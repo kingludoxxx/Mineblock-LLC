@@ -40,7 +40,7 @@ const fmt = (n) =>
 const fmtDecimal = (n) =>
   '$' + Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
-const fmtPct = (n) => (Number(n || 0) * 100).toFixed(1) + '%';
+const fmtPct = (n) => Number(n || 0).toFixed(1) + '%';
 
 const fmtRoas = (n) => Number(n || 0).toFixed(2) + 'x';
 
