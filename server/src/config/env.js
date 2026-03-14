@@ -13,6 +13,9 @@ const env = {
   ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY || '',
   GEMINI_API_KEY: process.env.GEMINI_API_KEY || '',
   LOG_LEVEL: process.env.LOG_LEVEL || 'info',
+  CLICKUP_API_TOKEN: process.env.CLICKUP_API_TOKEN || '',
+  TRIPLEWHALE_API_KEY: process.env.TRIPLEWHALE_API_KEY || '',
+  TRIPLEWHALE_SHOP_ID: process.env.TRIPLEWHALE_SHOP_ID || '17cca0-2.myshopify.com',
 };
 
 export default env;

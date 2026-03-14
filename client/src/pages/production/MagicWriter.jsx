@@ -141,7 +141,7 @@ export default function MagicWriter() {
   return (
     <div className="flex h-full gap-6 -m-6">
       {/* Left Panel - Input */}
-      <div className="w-[40%] min-w-[380px] overflow-y-auto p-6 border-r border-white/[0.06]">
+      <div className="w-[60%] min-w-[380px] overflow-y-auto p-6 border-r border-white/[0.06]">
         <div className="flex items-center gap-3 mb-6">
           <div className="p-2 rounded-lg bg-purple-500/20">
             <Wand2 className="w-5 h-5 text-purple-400" />

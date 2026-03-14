@@ -25,6 +25,7 @@ import BrandsPage from './pages/intel/BrandsPage';
 import BrandDetailPage from './pages/intel/BrandDetailPage';
 import FollowingPage from './pages/intel/FollowingPage';
 import SavedPage from './pages/intel/SavedPage';
+import CreativeIntelligencePage from './pages/intel/CreativeIntelligencePage';
 
 // Lab
 import AvatarsPage from './pages/lab/AvatarsPage';
@@ -93,6 +94,7 @@ export default function App() {
           <Route path="brands/:id" element={<BrandDetailPage />} />
           <Route path="following" element={<FollowingPage />} />
           <Route path="saved" element={<SavedPage />} />
+          <Route path="creative-intelligence" element={<CreativeIntelligencePage />} />
 
           {/* Lab */}
           <Route path="avatars" element={<AvatarsPage />} />

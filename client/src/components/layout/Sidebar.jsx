@@ -50,10 +50,18 @@ import {
   Monitor,
   Bug,
   Signal,
+  Brain,
 } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
 
 const navGroups = [
+  {
+    label: 'Intelligence',
+    icon: Brain,
+    items: [
+      { to: '/app/creative-intelligence', icon: Brain, label: 'Creative Intel' },
+    ],
+  },
   {
     label: 'Intel',
     icon: Radar,
