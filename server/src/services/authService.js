@@ -26,12 +26,11 @@ export const findUserByEmail = async (email) => {
 
 export const createUser = async ({ email, passwordHash, firstName, lastName }) => {
   const verificationToken = crypto.randomBytes(32).toString('hex');
-  const verificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 h
 
   const result = await pool.query(
     `INSERT INTO users
-       (email, password_hash, first_name, last_name, email_verification_token, email_verification_expires, is_active)
-     VALUES ($1, $2, $3, $4, $5, $6, true)
+       (email, password_hash, first_name, last_name, email_verify_token, is_active)
+     VALUES ($1, $2, $3, $4, $5, true)
      RETURNING *`,
     [
       email.toLowerCase().trim(),
@@ -39,7 +38,6 @@ export const createUser = async ({ email, passwordHash, firstName, lastName }) =
       firstName,
       lastName,
       hashToken(verificationToken),
-      verificationExpires,
     ],
   );
 

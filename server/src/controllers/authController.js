@@ -489,11 +489,9 @@ export const verifyEmail = async (req, res, next) => {
     const result = await pool.query(
       `UPDATE users
        SET email_verified = true,
-           email_verification_token = NULL,
-           email_verification_expires = NULL,
+           email_verify_token = NULL,
            updated_at = NOW()
-       WHERE email_verification_token = $1
-         AND email_verification_expires > NOW()
+       WHERE email_verify_token = $1
          AND is_active = true
        RETURNING id, email`,
       [tokenHashValue],
