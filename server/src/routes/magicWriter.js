@@ -40,7 +40,7 @@ async function generateWithAI(body) {
         : `Generate ${count} distinct variant(s) of marketing copy inspired by the reference content, each with a different angle or hook.`;
 
     const message = await client.messages.create({
-      model: 'claude-sonnet-4-6-20250725',
+      model: 'claude-sonnet-4-20250514',
       max_tokens: 4096,
       messages: [
         {
@@ -82,7 +82,7 @@ async function enhanceWithAI(field, value) {
         : `Expand this target audience description to be more specific and actionable for copywriting. Keep it to 1-2 sentences. Original: "${value}". Return ONLY the enhanced description, nothing else.`;
 
     const message = await client.messages.create({
-      model: 'claude-sonnet-4-6-20250725',
+      model: 'claude-sonnet-4-20250514',
       max_tokens: 200,
       messages: [{ role: 'user', content: prompt }],
     });
