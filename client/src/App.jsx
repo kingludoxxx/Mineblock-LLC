@@ -34,7 +34,7 @@ import ProductsPage from './pages/lab/ProductsPage';
 import FunnelsPage from './pages/lab/FunnelsPage';
 
 // Production
-import MagicWriterPage from './pages/production/MagicWriterPage';
+import MagicWriterPage from './pages/production/MagicWriter';
 import MagicAdsPage from './pages/production/MagicAdsPage';
 import ImagesPage from './pages/production/ImagesPage';
 import VideoPage from './pages/production/VideoPage';

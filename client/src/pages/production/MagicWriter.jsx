@@ -60,7 +60,7 @@ export default function MagicWriter() {
     setGenerating(true);
     setVariants([]);
     try {
-      const res = await api.post('/v1/magic-writer/generate', {
+      const res = await api.post('/magic-writer/generate', {
         referenceText: referenceMode === 'text' ? referenceText : referenceUrl,
         productName,
         targetAudience,
@@ -88,7 +88,7 @@ export default function MagicWriter() {
     if (!value.trim()) return;
     setEnhancingField(field);
     try {
-      const res = await api.post('/v1/magic-writer/enhance', { field, value });
+      const res = await api.post('/magic-writer/enhance', { field, value });
       if (field === 'productName') setProductName(res.data.enhanced);
       else setTargetAudience(res.data.enhanced);
     } catch {
