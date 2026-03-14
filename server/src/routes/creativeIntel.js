@@ -276,14 +276,30 @@ function matchCreative(parsed, twData, twNormalized) {
 
   const creativeIdLower = parsed.creativeId.toLowerCase();
 
-  // Strategy 1: Match on creative ID (e.g. "b0109", "im0004")
+  // Strategy: Match creative ID near the start of the ad name.
+  // The ID (e.g. "b0109") should appear as the 2nd segment, not as a reference deeper in the name.
+  // We check if the normalized TW name starts with or has the ID within the first ~30 chars.
+  // Aggregate all TW ads that match this creative ID (same creative can run as multiple ads)
+  let totalSpend = 0;
+  let totalRevenue = 0;
+  let totalImpressions = 0;
+  let totalClicks = 0;
+  let matched = false;
+
   for (let i = 0; i < twData.length; i++) {
-    if (twNormalized[i].includes(creativeIdLower)) {
-      return twData[i];
+    const norm = twNormalized[i];
+    const idx = norm.indexOf(creativeIdLower);
+    if (idx >= 0 && idx < 40) {
+      totalSpend += twData[i].total_spend || 0;
+      totalRevenue += twData[i].total_revenue || 0;
+      totalImpressions += twData[i].impressions || 0;
+      totalClicks += twData[i].clicks || 0;
+      matched = true;
     }
   }
 
-  return null;
+  if (!matched) return null;
+  return { total_spend: totalSpend, total_revenue: totalRevenue, impressions: totalImpressions, clicks: totalClicks };
 }
 
 /**
