@@ -45,7 +45,7 @@ export default function Header() {
             {user?.firstName} {user?.lastName}
           </span>
           {user?.roles?.map((role) => (
-            <Badge key={role} role={role} />
+            <Badge key={role.id || role.name} role={role.name} />
           ))}
         </div>
         <button
