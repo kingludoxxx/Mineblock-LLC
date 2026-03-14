@@ -1,67 +1,264 @@
 import { useState } from 'react';
-import { NavLink } from 'react-router-dom';
+import { NavLink, useLocation } from 'react-router-dom';
+import { useSidebar } from './AppLayout';
 import {
-  LayoutDashboard,
-  Users,
-  Building2,
-  ScrollText,
-  Settings,
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
+  Radar,
+  FlaskConical,
+  Factory,
+  FolderOpen,
+  BarChart3,
+  Wrench,
+  Settings,
+  LayoutDashboard,
+  // Intel icons
+  Facebook,
+  Search,
+  Youtube,
+  Megaphone,
+  ShoppingBag,
+  TrendingUp,
+  Eye,
+  UserCheck,
+  Bookmark,
+  // Lab icons
+  Users,
+  Cog,
+  Tag,
+  Package,
+  GitBranch,
+  // Production icons
+  PenTool,
+  Wand2,
+  Image,
+  Video,
+  Music,
+  // Performance icons
+  Target,
+  Activity,
+  Clock,
+  DollarSign,
+  // Library icons
+  UsersRound,
+  Archive,
+  CheckSquare,
+  // Ops icons
+  Headphones,
+  Zap,
+  Monitor,
+  Bug,
+  Signal,
 } from 'lucide-react';
-import { usePermissions } from '../../hooks/usePermissions';
+import { useAuth } from '../../hooks/useAuth';
 
-const navItems = [
-  { to: '/dashboard', icon: LayoutDashboard, label: 'Dashboard', permission: 'dashboard' },
-  { to: '/users', icon: Users, label: 'Users', permission: 'users' },
-  { to: '/departments', icon: Building2, label: 'Departments', permission: 'departments' },
-  { to: '/audit', icon: ScrollText, label: 'Audit Logs', permission: 'audit' },
-  { to: '/settings', icon: Settings, label: 'Settings', permission: 'settings' },
+const navGroups = [
+  {
+    label: 'Intel',
+    icon: Radar,
+    items: [
+      { to: '/app/meta', icon: Facebook, label: 'Meta' },
+      { to: '/app/google', icon: Search, label: 'Google' },
+      { to: '/app/youtube', icon: Youtube, label: 'YouTube' },
+      { to: '/app/tiktok-ads', icon: Megaphone, label: 'TikTok Ads' },
+      { to: '/app/tiktok-shop', icon: ShoppingBag, label: 'TikTok Shop' },
+      { to: '/app/tiktok-organic', icon: TrendingUp, label: 'TikTok Organic' },
+      { to: '/app/brands', icon: Eye, label: 'Brand Spy' },
+      { to: '/app/following', icon: UserCheck, label: 'Following' },
+      { to: '/app/saved', icon: Bookmark, label: 'Saved' },
+    ],
+  },
+  {
+    label: 'Lab',
+    icon: FlaskConical,
+    items: [
+      { to: '/app/avatars', icon: Users, label: 'Avatars' },
+      { to: '/app/mechanisms', icon: Cog, label: 'Mechanisms' },
+      { to: '/app/offers', icon: Tag, label: 'Offers' },
+      { to: '/app/products', icon: Package, label: 'Products' },
+      { to: '/app/funnels', icon: GitBranch, label: 'Funnels' },
+    ],
+  },
+  {
+    label: 'Production',
+    icon: Factory,
+    items: [
+      { to: '/app/magic-writer', icon: PenTool, label: 'Magic Writer' },
+      { to: '/app/magic-ads', icon: Wand2, label: 'Magic Ads' },
+      { to: '/app/images', icon: Image, label: 'Images' },
+      { to: '/app/video', icon: Video, label: 'Video' },
+      { to: '/app/audio', icon: Music, label: 'Audio' },
+    ],
+  },
+  {
+    label: 'Library',
+    icon: FolderOpen,
+    items: [
+      { to: '/app/team-hub', icon: UsersRound, label: 'Team Hub' },
+      { to: '/app/assets', icon: Archive, label: 'Assets' },
+      { to: '/app/todo', icon: CheckSquare, label: 'To Do' },
+    ],
+  },
+  {
+    label: 'Performance',
+    icon: BarChart3,
+    items: [
+      { to: '/app/attribution', icon: Target, label: 'Attribution' },
+      { to: '/app/live', icon: Activity, label: 'Live' },
+      { to: '/app/ltv', icon: Clock, label: 'LTV' },
+      { to: '/app/roas', icon: DollarSign, label: 'ROAS' },
+    ],
+  },
+  {
+    label: 'Ops',
+    icon: Wrench,
+    adminOnly: true,
+    items: [
+      { to: '/app/support', icon: Headphones, label: 'Support' },
+      { to: '/app/api-runs', icon: Zap, label: 'API Runs' },
+      { to: '/app/ops-dashboard', icon: Monitor, label: 'Dashboard' },
+      { to: '/app/scrape-runs', icon: Bug, label: 'Scrape Runs' },
+      { to: '/app/status', icon: Signal, label: 'Status' },
+    ],
+  },
 ];
 
 export default function Sidebar() {
-  const [collapsed, setCollapsed] = useState(false);
-  const { hasPermission } = usePermissions();
+  const { collapsed, setCollapsed } = useSidebar();
+  const [expandedGroups, setExpandedGroups] = useState(() => {
+    const initial = {};
+    navGroups.forEach((g) => {
+      initial[g.label] = true;
+    });
+    return initial;
+  });
+  const { user } = useAuth();
+  const location = useLocation();
 
-  const filteredItems = navItems.filter((item) => hasPermission(item.permission));
+  const isAdmin =
+    user?.roles?.includes('SuperAdmin') || user?.roles?.includes('Admin');
+
+  const toggleGroup = (label) => {
+    setExpandedGroups((prev) => ({ ...prev, [label]: !prev[label] }));
+  };
+
+  const isGroupActive = (group) => {
+    return group.items.some((item) => location.pathname.startsWith(item.to));
+  };
 
   return (
     <aside
-      className={`bg-slate-950 border-r border-slate-800 flex flex-col transition-all duration-300
-        ${collapsed ? 'w-16' : 'w-64'}`}
+      className="fixed top-0 left-0 h-screen flex flex-col bg-bg-card border-r border-border-default transition-all duration-200 z-30"
+      style={{ width: collapsed ? 'var(--sidebar-collapsed-w)' : 'var(--sidebar-w)' }}
     >
-      <div className="flex items-center justify-between p-4 border-b border-slate-800 min-h-[64px]">
+      {/* Logo + collapse */}
+      <div className="flex items-center justify-between px-3 h-[var(--topbar-h)] border-b border-border-subtle shrink-0">
         {!collapsed && (
-          <span className="text-lg font-bold text-white whitespace-nowrap">Mineblock LLC</span>
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-lg bg-accent flex items-center justify-center text-white font-bold text-sm">
+              M
+            </div>
+            <span className="text-sm font-semibold text-text-primary truncate">Mineblock</span>
+          </div>
+        )}
+        {collapsed && (
+          <div className="w-8 h-8 rounded-lg bg-accent flex items-center justify-center text-white font-bold text-sm mx-auto">
+            M
+          </div>
         )}
         <button
           onClick={() => setCollapsed(!collapsed)}
-          className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
+          className="p-1 rounded-md text-text-muted hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer"
+          title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
         >
           {collapsed ? <ChevronRight className="w-4 h-4" /> : <ChevronLeft className="w-4 h-4" />}
         </button>
       </div>
-      <nav className="flex-1 p-3 space-y-1">
-        {filteredItems.map((item) => (
-          <NavLink
-            key={item.to}
-            to={item.to}
-            className={({ isActive }) =>
-              `flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors
-              ${
-                isActive
-                  ? 'bg-blue-600 text-white'
-                  : 'text-slate-400 hover:text-white hover:bg-slate-800'
-              }
-              ${collapsed ? 'justify-center' : ''}`
-            }
-            title={collapsed ? item.label : undefined}
-          >
-            <item.icon className="w-5 h-5 shrink-0" />
-            {!collapsed && <span>{item.label}</span>}
-          </NavLink>
-        ))}
+
+      {/* Dashboard link */}
+      <div className="px-2 pt-2 shrink-0">
+        <NavLink
+          to="/app/dashboard"
+          className={({ isActive }) =>
+            `flex items-center gap-2.5 px-2.5 py-1.5 rounded-md text-sm transition-colors
+            ${isActive ? 'bg-accent text-white' : 'text-text-muted hover:text-text-primary hover:bg-bg-hover'}
+            ${collapsed ? 'justify-center' : ''}`
+          }
+          title={collapsed ? 'Dashboard' : undefined}
+        >
+          <LayoutDashboard className="w-4 h-4 shrink-0" />
+          {!collapsed && <span>Dashboard</span>}
+        </NavLink>
+      </div>
+
+      {/* Nav groups */}
+      <nav className="flex-1 overflow-y-auto px-2 py-2 space-y-0.5">
+        {navGroups.map((group) => {
+          if (group.adminOnly && !isAdmin) return null;
+          const GroupIcon = group.icon;
+          const isExpanded = expandedGroups[group.label];
+          const groupActive = isGroupActive(group);
+
+          return (
+            <div key={group.label}>
+              <button
+                onClick={() => !collapsed && toggleGroup(group.label)}
+                className={`w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-md text-xs font-medium uppercase tracking-wider transition-colors cursor-pointer
+                  ${groupActive ? 'text-text-primary' : 'text-text-faint hover:text-text-muted'}
+                  ${collapsed ? 'justify-center' : ''}`}
+                title={collapsed ? group.label : undefined}
+              >
+                <GroupIcon className="w-4 h-4 shrink-0" />
+                {!collapsed && (
+                  <>
+                    <span className="flex-1 text-left">{group.label}</span>
+                    <ChevronDown
+                      className={`w-3 h-3 transition-transform ${isExpanded ? '' : '-rotate-90'}`}
+                    />
+                  </>
+                )}
+              </button>
+              {!collapsed && isExpanded && (
+                <div className="ml-3 pl-3 border-l border-border-subtle space-y-0.5 mt-0.5 mb-1">
+                  {group.items.map((item) => {
+                    const ItemIcon = item.icon;
+                    return (
+                      <NavLink
+                        key={item.to}
+                        to={item.to}
+                        className={({ isActive }) =>
+                          `flex items-center gap-2.5 px-2.5 py-1.5 rounded-md text-sm transition-colors
+                          ${isActive ? 'bg-bg-hover text-text-primary' : 'text-text-muted hover:text-text-primary hover:bg-bg-hover'}`
+                        }
+                      >
+                        <ItemIcon className="w-3.5 h-3.5 shrink-0" />
+                        <span>{item.label}</span>
+                      </NavLink>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })}
       </nav>
+
+      {/* Settings pinned at bottom */}
+      <div className="px-2 py-2 border-t border-border-subtle shrink-0">
+        <NavLink
+          to="/app/settings"
+          className={({ isActive }) =>
+            `flex items-center gap-2.5 px-2.5 py-1.5 rounded-md text-sm transition-colors
+            ${isActive ? 'bg-bg-hover text-text-primary' : 'text-text-muted hover:text-text-primary hover:bg-bg-hover'}
+            ${collapsed ? 'justify-center' : ''}`
+          }
+          title={collapsed ? 'Settings' : undefined}
+        >
+          <Settings className="w-4 h-4 shrink-0" />
+          {!collapsed && <span>Settings</span>}
+        </NavLink>
+      </div>
     </aside>
   );
 }

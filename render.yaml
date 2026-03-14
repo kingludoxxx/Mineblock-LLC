@@ -9,7 +9,7 @@ services:
     name: mineblock-admin
     runtime: node
     plan: free
-    buildCommand: npm install
+    buildCommand: npm install && cd client && npm install && npm run build
     startCommand: npm start
     envVars:
       - key: NODE_ENV
@@ -23,4 +23,10 @@ services:
       - key: JWT_REFRESH_SECRET
         generateValue: true
       - key: CORS_ORIGIN
-        value: https://mineblock-admin.onrender.com
+        value: https://mineblock-dashboard.onrender.com
+      - key: REDIS_URL
+        value: ""
+      - key: ANTHROPIC_API_KEY
+        value: ""
+      - key: GEMINI_API_KEY
+        value: ""

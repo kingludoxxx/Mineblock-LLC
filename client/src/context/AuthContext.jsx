@@ -12,6 +12,16 @@ export function AuthProvider({ children }) {
     accessTokenRef.current = token;
   };
 
+  const fetchMe = useCallback(async () => {
+    try {
+      const res = await api.get('/auth/me', { withCredentials: true });
+      setUser(res.data.user || res.data);
+      return res.data;
+    } catch {
+      return null;
+    }
+  }, []);
+
   const refreshToken = useCallback(async () => {
     try {
       const res = await api.post('/auth/refresh', {}, { withCredentials: true });
@@ -66,6 +76,21 @@ export function AuthProvider({ children }) {
     return res.data;
   };
 
+  const signup = async (name, email, password) => {
+    const res = await api.post('/auth/signup', { name, email, password }, { withCredentials: true });
+    return res.data;
+  };
+
+  const forgotPassword = async (email) => {
+    const res = await api.post('/auth/forgot-password', { email });
+    return res.data;
+  };
+
+  const resetPassword = async (token, password) => {
+    const res = await api.post('/auth/reset-password', { token, password });
+    return res.data;
+  };
+
   const logout = async () => {
     try {
       await api.post('/auth/logout', {}, { withCredentials: true });
@@ -79,7 +104,20 @@ export function AuthProvider({ children }) {
   const isAuthenticated = !!user;
 
   return (
-    <AuthContext.Provider value={{ user, isAuthenticated, isLoading, login, logout, refreshToken }}>
+    <AuthContext.Provider
+      value={{
+        user,
+        isAuthenticated,
+        isLoading,
+        login,
+        signup,
+        logout,
+        forgotPassword,
+        resetPassword,
+        refreshToken,
+        fetchMe,
+      }}
+    >
       {children}
     </AuthContext.Provider>
   );

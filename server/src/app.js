@@ -49,9 +49,11 @@ app.use(cookieParser());
 app.use('/api', apiLimiter);
 
 // API routes
-app.use('/api/v1/health', healthRoutes);
+app.use('/api/health', healthRoutes);      // top-level health check
+app.use('/api/v1/health', healthRoutes);   // versioned health check
 app.use('/api/v1/dashboard', dashboardRoutes);
 app.use('/api/v1/auth', authRoutes);
+app.use('/api/auth', authRoutes);       // alias for client compatibility
 
 // Mount CRUD routes (users, departments, audit, settings)
 mountRoutes(app);

@@ -1,65 +1,42 @@
-import { useState, useEffect } from 'react';
-import { Users, Building2, ScrollText, Shield } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
-import StatCard from '../components/shared/StatCard';
-import LoadingSpinner from '../components/shared/LoadingSpinner';
-import api from '../services/api';
+import Card from '../components/ui/Card';
 
 export default function Dashboard() {
   const { user } = useAuth();
-  const [stats, setStats] = useState(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    api
-      .get('/dashboard/stats')
-      .then((res) => setStats(res.data))
-      .catch(() =>
-        setStats({
-          totalUsers: 0,
-          totalDepartments: 0,
-          recentAuditLogs: 0,
-          activeRoles: 0,
-        })
-      )
-      .finally(() => setLoading(false));
-  }, []);
-
-  if (loading) return <LoadingSpinner />;
 
   return (
-    <div>
-      <div className="mb-8">
-        <h1 className="text-2xl font-bold text-white">
-          Welcome back, {user?.firstName || 'Admin'}
+    <div className="p-6 space-y-6">
+      <div>
+        <h1 className="text-xl font-semibold text-white">
+          Welcome back{user?.name ? `, ${user.name}` : ''}
         </h1>
-        <p className="text-slate-400 mt-1">Here is what is happening in your organization.</p>
+        <p className="text-sm text-text-muted mt-1">
+          Here is an overview of your workspace
+        </p>
       </div>
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-        <StatCard
-          icon={Users}
-          label="Total Users"
-          value={stats?.totalUsers ?? 0}
-          trend={12}
-        />
-        <StatCard
-          icon={Building2}
-          label="Departments"
-          value={stats?.totalDepartments ?? 0}
-          trend={4}
-        />
-        <StatCard
-          icon={ScrollText}
-          label="Audit Logs"
-          value={stats?.recentAuditLogs ?? 0}
-          trend={-2}
-        />
-        <StatCard
-          icon={Shield}
-          label="Active Roles"
-          value={stats?.activeRoles ?? 0}
-        />
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <Card>
+          <p className="text-xs text-text-muted font-medium uppercase tracking-wider">Active Campaigns</p>
+          <p className="text-2xl font-bold text-text-primary mt-2">--</p>
+        </Card>
+        <Card>
+          <p className="text-xs text-text-muted font-medium uppercase tracking-wider">Total Spend</p>
+          <p className="text-2xl font-bold text-text-primary mt-2">--</p>
+        </Card>
+        <Card>
+          <p className="text-xs text-text-muted font-medium uppercase tracking-wider">Revenue</p>
+          <p className="text-2xl font-bold text-text-primary mt-2">--</p>
+        </Card>
+        <Card>
+          <p className="text-xs text-text-muted font-medium uppercase tracking-wider">ROAS</p>
+          <p className="text-2xl font-bold text-text-primary mt-2">--</p>
+        </Card>
       </div>
+
+      <Card>
+        <p className="text-sm text-text-muted">Dashboard widgets and analytics coming soon.</p>
+      </Card>
     </div>
   );
 }

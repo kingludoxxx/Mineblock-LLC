@@ -1,0 +1,10 @@
+export default function YouTubePage() {
+  return (
+    <div className="p-6 space-y-6">
+      <div>
+        <h1 className="text-xl font-semibold text-white">YouTube</h1>
+        <p className="text-sm text-gray-400 mt-1">YouTube ad spy and video intelligence. Coming soon.</p>
+      </div>
+    </div>
+  );
+}

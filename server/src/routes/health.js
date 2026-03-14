@@ -1,58 +1,55 @@
 import { Router } from 'express';
-import { query } from '../config/db.js';
+import { pgQuery, isDbCircuitOpen } from '../db/pg.js';
+import redis from '../db/redis.js';
 
 const router = Router();
 
-router.get('/', (req, res) => {
-  res.json({
-    success: true,
+router.get('/', async (req, res) => {
+  // Database check
+  let dbStatus = 'ok';
+  let dbLatencyMs = null;
+  try {
+    if (isDbCircuitOpen()) {
+      dbStatus = 'circuit_open';
+    } else {
+      const start = Date.now();
+      await pgQuery('SELECT 1');
+      dbLatencyMs = Date.now() - start;
+    }
+  } catch {
+    dbStatus = 'error';
+  }
+
+  // Redis check
+  let redisStatus = 'ok';
+  let redisLatencyMs = null;
+  try {
+    const start = Date.now();
+    await redis.ping();
+    redisLatencyMs = Date.now() - start;
+  } catch {
+    redisStatus = 'error';
+  }
+
+  const overall = dbStatus === 'ok' && redisStatus === 'ok' ? 'healthy' : 'degraded';
+  const httpCode = overall === 'healthy' ? 200 : 503;
+
+  res.status(httpCode).json({
+    success: overall === 'healthy',
     data: {
-      status: 'ok',
+      status: overall,
       uptime: process.uptime(),
       timestamp: new Date().toISOString(),
+      database: {
+        status: dbStatus,
+        latencyMs: dbLatencyMs,
+      },
+      redis: {
+        status: redisStatus,
+        latencyMs: redisLatencyMs,
+      },
     },
   });
-});
-
-router.get('/deep', async (req, res, next) => {
-  try {
-    const dbStart = Date.now();
-    await query('SELECT 1');
-    const dbLatencyMs = Date.now() - dbStart;
-
-    const memoryUsage = process.memoryUsage();
-
-    res.json({
-      success: true,
-      data: {
-        status: 'ok',
-        uptime: process.uptime(),
-        timestamp: new Date().toISOString(),
-        database: {
-          connected: true,
-          latencyMs: dbLatencyMs,
-        },
-        memory: {
-          rss: `${Math.round(memoryUsage.rss / 1024 / 1024)} MB`,
-          heapUsed: `${Math.round(memoryUsage.heapUsed / 1024 / 1024)} MB`,
-          heapTotal: `${Math.round(memoryUsage.heapTotal / 1024 / 1024)} MB`,
-        },
-      },
-    });
-  } catch (err) {
-    res.status(503).json({
-      success: false,
-      data: {
-        status: 'degraded',
-        uptime: process.uptime(),
-        timestamp: new Date().toISOString(),
-        database: {
-          connected: false,
-          error: err.message,
-        },
-      },
-    });
-  }
 });
 
 export default router;

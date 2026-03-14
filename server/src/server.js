@@ -1,6 +1,8 @@
 import app from './app.js';
 import env from './config/env.js';
 import pool, { testConnection } from './config/db.js';
+import { pgQuery } from './db/pg.js';
+import redis from './db/redis.js';
 import logger from './utils/logger.js';
 import fs from 'fs';
 import path from 'path';
@@ -9,6 +11,11 @@ import { hashPassword } from './utils/hash.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+// ---------------------------------------------------------------------------
+// Auto-migration (reads .sql files from server/migrations/)
+// Uses the legacy pg Pool for migrations since it supports transactional DDL
+// with explicit BEGIN/COMMIT via client.query.
+// ---------------------------------------------------------------------------
 async function runMigrations() {
   const client = await pool.connect();
   try {
@@ -45,8 +52,10 @@ async function runMigrations() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Seed default roles & super-admin user
+// ---------------------------------------------------------------------------
 async function runSeeds() {
-  // Seed roles
   const roles = [
     { name: 'SuperAdmin', description: 'Full system access', permissions: { '*': ['*'] } },
     { name: 'Admin', description: 'Administrative access', permissions: { users: ['read','create','update'], departments: ['*'], audit: ['read'], settings: ['read'] } },
@@ -61,11 +70,10 @@ async function runSeeds() {
   }
   logger.info('Roles seeded');
 
-  // Seed SuperAdmin user
-  const email = env.SUPERADMIN_EMAIL || 'admin@try-mineblock.com';
+  const email = process.env.SUPERADMIN_EMAIL || 'admin@try-mineblock.com';
   const { rows: existing } = await pool.query('SELECT id FROM users WHERE email = $1', [email]);
   if (existing.length === 0) {
-    const password = env.SUPERADMIN_PASSWORD || 'MineblockAdmin2026!';
+    const password = process.env.SUPERADMIN_PASSWORD || 'MineblockAdmin2026!';
     const hash = await hashPassword(password);
     const { rows: [user] } = await pool.query(
       `INSERT INTO users (email, password_hash, first_name, last_name, must_change_password) VALUES ($1, $2, $3, $4, true) RETURNING id`,
@@ -81,12 +89,36 @@ async function runSeeds() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Startup
+// ---------------------------------------------------------------------------
 const start = async () => {
+  // 1. Connect legacy pg pool (used by migrations, seeds, existing code)
   try {
     await testConnection();
-    logger.info('Database connection established');
+    logger.info('PostgreSQL (pg pool) connection established');
+  } catch (err) {
+    logger.warn(`PostgreSQL (pg pool) connection failed: ${err.message}`);
+  }
 
-    // Auto-run migrations and seeds
+  // 2. Verify postgres.js driver
+  try {
+    await pgQuery('SELECT 1');
+    logger.info('PostgreSQL (postgres.js) connection established');
+  } catch (err) {
+    logger.warn(`PostgreSQL (postgres.js) connection failed: ${err.message}`);
+  }
+
+  // 3. Connect Redis
+  try {
+    await redis.connect();
+    logger.info('Redis connection established');
+  } catch (err) {
+    logger.warn(`Redis connection failed: ${err.message}. Continuing without Redis.`);
+  }
+
+  // 4. Run migrations & seeds
+  try {
     await runMigrations();
     logger.info('Migrations complete');
     await runSeeds();
@@ -95,6 +127,7 @@ const start = async () => {
     logger.warn(`Database setup issue: ${err.message}. Starting server anyway.`);
   }
 
+  // 5. Start HTTP server
   app.listen(env.PORT, () => {
     logger.info(`Server running on port ${env.PORT} in ${env.NODE_ENV} mode`);
   });

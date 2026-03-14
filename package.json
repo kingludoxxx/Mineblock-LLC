@@ -16,6 +16,7 @@
     "author": "",
     "license": "ISC",
     "dependencies": {
+        "@anthropic-ai/sdk": "^0.78.0",
         "axios": "^1.13.2",
         "bcrypt": "^6.0.0",
         "cookie-parser": "^1.4.7",
@@ -24,10 +25,12 @@
         "express": "^5.2.1",
         "express-rate-limit": "^8.3.1",
         "helmet": "^8.1.0",
+        "ioredis": "^5.10.0",
         "joi": "^18.0.2",
         "jsonwebtoken": "^9.0.3",
         "morgan": "^1.10.1",
         "pg": "^8.20.0",
+        "postgres": "^3.4.8",
         "winston": "^3.19.0"
     }
 }
