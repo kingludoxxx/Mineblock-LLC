@@ -10,6 +10,11 @@ export function AuthProvider({ children }) {
 
   const setAccessToken = (token) => {
     accessTokenRef.current = token;
+    if (token) {
+      localStorage.setItem('accessToken', token);
+    } else {
+      localStorage.removeItem('accessToken');
+    }
   };
 
   const fetchMe = useCallback(async () => {
@@ -66,8 +71,23 @@ export function AuthProvider({ children }) {
   }, [refreshToken]);
 
   useEffect(() => {
-    refreshToken().finally(() => setIsLoading(false));
-  }, [refreshToken]);
+    const init = async () => {
+      // Try stored token first
+      const stored = localStorage.getItem('accessToken');
+      if (stored) {
+        accessTokenRef.current = stored;
+        const me = await fetchMe();
+        if (me) {
+          setIsLoading(false);
+          return;
+        }
+      }
+      // Fall back to cookie-based refresh
+      await refreshToken();
+      setIsLoading(false);
+    };
+    init();
+  }, [refreshToken, fetchMe]);
 
   const login = async (email, password) => {
     const res = await api.post('/auth/login', { email, password }, { withCredentials: true });
@@ -99,6 +119,7 @@ export function AuthProvider({ children }) {
     }
     setUser(null);
     setAccessToken(null);
+    localStorage.removeItem('accessToken');
   };
 
   const isAuthenticated = !!user;

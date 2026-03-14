@@ -81,16 +81,13 @@ export default function Topbar() {
   const currentPage = segments[0] || 'dashboard';
   const section = sectionLabels[currentPage];
 
-  const initials = user?.name
-    ? user.name
-        .split(' ')
-        .map((n) => n[0])
-        .join('')
-        .toUpperCase()
-        .slice(0, 2)
+  const fullName = user?.name || [user?.firstName, user?.lastName].filter(Boolean).join(' ') || '';
+  const initials = fullName
+    ? fullName.split(' ').map((n) => n[0]).join('').toUpperCase().slice(0, 2)
     : '??';
 
-  const displayRole = user?.roles?.[0] || 'User';
+  const firstRole = user?.roles?.[0];
+  const displayRole = typeof firstRole === 'string' ? firstRole : firstRole?.name || 'User';
 
   return (
     <header className="h-[var(--topbar-h)] bg-bg-main border-b border-border-subtle flex items-center justify-between px-4 shrink-0">
@@ -129,7 +126,7 @@ export default function Topbar() {
           </div>
           <div className="hidden sm:flex flex-col">
             <span className="text-xs font-medium text-text-primary leading-none">
-              {user?.name || 'User'}
+              {fullName || 'User'}
             </span>
             <span className="text-[10px] text-text-muted leading-none mt-0.5">
               {displayRole}
