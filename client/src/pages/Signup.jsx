@@ -73,7 +73,7 @@ export default function Signup() {
       navigate('/login?registered=1');
     } catch (err) {
       setError(
-        err.response?.data?.message || 'Something went wrong. Please try again.',
+        err.response?.data?.error || err.response?.data?.message || 'Something went wrong. Please try again.',
       );
     } finally {
       setLoading(false);
