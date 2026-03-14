@@ -1,37 +1,24 @@
 import { useState } from 'react';
 import {
-  Globe, Bot, Palette, Video, Zap, BarChart3, MessageSquare,
-  CheckCircle, Settings, FlaskConical, X, Eye, EyeOff, Layers
+  Globe, Bot, Zap, CheckCircle, Settings, FlaskConical, X, Eye, EyeOff, Layers
 } from 'lucide-react';
 
 const categories = [
   { id: 'all', label: 'All', icon: Layers },
-  { id: 'scraping', label: 'Scraping', icon: Globe },
-  { id: 'ai-text', label: 'AI / Text', icon: Bot },
-  { id: 'ai-creative', label: 'AI / Creative', icon: Palette },
-  { id: 'ai-video', label: 'AI / Video', icon: Video },
-  { id: 'automation', label: 'Automation', icon: Zap },
-  { id: 'analytics', label: 'Analytics', icon: BarChart3 },
-  { id: 'pm-comms', label: 'PM & Comms', icon: MessageSquare },
+  { id: 'ai', label: 'AI Providers', icon: Bot },
+  { id: 'infrastructure', label: 'Infrastructure', icon: Globe },
+  { id: 'auth', label: 'Auth & Security', icon: Zap },
 ];
 
 const integrations = [
-  { id: 1, name: 'Bright Data', description: 'Web scraping & data collection platform', category: 'scraping', connected: true, envVar: 'BRIGHTDATA_API_KEY' },
-  { id: 2, name: 'ScrapingBee', description: 'Web scraping API with headless browser', category: 'scraping', connected: false, envVar: 'SCRAPINGBEE_KEY' },
-  { id: 3, name: 'Apify', description: 'Web scraping and automation platform', category: 'scraping', connected: true, envVar: 'APIFY_TOKEN' },
-  { id: 4, name: 'OpenAI', description: 'GPT models for text generation', category: 'ai-text', connected: true, envVar: 'OPENAI_API_KEY' },
-  { id: 5, name: 'Anthropic', description: 'Claude models for AI assistance', category: 'ai-text', connected: true, envVar: 'ANTHROPIC_API_KEY' },
-  { id: 6, name: 'Replicate', description: 'Run ML models in the cloud', category: 'ai-creative', connected: false, envVar: 'REPLICATE_API_TOKEN' },
-  { id: 7, name: 'Stability AI', description: 'Image generation with Stable Diffusion', category: 'ai-creative', connected: true, envVar: 'STABILITY_API_KEY' },
-  { id: 8, name: 'ElevenLabs', description: 'AI voice synthesis and cloning', category: 'ai-creative', connected: false, envVar: 'ELEVENLABS_API_KEY' },
-  { id: 9, name: 'HeyGen', description: 'AI video generation with avatars', category: 'ai-video', connected: false, envVar: 'HEYGEN_API_KEY' },
-  { id: 10, name: 'Runway', description: 'AI-powered video generation', category: 'ai-video', connected: false, envVar: 'RUNWAY_API_KEY' },
-  { id: 11, name: 'Zapier', description: 'Workflow automation & integrations', category: 'automation', connected: true, envVar: 'ZAPIER_WEBHOOK_URL' },
-  { id: 12, name: 'Make (Integromat)', description: 'Visual automation platform', category: 'automation', connected: false, envVar: 'MAKE_API_KEY' },
-  { id: 13, name: 'Google Analytics', description: 'Website traffic analytics', category: 'analytics', connected: true, envVar: 'GA_MEASUREMENT_ID' },
-  { id: 14, name: 'Mixpanel', description: 'Product analytics platform', category: 'analytics', connected: false, envVar: 'MIXPANEL_TOKEN' },
-  { id: 15, name: 'Slack', description: 'Team messaging & notifications', category: 'pm-comms', connected: true, envVar: 'SLACK_WEBHOOK_URL' },
-  { id: 16, name: 'Linear', description: 'Project management for teams', category: 'pm-comms', connected: false, envVar: 'LINEAR_API_KEY' },
+  { id: 1, name: 'Anthropic', description: 'Claude models — powers Magic Writer & AI features', category: 'ai', connected: true, envVar: 'ANTHROPIC_API_KEY' },
+  { id: 2, name: 'Google Gemini', description: 'Gemini models for multimodal AI tasks', category: 'ai', connected: true, envVar: 'GEMINI_API_KEY' },
+  { id: 3, name: 'PostgreSQL', description: 'Primary database hosted on Render', category: 'infrastructure', connected: true, envVar: 'DATABASE_URL' },
+  { id: 4, name: 'Redis', description: 'Session cache, rate limiting & response cache', category: 'infrastructure', connected: false, envVar: 'REDIS_URL' },
+  { id: 5, name: 'Render', description: 'Hosting platform — web service & database', category: 'infrastructure', connected: true, envVar: 'NODE_ENV' },
+  { id: 6, name: 'CORS Origin', description: 'Allowed frontend origin for API requests', category: 'infrastructure', connected: true, envVar: 'CORS_ORIGIN' },
+  { id: 7, name: 'JWT Access Token', description: 'Secret for signing short-lived access tokens (15min)', category: 'auth', connected: true, envVar: 'JWT_ACCESS_SECRET' },
+  { id: 8, name: 'JWT Refresh Token', description: 'Secret for signing long-lived refresh tokens (7 days)', category: 'auth', connected: true, envVar: 'JWT_REFRESH_SECRET' },
 ];
 
 export default function IntegrationsTab() {
@@ -52,13 +39,9 @@ export default function IntegrationsTab() {
   };
 
   const iconMap = {
-    scraping: Globe,
-    'ai-text': Bot,
-    'ai-creative': Palette,
-    'ai-video': Video,
-    automation: Zap,
-    analytics: BarChart3,
-    'pm-comms': MessageSquare,
+    ai: Bot,
+    infrastructure: Globe,
+    auth: Zap,
   };
 
   return (
