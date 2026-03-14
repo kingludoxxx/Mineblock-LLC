@@ -51,6 +51,7 @@ export default function MagicWriter() {
   const [generating, setGenerating] = useState(false);
   const [enhancingField, setEnhancingField] = useState(null);
   const [copiedIndex, setCopiedIndex] = useState(null);
+  const [aiSource, setAiSource] = useState(null);
 
   const referenceContent = referenceMode === 'text' ? referenceText : referenceUrl;
   const canGenerate = referenceContent.trim() && productName.trim() && targetAudience.trim();
@@ -69,6 +70,7 @@ export default function MagicWriter() {
         aggressiveness,
       });
       setVariants(res.data.variants || []);
+      setAiSource(res.data.source || 'unknown');
     } catch {
       // Fallback mock response
       await new Promise((r) => setTimeout(r, 2000));
@@ -399,6 +401,15 @@ export default function MagicWriter() {
                 <span className="text-sm font-normal text-slate-400 ml-2">
                   {variants.length} variant{variants.length !== 1 ? 's' : ''}
                 </span>
+                {aiSource && (
+                  <span className={`ml-3 text-xs font-medium px-2 py-0.5 rounded-full ${
+                    aiSource === 'mock'
+                      ? 'bg-yellow-500/20 text-yellow-400'
+                      : 'bg-green-500/20 text-green-400'
+                  }`}>
+                    {aiSource === 'mock' ? 'Mock Data' : `Powered by ${aiSource}`}
+                  </span>
+                )}
               </h2>
               <button
                 onClick={handleGenerate}

@@ -40,7 +40,7 @@ async function generateWithAI(body) {
         : `Generate ${count} distinct variant(s) of marketing copy inspired by the reference content, each with a different angle or hook.`;
 
     const message = await client.messages.create({
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-sonnet-4-6-20250725',
       max_tokens: 4096,
       messages: [
         {
@@ -62,7 +62,8 @@ Return ONLY a JSON array of objects with "id" (number) and "text" (string) field
     const text = message.content[0].text.trim();
     const parsed = JSON.parse(text);
     return Array.isArray(parsed) ? parsed : null;
-  } catch {
+  } catch (err) {
+    console.error('[MagicWriter] AI generate error:', err.message);
     return null;
   }
 }
@@ -81,13 +82,14 @@ async function enhanceWithAI(field, value) {
         : `Expand this target audience description to be more specific and actionable for copywriting. Keep it to 1-2 sentences. Original: "${value}". Return ONLY the enhanced description, nothing else.`;
 
     const message = await client.messages.create({
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-sonnet-4-6-20250725',
       max_tokens: 200,
       messages: [{ role: 'user', content: prompt }],
     });
 
     return message.content[0].text.trim();
-  } catch {
+  } catch (err) {
+    console.error('[MagicWriter] AI enhance error:', err.message);
     return null;
   }
 }
@@ -107,8 +109,9 @@ router.post('/generate', async (req, res) => {
     // Try AI first, fall back to mock
     const aiResult = await generateWithAI(req.body);
     const variants = aiResult || generateMockVariants(req.body);
+    const source = aiResult ? 'claude-sonnet-4.6' : 'mock';
 
-    res.json({ success: true, variants });
+    res.json({ success: true, variants, source });
   } catch (err) {
     res.status(500).json({
       success: false,
