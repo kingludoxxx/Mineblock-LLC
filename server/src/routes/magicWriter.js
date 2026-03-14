@@ -2,28 +2,68 @@ import express from 'express';
 
 const router = express.Router();
 
-// Mock copy generation
-function generateMockVariants(body) {
-  const { productName, targetAudience, mode, variantCount = 3, aggressiveness = 5 } = body;
-  const count = mode === 'clone' ? 1 : variantCount;
+// ---------------------------------------------------------------------------
+// Mock data fallbacks
+// ---------------------------------------------------------------------------
 
-  const urgencyLevel =
-    aggressiveness <= 3 ? 'gentle' : aggressiveness <= 6 ? 'moderate' : 'aggressive';
+function buildProductContext(profile) {
+  return [
+    `Product: ${profile.productName}`,
+    `Benefits: ${profile.benefits}`,
+    `Target Audience: ${profile.targetAudience}`,
+    `Unique Mechanism: ${profile.uniqueMechanism}`,
+    `Power Phrases: ${profile.powerPhrases}`,
+  ].join('\n');
+}
 
-  const urgencyPhrases = {
-    gentle: 'Take your time to explore what works best for you.',
-    moderate: 'Join thousands who have already made the switch.',
-    aggressive: 'WARNING: This offer expires TONIGHT. Act NOW or miss out forever!',
-  };
+function generateMockCompetitor(script, profile) {
+  return [
+    {
+      id: 1,
+      text: `[Competitor Rephrase]\n\n${script
+        .split('\n')
+        .map((line) =>
+          line.trim()
+            ? line
+                .replace(/\b[A-Z][a-z]+(?:\s[A-Z][a-z]+)*\b/, profile.productName)
+            : line
+        )
+        .join('\n')}\n\n— Powered by ${profile.productName} | ${profile.uniqueMechanism}`,
+    },
+  ];
+}
 
+function generateMockVariants(script, profile, count) {
+  const angles = ['curiosity', 'fear-of-missing-out', 'social proof', 'authority', 'urgency'];
   return Array.from({ length: count }, (_, i) => ({
     id: i + 1,
-    text: `[Variant ${i + 1}] Attention ${targetAudience}!\n\nAre you tired of solutions that just don't work? It's not your fault. The industry has been selling you the wrong approach for years.\n\nIntroducing ${productName} — built on a completely different mechanism that gets to the root of the problem.\n\nHere's why ${productName} is different:\n\n• Proprietary method that addresses the REAL cause\n• Backed by real results from people just like you\n• Designed specifically for ${targetAudience}\n• Zero risk — full money-back guarantee\n\n${urgencyPhrases[urgencyLevel]}\n\n→ [Get ${productName} Now]`,
+    text: `[Variant ${i + 1} — ${angles[i % angles.length]} angle]\n\nAttention ${profile.targetAudience}!\n\n${profile.benefits}\n\nIntroducing ${profile.productName} — powered by ${profile.uniqueMechanism}.\n\n${script.slice(0, 200)}…\n\n${profile.powerPhrases}\n\n→ [Get ${profile.productName} Now]`,
   }));
 }
 
-// Try to use Anthropic API, fall back to mock
-async function generateWithAI(body) {
+function generateMockHooks(selectedVariant, profile, count) {
+  const hookAngles = ['curiosity', 'fear', 'social proof', 'authority', 'urgency'];
+  return Array.from({ length: count }, (_, i) => ({
+    id: i + 1,
+    text: `[Hook ${i + 1} — ${hookAngles[i % hookAngles.length]}]\n\n${
+      i === 0
+        ? `What if everything you knew about ${profile.targetAudience.toLowerCase()} solutions was wrong?`
+        : i === 1
+          ? `WARNING: If you're still ignoring ${profile.uniqueMechanism}, you're leaving money on the table.`
+          : i === 2
+            ? `Over 10,000 ${profile.targetAudience.toLowerCase()} have already switched to ${profile.productName}.`
+            : i === 3
+              ? `Leading experts agree: ${profile.uniqueMechanism} changes everything.`
+              : `This offer won't last. ${profile.powerPhrases}`
+    }\n\n${selectedVariant.slice(selectedVariant.indexOf('\n\n') + 2)}`,
+  }));
+}
+
+// ---------------------------------------------------------------------------
+// AI generation helpers
+// ---------------------------------------------------------------------------
+
+async function callAnthropic(systemPrompt, userPrompt, maxTokens = 4096) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) return null;
 
@@ -31,88 +71,121 @@ async function generateWithAI(body) {
     const { default: Anthropic } = await import('@anthropic-ai/sdk');
     const client = new Anthropic({ apiKey });
 
-    const { referenceText, productName, targetAudience, mode, variantCount = 3, aggressiveness = 5 } = body;
-    const count = mode === 'clone' ? 1 : variantCount;
-
-    const modeInstruction =
-      mode === 'clone'
-        ? 'Create a 1:1 structural clone of the reference copy, maintaining the same flow, hooks, and persuasion techniques, but rewritten for the given product and audience.'
-        : `Generate ${count} distinct variant(s) of marketing copy inspired by the reference content, each with a different angle or hook.`;
-
     const message = await client.messages.create({
       model: 'claude-sonnet-4-20250514',
-      max_tokens: 4096,
+      max_tokens: maxTokens,
       messages: [
         {
           role: 'user',
-          content: `You are an expert direct-response copywriter. ${modeInstruction}
-
-Reference Content:
-${referenceText}
-
-Product: ${productName}
-Target Audience: ${targetAudience}
-Conversion Aggressiveness (1=subtle, 10=hard sell): ${aggressiveness}
-
-Return ONLY a JSON array of objects with "id" (number) and "text" (string) fields. No markdown, no explanation, just valid JSON.`,
+          content: `${systemPrompt}\n\n${userPrompt}`,
         },
       ],
     });
 
     const text = message.content[0].text.trim();
-    const parsed = JSON.parse(text);
-    return Array.isArray(parsed) ? parsed : null;
+    // Strip markdown fences if the model wraps them
+    const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
+    return JSON.parse(cleaned);
   } catch (err) {
-    console.error('[MagicWriter] AI generate error:', err.message);
+    console.error('[MagicWriter] AI error:', err.message);
     return null;
   }
 }
 
-async function enhanceWithAI(field, value) {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) return null;
+async function generateWithAI(mode, script, productProfile, variantCount) {
+  const context = buildProductContext(productProfile);
 
-  try {
-    const { default: Anthropic } = await import('@anthropic-ai/sdk');
-    const client = new Anthropic({ apiKey });
+  if (mode === 'competitor') {
+    const system = `You are an expert direct-response copywriter. Rephrase this competitor script keeping EXACTLY the same structure, flow, format, hooks, and persuasion techniques. Adapt the content for our product using the provided product profile. Include the product context: benefits, unique mechanism, target audience, power phrases. Return a single rewritten script.`;
 
-    const prompt =
-      field === 'productName'
-        ? `Enhance this product name to be more compelling and marketable. Keep it concise (under 10 words). Original: "${value}". Return ONLY the enhanced name, nothing else.`
-        : `Expand this target audience description to be more specific and actionable for copywriting. Keep it to 1-2 sentences. Original: "${value}". Return ONLY the enhanced description, nothing else.`;
+    const user = `Competitor Script:
+${script}
 
-    const message = await client.messages.create({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 200,
-      messages: [{ role: 'user', content: prompt }],
-    });
+Product Profile:
+${context}
 
-    return message.content[0].text.trim();
-  } catch (err) {
-    console.error('[MagicWriter] AI enhance error:', err.message);
-    return null;
+Return ONLY a JSON array with one object: [{"id": 1, "text": "...the rewritten script..."}]. No markdown, no explanation, just valid JSON.`;
+
+    return callAnthropic(system, user);
   }
+
+  // variations mode
+  const system = `You are an expert direct-response copywriter. Create ${variantCount} distinct variations of this winning script. Each variation should have a different angle, hook, or emotional trigger. Maintain the same general length and persuasion quality. Use the product profile context to enrich each variation.`;
+
+  const user = `Winning Script:
+${script}
+
+Product Profile:
+${context}
+
+Return ONLY a JSON array of ${variantCount} objects with "id" (number) and "text" (string) fields. No markdown, no explanation, just valid JSON.`;
+
+  return callAnthropic(system, user);
 }
+
+async function generateHooksWithAI(selectedVariant, productProfile, hookCount) {
+  const context = buildProductContext(productProfile);
+
+  const system = `You are an expert direct-response copywriter. Generate ${hookCount} new hooks (opening lines/paragraphs) that blend perfectly with the body of the selected script. Each hook should use a different angle: curiosity, fear, social proof, authority, urgency. The hook should flow naturally into the body of the script. Use the product profile context, especially the power phrases and unique mechanism.`;
+
+  const user = `Selected Script:
+${selectedVariant}
+
+Product Profile:
+${context}
+
+Return ONLY a JSON array of ${hookCount} objects with "id" (number) and "text" (string) fields. Each "text" should be the full script with the new hook replacing the original opening. No markdown, no explanation, just valid JSON.`;
+
+  return callAnthropic(system, user);
+}
+
+// ---------------------------------------------------------------------------
+// Routes
+// ---------------------------------------------------------------------------
 
 // POST /api/v1/magic-writer/generate
 router.post('/generate', async (req, res) => {
   try {
-    const { referenceText, productName, targetAudience } = req.body;
+    const { mode, script, productProfile, variantCount = 5 } = req.body;
 
-    if (!referenceText || !productName || !targetAudience) {
+    if (!mode || !script || !productProfile) {
       return res.status(400).json({
         success: false,
-        error: { message: 'referenceText, productName, and targetAudience are required.' },
+        error: { message: 'mode, script, and productProfile are required.' },
+      });
+    }
+
+    if (!['competitor', 'variations'].includes(mode)) {
+      return res.status(400).json({
+        success: false,
+        error: { message: 'mode must be "competitor" or "variations".' },
+      });
+    }
+
+    const { productName, benefits, targetAudience, uniqueMechanism, powerPhrases } =
+      productProfile;
+    if (!productName || !benefits || !targetAudience || !uniqueMechanism || !powerPhrases) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          message:
+            'productProfile must include productName, benefits, targetAudience, uniqueMechanism, and powerPhrases.',
+        },
       });
     }
 
     // Try AI first, fall back to mock
-    const aiResult = await generateWithAI(req.body);
-    const variants = aiResult || generateMockVariants(req.body);
-    const source = aiResult ? 'claude-sonnet-4.6' : 'mock';
+    const aiResult = await generateWithAI(mode, script, productProfile, variantCount);
+    const variants =
+      aiResult ||
+      (mode === 'competitor'
+        ? generateMockCompetitor(script, productProfile)
+        : generateMockVariants(script, productProfile, variantCount));
+    const source = aiResult ? 'claude-sonnet-4' : 'mock';
 
     res.json({ success: true, variants, source });
   } catch (err) {
+    console.error('[MagicWriter] /generate error:', err.message);
     res.status(500).json({
       success: false,
       error: { message: 'Failed to generate copy.' },
@@ -120,31 +193,41 @@ router.post('/generate', async (req, res) => {
   }
 });
 
-// POST /api/v1/magic-writer/enhance
-router.post('/enhance', async (req, res) => {
+// POST /api/v1/magic-writer/generate-hooks
+router.post('/generate-hooks', async (req, res) => {
   try {
-    const { field, value } = req.body;
+    const { selectedVariant, productProfile, hookCount = 5 } = req.body;
 
-    if (!field || !value) {
+    if (!selectedVariant || !productProfile) {
       return res.status(400).json({
         success: false,
-        error: { message: 'field and value are required.' },
+        error: { message: 'selectedVariant and productProfile are required.' },
       });
     }
 
-    const aiResult = await enhanceWithAI(field, value);
+    const { productName, benefits, targetAudience, uniqueMechanism, powerPhrases } =
+      productProfile;
+    if (!productName || !benefits || !targetAudience || !uniqueMechanism || !powerPhrases) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          message:
+            'productProfile must include productName, benefits, targetAudience, uniqueMechanism, and powerPhrases.',
+        },
+      });
+    }
 
-    const enhanced =
-      aiResult ||
-      (field === 'productName'
-        ? `${value} - Premium Edition`
-        : `${value} who are frustrated with existing solutions and ready to invest in real change`);
+    // Try AI first, fall back to mock
+    const aiResult = await generateHooksWithAI(selectedVariant, productProfile, hookCount);
+    const hooks = aiResult || generateMockHooks(selectedVariant, productProfile, hookCount);
+    const source = aiResult ? 'claude-sonnet-4' : 'mock';
 
-    res.json({ success: true, enhanced });
+    res.json({ success: true, hooks, source });
   } catch (err) {
+    console.error('[MagicWriter] /generate-hooks error:', err.message);
     res.status(500).json({
       success: false,
-      error: { message: 'Failed to enhance field.' },
+      error: { message: 'Failed to generate hooks.' },
     });
   }
 });
