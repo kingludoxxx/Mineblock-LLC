@@ -136,10 +136,9 @@ function generateNamingConvention(task, listId) {
   const product = getFieldValue(task, isVideo ? FIELD_IDS.productVideo : FIELD_IDS.productStatic) || 'NA';
   const parentBriefId = getFieldValue(task, FIELD_IDS.parentBriefId) || 'NA';
 
-  // HX for Video, VX for Static — use Brief Number field for the numeric part
-  const prefix = isVideo ? 'H' : 'V';
+  // Brief ID always uses B prefix + the Brief Number field
   const briefNum = getFieldValue(task, FIELD_IDS.briefNumber);
-  const briefId = briefNum ? `${prefix}${String(briefNum).padStart(4, '0')}` : `${prefix}XXXX`;
+  const briefId = briefNum ? `B${String(Math.round(briefNum)).padStart(4, '0')}` : 'BXXXX';
 
   const angle = getFieldValue(task, FIELD_IDS.angle) || 'NA';
   const briefType = getFieldValue(task, FIELD_IDS.briefType) || 'NA';
