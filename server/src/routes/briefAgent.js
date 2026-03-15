@@ -532,4 +532,105 @@ router.post('/create', async (req, res) => {
   }
 });
 
+// ── Editor Weekly Report (for Make → Slack) ─────────────────────────
+
+// GET /api/v1/brief-agent/editor-report/slack/:editor
+// Returns total "ready to launch" cards this week per editor — Make calls this Monday and posts to Slack
+// Slack channels: Faiz → C0AFCJ4UN9L, Antoni → C0AEZ6UQANT
+router.get('/editor-report/slack/:editor', async (req, res) => {
+  try {
+    const editorName = req.params.editor;
+    const editorId = USER_IDS[editorName];
+    if (!editorId) {
+      return res.status(400).json({ success: false, error: { message: `Unknown editor: ${editorName}` } });
+    }
+
+    // Get current week boundaries (Monday 00:00 → Sunday 23:59)
+    const now = new Date();
+    const dayOfWeek = now.getDay(); // 0=Sun, 1=Mon
+    const mondayOffset = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
+    const weekStart = new Date(now);
+    weekStart.setDate(now.getDate() + mondayOffset);
+    weekStart.setHours(0, 0, 0, 0);
+    const weekEnd = new Date(weekStart);
+    weekEnd.setDate(weekStart.getDate() + 6);
+    weekEnd.setHours(23, 59, 59, 999);
+
+    // Fetch "ready to launch" tasks assigned to this editor
+    const readyTasks = [];
+    let page = 0;
+    let hasMore = true;
+    while (hasMore) {
+      const data = await clickupFetch(
+        `${CLICKUP_API}/list/${VIDEO_ADS_LIST_ID}/task?page=${page}&limit=100&statuses%5B%5D=ready%20to%20launch&include_closed=false&subtasks=true`,
+      );
+      const tasks = data.tasks || [];
+      for (const task of tasks) {
+        const isAssigned = (task.assignees || []).some((a) => a.id === editorId);
+        if (isAssigned) {
+          readyTasks.push({
+            name: task.name,
+            url: task.url || `https://app.clickup.com/t/${task.id}`,
+          });
+        }
+      }
+      hasMore = tasks.length === 100;
+      page++;
+    }
+
+    // Also count "launched" this week (moved to launched within current week)
+    const launchedTasks = [];
+    page = 0;
+    hasMore = true;
+    while (hasMore) {
+      const data = await clickupFetch(
+        `${CLICKUP_API}/list/${VIDEO_ADS_LIST_ID}/task?page=${page}&limit=100&statuses%5B%5D=launched&include_closed=false&subtasks=true&date_updated_gt=${weekStart.getTime()}&date_updated_lt=${weekEnd.getTime()}`,
+      );
+      const tasks = data.tasks || [];
+      for (const task of tasks) {
+        const isAssigned = (task.assignees || []).some((a) => a.id === editorId);
+        if (isAssigned) {
+          launchedTasks.push({
+            name: task.name,
+            url: task.url || `https://app.clickup.com/t/${task.id}`,
+          });
+        }
+      }
+      hasMore = tasks.length === 100;
+      page++;
+    }
+
+    const { weekNum, year } = getISOWeekNumber();
+    const weekLabel = `WK${String(weekNum).padStart(2, '0')} ${year}`;
+
+    const lines = [
+      `📊 *Weekly Report — ${editorName}* (${weekLabel})`,
+      `📅 ${now.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}`,
+      '',
+      `🚀 *Ready to Launch: ${readyTasks.length}*`,
+    ];
+
+    if (readyTasks.length > 0) {
+      for (const t of readyTasks) {
+        lines.push(`    • <${t.url}|${t.name}>`);
+      }
+    } else {
+      lines.push('    _No cards ready to launch_');
+    }
+
+    lines.push('');
+    lines.push(`✅ *Launched this week: ${launchedTasks.length}*`);
+    if (launchedTasks.length > 0) {
+      for (const t of launchedTasks) {
+        lines.push(`    • <${t.url}|${t.name}>`);
+      }
+    }
+
+    res.json({ success: true, text: lines.join('\n') });
+  } catch (err) {
+    console.error('[BriefAgent] editor-report/slack error:', err.message);
+    res.status(500).json({ success: false, error: { message: 'Failed to generate report.' } });
+  }
+});
+
 export default router;
