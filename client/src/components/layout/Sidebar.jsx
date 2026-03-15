@@ -35,6 +35,7 @@ import {
   Image,
   Video,
   Music,
+  Sparkles,
   // Performance icons
   Target,
   Activity,
@@ -92,6 +93,7 @@ const navGroups = [
     label: 'Production',
     icon: Factory,
     items: [
+      { to: '/app/brief-agent', icon: Sparkles, label: 'Brief Agent' },
       { to: '/app/magic-writer', icon: PenTool, label: 'Magic Writer' },
       { to: '/app/magic-ads', icon: Wand2, label: 'Magic Ads' },
       { to: '/app/images', icon: Image, label: 'Images' },

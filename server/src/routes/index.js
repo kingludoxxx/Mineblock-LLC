@@ -4,6 +4,7 @@ import auditRoutes from './audit.js';
 import settingsRoutes from './settings.js';
 import magicWriterRoutes from './magicWriter.js';
 import creativeIntelRoutes from './creativeIntel.js';
+import briefAgentRoutes from './briefAgent.js';
 
 const mountRoutes = (app) => {
   app.use('/api/v1/users', userRoutes);
@@ -12,6 +13,7 @@ const mountRoutes = (app) => {
   app.use('/api/v1/settings', settingsRoutes);
   app.use('/api/v1/magic-writer', magicWriterRoutes);
   app.use('/api/v1/creative-intel', creativeIntelRoutes);
+  app.use('/api/v1/brief-agent', briefAgentRoutes);
 };
 
 export default mountRoutes;

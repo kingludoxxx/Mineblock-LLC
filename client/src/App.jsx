@@ -35,6 +35,7 @@ import ProductsPage from './pages/lab/ProductsPage';
 import FunnelsPage from './pages/lab/FunnelsPage';
 
 // Production
+import BriefAgentPage from './pages/production/BriefAgentPage';
 import MagicWriterPage from './pages/production/MagicWriter';
 import MagicAdsPage from './pages/production/MagicAdsPage';
 import ImagesPage from './pages/production/ImagesPage';
@@ -104,6 +105,7 @@ export default function App() {
           <Route path="funnels" element={<FunnelsPage />} />
 
           {/* Production */}
+          <Route path="brief-agent" element={<BriefAgentPage />} />
           <Route path="magic-writer" element={<MagicWriterPage />} />
           <Route path="magic-ads" element={<MagicAdsPage />} />
           <Route path="images" element={<ImagesPage />} />
