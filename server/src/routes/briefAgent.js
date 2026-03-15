@@ -338,9 +338,54 @@ router.post('/create', async (req, res) => {
 
     const taskName = `${product} - B${briefNumberPadded} - ${creativeTypeCode} - ${briefType} - ${parentId} - ${angle} - ${weekStr}`;
 
+    // 2b) Auto-lookup parent's frame link for iterations if not already provided
+    let finalReferenceLink = referenceLink || '';
+    if (briefType === 'IT' && parentBriefId && !finalReferenceLink) {
+      try {
+        const parentNum = parseInt(parentBriefId.toUpperCase().replace(/^B0*/, ''), 10);
+        if (!isNaN(parentNum)) {
+          let parentFound = null;
+          let pPage = 0;
+          let pHasMore = true;
+          while (pHasMore && !parentFound) {
+            const pData = await clickupFetch(
+              `${CLICKUP_API}/list/${VIDEO_ADS_LIST_ID}/task?page=${pPage}&limit=100&include_closed=true&subtasks=true`,
+            );
+            const pTasks = pData.tasks || [];
+            for (const pt of pTasks) {
+              const ptBriefField = pt.custom_fields?.find((f) => f.id === FIELD_IDS.briefNumber);
+              const ptBriefNum = ptBriefField?.value != null ? parseInt(ptBriefField.value, 10) : null;
+              const ptNameMatch = pt.name?.match(/B0*(\d+)/);
+              const ptNameNum = ptNameMatch ? parseInt(ptNameMatch[1], 10) : null;
+              if (ptBriefNum === parentNum || ptNameNum === parentNum) {
+                const ptProduct = pt.name?.split(' - ')[0]?.trim().toUpperCase();
+                if (ptProduct === product.toUpperCase()) {
+                  parentFound = pt;
+                  break;
+                }
+              }
+            }
+            pHasMore = pTasks.length === 100;
+            pPage++;
+          }
+          if (parentFound) {
+            const parentFrame = parentFound.custom_fields?.find((f) => f.id === FIELD_IDS.adsFrameLink)?.value
+              || parentFound.custom_fields?.find((f) => f.id === '55357fec-e285-4e47-b071-926b7dc8a214')?.value
+              || null;
+            if (parentFrame) {
+              finalReferenceLink = parentFrame;
+              console.log(`[BriefAgent] Auto-resolved parent ${parentBriefId} frame link: ${parentFrame}`);
+            }
+          }
+        }
+      } catch (lookupErr) {
+        console.error('[BriefAgent] Parent frame lookup error:', lookupErr.message);
+      }
+    }
+
     // 3) Build description
     const description = [
-      referenceLink ? `Reference: ${referenceLink}` : '',
+      finalReferenceLink ? `Reference: ${finalReferenceLink}` : '',
       '',
       briefText || '(no brief text provided)',
     ]
@@ -359,7 +404,7 @@ router.post('/create', async (req, res) => {
       { id: FIELD_IDS.creationWeek, value: weekStr },
       { id: FIELD_IDS.creativeStrategist, value: { add: [USER_IDS.Ludovico], rem: [] } },
       { id: FIELD_IDS.copywriter, value: { add: [USER_IDS.Ludovico], rem: [] } },
-      referenceLink ? { id: FIELD_IDS.adsFrameLink, value: referenceLink } : null,
+      finalReferenceLink ? { id: FIELD_IDS.adsFrameLink, value: finalReferenceLink } : null,
     ].filter((f) => f != null && f.value != null);
 
     // 5) Create the task — goes straight to edit queue since editor is assigned
