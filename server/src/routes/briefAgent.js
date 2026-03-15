@@ -201,7 +201,6 @@ router.get('/lookup/:briefId', async (req, res) => {
 
     // Search through all tasks to find matching brief numbers
     let found = null;
-    let fallback = null; // in case no product match, keep the first match as fallback
     let page = 0;
     let hasMore = true;
 
@@ -220,17 +219,16 @@ router.get('/lookup/:briefId', async (req, res) => {
         const nameBriefNum = nameMatch ? parseInt(nameMatch[1], 10) : null;
 
         if (taskBriefNum === briefNum || nameBriefNum === briefNum) {
-          // Check if the task's product matches the requested product
-          const taskProduct = task.name?.split(' - ')[0]?.trim().toUpperCase();
-
-          if (productFilter && taskProduct === productFilter) {
+          // If product filter is set, only match tasks with the same product prefix
+          if (productFilter) {
+            const taskProduct = task.name?.split(' - ')[0]?.trim().toUpperCase();
+            if (taskProduct === productFilter) {
+              found = task;
+              break;
+            }
+          } else {
             found = task;
             break;
-          } else if (!productFilter) {
-            found = task;
-            break;
-          } else if (!fallback) {
-            fallback = task;
           }
         }
       }
@@ -239,8 +237,7 @@ router.get('/lookup/:briefId', async (req, res) => {
       page++;
     }
 
-    // Use product-matched task, or fallback if no exact product match
-    const result = found || fallback;
+    const result = found;
 
     if (!result) {
       return res.json({ success: true, found: false });

@@ -264,7 +264,7 @@ export default function BriefAgent() {
                   {parentLookup && !parentLookup.loading && !parentLookup.task && (
                     <div className="flex items-center gap-2 text-xs text-text-faint">
                       <AlertCircle className="w-3 h-3" />
-                      No matching brief found
+                      No matching {form.product} brief found
                     </div>
                   )}
                 </div>
