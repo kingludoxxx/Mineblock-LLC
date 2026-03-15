@@ -228,27 +228,16 @@ export default function BriefAgent() {
                   onChange={(e) => updateField('briefType', e.target.value)}
                   options={options?.briefTypes?.map((b) => ({ value: b, label: b === 'NN' ? 'NN (New)' : 'IT (Iteration)' })) || []}
                 />
-                <div>
-                  <Select
-                    label="Editor"
-                    value={form.editor}
-                    onChange={(e) => updateField('editor', e.target.value)}
-                    options={options?.editors?.map((ed) => ({
-                      value: ed,
-                      label: editorCounts[ed] != null ? `${ed} (${editorCounts[ed]})` : ed,
-                    })) || []}
-                    placeholder="Select editor..."
-                  />
-                  {Object.keys(editorCounts).length > 0 && (
-                    <div className="flex gap-2 mt-1">
-                      {options?.editors?.map((ed) => (
-                        <span key={ed} className="text-[10px] text-text-faint leading-none">
-                          {ed} <span className="font-mono text-text-muted">{editorCounts[ed] || 0}</span>
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                </div>
+                <Select
+                  label="Editor"
+                  value={form.editor}
+                  onChange={(e) => updateField('editor', e.target.value)}
+                  options={options?.editors?.map((ed) => ({
+                    value: ed,
+                    label: editorCounts[ed] != null ? `${ed} (${editorCounts[ed]})` : ed,
+                  })) || []}
+                  placeholder="Select editor..."
+                />
                 <Select
                   label="Avatar"
                   value={form.avatar}
