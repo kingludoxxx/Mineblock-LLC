@@ -98,9 +98,8 @@ export default function BriefAgent() {
         setResult(data.task);
         setRecentBriefs((prev) => [data.task, ...prev].slice(0, 10));
         setForm(INITIAL_FORM);
-        // Refresh next brief number
-        const briefRes = await fetch(`${API_BASE}/next-brief-number`).then((r) => r.json());
-        if (briefRes.success) setNextBrief(briefRes.nextBriefNumber);
+        // Increment locally — ClickUp API has a delay before the new task is indexed
+        setNextBrief((prev) => (prev || data.task.briefNumber) + 1);
       } else {
         setError(data.error?.message || 'Failed to create brief.');
       }
