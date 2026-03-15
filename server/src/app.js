@@ -16,6 +16,7 @@ import healthRoutes from './routes/health.js';
 import dashboardRoutes from './routes/dashboard.js';
 import authRoutes from './routes/auth.js';
 import mountRoutes from './routes/index.js';
+import clickupWebhookRoutes from './routes/clickupWebhook.js';
 import departmentRegistry from './departments/registry.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -44,6 +45,9 @@ app.use(express.urlencoded({ extended: true, limit: '10kb' }));
 
 // Cookies
 app.use(cookieParser());
+
+// ClickUp webhook (before rate limiter — webhooks should not be throttled)
+app.use('/api/v1/clickup-webhook', clickupWebhookRoutes);
 
 // Rate limiting on all API routes
 app.use('/api', apiLimiter);
