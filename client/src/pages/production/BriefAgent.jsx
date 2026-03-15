@@ -240,10 +240,10 @@ export default function BriefAgent() {
                     placeholder="Select editor..."
                   />
                   {Object.keys(editorCounts).length > 0 && (
-                    <div className="flex gap-3 mt-1.5">
+                    <div className="flex gap-2 mt-1">
                       {options?.editors?.map((ed) => (
-                        <span key={ed} className="text-[10px] text-text-faint">
-                          {ed}: <span className={`font-mono font-semibold ${(editorCounts[ed] || 0) >= 8 ? 'text-red-400' : (editorCounts[ed] || 0) >= 5 ? 'text-amber-400' : 'text-emerald-400'}`}>{editorCounts[ed] || 0}</span> in queue
+                        <span key={ed} className="text-[10px] text-text-faint leading-none">
+                          {ed} <span className="font-mono text-text-muted">{editorCounts[ed] || 0}</span>
                         </span>
                       ))}
                     </div>
