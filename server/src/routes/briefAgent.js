@@ -187,6 +187,70 @@ router.get('/field-options', (_req, res) => {
   });
 });
 
+// GET /api/v1/brief-agent/lookup/:briefId — look up a task by brief ID and return its Frame links
+router.get('/lookup/:briefId', async (req, res) => {
+  try {
+    const briefId = req.params.briefId.toUpperCase().replace(/^B0*/, '');
+    const briefNum = parseInt(briefId, 10);
+    if (isNaN(briefNum)) {
+      return res.status(400).json({ success: false, error: { message: 'Invalid brief ID.' } });
+    }
+
+    // Search through all tasks to find the matching brief number
+    let found = null;
+    let page = 0;
+    let hasMore = true;
+
+    while (hasMore && !found) {
+      const data = await clickupFetch(
+        `${CLICKUP_API}/list/${VIDEO_ADS_LIST_ID}/task?page=${page}&limit=100&include_closed=true&subtasks=true`,
+      );
+      const tasks = data.tasks || [];
+
+      for (const task of tasks) {
+        const briefField = task.custom_fields?.find((f) => f.id === FIELD_IDS.briefNumber);
+        const taskBriefNum = briefField?.value != null ? parseInt(briefField.value, 10) : null;
+
+        // Match by brief number field or by name pattern
+        const nameMatch = task.name?.match(/B0*(\d+)/);
+        const nameBriefNum = nameMatch ? parseInt(nameMatch[1], 10) : null;
+
+        if (taskBriefNum === briefNum || nameBriefNum === briefNum) {
+          found = task;
+          break;
+        }
+      }
+
+      hasMore = tasks.length === 100;
+      page++;
+    }
+
+    if (!found) {
+      return res.json({ success: true, found: false });
+    }
+
+    // Extract Frame links
+    const adsFrameLink = found.custom_fields?.find((f) => f.id === 'd90f9f25-d7a0-4eb4-9ded-aca0b4519a3b')?.value || null;
+    const rawFrameLink = found.custom_fields?.find((f) => f.id === '55357fec-e285-4e47-b071-926b7dc8a214')?.value || null;
+
+    res.json({
+      success: true,
+      found: true,
+      task: {
+        id: found.id,
+        name: found.name,
+        url: found.url || `https://app.clickup.com/t/${found.id}`,
+        adsFrameLink,
+        rawFrameLink,
+        frameLink: adsFrameLink || rawFrameLink || null,
+      },
+    });
+  } catch (err) {
+    console.error('[BriefAgent] lookup error:', err.message);
+    res.status(500).json({ success: false, error: { message: 'Failed to look up brief.' } });
+  }
+});
+
 // POST /api/v1/brief-agent/create
 router.post('/create', async (req, res) => {
   try {

@@ -40,6 +40,8 @@ export default function BriefAgent() {
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
   const [recentBriefs, setRecentBriefs] = useState([]);
+  const [parentLookup, setParentLookup] = useState(null); // { loading, task }
+  const [lookupTimer, setLookupTimer] = useState(null);
 
   // Fetch field options and next brief number on mount
   const fetchData = useCallback(async () => {
@@ -65,6 +67,33 @@ export default function BriefAgent() {
   const updateField = (field, value) => {
     setForm((prev) => ({ ...prev, [field]: value }));
     setError(null);
+
+    // Auto-lookup parent brief when typing in Parent Brief ID
+    if (field === 'parentBriefId' && value.length >= 2) {
+      if (lookupTimer) clearTimeout(lookupTimer);
+      const timer = setTimeout(async () => {
+        const cleanId = value.replace(/^B0*/i, '');
+        if (!cleanId || isNaN(cleanId)) return;
+        setParentLookup({ loading: true, task: null });
+        try {
+          const res = await fetch(`${API_BASE}/lookup/${value}`).then((r) => r.json());
+          if (res.success && res.found) {
+            setParentLookup({ loading: false, task: res.task });
+            // Auto-fill reference link with Frame link if available
+            if (res.task.frameLink) {
+              setForm((prev) => ({ ...prev, referenceLink: res.task.frameLink }));
+            }
+          } else {
+            setParentLookup({ loading: false, task: null });
+          }
+        } catch {
+          setParentLookup({ loading: false, task: null });
+        }
+      }, 600);
+      setLookupTimer(timer);
+    } else if (field === 'parentBriefId' && value.length < 2) {
+      setParentLookup(null);
+    }
   };
 
   const generatePreview = () => {
@@ -201,12 +230,39 @@ export default function BriefAgent() {
 
               {/* Parent Brief ID (only for iterations) */}
               {form.briefType === 'IT' && (
-                <Input
-                  label="Parent Brief ID"
-                  value={form.parentBriefId}
-                  onChange={(e) => updateField('parentBriefId', e.target.value)}
-                  placeholder="e.g. B0045"
-                />
+                <div className="space-y-2">
+                  <Input
+                    label="Parent Brief ID"
+                    value={form.parentBriefId}
+                    onChange={(e) => updateField('parentBriefId', e.target.value)}
+                    placeholder="e.g. B0045"
+                  />
+                  {parentLookup?.loading && (
+                    <div className="flex items-center gap-2 text-xs text-text-muted">
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                      Looking up parent brief...
+                    </div>
+                  )}
+                  {parentLookup && !parentLookup.loading && parentLookup.task && (
+                    <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-lg px-3 py-2">
+                      <div className="flex items-center gap-2 text-xs text-emerald-400">
+                        <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                        <span className="font-mono truncate">{parentLookup.task.name}</span>
+                      </div>
+                      {parentLookup.task.frameLink && (
+                        <p className="text-[10px] text-emerald-400/70 mt-1 ml-5">
+                          Frame link auto-filled in Reference
+                        </p>
+                      )}
+                    </div>
+                  )}
+                  {parentLookup && !parentLookup.loading && !parentLookup.task && (
+                    <div className="flex items-center gap-2 text-xs text-text-faint">
+                      <AlertCircle className="w-3 h-3" />
+                      No matching brief found
+                    </div>
+                  )}
+                </div>
               )}
 
               {/* Idea */}
