@@ -64,36 +64,41 @@ export default function BriefAgent() {
     fetchData();
   }, [fetchData]);
 
-  const updateField = (field, value) => {
-    setForm((prev) => ({ ...prev, [field]: value }));
-    setError(null);
-
-    // Auto-lookup parent brief when typing in Parent Brief ID
-    if (field === 'parentBriefId' && value.length >= 2) {
-      if (lookupTimer) clearTimeout(lookupTimer);
-      const timer = setTimeout(async () => {
-        const cleanId = value.replace(/^B0*/i, '');
-        if (!cleanId || isNaN(cleanId)) return;
-        setParentLookup({ loading: true, task: null });
-        try {
-          const res = await fetch(`${API_BASE}/lookup/${value}`).then((r) => r.json());
-          if (res.success && res.found) {
-            setParentLookup({ loading: false, task: res.task });
-            // Auto-fill reference link with Frame link if available
-            if (res.task.frameLink) {
-              setForm((prev) => ({ ...prev, referenceLink: res.task.frameLink }));
-            }
-          } else {
-            setParentLookup({ loading: false, task: null });
-          }
-        } catch {
-          setParentLookup({ loading: false, task: null });
+  const lookupParentBrief = useCallback(async (briefId, product) => {
+    const cleanId = briefId.replace(/^B0*/i, '');
+    if (!cleanId || isNaN(cleanId)) return;
+    setParentLookup({ loading: true, task: null });
+    try {
+      const res = await fetch(`${API_BASE}/lookup/${briefId}?product=${product}`).then((r) => r.json());
+      if (res.success && res.found) {
+        setParentLookup({ loading: false, task: res.task });
+        if (res.task.frameLink) {
+          setForm((prev) => ({ ...prev, referenceLink: res.task.frameLink }));
         }
-      }, 600);
-      setLookupTimer(timer);
-    } else if (field === 'parentBriefId' && value.length < 2) {
-      setParentLookup(null);
+      } else {
+        setParentLookup({ loading: false, task: null });
+      }
+    } catch {
+      setParentLookup({ loading: false, task: null });
     }
+  }, []);
+
+  const updateField = (field, value) => {
+    setForm((prev) => {
+      const next = { ...prev, [field]: value };
+
+      // Trigger parent brief lookup when parentBriefId or product changes
+      if ((field === 'parentBriefId' || field === 'product') && next.briefType === 'IT' && next.parentBriefId.length >= 2) {
+        if (lookupTimer) clearTimeout(lookupTimer);
+        const timer = setTimeout(() => lookupParentBrief(next.parentBriefId, next.product), 600);
+        setLookupTimer(timer);
+      } else if (field === 'parentBriefId' && value.length < 2) {
+        setParentLookup(null);
+      }
+
+      return next;
+    });
+    setError(null);
   };
 
   const generatePreview = () => {

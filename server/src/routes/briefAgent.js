@@ -188,6 +188,7 @@ router.get('/field-options', (_req, res) => {
 });
 
 // GET /api/v1/brief-agent/lookup/:briefId — look up a task by brief ID and return its Frame links
+// Accepts ?product=MR|TX to filter by product code (matches the start of the task name)
 router.get('/lookup/:briefId', async (req, res) => {
   try {
     const briefId = req.params.briefId.toUpperCase().replace(/^B0*/, '');
@@ -196,8 +197,11 @@ router.get('/lookup/:briefId', async (req, res) => {
       return res.status(400).json({ success: false, error: { message: 'Invalid brief ID.' } });
     }
 
-    // Search through all tasks to find the matching brief number
+    const productFilter = (req.query.product || '').toUpperCase();
+
+    // Search through all tasks to find matching brief numbers
     let found = null;
+    let fallback = null; // in case no product match, keep the first match as fallback
     let page = 0;
     let hasMore = true;
 
@@ -216,8 +220,18 @@ router.get('/lookup/:briefId', async (req, res) => {
         const nameBriefNum = nameMatch ? parseInt(nameMatch[1], 10) : null;
 
         if (taskBriefNum === briefNum || nameBriefNum === briefNum) {
-          found = task;
-          break;
+          // Check if the task's product matches the requested product
+          const taskProduct = task.name?.split(' - ')[0]?.trim().toUpperCase();
+
+          if (productFilter && taskProduct === productFilter) {
+            found = task;
+            break;
+          } else if (!productFilter) {
+            found = task;
+            break;
+          } else if (!fallback) {
+            fallback = task;
+          }
         }
       }
 
@@ -225,21 +239,24 @@ router.get('/lookup/:briefId', async (req, res) => {
       page++;
     }
 
-    if (!found) {
+    // Use product-matched task, or fallback if no exact product match
+    const result = found || fallback;
+
+    if (!result) {
       return res.json({ success: true, found: false });
     }
 
     // Extract Frame links
-    const adsFrameLink = found.custom_fields?.find((f) => f.id === 'd90f9f25-d7a0-4eb4-9ded-aca0b4519a3b')?.value || null;
-    const rawFrameLink = found.custom_fields?.find((f) => f.id === '55357fec-e285-4e47-b071-926b7dc8a214')?.value || null;
+    const adsFrameLink = result.custom_fields?.find((f) => f.id === 'd90f9f25-d7a0-4eb4-9ded-aca0b4519a3b')?.value || null;
+    const rawFrameLink = result.custom_fields?.find((f) => f.id === '55357fec-e285-4e47-b071-926b7dc8a214')?.value || null;
 
     res.json({
       success: true,
       found: true,
       task: {
-        id: found.id,
-        name: found.name,
-        url: found.url || `https://app.clickup.com/t/${found.id}`,
+        id: result.id,
+        name: result.name,
+        url: result.url || `https://app.clickup.com/t/${result.id}`,
         adsFrameLink,
         rawFrameLink,
         frameLink: adsFrameLink || rawFrameLink || null,
