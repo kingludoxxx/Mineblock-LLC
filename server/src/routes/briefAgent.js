@@ -633,4 +633,92 @@ router.get('/editor-report/slack/:editor', async (req, res) => {
   }
 });
 
+// ── Weekly Recap for Make → Slack (B codes only, filtered by week) ───
+
+// GET /api/v1/brief-agent/weekly-recap/:editor
+// Returns just B codes for tasks in "ready to launch" or "launched" status
+// that belong to the previous week, filtered by editor name in the task name.
+// Make calls this on Monday and posts the response text directly to Slack.
+router.get('/weekly-recap/:editor', async (req, res) => {
+  try {
+    const editorName = req.params.editor; // "Antoni" or "Faiz"
+
+    // Determine the target week: if today is Monday, report on last week; otherwise report on this week
+    const now = new Date();
+    const dayOfWeek = now.getDay(); // 0=Sun, 1=Mon, ...
+    const targetDate = dayOfWeek === 1
+      ? new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000) // Monday → last week
+      : now; // any other day → this week
+
+    // Get ISO week number for the target date
+    const d = new Date(Date.UTC(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate()));
+    const dayNum = d.getUTCDay() || 7;
+    d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+    const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+    const weekNum = Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+    const year = d.getUTCFullYear();
+    const weekCode = `WK${String(weekNum).padStart(2, '0')}_${year}`;
+
+    // Editor name patterns to match in task names
+    const editorPatterns = editorName.toLowerCase() === 'faiz'
+      ? ['faiz', 'mohammad']
+      : [editorName.toLowerCase()];
+
+    // Fetch tasks with "ready to launch" and "launched" statuses
+    const allTasks = [];
+    for (const status of ['ready%20to%20launch', 'launched']) {
+      let page = 0;
+      let hasMore = true;
+      while (hasMore) {
+        const data = await clickupFetch(
+          `${CLICKUP_API}/list/${VIDEO_ADS_LIST_ID}/task?page=${page}&limit=100&statuses%5B%5D=${status}&include_closed=false&subtasks=true`,
+        );
+        const tasks = data.tasks || [];
+        allTasks.push(...tasks);
+        hasMore = tasks.length === 100;
+        page++;
+      }
+    }
+
+    // Filter: task name must contain the week code AND the editor name
+    const matchedBCodes = [];
+    for (const task of allTasks) {
+      const name = (task.name || '').toLowerCase();
+      const hasWeek = name.includes(weekCode.toLowerCase());
+      const hasEditor = editorPatterns.some((p) => name.includes(p));
+
+      if (hasWeek && hasEditor) {
+        // Extract B code from task name (e.g., "B0115")
+        const bMatch = task.name.match(/B\d{3,5}/);
+        if (bMatch) {
+          matchedBCodes.push(bMatch[0]);
+        }
+      }
+    }
+
+    // Build Slack message
+    const weekLabel = `WK${String(weekNum).padStart(2, '0')} ${year}`;
+    const displayName = editorName.charAt(0).toUpperCase() + editorName.slice(1);
+
+    const lines = [
+      `📊 *Weekly Recap — ${displayName}* (${weekLabel})`,
+      '',
+      `*Total cards ready to launch: ${matchedBCodes.length}*`,
+    ];
+
+    if (matchedBCodes.length > 0) {
+      for (const code of matchedBCodes) {
+        lines.push(`• ${code}`);
+      }
+    } else {
+      lines.push('_No cards this week_');
+    }
+
+    res.json({ success: true, text: lines.join('\n') });
+  } catch (err) {
+    console.error('[BriefAgent] weekly-recap error:', err.message);
+    res.status(500).json({ success: false, error: { message: 'Failed to generate weekly recap.' } });
+  }
+});
+
 export default router;
