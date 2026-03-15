@@ -401,20 +401,12 @@ router.get('/data', authenticate, async (req, res) => {
       allParsed.push(parsed);
     }
 
-    // Filter: include tasks that either:
-    // 1. Have a week in the date range, OR
-    // 2. Have no parseable week (old format) but have TW data (active during period)
-    const filtered = allParsed.filter(p => {
-      if (p.week) return weekInRange(p.week, startDate, endDate);
-      // No week — include if creative has TW data (we'll check during matching)
-      return true;
-    });
-
-    // Match with Triple Whale data and classify
+    // Match ALL ClickUp tasks against TW data for the selected period.
+    // A creative is included if it has TW spend in the date range OR was launched during it.
     const creatives = [];
     const seenCreativeIds = new Set();
 
-    for (const p of filtered) {
+    for (const p of allParsed) {
       const twMatch = matchCreative(p, twData, twNormalized);
       const spend = twMatch ? (twMatch.total_spend || 0) : 0;
       const revenue = twMatch ? (twMatch.total_revenue || 0) : 0;
@@ -423,8 +415,9 @@ router.get('/data', authenticate, async (req, res) => {
       const clicks = twMatch ? (twMatch.clicks || 0) : 0;
       const status = classify(spend, roas);
 
-      // For tasks without a week: only include if they have TW performance data
-      if (!p.week && !twMatch) continue;
+      // Include if: has TW spend data in period OR was launched (week) in period
+      const launchedInRange = p.week && weekInRange(p.week, startDate, endDate);
+      if (!twMatch && !launchedInRange) continue;
 
       // Deduplicate by normalized creative ID
       const normId = normalizeCreativeId(p.creativeId);
