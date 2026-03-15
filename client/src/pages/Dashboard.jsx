@@ -8,7 +8,7 @@ export default function Dashboard() {
     <div className="p-6 space-y-6">
       <div>
         <h1 className="text-xl font-semibold text-white">
-          Welcome back{(user?.name || user?.firstName) ? `, ${user.name || user.firstName}` : ''}
+          Welcome Back King Ludo
         </h1>
         <p className="text-sm text-text-muted mt-1">
           Here is an overview of your workspace
