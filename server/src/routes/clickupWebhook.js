@@ -18,20 +18,25 @@ const NAMING_LISTS = [VIDEO_ADS_LIST, STATIC_ADS_LIST];
 // Statuses to sync
 const SYNC_STATUSES = ['launched', 'ready to launch'];
 
-// Custom field IDs (without hyphens — ClickUp uses the full UUID)
+// Custom field IDs — some differ between Video Ads and Static Ads lists
 const FIELD_IDS = {
-  product: '7bc3b414-fa7b-43a5-92f6-aacb94b32072',
-  parentBriefId: '4f72235e-2ceb-44b4-ab50-8e62bd7e3e65',
-  angle: '7e740c52-8d74-4e3b-b0ca-e459c8cdd5f0',
-  briefType: '98d04d2d-bac4-4e6e-9b69-46b8e78ee1e1',
-  creativeType: 'b7f50dff-9a3f-4e2e-b3be-0b30d1ab6cfb',
-  creator: 'be5a2a58-9e1b-4d0a-af16-f72a1c26d1b5',
-  avatarVideo: '4ad59f88-b2d6-4f5a-9c2d-d0e2c37f0e1a',
-  avatarStatic: 'a007dc5d-2b3e-4f8a-b1c5-e9d0a1f2b3c4',
-  editor: 'a9613cd9-1a2b-3c4d-5e6f-7a8b9c0d1e2f',
+  // Shared across both lists
+  angle: '7e740c52-a05b-4b3b-9798-0801acd84b8a',
+  briefType: '98d04d2d-9575-4363-8eee-9bf150b1c319',
+  parentBriefId: '4f72235e-0a41-4824-9e67-d27e38ba16d9',
+  editor: 'a9613cd9-715a-4a2a-bbbb-fbb7f664980a',
+  creativeStrategist: '372d59af-e573-4eb4-be9f-31cb02f3ad5b',
   namingConvention: 'c97d93bc-ad82-4b90-98e0-092df383d9b8',
-  creationWeek: 'a609d8d0-1b2c-3d4e-5f6a-7b8c9d0e1f2a',
-  creativeStrategist: '372d59af-4a5b-6c7d-8e9f-0a1b2c3d4e5f',
+  creationWeek: 'a609d8d0-661e-400f-87cb-2557bd48857b',
+  briefNumber: '62b61cc4-2d35-4dfc-86f4-a3913e2bbca3',
+  // Video Ads only
+  productVideo: '7bc3b414-363e-421e-9445-473b4b8ccf18',
+  avatarVideo: '4ad59f88-89cc-45e5-bc56-0027a4ab8624',
+  creativeType: 'b7f50dff-c752-47a7-830d-c3780021a27f',
+  creator: 'be5a2a58-f355-4fac-8263-2824725eaa64',
+  // Static Ads only
+  productStatic: '11a3ee08-50c8-4c19-b8cc-7c50eaabbe65',
+  avatarStatic: 'a007dc5d-2422-4fc4-b3ca-e9e53489e76b',
 };
 
 // Dropdown index → label mappings
@@ -93,14 +98,24 @@ async function setCustomField(taskId, fieldId, value) {
 // Helper: get a custom field value from task by field ID
 function getFieldValue(task, fieldId) {
   const field = task.custom_fields?.find((f) => f.id === fieldId);
-  if (!field) return null;
-  // For dropdown fields, return the selected option index
+  if (!field || field.value == null) return null;
+
   if (field.type === 'drop_down' && field.type_config?.options) {
-    const selectedIndex = field.value;
-    if (selectedIndex == null) return null;
-    return { index: parseInt(selectedIndex, 10), label: field.type_config.options[selectedIndex]?.name };
+    const idx = parseInt(field.value, 10);
+    const opt = field.type_config.options.find((o) => o.orderindex === idx);
+    return opt?.name || null;
   }
-  // For labels/text fields
+
+  // list_relationship: value is an array of linked task objects
+  if (field.type === 'list_relationship' && Array.isArray(field.value)) {
+    return field.value.map((t) => t.name).join(', ') || null;
+  }
+
+  // users: value is an array of user objects
+  if (field.type === 'users' && Array.isArray(field.value)) {
+    return field.value.map((u) => u.username?.split(' ')[0]).join(', ') || null;
+  }
+
   return field.value;
 }
 
@@ -116,36 +131,27 @@ function getWeekLabel() {
 
 // Generate naming convention from task custom fields
 function generateNamingConvention(task, listId) {
-  const product = getFieldValue(task, FIELD_IDS.product) || 'NA';
+  const isVideo = listId === VIDEO_ADS_LIST;
+
+  const product = getFieldValue(task, isVideo ? FIELD_IDS.productVideo : FIELD_IDS.productStatic) || 'NA';
   const parentBriefId = getFieldValue(task, FIELD_IDS.parentBriefId) || 'NA';
 
-  // HX for Video, VX for Static
-  const prefix = listId === VIDEO_ADS_LIST ? 'H' : 'V';
-  // Brief ID from task name if it starts with B/H/V/IM followed by digits
-  const briefIdMatch = task.name?.match(/^[BHVIM]+(\d+)/i);
-  const briefNum = briefIdMatch ? briefIdMatch[1] : 'XX';
-  const briefId = `${prefix}${briefNum}`;
+  // HX for Video, VX for Static — use Brief Number field for the numeric part
+  const prefix = isVideo ? 'H' : 'V';
+  const briefNum = getFieldValue(task, FIELD_IDS.briefNumber);
+  const briefId = briefNum ? `${prefix}${String(briefNum).padStart(4, '0')}` : `${prefix}XXXX`;
 
-  const angleField = getFieldValue(task, FIELD_IDS.angle);
-  const angle = angleField?.label || ANGLE_MAP[angleField?.index] || 'NA';
-
-  const briefTypeField = getFieldValue(task, FIELD_IDS.briefType);
-  const briefType = briefTypeField?.label || BRIEF_TYPE_MAP[briefTypeField?.index] || 'NA';
-
-  const creativeTypeField = getFieldValue(task, FIELD_IDS.creativeType);
-  const creativeType = creativeTypeField?.label || CREATIVE_TYPE_MAP[creativeTypeField?.index] || 'NA';
-
-  const avatarFieldId = listId === VIDEO_ADS_LIST ? FIELD_IDS.avatarVideo : FIELD_IDS.avatarStatic;
-  const avatarField = getFieldValue(task, avatarFieldId);
-  const avatar = avatarField?.label || avatarField || 'NA';
-
-  const creator = getFieldValue(task, FIELD_IDS.creator) || 'NA';
+  const angle = getFieldValue(task, FIELD_IDS.angle) || 'NA';
+  const briefType = getFieldValue(task, FIELD_IDS.briefType) || 'NA';
+  const creativeType = isVideo ? (getFieldValue(task, FIELD_IDS.creativeType) || 'NA') : 'IMG';
+  const avatar = getFieldValue(task, isVideo ? FIELD_IDS.avatarVideo : FIELD_IDS.avatarStatic) || 'NA';
+  const creator = isVideo ? (getFieldValue(task, FIELD_IDS.creator) || 'NA') : 'NA';
   const editor = getFieldValue(task, FIELD_IDS.editor) || 'NA';
   const strategist = getFieldValue(task, FIELD_IDS.creativeStrategist) || 'NA';
 
   const week = getWeekLabel();
 
-  // Format: Product - BriefID - HX/VX - BriefType - ParentBriefID - Avatar - Angle - CreativeType - CreativeStrategist - Creator - Editor - WKxx_yyyy
+  // Format: Product - BriefID - BriefType - ParentBriefID - Avatar - Angle - CreativeType - CreativeStrategist - Creator - Editor - WKxx_yyyy
   const parts = [
     product, briefId, briefType, parentBriefId,
     avatar, angle, creativeType, strategist, creator, editor, week,
