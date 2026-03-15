@@ -64,21 +64,6 @@ const navGroups = [
     ],
   },
   {
-    label: 'Intel',
-    icon: Radar,
-    items: [
-      { to: '/app/meta', icon: Facebook, label: 'Meta' },
-      { to: '/app/google', icon: Search, label: 'Google' },
-      { to: '/app/youtube', icon: Youtube, label: 'YouTube' },
-      { to: '/app/tiktok-ads', icon: Megaphone, label: 'TikTok Ads' },
-      { to: '/app/tiktok-shop', icon: ShoppingBag, label: 'TikTok Shop' },
-      { to: '/app/tiktok-organic', icon: TrendingUp, label: 'TikTok Organic' },
-      { to: '/app/brands', icon: Eye, label: 'Brand Spy' },
-      { to: '/app/following', icon: UserCheck, label: 'Following' },
-      { to: '/app/saved', icon: Bookmark, label: 'Saved' },
-    ],
-  },
-  {
     label: 'Lab',
     icon: FlaskConical,
     items: [
