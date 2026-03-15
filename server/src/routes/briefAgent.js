@@ -188,6 +188,43 @@ router.get('/field-options', (_req, res) => {
   });
 });
 
+// GET /api/v1/brief-agent/editor-queue — count of edit queue tasks per editor
+router.get('/editor-queue', async (_req, res) => {
+  try {
+    const counts = {};
+    // Initialize all editors to 0
+    for (const name of Object.keys(USER_IDS)) {
+      if (name !== 'Ludovico') counts[name] = 0;
+    }
+
+    let page = 0;
+    let hasMore = true;
+    while (hasMore) {
+      const data = await clickupFetch(
+        `${CLICKUP_API}/list/${VIDEO_ADS_LIST_ID}/task?page=${page}&limit=100&statuses%5B%5D=edit%20queue&include_closed=false&subtasks=true`,
+      );
+      const tasks = data.tasks || [];
+      for (const task of tasks) {
+        for (const assignee of task.assignees || []) {
+          // Match assignee by user ID to our editor names
+          for (const [name, id] of Object.entries(USER_IDS)) {
+            if (name !== 'Ludovico' && assignee.id === id) {
+              counts[name] = (counts[name] || 0) + 1;
+            }
+          }
+        }
+      }
+      hasMore = tasks.length === 100;
+      page++;
+    }
+
+    res.json({ success: true, counts });
+  } catch (err) {
+    console.error('[BriefAgent] editor-queue error:', err.message);
+    res.status(500).json({ success: false, error: { message: 'Failed to fetch editor queue counts.' } });
+  }
+});
+
 // GET /api/v1/brief-agent/lookup/:briefId — look up a task by brief ID and return its Frame links
 // Accepts ?product=MR|TX to filter by product code (matches the start of the task name)
 router.get('/lookup/:briefId', async (req, res) => {

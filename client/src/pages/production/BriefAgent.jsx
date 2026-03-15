@@ -42,6 +42,15 @@ export default function BriefAgent() {
   const [recentBriefs, setRecentBriefs] = useState([]);
   const [parentLookup, setParentLookup] = useState(null); // { loading, task }
   const [lookupTimer, setLookupTimer] = useState(null);
+  const [editorCounts, setEditorCounts] = useState({}); // { Antoni: 5, Faiz: 6 }
+
+  // Fetch editor queue counts
+  const fetchEditorCounts = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/editor-queue`).then((r) => r.json());
+      if (res.success) setEditorCounts(res.counts);
+    } catch { /* silent */ }
+  }, []);
 
   // Fetch field options and next brief number on mount
   const fetchData = useCallback(async () => {
@@ -62,7 +71,8 @@ export default function BriefAgent() {
 
   useEffect(() => {
     fetchData();
-  }, [fetchData]);
+    fetchEditorCounts();
+  }, [fetchData, fetchEditorCounts]);
 
   const lookupParentBrief = useCallback(async (briefId, product) => {
     const cleanId = briefId.replace(/^B0*/i, '');
@@ -132,6 +142,7 @@ export default function BriefAgent() {
         setResult(data.task);
         setRecentBriefs((prev) => [data.task, ...prev].slice(0, 10));
         setForm(INITIAL_FORM);
+        fetchEditorCounts(); // refresh queue counts
         // Increment locally — ClickUp API has a delay before the new task is indexed
         setNextBrief((prev) => (prev || data.task.briefNumber) + 1);
       } else {
@@ -217,13 +228,27 @@ export default function BriefAgent() {
                   onChange={(e) => updateField('briefType', e.target.value)}
                   options={options?.briefTypes?.map((b) => ({ value: b, label: b === 'NN' ? 'NN (New)' : 'IT (Iteration)' })) || []}
                 />
-                <Select
-                  label="Editor"
-                  value={form.editor}
-                  onChange={(e) => updateField('editor', e.target.value)}
-                  options={options?.editors?.map((ed) => ({ value: ed, label: ed })) || []}
-                  placeholder="Select editor..."
-                />
+                <div>
+                  <Select
+                    label="Editor"
+                    value={form.editor}
+                    onChange={(e) => updateField('editor', e.target.value)}
+                    options={options?.editors?.map((ed) => ({
+                      value: ed,
+                      label: editorCounts[ed] != null ? `${ed} (${editorCounts[ed]})` : ed,
+                    })) || []}
+                    placeholder="Select editor..."
+                  />
+                  {Object.keys(editorCounts).length > 0 && (
+                    <div className="flex gap-3 mt-1.5">
+                      {options?.editors?.map((ed) => (
+                        <span key={ed} className="text-[10px] text-text-faint">
+                          {ed}: <span className={`font-mono font-semibold ${(editorCounts[ed] || 0) >= 8 ? 'text-red-400' : (editorCounts[ed] || 0) >= 5 ? 'text-amber-400' : 'text-emerald-400'}`}>{editorCounts[ed] || 0}</span> in queue
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
                 <Select
                   label="Avatar"
                   value={form.avatar}
