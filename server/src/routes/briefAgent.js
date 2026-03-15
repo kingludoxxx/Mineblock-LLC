@@ -282,11 +282,12 @@ router.post('/create', async (req, res) => {
       { id: FIELD_IDS.copywriter, value: { add: [USER_IDS.Ludovico], rem: [] } },
     ].filter((f) => f.value != null);
 
-    // 5) Create the task
+    // 5) Create the task — goes straight to edit queue since editor is assigned
     const taskPayload = {
       name: taskName,
       description,
-      status: 'copy queue',
+      status: 'edit queue',
+      assignees: [USER_IDS[editor]],
       custom_fields: customFields,
     };
 
@@ -357,7 +358,7 @@ router.post('/create', async (req, res) => {
         name: taskName,
         url: createdTask.url || `https://app.clickup.com/t/${taskId}`,
         briefNumber,
-        status: 'copy queue',
+        status: 'edit queue',
       },
     });
   } catch (err) {
