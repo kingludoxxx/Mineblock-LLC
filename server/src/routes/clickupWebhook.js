@@ -129,16 +129,48 @@ function getWeekLabel() {
   return `WK${weekStr}_${now.getFullYear()}`;
 }
 
+// Scan all tasks in Video Ads list to find highest brief number
+async function getNextBriefNumber() {
+  let maxBrief = 0;
+  let page = 0;
+  let hasMore = true;
+
+  while (hasMore) {
+    const data = await clickupFetch(
+      `/list/${VIDEO_ADS_LIST}/task?page=${page}&limit=100&include_closed=true&subtasks=true`,
+    );
+    const tasks = data.tasks || [];
+
+    for (const task of tasks) {
+      const briefField = task.custom_fields?.find((f) => f.id === FIELD_IDS.briefNumber);
+      if (briefField?.value != null) {
+        const num = parseInt(briefField.value, 10);
+        if (!isNaN(num) && num > maxBrief) maxBrief = num;
+      }
+      // Also parse from task name as fallback (B0118 pattern)
+      const match = task.name?.match(/B(\d{2,5})/);
+      if (match) {
+        const num = parseInt(match[1], 10);
+        if (!isNaN(num) && num > maxBrief) maxBrief = num;
+      }
+    }
+
+    hasMore = tasks.length === 100;
+    page++;
+  }
+
+  return maxBrief + 1;
+}
+
 // Generate naming convention from task custom fields
-function generateNamingConvention(task, listId) {
+function generateNamingConvention(task, listId, briefNumber) {
   const isVideo = listId === VIDEO_ADS_LIST;
 
   const product = getFieldValue(task, isVideo ? FIELD_IDS.productVideo : FIELD_IDS.productStatic) || 'NA';
   const parentBriefId = getFieldValue(task, FIELD_IDS.parentBriefId) || 'NA';
 
-  // Brief ID always uses B prefix + the Brief Number field
-  const briefNum = getFieldValue(task, FIELD_IDS.briefNumber);
-  const briefId = briefNum ? `B${String(Math.round(briefNum)).padStart(4, '0')}` : 'BXXXX';
+  // Brief ID always uses B prefix
+  const briefId = `B${String(briefNumber).padStart(4, '0')}`;
 
   const angle = getFieldValue(task, FIELD_IDS.angle) || 'NA';
   const briefType = getFieldValue(task, FIELD_IDS.briefType) || 'NA';
@@ -162,14 +194,25 @@ function generateNamingConvention(task, listId) {
 // Handle taskCreated — auto-generate naming convention
 async function handleTaskCreated(taskId) {
   // Small delay to let ClickUp populate custom fields
-  await new Promise((r) => setTimeout(r, 2000));
+  await new Promise((r) => setTimeout(r, 3000));
 
   const task = await getTask(taskId);
   const listId = task.list?.id;
 
   if (!NAMING_LISTS.includes(listId)) return;
 
-  const namingConv = generateNamingConvention(task, listId);
+  // Get brief number from field, or auto-assign next available
+  let briefNumber = getFieldValue(task, FIELD_IDS.briefNumber);
+  if (briefNumber != null) {
+    briefNumber = Math.round(briefNumber);
+  } else {
+    briefNumber = await getNextBriefNumber();
+    // Save the assigned brief number to the task
+    await setCustomField(taskId, FIELD_IDS.briefNumber, briefNumber);
+    logger.info(`[ClickUp Webhook] Auto-assigned brief number B${String(briefNumber).padStart(4, '0')} to task ${taskId}`);
+  }
+
+  const namingConv = generateNamingConvention(task, listId, briefNumber);
 
   // Update task name and naming convention custom field
   await updateTask(taskId, { name: namingConv });
@@ -189,7 +232,14 @@ async function handleCustomFieldChanged(taskId) {
   const existingName = getFieldValue(task, FIELD_IDS.namingConvention);
   if (!existingName) return; // Only regenerate if it was previously generated
 
-  const namingConv = generateNamingConvention(task, listId);
+  let briefNumber = getFieldValue(task, FIELD_IDS.briefNumber);
+  if (briefNumber != null) {
+    briefNumber = Math.round(briefNumber);
+  } else {
+    return; // Can't regenerate without a brief number
+  }
+
+  const namingConv = generateNamingConvention(task, listId, briefNumber);
 
   if (namingConv !== existingName) {
     await updateTask(taskId, { name: namingConv });
