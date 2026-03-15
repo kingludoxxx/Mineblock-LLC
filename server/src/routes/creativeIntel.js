@@ -15,30 +15,44 @@ const VIDEO_LIST_ID  = '901518716584';
 const STATIC_LIST_ID = '901518769479';
 
 // Known formats & angles for classification
-const KNOWN_FORMATS = ['mashup', 'shortvid', 'mini vsl', 'img', 'short vid'];
+const KNOWN_FORMATS = ['mashup', 'mashups', 'shortvid', 'short vid', 'shortvideo', 'mini vsl', 'img'];
 const KNOWN_ANGLES  = [
-  'lottery', 'againstcompetition', 'gtrs', 'btc made easy', 'founderstory',
-  'hiddenopportunity', 'missedopportunity', 'btcfarm', 'moneyopportunity',
-  'offer', 'retargeting', 'reaction', 'sharktank', 'lambo', 'mclaren',
-  'scarcity', 'comparison',
+  'lottery', 'againstcompetition', 'against competition', 'against competitors',
+  'gtrs', 'gt3', 'btc made easy', 'founderstory', 'founder story',
+  'hiddenopportunity', 'hidden opportunity', 'missedopportunity', 'missed opportunity',
+  'btcfarm', 'btc farm', 'moneyopportunity', 'money opportunity',
+  'offer', 'retargeting', 'reaction', 'sharktank', 'shark tank',
+  'lambo', 'mclaren', 'scarcity', 'comparison',
 ];
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
 /**
  * Parse the ClickUp naming convention.
+ * Supports both new format (` - ` separator) and old format (` _ ` separator).
  * Last segment = week (WKxx_YYYY), second-to-last = editor.
  * Scans remaining segments for known format and angle.
  */
 function parseTaskName(name) {
-  const segments = name.split(/\s*-\s*/).map(s => s.trim()).filter(Boolean);
+  // Detect separator: if name has ` - ` use that, else try ` _ ` or just `_`
+  let segments;
+  if (name.includes(' - ')) {
+    segments = name.split(/\s*-\s*/).map(s => s.trim()).filter(Boolean);
+  } else {
+    segments = name.split(/\s*_\s*/).map(s => s.trim()).filter(Boolean);
+  }
+
+  // Remove .mp4 from last segment
+  if (segments.length > 0) {
+    segments[segments.length - 1] = segments[segments.length - 1].replace(/\.mp4$/i, '');
+  }
 
   // Extract week (last segment matching WKxx_YYYY)
   let week = null;
   let weekIdx = -1;
   for (let i = segments.length - 1; i >= 0; i--) {
-    if (/^WK\d+_\d{4}$/i.test(segments[i])) {
-      week = segments[i].toUpperCase();
+    if (/^WK\d+[_\s]\d{4}$/i.test(segments[i])) {
+      week = segments[i].toUpperCase().replace(/\s/, '_');
       weekIdx = i;
       break;
     }
@@ -59,50 +73,55 @@ function parseTaskName(name) {
       }
     }
   }
+  // For old format without WK, try to find editor from known positions
+  // Old format: MR Miner _ B041 _ HX _ IT _ B011 _ Angle _ Avatar _ Format _ Person1 _ Person2
+  // Editor is typically near the end
+  if (!editor && !week && segments.length >= 3) {
+    // Try last segment as editor
+    const last = segments[segments.length - 1].trim();
+    if (last && last.toUpperCase() !== 'NA' && last.length > 1 && !/^(MR|B\d|IM\d|HX|H\d|IT|NN)/i.test(last)) {
+      editor = last;
+    }
+  }
 
   // Normalize editor name
   if (editor) {
     editor = editor.charAt(0).toUpperCase() + editor.slice(1).toLowerCase();
-    // Common name normalizations
     const editorMap = {
-      'mohammad': 'Muhammad',
-      'mohammed': 'Muhammad',
-      'muhammad': 'Muhammad',
-      'antoni': 'Antoni',
-      'anthony': 'Antoni',
-      'ludovico': 'Ludovico',
-      'faiz': 'Faiz',
-      'atif': 'Atif',
-      'ali': 'Ali',
-      'hamza': 'Hamza',
-      'usama': 'Usama',
-      'carl': 'Carl',
-      'alhamjatonni': 'Alhamjatonni',
-      'abdul': 'Abdul',
-      'robi': 'Robi',
-      'abdullah': 'Abdullah',
-      'farhan': 'Farhan',
+      'mohammad': 'Muhammad', 'mohammed': 'Muhammad', 'muhammad': 'Muhammad',
+      'antoni': 'Antoni', 'anthony': 'Antoni',
+      'ludovico': 'Ludovico', 'ludo': 'Ludovico',
+      'faiz': 'Faiz', 'atif': 'Atif', 'ali': 'Ali', 'hamza': 'Hamza',
+      'usama': 'Usama', 'carl': 'Carl', 'alhamjatonni': 'Alhamjatonni',
+      'abdul': 'Abdul', 'robi': 'Robi', 'abdullah': 'Abdullah', 'farhan': 'Farhan',
+      'team': 'Team',
     };
     editor = editorMap[editor.toLowerCase()] || editor;
   }
 
-  // Extract creative ID (second segment, e.g. B0109, IM0004)
-  const creativeId = segments.length > 1 ? segments[1] : null;
+  // Extract creative ID (second segment, e.g. B0109, IM0004, B041)
+  let creativeId = segments.length > 1 ? segments[1] : null;
+  // Clean: remove "Miner" prefix if present (old format: "MR Miner")
+  if (creativeId && /^miner$/i.test(creativeId) && segments.length > 2) {
+    creativeId = segments[2];
+  }
 
   // Determine type from creative ID prefix
   const isImage = creativeId && /^IM/i.test(creativeId);
   const type = isImage ? 'image' : 'video';
 
-  // Find format — scan from right to left (before editor area)
+  // Find format — scan all segments for known format keywords
   let format = null;
-  const searchSegments = weekIdx > 0 ? segments.slice(0, weekIdx) : segments;
-  for (let i = searchSegments.length - 1; i >= 0; i--) {
-    const lower = searchSegments[i].toLowerCase().trim();
-    if (KNOWN_FORMATS.some(f => lower === f || lower.replace(/\s/g, '') === f.replace(/\s/g, ''))) {
-      format = searchSegments[i].trim();
-      // Also check for angle right before format
-      break;
+  for (let i = segments.length - 1; i >= 0; i--) {
+    const lower = segments[i].toLowerCase().trim().replace(/\s+/g, '');
+    for (const f of KNOWN_FORMATS) {
+      const fNorm = f.replace(/\s+/g, '');
+      if (lower === fNorm || lower === fNorm + 's') {
+        format = segments[i].trim();
+        break;
+      }
     }
+    if (format) break;
   }
 
   // Normalize format
@@ -117,27 +136,35 @@ function parseTaskName(name) {
 
   // Find angle — look for known angle keywords in segments
   let angle = null;
-  for (let i = 0; i < searchSegments.length; i++) {
-    const lower = searchSegments[i].toLowerCase().trim();
-    if (KNOWN_ANGLES.some(a => lower === a || lower.includes(a))) {
-      angle = searchSegments[i].trim();
-      break;
+  for (let i = 0; i < segments.length; i++) {
+    const lower = segments[i].toLowerCase().trim().replace(/\s+/g, '');
+    for (const a of KNOWN_ANGLES) {
+      const aNorm = a.replace(/\s+/g, '');
+      if (lower === aNorm || lower.includes(aNorm)) {
+        angle = segments[i].trim();
+        break;
+      }
     }
+    if (angle) break;
   }
 
   // Normalize angle
   if (angle) {
-    const al = angle.toLowerCase().trim();
-    if (al === 'againstcompetition') angle = 'Against Competition';
-    else if (al === 'gtrs') angle = 'GTRS';
-    else if (al === 'btcfarm') angle = 'BTC Farm';
-    else if (al === 'btc made easy') angle = 'BTC Made Easy';
-    else if (al === 'founderstory') angle = 'Founder Story';
-    else if (al === 'hiddenopportunity') angle = 'Hidden Opportunity';
-    else if (al === 'missedopportunity') angle = 'Missed Opportunity';
-    else if (al === 'moneyopportunity') angle = 'Money Opportunity';
-    else if (al === 'sharktank') angle = 'Shark Tank';
-    else angle = angle.charAt(0).toUpperCase() + angle.slice(1).toLowerCase();
+    const al = angle.toLowerCase().trim().replace(/\s+/g, '');
+    const angleNormMap = {
+      'againstcompetition': 'Against Competition',
+      'againstcompetitors': 'Against Competition',
+      'gtrs': 'GTRS',
+      'gt3': 'GTRS',
+      'btcfarm': 'BTC Farm',
+      'btcmadeeasy': 'BTC Made Easy',
+      'founderstory': 'Founder Story',
+      'hiddenopportunity': 'Hidden Opportunity',
+      'missedopportunity': 'Missed Opportunity',
+      'moneyopportunity': 'Money Opportunity',
+      'sharktank': 'Shark Tank',
+    };
+    angle = angleNormMap[al] || angle.charAt(0).toUpperCase() + angle.slice(1).toLowerCase();
   }
 
   return { name, creativeId, type, week, editor, format, angle };
@@ -152,9 +179,8 @@ function weekToDateRange(weekStr) {
   const weekNum = parseInt(match[1], 10);
   const year = parseInt(match[2], 10);
 
-  // ISO week: Jan 4 is always in week 1
   const jan4 = new Date(year, 0, 4);
-  const dayOfWeek = jan4.getDay() || 7; // Mon=1 ... Sun=7
+  const dayOfWeek = jan4.getDay() || 7;
   const mondayW1 = new Date(jan4);
   mondayW1.setDate(jan4.getDate() - dayOfWeek + 1);
 
@@ -175,7 +201,6 @@ function weekInRange(weekStr, startDate, endDate) {
   if (!range) return false;
   const start = new Date(startDate);
   const end = new Date(endDate);
-  // Week overlaps with range if week-end >= range-start AND week-start <= range-end
   return range.end >= start && range.start <= end;
 }
 
@@ -256,7 +281,6 @@ async function fetchTripleWhaleData(startDate, endDate) {
 
 /**
  * Normalize an ad name for fuzzy matching.
- * Strips separators, extra spaces, .mp4, lowercases.
  */
 function normalizeAdName(name) {
   return name
@@ -268,18 +292,24 @@ function normalizeAdName(name) {
 }
 
 /**
- * Try to match a ClickUp task to a Triple Whale ad.
- * Returns the best matching TW record or null.
+ * Normalize a creative ID for matching — strip leading zeros after prefix.
+ * e.g. B0041 → b41, B041 → b41, B0003 → b3, IM0004 → im4
+ */
+function normalizeCreativeId(id) {
+  if (!id) return '';
+  return id.toLowerCase().replace(/^(b|im)0*/, '$1');
+}
+
+/**
+ * Match a ClickUp task to Triple Whale ad data.
+ * Aggregates all TW ads that match this creative ID.
  */
 function matchCreative(parsed, twData, twNormalized) {
   if (!parsed.creativeId) return null;
 
+  const creativeIdNorm = normalizeCreativeId(parsed.creativeId);
   const creativeIdLower = parsed.creativeId.toLowerCase();
 
-  // Strategy: Match creative ID near the start of the ad name.
-  // The ID (e.g. "b0109") should appear as the 2nd segment, not as a reference deeper in the name.
-  // We check if the normalized TW name starts with or has the ID within the first ~30 chars.
-  // Aggregate all TW ads that match this creative ID (same creative can run as multiple ads)
   let totalSpend = 0;
   let totalRevenue = 0;
   let totalImpressions = 0;
@@ -288,13 +318,32 @@ function matchCreative(parsed, twData, twNormalized) {
 
   for (let i = 0; i < twData.length; i++) {
     const norm = twNormalized[i];
-    const idx = norm.indexOf(creativeIdLower);
-    if (idx >= 0 && idx < 40) {
+
+    // Strategy 1: Exact creative ID match within first 50 chars
+    let idx = norm.indexOf(creativeIdLower);
+    if (idx >= 0 && idx < 50) {
       totalSpend += twData[i].total_spend || 0;
       totalRevenue += twData[i].total_revenue || 0;
       totalImpressions += twData[i].impressions || 0;
       totalClicks += twData[i].clicks || 0;
       matched = true;
+      continue;
+    }
+
+    // Strategy 2: Normalized ID match (B0041 matches B041)
+    // Extract creative IDs from the TW ad name and normalize them
+    const twIds = norm.match(/\b(b|im)\d+/g) || [];
+    for (const twId of twIds) {
+      // Only check IDs that appear early in the name (first ~60 chars position)
+      const twIdIdx = norm.indexOf(twId);
+      if (twIdIdx < 60 && normalizeCreativeId(twId) === creativeIdNorm) {
+        totalSpend += twData[i].total_spend || 0;
+        totalRevenue += twData[i].total_revenue || 0;
+        totalImpressions += twData[i].impressions || 0;
+        totalClicks += twData[i].clicks || 0;
+        matched = true;
+        break;
+      }
     }
   }
 
@@ -352,14 +401,20 @@ router.get('/data', authenticate, async (req, res) => {
       allParsed.push(parsed);
     }
 
-    // Filter by date range (using week field)
+    // Filter: include tasks that either:
+    // 1. Have a week in the date range, OR
+    // 2. Have no parseable week (old format) but have TW data (active during period)
     const filtered = allParsed.filter(p => {
-      if (!p.week) return false;
-      return weekInRange(p.week, startDate, endDate);
+      if (p.week) return weekInRange(p.week, startDate, endDate);
+      // No week — include if creative has TW data (we'll check during matching)
+      return true;
     });
 
     // Match with Triple Whale data and classify
-    const creatives = filtered.map(p => {
+    const creatives = [];
+    const seenCreativeIds = new Set();
+
+    for (const p of filtered) {
       const twMatch = matchCreative(p, twData, twNormalized);
       const spend = twMatch ? (twMatch.total_spend || 0) : 0;
       const revenue = twMatch ? (twMatch.total_revenue || 0) : 0;
@@ -368,7 +423,15 @@ router.get('/data', authenticate, async (req, res) => {
       const clicks = twMatch ? (twMatch.clicks || 0) : 0;
       const status = classify(spend, roas);
 
-      return {
+      // For tasks without a week: only include if they have TW performance data
+      if (!p.week && !twMatch) continue;
+
+      // Deduplicate by normalized creative ID
+      const normId = normalizeCreativeId(p.creativeId);
+      if (normId && seenCreativeIds.has(normId)) continue;
+      if (normId) seenCreativeIds.add(normId);
+
+      creatives.push({
         name: p.name,
         creativeId: p.creativeId,
         type: p.type,
@@ -384,8 +447,8 @@ router.get('/data', authenticate, async (req, res) => {
         clicks,
         status,
         hasPerformanceData: !!twMatch,
-      };
-    });
+      });
+    }
 
     // ── Compute KPIs ──────────────────────────────────────────────
 
@@ -428,10 +491,11 @@ router.get('/data', authenticate, async (req, res) => {
 
     const editorMap = {};
     for (const c of creatives) {
-      if (!c.editor || !c.week) continue;
-      const key = `${c.editor}__${c.week}`;
+      if (!c.editor) continue;
+      const weekKey = c.week || 'unknown';
+      const key = `${c.editor}__${weekKey}`;
       if (!editorMap[key]) {
-        editorMap[key] = { editor: c.editor, week: c.week, video: 0, image: 0, total: 0 };
+        editorMap[key] = { editor: c.editor, week: weekKey, video: 0, image: 0, total: 0 };
       }
       editorMap[key][c.type]++;
       editorMap[key].total++;
