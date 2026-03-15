@@ -36,6 +36,7 @@ const FIELD_IDS = {
   product: '7bc3b414-363e-421e-9445-473b4b8ccf18',
   avatar: '4ad59f88-89cc-45e5-bc56-0027a4ab8624',
   creator: 'be5a2a58-f355-4fac-8263-2824725eaa64',
+  adsFrameLink: 'd90f9f25-d7a0-4eb4-9ded-aca0b4519a3b',
 };
 
 // Dropdown option IDs
@@ -358,7 +359,8 @@ router.post('/create', async (req, res) => {
       { id: FIELD_IDS.creationWeek, value: weekStr },
       { id: FIELD_IDS.creativeStrategist, value: { add: [USER_IDS.Ludovico], rem: [] } },
       { id: FIELD_IDS.copywriter, value: { add: [USER_IDS.Ludovico], rem: [] } },
-    ].filter((f) => f.value != null);
+      referenceLink ? { id: FIELD_IDS.adsFrameLink, value: referenceLink } : null,
+    ].filter((f) => f != null && f.value != null);
 
     // 5) Create the task — goes straight to edit queue since editor is assigned
     const taskPayload = {
