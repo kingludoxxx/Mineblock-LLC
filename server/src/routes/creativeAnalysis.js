@@ -136,7 +136,6 @@ async function fetchTripleWhaleAds(startDate, endDate) {
       ad_name,
       SUM(spend) as spend,
       SUM(order_revenue) as revenue,
-      SUM(purchases) as purchases,
       SUM(impressions) as impressions,
       SUM(clicks) as clicks
     FROM pixel_joined_tvf
@@ -226,7 +225,7 @@ async function syncData({ startDate, endDate }) {
     const metrics = computeMetrics({
       spend: ad.spend,
       revenue: ad.revenue,
-      purchases: ad.purchases,
+      purchases: ad.purchases || 0,
       impressions: ad.impressions,
       clicks: ad.clicks,
     });

@@ -105,7 +105,7 @@ const LEADERBOARD_CONFIG = [
 ];
 
 const TABLE_COLUMNS = [
-  { key: 'creative_type', label: 'Type', align: 'left' },
+  { key: 'type', label: 'Type', align: 'left' },
   { key: 'launch_date', label: 'Launch Date', align: 'left' },
   { key: 'ad_name', label: 'Ad Name', align: 'left' },
   { key: 'creative_link', label: 'Link', align: 'center', noSort: true },
@@ -119,7 +119,7 @@ const TABLE_COLUMNS = [
   { key: 'cpa', label: 'CPA', align: 'right', format: fmtMoney },
   { key: 'cpm', label: 'CPM', align: 'right', format: fmtMoney },
   { key: 'aov', label: 'AOV', align: 'right', format: fmtMoney },
-  { key: 'conv_value', label: 'Conv Value', align: 'right', format: fmtMoney },
+  { key: 'revenue', label: 'Conv Value', align: 'right', format: fmtMoney },
   { key: 'cpc', label: 'CPC', align: 'right', format: fmtMoney },
   { key: 'ctr', label: 'CTR', align: 'right', format: fmtPct },
   { key: 'status', label: 'Status', align: 'center', noSort: true },
@@ -159,7 +159,8 @@ export default function CreativeAnalysis() {
         api.get('/creative-analysis/data', { params: { week } }),
         api.get('/creative-analysis/leaderboard', { params: { week } }),
       ]);
-      setData(dataRes.data?.data || dataRes.data || []);
+      const respData = dataRes.data?.data || dataRes.data || {};
+      setData(respData.creatives || respData || []);
       setLeaderboard(lbRes.data?.data || lbRes.data || null);
     } catch (err) {
       setError(err.response?.data?.message || err.message || 'Failed to load data.');
@@ -176,7 +177,7 @@ export default function CreativeAnalysis() {
     setSyncing(true);
     setError(null);
     try {
-      await api.post('/creative-analysis/sync');
+      await api.post('/creative-analysis/sync', { week });
       await fetchData();
     } catch (err) {
       setError(err.response?.data?.message || err.message || 'Sync failed.');
@@ -222,7 +223,7 @@ export default function CreativeAnalysis() {
     // Apply filters
     if (filters.creativeType) {
       rows = rows.filter(
-        (r) => (r.creative_type || '').toLowerCase() === filters.creativeType.toLowerCase()
+        (r) => (r.type || '').toLowerCase() === filters.creativeType.toLowerCase()
       );
     }
     if (filters.avatar) rows = rows.filter((r) => r.avatar === filters.avatar);
@@ -235,35 +236,17 @@ export default function CreativeAnalysis() {
       );
     }
 
-    // Group by creative_id
-    const groups = {};
-    rows.forEach((row) => {
-      const cid = row.creative_id || row.ad_name || 'ungrouped';
-      if (!groups[cid]) {
-        groups[cid] = { parent: null, hooks: [] };
-      }
-      if (row.is_hook || row.hook_label) {
-        groups[cid].hooks.push(row);
-      } else {
-        groups[cid].parent = row;
-      }
-    });
-
-    // Build flat list: parent rows with hooks nested
-    const result = [];
-    Object.entries(groups).forEach(([cid, group]) => {
-      // If no parent, use first hook as parent or create aggregate
-      const parent = group.parent || group.hooks[0];
-      if (!parent) return;
-
-      // Aggregate metrics for parent if hooks exist and parent has no spend
-      if (group.hooks.length > 0 && !group.parent) {
-        const agg = { ...parent, _hooks: group.hooks, _creativeId: cid };
-        result.push(agg);
-      } else {
-        result.push({ ...parent, _hooks: group.hooks, _creativeId: cid });
-      }
-    });
+    // Data from backend is already grouped by creative_id with hooks array
+    // Each item: { creative_id, type, avatar, angle, format, editor, total_spend, total_revenue, roas, cpa, cpm, aov, cpc, ctr, hooks: [...] }
+    const result = rows.map((creative) => ({
+      ...creative,
+      spend: creative.total_spend || creative.spend || 0,
+      revenue: creative.total_revenue || creative.revenue || 0,
+      purchases: creative.total_purchases || creative.purchases || 0,
+      ad_name: creative.hooks?.[0]?.ad_name || creative.ad_name || creative.creative_id,
+      _hooks: creative.hooks || [],
+      _creativeId: creative.creative_id,
+    }));
 
     // Sort
     const { key, direction } = sortConfig;
@@ -315,7 +298,7 @@ export default function CreativeAnalysis() {
   const renderCellValue = (row, col) => {
     const val = row[col.key];
 
-    if (col.key === 'creative_type') {
+    if (col.key === 'type') {
       const isVideo = (val || '').toLowerCase() === 'video';
       return (
         <span className="flex items-center gap-1.5">
@@ -677,7 +660,7 @@ export default function CreativeAnalysis() {
                                 ? 'text-center'
                                 : 'text-left'
                             } ${
-                              ['spend', 'roas', 'purchases', 'conv_value'].includes(col.key)
+                              ['spend', 'roas', 'purchases', 'revenue'].includes(col.key)
                                 ? 'text-white font-medium'
                                 : 'text-gray-400'
                             }`}
