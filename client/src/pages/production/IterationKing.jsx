@@ -22,10 +22,7 @@ import {
 
 const API = '/api/v1/iteration-king';
 
-// ── Session storage ───────────────────────────────────────────────
-const SESSION_KEY = 'iterationKing_session';
-function saveSession(s) { try { sessionStorage.setItem(SESSION_KEY, JSON.stringify(s)); } catch {} }
-function loadSession() { try { const r = sessionStorage.getItem(SESSION_KEY); return r ? JSON.parse(r) : null; } catch { return null; } }
+// Session storage removed — each visit starts fresh
 
 function authHeaders() {
   const t = localStorage.getItem('accessToken');
@@ -318,32 +315,8 @@ export default function IterationKing() {
   const [error, setError] = useState(null);
   const [generationMode, setGenerationMode] = useState('iterate');
   const searchTimer = useRef(null);
-  const sessionLoaded = useRef(false);
   const scriptAbortRef = useRef(null);
   const hookAbortRef = useRef(null);
-
-  // Session restore
-  useEffect(() => {
-    if (sessionLoaded.current) return;
-    sessionLoaded.current = true;
-    const s = loadSession();
-    if (!s) return;
-    if (s.selectedBrief) setSelectedBrief(s.selectedBrief);
-    if (s.searchQuery) setSearchQuery(s.searchQuery);
-    if (s.originalScript) setOriginalScript(s.originalScript);
-    if (s.analysis) setAnalysis(s.analysis);
-    if (s.aggressiveness) setAggressiveness(s.aggressiveness);
-    if (s.similarity) setSimilarity(s.similarity);
-    if (s.scripts) setScripts(s.scripts);
-    if (s.selectedScriptIdx != null && s.scripts && s.selectedScriptIdx < s.scripts.length) setSelectedScriptIdx(s.selectedScriptIdx);
-    if (s.hooks) setHooks(s.hooks);
-    if (s.selectedHookIdxs && s.hooks) {
-      const valid = s.selectedHookIdxs.filter((i) => i < s.hooks.length);
-      setSelectedHookIdxs(new Set(valid));
-    }
-    if (s.finalScript) setFinalScript(s.finalScript);
-    if (s.generationMode) setGenerationMode(s.generationMode);
-  }, []);
 
   // Cleanup timers and abort controllers on unmount
   useEffect(() => {
@@ -353,12 +326,6 @@ export default function IterationKing() {
       if (hookAbortRef.current) hookAbortRef.current.abort();
     };
   }, []);
-
-  // Session persist
-  useEffect(() => {
-    if (!sessionLoaded.current) return;
-    saveSession({ selectedBrief, searchQuery, originalScript, analysis, aggressiveness, similarity, scripts, selectedScriptIdx, hooks, selectedHookIdxs: [...selectedHookIdxs], finalScript, generationMode });
-  }, [selectedBrief, searchQuery, originalScript, analysis, aggressiveness, similarity, scripts, selectedScriptIdx, hooks, selectedHookIdxs, finalScript, generationMode]);
 
   // Keyboard shortcuts (use ref to avoid re-registering every render)
   const shortcutRef = useRef();
@@ -506,7 +473,7 @@ export default function IterationKing() {
     setFinalScript(''); setMoveSuccess(false); setError(null); setCopied(false);
     setAggressiveness(5); setSimilarity(5); setGenerationMode('iterate');
     setBriefLoading(false); setAnalysisLoading(false); setScriptsLoading(false); setHooksLoading(false);
-    sessionStorage.removeItem(SESSION_KEY);
+    // Session cleared on reset
   };
 
   const isFullMode = generationMode === 'full';
