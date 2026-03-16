@@ -3,7 +3,7 @@ import { authenticate } from '../middleware/auth.js';
 
 const router = express.Router();
 
-const CLICKUP_TOKEN = 'pk_266421907_38TVGF16690R1U9EZOZLBK9BJ6J0YPRD';
+const CLICKUP_TOKEN = process.env.CLICKUP_API_TOKEN || 'pk_266421907_38TVGF16690R1U9EZOZLBK9BJ6J0YPRD';
 const VIDEO_ADS_LIST_ID = '901518716584';
 const CLICKUP_API = 'https://api.clickup.com/api/v2';
 
@@ -24,14 +24,6 @@ async function clickupFetch(url, options = {}) {
 // ── Cached Anthropic client ───────────────────────────────────────
 let anthropicClient = null;
 
-function getAnthropicClient() {
-  if (anthropicClient) return anthropicClient;
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) throw new Error('ANTHROPIC_API_KEY not configured');
-  // Dynamic import is needed for ESM compatibility, but we cache the result
-  return null; // Will be set by initClient
-}
-
 async function initClient() {
   if (anthropicClient) return anthropicClient;
   const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -44,10 +36,42 @@ async function initClient() {
 // Strip markdown fences and extract pure JSON from Claude output
 function extractJSON(text) {
   let cleaned = text.trim();
-  // Remove ```json ... ``` or ``` ... ``` wrappers
-  const fenceMatch = cleaned.match(/```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/);
-  if (fenceMatch) cleaned = fenceMatch[1].trim();
+  // Prefer ```json fences, then bare fences
+  const jsonFence = cleaned.match(/```json\s*\n?([\s\S]*?)\n?\s*```/);
+  if (jsonFence) return jsonFence[1].trim();
+  const bareFence = cleaned.match(/```\s*\n?([\s\S]*?)\n?\s*```/);
+  if (bareFence) return bareFence[1].trim();
   return cleaned;
+}
+
+// Extract top-level JSON objects from a partial JSON array string using brace-depth parsing
+function extractJSONObjects(text) {
+  const objects = [];
+  let depth = 0;
+  let objStart = -1;
+  let inString = false;
+  let escaped = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+
+    if (escaped) { escaped = false; continue; }
+    if (ch === '\\' && inString) { escaped = true; continue; }
+    if (ch === '"') { inString = !inString; continue; }
+    if (inString) continue;
+
+    if (ch === '{') {
+      if (depth === 0) objStart = i;
+      depth++;
+    } else if (ch === '}') {
+      depth--;
+      if (depth === 0 && objStart !== -1) {
+        objects.push(text.slice(objStart, i + 1));
+        objStart = -1;
+      }
+    }
+  }
+  return objects;
 }
 
 const MODEL_FAST = 'claude-3-5-haiku-20241022';
@@ -89,22 +113,17 @@ async function streamJSONArray(res, prompt, maxTokens, { fast = true, eventName 
     stream.on('text', (text) => {
       fullText += text;
 
-      // Try to extract complete JSON objects as they appear
+      // Parse complete JSON objects using brace-depth parser
       const cleaned = extractJSON(fullText);
-      try {
-        // Try parsing incrementally - find complete objects in the array
-        const objectMatches = [...cleaned.matchAll(/\{[^{}]*\}/g)];
-        for (let i = sentCount; i < objectMatches.length; i++) {
-          try {
-            const obj = JSON.parse(objectMatches[i][0]);
-            res.write(`data: ${JSON.stringify(obj)}\n\n`);
-            sentCount++;
-          } catch {
-            // Incomplete object, skip
-          }
+      const objects = extractJSONObjects(cleaned);
+      for (let i = sentCount; i < objects.length; i++) {
+        try {
+          const obj = JSON.parse(objects[i]);
+          res.write(`data: ${JSON.stringify(obj)}\n\n`);
+          sentCount++;
+        } catch {
+          // Incomplete object, skip
         }
-      } catch {
-        // Not parseable yet, continue collecting
       }
     });
 
@@ -121,8 +140,10 @@ async function streamJSONArray(res, prompt, maxTokens, { fast = true, eventName 
     res.end();
     return items;
   } catch (err) {
-    res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
-    res.end();
+    if (res.headersSent) {
+      res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
+      res.end();
+    }
     throw err;
   }
 }
@@ -254,7 +275,7 @@ router.post('/generate-scripts', authenticate, async (req, res) => {
     if (!script) return res.status(400).json({ success: false, error: 'Script is required' });
 
     const analysisContext = analysis
-      ? `\nWinner Analysis:\n- Hook Mechanism: ${analysis.hookMechanism}\n- Core Angle: ${analysis.coreAngle}\n- Emotional Trigger: ${analysis.emotionalTrigger}\n- Structure: ${analysis.narrativeStructure}\n`
+      ? `\nWinner Analysis:\n- Hook Mechanism: ${analysis.hookMechanism || 'N/A'}\n- Core Angle: ${analysis.coreAngle || 'N/A'}\n- Emotional Trigger: ${analysis.emotionalTrigger || 'N/A'}\n- Structure: ${analysis.narrativeStructure || 'N/A'}\n`
       : '';
 
     const prompt = `You are a world-class direct response ad copy iteration engine.
@@ -300,7 +321,7 @@ router.post('/generate-full-scripts', authenticate, async (req, res) => {
     if (!script) return res.status(400).json({ success: false, error: 'Script is required' });
 
     const analysisContext = analysis
-      ? `\nWinner Analysis:\n- Hook Mechanism: ${analysis.hookMechanism}\n- Core Angle: ${analysis.coreAngle}\n- Emotional Trigger: ${analysis.emotionalTrigger}\n- Structure: ${analysis.narrativeStructure}\n`
+      ? `\nWinner Analysis:\n- Hook Mechanism: ${analysis.hookMechanism || 'N/A'}\n- Core Angle: ${analysis.coreAngle || 'N/A'}\n- Emotional Trigger: ${analysis.emotionalTrigger || 'N/A'}\n- Structure: ${analysis.narrativeStructure || 'N/A'}\n`
       : '';
 
     const prompt = `You are a world-class direct response ad scriptwriter.

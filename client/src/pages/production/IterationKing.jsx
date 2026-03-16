@@ -33,22 +33,31 @@ function authHeaders() {
 }
 
 // SSE stream consumer: reads items as they arrive and calls onItem for each
-async function consumeSSEStream(url, body, { onItem, onError, onDone }) {
+async function consumeSSEStream(url, body, { onItem, onError, onDone, signal }) {
   const t = localStorage.getItem('accessToken');
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...(t ? { Authorization: `Bearer ${t}` } : {}) },
-  body: JSON.stringify(body),
+    body: JSON.stringify(body),
+    signal,
   });
 
   if (!res.ok) {
-    const data = await res.json().catch(() => ({ error: 'Request failed' }));
+    if (res.status === 401) throw new Error('Session expired — please log in again.');
+    const data = await res.json().catch(() => ({}));
     throw new Error(data.error || `HTTP ${res.status}`);
+  }
+
+  // Verify response is actually SSE
+  const ct = res.headers.get('content-type') || '';
+  if (!ct.includes('text/event-stream')) {
+    throw new Error('Unexpected response from server');
   }
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
+  let receivedItems = false;
 
   while (true) {
     const { done, value } = await reader.read();
@@ -65,10 +74,12 @@ async function consumeSSEStream(url, body, { onItem, onError, onDone }) {
       try {
         const item = JSON.parse(payload);
         if (item.error) { onError?.(item.error); return; }
+        receivedItems = true;
         onItem(item);
       } catch {}
     }
   }
+  if (!receivedItems) onError?.('No data received from server');
   onDone?.();
 }
 
@@ -308,6 +319,8 @@ export default function IterationKing() {
   const [generationMode, setGenerationMode] = useState('iterate');
   const searchTimer = useRef(null);
   const sessionLoaded = useRef(false);
+  const scriptAbortRef = useRef(null);
+  const hookAbortRef = useRef(null);
 
   // Session restore
   useEffect(() => {
@@ -322,11 +335,23 @@ export default function IterationKing() {
     if (s.aggressiveness) setAggressiveness(s.aggressiveness);
     if (s.similarity) setSimilarity(s.similarity);
     if (s.scripts) setScripts(s.scripts);
-    if (s.selectedScriptIdx != null) setSelectedScriptIdx(s.selectedScriptIdx);
+    if (s.selectedScriptIdx != null && s.scripts && s.selectedScriptIdx < s.scripts.length) setSelectedScriptIdx(s.selectedScriptIdx);
     if (s.hooks) setHooks(s.hooks);
-    if (s.selectedHookIdxs) setSelectedHookIdxs(new Set(s.selectedHookIdxs));
+    if (s.selectedHookIdxs && s.hooks) {
+      const valid = s.selectedHookIdxs.filter((i) => i < s.hooks.length);
+      setSelectedHookIdxs(new Set(valid));
+    }
     if (s.finalScript) setFinalScript(s.finalScript);
     if (s.generationMode) setGenerationMode(s.generationMode);
+  }, []);
+
+  // Cleanup timers and abort controllers on unmount
+  useEffect(() => {
+    return () => {
+      if (searchTimer.current) clearTimeout(searchTimer.current);
+      if (scriptAbortRef.current) scriptAbortRef.current.abort();
+      if (hookAbortRef.current) hookAbortRef.current.abort();
+    };
   }, []);
 
   // Session persist
@@ -335,16 +360,18 @@ export default function IterationKing() {
     saveSession({ selectedBrief, searchQuery, originalScript, analysis, aggressiveness, similarity, scripts, selectedScriptIdx, hooks, selectedHookIdxs: [...selectedHookIdxs], finalScript, generationMode });
   }, [selectedBrief, searchQuery, originalScript, analysis, aggressiveness, similarity, scripts, selectedScriptIdx, hooks, selectedHookIdxs, finalScript, generationMode]);
 
-  // Keyboard shortcuts
+  // Keyboard shortcuts (use ref to avoid re-registering every render)
+  const shortcutRef = useRef();
+  shortcutRef.current = (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); if (originalScript && !scriptsLoading) handleGenerateScripts(); }
+    if ((e.metaKey || e.ctrlKey) && e.key === 'h') { e.preventDefault(); if (selectedScriptIdx !== null && !hooksLoading && generationMode === 'iterate') handleGenerateHooks(); }
+    if ((e.metaKey || e.ctrlKey) && e.key === 'b') { e.preventDefault(); handleMoveToBriefAgent(); }
+  };
   useEffect(() => {
-    const handler = (e) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); if (originalScript && !scriptsLoading) handleGenerateScripts(); }
-      if ((e.metaKey || e.ctrlKey) && e.key === 'h') { e.preventDefault(); if (selectedScriptIdx !== null && !hooksLoading && generationMode === 'iterate') handleGenerateHooks(); }
-      if ((e.metaKey || e.ctrlKey) && e.key === 'b') { e.preventDefault(); handleMoveToBriefAgent(); }
-    };
+    const handler = (e) => shortcutRef.current(e);
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  });
+  }, []);
 
   const getEffectiveFinalText = useCallback(() => {
     if (finalScript) return finalScript;
@@ -402,6 +429,9 @@ export default function IterationKing() {
   // Generate scripts (streaming)
   const handleGenerateScripts = async () => {
     if (!originalScript) return;
+    if (scriptAbortRef.current) scriptAbortRef.current.abort();
+    const controller = new AbortController();
+    scriptAbortRef.current = controller;
     setScriptsLoading(true); setScripts([]); setSelectedScriptIdx(null); setHooks([]); setSelectedHookIdxs(new Set()); setFinalScript(''); setError(null);
     try {
       const ep = generationMode === 'full' ? '/generate-full-scripts' : '/generate-scripts';
@@ -409,13 +439,21 @@ export default function IterationKing() {
         onItem: (item) => setScripts((prev) => [...prev, item]),
         onError: (err) => setError(err),
         onDone: () => setScriptsLoading(false),
+        signal: controller.signal,
       });
-    } catch (e) { setError(e.message || 'Failed to generate scripts'); } finally { setScriptsLoading(false); }
+    } catch (e) {
+      if (e.name !== 'AbortError') setError(e.message || 'Failed to generate scripts');
+    } finally {
+      if (scriptAbortRef.current === controller) setScriptsLoading(false);
+    }
   };
 
   // Generate hooks (streaming)
   const handleGenerateHooks = async () => {
-    if (selectedScriptIdx === null) return;
+    if (selectedScriptIdx === null || !scripts[selectedScriptIdx]) return;
+    if (hookAbortRef.current) hookAbortRef.current.abort();
+    const controller = new AbortController();
+    hookAbortRef.current = controller;
     setHooksLoading(true); setHooks([]); setSelectedHookIdxs(new Set()); setFinalScript(''); setError(null);
     try {
       await consumeSSEStream(`${API}/generate-hooks`, { body: scripts[selectedScriptIdx].text, aggressiveness }, {
@@ -433,8 +471,13 @@ export default function IterationKing() {
         },
         onError: (err) => setError(err),
         onDone: () => setHooksLoading(false),
+        signal: controller.signal,
       });
-    } catch (e) { setError(e.message || 'Failed to generate hooks'); } finally { setHooksLoading(false); }
+    } catch (e) {
+      if (e.name !== 'AbortError') setError(e.message || 'Failed to generate hooks');
+    } finally {
+      if (hookAbortRef.current === controller) setHooksLoading(false);
+    }
   };
 
   const toggleHook = (idx) => { setSelectedHookIdxs((prev) => { const n = new Set(prev); if (n.has(idx)) n.delete(idx); else n.add(idx); return n; }); };
@@ -456,9 +499,14 @@ export default function IterationKing() {
   const handleCopy = () => { const t = getEffectiveFinalText(); if (!t) return; navigator.clipboard.writeText(t); setCopied(true); setTimeout(() => setCopied(false), 2000); };
 
   const handleReset = () => {
+    if (scriptAbortRef.current) scriptAbortRef.current.abort();
+    if (hookAbortRef.current) hookAbortRef.current.abort();
     setSearchQuery(''); setSearchResults([]); setSelectedBrief(null); setOriginalScript(''); setAnalysis(null);
     setScripts([]); setSelectedScriptIdx(null); setHooks([]); setSelectedHookIdxs(new Set());
-    setFinalScript(''); setMoveSuccess(false); setError(null); sessionStorage.removeItem(SESSION_KEY);
+    setFinalScript(''); setMoveSuccess(false); setError(null); setCopied(false);
+    setAggressiveness(5); setSimilarity(5); setGenerationMode('iterate');
+    setBriefLoading(false); setAnalysisLoading(false); setScriptsLoading(false); setHooksLoading(false);
+    sessionStorage.removeItem(SESSION_KEY);
   };
 
   const isFullMode = generationMode === 'full';
@@ -480,7 +528,7 @@ export default function IterationKing() {
   const showFinalAssembly = isFullMode ? selectedScriptIdx !== null : (finalScript && selectedHookIdxs.size > 0);
 
   return (
-    <div className="min-h-screen p-6 space-y-0" style={{ background: '#0A0A0A' }}>
+    <div className="p-6 pb-24 space-y-0" style={{ background: '#0A0A0A' }}>
 
       {/* ── HEADER ─────────────────────────────────────────────── */}
       <div className="flex items-center justify-between mb-10">
