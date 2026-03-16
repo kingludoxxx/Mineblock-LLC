@@ -134,10 +134,10 @@ async function fetchTripleWhaleAds(startDate, endDate) {
   const query = `
     SELECT
       ad_name,
-      SUM(spend) as spend,
-      SUM(order_revenue) as revenue,
-      SUM(impressions) as impressions,
-      SUM(clicks) as clicks
+      SUM(spend) as total_spend,
+      SUM(order_revenue) as total_revenue,
+      SUM(impressions) as total_impressions,
+      SUM(clicks) as total_clicks
     FROM pixel_joined_tvf
     WHERE event_date BETWEEN @startDate AND @endDate
     GROUP BY ad_name
@@ -222,12 +222,17 @@ async function syncData({ startDate, endDate }) {
       continue;
     }
 
+    const spend = Number(ad.total_spend) || 0;
+    const revenue = Number(ad.total_revenue) || 0;
+    const impressions = Number(ad.total_impressions) || 0;
+    const clicks = Number(ad.total_clicks) || 0;
+
     const metrics = computeMetrics({
-      spend: ad.spend,
-      revenue: ad.revenue,
-      purchases: ad.purchases || 0,
-      impressions: ad.impressions,
-      clicks: ad.clicks,
+      spend,
+      revenue,
+      purchases: 0,
+      impressions,
+      clicks,
     });
 
     try {
@@ -267,11 +272,11 @@ async function syncData({ startDate, endDate }) {
           parsed.format,
           parsed.editor,
           parsed.week,
-          ad.spend || 0,
-          ad.revenue || 0,
-          ad.purchases || 0,
-          ad.impressions || 0,
-          ad.clicks || 0,
+          spend,
+          revenue,
+          0,
+          impressions,
+          clicks,
           metrics.roas,
           metrics.cpa,
           metrics.cpm,
