@@ -10,25 +10,23 @@ const TW_SHOP_ID  = process.env.TRIPLEWHALE_SHOP_ID || '17cca0-2.myshopify.com';
 const TW_SQL_URL  = 'https://api.triplewhale.com/api/v2/orcabase/api/sql';
 const CRON_SECRET = process.env.CRON_SECRET || '';
 
+let tableReady = false; // cache ensureTable so it only runs once
+
 // ── Naming Convention Parser ────────────────────────────────────────
 
 /**
  * Parse ad names following the convention:
  * "MR - B0066 - H1 - IT - B017 - MoneySeeker - Lottery - ShortVid - Ludovico - NA - Ludovico - WK08_2026"
  *
- * Positions (split on " - "):
- *  [0]  Prefix (MR) — skip
- *  [1]  Creative ID (B0066 = Video, IM0066 = Image)
- *  [2]  Hook ID (H1, H2, HX)
- *  [3]  Market code — skip
- *  [4]  Brief code — skip
- *  [5]  Avatar
- *  [6]  Angle
- *  [7]  Format
- *  [8]  Editor
- *  [9]  skip
- *  [10] skip
- *  [11] Week (WK08_2026)
+ * Head is fixed:       [0]=Prefix  [1]=CreativeID  [2]=HookID
+ * Tail is stable (relative to week position):
+ *   week_pos - 3 = Editor
+ *   week_pos - 4 = Format
+ *   week_pos - 5 = Angle
+ *   week_pos - 6 = Avatar
+ *
+ * Uses RIGHT-TO-LEFT parsing anchored on the week (WKxx_YYYY) to handle
+ * variable segment counts from inconsistent naming.
  */
 function parseAdName(name) {
   if (!name) return null;
@@ -38,23 +36,31 @@ function parseAdName(name) {
 
   const creativeId = segments[1] || null;
   const hookId     = segments[2] || null;
-  const avatar     = segments[5] || null;
-  const angle      = segments[6] || null;
-  const format     = segments[7] || null;
-  const editor     = segments[8] || null;
 
-  // Extract week — look for WKxx_YYYY pattern anywhere (prefer position 11)
+  // Find week position — scan from the end
+  let weekPos = -1;
   let week = null;
-  if (segments[11] && /^WK\d+[_\s]\d{4}$/i.test(segments[11])) {
-    week = segments[11].toUpperCase().replace(/\s/, '_');
-  } else {
-    // Fallback: scan from the end
-    for (let i = segments.length - 1; i >= 0; i--) {
-      if (/^WK\d+[_\s]\d{4}$/i.test(segments[i])) {
-        week = segments[i].toUpperCase().replace(/\s/, '_');
-        break;
-      }
+  for (let i = segments.length - 1; i >= 0; i--) {
+    if (/^WK\d+[_\s]\d{4}$/i.test(segments[i])) {
+      weekPos = i;
+      week = segments[i].toUpperCase().replace(/\s/, '_');
+      break;
     }
+  }
+
+  // Parse metadata relative to week position (right-to-left)
+  let avatar = null, angle = null, format = null, editor = null;
+  if (weekPos >= 6) {
+    editor = segments[weekPos - 3] || null;
+    format = segments[weekPos - 4] || null;
+    angle  = segments[weekPos - 5] || null;
+    avatar = segments[weekPos - 6] || null;
+
+    // Clean up placeholder values
+    if (editor === '-' || editor === 'NA') editor = null;
+    if (format === '-' || format === 'NA') format = null;
+    if (angle === '-' || angle === 'NA')   angle = null;
+    if (avatar === '-' || avatar === 'NA') avatar = null;
   }
 
   // Determine type from creative ID prefix
@@ -171,6 +177,8 @@ async function fetchTripleWhaleAds(startDate, endDate) {
 // ── Ensure Table Exists ─────────────────────────────────────────────
 
 async function ensureTable() {
+  if (tableReady) return;
+
   await pgQuery(`
     CREATE TABLE IF NOT EXISTS creative_analysis (
       id SERIAL PRIMARY KEY,
@@ -186,8 +194,8 @@ async function ensureTable() {
       spend NUMERIC(12,2) DEFAULT 0,
       revenue NUMERIC(12,2) DEFAULT 0,
       purchases INTEGER DEFAULT 0,
-      impressions INTEGER DEFAULT 0,
-      clicks INTEGER DEFAULT 0,
+      impressions BIGINT DEFAULT 0,
+      clicks BIGINT DEFAULT 0,
       roas NUMERIC(8,2) DEFAULT 0,
       cpa NUMERIC(10,2) DEFAULT 0,
       cpm NUMERIC(10,2) DEFAULT 0,
@@ -196,9 +204,47 @@ async function ensureTable() {
       ctr NUMERIC(8,2) DEFAULT 0,
       synced_at TIMESTAMPTZ DEFAULT NOW(),
       created_at TIMESTAMPTZ DEFAULT NOW(),
-      UNIQUE(creative_id, hook_id)
+      UNIQUE(creative_id, hook_id, week)
     )
   `);
+
+  // Migrate existing table: if old unique constraint exists (without week), swap it
+  try {
+    await pgQuery(`
+      DO $$
+      BEGIN
+        -- Drop old constraint if it exists (creative_id, hook_id) without week
+        IF EXISTS (
+          SELECT 1 FROM pg_constraint
+          WHERE conname = 'creative_analysis_creative_id_hook_id_key'
+          AND conrelid = 'creative_analysis'::regclass
+        ) THEN
+          ALTER TABLE creative_analysis DROP CONSTRAINT creative_analysis_creative_id_hook_id_key;
+        END IF;
+
+        -- Add new constraint with week if it doesn't exist
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint
+          WHERE conname = 'creative_analysis_creative_id_hook_id_week_key'
+          AND conrelid = 'creative_analysis'::regclass
+        ) THEN
+          ALTER TABLE creative_analysis ADD CONSTRAINT creative_analysis_creative_id_hook_id_week_key
+            UNIQUE (creative_id, hook_id, week);
+        END IF;
+
+        -- Upgrade columns to BIGINT if needed
+        ALTER TABLE creative_analysis ALTER COLUMN impressions TYPE BIGINT;
+        ALTER TABLE creative_analysis ALTER COLUMN clicks TYPE BIGINT;
+      EXCEPTION WHEN OTHERS THEN
+        -- Ignore migration errors (e.g. duplicate data blocking unique constraint)
+        RAISE NOTICE 'Migration warning: %', SQLERRM;
+      END $$;
+    `);
+  } catch (err) {
+    console.warn('[Creative Analysis] Table migration warning:', err.message);
+  }
+
+  tableReady = true;
 }
 
 // ── Sync Logic ──────────────────────────────────────────────────────
@@ -242,7 +288,7 @@ async function syncData({ startDate, endDate }) {
             spend, revenue, purchases, impressions, clicks,
             roas, cpa, cpm, aov, cpc, ctr, synced_at)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20, NOW())
-         ON CONFLICT (creative_id, hook_id) DO UPDATE SET
+         ON CONFLICT (creative_id, hook_id, week) DO UPDATE SET
            ad_name = EXCLUDED.ad_name,
            type = EXCLUDED.type,
            avatar = EXCLUDED.avatar,
@@ -559,7 +605,7 @@ router.get('/weeks', authenticate, async (req, res) => {
     await ensureTable();
 
     const rows = await pgQuery(
-      `SELECT DISTINCT week, COUNT(*) as creative_count, SUM(spend) as total_spend
+      `SELECT week, COUNT(DISTINCT creative_id) as creative_count, SUM(spend) as total_spend
        FROM creative_analysis
        WHERE week IS NOT NULL
        GROUP BY week

@@ -5,35 +5,38 @@ import {
   Image,
   RefreshCw,
   X,
-  ChevronDown,
   ChevronRight,
-  ExternalLink,
   ArrowUpDown,
   ArrowUp,
   ArrowDown,
   Trophy,
   ShoppingCart,
   Zap,
-  Crown,
 } from 'lucide-react';
 import api from '../../services/api';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+/** ISO week number — matches the backend algorithm exactly */
+function getISOWeek(date) {
+  const jan4 = new Date(date.getFullYear(), 0, 4);
+  const dayOfWeek = jan4.getDay() || 7;
+  const mondayW1 = new Date(jan4);
+  mondayW1.setDate(jan4.getDate() - dayOfWeek + 1);
+  const diff = Math.floor((date - mondayW1) / (7 * 24 * 60 * 60 * 1000));
+  return diff + 1;
+}
+
 function getCurrentWeek() {
   const now = new Date();
-  const jan1 = new Date(now.getFullYear(), 0, 1);
-  const days = Math.floor((now - jan1) / 86400000);
-  const week = Math.ceil((days + jan1.getDay() + 1) / 7);
+  const week = getISOWeek(now);
   return `WK${String(week).padStart(2, '0')}_${now.getFullYear()}`;
 }
 
 function generateWeekOptions() {
   const now = new Date();
   const year = now.getFullYear();
-  const jan1 = new Date(year, 0, 1);
-  const days = Math.floor((now - jan1) / 86400000);
-  const currentWeek = Math.ceil((days + jan1.getDay() + 1) / 7);
+  const currentWeek = getISOWeek(now);
   const weeks = [];
   for (let w = currentWeek; w >= 1; w--) {
     weeks.push(`WK${String(w).padStart(2, '0')}_${year}`);
@@ -61,12 +64,6 @@ const fmtInt = (n) => Number(n || 0).toLocaleString();
 const cardStyle = 'bg-[#111] border border-white/[0.06] rounded-xl p-5';
 const selectStyle =
   'bg-white/[0.04] border border-white/[0.08] rounded-lg text-white px-3 py-2 text-sm focus:outline-none focus:border-white/20 appearance-none cursor-pointer';
-
-const STATUS_STYLES = {
-  Active: 'bg-green-500/20 text-green-400 border border-green-500/30',
-  Paused: 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30',
-  Disabled: 'bg-red-500/20 text-red-400 border border-red-500/30',
-};
 
 const LEADERBOARD_CONFIG = [
   {
@@ -106,23 +103,19 @@ const LEADERBOARD_CONFIG = [
 
 const TABLE_COLUMNS = [
   { key: 'type', label: 'Type', align: 'left' },
-  { key: 'launch_date', label: 'Launch Date', align: 'left' },
   { key: 'ad_name', label: 'Ad Name', align: 'left' },
-  { key: 'creative_link', label: 'Link', align: 'center', noSort: true },
   { key: 'avatar', label: 'Avatar', align: 'left' },
   { key: 'angle', label: 'Angle', align: 'left' },
   { key: 'format', label: 'Format', align: 'left' },
   { key: 'editor', label: 'Editor', align: 'left' },
   { key: 'spend', label: 'Spend', align: 'right', format: fmtMoney },
+  { key: 'revenue', label: 'Revenue', align: 'right', format: fmtMoney },
   { key: 'roas', label: 'ROAS', align: 'right', format: fmtRoas },
-  { key: 'purchases', label: 'Purch', align: 'right', format: fmtInt },
-  { key: 'cpa', label: 'CPA', align: 'right', format: fmtMoney },
   { key: 'cpm', label: 'CPM', align: 'right', format: fmtMoney },
-  { key: 'aov', label: 'AOV', align: 'right', format: fmtMoney },
-  { key: 'revenue', label: 'Conv Value', align: 'right', format: fmtMoney },
   { key: 'cpc', label: 'CPC', align: 'right', format: fmtMoney },
   { key: 'ctr', label: 'CTR', align: 'right', format: fmtPct },
-  { key: 'status', label: 'Status', align: 'center', noSort: true },
+  { key: 'impressions', label: 'Impr', align: 'right', format: fmtInt },
+  { key: 'clicks', label: 'Clicks', align: 'right', format: fmtInt },
 ];
 
 // ── Component ────────────────────────────────────────────────────────────────
@@ -143,7 +136,6 @@ export default function CreativeAnalysis() {
     angle: '',
     format: '',
     editor: '',
-    status: '',
   });
 
   const [expandedCreatives, setExpandedCreatives] = useState(new Set());
@@ -163,7 +155,7 @@ export default function CreativeAnalysis() {
       setData(respData.creatives || respData || []);
       setLeaderboard(lbRes.data?.data || lbRes.data || null);
     } catch (err) {
-      setError(err.response?.data?.message || err.message || 'Failed to load data.');
+      setError(err.response?.data?.error?.message || err.message || 'Failed to load data.');
     } finally {
       setLoading(false);
     }
@@ -180,7 +172,7 @@ export default function CreativeAnalysis() {
       await api.post('/creative-analysis/sync', { week });
       await fetchData();
     } catch (err) {
-      setError(err.response?.data?.message || err.message || 'Sync failed.');
+      setError(err.response?.data?.error?.message || err.message || 'Sync failed.');
     } finally {
       setSyncing(false);
     }
@@ -193,7 +185,7 @@ export default function CreativeAnalysis() {
   };
 
   const clearFilters = () => {
-    setFilters({ creativeType: '', avatar: '', angle: '', format: '', editor: '', status: '' });
+    setFilters({ creativeType: '', avatar: '', angle: '', format: '', editor: '' });
   };
 
   const hasActiveFilters = Object.values(filters).some(Boolean);
@@ -230,11 +222,6 @@ export default function CreativeAnalysis() {
     if (filters.angle) rows = rows.filter((r) => r.angle === filters.angle);
     if (filters.format) rows = rows.filter((r) => r.format === filters.format);
     if (filters.editor) rows = rows.filter((r) => r.editor === filters.editor);
-    if (filters.status) {
-      rows = rows.filter(
-        (r) => (r.status || '').toLowerCase() === filters.status.toLowerCase()
-      );
-    }
 
     // Data from backend is already grouped by creative_id with hooks array
     // Each item: { creative_id, type, avatar, angle, format, editor, total_spend, total_revenue, roas, cpa, cpm, aov, cpc, ctr, hooks: [...] }
@@ -243,6 +230,8 @@ export default function CreativeAnalysis() {
       spend: creative.total_spend || creative.spend || 0,
       revenue: creative.total_revenue || creative.revenue || 0,
       purchases: creative.total_purchases || creative.purchases || 0,
+      impressions: creative.total_impressions || creative.impressions || 0,
+      clicks: creative.total_clicks || creative.clicks || 0,
       ad_name: creative.hooks?.[0]?.ad_name || creative.ad_name || creative.creative_id,
       _hooks: creative.hooks || [],
       _creativeId: creative.creative_id,
@@ -308,30 +297,6 @@ export default function CreativeAnalysis() {
             <Image className="w-3.5 h-3.5 text-cyan-400" />
           )}
           <span className="capitalize">{val || '-'}</span>
-        </span>
-      );
-    }
-
-    if (col.key === 'creative_link') {
-      if (!val) return <span className="text-gray-600">-</span>;
-      return (
-        <a
-          href={val}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-emerald-400 hover:text-emerald-300 transition-colors"
-        >
-          <ExternalLink className="w-3.5 h-3.5" />
-        </a>
-      );
-    }
-
-    if (col.key === 'status') {
-      const badge =
-        STATUS_STYLES[val] || 'bg-white/[0.04] text-gray-500 border border-white/[0.06]';
-      return (
-        <span className={`inline-block px-2.5 py-0.5 rounded-full text-xs font-medium ${badge}`}>
-          {val || '-'}
         </span>
       );
     }
@@ -544,16 +509,6 @@ export default function CreativeAnalysis() {
             ))}
           </select>
 
-          <select
-            value={filters.status}
-            onChange={(e) => updateFilter('status', e.target.value)}
-            className={selectStyle}
-          >
-            <option value="" className="bg-[#111]">All Statuses</option>
-            <option value="Active" className="bg-[#111]">Active</option>
-            <option value="Paused" className="bg-[#111]">Paused</option>
-          </select>
-
           {hasActiveFilters && (
             <button
               onClick={clearFilters}
@@ -648,7 +603,7 @@ export default function CreativeAnalysis() {
                                 ? 'text-center'
                                 : 'text-left'
                             } ${
-                              ['spend', 'roas', 'purchases', 'revenue'].includes(col.key)
+                              ['spend', 'roas', 'revenue'].includes(col.key)
                                 ? 'text-white font-medium'
                                 : 'text-gray-400'
                             }`}
