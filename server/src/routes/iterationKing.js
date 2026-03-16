@@ -50,7 +50,7 @@ function extractJSON(text) {
   return cleaned;
 }
 
-const MODEL_FAST = 'claude-sonnet-4-20250514';
+const MODEL_FAST = 'claude-3-5-haiku-20241022';
 const MODEL_QUALITY = 'claude-sonnet-4-20250514';
 
 async function callClaude(prompt, maxTokens = 8192, { fast = false } = {}) {
@@ -61,6 +61,70 @@ async function callClaude(prompt, maxTokens = 8192, { fast = false } = {}) {
     messages: [{ role: 'user', content: prompt }],
   });
   return message.content[0].text.trim();
+}
+
+async function callClaudeStream(prompt, maxTokens = 8192, { fast = false } = {}) {
+  const client = await initClient();
+  const stream = await client.messages.stream({
+    model: fast ? MODEL_FAST : MODEL_QUALITY,
+    max_tokens: maxTokens,
+    messages: [{ role: 'user', content: prompt }],
+  });
+  return stream;
+}
+
+// SSE helper: stream Claude response, parse JSON array items as they complete, send each as SSE event
+async function streamJSONArray(res, prompt, maxTokens, { fast = true, eventName = 'item' } = {}) {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
+
+  let fullText = '';
+  let sentCount = 0;
+
+  try {
+    const stream = await callClaudeStream(prompt, maxTokens, { fast });
+
+    stream.on('text', (text) => {
+      fullText += text;
+
+      // Try to extract complete JSON objects as they appear
+      const cleaned = extractJSON(fullText);
+      try {
+        // Try parsing incrementally - find complete objects in the array
+        const objectMatches = [...cleaned.matchAll(/\{[^{}]*\}/g)];
+        for (let i = sentCount; i < objectMatches.length; i++) {
+          try {
+            const obj = JSON.parse(objectMatches[i][0]);
+            res.write(`data: ${JSON.stringify(obj)}\n\n`);
+            sentCount++;
+          } catch {
+            // Incomplete object, skip
+          }
+        }
+      } catch {
+        // Not parseable yet, continue collecting
+      }
+    });
+
+    await stream.finalMessage();
+
+    // Final pass: parse the complete response and send any remaining items
+    const finalParsed = safeParseJSON(fullText);
+    const items = Array.isArray(finalParsed) ? finalParsed : [];
+    for (let i = sentCount; i < items.length; i++) {
+      res.write(`data: ${JSON.stringify(items[i])}\n\n`);
+    }
+
+    res.write(`data: [DONE]\n\n`);
+    res.end();
+    return items;
+  } catch (err) {
+    res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
+    res.end();
+    throw err;
+  }
 }
 
 function safeParseJSON(text) {
@@ -183,7 +247,7 @@ Return ONLY valid JSON with this exact structure (no markdown, no explanation, n
   }
 });
 
-// ── POST /generate-scripts — Generate script iterations ───────────
+// ── POST /generate-scripts — Generate script iterations (SSE stream) ───────────
 router.post('/generate-scripts', authenticate, async (req, res) => {
   try {
     const { script, aggressiveness = 5, similarity = 5, analysis } = req.body;
@@ -222,17 +286,14 @@ Return ONLY a valid JSON array (no markdown, no backticks, no explanation). Each
 
 Generate exactly 10 variations.`;
 
-    const result = await callClaude(prompt, 8192, { fast: true });
-    const scripts = safeParseJSON(result);
-
-    res.json({ success: true, scripts: Array.isArray(scripts) ? scripts : [] });
+    await streamJSONArray(res, prompt, 8192, { fast: true });
   } catch (err) {
     console.error('[IterationKing] Generate scripts error:', err.message);
-    res.status(500).json({ success: false, error: err.message });
+    if (!res.headersSent) res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// ── POST /generate-full-scripts — Generate complete ad scripts ────
+// ── POST /generate-full-scripts — Generate complete ad scripts (SSE stream) ────
 router.post('/generate-full-scripts', authenticate, async (req, res) => {
   try {
     const { script, aggressiveness = 5, similarity = 5, analysis } = req.body;
@@ -270,17 +331,14 @@ Return ONLY a valid JSON array (no markdown, no backticks, no explanation). Each
 
 Generate exactly 10 complete scripts.`;
 
-    const result = await callClaude(prompt, 8192, { fast: true });
-    const scripts = safeParseJSON(result);
-
-    res.json({ success: true, scripts: Array.isArray(scripts) ? scripts : [] });
+    await streamJSONArray(res, prompt, 8192, { fast: true });
   } catch (err) {
     console.error('[IterationKing] Generate full scripts error:', err.message);
-    res.status(500).json({ success: false, error: err.message });
+    if (!res.headersSent) res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// ── POST /generate-hooks — Generate hooks for selected body ───────
+// ── POST /generate-hooks — Generate hooks for selected body (SSE stream) ───────
 router.post('/generate-hooks', authenticate, async (req, res) => {
   try {
     const { body, aggressiveness = 5 } = req.body;
@@ -314,25 +372,10 @@ Return ONLY a valid JSON array (no markdown, no backticks, no explanation). Each
 
 Generate exactly 10 hooks.`;
 
-    const result = await callClaude(prompt, 2048, { fast: true });
-    const hooks = safeParseJSON(result);
-
-    // Validate and normalize hook fields
-    const normalizedHooks = (Array.isArray(hooks) ? hooks : []).map((h, i) => ({
-      id: h.id || i + 1,
-      text: h.text || '',
-      strength: typeof h.strength === 'number' ? h.strength : parseFloat(h.strength) || 5,
-      curiosityTrigger: ['Low', 'Medium', 'High'].includes(h.curiosityTrigger) ? h.curiosityTrigger : 'Medium',
-      clarity: ['Low', 'Medium', 'High'].includes(h.clarity) ? h.clarity : 'Medium',
-      scrollStopProbability: ['Weak', 'Moderate', 'Strong'].includes(h.scrollStopProbability)
-        ? h.scrollStopProbability
-        : 'Moderate',
-    }));
-
-    res.json({ success: true, hooks: normalizedHooks });
+    await streamJSONArray(res, prompt, 2048, { fast: true });
   } catch (err) {
     console.error('[IterationKing] Generate hooks error:', err.message);
-    res.status(500).json({ success: false, error: err.message });
+    if (!res.headersSent) res.status(500).json({ success: false, error: err.message });
   }
 });
 

@@ -32,6 +32,46 @@ function authHeaders() {
   return { 'Content-Type': 'application/json', ...(t ? { Authorization: `Bearer ${t}` } : {}) };
 }
 
+// SSE stream consumer: reads items as they arrive and calls onItem for each
+async function consumeSSEStream(url, body, { onItem, onError, onDone }) {
+  const t = localStorage.getItem('accessToken');
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(t ? { Authorization: `Bearer ${t}` } : {}) },
+  body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({ error: 'Request failed' }));
+    throw new Error(data.error || `HTTP ${res.status}`);
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue;
+      const payload = line.slice(6).trim();
+      if (payload === '[DONE]') { onDone?.(); return; }
+      try {
+        const item = JSON.parse(payload);
+        if (item.error) { onError?.(item.error); return; }
+        onItem(item);
+      } catch {}
+    }
+  }
+  onDone?.();
+}
+
 // ── Animated status ───────────────────────────────────────────────
 const SCRIPT_STEPS = ['Analyzing winning pattern...', 'Generating iterations...', 'Optimizing persuasion structure...', 'Finalizing variations...'];
 const HOOK_STEPS = ['Synthesizing scroll-stopping openings...', 'Aligning hooks with body...', 'Scoring hook strength...', 'Finalizing hooks...'];
@@ -359,29 +399,42 @@ export default function IterationKing() {
     } catch { setError('Failed to fetch brief details'); } finally { setBriefLoading(false); }
   };
 
-  // Generate scripts
+  // Generate scripts (streaming)
   const handleGenerateScripts = async () => {
     if (!originalScript) return;
     setScriptsLoading(true); setScripts([]); setSelectedScriptIdx(null); setHooks([]); setSelectedHookIdxs(new Set()); setFinalScript(''); setError(null);
     try {
       const ep = generationMode === 'full' ? '/generate-full-scripts' : '/generate-scripts';
-      const res = await fetch(`${API}${ep}`, { method: 'POST', headers: authHeaders(), body: JSON.stringify({ script: originalScript, aggressiveness, similarity, analysis }) });
-      const data = await res.json();
-      if (data.success && Array.isArray(data.scripts)) setScripts(data.scripts);
-      else setError(data.error || 'Failed to generate scripts');
-    } catch { setError('Failed to generate scripts'); } finally { setScriptsLoading(false); }
+      await consumeSSEStream(`${API}${ep}`, { script: originalScript, aggressiveness, similarity, analysis }, {
+        onItem: (item) => setScripts((prev) => [...prev, item]),
+        onError: (err) => setError(err),
+        onDone: () => setScriptsLoading(false),
+      });
+    } catch (e) { setError(e.message || 'Failed to generate scripts'); } finally { setScriptsLoading(false); }
   };
 
-  // Generate hooks
+  // Generate hooks (streaming)
   const handleGenerateHooks = async () => {
     if (selectedScriptIdx === null) return;
     setHooksLoading(true); setHooks([]); setSelectedHookIdxs(new Set()); setFinalScript(''); setError(null);
     try {
-      const res = await fetch(`${API}/generate-hooks`, { method: 'POST', headers: authHeaders(), body: JSON.stringify({ body: scripts[selectedScriptIdx].text, aggressiveness }) });
-      const data = await res.json();
-      if (data.success && Array.isArray(data.hooks)) setHooks(data.hooks);
-      else setError(data.error || 'Failed to generate hooks');
-    } catch { setError('Failed to generate hooks'); } finally { setHooksLoading(false); }
+      await consumeSSEStream(`${API}/generate-hooks`, { body: scripts[selectedScriptIdx].text, aggressiveness }, {
+        onItem: (item) => {
+          // Normalize hook fields on the fly
+          const h = {
+            id: item.id || 0,
+            text: item.text || '',
+            strength: typeof item.strength === 'number' ? item.strength : parseFloat(item.strength) || 5,
+            curiosityTrigger: ['Low', 'Medium', 'High'].includes(item.curiosityTrigger) ? item.curiosityTrigger : 'Medium',
+            clarity: ['Low', 'Medium', 'High'].includes(item.clarity) ? item.clarity : 'Medium',
+            scrollStopProbability: ['Weak', 'Moderate', 'Strong'].includes(item.scrollStopProbability) ? item.scrollStopProbability : 'Moderate',
+          };
+          setHooks((prev) => [...prev, h]);
+        },
+        onError: (err) => setError(err),
+        onDone: () => setHooksLoading(false),
+      });
+    } catch (e) { setError(e.message || 'Failed to generate hooks'); } finally { setHooksLoading(false); }
   };
 
   const toggleHook = (idx) => { setSelectedHookIdxs((prev) => { const n = new Set(prev); if (n.has(idx)) n.delete(idx); else n.add(idx); return n; }); };
