@@ -50,10 +50,13 @@ function extractJSON(text) {
   return cleaned;
 }
 
-async function callClaude(prompt, maxTokens = 8192) {
+const MODEL_FAST = 'claude-3-5-haiku-20241022';
+const MODEL_QUALITY = 'claude-sonnet-4-20250514';
+
+async function callClaude(prompt, maxTokens = 8192, { fast = false } = {}) {
   const client = await initClient();
   const message = await client.messages.create({
-    model: 'claude-sonnet-4-20250514',
+    model: fast ? MODEL_FAST : MODEL_QUALITY,
     max_tokens: maxTokens,
     messages: [{ role: 'user', content: prompt }],
   });
@@ -219,7 +222,7 @@ Return ONLY a valid JSON array (no markdown, no backticks, no explanation). Each
 
 Generate exactly 10 variations.`;
 
-    const result = await callClaude(prompt, 12000);
+    const result = await callClaude(prompt, 8192, { fast: true });
     const scripts = safeParseJSON(result);
 
     res.json({ success: true, scripts: Array.isArray(scripts) ? scripts : [] });
@@ -267,7 +270,7 @@ Return ONLY a valid JSON array (no markdown, no backticks, no explanation). Each
 
 Generate exactly 10 complete scripts.`;
 
-    const result = await callClaude(prompt, 12000);
+    const result = await callClaude(prompt, 8192, { fast: true });
     const scripts = safeParseJSON(result);
 
     res.json({ success: true, scripts: Array.isArray(scripts) ? scripts : [] });
@@ -311,7 +314,7 @@ Return ONLY a valid JSON array (no markdown, no backticks, no explanation). Each
 
 Generate exactly 10 hooks.`;
 
-    const result = await callClaude(prompt, 4096);
+    const result = await callClaude(prompt, 2048, { fast: true });
     const hooks = safeParseJSON(result);
 
     // Validate and normalize hook fields
