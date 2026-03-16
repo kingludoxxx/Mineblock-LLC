@@ -419,6 +419,7 @@ router.get('/leaderboard', authenticate, async (req, res) => {
          angle,
          format,
          editor,
+         MIN(ad_name) as ad_name,
          SUM(spend) as spend,
          SUM(revenue) as revenue,
          SUM(purchases) as purchases,
@@ -435,6 +436,7 @@ router.get('/leaderboard', authenticate, async (req, res) => {
     // Compute metrics for each
     const withMetrics = aggregated.map(row => ({
       creative_id: row.creative_id,
+      ad_name: row.ad_name,
       type: row.type,
       avatar: row.avatar,
       angle: row.angle,

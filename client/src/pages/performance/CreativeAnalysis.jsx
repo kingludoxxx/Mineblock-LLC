@@ -93,7 +93,7 @@ const LEADERBOARD_CONFIG = [
   },
   {
     title: 'Top by Efficiency',
-    key: 'topCpa',
+    key: 'topEfficiency',
     metricKey: 'cpa',
     metricLabel: 'CPA',
     format: fmtMoney,
@@ -468,7 +468,7 @@ export default function CreativeAnalysis() {
                             {idx + 1}
                           </span>
                           <span className="text-gray-300 truncate text-xs">
-                            {item.ad_name || item.creative_name || item.name || '-'}
+                            {item.ad_name || item.creative_id || item.creative_name || item.name || '-'}
                           </span>
                         </div>
                         <div className="flex items-center gap-3 shrink-0 ml-2">
@@ -490,18 +490,6 @@ export default function CreativeAnalysis() {
       {/* Filter Bar */}
       <div className={`${cardStyle} mb-6`}>
         <div className="flex items-center gap-3 flex-wrap">
-          <select
-            value={week}
-            onChange={(e) => setWeek(e.target.value)}
-            className={selectStyle}
-          >
-            {weekOptions.map((w) => (
-              <option key={w} value={w} className="bg-[#111]">
-                {w.replace('_', ' ')}
-              </option>
-            ))}
-          </select>
-
           <select
             value={filters.creativeType}
             onChange={(e) => updateFilter('creativeType', e.target.value)}
