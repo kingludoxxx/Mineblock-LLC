@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   Brain,
   TrendingUp,
@@ -7,6 +7,10 @@ import {
   Target,
   DollarSign,
   RefreshCw,
+  Filter,
+  X,
+  ChevronDown,
+  Clock,
 } from 'lucide-react';
 import {
   BarChart,
@@ -18,6 +22,7 @@ import {
   Cell,
 } from 'recharts';
 import api from '../../services/api';
+import DateRangePicker from '../../components/ui/DateRangePicker';
 
 const EDITOR_COLORS = [
   '#8b5cf6',
@@ -27,6 +32,9 @@ const EDITOR_COLORS = [
   '#f43f5e',
   '#10b981',
 ];
+
+// Active editors — only these show in the filter dropdown
+const ACTIVE_EDITORS = ['Antoni', 'Faiz'];
 
 const STATUS_STYLES = {
   Winner: 'bg-green-500/20 text-green-400 border border-green-500/30',
@@ -47,7 +55,7 @@ const fmtRoas = (n) => Number(n || 0).toFixed(2) + 'x';
 function getDefaultDates() {
   const end = new Date();
   const start = new Date();
-  start.setDate(start.getDate() - 30);
+  start.setDate(start.getDate() - 7);
   return {
     startDate: start.toISOString().split('T')[0],
     endDate: end.toISOString().split('T')[0],
@@ -91,6 +99,10 @@ export default function CreativeIntelligence() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [selectedEditors, setSelectedEditors] = useState(ACTIVE_EDITORS);
+  const [editorDropdownOpen, setEditorDropdownOpen] = useState(false);
+  const [minutesData, setMinutesData] = useState(null);
+  const [minutesLoading, setMinutesLoading] = useState(false);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -111,40 +123,109 @@ export default function CreativeIntelligence() {
     }
   }, [dateRange.startDate, dateRange.endDate]);
 
+  const fetchMinutes = useCallback(async () => {
+    setMinutesLoading(true);
+    try {
+      const res = await api.get('/creative-intel/editor-minutes', {
+        params: { startDate: dateRange.startDate, endDate: dateRange.endDate },
+      });
+      if (res.data?.success) {
+        setMinutesData(res.data.data);
+      }
+    } catch {
+      // Silently fail — Frame.io token might not be configured
+      setMinutesData(null);
+    } finally {
+      setMinutesLoading(false);
+    }
+  }, [dateRange.startDate, dateRange.endDate]);
+
   useEffect(() => {
     fetchData();
-  }, [fetchData]);
+    fetchMinutes();
+  }, [fetchData, fetchMinutes]);
+
+  // Only show active editors in the filter dropdown
+  const allEditors = useMemo(() => {
+    return ACTIVE_EDITORS.slice().sort();
+  }, [data]);
+
+  // Filter productivity data by selected editors
+  const filteredProductivity = useMemo(() => {
+    if (!data?.editorProductivity) return [];
+    if (selectedEditors.length === 0) return data.editorProductivity;
+    return data.editorProductivity.filter((r) => selectedEditors.includes(r.editor));
+  }, [data, selectedEditors]);
 
   // Derive editor chart data
-  const editorChartData = (() => {
-    if (!data?.editorProductivity) return [];
-    const weeks = [...new Set(data.editorProductivity.map((r) => r.week))].sort();
+  const editorChartData = useMemo(() => {
+    if (!filteredProductivity.length) return [];
+    const weeks = [...new Set(filteredProductivity.map((r) => r.week))].sort();
     return weeks.map((week) => {
       const row = { week };
-      data.editorProductivity
+      filteredProductivity
         .filter((r) => r.week === week)
         .forEach((r) => {
           row[r.editor] = r.total;
         });
       return row;
     });
-  })();
+  }, [filteredProductivity]);
 
-  const editorNames = data?.editorProductivity
-    ? [...new Set(data.editorProductivity.map((r) => r.editor))]
-    : [];
+  const editorNames = useMemo(() => {
+    return filteredProductivity.length
+      ? [...new Set(filteredProductivity.map((r) => r.editor))]
+      : [];
+  }, [filteredProductivity]);
 
-  const editorTotals = (() => {
-    if (!data?.editorProductivity) return [];
+  const editorTotals = useMemo(() => {
+    if (!filteredProductivity.length) return [];
     const map = {};
-    data.editorProductivity.forEach((r) => {
+    filteredProductivity.forEach((r) => {
       if (!map[r.editor]) map[r.editor] = { editor: r.editor, video: 0, image: 0, total: 0 };
       map[r.editor].video += r.video || 0;
       map[r.editor].image += r.image || 0;
       map[r.editor].total += r.total || 0;
     });
     return Object.values(map).sort((a, b) => b.total - a.total);
-  })();
+  }, [filteredProductivity]);
+
+  // Filter creatives by selected editors
+  const filteredCreatives = useMemo(() => {
+    if (!data?.creatives) return [];
+    if (selectedEditors.length === 0) return data.creatives;
+    return data.creatives.filter((c) => selectedEditors.includes(c.editor));
+  }, [data, selectedEditors]);
+
+  // Editor minutes data (filtered by selected editors)
+  const filteredMinutesSummary = useMemo(() => {
+    if (!minutesData?.editorSummary) return [];
+    if (selectedEditors.length === 0) return minutesData.editorSummary;
+    return minutesData.editorSummary.filter((e) => selectedEditors.includes(e.editor));
+  }, [minutesData, selectedEditors]);
+
+  const minutesChartData = useMemo(() => {
+    if (!minutesData?.weeklyBreakdown) return [];
+    const filtered = selectedEditors.length === 0
+      ? minutesData.weeklyBreakdown
+      : minutesData.weeklyBreakdown.filter((r) => selectedEditors.includes(r.editor));
+    const weeks = [...new Set(filtered.map((r) => r.week))].sort();
+    return weeks.map((week) => {
+      const row = { week };
+      filtered.filter((r) => r.week === week).forEach((r) => {
+        row[r.editor] = Math.round(r.totalMinutes * 10) / 10;
+      });
+      return row;
+    });
+  }, [minutesData, selectedEditors]);
+
+  const minutesEditorNames = useMemo(() => {
+    if (!minutesData?.weeklyBreakdown) return [];
+    const filtered = selectedEditors.length === 0
+      ? minutesData.weeklyBreakdown
+      : minutesData.weeklyBreakdown.filter((r) => selectedEditors.includes(r.editor));
+    return [...new Set(filtered.map((r) => r.editor))];
+  }, [minutesData, selectedEditors]);
 
   // Format performance chart data (horizontal)
   const formatChartData = (data?.formatPerformance || [])
@@ -155,9 +236,17 @@ export default function CreativeIntelligence() {
     .slice()
     .sort((a, b) => (b.roas || 0) - (a.roas || 0));
 
-  const sortedCreatives = (data?.creatives || [])
+  const sortedCreatives = filteredCreatives
     .slice()
     .sort((a, b) => (b.spend || 0) - (a.spend || 0));
+
+  const toggleEditor = (editor) => {
+    setSelectedEditors((prev) =>
+      prev.includes(editor) ? prev.filter((e) => e !== editor) : [...prev, editor]
+    );
+  };
+
+  const clearEditorFilter = () => setSelectedEditors([]);
 
   // Loading state
   if (loading && !data) {
@@ -195,46 +284,75 @@ export default function CreativeIntelligence() {
   const s = data?.summary || {};
 
   return (
-    <div>
-      {/* Header + Date Range */}
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-8">
-        <div>
-          <h1 className="text-2xl font-bold text-white flex items-center gap-2">
-            <Brain className="w-6 h-6 text-purple-400" />
-            Creative Intelligence
-          </h1>
-          <p className="text-gray-400 mt-1 text-sm">
-            Analyze creative performance, editor output, and winning patterns.
-          </p>
-        </div>
+    <div className="p-6 pl-10">
+      {/* Filters */}
+      <div className="flex items-center justify-end gap-3 mt-8 mb-10">
+          {/* Editor filter */}
+          <div className="relative">
+            <button
+              onClick={() => setEditorDropdownOpen(!editorDropdownOpen)}
+              className="flex items-center gap-2 px-4 py-2 rounded-lg bg-[#111] border border-white/[0.08] hover:border-blue-500/40 text-white text-sm transition-all cursor-pointer whitespace-nowrap"
+            >
+              <Filter className="w-4 h-4 text-blue-400" />
+              <span>
+                {selectedEditors.length === 0
+                  ? 'All Editors'
+                  : `${selectedEditors.length} Editor${selectedEditors.length > 1 ? 's' : ''}`}
+              </span>
+              <ChevronDown className={`w-3.5 h-3.5 text-gray-400 transition-transform ${editorDropdownOpen ? 'rotate-180' : ''}`} />
+            </button>
 
-        <div className="flex items-center gap-3">
-          <input
-            type="date"
-            value={dateRange.startDate}
-            onChange={(e) =>
-              setDateRange((prev) => ({ ...prev, startDate: e.target.value }))
-            }
-            className={inputStyle}
+            {editorDropdownOpen && (
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setEditorDropdownOpen(false)} />
+                <div className="absolute right-0 top-full mt-2 z-50 w-56 bg-[#0d0d0d] border border-white/[0.08] rounded-xl shadow-2xl py-2 max-h-72 overflow-y-auto">
+                  {selectedEditors.length > 0 && (
+                    <button
+                      onClick={clearEditorFilter}
+                      className="w-full flex items-center gap-2 px-4 py-2 text-sm text-red-400 hover:bg-white/[0.04] transition-colors cursor-pointer"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                      Clear filter
+                    </button>
+                  )}
+                  {allEditors.map((editor) => (
+                    <button
+                      key={editor}
+                      onClick={() => toggleEditor(editor)}
+                      className={`w-full text-left px-4 py-2 text-sm transition-colors cursor-pointer flex items-center justify-between
+                        ${selectedEditors.includes(editor)
+                          ? 'bg-blue-500/15 text-blue-400 font-medium'
+                          : 'text-gray-400 hover:bg-white/[0.04] hover:text-white'
+                        }`}
+                    >
+                      <span>{editor}</span>
+                      {selectedEditors.includes(editor) && (
+                        <span className="text-blue-400">✓</span>
+                      )}
+                    </button>
+                  ))}
+                  {allEditors.length === 0 && (
+                    <p className="px-4 py-3 text-sm text-gray-500">No editors found</p>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
+
+          <DateRangePicker
+            startDate={dateRange.startDate}
+            endDate={dateRange.endDate}
+            onChange={setDateRange}
           />
-          <span className="text-gray-500 text-sm">to</span>
-          <input
-            type="date"
-            value={dateRange.endDate}
-            onChange={(e) =>
-              setDateRange((prev) => ({ ...prev, endDate: e.target.value }))
-            }
-            className={inputStyle}
-          />
+
           <button
-            onClick={fetchData}
+            onClick={() => { fetchData(); fetchMinutes(); }}
             disabled={loading}
-            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-white/[0.06] hover:bg-white/[0.1] text-white text-sm transition-colors disabled:opacity-50"
+            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-white/[0.06] hover:bg-white/[0.1] text-white text-sm transition-colors disabled:opacity-50 cursor-pointer"
           >
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
             Refresh
           </button>
-        </div>
       </div>
 
       {error && (
@@ -376,6 +494,100 @@ export default function CreativeIntelligence() {
                       <td className="text-right px-4 py-2.5 text-gray-400">{e.video}</td>
                       <td className="text-right px-4 py-2.5 text-gray-400">{e.image}</td>
                       <td className="text-right px-4 py-2.5 text-white font-medium">{e.total}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* Minutes Edited */}
+      <div className={`${cardStyle} mb-8`}>
+        <h2 className="text-lg font-semibold text-white mb-1 flex items-center gap-2">
+          <Clock className="w-5 h-5 text-cyan-400" />
+          Minutes Edited
+        </h2>
+        <div className="flex items-center justify-between mb-6">
+          <p className="text-gray-500 text-sm">Total video minutes edited per editor (from Frame.io)</p>
+          {minutesData?.syncStatus && (
+            <span className="text-xs text-gray-500">
+              {minutesData.syncStatus.synced} synced / {minutesData.syncStatus.missing} missing durations
+            </span>
+          )}
+        </div>
+
+        {minutesLoading ? (
+          <div className="flex items-center justify-center h-48">
+            <RefreshCw className="w-5 h-5 text-gray-500 animate-spin" />
+          </div>
+        ) : !minutesData ? (
+          <div className="flex items-center justify-center h-48 text-gray-500 text-sm">
+            No duration data synced yet. Run the Frame.io sync to populate.
+          </div>
+        ) : filteredMinutesSummary.length === 0 ? (
+          <div className="flex items-center justify-center h-48 text-gray-500 text-sm">
+            No minutes data available for this period.
+          </div>
+        ) : (
+          <>
+            {minutesChartData.length > 0 && (
+              <div className="h-72 mb-6">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={minutesChartData} barCategoryGap="20%">
+                    <XAxis
+                      dataKey="week"
+                      tick={{ fill: '#9ca3af', fontSize: 12 }}
+                      axisLine={{ stroke: 'rgba(255,255,255,0.06)' }}
+                      tickLine={false}
+                    />
+                    <YAxis
+                      tick={{ fill: '#9ca3af', fontSize: 12 }}
+                      axisLine={false}
+                      tickLine={false}
+                      label={{ value: 'Minutes', angle: -90, position: 'insideLeft', fill: '#6b7280', fontSize: 11 }}
+                    />
+                    <Tooltip content={<CustomTooltip />} cursor={{ fill: 'rgba(255,255,255,0.03)' }} />
+                    {minutesEditorNames.map((name, i) => (
+                      <Bar
+                        key={name}
+                        dataKey={name}
+                        name={name}
+                        fill={EDITOR_COLORS[i % EDITOR_COLORS.length]}
+                        radius={[3, 3, 0, 0]}
+                      />
+                    ))}
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-white/[0.06]">
+                    <th className="text-left px-4 py-2 text-gray-400 text-xs uppercase tracking-wider font-semibold">Editor</th>
+                    <th className="text-right px-4 py-2 text-gray-400 text-xs uppercase tracking-wider font-semibold">Videos</th>
+                    <th className="text-right px-4 py-2 text-gray-400 text-xs uppercase tracking-wider font-semibold">Total Minutes</th>
+                    <th className="text-right px-4 py-2 text-gray-400 text-xs uppercase tracking-wider font-semibold">Avg Min / Video</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredMinutesSummary.map((e, i) => (
+                    <tr key={e.editor} className="border-b border-white/[0.04]">
+                      <td className="px-4 py-2.5 text-white flex items-center gap-2">
+                        <span
+                          className="w-2.5 h-2.5 rounded-full inline-block"
+                          style={{ backgroundColor: EDITOR_COLORS[i % EDITOR_COLORS.length] }}
+                        />
+                        {e.editor}
+                      </td>
+                      <td className="text-right px-4 py-2.5 text-gray-400">{e.videoCount}</td>
+                      <td className="text-right px-4 py-2.5 text-white font-medium">{e.totalMinutes.toFixed(1)}</td>
+                      <td className="text-right px-4 py-2.5 text-gray-400">
+                        {e.videoCount > 0 ? (e.totalMinutes / e.videoCount).toFixed(1) : '0.0'}
+                      </td>
                     </tr>
                   ))}
                 </tbody>

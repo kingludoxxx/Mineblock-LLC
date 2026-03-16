@@ -7,8 +7,23 @@ export default defineConfig({
   server: {
     proxy: {
       '/api': {
-        target: 'http://localhost:3000',
+        target: 'https://mineblock-dashboard.onrender.com',
         changeOrigin: true,
+        secure: true,
+        cookieDomainRewrite: { '*': '' },
+        configure: (proxy) => {
+          // Strip Secure and SameSite flags from cookies so they work on http://localhost
+          proxy.on('proxyRes', (proxyRes) => {
+            const setCookie = proxyRes.headers['set-cookie'];
+            if (setCookie) {
+              proxyRes.headers['set-cookie'] = setCookie.map((cookie) =>
+                cookie
+                  .replace(/;\s*Secure/gi, '')
+                  .replace(/;\s*SameSite=\w+/gi, '; SameSite=Lax')
+              );
+            }
+          });
+        },
       },
     },
   },

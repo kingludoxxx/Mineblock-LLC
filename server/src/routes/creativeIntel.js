@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { authenticate } from '../middleware/auth.js';
+import { pgQuery } from '../db/pg.js';
 
 const router = Router();
 
@@ -7,12 +8,20 @@ const router = Router();
 const CLICKUP_TOKEN  = process.env.CLICKUP_API_TOKEN  || '';
 const TW_API_KEY     = process.env.TRIPLEWHALE_API_KEY || '';
 const TW_SHOP_ID     = process.env.TRIPLEWHALE_SHOP_ID || '17cca0-2.myshopify.com';
-
 const CLICKUP_BASE   = 'https://api.clickup.com/api/v2';
 const TW_SQL_URL     = 'https://api.triplewhale.com/api/v2/orcabase/api/sql';
 
 const VIDEO_LIST_ID  = '901518716584';
 const STATIC_LIST_ID = '901518769479';
+
+// ClickUp custom field ID for Frame link
+const FRAME_LINK_FIELD_ID = 'd90f9f25-d7a0-4eb4-9ded-aca0b4519a3b';
+
+// Editor user IDs in ClickUp
+const EDITOR_USER_IDS = {
+  Antoni: 94595626,
+  Faiz: 170558610,
+};
 
 // Known formats & angles for classification
 const KNOWN_FORMATS = ['mashup', 'mashups', 'shortvid', 'short vid', 'shortvideo', 'mini vsl', 'img'];
@@ -88,7 +97,7 @@ function parseTaskName(name) {
   if (editor) {
     editor = editor.charAt(0).toUpperCase() + editor.slice(1).toLowerCase();
     const editorMap = {
-      'mohammad': 'Muhammad', 'mohammed': 'Muhammad', 'muhammad': 'Muhammad',
+      'mohammad': 'Faiz', 'mohammed': 'Faiz', 'muhammad': 'Faiz',
       'antoni': 'Antoni', 'anthony': 'Antoni',
       'ludovico': 'Ludovico', 'ludo': 'Ludovico',
       'faiz': 'Faiz', 'atif': 'Atif', 'ali': 'Ali', 'hamza': 'Hamza',
@@ -560,6 +569,195 @@ router.get('/data', authenticate, async (req, res) => {
     res.status(500).json({
       success: false,
       error: { message: err.message || 'Internal server error' },
+    });
+  }
+});
+
+// ── Frame.io helpers ────────────────────────────────────────────────
+
+/**
+ * Extract the Frame.io asset/folder ID from a URL.
+ */
+function extractFrameAssetId(url) {
+  if (!url) return null;
+  const nextMatch = url.match(/next\.frame\.io\/project\/[a-f0-9-]+\/([a-f0-9-]+)/i);
+  if (nextMatch) return nextMatch[1];
+  const playerMatch = url.match(/frame\.io\/player\/([a-f0-9-]+)/i);
+  if (playerMatch) return playerMatch[1];
+  return null;
+}
+
+// ── Sync video durations (POST from browser) ───────────────────────
+
+router.post('/sync-durations', authenticate, async (req, res) => {
+  try {
+    const { durations } = req.body;
+    if (!Array.isArray(durations) || durations.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: { message: 'durations array is required' },
+      });
+    }
+
+    let upserted = 0;
+    for (const d of durations) {
+      if (!d.frameAssetId || d.durationSeconds == null) continue;
+      await pgQuery(
+        `INSERT INTO video_durations (frame_asset_id, brief_code, task_name, editor, week_code, duration_seconds, video_count, synced_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+         ON CONFLICT (frame_asset_id) DO UPDATE SET
+           duration_seconds = EXCLUDED.duration_seconds,
+           video_count = EXCLUDED.video_count,
+           brief_code = COALESCE(EXCLUDED.brief_code, video_durations.brief_code),
+           task_name = COALESCE(EXCLUDED.task_name, video_durations.task_name),
+           editor = COALESCE(EXCLUDED.editor, video_durations.editor),
+           week_code = COALESCE(EXCLUDED.week_code, video_durations.week_code),
+           synced_at = NOW()`,
+        [
+          d.frameAssetId,
+          d.briefCode || null,
+          d.taskName || null,
+          d.editor || null,
+          d.weekCode || null,
+          d.durationSeconds,
+          d.videoCount || 1,
+        ]
+      );
+      upserted++;
+    }
+
+    res.json({ success: true, upserted });
+  } catch (err) {
+    console.error('[Creative Intel] sync-durations error:', err);
+    res.status(500).json({
+      success: false,
+      error: { message: err.message || 'Failed to sync durations.' },
+    });
+  }
+});
+
+// ── Editor Minutes endpoint (reads from DB + ClickUp) ───────────────
+
+router.get('/editor-minutes', authenticate, async (req, res) => {
+  try {
+    const { startDate, endDate } = req.query;
+    if (!startDate || !endDate) {
+      return res.status(400).json({
+        success: false,
+        error: { message: 'startDate and endDate are required (YYYY-MM-DD)' },
+      });
+    }
+
+    // 1. Fetch all video tasks from ClickUp
+    const allTasks = await fetchClickUpTasks(VIDEO_LIST_ID);
+
+    // 2. Load all synced durations from DB, keyed by frame_asset_id
+    let durationMap = {};
+    try {
+      const rows = await pgQuery('SELECT frame_asset_id, duration_seconds, video_count FROM video_durations');
+      for (const r of rows) {
+        durationMap[r.frame_asset_id] = {
+          durationSeconds: Number(r.duration_seconds) || 0,
+          videoCount: Number(r.video_count) || 1,
+        };
+      }
+    } catch {
+      // Table might not exist yet — proceed with empty map
+    }
+
+    // 3. Process tasks
+    const editorMinutes = {};
+    const editorWeekMinutes = {};
+    const processedBriefs = new Set();
+    let totalSynced = 0;
+    let totalMissing = 0;
+
+    for (const task of allTasks) {
+      const parsed = parseTaskName(task.name);
+      if (!parsed.week || !parsed.editor) continue;
+      if (!weekInRange(parsed.week, startDate, endDate)) continue;
+
+      // Deduplicate by creative ID
+      const briefId = parsed.creativeId;
+      if (!briefId || processedBriefs.has(briefId)) continue;
+      processedBriefs.add(briefId);
+
+      // Extract Frame.io link
+      let frameUrl = null;
+      for (const cf of task.custom_fields || []) {
+        if (cf.id === FRAME_LINK_FIELD_ID && cf.value) {
+          frameUrl = cf.value;
+          break;
+        }
+      }
+
+      const assetId = extractFrameAssetId(frameUrl);
+
+      // Look up duration from DB
+      let durationSec = 0;
+      let hasDuration = false;
+      if (assetId && durationMap[assetId]) {
+        durationSec = durationMap[assetId].durationSeconds;
+        hasDuration = true;
+        totalSynced++;
+      } else {
+        totalMissing++;
+      }
+
+      const durationMin = Math.round((durationSec / 60) * 100) / 100;
+      const editor = parsed.editor;
+
+      // Accumulate per editor
+      if (!editorMinutes[editor]) {
+        editorMinutes[editor] = { editor, totalMinutes: 0, videoCount: 0, briefs: [] };
+      }
+      editorMinutes[editor].totalMinutes += durationMin;
+      editorMinutes[editor].videoCount++;
+      editorMinutes[editor].briefs.push({
+        briefId,
+        week: parsed.week,
+        durationMin,
+        hasDuration,
+        taskName: task.name,
+      });
+
+      // Accumulate per editor per week
+      const weekKey = `${editor}__${parsed.week}`;
+      if (!editorWeekMinutes[weekKey]) {
+        editorWeekMinutes[weekKey] = { editor, week: parsed.week, totalMinutes: 0, videoCount: 0 };
+      }
+      editorWeekMinutes[weekKey].totalMinutes += durationMin;
+      editorWeekMinutes[weekKey].videoCount++;
+    }
+
+    // Round totals
+    for (const ed of Object.values(editorMinutes)) {
+      ed.totalMinutes = Math.round(ed.totalMinutes * 100) / 100;
+    }
+    for (const ew of Object.values(editorWeekMinutes)) {
+      ew.totalMinutes = Math.round(ew.totalMinutes * 100) / 100;
+    }
+
+    const editorSummary = Object.values(editorMinutes).sort((a, b) => b.totalMinutes - a.totalMinutes);
+    const weeklyBreakdown = Object.values(editorWeekMinutes).sort((a, b) => {
+      if (a.week < b.week) return -1;
+      if (a.week > b.week) return 1;
+      return a.editor.localeCompare(b.editor);
+    });
+
+    res.json({
+      success: true,
+      data: {
+        editorSummary,
+        weeklyBreakdown,
+        syncStatus: { synced: totalSynced, missing: totalMissing },
+      },
+    });
+  } catch (err) {
+    console.error('[Creative Intel] editor-minutes error:', err);
+    res.status(500).json({
+      success: false,
+      error: { message: err.message || 'Failed to fetch editor minutes.' },
     });
   }
 });
