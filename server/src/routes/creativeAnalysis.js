@@ -249,7 +249,14 @@ async function ensureTable() {
 
 // ── Sync Logic ──────────────────────────────────────────────────────
 
-async function syncData({ startDate, endDate }) {
+/**
+ * Sync ad performance data for a specific period.
+ * @param {string} periodWeek — The performance period week (e.g. WK10_2026)
+ *                               ALL ads running in this period are stored under this week.
+ * @param {string} startDate — YYYY-MM-DD
+ * @param {string} endDate   — YYYY-MM-DD
+ */
+async function syncData({ periodWeek, startDate, endDate }) {
   await ensureTable();
 
   const twAds = await fetchTripleWhaleAds(startDate, endDate);
@@ -257,10 +264,9 @@ async function syncData({ startDate, endDate }) {
     return { synced: 0, skipped: 0, errors: 0 };
   }
 
-  // Parse all ads first to find which weeks will be affected
+  // Parse all ads
   const parsedAds = [];
   let skipped = 0;
-  const affectedWeeks = new Set();
 
   for (const ad of twAds) {
     const parsed = parseAdName(ad.ad_name);
@@ -268,14 +274,11 @@ async function syncData({ startDate, endDate }) {
       skipped++;
       continue;
     }
-    if (parsed.week) affectedWeeks.add(parsed.week);
     parsedAds.push({ raw: ad, parsed });
   }
 
-  // Delete old data for affected weeks so re-sync is always clean
-  for (const w of affectedWeeks) {
-    await pgQuery('DELETE FROM creative_analysis WHERE week = $1', [w]);
-  }
+  // Delete old data for this period week, then insert fresh
+  await pgQuery('DELETE FROM creative_analysis WHERE week = $1', [periodWeek]);
 
   let synced = 0;
   let errors = 0;
@@ -310,7 +313,7 @@ async function syncData({ startDate, endDate }) {
           parsed.angle,
           parsed.format,
           parsed.editor,
-          parsed.week,
+          periodWeek,    // Use the sync period's week, not the ad name's launch week
           spend,
           revenue,
           0,
@@ -523,23 +526,21 @@ router.post('/sync', authenticate, async (req, res) => {
   try {
     let { startDate, endDate, week } = req.body || {};
 
-    if (week) {
-      const range = weekToDateRange(week);
-      if (!range) {
-        return res.status(400).json({ success: false, error: { message: 'Invalid week format. Use WKxx_YYYY.' } });
-      }
-      startDate = range.startDate;
-      endDate   = range.endDate;
-    }
-
-    if (!startDate || !endDate) {
+    if (!week) {
       return res.status(400).json({
         success: false,
-        error: { message: 'Provide { startDate, endDate } (YYYY-MM-DD) or { week } (WKxx_YYYY)' },
+        error: { message: 'Provide { week } (WKxx_YYYY)' },
       });
     }
 
-    const result = await syncData({ startDate, endDate });
+    const range = weekToDateRange(week);
+    if (!range) {
+      return res.status(400).json({ success: false, error: { message: 'Invalid week format. Use WKxx_YYYY.' } });
+    }
+    startDate = range.startDate;
+    endDate   = range.endDate;
+
+    const result = await syncData({ periodWeek: week.toUpperCase(), startDate, endDate });
 
     res.json({
       success: true,
@@ -573,7 +574,7 @@ router.post('/sync-weekly', async (req, res) => {
       return res.status(500).json({ success: false, error: { message: 'Failed to determine current week range' } });
     }
 
-    const result = await syncData({ startDate: range.startDate, endDate: range.endDate });
+    const result = await syncData({ periodWeek: week, startDate: range.startDate, endDate: range.endDate });
 
     res.json({
       success: true,
