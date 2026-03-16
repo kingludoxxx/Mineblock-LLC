@@ -50,8 +50,8 @@ function extractJSON(text) {
   return cleaned;
 }
 
-const MODEL_FAST = 'claude-sonnet-4-6-20250527';
-const MODEL_QUALITY = 'claude-sonnet-4-6-20250527';
+const MODEL_FAST = 'claude-sonnet-4-20250514';
+const MODEL_QUALITY = 'claude-sonnet-4-20250514';
 
 async function callClaude(prompt, maxTokens = 8192, { fast = false } = {}) {
   const client = await initClient();
