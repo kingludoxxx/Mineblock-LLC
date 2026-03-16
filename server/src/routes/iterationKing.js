@@ -50,8 +50,8 @@ function extractJSON(text) {
   return cleaned;
 }
 
-const MODEL_FAST = 'claude-3-5-haiku-20241022';
-const MODEL_QUALITY = 'claude-sonnet-4-20250514';
+const MODEL_FAST = 'claude-sonnet-4-6-20250527';
+const MODEL_QUALITY = 'claude-sonnet-4-6-20250527';
 
 async function callClaude(prompt, maxTokens = 8192, { fast = false } = {}) {
   const client = await initClient();
@@ -110,7 +110,7 @@ router.get('/search', authenticate, async (req, res) => {
     const allTasks = await getAllTasks();
     const query = q.toLowerCase();
     const matches = allTasks
-      .filter((t) => t.name.toLowerCase().includes(query))
+      .filter((t) => t.name.toLowerCase().includes(query) && (t.status?.status || '').toLowerCase() !== 'edit queue')
       .slice(0, 25)
       .map((t) => ({
         id: t.id,

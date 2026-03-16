@@ -327,6 +327,15 @@ export default function IterationKing() {
     }, 400);
   }, []);
 
+  // Extract only the brief content (hooks + body), stripping URLs and attachment junk
+  const cleanBriefScript = (text) => {
+    // Try to find where the actual brief starts (HOOKS: or Hook or BODY:)
+    const briefStart = text.match(/\b(HOOKS?:|Body:|BODY:)/i);
+    const content = briefStart ? text.slice(briefStart.index) : text;
+    // Strip any remaining URLs and clean up blank lines
+    return content.replace(/https?:\/\/[^\s)]+/g, '').replace(/\S*\.mp4\S*/gi, '').replace(/\n{3,}/g, '\n\n').trim();
+  };
+
   // Select brief
   const handleSelectBrief = async (briefSummary) => {
     setSearchResults([]); setSearchQuery(briefSummary.name); setScripts([]); setSelectedScriptIdx(null);
@@ -336,11 +345,12 @@ export default function IterationKing() {
       const res = await fetch(`${API}/brief/${briefSummary.id}`, { headers: authHeaders() });
       const data = await res.json();
       if (data.success) {
-        setSelectedBrief(data.brief); setOriginalScript(data.brief.description || '');
-        if (data.brief.description?.length > 10) {
+        const cleanScript = cleanBriefScript(data.brief.description || '');
+        setSelectedBrief(data.brief); setOriginalScript(cleanScript);
+        if (cleanScript.length > 10) {
           setAnalysisLoading(true);
           try {
-            const a = await fetch(`${API}/analyze`, { method: 'POST', headers: authHeaders(), body: JSON.stringify({ script: data.brief.description }) });
+            const a = await fetch(`${API}/analyze`, { method: 'POST', headers: authHeaders(), body: JSON.stringify({ script: cleanScript }) });
             const ad = await a.json();
             if (ad.success) setAnalysis(ad.analysis);
           } catch {} finally { setAnalysisLoading(false); }
@@ -417,7 +427,7 @@ export default function IterationKing() {
   const showFinalAssembly = isFullMode ? selectedScriptIdx !== null : (finalScript && selectedHookIdxs.size > 0);
 
   return (
-    <div className="min-h-screen" style={{ background: '#0A0A0A' }}>
+    <div className="min-h-screen p-6 space-y-0" style={{ background: '#0A0A0A' }}>
 
       {/* ── HEADER ─────────────────────────────────────────────── */}
       <div className="flex items-center justify-between mb-10">
@@ -436,7 +446,7 @@ export default function IterationKing() {
       </div>
 
       {/* ── PIPELINE ───────────────────────────────────────────── */}
-      <div className="flex items-center gap-2 mb-10 overflow-x-auto pb-2">
+      <div className="flex items-center gap-2 mb-8 flex-wrap">
         {pipelineSteps.map((step, i) => {
           const { active, done } = getStepState(step);
           return (
@@ -511,12 +521,16 @@ export default function IterationKing() {
                 <div className="flex items-center gap-2 mb-2">
                   <Lock className="w-3 h-3" style={{ color: '#666' }} />
                   <span className="text-[10px] font-mono uppercase tracking-wider" style={{ color: '#666' }}>Source: ClickUp</span>
-                  <span className="text-[10px] font-mono uppercase tracking-wider" style={{ color: '#333' }}>Locked</span>
                   {selectedBrief.url && (
-                    <a href={selectedBrief.url} target="_blank" rel="noopener noreferrer" className="ml-auto hover:opacity-80">
+                    <a href={selectedBrief.url} target="_blank" rel="noopener noreferrer" className="hover:opacity-80">
                       <ExternalLink className="w-3 h-3" style={{ color: '#555' }} />
                     </a>
                   )}
+                  <button onClick={() => { setSelectedBrief(null); setOriginalScript(''); setSearchQuery(''); setAnalysis(null); setScripts([]); setSelectedScriptIdx(null); setHooks([]); setSelectedHookIdxs(new Set()); setFinalScript(''); }}
+                    className="ml-auto text-[10px] font-mono uppercase tracking-wider px-2 py-0.5 rounded hover:bg-[#1E1E1E] transition-colors cursor-pointer"
+                    style={{ color: '#EF4444', border: '1px solid #EF444433' }}>
+                    Clear
+                  </button>
                 </div>
                 <div className="ik-script-box">{originalScript || '(No script content in this brief)'}</div>
               </div>
@@ -542,8 +556,6 @@ export default function IterationKing() {
                     { l: 'Core Angle', v: analysis.coreAngle },
                     { l: 'Emotional Trigger', v: analysis.emotionalTrigger },
                     { l: 'Structure', v: analysis.narrativeStructure, mono: true },
-                    { l: 'Pacing', v: analysis.pacingPattern, dim: true },
-                    { l: 'CTA', v: analysis.ctaStructure, dim: true },
                   ].map((item) => (
                     <div key={item.l}>
                       <div className="text-[9px] uppercase tracking-wider mb-0.5" style={{ color: '#444' }}>{item.l}</div>
@@ -559,7 +571,6 @@ export default function IterationKing() {
                         {analysis.overallStrength}/10
                       </span>
                     </div>
-                    <p className="text-xs mt-1.5 leading-relaxed" style={{ color: '#888' }}>{analysis.summary}</p>
                   </div>
                 </div>
               ) : null}
