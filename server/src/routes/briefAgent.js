@@ -647,12 +647,10 @@ router.get('/weekly-recap/:editor', async (req, res) => {
       return res.status(400).json({ success: false, error: { message: `Unknown editor: ${editorName}` } });
     }
 
-    // Determine the target week: if today is Monday, report on last week; otherwise report on this week
+    // Always report on the previous completed week (subtract 7 days)
+    // On Monday this shows the week that just ended; on other days it still shows last week
     const now = new Date();
-    const dayOfWeek = now.getDay(); // 0=Sun, 1=Mon, ...
-    const targetDate = dayOfWeek === 1
-      ? new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000) // Monday → last week
-      : now; // any other day → this week
+    const targetDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
 
     // Get ISO week number for the target date
     const d = new Date(Date.UTC(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate()));
