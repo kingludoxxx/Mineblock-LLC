@@ -38,6 +38,7 @@ import FunnelsPage from './pages/lab/FunnelsPage';
 import BriefAgentPage from './pages/production/BriefAgentPage';
 import MagicWriterPage from './pages/production/MagicWriter';
 import MagicAdsPage from './pages/production/MagicAdsPage';
+import IterationKingPage from './pages/production/IterationKingPage';
 import ImagesPage from './pages/production/ImagesPage';
 import VideoPage from './pages/production/VideoPage';
 import AudioPage from './pages/production/AudioPage';
@@ -108,6 +109,7 @@ export default function App() {
           <Route path="brief-agent" element={<BriefAgentPage />} />
           <Route path="magic-writer" element={<MagicWriterPage />} />
           <Route path="magic-ads" element={<MagicAdsPage />} />
+          <Route path="iteration-king" element={<IterationKingPage />} />
           <Route path="images" element={<ImagesPage />} />
           <Route path="video" element={<VideoPage />} />
           <Route path="audio" element={<AudioPage />} />

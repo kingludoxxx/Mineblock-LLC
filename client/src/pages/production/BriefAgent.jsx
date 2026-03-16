@@ -72,6 +72,12 @@ export default function BriefAgent() {
   useEffect(() => {
     fetchData();
     fetchEditorCounts();
+    // Check if Iteration King sent a script
+    const ikText = localStorage.getItem('iterationKing_briefText');
+    if (ikText) {
+      setForm((prev) => ({ ...prev, briefText: ikText, briefType: 'IT' }));
+      localStorage.removeItem('iterationKing_briefText');
+    }
   }, [fetchData, fetchEditorCounts]);
 
   const lookupParentBrief = useCallback(async (briefId, product) => {

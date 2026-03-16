@@ -32,6 +32,7 @@ import {
   // Production icons
   PenTool,
   Wand2,
+  Crown,
   Image,
   Video,
   Music,
@@ -81,6 +82,7 @@ const navGroups = [
       { to: '/app/brief-agent', icon: Sparkles, label: 'Brief Agent' },
       { to: '/app/magic-writer', icon: PenTool, label: 'Magic Writer' },
       { to: '/app/magic-ads', icon: Wand2, label: 'Magic Ads' },
+      { to: '/app/iteration-king', icon: Crown, label: 'Iteration King' },
       { to: '/app/images', icon: Image, label: 'Images' },
       { to: '/app/video', icon: Video, label: 'Video' },
       { to: '/app/audio', icon: Music, label: 'Audio' },
