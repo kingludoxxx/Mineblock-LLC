@@ -101,6 +101,7 @@ const navGroups = [
     label: 'Performance',
     icon: BarChart3,
     items: [
+      { to: '/app/creative-analysis', icon: BarChart3, label: 'Creative Analysis' },
       { to: '/app/attribution', icon: Target, label: 'Attribution' },
       { to: '/app/live', icon: Activity, label: 'Live' },
       { to: '/app/ltv', icon: Clock, label: 'LTV' },

@@ -48,6 +48,7 @@ import AttributionPage from './pages/performance/AttributionPage';
 import LivePage from './pages/performance/LivePage';
 import LtvPage from './pages/performance/LtvPage';
 import RoasPage from './pages/performance/RoasPage';
+import CreativeAnalysisPage from './pages/performance/CreativeAnalysisPage';
 
 // Library
 import TeamHubPage from './pages/library/TeamHubPage';
@@ -115,6 +116,7 @@ export default function App() {
           <Route path="audio" element={<AudioPage />} />
 
           {/* Performance */}
+          <Route path="creative-analysis" element={<CreativeAnalysisPage />} />
           <Route path="attribution" element={<AttributionPage />} />
           <Route path="live" element={<LivePage />} />
           <Route path="ltv" element={<LtvPage />} />
