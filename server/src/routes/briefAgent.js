@@ -679,10 +679,30 @@ router.get('/weekly-recap/:editor', async (req, res) => {
       }
     }
 
+    // Fetch "edit queue" tasks to get B codes that are still in progress
+    const editQueueBCodes = new Set();
+    {
+      let page = 0;
+      let hasMore = true;
+      while (hasMore) {
+        const data = await clickupFetch(
+          `${CLICKUP_API}/list/${VIDEO_ADS_LIST_ID}/task?page=${page}&limit=100&statuses%5B%5D=edit%20queue&include_closed=false&subtasks=true`,
+        );
+        const tasks = data.tasks || [];
+        for (const task of tasks) {
+          const bMatch = task.name?.match(/B\d{3,5}/);
+          if (bMatch) editQueueBCodes.add(bMatch[0]);
+        }
+        hasMore = tasks.length === 100;
+        page++;
+      }
+    }
+
     // Filter tasks:
-    // 1. Task status must actually be "ready to launch" or "launched" (double-check, not "edit queue")
+    // 1. Task status must actually be "ready to launch" or "launched" (not "edit queue")
     // 2. Task name must contain the week code (e.g., WK11_2026)
     // 3. Task must be assigned to this editor (by assignee ID)
+    // 4. B code must NOT also exist in edit queue (meaning it's not fully done)
     const validStatuses = ['ready to launch', 'launched'];
     const matchedBCodes = [];
     for (const task of allTasks) {
@@ -697,7 +717,7 @@ router.get('/weekly-recap/:editor', async (req, res) => {
       if (hasWeek && isAssigned) {
         // Extract B code from task name (e.g., "B0115")
         const bMatch = task.name.match(/B\d{3,5}/);
-        if (bMatch && !matchedBCodes.includes(bMatch[0])) {
+        if (bMatch && !matchedBCodes.includes(bMatch[0]) && !editQueueBCodes.has(bMatch[0])) {
           matchedBCodes.push(bMatch[0]);
         }
       }
