@@ -637,11 +637,15 @@ router.get('/editor-report/slack/:editor', async (req, res) => {
 
 // GET /api/v1/brief-agent/weekly-recap/:editor
 // Returns just B codes for tasks in "ready to launch" or "launched" status
-// that belong to the previous week, filtered by editor name in the task name.
+// that belong to the target week, filtered by editor assignee.
 // Make calls this on Monday and posts the response text directly to Slack.
 router.get('/weekly-recap/:editor', async (req, res) => {
   try {
     const editorName = req.params.editor; // "Antoni" or "Faiz"
+    const editorId = USER_IDS[editorName];
+    if (!editorId) {
+      return res.status(400).json({ success: false, error: { message: `Unknown editor: ${editorName}` } });
+    }
 
     // Determine the target week: if today is Monday, report on last week; otherwise report on this week
     const now = new Date();
@@ -659,11 +663,6 @@ router.get('/weekly-recap/:editor', async (req, res) => {
     const year = d.getUTCFullYear();
     const weekCode = `WK${String(weekNum).padStart(2, '0')}_${year}`;
 
-    // Editor name patterns to match in task names
-    const editorPatterns = editorName.toLowerCase() === 'faiz'
-      ? ['faiz', 'mohammad']
-      : [editorName.toLowerCase()];
-
     // Fetch tasks with "ready to launch" and "launched" statuses
     const allTasks = [];
     for (const status of ['ready%20to%20launch', 'launched']) {
@@ -680,17 +679,25 @@ router.get('/weekly-recap/:editor', async (req, res) => {
       }
     }
 
-    // Filter: task name must contain the week code AND the editor name
+    // Filter tasks:
+    // 1. Task status must actually be "ready to launch" or "launched" (double-check, not "edit queue")
+    // 2. Task name must contain the week code (e.g., WK11_2026)
+    // 3. Task must be assigned to this editor (by assignee ID)
+    const validStatuses = ['ready to launch', 'launched'];
     const matchedBCodes = [];
     for (const task of allTasks) {
+      // Verify actual task status (not just API filter)
+      const taskStatus = (task.status?.status || '').toLowerCase();
+      if (!validStatuses.includes(taskStatus)) continue;
+
       const name = (task.name || '').toLowerCase();
       const hasWeek = name.includes(weekCode.toLowerCase());
-      const hasEditor = editorPatterns.some((p) => name.includes(p));
+      const isAssigned = (task.assignees || []).some((a) => a.id === editorId);
 
-      if (hasWeek && hasEditor) {
+      if (hasWeek && isAssigned) {
         // Extract B code from task name (e.g., "B0115")
         const bMatch = task.name.match(/B\d{3,5}/);
-        if (bMatch) {
+        if (bMatch && !matchedBCodes.includes(bMatch[0])) {
           matchedBCodes.push(bMatch[0]);
         }
       }
