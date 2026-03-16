@@ -257,9 +257,10 @@ async function syncData({ startDate, endDate }) {
     return { synced: 0, skipped: 0, errors: 0 };
   }
 
-  let synced = 0;
+  // Parse all ads first to find which weeks will be affected
+  const parsedAds = [];
   let skipped = 0;
-  let errors = 0;
+  const affectedWeeks = new Set();
 
   for (const ad of twAds) {
     const parsed = parseAdName(ad.ad_name);
@@ -267,7 +268,19 @@ async function syncData({ startDate, endDate }) {
       skipped++;
       continue;
     }
+    if (parsed.week) affectedWeeks.add(parsed.week);
+    parsedAds.push({ raw: ad, parsed });
+  }
 
+  // Delete old data for affected weeks so re-sync is always clean
+  for (const w of affectedWeeks) {
+    await pgQuery('DELETE FROM creative_analysis WHERE week = $1', [w]);
+  }
+
+  let synced = 0;
+  let errors = 0;
+
+  for (const { raw: ad, parsed } of parsedAds) {
     const spend = Number(ad.total_spend) || 0;
     const revenue = Number(ad.total_revenue) || 0;
     const impressions = Number(ad.total_impressions) || 0;
@@ -287,27 +300,7 @@ async function syncData({ startDate, endDate }) {
            (ad_name, creative_id, hook_id, type, avatar, angle, format, editor, week,
             spend, revenue, purchases, impressions, clicks,
             roas, cpa, cpm, aov, cpc, ctr, synced_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20, NOW())
-         ON CONFLICT (creative_id, hook_id, week) DO UPDATE SET
-           ad_name = EXCLUDED.ad_name,
-           type = EXCLUDED.type,
-           avatar = EXCLUDED.avatar,
-           angle = EXCLUDED.angle,
-           format = EXCLUDED.format,
-           editor = EXCLUDED.editor,
-           week = EXCLUDED.week,
-           spend = EXCLUDED.spend,
-           revenue = EXCLUDED.revenue,
-           purchases = EXCLUDED.purchases,
-           impressions = EXCLUDED.impressions,
-           clicks = EXCLUDED.clicks,
-           roas = EXCLUDED.roas,
-           cpa = EXCLUDED.cpa,
-           cpm = EXCLUDED.cpm,
-           aov = EXCLUDED.aov,
-           cpc = EXCLUDED.cpc,
-           ctr = EXCLUDED.ctr,
-           synced_at = NOW()`,
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20, NOW())`,
         [
           parsed.ad_name,
           parsed.creative_id,
@@ -333,7 +326,7 @@ async function syncData({ startDate, endDate }) {
       );
       synced++;
     } catch (err) {
-      console.error(`[Creative Analysis] UPSERT error for ${parsed.creative_id}/${parsed.hook_id}:`, err.message);
+      console.error(`[Creative Analysis] INSERT error for ${parsed.creative_id}/${parsed.hook_id}:`, err.message);
       errors++;
     }
   }
