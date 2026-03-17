@@ -104,13 +104,33 @@ function parseAdName(name) {
   }
 
   // Parse metadata relative to week position (right-to-left)
-  // Convention: week-1 = editor2/signoff, week-2 = NA/editor1, week-3 = editor, week-4 = format, week-5 = angle, week-6 = avatar
+  // Two tail patterns exist:
+  //   Long tail:  ... Avatar - Angle - Format - Editor - NA - Editor2 - Week  (editorOffset = 3)
+  //   Short tail: ... Avatar - Angle - Format - Editor - NA - Week           (editorOffset = 2)
+  // Detect by checking if segments[weekPos-2] is "NA" (short) or segments[weekPos-1] is editor2
   let avatar = null, angle = null, format = null, editor = null;
-  if (weekPos >= 6) {
-    editor = segments[weekPos - 3] || null;
-    format = segments[weekPos - 4] || null;
-    angle  = segments[weekPos - 5] || null;
-    avatar = segments[weekPos - 6] || null;
+  if (weekPos >= 4) {
+    let editorOffset;
+
+    // Check which tail pattern matches
+    const atWeekM1 = segments[weekPos - 1] || '';
+    const atWeekM2 = segments[weekPos - 2] || '';
+
+    if (/^NA\d*$/i.test(atWeekM1)) {
+      // Short tail: ... Format - Editor - NA - Week
+      editorOffset = 2;
+    } else if (/^NA\d*$/i.test(atWeekM2)) {
+      // Long tail: ... Format - Editor - NA - Editor2 - Week
+      editorOffset = 3;
+    } else {
+      // No NA found — try assuming short tail
+      editorOffset = 2;
+    }
+
+    editor = (weekPos - editorOffset >= 0) ? segments[weekPos - editorOffset] || null : null;
+    format = (weekPos - editorOffset - 1 >= 0) ? segments[weekPos - editorOffset - 1] || null : null;
+    angle  = (weekPos - editorOffset - 2 >= 0) ? segments[weekPos - editorOffset - 2] || null : null;
+    avatar = (weekPos - editorOffset - 3 >= 0) ? segments[weekPos - editorOffset - 3] || null : null;
 
     // Clean up placeholder values
     const placeholders = ['-', 'NA', 'NN', 'na', 'nn'];
@@ -126,7 +146,7 @@ function parseAdName(name) {
     if (angle && junkPattern.test(angle))   angle = null;
     if (avatar && junkPattern.test(avatar)) avatar = null;
 
-    // Also reject values containing file extensions or parentheses with extensions
+    // Strip file extensions from values
     const filePattern = /\.(mp4|mov|png|jpg|jpeg|gif|webp|webm|avi|mkv)$/i;
     if (editor && filePattern.test(editor)) editor = editor.replace(filePattern, '').trim() || null;
     if (format && filePattern.test(format)) format = format.replace(filePattern, '').trim() || null;
