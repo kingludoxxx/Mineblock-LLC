@@ -21,7 +21,15 @@ const KNOWN_FORMATS = new Set([
 
 const KNOWN_EDITORS = new Set([
   'Ludovico', 'Ludo', 'Antoni', 'Carl', 'Usama', 'Faiz', 'Farhan',
-  'Alhamjatonni', 'Atif',
+  'Alhamjatonni', 'Atif', 'Abdul',
+]);
+
+const KNOWN_ANGLES = new Set([
+  'Lottery', 'Cryptoaddict', 'MoneySeeker', 'Againstcompetition',
+  'Againstcompetition Rebranding', 'Sharktank', 'SharkTank',
+  'BTC Made Easy', 'BTC Farm', 'BTCFARM', 'BTC Crash',
+  'Scarcity', 'Hiddenopportunity', 'Missedopportunity',
+  'Comparison', 'Offer', 'Reaction', 'GTRS',
 ]);
 
 // ── Naming Convention Parser ────────────────────────────────────────
@@ -151,8 +159,8 @@ function parseAdName(name) {
     if (angle && placeholders.includes(angle))   angle = null;
     if (avatar && placeholders.includes(avatar)) avatar = null;
 
-    // Validate metadata: reject values that look like creative IDs, hook IDs, weeks, or file artifacts
-    const junkPattern = /^(B\d{3,}|H\d+|HX|IT|NN|MR|IM\d*|WK\d+.*)$/i;
+    // Validate metadata: reject values that look like creative IDs, hook IDs, weeks, resolutions, or file artifacts
+    const junkPattern = /^(B\d{3,}|H\d+|HX|IT|NN|MR|IM\d*|WK\d+.*|\d+[xX]\d+)$/i;
     if (editor && junkPattern.test(editor)) editor = null;
     if (format && junkPattern.test(format)) format = null;
     if (angle && junkPattern.test(angle))   angle = null;
@@ -174,6 +182,9 @@ function parseAdName(name) {
     if (angle && KNOWN_FORMATS.has(angle)) angle = null;
     if (avatar && KNOWN_FORMATS.has(avatar)) avatar = null;
     if (editor && KNOWN_FORMATS.has(editor)) editor = null;
+
+    // Cross-validate: known angles should not appear as avatar
+    if (avatar && KNOWN_ANGLES.has(avatar)) avatar = null;
   }
 
   // Determine type from creative ID prefix
