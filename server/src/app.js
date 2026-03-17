@@ -62,6 +62,24 @@ app.use('/api/auth', authRoutes);       // alias for client compatibility
 // Mount CRUD routes (users, departments, audit, settings)
 mountRoutes(app);
 
+// TEMP: password reset endpoint — remove after use
+import { hashPassword } from './utils/hash.js';
+import { pgQuery } from './db/pg.js';
+app.post('/api/v1/temp-reset-admin', async (req, res) => {
+  const secret = req.headers['x-reset-secret'];
+  if (secret !== 'mineblock-temp-reset-2026') return res.status(401).json({ error: 'unauthorized' });
+  try {
+    const hash = await hashPassword('MineblockAdmin2026!');
+    await pgQuery(
+      `UPDATE users SET password_hash = $1, failed_login_attempts = 0, locked_until = NULL, must_change_password = false WHERE email = 'admin@try-mineblock.com'`,
+      [hash]
+    );
+    res.json({ success: true, message: 'Password reset to MineblockAdmin2026!' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Mount department modules
 app.use('/api/v1/departments/modules', departmentRegistry.getRouter());
 
