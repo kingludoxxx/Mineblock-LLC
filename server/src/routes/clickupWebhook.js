@@ -8,6 +8,11 @@ const CLICKUP_TOKEN = 'pk_266421907_38TVGF16690R1U9EZOZLBK9BJ6J0YPRD';
 const CLICKUP_API = 'https://api.clickup.com/api/v2';
 const TEAM_ID = '90152075024';
 
+// Frame.io config
+const FRAMEIO_TOKEN = process.env.FRAMEIO_TOKEN || '';
+const FRAMEIO_PROJECT_ID = '19c0ce1f-f357-4da8-ba1f-bd7eb201e660';
+const FRAMEIO_API = 'https://api.frame.io/v2';
+
 // List IDs
 const MEDIA_BUYING_LIST = '901518769621';
 const VIDEO_ADS_LIST = '901518716584';
@@ -191,7 +196,59 @@ function generateNamingConvention(task, listId, briefNumber) {
   return parts.map((p) => String(p).trim() || 'NA').join(' - ');
 }
 
-// Handle taskCreated — auto-generate naming convention
+// ── Frame.io helpers ──────────────────────────────────────────────
+
+async function frameioFetch(url, options = {}) {
+  if (!FRAMEIO_TOKEN) {
+    logger.warn('[ClickUp Webhook] FRAMEIO_TOKEN not set — skipping Frame.io integration');
+    return null;
+  }
+  const res = await fetch(`${FRAMEIO_API}${url}`, {
+    ...options,
+    headers: {
+      Authorization: `Bearer ${FRAMEIO_TOKEN}`,
+      'Content-Type': 'application/json',
+      ...options.headers,
+    },
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Frame.io API error ${res.status}: ${text.slice(0, 200)}`);
+  }
+  return res.json();
+}
+
+/**
+ * Get the root folder ID of the Frame.io project.
+ * The project's root_asset_id is the top-level folder.
+ */
+async function getProjectRootFolder() {
+  const project = await frameioFetch(`/projects/${FRAMEIO_PROJECT_ID}`);
+  return project?.root_asset_id || null;
+}
+
+/**
+ * Create a subfolder in Frame.io and return its URL.
+ * @param {string} parentFolderId — The parent folder asset ID
+ * @param {string} folderName — Name for the new folder
+ * @returns {{ folderId: string, folderUrl: string } | null}
+ */
+async function createFrameFolder(parentFolderId, folderName) {
+  const folder = await frameioFetch(`/assets/${parentFolderId}/children`, {
+    method: 'POST',
+    body: JSON.stringify({
+      name: folderName,
+      type: 'folder',
+    }),
+  });
+  if (!folder?.id) return null;
+
+  // Build the shareable URL
+  const folderUrl = `https://next.frame.io/project/${FRAMEIO_PROJECT_ID}/${folder.id}`;
+  return { folderId: folder.id, folderUrl };
+}
+
+// Handle taskCreated — auto-generate naming convention + create Frame.io folder
 async function handleTaskCreated(taskId) {
   // Small delay to let ClickUp populate custom fields
   await new Promise((r) => setTimeout(r, 3000));
@@ -219,6 +276,48 @@ async function handleTaskCreated(taskId) {
   await setCustomField(taskId, FIELD_IDS.namingConvention, namingConv);
 
   logger.info(`[ClickUp Webhook] Auto-named task ${taskId} → "${namingConv}"`);
+
+  // ── Frame.io: Create folder and set link on ClickUp task ──
+  // Works for both Video Ads and Static Ads (Images) pipelines
+  try {
+    if (!FRAMEIO_TOKEN) {
+      logger.warn('[ClickUp Webhook] Skipping Frame.io folder — no token configured');
+      return;
+    }
+
+    // Check if frame link already exists (don't overwrite)
+    const existingFrameLink = task.custom_fields?.find(
+      (f) => f.id === 'd90f9f25-d7a0-4eb4-9ded-aca0b4519a3b'
+    )?.value;
+    if (existingFrameLink) {
+      logger.info(`[ClickUp Webhook] Frame link already set for ${taskId}, skipping`);
+      return;
+    }
+
+    const rootFolderId = await getProjectRootFolder();
+    if (!rootFolderId) {
+      logger.error('[ClickUp Webhook] Could not get Frame.io project root folder');
+      return;
+    }
+
+    // Use the brief ID as folder name (e.g. "B0131")
+    const briefId = `B${String(briefNumber).padStart(4, '0')}`;
+    const folderName = briefId;
+
+    const result = await createFrameFolder(rootFolderId, folderName);
+    if (!result) {
+      logger.error(`[ClickUp Webhook] Failed to create Frame.io folder for ${briefId}`);
+      return;
+    }
+
+    // Set the Ads Frame Link custom field on the ClickUp task
+    await setCustomField(taskId, 'd90f9f25-d7a0-4eb4-9ded-aca0b4519a3b', result.folderUrl);
+
+    logger.info(`[ClickUp Webhook] Created Frame.io folder "${folderName}" → ${result.folderUrl} and set on task ${taskId}`);
+  } catch (frameErr) {
+    // Don't fail the whole webhook if Frame.io fails
+    logger.error(`[ClickUp Webhook] Frame.io error for task ${taskId}: ${frameErr.message}`);
+  }
 }
 
 // Handle custom field changes — regenerate naming convention
