@@ -18,8 +18,13 @@ let tableReady = false; // cache ensureTable so it only runs once
  * Parse ad names following the convention:
  * "MR - B0066 - H1 - IT - B017 - MoneySeeker - Lottery - ShortVid - Ludovico - NA - Ludovico - WK08_2026"
  *
- * Head is fixed:       [0]=Prefix  [1]=CreativeID  [2]=HookID
+ * Also supports underscore-delimited variant:
+ * "MR Miner _ B041 _ HX _ IT _ B049 _ MoneySeeker _ Lottery _ ShortVid _ Ludovico _ NA _ Ludovico _ WK08_2026"
+ *
+ * Head is fixed:       [0]=Prefix  [1]=CreativeID  [2]=HookID (or IT marker)
  * Tail is stable (relative to week position):
+ *   week_pos - 1 = Editor (second instance / sign-off)
+ *   week_pos - 2 = Editor (first instance / NA)
  *   week_pos - 3 = Editor
  *   week_pos - 4 = Format
  *   week_pos - 5 = Angle
@@ -31,13 +36,40 @@ let tableReady = false; // cache ensureTable so it only runs once
 function parseAdName(name) {
   if (!name) return null;
 
-  const segments = name.split(' - ').map(s => s.trim()).filter(Boolean);
+  // Try standard ` - ` delimiter first, then ` _ ` delimiter
+  let segments = name.split(' - ').map(s => s.trim()).filter(Boolean);
+  if (segments.length < 3) {
+    segments = name.split(' _ ').map(s => s.trim()).filter(Boolean);
+  }
+  // Last resort: split on ` - ` or ` _ ` combined
+  if (segments.length < 3) {
+    segments = name.split(/\s[-_]\s/).map(s => s.trim()).filter(Boolean);
+  }
   if (segments.length < 3) return null;
 
-  const creativeId = segments[1] || null;
-  const hookId     = segments[2] || null;
+  // Clean file extensions from all segments (.mp4, .mov, .png, .jpg, etc.)
+  segments = segments.map(s => s.replace(/\.(mp4|mov|avi|mkv|png|jpg|jpeg|gif|webp|webm)$/i, '').trim());
 
-  // Find week position — scan from the end
+  const creativeId = segments[1] || null;
+
+  // Detect if position [2] is the hook (H1, H2, HX, etc.) or an iteration marker (IT, NN, etc.)
+  let hookId = null;
+  const seg2 = segments[2] || '';
+  if (/^H\d+$/i.test(seg2) || /^HX$/i.test(seg2)) {
+    hookId = seg2.toUpperCase();
+  } else if (/^(IT|NN)$/i.test(seg2)) {
+    // IT/NN is an iteration marker, hook is in position [3]
+    const seg3 = segments[3] || '';
+    if (/^H\d+$/i.test(seg3) || /^HX$/i.test(seg3)) {
+      hookId = seg3.toUpperCase();
+    } else {
+      hookId = 'HX'; // fallback: unknown hook
+    }
+  } else {
+    hookId = seg2 || 'HX'; // fallback
+  }
+
+  // Find week position — scan from the end, also handle .mp4 suffix already stripped
   let weekPos = -1;
   let week = null;
   for (let i = segments.length - 1; i >= 0; i--) {
@@ -61,6 +93,13 @@ function parseAdName(name) {
     if (format === '-' || format === 'NA') format = null;
     if (angle === '-' || angle === 'NA')   angle = null;
     if (avatar === '-' || avatar === 'NA') avatar = null;
+
+    // Validate metadata: reject values that look like creative IDs, hook IDs, or contain file extensions
+    const junkPattern = /^(B\d{3,}|H\d+|HX|IT|NN|MR|IM\d*)$/i;
+    if (editor && junkPattern.test(editor)) editor = null;
+    if (format && junkPattern.test(format)) format = null;
+    if (angle && junkPattern.test(angle))   angle = null;
+    if (avatar && junkPattern.test(avatar)) avatar = null;
   }
 
   // Determine type from creative ID prefix
@@ -137,7 +176,23 @@ async function fetchTripleWhaleAds(startDate, endDate) {
     return [];
   }
 
-  const query = `
+  // Try with pixel_purchases first, fallback without if TW doesn't have that column
+  const queryWithPurchases = `
+    SELECT
+      ad_name,
+      SUM(spend) as total_spend,
+      SUM(order_revenue) as total_revenue,
+      SUM(pixel_purchases) as total_purchases,
+      SUM(impressions) as total_impressions,
+      SUM(clicks) as total_clicks
+    FROM pixel_joined_tvf
+    WHERE event_date BETWEEN @startDate AND @endDate
+    GROUP BY ad_name
+    HAVING SUM(spend) > 0
+    ORDER BY SUM(spend) DESC
+  `;
+
+  const queryWithout = `
     SELECT
       ad_name,
       SUM(spend) as total_spend,
@@ -151,27 +206,33 @@ async function fetchTripleWhaleAds(startDate, endDate) {
     ORDER BY SUM(spend) DESC
   `;
 
-  const res = await fetch(TW_SQL_URL, {
-    method: 'POST',
-    headers: {
-      'x-api-key': TW_API_KEY,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      shopId: TW_SHOP_ID,
-      query: query.trim(),
-      period: { startDate, endDate },
-    }),
-  });
+  // Try with purchases column first
+  for (const query of [queryWithPurchases, queryWithout]) {
+    const res = await fetch(TW_SQL_URL, {
+      method: 'POST',
+      headers: {
+        'x-api-key': TW_API_KEY,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        shopId: TW_SHOP_ID,
+        query: query.trim(),
+        period: { startDate, endDate },
+      }),
+    });
 
-  if (!res.ok) {
+    if (res.ok) {
+      const data = await res.json();
+      return Array.isArray(data) ? data : [];
+    }
+
     const text = await res.text();
-    console.error(`[Creative Analysis] Triple Whale API error: ${res.status} — ${text}`);
-    return [];
+    console.warn(`[Creative Analysis] TW query attempt failed: ${res.status} — ${text.slice(0, 200)}`);
+    // If it was the purchases query that failed, try without
   }
 
-  const data = await res.json();
-  return Array.isArray(data) ? data : [];
+  console.error('[Creative Analysis] All Triple Whale queries failed');
+  return [];
 }
 
 // ── Ensure Table Exists ─────────────────────────────────────────────
@@ -286,13 +347,14 @@ async function syncData({ periodWeek, startDate, endDate }) {
   for (const { raw: ad, parsed } of parsedAds) {
     const spend = Number(ad.total_spend) || 0;
     const revenue = Number(ad.total_revenue) || 0;
+    const purchases = Number(ad.total_purchases) || 0;
     const impressions = Number(ad.total_impressions) || 0;
     const clicks = Number(ad.total_clicks) || 0;
 
     const metrics = computeMetrics({
       spend,
       revenue,
-      purchases: 0,
+      purchases,
       impressions,
       clicks,
     });
@@ -316,7 +378,7 @@ async function syncData({ periodWeek, startDate, endDate }) {
           periodWeek,    // Use the sync period's week, not the ad name's launch week
           spend,
           revenue,
-          0,
+          purchases,
           impressions,
           clicks,
           metrics.roas,
