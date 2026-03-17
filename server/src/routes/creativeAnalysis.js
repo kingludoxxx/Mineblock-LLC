@@ -536,13 +536,19 @@ router.get('/data', authenticate, async (req, res) => {
     // Sort by spend descending
     creatives.sort((a, b) => b.total_spend - a.total_spend);
 
-    // Collect available filter values from all data (not just this week)
+    // Collect available filter values for THIS week only (not global)
     const filterRows = await pgQuery(
-      `SELECT DISTINCT week, avatar, angle, format, editor FROM creative_analysis ORDER BY week`
+      `SELECT DISTINCT avatar, angle, format, editor FROM creative_analysis WHERE week = $1`,
+      [week.toUpperCase()]
+    );
+
+    // Get available weeks separately
+    const weekRows = await pgQuery(
+      `SELECT DISTINCT week FROM creative_analysis WHERE week IS NOT NULL ORDER BY week`
     );
 
     const filters = {
-      weeks:   [...new Set(filterRows.map(r => r.week).filter(Boolean))].sort(),
+      weeks:   weekRows.map(r => r.week).sort(),
       avatars: [...new Set(filterRows.map(r => r.avatar).filter(Boolean))].sort(),
       angles:  [...new Set(filterRows.map(r => r.angle).filter(Boolean))].sort(),
       formats: [...new Set(filterRows.map(r => r.format).filter(Boolean))].sort(),
@@ -705,6 +711,34 @@ router.post('/sync-weekly', async (req, res) => {
   } catch (err) {
     console.error('[Creative Analysis] /sync-weekly error:', err);
     res.status(500).json({ success: false, error: { message: err.message || 'Weekly sync failed' } });
+  }
+});
+
+/**
+ * POST /sync-all
+ * Re-sync all existing weeks. Useful after parser changes to clean stale data.
+ */
+router.post('/sync-all', authenticate, async (req, res) => {
+  try {
+    await ensureTable();
+
+    // Get all existing weeks
+    const weekRows = await pgQuery(
+      'SELECT DISTINCT week FROM creative_analysis WHERE week IS NOT NULL ORDER BY week'
+    );
+
+    const results = [];
+    for (const row of weekRows) {
+      const range = weekToDateRange(row.week);
+      if (!range) continue;
+      const result = await syncData({ periodWeek: row.week, startDate: range.startDate, endDate: range.endDate });
+      results.push({ week: row.week, ...result });
+    }
+
+    res.json({ success: true, data: { results } });
+  } catch (err) {
+    console.error('[Creative Analysis] /sync-all error:', err);
+    res.status(500).json({ success: false, error: { message: err.message || 'Sync-all failed' } });
   }
 });
 
