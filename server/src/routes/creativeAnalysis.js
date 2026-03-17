@@ -12,6 +12,18 @@ const CRON_SECRET = process.env.CRON_SECRET || '';
 
 let tableReady = false; // cache ensureTable so it only runs once
 
+// ── Known Values (for cross-validation) ─────────────────────────────
+// These sets prevent fields from leaking into the wrong slot when segment counts vary.
+const KNOWN_FORMATS = new Set([
+  'ShortVid', 'Mashup', 'Mashups', 'Mini VSL', 'Long form', 'long form', 'IMG',
+  'Shortvid', 'shortvid',
+]);
+
+const KNOWN_EDITORS = new Set([
+  'Ludovico', 'Ludo', 'Antoni', 'Carl', 'Usama', 'Faiz', 'Farhan',
+  'Alhamjatonni', 'Atif',
+]);
+
 // ── Naming Convention Parser ────────────────────────────────────────
 
 /**
@@ -152,6 +164,16 @@ function parseAdName(name) {
     if (format && filePattern.test(format)) format = format.replace(filePattern, '').trim() || null;
     if (angle && filePattern.test(angle))   angle = angle.replace(filePattern, '').trim() || null;
     if (avatar && filePattern.test(avatar)) avatar = avatar.replace(filePattern, '').trim() || null;
+
+    // Cross-validate: known editors should not appear as format/angle/avatar
+    if (format && KNOWN_EDITORS.has(format)) format = null;
+    if (angle && KNOWN_EDITORS.has(angle)) angle = null;
+    if (avatar && KNOWN_EDITORS.has(avatar)) avatar = null;
+
+    // Cross-validate: known formats should not appear as angle/avatar/editor
+    if (angle && KNOWN_FORMATS.has(angle)) angle = null;
+    if (avatar && KNOWN_FORMATS.has(avatar)) avatar = null;
+    if (editor && KNOWN_FORMATS.has(editor)) editor = null;
   }
 
   // Determine type from creative ID prefix
