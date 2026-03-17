@@ -62,25 +62,6 @@ app.use('/api/auth', authRoutes);       // alias for client compatibility
 // Mount CRUD routes (users, departments, audit, settings)
 mountRoutes(app);
 
-// TEMP: password reset endpoint — remove after use
-import { hashPassword } from './utils/hash.js';
-import pool from './config/db.js';
-app.post('/api/v1/temp-reset-admin', async (req, res) => {
-  const secret = req.headers['x-reset-secret'];
-  if (secret !== 'mineblock-temp-reset-2026') return res.status(401).json({ error: 'unauthorized' });
-  try {
-    const hash = await hashPassword('MineblockAdmin2026!');
-    await pool.query(
-      `UPDATE users SET password_hash = $1, failed_login_attempts = 0, locked_until = NULL, must_change_password = false WHERE email = $2`,
-      [hash, 'admin@try-mineblock.com']
-    );
-    // Verify it worked
-    const check = await pool.query('SELECT id, email, failed_login_attempts, locked_until, must_change_password FROM users WHERE email = $1', ['admin@try-mineblock.com']);
-    res.json({ success: true, user: check.rows[0] });
-  } catch (err) {
-    res.status(500).json({ error: err.message, stack: err.stack });
-  }
-});
 
 
 // Mount department modules
