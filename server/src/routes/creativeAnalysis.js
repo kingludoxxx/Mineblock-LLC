@@ -36,40 +36,63 @@ let tableReady = false; // cache ensureTable so it only runs once
 function parseAdName(name) {
   if (!name) return null;
 
-  // Try standard ` - ` delimiter first, then ` _ ` delimiter
-  let segments = name.split(' - ').map(s => s.trim()).filter(Boolean);
-  if (segments.length < 3) {
-    segments = name.split(' _ ').map(s => s.trim()).filter(Boolean);
-  }
-  // Last resort: split on ` - ` or ` _ ` combined
-  if (segments.length < 3) {
-    segments = name.split(/\s[-_]\s/).map(s => s.trim()).filter(Boolean);
-  }
-  if (segments.length < 3) return null;
+  // Normalize: strip file extensions from the full name first
+  let cleanName = name.replace(/\.(mp4|mov|avi|mkv|png|jpg|jpeg|gif|webp|webm)$/i, '').trim();
 
-  // Clean file extensions from all segments (.mp4, .mov, .png, .jpg, etc.)
+  // Detect delimiter: ` - ` (standard) or ` _ ` (variant)
+  // Important: must check ` _ ` carefully because WK10_2026 contains underscore too
+  let segments;
+  const dashSegments = cleanName.split(' - ').map(s => s.trim()).filter(Boolean);
+
+  if (dashSegments.length >= 3) {
+    segments = dashSegments;
+  } else {
+    // For underscore-delimited ads like "MR Miner _ B041 _ HX _ IT _ B049 _ MoneySeeker _ Lottery _ ShortVid _ Ludovico _ NA _ Ludovico _ WK08_2026"
+    // We need to split on " _ " but preserve "WK08_2026" — reconstruct week if it got split
+    const underscoreSegments = cleanName.split(' _ ').map(s => s.trim()).filter(Boolean);
+
+    // Check if last two segments are a split week (e.g. ["WK08", "2026"])
+    if (underscoreSegments.length >= 2) {
+      const last = underscoreSegments[underscoreSegments.length - 1];
+      const secondLast = underscoreSegments[underscoreSegments.length - 2];
+      if (/^\d{4}$/.test(last) && /^WK\d+$/i.test(secondLast)) {
+        // Rejoin split week
+        underscoreSegments.splice(-2, 2, `${secondLast}_${last}`);
+      }
+    }
+
+    if (underscoreSegments.length >= 3) {
+      segments = underscoreSegments;
+    } else {
+      return null;
+    }
+  }
+
+  // Clean file extensions from individual segments (in case they weren't at the end)
   segments = segments.map(s => s.replace(/\.(mp4|mov|avi|mkv|png|jpg|jpeg|gif|webp|webm)$/i, '').trim());
 
   const creativeId = segments[1] || null;
 
-  // Detect if position [2] is the hook (H1, H2, HX, etc.) or an iteration marker (IT, NN, etc.)
+  // Detect if position [2] is the hook (H1, H2, HX, etc.) or an iteration marker (IT, NN, NA, etc.)
   let hookId = null;
   const seg2 = segments[2] || '';
   if (/^H\d+$/i.test(seg2) || /^HX$/i.test(seg2)) {
     hookId = seg2.toUpperCase();
-  } else if (/^(IT|NN)$/i.test(seg2)) {
-    // IT/NN is an iteration marker, hook is in position [3]
+  } else if (/^(IT|NN|NA)$/i.test(seg2)) {
+    // IT/NN/NA in position 2 — look for hook in position [3]
     const seg3 = segments[3] || '';
     if (/^H\d+$/i.test(seg3) || /^HX$/i.test(seg3)) {
       hookId = seg3.toUpperCase();
     } else {
-      hookId = 'HX'; // fallback: unknown hook
+      // No hook found — this ad uses a non-standard format, assign HX
+      hookId = 'HX';
     }
   } else {
-    hookId = seg2 || 'HX'; // fallback
+    // Position 2 isn't a standard hook format, use it as-is but normalize
+    hookId = seg2.toUpperCase() || 'HX';
   }
 
-  // Find week position — scan from the end, also handle .mp4 suffix already stripped
+  // Find week position — scan from the end
   let weekPos = -1;
   let week = null;
   for (let i = segments.length - 1; i >= 0; i--) {
@@ -81,6 +104,7 @@ function parseAdName(name) {
   }
 
   // Parse metadata relative to week position (right-to-left)
+  // Convention: week-1 = editor2/signoff, week-2 = NA/editor1, week-3 = editor, week-4 = format, week-5 = angle, week-6 = avatar
   let avatar = null, angle = null, format = null, editor = null;
   if (weekPos >= 6) {
     editor = segments[weekPos - 3] || null;
@@ -89,17 +113,25 @@ function parseAdName(name) {
     avatar = segments[weekPos - 6] || null;
 
     // Clean up placeholder values
-    if (editor === '-' || editor === 'NA') editor = null;
-    if (format === '-' || format === 'NA') format = null;
-    if (angle === '-' || angle === 'NA')   angle = null;
-    if (avatar === '-' || avatar === 'NA') avatar = null;
+    const placeholders = ['-', 'NA', 'NN', 'na', 'nn'];
+    if (editor && placeholders.includes(editor)) editor = null;
+    if (format && placeholders.includes(format)) format = null;
+    if (angle && placeholders.includes(angle))   angle = null;
+    if (avatar && placeholders.includes(avatar)) avatar = null;
 
-    // Validate metadata: reject values that look like creative IDs, hook IDs, or contain file extensions
-    const junkPattern = /^(B\d{3,}|H\d+|HX|IT|NN|MR|IM\d*)$/i;
+    // Validate metadata: reject values that look like creative IDs, hook IDs, weeks, or file artifacts
+    const junkPattern = /^(B\d{3,}|H\d+|HX|IT|NN|MR|IM\d*|WK\d+.*)$/i;
     if (editor && junkPattern.test(editor)) editor = null;
     if (format && junkPattern.test(format)) format = null;
     if (angle && junkPattern.test(angle))   angle = null;
     if (avatar && junkPattern.test(avatar)) avatar = null;
+
+    // Also reject values containing file extensions or parentheses with extensions
+    const filePattern = /\.(mp4|mov|png|jpg|jpeg|gif|webp|webm|avi|mkv)$/i;
+    if (editor && filePattern.test(editor)) editor = editor.replace(filePattern, '').trim() || null;
+    if (format && filePattern.test(format)) format = format.replace(filePattern, '').trim() || null;
+    if (angle && filePattern.test(angle))   angle = angle.replace(filePattern, '').trim() || null;
+    if (avatar && filePattern.test(avatar)) avatar = avatar.replace(filePattern, '').trim() || null;
   }
 
   // Determine type from creative ID prefix
@@ -176,38 +208,25 @@ async function fetchTripleWhaleAds(startDate, endDate) {
     return [];
   }
 
-  // Try with pixel_purchases first, fallback without if TW doesn't have that column
-  const queryWithPurchases = `
-    SELECT
-      ad_name,
-      SUM(spend) as total_spend,
-      SUM(order_revenue) as total_revenue,
-      SUM(pixel_purchases) as total_purchases,
-      SUM(impressions) as total_impressions,
-      SUM(clicks) as total_clicks
-    FROM pixel_joined_tvf
-    WHERE event_date BETWEEN @startDate AND @endDate
-    GROUP BY ad_name
-    HAVING SUM(spend) > 0
-    ORDER BY SUM(spend) DESC
-  `;
+  // Query TW — try with pixel_purchases, then conversions, then without
+  const purchaseColumns = ['pixel_purchases', 'conversions', null];
 
-  const queryWithout = `
-    SELECT
-      ad_name,
-      SUM(spend) as total_spend,
-      SUM(order_revenue) as total_revenue,
-      SUM(impressions) as total_impressions,
-      SUM(clicks) as total_clicks
-    FROM pixel_joined_tvf
-    WHERE event_date BETWEEN @startDate AND @endDate
-    GROUP BY ad_name
-    HAVING SUM(spend) > 0
-    ORDER BY SUM(spend) DESC
-  `;
+  for (const purchaseCol of purchaseColumns) {
+    const purchaseSelect = purchaseCol ? `, SUM(${purchaseCol}) as total_purchases` : '';
+    const query = `
+      SELECT
+        ad_name,
+        SUM(spend) as total_spend,
+        SUM(order_revenue) as total_revenue${purchaseSelect},
+        SUM(impressions) as total_impressions,
+        SUM(clicks) as total_clicks
+      FROM pixel_joined_tvf
+      WHERE event_date BETWEEN @startDate AND @endDate
+      GROUP BY ad_name
+      HAVING SUM(spend) > 0
+      ORDER BY SUM(spend) DESC
+    `;
 
-  // Try with purchases column first
-  for (const query of [queryWithPurchases, queryWithout]) {
     const res = await fetch(TW_SQL_URL, {
       method: 'POST',
       headers: {
@@ -223,15 +242,20 @@ async function fetchTripleWhaleAds(startDate, endDate) {
 
     if (res.ok) {
       const data = await res.json();
+      if (purchaseCol) {
+        console.log(`[Creative Analysis] TW purchases column "${purchaseCol}" works`);
+      }
       return Array.isArray(data) ? data : [];
     }
 
     const text = await res.text();
-    console.warn(`[Creative Analysis] TW query attempt failed: ${res.status} — ${text.slice(0, 200)}`);
-    // If it was the purchases query that failed, try without
+    if (purchaseCol) {
+      console.warn(`[Creative Analysis] TW column "${purchaseCol}" not available: ${text.slice(0, 100)}`);
+    } else {
+      console.error(`[Creative Analysis] TW query failed entirely: ${res.status} — ${text.slice(0, 200)}`);
+    }
   }
 
-  console.error('[Creative Analysis] All Triple Whale queries failed');
   return [];
 }
 
@@ -325,8 +349,10 @@ async function syncData({ periodWeek, startDate, endDate }) {
     return { synced: 0, skipped: 0, errors: 0 };
   }
 
-  // Parse all ads
-  const parsedAds = [];
+  // Parse all ads and aggregate by (creative_id, hook_id) to avoid UNIQUE constraint violations.
+  // Multiple TW rows can map to the same (creative_id, hook_id) — e.g. different iterations
+  // of the same ad. We sum their metrics.
+  const aggregated = new Map(); // key: "creative_id|hook_id"
   let skipped = 0;
 
   for (const ad of twAds) {
@@ -335,7 +361,49 @@ async function syncData({ periodWeek, startDate, endDate }) {
       skipped++;
       continue;
     }
-    parsedAds.push({ raw: ad, parsed });
+
+    const key = `${parsed.creative_id}|${parsed.hook_id}`;
+    const spend = Number(ad.total_spend) || 0;
+    const revenue = Number(ad.total_revenue) || 0;
+    const purchases = Number(ad.total_purchases) || 0;
+    const impressions = Number(ad.total_impressions) || 0;
+    const clicks = Number(ad.total_clicks) || 0;
+
+    if (aggregated.has(key)) {
+      const existing = aggregated.get(key);
+      existing.spend += spend;
+      existing.revenue += revenue;
+      existing.purchases += purchases;
+      existing.impressions += impressions;
+      existing.clicks += clicks;
+      // Keep the ad_name with higher spend for display
+      if (spend > (existing._topSpend || 0)) {
+        existing.ad_name = parsed.ad_name;
+        existing._topSpend = spend;
+        // Also prefer metadata from the higher-spend variant
+        if (parsed.avatar) existing.avatar = parsed.avatar;
+        if (parsed.angle)  existing.angle = parsed.angle;
+        if (parsed.format) existing.format = parsed.format;
+        if (parsed.editor) existing.editor = parsed.editor;
+      }
+    } else {
+      aggregated.set(key, {
+        ad_name: parsed.ad_name,
+        creative_id: parsed.creative_id,
+        hook_id: parsed.hook_id,
+        type: parsed.type,
+        avatar: parsed.avatar,
+        angle: parsed.angle,
+        format: parsed.format,
+        editor: parsed.editor,
+        spend,
+        revenue,
+        purchases,
+        impressions,
+        clicks,
+        _topSpend: spend,
+      });
+    }
   }
 
   // Delete old data for this period week, then insert fresh
@@ -344,20 +412,8 @@ async function syncData({ periodWeek, startDate, endDate }) {
   let synced = 0;
   let errors = 0;
 
-  for (const { raw: ad, parsed } of parsedAds) {
-    const spend = Number(ad.total_spend) || 0;
-    const revenue = Number(ad.total_revenue) || 0;
-    const purchases = Number(ad.total_purchases) || 0;
-    const impressions = Number(ad.total_impressions) || 0;
-    const clicks = Number(ad.total_clicks) || 0;
-
-    const metrics = computeMetrics({
-      spend,
-      revenue,
-      purchases,
-      impressions,
-      clicks,
-    });
+  for (const entry of aggregated.values()) {
+    const metrics = computeMetrics(entry);
 
     try {
       await pgQuery(
@@ -367,20 +423,20 @@ async function syncData({ periodWeek, startDate, endDate }) {
             roas, cpa, cpm, aov, cpc, ctr, synced_at)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20, NOW())`,
         [
-          parsed.ad_name,
-          parsed.creative_id,
-          parsed.hook_id,
-          parsed.type,
-          parsed.avatar,
-          parsed.angle,
-          parsed.format,
-          parsed.editor,
-          periodWeek,    // Use the sync period's week, not the ad name's launch week
-          spend,
-          revenue,
-          purchases,
-          impressions,
-          clicks,
+          entry.ad_name,
+          entry.creative_id,
+          entry.hook_id,
+          entry.type,
+          entry.avatar,
+          entry.angle,
+          entry.format,
+          entry.editor,
+          periodWeek,
+          Math.round(entry.spend * 100) / 100,
+          Math.round(entry.revenue * 100) / 100,
+          entry.purchases,
+          entry.impressions,
+          entry.clicks,
           metrics.roas,
           metrics.cpa,
           metrics.cpm,
@@ -391,12 +447,12 @@ async function syncData({ periodWeek, startDate, endDate }) {
       );
       synced++;
     } catch (err) {
-      console.error(`[Creative Analysis] INSERT error for ${parsed.creative_id}/${parsed.hook_id}:`, err.message);
+      console.error(`[Creative Analysis] INSERT error for ${entry.creative_id}/${entry.hook_id}:`, err.message);
       errors++;
     }
   }
 
-  return { synced, skipped, errors };
+  return { synced, skipped, errors, aggregatedFrom: twAds.length - skipped };
 }
 
 // ── Routes ──────────────────────────────────────────────────────────
