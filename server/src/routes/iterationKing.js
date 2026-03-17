@@ -74,7 +74,7 @@ function extractJSONObjects(text) {
   return objects;
 }
 
-const MODEL_FAST = 'claude-3-5-haiku-20241022';
+const MODEL_FAST = 'claude-haiku-4-5-20251001';
 const MODEL_QUALITY = 'claude-sonnet-4-20250514';
 
 async function callClaude(prompt, maxTokens = 8192, { fast = false } = {}) {
