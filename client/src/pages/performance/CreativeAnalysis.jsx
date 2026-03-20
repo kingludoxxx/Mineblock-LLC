@@ -155,7 +155,7 @@ const TABLE_COLUMNS = [
   { key: 'angle', label: 'Angle', align: 'left' },
   { key: 'format', label: 'Format', align: 'left' },
   { key: 'editor', label: 'Editor', align: 'left' },
-  { key: 'launched', label: 'Launched', align: 'left', format: weekToDate },
+  { key: 'launched', label: 'Date', align: 'left', format: weekToDate },
   { key: 'spend', label: 'Spend', align: 'right', format: fmtMoney },
   { key: 'revenue', label: 'Revenue', align: 'right', format: fmtMoney },
   { key: 'roas', label: 'ROAS', align: 'right', format: fmtRoas },
