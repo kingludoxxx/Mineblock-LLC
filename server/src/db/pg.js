@@ -17,7 +17,7 @@ const pgDb = postgres(env.DATABASE_URL, {
   max: 10,
   idle_timeout: 20,
   connect_timeout: 10,
-  ssl: env.NODE_ENV === 'production' ? 'require' : false,
+  ssl: env.DATABASE_URL?.includes('render.com') || env.NODE_ENV === 'production' ? 'require' : false,
   connection: {
     statement_timeout: 15_000, // 15 seconds
   },

@@ -5,13 +5,21 @@
       "name": "Backend (Express API)",
       "runtimeExecutable": "node",
       "runtimeArgs": ["--watch", "server/src/server.js"],
-      "port": 3000
+      "port": 3000,
+      "autoPort": true
     },
     {
       "name": "Frontend (Vite Dev)",
       "runtimeExecutable": "npx",
       "runtimeArgs": ["vite", "--host"],
-      "port": 5173
+      "port": 5173,
+      "cwd": "client"
+    },
+    {
+      "name": "Upsell Preview",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["-m", "http.server", "8080", "--directory", "upsells"],
+      "port": 8080
     }
   ]
 }

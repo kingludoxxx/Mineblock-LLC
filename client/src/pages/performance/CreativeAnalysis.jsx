@@ -12,31 +12,58 @@ import {
   Trophy,
   ShoppingCart,
   Zap,
+  TrendingUp,
 } from 'lucide-react';
+import {
+  ResponsiveContainer,
+  ComposedChart,
+  Area,
+  Line,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  Legend,
+} from 'recharts';
 import api from '../../services/api';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-/** ISO week number — matches the backend algorithm exactly */
+/** ISO week number — uses UTC to match the backend algorithm exactly */
 function getISOWeek(date) {
-  const jan4 = new Date(date.getFullYear(), 0, 4);
-  const dayOfWeek = jan4.getDay() || 7;
+  const year = date.getUTCFullYear();
+  const jan4 = new Date(Date.UTC(year, 0, 4));
+  const dayOfWeek = jan4.getUTCDay() || 7;
   const mondayW1 = new Date(jan4);
-  mondayW1.setDate(jan4.getDate() - dayOfWeek + 1);
-  const diff = Math.floor((date - mondayW1) / (7 * 24 * 60 * 60 * 1000));
-  return diff + 1;
+  mondayW1.setUTCDate(jan4.getUTCDate() - dayOfWeek + 1);
+  const diff = Math.floor(
+    (Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()) - mondayW1.getTime()) /
+      (7 * 24 * 60 * 60 * 1000),
+  );
+  const weekNum = diff + 1;
+  if (weekNum < 1) {
+    const prevJan4 = new Date(Date.UTC(year - 1, 0, 4));
+    const prevDow = prevJan4.getUTCDay() || 7;
+    const prevMondayW1 = new Date(prevJan4);
+    prevMondayW1.setUTCDate(prevJan4.getUTCDate() - prevDow + 1);
+    const prevDiff = Math.floor(
+      (Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()) - prevMondayW1.getTime()) /
+        (7 * 24 * 60 * 60 * 1000),
+    );
+    return { week: prevDiff + 1, year: year - 1 };
+  }
+  return { week: weekNum, year };
 }
 
 function getCurrentWeek() {
   const now = new Date();
-  const week = getISOWeek(now);
-  return `WK${String(week).padStart(2, '0')}_${now.getFullYear()}`;
+  const { week, year } = getISOWeek(now);
+  return `WK${String(week).padStart(2, '0')}_${year}`;
 }
 
 function generateWeekOptions() {
   const now = new Date();
-  const year = now.getFullYear();
-  const currentWeek = getISOWeek(now);
+  const { week: currentWeek, year } = getISOWeek(now);
   const weeks = [];
   for (let w = currentWeek; w >= 1; w--) {
     weeks.push(`WK${String(w).padStart(2, '0')}_${year}`);
@@ -124,12 +151,15 @@ export default function CreativeAnalysis() {
   const weekOptions = useMemo(() => generateWeekOptions(), []);
 
   const [week, setWeek] = useState(getCurrentWeek);
+  const [dateMode, setDateMode] = useState('week'); // 'week' or 'custom'
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
   const [data, setData] = useState([]);
   const [leaderboard, setLeaderboard] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
   const [syncing, setSyncing] = useState(false);
-
+  const [error, setError] = useState(null);
+  const [activeOnly, setActiveOnly] = useState(false);
   const [filters, setFilters] = useState({
     creativeType: '',
     avatar: '',
@@ -140,6 +170,9 @@ export default function CreativeAnalysis() {
 
   const [expandedCreatives, setExpandedCreatives] = useState(new Set());
   const [sortConfig, setSortConfig] = useState({ key: 'spend', direction: 'desc' });
+  const [chartCreative, setChartCreative] = useState(null); // creative_id showing chart
+  const [chartData, setChartData] = useState(null);
+  const [chartLoading, setChartLoading] = useState(false);
 
   // ── Fetch ──
 
@@ -147,27 +180,37 @@ export default function CreativeAnalysis() {
     setLoading(true);
     setError(null);
     try {
-      const [dataRes, lbRes] = await Promise.all([
-        api.get('/creative-analysis/data', { params: { week } }),
-        api.get('/creative-analysis/leaderboard', { params: { week } }),
-      ]);
+      let dataRes;
+      let lbWeek = week; // week to use for leaderboard
+      if (dateMode === 'custom' && startDate && endDate) {
+        dataRes = await api.get('/creative-analysis/data-by-date', { params: { startDate, endDate } });
+      } else if (activeOnly) {
+        dataRes = await api.get('/creative-analysis/active');
+        // Use the latest_week from /active for the leaderboard
+        const activeData = dataRes.data?.data || dataRes.data || {};
+        if (activeData.latest_week) lbWeek = activeData.latest_week;
+      } else {
+        dataRes = await api.get('/creative-analysis/data', { params: { week } });
+      }
       const respData = dataRes.data?.data || dataRes.data || {};
       setData(respData.creatives || respData || []);
-      setLeaderboard(lbRes.data?.data || lbRes.data || null);
+
+      // Skip leaderboard in custom date mode (it's week-based and wouldn't match)
+      if (dateMode !== 'custom') {
+        const lbRes = await api.get('/creative-analysis/leaderboard', { params: { week: lbWeek } });
+        setLeaderboard(lbRes.data?.data || lbRes.data || null);
+      } else {
+        setLeaderboard(null);
+      }
     } catch (err) {
       setError(err.response?.data?.error?.message || err.message || 'Failed to load data.');
     } finally {
       setLoading(false);
     }
-  }, [week]);
-
-  useEffect(() => {
-    fetchData();
-  }, [fetchData]);
+  }, [week, dateMode, startDate, endDate, activeOnly]);
 
   const handleSync = async () => {
     setSyncing(true);
-    setError(null);
     try {
       await api.post('/creative-analysis/sync', { week });
       await fetchData();
@@ -177,6 +220,13 @@ export default function CreativeAnalysis() {
       setSyncing(false);
     }
   };
+
+  useEffect(() => {
+    fetchData();
+    // Auto-refresh every 5 minutes
+    const interval = setInterval(fetchData, 5 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [fetchData]);
 
   // ── Filtering ──
 
@@ -265,11 +315,44 @@ export default function CreativeAnalysis() {
     });
   };
 
+  const NUMERIC_COLS = new Set(['spend', 'revenue', 'roas', 'cpm', 'cpc', 'ctr', 'impressions', 'clicks']);
+
   const handleSort = (key) => {
-    setSortConfig((prev) => ({
-      key,
-      direction: prev.key === key && prev.direction === 'asc' ? 'desc' : 'asc',
-    }));
+    setSortConfig((prev) => {
+      if (prev.key === key) {
+        return { key, direction: prev.direction === 'desc' ? 'asc' : 'desc' };
+      }
+      // Default: descending for numeric, ascending for text
+      return { key, direction: NUMERIC_COLS.has(key) ? 'desc' : 'asc' };
+    });
+  };
+
+  const toggleChart = async (creativeId) => {
+    if (chartCreative === creativeId) {
+      setChartCreative(null);
+      setChartData(null);
+      return;
+    }
+    setChartCreative(creativeId);
+    setChartLoading(true);
+    try {
+      const res = await api.get('/creative-analysis/lifetime', { params: { creative_id: creativeId } });
+      const lifetime = res.data?.data || {};
+      const breakdown = lifetime.weekly_breakdown || [];
+      setChartData({
+        ...lifetime,
+        chartPoints: breakdown.map((w) => ({
+          week: w.week.replace('WK', 'W').replace('_', ' '),
+          spend: w.spend,
+          roas: w.roas,
+          revenue: w.revenue,
+        })),
+      });
+    } catch {
+      setChartData(null);
+    } finally {
+      setChartLoading(false);
+    }
   };
 
   const SortIcon = ({ colKey }) => {
@@ -338,16 +421,8 @@ export default function CreativeAnalysis() {
             </div>
             <p className="text-white font-medium text-lg">No data yet</p>
             <p className="text-gray-500 text-sm">
-              Run an initial sync to pull creative performance data from your ad accounts.
+              Data auto-syncs every 5 minutes. First sync in progress...
             </p>
-            <button
-              onClick={handleSync}
-              disabled={syncing}
-              className="mt-2 flex items-center gap-2 px-5 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium transition-colors disabled:opacity-50 cursor-pointer"
-            >
-              <RefreshCw className={`w-4 h-4 ${syncing ? 'animate-spin' : ''}`} />
-              {syncing ? 'Syncing...' : 'Sync Now'}
-            </button>
           </div>
         </div>
       </div>
@@ -368,27 +443,81 @@ export default function CreativeAnalysis() {
           </div>
         </div>
 
-        <div className="flex items-center gap-3">
-          <select
-            value={week}
-            onChange={(e) => setWeek(e.target.value)}
-            className={selectStyle}
-          >
-            {weekOptions.map((w) => (
-              <option key={w} value={w} className="bg-[#111]">
-                {w.replace('_', ' ')}
-              </option>
-            ))}
-          </select>
+        <div className="flex items-center gap-3 flex-wrap">
+          {/* Date mode toggle */}
+          <div className="flex rounded-lg overflow-hidden border border-white/[0.08]">
+            <button
+              onClick={() => setDateMode('week')}
+              className={`px-3 py-2 text-xs font-medium transition-colors cursor-pointer ${dateMode === 'week' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-white/[0.04] text-gray-400 hover:text-white'}`}
+            >
+              Week
+            </button>
+            <button
+              onClick={() => setDateMode('custom')}
+              className={`px-3 py-2 text-xs font-medium transition-colors cursor-pointer ${dateMode === 'custom' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-white/[0.04] text-gray-400 hover:text-white'}`}
+            >
+              Custom
+            </button>
+          </div>
 
-          <button
-            onClick={fetchData}
-            disabled={loading}
-            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-white/[0.06] hover:bg-white/[0.1] text-white text-sm transition-colors disabled:opacity-50 cursor-pointer"
-          >
-            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-            Refresh
-          </button>
+          {dateMode === 'week' ? (
+            <select
+              value={week}
+              onChange={(e) => setWeek(e.target.value)}
+              className={selectStyle}
+            >
+              {weekOptions.map((w) => (
+                <option key={w} value={w} className="bg-[#111]">
+                  {w.replace('_', ' ')}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <>
+              <input
+                type="date"
+                value={startDate}
+                onChange={(e) => setStartDate(e.target.value)}
+                className={`${selectStyle} text-gray-300`}
+              />
+              <span className="text-gray-500 text-xs">to</span>
+              <input
+                type="date"
+                value={endDate}
+                onChange={(e) => setEndDate(e.target.value)}
+                className={`${selectStyle} text-gray-300`}
+              />
+              <button
+                onClick={fetchData}
+                disabled={!startDate || !endDate}
+                className="px-3 py-2 rounded-lg bg-emerald-500/20 text-emerald-400 text-sm font-medium hover:bg-emerald-500/30 transition-colors cursor-pointer disabled:opacity-40"
+              >
+                Apply
+              </button>
+            </>
+          )}
+
+          {/* Active only toggle (disabled in custom date mode) */}
+          {dateMode === 'week' && (
+            <button
+              onClick={() => setActiveOnly((v) => !v)}
+              className={`px-3 py-2 rounded-lg text-xs font-medium transition-colors cursor-pointer ${activeOnly ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30' : 'bg-white/[0.04] text-gray-400 hover:text-white border border-white/[0.08]'}`}
+            >
+              Active Only
+            </button>
+          )}
+
+          {/* Sync button (only in week mode — custom mode queries TW live) */}
+          {dateMode === 'week' && (
+            <button
+              onClick={handleSync}
+              disabled={syncing}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 text-sm font-medium transition-colors cursor-pointer border border-emerald-500/20"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${syncing ? 'animate-spin' : ''}`} />
+              {syncing ? 'Syncing...' : 'Sync Data'}
+            </button>
+          )}
         </div>
       </div>
 
@@ -530,14 +659,7 @@ export default function CreativeAnalysis() {
               {processedData.length} creative{processedData.length !== 1 ? 's' : ''}
             </p>
           </div>
-          <button
-            onClick={handleSync}
-            disabled={syncing}
-            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-400 text-sm font-medium transition-colors disabled:opacity-50 cursor-pointer"
-          >
-            <RefreshCw className={`w-4 h-4 ${syncing ? 'animate-spin' : ''}`} />
-            {syncing ? 'Syncing...' : 'Sync Data'}
-          </button>
+          <span className="text-gray-600 text-xs">Auto-syncs every 5 min</span>
         </div>
 
         {processedData.length === 0 ? (
@@ -549,6 +671,8 @@ export default function CreativeAnalysis() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-white/[0.06]">
+                  {/* Chart button column */}
+                  <th className="w-10 px-1 py-2" />
                   {/* Expand column */}
                   <th className="w-8 px-2 py-2" />
                   {TABLE_COLUMNS.map((col) => (
@@ -584,6 +708,19 @@ export default function CreativeAnalysis() {
                         }`}
                         onClick={hasHooks ? () => toggleExpand(cid) : undefined}
                       >
+                        <td className="w-10 px-1 py-2.5 text-center">
+                          <button
+                            onClick={(e) => { e.stopPropagation(); toggleChart(cid); }}
+                            className={`w-7 h-7 rounded-lg flex items-center justify-center transition-colors cursor-pointer ${
+                              chartCreative === cid
+                                ? 'bg-blue-500 text-white'
+                                : 'bg-blue-500/10 text-blue-400 hover:bg-blue-500/20'
+                            }`}
+                            title="View performance chart"
+                          >
+                            <TrendingUp className="w-3.5 h-3.5" />
+                          </button>
+                        </td>
                         <td className="w-8 px-2 py-2.5 text-center">
                           {hasHooks && (
                             <ChevronRight
@@ -608,10 +745,69 @@ export default function CreativeAnalysis() {
                                 : 'text-gray-400'
                             }`}
                           >
-                            {renderCellValue(row, col)}
+                            {col.key === 'ad_name' ? (
+                              <span className="flex items-center gap-2">
+                                {renderCellValue(row, col)}
+                                {row.is_winner && (
+                                  <span className="px-1.5 py-0.5 rounded bg-yellow-500/20 text-yellow-400 text-[10px] font-bold uppercase tracking-wide shrink-0">Winner</span>
+                                )}
+                              </span>
+                            ) : (
+                              renderCellValue(row, col)
+                            )}
                           </td>
                         ))}
                       </tr>
+
+                      {/* Chart panel */}
+                      {chartCreative === cid && (
+                        <tr className="border-b border-white/[0.04]">
+                          <td colSpan={TABLE_COLUMNS.length + 2} className="p-0">
+                            <div className="bg-[#0a0f1a] border-t border-b border-blue-500/20 p-5">
+                              {chartLoading ? (
+                                <div className="flex items-center justify-center h-48">
+                                  <RefreshCw className="w-5 h-5 text-blue-400 animate-spin" />
+                                </div>
+                              ) : chartData?.chartPoints?.length > 0 ? (
+                                <div>
+                                  <div className="flex items-center justify-between mb-4">
+                                    <div className="flex items-center gap-3">
+                                      <h3 className="text-white font-semibold text-sm">{cid} — Lifetime Performance</h3>
+                                      {chartData.is_winner && (
+                                        <span className="px-2 py-0.5 rounded-full bg-yellow-500/20 text-yellow-400 text-xs font-bold">WINNER</span>
+                                      )}
+                                    </div>
+                                    <div className="flex items-center gap-4 text-xs">
+                                      <span className="text-gray-400">Lifetime Spend: <span className="text-white font-medium">{fmtMoney(chartData.lifetime_spend)}</span></span>
+                                      <span className="text-gray-400">Lifetime ROAS: <span className="text-white font-medium">{fmtRoas(chartData.lifetime_roas)}</span></span>
+                                      <span className="text-gray-400">Weeks Active: <span className="text-white font-medium">{chartData.weeks_active}</span></span>
+                                    </div>
+                                  </div>
+                                  <ResponsiveContainer width="100%" height={240}>
+                                    <ComposedChart data={chartData.chartPoints} margin={{ top: 5, right: 20, bottom: 5, left: 10 }}>
+                                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
+                                      <XAxis dataKey="week" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={{ stroke: 'rgba(255,255,255,0.1)' }} />
+                                      <YAxis yAxisId="spend" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={{ stroke: 'rgba(255,255,255,0.1)' }} tickFormatter={(v) => `$${v}`} />
+                                      <YAxis yAxisId="roas" orientation="right" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={{ stroke: 'rgba(255,255,255,0.1)' }} tickFormatter={(v) => `${v}x`} />
+                                      <Tooltip
+                                        contentStyle={{ background: '#1a1a2e', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, color: '#fff', fontSize: 12 }}
+                                        formatter={(value, name) => [name === 'roas' ? `${value}x` : `$${Number(value).toLocaleString()}`, name === 'roas' ? 'ROAS' : name === 'spend' ? 'Ad Spend' : 'Revenue']}
+                                      />
+                                      <Legend wrapperStyle={{ fontSize: 11, color: '#9ca3af' }} />
+                                      <Area yAxisId="spend" type="monotone" dataKey="spend" name="Ad Spend" fill="rgba(59,130,246,0.15)" stroke="#3b82f6" strokeWidth={2} />
+                                      <Line yAxisId="roas" type="monotone" dataKey="roas" name="ROAS" stroke="#a78bfa" strokeWidth={2} strokeDasharray="5 5" dot={false} />
+                                    </ComposedChart>
+                                  </ResponsiveContainer>
+                                </div>
+                              ) : (
+                                <div className="flex items-center justify-center h-32 text-gray-500 text-sm">
+                                  No lifetime data available for this creative.
+                                </div>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      )}
 
                       {/* Hook rows (expanded) */}
                       {isExpanded &&
@@ -620,6 +816,7 @@ export default function CreativeAnalysis() {
                             key={`${cid}-hook-${idx}`}
                             className="border-b border-white/[0.02] bg-white/[0.01]"
                           >
+                            <td className="w-10 px-1 py-2" />
                             <td className="w-8 px-2 py-2" />
                             {TABLE_COLUMNS.map((col) => (
                               <td

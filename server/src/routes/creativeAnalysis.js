@@ -201,19 +201,24 @@ function parseAdName(name) {
 function weekToDateRange(weekStr) {
   const match = weekStr.match(/WK(\d+)_(\d{4})/i);
   if (!match) return null;
-  const weekNum = parseInt(match[1], 10);
-  const year    = parseInt(match[2], 10);
+  let weekNum = parseInt(match[1], 10);
+  const year  = parseInt(match[2], 10);
 
-  const jan4      = new Date(year, 0, 4);
-  const dayOfWeek = jan4.getDay() || 7;
+  // Validate week bounds
+  if (weekNum < 1) weekNum = 1;
+  if (weekNum > 53) weekNum = 53;
+
+  // Use UTC to avoid timezone drift
+  const jan4      = new Date(Date.UTC(year, 0, 4));
+  const dayOfWeek = jan4.getUTCDay() || 7;
   const mondayW1  = new Date(jan4);
-  mondayW1.setDate(jan4.getDate() - dayOfWeek + 1);
+  mondayW1.setUTCDate(jan4.getUTCDate() - dayOfWeek + 1);
 
   const start = new Date(mondayW1);
-  start.setDate(mondayW1.getDate() + (weekNum - 1) * 7);
+  start.setUTCDate(mondayW1.getUTCDate() + (weekNum - 1) * 7);
 
   const end = new Date(start);
-  end.setDate(start.getDate() + 6);
+  end.setUTCDate(start.getUTCDate() + 6);
 
   const fmt = (d) => d.toISOString().slice(0, 10);
   return { startDate: fmt(start), endDate: fmt(end) };
@@ -224,14 +229,28 @@ function weekToDateRange(weekStr) {
  */
 function getCurrentWeek() {
   const now = new Date();
-  const jan4 = new Date(now.getFullYear(), 0, 4);
-  const dayOfWeek = jan4.getDay() || 7;
+  // Use UTC to avoid timezone/DST drift
+  const year = now.getUTCFullYear();
+  const jan4 = new Date(Date.UTC(year, 0, 4));
+  const dayOfWeek = jan4.getUTCDay() || 7;
   const mondayW1 = new Date(jan4);
-  mondayW1.setDate(jan4.getDate() - dayOfWeek + 1);
+  mondayW1.setUTCDate(jan4.getUTCDate() - dayOfWeek + 1);
 
-  const diff = Math.floor((now - mondayW1) / (7 * 24 * 60 * 60 * 1000));
-  const weekNum = diff + 1;
-  return `WK${String(weekNum).padStart(2, '0')}_${now.getFullYear()}`;
+  const diff = Math.floor((Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) - mondayW1.getTime()) / (7 * 24 * 60 * 60 * 1000));
+  let weekNum = diff + 1;
+
+  // Handle dates before ISO week 1 Monday (roll back to last year's last week)
+  if (weekNum < 1) {
+    const prevJan4 = new Date(Date.UTC(year - 1, 0, 4));
+    const prevDow = prevJan4.getUTCDay() || 7;
+    const prevMondayW1 = new Date(prevJan4);
+    prevMondayW1.setUTCDate(prevJan4.getUTCDate() - prevDow + 1);
+    const prevDiff = Math.floor((Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) - prevMondayW1.getTime()) / (7 * 24 * 60 * 60 * 1000));
+    weekNum = prevDiff + 1;
+    return `WK${String(weekNum).padStart(2, '0')}_${year - 1}`;
+  }
+
+  return `WK${String(weekNum).padStart(2, '0')}_${year}`;
 }
 
 // ── Derived Metrics ─────────────────────────────────────────────────
@@ -261,54 +280,74 @@ async function fetchTripleWhaleAds(startDate, endDate) {
     return [];
   }
 
-  // Query TW — try with pixel_purchases, then conversions, then without
-  const purchaseColumns = ['pixel_purchases', 'conversions', null];
+  // Revenue columns to try (order_revenue may not exist in all TW setups)
+  const revenueColumns = ['order_revenue', 'pixel_revenue', 'revenue'];
+  // Purchase columns to try, then null (no purchases)
+  const purchaseColumns = ['pixel_purchases', 'purchases', 'pixel_capi_purchases', 'conversions', null];
 
-  for (const purchaseCol of purchaseColumns) {
-    const purchaseSelect = purchaseCol ? `, SUM(${purchaseCol}) as total_purchases` : '';
-    const query = `
-      SELECT
-        ad_name,
-        SUM(spend) as total_spend,
-        SUM(order_revenue) as total_revenue${purchaseSelect},
-        SUM(impressions) as total_impressions,
-        SUM(clicks) as total_clicks
-      FROM pixel_joined_tvf
-      WHERE event_date BETWEEN @startDate AND @endDate
-      GROUP BY ad_name
-      HAVING SUM(spend) > 0
-      ORDER BY SUM(spend) DESC
-    `;
+  let workingRevenueCol = null;
 
-    const res = await fetch(TW_SQL_URL, {
-      method: 'POST',
-      headers: {
-        'x-api-key': TW_API_KEY,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        shopId: TW_SHOP_ID,
-        query: query.trim(),
-        period: { startDate, endDate },
-      }),
-    });
+  for (const revenueCol of revenueColumns) {
+    for (const purchaseCol of purchaseColumns) {
+      const purchaseSelect = purchaseCol ? `, SUM(${purchaseCol}) as total_purchases` : '';
+      const query = `
+        SELECT
+          ad_name,
+          SUM(spend) as total_spend,
+          SUM(${revenueCol}) as total_revenue${purchaseSelect},
+          SUM(impressions) as total_impressions,
+          SUM(clicks) as total_clicks
+        FROM pixel_joined_tvf
+        WHERE event_date BETWEEN @startDate AND @endDate
+        GROUP BY ad_name
+        HAVING SUM(spend) > 0
+        ORDER BY SUM(spend) DESC
+      `;
 
-    if (res.ok) {
-      const data = await res.json();
-      if (purchaseCol) {
-        console.log(`[Creative Analysis] TW purchases column "${purchaseCol}" works`);
+      const res = await fetch(TW_SQL_URL, {
+        method: 'POST',
+        headers: {
+          'x-api-key': TW_API_KEY,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          shopId: TW_SHOP_ID,
+          query: query.trim(),
+          period: { startDate, endDate },
+        }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        const rows = Array.isArray(data) ? data : (data?.data || data?.rows || []);
+        console.log(`[Creative Analysis] TW query OK — revenue="${revenueCol}", purchases="${purchaseCol || 'none'}", rows=${rows.length}`);
+        if (!purchaseCol) {
+          console.warn('[Creative Analysis] WARNING: No purchase column available. Purchases will be 0.');
+        }
+        return rows;
       }
-      return Array.isArray(data) ? data : [];
+
+      // Check if this is an auth/server error (don't retry column variants)
+      if (res.status === 401 || res.status === 403) {
+        const text = await res.text();
+        console.error(`[Creative Analysis] TW auth error ${res.status}: ${text.slice(0, 200)}`);
+        return [];
+      }
+      if (res.status >= 500) {
+        const text = await res.text();
+        console.error(`[Creative Analysis] TW server error ${res.status}: ${text.slice(0, 200)}`);
+        return [];
+      }
+
+      // 400/422 = likely column not found, try next variant
+      const text = await res.text();
+      console.warn(`[Creative Analysis] TW column combo revenue="${revenueCol}" purchases="${purchaseCol}" failed: ${text.slice(0, 100)}`);
     }
 
-    const text = await res.text();
-    if (purchaseCol) {
-      console.warn(`[Creative Analysis] TW column "${purchaseCol}" not available: ${text.slice(0, 100)}`);
-    } else {
-      console.error(`[Creative Analysis] TW query failed entirely: ${res.status} — ${text.slice(0, 200)}`);
-    }
+    // If we get here, all purchase variants failed with this revenue column. Try next revenue column.
   }
 
+  console.error('[Creative Analysis] All TW query variants failed. No data returned.');
   return [];
 }
 
@@ -459,22 +498,48 @@ async function syncData({ periodWeek, startDate, endDate }) {
     }
   }
 
-  // Delete old data for this period week, then insert fresh
-  await pgQuery('DELETE FROM creative_analysis WHERE week = $1', [periodWeek]);
+  // Guard: if all ads were skipped during parsing, don't wipe existing data
+  if (aggregated.size === 0) {
+    return { synced: 0, skipped, errors: 0, aggregatedFrom: 0 };
+  }
 
+  // Delete old data for this period week, then insert fresh (in a transaction)
   let synced = 0;
   let errors = 0;
 
-  for (const entry of aggregated.values()) {
-    const metrics = computeMetrics(entry);
+  await pgQuery('BEGIN');
+  try {
+    await pgQuery('DELETE FROM creative_analysis WHERE week = $1', [periodWeek]);
 
-    try {
+    for (const entry of aggregated.values()) {
+      const metrics = computeMetrics(entry);
+
       await pgQuery(
         `INSERT INTO creative_analysis
            (ad_name, creative_id, hook_id, type, avatar, angle, format, editor, week,
             spend, revenue, purchases, impressions, clicks,
             roas, cpa, cpm, aov, cpc, ctr, synced_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20, NOW())`,
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20, NOW())
+         ON CONFLICT (creative_id, hook_id, week)
+         DO UPDATE SET
+           ad_name = EXCLUDED.ad_name,
+           type = EXCLUDED.type,
+           avatar = EXCLUDED.avatar,
+           angle = EXCLUDED.angle,
+           format = EXCLUDED.format,
+           editor = EXCLUDED.editor,
+           spend = EXCLUDED.spend,
+           revenue = EXCLUDED.revenue,
+           purchases = EXCLUDED.purchases,
+           impressions = EXCLUDED.impressions,
+           clicks = EXCLUDED.clicks,
+           roas = EXCLUDED.roas,
+           cpa = EXCLUDED.cpa,
+           cpm = EXCLUDED.cpm,
+           aov = EXCLUDED.aov,
+           cpc = EXCLUDED.cpc,
+           ctr = EXCLUDED.ctr,
+           synced_at = NOW()`,
         [
           entry.ad_name,
           entry.creative_id,
@@ -499,13 +564,59 @@ async function syncData({ periodWeek, startDate, endDate }) {
         ]
       );
       synced++;
-    } catch (err) {
-      console.error(`[Creative Analysis] INSERT error for ${entry.creative_id}/${entry.hook_id}:`, err.message);
-      errors++;
     }
+
+    await pgQuery('COMMIT');
+  } catch (err) {
+    await pgQuery('ROLLBACK');
+    throw err;
   }
 
   return { synced, skipped, errors, aggregatedFrom: twAds.length - skipped };
+}
+
+// ── Helpers: Lifetime metrics lookup ─────────────────────────────────
+
+/**
+ * Fetch lifetime aggregated metrics for a set of creative_ids.
+ * Returns a Map keyed by creative_id.
+ */
+async function getLifetimeMetrics(creativeIds) {
+  if (!creativeIds || creativeIds.length === 0) return new Map();
+
+  const placeholders = creativeIds.map((_, i) => `$${i + 1}`).join(',');
+  const rows = await pgQuery(
+    `SELECT
+       creative_id,
+       SUM(spend) as lifetime_spend,
+       SUM(revenue) as lifetime_revenue,
+       SUM(purchases) as lifetime_purchases,
+       COUNT(DISTINCT week) as weeks_active,
+       (ARRAY_AGG(week ORDER BY SPLIT_PART(week,'_',2)::int, REPLACE(SPLIT_PART(week,'_',1),'WK','')::int))[1] as first_seen,
+       (ARRAY_AGG(week ORDER BY SPLIT_PART(week,'_',2)::int DESC, REPLACE(SPLIT_PART(week,'_',1),'WK','')::int DESC))[1] as last_seen
+     FROM creative_analysis
+     WHERE creative_id IN (${placeholders})
+     GROUP BY creative_id`,
+    creativeIds
+  );
+
+  const map = new Map();
+  for (const r of rows) {
+    const ls = Math.round(Number(r.lifetime_spend) * 100) / 100;
+    const lr = Math.round(Number(r.lifetime_revenue) * 100) / 100;
+    const lRoas = ls > 0 ? Math.round((lr / ls) * 100) / 100 : 0;
+    map.set(r.creative_id, {
+      lifetime_spend: ls,
+      lifetime_revenue: lr,
+      lifetime_roas: lRoas,
+      lifetime_purchases: Number(r.lifetime_purchases),
+      first_seen: r.first_seen,
+      last_seen: r.last_seen,
+      weeks_active: Number(r.weeks_active),
+      is_winner: ls >= 500 && lRoas >= 1.80,
+    });
+  }
+  return map;
 }
 
 // ── Routes ──────────────────────────────────────────────────────────
@@ -513,7 +624,7 @@ async function syncData({ periodWeek, startDate, endDate }) {
 /**
  * GET /data?week=WK12_2026
  * Returns all creatives for a week, grouped by creative_id with hook-level detail.
- * Also returns available filter values.
+ * Also returns available filter values and lifetime metrics per creative.
  */
 router.get('/data', authenticate, async (req, res) => {
   try {
@@ -524,9 +635,9 @@ router.get('/data', authenticate, async (req, res) => {
 
     await ensureTable();
 
-    // Fetch all rows for this week
+    // Fetch only active rows (spend > 0) for this week
     const rows = await pgQuery(
-      'SELECT * FROM creative_analysis WHERE week = $1 ORDER BY spend DESC',
+      'SELECT * FROM creative_analysis WHERE week = $1 AND spend > 0 ORDER BY spend DESC',
       [week.toUpperCase()]
     );
 
@@ -572,19 +683,31 @@ router.get('/data', authenticate, async (req, res) => {
       grouped[cid].total_clicks     += Number(row.clicks) || 0;
     }
 
-    // Compute aggregate metrics per creative
-    const creatives = Object.values(grouped).map(c => ({
-      ...c,
-      total_spend:  Math.round(c.total_spend * 100) / 100,
-      total_revenue: Math.round(c.total_revenue * 100) / 100,
-      ...computeMetrics({
-        spend: c.total_spend,
-        revenue: c.total_revenue,
-        purchases: c.total_purchases,
-        impressions: c.total_impressions,
-        clicks: c.total_clicks,
-      }),
-    }));
+    // Fetch lifetime metrics for all creative_ids in this week
+    const creativeIds = Object.keys(grouped);
+    const lifetimeMap = await getLifetimeMetrics(creativeIds);
+
+    // Compute aggregate metrics per creative, include lifetime data
+    const creatives = Object.values(grouped).map(c => {
+      const lt = lifetimeMap.get(c.creative_id) || {
+        lifetime_spend: 0, lifetime_revenue: 0, lifetime_roas: 0,
+        lifetime_purchases: 0, first_seen: null, last_seen: null,
+        weeks_active: 0, is_winner: false,
+      };
+      return {
+        ...c,
+        total_spend:  Math.round(c.total_spend * 100) / 100,
+        total_revenue: Math.round(c.total_revenue * 100) / 100,
+        ...computeMetrics({
+          spend: c.total_spend,
+          revenue: c.total_revenue,
+          purchases: c.total_purchases,
+          impressions: c.total_impressions,
+          clicks: c.total_clicks,
+        }),
+        ...lt,
+      };
+    });
 
     // Sort by spend descending
     creatives.sort((a, b) => b.total_spend - a.total_spend);
@@ -595,13 +718,14 @@ router.get('/data', authenticate, async (req, res) => {
       [week.toUpperCase()]
     );
 
-    // Get available weeks separately
+    // Get available weeks separately (year-aware ordering)
     const weekRows = await pgQuery(
-      `SELECT DISTINCT week FROM creative_analysis WHERE week IS NOT NULL ORDER BY week`
+      `SELECT DISTINCT week FROM creative_analysis WHERE week IS NOT NULL
+       ORDER BY SPLIT_PART(week,'_',2)::int DESC, REPLACE(SPLIT_PART(week,'_',1),'WK','')::int DESC`
     );
 
     const filters = {
-      weeks:   weekRows.map(r => r.week).sort(),
+      weeks:   weekRows.map(r => r.week),
       avatars: [...new Set(filterRows.map(r => r.avatar).filter(Boolean))].sort(),
       angles:  [...new Set(filterRows.map(r => r.angle).filter(Boolean))].sort(),
       formats: [...new Set(filterRows.map(r => r.format).filter(Boolean))].sort(),
@@ -616,9 +740,352 @@ router.get('/data', authenticate, async (req, res) => {
 });
 
 /**
+ * GET /data-by-date?startDate=YYYY-MM-DD&endDate=YYYY-MM-DD
+ * Queries Triple Whale directly for a custom date range and returns the same
+ * grouped format as /data, without touching the week-based storage.
+ */
+router.get('/data-by-date', authenticate, async (req, res) => {
+  try {
+    const { startDate, endDate } = req.query;
+    if (!startDate || !endDate) {
+      return res.status(400).json({
+        success: false,
+        error: { message: 'startDate and endDate query params are required (YYYY-MM-DD)' },
+      });
+    }
+
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(startDate) || !/^\d{4}-\d{2}-\d{2}$/.test(endDate)) {
+      return res.status(400).json({
+        success: false,
+        error: { message: 'Dates must be in YYYY-MM-DD format' },
+      });
+    }
+
+    const twAds = await fetchTripleWhaleAds(startDate, endDate);
+
+    // Parse and aggregate by creative_id
+    const grouped = {};
+    let skipped = 0;
+
+    for (const ad of twAds) {
+      const parsed = parseAdName(ad.ad_name);
+      if (!parsed || !parsed.creative_id || !parsed.hook_id) {
+        skipped++;
+        continue;
+      }
+
+      const cid = parsed.creative_id;
+      const spend = Number(ad.total_spend) || 0;
+      const revenue = Number(ad.total_revenue) || 0;
+      const purchases = Number(ad.total_purchases) || 0;
+      const impressions = Number(ad.total_impressions) || 0;
+      const clicks = Number(ad.total_clicks) || 0;
+
+      if (!grouped[cid]) {
+        grouped[cid] = {
+          creative_id: cid,
+          type: parsed.type,
+          avatar: parsed.avatar,
+          angle: parsed.angle,
+          format: parsed.format,
+          editor: parsed.editor,
+          total_spend: 0,
+          total_revenue: 0,
+          total_purchases: 0,
+          total_impressions: 0,
+          total_clicks: 0,
+          hooks: [],
+        };
+      }
+
+      const hookMetrics = computeMetrics({ spend, revenue, purchases, impressions, clicks });
+      grouped[cid].hooks.push({
+        hook_id: parsed.hook_id,
+        ad_name: parsed.ad_name,
+        spend: Math.round(spend * 100) / 100,
+        revenue: Math.round(revenue * 100) / 100,
+        purchases,
+        impressions,
+        clicks,
+        ...hookMetrics,
+      });
+
+      grouped[cid].total_spend      += spend;
+      grouped[cid].total_revenue    += revenue;
+      grouped[cid].total_purchases  += purchases;
+      grouped[cid].total_impressions += impressions;
+      grouped[cid].total_clicks     += clicks;
+
+      // Prefer metadata from the first variant that has it
+      if (parsed.avatar && !grouped[cid].avatar) grouped[cid].avatar = parsed.avatar;
+      if (parsed.angle && !grouped[cid].angle)   grouped[cid].angle = parsed.angle;
+      if (parsed.format && !grouped[cid].format) grouped[cid].format = parsed.format;
+      if (parsed.editor && !grouped[cid].editor) grouped[cid].editor = parsed.editor;
+    }
+
+    // Fetch lifetime metrics for all creative_ids
+    const creativeIds = Object.keys(grouped);
+    const lifetimeMap = await getLifetimeMetrics(creativeIds);
+
+    const creatives = Object.values(grouped).map(c => {
+      const lt = lifetimeMap.get(c.creative_id) || {
+        lifetime_spend: 0, lifetime_revenue: 0, lifetime_roas: 0,
+        lifetime_purchases: 0, first_seen: null, last_seen: null,
+        weeks_active: 0, is_winner: false,
+      };
+      return {
+        ...c,
+        total_spend:  Math.round(c.total_spend * 100) / 100,
+        total_revenue: Math.round(c.total_revenue * 100) / 100,
+        ...computeMetrics({
+          spend: c.total_spend,
+          revenue: c.total_revenue,
+          purchases: c.total_purchases,
+          impressions: c.total_impressions,
+          clicks: c.total_clicks,
+        }),
+        ...lt,
+      };
+    });
+
+    creatives.sort((a, b) => b.total_spend - a.total_spend);
+
+    res.json({
+      success: true,
+      data: {
+        creatives,
+        dateRange: { startDate, endDate },
+        meta: { total_ads: twAds.length, parsed: twAds.length - skipped, skipped },
+      },
+    });
+  } catch (err) {
+    console.error('[Creative Analysis] /data-by-date error:', err);
+    res.status(500).json({ success: false, error: { message: err.message || 'Internal server error' } });
+  }
+});
+
+/**
+ * GET /lifetime?creative_id=B0066
+ * Returns lifetime aggregated metrics across ALL weeks for a given creative_id,
+ * plus a weekly breakdown array.
+ */
+router.get('/lifetime', authenticate, async (req, res) => {
+  try {
+    const { creative_id } = req.query;
+    if (!creative_id) {
+      return res.status(400).json({
+        success: false,
+        error: { message: 'creative_id query param is required (e.g. B0066)' },
+      });
+    }
+
+    await ensureTable();
+
+    // Fetch all rows for this creative across all weeks
+    const rows = await pgQuery(
+      'SELECT * FROM creative_analysis WHERE creative_id = $1 ORDER BY week ASC, spend DESC',
+      [creative_id.toUpperCase()]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: { message: `No data found for creative_id "${creative_id}"` },
+      });
+    }
+
+    // Aggregate lifetime totals
+    let totalSpend = 0, totalRevenue = 0, totalPurchases = 0, totalImpressions = 0, totalClicks = 0;
+    const weeklyMap = {};
+
+    for (const row of rows) {
+      const spend = Number(row.spend) || 0;
+      const revenue = Number(row.revenue) || 0;
+      const purchases = Number(row.purchases) || 0;
+      const impressions = Number(row.impressions) || 0;
+      const clicks = Number(row.clicks) || 0;
+
+      totalSpend += spend;
+      totalRevenue += revenue;
+      totalPurchases += purchases;
+      totalImpressions += impressions;
+      totalClicks += clicks;
+
+      if (!weeklyMap[row.week]) {
+        weeklyMap[row.week] = {
+          week: row.week,
+          spend: 0, revenue: 0, purchases: 0, impressions: 0, clicks: 0,
+          hooks: [],
+        };
+      }
+
+      weeklyMap[row.week].spend += spend;
+      weeklyMap[row.week].revenue += revenue;
+      weeklyMap[row.week].purchases += purchases;
+      weeklyMap[row.week].impressions += impressions;
+      weeklyMap[row.week].clicks += clicks;
+      weeklyMap[row.week].hooks.push({
+        hook_id: row.hook_id,
+        ad_name: row.ad_name,
+        spend: Math.round(spend * 100) / 100,
+        revenue: Math.round(revenue * 100) / 100,
+        purchases,
+        impressions,
+        clicks,
+        ...computeMetrics(row),
+      });
+    }
+
+    // Build weekly breakdown with computed metrics
+    const weeklyBreakdown = Object.values(weeklyMap).map(w => ({
+      ...w,
+      spend: Math.round(w.spend * 100) / 100,
+      revenue: Math.round(w.revenue * 100) / 100,
+      ...computeMetrics(w),
+    }));
+
+    const lifetimeSpend = Math.round(totalSpend * 100) / 100;
+    const lifetimeRevenue = Math.round(totalRevenue * 100) / 100;
+    const lifetimeRoas = lifetimeSpend > 0 ? Math.round((lifetimeRevenue / lifetimeSpend) * 100) / 100 : 0;
+    const weeks = Object.keys(weeklyMap).sort((a, b) => {
+      const [wA, yA] = a.replace('WK', '').split('_').map(Number);
+      const [wB, yB] = b.replace('WK', '').split('_').map(Number);
+      return yA - yB || wA - wB;
+    });
+
+    // Get metadata from the row with highest spend
+    const topRow = rows.reduce((a, b) => (Number(b.spend) > Number(a.spend) ? b : a), rows[0]);
+
+    res.json({
+      success: true,
+      data: {
+        creative_id: creative_id.toUpperCase(),
+        type: topRow.type,
+        avatar: topRow.avatar,
+        angle: topRow.angle,
+        format: topRow.format,
+        editor: topRow.editor,
+        lifetime_spend: lifetimeSpend,
+        lifetime_revenue: lifetimeRevenue,
+        lifetime_roas: lifetimeRoas,
+        lifetime_purchases: totalPurchases,
+        first_seen: weeks[0],
+        last_seen: weeks[weeks.length - 1],
+        weeks_active: weeks.length,
+        is_winner: lifetimeSpend >= 500 && lifetimeRoas >= 1.80,
+        weekly_breakdown: weeklyBreakdown,
+      },
+    });
+  } catch (err) {
+    console.error('[Creative Analysis] /lifetime error:', err);
+    res.status(500).json({ success: false, error: { message: err.message || 'Internal server error' } });
+  }
+});
+
+/**
+ * GET /active
+ * Returns creatives that had spend > 0 in the latest week, sorted by spend DESC.
+ * Includes lifetime metrics and is_winner flag.
+ */
+router.get('/active', authenticate, async (req, res) => {
+  try {
+    await ensureTable();
+
+    // Find the latest week (sort by year then week number for correct cross-year ordering)
+    const latestRows = await pgQuery(
+      `SELECT DISTINCT week FROM creative_analysis WHERE week IS NOT NULL
+       ORDER BY SPLIT_PART(week, '_', 2) DESC, SPLIT_PART(week, '_', 1) DESC LIMIT 1`
+    );
+    if (latestRows.length === 0) {
+      return res.json({ success: true, data: { creatives: [], latest_week: null } });
+    }
+    const latestWeek = latestRows[0].week;
+
+    // Get active creatives (spend > 0 in latest week) with hook-level detail
+    const activeRows = await pgQuery(
+      `SELECT * FROM creative_analysis WHERE week = $1 AND spend > 0 ORDER BY spend DESC`,
+      [latestWeek]
+    );
+
+    // Group by creative_id (same pattern as /data)
+    const grouped = {};
+    for (const row of activeRows) {
+      const cid = row.creative_id;
+      if (!grouped[cid]) {
+        grouped[cid] = {
+          creative_id: cid,
+          type: row.type,
+          avatar: row.avatar,
+          angle: row.angle,
+          format: row.format,
+          editor: row.editor,
+          total_spend: 0,
+          total_revenue: 0,
+          total_purchases: 0,
+          total_impressions: 0,
+          total_clicks: 0,
+          hooks: [],
+        };
+      }
+
+      const metrics = computeMetrics(row);
+      grouped[cid].hooks.push({
+        hook_id: row.hook_id,
+        ad_name: row.ad_name,
+        spend: Number(row.spend),
+        revenue: Number(row.revenue),
+        purchases: Number(row.purchases),
+        impressions: Number(row.impressions),
+        clicks: Number(row.clicks),
+        ...metrics,
+      });
+
+      grouped[cid].total_spend      += Number(row.spend) || 0;
+      grouped[cid].total_revenue    += Number(row.revenue) || 0;
+      grouped[cid].total_purchases  += Number(row.purchases) || 0;
+      grouped[cid].total_impressions += Number(row.impressions) || 0;
+      grouped[cid].total_clicks     += Number(row.clicks) || 0;
+    }
+
+    // Get lifetime metrics for all active creative_ids
+    const creativeIds = Object.keys(grouped);
+    const lifetimeMap = await getLifetimeMetrics(creativeIds);
+
+    const creatives = Object.values(grouped).map(c => {
+      const lt = lifetimeMap.get(c.creative_id) || {
+        lifetime_spend: 0, lifetime_revenue: 0, lifetime_roas: 0,
+        lifetime_purchases: 0, first_seen: null, last_seen: null,
+        weeks_active: 0, is_winner: false,
+      };
+      return {
+        ...c,
+        total_spend:  Math.round(c.total_spend * 100) / 100,
+        total_revenue: Math.round(c.total_revenue * 100) / 100,
+        ...computeMetrics({
+          spend: c.total_spend,
+          revenue: c.total_revenue,
+          purchases: c.total_purchases,
+          impressions: c.total_impressions,
+          clicks: c.total_clicks,
+        }),
+        ...lt,
+      };
+    });
+
+    creatives.sort((a, b) => b.total_spend - a.total_spend);
+
+    res.json({ success: true, data: { creatives, latest_week: latestWeek } });
+  } catch (err) {
+    console.error('[Creative Analysis] /active error:', err);
+    res.status(500).json({ success: false, error: { message: err.message || 'Internal server error' } });
+  }
+});
+
+/**
  * GET /leaderboard?week=WK12_2026
  * Top 10 by ROAS, top 10 by Purchases, top 10 by Efficiency (lowest CPA).
  * Aggregated at creative_id level. Min $200 spend filter.
+ * Includes lifetime metrics and is_winner flag.
  */
 router.get('/leaderboard', authenticate, async (req, res) => {
   try {
@@ -633,11 +1100,11 @@ router.get('/leaderboard', authenticate, async (req, res) => {
     const aggregated = await pgQuery(
       `SELECT
          creative_id,
-         type,
-         avatar,
-         angle,
-         format,
-         editor,
+         MAX(type) as type,
+         MAX(avatar) as avatar,
+         MAX(angle) as angle,
+         MAX(format) as format,
+         MAX(editor) as editor,
          MIN(ad_name) as ad_name,
          SUM(spend) as spend,
          SUM(revenue) as revenue,
@@ -646,28 +1113,40 @@ router.get('/leaderboard', authenticate, async (req, res) => {
          SUM(clicks) as clicks
        FROM creative_analysis
        WHERE week = $1
-       GROUP BY creative_id, type, avatar, angle, format, editor
+       GROUP BY creative_id
        HAVING SUM(spend) >= 200
        ORDER BY SUM(spend) DESC`,
       [week.toUpperCase()]
     );
 
-    // Compute metrics for each
-    const withMetrics = aggregated.map(row => ({
-      creative_id: row.creative_id,
-      ad_name: row.ad_name,
-      type: row.type,
-      avatar: row.avatar,
-      angle: row.angle,
-      format: row.format,
-      editor: row.editor,
-      spend: Math.round(Number(row.spend) * 100) / 100,
-      revenue: Math.round(Number(row.revenue) * 100) / 100,
-      purchases: Number(row.purchases),
-      impressions: Number(row.impressions),
-      clicks: Number(row.clicks),
-      ...computeMetrics(row),
-    }));
+    // Get lifetime metrics for all leaderboard creative_ids
+    const creativeIds = aggregated.map(r => r.creative_id);
+    const lifetimeMap = await getLifetimeMetrics(creativeIds);
+
+    // Compute metrics for each, include lifetime data
+    const withMetrics = aggregated.map(row => {
+      const lt = lifetimeMap.get(row.creative_id) || {
+        lifetime_spend: 0, lifetime_revenue: 0, lifetime_roas: 0,
+        lifetime_purchases: 0, first_seen: null, last_seen: null,
+        weeks_active: 0, is_winner: false,
+      };
+      return {
+        creative_id: row.creative_id,
+        ad_name: row.ad_name,
+        type: row.type,
+        avatar: row.avatar,
+        angle: row.angle,
+        format: row.format,
+        editor: row.editor,
+        spend: Math.round(Number(row.spend) * 100) / 100,
+        revenue: Math.round(Number(row.revenue) * 100) / 100,
+        purchases: Number(row.purchases),
+        impressions: Number(row.impressions),
+        clicks: Number(row.clicks),
+        ...computeMetrics(row),
+        ...lt,
+      };
+    });
 
     // Top 10 by ROAS
     const topRoas = [...withMetrics]
@@ -697,7 +1176,8 @@ router.get('/leaderboard', authenticate, async (req, res) => {
 
 /**
  * POST /sync
- * Manual sync trigger. Takes optional { startDate, endDate } or { week }.
+ * Manual sync trigger. Accepts { week } OR { week, startDate, endDate }.
+ * If startDate/endDate are provided alongside week, they override the derived range.
  */
 router.post('/sync', authenticate, async (req, res) => {
   try {
@@ -710,12 +1190,15 @@ router.post('/sync', authenticate, async (req, res) => {
       });
     }
 
-    const range = weekToDateRange(week);
-    if (!range) {
-      return res.status(400).json({ success: false, error: { message: 'Invalid week format. Use WKxx_YYYY.' } });
+    // Use user-provided dates if both are given; otherwise derive from week
+    if (!startDate || !endDate) {
+      const range = weekToDateRange(week);
+      if (!range) {
+        return res.status(400).json({ success: false, error: { message: 'Invalid week format. Use WKxx_YYYY.' } });
+      }
+      startDate = range.startDate;
+      endDate   = range.endDate;
     }
-    startDate = range.startDate;
-    endDate   = range.endDate;
 
     const result = await syncData({ periodWeek: week.toUpperCase(), startDate, endDate });
 
@@ -777,7 +1260,8 @@ router.post('/sync-all', authenticate, async (req, res) => {
 
     // Get all existing weeks
     const weekRows = await pgQuery(
-      'SELECT DISTINCT week FROM creative_analysis WHERE week IS NOT NULL ORDER BY week'
+      `SELECT DISTINCT week FROM creative_analysis WHERE week IS NOT NULL
+       ORDER BY SPLIT_PART(week,'_',2)::int, REPLACE(SPLIT_PART(week,'_',1),'WK','')::int`
     );
 
     const results = [];
@@ -808,7 +1292,7 @@ router.get('/weeks', authenticate, async (req, res) => {
        FROM creative_analysis
        WHERE week IS NOT NULL
        GROUP BY week
-       ORDER BY week DESC`
+       ORDER BY SPLIT_PART(week,'_',2)::int DESC, REPLACE(SPLIT_PART(week,'_',1),'WK','')::int DESC`
     );
 
     const weeks = rows.map(r => ({
@@ -823,5 +1307,31 @@ router.get('/weeks', authenticate, async (req, res) => {
     res.status(500).json({ success: false, error: { message: err.message || 'Internal server error' } });
   }
 });
+
+// ── Auto-Sync (every 5 minutes) ─────────────────────────────────────
+let autoSyncRunning = false;
+
+async function autoSync() {
+  if (autoSyncRunning || !TW_API_KEY) return;
+  autoSyncRunning = true;
+  try {
+    const week = getCurrentWeek();
+    const range = weekToDateRange(week);
+    if (range) {
+      const result = await syncData({ periodWeek: week, startDate: range.startDate, endDate: range.endDate });
+      console.log(`[Creative Analysis] Auto-sync ${week}: synced=${result.synced}, skipped=${result.skipped}`);
+    }
+  } catch (err) {
+    console.error('[Creative Analysis] Auto-sync error:', err.message);
+  } finally {
+    autoSyncRunning = false;
+  }
+}
+
+// Start auto-sync after 30s delay, then every 5 minutes
+setTimeout(() => {
+  autoSync();
+  setInterval(autoSync, 5 * 60 * 1000);
+}, 30_000);
 
 export default router;

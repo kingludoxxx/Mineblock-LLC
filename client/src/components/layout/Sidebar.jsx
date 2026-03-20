@@ -65,17 +65,6 @@ const navGroups = [
     ],
   },
   {
-    label: 'Lab',
-    icon: FlaskConical,
-    items: [
-      { to: '/app/avatars', icon: Users, label: 'Avatars' },
-      { to: '/app/mechanisms', icon: Cog, label: 'Mechanisms' },
-      { to: '/app/offers', icon: Tag, label: 'Offers' },
-      { to: '/app/products', icon: Package, label: 'Products' },
-      { to: '/app/funnels', icon: GitBranch, label: 'Funnels' },
-    ],
-  },
-  {
     label: 'Production',
     icon: Factory,
     items: [
@@ -84,8 +73,6 @@ const navGroups = [
       { to: '/app/magic-ads', icon: Wand2, label: 'Magic Ads' },
       { to: '/app/iteration-king', icon: Crown, label: 'Iteration King' },
       { to: '/app/images', icon: Image, label: 'Images' },
-      { to: '/app/video', icon: Video, label: 'Video' },
-      { to: '/app/audio', icon: Music, label: 'Audio' },
     ],
   },
   {
@@ -102,10 +89,6 @@ const navGroups = [
     icon: BarChart3,
     items: [
       { to: '/app/creative-analysis', icon: BarChart3, label: 'Creative Analysis' },
-      { to: '/app/attribution', icon: Target, label: 'Attribution' },
-      { to: '/app/live', icon: Activity, label: 'Live' },
-      { to: '/app/ltv', icon: Clock, label: 'LTV' },
-      { to: '/app/roas', icon: DollarSign, label: 'ROAS' },
     ],
   },
   {
