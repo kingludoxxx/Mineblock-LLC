@@ -62,6 +62,9 @@ const knownHas = (set, val) => val && set.has(val.toLowerCase());
 function parseAdName(name) {
   if (!name) return null;
 
+  // Helper: title case normalization for consistent aggregation
+  const titleCase = (s) => s ? s.charAt(0).toUpperCase() + s.slice(1).toLowerCase() : null;
+
   // Normalize: strip file extensions from the full name first
   let cleanName = name.replace(/\.(mp4|mov|avi|mkv|png|jpg|jpeg|gif|webp|webm)$/i, '').trim();
 
@@ -90,7 +93,14 @@ function parseAdName(name) {
     if (underscoreSegments.length >= 3) {
       segments = underscoreSegments;
     } else {
-      return null;
+      return {
+        ad_name: name,
+        creative_id: name.slice(0, 50).replace(/[^a-zA-Z0-9]/g, '_'),
+        hook_id: 'HX',
+        type: 'video',
+        avatar: null, angle: null, format: null, editor: null,
+        week: null,
+      };
     }
   }
 
@@ -146,22 +156,34 @@ function parseAdName(name) {
     // Check which tail pattern matches
     const atWeekM1 = segments[weekPos - 1] || '';
     const atWeekM2 = segments[weekPos - 2] || '';
+    const resPattern = /^\d+[xX]\d+$/i;
 
     if (/^NA\d*$/i.test(atWeekM1)) {
       // Short tail: ... Format - Editor - NA - Week
       editorOffset = 2;
-    } else if (/^NA\d*$/i.test(atWeekM2)) {
-      // Long tail: ... Format - Editor - NA - Editor2 - Week
-      editorOffset = 3;
+    } else if (/^NA\d*$/i.test(atWeekM2) || resPattern.test(atWeekM2)) {
+      // Long tail: ... Format - Editor1 - NA/Resolution - Editor2 - Week
+      // Editor2 (sign-off) is at weekPos-1
+      editorOffset = 1;
     } else {
       // No NA found — try assuming short tail
       editorOffset = 2;
     }
 
+    // Bug fix: detect resolution-like segments (e.g. 1080X1080) between editor and format
+    // that shift format/angle/avatar positions by 1
+    let resolutionExtra = 0;
+    for (let ri = weekPos - 1; ri >= Math.max(0, weekPos - 4); ri--) {
+      if (resPattern.test(segments[ri])) { resolutionExtra = 1; break; }
+    }
+
     editor = (weekPos - editorOffset >= 0) ? segments[weekPos - editorOffset] || null : null;
-    format = (weekPos - editorOffset - 1 >= 0) ? segments[weekPos - editorOffset - 1] || null : null;
-    angle  = (weekPos - editorOffset - 2 >= 0) ? segments[weekPos - editorOffset - 2] || null : null;
-    avatar = (weekPos - editorOffset - 3 >= 0) ? segments[weekPos - editorOffset - 3] || null : null;
+    // For long tail (editorOffset=1): skip Editor1 + NA/Res slots (3 positions from editor)
+    // For short tail (editorOffset=2): skip NA slot (1 position from editor)
+    const formatOffset = editorOffset === 1 ? 4 : (editorOffset + 1);
+    format = (weekPos - formatOffset >= 0) ? segments[weekPos - formatOffset] || null : null;
+    angle  = (weekPos - formatOffset - 1 >= 0) ? segments[weekPos - formatOffset - 1] || null : null;
+    avatar = (weekPos - formatOffset - 2 >= 0) ? segments[weekPos - formatOffset - 2] || null : null;
 
     // Clean up placeholder values
     const placeholders = ['-', 'NA', 'NN', 'na', 'nn'];
@@ -198,7 +220,7 @@ function parseAdName(name) {
     if (knownHas(KNOWN_ANGLES, avatar)) {
       // Two angles exist (e.g. MoneySeeker + Lottery) — the "avatar" is actually the primary angle
       // Look one position further back for the real avatar/creative description
-      const realAvatarPos = weekPos - editorOffset - 4;
+      const realAvatarPos = weekPos - formatOffset - 3;
       if (realAvatarPos >= 0) {
         const candidate = segments[realAvatarPos] || null;
         // Only use if it's not junk
@@ -242,7 +264,7 @@ function parseAdName(name) {
   // Determine type from creative ID prefix
   const type = creativeId && /^IM\d/i.test(creativeId) ? 'image' : 'video';
 
-  return { ad_name: name, creative_id: creativeId, hook_id: hookId, type, avatar, angle, format, editor, week };
+  return { ad_name: name, creative_id: creativeId, hook_id: hookId, type, avatar: titleCase(avatar), angle: titleCase(angle), format: titleCase(format), editor: titleCase(editor), week };
 }
 
 // ── Week / Date Helpers ─────────────────────────────────────────────
