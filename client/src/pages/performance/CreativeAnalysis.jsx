@@ -17,6 +17,7 @@ import {
   Flame,
   Grid3X3,
   ChevronDown,
+  Calendar,
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -199,15 +200,62 @@ const TABLE_COLUMNS = [
   { key: 'aov', label: 'AOV', align: 'right', format: fmtMoney },
 ];
 
+// ── Date Presets ─────────────────────────────────────────────────────────────
+
+const DATE_PRESETS = [
+  { label: 'Today', key: 'today' },
+  { label: 'Yesterday', key: 'yesterday' },
+  { label: 'This week', key: 'this_week' },
+  { label: 'This month', key: 'this_month' },
+  { label: 'Last week', key: 'last_week' },
+  { label: 'Last month', key: 'last_month' },
+  { label: 'Last 7 days', key: 'last_7' },
+  { label: 'Last 14 days', key: 'last_14' },
+  { label: 'Last 30 days', key: 'last_30' },
+  { label: 'Last 365 days', key: 'last_365' },
+];
+
+function presetToRange(key) {
+  const today = new Date();
+  const fmt = (d) => d.toISOString().slice(0, 10);
+  const sub = (days) => { const d = new Date(today); d.setDate(d.getDate() - days); return d; };
+
+  switch (key) {
+    case 'today': return { startDate: fmt(today), endDate: fmt(today) };
+    case 'yesterday': { const y = sub(1); return { startDate: fmt(y), endDate: fmt(y) }; }
+    case 'this_week': {
+      const d = new Date(today); d.setDate(d.getDate() - d.getDay());
+      return { startDate: fmt(d), endDate: fmt(today) };
+    }
+    case 'this_month': {
+      const d = new Date(today.getFullYear(), today.getMonth(), 1);
+      return { startDate: fmt(d), endDate: fmt(today) };
+    }
+    case 'last_week': {
+      const end = new Date(today); end.setDate(end.getDate() - end.getDay() - 1);
+      const start = new Date(end); start.setDate(start.getDate() - 6);
+      return { startDate: fmt(start), endDate: fmt(end) };
+    }
+    case 'last_month': {
+      const end = new Date(today.getFullYear(), today.getMonth(), 0);
+      const start = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+      return { startDate: fmt(start), endDate: fmt(end) };
+    }
+    case 'last_7': return { startDate: fmt(sub(6)), endDate: fmt(today) };
+    case 'last_14': return { startDate: fmt(sub(13)), endDate: fmt(today) };
+    case 'last_30': return { startDate: fmt(sub(29)), endDate: fmt(today) };
+    case 'last_365': return { startDate: fmt(sub(364)), endDate: fmt(today) };
+    default: return { startDate: fmt(sub(13)), endDate: fmt(today) };
+  }
+}
+
 // ── Component ────────────────────────────────────────────────────────────────
 
 export default function CreativeAnalysis() {
-  const weekOptions = useMemo(() => generateWeekOptions(), []);
-
-  const [week, setWeek] = useState(getCurrentWeek);
-  const [dateMode, setDateMode] = useState('week'); // 'week' or 'custom'
-  const [startDate, setStartDate] = useState('');
-  const [endDate, setEndDate] = useState('');
+  const [datePreset, setDatePreset] = useState('last_14');
+  const [datePickerOpen, setDatePickerOpen] = useState(false);
+  const [startDate, setStartDate] = useState(() => presetToRange('last_14').startDate);
+  const [endDate, setEndDate] = useState(() => presetToRange('last_14').endDate);
   const [data, setData] = useState([]);
   const [leaderboard, setLeaderboard] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -301,26 +349,23 @@ export default function CreativeAnalysis() {
     setError(null);
     try {
       let dataRes;
-      let lbWeek = week; // week to use for leaderboard
-      if (dateMode === 'custom' && startDate && endDate) {
-        dataRes = await api.get('/creative-analysis/data-by-date', { params: { startDate, endDate }, signal });
-      } else if (activeOnly) {
+      let lbWeek = null;
+      if (activeOnly) {
         dataRes = await api.get('/creative-analysis/active', { signal });
-        // Use the latest_week from /active for the leaderboard and sync
         const activeData = dataRes.data?.data || dataRes.data || {};
         if (activeData.latest_week) {
           lbWeek = activeData.latest_week;
           setLatestWeek(activeData.latest_week);
         }
       } else {
-        dataRes = await api.get('/creative-analysis/data', { params: { week }, signal });
+        dataRes = await api.get('/creative-analysis/data-by-date', { params: { startDate, endDate }, signal });
       }
       if (signal.aborted) return;
       const respData = dataRes.data?.data || dataRes.data || {};
       setData(respData.creatives || respData || []);
 
-      // Skip leaderboard in custom date mode (it's week-based and wouldn't match)
-      if (dateMode !== 'custom') {
+      // Leaderboard only in active mode (it's week-based)
+      if (activeOnly && lbWeek) {
         const lbRes = await api.get('/creative-analysis/leaderboard', { params: { week: lbWeek }, signal });
         if (signal.aborted) return;
         setLeaderboard(lbRes.data?.data || lbRes.data || null);
@@ -333,12 +378,12 @@ export default function CreativeAnalysis() {
     } finally {
       if (!signal.aborted) setLoading(false);
     }
-  }, [week, dateMode, startDate, endDate, activeOnly]);
+  }, [startDate, endDate, activeOnly]);
 
   const handleSync = async () => {
     setSyncing(true);
     try {
-      const syncWeek = activeOnly && latestWeek ? latestWeek : week;
+      const syncWeek = latestWeek || getCurrentWeek();
       await api.post('/creative-analysis/sync', { week: syncWeek });
       await fetchData();
     } catch (err) {
@@ -669,85 +714,113 @@ export default function CreativeAnalysis() {
           <BarChart3 className="w-7 h-7 text-emerald-400" />
           <div>
             <h1 className="text-2xl font-bold text-white">Creative Analysis</h1>
-            <p className="text-gray-500 text-sm">Weekly ad performance report</p>
+            <p className="text-gray-500 text-sm">Ad performance report</p>
           </div>
         </div>
 
         <div className="flex items-center gap-3 flex-wrap">
-          {/* Date mode toggle */}
-          <div className="flex rounded-lg overflow-hidden border border-white/[0.08]">
+          {/* Date range picker */}
+          <div className="relative">
             <button
-              onClick={() => setDateMode('week')}
-              className={`px-3 py-2 text-xs font-medium transition-colors cursor-pointer ${dateMode === 'week' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-white/[0.04] text-gray-400 hover:text-white'}`}
+              onClick={() => setDatePickerOpen((v) => !v)}
+              className="flex items-center gap-2 px-4 py-2 rounded-lg bg-white/[0.04] border border-white/[0.08] text-white text-sm hover:bg-white/[0.06] transition-colors cursor-pointer"
             >
-              Week
+              <Calendar className="w-3.5 h-3.5 text-gray-400" />
+              {activeOnly ? 'Active Only' : DATE_PRESETS.find((p) => p.key === datePreset)?.label || 'Custom'}
+              <ChevronDown className="w-3.5 h-3.5 text-gray-500" />
             </button>
-            <button
-              onClick={() => setDateMode('custom')}
-              className={`px-3 py-2 text-xs font-medium transition-colors cursor-pointer ${dateMode === 'custom' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-white/[0.04] text-gray-400 hover:text-white'}`}
-            >
-              Custom
-            </button>
+
+            {datePickerOpen && (
+              <div className="absolute right-0 top-full mt-2 z-50 bg-[#1a1a2e] border border-white/[0.1] rounded-xl shadow-2xl flex min-w-[520px]">
+                {/* Presets */}
+                <div className="w-44 border-r border-white/[0.06] py-2">
+                  <p className="px-3 py-1.5 text-gray-500 text-[10px] uppercase tracking-wider font-semibold">Presets</p>
+                  {DATE_PRESETS.map((preset) => (
+                    <button
+                      key={preset.key}
+                      onClick={() => {
+                        const range = presetToRange(preset.key);
+                        setDatePreset(preset.key);
+                        setStartDate(range.startDate);
+                        setEndDate(range.endDate);
+                        setActiveOnly(false);
+                        setDatePickerOpen(false);
+                      }}
+                      className={`w-full text-left px-3 py-1.5 text-sm hover:bg-white/[0.04] transition-colors cursor-pointer ${
+                        datePreset === preset.key ? 'text-emerald-400 bg-emerald-500/10' : 'text-gray-300'
+                      }`}
+                    >
+                      {preset.label}
+                    </button>
+                  ))}
+                  <div className="border-t border-white/[0.06] mt-1 pt-1">
+                    <p className="px-3 py-1.5 text-gray-600 text-[10px] uppercase tracking-wider">Custom</p>
+                  </div>
+                </div>
+                {/* Custom date inputs */}
+                <div className="flex-1 p-4">
+                  <div className="flex items-center gap-3 mb-4">
+                    <div>
+                      <label className="block text-gray-500 text-[10px] uppercase mb-1">Start</label>
+                      <input
+                        type="date"
+                        value={startDate}
+                        onChange={(e) => { setStartDate(e.target.value); setDatePreset('custom'); }}
+                        className="bg-white/[0.04] border border-white/[0.08] rounded-lg text-white px-3 py-2 text-sm focus:outline-none focus:border-emerald-500/40"
+                      />
+                    </div>
+                    <span className="text-gray-500 text-xs mt-4">→</span>
+                    <div>
+                      <label className="block text-gray-500 text-[10px] uppercase mb-1">End</label>
+                      <input
+                        type="date"
+                        value={endDate}
+                        onChange={(e) => { setEndDate(e.target.value); setDatePreset('custom'); }}
+                        className="bg-white/[0.04] border border-white/[0.08] rounded-lg text-white px-3 py-2 text-sm focus:outline-none focus:border-emerald-500/40"
+                      />
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-end gap-2">
+                    <button
+                      onClick={() => setDatePickerOpen(false)}
+                      className="px-3 py-1.5 rounded-lg text-gray-400 text-sm hover:text-white transition-colors cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={() => {
+                        setActiveOnly(false);
+                        setDatePickerOpen(false);
+                        fetchData();
+                      }}
+                      disabled={!startDate || !endDate}
+                      className="px-4 py-1.5 rounded-lg bg-emerald-500 text-white text-sm font-medium hover:bg-emerald-600 transition-colors cursor-pointer disabled:opacity-40"
+                    >
+                      Apply
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
 
-          {dateMode === 'week' ? (
-            <select
-              value={week}
-              onChange={(e) => setWeek(e.target.value)}
-              className={selectStyle}
-            >
-              {weekOptions.map((w) => (
-                <option key={w} value={w} className="bg-[#111]">
-                  {w.replace('_', ' ')}
-                </option>
-              ))}
-            </select>
-          ) : (
-            <>
-              <input
-                type="date"
-                value={startDate}
-                onChange={(e) => setStartDate(e.target.value)}
-                className={`${selectStyle} text-gray-300`}
-              />
-              <span className="text-gray-500 text-xs">to</span>
-              <input
-                type="date"
-                value={endDate}
-                onChange={(e) => setEndDate(e.target.value)}
-                className={`${selectStyle} text-gray-300`}
-              />
-              <button
-                onClick={fetchData}
-                disabled={!startDate || !endDate}
-                className="px-3 py-2 rounded-lg bg-emerald-500/20 text-emerald-400 text-sm font-medium hover:bg-emerald-500/30 transition-colors cursor-pointer disabled:opacity-40"
-              >
-                Apply
-              </button>
-            </>
-          )}
+          {/* Active only toggle */}
+          <button
+            onClick={() => { setActiveOnly((v) => !v); setDatePreset(activeOnly ? 'last_14' : 'active'); }}
+            className={`px-3 py-2 rounded-lg text-xs font-medium transition-colors cursor-pointer ${activeOnly ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30' : 'bg-white/[0.04] text-gray-400 hover:text-white border border-white/[0.08]'}`}
+          >
+            Active Only
+          </button>
 
-          {/* Active only toggle (disabled in custom date mode) */}
-          {dateMode === 'week' && (
-            <button
-              onClick={() => setActiveOnly((v) => !v)}
-              className={`px-3 py-2 rounded-lg text-xs font-medium transition-colors cursor-pointer ${activeOnly ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30' : 'bg-white/[0.04] text-gray-400 hover:text-white border border-white/[0.08]'}`}
-            >
-              Active Only
-            </button>
-          )}
-
-          {/* Sync button (only in week mode — custom mode queries TW live) */}
-          {dateMode === 'week' && (
-            <button
-              onClick={handleSync}
-              disabled={syncing}
-              className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 text-sm font-medium transition-colors cursor-pointer border border-emerald-500/20"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 ${syncing ? 'animate-spin' : ''}`} />
-              {syncing ? 'Syncing...' : 'Sync Data'}
-            </button>
-          )}
+          {/* Sync button */}
+          <button
+            onClick={handleSync}
+            disabled={syncing}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 text-sm font-medium transition-colors cursor-pointer border border-emerald-500/20"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${syncing ? 'animate-spin' : ''}`} />
+            {syncing ? 'Syncing...' : 'Sync Data'}
+          </button>
         </div>
       </div>
 
