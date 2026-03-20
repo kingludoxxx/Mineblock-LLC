@@ -381,9 +381,10 @@ export default function CreativeAnalysis() {
 
   const handleSync = async () => {
     setSyncing(true);
+    const syncController = new AbortController();
     try {
       const syncWeek = latestWeek || getCurrentWeek();
-      await api.post('/creative-analysis/sync', { week: syncWeek }, { signal: abortRef.current?.signal });
+      await api.post('/creative-analysis/sync', { week: syncWeek }, { signal: syncController.signal });
       await fetchData();
     } catch (err) {
       if (err.name === 'CanceledError' || err.name === 'AbortError') return;
@@ -630,12 +631,14 @@ export default function CreativeAnalysis() {
     if (col.key === 'revenue') {
       if (val >= 1000) return 'bg-emerald-500/10 text-emerald-300 font-medium';
       if (val >= 500) return 'bg-emerald-500/[0.05] text-white font-medium';
+      return 'text-gray-400';
     }
     if (col.key === 'spend') return 'text-white font-medium';
     if (col.key === 'cpa') {
-      if (val > 0 && val <= 15) return 'bg-emerald-500/10 text-emerald-400';
-      if (val > 15 && val <= 30) return 'text-yellow-400';
-      if (val > 30) return 'text-red-400';
+      if (val == null || val === 0) return 'text-gray-500';
+      if (val <= 15) return 'bg-emerald-500/10 text-emerald-400';
+      if (val <= 30) return 'text-yellow-400';
+      return 'text-red-400';
     }
     return '';
   };
