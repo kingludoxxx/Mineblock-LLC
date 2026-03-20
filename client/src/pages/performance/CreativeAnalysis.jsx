@@ -18,6 +18,7 @@ import {
   ChevronDown,
   ChevronLeft,
   Calendar,
+  Play,
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -404,6 +405,8 @@ export default function CreativeAnalysis() {
     try {
       const syncWeek = latestWeek || getCurrentWeek();
       await api.post('/creative-analysis/sync', { week: syncWeek }, { signal: syncController.signal });
+      // Also sync Meta thumbnails
+      try { await api.post('/creative-analysis/sync-meta-thumbnails', {}, { signal: syncController.signal }); } catch {}
       await fetchData();
     } catch (err) {
       if (err.name === 'CanceledError' || err.name === 'AbortError') return;
@@ -504,6 +507,7 @@ export default function CreativeAnalysis() {
   // ── Analytics: Angle/Format Breakdown, Rising Stars, Heatmap ──
 
   const [analyticsOpen, setAnalyticsOpen] = useState(true);
+  const [videoModal, setVideoModal] = useState(null); // { thumbnail_url, video_url, ad_name }
 
   const angleStats = useMemo(() => {
     const map = {};
@@ -971,8 +975,22 @@ export default function CreativeAnalysis() {
                   className="shrink-0 w-56 bg-[#111] border border-white/[0.06] rounded-xl overflow-hidden hover:border-white/[0.12] transition-colors"
                 >
                   {/* Visual header */}
-                  <div className={`h-32 flex items-center justify-center relative ${isVideo ? 'bg-gradient-to-br from-blue-900/40 to-purple-900/30' : 'bg-gradient-to-br from-cyan-900/30 to-emerald-900/20'}`}>
-                    {isVideo ? (
+                  <div
+                    className={`h-36 flex items-center justify-center relative cursor-pointer group ${creative.thumbnail_url ? 'bg-black' : isVideo ? 'bg-gradient-to-br from-blue-900/40 to-purple-900/30' : 'bg-gradient-to-br from-cyan-900/30 to-emerald-900/20'}`}
+                    onClick={() => (creative.thumbnail_url || creative.video_url) && setVideoModal({ thumbnail_url: creative.thumbnail_url, video_url: creative.video_url, ad_name: creative.ad_name })}
+                  >
+                    {creative.thumbnail_url ? (
+                      <>
+                        <img src={creative.thumbnail_url} alt="" className="w-full h-full object-cover" />
+                        {creative.video_url && (
+                          <div className="absolute inset-0 flex items-center justify-center bg-black/20 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <div className="w-10 h-10 rounded-full bg-white/90 flex items-center justify-center">
+                              <Play className="w-5 h-5 text-black ml-0.5" />
+                            </div>
+                          </div>
+                        )}
+                      </>
+                    ) : isVideo ? (
                       <Video className="w-10 h-10 text-blue-400/40" />
                     ) : (
                       <Image className="w-10 h-10 text-cyan-400/40" />
@@ -1045,11 +1063,11 @@ export default function CreativeAnalysis() {
                   <h3 className="text-white font-semibold text-sm">Performance by Angle</h3>
                 </div>
                 {angleStats.length > 0 ? (
-                  <ResponsiveContainer width="100%" height={Math.min(500, Math.max(180, angleStats.length * 36))}>
-                    <RBarChart data={angleStats} layout="vertical" margin={{ top: 0, right: 20, bottom: 0, left: 0 }}>
+                  <ResponsiveContainer width="100%" height={Math.max(220, angleStats.length * 44)}>
+                    <RBarChart data={angleStats} layout="vertical" margin={{ top: 0, right: 20, bottom: 0, left: 0 }} barCategoryGap="20%">
                       <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" horizontal={false} />
                       <XAxis type="number" tick={{ fill: '#6b7280', fontSize: 10 }} axisLine={{ stroke: 'rgba(255,255,255,0.1)' }} tickFormatter={(v) => `${Number(v || 0).toFixed(1)}x`} />
-                      <YAxis type="category" dataKey="angle" tick={{ fill: '#9ca3af', fontSize: 11 }} axisLine={false} width={120} />
+                      <YAxis type="category" dataKey="angle" tick={{ fill: '#9ca3af', fontSize: 11 }} axisLine={false} width={160} interval={0} />
                       <Tooltip
                         contentStyle={{ background: '#1a1a2e', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, color: '#fff', fontSize: 12 }}
                         formatter={(v, name) => [name === 'roas' ? `${Number(v || 0).toFixed(2)}x` : `$${Number(v || 0).toLocaleString()}`, name === 'roas' ? 'ROAS' : name === 'spend' ? 'Spend' : 'Revenue']}
@@ -1086,11 +1104,11 @@ export default function CreativeAnalysis() {
                   <h3 className="text-white font-semibold text-sm">Performance by Format</h3>
                 </div>
                 {formatStats.length > 0 ? (
-                  <ResponsiveContainer width="100%" height={Math.min(500, Math.max(180, formatStats.length * 36))}>
-                    <RBarChart data={formatStats} layout="vertical" margin={{ top: 0, right: 20, bottom: 0, left: 0 }}>
+                  <ResponsiveContainer width="100%" height={Math.max(220, formatStats.length * 44)}>
+                    <RBarChart data={formatStats} layout="vertical" margin={{ top: 0, right: 20, bottom: 0, left: 0 }} barCategoryGap="20%">
                       <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" horizontal={false} />
                       <XAxis type="number" tick={{ fill: '#6b7280', fontSize: 10 }} axisLine={{ stroke: 'rgba(255,255,255,0.1)' }} tickFormatter={(v) => `${Number(v || 0).toFixed(1)}x`} />
-                      <YAxis type="category" dataKey="format" tick={{ fill: '#9ca3af', fontSize: 11 }} axisLine={false} width={100} />
+                      <YAxis type="category" dataKey="format" tick={{ fill: '#9ca3af', fontSize: 11 }} axisLine={false} width={120} interval={0} />
                       <Tooltip
                         contentStyle={{ background: '#1a1a2e', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, color: '#fff', fontSize: 12 }}
                         formatter={(v, name) => [name === 'roas' ? `${Number(v || 0).toFixed(2)}x` : `$${Number(v || 0).toLocaleString()}`, name === 'roas' ? 'ROAS' : name === 'spend' ? 'Spend' : 'Revenue']}
@@ -1455,6 +1473,35 @@ export default function CreativeAnalysis() {
           </div>
         )}
       </div>
+
+      {/* Video Player Modal */}
+      {videoModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80" onClick={() => setVideoModal(null)}>
+          <div className="relative max-w-3xl w-full mx-4" onClick={(e) => e.stopPropagation()}>
+            <button onClick={() => setVideoModal(null)} className="absolute -top-10 right-0 text-white/70 hover:text-white">
+              <X className="w-6 h-6" />
+            </button>
+            <div className="bg-[#111] rounded-xl overflow-hidden">
+              {videoModal.video_url ? (
+                <video
+                  src={videoModal.video_url}
+                  controls
+                  autoPlay
+                  className="w-full max-h-[80vh]"
+                  poster={videoModal.thumbnail_url}
+                />
+              ) : videoModal.thumbnail_url ? (
+                <img src={videoModal.thumbnail_url} alt="" className="w-full max-h-[80vh] object-contain" />
+              ) : null}
+              {videoModal.ad_name && (
+                <div className="p-3 border-t border-white/10">
+                  <p className="text-white text-sm truncate">{videoModal.ad_name}</p>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

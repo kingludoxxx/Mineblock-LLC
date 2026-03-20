@@ -10,6 +10,11 @@ const TW_SHOP_ID  = process.env.TRIPLEWHALE_SHOP_ID || '17cca0-2.myshopify.com';
 const TW_SQL_URL  = 'https://api.triplewhale.com/api/v2/orcabase/api/sql';
 const CRON_SECRET = process.env.CRON_SECRET || '';
 
+// Meta Marketing API config
+const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN || '';
+const META_AD_ACCOUNT_IDS = (process.env.META_AD_ACCOUNT_IDS || '').split(',').filter(Boolean);
+const META_GRAPH_URL = 'https://graph.facebook.com/v21.0';
+
 let tableReady = false; // cache ensureTable so it only runs once
 
 // ── Known Values (for cross-validation) ─────────────────────────────
@@ -520,6 +525,11 @@ async function ensureTable() {
         ALTER TABLE creative_analysis ALTER COLUMN impressions TYPE BIGINT;
         ALTER TABLE creative_analysis ALTER COLUMN clicks TYPE BIGINT;
 
+        -- Meta thumbnail/video columns
+        ALTER TABLE creative_analysis ADD COLUMN IF NOT EXISTS thumbnail_url TEXT;
+        ALTER TABLE creative_analysis ADD COLUMN IF NOT EXISTS video_url TEXT;
+        ALTER TABLE creative_analysis ADD COLUMN IF NOT EXISTS meta_ad_id TEXT;
+
         -- Add indexes for common query patterns
         CREATE INDEX IF NOT EXISTS idx_ca_week_spend ON creative_analysis (week, spend DESC);
         CREATE INDEX IF NOT EXISTS idx_ca_creative_id ON creative_analysis (creative_id);
@@ -728,6 +738,110 @@ async function getLifetimeMetrics(creativeIds) {
   }
 }
 
+// ── Meta Thumbnails Sync ─────────────────────────────────────────────
+
+/**
+ * Fetch all ads from all Meta ad accounts and match them to our creative_analysis
+ * rows by ad_name. Updates thumbnail_url, video_url, and meta_ad_id.
+ */
+async function syncMetaThumbnails() {
+  if (!META_ACCESS_TOKEN || META_AD_ACCOUNT_IDS.length === 0) {
+    console.warn('[Meta Sync] No META_ACCESS_TOKEN or META_AD_ACCOUNT_IDS configured');
+    return { matched: 0, total: 0 };
+  }
+
+  await ensureTable();
+
+  // 1. Get all unique ad_names from our DB that don't have a thumbnail yet
+  const dbRows = await pgQuery(
+    `SELECT DISTINCT ad_name FROM creative_analysis WHERE ad_name IS NOT NULL`
+  );
+  const dbAdNames = new Set(dbRows.map(r => r.ad_name));
+
+  // 2. Fetch ads from all Meta accounts
+  const metaAds = [];
+
+  for (const accountId of META_AD_ACCOUNT_IDS) {
+    try {
+      let url = `${META_GRAPH_URL}/${accountId}/ads?fields=name,creative{thumbnail_url,video_id}&limit=100&access_token=${META_ACCESS_TOKEN}`;
+      let pageCount = 0;
+
+      while (url && pageCount < 20) {
+        const resp = await fetch(url);
+        const data = await resp.json();
+        if (data.error) {
+          console.warn(`[Meta Sync] Error for ${accountId}:`, data.error.message);
+          break;
+        }
+        if (data.data) metaAds.push(...data.data);
+        url = data.paging?.next || null;
+        pageCount++;
+      }
+    } catch (err) {
+      console.warn(`[Meta Sync] Fetch error for ${accountId}:`, err.message);
+    }
+  }
+
+  console.log(`[Meta Sync] Fetched ${metaAds.length} ads from ${META_AD_ACCOUNT_IDS.length} accounts`);
+
+  // 3. Match Meta ads to DB rows by ad_name
+  let matched = 0;
+  const updates = []; // { ad_name, thumbnail_url, video_url, meta_ad_id }
+
+  for (const ad of metaAds) {
+    if (!ad.name || !dbAdNames.has(ad.name)) continue;
+    const thumbnailUrl = ad.creative?.thumbnail_url || null;
+    if (!thumbnailUrl) continue;
+
+    updates.push({
+      ad_name: ad.name,
+      thumbnail_url: thumbnailUrl,
+      video_id: ad.creative?.video_id || null,
+      meta_ad_id: ad.id,
+    });
+  }
+
+  // 4. For matched video ads, fetch the actual video source URL
+  const videoIds = [...new Set(updates.filter(u => u.video_id).map(u => u.video_id))];
+  const videoSources = new Map();
+
+  // Batch fetch video sources (50 at a time)
+  for (let i = 0; i < videoIds.length; i += 50) {
+    const batch = videoIds.slice(i, i + 50);
+    const promises = batch.map(async (vid) => {
+      try {
+        const resp = await fetch(`${META_GRAPH_URL}/${vid}?fields=source,picture&access_token=${META_ACCESS_TOKEN}`);
+        const data = await resp.json();
+        if (data.source) videoSources.set(vid, { source: data.source, picture: data.picture });
+      } catch {}
+    });
+    await Promise.all(promises);
+  }
+
+  // 5. Update DB rows
+  for (const upd of updates) {
+    const videoData = upd.video_id ? videoSources.get(upd.video_id) : null;
+    const videoUrl = videoData?.source || null;
+    // Use higher-res picture from video endpoint if available
+    const finalThumb = videoData?.picture || upd.thumbnail_url;
+
+    try {
+      await pgQuery(
+        `UPDATE creative_analysis
+         SET thumbnail_url = $1, video_url = $2, meta_ad_id = $3
+         WHERE ad_name = $4 AND (thumbnail_url IS NULL OR thumbnail_url = '')`,
+        [finalThumb, videoUrl, upd.meta_ad_id, upd.ad_name]
+      );
+      matched++;
+    } catch (err) {
+      console.warn(`[Meta Sync] Update error for ${upd.ad_name}:`, err.message);
+    }
+  }
+
+  console.log(`[Meta Sync] Matched and updated ${matched} creatives with thumbnails/videos`);
+  return { matched, total: metaAds.length };
+}
+
 // ── Routes ──────────────────────────────────────────────────────────
 
 /**
@@ -765,6 +879,8 @@ router.get('/data', authenticate, async (req, res) => {
           format: row.format,
           editor: row.editor,
           week: row.week,
+          thumbnail_url: row.thumbnail_url || null,
+          video_url: row.video_url || null,
           total_spend: 0,
           total_revenue: 0,
           total_purchases: 0,
@@ -801,6 +917,9 @@ router.get('/data', authenticate, async (req, res) => {
         if (row.angle)  grouped[cid].angle = row.angle;
         if (row.format) grouped[cid].format = row.format;
         if (row.editor) grouped[cid].editor = row.editor;
+        // Keep best thumbnail/video
+        if (row.thumbnail_url) grouped[cid].thumbnail_url = row.thumbnail_url;
+        if (row.video_url) grouped[cid].video_url = row.video_url;
       }
     }
 
@@ -992,9 +1111,25 @@ router.get('/data-by-date', authenticate, async (req, res) => {
       }
     }
 
-    // Fetch lifetime metrics for all creative_ids
+    // Fetch lifetime metrics and thumbnails for all creative_ids
     const creativeIds = Object.keys(grouped);
     const lifetimeMap = await getLifetimeMetrics(creativeIds);
+
+    // Look up thumbnails from DB for these creative_ids
+    const thumbMap = new Map();
+    if (creativeIds.length > 0) {
+      try {
+        const ph = creativeIds.map((_, i) => `$${i + 1}`).join(',');
+        const thumbRows = await pgQuery(
+          `SELECT DISTINCT ON (creative_id) creative_id, thumbnail_url, video_url
+           FROM creative_analysis
+           WHERE creative_id IN (${ph}) AND thumbnail_url IS NOT NULL
+           ORDER BY creative_id, spend DESC`,
+          creativeIds
+        );
+        for (const r of thumbRows) thumbMap.set(r.creative_id, { thumbnail_url: r.thumbnail_url, video_url: r.video_url });
+      } catch {}
+    }
 
     const creatives = Object.values(grouped).map(c => {
       const { _topSpend, ...rest } = c;
@@ -1003,8 +1138,11 @@ router.get('/data-by-date', authenticate, async (req, res) => {
         lifetime_purchases: 0, first_seen: null, last_seen: null,
         weeks_active: 0, is_winner: false,
       };
+      const thumb = thumbMap.get(c.creative_id) || {};
       return {
         ...rest,
+        thumbnail_url: thumb.thumbnail_url || null,
+        video_url: thumb.video_url || null,
         total_spend:  Math.round(c.total_spend * 100) / 100,
         total_revenue: Math.round(c.total_revenue * 100) / 100,
         ...computeMetrics({
@@ -1307,7 +1445,7 @@ router.get('/leaderboard', authenticate, async (req, res) => {
          GROUP BY creative_id HAVING SUM(spend) >= 200
        ) agg
        JOIN LATERAL (
-         SELECT type, avatar, angle, format, editor, ad_name
+         SELECT type, avatar, angle, format, editor, ad_name, thumbnail_url, video_url
          FROM creative_analysis
          WHERE creative_id = agg.creative_id AND week = $1
          ORDER BY spend DESC LIMIT 1
@@ -1335,6 +1473,8 @@ router.get('/leaderboard', authenticate, async (req, res) => {
         angle: row.angle,
         format: row.format,
         editor: row.editor,
+        thumbnail_url: row.thumbnail_url || null,
+        video_url: row.video_url || null,
         spend: Math.round(Number(row.spend) * 100) / 100,
         revenue: Math.round(Number(row.revenue) * 100) / 100,
         purchases: Number(row.purchases),
@@ -1574,12 +1714,29 @@ async function backfillHistory() {
   }
 }
 
+/**
+ * POST /sync-meta-thumbnails
+ * Manually trigger Meta thumbnail/video sync across all ad accounts.
+ */
+router.post('/sync-meta-thumbnails', authenticate, async (req, res) => {
+  try {
+    const result = await syncMetaThumbnails();
+    res.json({ success: true, data: result });
+  } catch (err) {
+    console.error('[Creative Analysis] /sync-meta-thumbnails error:', err);
+    res.status(500).json({ success: false, error: { message: 'Meta thumbnail sync failed' } });
+  }
+});
+
 // Start auto-sync after 30s delay, then every 5 minutes
-// Also trigger one-time history backfill
+// Also trigger one-time history backfill + meta thumbnails
 setTimeout(() => {
   autoSync();
   backfillHistory();
+  syncMetaThumbnails().catch(err => console.warn('[Meta Sync] Auto-sync error:', err.message));
   setInterval(autoSync, 5 * 60 * 1000);
+  // Sync Meta thumbnails every 30 minutes
+  setInterval(() => syncMetaThumbnails().catch(() => {}), 30 * 60 * 1000);
 }, 30_000);
 
 export default router;
