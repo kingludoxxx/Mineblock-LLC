@@ -154,22 +154,49 @@ const LEADERBOARD_CONFIG = [
   },
 ];
 
+// Stable color assignments for tag badges
+const TAG_COLORS = [
+  { bg: 'bg-amber-500/20', text: 'text-amber-400' },
+  { bg: 'bg-purple-500/20', text: 'text-purple-400' },
+  { bg: 'bg-rose-500/20', text: 'text-rose-400' },
+  { bg: 'bg-sky-500/20', text: 'text-sky-400' },
+  { bg: 'bg-lime-500/20', text: 'text-lime-400' },
+  { bg: 'bg-orange-500/20', text: 'text-orange-400' },
+  { bg: 'bg-teal-500/20', text: 'text-teal-400' },
+  { bg: 'bg-pink-500/20', text: 'text-pink-400' },
+  { bg: 'bg-indigo-500/20', text: 'text-indigo-400' },
+  { bg: 'bg-cyan-500/20', text: 'text-cyan-400' },
+];
+const tagColorMap = {};
+let tagColorIdx = 0;
+const getTagColor = (val) => {
+  if (!val) return null;
+  if (!tagColorMap[val]) {
+    tagColorMap[val] = TAG_COLORS[tagColorIdx % TAG_COLORS.length];
+    tagColorIdx++;
+  }
+  return tagColorMap[val];
+};
+
 const TABLE_COLUMNS = [
   { key: 'type', label: 'Type', align: 'left' },
   { key: 'ad_name', label: 'Ad Name', align: 'left' },
   { key: 'avatar', label: 'Avatar', align: 'left' },
-  { key: 'angle', label: 'Angle', align: 'left' },
-  { key: 'format', label: 'Format', align: 'left' },
+  { key: 'angle', label: 'Angle', align: 'left', tag: true },
+  { key: 'format', label: 'Format', align: 'left', tag: true },
   { key: 'editor', label: 'Editor', align: 'left' },
   { key: 'launched', label: 'Date', align: 'left', format: weekToDate },
   { key: 'spend', label: 'Spend', align: 'right', format: fmtMoney },
   { key: 'revenue', label: 'Revenue', align: 'right', format: fmtMoney },
   { key: 'roas', label: 'ROAS', align: 'right', format: fmtRoas },
+  { key: 'purchases', label: 'Purchases', align: 'right', format: fmtInt },
+  { key: 'cpa', label: 'CPA', align: 'right', format: fmtMoney },
   { key: 'cpm', label: 'CPM', align: 'right', format: fmtMoney },
   { key: 'cpc', label: 'CPC', align: 'right', format: fmtMoney },
   { key: 'ctr', label: 'CTR', align: 'right', format: fmtPct },
   { key: 'impressions', label: 'Impr', align: 'right', format: fmtInt },
   { key: 'clicks', label: 'Clicks', align: 'right', format: fmtInt },
+  { key: 'aov', label: 'AOV', align: 'right', format: fmtMoney },
 ];
 
 // ── Component ────────────────────────────────────────────────────────────────
@@ -485,7 +512,7 @@ export default function CreativeAnalysis() {
     });
   };
 
-  const NUMERIC_COLS = new Set(['spend', 'revenue', 'roas', 'cpm', 'cpc', 'ctr', 'impressions', 'clicks']);
+  const NUMERIC_COLS = new Set(['spend', 'revenue', 'roas', 'cpm', 'cpc', 'ctr', 'impressions', 'clicks', 'purchases', 'cpa', 'aov']);
 
   const handleSort = (key) => {
     setSortConfig((prev) => {
@@ -575,6 +602,16 @@ export default function CreativeAnalysis() {
           <span className="capitalize text-gray-300">{val || '-'}</span>
         </div>
       );
+    }
+
+    // Render colored tag badges for angle/format (Motion-style)
+    if (col.tag && val) {
+      const color = getTagColor(val);
+      return color ? (
+        <span className={`inline-block px-2 py-0.5 rounded-full text-[11px] font-medium ${color.bg} ${color.text}`}>
+          {val}
+        </span>
+      ) : val;
     }
 
     if (col.format) return col.format(val);
@@ -774,6 +811,74 @@ export default function CreativeAnalysis() {
         </div>
       )}
 
+      {/* Top Creatives Visual Cards (Motion-style) */}
+      {processedData.length > 0 && (
+        <div className="mb-8">
+          <h2 className="text-white font-semibold text-lg mb-4">Top Creatives</h2>
+          <div className="flex gap-3 overflow-x-auto pb-2">
+            {processedData.slice(0, 15).map((creative) => {
+              const isVideo = (creative.type || '').toLowerCase() === 'video';
+              const angleColor = getTagColor(creative.angle);
+              const formatColor = getTagColor(creative.format);
+              return (
+                <div
+                  key={creative._creativeId}
+                  className="shrink-0 w-56 bg-[#111] border border-white/[0.06] rounded-xl overflow-hidden hover:border-white/[0.12] transition-colors"
+                >
+                  {/* Visual header */}
+                  <div className={`h-32 flex items-center justify-center relative ${isVideo ? 'bg-gradient-to-br from-blue-900/40 to-purple-900/30' : 'bg-gradient-to-br from-cyan-900/30 to-emerald-900/20'}`}>
+                    {isVideo ? (
+                      <Video className="w-10 h-10 text-blue-400/40" />
+                    ) : (
+                      <Image className="w-10 h-10 text-cyan-400/40" />
+                    )}
+                    <span className={`absolute bottom-2 left-2 text-[10px] font-bold px-1.5 py-0.5 rounded ${isVideo ? 'bg-blue-500 text-white' : 'bg-cyan-500 text-white'}`}>
+                      {creative.type || '?'}
+                    </span>
+                    {creative.is_winner && (
+                      <span className="absolute top-2 right-2 text-[10px] font-bold px-1.5 py-0.5 rounded bg-yellow-500/30 text-yellow-400">Winner</span>
+                    )}
+                  </div>
+                  {/* Info */}
+                  <div className="p-3">
+                    <p className="text-white text-xs font-medium truncate mb-2" title={creative.ad_name}>
+                      {creative.ad_name}
+                    </p>
+                    <div className="space-y-1.5 text-xs">
+                      <div className="flex justify-between">
+                        <span className="text-gray-500">Spend</span>
+                        <span className="text-white font-medium">{fmtMoney(creative.spend)}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-gray-500">ROAS</span>
+                        <span className={creative.roas >= 1.5 ? 'text-emerald-400 font-semibold' : creative.roas >= 1.0 ? 'text-yellow-400' : 'text-red-400'}>{fmtRoas(creative.roas)}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-gray-500">CPA</span>
+                        <span className="text-gray-300">{fmtMoney(creative.cpa)}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-gray-500">CTR</span>
+                        <span className="text-gray-300">{fmtPct(creative.ctr)}</span>
+                      </div>
+                    </div>
+                    {/* Tags */}
+                    <div className="flex flex-wrap gap-1 mt-2">
+                      {creative.format && formatColor && (
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${formatColor.bg} ${formatColor.text}`}>{creative.format}</span>
+                      )}
+                      {creative.angle && angleColor && (
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${angleColor.bg} ${angleColor.text}`}>{creative.angle}</span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {/* Analytics Section */}
       <div className="mb-8">
         <button
@@ -883,7 +988,7 @@ export default function CreativeAnalysis() {
                   {risingStars.map((star) => (
                     <div
                       key={star._creativeId}
-                      className="bg-white/[0.03] border border-orange-500/10 rounded-lg p-3 hover:border-orange-500/30 transition-colors"
+                      className="bg-white/[0.03] border border-orange-500/10 rounded-lg p-3 hover:border-orange-500/30 transition-colors min-w-0 overflow-hidden"
                     >
                       <div className="flex items-center gap-1.5 mb-2">
                         <span className={`text-[10px] font-bold uppercase px-1.5 py-0.5 rounded ${

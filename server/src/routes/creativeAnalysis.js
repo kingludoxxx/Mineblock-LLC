@@ -14,22 +14,25 @@ let tableReady = false; // cache ensureTable so it only runs once
 
 // ── Known Values (for cross-validation) ─────────────────────────────
 // These sets prevent fields from leaking into the wrong slot when segment counts vary.
+// All stored lowercase for case-insensitive matching via knownHas() helper.
 const KNOWN_FORMATS = new Set([
-  'ShortVid', 'Mashup', 'Mashups', 'Mini VSL', 'Long form', 'long form', 'IMG',
-  'Shortvid', 'shortvid',
+  'shortvid', 'mashup', 'mashups', 'mini vsl', 'minivsl', 'long form', 'long vsl',
+  'longvsl', 'vsl', 'img', 'ugc', 'gif',
 ]);
 
 const KNOWN_EDITORS = new Set([
-  'Faiz', 'Muhammad', 'Antoni',
+  'faiz', 'muhammad', 'antoni',
 ]);
 
 const KNOWN_ANGLES = new Set([
-  'Lottery', 'Cryptoaddict', 'MoneySeeker', 'Againstcompetition',
-  'Againstcompetition Rebranding', 'Sharktank', 'SharkTank',
-  'BTC Made Easy', 'BTC Farm', 'BTCFARM', 'BTC Crash',
-  'Scarcity', 'Hiddenopportunity', 'Missedopportunity',
-  'Comparison', 'Offer', 'Reaction', 'GTRS',
+  'lottery', 'cryptoaddict', 'moneyseeker', 'againstcompetition',
+  'againstcompetition rebranding', 'sharktank', 'btc made easy',
+  'btc farm', 'btcfarm', 'btc crash', 'scarcity', 'hiddenopportunity',
+  'missedopportunity', 'comparison', 'offer', 'reaction', 'gtrs',
 ]);
+
+/** Case-insensitive Set.has() */
+const knownHas = (set, val) => val && set.has(val.toLowerCase());
 
 // ── Naming Convention Parser ────────────────────────────────────────
 
@@ -174,17 +177,17 @@ function parseAdName(name) {
     if (avatar && filePattern.test(avatar)) avatar = avatar.replace(filePattern, '').trim() || null;
 
     // Cross-validate: known editors should not appear as format/angle/avatar
-    if (format && KNOWN_EDITORS.has(format)) format = null;
-    if (angle && KNOWN_EDITORS.has(angle)) angle = null;
-    if (avatar && KNOWN_EDITORS.has(avatar)) avatar = null;
+    if (knownHas(KNOWN_EDITORS, format)) format = null;
+    if (knownHas(KNOWN_EDITORS, angle)) angle = null;
+    if (knownHas(KNOWN_EDITORS, avatar)) avatar = null;
 
     // Cross-validate: known formats should not appear as angle/avatar/editor
-    if (angle && KNOWN_FORMATS.has(angle)) angle = null;
-    if (avatar && KNOWN_FORMATS.has(avatar)) avatar = null;
-    if (editor && KNOWN_FORMATS.has(editor)) editor = null;
+    if (knownHas(KNOWN_FORMATS, angle)) angle = null;
+    if (knownHas(KNOWN_FORMATS, avatar)) avatar = null;
+    if (knownHas(KNOWN_FORMATS, editor)) editor = null;
 
     // Cross-validate: if avatar slot has a known angle, look one step further back for the real avatar
-    if (avatar && KNOWN_ANGLES.has(avatar)) {
+    if (knownHas(KNOWN_ANGLES, avatar)) {
       // Two angles exist (e.g. MoneySeeker + Lottery) — the "avatar" is actually the primary angle
       // Look one position further back for the real avatar/creative description
       const realAvatarPos = weekPos - editorOffset - 4;
@@ -200,7 +203,7 @@ function parseAdName(name) {
     }
 
     // Only accept recognized editors — reject brand owner names, unknowns, etc.
-    if (editor && !KNOWN_EDITORS.has(editor)) editor = null;
+    if (editor && !knownHas(KNOWN_EDITORS, editor)) editor = null;
   }
 
   // Determine type from creative ID prefix
@@ -301,7 +304,7 @@ async function fetchTripleWhaleAds(startDate, endDate) {
   // Purchase columns to try, then null (no purchases)
   const purchaseColumns = ['pixel_purchases', 'purchases', 'pixel_capi_purchases', 'conversions', null];
 
-  let workingRevenueCol = null;
+
 
   for (const revenueCol of revenueColumns) {
     for (const purchaseCol of purchaseColumns) {
@@ -608,39 +611,44 @@ async function syncData({ periodWeek, startDate, endDate }) {
 async function getLifetimeMetrics(creativeIds) {
   if (!creativeIds || creativeIds.length === 0) return new Map();
 
-  const placeholders = creativeIds.map((_, i) => `$${i + 1}`).join(',');
-  const rows = await pgQuery(
-    `SELECT
-       creative_id,
-       SUM(spend) as lifetime_spend,
-       SUM(revenue) as lifetime_revenue,
-       SUM(purchases) as lifetime_purchases,
-       COUNT(DISTINCT week) as weeks_active,
-       (ARRAY_AGG(week ORDER BY SPLIT_PART(week,'_',2)::int, REPLACE(SPLIT_PART(week,'_',1),'WK','')::int))[1] as first_seen,
-       (ARRAY_AGG(week ORDER BY SPLIT_PART(week,'_',2)::int DESC, REPLACE(SPLIT_PART(week,'_',1),'WK','')::int DESC))[1] as last_seen
-     FROM creative_analysis
-     WHERE creative_id IN (${placeholders})
-     GROUP BY creative_id`,
-    creativeIds
-  );
+  try {
+    const placeholders = creativeIds.map((_, i) => `$${i + 1}`).join(',');
+    const rows = await pgQuery(
+      `SELECT
+         creative_id,
+         SUM(spend) as lifetime_spend,
+         SUM(revenue) as lifetime_revenue,
+         SUM(purchases) as lifetime_purchases,
+         COUNT(DISTINCT CASE WHEN spend > 0 THEN week END) as weeks_active,
+         (ARRAY_AGG(week ORDER BY SPLIT_PART(week,'_',2)::int, REPLACE(SPLIT_PART(week,'_',1),'WK','')::int))[1] as first_seen,
+         (ARRAY_AGG(week ORDER BY SPLIT_PART(week,'_',2)::int DESC, REPLACE(SPLIT_PART(week,'_',1),'WK','')::int DESC))[1] as last_seen
+       FROM creative_analysis
+       WHERE creative_id IN (${placeholders})
+       GROUP BY creative_id`,
+      creativeIds
+    );
 
-  const map = new Map();
-  for (const r of rows) {
-    const ls = Math.round(Number(r.lifetime_spend) * 100) / 100;
-    const lr = Math.round(Number(r.lifetime_revenue) * 100) / 100;
-    const lRoas = ls > 0 ? Math.round((lr / ls) * 100) / 100 : 0;
-    map.set(r.creative_id, {
-      lifetime_spend: ls,
-      lifetime_revenue: lr,
-      lifetime_roas: lRoas,
-      lifetime_purchases: Number(r.lifetime_purchases),
-      first_seen: r.first_seen,
-      last_seen: r.last_seen,
-      weeks_active: Number(r.weeks_active),
-      is_winner: ls >= 500 && lRoas >= 1.80,
-    });
+    const map = new Map();
+    for (const r of rows) {
+      const ls = Math.round(Number(r.lifetime_spend) * 100) / 100;
+      const lr = Math.round(Number(r.lifetime_revenue) * 100) / 100;
+      const lRoas = ls > 0 ? Math.round((lr / ls) * 100) / 100 : 0;
+      map.set(r.creative_id, {
+        lifetime_spend: ls,
+        lifetime_revenue: lr,
+        lifetime_roas: lRoas,
+        lifetime_purchases: Number(r.lifetime_purchases),
+        first_seen: r.first_seen,
+        last_seen: r.last_seen,
+        weeks_active: Number(r.weeks_active),
+        is_winner: ls >= 500 && lRoas >= 1.80,
+      });
+    }
+    return map;
+  } catch (err) {
+    console.error('[Creative Analysis] getLifetimeMetrics error:', err.message);
+    return new Map();
   }
-  return map;
 }
 
 // ── Routes ──────────────────────────────────────────────────────────
@@ -772,7 +780,7 @@ router.get('/data', authenticate, async (req, res) => {
     res.json({ success: true, data: { creatives, filters } });
   } catch (err) {
     console.error('[Creative Analysis] /data error:', err);
-    res.status(500).json({ success: false, error: { message: err.message || 'Internal server error' } });
+    res.status(500).json({ success: false, error: { message: 'Internal server error' } });
   }
 });
 
@@ -938,7 +946,7 @@ router.get('/data-by-date', authenticate, async (req, res) => {
     });
   } catch (err) {
     console.error('[Creative Analysis] /data-by-date error:', err);
-    res.status(500).json({ success: false, error: { message: err.message || 'Internal server error' } });
+    res.status(500).json({ success: false, error: { message: 'Internal server error' } });
   }
 });
 
@@ -1062,7 +1070,7 @@ router.get('/lifetime', authenticate, async (req, res) => {
     });
   } catch (err) {
     console.error('[Creative Analysis] /lifetime error:', err);
-    res.status(500).json({ success: false, error: { message: err.message || 'Internal server error' } });
+    res.status(500).json({ success: false, error: { message: 'Internal server error' } });
   }
 });
 
@@ -1174,7 +1182,7 @@ router.get('/active', authenticate, async (req, res) => {
     res.json({ success: true, data: { creatives, latest_week: latestWeek } });
   } catch (err) {
     console.error('[Creative Analysis] /active error:', err);
-    res.status(500).json({ success: false, error: { message: err.message || 'Internal server error' } });
+    res.status(500).json({ success: false, error: { message: 'Internal server error' } });
   }
 });
 
@@ -1278,7 +1286,7 @@ router.get('/leaderboard', authenticate, async (req, res) => {
     });
   } catch (err) {
     console.error('[Creative Analysis] /leaderboard error:', err);
-    res.status(500).json({ success: false, error: { message: err.message || 'Internal server error' } });
+    res.status(500).json({ success: false, error: { message: 'Internal server error' } });
   }
 });
 
@@ -1291,12 +1299,17 @@ router.post('/sync', authenticate, async (req, res) => {
   try {
     let { startDate, endDate, week } = req.body || {};
 
-    if (!week) {
+    if (!week || !/^WK\d{1,2}_\d{4}$/i.test(week)) {
       return res.status(400).json({
         success: false,
-        error: { message: 'Provide { week } (WKxx_YYYY)' },
+        error: { message: 'Provide { week } in WKxx_YYYY format' },
       });
     }
+    week = week.toUpperCase().replace(/\s/, '_');
+
+    // Validate user-provided dates if given
+    if (startDate && !/^\d{4}-\d{2}-\d{2}$/.test(startDate)) startDate = null;
+    if (endDate && !/^\d{4}-\d{2}-\d{2}$/.test(endDate)) endDate = null;
 
     // Use user-provided dates if both are given; otherwise derive from week
     if (!startDate || !endDate) {
@@ -1319,7 +1332,7 @@ router.post('/sync', authenticate, async (req, res) => {
     });
   } catch (err) {
     console.error('[Creative Analysis] /sync error:', err);
-    res.status(500).json({ success: false, error: { message: err.message || 'Sync failed' } });
+    res.status(500).json({ success: false, error: { message: 'Sync failed' } });
   }
 });
 
@@ -1354,7 +1367,7 @@ router.post('/sync-weekly', async (req, res) => {
     });
   } catch (err) {
     console.error('[Creative Analysis] /sync-weekly error:', err);
-    res.status(500).json({ success: false, error: { message: err.message || 'Weekly sync failed' } });
+    res.status(500).json({ success: false, error: { message: 'Weekly sync failed' } });
   }
 });
 
@@ -1383,7 +1396,7 @@ router.post('/sync-all', authenticate, async (req, res) => {
     res.json({ success: true, data: { results } });
   } catch (err) {
     console.error('[Creative Analysis] /sync-all error:', err);
-    res.status(500).json({ success: false, error: { message: err.message || 'Sync-all failed' } });
+    res.status(500).json({ success: false, error: { message: 'Sync-all failed' } });
   }
 });
 
@@ -1412,7 +1425,7 @@ router.get('/weeks', authenticate, async (req, res) => {
     res.json({ success: true, data: { weeks } });
   } catch (err) {
     console.error('[Creative Analysis] /weeks error:', err);
-    res.status(500).json({ success: false, error: { message: err.message || 'Internal server error' } });
+    res.status(500).json({ success: false, error: { message: 'Internal server error' } });
   }
 });
 
