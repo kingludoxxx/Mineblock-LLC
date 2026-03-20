@@ -336,7 +336,7 @@ async function fetchTripleWhaleAds(startDate, endDate) {
   const revenueColumns = ['order_revenue', 'pixel_revenue', 'revenue'];
   // Purchase columns to try
   const purchaseColumns = [
-    'pixel_purchases', 'purchases', 'pixel_capi_purchases',
+    'pixel purchases', 'pixel_purchases', 'purchases', 'pixel_capi_purchases',
     'total_purchases', 'conversions', 'nc_purchases', 'pixel_nc_purchases',
   ];
 
@@ -377,8 +377,9 @@ async function fetchTripleWhaleAds(startDate, endDate) {
   // Step 1: Find the working revenue column (no purchase column, isolates the variable)
   let workingRevenueCol = null;
   for (const revenueCol of revenueColumns) {
+    const revRef = revenueCol.includes(' ') ? `\`${revenueCol}\`` : revenueCol;
     const sql = `
-      SELECT ad_name, SUM(spend) as total_spend, SUM(${revenueCol}) as total_revenue,
+      SELECT ad_name, SUM(spend) as total_spend, SUM(${revRef}) as total_revenue,
              SUM(impressions) as total_impressions, SUM(clicks) as total_clicks
       FROM pixel_joined_tvf
       WHERE event_date BETWEEN @startDate AND @endDate
@@ -395,9 +396,10 @@ async function fetchTripleWhaleAds(startDate, endDate) {
       console.log(`[Creative Analysis] TW revenue column found: "${revenueCol}"`);
       // Step 2: Try adding purchase columns to the working query
       for (const purchaseCol of purchaseColumns) {
+        const colRef = purchaseCol.includes(' ') ? `\`${purchaseCol}\`` : purchaseCol;
         const sqlWithPurchases = `
           SELECT ad_name, SUM(spend) as total_spend, SUM(${revenueCol}) as total_revenue,
-                 SUM(${purchaseCol}) as total_purchases,
+                 SUM(${colRef}) as total_purchases,
                  SUM(impressions) as total_impressions, SUM(clicks) as total_clicks
           FROM pixel_joined_tvf
           WHERE event_date BETWEEN @startDate AND @endDate
