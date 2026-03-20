@@ -988,13 +988,19 @@ router.get('/lifetime', authenticate, async (req, res) => {
       });
     }
 
-    // Build weekly breakdown with computed metrics
-    const weeklyBreakdown = Object.values(weeklyMap).map(w => ({
-      ...w,
-      spend: Math.round(w.spend * 100) / 100,
-      revenue: Math.round(w.revenue * 100) / 100,
-      ...computeMetrics(w),
-    }));
+    // Build weekly breakdown with computed metrics, sorted chronologically
+    const weeklyBreakdown = Object.values(weeklyMap)
+      .sort((a, b) => {
+        const [wA, yA] = a.week.replace('WK', '').split('_').map(Number);
+        const [wB, yB] = b.week.replace('WK', '').split('_').map(Number);
+        return yA - yB || wA - wB;
+      })
+      .map(w => ({
+        ...w,
+        spend: Math.round(w.spend * 100) / 100,
+        revenue: Math.round(w.revenue * 100) / 100,
+        ...computeMetrics(w),
+      }));
 
     const lifetimeSpend = Math.round(totalSpend * 100) / 100;
     const lifetimeRevenue = Math.round(totalRevenue * 100) / 100;

@@ -66,11 +66,14 @@ function generateWeekOptions() {
   const now = new Date();
   const { week: currentWeek, year } = getISOWeek(now);
   const weeks = [];
+  // Current year weeks (current down to 1)
   for (let w = currentWeek; w >= 1; w--) {
     weeks.push(`WK${String(w).padStart(2, '0')}_${year}`);
   }
-  // Add last few weeks of previous year
-  for (let w = 52; w >= 48; w--) {
+  // Previous year — check if it has 53 weeks (Dec 28 is always in the last ISO week)
+  const dec28 = new Date(Date.UTC(year - 1, 11, 28));
+  const prevYearLastWeek = getISOWeek(dec28).week;
+  for (let w = prevYearLastWeek; w >= 1; w--) {
     weeks.push(`WK${String(w).padStart(2, '0')}_${year - 1}`);
   }
   return weeks;
@@ -161,6 +164,7 @@ export default function CreativeAnalysis() {
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState(null);
   const [activeOnly, setActiveOnly] = useState(true);
+  const [latestWeek, setLatestWeek] = useState(null);
   const [filters, setFilters] = useState({
     creativeType: '',
     avatar: '',
@@ -245,9 +249,12 @@ export default function CreativeAnalysis() {
         dataRes = await api.get('/creative-analysis/data-by-date', { params: { startDate, endDate } });
       } else if (activeOnly) {
         dataRes = await api.get('/creative-analysis/active');
-        // Use the latest_week from /active for the leaderboard
+        // Use the latest_week from /active for the leaderboard and sync
         const activeData = dataRes.data?.data || dataRes.data || {};
-        if (activeData.latest_week) lbWeek = activeData.latest_week;
+        if (activeData.latest_week) {
+          lbWeek = activeData.latest_week;
+          setLatestWeek(activeData.latest_week);
+        }
       } else {
         dataRes = await api.get('/creative-analysis/data', { params: { week } });
       }
@@ -271,7 +278,8 @@ export default function CreativeAnalysis() {
   const handleSync = async () => {
     setSyncing(true);
     try {
-      await api.post('/creative-analysis/sync', { week });
+      const syncWeek = activeOnly && latestWeek ? latestWeek : week;
+      await api.post('/creative-analysis/sync', { week: syncWeek });
       await fetchData();
     } catch (err) {
       setError(err.response?.data?.error?.message || err.message || 'Sync failed.');
@@ -341,7 +349,7 @@ export default function CreativeAnalysis() {
       purchases: creative.total_purchases ?? creative.purchases ?? 0,
       impressions: creative.total_impressions ?? creative.impressions ?? 0,
       clicks: creative.total_clicks ?? creative.clicks ?? 0,
-      ad_name: creative.hooks?.[0]?.ad_name || creative.ad_name || creative.creative_id,
+      ad_name: creative.hooks?.reduce((best, h) => (h.spend > (best?.spend ?? -1) ? h : best), null)?.ad_name || creative.ad_name || creative.creative_id,
       _hooks: creative.hooks || [],
       _creativeId: creative.creative_id,
     }));
@@ -444,7 +452,7 @@ export default function CreativeAnalysis() {
     }
 
     if (col.format) return col.format(val);
-    return val || '-';
+    return val != null && val !== '' ? val : '-';
   };
 
   // ── Loading state ──
