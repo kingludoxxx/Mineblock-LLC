@@ -763,7 +763,7 @@ async function syncMetaThumbnails() {
 
   for (const accountId of META_AD_ACCOUNT_IDS) {
     try {
-      let url = `${META_GRAPH_URL}/${accountId}/ads?fields=name,creative{thumbnail_url,video_id}&limit=100&access_token=${META_ACCESS_TOKEN}`;
+      let url = `${META_GRAPH_URL}/${accountId}/ads?fields=name,creative{thumbnail_url,image_url,object_story_spec,video_id}&thumbnail_width=720&thumbnail_height=720&limit=100&access_token=${META_ACCESS_TOKEN}`;
       let pageCount = 0;
 
       while (url && pageCount < 20) {
@@ -790,7 +790,8 @@ async function syncMetaThumbnails() {
 
   for (const ad of metaAds) {
     if (!ad.name || !dbAdNames.has(ad.name)) continue;
-    const thumbnailUrl = ad.creative?.thumbnail_url || null;
+    // Prefer image_url (full res) over thumbnail_url (often 64x64)
+    const thumbnailUrl = ad.creative?.image_url || ad.creative?.thumbnail_url || null;
     if (!thumbnailUrl) continue;
 
     updates.push({
@@ -829,7 +830,7 @@ async function syncMetaThumbnails() {
       await pgQuery(
         `UPDATE creative_analysis
          SET thumbnail_url = $1, video_url = $2, meta_ad_id = $3
-         WHERE ad_name = $4 AND (thumbnail_url IS NULL OR thumbnail_url = '')`,
+         WHERE ad_name = $4`,
         [finalThumb, videoUrl, upd.meta_ad_id, upd.ad_name]
       );
       matched++;
