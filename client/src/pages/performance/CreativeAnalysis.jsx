@@ -9,6 +9,7 @@ import {
   ArrowUpDown,
   ArrowUp,
   ArrowDown,
+  GripVertical,
   Trophy,
   ShoppingCart,
   Zap,
@@ -159,7 +160,7 @@ export default function CreativeAnalysis() {
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState(null);
-  const [activeOnly, setActiveOnly] = useState(false);
+  const [activeOnly, setActiveOnly] = useState(true);
   const [filters, setFilters] = useState({
     creativeType: '',
     avatar: '',
@@ -173,6 +174,64 @@ export default function CreativeAnalysis() {
   const [chartCreative, setChartCreative] = useState(null); // creative_id showing chart
   const [chartData, setChartData] = useState(null);
   const [chartLoading, setChartLoading] = useState(false);
+
+  // ── Column order (persisted to localStorage) ──
+  const COLUMN_ORDER_KEY = 'ca_column_order';
+
+  const [columnOrder, setColumnOrder] = useState(() => {
+    try {
+      const saved = localStorage.getItem(COLUMN_ORDER_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        // Validate: must contain exactly the same keys as TABLE_COLUMNS
+        const defaultKeys = TABLE_COLUMNS.map((c) => c.key);
+        if (
+          Array.isArray(parsed) &&
+          parsed.length === defaultKeys.length &&
+          defaultKeys.every((k) => parsed.includes(k))
+        ) {
+          return parsed;
+        }
+      }
+    } catch {}
+    return TABLE_COLUMNS.map((c) => c.key);
+  });
+
+  const orderedColumns = useMemo(
+    () => columnOrder.map((key) => TABLE_COLUMNS.find((c) => c.key === key)).filter(Boolean),
+    [columnOrder],
+  );
+
+  const [dragCol, setDragCol] = useState(null);
+  const [dragOverCol, setDragOverCol] = useState(null);
+
+  const handleDragStart = (key) => setDragCol(key);
+  const handleDragOver = (e, key) => {
+    e.preventDefault();
+    if (key !== dragOverCol) setDragOverCol(key);
+  };
+  const handleDrop = (targetKey) => {
+    if (!dragCol || dragCol === targetKey) {
+      setDragCol(null);
+      setDragOverCol(null);
+      return;
+    }
+    setColumnOrder((prev) => {
+      const next = [...prev];
+      const fromIdx = next.indexOf(dragCol);
+      const toIdx = next.indexOf(targetKey);
+      next.splice(fromIdx, 1);
+      next.splice(toIdx, 0, dragCol);
+      localStorage.setItem(COLUMN_ORDER_KEY, JSON.stringify(next));
+      return next;
+    });
+    setDragCol(null);
+    setDragOverCol(null);
+  };
+  const handleDragEnd = () => {
+    setDragCol(null);
+    setDragOverCol(null);
+  };
 
   // ── Fetch ──
 
@@ -675,20 +734,30 @@ export default function CreativeAnalysis() {
                   <th className="w-10 px-1 py-2" />
                   {/* Expand column */}
                   <th className="w-8 px-2 py-2" />
-                  {TABLE_COLUMNS.map((col) => (
+                  {orderedColumns.map((col) => (
                     <th
                       key={col.key}
-                      className={`px-3 py-2 text-gray-400 text-xs uppercase tracking-wider font-semibold whitespace-nowrap ${
+                      draggable
+                      onDragStart={() => handleDragStart(col.key)}
+                      onDragOver={(e) => handleDragOver(e, col.key)}
+                      onDrop={() => handleDrop(col.key)}
+                      onDragEnd={handleDragEnd}
+                      className={`px-3 py-2 text-gray-400 text-xs uppercase tracking-wider font-semibold whitespace-nowrap transition-all ${
                         col.align === 'right'
                           ? 'text-right'
                           : col.align === 'center'
                           ? 'text-center'
                           : 'text-left'
-                      } ${!col.noSort ? 'cursor-pointer hover:text-gray-300 select-none' : ''}`}
+                      } ${!col.noSort ? 'cursor-grab hover:text-gray-300 select-none' : ''} ${
+                        dragCol === col.key ? 'opacity-40' : ''
+                      } ${dragOverCol === col.key && dragCol !== col.key ? 'border-l-2 border-emerald-400' : ''}`}
                       onClick={!col.noSort ? () => handleSort(col.key) : undefined}
                     >
-                      {col.label}
-                      {!col.noSort && <SortIcon colKey={col.key} />}
+                      <span className="inline-flex items-center gap-1">
+                        <GripVertical className="w-3 h-3 text-gray-600 shrink-0" />
+                        {col.label}
+                        {!col.noSort && <SortIcon colKey={col.key} />}
+                      </span>
                     </th>
                   ))}
                 </tr>
@@ -730,7 +799,7 @@ export default function CreativeAnalysis() {
                             />
                           )}
                         </td>
-                        {TABLE_COLUMNS.map((col) => (
+                        {orderedColumns.map((col) => (
                           <td
                             key={col.key}
                             className={`px-3 py-2.5 whitespace-nowrap ${
@@ -762,7 +831,7 @@ export default function CreativeAnalysis() {
                       {/* Chart panel */}
                       {chartCreative === cid && (
                         <tr className="border-b border-white/[0.04]">
-                          <td colSpan={TABLE_COLUMNS.length + 2} className="p-0">
+                          <td colSpan={orderedColumns.length + 2} className="p-0">
                             <div className="bg-[#0a0f1a] border-t border-b border-blue-500/20 p-5">
                               {chartLoading ? (
                                 <div className="flex items-center justify-center h-48">
@@ -818,7 +887,7 @@ export default function CreativeAnalysis() {
                           >
                             <td className="w-10 px-1 py-2" />
                             <td className="w-8 px-2 py-2" />
-                            {TABLE_COLUMNS.map((col) => (
+                            {orderedColumns.map((col) => (
                               <td
                                 key={col.key}
                                 className={`px-3 py-2 whitespace-nowrap text-xs ${

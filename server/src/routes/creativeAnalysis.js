@@ -20,8 +20,7 @@ const KNOWN_FORMATS = new Set([
 ]);
 
 const KNOWN_EDITORS = new Set([
-  'Ludovico', 'Ludo', 'Antoni', 'Carl', 'Usama', 'Faiz', 'Farhan',
-  'Alhamjatonni', 'Atif', 'Abdul',
+  'Faiz', 'Muhammad', 'Antoni',
 ]);
 
 const KNOWN_ANGLES = new Set([
@@ -185,6 +184,9 @@ function parseAdName(name) {
 
     // Cross-validate: known angles should not appear as avatar
     if (avatar && KNOWN_ANGLES.has(avatar)) avatar = null;
+
+    // Only accept recognized editors — reject brand owner names, unknowns, etc.
+    if (editor && !KNOWN_EDITORS.has(editor)) editor = null;
   }
 
   // Determine type from creative ID prefix
@@ -300,8 +302,9 @@ async function fetchTripleWhaleAds(startDate, endDate) {
         FROM pixel_joined_tvf
         WHERE event_date BETWEEN @startDate AND @endDate
         GROUP BY ad_name
-        HAVING SUM(spend) > 0
+        HAVING SUM(spend) > 0.01
         ORDER BY SUM(spend) DESC
+        LIMIT 500
       `;
 
       const res = await fetch(TW_SQL_URL, {
