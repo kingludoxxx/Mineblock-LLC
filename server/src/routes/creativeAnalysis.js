@@ -336,8 +336,8 @@ async function fetchTripleWhaleAds(startDate, endDate) {
   const revenueColumns = ['order_revenue', 'pixel_revenue', 'revenue'];
   // Purchase columns to try
   const purchaseColumns = [
-    'pixel purchases', 'pixel_purchases', 'purchases', 'pixel_capi_purchases',
-    'total_purchases', 'conversions', 'nc_purchases', 'pixel_nc_purchases',
+    'website_purchases', 'orders_quantity', 'pixel purchases', 'pixel_purchases',
+    'purchases', 'pixel_capi_purchases', 'total_purchases', 'conversions',
   ];
 
   // Helper to run a TW SQL query; returns { ok, rows, status, errorText }
