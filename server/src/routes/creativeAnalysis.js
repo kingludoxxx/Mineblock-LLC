@@ -106,14 +106,7 @@ function parseAdName(name) {
     if (underscoreSegments.length >= 3) {
       segments = underscoreSegments;
     } else {
-      return {
-        ad_name: name,
-        creative_id: name.slice(0, 50).replace(/[^a-zA-Z0-9]/g, '_'),
-        hook_id: 'HX',
-        type: 'video',
-        avatar: null, angle: null, format: null, editor: null,
-        week: null,
-      };
+      return null; // Not a parseable ad name — skip
     }
   }
 
