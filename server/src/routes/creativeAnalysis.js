@@ -72,7 +72,8 @@ function parseAdName(name) {
   const titleCase = (s) => {
     if (!s) return null;
     return s.split(/\s+/).map(w => {
-      if (w.length <= 3 && w === w.toUpperCase()) return w; // preserve acronyms like UGC, IMG, VSL
+      if (w === w.toUpperCase()) return w; // preserve all-caps: UGC, IMG, GTRS, VSL
+      if (w !== w.toLowerCase()) return w; // preserve camelCase: ShortVid, MoneySeeker
       return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
     }).join(' ');
   };
@@ -176,6 +177,9 @@ function parseAdName(name) {
     } else if (/^NA\d*$/i.test(atWeekM2) || resPattern.test(atWeekM2)) {
       // Long tail: ... Format - Editor1 - NA/Resolution - Editor2 - Week
       // Editor2 (sign-off) is at weekPos-1
+      editorOffset = 1;
+    } else if (weekPos >= 3 && knownHas(KNOWN_EDITORS, atWeekM1) && knownHas(KNOWN_EDITORS, atWeekM2)) {
+      // Triple-editor tail: ... Format - Editor1 - Editor2 - Editor3 - Week (no NA)
       editorOffset = 1;
     } else {
       // No NA found — try assuming short tail
