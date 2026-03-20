@@ -140,7 +140,7 @@ export default function Sidebar() {
           </div>
         )}
         {collapsed && (
-          <img src="/logo-white.png" alt="Mineblock" className="h-5 w-auto mx-auto" />
+          <img src="/logo-symbol-white.png" alt="Mineblock" className="h-6 w-auto mx-auto" />
         )}
         <button
           onClick={() => setCollapsed(!collapsed)}
