@@ -38,12 +38,7 @@ export default function Login() {
       <div className="bg-bg-card border border-border-default rounded-xl p-8 w-full max-w-md">
         {/* Brand */}
         <div className="text-center mb-8">
-          <div className="w-12 h-12 rounded-xl bg-accent flex items-center justify-center text-white font-bold text-xl mx-auto mb-4">
-            M
-          </div>
-          <h1 className="text-2xl font-bold text-text-primary tracking-tight">
-            Mineblock
-          </h1>
+          <img src="/logo-white.png" alt="Mineblock" className="h-8 w-auto mx-auto mb-4" />
           <p className="text-text-muted text-sm mt-1">
             Sign in to your account
           </p>
