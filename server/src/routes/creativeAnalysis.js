@@ -67,7 +67,15 @@ function parseAdName(name) {
   if (junkNames.includes(name.trim().toLowerCase())) return null;
 
   // Helper: title case normalization for consistent aggregation
-  const titleCase = (s) => s ? s.charAt(0).toUpperCase() + s.slice(1).toLowerCase() : null;
+  // Title case: capitalize first letter of each word, lowercase the rest
+  // But preserve short uppercase words (UGC, IMG, VSL) as-is
+  const titleCase = (s) => {
+    if (!s) return null;
+    return s.split(/\s+/).map(w => {
+      if (w.length <= 3 && w === w.toUpperCase()) return w; // preserve acronyms like UGC, IMG, VSL
+      return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
+    }).join(' ');
+  };
 
   // Normalize: strip file extensions from the full name first
   let cleanName = name.replace(/\.(mp4|mov|avi|mkv|png|jpg|jpeg|gif|webp|webm)$/i, '').trim();
@@ -172,13 +180,6 @@ function parseAdName(name) {
     } else {
       // No NA found — try assuming short tail
       editorOffset = 2;
-    }
-
-    // Bug fix: detect resolution-like segments (e.g. 1080X1080) between editor and format
-    // that shift format/angle/avatar positions by 1
-    let resolutionExtra = 0;
-    for (let ri = weekPos - 1; ri >= Math.max(0, weekPos - 4); ri--) {
-      if (resPattern.test(segments[ri])) { resolutionExtra = 1; break; }
     }
 
     editor = (weekPos - editorOffset >= 0) ? segments[weekPos - editorOffset] || null : null;
