@@ -467,10 +467,12 @@ export default function CreativeAnalysis() {
     result.sort((a, b) => {
       let aVal = a[key];
       let bVal = b[key];
-      if (typeof aVal === 'string') aVal = aVal.toLowerCase();
-      if (typeof bVal === 'string') bVal = bVal.toLowerCase();
-      if (aVal == null) aVal = direction === 'asc' ? Infinity : -Infinity;
-      if (bVal == null) bVal = direction === 'asc' ? Infinity : -Infinity;
+      const aIsStr = typeof aVal === 'string';
+      const bIsStr = typeof bVal === 'string';
+      if (aIsStr) aVal = aVal.toLowerCase();
+      if (bIsStr) bVal = bVal.toLowerCase();
+      if (aVal == null) aVal = (aIsStr || bIsStr) ? (direction === 'asc' ? '\uffff' : '') : (direction === 'asc' ? Infinity : -Infinity);
+      if (bVal == null) bVal = (aIsStr || bIsStr) ? (direction === 'asc' ? '\uffff' : '') : (direction === 'asc' ? Infinity : -Infinity);
       if (aVal < bVal) return direction === 'asc' ? -1 : 1;
       if (aVal > bVal) return direction === 'asc' ? 1 : -1;
       return 0;
@@ -623,7 +625,7 @@ export default function CreativeAnalysis() {
       if (val >= 2.0) return 'bg-emerald-500/20 text-emerald-300 font-semibold';
       if (val >= 1.5) return 'bg-emerald-500/10 text-emerald-400 font-medium';
       if (val >= 1.0) return 'bg-yellow-500/10 text-yellow-300 font-medium';
-      if (val > 0) return 'text-red-400';
+      return 'text-red-400';
     }
     if (col.key === 'revenue') {
       if (val >= 1000) return 'bg-emerald-500/10 text-emerald-300 font-medium';
