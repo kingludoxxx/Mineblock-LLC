@@ -360,7 +360,8 @@ export default function CreativeAnalysis() {
       }
       if (signal.aborted) return;
       const respData = dataRes.data?.data || dataRes.data || {};
-      setData(respData.creatives || respData || []);
+      const creatives = respData.creatives || respData;
+      setData(Array.isArray(creatives) ? creatives : []);
 
       // Leaderboard only in active mode (it's week-based)
       if (activeOnly && lbWeek) {
@@ -567,16 +568,21 @@ export default function CreativeAnalysis() {
     });
   };
 
+  const chartAbortRef = useRef(null);
   const toggleChart = async (creativeId) => {
+    if (chartAbortRef.current) chartAbortRef.current.abort();
     if (chartCreative === creativeId) {
       setChartCreative(null);
       setChartData(null);
       return;
     }
+    const controller = new AbortController();
+    chartAbortRef.current = controller;
     setChartCreative(creativeId);
     setChartLoading(true);
     try {
-      const res = await api.get('/creative-analysis/lifetime', { params: { creative_id: creativeId } });
+      const res = await api.get('/creative-analysis/lifetime', { params: { creative_id: creativeId }, signal: controller.signal });
+      if (controller.signal.aborted) return;
       const lifetime = res.data?.data || {};
       const breakdown = lifetime.weekly_breakdown || [];
       setChartData({
@@ -588,10 +594,11 @@ export default function CreativeAnalysis() {
           revenue: w.revenue,
         })),
       });
-    } catch {
+    } catch (err) {
+      if (err?.name === 'CanceledError' || controller.signal.aborted) return;
       setChartData(null);
     } finally {
-      setChartLoading(false);
+      if (!controller.signal.aborted) setChartLoading(false);
     }
   };
 

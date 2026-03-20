@@ -21,7 +21,7 @@ const KNOWN_FORMATS = new Set([
 ]);
 
 const KNOWN_EDITORS = new Set([
-  'faiz', 'muhammad', 'antoni',
+  'faiz', 'muhammad', 'antoni', 'ludovico',
 ]);
 
 const KNOWN_ANGLES = new Set([
@@ -207,7 +207,7 @@ function parseAdName(name) {
   }
 
   // Determine type from creative ID prefix
-  const type = creativeId && /^IM/i.test(creativeId) ? 'image' : 'video';
+  const type = creativeId && /^IM\d/i.test(creativeId) ? 'image' : 'video';
 
   return { ad_name: name, creative_id: creativeId, hook_id: hookId, type, avatar, angle, format, editor, week };
 }
@@ -595,7 +595,7 @@ async function syncData({ periodWeek, startDate, endDate }) {
 
     await pgQuery('COMMIT');
   } catch (err) {
-    await pgQuery('ROLLBACK');
+    try { await pgQuery('ROLLBACK'); } catch (_) { /* ignore rollback error */ }
     throw err;
   }
 
@@ -803,6 +803,13 @@ router.get('/data-by-date', authenticate, async (req, res) => {
       return res.status(400).json({
         success: false,
         error: { message: 'Dates must be in YYYY-MM-DD format' },
+      });
+    }
+
+    if (startDate > endDate) {
+      return res.status(400).json({
+        success: false,
+        error: { message: 'startDate must be on or before endDate' },
       });
     }
 
