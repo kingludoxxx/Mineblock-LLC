@@ -128,7 +128,7 @@ function parseAdName(name) {
   //   Short tail: ... Avatar - Angle - Format - Editor - NA - Week           (editorOffset = 2)
   // Detect by checking if segments[weekPos-2] is "NA" (short) or segments[weekPos-1] is editor2
   let avatar = null, angle = null, format = null, editor = null;
-  if (weekPos >= 4) {
+  if (weekPos >= 2) {
     let editorOffset;
 
     // Check which tail pattern matches
@@ -304,7 +304,7 @@ async function fetchTripleWhaleAds(startDate, endDate) {
         GROUP BY ad_name
         HAVING SUM(spend) > 0.01
         ORDER BY SUM(spend) DESC
-        LIMIT 500
+        LIMIT 2000
       `;
 
       const res = await fetch(TW_SQL_URL, {
@@ -324,6 +324,9 @@ async function fetchTripleWhaleAds(startDate, endDate) {
         const data = await res.json();
         const rows = Array.isArray(data) ? data : (data?.data || data?.rows || []);
         console.log(`[Creative Analysis] TW query OK — revenue="${revenueCol}", purchases="${purchaseCol || 'none'}", rows=${rows.length}`);
+        if (rows.length >= 2000) {
+          console.warn('[Creative Analysis] WARNING: TW query hit 2000 row limit — some ads may be missing');
+        }
         if (!purchaseCol) {
           console.warn('[Creative Analysis] WARNING: No purchase column available. Purchases will be 0.');
         }
@@ -506,13 +509,12 @@ async function syncData({ periodWeek, startDate, endDate }) {
     return { synced: 0, skipped, errors: 0, aggregatedFrom: 0 };
   }
 
-  // Delete old data for this period week, then insert fresh (in a transaction)
+  // Upsert data for this period week (no delete — ON CONFLICT handles updates)
   let synced = 0;
   let errors = 0;
 
   await pgQuery('BEGIN');
   try {
-    await pgQuery('DELETE FROM creative_analysis WHERE week = $1', [periodWeek]);
 
     for (const entry of aggregated.values()) {
       const metrics = computeMetrics(entry);
