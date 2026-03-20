@@ -763,7 +763,7 @@ router.get('/data', authenticate, async (req, res) => {
 
     // Get available weeks separately (year-aware ordering)
     const weekRows = await pgQuery(
-      `SELECT DISTINCT week FROM creative_analysis WHERE week IS NOT NULL
+      `SELECT week FROM (SELECT DISTINCT week FROM creative_analysis WHERE week IS NOT NULL) t
        ORDER BY SPLIT_PART(week,'_',2)::int DESC, REPLACE(SPLIT_PART(week,'_',1),'WK','')::int DESC`
     );
 
@@ -1087,7 +1087,7 @@ router.get('/active', authenticate, async (req, res) => {
 
     // Find the latest week (sort by year then week number for correct cross-year ordering)
     const latestRows = await pgQuery(
-      `SELECT DISTINCT week FROM creative_analysis WHERE week IS NOT NULL
+      `SELECT week FROM (SELECT DISTINCT week FROM creative_analysis WHERE week IS NOT NULL) t
        ORDER BY SPLIT_PART(week, '_', 2)::int DESC, REPLACE(SPLIT_PART(week, '_', 1), 'WK', '')::int DESC LIMIT 1`
     );
     if (latestRows.length === 0) {
@@ -1383,7 +1383,7 @@ router.post('/sync-all', authenticate, async (req, res) => {
 
     // Get all existing weeks
     const weekRows = await pgQuery(
-      `SELECT DISTINCT week FROM creative_analysis WHERE week IS NOT NULL
+      `SELECT week FROM (SELECT DISTINCT week FROM creative_analysis WHERE week IS NOT NULL) t
        ORDER BY SPLIT_PART(week,'_',2)::int, REPLACE(SPLIT_PART(week,'_',1),'WK','')::int`
     );
 
