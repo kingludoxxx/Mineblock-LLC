@@ -32,7 +32,7 @@ const KNOWN_ANGLES = new Set([
   'hiddenopportunity', 'missedopportunity', 'comparison', 'offer',
   'reaction', 'gtrs', 'livestream', 'rebranding', 'sale', 'breakingnews',
   'lambo', 'mclaren', 'retargeting', 'founder story', 'founderstory',
-  'money opportunity', 'moneyopportunity',
+  'money opportunity', 'moneyopportunity', 'opportunity', 'tof',
 ]);
 
 /** Case-insensitive Set.has() */
@@ -94,22 +94,26 @@ function parseAdName(name) {
     }
   }
 
-  // Clean file extensions from individual segments (in case they weren't at the end)
-  segments = segments.map(s => s.replace(/\.(mp4|mov|avi|mkv|png|jpg|jpeg|gif|webp|webm)$/i, '').trim());
+  // Clean file extensions and trailing dashes/underscores from individual segments
+  segments = segments.map(s => s.replace(/\.(mp4|mov|avi|mkv|png|jpg|jpeg|gif|webp|webm)$/i, '').replace(/[-_]+$/, '').trim());
 
-  const creativeId = segments[1] || null;
+  // Detect IM ads where segments[0] IS the creative ID (e.g. "IM110 - V5 - ...")
+  // In that case there is no prefix — segments[0] is creativeId, segments[1] is hook
+  const imLeadAd = /^IM\d/i.test(segments[0] || '');
+  const creativeId = imLeadAd ? segments[0] : (segments[1] || null);
 
-  // Detect if position [2] is the hook (H1, H2, HX, etc.), a version (V1, V2), or an iteration marker (IT, NN, NA, etc.)
+  // Detect if the hook position contains a hook (H1, H2, HX), version (V1, V2), or iteration marker (IT, NN, NA)
   let hookId = null;
-  const seg2 = segments[2] || '';
+  const hookIdx = imLeadAd ? 1 : 2;
+  const seg2 = segments[hookIdx] || '';
   if (/^H\d+$/i.test(seg2) || /^HX$/i.test(seg2)) {
     hookId = seg2.toUpperCase();
   } else if (/^V\d+$/i.test(seg2)) {
     // Image ads use Vx (V1, V2, V3) as versions — treat as hook variant
     hookId = seg2.toUpperCase();
   } else if (/^(IT|NN|NA)$/i.test(seg2)) {
-    // IT/NN/NA in position 2 — look for hook in position [3]
-    const seg3 = segments[3] || '';
+    // IT/NN/NA — look for hook in the next position
+    const seg3 = segments[hookIdx + 1] || '';
     if (/^H\d+$/i.test(seg3) || /^HX$/i.test(seg3) || /^V\d+$/i.test(seg3)) {
       hookId = seg3.toUpperCase();
     } else {
@@ -208,6 +212,31 @@ function parseAdName(name) {
 
     // Only accept recognized editors — reject brand owner names, unknowns, etc.
     if (editor && !knownHas(KNOWN_EDITORS, editor)) editor = null;
+  } else {
+    // No week marker found — scan remaining segments (after head) for known values
+    // Head size depends on whether segments[0] is the creative ID (imLeadAd) or a prefix
+    const headSize = imLeadAd ? (hookId ? 2 : 1) : (hookId ? 3 : 2);
+    const startIdx = headSize;
+    const pool = segments.slice(startIdx);
+
+    // Strip placeholders / junk from pool
+    const junkPattern = /^(B\d{3,}|H\d+|HX|IT|NN|NA|MR|IM\d*|V\d+|WK\d+.*|\d+[xX]\d+|-|)$/i;
+    const clean = pool.filter(s => s && !junkPattern.test(s) && !['-', 'NA', 'NN', 'na', 'nn'].includes(s));
+
+    // Scan for known values
+    for (const seg of clean) {
+      if (!editor && knownHas(KNOWN_EDITORS, seg)) { editor = seg; continue; }
+      if (!format && knownHas(KNOWN_FORMATS, seg)) { format = seg; continue; }
+      if (!angle && knownHas(KNOWN_ANGLES, seg)) { angle = seg; continue; }
+    }
+
+    // Second pass: if angle still missing, check for two-word angles (adjacent segments)
+    if (!angle) {
+      for (let i = 0; i < pool.length - 1; i++) {
+        const twoWord = `${pool[i]} ${pool[i + 1]}`;
+        if (knownHas(KNOWN_ANGLES, twoWord)) { angle = twoWord; break; }
+      }
+    }
   }
 
   // Determine type from creative ID prefix
@@ -305,77 +334,101 @@ async function fetchTripleWhaleAds(startDate, endDate) {
 
   // Revenue columns to try (order_revenue may not exist in all TW setups)
   const revenueColumns = ['order_revenue', 'pixel_revenue', 'revenue'];
-  // Purchase columns to try, then null (no purchases)
-  const purchaseColumns = ['pixel_purchases', 'purchases', 'pixel_capi_purchases', 'conversions', null];
+  // Purchase columns to try
+  const purchaseColumns = [
+    'pixel_purchases', 'purchases', 'pixel_capi_purchases',
+    'total_purchases', 'conversions', 'nc_purchases', 'pixel_nc_purchases',
+  ];
 
-
-
-  for (const revenueCol of revenueColumns) {
-    for (const purchaseCol of purchaseColumns) {
-      const purchaseSelect = purchaseCol ? `, SUM(${purchaseCol}) as total_purchases` : '';
-      const query = `
-        SELECT
-          ad_name,
-          SUM(spend) as total_spend,
-          SUM(${revenueCol}) as total_revenue${purchaseSelect},
-          SUM(impressions) as total_impressions,
-          SUM(clicks) as total_clicks
-        FROM pixel_joined_tvf
-        WHERE event_date BETWEEN @startDate AND @endDate
-        GROUP BY ad_name
-        HAVING SUM(spend) > 0.01
-        ORDER BY SUM(spend) DESC
-        LIMIT 2000
-      `;
-
-      const res = await fetch(TW_SQL_URL, {
-        method: 'POST',
-        headers: {
-          'x-api-key': TW_API_KEY,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          shopId: TW_SHOP_ID,
-          query: query.trim(),
-          period: { startDate, endDate },
-        }),
-        signal: AbortSignal.timeout(30000),
-      });
-
-      if (res.ok) {
-        const data = await res.json();
-        const rows = Array.isArray(data) ? data : (data?.data || data?.rows || []);
-        console.log(`[Creative Analysis] TW query OK — revenue="${revenueCol}", purchases="${purchaseCol || 'none'}", rows=${rows.length}`);
-        if (rows.length >= 2000) {
-          console.warn('[Creative Analysis] WARNING: TW query hit 2000 row limit — some ads may be missing');
-        }
-        if (!purchaseCol) {
-          console.warn('[Creative Analysis] WARNING: No purchase column available. Purchases will be 0.');
-        }
-        return rows;
-      }
-
-      // Check if this is an auth/server error (don't retry column variants)
-      if (res.status === 401 || res.status === 403) {
-        const text = await res.text();
-        console.error(`[Creative Analysis] TW auth error ${res.status}: ${text.slice(0, 200)}`);
-        return [];
-      }
-      if (res.status >= 500) {
-        const text = await res.text();
-        console.error(`[Creative Analysis] TW server error ${res.status}: ${text.slice(0, 200)}`);
-        return [];
-      }
-
-      // 400/422 = likely column not found, try next variant
+  // Helper to run a TW SQL query; returns { ok, rows, status, errorText }
+  async function twQuery(sql) {
+    const res = await fetch(TW_SQL_URL, {
+      method: 'POST',
+      headers: {
+        'x-api-key': TW_API_KEY,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        shopId: TW_SHOP_ID,
+        query: sql.trim(),
+        period: { startDate, endDate },
+      }),
+      signal: AbortSignal.timeout(30000),
+    });
+    if (res.status === 401 || res.status === 403) {
       const text = await res.text();
-      console.warn(`[Creative Analysis] TW column combo revenue="${revenueCol}" purchases="${purchaseCol}" failed: ${text.slice(0, 100)}`);
+      console.error(`[Creative Analysis] TW auth error ${res.status}: ${text.slice(0, 200)}`);
+      return { ok: false, fatal: true };
     }
-
-    // If we get here, all purchase variants failed with this revenue column. Try next revenue column.
+    if (res.status >= 500) {
+      const text = await res.text();
+      console.error(`[Creative Analysis] TW server error ${res.status}: ${text.slice(0, 200)}`);
+      return { ok: false, fatal: true };
+    }
+    if (!res.ok) {
+      const text = await res.text();
+      return { ok: false, fatal: false, errorText: text.slice(0, 100) };
+    }
+    const data = await res.json();
+    const rows = Array.isArray(data) ? data : (data?.data || data?.rows || []);
+    return { ok: true, rows };
   }
 
-  console.error('[Creative Analysis] All TW query variants failed. No data returned.');
+  // Step 1: Find the working revenue column (no purchase column, isolates the variable)
+  let workingRevenueCol = null;
+  for (const revenueCol of revenueColumns) {
+    const sql = `
+      SELECT ad_name, SUM(spend) as total_spend, SUM(${revenueCol}) as total_revenue,
+             SUM(impressions) as total_impressions, SUM(clicks) as total_clicks
+      FROM pixel_joined_tvf
+      WHERE event_date BETWEEN @startDate AND @endDate
+      GROUP BY ad_name
+      HAVING SUM(spend) > 0.01
+      ORDER BY SUM(spend) DESC
+      LIMIT 2000
+    `;
+    const result = await twQuery(sql);
+    if (result.fatal) return [];
+    if (result.ok) {
+      const revenueOnlyRows = result.rows;
+      workingRevenueCol = revenueCol;
+      console.log(`[Creative Analysis] TW revenue column found: "${revenueCol}"`);
+      // Step 2: Try adding purchase columns to the working query
+      for (const purchaseCol of purchaseColumns) {
+        const sqlWithPurchases = `
+          SELECT ad_name, SUM(spend) as total_spend, SUM(${revenueCol}) as total_revenue,
+                 SUM(${purchaseCol}) as total_purchases,
+                 SUM(impressions) as total_impressions, SUM(clicks) as total_clicks
+          FROM pixel_joined_tvf
+          WHERE event_date BETWEEN @startDate AND @endDate
+          GROUP BY ad_name
+          HAVING SUM(spend) > 0.01
+          ORDER BY SUM(spend) DESC
+          LIMIT 2000
+        `;
+        const pResult = await twQuery(sqlWithPurchases);
+        if (pResult.fatal) return [];
+        if (pResult.ok) {
+          console.log(`[Creative Analysis] TW query OK — revenue="${revenueCol}", purchases="${purchaseCol}", rows=${pResult.rows.length}`);
+          if (pResult.rows.length >= 2000) {
+            console.warn('[Creative Analysis] WARNING: TW query hit 2000 row limit — some ads may be missing');
+          }
+          return pResult.rows;
+        }
+        console.warn(`[Creative Analysis] TW purchase column "${purchaseCol}" failed: ${pResult.errorText}`);
+      }
+      // No purchase column worked — return the revenue-only result
+      console.warn('[Creative Analysis] WARNING: No purchase column available. Purchases will be 0.');
+      console.log(`[Creative Analysis] TW query OK (no purchases) — revenue="${revenueCol}", rows=${revenueOnlyRows.length}`);
+      if (revenueOnlyRows.length >= 2000) {
+        console.warn('[Creative Analysis] WARNING: TW query hit 2000 row limit — some ads may be missing');
+      }
+      return revenueOnlyRows;
+    }
+    console.warn(`[Creative Analysis] TW revenue column "${revenueCol}" failed: ${result.errorText}`);
+  }
+
+  console.error('[Creative Analysis] All TW revenue column variants failed. No data returned.');
   return [];
 }
 

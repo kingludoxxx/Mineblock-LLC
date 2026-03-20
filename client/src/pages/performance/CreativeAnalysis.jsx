@@ -383,9 +383,10 @@ export default function CreativeAnalysis() {
     setSyncing(true);
     try {
       const syncWeek = latestWeek || getCurrentWeek();
-      await api.post('/creative-analysis/sync', { week: syncWeek });
+      await api.post('/creative-analysis/sync', { week: syncWeek }, { signal: abortRef.current?.signal });
       await fetchData();
     } catch (err) {
+      if (err.name === 'CanceledError' || err.name === 'AbortError') return;
       setError(err.response?.data?.error?.message || err.message || 'Sync failed.');
     } finally {
       setSyncing(false);
@@ -467,12 +468,11 @@ export default function CreativeAnalysis() {
     result.sort((a, b) => {
       let aVal = a[key];
       let bVal = b[key];
-      const aIsStr = typeof aVal === 'string';
-      const bIsStr = typeof bVal === 'string';
-      if (aIsStr) aVal = aVal.toLowerCase();
-      if (bIsStr) bVal = bVal.toLowerCase();
-      if (aVal == null) aVal = (aIsStr || bIsStr) ? (direction === 'asc' ? '\uffff' : '') : (direction === 'asc' ? Infinity : -Infinity);
-      if (bVal == null) bVal = (aIsStr || bIsStr) ? (direction === 'asc' ? '\uffff' : '') : (direction === 'asc' ? Infinity : -Infinity);
+      const isStringCol = typeof aVal === 'string' || typeof bVal === 'string';
+      if (typeof aVal === 'string') aVal = aVal.toLowerCase();
+      if (typeof bVal === 'string') bVal = bVal.toLowerCase();
+      if (aVal == null) aVal = isStringCol ? (direction === 'asc' ? '\uffff' : '') : (direction === 'asc' ? Infinity : -Infinity);
+      if (bVal == null) bVal = isStringCol ? (direction === 'asc' ? '\uffff' : '') : (direction === 'asc' ? Infinity : -Infinity);
       if (aVal < bVal) return direction === 'asc' ? -1 : 1;
       if (aVal > bVal) return direction === 'asc' ? 1 : -1;
       return 0;
@@ -736,7 +736,7 @@ export default function CreativeAnalysis() {
               className="flex items-center gap-2 px-4 py-2 rounded-lg bg-white/[0.04] border border-white/[0.08] text-white text-sm hover:bg-white/[0.06] transition-colors cursor-pointer"
             >
               <Calendar className="w-3.5 h-3.5 text-gray-400" />
-              {activeOnly ? 'Active Only' : DATE_PRESETS.find((p) => p.key === datePreset)?.label || 'Custom'}
+              {activeOnly ? 'Date' : DATE_PRESETS.find((p) => p.key === datePreset)?.label || 'Custom'}
               <ChevronDown className="w-3.5 h-3.5 text-gray-500" />
             </button>
 
@@ -829,7 +829,7 @@ export default function CreativeAnalysis() {
             }}
             className={`px-3 py-2 rounded-lg text-xs font-medium transition-colors cursor-pointer ${activeOnly ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30' : 'bg-white/[0.04] text-gray-400 hover:text-white border border-white/[0.08]'}`}
           >
-            Active Only
+            Date
           </button>
 
           {/* Sync button */}
