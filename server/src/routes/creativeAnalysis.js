@@ -21,7 +21,7 @@ const KNOWN_FORMATS = new Set([
 ]);
 
 const KNOWN_EDITORS = new Set([
-  'faiz', 'muhammad', 'antoni', 'ludovico', 'atif', 'ali', 'hamza',
+  'faiz', 'muhammad', 'antoni', 'ludovico', 'ludo', 'atif', 'ali', 'hamza',
   'usama', 'carl', 'alhamjatonni', 'abdul', 'robi', 'abdullah', 'farhan',
 ]);
 
@@ -1057,7 +1057,7 @@ router.get('/lifetime', authenticate, async (req, res) => {
     // Fetch all rows for this creative across all weeks
     const rows = await pgQuery(
       'SELECT * FROM creative_analysis WHERE creative_id = $1 ORDER BY week ASC, spend DESC',
-      [creative_id.toUpperCase()]
+      [creative_id]
     );
 
     if (rows.length === 0) {
