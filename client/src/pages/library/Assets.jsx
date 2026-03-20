@@ -15,6 +15,7 @@ import {
   Users,
   Sparkles,
   Shield,
+  Upload,
 } from 'lucide-react';
 import api from '../../services/api';
 
@@ -43,12 +44,14 @@ const TABS = [
   { key: 'audience', label: 'Audience & Marketing', icon: Users },
   { key: 'details', label: 'Product Details', icon: Sparkles },
   { key: 'angles', label: 'Marketing Angles', icon: Megaphone },
-  { key: 'images', label: 'Images', icon: Image },
+  { key: 'images', label: 'Images & Logos', icon: Image },
+  { key: 'fonts', label: 'Brand Fonts', icon: FileText },
   { key: 'scripts', label: 'Scripts', icon: FileText },
 ];
 
 const emptyProduct = {
   name: '',
+  productCode: '',
   category: 'supplement',
   price: '',
   description: '',
@@ -67,6 +70,7 @@ const emptyProduct = {
   angles: [{ name: '', description: '' }],
   images: [''],
   logos: [''],
+  fonts: [{ name: '', url: '', usage: 'headline' }],
   scripts: [{ title: '', type: 'vsl', content: '' }],
 };
 
@@ -306,15 +310,43 @@ function EditorModal({ isCreating, form, setForm, activeTab, setActiveTab, savin
     setForm({ ...form, images: list.length ? list : [''] });
   };
 
-  const updateLogo = (i, val) => {
-    const list = [...form.logos];
-    list[i] = val;
-    setForm({ ...form, logos: list });
-  };
-  const addLogo = () => setForm({ ...form, logos: [...form.logos, ''] });
   const removeLogo = (i) => {
     const list = form.logos.filter((_, idx) => idx !== i);
-    setForm({ ...form, logos: list.length ? list : [''] });
+    setForm({ ...form, logos: list.length ? list : [] });
+  };
+  const handleLogoUpload = (files) => {
+    Array.from(files).forEach((file) => {
+      if (!file.type.startsWith('image/')) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        setForm((prev) => ({
+          ...prev,
+          logos: [...prev.logos.filter((l) => l), reader.result],
+        }));
+      };
+      reader.readAsDataURL(file);
+    });
+  };
+
+  const updateFont = (i, key, val) => {
+    const list = [...form.fonts];
+    list[i] = { ...list[i], [key]: val };
+    setForm({ ...form, fonts: list });
+  };
+  const addFont = () => setForm({ ...form, fonts: [...form.fonts, { name: '', url: '', usage: 'headline' }] });
+  const removeFont = (i) => {
+    const list = form.fonts.filter((_, idx) => idx !== i);
+    setForm({ ...form, fonts: list.length ? list : [{ name: '', url: '', usage: 'headline' }] });
+  };
+  const handleFontUpload = (i, file) => {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const list = [...form.fonts];
+      list[i] = { ...list[i], url: reader.result, name: list[i].name || file.name.replace(/\.[^.]+$/, '') };
+      setForm({ ...form, fonts: list });
+    };
+    reader.readAsDataURL(file);
   };
 
   const updateScript = (i, key, val) => {
@@ -334,6 +366,7 @@ function EditorModal({ isCreating, form, setForm, activeTab, setActiveTab, savin
   const renderBasic = () => (
     <div className="space-y-4">
       <Input label="Product Name" value={form.name} onChange={(v) => field('name', v)} placeholder="e.g. SuperGreens Pro" required />
+      <Input label="Product Code" value={form.productCode} onChange={(v) => field('productCode', v)} placeholder="e.g. SGP-001" />
       <Select label="Category" value={form.category} onChange={(v) => field('category', v)} options={CATEGORIES} />
       <Input label="Price" value={form.price} onChange={(v) => field('price', v)} placeholder="e.g. $49.99" />
       <TextArea label="Description" value={form.description} onChange={(v) => field('description', v)} placeholder="Describe the product..." rows={4} />
@@ -450,31 +483,44 @@ function EditorModal({ isCreating, form, setForm, activeTab, setActiveTab, savin
 
       <div>
         <label className="block text-xs font-medium text-slate-400 mb-2">Logos</label>
-        <div className="space-y-3">
-          {form.logos.map((url, i) => (
-            <div key={i}>
-              <div className="flex items-center gap-2">
-                <input
-                  value={url}
-                  onChange={(e) => updateLogo(i, e.target.value)}
-                  placeholder="https://example.com/logo.png"
-                  className="flex-1 bg-[#0a0a0a] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-emerald-500/40 transition-colors"
-                />
-                <button onClick={() => removeLogo(i)} className="text-slate-500 hover:text-red-400 p-1 transition-colors" title="Remove">
-                  <X className="w-3.5 h-3.5" />
-                </button>
-              </div>
-              {url.trim() && (
-                <div className="mt-2 w-20 h-20 rounded-md overflow-hidden border border-white/[0.06] bg-[#0a0a0a] flex items-center justify-center">
-                  <img src={url} alt="" className="max-w-full max-h-full object-contain" onError={(e) => { e.target.style.display = 'none'; }} />
-                </div>
-              )}
-            </div>
-          ))}
+        {/* Upload zone */}
+        <div
+          className="border-2 border-dashed border-white/[0.08] rounded-lg p-6 text-center hover:border-emerald-500/30 transition-colors cursor-pointer mb-3"
+          onDragOver={(e) => { e.preventDefault(); e.currentTarget.classList.add('border-emerald-500/40'); }}
+          onDragLeave={(e) => { e.currentTarget.classList.remove('border-emerald-500/40'); }}
+          onDrop={(e) => { e.preventDefault(); e.currentTarget.classList.remove('border-emerald-500/40'); handleLogoUpload(e.dataTransfer.files); }}
+          onClick={() => document.getElementById('logo-upload-input').click()}
+        >
+          <Upload className="w-6 h-6 text-slate-500 mx-auto mb-2" />
+          <p className="text-xs text-slate-400">Drop logos here or <span className="text-emerald-400">browse</span></p>
+          <p className="text-[10px] text-slate-600 mt-1">PNG, SVG, JPG — multiple files supported</p>
+          <input
+            id="logo-upload-input"
+            type="file"
+            accept="image/*"
+            multiple
+            className="hidden"
+            onChange={(e) => { handleLogoUpload(e.target.files); e.target.value = ''; }}
+          />
         </div>
-        <button onClick={addLogo} className="mt-2 text-xs text-emerald-400 hover:text-emerald-300 flex items-center gap-1 transition-colors">
-          <Plus className="w-3 h-3" /> Add logo
-        </button>
+        {/* Logo previews */}
+        {form.logos.filter((l) => l).length > 0 && (
+          <div className="flex flex-wrap gap-3">
+            {form.logos.map((url, i) =>
+              url ? (
+                <div key={i} className="relative group w-20 h-20 rounded-lg overflow-hidden border border-white/[0.06] bg-[#0a0a0a] flex items-center justify-center">
+                  <img src={url} alt="" className="max-w-full max-h-full object-contain p-1" />
+                  <button
+                    onClick={() => removeLogo(i)}
+                    className="absolute top-1 right-1 w-5 h-5 rounded-full bg-black/70 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity text-red-400 hover:text-red-300"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </div>
+              ) : null
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -523,12 +569,88 @@ function EditorModal({ isCreating, form, setForm, activeTab, setActiveTab, savin
     </div>
   );
 
+  const FONT_USAGES = [
+    { value: 'headline', label: 'Headline' },
+    { value: 'subheadline', label: 'Subheadline' },
+    { value: 'body', label: 'Body' },
+    { value: 'cta', label: 'CTA / Button' },
+    { value: 'accent', label: 'Accent' },
+    { value: 'other', label: 'Other' },
+  ];
+
+  const renderFonts = () => (
+    <div>
+      <label className="block text-xs font-medium text-slate-400 mb-1">Brand Fonts</label>
+      <p className="text-[11px] text-slate-500 mb-4">Upload your brand fonts (.ttf, .otf, .woff, .woff2) — these will be used in Statics Generation.</p>
+      <div className="space-y-3">
+        {form.fonts.map((f, i) => (
+          <div key={i} className="bg-[#0a0a0a] border border-white/[0.08] rounded-lg p-4 space-y-3">
+            <div className="flex items-start gap-2">
+              <div className="flex-1 space-y-3">
+                <input
+                  value={f.name}
+                  onChange={(e) => updateFont(i, 'name', e.target.value)}
+                  placeholder="Font name (e.g. Montserrat Bold)"
+                  className="w-full bg-transparent border-b border-white/[0.06] pb-1 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-emerald-500/40 transition-colors"
+                />
+                <div className="flex items-center gap-3">
+                  <select
+                    value={f.usage}
+                    onChange={(e) => updateFont(i, 'usage', e.target.value)}
+                    className="bg-[#111] border border-white/[0.08] rounded-md px-2 py-1.5 text-xs text-white focus:outline-none focus:border-emerald-500/40 transition-colors"
+                  >
+                    {FONT_USAGES.map((u) => (
+                      <option key={u.value} value={u.value}>{u.label}</option>
+                    ))}
+                  </select>
+                  {f.url ? (
+                    <span className="text-[10px] text-emerald-400 flex items-center gap-1">
+                      <Shield className="w-3 h-3" /> Font uploaded
+                    </span>
+                  ) : (
+                    <label className="text-xs text-emerald-400 hover:text-emerald-300 cursor-pointer flex items-center gap-1 transition-colors">
+                      <Upload className="w-3 h-3" /> Upload font file
+                      <input
+                        type="file"
+                        accept=".ttf,.otf,.woff,.woff2"
+                        className="hidden"
+                        onChange={(e) => { handleFontUpload(i, e.target.files[0]); e.target.value = ''; }}
+                      />
+                    </label>
+                  )}
+                </div>
+              </div>
+              <button onClick={() => removeFont(i)} className="text-slate-500 hover:text-red-400 p-1 transition-colors mt-0.5" title="Remove">
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+            {f.url && (
+              <div className="flex items-center justify-between">
+                <p className="text-xs text-slate-500 truncate max-w-[200px]">{f.name || 'Unnamed font'} — {f.usage}</p>
+                <button
+                  onClick={() => updateFont(i, 'url', '')}
+                  className="text-[10px] text-slate-500 hover:text-red-400 transition-colors"
+                >
+                  Remove file
+                </button>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+      <button onClick={addFont} className="mt-3 text-xs text-emerald-400 hover:text-emerald-300 flex items-center gap-1 transition-colors">
+        <Plus className="w-3 h-3" /> Add font
+      </button>
+    </div>
+  );
+
   const tabContent = {
     basic: renderBasic,
     audience: renderAudience,
     details: renderDetails,
     angles: renderAngles,
     images: renderImages,
+    fonts: renderFonts,
     scripts: renderScripts,
   };
 
@@ -634,6 +756,7 @@ export default function Assets() {
   /* ---- Helpers to normalise form arrays ---- */
   const normaliseForm = (p) => ({
     name: p.name ?? '',
+    productCode: p.productCode ?? p.product_code ?? '',
     category: p.category ?? 'supplement',
     price: p.price ?? '',
     description: p.description ?? '',
@@ -651,13 +774,14 @@ export default function Assets() {
     benefits: Array.isArray(p.benefits) && p.benefits.length ? [...p.benefits] : [''],
     angles: Array.isArray(p.angles) && p.angles.length ? p.angles.map((a) => ({ name: a.name ?? '', description: a.description ?? '' })) : [{ name: '', description: '' }],
     images: Array.isArray(p.images) && p.images.length ? [...p.images] : [''],
-    logos: Array.isArray(p.logos) && p.logos.length ? [...p.logos] : (p.logoUrl || p.logo_url ? [p.logoUrl ?? p.logo_url] : ['']),
+    logos: Array.isArray(p.logos) && p.logos.length ? [...p.logos] : (p.logoUrl || p.logo_url ? [p.logoUrl ?? p.logo_url] : []),
+    fonts: Array.isArray(p.fonts) && p.fonts.length ? p.fonts.map((f) => ({ name: f.name ?? '', url: f.url ?? '', usage: f.usage ?? 'headline' })) : [{ name: '', url: '', usage: 'headline' }],
     scripts: Array.isArray(p.scripts) && p.scripts.length ? p.scripts.map((s) => ({ title: s.title ?? '', type: s.type ?? 'vsl', content: s.content ?? '' })) : [{ title: '', type: 'vsl', content: '' }],
   });
 
   /* ---- CRUD actions ---- */
   const openCreate = () => {
-    setForm({ ...emptyProduct, benefits: [''], angles: [{ name: '', description: '' }], images: [''], logos: [''], scripts: [{ title: '', type: 'vsl', content: '' }] });
+    setForm({ ...emptyProduct, benefits: [''], angles: [{ name: '', description: '' }], images: [''], logos: [], fonts: [{ name: '', url: '', usage: 'headline' }], scripts: [{ title: '', type: 'vsl', content: '' }] });
     setEditingProduct(null);
     setIsCreating(true);
     setActiveTab('basic');
@@ -684,7 +808,8 @@ export default function Assets() {
         benefits: form.benefits.filter((b) => b.trim()),
         angles: form.angles.filter((a) => a.name.trim() || a.description.trim()),
         images: form.images.filter((u) => u.trim()),
-        logos: form.logos.filter((u) => u.trim()),
+        logos: form.logos.filter((u) => u),
+        fonts: form.fonts.filter((f) => f.name.trim() || f.url),
         scripts: form.scripts.filter((s) => s.title.trim() || s.content.trim()),
       };
 

@@ -18,7 +18,9 @@ async function ensureTable() {
       price TEXT,
       category TEXT DEFAULT 'supplement',
       logo_url TEXT,
+      product_code TEXT,
       logos JSONB DEFAULT '[]',
+      fonts JSONB DEFAULT '[]',
       product_images JSONB DEFAULT '[]',
       oneliner TEXT,
       tagline TEXT,
@@ -41,8 +43,10 @@ async function ensureTable() {
     );
   `);
 
-  // Add logos column if missing (migration for existing tables)
+  // Migrations for existing tables
   await pgQuery(`ALTER TABLE product_profiles ADD COLUMN IF NOT EXISTS logos JSONB DEFAULT '[]'`).catch(() => {});
+  await pgQuery(`ALTER TABLE product_profiles ADD COLUMN IF NOT EXISTS fonts JSONB DEFAULT '[]'`).catch(() => {});
+  await pgQuery(`ALTER TABLE product_profiles ADD COLUMN IF NOT EXISTS product_code TEXT`).catch(() => {});
 
   tableReady = true;
 }
@@ -52,7 +56,7 @@ ensureTable().catch(console.error);
 // ── Helpers ─────────────────────────────────────────────────────────
 
 const UPDATABLE_FIELDS = [
-  'name', 'description', 'price', 'category', 'logo_url', 'logos', 'product_images',
+  'name', 'description', 'price', 'category', 'product_code', 'logo_url', 'logos', 'fonts', 'product_images',
   'oneliner', 'tagline', 'customer_avatar', 'customer_frustration',
   'customer_dream', 'big_promise', 'mechanism', 'differentiator', 'voice',
   'guarantee', 'benefits', 'angles', 'scripts', 'offers',
@@ -60,7 +64,7 @@ const UPDATABLE_FIELDS = [
 ];
 
 const JSONB_FIELDS = new Set([
-  'product_images', 'logos', 'benefits', 'angles', 'scripts', 'offers', 'brand_colors',
+  'product_images', 'logos', 'fonts', 'benefits', 'angles', 'scripts', 'offers', 'brand_colors',
 ]);
 
 // ── GET / — List all profiles ───────────────────────────────────────
