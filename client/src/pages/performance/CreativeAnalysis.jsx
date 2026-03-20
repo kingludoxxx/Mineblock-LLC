@@ -69,22 +69,6 @@ function getCurrentWeek() {
   return `WK${String(week).padStart(2, '0')}_${year}`;
 }
 
-function generateWeekOptions() {
-  const now = new Date();
-  const { week: currentWeek, year } = getISOWeek(now);
-  const weeks = [];
-  // Current year weeks (current down to 1)
-  for (let w = currentWeek; w >= 1; w--) {
-    weeks.push(`WK${String(w).padStart(2, '0')}_${year}`);
-  }
-  // Previous year — check if it has 53 weeks (Dec 28 is always in the last ISO week)
-  const dec28 = new Date(Date.UTC(year - 1, 11, 28));
-  const prevYearLastWeek = getISOWeek(dec28).week;
-  for (let w = prevYearLastWeek; w >= 1; w--) {
-    weeks.push(`WK${String(w).padStart(2, '0')}_${year - 1}`);
-  }
-  return weeks;
-}
 
 /** Convert WKxx_YYYY to a readable date (Monday of that ISO week) */
 function weekToDate(weekStr) {
@@ -217,14 +201,14 @@ const DATE_PRESETS = [
 
 function presetToRange(key) {
   const today = new Date();
-  const fmt = (d) => d.toISOString().slice(0, 10);
+  const fmt = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   const sub = (days) => { const d = new Date(today); d.setDate(d.getDate() - days); return d; };
 
   switch (key) {
     case 'today': return { startDate: fmt(today), endDate: fmt(today) };
     case 'yesterday': { const y = sub(1); return { startDate: fmt(y), endDate: fmt(y) }; }
     case 'this_week': {
-      const d = new Date(today); d.setDate(d.getDate() - d.getDay());
+      const d = new Date(today); d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
       return { startDate: fmt(d), endDate: fmt(today) };
     }
     case 'this_month': {
@@ -232,9 +216,9 @@ function presetToRange(key) {
       return { startDate: fmt(d), endDate: fmt(today) };
     }
     case 'last_week': {
-      const end = new Date(today); end.setDate(end.getDate() - end.getDay() - 1);
-      const start = new Date(end); start.setDate(start.getDate() - 6);
-      return { startDate: fmt(start), endDate: fmt(end) };
+      const d = new Date(today); d.setDate(d.getDate() - ((d.getDay() + 6) % 7) - 7);
+      const end = new Date(d); end.setDate(d.getDate() + 6);
+      return { startDate: fmt(d), endDate: fmt(end) };
     }
     case 'last_month': {
       const end = new Date(today.getFullYear(), today.getMonth(), 0);
@@ -338,6 +322,20 @@ export default function CreativeAnalysis() {
   // ── Fetch ──
 
   const abortRef = useRef(null);
+  const datePickerRef = useRef(null);
+
+  // Click-outside handler for date picker
+  useEffect(() => {
+    if (!datePickerOpen) return;
+    const handleClickOutside = (e) => {
+      if (datePickerRef.current && !datePickerRef.current.contains(e.target)) {
+        setDatePickerOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [datePickerOpen]);
+
   const fetchData = useCallback(async () => {
     // Cancel any in-flight request from a previous call
     if (abortRef.current) abortRef.current.abort();
@@ -720,7 +718,7 @@ export default function CreativeAnalysis() {
 
         <div className="flex items-center gap-3 flex-wrap">
           {/* Date range picker */}
-          <div className="relative">
+          <div className="relative" ref={datePickerRef}>
             <button
               onClick={() => setDatePickerOpen((v) => !v)}
               className="flex items-center gap-2 px-4 py-2 rounded-lg bg-white/[0.04] border border-white/[0.08] text-white text-sm hover:bg-white/[0.06] transition-colors cursor-pointer"
