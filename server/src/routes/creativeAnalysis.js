@@ -62,6 +62,10 @@ const knownHas = (set, val) => val && set.has(val.toLowerCase());
 function parseAdName(name) {
   if (!name) return null;
 
+  // Filter out known junk/unattributed ad names
+  const junkNames = ['(not set)', 'not set', '(unknown)', 'unknown'];
+  if (junkNames.includes(name.trim().toLowerCase())) return null;
+
   // Helper: title case normalization for consistent aggregation
   const titleCase = (s) => s ? s.charAt(0).toUpperCase() + s.slice(1).toLowerCase() : null;
 

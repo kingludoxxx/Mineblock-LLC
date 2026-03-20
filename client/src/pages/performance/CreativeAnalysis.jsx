@@ -236,16 +236,16 @@ function presetToRange(key) {
 // ── Component ────────────────────────────────────────────────────────────────
 
 export default function CreativeAnalysis() {
-  const [datePreset, setDatePreset] = useState('last_14');
+  const [datePreset, setDatePreset] = useState('last_7');
   const [datePickerOpen, setDatePickerOpen] = useState(false);
-  const [startDate, setStartDate] = useState(() => presetToRange('last_14').startDate);
-  const [endDate, setEndDate] = useState(() => presetToRange('last_14').endDate);
+  const [startDate, setStartDate] = useState(() => presetToRange('last_7').startDate);
+  const [endDate, setEndDate] = useState(() => presetToRange('last_7').endDate);
   const [data, setData] = useState([]);
   const [leaderboard, setLeaderboard] = useState(null);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState(null);
-  const [activeOnly, setActiveOnly] = useState(true);
+  const [activeOnly, setActiveOnly] = useState(false);
   const [latestWeek, setLatestWeek] = useState(null);
   const [filters, setFilters] = useState({
     creativeType: '',
@@ -736,7 +736,7 @@ export default function CreativeAnalysis() {
               className="flex items-center gap-2 px-4 py-2 rounded-lg bg-white/[0.04] border border-white/[0.08] text-white text-sm hover:bg-white/[0.06] transition-colors cursor-pointer"
             >
               <Calendar className="w-3.5 h-3.5 text-gray-400" />
-              {activeOnly ? 'Date' : DATE_PRESETS.find((p) => p.key === datePreset)?.label || 'Custom'}
+              {DATE_PRESETS.find((p) => p.key === datePreset)?.label || `${startDate} – ${endDate}`}
               <ChevronDown className="w-3.5 h-3.5 text-gray-500" />
             </button>
 
@@ -812,25 +812,6 @@ export default function CreativeAnalysis() {
               </div>
             )}
           </div>
-
-          {/* Active only toggle */}
-          <button
-            onClick={() => {
-              if (activeOnly) {
-                // Switching to date mode — set dates to match last_14 preset
-                const range = presetToRange('last_14');
-                setDatePreset('last_14');
-                setStartDate(range.startDate);
-                setEndDate(range.endDate);
-              } else {
-                setDatePreset('active');
-              }
-              setActiveOnly((v) => !v);
-            }}
-            className={`px-3 py-2 rounded-lg text-xs font-medium transition-colors cursor-pointer ${activeOnly ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30' : 'bg-white/[0.04] text-gray-400 hover:text-white border border-white/[0.08]'}`}
-          >
-            Date
-          </button>
 
           {/* Sync button */}
           <button
