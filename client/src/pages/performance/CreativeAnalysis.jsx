@@ -15,7 +15,6 @@ import {
   Zap,
   TrendingUp,
   Flame,
-  Grid3X3,
   ChevronDown,
   Calendar,
 } from 'lucide-react';
@@ -520,36 +519,6 @@ export default function CreativeAnalysis() {
       .sort((a, b) => (b.roas ?? 0) - (a.roas ?? 0))
       .slice(0, 10);
   }, [processedData]);
-
-  const heatmapData = useMemo(() => {
-    const map = {};
-    const angles = new Set();
-    const formats = new Set();
-    processedData.forEach((r) => {
-      const a = r.angle || 'Unknown';
-      const f = r.format || 'Unknown';
-      angles.add(a);
-      formats.add(f);
-      const key = `${f}|${a}`;
-      if (!map[key]) map[key] = { spend: 0, revenue: 0, count: 0 };
-      map[key].spend += r.spend || 0;
-      map[key].revenue += r.revenue || 0;
-      map[key].count++;
-    });
-    const cells = {};
-    for (const [key, val] of Object.entries(map)) {
-      cells[key] = val.spend > 0 ? val.revenue / val.spend : 0;
-    }
-    return { angles: [...angles].sort(), formats: [...formats].sort(), cells, counts: map };
-  }, [processedData]);
-
-  const heatmapColor = (roas) => {
-    if (roas >= 2.0) return 'bg-emerald-500/40 text-emerald-300';
-    if (roas >= 1.5) return 'bg-emerald-500/25 text-emerald-400';
-    if (roas >= 1.0) return 'bg-yellow-500/25 text-yellow-400';
-    if (roas > 0) return 'bg-red-500/20 text-red-400';
-    return 'bg-white/[0.02] text-gray-600';
-  };
 
   // ── Interactions ──
 
@@ -1097,57 +1066,6 @@ export default function CreativeAnalysis() {
               </div>
             )}
 
-            {/* Format × Angle Heatmap */}
-            {heatmapData.formats.length > 0 && heatmapData.angles.length > 0 && (
-              <div className={cardStyle}>
-                <div className="flex items-center gap-2 mb-4">
-                  <Grid3X3 className="w-4 h-4 text-cyan-400" />
-                  <h3 className="text-white font-semibold text-sm">Format × Angle Heatmap</h3>
-                  <span className="text-gray-500 text-xs ml-1">ROAS by combination</span>
-                </div>
-                <div className="overflow-x-auto">
-                  <table className="text-xs">
-                    <thead>
-                      <tr>
-                        <th className="px-3 py-2 text-left text-gray-500 font-medium">Format ↓ / Angle →</th>
-                        {heatmapData.angles.map((a) => (
-                          <th key={a} className="px-3 py-2 text-center text-gray-400 font-medium whitespace-nowrap">{a}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {heatmapData.formats.map((f) => (
-                        <tr key={f} className="border-t border-white/[0.04]">
-                          <td className="px-3 py-2 text-gray-400 font-medium whitespace-nowrap">{f}</td>
-                          {heatmapData.angles.map((a) => {
-                            const key = `${f}|${a}`;
-                            const roas = heatmapData.cells[key] ?? 0;
-                            const count = heatmapData.counts[key]?.count ?? 0;
-                            return (
-                              <td key={a} className={`px-3 py-2 text-center font-medium rounded ${heatmapColor(roas)}`}>
-                                {count > 0 ? (
-                                  <span title={`${count} creative${count !== 1 ? 's' : ''}, ${fmtMoney(heatmapData.counts[key]?.spend)} spend`}>
-                                    {roas.toFixed(2)}x
-                                  </span>
-                                ) : (
-                                  <span className="text-gray-700">—</span>
-                                )}
-                              </td>
-                            );
-                          })}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-                <div className="flex items-center gap-4 mt-3 text-[10px]">
-                  <span className="flex items-center gap-1"><span className="w-3 h-3 rounded bg-red-500/20" /> {'<'}1.0x</span>
-                  <span className="flex items-center gap-1"><span className="w-3 h-3 rounded bg-yellow-500/25" /> 1.0–1.5x</span>
-                  <span className="flex items-center gap-1"><span className="w-3 h-3 rounded bg-emerald-500/25" /> 1.5–2.0x</span>
-                  <span className="flex items-center gap-1"><span className="w-3 h-3 rounded bg-emerald-500/40" /> {'>'}2.0x</span>
-                </div>
-              </div>
-            )}
           </div>
         )}
       </div>
