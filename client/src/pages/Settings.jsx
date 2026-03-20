@@ -30,7 +30,7 @@ export default function Settings() {
   const ActiveComponent = currentTab.component;
 
   return (
-    <div>
+    <div className="p-6">
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-white">Settings</h1>
         <p className="text-white/40 text-sm mt-1">Manage your account, workspace, and integrations</p>

@@ -13,6 +13,7 @@ import {
   ArrowRight,
 } from 'lucide-react';
 import api from '../../services/api';
+import ProductSelector from '../../components/ProductSelector';
 
 const EXAMPLE_PROMPTS = [
   {
@@ -52,6 +53,17 @@ export default function MagicWriter() {
   const [enhancingField, setEnhancingField] = useState(null);
   const [copiedIndex, setCopiedIndex] = useState(null);
   const [aiSource, setAiSource] = useState(null);
+  const [selectedProductId, setSelectedProductId] = useState(null);
+
+  const handleProductSelect = (product) => {
+    if (!product) {
+      setSelectedProductId(null);
+      return;
+    }
+    setSelectedProductId(product.id);
+    setProductName(product.name || '');
+    setTargetAudience(product.customer_avatar || '');
+  };
 
   const referenceContent = referenceMode === 'text' ? referenceText : referenceUrl;
   const canGenerate = referenceContent.trim() && productName.trim() && targetAudience.trim();
@@ -139,7 +151,7 @@ export default function MagicWriter() {
   };
 
   return (
-    <div className="flex h-full gap-6 -m-6">
+    <div className="flex h-full">
       {/* Left Panel - Input */}
       <div className="w-[60%] min-w-[380px] overflow-y-auto p-6 border-r border-white/[0.06]">
         <div className="flex items-center gap-3 mb-6">
@@ -200,6 +212,12 @@ export default function MagicWriter() {
         {/* Your Product */}
         <section className="mb-6">
           <label className="text-sm font-medium text-slate-300 mb-3 block">Your Product</label>
+          <div className="mb-3">
+            <ProductSelector
+              selectedId={selectedProductId}
+              onSelect={handleProductSelect}
+            />
+          </div>
           <div className="space-y-3">
             <div>
               <label className="text-xs text-slate-500 mb-1 block">Product Name</label>

@@ -15,6 +15,7 @@ import {
   RotateCcw,
 } from 'lucide-react';
 import api from '../../services/api';
+import ProductSelector from '../../components/ProductSelector';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -192,11 +193,43 @@ export default function StaticsGeneration() {
   const [voice, setVoice] = useState('');
   const [guarantee, setGuarantee] = useState('');
 
+  const [selectedProductId, setSelectedProductId] = useState(null);
+
   // Generation state
   const [generating, setGenerating] = useState(false);
   const [generationStep, setGenerationStep] = useState(0);
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
+
+  const handleProductSelect = (product) => {
+    if (!product) {
+      setSelectedProductId(null);
+      return;
+    }
+    setSelectedProductId(product.id);
+    setProductName(product.name || '');
+    setProductDescription(product.description || '');
+    setProductPrice(product.price || '');
+    // Set product image from first product_images entry
+    if (product.product_images?.length > 0) {
+      setProductImageUrl(product.product_images[0]);
+      setProductPreview(product.product_images[0]);
+    }
+    // Profile fields
+    setOneliner(product.oneliner || '');
+    setCustomerAvatar(product.customer_avatar || '');
+    setCustomerFrustration(product.customer_frustration || '');
+    setCustomerDream(product.customer_dream || '');
+    setBigPromise(product.big_promise || '');
+    setMechanism(product.mechanism || '');
+    setDifferentiator(product.differentiator || '');
+    setVoice(product.voice || '');
+    setGuarantee(product.guarantee || '');
+    // Set first angle if available
+    if (product.angles?.length > 0) {
+      setMarketingAngle(product.angles[0].name || '');
+    }
+  };
 
   // Derived
   const hasReferenceImage = !!(referencePreview || referenceImageUrl);
@@ -330,6 +363,15 @@ export default function StaticsGeneration() {
             Generate new ad creatives from a reference image and product details
           </p>
         </div>
+      </div>
+
+      {/* Product Selector */}
+      <div className="mb-6">
+        <label className="text-xs text-slate-400 mb-1.5 block">Load from Product Library</label>
+        <ProductSelector
+          selectedId={selectedProductId}
+          onSelect={handleProductSelect}
+        />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">

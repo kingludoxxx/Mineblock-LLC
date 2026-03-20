@@ -71,10 +71,8 @@ const navGroups = [
     items: [
       { to: '/app/brief-agent', icon: Sparkles, label: 'Brief Agent' },
       { to: '/app/magic-writer', icon: PenTool, label: 'Magic Writer' },
-      { to: '/app/magic-ads', icon: Wand2, label: 'Magic Ads' },
-      { to: '/app/iteration-king', icon: Crown, label: 'Iteration King' },
-      { to: '/app/images', icon: Image, label: 'Images' },
-      { to: '/app/statics-generation', icon: Layers, label: 'Statics Generation' },
+{ to: '/app/iteration-king', icon: Crown, label: 'Iteration King' },
+{ to: '/app/statics-generation', icon: Layers, label: 'Statics Generation' },
     ],
   },
   {
@@ -82,8 +80,7 @@ const navGroups = [
     icon: FolderOpen,
     items: [
       { to: '/app/team-hub', icon: UsersRound, label: 'Team Hub' },
-      { to: '/app/assets', icon: Archive, label: 'Assets' },
-      { to: '/app/todo', icon: CheckSquare, label: 'To Do' },
+      { to: '/app/assets', icon: Package, label: 'Product Library' },
     ],
   },
   {
@@ -139,16 +136,11 @@ export default function Sidebar() {
       <div className="flex items-center justify-between px-3 h-[var(--topbar-h)] border-b border-border-subtle shrink-0">
         {!collapsed && (
           <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-accent flex items-center justify-center text-white font-bold text-sm">
-              M
-            </div>
-            <span className="text-sm font-semibold text-text-primary truncate">Mineblock</span>
+            <img src="/logo-white.png" alt="Mineblock" className="h-5 w-auto" />
           </div>
         )}
         {collapsed && (
-          <div className="w-8 h-8 rounded-lg bg-accent flex items-center justify-center text-white font-bold text-sm mx-auto">
-            M
-          </div>
+          <img src="/logo-white.png" alt="Mineblock" className="h-5 w-auto mx-auto" />
         )}
         <button
           onClick={() => setCollapsed(!collapsed)}
