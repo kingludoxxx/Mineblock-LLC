@@ -16,6 +16,7 @@ import {
   TrendingUp,
   Flame,
   ChevronDown,
+  ChevronLeft,
   Calendar,
 } from 'lucide-react';
 import {
@@ -259,6 +260,25 @@ export default function CreativeAnalysis() {
   const [chartCreative, setChartCreative] = useState(null); // creative_id showing chart
   const [chartData, setChartData] = useState(null);
   const [chartLoading, setChartLoading] = useState(false);
+
+  // ── Calendar widget state ──
+  const [calViewYear, setCalViewYear] = useState(() => new Date().getFullYear());
+  const [calViewMonth, setCalViewMonth] = useState(() => new Date().getMonth());
+  const [calSelStart, setCalSelStart] = useState(null);
+  const [calSelEnd, setCalSelEnd] = useState(null);
+  const [calPicking, setCalPicking] = useState(null); // null | 'start' | 'end'
+
+  // Sync calendar state when picker opens
+  useEffect(() => {
+    if (datePickerOpen) {
+      const ed = new Date((endDate || new Date()) + (typeof endDate === 'string' ? 'T00:00' : ''));
+      setCalViewYear(ed.getFullYear());
+      setCalViewMonth(ed.getMonth());
+      setCalSelStart(startDate);
+      setCalSelEnd(endDate);
+      setCalPicking(null);
+    }
+  }, [datePickerOpen]);
 
   // ── Column order (persisted to localStorage) ──
   const COLUMN_ORDER_KEY = 'ca_column_order';
@@ -712,10 +732,54 @@ export default function CreativeAnalysis() {
               <ChevronDown className="w-3.5 h-3.5 text-gray-500" />
             </button>
 
-            {datePickerOpen && (
-              <div className="absolute right-0 top-full mt-2 z-50 bg-[#1a1a2e] border border-white/[0.1] rounded-xl shadow-2xl flex min-w-[520px]">
+            {datePickerOpen && (() => {
+              const daysInMonth = new Date(calViewYear, calViewMonth + 1, 0).getDate();
+              const firstDow = new Date(calViewYear, calViewMonth, 1).getDay();
+              const monthName = new Date(calViewYear, calViewMonth).toLocaleString('en-US', { month: 'long' });
+              const today = new Date();
+              const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+
+              const fmtDay = (d) => `${calViewYear}-${String(calViewMonth + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+              const isInRange = (ds) => calSelStart && calSelEnd && ds >= calSelStart && ds <= calSelEnd;
+              const isStart = (ds) => ds === calSelStart;
+              const isEnd = (ds) => ds === calSelEnd;
+              const isToday = (ds) => ds === todayStr;
+              const isFuture = (ds) => ds > todayStr;
+
+              const prevMonth = () => { if (calViewMonth === 0) { setCalViewYear(calViewYear - 1); setCalViewMonth(11); } else setCalViewMonth(calViewMonth - 1); };
+              const nextMonth = () => { if (calViewMonth === 11) { setCalViewYear(calViewYear + 1); setCalViewMonth(0); } else setCalViewMonth(calViewMonth + 1); };
+
+              const handleDayClick = (ds) => {
+                if (isFuture(ds)) return;
+                if (!calPicking || calPicking === 'start') {
+                  setCalSelStart(ds);
+                  setCalSelEnd(null);
+                  setCalPicking('end');
+                } else {
+                  if (ds < calSelStart) { setCalSelStart(ds); setCalSelEnd(calSelStart); }
+                  else setCalSelEnd(ds);
+                  setCalPicking(null);
+                }
+                setDatePreset('custom');
+              };
+
+              const handleApply = () => {
+                if (calSelStart && calSelEnd) {
+                  setStartDate(calSelStart);
+                  setEndDate(calSelEnd);
+                  setActiveOnly(false);
+                  setDatePickerOpen(false);
+                }
+              };
+
+              const cells = [];
+              for (let i = 0; i < firstDow; i++) cells.push(null);
+              for (let d = 1; d <= daysInMonth; d++) cells.push(d);
+
+              return (
+              <div className="absolute right-0 top-full mt-2 z-50 bg-[#1a1a2e] border border-white/[0.1] rounded-xl shadow-2xl flex min-w-[560px]">
                 {/* Presets */}
-                <div className="w-44 border-r border-white/[0.06] py-2">
+                <div className="w-44 border-r border-white/[0.06] py-2 overflow-y-auto max-h-[400px]">
                   <p className="px-3 py-1.5 text-gray-500 text-[10px] uppercase tracking-wider font-semibold">Presets</p>
                   {DATE_PRESETS.map((preset) => (
                     <button
@@ -725,8 +789,13 @@ export default function CreativeAnalysis() {
                         setDatePreset(preset.key);
                         setStartDate(range.startDate);
                         setEndDate(range.endDate);
+                        setCalSelStart(range.startDate);
+                        setCalSelEnd(range.endDate);
                         setActiveOnly(false);
-                        setDatePickerOpen(false);
+                        setCalPicking(null);
+                        const ed = new Date(range.endDate);
+                        setCalViewYear(ed.getFullYear());
+                        setCalViewMonth(ed.getMonth());
                       }}
                       className={`w-full text-left px-3 py-1.5 text-sm hover:bg-white/[0.04] transition-colors cursor-pointer ${
                         datePreset === preset.key ? 'text-emerald-400 bg-emerald-500/10' : 'text-gray-300'
@@ -735,54 +804,84 @@ export default function CreativeAnalysis() {
                       {preset.label}
                     </button>
                   ))}
-                  <div className="border-t border-white/[0.06] mt-1 pt-1">
-                    <p className="px-3 py-1.5 text-gray-600 text-[10px] uppercase tracking-wider">Custom</p>
-                  </div>
                 </div>
-                {/* Custom date inputs */}
-                <div className="flex-1 p-4">
-                  <div className="flex items-center gap-3 mb-4">
-                    <div>
-                      <label className="block text-gray-500 text-[10px] uppercase mb-1">Start</label>
-                      <input
-                        type="date"
-                        value={startDate}
-                        onChange={(e) => { setStartDate(e.target.value); setDatePreset('custom'); }}
-                        className="bg-white/[0.04] border border-white/[0.08] rounded-lg text-white px-3 py-2 text-sm focus:outline-none focus:border-emerald-500/40"
-                      />
-                    </div>
-                    <span className="text-gray-500 text-xs mt-4">→</span>
-                    <div>
-                      <label className="block text-gray-500 text-[10px] uppercase mb-1">End</label>
-                      <input
-                        type="date"
-                        value={endDate}
-                        onChange={(e) => { setEndDate(e.target.value); setDatePreset('custom'); }}
-                        className="bg-white/[0.04] border border-white/[0.08] rounded-lg text-white px-3 py-2 text-sm focus:outline-none focus:border-emerald-500/40"
-                      />
-                    </div>
+                {/* Calendar */}
+                <div className="flex-1 p-4 flex flex-col">
+                  {/* Month nav */}
+                  <div className="flex items-center justify-between mb-3">
+                    <button onClick={prevMonth} className="p-1 rounded hover:bg-white/[0.06] text-gray-400 hover:text-white transition-colors cursor-pointer">
+                      <ChevronLeft className="w-4 h-4" />
+                    </button>
+                    <span className="text-emerald-400 font-semibold text-sm">{monthName} {calViewYear}</span>
+                    <button onClick={nextMonth} className="p-1 rounded hover:bg-white/[0.06] text-gray-400 hover:text-white transition-colors cursor-pointer">
+                      <ChevronRight className="w-4 h-4" />
+                    </button>
                   </div>
-                  <div className="flex items-center justify-end gap-2">
-                    <button
-                      onClick={() => setDatePickerOpen(false)}
-                      className="px-3 py-1.5 rounded-lg text-gray-400 text-sm hover:text-white transition-colors cursor-pointer"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      onClick={() => {
-                        setActiveOnly(false);
-                        setDatePickerOpen(false);
-                      }}
-                      disabled={!startDate || !endDate}
-                      className="px-4 py-1.5 rounded-lg bg-emerald-500 text-white text-sm font-medium hover:bg-emerald-600 transition-colors cursor-pointer disabled:opacity-40"
-                    >
-                      Apply
-                    </button>
+                  {/* Day headers */}
+                  <div className="grid grid-cols-7 mb-1">
+                    {['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'].map((d) => (
+                      <div key={d} className="text-center text-[11px] text-gray-500 font-medium py-1">{d}</div>
+                    ))}
+                  </div>
+                  {/* Day grid */}
+                  <div className="grid grid-cols-7 gap-y-0.5">
+                    {cells.map((day, i) => {
+                      if (!day) return <div key={`e${i}`} />;
+                      const ds = fmtDay(day);
+                      const inRange = isInRange(ds);
+                      const start = isStart(ds);
+                      const end = isEnd(ds);
+                      const tod = isToday(ds);
+                      const fut = isFuture(ds);
+                      return (
+                        <button
+                          key={ds}
+                          onClick={() => handleDayClick(ds)}
+                          disabled={fut}
+                          className={`relative h-8 text-xs font-medium rounded transition-colors cursor-pointer
+                            ${fut ? 'text-gray-700 cursor-not-allowed' : ''}
+                            ${start || end ? 'bg-emerald-500 text-white' : ''}
+                            ${inRange && !start && !end ? 'bg-emerald-500/20 text-emerald-300' : ''}
+                            ${!inRange && !start && !end && !fut ? 'text-gray-300 hover:bg-white/[0.06]' : ''}
+                            ${tod && !start && !end ? 'ring-1 ring-emerald-500/50' : ''}
+                          `}
+                        >
+                          {day}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {/* Selection display + actions */}
+                  <div className="mt-auto pt-3 border-t border-white/[0.06] flex items-center justify-between">
+                    <div className="text-[11px] text-gray-500">
+                      {calSelStart && calSelEnd ? (
+                        <span>{new Date(calSelStart + 'T00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} – {new Date(calSelEnd + 'T00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</span>
+                      ) : calPicking === 'end' ? (
+                        <span className="text-emerald-400">Select end date</span>
+                      ) : (
+                        <span>Click a day to start</span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => setDatePickerOpen(false)}
+                        className="px-3 py-1.5 rounded-lg text-gray-400 text-sm hover:text-white transition-colors cursor-pointer"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        onClick={handleApply}
+                        disabled={!calSelStart || !calSelEnd}
+                        className="px-4 py-1.5 rounded-lg bg-emerald-500 text-white text-sm font-medium hover:bg-emerald-600 transition-colors cursor-pointer disabled:opacity-40"
+                      >
+                        Apply
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>
-            )}
+              );
+            })()}
           </div>
 
           {/* Sync button */}
