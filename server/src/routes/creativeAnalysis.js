@@ -92,22 +92,23 @@ function parseAdName(name) {
 
   const creativeId = segments[1] || null;
 
-  // Detect if position [2] is the hook (H1, H2, HX, etc.) or an iteration marker (IT, NN, NA, etc.)
+  // Detect if position [2] is the hook (H1, H2, HX, etc.), a version (V1, V2), or an iteration marker (IT, NN, NA, etc.)
   let hookId = null;
   const seg2 = segments[2] || '';
   if (/^H\d+$/i.test(seg2) || /^HX$/i.test(seg2)) {
     hookId = seg2.toUpperCase();
+  } else if (/^V\d+$/i.test(seg2)) {
+    // Image ads use Vx (V1, V2, V3) as versions — treat as hook variant
+    hookId = seg2.toUpperCase();
   } else if (/^(IT|NN|NA)$/i.test(seg2)) {
     // IT/NN/NA in position 2 — look for hook in position [3]
     const seg3 = segments[3] || '';
-    if (/^H\d+$/i.test(seg3) || /^HX$/i.test(seg3)) {
+    if (/^H\d+$/i.test(seg3) || /^HX$/i.test(seg3) || /^V\d+$/i.test(seg3)) {
       hookId = seg3.toUpperCase();
     } else {
-      // No hook found — this ad uses a non-standard format, assign HX
       hookId = 'HX';
     }
   } else {
-    // Position 2 isn't a standard hook format, use it as-is but normalize
     hookId = seg2.toUpperCase() || 'HX';
   }
 
@@ -159,7 +160,7 @@ function parseAdName(name) {
     if (avatar && placeholders.includes(avatar)) avatar = null;
 
     // Validate metadata: reject values that look like creative IDs, hook IDs, weeks, resolutions, or file artifacts
-    const junkPattern = /^(B\d{3,}|H\d+|HX|IT|NN|MR|IM\d*|WK\d+.*|\d+[xX]\d+)$/i;
+    const junkPattern = /^(B\d{3,}|H\d+|HX|IT|NN|MR|IM\d*|V\d+|WK\d+.*|\d+[xX]\d+)$/i;
     if (editor && junkPattern.test(editor)) editor = null;
     if (format && junkPattern.test(format)) format = null;
     if (angle && junkPattern.test(angle))   angle = null;
@@ -182,8 +183,21 @@ function parseAdName(name) {
     if (avatar && KNOWN_FORMATS.has(avatar)) avatar = null;
     if (editor && KNOWN_FORMATS.has(editor)) editor = null;
 
-    // Cross-validate: known angles should not appear as avatar
-    if (avatar && KNOWN_ANGLES.has(avatar)) avatar = null;
+    // Cross-validate: if avatar slot has a known angle, look one step further back for the real avatar
+    if (avatar && KNOWN_ANGLES.has(avatar)) {
+      // Two angles exist (e.g. MoneySeeker + Lottery) — the "avatar" is actually the primary angle
+      // Look one position further back for the real avatar/creative description
+      const realAvatarPos = weekPos - editorOffset - 4;
+      if (realAvatarPos >= 0) {
+        const candidate = segments[realAvatarPos] || null;
+        // Only use if it's not junk
+        const junk = /^(B\d{3,}|H\d+|HX|IT|NN|NA|MR|IM\d*|V\d+|WK\d+.*|\d+[xX]\d+)$/i;
+        avatar = (candidate && !junk.test(candidate) && !['-', 'NA', 'NN', 'na', 'nn'].includes(candidate))
+          ? candidate : null;
+      } else {
+        avatar = null;
+      }
+    }
 
     // Only accept recognized editors — reject brand owner names, unknowns, etc.
     if (editor && !KNOWN_EDITORS.has(editor)) editor = null;
