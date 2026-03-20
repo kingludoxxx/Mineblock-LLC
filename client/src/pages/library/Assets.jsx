@@ -66,7 +66,7 @@ const emptyProduct = {
   benefits: [''],
   angles: [{ name: '', description: '' }],
   images: [''],
-  logoUrl: '',
+  logos: [''],
   scripts: [{ title: '', type: 'vsl', content: '' }],
 };
 
@@ -306,6 +306,17 @@ function EditorModal({ isCreating, form, setForm, activeTab, setActiveTab, savin
     setForm({ ...form, images: list.length ? list : [''] });
   };
 
+  const updateLogo = (i, val) => {
+    const list = [...form.logos];
+    list[i] = val;
+    setForm({ ...form, logos: list });
+  };
+  const addLogo = () => setForm({ ...form, logos: [...form.logos, ''] });
+  const removeLogo = (i) => {
+    const list = form.logos.filter((_, idx) => idx !== i);
+    setForm({ ...form, logos: list.length ? list : [''] });
+  };
+
   const updateScript = (i, key, val) => {
     const list = [...form.scripts];
     list[i] = { ...list[i], [key]: val };
@@ -437,12 +448,34 @@ function EditorModal({ isCreating, form, setForm, activeTab, setActiveTab, savin
         </button>
       </div>
 
-      <Input label="Logo URL" value={form.logoUrl} onChange={(v) => field('logoUrl', v)} placeholder="https://example.com/logo.png" />
-      {form.logoUrl?.trim() && (
-        <div className="w-16 h-16 rounded-md overflow-hidden border border-white/[0.06] bg-[#0a0a0a]">
-          <img src={form.logoUrl} alt="Logo" className="w-full h-full object-contain" onError={(e) => { e.target.style.display = 'none'; }} />
+      <div>
+        <label className="block text-xs font-medium text-slate-400 mb-2">Logos</label>
+        <div className="space-y-3">
+          {form.logos.map((url, i) => (
+            <div key={i}>
+              <div className="flex items-center gap-2">
+                <input
+                  value={url}
+                  onChange={(e) => updateLogo(i, e.target.value)}
+                  placeholder="https://example.com/logo.png"
+                  className="flex-1 bg-[#0a0a0a] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-emerald-500/40 transition-colors"
+                />
+                <button onClick={() => removeLogo(i)} className="text-slate-500 hover:text-red-400 p-1 transition-colors" title="Remove">
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+              {url.trim() && (
+                <div className="mt-2 w-20 h-20 rounded-md overflow-hidden border border-white/[0.06] bg-[#0a0a0a] flex items-center justify-center">
+                  <img src={url} alt="" className="max-w-full max-h-full object-contain" onError={(e) => { e.target.style.display = 'none'; }} />
+                </div>
+              )}
+            </div>
+          ))}
         </div>
-      )}
+        <button onClick={addLogo} className="mt-2 text-xs text-emerald-400 hover:text-emerald-300 flex items-center gap-1 transition-colors">
+          <Plus className="w-3 h-3" /> Add logo
+        </button>
+      </div>
     </div>
   );
 
@@ -618,13 +651,13 @@ export default function Assets() {
     benefits: Array.isArray(p.benefits) && p.benefits.length ? [...p.benefits] : [''],
     angles: Array.isArray(p.angles) && p.angles.length ? p.angles.map((a) => ({ name: a.name ?? '', description: a.description ?? '' })) : [{ name: '', description: '' }],
     images: Array.isArray(p.images) && p.images.length ? [...p.images] : [''],
-    logoUrl: p.logoUrl ?? p.logo_url ?? '',
+    logos: Array.isArray(p.logos) && p.logos.length ? [...p.logos] : (p.logoUrl || p.logo_url ? [p.logoUrl ?? p.logo_url] : ['']),
     scripts: Array.isArray(p.scripts) && p.scripts.length ? p.scripts.map((s) => ({ title: s.title ?? '', type: s.type ?? 'vsl', content: s.content ?? '' })) : [{ title: '', type: 'vsl', content: '' }],
   });
 
   /* ---- CRUD actions ---- */
   const openCreate = () => {
-    setForm({ ...emptyProduct, benefits: [''], angles: [{ name: '', description: '' }], images: [''], scripts: [{ title: '', type: 'vsl', content: '' }] });
+    setForm({ ...emptyProduct, benefits: [''], angles: [{ name: '', description: '' }], images: [''], logos: [''], scripts: [{ title: '', type: 'vsl', content: '' }] });
     setEditingProduct(null);
     setIsCreating(true);
     setActiveTab('basic');
@@ -651,6 +684,7 @@ export default function Assets() {
         benefits: form.benefits.filter((b) => b.trim()),
         angles: form.angles.filter((a) => a.name.trim() || a.description.trim()),
         images: form.images.filter((u) => u.trim()),
+        logos: form.logos.filter((u) => u.trim()),
         scripts: form.scripts.filter((s) => s.title.trim() || s.content.trim()),
       };
 
