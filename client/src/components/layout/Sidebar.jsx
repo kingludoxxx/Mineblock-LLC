@@ -34,6 +34,7 @@ import {
   Wand2,
   Crown,
   Image,
+  Layers,
   Video,
   Music,
   Sparkles,
@@ -73,6 +74,7 @@ const navGroups = [
       { to: '/app/magic-ads', icon: Wand2, label: 'Magic Ads' },
       { to: '/app/iteration-king', icon: Crown, label: 'Iteration King' },
       { to: '/app/images', icon: Image, label: 'Images' },
+      { to: '/app/statics-generation', icon: Layers, label: 'Statics Generation' },
     ],
   },
   {

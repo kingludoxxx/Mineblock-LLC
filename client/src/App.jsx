@@ -42,6 +42,7 @@ import IterationKingPage from './pages/production/IterationKingPage';
 import ImagesPage from './pages/production/ImagesPage';
 import VideoPage from './pages/production/VideoPage';
 import AudioPage from './pages/production/AudioPage';
+import StaticsGenerationPage from './pages/production/StaticsGenerationPage';
 
 // Performance
 import AttributionPage from './pages/performance/AttributionPage';
@@ -114,6 +115,7 @@ export default function App() {
           <Route path="images" element={<ImagesPage />} />
           <Route path="video" element={<VideoPage />} />
           <Route path="audio" element={<AudioPage />} />
+          <Route path="statics-generation" element={<StaticsGenerationPage />} />
 
           {/* Performance */}
           <Route path="creative-analysis" element={<CreativeAnalysisPage />} />
