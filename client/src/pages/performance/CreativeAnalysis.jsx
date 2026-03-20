@@ -336,11 +336,11 @@ export default function CreativeAnalysis() {
     // Each item: { creative_id, type, avatar, angle, format, editor, total_spend, total_revenue, roas, cpa, cpm, aov, cpc, ctr, hooks: [...] }
     const result = rows.map((creative) => ({
       ...creative,
-      spend: creative.total_spend || creative.spend || 0,
-      revenue: creative.total_revenue || creative.revenue || 0,
-      purchases: creative.total_purchases || creative.purchases || 0,
-      impressions: creative.total_impressions || creative.impressions || 0,
-      clicks: creative.total_clicks || creative.clicks || 0,
+      spend: creative.total_spend ?? creative.spend ?? 0,
+      revenue: creative.total_revenue ?? creative.revenue ?? 0,
+      purchases: creative.total_purchases ?? creative.purchases ?? 0,
+      impressions: creative.total_impressions ?? creative.impressions ?? 0,
+      clicks: creative.total_clicks ?? creative.clicks ?? 0,
       ad_name: creative.hooks?.[0]?.ad_name || creative.ad_name || creative.creative_id,
       _hooks: creative.hooks || [],
       _creativeId: creative.creative_id,

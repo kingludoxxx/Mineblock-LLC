@@ -644,10 +644,12 @@ router.get('/data', authenticate, async (req, res) => {
       [week.toUpperCase()]
     );
 
-    // Group by creative_id
+    // Group by creative_id — use highest-spend hook's metadata
     const grouped = {};
     for (const row of rows) {
       const cid = row.creative_id;
+      const spend = Number(row.spend) || 0;
+
       if (!grouped[cid]) {
         grouped[cid] = {
           creative_id: cid,
@@ -657,13 +659,13 @@ router.get('/data', authenticate, async (req, res) => {
           format: row.format,
           editor: row.editor,
           week: row.week,
-          // Aggregated totals
           total_spend: 0,
           total_revenue: 0,
           total_purchases: 0,
           total_impressions: 0,
           total_clicks: 0,
           hooks: [],
+          _topSpend: 0,
         };
       }
 
@@ -671,7 +673,7 @@ router.get('/data', authenticate, async (req, res) => {
       grouped[cid].hooks.push({
         hook_id: row.hook_id,
         ad_name: row.ad_name,
-        spend: Number(row.spend),
+        spend,
         revenue: Number(row.revenue),
         purchases: Number(row.purchases),
         impressions: Number(row.impressions),
@@ -679,11 +681,21 @@ router.get('/data', authenticate, async (req, res) => {
         ...metrics,
       });
 
-      grouped[cid].total_spend      += Number(row.spend) || 0;
+      grouped[cid].total_spend      += spend;
       grouped[cid].total_revenue    += Number(row.revenue) || 0;
       grouped[cid].total_purchases  += Number(row.purchases) || 0;
       grouped[cid].total_impressions += Number(row.impressions) || 0;
       grouped[cid].total_clicks     += Number(row.clicks) || 0;
+
+      // Prefer metadata from highest-spend hook
+      if (spend > grouped[cid]._topSpend) {
+        grouped[cid]._topSpend = spend;
+        grouped[cid].type = row.type;
+        if (row.avatar) grouped[cid].avatar = row.avatar;
+        if (row.angle)  grouped[cid].angle = row.angle;
+        if (row.format) grouped[cid].format = row.format;
+        if (row.editor) grouped[cid].editor = row.editor;
+      }
     }
 
     // Fetch lifetime metrics for all creative_ids in this week
@@ -697,8 +709,9 @@ router.get('/data', authenticate, async (req, res) => {
         lifetime_purchases: 0, first_seen: null, last_seen: null,
         weeks_active: 0, is_winner: false,
       };
+      const { _topSpend, ...rest } = c;
       return {
-        ...c,
+        ...rest,
         total_spend:  Math.round(c.total_spend * 100) / 100,
         total_revenue: Math.round(c.total_revenue * 100) / 100,
         ...computeMetrics({
@@ -766,8 +779,8 @@ router.get('/data-by-date', authenticate, async (req, res) => {
 
     const twAds = await fetchTripleWhaleAds(startDate, endDate);
 
-    // Parse and aggregate by creative_id
-    const grouped = {};
+    // Parse and aggregate by (creative_id, hook_id) — same pattern as syncData
+    const hookAgg = new Map(); // key: "creative_id|hook_id"
     let skipped = 0;
 
     for (const ad of twAds) {
@@ -777,53 +790,89 @@ router.get('/data-by-date', authenticate, async (req, res) => {
         continue;
       }
 
-      const cid = parsed.creative_id;
+      const key = `${parsed.creative_id}|${parsed.hook_id}`;
       const spend = Number(ad.total_spend) || 0;
       const revenue = Number(ad.total_revenue) || 0;
       const purchases = Number(ad.total_purchases) || 0;
       const impressions = Number(ad.total_impressions) || 0;
       const clicks = Number(ad.total_clicks) || 0;
 
-      if (!grouped[cid]) {
-        grouped[cid] = {
-          creative_id: cid,
+      if (hookAgg.has(key)) {
+        const existing = hookAgg.get(key);
+        existing.spend += spend;
+        existing.revenue += revenue;
+        existing.purchases += purchases;
+        existing.impressions += impressions;
+        existing.clicks += clicks;
+        if (spend > (existing._topSpend || 0)) {
+          existing.ad_name = parsed.ad_name;
+          existing._topSpend = spend;
+        }
+      } else {
+        hookAgg.set(key, {
+          creative_id: parsed.creative_id,
+          hook_id: parsed.hook_id,
+          ad_name: parsed.ad_name,
           type: parsed.type,
           avatar: parsed.avatar,
           angle: parsed.angle,
           format: parsed.format,
           editor: parsed.editor,
+          spend, revenue, purchases, impressions, clicks,
+          _topSpend: spend,
+        });
+      }
+    }
+
+    // Group aggregated hooks by creative_id
+    const grouped = {};
+    for (const entry of hookAgg.values()) {
+      const cid = entry.creative_id;
+      const hookMetrics = computeMetrics(entry);
+
+      if (!grouped[cid]) {
+        grouped[cid] = {
+          creative_id: cid,
+          type: entry.type,
+          avatar: entry.avatar,
+          angle: entry.angle,
+          format: entry.format,
+          editor: entry.editor,
           total_spend: 0,
           total_revenue: 0,
           total_purchases: 0,
           total_impressions: 0,
           total_clicks: 0,
           hooks: [],
+          _topSpend: 0,
         };
       }
 
-      const hookMetrics = computeMetrics({ spend, revenue, purchases, impressions, clicks });
       grouped[cid].hooks.push({
-        hook_id: parsed.hook_id,
-        ad_name: parsed.ad_name,
-        spend: Math.round(spend * 100) / 100,
-        revenue: Math.round(revenue * 100) / 100,
-        purchases,
-        impressions,
-        clicks,
+        hook_id: entry.hook_id,
+        ad_name: entry.ad_name,
+        spend: Math.round(entry.spend * 100) / 100,
+        revenue: Math.round(entry.revenue * 100) / 100,
+        purchases: entry.purchases,
+        impressions: entry.impressions,
+        clicks: entry.clicks,
         ...hookMetrics,
       });
 
-      grouped[cid].total_spend      += spend;
-      grouped[cid].total_revenue    += revenue;
-      grouped[cid].total_purchases  += purchases;
-      grouped[cid].total_impressions += impressions;
-      grouped[cid].total_clicks     += clicks;
+      grouped[cid].total_spend      += entry.spend;
+      grouped[cid].total_revenue    += entry.revenue;
+      grouped[cid].total_purchases  += entry.purchases;
+      grouped[cid].total_impressions += entry.impressions;
+      grouped[cid].total_clicks     += entry.clicks;
 
-      // Prefer metadata from the first variant that has it
-      if (parsed.avatar && !grouped[cid].avatar) grouped[cid].avatar = parsed.avatar;
-      if (parsed.angle && !grouped[cid].angle)   grouped[cid].angle = parsed.angle;
-      if (parsed.format && !grouped[cid].format) grouped[cid].format = parsed.format;
-      if (parsed.editor && !grouped[cid].editor) grouped[cid].editor = parsed.editor;
+      // Prefer metadata from the highest-spend hook (consistent with /data and /active)
+      if (entry.spend > grouped[cid]._topSpend) {
+        grouped[cid]._topSpend = entry.spend;
+        if (entry.avatar) grouped[cid].avatar = entry.avatar;
+        if (entry.angle)  grouped[cid].angle = entry.angle;
+        if (entry.format) grouped[cid].format = entry.format;
+        if (entry.editor) grouped[cid].editor = entry.editor;
+      }
     }
 
     // Fetch lifetime metrics for all creative_ids
@@ -1010,10 +1059,12 @@ router.get('/active', authenticate, async (req, res) => {
       [latestWeek]
     );
 
-    // Group by creative_id (same pattern as /data)
+    // Group by creative_id — use highest-spend hook's metadata (same as /data)
     const grouped = {};
     for (const row of activeRows) {
       const cid = row.creative_id;
+      const spend = Number(row.spend) || 0;
+
       if (!grouped[cid]) {
         grouped[cid] = {
           creative_id: cid,
@@ -1028,6 +1079,7 @@ router.get('/active', authenticate, async (req, res) => {
           total_impressions: 0,
           total_clicks: 0,
           hooks: [],
+          _topSpend: 0,
         };
       }
 
@@ -1035,7 +1087,7 @@ router.get('/active', authenticate, async (req, res) => {
       grouped[cid].hooks.push({
         hook_id: row.hook_id,
         ad_name: row.ad_name,
-        spend: Number(row.spend),
+        spend,
         revenue: Number(row.revenue),
         purchases: Number(row.purchases),
         impressions: Number(row.impressions),
@@ -1043,11 +1095,20 @@ router.get('/active', authenticate, async (req, res) => {
         ...metrics,
       });
 
-      grouped[cid].total_spend      += Number(row.spend) || 0;
+      grouped[cid].total_spend      += spend;
       grouped[cid].total_revenue    += Number(row.revenue) || 0;
       grouped[cid].total_purchases  += Number(row.purchases) || 0;
       grouped[cid].total_impressions += Number(row.impressions) || 0;
       grouped[cid].total_clicks     += Number(row.clicks) || 0;
+
+      if (spend > grouped[cid]._topSpend) {
+        grouped[cid]._topSpend = spend;
+        grouped[cid].type = row.type;
+        if (row.avatar) grouped[cid].avatar = row.avatar;
+        if (row.angle)  grouped[cid].angle = row.angle;
+        if (row.format) grouped[cid].format = row.format;
+        if (row.editor) grouped[cid].editor = row.editor;
+      }
     }
 
     // Get lifetime metrics for all active creative_ids
@@ -1060,8 +1121,9 @@ router.get('/active', authenticate, async (req, res) => {
         lifetime_purchases: 0, first_seen: null, last_seen: null,
         weeks_active: 0, is_winner: false,
       };
+      const { _topSpend, ...rest } = c;
       return {
-        ...c,
+        ...rest,
         total_spend:  Math.round(c.total_spend * 100) / 100,
         total_revenue: Math.round(c.total_revenue * 100) / 100,
         ...computeMetrics({
@@ -1100,25 +1162,36 @@ router.get('/leaderboard', authenticate, async (req, res) => {
     await ensureTable();
 
     // Aggregate at creative_id level for the given week, min $200 spend
+    // Use DISTINCT ON to pick metadata from the highest-spend hook per creative
     const aggregated = await pgQuery(
       `SELECT
-         creative_id,
-         MAX(type) as type,
-         MAX(avatar) as avatar,
-         MAX(angle) as angle,
-         MAX(format) as format,
-         MAX(editor) as editor,
-         MIN(ad_name) as ad_name,
-         SUM(spend) as spend,
-         SUM(revenue) as revenue,
-         SUM(purchases) as purchases,
-         SUM(impressions) as impressions,
-         SUM(clicks) as clicks
-       FROM creative_analysis
-       WHERE week = $1
-       GROUP BY creative_id
-       HAVING SUM(spend) >= 200
-       ORDER BY SUM(spend) DESC`,
+         agg.creative_id,
+         top.type,
+         top.avatar,
+         top.angle,
+         top.format,
+         top.editor,
+         top.ad_name,
+         agg.spend,
+         agg.revenue,
+         agg.purchases,
+         agg.impressions,
+         agg.clicks
+       FROM (
+         SELECT creative_id,
+           SUM(spend) as spend, SUM(revenue) as revenue,
+           SUM(purchases) as purchases, SUM(impressions) as impressions,
+           SUM(clicks) as clicks
+         FROM creative_analysis WHERE week = $1
+         GROUP BY creative_id HAVING SUM(spend) >= 200
+       ) agg
+       JOIN LATERAL (
+         SELECT type, avatar, angle, format, editor, ad_name
+         FROM creative_analysis
+         WHERE creative_id = agg.creative_id AND week = $1
+         ORDER BY spend DESC LIMIT 1
+       ) top ON true
+       ORDER BY agg.spend DESC`,
       [week.toUpperCase()]
     );
 
