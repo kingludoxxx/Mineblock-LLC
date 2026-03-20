@@ -186,7 +186,6 @@ const TABLE_COLUMNS = [
 // ── Date Presets ─────────────────────────────────────────────────────────────
 
 const DATE_PRESETS = [
-  { label: 'Active Ads', key: 'active' },
   { label: 'Today', key: 'today' },
   { label: 'Yesterday', key: 'yesterday' },
   { label: 'This week', key: 'this_week' },
@@ -236,7 +235,7 @@ function presetToRange(key) {
 // ── Component ────────────────────────────────────────────────────────────────
 
 export default function CreativeAnalysis() {
-  const [datePreset, setDatePreset] = useState('active');
+  const [datePreset, setDatePreset] = useState('last_7');
   const [datePickerOpen, setDatePickerOpen] = useState(false);
   const [startDate, setStartDate] = useState(() => presetToRange('last_7').startDate);
   const [endDate, setEndDate] = useState(() => presetToRange('last_7').endDate);
@@ -245,7 +244,7 @@ export default function CreativeAnalysis() {
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState(null);
-  const [activeOnly, setActiveOnly] = useState(true);
+  const [activeOnly, setActiveOnly] = useState(false);
   const [latestWeek, setLatestWeek] = useState(null);
   const [filters, setFilters] = useState({
     creativeType: '',
@@ -722,16 +721,11 @@ export default function CreativeAnalysis() {
                     <button
                       key={preset.key}
                       onClick={() => {
-                        if (preset.key === 'active') {
-                          setDatePreset('active');
-                          setActiveOnly(true);
-                        } else {
-                          const range = presetToRange(preset.key);
-                          setDatePreset(preset.key);
-                          setStartDate(range.startDate);
-                          setEndDate(range.endDate);
-                          setActiveOnly(false);
-                        }
+                        const range = presetToRange(preset.key);
+                        setDatePreset(preset.key);
+                        setStartDate(range.startDate);
+                        setEndDate(range.endDate);
+                        setActiveOnly(false);
                         setDatePickerOpen(false);
                       }}
                       className={`w-full text-left px-3 py-1.5 text-sm hover:bg-white/[0.04] transition-colors cursor-pointer ${
