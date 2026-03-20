@@ -332,6 +332,7 @@ async function fetchTripleWhaleAds(startDate, endDate) {
           query: query.trim(),
           period: { startDate, endDate },
         }),
+        signal: AbortSignal.timeout(30000),
       });
 
       if (res.ok) {
@@ -432,6 +433,10 @@ async function ensureTable() {
         -- Upgrade columns to BIGINT if needed
         ALTER TABLE creative_analysis ALTER COLUMN impressions TYPE BIGINT;
         ALTER TABLE creative_analysis ALTER COLUMN clicks TYPE BIGINT;
+
+        -- Add indexes for common query patterns
+        CREATE INDEX IF NOT EXISTS idx_ca_week_spend ON creative_analysis (week, spend DESC);
+        CREATE INDEX IF NOT EXISTS idx_ca_creative_id ON creative_analysis (creative_id);
       EXCEPTION WHEN OTHERS THEN
         -- Ignore migration errors (e.g. duplicate data blocking unique constraint)
         RAISE NOTICE 'Migration warning: %', SQLERRM;
@@ -823,6 +828,10 @@ router.get('/data-by-date', authenticate, async (req, res) => {
         if (spend > (existing._topSpend || 0)) {
           existing.ad_name = parsed.ad_name;
           existing._topSpend = spend;
+          if (parsed.avatar) existing.avatar = parsed.avatar;
+          if (parsed.angle)  existing.angle = parsed.angle;
+          if (parsed.format) existing.format = parsed.format;
+          if (parsed.editor) existing.editor = parsed.editor;
         }
       } else {
         hookAgg.set(key, {
@@ -896,13 +905,14 @@ router.get('/data-by-date', authenticate, async (req, res) => {
     const lifetimeMap = await getLifetimeMetrics(creativeIds);
 
     const creatives = Object.values(grouped).map(c => {
+      const { _topSpend, ...rest } = c;
       const lt = lifetimeMap.get(c.creative_id) || {
         lifetime_spend: 0, lifetime_revenue: 0, lifetime_roas: 0,
         lifetime_purchases: 0, first_seen: null, last_seen: null,
         weeks_active: 0, is_winner: false,
       };
       return {
-        ...c,
+        ...rest,
         total_spend:  Math.round(c.total_spend * 100) / 100,
         total_revenue: Math.round(c.total_revenue * 100) / 100,
         ...computeMetrics({
@@ -1068,7 +1078,7 @@ router.get('/active', authenticate, async (req, res) => {
     // Find the latest week (sort by year then week number for correct cross-year ordering)
     const latestRows = await pgQuery(
       `SELECT DISTINCT week FROM creative_analysis WHERE week IS NOT NULL
-       ORDER BY SPLIT_PART(week, '_', 2) DESC, SPLIT_PART(week, '_', 1) DESC LIMIT 1`
+       ORDER BY SPLIT_PART(week, '_', 2)::int DESC, REPLACE(SPLIT_PART(week, '_', 1), 'WK', '')::int DESC LIMIT 1`
     );
     if (latestRows.length === 0) {
       return res.json({ success: true, data: { creatives: [], latest_week: null } });

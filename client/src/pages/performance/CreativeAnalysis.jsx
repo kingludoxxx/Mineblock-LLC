@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   BarChart3,
   Video,
@@ -262,16 +262,23 @@ export default function CreativeAnalysis() {
 
   // ── Fetch ──
 
+  const abortRef = useRef(null);
   const fetchData = useCallback(async () => {
+    // Cancel any in-flight request from a previous call
+    if (abortRef.current) abortRef.current.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const signal = controller.signal;
+
     setLoading(true);
     setError(null);
     try {
       let dataRes;
       let lbWeek = week; // week to use for leaderboard
       if (dateMode === 'custom' && startDate && endDate) {
-        dataRes = await api.get('/creative-analysis/data-by-date', { params: { startDate, endDate } });
+        dataRes = await api.get('/creative-analysis/data-by-date', { params: { startDate, endDate }, signal });
       } else if (activeOnly) {
-        dataRes = await api.get('/creative-analysis/active');
+        dataRes = await api.get('/creative-analysis/active', { signal });
         // Use the latest_week from /active for the leaderboard and sync
         const activeData = dataRes.data?.data || dataRes.data || {};
         if (activeData.latest_week) {
@@ -279,22 +286,25 @@ export default function CreativeAnalysis() {
           setLatestWeek(activeData.latest_week);
         }
       } else {
-        dataRes = await api.get('/creative-analysis/data', { params: { week } });
+        dataRes = await api.get('/creative-analysis/data', { params: { week }, signal });
       }
+      if (signal.aborted) return;
       const respData = dataRes.data?.data || dataRes.data || {};
       setData(respData.creatives || respData || []);
 
       // Skip leaderboard in custom date mode (it's week-based and wouldn't match)
       if (dateMode !== 'custom') {
-        const lbRes = await api.get('/creative-analysis/leaderboard', { params: { week: lbWeek } });
+        const lbRes = await api.get('/creative-analysis/leaderboard', { params: { week: lbWeek }, signal });
+        if (signal.aborted) return;
         setLeaderboard(lbRes.data?.data || lbRes.data || null);
       } else {
         setLeaderboard(null);
       }
     } catch (err) {
+      if (err.name === 'CanceledError' || err.name === 'AbortError' || signal.aborted) return;
       setError(err.response?.data?.error?.message || err.message || 'Failed to load data.');
     } finally {
-      setLoading(false);
+      if (!signal.aborted) setLoading(false);
     }
   }, [week, dateMode, startDate, endDate, activeOnly]);
 
@@ -527,20 +537,43 @@ export default function CreativeAnalysis() {
 
   // ── Render helpers ──
 
+  /** Color intensity for metric cells (Motion-style green gradient) */
+  const metricCellClass = (col, val) => {
+    if (col.key === 'roas') {
+      if (val >= 2.0) return 'bg-emerald-500/20 text-emerald-300 font-semibold';
+      if (val >= 1.5) return 'bg-emerald-500/10 text-emerald-400 font-medium';
+      if (val >= 1.0) return 'bg-yellow-500/10 text-yellow-300 font-medium';
+      if (val > 0) return 'text-red-400';
+    }
+    if (col.key === 'revenue') {
+      if (val >= 1000) return 'bg-emerald-500/10 text-emerald-300 font-medium';
+      if (val >= 500) return 'bg-emerald-500/[0.05] text-white font-medium';
+    }
+    if (col.key === 'spend') return 'text-white font-medium';
+    if (col.key === 'cpa') {
+      if (val > 0 && val <= 15) return 'bg-emerald-500/10 text-emerald-400';
+      if (val > 15 && val <= 30) return 'text-yellow-400';
+      if (val > 30) return 'text-red-400';
+    }
+    return '';
+  };
+
   const renderCellValue = (row, col) => {
     const val = row[col.key];
 
     if (col.key === 'type') {
       const isVideo = (val || '').toLowerCase() === 'video';
       return (
-        <span className="flex items-center gap-1.5">
-          {isVideo ? (
-            <Video className="w-3.5 h-3.5 text-blue-400" />
-          ) : (
-            <Image className="w-3.5 h-3.5 text-cyan-400" />
-          )}
-          <span className="capitalize">{val || '-'}</span>
-        </span>
+        <div className="flex items-center gap-2.5">
+          <div className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${isVideo ? 'bg-blue-500/15' : 'bg-cyan-500/15'}`}>
+            {isVideo ? (
+              <Video className="w-4 h-4 text-blue-400" />
+            ) : (
+              <Image className="w-4 h-4 text-cyan-400" />
+            )}
+          </div>
+          <span className="capitalize text-gray-300">{val || '-'}</span>
+        </div>
       );
     }
 
@@ -762,14 +795,14 @@ export default function CreativeAnalysis() {
                   <h3 className="text-white font-semibold text-sm">Performance by Angle</h3>
                 </div>
                 {angleStats.length > 0 ? (
-                  <ResponsiveContainer width="100%" height={Math.max(180, angleStats.length * 36)}>
+                  <ResponsiveContainer width="100%" height={Math.min(500, Math.max(180, angleStats.length * 36))}>
                     <RBarChart data={angleStats} layout="vertical" margin={{ top: 0, right: 20, bottom: 0, left: 0 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" horizontal={false} />
-                      <XAxis type="number" tick={{ fill: '#6b7280', fontSize: 10 }} axisLine={{ stroke: 'rgba(255,255,255,0.1)' }} tickFormatter={(v) => `${v.toFixed(1)}x`} />
+                      <XAxis type="number" tick={{ fill: '#6b7280', fontSize: 10 }} axisLine={{ stroke: 'rgba(255,255,255,0.1)' }} tickFormatter={(v) => `${Number(v || 0).toFixed(1)}x`} />
                       <YAxis type="category" dataKey="angle" tick={{ fill: '#9ca3af', fontSize: 11 }} axisLine={false} width={120} />
                       <Tooltip
                         contentStyle={{ background: '#1a1a2e', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, color: '#fff', fontSize: 12 }}
-                        formatter={(v, name) => [name === 'roas' ? `${v.toFixed(2)}x` : `$${Number(v).toLocaleString()}`, name === 'roas' ? 'ROAS' : name === 'spend' ? 'Spend' : 'Revenue']}
+                        formatter={(v, name) => [name === 'roas' ? `${Number(v || 0).toFixed(2)}x` : `$${Number(v || 0).toLocaleString()}`, name === 'roas' ? 'ROAS' : name === 'spend' ? 'Spend' : 'Revenue']}
                       />
                       <Bar dataKey="roas" radius={[0, 4, 4, 0]}>
                         {angleStats.map((entry, i) => (
@@ -803,14 +836,14 @@ export default function CreativeAnalysis() {
                   <h3 className="text-white font-semibold text-sm">Performance by Format</h3>
                 </div>
                 {formatStats.length > 0 ? (
-                  <ResponsiveContainer width="100%" height={Math.max(180, formatStats.length * 36)}>
+                  <ResponsiveContainer width="100%" height={Math.min(500, Math.max(180, formatStats.length * 36))}>
                     <RBarChart data={formatStats} layout="vertical" margin={{ top: 0, right: 20, bottom: 0, left: 0 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" horizontal={false} />
-                      <XAxis type="number" tick={{ fill: '#6b7280', fontSize: 10 }} axisLine={{ stroke: 'rgba(255,255,255,0.1)' }} tickFormatter={(v) => `${v.toFixed(1)}x`} />
+                      <XAxis type="number" tick={{ fill: '#6b7280', fontSize: 10 }} axisLine={{ stroke: 'rgba(255,255,255,0.1)' }} tickFormatter={(v) => `${Number(v || 0).toFixed(1)}x`} />
                       <YAxis type="category" dataKey="format" tick={{ fill: '#9ca3af', fontSize: 11 }} axisLine={false} width={100} />
                       <Tooltip
                         contentStyle={{ background: '#1a1a2e', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, color: '#fff', fontSize: 12 }}
-                        formatter={(v, name) => [name === 'roas' ? `${v.toFixed(2)}x` : `$${Number(v).toLocaleString()}`, name === 'roas' ? 'ROAS' : name === 'spend' ? 'Spend' : 'Revenue']}
+                        formatter={(v, name) => [name === 'roas' ? `${Number(v || 0).toFixed(2)}x` : `$${Number(v || 0).toLocaleString()}`, name === 'roas' ? 'ROAS' : name === 'spend' ? 'Spend' : 'Revenue']}
                       />
                       <Bar dataKey="roas" radius={[0, 4, 4, 0]}>
                         {formatStats.map((entry, i) => (
@@ -1028,9 +1061,9 @@ export default function CreativeAnalysis() {
               <thead>
                 <tr className="border-b border-white/[0.06]">
                   {/* Chart button column */}
-                  <th className="w-10 px-1 py-2" />
+                  <th className="w-10 px-1 py-3" />
                   {/* Expand column */}
-                  <th className="w-8 px-2 py-2" />
+                  <th className="w-8 px-2 py-3" />
                   {orderedColumns.map((col) => (
                     <th
                       key={col.key}
@@ -1039,7 +1072,7 @@ export default function CreativeAnalysis() {
                       onDragOver={(e) => handleDragOver(e, col.key)}
                       onDrop={() => handleDrop(col.key)}
                       onDragEnd={handleDragEnd}
-                      className={`px-3 py-2 text-gray-400 text-xs uppercase tracking-wider font-semibold whitespace-nowrap transition-all ${
+                      className={`px-3 py-3 text-gray-400 text-xs uppercase tracking-wider font-semibold whitespace-nowrap transition-all ${
                         col.align === 'right'
                           ? 'text-right'
                           : col.align === 'center'
@@ -1069,15 +1102,15 @@ export default function CreativeAnalysis() {
                     <tbody key={cid}>
                       {/* Parent row */}
                       <tr
-                        className={`border-b border-white/[0.04] hover:bg-white/[0.02] transition-colors ${
+                        className={`border-b border-white/[0.06] hover:bg-white/[0.03] transition-colors ${
                           hasHooks ? 'cursor-pointer' : ''
                         }`}
                         onClick={hasHooks ? () => toggleExpand(cid) : undefined}
                       >
-                        <td className="w-10 px-1 py-2.5 text-center">
+                        <td className="w-10 px-1 py-3 text-center">
                           <button
                             onClick={(e) => { e.stopPropagation(); toggleChart(cid); }}
-                            className={`w-7 h-7 rounded-lg flex items-center justify-center transition-colors cursor-pointer ${
+                            className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors cursor-pointer ${
                               chartCreative === cid
                                 ? 'bg-blue-500 text-white'
                                 : 'bg-blue-500/10 text-blue-400 hover:bg-blue-500/20'
@@ -1087,7 +1120,7 @@ export default function CreativeAnalysis() {
                             <TrendingUp className="w-3.5 h-3.5" />
                           </button>
                         </td>
-                        <td className="w-8 px-2 py-2.5 text-center">
+                        <td className="w-8 px-2 py-3 text-center">
                           {hasHooks && (
                             <ChevronRight
                               className={`w-3.5 h-3.5 text-gray-500 transition-transform inline-block ${
@@ -1099,25 +1132,30 @@ export default function CreativeAnalysis() {
                         {orderedColumns.map((col) => (
                           <td
                             key={col.key}
-                            className={`px-3 py-2.5 whitespace-nowrap ${
+                            className={`px-3 py-3 whitespace-nowrap ${
                               col.align === 'right'
                                 ? 'text-right'
                                 : col.align === 'center'
                                 ? 'text-center'
                                 : 'text-left'
-                            } ${
+                            } ${metricCellClass(col, row[col.key]) || (
                               ['spend', 'roas', 'revenue'].includes(col.key)
                                 ? 'text-white font-medium'
                                 : 'text-gray-400'
-                            }`}
+                            )}`}
                           >
                             {col.key === 'ad_name' ? (
-                              <span className="flex items-center gap-2">
-                                {renderCellValue(row, col)}
-                                {row.is_winner && (
-                                  <span className="px-1.5 py-0.5 rounded bg-yellow-500/20 text-yellow-400 text-[10px] font-bold uppercase tracking-wide shrink-0">Winner</span>
+                              <div className="flex flex-col">
+                                <span className="flex items-center gap-2">
+                                  {renderCellValue(row, col)}
+                                  {row.is_winner && (
+                                    <span className="px-1.5 py-0.5 rounded bg-yellow-500/20 text-yellow-400 text-[10px] font-bold uppercase tracking-wide shrink-0">Winner</span>
+                                  )}
+                                </span>
+                                {hooks.length > 0 && (
+                                  <span className="text-gray-600 text-[10px] mt-0.5">{hooks.length} ad{hooks.length !== 1 ? 's' : ''}</span>
                                 )}
-                              </span>
+                              </div>
                             ) : (
                               renderCellValue(row, col)
                             )}
@@ -1157,7 +1195,7 @@ export default function CreativeAnalysis() {
                                       <YAxis yAxisId="roas" orientation="right" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={{ stroke: 'rgba(255,255,255,0.1)' }} tickFormatter={(v) => `${v}x`} />
                                       <Tooltip
                                         contentStyle={{ background: '#1a1a2e', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, color: '#fff', fontSize: 12 }}
-                                        formatter={(value, name) => [name === 'roas' ? `${value}x` : `$${Number(value).toLocaleString()}`, name === 'roas' ? 'ROAS' : name === 'spend' ? 'Ad Spend' : 'Revenue']}
+                                        formatter={(value, name) => [name === 'roas' ? `${Number(value || 0)}x` : `$${Number(value || 0).toLocaleString()}`, name === 'roas' ? 'ROAS' : name === 'spend' ? 'Ad Spend' : 'Revenue']}
                                       />
                                       <Legend wrapperStyle={{ fontSize: 11, color: '#9ca3af' }} />
                                       <Area yAxisId="spend" type="monotone" dataKey="spend" name="Ad Spend" fill="rgba(59,130,246,0.15)" stroke="#3b82f6" strokeWidth={2} />
