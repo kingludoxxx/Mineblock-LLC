@@ -79,6 +79,22 @@ function generateWeekOptions() {
   return weeks;
 }
 
+/** Convert WKxx_YYYY to a readable date (Monday of that ISO week) */
+function weekToDate(weekStr) {
+  if (!weekStr) return '-';
+  const match = weekStr.match(/WK(\d+)_(\d{4})/i);
+  if (!match) return weekStr;
+  const weekNum = parseInt(match[1], 10);
+  const year = parseInt(match[2], 10);
+  const jan4 = new Date(Date.UTC(year, 0, 4));
+  const dayOfWeek = jan4.getUTCDay() || 7;
+  const mondayW1 = new Date(jan4);
+  mondayW1.setUTCDate(jan4.getUTCDate() - dayOfWeek + 1);
+  const start = new Date(mondayW1);
+  start.setUTCDate(mondayW1.getUTCDate() + (weekNum - 1) * 7);
+  return start.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
+}
+
 const fmtMoney = (n) =>
   '$' +
   Number(n || 0).toLocaleString(undefined, {
@@ -139,6 +155,7 @@ const TABLE_COLUMNS = [
   { key: 'angle', label: 'Angle', align: 'left' },
   { key: 'format', label: 'Format', align: 'left' },
   { key: 'editor', label: 'Editor', align: 'left' },
+  { key: 'launched', label: 'Launched', align: 'left', format: weekToDate },
   { key: 'spend', label: 'Spend', align: 'right', format: fmtMoney },
   { key: 'revenue', label: 'Revenue', align: 'right', format: fmtMoney },
   { key: 'roas', label: 'ROAS', align: 'right', format: fmtRoas },
@@ -350,6 +367,7 @@ export default function CreativeAnalysis() {
       impressions: creative.total_impressions ?? creative.impressions ?? 0,
       clicks: creative.total_clicks ?? creative.clicks ?? 0,
       ad_name: creative.hooks?.reduce((best, h) => (h.spend > (best?.spend ?? -1) ? h : best), null)?.ad_name || creative.ad_name || creative.creative_id,
+      launched: creative.first_seen || creative.week || null,
       _hooks: creative.hooks || [],
       _creativeId: creative.creative_id,
     }));
