@@ -1532,9 +1532,55 @@ async function autoSync() {
   }
 }
 
+// One-time historical backfill: sync past 12 weeks if not already in DB
+let historyBackfilled = false;
+async function backfillHistory() {
+  if (historyBackfilled || !TW_API_KEY) return;
+  historyBackfilled = true;
+  try {
+    await ensureTable();
+    // Check which weeks already exist
+    const existing = await pgQuery('SELECT DISTINCT week FROM creative_analysis WHERE week IS NOT NULL');
+    const existingSet = new Set(existing.map(r => r.week));
+
+    // Generate past 12 weeks
+    const weeks = [];
+    for (let i = 0; i < 12; i++) {
+      const d = new Date();
+      d.setDate(d.getDate() - i * 7);
+      const oneJan = new Date(d.getFullYear(), 0, 1);
+      const weekNum = Math.ceil(((d - oneJan) / 86400000 + oneJan.getDay() + 1) / 7);
+      const wk = `WK${String(weekNum).padStart(2, '0')}_${d.getFullYear()}`;
+      if (!existingSet.has(wk)) weeks.push(wk);
+    }
+
+    if (weeks.length === 0) {
+      console.log('[Creative Analysis] History backfill: all weeks already synced');
+      return;
+    }
+
+    console.log(`[Creative Analysis] History backfill: syncing ${weeks.length} missing weeks: ${weeks.join(', ')}`);
+    for (const week of weeks) {
+      try {
+        const range = weekToDateRange(week);
+        if (!range) continue;
+        const result = await syncData({ periodWeek: week, startDate: range.startDate, endDate: range.endDate });
+        console.log(`[Creative Analysis] Backfill ${week}: synced=${result.synced}, skipped=${result.skipped}`);
+      } catch (err) {
+        console.error(`[Creative Analysis] Backfill ${week} failed:`, err.message);
+      }
+    }
+    console.log('[Creative Analysis] History backfill complete');
+  } catch (err) {
+    console.error('[Creative Analysis] History backfill error:', err.message);
+  }
+}
+
 // Start auto-sync after 30s delay, then every 5 minutes
+// Also trigger one-time history backfill
 setTimeout(() => {
   autoSync();
+  backfillHistory();
   setInterval(autoSync, 5 * 60 * 1000);
 }, 30_000);
 
