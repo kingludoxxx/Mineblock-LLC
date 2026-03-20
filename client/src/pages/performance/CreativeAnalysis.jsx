@@ -396,7 +396,10 @@ export default function CreativeAnalysis() {
     fetchData();
     // Auto-refresh every 5 minutes
     const interval = setInterval(fetchData, 5 * 60 * 1000);
-    return () => clearInterval(interval);
+    return () => {
+      clearInterval(interval);
+      if (abortRef.current) abortRef.current.abort();
+    };
   }, [fetchData]);
 
   // ── Filtering ──
@@ -796,7 +799,6 @@ export default function CreativeAnalysis() {
                       onClick={() => {
                         setActiveOnly(false);
                         setDatePickerOpen(false);
-                        fetchData();
                       }}
                       disabled={!startDate || !endDate}
                       className="px-4 py-1.5 rounded-lg bg-emerald-500 text-white text-sm font-medium hover:bg-emerald-600 transition-colors cursor-pointer disabled:opacity-40"
@@ -811,7 +813,18 @@ export default function CreativeAnalysis() {
 
           {/* Active only toggle */}
           <button
-            onClick={() => { setActiveOnly((v) => !v); setDatePreset(activeOnly ? 'last_14' : 'active'); }}
+            onClick={() => {
+              if (activeOnly) {
+                // Switching to date mode — set dates to match last_14 preset
+                const range = presetToRange('last_14');
+                setDatePreset('last_14');
+                setStartDate(range.startDate);
+                setEndDate(range.endDate);
+              } else {
+                setDatePreset('active');
+              }
+              setActiveOnly((v) => !v);
+            }}
             className={`px-3 py-2 rounded-lg text-xs font-medium transition-colors cursor-pointer ${activeOnly ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30' : 'bg-white/[0.04] text-gray-400 hover:text-white border border-white/[0.08]'}`}
           >
             Active Only
@@ -1378,7 +1391,7 @@ export default function CreativeAnalysis() {
                                       <YAxis yAxisId="roas" orientation="right" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={{ stroke: 'rgba(255,255,255,0.1)' }} tickFormatter={(v) => `${v}x`} />
                                       <Tooltip
                                         contentStyle={{ background: '#1a1a2e', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, color: '#fff', fontSize: 12 }}
-                                        formatter={(value, name) => [name === 'roas' ? `${Number(value || 0)}x` : `$${Number(value || 0).toLocaleString()}`, name === 'roas' ? 'ROAS' : name === 'spend' ? 'Ad Spend' : 'Revenue']}
+                                        formatter={(value, name) => [name === 'roas' ? `${Number(value || 0).toFixed(2)}x` : `$${Number(value || 0).toLocaleString()}`, name === 'roas' ? 'ROAS' : name === 'spend' ? 'Ad Spend' : 'Revenue']}
                                       />
                                       <Legend wrapperStyle={{ fontSize: 11, color: '#9ca3af' }} />
                                       <Area yAxisId="spend" type="monotone" dataKey="spend" name="Ad Spend" fill="rgba(59,130,246,0.15)" stroke="#3b82f6" strokeWidth={2} />

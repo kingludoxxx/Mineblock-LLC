@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { authenticate } from '../middleware/auth.js';
-import { pgQuery } from '../db/pg.js';
+import { pgQuery, pgDb } from '../db/pg.js';
 
 const router = Router();
 
@@ -21,14 +21,18 @@ const KNOWN_FORMATS = new Set([
 ]);
 
 const KNOWN_EDITORS = new Set([
-  'faiz', 'muhammad', 'antoni', 'ludovico',
+  'faiz', 'muhammad', 'antoni', 'ludovico', 'atif', 'ali', 'hamza',
+  'usama', 'carl', 'alhamjatonni', 'abdul', 'robi', 'abdullah', 'farhan',
 ]);
 
 const KNOWN_ANGLES = new Set([
   'lottery', 'cryptoaddict', 'moneyseeker', 'againstcompetition',
   'againstcompetition rebranding', 'sharktank', 'btc made easy',
-  'btc farm', 'btcfarm', 'btc crash', 'scarcity', 'hiddenopportunity',
-  'missedopportunity', 'comparison', 'offer', 'reaction', 'gtrs',
+  'btcmadeeasy', 'btc farm', 'btcfarm', 'btc crash', 'scarcity',
+  'hiddenopportunity', 'missedopportunity', 'comparison', 'offer',
+  'reaction', 'gtrs', 'livestream', 'rebranding', 'sale', 'breakingnews',
+  'lambo', 'mclaren', 'retargeting', 'founder story', 'founderstory',
+  'money opportunity', 'moneyopportunity',
 ]);
 
 /** Case-insensitive Set.has() */
@@ -532,16 +536,15 @@ async function syncData({ periodWeek, startDate, endDate }) {
   }
 
   // Upsert data for this period week (no delete — ON CONFLICT handles updates)
+  // Use pgDb.begin() to pin a single connection for the entire transaction
   let synced = 0;
   let errors = 0;
 
-  await pgQuery('BEGIN');
-  try {
-
+  await pgDb.begin(async (sql) => {
     for (const entry of aggregated.values()) {
       const metrics = computeMetrics(entry);
 
-      await pgQuery(
+      await sql.unsafe(
         `INSERT INTO creative_analysis
            (ad_name, creative_id, hook_id, type, avatar, angle, format, editor, week,
             spend, revenue, purchases, impressions, clicks,
@@ -592,12 +595,7 @@ async function syncData({ periodWeek, startDate, endDate }) {
       );
       synced++;
     }
-
-    await pgQuery('COMMIT');
-  } catch (err) {
-    try { await pgQuery('ROLLBACK'); } catch (_) { /* ignore rollback error */ }
-    throw err;
-  }
+  });
 
   return { synced, skipped, errors, aggregatedFrom: twAds.length - skipped };
 }
@@ -1043,15 +1041,12 @@ router.get('/lifetime', authenticate, async (req, res) => {
         ...computeMetrics(w),
       }));
 
+    const weeks = weeklyBreakdown.map(w => w.week);
+    const weeksWithSpend = weeklyBreakdown.filter(w => w.spend > 0).length;
+
     const lifetimeSpend = Math.round(totalSpend * 100) / 100;
     const lifetimeRevenue = Math.round(totalRevenue * 100) / 100;
     const lifetimeRoas = lifetimeSpend > 0 ? Math.round((lifetimeRevenue / lifetimeSpend) * 100) / 100 : 0;
-    const weeks = Object.keys(weeklyMap).sort((a, b) => {
-      const [wA, yA] = a.replace('WK', '').split('_').map(Number);
-      const [wB, yB] = b.replace('WK', '').split('_').map(Number);
-      return yA - yB || wA - wB;
-    });
-
     // Get metadata from the row with highest spend
     const topRow = rows.reduce((a, b) => (Number(b.spend) > Number(a.spend) ? b : a), rows[0]);
 
@@ -1068,9 +1063,9 @@ router.get('/lifetime', authenticate, async (req, res) => {
         lifetime_revenue: lifetimeRevenue,
         lifetime_roas: lifetimeRoas,
         lifetime_purchases: totalPurchases,
-        first_seen: weeks[0],
-        last_seen: weeks[weeks.length - 1],
-        weeks_active: weeks.length,
+        first_seen: weeks[0] || null,
+        last_seen: weeks[weeks.length - 1] || null,
+        weeks_active: weeksWithSpend,
         is_winner: lifetimeSpend >= 500 && lifetimeRoas >= 1.80,
         weekly_breakdown: weeklyBreakdown,
       },
