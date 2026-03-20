@@ -1483,12 +1483,12 @@ export default function CreativeAnalysis() {
             </button>
             <div className="bg-[#111] rounded-xl overflow-hidden">
               {videoModal.video_url ? (
-                <video
+                <iframe
                   src={videoModal.video_url}
-                  controls
-                  autoPlay
-                  className="w-full max-h-[80vh]"
-                  poster={videoModal.thumbnail_url}
+                  className="w-full border-0"
+                  style={{ height: '80vh' }}
+                  allow="autoplay; fullscreen"
+                  allowFullScreen
                 />
               ) : videoModal.thumbnail_url ? (
                 <img src={videoModal.thumbnail_url} alt="" className="w-full max-h-[80vh] object-contain" />

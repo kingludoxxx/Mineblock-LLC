@@ -802,29 +802,37 @@ async function syncMetaThumbnails() {
     });
   }
 
-  // 4. For matched video ads, fetch the actual video source URL
-  const videoIds = [...new Set(updates.filter(u => u.video_id).map(u => u.video_id))];
-  const videoSources = new Map();
+  // 4. For video ads, fetch the ad preview iframe URL (video source requires extra permissions)
+  const adIdsWithVideo = updates.filter(u => u.video_id);
+  const previewUrls = new Map(); // meta_ad_id -> preview iframe URL
 
-  // Batch fetch video sources (50 at a time)
-  for (let i = 0; i < videoIds.length; i += 50) {
-    const batch = videoIds.slice(i, i + 50);
-    const promises = batch.map(async (vid) => {
+  // Batch fetch ad previews (10 at a time to avoid rate limits)
+  for (let i = 0; i < adIdsWithVideo.length; i += 10) {
+    const batch = adIdsWithVideo.slice(i, i + 10);
+    const promises = batch.map(async (upd) => {
       try {
-        const resp = await fetch(`${META_GRAPH_URL}/${vid}?fields=source,picture&access_token=${META_ACCESS_TOKEN}`);
+        const resp = await fetch(`${META_GRAPH_URL}/${upd.meta_ad_id}/previews?ad_format=MOBILE_FEED_STANDARD&access_token=${META_ACCESS_TOKEN}`);
         const data = await resp.json();
-        if (data.source) videoSources.set(vid, { source: data.source, picture: data.picture });
+        const body = data.data?.[0]?.body;
+        if (body) {
+          // Extract the preview iframe src URL
+          const match = body.match(/src=["']([^"']+)["']/);
+          if (match) {
+            const iframeSrc = match[1].replace(/&amp;/g, '&');
+            previewUrls.set(upd.meta_ad_id, iframeSrc);
+          }
+        }
       } catch {}
     });
     await Promise.all(promises);
   }
 
+  console.log(`[Meta Sync] Fetched ${previewUrls.size} ad preview URLs for ${adIdsWithVideo.length} video ads`);
+
   // 5. Update DB rows
   for (const upd of updates) {
-    const videoData = upd.video_id ? videoSources.get(upd.video_id) : null;
-    const videoUrl = videoData?.source || null;
-    // Use higher-res picture from video endpoint if available
-    const finalThumb = videoData?.picture || upd.thumbnail_url;
+    const videoUrl = previewUrls.get(upd.meta_ad_id) || null;
+    const finalThumb = upd.thumbnail_url;
 
     try {
       await pgQuery(
