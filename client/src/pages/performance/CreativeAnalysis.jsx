@@ -14,10 +14,16 @@ import {
   ShoppingCart,
   Zap,
   TrendingUp,
+  Flame,
+  Grid3X3,
+  ChevronDown,
 } from 'lucide-react';
 import {
   ResponsiveContainer,
   ComposedChart,
+  BarChart as RBarChart,
+  Bar,
+  Cell,
   Area,
   Line,
   XAxis,
@@ -389,6 +395,75 @@ export default function CreativeAnalysis() {
     return result;
   }, [data, filters, sortConfig]);
 
+  // ── Analytics: Angle/Format Breakdown, Rising Stars, Heatmap ──
+
+  const [analyticsOpen, setAnalyticsOpen] = useState(true);
+
+  const angleStats = useMemo(() => {
+    const map = {};
+    processedData.forEach((r) => {
+      const a = r.angle || 'Unknown';
+      if (!map[a]) map[a] = { angle: a, spend: 0, revenue: 0, count: 0 };
+      map[a].spend += r.spend || 0;
+      map[a].revenue += r.revenue || 0;
+      map[a].count++;
+    });
+    return Object.values(map)
+      .map((a) => ({ ...a, roas: a.spend > 0 ? a.revenue / a.spend : 0 }))
+      .sort((a, b) => b.spend - a.spend);
+  }, [processedData]);
+
+  const formatStats = useMemo(() => {
+    const map = {};
+    processedData.forEach((r) => {
+      const f = r.format || 'Unknown';
+      if (!map[f]) map[f] = { format: f, spend: 0, revenue: 0, count: 0 };
+      map[f].spend += r.spend || 0;
+      map[f].revenue += r.revenue || 0;
+      map[f].count++;
+    });
+    return Object.values(map)
+      .map((f) => ({ ...f, roas: f.spend > 0 ? f.revenue / f.spend : 0 }))
+      .sort((a, b) => b.spend - a.spend);
+  }, [processedData]);
+
+  const risingStars = useMemo(() => {
+    return processedData
+      .filter((r) => (r.spend ?? 0) >= 50 && (r.spend ?? 0) < 500 && (r.roas ?? 0) >= 1.0)
+      .sort((a, b) => (b.roas ?? 0) - (a.roas ?? 0))
+      .slice(0, 10);
+  }, [processedData]);
+
+  const heatmapData = useMemo(() => {
+    const map = {};
+    const angles = new Set();
+    const formats = new Set();
+    processedData.forEach((r) => {
+      const a = r.angle || 'Unknown';
+      const f = r.format || 'Unknown';
+      angles.add(a);
+      formats.add(f);
+      const key = `${f}|${a}`;
+      if (!map[key]) map[key] = { spend: 0, revenue: 0, count: 0 };
+      map[key].spend += r.spend || 0;
+      map[key].revenue += r.revenue || 0;
+      map[key].count++;
+    });
+    const cells = {};
+    for (const [key, val] of Object.entries(map)) {
+      cells[key] = val.spend > 0 ? val.revenue / val.spend : 0;
+    }
+    return { angles: [...angles].sort(), formats: [...formats].sort(), cells, counts: map };
+  }, [processedData]);
+
+  const heatmapColor = (roas) => {
+    if (roas >= 2.0) return 'bg-emerald-500/40 text-emerald-300';
+    if (roas >= 1.5) return 'bg-emerald-500/25 text-emerald-400';
+    if (roas >= 1.0) return 'bg-yellow-500/25 text-yellow-400';
+    if (roas > 0) return 'bg-red-500/20 text-red-400';
+    return 'bg-white/[0.02] text-gray-600';
+  };
+
   // ── Interactions ──
 
   const toggleExpand = (creativeId) => {
@@ -665,6 +740,202 @@ export default function CreativeAnalysis() {
           })}
         </div>
       )}
+
+      {/* Analytics Section */}
+      <div className="mb-8">
+        <button
+          onClick={() => setAnalyticsOpen((v) => !v)}
+          className="flex items-center gap-2 mb-4 text-white font-semibold text-lg hover:text-emerald-400 transition-colors cursor-pointer"
+        >
+          <ChevronDown className={`w-4 h-4 transition-transform ${analyticsOpen ? '' : '-rotate-90'}`} />
+          Performance Analytics
+        </button>
+
+        {analyticsOpen && (
+          <div className="space-y-6">
+            {/* Angle & Format Breakdown */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              {/* Angle Breakdown */}
+              <div className={cardStyle}>
+                <div className="flex items-center gap-2 mb-4">
+                  <BarChart3 className="w-4 h-4 text-purple-400" />
+                  <h3 className="text-white font-semibold text-sm">Performance by Angle</h3>
+                </div>
+                {angleStats.length > 0 ? (
+                  <ResponsiveContainer width="100%" height={Math.max(180, angleStats.length * 36)}>
+                    <RBarChart data={angleStats} layout="vertical" margin={{ top: 0, right: 20, bottom: 0, left: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" horizontal={false} />
+                      <XAxis type="number" tick={{ fill: '#6b7280', fontSize: 10 }} axisLine={{ stroke: 'rgba(255,255,255,0.1)' }} tickFormatter={(v) => `${v.toFixed(1)}x`} />
+                      <YAxis type="category" dataKey="angle" tick={{ fill: '#9ca3af', fontSize: 11 }} axisLine={false} width={120} />
+                      <Tooltip
+                        contentStyle={{ background: '#1a1a2e', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, color: '#fff', fontSize: 12 }}
+                        formatter={(v, name) => [name === 'roas' ? `${v.toFixed(2)}x` : `$${Number(v).toLocaleString()}`, name === 'roas' ? 'ROAS' : name === 'spend' ? 'Spend' : 'Revenue']}
+                      />
+                      <Bar dataKey="roas" radius={[0, 4, 4, 0]}>
+                        {angleStats.map((entry, i) => (
+                          <Cell key={i} fill={entry.roas >= 1.5 ? '#10b981' : entry.roas >= 1.0 ? '#eab308' : '#ef4444'} fillOpacity={0.7} />
+                        ))}
+                      </Bar>
+                    </RBarChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <p className="text-gray-500 text-xs">No angle data available</p>
+                )}
+                {angleStats.length > 0 && (
+                  <div className="mt-3 space-y-1">
+                    {angleStats.map((a) => (
+                      <div key={a.angle} className="flex items-center justify-between text-xs">
+                        <span className="text-gray-400">{a.angle} <span className="text-gray-600">({a.count})</span></span>
+                        <div className="flex gap-3">
+                          <span className="text-gray-500">{fmtMoney(a.spend)}</span>
+                          <span className={a.roas >= 1.5 ? 'text-emerald-400' : a.roas >= 1.0 ? 'text-yellow-400' : 'text-red-400'}>{fmtRoas(a.roas)}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Format Breakdown */}
+              <div className={cardStyle}>
+                <div className="flex items-center gap-2 mb-4">
+                  <BarChart3 className="w-4 h-4 text-blue-400" />
+                  <h3 className="text-white font-semibold text-sm">Performance by Format</h3>
+                </div>
+                {formatStats.length > 0 ? (
+                  <ResponsiveContainer width="100%" height={Math.max(180, formatStats.length * 36)}>
+                    <RBarChart data={formatStats} layout="vertical" margin={{ top: 0, right: 20, bottom: 0, left: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" horizontal={false} />
+                      <XAxis type="number" tick={{ fill: '#6b7280', fontSize: 10 }} axisLine={{ stroke: 'rgba(255,255,255,0.1)' }} tickFormatter={(v) => `${v.toFixed(1)}x`} />
+                      <YAxis type="category" dataKey="format" tick={{ fill: '#9ca3af', fontSize: 11 }} axisLine={false} width={100} />
+                      <Tooltip
+                        contentStyle={{ background: '#1a1a2e', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, color: '#fff', fontSize: 12 }}
+                        formatter={(v, name) => [name === 'roas' ? `${v.toFixed(2)}x` : `$${Number(v).toLocaleString()}`, name === 'roas' ? 'ROAS' : name === 'spend' ? 'Spend' : 'Revenue']}
+                      />
+                      <Bar dataKey="roas" radius={[0, 4, 4, 0]}>
+                        {formatStats.map((entry, i) => (
+                          <Cell key={i} fill={entry.roas >= 1.5 ? '#3b82f6' : entry.roas >= 1.0 ? '#eab308' : '#ef4444'} fillOpacity={0.7} />
+                        ))}
+                      </Bar>
+                    </RBarChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <p className="text-gray-500 text-xs">No format data available</p>
+                )}
+                {formatStats.length > 0 && (
+                  <div className="mt-3 space-y-1">
+                    {formatStats.map((f) => (
+                      <div key={f.format} className="flex items-center justify-between text-xs">
+                        <span className="text-gray-400">{f.format} <span className="text-gray-600">({f.count})</span></span>
+                        <div className="flex gap-3">
+                          <span className="text-gray-500">{fmtMoney(f.spend)}</span>
+                          <span className={f.roas >= 1.5 ? 'text-blue-400' : f.roas >= 1.0 ? 'text-yellow-400' : 'text-red-400'}>{fmtRoas(f.roas)}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Rising Stars */}
+            {risingStars.length > 0 && (
+              <div className={cardStyle}>
+                <div className="flex items-center gap-2 mb-4">
+                  <Flame className="w-4 h-4 text-orange-400" />
+                  <h3 className="text-white font-semibold text-sm">Rising Stars</h3>
+                  <span className="text-gray-500 text-xs ml-1">Profitable creatives not yet scaled (spend $50–$500, ROAS {'>'}1.0x)</span>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3">
+                  {risingStars.map((star) => (
+                    <div
+                      key={star._creativeId}
+                      className="bg-white/[0.03] border border-orange-500/10 rounded-lg p-3 hover:border-orange-500/30 transition-colors"
+                    >
+                      <div className="flex items-center gap-1.5 mb-2">
+                        <span className={`text-[10px] font-bold uppercase px-1.5 py-0.5 rounded ${
+                          (star.type || '').toLowerCase() === 'video'
+                            ? 'bg-blue-500/20 text-blue-400'
+                            : 'bg-cyan-500/20 text-cyan-400'
+                        }`}>
+                          {star.type || '?'}
+                        </span>
+                        {star.angle && <span className="text-gray-500 text-[10px]">{star.angle}</span>}
+                      </div>
+                      <p className="text-white text-xs font-medium truncate mb-2" title={star.ad_name}>
+                        {star.ad_name}
+                      </p>
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="text-gray-500">{fmtMoney(star.spend)}</span>
+                        <span className="text-orange-400 font-semibold">{fmtRoas(star.roas)}</span>
+                      </div>
+                      <div className="mt-1.5 w-full bg-white/[0.04] rounded-full h-1">
+                        <div
+                          className="bg-orange-500/60 h-1 rounded-full"
+                          style={{ width: `${Math.min(100, ((star.spend || 0) / 500) * 100)}%` }}
+                        />
+                      </div>
+                      <p className="text-gray-600 text-[10px] mt-1 text-right">{Math.round(((star.spend || 0) / 500) * 100)}% to scale threshold</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Format × Angle Heatmap */}
+            {heatmapData.formats.length > 0 && heatmapData.angles.length > 0 && (
+              <div className={cardStyle}>
+                <div className="flex items-center gap-2 mb-4">
+                  <Grid3X3 className="w-4 h-4 text-cyan-400" />
+                  <h3 className="text-white font-semibold text-sm">Format × Angle Heatmap</h3>
+                  <span className="text-gray-500 text-xs ml-1">ROAS by combination</span>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="text-xs">
+                    <thead>
+                      <tr>
+                        <th className="px-3 py-2 text-left text-gray-500 font-medium">Format ↓ / Angle →</th>
+                        {heatmapData.angles.map((a) => (
+                          <th key={a} className="px-3 py-2 text-center text-gray-400 font-medium whitespace-nowrap">{a}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {heatmapData.formats.map((f) => (
+                        <tr key={f} className="border-t border-white/[0.04]">
+                          <td className="px-3 py-2 text-gray-400 font-medium whitespace-nowrap">{f}</td>
+                          {heatmapData.angles.map((a) => {
+                            const key = `${f}|${a}`;
+                            const roas = heatmapData.cells[key] ?? 0;
+                            const count = heatmapData.counts[key]?.count ?? 0;
+                            return (
+                              <td key={a} className={`px-3 py-2 text-center font-medium rounded ${heatmapColor(roas)}`}>
+                                {count > 0 ? (
+                                  <span title={`${count} creative${count !== 1 ? 's' : ''}, ${fmtMoney(heatmapData.counts[key]?.spend)} spend`}>
+                                    {roas.toFixed(2)}x
+                                  </span>
+                                ) : (
+                                  <span className="text-gray-700">—</span>
+                                )}
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="flex items-center gap-4 mt-3 text-[10px]">
+                  <span className="flex items-center gap-1"><span className="w-3 h-3 rounded bg-red-500/20" /> {'<'}1.0x</span>
+                  <span className="flex items-center gap-1"><span className="w-3 h-3 rounded bg-yellow-500/25" /> 1.0–1.5x</span>
+                  <span className="flex items-center gap-1"><span className="w-3 h-3 rounded bg-emerald-500/25" /> 1.5–2.0x</span>
+                  <span className="flex items-center gap-1"><span className="w-3 h-3 rounded bg-emerald-500/40" /> {'>'}2.0x</span>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
 
       {/* Filter Bar */}
       <div className={`${cardStyle} mb-6`}>
