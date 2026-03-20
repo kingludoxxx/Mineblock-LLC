@@ -398,183 +398,225 @@ export default function StaticsGeneration() {
             />
           </div>
 
-          {/* Product Info */}
-          <div className="bg-[#111] border border-white/[0.06] rounded-lg p-5 space-y-3">
-            <h3 className="text-sm font-medium text-white mb-1">Product Info</h3>
+          {/* Product Info — hidden when product selected from library */}
+          {!selectedProductId && (
+            <>
+              <div className="bg-[#111] border border-white/[0.06] rounded-lg p-5 space-y-3">
+                <h3 className="text-sm font-medium text-white mb-1">Product Info</h3>
 
-            <div>
-              <label className={labelClasses}>
-                Product Name <span className="text-violet-400">*</span>
-              </label>
-              <input
-                type="text"
-                value={productName}
-                onChange={(e) => setProductName(e.target.value)}
-                placeholder="e.g. GlowSkin Serum"
-                className={inputClasses}
-              />
-            </div>
-
-            <div>
-              <label className={labelClasses}>Description</label>
-              <textarea
-                value={productDescription}
-                onChange={(e) => setProductDescription(e.target.value)}
-                placeholder="Short product description..."
-                rows={3}
-                className={inputClasses + ' resize-none'}
-              />
-            </div>
-
-            <div>
-              <label className={labelClasses}>Price</label>
-              <input
-                type="text"
-                value={productPrice}
-                onChange={(e) => setProductPrice(e.target.value)}
-                placeholder="e.g. $49.99"
-                className={inputClasses}
-              />
-            </div>
-
-            <div>
-              <label className={labelClasses}>
-                Product Photo <span className="text-violet-400">*</span>
-              </label>
-              <UploadZone
-                preview={productPreview}
-                onFile={handleProductFile}
-                onUrlChange={(url) => {
-                  setProductImageUrl(url);
-                  setProductFile(null);
-                  setProductPreview('');
-                }}
-                urlValue={productImageUrl}
-                onClear={clearProduct}
-                label="Product photo"
-                compact
-              />
-            </div>
-          </div>
-
-          {/* Product Profile (collapsible) */}
-          <div className="bg-[#111] border border-white/[0.06] rounded-lg">
-            <button
-              type="button"
-              onClick={() => setProfileOpen(!profileOpen)}
-              className="w-full flex items-center justify-between p-5 cursor-pointer"
-            >
-              <span className="text-sm font-medium text-white">Product Profile</span>
-              {profileOpen ? (
-                <ChevronDown className="w-4 h-4 text-slate-400" />
-              ) : (
-                <ChevronRight className="w-4 h-4 text-slate-400" />
-              )}
-            </button>
-
-            {profileOpen && (
-              <div className="px-5 pb-5 space-y-3 border-t border-white/[0.04] pt-4">
                 <div>
-                  <label className={labelClasses}>Oneliner</label>
+                  <label className={labelClasses}>
+                    Product Name <span className="text-violet-400">*</span>
+                  </label>
                   <input
                     type="text"
-                    value={oneliner}
-                    onChange={(e) => setOneliner(e.target.value)}
-                    placeholder="One-sentence product pitch"
+                    value={productName}
+                    onChange={(e) => setProductName(e.target.value)}
+                    placeholder="e.g. GlowSkin Serum"
                     className={inputClasses}
                   />
                 </div>
 
                 <div>
-                  <label className={labelClasses}>Customer Avatar</label>
+                  <label className={labelClasses}>Description</label>
+                  <textarea
+                    value={productDescription}
+                    onChange={(e) => setProductDescription(e.target.value)}
+                    placeholder="Short product description..."
+                    rows={3}
+                    className={inputClasses + ' resize-none'}
+                  />
+                </div>
+
+                <div>
+                  <label className={labelClasses}>Price</label>
                   <input
                     type="text"
-                    value={customerAvatar}
-                    onChange={(e) => setCustomerAvatar(e.target.value)}
-                    placeholder="Who is your ideal customer?"
+                    value={productPrice}
+                    onChange={(e) => setProductPrice(e.target.value)}
+                    placeholder="e.g. $49.99"
                     className={inputClasses}
                   />
                 </div>
 
                 <div>
-                  <label className={labelClasses}>Customer Frustration</label>
-                  <textarea
-                    value={customerFrustration}
-                    onChange={(e) => setCustomerFrustration(e.target.value)}
-                    placeholder="What frustrates them?"
-                    rows={2}
-                    className={inputClasses + ' resize-none'}
-                  />
-                </div>
-
-                <div>
-                  <label className={labelClasses}>Customer Dream</label>
-                  <textarea
-                    value={customerDream}
-                    onChange={(e) => setCustomerDream(e.target.value)}
-                    placeholder="What do they aspire to?"
-                    rows={2}
-                    className={inputClasses + ' resize-none'}
-                  />
-                </div>
-
-                <div>
-                  <label className={labelClasses}>Big Promise</label>
-                  <textarea
-                    value={bigPromise}
-                    onChange={(e) => setBigPromise(e.target.value)}
-                    placeholder="Your main value proposition"
-                    rows={2}
-                    className={inputClasses + ' resize-none'}
-                  />
-                </div>
-
-                <div>
-                  <label className={labelClasses}>Mechanism</label>
-                  <textarea
-                    value={mechanism}
-                    onChange={(e) => setMechanism(e.target.value)}
-                    placeholder="How does it work?"
-                    rows={2}
-                    className={inputClasses + ' resize-none'}
-                  />
-                </div>
-
-                <div>
-                  <label className={labelClasses}>Differentiator</label>
-                  <textarea
-                    value={differentiator}
-                    onChange={(e) => setDifferentiator(e.target.value)}
-                    placeholder="What makes it unique?"
-                    rows={2}
-                    className={inputClasses + ' resize-none'}
-                  />
-                </div>
-
-                <div>
-                  <label className={labelClasses}>Voice / Tone</label>
-                  <input
-                    type="text"
-                    value={voice}
-                    onChange={(e) => setVoice(e.target.value)}
-                    placeholder="e.g. Bold, friendly, clinical"
-                    className={inputClasses}
-                  />
-                </div>
-
-                <div>
-                  <label className={labelClasses}>Guarantee</label>
-                  <input
-                    type="text"
-                    value={guarantee}
-                    onChange={(e) => setGuarantee(e.target.value)}
-                    placeholder="e.g. 30-day money-back guarantee"
-                    className={inputClasses}
+                  <label className={labelClasses}>
+                    Product Photo <span className="text-violet-400">*</span>
+                  </label>
+                  <UploadZone
+                    preview={productPreview}
+                    onFile={handleProductFile}
+                    onUrlChange={(url) => {
+                      setProductImageUrl(url);
+                      setProductFile(null);
+                      setProductPreview('');
+                    }}
+                    urlValue={productImageUrl}
+                    onClear={clearProduct}
+                    label="Product photo"
+                    compact
                   />
                 </div>
               </div>
-            )}
-          </div>
+
+              {/* Product Profile (collapsible) */}
+              <div className="bg-[#111] border border-white/[0.06] rounded-lg">
+                <button
+                  type="button"
+                  onClick={() => setProfileOpen(!profileOpen)}
+                  className="w-full flex items-center justify-between p-5 cursor-pointer"
+                >
+                  <span className="text-sm font-medium text-white">Product Profile</span>
+                  {profileOpen ? (
+                    <ChevronDown className="w-4 h-4 text-slate-400" />
+                  ) : (
+                    <ChevronRight className="w-4 h-4 text-slate-400" />
+                  )}
+                </button>
+
+                {profileOpen && (
+                  <div className="px-5 pb-5 space-y-3 border-t border-white/[0.04] pt-4">
+                    <div>
+                      <label className={labelClasses}>Oneliner</label>
+                      <input
+                        type="text"
+                        value={oneliner}
+                        onChange={(e) => setOneliner(e.target.value)}
+                        placeholder="One-sentence product pitch"
+                        className={inputClasses}
+                      />
+                    </div>
+
+                    <div>
+                      <label className={labelClasses}>Customer Avatar</label>
+                      <input
+                        type="text"
+                        value={customerAvatar}
+                        onChange={(e) => setCustomerAvatar(e.target.value)}
+                        placeholder="Who is your ideal customer?"
+                        className={inputClasses}
+                      />
+                    </div>
+
+                    <div>
+                      <label className={labelClasses}>Customer Frustration</label>
+                      <textarea
+                        value={customerFrustration}
+                        onChange={(e) => setCustomerFrustration(e.target.value)}
+                        placeholder="What frustrates them?"
+                        rows={2}
+                        className={inputClasses + ' resize-none'}
+                      />
+                    </div>
+
+                    <div>
+                      <label className={labelClasses}>Customer Dream</label>
+                      <textarea
+                        value={customerDream}
+                        onChange={(e) => setCustomerDream(e.target.value)}
+                        placeholder="What do they aspire to?"
+                        rows={2}
+                        className={inputClasses + ' resize-none'}
+                      />
+                    </div>
+
+                    <div>
+                      <label className={labelClasses}>Big Promise</label>
+                      <textarea
+                        value={bigPromise}
+                        onChange={(e) => setBigPromise(e.target.value)}
+                        placeholder="Your main value proposition"
+                        rows={2}
+                        className={inputClasses + ' resize-none'}
+                      />
+                    </div>
+
+                    <div>
+                      <label className={labelClasses}>Mechanism</label>
+                      <textarea
+                        value={mechanism}
+                        onChange={(e) => setMechanism(e.target.value)}
+                        placeholder="How does it work?"
+                        rows={2}
+                        className={inputClasses + ' resize-none'}
+                      />
+                    </div>
+
+                    <div>
+                      <label className={labelClasses}>Differentiator</label>
+                      <textarea
+                        value={differentiator}
+                        onChange={(e) => setDifferentiator(e.target.value)}
+                        placeholder="What makes it unique?"
+                        rows={2}
+                        className={inputClasses + ' resize-none'}
+                      />
+                    </div>
+
+                    <div>
+                      <label className={labelClasses}>Voice / Tone</label>
+                      <input
+                        type="text"
+                        value={voice}
+                        onChange={(e) => setVoice(e.target.value)}
+                        placeholder="e.g. Bold, friendly, clinical"
+                        className={inputClasses}
+                      />
+                    </div>
+
+                    <div>
+                      <label className={labelClasses}>Guarantee</label>
+                      <input
+                        type="text"
+                        value={guarantee}
+                        onChange={(e) => setGuarantee(e.target.value)}
+                        placeholder="e.g. 30-day money-back guarantee"
+                        className={inputClasses}
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+
+          {/* Selected product summary */}
+          {selectedProductId && (
+            <div className="bg-[#111] border border-emerald-500/20 rounded-lg p-5 space-y-2">
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-medium text-emerald-400">Product Loaded</h3>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedProductId(null);
+                    setProductName('');
+                    setProductDescription('');
+                    setProductPrice('');
+                    setProductImageUrl('');
+                    setProductPreview('');
+                    setOneliner('');
+                    setCustomerAvatar('');
+                    setCustomerFrustration('');
+                    setCustomerDream('');
+                    setBigPromise('');
+                    setMechanism('');
+                    setDifferentiator('');
+                    setVoice('');
+                    setGuarantee('');
+                    setMarketingAngle('');
+                  }}
+                  className="text-[10px] text-slate-500 hover:text-white transition-colors cursor-pointer"
+                >
+                  Clear & enter manually
+                </button>
+              </div>
+              <p className="text-white text-sm font-medium">{productName}</p>
+              {productDescription && <p className="text-xs text-slate-400 line-clamp-2">{productDescription}</p>}
+              {productPreview && (
+                <img src={productPreview} alt="" className="w-16 h-16 rounded-md object-cover border border-white/[0.06] mt-1" />
+              )}
+            </div>
+          )}
 
           {/* Marketing Angle */}
           <div className="bg-[#111] border border-white/[0.06] rounded-lg p-5">
