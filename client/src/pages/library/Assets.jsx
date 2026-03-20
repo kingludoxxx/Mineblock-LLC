@@ -299,15 +299,31 @@ function EditorModal({ isCreating, form, setForm, activeTab, setActiveTab, savin
     setForm({ ...form, angles: list.length ? list : [{ name: '', description: '' }] });
   };
 
-  const updateImage = (i, val) => {
-    const list = [...form.images];
-    list[i] = val;
-    setForm({ ...form, images: list });
-  };
-  const addImage = () => setForm({ ...form, images: [...form.images, ''] });
   const removeImage = (i) => {
     const list = form.images.filter((_, idx) => idx !== i);
-    setForm({ ...form, images: list.length ? list : [''] });
+    setForm({ ...form, images: list.length ? list : [] });
+  };
+  const handleImageUpload = (files) => {
+    Array.from(files).forEach((file) => {
+      if (!file.type.startsWith('image/')) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        setForm((prev) => ({
+          ...prev,
+          images: [...prev.images.filter((img) => img), reader.result],
+        }));
+      };
+      reader.readAsDataURL(file);
+    });
+  };
+  const [imageUrlInput, setImageUrlInput] = useState('');
+  const addImageUrl = () => {
+    if (!imageUrlInput.trim()) return;
+    setForm((prev) => ({
+      ...prev,
+      images: [...prev.images.filter((img) => img), imageUrlInput.trim()],
+    }));
+    setImageUrlInput('');
   };
 
   const removeLogo = (i) => {
@@ -454,31 +470,61 @@ function EditorModal({ isCreating, form, setForm, activeTab, setActiveTab, savin
     <div className="space-y-4">
       <div>
         <label className="block text-xs font-medium text-slate-400 mb-2">Product Images</label>
-        <div className="space-y-3">
-          {form.images.map((url, i) => (
-            <div key={i}>
-              <div className="flex items-center gap-2">
-                <input
-                  value={url}
-                  onChange={(e) => updateImage(i, e.target.value)}
-                  placeholder="https://example.com/image.jpg"
-                  className="flex-1 bg-[#0a0a0a] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-emerald-500/40 transition-colors"
-                />
-                <button onClick={() => removeImage(i)} className="text-slate-500 hover:text-red-400 p-1 transition-colors" title="Remove">
-                  <X className="w-3.5 h-3.5" />
-                </button>
-              </div>
-              {url.trim() && (
-                <div className="mt-2 w-20 h-20 rounded-md overflow-hidden border border-white/[0.06] bg-[#0a0a0a]">
-                  <img src={url} alt="" className="w-full h-full object-cover" onError={(e) => { e.target.style.display = 'none'; }} />
-                </div>
-              )}
-            </div>
-          ))}
+        {/* Upload zone */}
+        <div
+          className="border-2 border-dashed border-white/[0.08] rounded-lg p-6 text-center hover:border-emerald-500/30 transition-colors cursor-pointer mb-3"
+          onDragOver={(e) => { e.preventDefault(); e.currentTarget.classList.add('border-emerald-500/40'); }}
+          onDragLeave={(e) => { e.currentTarget.classList.remove('border-emerald-500/40'); }}
+          onDrop={(e) => { e.preventDefault(); e.currentTarget.classList.remove('border-emerald-500/40'); handleImageUpload(e.dataTransfer.files); }}
+          onClick={() => document.getElementById('product-image-upload-input').click()}
+        >
+          <Upload className="w-6 h-6 text-slate-500 mx-auto mb-2" />
+          <p className="text-xs text-slate-400">Drop product images here or <span className="text-emerald-400">browse</span></p>
+          <p className="text-[10px] text-slate-600 mt-1">PNG, JPG, WebP — multiple files supported</p>
+          <input
+            id="product-image-upload-input"
+            type="file"
+            accept="image/*"
+            multiple
+            className="hidden"
+            onChange={(e) => { handleImageUpload(e.target.files); e.target.value = ''; }}
+          />
         </div>
-        <button onClick={addImage} className="mt-2 text-xs text-emerald-400 hover:text-emerald-300 flex items-center gap-1 transition-colors">
-          <Plus className="w-3 h-3" /> Add image
-        </button>
+        {/* URL paste fallback */}
+        <div className="flex items-center gap-2 mb-3">
+          <input
+            value={imageUrlInput}
+            onChange={(e) => setImageUrlInput(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && addImageUrl()}
+            placeholder="Or paste image URL..."
+            className="flex-1 bg-[#0a0a0a] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-emerald-500/40 transition-colors"
+          />
+          <button
+            onClick={addImageUrl}
+            disabled={!imageUrlInput.trim()}
+            className="text-xs text-emerald-400 hover:text-emerald-300 disabled:text-slate-600 disabled:cursor-not-allowed px-3 py-2 rounded-lg border border-white/[0.08] hover:border-emerald-500/30 transition-colors"
+          >
+            Add
+          </button>
+        </div>
+        {/* Image previews grid */}
+        {form.images.filter((img) => img).length > 0 && (
+          <div className="flex flex-wrap gap-3">
+            {form.images.map((url, i) =>
+              url ? (
+                <div key={i} className="relative group w-20 h-20 rounded-lg overflow-hidden border border-white/[0.06] bg-[#0a0a0a]">
+                  <img src={url} alt="" className="w-full h-full object-cover" onError={(e) => { e.target.style.display = 'none'; }} />
+                  <button
+                    onClick={() => removeImage(i)}
+                    className="absolute top-1 right-1 w-5 h-5 rounded-full bg-black/70 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity text-red-400 hover:text-red-300"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </div>
+              ) : null
+            )}
+          </div>
+        )}
       </div>
 
       <div>
@@ -773,7 +819,7 @@ export default function Assets() {
     guarantee: p.guarantee ?? '',
     benefits: Array.isArray(p.benefits) && p.benefits.length ? [...p.benefits] : [''],
     angles: Array.isArray(p.angles) && p.angles.length ? p.angles.map((a) => ({ name: a.name ?? '', description: a.description ?? '' })) : [{ name: '', description: '' }],
-    images: Array.isArray(p.images) && p.images.length ? [...p.images] : [''],
+    images: Array.isArray(p.images) && p.images.length ? p.images.filter((img) => img) : [],
     logos: Array.isArray(p.logos) && p.logos.length ? [...p.logos] : (p.logoUrl || p.logo_url ? [p.logoUrl ?? p.logo_url] : []),
     fonts: Array.isArray(p.fonts) && p.fonts.length ? p.fonts.map((f) => ({ name: f.name ?? '', url: f.url ?? '', usage: f.usage ?? 'headline' })) : [{ name: '', url: '', usage: 'headline' }],
     scripts: Array.isArray(p.scripts) && p.scripts.length ? p.scripts.map((s) => ({ title: s.title ?? '', type: s.type ?? 'vsl', content: s.content ?? '' })) : [{ title: '', type: 'vsl', content: '' }],
@@ -781,7 +827,7 @@ export default function Assets() {
 
   /* ---- CRUD actions ---- */
   const openCreate = () => {
-    setForm({ ...emptyProduct, benefits: [''], angles: [{ name: '', description: '' }], images: [''], logos: [], fonts: [{ name: '', url: '', usage: 'headline' }], scripts: [{ title: '', type: 'vsl', content: '' }] });
+    setForm({ ...emptyProduct, benefits: [''], angles: [{ name: '', description: '' }], images: [], logos: [], fonts: [{ name: '', url: '', usage: 'headline' }], scripts: [{ title: '', type: 'vsl', content: '' }] });
     setEditingProduct(null);
     setIsCreating(true);
     setActiveTab('basic');
@@ -807,7 +853,7 @@ export default function Assets() {
         ...form,
         benefits: form.benefits.filter((b) => b.trim()),
         angles: form.angles.filter((a) => a.name.trim() || a.description.trim()),
-        images: form.images.filter((u) => u.trim()),
+        images: form.images.filter((u) => u),
         logos: form.logos.filter((u) => u),
         fonts: form.fonts.filter((f) => f.name.trim() || f.url),
         scripts: form.scripts.filter((s) => s.title.trim() || s.content.trim()),
