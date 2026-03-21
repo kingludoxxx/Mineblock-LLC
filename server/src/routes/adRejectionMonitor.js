@@ -67,6 +67,9 @@ async function sendSlackMessage(text, blocks) {
   return data;
 }
 
+// ── Helpers ─────────────────────────────────────────────────────────
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
 // ── Core: Check for Rejected Ads ────────────────────────────────────
 async function checkRejectedAds() {
   if (!META_ACCESS_TOKEN || META_AD_ACCOUNT_IDS.length === 0) {
@@ -79,7 +82,10 @@ async function checkRejectedAds() {
   let totalChecked = 0;
   let newRejections = 0;
 
-  for (const accountId of META_AD_ACCOUNT_IDS) {
+  for (let i = 0; i < META_AD_ACCOUNT_IDS.length; i++) {
+    const accountId = META_AD_ACCOUNT_IDS[i];
+    // Delay between accounts to avoid Meta rate limiting
+    if (i > 0) await sleep(3000);
     try {
       // Fetch disapproved ads from this account
       const url = `${META_GRAPH_URL}/${accountId}/ads?fields=name,effective_status,ad_review_feedback&effective_status=["DISAPPROVED"]&limit=100&access_token=${META_ACCESS_TOKEN}`;
