@@ -362,23 +362,72 @@ async function fetchAllOrders(sinceId = null, extraQueryStr = '') {
 }
 
 // ── Cost Calculation ────────────────────────────────────────────────
-function parseSku(sku) {
-  if (!sku) return null;
-  const upper = sku.toUpperCase().trim();
+function parseSku(sku, title, variantTitle) {
+  // First try SKU-based matching (existing logic)
+  if (sku) {
+    const upper = sku.toUpperCase().trim();
 
-  for (const [prefix, minerCount] of Object.entries(MR_MINER_COUNTS)) {
-    if (upper === prefix || upper.startsWith(prefix + '-') || upper.startsWith(prefix)) {
-      return { type: 'MR', sku: prefix, minerCount };
+    for (const [prefix, minerCount] of Object.entries(MR_MINER_COUNTS)) {
+      if (upper === prefix || upper.startsWith(prefix + '-') || upper.startsWith(prefix)) {
+        return { type: 'MR', sku: prefix, minerCount };
+      }
+    }
+
+    for (const [rigSku, cost] of Object.entries(RIG_UNIT_COSTS)) {
+      if (upper === rigSku || upper.startsWith(rigSku + '-') || upper.startsWith(rigSku)) {
+        return { type: 'RIG', sku: rigSku, unitCost: cost, slotCount: RIG_SLOT_COUNTS[rigSku] };
+      }
     }
   }
 
-  for (const [rigSku, cost] of Object.entries(RIG_UNIT_COSTS)) {
-    if (upper === rigSku || upper.startsWith(rigSku + '-') || upper.startsWith(rigSku)) {
-      return { type: 'RIG', sku: rigSku, unitCost: cost, slotCount: RIG_SLOT_COUNTS[rigSku] };
+  // Fallback: title-based matching for older orders without SKUs
+  if (!sku && title) {
+    const lowerTitle = title.toLowerCase();
+
+    // Check if it's a Miner product
+    if (lowerTitle.includes('miner') && !lowerTitle.includes('rig') && !lowerTitle.includes('setup') && !lowerTitle.includes('verification')) {
+      // Determine miner count from variant title or product title
+      let minerCount = 1; // default
+      const combinedText = ((variantTitle || '') + ' ' + title).toLowerCase();
+
+      if (combinedText.includes('5 pack') || combinedText.includes('5-pack')) minerCount = 5;
+      else if (combinedText.includes('4 pack') || combinedText.includes('4-pack') || combinedText.includes('4 miner')) minerCount = 4;
+      else if (combinedText.includes('2 pack') || combinedText.includes('2-pack') || combinedText.includes('2 miner')) minerCount = 2;
+      // Also check quantity patterns in variant
+      else if (variantTitle) {
+        const match = variantTitle.match(/(\d+)/);
+        if (match) {
+          const num = parseInt(match[1]);
+          if ([1, 2, 4, 5].includes(num)) minerCount = num;
+        }
+      }
+
+      return { type: 'MR', minerCount, unitCost: null }; // unitCost determined by order number in calculateOrderCosts
+    }
+
+    // Check if it's a Mining Rig
+    if (lowerTitle.includes('mining rig') || lowerTitle.includes('slot')) {
+      let slotCount = 1; // default
+      const combinedText = ((variantTitle || '') + ' ' + title).toLowerCase();
+
+      if (combinedText.includes('4 slot')) slotCount = 4;
+      else if (combinedText.includes('2 slot')) slotCount = 2;
+      else if (combinedText.includes('1 slot')) slotCount = 1;
+      else if (variantTitle) {
+        const match = variantTitle.match(/(\d+)/);
+        if (match) {
+          const num = parseInt(match[1]);
+          if ([1, 2, 4].includes(num)) slotCount = num;
+        }
+      }
+
+      const rigKey = `RIG-${slotCount}`;
+      const unitCost = RIG_UNIT_COSTS[rigKey] || RIG_UNIT_COSTS['RIG-1'];
+      return { type: 'RIG', slotCount, unitCost };
     }
   }
 
-  return null;
+  return null; // Unknown product
 }
 
 function calculateOrderCosts(order) {
@@ -407,13 +456,13 @@ function calculateOrderCosts(order) {
   const skuBreakdown = [];
 
   for (const item of lineItems) {
-    const parsed = parseSku(item.sku);
+    const parsed = parseSku(item.sku, item.title, item.variant_title);
     if (!parsed) continue;
 
     if (parsed.type === 'MR') {
       const minersInLine = parsed.minerCount * (item.quantity || 1);
       totalMiners += minersInLine;
-      skuBreakdown.push({ sku: parsed.sku, type: 'MR', quantity: item.quantity, miners: minersInLine });
+      skuBreakdown.push({ sku: parsed.sku || item.title, type: 'MR', quantity: item.quantity, miners: minersInLine });
     } else if (parsed.type === 'RIG') {
       const qty = item.quantity || 1;
       rigCogs += parsed.unitCost * qty;
@@ -693,16 +742,23 @@ router.post('/sync', authenticate, async (req, res) => {
     await ensureTables();
     await seedStaticData();
 
+    const fullSync = req.query.full === 'true' || req.body.full === true;
+    if (fullSync) {
+      await pgQuery('DELETE FROM shopify_orders_cache');
+      await pgQuery('DELETE FROM daily_kpi_snapshots');
+      console.log('[KPI] Full re-sync: cleared cache');
+    }
+
     // Incremental sync: fetch new orders + re-fetch recent orders (last 3 days) to catch status changes
     const lastSynced = await pgQuery('SELECT MAX(order_id) as max_id FROM shopify_orders_cache');
-    const sinceId = lastSynced[0]?.max_id || null;
+    const sinceId = fullSync ? null : (lastSynced[0]?.max_id || null);
 
     // Fetch new orders
     const newOrders = await fetchAllOrders(sinceId);
 
     // Also re-fetch orders from last 3 days to catch refunds/status changes
     const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString();
-    const recentOrders = await fetchAllOrders(null, `&created_at_min=${threeDaysAgo}`);
+    const recentOrders = fullSync ? [] : await fetchAllOrders(null, `&created_at_min=${threeDaysAgo}`);
 
     // Merge: use Map to deduplicate by order ID
     const orderMap = new Map();
