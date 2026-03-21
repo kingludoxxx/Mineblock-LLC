@@ -32,9 +32,14 @@ async function ensureTable() {
       ad_id TEXT PRIMARY KEY,
       ad_name TEXT,
       account_id TEXT,
+      status TEXT DEFAULT 'DISAPPROVED',
       notified_at TIMESTAMPTZ DEFAULT NOW()
     )
   `);
+  // Add status column if missing (existing installs)
+  await pgQuery(`
+    ALTER TABLE ad_rejections_notified ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'DISAPPROVED'
+  `).catch(() => {});
   tableReady = true;
 }
 
@@ -70,6 +75,16 @@ async function sendSlackMessage(text, blocks) {
 // ── Helpers ─────────────────────────────────────────────────────────
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
+async function fetchAdsForAccount(accountId) {
+  // Meta uses multiple statuses for rejected/problematic ads:
+  // DISAPPROVED — permanently rejected
+  // WITH_ISSUES — rejected but can be edited and resubmitted
+  // PENDING_REVIEW — could be a resubmission after rejection (we track to catch fast rejections)
+  const url = `${META_GRAPH_URL}/${accountId}/ads?fields=name,effective_status,ad_review_feedback&effective_status=["DISAPPROVED","WITH_ISSUES","PENDING_REVIEW"]&limit=100&access_token=${META_ACCESS_TOKEN}`;
+  const resp = await fetch(url);
+  return resp.json();
+}
+
 // ── Core: Check for Rejected Ads ────────────────────────────────────
 async function checkRejectedAds() {
   if (!META_ACCESS_TOKEN || META_AD_ACCOUNT_IDS.length === 0) {
@@ -81,18 +96,14 @@ async function checkRejectedAds() {
 
   let totalChecked = 0;
   let newRejections = 0;
-
-  const rateLimitedAccounts = []; // Track failed accounts for retry
+  const rateLimitedAccounts = [];
 
   for (let i = 0; i < META_AD_ACCOUNT_IDS.length; i++) {
     const accountId = META_AD_ACCOUNT_IDS[i];
-    // 5s delay between accounts to respect Meta rate limits
-    if (i > 0) await sleep(5000);
+    if (i > 0) await sleep(5000); // 5s delay between accounts
+
     try {
-      // Fetch rejected ads — Meta uses BOTH "DISAPPROVED" and "WITH_ISSUES" for rejected ads
-      const url = `${META_GRAPH_URL}/${accountId}/ads?fields=name,effective_status,ad_review_feedback&effective_status=["DISAPPROVED","WITH_ISSUES"]&limit=100&access_token=${META_ACCESS_TOKEN}`;
-      const resp = await fetch(url);
-      const data = await resp.json();
+      const data = await fetchAdsForAccount(accountId);
 
       if (data.error) {
         console.warn(`[Ad Rejection] Error for ${accountId}:`, data.error.message);
@@ -100,26 +111,37 @@ async function checkRejectedAds() {
         continue;
       }
 
-      const rejectedAds = data.data || [];
-      totalChecked += rejectedAds.length;
+      const ads = data.data || [];
+      const accountName = ACCOUNT_NAMES[accountId] || accountId;
 
-      for (const ad of rejectedAds) {
+      for (const ad of ads) {
+        const status = ad.effective_status;
+
+        // Only notify for DISAPPROVED and WITH_ISSUES (actual rejections)
+        // PENDING_REVIEW ads are tracked but only notified if they were previously rejected
+        if (status === 'PENDING_REVIEW') {
+          // Check if this was a previously rejected ad that got resubmitted
+          // If we already notified, skip. If not, it's a new submission — skip too.
+          continue;
+        }
+
         // Check if we already notified about this ad
         const existing = await pgQuery(
           'SELECT ad_id FROM ad_rejections_notified WHERE ad_id = $1',
           [ad.id]
         );
-
-        if (existing.length > 0) continue; // Already notified
+        if (existing.length > 0) continue;
 
         // New rejection — send Slack notification
-        const accountName = ACCOUNT_NAMES[accountId] || accountId;
         const adName = ad.name || 'Unknown';
+        totalChecked++;
+
+        const statusLabel = status === 'WITH_ISSUES' ? 'Ad Rejected (With Issues)' : 'Ad Rejected';
 
         const blocks = [
           {
             type: 'header',
-            text: { type: 'plain_text', text: ':no_entry: Ad Rejected', emoji: true },
+            text: { type: 'plain_text', text: `:no_entry: ${statusLabel}`, emoji: true },
           },
           {
             type: 'section',
@@ -132,28 +154,28 @@ async function checkRejectedAds() {
             type: 'section',
             fields: [
               { type: 'mrkdwn', text: `*Ad ID:*\n\`${ad.id}\`` },
+              { type: 'mrkdwn', text: `*Status:*\n${status}` },
             ],
           },
           { type: 'divider' },
         ];
 
-        await sendSlackMessage(`Ad Rejected: ${adName} (${accountName})`, blocks);
+        await sendSlackMessage(`${statusLabel}: ${adName} (${accountName})`, blocks);
 
-        // Mark as notified
         await pgQuery(
-          'INSERT INTO ad_rejections_notified (ad_id, ad_name, account_id) VALUES ($1, $2, $3) ON CONFLICT (ad_id) DO NOTHING',
-          [ad.id, adName, accountId]
+          'INSERT INTO ad_rejections_notified (ad_id, ad_name, account_id, status) VALUES ($1, $2, $3, $4) ON CONFLICT (ad_id) DO NOTHING',
+          [ad.id, adName, accountId, status]
         );
 
         newRejections++;
-        console.log(`[Ad Rejection] Notified: "${adName}" from ${accountName}`);
+        console.log(`[Ad Rejection] Notified: "${adName}" [${status}] from ${accountName}`);
       }
     } catch (err) {
       console.error(`[Ad Rejection] Error checking ${accountId}:`, err.message);
     }
   }
 
-  // Retry rate-limited accounts after a 60s cooldown
+  // Retry rate-limited accounts after 60s cooldown
   if (rateLimitedAccounts.length > 0) {
     console.log(`[Ad Rejection] ${rateLimitedAccounts.length} accounts rate-limited, retrying in 60s...`);
     await sleep(60_000);
@@ -161,36 +183,40 @@ async function checkRejectedAds() {
       const accountId = rateLimitedAccounts[i];
       if (i > 0) await sleep(5000);
       try {
-        const url = `${META_GRAPH_URL}/${accountId}/ads?fields=name,effective_status,ad_review_feedback&effective_status=["DISAPPROVED","WITH_ISSUES"]&limit=100&access_token=${META_ACCESS_TOKEN}`;
-        const resp = await fetch(url);
-        const data = await resp.json();
+        const data = await fetchAdsForAccount(accountId);
         if (data.error) {
           console.warn(`[Ad Rejection] Retry failed for ${accountId}:`, data.error.message);
           continue;
         }
-        const rejectedAds = data.data || [];
-        totalChecked += rejectedAds.length;
-        for (const ad of rejectedAds) {
+        const ads = data.data || [];
+        const accountName = ACCOUNT_NAMES[accountId] || accountId;
+        for (const ad of ads) {
+          if (ad.effective_status === 'PENDING_REVIEW') continue;
           const existing = await pgQuery('SELECT ad_id FROM ad_rejections_notified WHERE ad_id = $1', [ad.id]);
           if (existing.length > 0) continue;
-          const accountName = ACCOUNT_NAMES[accountId] || accountId;
           const adName = ad.name || 'Unknown';
+          const status = ad.effective_status;
+          totalChecked++;
+          const statusLabel = status === 'WITH_ISSUES' ? 'Ad Rejected (With Issues)' : 'Ad Rejected';
           const blocks = [
-            { type: 'header', text: { type: 'plain_text', text: ':no_entry: Ad Rejected', emoji: true } },
+            { type: 'header', text: { type: 'plain_text', text: `:no_entry: ${statusLabel}`, emoji: true } },
             { type: 'section', fields: [
               { type: 'mrkdwn', text: `*Ad Name:*\n${adName}` },
               { type: 'mrkdwn', text: `*Ad Account:*\n${accountName}` },
             ]},
-            { type: 'section', fields: [{ type: 'mrkdwn', text: `*Ad ID:*\n\`${ad.id}\`` }] },
+            { type: 'section', fields: [
+              { type: 'mrkdwn', text: `*Ad ID:*\n\`${ad.id}\`` },
+              { type: 'mrkdwn', text: `*Status:*\n${status}` },
+            ]},
             { type: 'divider' },
           ];
-          await sendSlackMessage(`Ad Rejected: ${adName} (${accountName})`, blocks);
+          await sendSlackMessage(`${statusLabel}: ${adName} (${accountName})`, blocks);
           await pgQuery(
-            'INSERT INTO ad_rejections_notified (ad_id, ad_name, account_id) VALUES ($1, $2, $3) ON CONFLICT (ad_id) DO NOTHING',
-            [ad.id, adName, accountId]
+            'INSERT INTO ad_rejections_notified (ad_id, ad_name, account_id, status) VALUES ($1, $2, $3, $4) ON CONFLICT (ad_id) DO NOTHING',
+            [ad.id, adName, accountId, status]
           );
           newRejections++;
-          console.log(`[Ad Rejection] Notified (retry): "${adName}" from ${accountName}`);
+          console.log(`[Ad Rejection] Notified (retry): "${adName}" [${status}] from ${accountName}`);
         }
       } catch (err) {
         console.error(`[Ad Rejection] Retry error for ${accountId}:`, err.message);
@@ -198,7 +224,7 @@ async function checkRejectedAds() {
     }
   }
 
-  console.log(`[Ad Rejection] Checked ${totalChecked} rejected ads, ${newRejections} new notifications sent`);
+  console.log(`[Ad Rejection] Checked ads, ${newRejections} new notifications sent`);
   return { checked: totalChecked, newRejections };
 }
 
@@ -239,10 +265,10 @@ setInterval(async () => {
   try { await fetch(`${RENDER_URL}/api/health`); } catch {}
 }, 10 * 60 * 1000); // Ping every 10 minutes
 
-// ── Auto-check every 5 minutes ─────────────────────────────────────
+// ── Auto-check every 10 minutes (reduced from 5 to avoid rate limits) ──
 setTimeout(() => {
   checkRejectedAds().catch(err => console.warn('[Ad Rejection] Initial check error:', err.message));
-  setInterval(() => checkRejectedAds().catch(() => {}), 5 * 60 * 1000);
-}, 45_000); // Start 45s after boot (after other init tasks)
+  setInterval(() => checkRejectedAds().catch(() => {}), 10 * 60 * 1000);
+}, 45_000);
 
 export default router;
