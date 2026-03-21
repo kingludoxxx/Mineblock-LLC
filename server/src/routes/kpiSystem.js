@@ -14,7 +14,7 @@ const UNIT_COST_PER_MINER = 10.92;
 const UNIT_COST_PER_MINER_2920 = 11.28; // Orders #2920-#5716
 
 const MR_MINER_COUNTS = {
-  'MR-01': 1, 'MR-02': 2, 'MR-04': 4, 'M5-05': 5,
+  'MR-01': 1, 'MR-02': 2, 'MR-04': 4, 'MR-05': 5, 'M5-05': 5,
 };
 
 const RIG_UNIT_COSTS = {
@@ -383,6 +383,11 @@ function parseSku(sku, title, variantTitle) {
   // Fallback: title-based matching for older orders without SKUs
   if (!sku && title) {
     const lowerTitle = title.toLowerCase();
+
+    // Check if it's a Winner Pack (5 miners upsell)
+    if (lowerTitle.includes('winner pack')) {
+      return { type: 'MR', minerCount: 5, unitCost: null };
+    }
 
     // Check if it's a Miner product
     if (lowerTitle.includes('miner') && !lowerTitle.includes('rig') && !lowerTitle.includes('setup') && !lowerTitle.includes('verification')) {
