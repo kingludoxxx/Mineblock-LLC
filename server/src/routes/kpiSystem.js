@@ -15,7 +15,7 @@ const UNIT_COST_PER_MINER_2920 = 11.28; // Orders #2722-#5716
 const UNIT_COST_PER_MINER_ORIGINAL = 12.13; // Orders before #2722
 
 const MR_MINER_COUNTS = {
-  'MR-01': 1, 'MR-02': 2, 'MR-04': 4, 'MR-05': 5, 'M5-05': 5,
+  'MR-01': 1, 'MR-02': 2, 'MR-04': 4, 'MR-05': 5, 'MR-08': 8, 'MR-15': 15, 'MR-16': 16, 'M5-05': 5,
 };
 
 const RIG_UNIT_COSTS = {
@@ -423,25 +423,44 @@ function parseSku(sku, title, variantTitle) {
       return { type: 'MR', minerCount: 5, unitCost: null };
     }
 
+    // Check if it's a Pro Package / MinerForge Pro Package (5, 8, or 15 miners)
+    if (lowerTitle.includes('pro package')) {
+      const combinedText = ((variantTitle || '') + ' ' + title).toLowerCase();
+      let minerCount = 5; // default
+      if (combinedText.includes('15')) minerCount = 15;
+      else if (combinedText.includes('8')) minerCount = 8;
+      else if (combinedText.includes('5')) minerCount = 5;
+      return { type: 'MR', minerCount, unitCost: null };
+    }
+
     // Check if it's a Miner product
     if (lowerTitle.includes('miner') && !lowerTitle.includes('rig') && !lowerTitle.includes('setup') && !lowerTitle.includes('verification')) {
       // Determine miner count from variant title or product title
       let minerCount = 1; // default
       const combinedText = ((variantTitle || '') + ' ' + title).toLowerCase();
 
-      if (combinedText.includes('5 pack') || combinedText.includes('5-pack')) minerCount = 5;
+      // Parse "X + Y Free" patterns first (e.g. "12 + 4 Free" = 16, "6 + 2 Free" = 8, "3 + 1 Free" = 4)
+      const freeMatch = combinedText.match(/(\d+)\s*\+\s*(\d+)\s*free/i);
+      if (freeMatch) {
+        minerCount = parseInt(freeMatch[1]) + parseInt(freeMatch[2]);
+      }
+      else if (combinedText.includes('5 pack') || combinedText.includes('5-pack')) minerCount = 5;
       else if (combinedText.includes('4 pack') || combinedText.includes('4-pack') || combinedText.includes('4 miner')) minerCount = 4;
       else if (combinedText.includes('2 pack') || combinedText.includes('2-pack') || combinedText.includes('2 miner')) minerCount = 2;
-      // Also check quantity patterns in variant
       else if (variantTitle) {
-        const match = variantTitle.match(/(\d+)/);
+        const match = variantTitle.match(/(\d+)\s*miner/i);
         if (match) {
-          const num = parseInt(match[1]);
-          if ([1, 2, 4, 5].includes(num)) minerCount = num;
+          minerCount = parseInt(match[1]);
+        } else {
+          const numMatch = variantTitle.match(/(\d+)/);
+          if (numMatch) {
+            const num = parseInt(numMatch[1]);
+            if ([1, 2, 4, 5, 8, 15, 16].includes(num)) minerCount = num;
+          }
         }
       }
 
-      return { type: 'MR', minerCount, unitCost: null }; // unitCost determined by order number in calculateOrderCosts
+      return { type: 'MR', minerCount, unitCost: null };
     }
 
     // Check if it's a Mining Rig
