@@ -684,17 +684,34 @@ async function runAnomalyDetection(snapshotDate) {
 }
 
 // ── Snapshot Recalculation ──────────────────────────────────────────
-async function recalculateSnapshots() {
-  const dates = await pgQuery(`
-    SELECT DISTINCT DATE(created_at) as d
-    FROM shopify_orders_cache
-    ORDER BY d
-  `);
+async function recalculateSnapshots(startDate, endDate) {
+  let dates;
+  if (startDate && endDate) {
+    dates = await pgQuery(`
+      SELECT DISTINCT DATE(created_at) as d
+      FROM shopify_orders_cache
+      WHERE DATE(created_at) BETWEEN $1 AND $2
+      ORDER BY d
+    `, [startDate, endDate]);
+  } else if (startDate) {
+    dates = await pgQuery(`
+      SELECT DISTINCT DATE(created_at) as d
+      FROM shopify_orders_cache
+      WHERE DATE(created_at) = $1
+      ORDER BY d
+    `, [startDate]);
+  } else {
+    dates = await pgQuery(`
+      SELECT DISTINCT DATE(created_at) as d
+      FROM shopify_orders_cache
+      ORDER BY d
+    `);
+  }
 
   for (const row of dates) {
     const d = row.d;
     const allOrders = await pgQuery(`
-      SELECT * FROM shopify_orders_cache WHERE DATE(created_at AT TIME ZONE 'UTC') = $1
+      SELECT * FROM shopify_orders_cache WHERE DATE(created_at) = $1
     `, [d]);
 
     if (allOrders.length === 0) continue;
@@ -1264,39 +1281,63 @@ router.get('/export', authenticate, async (req, res) => {
 });
 
 // ── Auto-sync every 60 seconds ──────────────────────────────────────
+let autoSyncCount = 0;
+
+async function upsertOrders(orders) {
+  let synced = 0;
+  const affectedDates = new Set();
+  for (const order of orders) {
+    if (order.order_number < MIN_ORDER_NUMBER) continue;
+    const costs = calculateOrderCosts(order);
+    const orderDate = order.created_at ? order.created_at.slice(0, 10) : null;
+    await pgQuery(`
+      INSERT INTO shopify_orders_cache (order_id, order_number, created_at, country, financial_status,
+        total_price, subtotal_price, total_discounts, line_items, cogs, shipping_cost, gross_profit, profit_margin, synced_at)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,NOW())
+      ON CONFLICT (order_id) DO UPDATE SET
+        financial_status=EXCLUDED.financial_status, total_price=EXCLUDED.total_price,
+        subtotal_price=EXCLUDED.subtotal_price, total_discounts=EXCLUDED.total_discounts,
+        line_items=EXCLUDED.line_items, cogs=EXCLUDED.cogs, shipping_cost=EXCLUDED.shipping_cost,
+        gross_profit=EXCLUDED.gross_profit, profit_margin=EXCLUDED.profit_margin, country=EXCLUDED.country, synced_at=NOW()
+    `, [order.id, order.order_number, order.created_at,
+        order.shipping_address?.country || 'United States', order.financial_status,
+        order.total_price, order.subtotal_price, order.total_discounts,
+        JSON.stringify(order.line_items), costs.cogs, costs.shippingCost,
+        costs.grossProfit, costs.profitMargin]);
+    if (orderDate) affectedDates.add(orderDate);
+    synced++;
+  }
+  return { synced, affectedDates };
+}
+
 async function autoSync() {
   if (!SHOPIFY_TOKEN) return;
   try {
     await ensureTables();
     await seedStaticData();
+    autoSyncCount++;
+
+    // 1. Fetch new orders (incremental via since_id)
     const sinceIdRows = await pgQuery('SELECT MAX(order_id) AS max_id FROM shopify_orders_cache');
     const sinceId = sinceIdRows[0]?.max_id || null;
-    const allOrders = await fetchAllOrders(sinceId);
-    if (allOrders.length === 0) return;
-    let synced = 0;
-    const affectedDates = new Set();
-    for (const order of allOrders) {
-      if (order.order_number < MIN_ORDER_NUMBER) continue;
-      const costs = calculateOrderCosts(order);
-      const orderDate = order.created_at ? order.created_at.slice(0, 10) : null;
-      await pgQuery(`
-        INSERT INTO shopify_orders_cache (order_id, order_number, created_at, country, financial_status,
-          total_price, subtotal_price, total_discounts, line_items, cogs, shipping_cost, gross_profit, profit_margin, synced_at)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,NOW())
-        ON CONFLICT (order_id) DO UPDATE SET
-          financial_status=EXCLUDED.financial_status, total_price=EXCLUDED.total_price,
-          subtotal_price=EXCLUDED.subtotal_price, total_discounts=EXCLUDED.total_discounts,
-          line_items=EXCLUDED.line_items, cogs=EXCLUDED.cogs, shipping_cost=EXCLUDED.shipping_cost,
-          gross_profit=EXCLUDED.gross_profit, profit_margin=EXCLUDED.profit_margin, synced_at=NOW()
-      `, [order.id, order.order_number, order.created_at,
-          order.shipping_address?.country || 'United States', order.financial_status,
-          order.total_price, order.subtotal_price, order.total_discounts,
-          JSON.stringify(order.line_items), costs.cogs, costs.shippingCost,
-          costs.grossProfit, costs.profitMargin]);
-      if (orderDate) affectedDates.add(orderDate);
-      synced++;
+    const newOrders = await fetchAllOrders(sinceId);
+
+    // 2. Every 5th cycle (~5 min), also re-fetch last 3 days to catch refunds/status changes
+    let recentOrders = [];
+    if (autoSyncCount % 5 === 0) {
+      const threeDaysAgo = new Date(Date.now() - 3 * 86400000).toISOString();
+      const url = `https://${SHOPIFY_STORE}/admin/api/${SHOPIFY_API_VERSION}/orders.json?status=any&created_at_min=${threeDaysAgo}&limit=250&fields=id,order_number,created_at,total_price,subtotal_price,total_discounts,line_items,shipping_address,financial_status`;
+      try {
+        const resp = await fetch(url, { headers: { 'X-Shopify-Access-Token': SHOPIFY_TOKEN } });
+        if (resp.ok) recentOrders = (await resp.json()).orders || [];
+      } catch {}
     }
-    for (const d of affectedDates) await recalculateSnapshots(d, d);
+
+    const allOrders = [...newOrders, ...recentOrders];
+    if (allOrders.length === 0) return;
+
+    const { synced, affectedDates } = await upsertOrders(allOrders);
+    for (const d of affectedDates) await recalculateSnapshots(d);
     if (synced > 0) console.log(`[KPI Auto-Sync] ${synced} new orders synced`);
   } catch (err) {
     console.error('[KPI Auto-Sync] Error:', err.message);
