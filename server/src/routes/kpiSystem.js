@@ -8,7 +8,7 @@ const router = Router();
 const SHOPIFY_STORE = '17cca0-2.myshopify.com';
 const SHOPIFY_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN || '';
 const SHOPIFY_API_VERSION = '2024-01';
-const MIN_ORDER_NUMBER = 2920;
+const MIN_ORDER_NUMBER = 2722;
 
 const UNIT_COST_PER_MINER = 10.92;
 const UNIT_COST_PER_MINER_2920 = 11.28; // Orders #2920-#5716
@@ -119,6 +119,39 @@ const SHIPPING_RATES_MR_2920 = {
   'Saudi Arabia': { 1: 13.85, 2: 15.72, 3: 17.59, 4: 19.48, 5: 21.35, 6: 23.23, 7: 25.1, 8: 26.98, 9: 28.86, 10: 30.73, 11: 36.59, 12: 38.12, 13: 40.15, 14: 41.82, 15: 43.25, 16: 45.53, 24: 65.18, 30: 81.98 },
   'United States': { 1: 6.48, 2: 8.64, 3: 10.7, 4: 12.1, 5: 14.61, 6: 17.12, 7: 19.63, 8: 22.14, 9: 24.65, 10: 27.16, 11: 29.67, 12: 32.18, 13: 34.69, 14: 37.2, 15: 39.71, 16: 42.22, 24: 62.29, 30: 77.35 },
   'Switzerland': { 1: 7.78, 2: 10.42, 3: 12.86, 4: 16.2, 5: 19.54, 6: 22.87, 7: 26.21, 8: 29.54, 9: 32.88, 10: 36.21, 11: 38.12, 12: 39.71, 13: 44.05, 14: 45.88, 15: 49.46, 16: 52.06, 24: 82.91, 30: 114.26 },
+};
+
+// Shipping rates for orders #2722-#2919 (oldest quotation, sparse: 1,2,4,6,8,9)
+const SHIPPING_RATES_MR_2722 = {
+  'United Arab Emirates': { 1: 5.01, 2: 6.47, 4: 9.38, 6: 12.29, 8: 15.21, 9: 16.66 },
+  'U.A.E': { 1: 5.01, 2: 6.47, 4: 9.38, 6: 12.29, 8: 15.21, 9: 16.66 },
+  'Austria': { 1: 6.24, 2: 8.77, 4: 13.81, 6: 18.86, 8: 23.91, 9: 26.43 },
+  'Australia': { 1: 5.63, 2: 6.73, 4: 9.25, 6: 11.45, 8: 13.33, 9: 14.27 },
+  'Belgium': { 1: 6.44, 2: 9.16, 4: 14.59, 6: 20.03, 8: 25.46, 9: 28.18 },
+  'Canada': { 1: 5.79, 2: 8.19, 4: 13.69, 6: 18.67, 8: 23.65, 9: 26.14 },
+  'Cyprus': { 1: 8.54, 2: 12.39, 4: 20.09, 6: 27.79, 8: 35.49, 9: 39.34 },
+  'Germany': { 1: 5.6, 2: 7.76, 4: 11.97, 6: 16.18, 8: 20.38, 9: 22.49 },
+  'Estonia': { 1: 5.66, 2: 8.09, 4: 12.94, 6: 17.79, 8: 22.65, 9: 25.07 },
+  'Spain': { 1: 4.89, 2: 6.86, 4: 10.81, 6: 14.75, 8: 18.7, 9: 20.67 },
+  'Finland': { 1: 6.66, 2: 9.29, 4: 14.53, 6: 19.77, 8: 25.01, 9: 27.63 },
+  'France': { 1: 5.6, 2: 7.96, 4: 13.04, 6: 17.7, 8: 22.36, 9: 24.69 },
+  'United Kingdom': { 1: 4.50, 2: 6.54, 4: 10.48, 6: 14.82, 8: 18.89, 9: 20.93 },
+  'Greece': { 1: 5.73, 2: 8.54, 4: 14.17, 6: 19.8, 8: 25.43, 9: 28.24 },
+  'Hong Kong': { 1: 4.04, 2: 4.53, 4: 5.5, 6: 6.47, 8: 7.44, 9: 7.93 },
+  'Croatia': { 1: 7.73, 2: 11.26, 4: 18.31, 6: 25.36, 8: 32.42, 9: 35.94 },
+  'Ireland': { 1: 7.02, 2: 10.32, 4: 16.92, 6: 23.52, 8: 30.12, 9: 33.42 },
+  'Italy': { 1: 5.99, 2: 7.93, 4: 11.81, 6: 15.69, 8: 19.57, 9: 21.51 },
+  'Lithuania': { 1: 5.6, 2: 7.96, 4: 12.68, 6: 17.41, 8: 22.13, 9: 24.49 },
+  'Luxembourg': { 1: 8.8, 2: 13.39, 4: 22.58, 6: 31.77, 8: 40.96, 9: 45.55 },
+  'Luxambourg': { 1: 8.8, 2: 13.39, 4: 22.58, 6: 31.77, 8: 40.96, 9: 45.55 },
+  'Malta': { 1: 10.26, 2: 15.5, 4: 25.98, 6: 36.46, 8: 46.94, 9: 52.19 },
+  'Mexico': { 1: 5.5, 2: 8.41, 4: 14.24, 6: 20.06, 8: 25.88, 9: 28.79 },
+  'Netherlands': { 1: 6.24, 2: 8.77, 4: 13.81, 6: 18.86, 8: 23.91, 9: 26.43 },
+  'Poland': { 1: 4.3, 2: 7.21, 4: 12.0, 6: 16.79, 8: 21.58, 9: 23.97 },
+  'Portugal': { 1: 5.53, 2: 7.83, 4: 12.42, 6: 17.02, 8: 21.61, 9: 23.91 },
+  'Saudi Arabia': { 1: 13.85, 2: 15.72, 4: 19.48, 6: 23.23, 8: 26.98, 9: 28.86 },
+  'United States': { 1: 6.61, 2: 9.08, 4: 13.0, 6: 18.5, 8: 24.0, 9: 26.74 },
+  'Switzerland': { 1: 7.76, 2: 11.58, 4: 18.0, 6: 25.41, 8: 32.82, 9: 36.53 },
 };
 
 /**
@@ -450,9 +483,12 @@ function calculateOrderCosts(order) {
   } else if (orderNumber >= 5717) {
     unitCostPerMiner = UNIT_COST_PER_MINER; // 10.92 (price changed at 5717)
     mrShippingRates = SHIPPING_RATES_MR_2920; // but shipping stayed the same until 6009
-  } else {
+  } else if (orderNumber >= 2920) {
     unitCostPerMiner = UNIT_COST_PER_MINER_2920; // 11.28
     mrShippingRates = SHIPPING_RATES_MR_2920;
+  } else {
+    unitCostPerMiner = UNIT_COST_PER_MINER_2920; // 11.28 (same product cost for #2722-#2919)
+    mrShippingRates = SHIPPING_RATES_MR_2722;
   }
 
   let totalMiners = 0;
@@ -484,7 +520,7 @@ function calculateOrderCosts(order) {
   if (totalMiners > 0) {
     const countryRates = mrShippingRates[country] || mrShippingRates['United States'];
     // Use interpolation for sparse tables (2920 quote) and direct lookup for dense tables (6009+ quote)
-    if (mrShippingRates === SHIPPING_RATES_MR_2920) {
+    if (mrShippingRates === SHIPPING_RATES_MR_2920 || mrShippingRates === SHIPPING_RATES_MR_2722) {
       mrShipping = interpolateRate(countryRates, totalMiners);
     } else {
       const maxDefined = Math.max(...Object.keys(countryRates).map(Number));
@@ -1219,6 +1255,7 @@ export {
   RIG_SLOT_COUNTS,
   SHIPPING_RATES_MR,
   SHIPPING_RATES_MR_2920,
+  SHIPPING_RATES_MR_2722,
   SHIPPING_RATES_RIG,
   MIN_ORDER_NUMBER,
 };
