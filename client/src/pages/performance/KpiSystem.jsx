@@ -272,6 +272,9 @@ export default function KpiSystem() {
     shippingCost: raw.shippingCost ?? raw.totalShipping ?? 0,
     grossProfit: raw.grossProfit ?? raw.totalGrossProfit ?? 0,
     margin: raw.margin ?? raw.avgProfitMargin ?? raw.grossMargin ?? 0,
+    totalFees: raw.totalFees ?? 0,
+    whopFees: raw.whopFees ?? 0,
+    processingFees: raw.processingFees ?? 0,
   };
 
   // ── Render ─────────────────────────────────────────────────────────────────
@@ -368,7 +371,7 @@ export default function KpiSystem() {
         )}
 
         {/* ── KPI Metric Cards ────────────────────────────────────────────── */}
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-4">
           <MetricCard
             icon={DollarSign}
             label="Revenue"
@@ -407,6 +410,13 @@ export default function KpiSystem() {
             label="Shipping"
             value={fmtMoney(metrics.shippingCost ?? metrics.shipping ?? metrics.totalShipping)}
             accentColor="bg-orange-500/10"
+          />
+          <MetricCard
+            icon={AlertTriangle}
+            label="Fees"
+            value={fmtMoney(metrics.totalFees)}
+            subtitle={metrics.totalFees > 0 ? `${((metrics.totalFees / (metrics.revenue || 1)) * 100).toFixed(1)}% of revenue` : undefined}
+            accentColor="bg-yellow-500/10"
           />
           <div className={cardStyle}>
             <div className="flex items-center gap-2 mb-3">

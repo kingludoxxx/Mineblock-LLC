@@ -10,6 +10,10 @@ const SHOPIFY_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN || '';
 const SHOPIFY_API_VERSION = '2024-01';
 const MIN_ORDER_NUMBER = 0; // Sync ALL orders
 
+const WHOP_API_TOKEN = process.env.WHOP_API_TOKEN || '';
+const WHOP_API_URL = 'https://api.whop.com/api';
+const WHOP_COMPANY_ID = 'biz_pkN7XmNrvouslh';
+
 const UNIT_COST_PER_MINER = 10.92;
 const UNIT_COST_PER_MINER_2920 = 11.28; // Orders #2722-#5716
 const UNIT_COST_PER_MINER_ORIGINAL = 12.13; // Orders before #2722
@@ -287,6 +291,32 @@ async function ensureTables() {
       snapshot_date DATE,
       acknowledged BOOLEAN DEFAULT FALSE,
       created_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+
+  await pgQuery(`
+    CREATE TABLE IF NOT EXISTS whop_payment_fees (
+      payment_id TEXT PRIMARY KEY,
+      order_number INT,
+      payment_amount NUMERIC,
+      currency TEXT,
+      total_fees NUMERIC,
+      whop_fees NUMERIC,
+      processing_fees NUMERIC,
+      other_fees NUMERIC,
+      fee_details JSONB,
+      paid_at TIMESTAMPTZ,
+      synced_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+
+  await pgQuery(`
+    CREATE TABLE IF NOT EXISTS lasso_revenue_shares (
+      id SERIAL PRIMARY KEY,
+      payment_id TEXT,
+      amount NUMERIC,
+      created_at TIMESTAMPTZ,
+      synced_at TIMESTAMPTZ DEFAULT NOW()
     )
   `);
 
@@ -811,6 +841,120 @@ function getPeriodRange(period, dateStr) {
   return { start, end };
 }
 
+// ── Whop Fee Sync ───────────────────────────────────────────────────
+async function fetchPaymentFees(paymentId) {
+  if (!WHOP_API_TOKEN) return null;
+  try {
+    const resp = await fetch(`${WHOP_API_URL}/v1/payments/${paymentId}/fees`, {
+      headers: { 'Authorization': `Bearer ${WHOP_API_TOKEN}` }
+    });
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    const fees = data.data || [];
+
+    let whopFees = 0;
+    let processingFees = 0;
+    let otherFees = 0;
+
+    for (const fee of fees) {
+      const amount = fee.amount || 0;
+      if (['whop_processing_fee', 'orchestration_percentage_fee'].includes(fee.type)) {
+        whopFees += amount;
+      } else if (['payment_processing_percentage_fee', 'payment_processing_fixed_fee', 'stripe_radar_fee', '3d_secure_fee', 'cross_border_percentage_fee', 'fx_percentage_fee'].includes(fee.type)) {
+        processingFees += amount;
+      } else {
+        otherFees += amount;
+      }
+    }
+
+    return {
+      totalFees: whopFees + processingFees + otherFees,
+      whopFees,
+      processingFees,
+      otherFees,
+      feeDetails: fees,
+    };
+  } catch (err) {
+    console.error(`[KPI] Error fetching fees for ${paymentId}:`, err.message);
+    return null;
+  }
+}
+
+async function syncWhopFees(lookbackDays = 3) {
+  if (!WHOP_API_TOKEN) return { synced: 0 };
+
+  try {
+    await ensureTables();
+
+    // Get recent paid Whop payments
+    const sinceTimestamp = Math.floor((Date.now() - lookbackDays * 86400000) / 1000);
+    const resp = await fetch(`${WHOP_API_URL}/v5/company/payments?per=100&status=paid&created_at_gte=${sinceTimestamp}`, {
+      headers: { 'Authorization': `Bearer ${WHOP_API_TOKEN}` }
+    });
+    if (!resp.ok) return { synced: 0, error: 'Failed to fetch payments' };
+
+    const data = await resp.json();
+    const payments = data.data || [];
+    let synced = 0;
+
+    for (const payment of payments) {
+      // Check if already synced
+      const existing = await pgQuery('SELECT payment_id FROM whop_payment_fees WHERE payment_id = $1', [payment.id]);
+      if (existing.length > 0) continue;
+
+      // Fetch fee breakdown
+      const fees = await fetchPaymentFees(payment.id);
+      if (!fees) continue;
+
+      const paidAt = payment.paid_at ? new Date(payment.paid_at * 1000).toISOString() : null;
+
+      await pgQuery(`
+        INSERT INTO whop_payment_fees (payment_id, payment_amount, currency, total_fees, whop_fees, processing_fees, other_fees, fee_details, paid_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        ON CONFLICT (payment_id) DO UPDATE SET
+          total_fees=EXCLUDED.total_fees, whop_fees=EXCLUDED.whop_fees, processing_fees=EXCLUDED.processing_fees,
+          other_fees=EXCLUDED.other_fees, fee_details=EXCLUDED.fee_details, synced_at=NOW()
+      `, [payment.id, payment.final_amount, payment.currency, fees.totalFees, fees.whopFees, fees.processingFees, fees.otherFees, JSON.stringify(fees.feeDetails), paidAt]);
+
+      synced++;
+
+      // Rate limit: Whop API might throttle
+      if (synced % 10 === 0) await new Promise(r => setTimeout(r, 1000));
+    }
+
+    // Handle pagination
+    let nextPage = data.pagination?.next_page;
+    while (nextPage) {
+      const pageResp = await fetch(`${WHOP_API_URL}/v5/company/payments?per=100&status=paid&created_at_gte=${sinceTimestamp}&page=${nextPage}`, {
+        headers: { 'Authorization': `Bearer ${WHOP_API_TOKEN}` }
+      });
+      if (!pageResp.ok) break;
+      const pageData = await pageResp.json();
+      for (const payment of (pageData.data || [])) {
+        const existing = await pgQuery('SELECT payment_id FROM whop_payment_fees WHERE payment_id = $1', [payment.id]);
+        if (existing.length > 0) continue;
+        const fees = await fetchPaymentFees(payment.id);
+        if (!fees) continue;
+        const paidAt = payment.paid_at ? new Date(payment.paid_at * 1000).toISOString() : null;
+        await pgQuery(`
+          INSERT INTO whop_payment_fees (payment_id, payment_amount, currency, total_fees, whop_fees, processing_fees, other_fees, fee_details, paid_at)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+          ON CONFLICT (payment_id) DO NOTHING
+        `, [payment.id, payment.final_amount, payment.currency, fees.totalFees, fees.whopFees, fees.processingFees, fees.otherFees, JSON.stringify(fees.feeDetails), paidAt]);
+        synced++;
+        if (synced % 10 === 0) await new Promise(r => setTimeout(r, 1000));
+      }
+      nextPage = pageData.pagination?.next_page;
+    }
+
+    console.log(`[KPI] Whop fees synced: ${synced} payments`);
+    return { synced };
+  } catch (err) {
+    console.error('[KPI] Whop fee sync error:', err.message);
+    return { synced: 0, error: err.message };
+  }
+}
+
 // ── Routes ──────────────────────────────────────────────────────────
 
 /** POST /sync — Pull Shopify orders, calculate costs, store KPIs */
@@ -827,6 +971,7 @@ router.post('/sync', authenticate, async (req, res) => {
     if (fullSync) {
       await pgQuery('DELETE FROM shopify_orders_cache');
       await pgQuery('DELETE FROM daily_kpi_snapshots');
+      await pgQuery('DELETE FROM whop_payment_fees');
       console.log('[KPI] Full re-sync: cleared cache');
     }
 
@@ -904,6 +1049,12 @@ router.post('/sync', authenticate, async (req, res) => {
     // Recalculate daily snapshots
     await recalculateSnapshots();
 
+    // Sync Whop payment fees (30 days for full sync, 3 days for incremental)
+    const feeResult = await syncWhopFees(fullSync ? 30 : 3).catch(err => {
+      console.error('[KPI] Fee sync error:', err.message);
+      return { synced: 0, error: err.message };
+    });
+
     const totalOrders = await pgQuery('SELECT COUNT(*) as count FROM shopify_orders_cache');
 
     res.json({
@@ -914,6 +1065,7 @@ router.post('/sync', authenticate, async (req, res) => {
         skipped,
         totalCached: parseInt(totalOrders[0].count),
         incremental: !!sinceId,
+        feesSynced: feeResult.synced || 0,
       },
     });
   } catch (err) {
@@ -964,6 +1116,27 @@ router.get('/dashboard', authenticate, async (req, res) => {
     agg.avgOrderValue = agg.totalOrders > 0 ? Math.round((agg.totalRevenue / agg.totalOrders) * 100) / 100 : 0;
     agg.avgProfitMargin = agg.totalRevenue > 0 ? Math.round((agg.grossProfit / agg.totalRevenue) * 10000) / 100 : 0;
 
+    // Query Whop payment fees for the period
+    const feeRows = await pgQuery(`
+      SELECT
+        COALESCE(SUM(total_fees), 0) as total_fees,
+        COALESCE(SUM(whop_fees), 0) as whop_fees,
+        COALESCE(SUM(processing_fees), 0) as processing_fees,
+        COALESCE(SUM(other_fees), 0) as other_fees,
+        COUNT(*) as fee_count
+      FROM whop_payment_fees
+      WHERE DATE(paid_at AT TIME ZONE 'Europe/Berlin') BETWEEN $1 AND $2
+    `, [start, end]);
+
+    const totalFees = parseFloat(feeRows[0]?.total_fees || 0);
+    const whopFees = parseFloat(feeRows[0]?.whop_fees || 0);
+    const processingFees = parseFloat(feeRows[0]?.processing_fees || 0);
+    const otherFees = parseFloat(feeRows[0]?.other_fees || 0);
+
+    // Subtract fees from gross profit
+    agg.grossProfit = agg.totalRevenue - agg.totalCogs - agg.totalShipping - totalFees;
+    agg.avgProfitMargin = agg.totalRevenue > 0 ? Math.round((agg.grossProfit / agg.totalRevenue) * 10000) / 100 : 0;
+
     // Find overall top SKU from the period's snapshots
     const skuFreq = {};
     for (const s of snapshots) {
@@ -976,6 +1149,10 @@ router.get('/dashboard', authenticate, async (req, res) => {
       data: {
         period, start, end,
         ...agg,
+        totalFees: Math.round(totalFees * 100) / 100,
+        whopFees: Math.round(whopFees * 100) / 100,
+        processingFees: Math.round(processingFees * 100) / 100,
+        otherFees: Math.round(otherFees * 100) / 100,
         topSku,
         days: snapshots.map(s => ({
           date: s.snapshot_date,
@@ -1220,6 +1397,104 @@ router.get('/alerts', authenticate, async (req, res) => {
   }
 });
 
+/** GET /fees — Detailed Whop payment fee breakdown */
+router.get('/fees', authenticate, async (req, res) => {
+  try {
+    await ensureTables();
+    const { period, date } = req.query;
+    const { start, end } = getPeriodRange(period || 'daily', date || new Date().toISOString().slice(0, 10));
+
+    // Daily summary
+    const dailySummary = await pgQuery(`
+      SELECT
+        DATE(paid_at AT TIME ZONE 'Europe/Berlin') as date,
+        COUNT(*) as transactions,
+        COALESCE(SUM(payment_amount), 0) as total_payment_amount,
+        COALESCE(SUM(total_fees), 0) as total_fees,
+        COALESCE(SUM(whop_fees), 0) as whop_fees,
+        COALESCE(SUM(processing_fees), 0) as processing_fees,
+        COALESCE(SUM(other_fees), 0) as other_fees
+      FROM whop_payment_fees
+      WHERE DATE(paid_at AT TIME ZONE 'Europe/Berlin') BETWEEN $1 AND $2
+      GROUP BY DATE(paid_at AT TIME ZONE 'Europe/Berlin')
+      ORDER BY date DESC
+    `, [start, end]);
+
+    // Fee type breakdown
+    const feeTypeBreakdown = await pgQuery(`
+      SELECT fee_details FROM whop_payment_fees
+      WHERE DATE(paid_at AT TIME ZONE 'Europe/Berlin') BETWEEN $1 AND $2
+    `, [start, end]);
+
+    // Aggregate by fee type
+    const byType = {};
+    for (const row of feeTypeBreakdown) {
+      const details = typeof row.fee_details === 'string' ? JSON.parse(row.fee_details) : (row.fee_details || []);
+      for (const fee of details) {
+        if (!byType[fee.type]) byType[fee.type] = { name: fee.name, type: fee.type, total: 0, count: 0 };
+        byType[fee.type].total += fee.amount || 0;
+        byType[fee.type].count++;
+      }
+    }
+
+    // Per-payment detail (last 50)
+    const recentPayments = await pgQuery(`
+      SELECT payment_id, payment_amount, currency, total_fees, whop_fees, processing_fees, other_fees, paid_at
+      FROM whop_payment_fees
+      WHERE DATE(paid_at AT TIME ZONE 'Europe/Berlin') BETWEEN $1 AND $2
+      ORDER BY paid_at DESC
+      LIMIT 50
+    `, [start, end]);
+
+    const totalFees = dailySummary.reduce((s, r) => s + parseFloat(r.total_fees), 0);
+    const totalWhop = dailySummary.reduce((s, r) => s + parseFloat(r.whop_fees), 0);
+    const totalProcessing = dailySummary.reduce((s, r) => s + parseFloat(r.processing_fees), 0);
+    const totalOther = dailySummary.reduce((s, r) => s + parseFloat(r.other_fees), 0);
+    const totalPaymentAmount = dailySummary.reduce((s, r) => s + parseFloat(r.total_payment_amount), 0);
+
+    res.json({
+      success: true,
+      data: {
+        summary: {
+          totalFees: Math.round(totalFees * 100) / 100,
+          whopFees: Math.round(totalWhop * 100) / 100,
+          processingFees: Math.round(totalProcessing * 100) / 100,
+          otherFees: Math.round(totalOther * 100) / 100,
+          totalPaymentAmount: Math.round(totalPaymentAmount * 100) / 100,
+          effectiveRate: totalPaymentAmount > 0 ? Math.round(totalFees / totalPaymentAmount * 10000) / 100 : 0,
+          transactionCount: dailySummary.reduce((s, r) => s + parseInt(r.transactions), 0),
+        },
+        dailyBreakdown: dailySummary.map(r => ({
+          date: r.date,
+          transactions: parseInt(r.transactions),
+          paymentAmount: Math.round(parseFloat(r.total_payment_amount) * 100) / 100,
+          totalFees: Math.round(parseFloat(r.total_fees) * 100) / 100,
+          whopFees: Math.round(parseFloat(r.whop_fees) * 100) / 100,
+          processingFees: Math.round(parseFloat(r.processing_fees) * 100) / 100,
+          otherFees: Math.round(parseFloat(r.other_fees) * 100) / 100,
+        })),
+        feeTypeBreakdown: Object.values(byType).sort((a, b) => b.total - a.total).map(f => ({
+          name: f.name,
+          type: f.type,
+          total: Math.round(f.total * 100) / 100,
+          count: f.count,
+        })),
+        recentPayments: recentPayments.map(r => ({
+          paymentId: r.payment_id,
+          amount: parseFloat(r.payment_amount),
+          currency: r.currency,
+          totalFees: parseFloat(r.total_fees),
+          whopFees: parseFloat(r.whop_fees),
+          processingFees: parseFloat(r.processing_fees),
+          paidAt: r.paid_at,
+        })),
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
 /** GET /export — CSV export of KPI data */
 router.get('/export', authenticate, async (req, res) => {
   try {
@@ -1339,6 +1614,11 @@ async function autoSync() {
     const { synced, affectedDates } = await upsertOrders(allOrders);
     for (const d of affectedDates) await recalculateSnapshots(d);
     if (synced > 0) console.log(`[KPI Auto-Sync] ${synced} new orders synced`);
+
+    // Also sync Whop fees every 5th cycle (~5 min)
+    if (autoSyncCount % 5 === 0) {
+      await syncWhopFees().catch(err => console.error('[KPI] Fee sync error:', err.message));
+    }
   } catch (err) {
     console.error('[KPI Auto-Sync] Error:', err.message);
   }
@@ -1357,6 +1637,7 @@ export {
   seedStaticData,
   runAnomalyDetection,
   interpolateRate,
+  syncWhopFees,
   UNIT_COST_PER_MINER,
   UNIT_COST_PER_MINER_2920,
   MR_MINER_COUNTS,
