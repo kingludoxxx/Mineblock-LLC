@@ -763,7 +763,7 @@ async function syncMetaThumbnails() {
 
   for (const accountId of META_AD_ACCOUNT_IDS) {
     try {
-      let url = `${META_GRAPH_URL}/${accountId}/ads?fields=name,creative{thumbnail_url,image_url,object_story_spec,video_id}&thumbnail_width=720&thumbnail_height=720&limit=100&access_token=${META_ACCESS_TOKEN}`;
+      let url = `${META_GRAPH_URL}/${accountId}/ads?fields=name,creative.fields(thumbnail_url,image_url,object_story_spec,video_id).thumbnail_width(720).thumbnail_height(720)&limit=100&access_token=${META_ACCESS_TOKEN}`;
       let pageCount = 0;
 
       while (url && pageCount < 20) {
@@ -786,11 +786,11 @@ async function syncMetaThumbnails() {
 
   // 3. Match Meta ads to DB rows by ad_name
   let matched = 0;
-  const updates = []; // { ad_name, thumbnail_url, video_url, meta_ad_id }
+  const updates = [];
 
   for (const ad of metaAds) {
     if (!ad.name || !dbAdNames.has(ad.name)) continue;
-    // Prefer image_url (full res) over thumbnail_url (often 64x64)
+    // Prefer image_url (full res for image ads) over thumbnail_url (720px for video ads)
     const thumbnailUrl = ad.creative?.image_url || ad.creative?.thumbnail_url || null;
     if (!thumbnailUrl) continue;
 
@@ -802,11 +802,10 @@ async function syncMetaThumbnails() {
     });
   }
 
-  // 4. For video ads, fetch the ad preview iframe URL (video source requires extra permissions)
+  // 4. For video ads, fetch the ad preview iframe URL
   const adIdsWithVideo = updates.filter(u => u.video_id);
-  const previewUrls = new Map(); // meta_ad_id -> preview iframe URL
+  const previewUrls = new Map();
 
-  // Batch fetch ad previews (10 at a time to avoid rate limits)
   for (let i = 0; i < adIdsWithVideo.length; i += 10) {
     const batch = adIdsWithVideo.slice(i, i + 10);
     const promises = batch.map(async (upd) => {
@@ -815,18 +814,13 @@ async function syncMetaThumbnails() {
         const data = await resp.json();
         const body = data.data?.[0]?.body;
         if (body) {
-          // Extract the preview iframe src URL
           const match = body.match(/src=["']([^"']+)["']/);
-          if (match) {
-            const iframeSrc = match[1].replace(/&amp;/g, '&');
-            previewUrls.set(upd.meta_ad_id, iframeSrc);
-          }
+          if (match) previewUrls.set(upd.meta_ad_id, match[1].replace(/&amp;/g, '&'));
         }
       } catch {}
     });
     await Promise.all(promises);
   }
-
   console.log(`[Meta Sync] Fetched ${previewUrls.size} ad preview URLs for ${adIdsWithVideo.length} video ads`);
 
   // 5. Update DB rows
