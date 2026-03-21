@@ -155,7 +155,7 @@ export default function KpiSystem() {
   const [costSheet, setCostSheet] = useState(null);
   const [alerts, setAlerts] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [syncing, setSyncing] = useState(false);
+  const [lastRefresh, setLastRefresh] = useState(null);
   const [error, setError] = useState(null);
   const [skuSort, setSkuSort] = useState({ field: 'revenue', dir: 'desc' });
 
@@ -210,22 +210,13 @@ export default function KpiSystem() {
 
   useEffect(() => {
     fetchAll();
+    // Auto-refresh every 60 seconds
+    const interval = setInterval(() => {
+      fetchAll();
+      setLastRefresh(new Date());
+    }, 60_000);
+    return () => clearInterval(interval);
   }, [fetchAll]);
-
-  // ── Actions ────────────────────────────────────────────────────────────────
-
-  const handleSync = async () => {
-    setSyncing(true);
-    try {
-      await api.post('/kpi-system/sync');
-      await fetchAll();
-    } catch (err) {
-      console.error('Sync error:', err);
-      setError(err.response?.data?.message || 'Sync failed');
-    } finally {
-      setSyncing(false);
-    }
-  };
 
   const handleExport = async () => {
     try {
@@ -352,15 +343,11 @@ export default function KpiSystem() {
           {/* Date picker */}
           <DatePicker value={date} onChange={setDate} period={period} />
 
-          {/* Sync button */}
-          <button
-            onClick={handleSync}
-            disabled={syncing}
-            className={`${btnBase} ${syncing ? 'opacity-50 cursor-not-allowed' : ''} bg-white/[0.04] border-white/[0.08] text-white hover:border-white/20 flex items-center gap-2`}
-          >
-            <RefreshCw size={14} className={syncing ? 'animate-spin' : ''} />
-            {syncing ? 'Syncing...' : 'Sync Shopify'}
-          </button>
+          {/* Live indicator */}
+          <span className="flex items-center gap-1.5 text-xs text-green-500">
+            <span className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse" />
+            Live
+          </span>
 
           {/* Export button */}
           <button

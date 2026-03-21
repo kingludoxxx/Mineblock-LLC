@@ -1263,6 +1263,51 @@ router.get('/export', authenticate, async (req, res) => {
   }
 });
 
+// ── Auto-sync every 60 seconds ──────────────────────────────────────
+async function autoSync() {
+  if (!SHOPIFY_TOKEN) return;
+  try {
+    await ensureTables();
+    await seedStaticData();
+    const sinceIdRows = await pgQuery('SELECT MAX(order_id) AS max_id FROM shopify_orders_cache');
+    const sinceId = sinceIdRows[0]?.max_id || null;
+    const allOrders = await fetchAllOrders(sinceId);
+    if (allOrders.length === 0) return;
+    let synced = 0;
+    const affectedDates = new Set();
+    for (const order of allOrders) {
+      if (order.order_number < MIN_ORDER_NUMBER) continue;
+      const costs = calculateOrderCosts(order);
+      const orderDate = order.created_at ? order.created_at.slice(0, 10) : null;
+      await pgQuery(`
+        INSERT INTO shopify_orders_cache (order_id, order_number, created_at, country, financial_status,
+          total_price, subtotal_price, total_discounts, line_items, cogs, shipping_cost, gross_profit, profit_margin, synced_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,NOW())
+        ON CONFLICT (order_id) DO UPDATE SET
+          financial_status=EXCLUDED.financial_status, total_price=EXCLUDED.total_price,
+          subtotal_price=EXCLUDED.subtotal_price, total_discounts=EXCLUDED.total_discounts,
+          line_items=EXCLUDED.line_items, cogs=EXCLUDED.cogs, shipping_cost=EXCLUDED.shipping_cost,
+          gross_profit=EXCLUDED.gross_profit, profit_margin=EXCLUDED.profit_margin, synced_at=NOW()
+      `, [order.id, order.order_number, order.created_at,
+          order.shipping_address?.country || 'United States', order.financial_status,
+          order.total_price, order.subtotal_price, order.total_discounts,
+          JSON.stringify(order.line_items), costs.cogs, costs.shippingCost,
+          costs.grossProfit, costs.profitMargin]);
+      if (orderDate) affectedDates.add(orderDate);
+      synced++;
+    }
+    for (const d of affectedDates) await recalculateSnapshots(d, d);
+    if (synced > 0) console.log(`[KPI Auto-Sync] ${synced} new orders synced`);
+  } catch (err) {
+    console.error('[KPI Auto-Sync] Error:', err.message);
+  }
+}
+
+setTimeout(() => {
+  autoSync().catch(() => {});
+  setInterval(() => autoSync().catch(() => {}), 60_000); // Every 60 seconds
+}, 30_000); // Start 30s after boot
+
 export default router;
 export {
   calculateOrderCosts,
