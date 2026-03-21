@@ -819,7 +819,7 @@ router.get('/sku-breakdown', authenticate, async (req, res) => {
         // Calculate COGS per SKU
         const parsed = parseSku(sku);
         if (parsed.type === 'MR') {
-          skuData[sku].cogs += MR_UNIT_COST * parsed.minerCount * qty;
+          skuData[sku].cogs += UNIT_COST_PER_MINER * parsed.minerCount * qty;
         } else if (parsed.type === 'RIG') {
           skuData[sku].cogs += parsed.unitCost * qty;
         }

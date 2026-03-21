@@ -178,12 +178,13 @@ export default function KpiSystem() {
         startDate = s.toISOString().slice(0, 10);
       }
 
+      const safeGet = (url, opts) => api.get(url, opts).catch(e => ({ data: {} }));
       const [dashRes, trendRes, skuRes, costRes, alertRes] = await Promise.all([
         api.get('/kpi-system/dashboard', { params: { period, date } }),
-        api.get('/kpi-system/trends', { params: { days: 30 } }),
-        api.get('/kpi-system/sku-breakdown', { params: { startDate, endDate } }),
-        api.get('/kpi-system/cost-sheet', { params: { period, date } }),
-        api.get('/kpi-system/alerts'),
+        safeGet('/kpi-system/trends', { params: { days: 30 } }),
+        safeGet('/kpi-system/sku-breakdown', { params: { startDate, endDate } }),
+        safeGet('/kpi-system/cost-sheet', { params: { period, date } }),
+        safeGet('/kpi-system/alerts'),
       ]);
 
       setDashboard(dashRes.data?.data || dashRes.data || {});
