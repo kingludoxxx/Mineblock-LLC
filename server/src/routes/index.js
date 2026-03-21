@@ -9,6 +9,7 @@ import iterationKingRoutes from './iterationKing.js';
 import creativeAnalysisRoutes from './creativeAnalysis.js';
 import staticsGenerationRoutes from './staticsGeneration.js';
 import productProfileRoutes from './productProfiles.js';
+import adRejectionMonitorRoutes from './adRejectionMonitor.js';
 
 const mountRoutes = (app) => {
   app.use('/api/v1/users', userRoutes);
@@ -22,6 +23,7 @@ const mountRoutes = (app) => {
   app.use('/api/v1/creative-analysis', creativeAnalysisRoutes);
   app.use('/api/v1/statics-generation', staticsGenerationRoutes);
   app.use('/api/v1/product-profiles', productProfileRoutes);
+  app.use('/api/v1/ad-rejection-monitor', adRejectionMonitorRoutes);
 };
 
 export default mountRoutes;
