@@ -265,10 +265,10 @@ setInterval(async () => {
   try { await fetch(`${RENDER_URL}/api/health`); } catch {}
 }, 10 * 60 * 1000); // Ping every 10 minutes
 
-// ── Auto-check every 10 minutes (reduced from 5 to avoid rate limits) ──
+// ── Fallback poll every 30 minutes (primary: Meta webhook in metaWebhook.js) ──
 setTimeout(() => {
   checkRejectedAds().catch(err => console.warn('[Ad Rejection] Initial check error:', err.message));
-  setInterval(() => checkRejectedAds().catch(() => {}), 10 * 60 * 1000);
+  setInterval(() => checkRejectedAds().catch(() => {}), 30 * 60 * 1000);
 }, 45_000);
 
 export default router;
