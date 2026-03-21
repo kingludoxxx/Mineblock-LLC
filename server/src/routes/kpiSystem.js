@@ -806,7 +806,7 @@ router.post('/sync', authenticate, async (req, res) => {
     await ensureTables();
     await seedStaticData();
 
-    const fullSync = req.query.full === 'true' || req.body.full === true;
+    const fullSync = req.query.full === 'true' || (req.body && req.body.full === true);
     if (fullSync) {
       await pgQuery('DELETE FROM shopify_orders_cache');
       await pgQuery('DELETE FROM daily_kpi_snapshots');
@@ -1130,10 +1130,10 @@ router.get('/sku-breakdown', authenticate, async (req, res) => {
         skuData[sku].orderCount++;
 
         // Calculate COGS per SKU
-        const parsed = parseSku(sku);
-        if (parsed.type === 'MR') {
+        const parsed = parseSku(item.sku, item.title, item.variant_title);
+        if (parsed && parsed.type === 'MR') {
           skuData[sku].cogs += UNIT_COST_PER_MINER * parsed.minerCount * qty;
-        } else if (parsed.type === 'RIG') {
+        } else if (parsed && parsed.type === 'RIG') {
           skuData[sku].cogs += parsed.unitCost * qty;
         }
       }
