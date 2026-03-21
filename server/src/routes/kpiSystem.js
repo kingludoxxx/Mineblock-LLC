@@ -688,21 +688,21 @@ async function recalculateSnapshots(startDate, endDate) {
   let dates;
   if (startDate && endDate) {
     dates = await pgQuery(`
-      SELECT DISTINCT DATE(created_at) as d
+      SELECT DISTINCT DATE(created_at AT TIME ZONE 'Europe/Berlin') as d
       FROM shopify_orders_cache
-      WHERE DATE(created_at) BETWEEN $1 AND $2
+      WHERE DATE(created_at AT TIME ZONE 'Europe/Berlin') BETWEEN $1 AND $2
       ORDER BY d
     `, [startDate, endDate]);
   } else if (startDate) {
     dates = await pgQuery(`
-      SELECT DISTINCT DATE(created_at) as d
+      SELECT DISTINCT DATE(created_at AT TIME ZONE 'Europe/Berlin') as d
       FROM shopify_orders_cache
-      WHERE DATE(created_at) = $1
+      WHERE DATE(created_at AT TIME ZONE 'Europe/Berlin') = $1
       ORDER BY d
     `, [startDate]);
   } else {
     dates = await pgQuery(`
-      SELECT DISTINCT DATE(created_at) as d
+      SELECT DISTINCT DATE(created_at AT TIME ZONE 'Europe/Berlin') as d
       FROM shopify_orders_cache
       ORDER BY d
     `);
@@ -711,7 +711,7 @@ async function recalculateSnapshots(startDate, endDate) {
   for (const row of dates) {
     const d = row.d;
     const allOrders = await pgQuery(`
-      SELECT * FROM shopify_orders_cache WHERE DATE(created_at) = $1
+      SELECT * FROM shopify_orders_cache WHERE DATE(created_at AT TIME ZONE 'Europe/Berlin') = $1
     `, [d]);
 
     if (allOrders.length === 0) continue;
@@ -1009,7 +1009,7 @@ router.get('/cost-sheet', authenticate, async (req, res) => {
              gross_profit, profit_margin, total_miners, total_rig_units,
              line_items, country, financial_status
       FROM shopify_orders_cache
-      WHERE DATE(created_at) BETWEEN $1 AND $2
+      WHERE DATE(created_at AT TIME ZONE 'Europe/Berlin') BETWEEN $1 AND $2
         AND financial_status NOT IN ('refunded', 'voided')
       ORDER BY created_at DESC
     `, [start, end]);
@@ -1129,7 +1129,7 @@ router.get('/sku-breakdown', authenticate, async (req, res) => {
     const orders = await pgQuery(`
       SELECT line_items, total_price, cogs, shipping_cost, gross_profit
       FROM shopify_orders_cache
-      WHERE DATE(created_at) BETWEEN $1 AND $2
+      WHERE DATE(created_at AT TIME ZONE 'Europe/Berlin') BETWEEN $1 AND $2
     `, [startDate, endDate]);
 
     const skuData = {};
@@ -1236,7 +1236,7 @@ router.get('/export', authenticate, async (req, res) => {
              total_miners, total_rig_units, cogs, shipping_cost,
              gross_profit, profit_margin
       FROM shopify_orders_cache
-      WHERE DATE(created_at) BETWEEN $1 AND $2
+      WHERE DATE(created_at AT TIME ZONE 'Europe/Berlin') BETWEEN $1 AND $2
       ORDER BY created_at
     `, [start, end]);
 

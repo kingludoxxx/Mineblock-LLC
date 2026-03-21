@@ -88,7 +88,7 @@ async function upsertOrder(order) {
 // ── Recalculate daily snapshot for a specific date ──────────────────
 async function recalculateSnapshotForDate(dateStr) {
   const allOrders = await pgQuery(`
-    SELECT * FROM shopify_orders_cache WHERE DATE(created_at AT TIME ZONE 'UTC') = $1
+    SELECT * FROM shopify_orders_cache WHERE DATE(created_at AT TIME ZONE 'Europe/Berlin') = $1
   `, [dateStr]);
 
   if (allOrders.length === 0) return;
