@@ -10,6 +10,7 @@ import creativeAnalysisRoutes from './creativeAnalysis.js';
 import staticsGenerationRoutes from './staticsGeneration.js';
 import productProfileRoutes from './productProfiles.js';
 import adRejectionMonitorRoutes from './adRejectionMonitor.js';
+import kpiSystemRoutes from './kpiSystem.js';
 
 const mountRoutes = (app) => {
   app.use('/api/v1/users', userRoutes);
@@ -24,6 +25,7 @@ const mountRoutes = (app) => {
   app.use('/api/v1/statics-generation', staticsGenerationRoutes);
   app.use('/api/v1/product-profiles', productProfileRoutes);
   app.use('/api/v1/ad-rejection-monitor', adRejectionMonitorRoutes);
+  app.use('/api/v1/kpi-system', kpiSystemRoutes);
 };
 
 export default mountRoutes;

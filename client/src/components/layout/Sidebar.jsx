@@ -88,6 +88,7 @@ const navGroups = [
     icon: BarChart3,
     items: [
       { to: '/app/creative-analysis', icon: BarChart3, label: 'Creative Analysis' },
+      { to: '/app/kpi-system', icon: DollarSign, label: 'KPI System' },
     ],
   },
   {

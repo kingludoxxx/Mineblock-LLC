@@ -50,6 +50,7 @@ import LivePage from './pages/performance/LivePage';
 import LtvPage from './pages/performance/LtvPage';
 import RoasPage from './pages/performance/RoasPage';
 import CreativeAnalysisPage from './pages/performance/CreativeAnalysisPage';
+import KpiSystem from './pages/performance/KpiSystem';
 
 // Library
 import TeamHubPage from './pages/library/TeamHubPage';
@@ -119,6 +120,7 @@ export default function App() {
 
           {/* Performance */}
           <Route path="creative-analysis" element={<CreativeAnalysisPage />} />
+          <Route path="kpi-system" element={<KpiSystem />} />
           <Route path="attribution" element={<AttributionPage />} />
           <Route path="live" element={<LivePage />} />
           <Route path="ltv" element={<LtvPage />} />
