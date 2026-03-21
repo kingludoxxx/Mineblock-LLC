@@ -8,9 +8,10 @@ const router = Router();
 const SHOPIFY_STORE = '17cca0-2.myshopify.com';
 const SHOPIFY_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN || '';
 const SHOPIFY_API_VERSION = '2024-01';
-const MIN_ORDER_NUMBER = 6009;
+const MIN_ORDER_NUMBER = 2920;
 
 const UNIT_COST_PER_MINER = 10.92;
+const UNIT_COST_PER_MINER_2920 = 11.28; // Orders #2920-#5716
 
 const MR_MINER_COUNTS = {
   'MR-01': 1, 'MR-02': 2, 'MR-04': 4, 'M5-05': 5,
@@ -86,6 +87,81 @@ const SHIPPING_RATES_RIG = {
   'United States': { 1: 0.28, 2: 0.65, 4: 1.2 },
   'Switzerland': { 1: 0.72, 2: 1.29, 4: 1.85 },
 };
+
+// Shipping rates for orders #2920-#6008 (older quotation)
+const SHIPPING_RATES_MR_2920 = {
+  'U.A.E': { 1: 4.92, 2: 6.35, 3: 7.78, 4: 9.21, 5: 10.64, 6: 12.07, 7: 13.5, 8: 14.93, 9: 16.36, 10: 17.79, 11: 18.35, 12: 19.12, 13: 20.89, 14: 21.76, 15: 23.19, 16: 24.41, 24: 37.8, 30: 46.39 },
+  'United Arab Emirates': { 1: 4.92, 2: 6.35, 3: 7.78, 4: 9.21, 5: 10.64, 6: 12.07, 7: 13.5, 8: 14.93, 9: 16.36, 10: 17.79, 11: 18.35, 12: 19.12, 13: 20.89, 14: 21.76, 15: 23.19, 16: 24.41, 24: 37.8, 30: 46.39 },
+  'Austria': { 1: 5.94, 2: 8.23, 3: 10.51, 4: 12.8, 5: 15.09, 6: 17.38, 7: 19.66, 8: 21.95, 9: 24.24, 10: 26.52, 11: 27.64, 12: 28.79, 13: 31.71, 14: 33.03, 15: 35.4, 16: 37.26, 24: 58.54, 30: 72.26 },
+  'Australia': { 1: 4.93, 2: 6.42, 3: 7.53, 4: 8.45, 5: 9.75, 6: 10.67, 7: 11.59, 8: 12.5, 9: 13.42, 10: 14.34, 11: 15.26, 12: 16.17, 13: 17.09, 14: 18.01, 15: 18.93, 16: 19.34, 24: 27.19, 30: 32.69 },
+  'Belgium': { 1: 6.16, 2: 8.67, 3: 11.18, 4: 13.69, 5: 16.2, 6: 18.71, 7: 21.22, 8: 23.73, 9: 26.24, 10: 28.75, 11: 28.04, 12: 29.21, 13: 32.22, 14: 33.56, 15: 36.02, 16: 37.91, 24: 59.75, 30: 73.85 },
+  'Canada': { 1: 5.18, 2: 7.02, 3: 9.47, 4: 11.4, 5: 13.34, 6: 15.28, 7: 17.22, 8: 19.15, 9: 21.09, 10: 23.03, 11: 25.27, 12: 26.32, 13: 28.94, 14: 30.15, 15: 32.27, 16: 33.97, 24: 53.21, 30: 65.59 },
+  'Cyprus': { 1: 8.39, 2: 12.17, 3: 15.95, 4: 19.73, 5: 23.51, 6: 27.29, 7: 31.07, 8: 34.85, 9: 38.63, 10: 42.41, 11: 46.11, 12: 48.03, 13: 53.11, 14: 55.32, 15: 59.49, 16: 62.62, 24: 99.14, 30: 122.77 },
+  'Germany': { 1: 5.5, 2: 7.31, 3: 9.21, 4: 11.12, 5: 13.02, 6: 14.93, 7: 16.84, 8: 18.74, 9: 20.65, 10: 22.55, 11: 23.44, 12: 24.41, 13: 26.82, 14: 27.94, 15: 29.9, 16: 31.47, 24: 49.24, 30: 60.67 },
+  'Estonia': { 1: 5.34, 2: 7.5, 3: 9.66, 4: 11.82, 5: 13.98, 6: 16.14, 7: 18.3, 8: 20.46, 9: 22.62, 10: 24.78, 11: 25.86, 12: 26.94, 13: 29.7, 14: 30.94, 15: 33.19, 16: 34.94, 24: 55.02, 30: 67.98 },
+  'Spain': { 1: 4.7, 2: 6.54, 3: 8.39, 4: 10.23, 5: 12.07, 6: 13.91, 7: 15.76, 8: 17.6, 9: 19.44, 10: 21.28, 11: 22.19, 12: 23.12, 13: 25.47, 14: 26.53, 15: 28.44, 16: 29.94, 24: 47.08, 30: 58.13 },
+  'Finland': { 1: 6.32, 2: 8.67, 3: 11.02, 4: 13.37, 5: 15.72, 6: 18.07, 7: 20.42, 8: 22.78, 9: 25.13, 10: 27.48, 11: 28.6, 12: 29.79, 13: 32.78, 14: 34.15, 15: 36.58, 16: 38.5, 24: 60.38, 30: 74.49 },
+  'France': { 1: 5.3, 2: 7.43, 3: 10.04, 4: 12.17, 5: 14.29, 6: 16.42, 7: 18.55, 8: 20.68, 9: 22.81, 10: 24.94, 11: 25.61, 12: 26.68, 13: 29.34, 14: 30.56, 15: 32.72, 16: 34.44, 24: 53.97, 30: 66.55 },
+  'United Kingdom': { 1: 4.1, 2: 5.78, 3: 7.4, 4: 9.02, 5: 10.64, 6: 12.64, 7: 14.33, 8: 16.01, 9: 17.69, 10: 19.38, 11: 20.22, 12: 21.06, 13: 23.21, 14: 24.18, 15: 25.93, 16: 27.29, 24: 42.95, 30: 53.05 },
+  'Greece': { 1: 5.62, 2: 8.39, 3: 11.15, 4: 13.91, 5: 16.68, 6: 19.44, 7: 22.2, 8: 24.97, 9: 27.73, 10: 30.49, 11: 32.02, 12: 33.35, 13: 36.93, 14: 38.47, 15: 41.41, 16: 43.59, 24: 69.18, 30: 85.76 },
+  'Hong Kong': { 1: 3.97, 2: 4.45, 3: 4.92, 4: 5.4, 5: 5.88, 6: 6.35, 7: 6.83, 8: 7.31, 9: 7.78, 10: 8.26, 11: 8.74, 12: 9.22, 13: 9.7, 14: 10.18, 15: 10.66, 16: 11.14, 24: 17.79, 30: 20.65 },
+  'Croatia': { 1: 7.43, 2: 10.74, 3: 14.04, 4: 17.34, 5: 20.65, 6: 23.95, 7: 27.25, 8: 30.56, 9: 33.86, 10: 37.16, 11: 38.91, 12: 40.53, 13: 44.78, 14: 46.65, 15: 50.13, 16: 52.76, 24: 83.41, 30: 103.24 },
+  'Ireland': { 1: 6.89, 2: 10.13, 3: 13.37, 4: 16.61, 5: 19.85, 6: 23.09, 7: 26.33, 8: 29.57, 9: 32.81, 10: 36.05, 11: 37.81, 12: 39.38, 13: 43.57, 14: 45.38, 15: 48.81, 16: 51.38, 24: 81.41, 30: 100.85 },
+  'Italy': { 1: 5.88, 2: 7.78, 3: 9.69, 4: 11.59, 5: 13.5, 6: 15.41, 7: 17.31, 8: 19.22, 9: 21.12, 10: 23.03, 11: 24.54, 12: 25.56, 13: 28.04, 14: 29.21, 15: 31.21, 16: 32.85, 24: 51.24, 30: 63.05 },
+  'Lithuania': { 1: 5.27, 2: 7.37, 3: 9.47, 4: 11.56, 5: 13.66, 6: 15.76, 7: 17.85, 8: 19.95, 9: 22.04, 10: 24.14, 11: 26.2, 12: 27.29, 13: 30.1, 14: 31.35, 15: 33.64, 16: 35.41, 24: 55.78, 30: 68.93 },
+  'Luxembourg': { 1: 8.26, 2: 12.39, 3: 16.52, 4: 20.65, 5: 24.78, 6: 28.91, 7: 33.04, 8: 37.16, 9: 41.29, 10: 45.42, 11: 49.55, 12: 53.68, 13: 57.81, 14: 59.71, 15: 61.94, 16: 66.07, 24: 107.05, 30: 132.78 },
+  'Luxambourg': { 1: 8.26, 2: 12.39, 3: 16.52, 4: 20.65, 5: 24.78, 6: 28.91, 7: 33.04, 8: 37.16, 9: 41.29, 10: 45.42, 11: 49.55, 12: 53.68, 13: 57.81, 14: 59.71, 15: 61.94, 16: 66.07, 24: 107.05, 30: 132.78 },
+  'Malta': { 1: 10.07, 2: 15.22, 3: 20.36, 4: 25.51, 5: 30.65, 6: 35.8, 7: 40.94, 8: 46.09, 9: 51.24, 10: 56.38, 11: 61.53, 12: 66.67, 13: 71.82, 14: 74.97, 15: 76.97, 16: 82.11, 24: 85.51, 30: 106.09 },
+  'Mexico': { 1: 4.61, 2: 6.67, 3: 8.74, 4: 10.8, 5: 12.86, 6: 14.93, 7: 16.99, 8: 19.06, 9: 21.12, 10: 23.19, 11: 24.28, 12: 25.29, 13: 27.95, 14: 29.12, 15: 31.29, 16: 32.94, 24: 52.09, 30: 64.48 },
+  'Netherlands': { 1: 5.97, 2: 8.29, 3: 10.61, 4: 12.93, 5: 15.25, 6: 17.57, 7: 19.88, 8: 22.2, 9: 24.52, 10: 26.84, 11: 23.92, 12: 24.91, 13: 27.36, 14: 28.5, 15: 30.48, 16: 32.09, 24: 50.16, 30: 61.78 },
+  'Poland': { 1: 4.07, 2: 6.77, 3: 8.96, 4: 11.15, 5: 13.34, 6: 15.53, 7: 17.72, 8: 19.92, 9: 22.11, 10: 24.3, 11: 25.5, 12: 26.56, 13: 29.39, 14: 30.62, 15: 32.94, 16: 34.68, 24: 54.98, 30: 68.14 },
+  'Portugal': { 1: 5.34, 2: 7.5, 3: 9.66, 4: 11.82, 5: 13.98, 6: 16.14, 7: 18.3, 8: 20.46, 9: 22.62, 10: 24.78, 11: 25.86, 12: 26.94, 13: 29.7, 14: 30.94, 15: 33.19, 16: 34.94, 24: 55.02, 30: 67.98 },
+  'Saudi Arabia': { 1: 13.85, 2: 15.72, 3: 17.59, 4: 19.48, 5: 21.35, 6: 23.23, 7: 25.1, 8: 26.98, 9: 28.86, 10: 30.73, 11: 36.59, 12: 38.12, 13: 40.15, 14: 41.82, 15: 43.25, 16: 45.53, 24: 65.18, 30: 81.98 },
+  'United States': { 1: 6.48, 2: 8.64, 3: 10.7, 4: 12.1, 5: 14.61, 6: 17.12, 7: 19.63, 8: 22.14, 9: 24.65, 10: 27.16, 11: 29.67, 12: 32.18, 13: 34.69, 14: 37.2, 15: 39.71, 16: 42.22, 24: 62.29, 30: 77.35 },
+  'Switzerland': { 1: 7.78, 2: 10.42, 3: 12.86, 4: 16.2, 5: 19.54, 6: 22.87, 7: 26.21, 8: 29.54, 9: 32.88, 10: 36.21, 11: 38.12, 12: 39.71, 13: 44.05, 14: 45.88, 15: 49.46, 16: 52.06, 24: 82.91, 30: 114.26 },
+};
+
+/**
+ * Interpolate a shipping rate from a sparse rate table (e.g. SHIPPING_RATES_MR_2920).
+ * Handles exact matches, linear interpolation between defined points,
+ * and linear extrapolation beyond the max defined quantity.
+ */
+function interpolateRate(countryRates, quantity) {
+  if (countryRates[quantity] !== undefined) return countryRates[quantity];
+
+  const definedQtys = Object.keys(countryRates).map(Number).sort((a, b) => a - b);
+
+  // Below the minimum defined rate — use the first rate
+  if (quantity < definedQtys[0]) return countryRates[definedQtys[0]];
+
+  const maxQty = definedQtys[definedQtys.length - 1];
+
+  if (quantity > maxQty) {
+    // Extrapolate beyond max using the last increment
+    const prevQty = definedQtys[definedQtys.length - 2];
+    const rateMax = countryRates[maxQty];
+    const ratePrev = countryRates[prevQty];
+    const perUnit = (rateMax - ratePrev) / (maxQty - prevQty);
+    return Math.round((rateMax + perUnit * (quantity - maxQty)) * 100) / 100;
+  }
+
+  // Interpolate between two surrounding defined rates
+  let lower = definedQtys[0];
+  let upper = definedQtys[definedQtys.length - 1];
+  for (const q of definedQtys) {
+    if (q <= quantity) lower = q;
+    if (q >= quantity && q < upper) { upper = q; break; }
+  }
+  // Refine upper: find smallest defined qty > quantity
+  for (const q of definedQtys) {
+    if (q > quantity) { upper = q; break; }
+  }
+
+  const rateLower = countryRates[lower];
+  const rateUpper = countryRates[upper];
+  const interpolated = rateLower + (rateUpper - rateLower) * (quantity - lower) / (upper - lower);
+  return Math.round(interpolated * 100) / 100;
+}
 
 // ── DB Setup ────────────────────────────────────────────────────────
 let tablesReady = false;
@@ -309,6 +385,22 @@ function calculateOrderCosts(order) {
   const lineItems = order.line_items || [];
   const country = order.shipping_address?.country || order.billing_address?.country || 'United States';
 
+  // Determine which quotation to use based on order number
+  const orderNumber = order.order_number || 0;
+  let unitCostPerMiner;
+  let mrShippingRates;
+
+  if (orderNumber >= 6009) {
+    unitCostPerMiner = UNIT_COST_PER_MINER; // 10.92
+    mrShippingRates = SHIPPING_RATES_MR;
+  } else if (orderNumber >= 5717) {
+    unitCostPerMiner = UNIT_COST_PER_MINER; // 10.92 (price changed at 5717)
+    mrShippingRates = SHIPPING_RATES_MR_2920; // but shipping stayed the same until 6009
+  } else {
+    unitCostPerMiner = UNIT_COST_PER_MINER_2920; // 11.28
+    mrShippingRates = SHIPPING_RATES_MR_2920;
+  }
+
   let totalMiners = 0;
   let totalRigUnits = 0;
   let rigCogs = 0;
@@ -330,22 +422,27 @@ function calculateOrderCosts(order) {
     }
   }
 
-  // MR COGS = total miners * unit cost
-  const mrCogs = totalMiners * UNIT_COST_PER_MINER;
+  // MR COGS = total miners * unit cost (varies by quotation period)
+  const mrCogs = totalMiners * unitCostPerMiner;
 
-  // MR shipping lookup — country-specific, extrapolate beyond max defined rate
+  // MR shipping lookup — country-specific, with interpolation for sparse rate tables
   let mrShipping = 0;
   if (totalMiners > 0) {
-    const countryRates = SHIPPING_RATES_MR[country] || SHIPPING_RATES_MR['United States'];
-    const maxDefined = Math.max(...Object.keys(countryRates).map(Number));
-    if (totalMiners <= maxDefined) {
-      mrShipping = countryRates[totalMiners] || countryRates[maxDefined] || 0;
+    const countryRates = mrShippingRates[country] || mrShippingRates['United States'];
+    // Use interpolation for sparse tables (2920 quote) and direct lookup for dense tables (6009+ quote)
+    if (mrShippingRates === SHIPPING_RATES_MR_2920) {
+      mrShipping = interpolateRate(countryRates, totalMiners);
     } else {
-      // Extrapolate: use max rate + per-unit rate for additional miners
-      const maxRate = countryRates[maxDefined];
-      const prevRate = countryRates[maxDefined - 1] || maxRate;
-      const perUnitRate = maxRate - prevRate; // incremental cost per miner
-      mrShipping = Math.round((maxRate + perUnitRate * (totalMiners - maxDefined)) * 100) / 100;
+      const maxDefined = Math.max(...Object.keys(countryRates).map(Number));
+      if (totalMiners <= maxDefined) {
+        mrShipping = countryRates[totalMiners] || countryRates[maxDefined] || 0;
+      } else {
+        // Extrapolate: use max rate + per-unit rate for additional miners
+        const maxRate = countryRates[maxDefined];
+        const prevRate = countryRates[maxDefined - 1] || maxRate;
+        const perUnitRate = maxRate - prevRate; // incremental cost per miner
+        mrShipping = Math.round((maxRate + perUnitRate * (totalMiners - maxDefined)) * 100) / 100;
+      }
     }
   }
 
@@ -1053,11 +1150,14 @@ export {
   parseSku,
   seedStaticData,
   runAnomalyDetection,
+  interpolateRate,
   UNIT_COST_PER_MINER,
+  UNIT_COST_PER_MINER_2920,
   MR_MINER_COUNTS,
   RIG_UNIT_COSTS,
   RIG_SLOT_COUNTS,
   SHIPPING_RATES_MR,
+  SHIPPING_RATES_MR_2920,
   SHIPPING_RATES_RIG,
   MIN_ORDER_NUMBER,
 };
