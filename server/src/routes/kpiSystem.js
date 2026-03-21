@@ -885,68 +885,61 @@ async function syncWhopFees(lookbackDays = 3) {
 
   try {
     await ensureTables();
+    const cutoffTs = Math.floor((Date.now() - lookbackDays * 86400000) / 1000);
 
-    // Get recent paid Whop payments
-    const sinceTimestamp = Math.floor((Date.now() - lookbackDays * 86400000) / 1000);
-    const resp = await fetch(`${WHOP_API_URL}/v5/company/payments?per=100&status=paid&created_at_gte=${sinceTimestamp}`, {
+    // Whop API returns oldest-first and date filters don't work reliably.
+    // Strategy: start from LAST page (newest payments) and work backwards.
+    const firstResp = await fetch(`${WHOP_API_URL}/v5/company/payments?per=100&page=1`, {
       headers: { 'Authorization': `Bearer ${WHOP_API_TOKEN}` }
     });
-    if (!resp.ok) return { synced: 0, error: 'Failed to fetch payments' };
+    if (!firstResp.ok) return { synced: 0, error: 'Failed to fetch payments' };
+    const firstData = await firstResp.json();
+    const totalPages = firstData.pagination?.total_pages || 1;
 
-    const data = await resp.json();
-    const payments = data.data || [];
     let synced = 0;
+    let reachedCutoff = false;
 
-    for (const payment of payments) {
-      // Check if already synced
-      const existing = await pgQuery('SELECT payment_id FROM whop_payment_fees WHERE payment_id = $1', [payment.id]);
-      if (existing.length > 0) continue;
-
-      // Fetch fee breakdown
-      const fees = await fetchPaymentFees(payment.id);
-      if (!fees) continue;
-
-      const paidAt = payment.paid_at ? new Date(payment.paid_at * 1000).toISOString() : null;
-
-      await pgQuery(`
-        INSERT INTO whop_payment_fees (payment_id, payment_amount, currency, total_fees, whop_fees, processing_fees, other_fees, fee_details, paid_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-        ON CONFLICT (payment_id) DO UPDATE SET
-          total_fees=EXCLUDED.total_fees, whop_fees=EXCLUDED.whop_fees, processing_fees=EXCLUDED.processing_fees,
-          other_fees=EXCLUDED.other_fees, fee_details=EXCLUDED.fee_details, synced_at=NOW()
-      `, [payment.id, payment.final_amount, payment.currency, fees.totalFees, fees.whopFees, fees.processingFees, fees.otherFees, JSON.stringify(fees.feeDetails), paidAt]);
-
-      synced++;
-
-      // Rate limit: Whop API might throttle
-      if (synced % 10 === 0) await new Promise(r => setTimeout(r, 1000));
-    }
-
-    // Handle pagination
-    let nextPage = data.pagination?.next_page;
-    while (nextPage) {
-      const pageResp = await fetch(`${WHOP_API_URL}/v5/company/payments?per=100&status=paid&created_at_gte=${sinceTimestamp}&page=${nextPage}`, {
+    // Iterate from last page backwards (newest to oldest)
+    for (let page = totalPages; page >= 1 && !reachedCutoff; page--) {
+      const resp = await fetch(`${WHOP_API_URL}/v5/company/payments?per=100&page=${page}`, {
         headers: { 'Authorization': `Bearer ${WHOP_API_TOKEN}` }
       });
-      if (!pageResp.ok) break;
-      const pageData = await pageResp.json();
-      for (const payment of (pageData.data || [])) {
+      if (!resp.ok) break;
+      const data = await resp.json();
+      const payments = data.data || [];
+
+      for (const payment of payments) {
+        // Skip unpaid/open payments
+        if (!payment.paid_at || payment.status !== 'paid') continue;
+
+        // Stop if we've gone past the lookback window
+        if (payment.created_at < cutoffTs) {
+          reachedCutoff = true;
+          break;
+        }
+
+        // Check if already synced
         const existing = await pgQuery('SELECT payment_id FROM whop_payment_fees WHERE payment_id = $1', [payment.id]);
         if (existing.length > 0) continue;
+
+        // Fetch fee breakdown
         const fees = await fetchPaymentFees(payment.id);
         if (!fees) continue;
-        const paidAt = payment.paid_at ? new Date(payment.paid_at * 1000).toISOString() : null;
+
+        const paidAt = new Date(payment.paid_at * 1000).toISOString();
         await pgQuery(`
           INSERT INTO whop_payment_fees (payment_id, payment_amount, currency, total_fees, whop_fees, processing_fees, other_fees, fee_details, paid_at)
           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-          ON CONFLICT (payment_id) DO NOTHING
+          ON CONFLICT (payment_id) DO UPDATE SET
+            total_fees=EXCLUDED.total_fees, whop_fees=EXCLUDED.whop_fees, processing_fees=EXCLUDED.processing_fees,
+            other_fees=EXCLUDED.other_fees, fee_details=EXCLUDED.fee_details, synced_at=NOW()
         `, [payment.id, payment.final_amount, payment.currency, fees.totalFees, fees.whopFees, fees.processingFees, fees.otherFees, JSON.stringify(fees.feeDetails), paidAt]);
-        synced++;
-        if (synced % 10 === 0) await new Promise(r => setTimeout(r, 1000));
-      }
-      nextPage = pageData.pagination?.next_page;
-    }
 
+        synced++;
+        if (synced % 10 === 0) await new Promise(r => setTimeout(r, 500));
+      }
+    }
+        `, [payment.id, payment.final_amount, payment.currency, fees.totalFees, fees.whopFees, fees.processingFees, fees.otherFees, JSON.stringify(fees.feeDetails), paidAt]);
     console.log(`[KPI] Whop fees synced: ${synced} payments`);
     return { synced };
   } catch (err) {
