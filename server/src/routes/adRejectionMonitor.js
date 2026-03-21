@@ -87,8 +87,8 @@ async function checkRejectedAds() {
     // Delay between accounts to avoid Meta rate limiting
     if (i > 0) await sleep(3000);
     try {
-      // Fetch disapproved ads from this account
-      const url = `${META_GRAPH_URL}/${accountId}/ads?fields=name,effective_status,ad_review_feedback&effective_status=["DISAPPROVED"]&limit=100&access_token=${META_ACCESS_TOKEN}`;
+      // Fetch rejected ads — Meta uses BOTH "DISAPPROVED" and "WITH_ISSUES" for rejected ads
+      const url = `${META_GRAPH_URL}/${accountId}/ads?fields=name,effective_status,ad_review_feedback&effective_status=["DISAPPROVED","WITH_ISSUES"]&limit=100&access_token=${META_ACCESS_TOKEN}`;
       const resp = await fetch(url);
       const data = await resp.json();
 
@@ -184,6 +184,12 @@ router.post('/check-now', authenticate, async (req, res) => {
     res.status(500).json({ success: false, error: { message: err.message } });
   }
 });
+
+// ── Keep-alive ping (prevents Render free tier from sleeping) ──────
+const RENDER_URL = process.env.RENDER_EXTERNAL_URL || 'https://mineblock-dashboard.onrender.com';
+setInterval(async () => {
+  try { await fetch(`${RENDER_URL}/api/health`); } catch {}
+}, 10 * 60 * 1000); // Ping every 10 minutes
 
 // ── Auto-check every 5 minutes ─────────────────────────────────────
 setTimeout(() => {
