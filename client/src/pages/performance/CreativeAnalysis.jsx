@@ -972,11 +972,11 @@ export default function CreativeAnalysis() {
               return (
                 <div
                   key={creative._creativeId}
-                  className="shrink-0 w-56 bg-[#111] border border-white/[0.06] rounded-xl overflow-hidden hover:border-white/[0.12] transition-colors"
+                  className="shrink-0 w-64 bg-[#111] border border-white/[0.06] rounded-xl overflow-hidden hover:border-white/[0.12] transition-colors"
                 >
                   {/* Visual header */}
                   <div
-                    className={`h-36 flex items-center justify-center relative cursor-pointer group ${creative.thumbnail_url ? 'bg-black' : isVideo ? 'bg-gradient-to-br from-blue-900/40 to-purple-900/30' : 'bg-gradient-to-br from-cyan-900/30 to-emerald-900/20'}`}
+                    className={`h-64 flex items-center justify-center relative cursor-pointer group ${creative.thumbnail_url ? 'bg-black' : isVideo ? 'bg-gradient-to-br from-blue-900/40 to-purple-900/30' : 'bg-gradient-to-br from-cyan-900/30 to-emerald-900/20'}`}
                     onClick={() => (creative.thumbnail_url || creative.video_url) && setVideoModal({ thumbnail_url: creative.thumbnail_url, video_url: creative.video_url, ad_name: creative.ad_name })}
                   >
                     {creative.thumbnail_url ? (
