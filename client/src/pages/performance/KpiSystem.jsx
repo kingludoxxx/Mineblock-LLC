@@ -266,7 +266,21 @@ export default function KpiSystem() {
   // ── Metrics from dashboard ─────────────────────────────────────────────────
 
   const m = dashboard || {};
-  const metrics = m.metrics || m;
+  const raw = m.metrics || m;
+  // Normalize field names from API (totalRevenue → revenue, totalOrders → orders, etc.)
+  const metrics = {
+    ...raw,
+    revenue: raw.revenue ?? raw.totalRevenue ?? raw.netRevenue ?? 0,
+    netRevenue: raw.netRevenue ?? raw.totalRevenue ?? raw.revenue ?? 0,
+    grossRevenue: raw.grossRevenue ?? raw.totalRevenue ?? 0,
+    orders: raw.orders ?? raw.totalOrders ?? raw.orderCount ?? 0,
+    unitsSold: raw.unitsSold ?? (Number(raw.totalMinersSold || 0) + Number(raw.totalRigsSold || 0)),
+    aov: raw.aov ?? raw.avgOrderValue ?? 0,
+    cogs: raw.cogs ?? raw.totalCogs ?? 0,
+    shippingCost: raw.shippingCost ?? raw.totalShipping ?? 0,
+    grossProfit: raw.grossProfit ?? raw.totalGrossProfit ?? 0,
+    margin: raw.margin ?? raw.avgProfitMargin ?? raw.grossMargin ?? 0,
+  };
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
@@ -408,7 +422,7 @@ export default function KpiSystem() {
           <MetricCard
             icon={Truck}
             label="Shipping"
-            value={fmtMoney(metrics.shipping ?? metrics.totalShipping)}
+            value={fmtMoney(metrics.shippingCost ?? metrics.shipping ?? metrics.totalShipping)}
             accentColor="bg-orange-500/10"
           />
           <div className={cardStyle}>
