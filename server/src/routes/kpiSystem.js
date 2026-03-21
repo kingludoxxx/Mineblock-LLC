@@ -809,11 +809,20 @@ router.get('/sku-breakdown', authenticate, async (req, res) => {
       for (const item of items) {
         const sku = item.sku || 'UNKNOWN';
         if (!skuData[sku]) {
-          skuData[sku] = { sku, unitsSold: 0, revenue: 0, orderCount: 0, title: item.title || sku };
+          skuData[sku] = { sku, unitsSold: 0, revenue: 0, cogs: 0, orderCount: 0, title: item.title || sku };
         }
-        skuData[sku].unitsSold += item.quantity || 1;
-        skuData[sku].revenue += parseFloat(item.price || 0) * (item.quantity || 1);
+        const qty = item.quantity || 1;
+        skuData[sku].unitsSold += qty;
+        skuData[sku].revenue += parseFloat(item.price || 0) * qty;
         skuData[sku].orderCount++;
+
+        // Calculate COGS per SKU
+        const parsed = parseSku(sku);
+        if (parsed.type === 'MR') {
+          skuData[sku].cogs += MR_UNIT_COST * parsed.minerCount * qty;
+        } else if (parsed.type === 'RIG') {
+          skuData[sku].cogs += parsed.unitCost * qty;
+        }
       }
     }
 
@@ -825,11 +834,18 @@ router.get('/sku-breakdown', authenticate, async (req, res) => {
       data: {
         startDate, endDate,
         totalSkus: breakdown.length,
-        breakdown: breakdown.map(b => ({
-          ...b,
-          revenue: Math.round(b.revenue * 100) / 100,
-          revenueShare: totalRevenue > 0 ? Math.round((b.revenue / totalRevenue) * 10000) / 100 : 0,
-        })),
+        breakdown: breakdown.map(b => {
+          const profit = b.revenue - b.cogs;
+          const margin = b.revenue > 0 ? (profit / b.revenue) * 100 : 0;
+          return {
+            ...b,
+            revenue: Math.round(b.revenue * 100) / 100,
+            cogs: Math.round(b.cogs * 100) / 100,
+            profit: Math.round(profit * 100) / 100,
+            margin: Math.round(margin * 100) / 100,
+            revenueShare: totalRevenue > 0 ? Math.round((b.revenue / totalRevenue) * 10000) / 100 : 0,
+          };
+        }),
       },
     });
   } catch (err) {

@@ -187,10 +187,17 @@ export default function KpiSystem() {
       ]);
 
       setDashboard(dashRes.data?.data || dashRes.data || {});
-      setTrends(trendRes.data?.data || trendRes.data || []);
-      setSkuBreakdown(skuRes.data?.data || skuRes.data || []);
+      // trends API returns { days: N, dataPoints: [...], comparison }
+      const trendData = trendRes.data?.data || trendRes.data || {};
+      setTrends(trendData.dataPoints || trendData.days || trendData.data || (Array.isArray(trendData) ? trendData : []));
+      // sku-breakdown API returns { breakdown: [...] }
+      const skuData = skuRes.data?.data || skuRes.data || {};
+      setSkuBreakdown(skuData.breakdown || skuData.skus || (Array.isArray(skuData) ? skuData : []));
+      // cost-sheet API returns { summary: {...}, orders: [...] }
       setCostSheet(costRes.data?.data || costRes.data || {});
-      setAlerts(alertRes.data?.data || alertRes.data || []);
+      // alerts API returns { alerts: [...] }
+      const alertData = alertRes.data?.data || alertRes.data || {};
+      setAlerts(alertData.alerts || (Array.isArray(alertData) ? alertData : []));
     } catch (err) {
       console.error('KPI fetch error:', err);
       setError(err.response?.data?.message || err.message || 'Failed to load KPI data');
@@ -293,8 +300,9 @@ export default function KpiSystem() {
     );
   }
 
-  const costSheetRows = costSheet?.rows || costSheet?.dailyBreakdown || [];
-  const supplierOwed = costSheet?.totalOwed ?? costSheet?.supplierOwed ?? 0;
+  const costSheetRows = costSheet?.orders || costSheet?.rows || costSheet?.dailyBreakdown || [];
+  const costSummary = costSheet?.summary || {};
+  const supplierOwed = Number(costSummary?.totalCogs || 0) + Number(costSummary?.totalShipping || 0) || (Number(metrics.totalCogs || 0) + Number(metrics.totalShipping || 0));
   const alertList = Array.isArray(alerts) ? alerts : [];
 
   return (
@@ -453,7 +461,7 @@ export default function KpiSystem() {
                     axisLine={{ stroke: 'rgba(255,255,255,0.06)' }}
                     tickFormatter={(v) => {
                       if (!v) return '';
-                      const d = new Date(v + 'T00:00:00');
+                      const d = new Date(v);
                       return `${d.getMonth() + 1}/${d.getDate()}`;
                     }}
                   />
@@ -532,7 +540,7 @@ export default function KpiSystem() {
                         }`}
                       >
                         <td className="px-3 py-3 text-white font-mono text-xs">{row.sku || '-'}</td>
-                        <td className="px-3 py-3 text-white">{row.product || row.productName || '-'}</td>
+                        <td className="px-3 py-3 text-white">{row.title || row.product || row.productName || '-'}</td>
                         <td className="px-3 py-3 text-white">{fmtInt(row.unitsSold ?? row.units)}</td>
                         <td className="px-3 py-3 text-white">{fmtMoney(row.revenue)}</td>
                         <td className="px-3 py-3 text-[#888]">{fmtMoney(row.cogs)}</td>
@@ -574,27 +582,29 @@ export default function KpiSystem() {
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-white/[0.06]">
+                      <th className="text-left text-xs text-[#888] font-medium px-3 py-3">Order #</th>
                       <th className="text-left text-xs text-[#888] font-medium px-3 py-3">Date</th>
-                      <th className="text-left text-xs text-[#888] font-medium px-3 py-3">Orders</th>
-                      <th className="text-left text-xs text-[#888] font-medium px-3 py-3">MR Units</th>
-                      <th className="text-left text-xs text-[#888] font-medium px-3 py-3">RIG Units</th>
-                      <th className="text-left text-xs text-[#888] font-medium px-3 py-3">MR Cost</th>
-                      <th className="text-left text-xs text-[#888] font-medium px-3 py-3">RIG Cost</th>
+                      <th className="text-left text-xs text-[#888] font-medium px-3 py-3">Country</th>
+                      <th className="text-left text-xs text-[#888] font-medium px-3 py-3">Miners</th>
+                      <th className="text-left text-xs text-[#888] font-medium px-3 py-3">Rigs</th>
+                      <th className="text-left text-xs text-[#888] font-medium px-3 py-3">COGS</th>
                       <th className="text-left text-xs text-[#888] font-medium px-3 py-3">Shipping</th>
-                      <th className="text-left text-xs text-[#888] font-medium px-3 py-3">Total</th>
+                      <th className="text-left text-xs text-[#888] font-medium px-3 py-3">Total Cost</th>
+                      <th className="text-left text-xs text-[#888] font-medium px-3 py-3">Margin</th>
                     </tr>
                   </thead>
                   <tbody>
                     {costSheetRows.map((row, i) => (
-                      <tr key={row.date || i} className="border-b border-white/[0.04] hover:bg-white/[0.02] transition-colors">
-                        <td className="px-3 py-3 text-white text-xs">{row.date || '-'}</td>
-                        <td className="px-3 py-3 text-white">{fmtInt(row.orders)}</td>
-                        <td className="px-3 py-3 text-white">{fmtInt(row.mrUnits)}</td>
-                        <td className="px-3 py-3 text-white">{fmtInt(row.rigUnits)}</td>
-                        <td className="px-3 py-3 text-[#888]">{fmtMoney(row.mrCost)}</td>
-                        <td className="px-3 py-3 text-[#888]">{fmtMoney(row.rigCost)}</td>
+                      <tr key={row.orderNumber || i} className="border-b border-white/[0.04] hover:bg-white/[0.02] transition-colors">
+                        <td className="px-3 py-3 text-white text-xs">#{row.orderNumber}</td>
+                        <td className="px-3 py-3 text-white text-xs">{row.date ? new Date(row.date).toLocaleDateString() : '-'}</td>
+                        <td className="px-3 py-3 text-[#888] text-xs">{row.country || '-'}</td>
+                        <td className="px-3 py-3 text-white">{fmtInt(row.miners)}</td>
+                        <td className="px-3 py-3 text-white">{fmtInt(row.rigs)}</td>
+                        <td className="px-3 py-3 text-[#888]">{fmtMoney(row.cogs)}</td>
                         <td className="px-3 py-3 text-[#888]">{fmtMoney(row.shipping)}</td>
-                        <td className="px-3 py-3 text-white font-medium">{fmtMoney(row.total)}</td>
+                        <td className="px-3 py-3 text-white font-medium">{fmtMoney(Number(row.cogs || 0) + Number(row.shipping || 0))}</td>
+                        <td className="px-3 py-3"><MarginBadge margin={row.margin} /></td>
                       </tr>
                     ))}
                   </tbody>

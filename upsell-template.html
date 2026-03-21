@@ -1,0 +1,857 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MineBlock - Special One-Time Offer</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Manrope:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    /* ═══════════════════════════════════════════════════
+       MINEBLOCK VSL UPSELL TEMPLATE
+       Brand: Plus Jakarta Sans + Manrope
+       Colors: #0A0A0A, #0F26A6, #287AF8, #E6E8ED
+       ═══════════════════════════════════════════════════ */
+
+    *, *::before, *::after {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: 'Manrope', sans-serif;
+      background-color: #FFFFFF;
+      color: #0A0A0A;
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .container {
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 0 20px;
+    }
+
+    .container-wide {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 0 20px;
+    }
+
+    /* ── Progress Bar ────────────────────────────────── */
+    .progress-bar {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px 0;
+      max-width: 650px;
+      margin: 0 auto;
+    }
+
+    .step {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      font-size: 14px;
+      font-weight: 600;
+      color: #8A8F9C;
+      white-space: nowrap;
+    }
+
+    .step.completed { color: #0A0A0A; }
+
+    .step.active {
+      color: #FFFFFF;
+      background: linear-gradient(135deg, #0F26A6, #287AF8);
+      padding: 8px 20px;
+      border-radius: 50px;
+    }
+
+    .step-icon {
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .step-icon.check { background: #287AF8; color: #FFFFFF; }
+    .step-icon.number { background: #E6E8ED; color: #3A3F4B; }
+
+    .step-arrow {
+      width: 24px;
+      height: 24px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #8A8F9C;
+    }
+
+    /* ── Warning & Badge ─────────────────────────────── */
+    .warning-text {
+      text-align: center;
+      font-size: 13px;
+      font-weight: 600;
+      color: #3A3F4B;
+      padding: 8px 0;
+    }
+
+    .option-badge {
+      text-align: center;
+      padding: 10px 0;
+      margin: 8px auto;
+      max-width: 500px;
+      background: #F4F5F7;
+      border-radius: 8px;
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      font-size: 14px;
+      font-weight: 500;
+      color: #287AF8;
+    }
+
+    /* ── Main Headline ───────────────────────────────── */
+    .headline {
+      text-align: center;
+      padding: 24px 0 16px;
+    }
+
+    .headline h1 {
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      font-size: 32px;
+      font-weight: 800;
+      line-height: 1.25;
+      color: #0A0A0A;
+      letter-spacing: -0.5px;
+    }
+
+    .headline h1 .highlight {
+      text-decoration: underline;
+      text-decoration-color: #287AF8;
+      text-underline-offset: 4px;
+      text-decoration-thickness: 3px;
+    }
+
+    /* ── Video Section (Wistia/VSL) ──────────────────── */
+    .video-section { padding: 16px 0 24px; }
+
+    .video-wrapper {
+      background: linear-gradient(135deg, #E6E8ED 0%, #F4F5F7 50%, #E6E8ED 100%);
+      border-radius: 16px;
+      padding: 24px;
+      max-width: 750px;
+      margin: 0 auto;
+    }
+
+    .video-embed {
+      position: relative;
+      width: 100%;
+      padding-top: 56.25%;
+      background: #0A0A0A;
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 8px 32px rgba(10, 10, 10, 0.15);
+    }
+
+    .video-embed iframe,
+    .video-embed .wistia_embed {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+    }
+
+    .video-placeholder {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: linear-gradient(135deg, #0A0A0A 0%, #1a1a2e 100%);
+      color: #FFFFFF;
+      cursor: pointer;
+    }
+
+    .play-icon {
+      width: 72px;
+      height: 72px;
+      border-radius: 50%;
+      background: rgba(40, 122, 248, 0.9);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 12px;
+      transition: transform 0.2s, background 0.2s;
+    }
+
+    .play-icon:hover {
+      transform: scale(1.1);
+      background: rgba(15, 38, 166, 0.95);
+    }
+
+    .play-icon svg {
+      width: 28px; height: 28px;
+      fill: #FFFFFF;
+      margin-left: 4px;
+    }
+
+    .video-placeholder span {
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      font-weight: 700;
+      font-size: 16px;
+    }
+
+    /* ═══════════════════════════════════════════════════
+       BUNDLE SECTION — 3 Column Cards
+       ═══════════════════════════════════════════════════ */
+    .bundle-section {
+      padding: 40px 0;
+    }
+
+    .bundle-headline {
+      text-align: center;
+      margin-bottom: 32px;
+    }
+
+    .bundle-headline h2 {
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      font-size: 30px;
+      font-weight: 800;
+      color: #0A0A0A;
+      letter-spacing: -0.5px;
+    }
+
+    .bundle-cards {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 20px;
+      align-items: end;
+    }
+
+    /* ── Individual Card ─────────────────────────────── */
+    .bundle-card {
+      border: 2px solid #E6E8ED;
+      border-radius: 16px;
+      overflow: hidden;
+      background: #FFFFFF;
+      position: relative;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+
+    .bundle-card:hover {
+      box-shadow: 0 4px 24px rgba(0,0,0,0.08);
+    }
+
+    /* Featured (center card) */
+    .bundle-card.featured {
+      border-color: #287AF8;
+      box-shadow: 0 8px 32px rgba(40, 122, 248, 0.15);
+      transform: scale(1.03);
+      z-index: 2;
+    }
+
+    /* Secondary highlight (right card) */
+    .bundle-card.secondary {
+      border-color: #E6C94A;
+    }
+
+    /* ── Card Header ─────────────────────────────────── */
+    .card-header {
+      padding: 16px 20px 12px;
+      text-align: center;
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      font-size: 16px;
+      font-weight: 700;
+      color: #3A3F4B;
+      border-bottom: 1px solid #E6E8ED;
+    }
+
+    .bundle-card.featured .card-header {
+      background: linear-gradient(135deg, #0F26A6, #287AF8);
+      color: #FFFFFF;
+      border-bottom: none;
+    }
+
+    .bundle-card.secondary .card-header {
+      background: linear-gradient(135deg, #D4A843, #E6C94A);
+      color: #0A0A0A;
+      border-bottom: none;
+    }
+
+    /* ── Card Body ───────────────────────────────────── */
+    .card-body {
+      padding: 20px;
+      text-align: center;
+    }
+
+    /* Product Image Placeholder */
+    .product-image {
+      width: 120px;
+      height: 160px;
+      margin: 0 auto 16px;
+      background: #F4F5F7;
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #B3B3B3;
+      font-size: 12px;
+      font-weight: 500;
+    }
+
+    .product-image img {
+      max-width: 100%;
+      max-height: 100%;
+      object-fit: contain;
+    }
+
+    /* Save Badge */
+    .save-badge {
+      display: inline-block;
+      background: #E53E3E;
+      color: #FFFFFF;
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      font-size: 13px;
+      font-weight: 800;
+      padding: 6px 14px;
+      border-radius: 50px;
+      margin-bottom: 8px;
+    }
+
+    /* Price */
+    .bundle-price {
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      margin-bottom: 4px;
+    }
+
+    .bundle-price .amount {
+      font-size: 36px;
+      font-weight: 800;
+      color: #E53E3E;
+    }
+
+    .bundle-card:first-child .bundle-price .amount {
+      color: #0A0A0A;
+    }
+
+    .bundle-price .per {
+      display: block;
+      font-size: 14px;
+      color: #8A8F9C;
+      font-weight: 500;
+    }
+
+    /* Total / Compare Price */
+    .bundle-total {
+      font-size: 14px;
+      color: #3A3F4B;
+      margin-bottom: 16px;
+    }
+
+    .bundle-total .original {
+      text-decoration: line-through;
+      color: #B3B3B3;
+      margin-left: 6px;
+    }
+
+    /* ── Perks List ──────────────────────────────────── */
+    .bundle-perks {
+      list-style: none;
+      text-align: left;
+      margin: 16px 0;
+      padding: 0;
+    }
+
+    .bundle-perks li {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 6px 0;
+      font-size: 13px;
+      font-weight: 500;
+      color: #3A3F4B;
+      border-bottom: 1px solid #F4F5F7;
+    }
+
+    .bundle-perks li:last-child {
+      border-bottom: none;
+    }
+
+    .bundle-perks .perk-icon {
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: #287AF8;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      margin-right: 8px;
+    }
+
+    .bundle-perks .perk-icon svg {
+      width: 10px; height: 10px;
+      fill: #FFFFFF;
+    }
+
+    .bundle-perks .perk-label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex: 1;
+    }
+
+    .bundle-perks .perk-value {
+      font-weight: 700;
+      color: #287AF8;
+      white-space: nowrap;
+    }
+
+    .bundle-perks .perk-value.free {
+      color: #16A34A;
+    }
+
+    .bundle-perks .perk-value.strike {
+      text-decoration: line-through;
+      color: #B3B3B3;
+      font-weight: 400;
+      margin-right: 6px;
+    }
+
+    /* ── CTA Button ──────────────────────────────────── */
+    .cta-button {
+      display: block;
+      width: 100%;
+      padding: 14px 24px;
+      background: linear-gradient(135deg, #0F26A6, #287AF8);
+      color: #FFFFFF;
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      font-size: 15px;
+      font-weight: 700;
+      border: none;
+      border-radius: 12px;
+      cursor: pointer;
+      text-align: center;
+      transition: transform 0.2s, box-shadow 0.2s;
+      text-decoration: none;
+    }
+
+    .cta-button:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 24px rgba(15, 38, 166, 0.3);
+    }
+
+    /* Muted CTA for single unit */
+    .cta-button.muted {
+      background: #E6E8ED;
+      color: #3A3F4B;
+    }
+
+    .cta-button.muted:hover {
+      background: #d0d3d9;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+    }
+
+    /* Gold CTA for 2-pack */
+    .cta-button.gold {
+      background: linear-gradient(135deg, #B8860B, #D4A843);
+    }
+
+    .cta-button.gold:hover {
+      box-shadow: 0 8px 24px rgba(184, 134, 11, 0.3);
+    }
+
+    .cta-sub {
+      text-align: center;
+      font-size: 12px;
+      color: #8A8F9C;
+      margin-top: 6px;
+    }
+
+    /* Payment Icons */
+    .payment-icons {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      margin-top: 12px;
+      opacity: 0.5;
+    }
+
+    .payment-icons img {
+      height: 20px;
+    }
+
+    .payment-icons span {
+      font-size: 11px;
+      color: #8A8F9C;
+      background: #F4F5F7;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-weight: 600;
+    }
+
+    .tax-note {
+      text-align: center;
+      font-size: 11px;
+      color: #B3B3B3;
+      margin-top: 8px;
+    }
+
+    /* ── No Thanks Link ──────────────────────────────── */
+    .no-thanks {
+      text-align: center;
+      padding: 32px 0 16px;
+    }
+
+    .no-thanks a {
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      font-size: 14px;
+      font-weight: 600;
+      color: #3A3F4B;
+      text-decoration: underline;
+      cursor: pointer;
+    }
+
+    .no-thanks-detail {
+      text-align: center;
+      font-size: 13px;
+      color: #287AF8;
+      max-width: 600px;
+      margin: 12px auto 0;
+      line-height: 1.5;
+      cursor: pointer;
+    }
+
+    /* ── Footer ──────────────────────────────────────── */
+    .footer {
+      background: #0A0A0A;
+      color: #8A8F9C;
+      padding: 40px 0;
+      margin-top: 40px;
+    }
+
+    .footer-logo {
+      text-align: center;
+      margin-bottom: 20px;
+    }
+
+    .footer-logo .logo-text {
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      font-size: 24px;
+      font-weight: 800;
+      color: #FFFFFF;
+      letter-spacing: -0.5px;
+    }
+
+    .footer-disclaimer {
+      max-width: 700px;
+      margin: 0 auto;
+      text-align: center;
+      font-size: 12px;
+      line-height: 1.7;
+      color: #8A8F9C;
+    }
+
+    .footer-disclaimer strong { color: #E6E8ED; }
+
+    .footer-bottom {
+      text-align: center;
+      margin-top: 24px;
+      font-size: 12px;
+      color: #8A8F9C;
+    }
+
+    .footer-bottom a {
+      color: #287AF8;
+      text-decoration: none;
+    }
+
+    .footer-bottom a:hover { text-decoration: underline; }
+
+    /* ── Responsive ──────────────────────────────────── */
+    @media (max-width: 768px) {
+      .bundle-cards {
+        grid-template-columns: 1fr;
+        max-width: 400px;
+        margin: 0 auto;
+      }
+
+      .bundle-card.featured {
+        transform: none;
+        order: -1;
+      }
+
+      .headline h1 { font-size: 24px; }
+      .bundle-headline h2 { font-size: 24px; }
+      .progress-bar { gap: 4px; }
+      .step { font-size: 12px; }
+      .video-wrapper { padding: 12px; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ═══════════════════════════════════════════════════
+       PROGRESS BAR
+       ═══════════════════════════════════════════════════ -->
+  <div class="container">
+    <div class="progress-bar">
+      <div class="step completed">
+        <span class="step-icon check">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="white"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+        </span>
+        Order Approved
+      </div>
+      <div class="step-arrow">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="#8A8F9C"><path d="M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6z"/></svg>
+      </div>
+      <div class="step active">
+        <span class="step-icon">2</span>
+        Customize Order
+      </div>
+      <div class="step-arrow">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="#8A8F9C"><path d="M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6z"/></svg>
+      </div>
+      <div class="step">
+        <span class="step-icon number">3</span>
+        Final Confirmation
+      </div>
+    </div>
+
+    <p class="warning-text">**Do not hit your back button as you might accidentally place a double order.**</p>
+    <div class="option-badge">Option 1 of 3 to Customize Your Order</div>
+
+    <!-- ═══════════════════════════════════════════════════
+         HEADLINE
+         ═══════════════════════════════════════════════════ -->
+    <div class="headline">
+      <h1>As a New Customer You've Been Qualified<br>For This <span class="highlight">Special One-Time Offer</span></h1>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════
+         VSL VIDEO (Wistia Embed)
+         ═══════════════════════════════════════════════════ -->
+    <div class="video-section">
+      <div class="video-wrapper">
+        <div class="video-embed">
+          <!-- REPLACE with your Wistia embed code -->
+          <div class="video-placeholder" id="videoPlaceholder">
+            <div class="play-icon">
+              <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+            </div>
+            <span>Tap To Unmute</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════
+       BUNDLE OFFER CARDS (3 columns)
+       ═══════════════════════════════════════════════════ -->
+  <div class="container-wide">
+    <div class="bundle-section">
+      <div class="bundle-headline">
+        <h2>Choose Your Discounted Package</h2>
+      </div>
+
+      <div class="bundle-cards">
+
+        <!-- ── Card 1: 5 Miners Pack ──────────────── -->
+        <div class="bundle-card">
+          <div class="card-header">5 Miners Pack</div>
+          <div class="card-body">
+            <div class="product-image">
+              <!-- Replace with actual product image -->
+              <span>Product Image</span>
+            </div>
+
+            <div class="save-badge">SAVE 50%</div>
+            <div class="bundle-price">
+              <span class="amount">$29.80</span>
+              <span class="per">each</span>
+            </div>
+            <div class="bundle-total">
+              Total: $149.99 <span class="original">$300</span>
+            </div>
+
+            <ul class="bundle-perks">
+              <li>
+                <span class="perk-label">
+                  <span class="perk-icon"><svg viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg></span>
+                  720 Automatic Attempts Daily
+                </span>
+              </li>
+              <li>
+                <span class="perk-label">
+                  <span class="perk-icon"><svg viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg></span>
+                  90 Day Money Back Guarantee
+                </span>
+              </li>
+            </ul>
+
+            <a href="#" class="cta-button muted">Yes! Add to Order!</a>
+            <p class="cta-sub">90-Day Money Back Guarantee</p>
+
+            <div class="payment-icons">
+              <span>PayPal</span>
+              <span>Visa</span>
+              <span>MC</span>
+              <span>Amex</span>
+            </div>
+            <p class="tax-note">* Plus applicable sales tax</p>
+          </div>
+        </div>
+
+        <!-- ── Card 2: 15 Miners Pack (FEATURED / Best Deal) ── -->
+        <div class="bundle-card featured">
+          <div class="card-header">15 Miners Pack</div>
+          <div class="card-body">
+            <div class="product-image">
+              <!-- Replace with actual product image -->
+              <span>Product Image</span>
+            </div>
+
+            <div class="save-badge">SAVE 61%</div>
+            <div class="bundle-price">
+              <span class="amount">$23.27</span>
+              <span class="per">each</span>
+            </div>
+            <div class="bundle-total">
+              Total: $349 <span class="original">$899</span>
+            </div>
+
+            <ul class="bundle-perks">
+              <li>
+                <span class="perk-label">
+                  <span class="perk-icon"><svg viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg></span>
+                  Biggest Discount
+                </span>
+                <span class="perk-value">61% OFF</span>
+              </li>
+              <li>
+                <span class="perk-label">
+                  <span class="perk-icon"><svg viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg></span>
+                  2116 Automatic Attempts Daily
+                </span>
+              </li>
+              <li>
+                <span class="perk-label">
+                  <span class="perk-icon"><svg viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg></span>
+                  90 Day Money Back Guarantee
+                </span>
+                <span class="perk-value">INCLUDED</span>
+              </li>
+            </ul>
+
+            <a href="#" class="cta-button">Yes! Add to Order!</a>
+            <p class="cta-sub">90-Day Money Back Guarantee</p>
+
+            <div class="payment-icons">
+              <span>PayPal</span>
+              <span>Visa</span>
+              <span>MC</span>
+              <span>Amex</span>
+            </div>
+            <p class="tax-note">* Plus applicable sales tax</p>
+          </div>
+        </div>
+
+        <!-- ── Card 3: 8 Miners Pack ─────────────────── -->
+        <div class="bundle-card secondary">
+          <div class="card-header">8 Miners Pack</div>
+          <div class="card-body">
+            <div class="product-image">
+              <!-- Replace with actual product image -->
+              <span>Product Image</span>
+            </div>
+
+            <div class="save-badge">SAVE 52%</div>
+            <div class="bundle-price">
+              <span class="amount">$28.62</span>
+              <span class="per">each</span>
+            </div>
+            <div class="bundle-total">
+              Total: $228.96 <span class="original">$479</span>
+            </div>
+
+            <ul class="bundle-perks">
+              <li>
+                <span class="perk-label">
+                  <span class="perk-icon"><svg viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg></span>
+                  1152 Automatic Attempts Daily
+                </span>
+              </li>
+              <li>
+                <span class="perk-label">
+                  <span class="perk-icon"><svg viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg></span>
+                  90 Day Money Back Guarantee
+                </span>
+                <span class="perk-value">INCLUDED</span>
+              </li>
+            </ul>
+
+            <a href="#" class="cta-button gold">Yes! Add to Order!</a>
+            <p class="cta-sub">90-Day Money Back Guarantee</p>
+
+            <div class="payment-icons">
+              <span>PayPal</span>
+              <span>Visa</span>
+              <span>MC</span>
+              <span>Amex</span>
+            </div>
+            <p class="tax-note">* Plus applicable sales tax</p>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════
+       NO THANKS
+       ═══════════════════════════════════════════════════ -->
+  <div class="container">
+    <div class="no-thanks">
+      <a href="#">No Thank You, I'm Happy With My Existing Order</a>
+    </div>
+    <p class="no-thanks-detail">
+      No, I'm not interested in learning more about my order. I'm aware I'm going to miss out
+      on important order details and additional One-Time only offer. Take me to the next step.
+    </p>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════
+       FOOTER
+       ═══════════════════════════════════════════════════ -->
+  <footer class="footer">
+    <div class="container">
+      <div class="footer-logo">
+        <span class="logo-text">MineBlock.</span>
+      </div>
+      <div class="footer-disclaimer">
+        <p><strong>DISCLAIMER:</strong> The information and other content provided in this page, or in any linked materials, are not intended and should not be construed as financial advice, nor is the information a substitute for professional financial expertise or treatment.</p>
+        <br>
+        <p>Results may vary. Past performance does not guarantee future results. Always do your own research before making any financial decisions.</p>
+      </div>
+      <div class="footer-bottom">
+        <p>MineBlock&trade; - Copyright 2026 - All Rights Reserved.</p>
+        <p>
+          <a href="#">Privacy Policy</a> -
+          <a href="#">Terms Of Service</a> -
+          <a href="#">Return Policy</a>
+        </p>
+        <p>support@mineblock.com</p>
+      </div>
+    </div>
+  </footer>
+
+</body>
+</html>
