@@ -192,10 +192,15 @@ async function shopifyFetch(endpoint, params = {}) {
   return { data, nextUrl };
 }
 
-async function fetchAllOrders(sinceId = null) {
+async function fetchAllOrders(sinceId = null, extraQueryStr = '') {
   const allOrders = [];
   const params = { limit: '250', status: 'any' };
   if (sinceId) params.since_id = sinceId.toString();
+  // Parse extra query params like &created_at_min=...
+  if (extraQueryStr) {
+    const extra = new URLSearchParams(extraQueryStr.replace(/^&/, ''));
+    for (const [k, v] of extra) params[k] = v;
+  }
 
   let result = await shopifyFetch('orders.json', params);
   allOrders.push(...(result.data.orders || []));
@@ -269,25 +274,37 @@ function calculateOrderCosts(order) {
   // MR COGS = total miners * unit cost
   const mrCogs = totalMiners * UNIT_COST_PER_MINER;
 
-  // MR shipping lookup
+  // MR shipping lookup — extrapolate beyond max defined rate
   let mrShipping = 0;
   if (totalMiners > 0) {
-    const lookupCountry = Object.keys(SHIPPING_RATES_MR).length > 0 ? 'United States' : country;
-    // Use the closest miner count (cap at max defined)
     const maxDefined = Math.max(...Object.keys(SHIPPING_RATES_MR).map(Number));
-    const lookupCount = Math.min(totalMiners, maxDefined);
-    mrShipping = SHIPPING_RATES_MR[lookupCount] || SHIPPING_RATES_MR[maxDefined] || 0;
+    if (totalMiners <= maxDefined) {
+      mrShipping = SHIPPING_RATES_MR[totalMiners] || SHIPPING_RATES_MR[maxDefined] || 0;
+    } else {
+      // Extrapolate: use max rate + per-unit rate for additional miners
+      const maxRate = SHIPPING_RATES_MR[maxDefined];
+      const prevRate = SHIPPING_RATES_MR[maxDefined - 1] || maxRate;
+      const perUnitRate = maxRate - prevRate; // incremental cost per miner
+      mrShipping = Math.round((maxRate + perUnitRate * (totalMiners - maxDefined)) * 100) / 100;
+    }
   }
 
-  // RIG shipping lookup
+  // RIG shipping lookup — scale linearly for quantities beyond defined rates
   let rigShipping = 0;
   if (totalRigUnits > 0) {
-    rigShipping = SHIPPING_RATES_RIG[totalRigUnits] || SHIPPING_RATES_RIG[4] || 0;
+    if (SHIPPING_RATES_RIG[totalRigUnits]) {
+      rigShipping = SHIPPING_RATES_RIG[totalRigUnits];
+    } else {
+      // For undefined slot counts, calculate proportionally using the per-slot rate from 4-slot
+      const perSlotRate = SHIPPING_RATES_RIG[4] / 4; // $0.30 per slot
+      rigShipping = Math.round(perSlotRate * totalRigUnits * 100) / 100;
+    }
   }
 
   const totalCogs = mrCogs + rigCogs;
   const totalShipping = mrShipping + rigShipping;
-  const revenue = parseFloat(order.total_price || 0);
+  // Use subtotal_price (product revenue only, excludes customer-paid shipping)
+  const revenue = parseFloat(order.subtotal_price || order.total_price || 0);
   const grossProfit = revenue - totalCogs - totalShipping;
   const profitMargin = revenue > 0 ? (grossProfit / revenue) * 100 : 0;
 
@@ -405,22 +422,27 @@ async function recalculateSnapshots() {
 
   for (const row of dates) {
     const d = row.d;
-    const orders = await pgQuery(`
-      SELECT * FROM shopify_orders_cache WHERE DATE(created_at) = $1
+    const allOrders = await pgQuery(`
+      SELECT * FROM shopify_orders_cache WHERE DATE(created_at AT TIME ZONE 'UTC') = $1
     `, [d]);
 
-    if (orders.length === 0) continue;
+    if (allOrders.length === 0) continue;
 
-    const totalRevenue = orders.reduce((s, o) => s + parseFloat(o.total_price || 0), 0);
+    // Filter out refunded/voided/cancelled orders from revenue calculations
+    const orders = allOrders.filter(o => !['refunded', 'voided'].includes(o.financial_status));
+    const refundedOrders = allOrders.filter(o => ['refunded', 'voided'].includes(o.financial_status));
+
+    // Use subtotal_price (product revenue, excludes customer-paid shipping)
+    const totalRevenue = orders.reduce((s, o) => s + parseFloat(o.subtotal_price || o.total_price || 0), 0);
     const totalCogs = orders.reduce((s, o) => s + parseFloat(o.cogs || 0), 0);
     const totalShipping = orders.reduce((s, o) => s + parseFloat(o.shipping_cost || 0), 0);
     const totalDiscounts = orders.reduce((s, o) => s + parseFloat(o.total_discounts || 0), 0);
     const grossProfit = totalRevenue - totalCogs - totalShipping;
-    const avgOv = totalRevenue / orders.length;
-    const avgMargin = orders.reduce((s, o) => s + parseFloat(o.profit_margin || 0), 0) / orders.length;
+    const avgOv = orders.length > 0 ? totalRevenue / orders.length : 0;
+    const avgMargin = orders.length > 0 ? orders.reduce((s, o) => s + parseFloat(o.profit_margin || 0), 0) / orders.length : 0;
     const totalMiners = orders.reduce((s, o) => s + (parseInt(o.total_miners) || 0), 0);
     const totalRigs = orders.reduce((s, o) => s + (parseInt(o.total_rig_units) || 0), 0);
-    const refunds = orders.filter(o => o.financial_status === 'refunded' || o.financial_status === 'partially_refunded').length;
+    const refunds = refundedOrders.length;
 
     // Find top SKU
     const skuCounts = {};
@@ -513,11 +535,23 @@ router.post('/sync', authenticate, async (req, res) => {
     await ensureTables();
     await seedStaticData();
 
-    // Find last synced order to do incremental sync
+    // Incremental sync: fetch new orders + re-fetch recent orders (last 3 days) to catch status changes
     const lastSynced = await pgQuery('SELECT MAX(order_id) as max_id FROM shopify_orders_cache');
     const sinceId = lastSynced[0]?.max_id || null;
 
-    const orders = await fetchAllOrders(sinceId);
+    // Fetch new orders
+    const newOrders = await fetchAllOrders(sinceId);
+
+    // Also re-fetch orders from last 3 days to catch refunds/status changes
+    const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString();
+    const recentOrders = await fetchAllOrders(null, `&created_at_min=${threeDaysAgo}`);
+
+    // Merge: use Map to deduplicate by order ID
+    const orderMap = new Map();
+    for (const o of [...newOrders, ...recentOrders]) {
+      orderMap.set(o.id, o);
+    }
+    const orders = Array.from(orderMap.values());
     const eligible = orders.filter(o => (o.order_number || 0) >= MIN_ORDER_NUMBER);
 
     let synced = 0;
@@ -676,17 +710,18 @@ router.get('/cost-sheet', authenticate, async (req, res) => {
     const { start, end } = getPeriodRange(period, date);
 
     const orders = await pgQuery(`
-      SELECT order_number, created_at, total_price, cogs, shipping_cost,
+      SELECT order_number, created_at, total_price, subtotal_price, cogs, shipping_cost,
              gross_profit, profit_margin, total_miners, total_rig_units,
              line_items, country, financial_status
       FROM shopify_orders_cache
       WHERE DATE(created_at) BETWEEN $1 AND $2
+        AND financial_status NOT IN ('refunded', 'voided')
       ORDER BY created_at DESC
     `, [start, end]);
 
     const summary = {
       totalOrders: orders.length,
-      totalRevenue: orders.reduce((s, o) => s + parseFloat(o.total_price), 0),
+      totalRevenue: orders.reduce((s, o) => s + parseFloat(o.subtotal_price || o.total_price), 0),
       totalCogs: orders.reduce((s, o) => s + parseFloat(o.cogs), 0),
       totalShipping: orders.reduce((s, o) => s + parseFloat(o.shipping_cost), 0),
       totalGrossProfit: orders.reduce((s, o) => s + parseFloat(o.gross_profit), 0),
@@ -703,7 +738,7 @@ router.get('/cost-sheet', authenticate, async (req, res) => {
         orders: orders.map(o => ({
           orderNumber: o.order_number,
           date: o.created_at,
-          revenue: parseFloat(o.total_price),
+          revenue: parseFloat(o.subtotal_price || o.total_price),
           cogs: parseFloat(o.cogs),
           shipping: parseFloat(o.shipping_cost),
           grossProfit: parseFloat(o.gross_profit),
