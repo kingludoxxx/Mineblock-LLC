@@ -48,6 +48,8 @@ async function sendSlackMessage(text, blocks) {
   const body = {
     channel: SLACK_CHANNEL,
     text,
+    username: 'Mineblock Bot',
+    icon_url: 'https://i.imgur.com/PJCRE4g.png',
     ...(blocks ? { blocks } : {}),
   };
 
