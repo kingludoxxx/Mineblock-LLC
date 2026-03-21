@@ -951,3 +951,17 @@ router.get('/export', authenticate, async (req, res) => {
 });
 
 export default router;
+export {
+  calculateOrderCosts,
+  ensureTables,
+  parseSku,
+  seedStaticData,
+  runAnomalyDetection,
+  UNIT_COST_PER_MINER,
+  MR_MINER_COUNTS,
+  RIG_UNIT_COSTS,
+  RIG_SLOT_COUNTS,
+  SHIPPING_RATES_MR,
+  SHIPPING_RATES_RIG,
+  MIN_ORDER_NUMBER,
+};

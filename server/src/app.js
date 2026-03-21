@@ -18,6 +18,7 @@ import authRoutes from './routes/auth.js';
 import mountRoutes from './routes/index.js';
 import clickupWebhookRoutes from './routes/clickupWebhook.js';
 import metaWebhookRoutes from './routes/metaWebhook.js';
+import shopifyWebhookRoutes from './routes/shopifyWebhook.js';
 import departmentRegistry from './departments/registry.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -40,6 +41,14 @@ app.use(morgan(morganFormat, {
   stream: { write: (message) => logger.info(message.trim()) },
 }));
 
+// Capture raw body for Shopify webhook HMAC verification (must come before json parser)
+app.use('/api/v1/shopify-webhook', express.json({
+  limit: '50mb',
+  verify: (req, _res, buf) => {
+    req.rawBody = buf.toString('utf8');
+  },
+}));
+
 // Body parsing
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
@@ -50,6 +59,7 @@ app.use(cookieParser());
 // Webhooks (before rate limiter — webhooks should not be throttled)
 app.use('/api/v1/clickup-webhook', clickupWebhookRoutes);
 app.use('/api/v1/meta-webhook', metaWebhookRoutes);
+app.use('/api/v1/shopify-webhook', shopifyWebhookRoutes);
 
 // Rate limiting on all API routes
 app.use('/api', apiLimiter);
