@@ -8,10 +8,11 @@ const router = Router();
 const SHOPIFY_STORE = '17cca0-2.myshopify.com';
 const SHOPIFY_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN || '';
 const SHOPIFY_API_VERSION = '2024-01';
-const MIN_ORDER_NUMBER = 2722;
+const MIN_ORDER_NUMBER = 0; // Sync ALL orders
 
 const UNIT_COST_PER_MINER = 10.92;
-const UNIT_COST_PER_MINER_2920 = 11.28; // Orders #2920-#5716
+const UNIT_COST_PER_MINER_2920 = 11.28; // Orders #2722-#5716
+const UNIT_COST_PER_MINER_ORIGINAL = 12.13; // Orders before #2722
 
 const MR_MINER_COUNTS = {
   'MR-01': 1, 'MR-02': 2, 'MR-04': 4, 'MR-05': 5, 'M5-05': 5,
@@ -486,9 +487,12 @@ function calculateOrderCosts(order) {
   } else if (orderNumber >= 2920) {
     unitCostPerMiner = UNIT_COST_PER_MINER_2920; // 11.28
     mrShippingRates = SHIPPING_RATES_MR_2920;
-  } else {
-    unitCostPerMiner = UNIT_COST_PER_MINER_2920; // 11.28 (same product cost for #2722-#2919)
+  } else if (orderNumber >= 2722) {
+    unitCostPerMiner = UNIT_COST_PER_MINER_2920; // 11.28 (orders #2722-#2919)
     mrShippingRates = SHIPPING_RATES_MR_2722;
+  } else {
+    unitCostPerMiner = UNIT_COST_PER_MINER_ORIGINAL; // 12.13 (orders before #2722)
+    mrShippingRates = SHIPPING_RATES_MR_2722; // same shipping rates
   }
 
   let totalMiners = 0;
