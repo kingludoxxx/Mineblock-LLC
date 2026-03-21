@@ -12,6 +12,7 @@ import {
   Download,
   BarChart3,
 } from 'lucide-react';
+import DatePicker from '../../components/ui/DatePicker';
 import {
   ResponsiveContainer,
   ComposedChart,
@@ -349,12 +350,7 @@ export default function KpiSystem() {
           </div>
 
           {/* Date picker */}
-          <input
-            type="date"
-            value={date}
-            onChange={(e) => setDate(e.target.value)}
-            className="bg-white/[0.04] border border-white/[0.08] rounded-lg text-white px-3 py-2 text-sm focus:outline-none focus:border-white/20 [color-scheme:dark]"
-          />
+          <DatePicker value={date} onChange={setDate} period={period} />
 
           {/* Sync button */}
           <button
