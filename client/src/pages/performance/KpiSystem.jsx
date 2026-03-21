@@ -309,7 +309,7 @@ export default function KpiSystem() {
 
   const costSheetRows = costSheet?.orders || costSheet?.rows || costSheet?.dailyBreakdown || [];
   const costSummary = costSheet?.summary || {};
-  const supplierOwed = Number(costSummary?.totalCogs || 0) + Number(costSummary?.totalShipping || 0) || (Number(metrics.totalCogs || 0) + Number(metrics.totalShipping || 0));
+  const supplierOwed = Number(costSummary?.totalCogs || 0) + Number(costSummary?.totalShipping || 0) || (Number(metrics.cogs || 0) + Number(metrics.shippingCost || 0));
   const alertList = Array.isArray(alerts) ? alerts : [];
 
   return (
@@ -416,7 +416,7 @@ export default function KpiSystem() {
               <span className="text-[#888] text-sm">Profit</span>
             </div>
             <div className="text-2xl font-semibold text-white mb-1">
-              {fmtMoney(metrics.profit ?? metrics.grossProfit)}
+              {fmtMoney(metrics.grossProfit)}
             </div>
             <div className="mt-2">
               <MarginBadge margin={metrics.margin ?? metrics.profitMargin} />
