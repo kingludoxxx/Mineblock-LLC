@@ -179,6 +179,17 @@ router.post('/check-now', authenticate, async (req, res) => {
   }
 });
 
+/** POST /reset-test — Temporarily clear notified table for testing (REMOVE AFTER TEST) */
+router.post('/reset-test', authenticate, async (req, res) => {
+  try {
+    await ensureTable();
+    await pgQuery('DELETE FROM ad_rejections_notified');
+    res.json({ success: true, message: 'Cleared all notified rejections' });
+  } catch (err) {
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
 // ── Auto-check every 5 minutes ─────────────────────────────────────
 setTimeout(() => {
   checkRejectedAds().catch(err => console.warn('[Ad Rejection] Initial check error:', err.message));
