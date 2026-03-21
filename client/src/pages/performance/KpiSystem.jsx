@@ -498,7 +498,7 @@ export default function KpiSystem() {
                   />
                   <Area
                     type="monotone"
-                    dataKey="profit"
+                    dataKey="grossProfit"
                     stroke="#16a34a"
                     strokeWidth={2}
                     fill="url(#gProfit)"
@@ -535,7 +535,6 @@ export default function KpiSystem() {
                     <SortHeader label="Units" field="unitsSold" sortField={skuSort.field} sortDir={skuSort.dir} onSort={handleSkuSort} />
                     <SortHeader label="Revenue" field="revenue" sortField={skuSort.field} sortDir={skuSort.dir} onSort={handleSkuSort} />
                     <SortHeader label="COGS" field="cogs" sortField={skuSort.field} sortDir={skuSort.dir} onSort={handleSkuSort} />
-                    <SortHeader label="Shipping" field="shipping" sortField={skuSort.field} sortDir={skuSort.dir} onSort={handleSkuSort} />
                     <SortHeader label="Profit" field="profit" sortField={skuSort.field} sortDir={skuSort.dir} onSort={handleSkuSort} />
                     <SortHeader label="Margin" field="margin" sortField={skuSort.field} sortDir={skuSort.dir} onSort={handleSkuSort} />
                   </tr>
@@ -555,7 +554,6 @@ export default function KpiSystem() {
                         <td className="px-3 py-3 text-white">{fmtInt(row.unitsSold ?? row.units)}</td>
                         <td className="px-3 py-3 text-white">{fmtMoney(row.revenue)}</td>
                         <td className="px-3 py-3 text-[#888]">{fmtMoney(row.cogs)}</td>
-                        <td className="px-3 py-3 text-[#888]">{fmtMoney(row.shipping)}</td>
                         <td className={`px-3 py-3 font-medium ${(row.profit ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                           {fmtMoney(row.profit)}
                         </td>

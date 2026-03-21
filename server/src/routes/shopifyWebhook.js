@@ -87,22 +87,26 @@ async function upsertOrder(order) {
 
 // ── Recalculate daily snapshot for a specific date ──────────────────
 async function recalculateSnapshotForDate(dateStr) {
-  const orders = await pgQuery(`
-    SELECT * FROM shopify_orders_cache WHERE DATE(created_at) = $1
+  const allOrders = await pgQuery(`
+    SELECT * FROM shopify_orders_cache WHERE DATE(created_at AT TIME ZONE 'UTC') = $1
   `, [dateStr]);
 
-  if (orders.length === 0) return;
+  if (allOrders.length === 0) return;
 
-  const totalRevenue = orders.reduce((s, o) => s + parseFloat(o.total_price || 0), 0);
+  // Exclude refunded/voided orders from revenue calculations (consistent with main kpiSystem.js)
+  const orders = allOrders.filter(o => !['refunded', 'voided'].includes(o.financial_status));
+  const refundedOrders = allOrders.filter(o => ['refunded', 'voided'].includes(o.financial_status));
+
+  const totalRevenue = orders.reduce((s, o) => s + parseFloat(o.subtotal_price || o.total_price || 0), 0);
   const totalCogs = orders.reduce((s, o) => s + parseFloat(o.cogs || 0), 0);
   const totalShipping = orders.reduce((s, o) => s + parseFloat(o.shipping_cost || 0), 0);
   const totalDiscounts = orders.reduce((s, o) => s + parseFloat(o.total_discounts || 0), 0);
   const grossProfit = totalRevenue - totalCogs - totalShipping;
-  const avgOv = totalRevenue / orders.length;
-  const avgMargin = orders.reduce((s, o) => s + parseFloat(o.profit_margin || 0), 0) / orders.length;
+  const avgOv = orders.length > 0 ? totalRevenue / orders.length : 0;
+  const avgMargin = orders.length > 0 ? orders.reduce((s, o) => s + parseFloat(o.profit_margin || 0), 0) / orders.length : 0;
   const totalMiners = orders.reduce((s, o) => s + (parseInt(o.total_miners) || 0), 0);
   const totalRigs = orders.reduce((s, o) => s + (parseInt(o.total_rig_units) || 0), 0);
-  const refunds = orders.filter(o => o.financial_status === 'refunded' || o.financial_status === 'partially_refunded').length;
+  const refunds = refundedOrders.length;
 
   // Find top SKU
   const skuCounts = {};
