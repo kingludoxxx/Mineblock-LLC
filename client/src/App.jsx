@@ -55,6 +55,7 @@ import KpiSystem from './pages/performance/KpiSystem';
 import KpiDashboard from './pages/performance/KpiDashboard';
 import SupplierCostSheet from './pages/performance/SupplierCostSheet';
 import FeeBreakdown from './pages/performance/FeeBreakdown';
+import AdsControlCenter from './pages/performance/AdsControlCenter';
 
 // Library
 import TeamHubPage from './pages/library/TeamHubPage';
@@ -131,6 +132,7 @@ export default function App() {
           <Route path="live" element={<LivePage />} />
           <Route path="ltv" element={<LtvPage />} />
           <Route path="roas" element={<RoasPage />} />
+          <Route path="ads-control-center" element={<AdsControlCenter />} />
 
           {/* Library */}
           <Route path="team-hub" element={<TeamHubPage />} />

@@ -11,6 +11,7 @@ import staticsGenerationRoutes from './staticsGeneration.js';
 import productProfileRoutes from './productProfiles.js';
 import adRejectionMonitorRoutes from './adRejectionMonitor.js';
 import kpiSystemRoutes from './kpiSystem.js';
+import adsControlCenterRoutes from './adsControlCenter.js';
 
 const mountRoutes = (app) => {
   app.use('/api/v1/users', userRoutes);
@@ -26,6 +27,7 @@ const mountRoutes = (app) => {
   app.use('/api/v1/product-profiles', productProfileRoutes);
   app.use('/api/v1/ad-rejection-monitor', adRejectionMonitorRoutes);
   app.use('/api/v1/kpi-system', kpiSystemRoutes);
+  app.use('/api/v1/ads-control', adsControlCenterRoutes);
 };
 
 export default mountRoutes;
