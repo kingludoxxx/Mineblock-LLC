@@ -61,55 +61,62 @@ function fmtDateTime(dateStr) {
  */
 function expandOrderLines(order) {
   const lines = [];
-  const miners = Number(order.miners || 0);
-  const rigs = Number(order.rigs || 0);
-  const totalUnits = miners + rigs;
-
-  // Calculate per-unit cost allocation
+  const miners = Number(order.miners || order.totalMiners || 0);
+  const rigs = Number(order.rigs || order.totalRigs || 0);
   const totalCogs = Number(order.cogs || order.productCost || 0);
   const totalShipping = Number(order.shipping || order.shippingCost || 0);
 
+  // Determine SKU based on miner count
+  const minerSku = miners <= 1 ? 'MR-01' : miners === 2 ? 'MR-02' : miners === 4 ? 'MR-04' : miners === 5 ? 'MR-05' : miners === 8 ? 'MR-08' : miners === 16 ? 'MR-16' : `MR-${String(miners).padStart(2, '0')}`;
+  const rigSku = rigs <= 1 ? 'RIG-1' : rigs === 2 ? 'RIG-2' : 'RIG-4';
+
+  // Use known unit costs to split COGS properly (not ratio-based)
+  const MINER_UNIT_COST = 10.92; // current quote
+  const RIG_COSTS = { 1: 1.96, 2: 2.91, 4: 3.87 };
+  const rigUnitCost = RIG_COSTS[rigs] || RIG_COSTS[4] || 3.87;
+
   if (miners > 0) {
-    const minerShare = totalUnits > 0 ? miners / totalUnits : 1;
-    const minerCogs = totalUnits > 0 && rigs > 0 ? totalCogs * minerShare : totalCogs;
-    const minerShip = totalUnits > 0 && rigs > 0 ? totalShipping * minerShare : totalShipping;
+    const minerCogs = miners * MINER_UNIT_COST;
+    const minerShip = rigs > 0 ? totalShipping - (totalCogs - minerCogs > 0 ? totalShipping * (totalCogs - minerCogs) / totalCogs : 0) : totalShipping;
+    // Simpler: use actual COGS minus rig cost for miner cost, and proportional shipping
+    const actualMinerCogs = rigs > 0 ? totalCogs - rigUnitCost * (order.rigQty || 1) : totalCogs;
+    const actualMinerShip = totalCogs > 0 && rigs > 0 ? totalShipping * (actualMinerCogs / totalCogs) : totalShipping;
     lines.push({
       orderNumber: order.orderNumber || order.orderId,
       date: order.date,
-      item: 'Miner Forge PRO',
+      item: `Miner Forge PRO 2.0 (${minerSku})`,
       qty: miners,
       country: order.country || '',
-      cost: minerCogs,
-      shipping: minerShip,
-      total: minerCogs + minerShip,
+      cost: rigs > 0 ? Math.round(actualMinerCogs * 100) / 100 : totalCogs,
+      shipping: rigs > 0 ? Math.round(actualMinerShip * 100) / 100 : totalShipping,
+      total: rigs > 0 ? Math.round((actualMinerCogs + actualMinerShip) * 100) / 100 : totalCogs + totalShipping,
       isFirstLine: true,
     });
   }
 
   if (rigs > 0) {
-    const rigShare = totalUnits > 0 ? rigs / totalUnits : 1;
-    const rigCogs = totalUnits > 0 && miners > 0 ? totalCogs * rigShare : totalCogs;
-    const rigShip = totalUnits > 0 && miners > 0 ? totalShipping * rigShare : totalShipping;
+    const actualRigCogs = miners > 0 ? totalCogs - (miners * MINER_UNIT_COST) : totalCogs;
+    const actualRigShip = totalCogs > 0 && miners > 0 ? totalShipping * (Math.max(0, actualRigCogs) / totalCogs) : totalShipping;
     lines.push({
       orderNumber: order.orderNumber || order.orderId,
       date: order.date,
-      item: 'Mining Rig (4 Slots)',
+      item: `Mining Rig (${rigSku})`,
       qty: rigs,
       country: miners > 0 ? '' : (order.country || ''),
-      cost: rigCogs,
-      shipping: rigShip,
-      total: rigCogs + rigShip,
+      cost: miners > 0 ? Math.round(Math.max(0, actualRigCogs) * 100) / 100 : totalCogs,
+      shipping: miners > 0 ? Math.round(Math.max(0, actualRigShip) * 100) / 100 : totalShipping,
+      total: miners > 0 ? Math.round((Math.max(0, actualRigCogs) + Math.max(0, actualRigShip)) * 100) / 100 : totalCogs + totalShipping,
       isFirstLine: miners === 0,
     });
   }
 
-  // Fallback: if neither miners nor rigs, show the order as a single row
-  if (lines.length === 0) {
+  // Fallback: if neither miners nor rigs but has cost data, show as Miner Forge PRO
+  if (lines.length === 0 && totalCogs > 0) {
     lines.push({
       orderNumber: order.orderNumber || order.orderId,
       date: order.date,
-      item: order.item || order.productName || 'Unknown Item',
-      qty: order.quantity || 1,
+      item: 'Miner Forge PRO 2.0',
+      qty: Math.round(totalCogs / MINER_UNIT_COST) || 1,
       country: order.country || '',
       cost: totalCogs,
       shipping: totalShipping,
