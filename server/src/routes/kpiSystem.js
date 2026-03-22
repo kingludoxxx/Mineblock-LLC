@@ -1873,7 +1873,7 @@ setTimeout(() => {
 
 // ── Daily P&L Slack Report ──────────────────────────────────────────────────
 const SLACK_DAILY_PNL_CHANNEL = 'C0AF724MJPR';
-const DAILY_OPS_ESTIMATE = 74.70; // Operations & Teams daily estimate
+// Operations & Teams removed from P&L report per request
 
 async function sendDailyPnlReport(dateStr) {
   if (!SLACK_BOT_TOKEN) {
@@ -1920,10 +1920,9 @@ async function sendDailyPnlReport(dateStr) {
     const netSales = grossSales - discountsReturns;
     const cogs = parseFloat(snap.total_cogs || 0) + parseFloat(snap.total_shipping || 0);
     const adSpend = adSpendRows[0]?.spend || 0;
-    const opsTeams = DAILY_OPS_ESTIMATE;
     const processingFee = parseFloat(feeRows[0]?.processing_fees || parseFloat(feeRows[0]?.total_fees || 0));
     const roas = adSpend > 0 ? (netSales / adSpend) : 0;
-    const netProfit = netSales - cogs - adSpend - opsTeams - processingFee;
+    const netProfit = netSales - cogs - adSpend - processingFee;
     const netMarginPct = netSales > 0 ? (netProfit / netSales) * 100 : 0;
 
     // Format date as MM/DD/YYYY
@@ -1945,7 +1944,6 @@ async function sendDailyPnlReport(dateStr) {
       `Net Sales:  ${fmt(netSales)}`,
       `COGS:  ${fmt(cogs)} _(product + shipping)_`,
       `Ad Spend:  ${fmt(adSpend)}`,
-      `Operations & Teams:  ${fmt(opsTeams)}  _(estimate)_`,
       `Processing Fee:  ${fmt(processingFee)}`,
       `ROAS:  ${roas.toFixed(2)}`,
       `Net Margin %:  ${netMarginPct.toFixed(1)}%`,
