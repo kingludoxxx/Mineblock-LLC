@@ -1871,6 +1871,168 @@ setTimeout(() => {
   setInterval(() => autoSync().catch(() => {}), 60_000); // Every 60 seconds
 }, 30_000); // Start 30s after boot
 
+// ── Daily P&L Slack Report ──────────────────────────────────────────────────
+const SLACK_DAILY_PNL_CHANNEL = 'C0AF724MJPR';
+const DAILY_OPS_ESTIMATE = 74.70; // Operations & Teams daily estimate
+
+async function sendDailyPnlReport(dateStr) {
+  if (!SLACK_BOT_TOKEN) {
+    console.warn('[Daily P&L] No SLACK_BOT_TOKEN configured');
+    return;
+  }
+
+  try {
+    await ensureTables();
+
+    // Get snapshot for the date
+    const snapRows = await pgQuery(
+      'SELECT * FROM daily_kpi_snapshots WHERE snapshot_date = $1', [dateStr]
+    );
+
+    // Get fees for the date
+    const feeRows = await pgQuery(
+      `SELECT COALESCE(SUM(total_fees),0) as total_fees, COALESCE(SUM(processing_fees),0) as processing_fees
+       FROM whop_payment_fees WHERE DATE(paid_at AT TIME ZONE 'Europe/Berlin') = $1`, [dateStr]
+    );
+
+    // Get ad spend from Triple Whale
+    const adSpendRows = await fetchDailyAdSpend(dateStr, dateStr);
+
+    // Get refund/discount totals from orders
+    const discountRows = await pgQuery(
+      `SELECT COALESCE(SUM(CAST(total_discounts AS NUMERIC)),0) as total_discounts,
+              COALESCE(SUM(CASE WHEN financial_status IN ('refunded','voided') THEN CAST(subtotal_price AS NUMERIC) ELSE 0 END),0) as refund_total
+       FROM shopify_orders_cache
+       WHERE DATE(created_at AT TIME ZONE 'Europe/Berlin') = $1`, [dateStr]
+    );
+
+    const snap = snapRows[0];
+    if (!snap) {
+      console.warn(`[Daily P&L] No snapshot for ${dateStr}`);
+      return;
+    }
+
+    // Calculate metrics
+    const grossSales = parseFloat(snap.total_revenue || 0);
+    const discounts = parseFloat(discountRows[0]?.total_discounts || 0);
+    const refunds = parseFloat(discountRows[0]?.refund_total || 0);
+    const discountsReturns = discounts + refunds;
+    const netSales = grossSales - discountsReturns;
+    const cogs = parseFloat(snap.total_cogs || 0) + parseFloat(snap.total_shipping || 0);
+    const adSpend = adSpendRows[0]?.spend || 0;
+    const opsTeams = DAILY_OPS_ESTIMATE;
+    const processingFee = parseFloat(feeRows[0]?.processing_fees || parseFloat(feeRows[0]?.total_fees || 0));
+    const roas = adSpend > 0 ? (netSales / adSpend) : 0;
+    const netProfit = netSales - cogs - adSpend - opsTeams - processingFee;
+    const netMarginPct = netSales > 0 ? (netProfit / netSales) * 100 : 0;
+
+    // Format date as MM/DD/YYYY
+    const [y, m, d] = dateStr.split('-');
+    const displayDate = `${m}/${d}/${y}`;
+
+    const fmt = (n) => {
+      const abs = Math.abs(n);
+      const str = abs >= 1000
+        ? abs.toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 })
+        : abs.toFixed(1);
+      return n < 0 ? `-$${str}` : `$${str}`;
+    };
+
+    const msgText = [
+      `*${displayDate}*`,
+      `Gross Sales:  ${fmt(grossSales)}`,
+      `Discounts/Returns/Addbacks:  ${discountsReturns > 0 ? '-' : ''}${fmt(discountsReturns)}`,
+      `Net Sales:  ${fmt(netSales)}`,
+      `COGS:  ${fmt(cogs)} _(product + shipping)_`,
+      `Ad Spend:  ${fmt(adSpend)}`,
+      `Operations & Teams:  ${fmt(opsTeams)}  _(estimate)_`,
+      `Processing Fee:  ${fmt(processingFee)}`,
+      `ROAS:  ${roas.toFixed(2)}`,
+      `Net Margin %:  ${netMarginPct.toFixed(1)}%`,
+      `Net Profit:  ${fmt(netProfit)}`,
+    ].join('\n');
+
+    const profitEmoji = netProfit >= 0 ? ':chart_with_upwards_trend:' : ':chart_with_downwards_trend:';
+    const marginColor = netMarginPct >= 15 ? '#10b981' : netMarginPct >= 0 ? '#f59e0b' : '#ef4444';
+
+    const blocks = [
+      { type: 'header', text: { type: 'plain_text', text: `${netProfit >= 0 ? '📊' : '📉'} Daily P&L — ${displayDate}`, emoji: true } },
+      { type: 'divider' },
+      { type: 'section', text: { type: 'mrkdwn', text: msgText } },
+      { type: 'divider' },
+    ];
+
+    const resp = await fetch('https://slack.com/api/chat.postMessage', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${SLACK_BOT_TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        channel: SLACK_DAILY_PNL_CHANNEL,
+        text: `Daily P&L for ${displayDate}: Net Profit ${fmt(netProfit)}`,
+        blocks,
+        username: 'Mineblock Bot',
+        icon_url: 'https://i.imgur.com/PJCRE4g.png',
+      }),
+    });
+
+    const result = await resp.json();
+    if (!result.ok) {
+      console.error('[Daily P&L] Slack error:', result.error);
+    } else {
+      console.log(`[Daily P&L] Sent report for ${displayDate}: Net Profit ${fmt(netProfit)}`);
+    }
+  } catch (err) {
+    console.error('[Daily P&L] Error:', err.message);
+  }
+}
+
+// Schedule daily at 00:03 CET (Europe/Berlin)
+function scheduleDailyPnl() {
+  const checkInterval = 30_000; // Check every 30s
+  let lastSentDate = null;
+
+  setInterval(() => {
+    const now = new Date();
+    // Get current time in Europe/Berlin
+    const berlinStr = now.toLocaleString('en-US', { timeZone: 'Europe/Berlin' });
+    const berlin = new Date(berlinStr);
+    const hour = berlin.getHours();
+    const minute = berlin.getMinutes();
+    const todayStr = berlin.toISOString().slice(0, 10);
+
+    // Trigger at 00:03 CET (hour=0, minute=3)
+    if (hour === 0 && minute >= 3 && minute < 5 && lastSentDate !== todayStr) {
+      lastSentDate = todayStr;
+      // Report for yesterday (the day that just ended)
+      const yesterday = new Date(berlin);
+      yesterday.setDate(yesterday.getDate() - 1);
+      const yStr = `${yesterday.getFullYear()}-${String(yesterday.getMonth() + 1).padStart(2, '0')}-${String(yesterday.getDate()).padStart(2, '0')}`;
+      console.log(`[Daily P&L] Triggering report for ${yStr}`);
+      sendDailyPnlReport(yStr).catch(err => console.error('[Daily P&L] Send error:', err.message));
+    }
+  }, checkInterval);
+
+  console.log('[Daily P&L] Scheduler active — will fire at 00:03 CET daily');
+}
+
+// Also expose as API endpoint for manual testing
+router.post('/daily-pnl', authenticate, async (req, res) => {
+  try {
+    const dateStr = req.query.date || (() => {
+      const now = new Date();
+      const berlin = new Date(now.toLocaleString('en-US', { timeZone: 'Europe/Berlin' }));
+      berlin.setDate(berlin.getDate() - 1);
+      return `${berlin.getFullYear()}-${String(berlin.getMonth() + 1).padStart(2, '0')}-${String(berlin.getDate()).padStart(2, '0')}`;
+    })();
+    await sendDailyPnlReport(dateStr);
+    res.json({ success: true, date: dateStr });
+  } catch (err) {
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// Start the scheduler
+setTimeout(() => scheduleDailyPnl(), 60_000);
+
 export default router;
 export {
   calculateOrderCosts,
