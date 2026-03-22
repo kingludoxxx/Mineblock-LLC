@@ -84,7 +84,7 @@ function shuffleArray(arr) {
 }
 
 async function fetchAdsForAccount(accountId) {
-  const url = `${META_GRAPH_URL}/${accountId}/ads?fields=name,effective_status&effective_status=["DISAPPROVED","WITH_ISSUES"]&limit=100&access_token=${META_ACCESS_TOKEN}`;
+  const url = `${META_GRAPH_URL}/${accountId}/ads?fields=name,effective_status,configured_status,adset{configured_status},campaign{configured_status}&effective_status=["DISAPPROVED","WITH_ISSUES"]&limit=100&access_token=${META_ACCESS_TOKEN}`;
   const resp = await fetch(url);
   return resp.json();
 }
@@ -108,6 +108,16 @@ async function processAdsForAccount(accountId, accountName) {
   for (const ad of ads) {
     const status = ad.effective_status;
     if (status !== 'DISAPPROVED' && status !== 'WITH_ISSUES') continue;
+
+    // Skip ads that are already turned off (paused/archived at any level)
+    const adConfig = ad.configured_status;
+    const adsetConfig = ad.adset?.configured_status;
+    const campaignConfig = ad.campaign?.configured_status;
+    if (adConfig === 'PAUSED' || adConfig === 'ARCHIVED' ||
+        adsetConfig === 'PAUSED' || adsetConfig === 'ARCHIVED' ||
+        campaignConfig === 'PAUSED' || campaignConfig === 'ARCHIVED') {
+      continue;
+    }
 
     const existing = await pgQuery(
       'SELECT ad_id FROM ad_rejections_notified WHERE ad_id = $1',
