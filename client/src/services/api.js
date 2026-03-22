@@ -32,7 +32,8 @@ api.interceptors.response.use(
   (error) => {
     if (
       error.response?.status === 401 &&
-      !window.location.pathname.startsWith('/login')
+      !window.location.pathname.startsWith('/login') &&
+      !window.location.pathname.startsWith('/supplier')
     ) {
       window.location.href = '/login';
     }
