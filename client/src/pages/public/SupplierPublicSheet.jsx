@@ -114,9 +114,10 @@ export default function SupplierPublicSheet() {
 
   // ── Data ───────────────────────────────────────────────────────────────────
 
-  const orders = data?.orders || [];
-  const summary = data?.summary || {};
-  const dateRange = data?.dateRange || {};
+  const inner = data?.data || data || {};
+  const orders = inner?.orders || [];
+  const summary = inner?.summary || {};
+  const dateRange = inner?.dateRange || {};
 
   const totalProductCost = summary.totalProductCost ?? orders.reduce((s, o) => s + (o.productCost || 0), 0);
   const totalShipping = summary.totalShipping ?? orders.reduce((s, o) => s + (o.shipping || 0), 0);
