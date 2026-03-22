@@ -754,7 +754,7 @@ async function syncMetaThumbnails() {
 
   // 1. Get all unique ad_names from our DB that don't have a thumbnail yet
   const dbRows = await pgQuery(
-    `SELECT DISTINCT ad_name FROM creative_analysis WHERE ad_name IS NOT NULL`
+    `SELECT DISTINCT ad_name FROM creative_analysis WHERE ad_name IS NOT NULL AND (thumbnail_url IS NULL OR thumbnail_url = '')`
   );
   const dbAdNames = new Set(dbRows.map(r => r.ad_name));
 
@@ -817,7 +817,7 @@ async function syncMetaThumbnails() {
           const match = body.match(/src=["']([^"']+)["']/);
           if (match) previewUrls.set(upd.meta_ad_id, match[1].replace(/&amp;/g, '&'));
         }
-      } catch {}
+      } catch (err) { console.warn('[Creative] Preview fetch error:', err.message); }
     });
     await Promise.all(promises);
   }
@@ -1131,7 +1131,7 @@ router.get('/data-by-date', authenticate, async (req, res) => {
           creativeIds
         );
         for (const r of thumbRows) thumbMap.set(r.creative_id, { thumbnail_url: r.thumbnail_url, video_url: r.video_url });
-      } catch {}
+      } catch (err) { console.warn('[Creative] Thumbnail lookup error:', err.message); }
     }
 
     const creatives = Object.values(grouped).map(c => {
@@ -1438,6 +1438,8 @@ router.get('/leaderboard', authenticate, async (req, res) => {
          top.format,
          top.editor,
          top.ad_name,
+         top.thumbnail_url,
+         top.video_url,
          agg.spend,
          agg.revenue,
          agg.purchases,
