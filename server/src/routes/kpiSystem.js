@@ -897,10 +897,10 @@ async function syncWhopFees(lookbackDays = 3) {
     const totalPages = firstData.pagination?.total_pages || 1;
 
     let synced = 0;
-    let reachedCutoff = false;
+    const maxPages = Math.min(lookbackDays * 3, 30); // ~3 pages per day, cap at 30
 
     // Iterate from last page backwards (newest to oldest)
-    for (let page = totalPages; page >= 1 && !reachedCutoff; page--) {
+    for (let page = totalPages; page >= Math.max(1, totalPages - maxPages); page--) {
       const resp = await fetch(`${WHOP_API_URL}/v5/company/payments?per=100&page=${page}`, {
         headers: { 'Authorization': `Bearer ${WHOP_API_TOKEN}` }
       });
@@ -912,11 +912,8 @@ async function syncWhopFees(lookbackDays = 3) {
         // Skip unpaid/open payments
         if (!payment.paid_at || payment.status !== 'paid') continue;
 
-        // Stop if we've gone past the lookback window
-        if (payment.created_at < cutoffTs) {
-          reachedCutoff = true;
-          break;
-        }
+        // Skip if before the lookback window (but don't break — page has mixed ordering)
+        if (payment.created_at < cutoffTs) continue;
 
         // Check if already synced
         const existing = await pgQuery('SELECT payment_id FROM whop_payment_fees WHERE payment_id = $1', [payment.id]);
@@ -939,7 +936,7 @@ async function syncWhopFees(lookbackDays = 3) {
         if (synced % 10 === 0) await new Promise(r => setTimeout(r, 500));
       }
     }
-        `, [payment.id, payment.final_amount, payment.currency, fees.totalFees, fees.whopFees, fees.processingFees, fees.otherFees, JSON.stringify(fees.feeDetails), paidAt]);
+
     console.log(`[KPI] Whop fees synced: ${synced} payments`);
     return { synced };
   } catch (err) {
@@ -1557,7 +1554,7 @@ async function upsertOrders(orders) {
   for (const order of orders) {
     if (order.order_number < MIN_ORDER_NUMBER) continue;
     const costs = calculateOrderCosts(order);
-    const orderDate = order.created_at ? order.created_at.slice(0, 10) : null;
+    const orderDate = order.created_at ? new Date(order.created_at).toLocaleDateString('en-CA', { timeZone: 'Europe/Berlin' }) : null;
     await pgQuery(`
       INSERT INTO shopify_orders_cache (order_id, order_number, created_at, country, financial_status,
         total_price, subtotal_price, total_discounts, line_items, cogs, shipping_cost, gross_profit, profit_margin, synced_at)

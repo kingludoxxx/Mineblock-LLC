@@ -192,7 +192,8 @@ router.post('/orders', async (req, res) => {
     const costs = await upsertOrder(order);
 
     // Recalculate the daily snapshot for this order's date
-    const orderDate = new Date(order.created_at).toISOString().slice(0, 10);
+    // Use Europe/Berlin timezone to match Shopify store and snapshot grouping
+    const orderDate = new Date(order.created_at).toLocaleDateString('en-CA', { timeZone: 'Europe/Berlin' });
     await recalculateSnapshotForDate(orderDate);
 
     logger.info(`[Shopify Webhook] Processed ${topic} — order #${order.order_number} | revenue=$${order.total_price} | cogs=$${costs.cogs} | profit=$${costs.grossProfit}`);
