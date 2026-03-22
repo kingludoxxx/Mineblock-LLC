@@ -85,6 +85,8 @@ function expandOrderLines(order) {
       orderNumber: order.orderNumber || order.orderId,
       date: order.date,
       item: `Miner Forge PRO 2.0 (${minerSku})`,
+      itemName: 'Miner Forge PRO 2.0',
+      sku: minerSku,
       qty: miners,
       country: order.country || '',
       cost: rigs > 0 ? Math.round(actualMinerCogs * 100) / 100 : totalCogs,
@@ -101,6 +103,8 @@ function expandOrderLines(order) {
       orderNumber: order.orderNumber || order.orderId,
       date: order.date,
       item: `Mining Rig (${rigSku})`,
+      itemName: 'Mining Rig',
+      sku: rigSku,
       qty: rigs,
       country: miners > 0 ? '' : (order.country || ''),
       cost: miners > 0 ? Math.round(Math.max(0, actualRigCogs) * 100) / 100 : totalCogs,
@@ -116,6 +120,8 @@ function expandOrderLines(order) {
       orderNumber: order.orderNumber || order.orderId,
       date: order.date,
       item: 'Miner Forge PRO 2.0',
+      itemName: 'Miner Forge PRO 2.0',
+      sku: 'MR',
       qty: Math.round(totalCogs / MINER_UNIT_COST) || 1,
       country: order.country || '',
       cost: totalCogs,
@@ -377,6 +383,7 @@ export default function SupplierCostSheet() {
                   <th className="text-left text-xs text-[#888] font-medium px-4 py-3 whitespace-nowrap w-[100px]">Order #</th>
                   <th className="text-left text-xs text-[#888] font-medium px-4 py-3 whitespace-nowrap w-[120px]">Date/Time</th>
                   <th className="text-left text-xs text-[#888] font-medium px-4 py-3 whitespace-nowrap">Item</th>
+                  <th className="text-left text-xs text-[#888] font-medium px-4 py-3 whitespace-nowrap w-[80px]">SKU</th>
                   <th className="text-right text-xs text-[#888] font-medium px-4 py-3 whitespace-nowrap w-[60px]">Qty</th>
                   <th className="text-left text-xs text-[#888] font-medium px-4 py-3 whitespace-nowrap w-[140px]">Country</th>
                   <th className="text-right text-xs text-[#888] font-medium px-4 py-3 whitespace-nowrap w-[110px]">Cost</th>
@@ -387,7 +394,7 @@ export default function SupplierCostSheet() {
               <tbody>
                 {dayGroups.length === 0 && (
                   <tr>
-                    <td colSpan={8} className="text-center py-12 text-[#555] text-sm">
+                    <td colSpan={9} className="text-center py-12 text-[#555] text-sm">
                       No order data for this period
                     </td>
                   </tr>
@@ -400,7 +407,7 @@ export default function SupplierCostSheet() {
                 {/* ── Grand Total Row ──────────────────────────────────────── */}
                 {dayGroups.length > 0 && (
                   <tr className="bg-blue-500/10 border-t-2 border-blue-500/30">
-                    <td colSpan={5} className="px-4 py-4 text-blue-400 font-bold text-sm">
+                    <td colSpan={6} className="px-4 py-4 text-blue-400 font-bold text-sm">
                       Grand Total: {fmtInt(totalOrders)} orders
                     </td>
                     <td className="text-right px-4 py-4 text-blue-400 font-bold font-mono text-sm">
@@ -431,7 +438,7 @@ function DayGroup({ group }) {
     <>
       {/* Day header row */}
       <tr className="bg-[#1a1a1a] border-t-2 border-white/[0.08] border-b border-white/[0.06]">
-        <td colSpan={8} className="px-4 py-3">
+        <td colSpan={9} className="px-4 py-3">
           <span className="text-white font-bold text-sm">{group.label}</span>
         </td>
       </tr>
@@ -451,7 +458,9 @@ function DayGroup({ group }) {
             {line.isFirstLine ? fmtDateTime(line.date) : ''}
           </td>
           {/* Item */}
-          <td className="px-4 py-2.5 text-white text-xs">{line.item}</td>
+          <td className="px-4 py-2.5 text-white text-xs">{line.itemName}</td>
+          {/* SKU */}
+          <td className="px-4 py-2.5 text-[#888] text-xs font-mono">{line.sku}</td>
           {/* Qty */}
           <td className="text-right px-4 py-2.5 text-white font-mono text-xs">{line.qty}</td>
           {/* Country */}
@@ -467,7 +476,7 @@ function DayGroup({ group }) {
 
       {/* Daily total row */}
       <tr className="bg-[#0d1117] border-b border-white/[0.08]">
-        <td colSpan={5} className="px-4 py-3 text-green-400 font-semibold text-xs">
+        <td colSpan={6} className="px-4 py-3 text-green-400 font-semibold text-xs">
           Daily Total: {fmtInt(group.orderCount)} orders
         </td>
         <td className="text-right px-4 py-3 text-green-400 font-semibold font-mono text-xs">
