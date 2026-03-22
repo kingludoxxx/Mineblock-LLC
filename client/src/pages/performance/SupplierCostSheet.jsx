@@ -1,17 +1,15 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import api from '../../services/api';
 import {
-  Package,
+  FileText,
   DollarSign,
   Truck,
-  TrendingUp,
-  TrendingDown,
+  Package,
   RefreshCw,
   Download,
   Link2,
   AlertTriangle,
-  ChevronDown,
-  ChevronRight,
+  ShoppingCart,
 } from 'lucide-react';
 import DatePicker from '../../components/ui/DatePicker';
 
@@ -24,8 +22,6 @@ const fmtMoney = (n) =>
     maximumFractionDigits: 2,
   });
 
-const fmtPct = (n) => Number(n || 0).toFixed(1) + '%';
-
 const fmtInt = (n) => Number(n || 0).toLocaleString();
 
 const todayStr = () => new Date().toISOString().slice(0, 10);
@@ -36,66 +32,104 @@ const btnBase =
   'px-3 py-2 text-sm rounded-lg border transition-colors focus:outline-none cursor-pointer';
 
 const btnActive = 'bg-blue-600 border-blue-500 text-white';
-const btnInactive =
-  'bg-white/[0.04] border-white/[0.08] text-[#888] hover:text-white hover:border-white/20';
 
-// ── Summary Card ─────────────────────────────────────────────────────────────
+const MONTHS = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December',
+];
 
-function SummaryCard({ icon: Icon, label, value, change, accentColor }) {
-  const isPositive = (change ?? 0) >= 0;
-  const Arrow = isPositive ? TrendingUp : TrendingDown;
-  const changeColor = isPositive ? 'text-green-500' : 'text-red-500';
-
-  return (
-    <div className={cardStyle}>
-      <div className="flex items-center gap-2 mb-3">
-        <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${accentColor || 'bg-blue-500/10'}`}>
-          <Icon size={16} className={accentColor ? accentColor.replace('bg-', 'text-').replace('/10', '') : 'text-blue-400'} />
-        </div>
-        <span className="text-[#888] text-sm">{label}</span>
-      </div>
-      <div className="text-2xl font-semibold text-white mb-1">{value}</div>
-      {change !== undefined && change !== null && (
-        <div className={`flex items-center gap-1 text-xs ${changeColor}`}>
-          <Arrow size={12} />
-          <span>{isPositive ? '+' : ''}{fmtPct(change)}</span>
-          <span className="text-[#555]">vs prev period</span>
-        </div>
-      )}
-    </div>
-  );
+/** Format a date string like "March 21, 2026" */
+function fmtDayHeader(dateStr) {
+  const d = new Date(dateStr + 'T00:00:00');
+  return `${MONTHS[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`;
 }
 
-// ── Sortable Header ──────────────────────────────────────────────────────────
+/** Format a date string like "03/21 22:55" */
+function fmtDateTime(dateStr) {
+  if (!dateStr) return '-';
+  const d = new Date(dateStr);
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  const hh = String(d.getHours()).padStart(2, '0');
+  const min = String(d.getMinutes()).padStart(2, '0');
+  return `${mm}/${dd} ${hh}:${min}`;
+}
 
-function SortHeader({ label, field, sortField, sortDir, onSort }) {
-  const active = sortField === field;
-  return (
-    <th
-      className="text-left text-xs text-[#888] font-medium px-3 py-3 cursor-pointer hover:text-white select-none whitespace-nowrap"
-      onClick={() => onSort(field)}
-    >
-      <span className="inline-flex items-center gap-1">
-        {label}
-        {active && (sortDir === 'asc' ? <TrendingUp size={10} /> : <TrendingDown size={10} />)}
-      </span>
-    </th>
-  );
+/**
+ * Expand order-level data into individual line items.
+ * Each order can produce 1-2 rows: one for miners, one for rigs.
+ */
+function expandOrderLines(order) {
+  const lines = [];
+  const miners = Number(order.miners || 0);
+  const rigs = Number(order.rigs || 0);
+  const totalUnits = miners + rigs;
+
+  // Calculate per-unit cost allocation
+  const totalCogs = Number(order.cogs || order.productCost || 0);
+  const totalShipping = Number(order.shipping || order.shippingCost || 0);
+
+  if (miners > 0) {
+    const minerShare = totalUnits > 0 ? miners / totalUnits : 1;
+    const minerCogs = totalUnits > 0 && rigs > 0 ? totalCogs * minerShare : totalCogs;
+    const minerShip = totalUnits > 0 && rigs > 0 ? totalShipping * minerShare : totalShipping;
+    lines.push({
+      orderNumber: order.orderNumber || order.orderId,
+      date: order.date,
+      item: 'Miner Forge PRO',
+      qty: miners,
+      country: order.country || '',
+      cost: minerCogs,
+      shipping: minerShip,
+      total: minerCogs + minerShip,
+      isFirstLine: true,
+    });
+  }
+
+  if (rigs > 0) {
+    const rigShare = totalUnits > 0 ? rigs / totalUnits : 1;
+    const rigCogs = totalUnits > 0 && miners > 0 ? totalCogs * rigShare : totalCogs;
+    const rigShip = totalUnits > 0 && miners > 0 ? totalShipping * rigShare : totalShipping;
+    lines.push({
+      orderNumber: order.orderNumber || order.orderId,
+      date: order.date,
+      item: 'Mining Rig (4 Slots)',
+      qty: rigs,
+      country: miners > 0 ? '' : (order.country || ''),
+      cost: rigCogs,
+      shipping: rigShip,
+      total: rigCogs + rigShip,
+      isFirstLine: miners === 0,
+    });
+  }
+
+  // Fallback: if neither miners nor rigs, show the order as a single row
+  if (lines.length === 0) {
+    lines.push({
+      orderNumber: order.orderNumber || order.orderId,
+      date: order.date,
+      item: order.item || order.productName || 'Unknown Item',
+      qty: order.quantity || 1,
+      country: order.country || '',
+      cost: totalCogs,
+      shipping: totalShipping,
+      total: totalCogs + totalShipping,
+      isFirstLine: true,
+    });
+  }
+
+  return lines;
 }
 
 // ── Main Component ───────────────────────────────────────────────────────────
 
 export default function SupplierCostSheet() {
-  // State
   const [period, setPeriod] = useState('daily');
   const [date, setDate] = useState(todayStr());
   const [costSheet, setCostSheet] = useState(null);
-  const [dashboard, setDashboard] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [copied, setCopied] = useState(false);
-  const [expandedDays, setExpandedDays] = useState({});
-  const [orderSort, setOrderSort] = useState({ field: 'date', dir: 'desc' });
 
   // ── Data Fetching ──────────────────────────────────────────────────────────
 
@@ -103,13 +137,8 @@ export default function SupplierCostSheet() {
     setLoading(true);
     setError(null);
     try {
-      const [costRes, dashRes] = await Promise.all([
-        api.get('/kpi-system/cost-sheet', { params: { period, date } }),
-        api.get('/kpi-system/dashboard', { params: { period, date } }),
-      ]);
-
-      setCostSheet(costRes.data?.data || costRes.data || {});
-      setDashboard(dashRes.data?.data || dashRes.data || {});
+      const res = await api.get('/kpi-system/cost-sheet', { params: { period, date } });
+      setCostSheet(res.data?.data || res.data || {});
     } catch (err) {
       console.error('Supplier cost sheet fetch error:', err);
       setError(err.response?.data?.message || err.message || 'Failed to load cost sheet data');
@@ -156,67 +185,54 @@ export default function SupplierCostSheet() {
     });
   };
 
-  // ── Expand / Collapse Days ─────────────────────────────────────────────────
-
-  const toggleDay = (dayKey) => {
-    setExpandedDays((prev) => ({ ...prev, [dayKey]: !prev[dayKey] }));
-  };
-
-  // ── Order Sort ─────────────────────────────────────────────────────────────
-
-  const handleOrderSort = (field) => {
-    setOrderSort((prev) => ({
-      field,
-      dir: prev.field === field && prev.dir === 'desc' ? 'asc' : 'desc',
-    }));
-  };
-
   // ── Derived Data ───────────────────────────────────────────────────────────
 
-  const raw = dashboard?.metrics || dashboard || {};
   const costData = costSheet || {};
   const costSummary = costData.summary || {};
   const orders = costData.orders || costData.rows || [];
-  const dailyBreakdown = costData.dailyBreakdown || costData.daily || [];
 
-  const totalCogs =
-    Number(costSummary.totalCogs || 0) ||
-    Number(raw.cogs || raw.totalCogs || 0);
-  const totalShipping =
-    Number(costSummary.totalShipping || 0) ||
-    Number(raw.shippingCost || raw.totalShipping || 0);
+  const totalCogs = Number(costSummary.totalCogs || 0) ||
+    orders.reduce((s, o) => s + Number(o.cogs || o.productCost || 0), 0);
+  const totalShipping = Number(costSummary.totalShipping || 0) ||
+    orders.reduce((s, o) => s + Number(o.shipping || o.shippingCost || 0), 0);
   const grandTotal = totalCogs + totalShipping;
+  const totalOrders = Number(costSummary.totalOrders || costSummary.orders || 0) || orders.length;
 
-  const cogsChange = costSummary.cogsChange ?? raw.cogsChange ?? null;
-  const shippingChange = costSummary.shippingChange ?? raw.shippingChange ?? null;
-  const totalChange = costSummary.totalChange ?? null;
+  // Group orders by day (descending)
+  const dayGroups = useMemo(() => {
+    const groups = {};
+    for (const order of orders) {
+      const dayKey = (order.date || '').slice(0, 10);
+      if (!groups[dayKey]) groups[dayKey] = [];
+      groups[dayKey].push(order);
+    }
+    // Sort days descending
+    const sortedKeys = Object.keys(groups).sort((a, b) => b.localeCompare(a));
+    return sortedKeys.map((dayKey) => {
+      const dayOrders = groups[dayKey].sort((a, b) => {
+        // Sort orders within day by date descending (newest first)
+        return new Date(b.date) - new Date(a.date);
+      });
 
-  // Sort orders
-  const sortedOrders = useMemo(() => {
-    return [...orders].sort((a, b) => {
-      const dir = orderSort.dir === 'asc' ? 1 : -1;
-      const av = a[orderSort.field] ?? '';
-      const bv = b[orderSort.field] ?? '';
-      if (typeof av === 'string') return dir * av.localeCompare(bv);
-      return dir * (av - bv);
+      // Expand all orders into line items
+      const lines = dayOrders.flatMap(expandOrderLines);
+
+      // Daily totals
+      const dailyCogs = dayOrders.reduce((s, o) => s + Number(o.cogs || o.productCost || 0), 0);
+      const dailyShip = dayOrders.reduce((s, o) => s + Number(o.shipping || o.shippingCost || 0), 0);
+
+      return {
+        dayKey,
+        label: dayKey ? fmtDayHeader(dayKey) : 'Unknown Date',
+        orders: dayOrders,
+        lines,
+        orderCount: dayOrders.length,
+        productCost: dailyCogs,
+        shippingCost: dailyShip,
+        total: dailyCogs + dailyShip,
+      };
     });
-  }, [orders, orderSort]);
-
-  // Compute daily breakdown totals
-  const dailyTotals = useMemo(() => {
-    if (dailyBreakdown.length === 0) return null;
-    return dailyBreakdown.reduce(
-      (acc, row) => ({
-        orders: acc.orders + Number(row.orders || row.orderCount || 0),
-        mrUnits: acc.mrUnits + Number(row.mrUnits || row.miners || 0),
-        rigUnits: acc.rigUnits + Number(row.rigUnits || row.rigs || 0),
-        productCost: acc.productCost + Number(row.productCost || row.cogs || 0),
-        shippingCost: acc.shippingCost + Number(row.shippingCost || row.shipping || 0),
-        total: acc.total + Number(row.total || (Number(row.productCost || row.cogs || 0) + Number(row.shippingCost || row.shipping || 0))),
-      }),
-      { orders: 0, mrUnits: 0, rigUnits: 0, productCost: 0, shippingCost: 0, total: 0 }
-    );
-  }, [dailyBreakdown]);
+  }, [orders]);
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
@@ -253,29 +269,33 @@ export default function SupplierCostSheet() {
         {/* ── Header Bar ──────────────────────────────────────────────────── */}
         <div className="flex flex-wrap items-center gap-3">
           <div className="flex items-center gap-2 mr-auto">
-            <div className="w-9 h-9 bg-orange-500/10 rounded-lg flex items-center justify-center">
-              <Package size={18} className="text-orange-400" />
+            <div className="w-9 h-9 bg-blue-500/10 rounded-lg flex items-center justify-center">
+              <FileText size={18} className="text-blue-400" />
             </div>
             <h1 className="text-xl font-semibold text-white">Supplier Cost Sheet</h1>
           </div>
 
+          {/* Date picker (primary widget) */}
+          <DatePicker value={date} onChange={setDate} period={period} />
+
           {/* Period toggle */}
           <div className="flex gap-1 bg-white/[0.04] rounded-lg p-1 border border-white/[0.06]">
-            {['daily', 'weekly', 'monthly'].map((p) => (
+            {[
+              { key: 'daily', label: 'Day' },
+              { key: 'weekly', label: 'Week' },
+              { key: 'monthly', label: 'Month' },
+            ].map((p) => (
               <button
-                key={p}
-                onClick={() => setPeriod(p)}
+                key={p.key}
+                onClick={() => setPeriod(p.key)}
                 className={`px-3 py-1.5 text-xs rounded-md font-medium transition-colors cursor-pointer ${
-                  period === p ? 'bg-blue-600 text-white' : 'text-[#888] hover:text-white'
+                  period === p.key ? 'bg-blue-600 text-white' : 'text-[#888] hover:text-white'
                 }`}
               >
-                {p.charAt(0).toUpperCase() + p.slice(1)}
+                {p.label}
               </button>
             ))}
           </div>
-
-          {/* Date picker */}
-          <DatePicker value={date} onChange={setDate} period={period} />
 
           {/* Live indicator */}
           <span className="flex items-center gap-1.5 text-xs text-green-500">
@@ -310,174 +330,149 @@ export default function SupplierCostSheet() {
           </div>
         )}
 
-        {/* ── Summary Cards ───────────────────────────────────────────────── */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <SummaryCard
-            icon={Package}
-            label="Total COGS"
-            value={fmtMoney(totalCogs)}
-            change={cogsChange}
-            accentColor="bg-red-500/10"
-          />
-          <SummaryCard
-            icon={Truck}
-            label="Total Shipping"
-            value={fmtMoney(totalShipping)}
-            change={shippingChange}
-            accentColor="bg-orange-500/10"
-          />
-          <SummaryCard
-            icon={DollarSign}
-            label="Grand Total"
-            value={fmtMoney(grandTotal)}
-            change={totalChange}
-            accentColor="bg-blue-500/10"
-          />
+        {/* ── Grand Total Card ────────────────────────────────────────────── */}
+        <div className={`${cardStyle} !p-6`}>
+          <div className="flex items-center gap-2 mb-4">
+            <div className="w-8 h-8 rounded-lg flex items-center justify-center bg-blue-500/10">
+              <DollarSign size={16} className="text-blue-400" />
+            </div>
+            <span className="text-[#888] text-sm">Total Owed to Supplier</span>
+          </div>
+          <div className="text-4xl font-bold text-white font-mono mb-4">
+            {fmtMoney(grandTotal)}
+          </div>
+          <div className="flex flex-wrap items-center gap-6 text-sm">
+            <div className="flex items-center gap-2">
+              <Package size={14} className="text-red-400" />
+              <span className="text-[#888]">Product Cost:</span>
+              <span className="text-white font-mono font-medium">{fmtMoney(totalCogs)}</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <Truck size={14} className="text-orange-400" />
+              <span className="text-[#888]">Shipping Cost:</span>
+              <span className="text-white font-mono font-medium">{fmtMoney(totalShipping)}</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <ShoppingCart size={14} className="text-blue-400" />
+              <span className="text-[#888]">Orders:</span>
+              <span className="text-white font-mono font-medium">{fmtInt(totalOrders)}</span>
+            </div>
+          </div>
         </div>
 
-        {/* ── Daily Breakdown Table ────────────────────────────────────────── */}
-        {dailyBreakdown.length > 0 && (
-          <div className={cardStyle}>
-            <div className="flex items-center gap-2 mb-4">
-              <Package size={16} className="text-blue-400" />
-              <h2 className="text-sm font-medium text-white">Daily Breakdown</h2>
-              <span className="text-xs text-[#555] ml-auto">{dailyBreakdown.length} days</span>
-            </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-white/[0.06]">
-                    <th className="text-left text-xs text-[#888] font-medium px-3 py-3">Date</th>
-                    <th className="text-left text-xs text-[#888] font-medium px-3 py-3">Orders</th>
-                    <th className="text-left text-xs text-[#888] font-medium px-3 py-3">MR Units</th>
-                    <th className="text-left text-xs text-[#888] font-medium px-3 py-3">RIG Units</th>
-                    <th className="text-left text-xs text-[#888] font-medium px-3 py-3">Product Cost</th>
-                    <th className="text-left text-xs text-[#888] font-medium px-3 py-3">Shipping Cost</th>
-                    <th className="text-left text-xs text-[#888] font-medium px-3 py-3">Total</th>
+        {/* ── Invoice Table ────────────────────────────────────────────────── */}
+        <div className={`${cardStyle} !p-0 overflow-hidden`}>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              {/* Column headers (sticky-ish) */}
+              <thead>
+                <tr className="bg-[#111] border-b border-white/[0.08]">
+                  <th className="text-left text-xs text-[#888] font-medium px-4 py-3 whitespace-nowrap w-[100px]">Order #</th>
+                  <th className="text-left text-xs text-[#888] font-medium px-4 py-3 whitespace-nowrap w-[120px]">Date/Time</th>
+                  <th className="text-left text-xs text-[#888] font-medium px-4 py-3 whitespace-nowrap">Item</th>
+                  <th className="text-right text-xs text-[#888] font-medium px-4 py-3 whitespace-nowrap w-[60px]">Qty</th>
+                  <th className="text-left text-xs text-[#888] font-medium px-4 py-3 whitespace-nowrap w-[140px]">Country</th>
+                  <th className="text-right text-xs text-[#888] font-medium px-4 py-3 whitespace-nowrap w-[110px]">Cost</th>
+                  <th className="text-right text-xs text-[#888] font-medium px-4 py-3 whitespace-nowrap w-[110px]">Shipping</th>
+                  <th className="text-right text-xs text-[#888] font-medium px-4 py-3 whitespace-nowrap w-[110px]">Total</th>
+                </tr>
+              </thead>
+              <tbody>
+                {dayGroups.length === 0 && (
+                  <tr>
+                    <td colSpan={8} className="text-center py-12 text-[#555] text-sm">
+                      No order data for this period
+                    </td>
                   </tr>
-                </thead>
-                <tbody>
-                  {dailyBreakdown.map((row, i) => {
-                    const rowDate = row.date || row.day || '';
-                    const rowProductCost = Number(row.productCost || row.cogs || 0);
-                    const rowShippingCost = Number(row.shippingCost || row.shipping || 0);
-                    const rowTotal = Number(row.total || 0) || rowProductCost + rowShippingCost;
-                    return (
-                      <tr
-                        key={rowDate || i}
-                        className="border-b border-white/[0.04] hover:bg-white/[0.02] transition-colors cursor-pointer"
-                        onClick={() => toggleDay(rowDate)}
-                      >
-                        <td className="px-3 py-3 text-white text-xs">
-                          <span className="inline-flex items-center gap-1.5">
-                            {expandedDays[rowDate] ? <ChevronDown size={12} className="text-[#555]" /> : <ChevronRight size={12} className="text-[#555]" />}
-                            {rowDate ? new Date(rowDate + 'T00:00:00').toLocaleDateString() : '-'}
-                          </span>
-                        </td>
-                        <td className="px-3 py-3 text-white">{fmtInt(row.orders || row.orderCount)}</td>
-                        <td className="px-3 py-3 text-white">{fmtInt(row.mrUnits || row.miners)}</td>
-                        <td className="px-3 py-3 text-white">{fmtInt(row.rigUnits || row.rigs)}</td>
-                        <td className="px-3 py-3 text-[#888]">{fmtMoney(rowProductCost)}</td>
-                        <td className="px-3 py-3 text-[#888]">{fmtMoney(rowShippingCost)}</td>
-                        <td className="px-3 py-3 text-white font-medium">{fmtMoney(rowTotal)}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-                {dailyTotals && (
-                  <tfoot>
-                    <tr className="border-t border-white/[0.08] bg-white/[0.02]">
-                      <td className="px-3 py-3 text-white text-xs font-semibold">Total</td>
-                      <td className="px-3 py-3 text-white font-semibold">{fmtInt(dailyTotals.orders)}</td>
-                      <td className="px-3 py-3 text-white font-semibold">{fmtInt(dailyTotals.mrUnits)}</td>
-                      <td className="px-3 py-3 text-white font-semibold">{fmtInt(dailyTotals.rigUnits)}</td>
-                      <td className="px-3 py-3 text-white font-semibold">{fmtMoney(dailyTotals.productCost)}</td>
-                      <td className="px-3 py-3 text-white font-semibold">{fmtMoney(dailyTotals.shippingCost)}</td>
-                      <td className="px-3 py-3 text-white font-bold">{fmtMoney(dailyTotals.total)}</td>
-                    </tr>
-                  </tfoot>
                 )}
-              </table>
-            </div>
-          </div>
-        )}
 
-        {/* ── Order Detail Table ───────────────────────────────────────────── */}
-        <div className={cardStyle}>
-          <div className="flex items-center gap-2 mb-4">
-            <Truck size={16} className="text-orange-400" />
-            <h2 className="text-sm font-medium text-white">Order Details</h2>
-            <span className="text-xs text-[#555] ml-auto">{sortedOrders.length} orders</span>
+                {dayGroups.map((group) => (
+                  <DayGroup key={group.dayKey} group={group} />
+                ))}
+
+                {/* ── Grand Total Row ──────────────────────────────────────── */}
+                {dayGroups.length > 0 && (
+                  <tr className="bg-blue-500/10 border-t-2 border-blue-500/30">
+                    <td colSpan={5} className="px-4 py-4 text-blue-400 font-bold text-sm">
+                      Grand Total: {fmtInt(totalOrders)} orders
+                    </td>
+                    <td className="text-right px-4 py-4 text-blue-400 font-bold font-mono text-sm">
+                      {fmtMoney(totalCogs)}
+                    </td>
+                    <td className="text-right px-4 py-4 text-blue-400 font-bold font-mono text-sm">
+                      {fmtMoney(totalShipping)}
+                    </td>
+                    <td className="text-right px-4 py-4 text-blue-300 font-bold font-mono text-sm">
+                      {fmtMoney(grandTotal)}
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
           </div>
-          {sortedOrders.length > 0 ? (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-white/[0.06]">
-                    <SortHeader label="Order #" field="orderNumber" sortField={orderSort.field} sortDir={orderSort.dir} onSort={handleOrderSort} />
-                    <SortHeader label="Date" field="date" sortField={orderSort.field} sortDir={orderSort.dir} onSort={handleOrderSort} />
-                    <SortHeader label="Item" field="item" sortField={orderSort.field} sortDir={orderSort.dir} onSort={handleOrderSort} />
-                    <SortHeader label="Qty" field="quantity" sortField={orderSort.field} sortDir={orderSort.dir} onSort={handleOrderSort} />
-                    <SortHeader label="Country" field="country" sortField={orderSort.field} sortDir={orderSort.dir} onSort={handleOrderSort} />
-                    <SortHeader label="Product Cost" field="cogs" sortField={orderSort.field} sortDir={orderSort.dir} onSort={handleOrderSort} />
-                    <SortHeader label="Shipping Cost" field="shipping" sortField={orderSort.field} sortDir={orderSort.dir} onSort={handleOrderSort} />
-                    <SortHeader label="Total Cost" field="totalCost" sortField={orderSort.field} sortDir={orderSort.dir} onSort={handleOrderSort} />
-                  </tr>
-                </thead>
-                <tbody>
-                  {sortedOrders.map((row, i) => {
-                    const rowCogs = Number(row.cogs || row.productCost || 0);
-                    const rowShip = Number(row.shipping || row.shippingCost || 0);
-                    const rowTotal = Number(row.totalCost || 0) || rowCogs + rowShip;
-                    return (
-                      <tr
-                        key={row.orderNumber || row.orderId || i}
-                        className="border-b border-white/[0.04] hover:bg-white/[0.02] transition-colors"
-                      >
-                        <td className="px-3 py-3 text-white text-xs font-mono">#{row.orderNumber || row.orderId || '-'}</td>
-                        <td className="px-3 py-3 text-white text-xs">
-                          {row.date ? new Date(row.date).toLocaleDateString() : '-'}
-                        </td>
-                        <td className="px-3 py-3 text-white text-xs">
-                          {row.item || row.productName || row.title || row.sku || '-'}
-                        </td>
-                        <td className="px-3 py-3 text-white">{fmtInt(row.quantity || row.qty || (Number(row.miners || 0) + Number(row.rigs || 0)))}</td>
-                        <td className="px-3 py-3 text-[#888] text-xs">{row.country || '-'}</td>
-                        <td className="px-3 py-3 text-[#888]">{fmtMoney(rowCogs)}</td>
-                        <td className="px-3 py-3 text-[#888]">{fmtMoney(rowShip)}</td>
-                        <td className="px-3 py-3 text-white font-medium">{fmtMoney(rowTotal)}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-                <tfoot>
-                  <tr className="border-t border-white/[0.08] bg-white/[0.02]">
-                    <td colSpan={5} className="px-3 py-3 text-white text-xs font-semibold">Total</td>
-                    <td className="px-3 py-3 text-white font-semibold">
-                      {fmtMoney(sortedOrders.reduce((s, r) => s + Number(r.cogs || r.productCost || 0), 0))}
-                    </td>
-                    <td className="px-3 py-3 text-white font-semibold">
-                      {fmtMoney(sortedOrders.reduce((s, r) => s + Number(r.shipping || r.shippingCost || 0), 0))}
-                    </td>
-                    <td className="px-3 py-3 text-white font-bold">
-                      {fmtMoney(
-                        sortedOrders.reduce((s, r) => {
-                          const c = Number(r.cogs || r.productCost || 0);
-                          const sh = Number(r.shipping || r.shippingCost || 0);
-                          return s + (Number(r.totalCost || 0) || c + sh);
-                        }, 0)
-                      )}
-                    </td>
-                  </tr>
-                </tfoot>
-              </table>
-            </div>
-          ) : (
-            <div className="text-center py-8 text-[#555] text-sm">No order data for this period</div>
-          )}
         </div>
 
       </div>
     </div>
+  );
+}
+
+// ── Day Group Sub-component ──────────────────────────────────────────────────
+
+function DayGroup({ group }) {
+  return (
+    <>
+      {/* Day header row */}
+      <tr className="bg-[#1a1a1a] border-t-2 border-white/[0.08] border-b border-white/[0.06]">
+        <td colSpan={8} className="px-4 py-3">
+          <span className="text-white font-bold text-sm">{group.label}</span>
+        </td>
+      </tr>
+
+      {/* Order line items */}
+      {group.lines.map((line, i) => (
+        <tr
+          key={`${group.dayKey}-${line.orderNumber}-${line.item}-${i}`}
+          className="border-b border-white/[0.04] hover:bg-white/[0.02] transition-colors"
+        >
+          {/* Order # — only show on first line of each order */}
+          <td className="px-4 py-2.5 text-white font-mono text-xs">
+            {line.isFirstLine ? `#${line.orderNumber || '-'}` : ''}
+          </td>
+          {/* Date/Time — only show on first line */}
+          <td className="px-4 py-2.5 text-[#888] font-mono text-xs">
+            {line.isFirstLine ? fmtDateTime(line.date) : ''}
+          </td>
+          {/* Item */}
+          <td className="px-4 py-2.5 text-white text-xs">{line.item}</td>
+          {/* Qty */}
+          <td className="text-right px-4 py-2.5 text-white font-mono text-xs">{line.qty}</td>
+          {/* Country */}
+          <td className="px-4 py-2.5 text-[#888] text-xs">{line.country}</td>
+          {/* Cost */}
+          <td className="text-right px-4 py-2.5 text-[#888] font-mono text-xs">{fmtMoney(line.cost)}</td>
+          {/* Shipping */}
+          <td className="text-right px-4 py-2.5 text-[#888] font-mono text-xs">{fmtMoney(line.shipping)}</td>
+          {/* Total */}
+          <td className="text-right px-4 py-2.5 text-white font-mono font-medium text-xs">{fmtMoney(line.total)}</td>
+        </tr>
+      ))}
+
+      {/* Daily total row */}
+      <tr className="bg-[#0d1117] border-b border-white/[0.08]">
+        <td colSpan={5} className="px-4 py-3 text-green-400 font-semibold text-xs">
+          Daily Total: {fmtInt(group.orderCount)} orders
+        </td>
+        <td className="text-right px-4 py-3 text-green-400 font-semibold font-mono text-xs">
+          {fmtMoney(group.productCost)}
+        </td>
+        <td className="text-right px-4 py-3 text-green-400 font-semibold font-mono text-xs">
+          {fmtMoney(group.shippingCost)}
+        </td>
+        <td className="text-right px-4 py-3 text-green-300 font-bold font-mono text-xs">
+          {fmtMoney(group.total)}
+        </td>
+      </tr>
+    </>
   );
 }
