@@ -1335,6 +1335,8 @@ router.get('/active', authenticate, async (req, res) => {
           angle: row.angle,
           format: row.format,
           editor: row.editor,
+          thumbnail_url: row.thumbnail_url || null,
+          video_url: row.video_url || null,
           total_spend: 0,
           total_revenue: 0,
           total_purchases: 0,
@@ -1370,6 +1372,8 @@ router.get('/active', authenticate, async (req, res) => {
         if (row.angle)  grouped[cid].angle = row.angle;
         if (row.format) grouped[cid].format = row.format;
         if (row.editor) grouped[cid].editor = row.editor;
+        if (row.thumbnail_url) grouped[cid].thumbnail_url = row.thumbnail_url;
+        if (row.video_url) grouped[cid].video_url = row.video_url;
       }
     }
 

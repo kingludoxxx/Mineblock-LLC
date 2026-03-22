@@ -29,8 +29,16 @@ const app = express();
 // Trust proxy (Render runs behind a reverse proxy)
 app.set('trust proxy', 1);
 
-// Security headers
-app.use(helmet());
+// Security headers (allow Meta iframe previews + Meta CDN images)
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      ...helmet.contentSecurityPolicy.getDefaultDirectives(),
+      "frame-src": ["'self'", "https://www.facebook.com", "https://web.facebook.com"],
+      "img-src": ["'self'", "data:", "https:", "blob:"],
+    },
+  },
+}));
 
 // CORS
 app.use(cors(corsOptions));
