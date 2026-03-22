@@ -10,7 +10,7 @@ const SHOPIFY_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN || '';
 // SUPPLIER_SHARE_TOKEN — env var for public /public/cost-sheet token-based access
 const SUPPLIER_SHARE_TOKEN = process.env.SUPPLIER_SHARE_TOKEN || '';
 const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN || '';
-const SLACK_KPI_CHANNEL = process.env.SLACK_REJECTION_CHANNEL || ''; // reuse bm-alerts channel
+const SLACK_KPI_CHANNEL = 'C0AN0BPN0NA'; // supply-chain alerts channel
 
 // Track already-alerted unknown products to avoid spam
 const alertedUnknownProducts = new Set();
