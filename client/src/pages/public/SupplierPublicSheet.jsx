@@ -183,9 +183,9 @@ export default function SupplierPublicSheet() {
           <SummaryCard label="Grand Total" value={fmtMoney(grandTotal)} color="#10b981" />
         </section>
 
-        {dateRange.start && dateRange.end && (
+        {inner.start && inner.end && (
           <p style={styles.dateRangeLabel}>
-            Showing data from <strong>{dateRange.start}</strong> to <strong>{dateRange.end}</strong>
+            Showing data from <strong>{inner.start}</strong> to <strong>{inner.end}</strong>
           </p>
         )}
 
