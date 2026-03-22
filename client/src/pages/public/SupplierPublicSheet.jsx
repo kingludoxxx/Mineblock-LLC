@@ -115,13 +115,24 @@ export default function SupplierPublicSheet() {
   // ── Data ───────────────────────────────────────────────────────────────────
 
   const inner = data?.data || data || {};
-  const orders = inner?.orders || [];
+  const rawOrders = inner?.orders || [];
   const summary = inner?.summary || {};
-  const dateRange = inner?.dateRange || {};
 
-  const totalProductCost = summary.totalProductCost ?? orders.reduce((s, o) => s + (o.productCost || 0), 0);
+  // Map API fields to display fields
+  const orders = rawOrders.map(o => {
+    const miners = Number(o.miners || 0);
+    const rigs = Number(o.rigs || 0);
+    const item = miners > 0 && rigs > 0 ? `Miner Forge PRO (${miners}) + Mining Rig (${rigs})`
+      : miners > 0 ? `Miner Forge PRO 2.0` : rigs > 0 ? `Mining Rig` : '-';
+    const qty = miners + rigs || 1;
+    const d = o.date ? new Date(o.date) : null;
+    const dateStr = d ? d.toLocaleDateString('en-CA', { timeZone: 'Europe/Berlin' }) + ' ' + d.toLocaleTimeString('en-GB', { timeZone: 'Europe/Berlin', hour: '2-digit', minute: '2-digit' }) : '-';
+    return { ...o, item, qty, dateStr, productCost: o.cogs || 0, total: (o.cogs || 0) + (o.shipping || 0) };
+  });
+
+  const totalProductCost = summary.totalCogs ?? orders.reduce((s, o) => s + o.productCost, 0);
   const totalShipping = summary.totalShipping ?? orders.reduce((s, o) => s + (o.shipping || 0), 0);
-  const grandTotal = summary.grandTotal ?? totalProductCost + totalShipping;
+  const grandTotal = totalProductCost + totalShipping;
 
   return (
     <div style={styles.page}>
@@ -203,15 +214,15 @@ export default function SupplierPublicSheet() {
                 ) : (
                   orders.map((o, i) => (
                     <tr key={o.orderNumber || i} style={i % 2 === 0 ? {} : styles.altRow}>
-                      <td style={styles.td}>{o.orderNumber || '-'}</td>
-                      <td style={styles.td}>{o.date || '-'}</td>
+                      <td style={styles.td}>#{o.orderNumber || '-'}</td>
+                      <td style={styles.td}>{o.dateStr || '-'}</td>
                       <td style={styles.td}>{o.item || '-'}</td>
-                      <td style={{ ...styles.td, textAlign: 'right' }}>{o.quantity ?? '-'}</td>
+                      <td style={{ ...styles.td, textAlign: 'right' }}>{o.qty}</td>
                       <td style={styles.td}>{o.country || '-'}</td>
                       <td style={{ ...styles.td, textAlign: 'right' }}>{fmtMoney(o.productCost)}</td>
                       <td style={{ ...styles.td, textAlign: 'right' }}>{fmtMoney(o.shipping)}</td>
                       <td style={{ ...styles.td, textAlign: 'right', fontWeight: 600 }}>
-                        {fmtMoney((o.productCost || 0) + (o.shipping || 0))}
+                        {fmtMoney(o.total)}
                       </td>
                     </tr>
                   ))
