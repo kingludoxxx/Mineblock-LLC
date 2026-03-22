@@ -1162,6 +1162,56 @@ router.get('/home-dashboard', authenticate, async (req, res) => {
       snapLookup[d] = s;
     }
 
+    // Fetch Shopify online store sessions for conversion rate
+    const sessionLookup = {};
+    try {
+      if (SHOPIFY_TOKEN) {
+        // Shopify Analytics API - get daily sessions
+        const analyticsRes = await fetch(
+          `https://${SHOPIFY_STORE}/admin/api/${SHOPIFY_API_VERSION}/reports.json`,
+          { headers: { 'X-Shopify-Access-Token': SHOPIFY_TOKEN }, signal: AbortSignal.timeout(10000) }
+        ).catch(() => null);
+        // Fallback: use orders count from cache to estimate (Shopify Analytics API may not be available)
+        // Try the REST approach for visitor data
+        if (!analyticsRes || !analyticsRes.ok) {
+          // Use GraphQL to get online store sessions
+          const gqlBody = JSON.stringify({
+            query: `{
+              shopifyqlQuery(query: "FROM visits SHOW sum(visitor_count) AS sessions GROUP BY day SINCE ${startDate} UNTIL ${endDate} ORDER BY day") {
+                __typename
+                ... on TableResponse {
+                  tableData { rowData columns { name dataType } }
+                }
+              }
+            }`
+          });
+          const gqlRes = await fetch(`https://${SHOPIFY_STORE}/admin/api/${SHOPIFY_API_VERSION}/graphql.json`, {
+            method: 'POST',
+            headers: { 'X-Shopify-Access-Token': SHOPIFY_TOKEN, 'Content-Type': 'application/json' },
+            body: gqlBody,
+            signal: AbortSignal.timeout(10000),
+          }).catch(() => null);
+          if (gqlRes && gqlRes.ok) {
+            const gqlData = await gqlRes.json();
+            const tableData = gqlData?.data?.shopifyqlQuery?.tableData;
+            if (tableData?.rowData) {
+              const cols = tableData.columns?.map(c => c.name) || [];
+              const dayIdx = cols.findIndex(c => c === 'day');
+              const sessIdx = cols.findIndex(c => c === 'sessions');
+              if (dayIdx >= 0 && sessIdx >= 0) {
+                for (const row of tableData.rowData) {
+                  const d = row[dayIdx]?.slice(0, 10);
+                  if (d) sessionLookup[d] = parseInt(row[sessIdx] || 0);
+                }
+              }
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('[KPI] sessions fetch failed:', err.message);
+    }
+
     // Helper: build metrics object for a date
     function metricsForDate(d) {
       const s = snapLookup[d];
@@ -1171,12 +1221,14 @@ router.get('/home-dashboard', authenticate, async (req, res) => {
       const fees = feeLookup[d] || 0;
       const orders = s ? parseInt(s.total_orders || 0) : 0;
       const adSpend = spendLookup[d] || 0;
-      const costs = cogs + shipping + fees;
+      const costs = cogs + shipping + fees + adSpend; // Include ad spend in total costs
       const profit = revenue - costs;
       const netMargin = revenue > 0 ? Math.round((profit / revenue) * 10000) / 100 : 0;
       const aov = orders > 0 ? Math.round((revenue / orders) * 100) / 100 : 0;
       const roas = adSpend > 0 ? Math.round((revenue / adSpend) * 100) / 100 : 0;
-      return { date: d, revenue, adSpend, roas, orders, aov, costs, cogs, shipping, fees, profit, netMargin, conversionRate: null };
+      const sessions = sessionLookup[d] || null;
+      const conversionRate = (sessions && sessions > 0 && orders > 0) ? Math.round((orders / sessions) * 10000) / 100 : null;
+      return { date: d, revenue, adSpend, roas, orders, aov, costs, cogs, shipping, fees, profit, netMargin, conversionRate };
     }
 
     // Build sparklines for all 8 days (fill gaps with zeros)
