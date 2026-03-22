@@ -167,12 +167,21 @@ export default function SupplierPublicSheet() {
                 </button>
               ))}
             </div>
-            <input
-              type="date"
-              value={date}
-              onChange={(e) => setDate(e.target.value)}
-              style={styles.dateInput}
-            />
+            {period === 'monthly' ? (
+              <input
+                type="month"
+                value={date.slice(0, 7)}
+                onChange={(e) => setDate(e.target.value + '-01')}
+                style={styles.dateInput}
+              />
+            ) : (
+              <input
+                type="date"
+                value={date}
+                onChange={(e) => setDate(e.target.value)}
+                style={styles.dateInput}
+              />
+            )}
           </div>
         </header>
 
