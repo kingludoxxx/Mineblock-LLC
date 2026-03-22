@@ -329,9 +329,7 @@ export default function KpiDashboard() {
             icon={DollarSign}
             label="Revenue"
             value={fmtMoney(metrics.netRevenue ?? metrics.revenue)}
-            subtitle={metrics.grossRevenue ? `Gross: ${fmtMoney(metrics.grossRevenue)}` : undefined}
-            change={metrics.revenueChange}
-            changeLabel
+            subtitle={metrics.totalDiscounts ? `Discounts: -${fmtMoney(metrics.totalDiscounts)}` : undefined}
             accentColor="bg-green-500/10"
           />
           <MetricCard

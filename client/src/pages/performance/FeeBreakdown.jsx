@@ -172,6 +172,9 @@ export default function FeeBreakdown() {
   const feeTypeBreakdown = data?.feeTypeBreakdown || [];
   const recentPayments = (data?.recentPayments || []).slice(0, 50);
 
+  // Compute lassoFees from feeTypeBreakdown since API doesn't include it in summary
+  const lassoFees = lassoFees || feeTypeBreakdown.find(f => f.type === 'lasso_percentage_fee')?.total || 0;
+
   const totalVolume = Number(summary.totalPaymentAmount || 0);
   const pctOf = (v) => (totalVolume > 0 ? (Number(v || 0) / totalVolume) * 100 : 0);
 
@@ -269,8 +272,8 @@ export default function FeeBreakdown() {
           <SummaryCard
             icon={Percent}
             label="Lasso Fees"
-            amount={summary.lassoFees}
-            pctOfVolume={pctOf(summary.lassoFees)}
+            amount={lassoFees}
+            pctOfVolume={pctOf(lassoFees)}
             accentColor="bg-orange-500/10"
           />
         </div>
