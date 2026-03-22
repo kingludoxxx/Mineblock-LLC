@@ -206,11 +206,64 @@ function MonthGrid({ viewYear, selected, today, onSelect }) {
   );
 }
 
+// ── Preset Shortcuts ─────────────────────────────────────────────────────────
+
+const TIMEZONE = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+function getPresetDate(key) {
+  const t = new Date();
+  const todayDate = toDateStr(t.getFullYear(), t.getMonth(), t.getDate());
+  switch (key) {
+    case 'today': return todayDate;
+    case 'yesterday': {
+      t.setDate(t.getDate() - 1);
+      return toDateStr(t.getFullYear(), t.getMonth(), t.getDate());
+    }
+    case 'last7': {
+      t.setDate(t.getDate() - 7);
+      return toDateStr(t.getFullYear(), t.getMonth(), t.getDate());
+    }
+    case 'last14': {
+      t.setDate(t.getDate() - 14);
+      return toDateStr(t.getFullYear(), t.getMonth(), t.getDate());
+    }
+    case 'last30': {
+      t.setDate(t.getDate() - 30);
+      return toDateStr(t.getFullYear(), t.getMonth(), t.getDate());
+    }
+    case 'last90': {
+      t.setDate(t.getDate() - 90);
+      return toDateStr(t.getFullYear(), t.getMonth(), t.getDate());
+    }
+    case 'last365': {
+      t.setDate(t.getDate() - 365);
+      return toDateStr(t.getFullYear(), t.getMonth(), t.getDate());
+    }
+    case 'lastMonth': {
+      const lm = new Date(t.getFullYear(), t.getMonth() - 1, 1);
+      return toDateStr(lm.getFullYear(), lm.getMonth(), 1);
+    }
+    default: return todayDate;
+  }
+}
+
+const PRESETS = [
+  { key: 'today', label: 'Today' },
+  { key: 'yesterday', label: 'Yesterday' },
+  { key: 'last7', label: 'Last 7 Days' },
+  { key: 'last14', label: 'Last 14 Days' },
+  { key: 'last30', label: 'Last 30 Days' },
+  { key: 'last90', label: 'Last 90 Days' },
+  { key: 'last365', label: 'Last 365 Days' },
+  { key: 'lastMonth', label: 'Last Month' },
+];
+
 // ── Main DatePicker Component ───────────────────────────────────────────────
 
 export default function DatePicker({ value, onChange, period = 'daily' }) {
   const [open, setOpen] = useState(false);
   const [pendingDate, setPendingDate] = useState(value);
+  const [activePreset, setActivePreset] = useState(null);
   const containerRef = useRef(null);
 
   // View state for navigation (which month/year is shown)
@@ -219,6 +272,14 @@ export default function DatePicker({ value, onChange, period = 'daily' }) {
   const [viewMonth, setViewMonth] = useState(initial.month);
 
   const today = useMemo(() => getToday(), []);
+
+  // Detect which preset matches on open
+  useEffect(() => {
+    if (open) {
+      const match = PRESETS.find((p) => getPresetDate(p.key) === value);
+      setActivePreset(match ? match.key : null);
+    }
+  }, [open, value]);
 
   // Sync pending date and view when value prop changes externally
   useEffect(() => {
@@ -283,7 +344,16 @@ export default function DatePicker({ value, onChange, period = 'daily' }) {
 
   const handleDaySelect = useCallback((dateStr) => {
     setPendingDate(dateStr);
-    // Also update view if user clicked an outside-month day
+    setActivePreset(null);
+    const p = parseDate(dateStr);
+    setViewMonth(p.month);
+    setViewYear(p.year);
+  }, []);
+
+  const handlePresetSelect = useCallback((key) => {
+    const dateStr = getPresetDate(key);
+    setPendingDate(dateStr);
+    setActivePreset(key);
     const p = parseDate(dateStr);
     setViewMonth(p.month);
     setViewYear(p.year);
@@ -295,7 +365,6 @@ export default function DatePicker({ value, onChange, period = 'daily' }) {
   }, [onChange, pendingDate]);
 
   const handleCancel = useCallback(() => {
-    // Reset pending to current value
     setPendingDate(value);
     const p = parseDate(value);
     setViewYear(p.year);
@@ -305,7 +374,9 @@ export default function DatePicker({ value, onChange, period = 'daily' }) {
 
   const headerTitle = period === 'monthly'
     ? String(viewYear)
-    : `${MONTHS[viewMonth]} ${viewYear}`;
+    : `${MONTHS[viewMonth]}  ${viewYear}`;
+
+  const showPresets = period === 'daily';
 
   return (
     <div ref={containerRef} className="relative">
@@ -323,76 +394,112 @@ export default function DatePicker({ value, onChange, period = 'daily' }) {
       {/* Popover */}
       {open && (
         <div
-          className="absolute top-full mt-2 right-0 z-50 w-[280px] bg-[#1a1a1a] border border-white/[0.08]
-                     rounded-xl shadow-2xl shadow-black/40 overflow-hidden animate-in fade-in slide-in-from-top-1 duration-150"
+          className={`absolute top-full mt-2 right-0 z-50 bg-[#1a1a1a] border border-white/[0.08]
+                     rounded-xl shadow-2xl shadow-black/40 overflow-hidden animate-in fade-in slide-in-from-top-1 duration-150
+                     ${showPresets ? 'flex w-[480px]' : 'w-[280px]'}`}
         >
-          {/* Header */}
-          <div className="flex items-center justify-between px-3 py-3">
-            <button
-              type="button"
-              onClick={goPrev}
-              className="w-7 h-7 flex items-center justify-center rounded-full hover:bg-white/[0.08] transition-colors cursor-pointer"
-            >
-              <ChevronLeft size={16} className="text-[#888]" />
-            </button>
-            <span className="text-sm font-semibold text-blue-500 select-none">
-              {headerTitle}
-            </span>
-            <button
-              type="button"
-              onClick={goNext}
-              className="w-7 h-7 flex items-center justify-center rounded-full hover:bg-white/[0.08] transition-colors cursor-pointer"
-            >
-              <ChevronRight size={16} className="text-[#888]" />
-            </button>
-          </div>
+          {/* Preset shortcuts sidebar */}
+          {showPresets && (
+            <div className="w-[160px] border-r border-white/[0.06] py-2 shrink-0">
+              {PRESETS.map((p) => (
+                <button
+                  key={p.key}
+                  type="button"
+                  onClick={() => handlePresetSelect(p.key)}
+                  className={`w-full text-left px-4 py-2 text-sm cursor-pointer transition-colors ${
+                    activePreset === p.key
+                      ? 'text-blue-400 font-medium bg-blue-500/10'
+                      : 'text-white/70 hover:bg-white/[0.04] hover:text-white'
+                  }`}
+                >
+                  <span className="flex items-center justify-between">
+                    {p.label}
+                    {activePreset === p.key && (
+                      <svg className="w-4 h-4 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                      </svg>
+                    )}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
 
-          {/* Separator */}
-          <div className="border-t border-white/[0.06]" />
+          {/* Calendar side */}
+          <div className={showPresets ? 'flex-1' : 'w-full'}>
+            {/* Header */}
+            <div className="flex items-center justify-between px-3 py-3">
+              <button
+                type="button"
+                onClick={goPrev}
+                className="w-7 h-7 flex items-center justify-center rounded-full hover:bg-white/[0.08] transition-colors cursor-pointer"
+              >
+                <ChevronLeft size={16} className="text-[#888]" />
+              </button>
+              <span className="text-sm font-semibold text-blue-500 select-none">
+                {headerTitle}
+              </span>
+              <button
+                type="button"
+                onClick={goNext}
+                className="w-7 h-7 flex items-center justify-center rounded-full hover:bg-white/[0.08] transition-colors cursor-pointer"
+              >
+                <ChevronRight size={16} className="text-[#888]" />
+              </button>
+            </div>
 
-          {/* Body */}
-          <div className="pt-2">
-            {period === 'monthly' ? (
-              <MonthGrid
-                viewYear={viewYear}
-                selected={pendingDate}
-                today={today}
-                onSelect={handleDaySelect}
-              />
-            ) : (
-              <DayGrid
-                viewYear={viewYear}
-                viewMonth={viewMonth}
-                selected={value}
-                today={today}
-                period={period}
-                pendingDate={pendingDate}
-                onSelect={handleDaySelect}
-              />
-            )}
-          </div>
+            {/* Separator */}
+            <div className="border-t border-white/[0.06]" />
 
-          {/* Separator */}
-          <div className="border-t border-white/[0.06]" />
+            {/* Body */}
+            <div className="pt-2">
+              {period === 'monthly' ? (
+                <MonthGrid
+                  viewYear={viewYear}
+                  selected={pendingDate}
+                  today={today}
+                  onSelect={handleDaySelect}
+                />
+              ) : (
+                <DayGrid
+                  viewYear={viewYear}
+                  viewMonth={viewMonth}
+                  selected={value}
+                  today={today}
+                  period={period}
+                  pendingDate={pendingDate}
+                  onSelect={handleDaySelect}
+                />
+              )}
+            </div>
 
-          {/* Footer buttons */}
-          <div className="flex items-center justify-end gap-2 px-3 py-2.5">
-            <button
-              type="button"
-              onClick={handleCancel}
-              className="px-3 py-1.5 text-xs font-medium text-[#888] hover:text-white rounded-md
-                         hover:bg-white/[0.06] transition-colors cursor-pointer"
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              onClick={handleApply}
-              className="px-3 py-1.5 text-xs font-medium text-white bg-blue-600 hover:bg-blue-700
-                         rounded-md transition-colors cursor-pointer"
-            >
-              Apply
-            </button>
+            {/* Timezone */}
+            <div className="px-3 pb-2">
+              <p className="text-[11px] text-white/30">Timezone: {TIMEZONE}</p>
+            </div>
+
+            {/* Separator */}
+            <div className="border-t border-white/[0.06]" />
+
+            {/* Footer buttons */}
+            <div className="flex items-center justify-end gap-2 px-3 py-2.5">
+              <button
+                type="button"
+                onClick={handleCancel}
+                className="px-4 py-1.5 text-xs font-medium text-white/70 border border-white/[0.1] rounded-md
+                           hover:bg-white/[0.06] hover:text-white transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleApply}
+                className="px-4 py-1.5 text-xs font-medium text-white bg-blue-600 hover:bg-blue-700
+                           rounded-md transition-colors cursor-pointer"
+              >
+                Apply
+              </button>
+            </div>
           </div>
         </div>
       )}
