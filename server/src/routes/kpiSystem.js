@@ -1962,6 +1962,13 @@ async function sendDailyPnlReport(dateStr) {
       { type: 'divider' },
     ];
 
+    // Ensure bot is in the channel
+    await fetch('https://slack.com/api/conversations.join', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${SLACK_BOT_TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channel: SLACK_DAILY_PNL_CHANNEL }),
+    }).catch(() => {});
+
     const resp = await fetch('https://slack.com/api/chat.postMessage', {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${SLACK_BOT_TOKEN}`, 'Content-Type': 'application/json' },
@@ -1992,20 +1999,23 @@ function scheduleDailyPnl() {
 
   setInterval(() => {
     const now = new Date();
-    // Get current time in Europe/Berlin
-    const berlinStr = now.toLocaleString('en-US', { timeZone: 'Europe/Berlin' });
-    const berlin = new Date(berlinStr);
-    const hour = berlin.getHours();
-    const minute = berlin.getMinutes();
-    const todayStr = berlin.toISOString().slice(0, 10);
+    // Get current time parts in Europe/Berlin
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Europe/Berlin', year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', hour12: false,
+    }).formatToParts(now);
+    const get = (type) => parts.find(p => p.type === type)?.value;
+    const hour = parseInt(get('hour'));
+    const minute = parseInt(get('minute'));
+    const berlinDate = `${get('year')}-${get('month')}-${get('day')}`;
 
     // Trigger at 00:03 CET (hour=0, minute=3)
-    if (hour === 0 && minute >= 3 && minute < 5 && lastSentDate !== todayStr) {
-      lastSentDate = todayStr;
+    if (hour === 0 && minute >= 3 && minute < 5 && lastSentDate !== berlinDate) {
+      lastSentDate = berlinDate;
       // Report for yesterday (the day that just ended)
-      const yesterday = new Date(berlin);
-      yesterday.setDate(yesterday.getDate() - 1);
-      const yStr = `${yesterday.getFullYear()}-${String(yesterday.getMonth() + 1).padStart(2, '0')}-${String(yesterday.getDate()).padStart(2, '0')}`;
+      const yDate = new Date(berlinDate + 'T00:00:00Z');
+      yDate.setUTCDate(yDate.getUTCDate() - 1);
+      const yStr = yDate.toISOString().slice(0, 10);
       console.log(`[Daily P&L] Triggering report for ${yStr}`);
       sendDailyPnlReport(yStr).catch(err => console.error('[Daily P&L] Send error:', err.message));
     }
