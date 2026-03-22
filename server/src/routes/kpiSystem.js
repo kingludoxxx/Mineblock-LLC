@@ -1230,6 +1230,13 @@ router.get('/cost-sheet', authenticate, async (req, res) => {
   }
 });
 
+/** GET /share-token — Return the supplier share token (authenticated) */
+router.get('/share-token', authenticate, (req, res) => {
+  const token = process.env.SUPPLIER_SHARE_TOKEN || '';
+  if (!token) return res.status(404).json({ success: false, error: { message: 'Share token not configured' } });
+  res.json({ success: true, data: { token } });
+});
+
 /** GET /public/cost-sheet — Public supplier cost sheet (token-based auth) */
 router.get('/public/cost-sheet', async (req, res) => {
   try {

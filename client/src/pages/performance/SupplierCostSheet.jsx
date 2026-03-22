@@ -190,8 +190,15 @@ export default function SupplierCostSheet() {
 
   // ── Share Link ─────────────────────────────────────────────────────────────
 
-  const handleShareLink = () => {
-    const shareUrl = `${window.location.origin}/supplier/cost-sheet?token=SUPPLIER_SHARE_TOKEN`;
+  const handleShareLink = async () => {
+    // Fetch the share token from the API
+    let token = '';
+    try {
+      const res = await api.get('/kpi-system/share-token');
+      token = res.data?.token || res.data?.data?.token || '';
+    } catch { token = ''; }
+    if (!token) { alert('Share token not configured. Set SUPPLIER_SHARE_TOKEN in environment.'); return; }
+    const shareUrl = `${window.location.origin}/supplier/cost-sheet?token=${token}`;
     navigator.clipboard.writeText(shareUrl).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
