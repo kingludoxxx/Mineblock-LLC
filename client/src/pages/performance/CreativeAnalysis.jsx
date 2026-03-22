@@ -981,7 +981,7 @@ export default function CreativeAnalysis() {
                   >
                     {creative.thumbnail_url ? (
                       <>
-                        <img src={creative.thumbnail_url} alt="" className="w-full h-full object-cover" />
+                        <img src={creative.thumbnail_url} alt="" className="w-full h-full object-cover" onError={(e) => { e.target.src = ''; e.target.className = 'hidden'; }} />
                         {creative.video_url && (
                           <div className="absolute inset-0 flex items-center justify-center bg-black/20 opacity-0 group-hover:opacity-100 transition-opacity">
                             <div className="w-10 h-10 rounded-full bg-white/90 flex items-center justify-center">
@@ -1105,8 +1105,8 @@ export default function CreativeAnalysis() {
                 </div>
                 {formatStats.length > 0 ? (
                   <ResponsiveContainer width="100%" height={Math.max(220, formatStats.length * 44)}>
-                    <RBarChart data={formatStats} layout="vertical" margin={{ top: 0, right: 20, bottom: 0, left: 0 }} barCategoryGap="20%">
-                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" horizontal={false} vertical={false} />
+                    <RBarChart data={formatStats} layout="vertical" margin={{ top: 0, right: 20, bottom: 0, left: 0 }} barCategoryGap="20%" style={{ outline: 'none' }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" horizontal={false} vertical={true} />
                       <XAxis type="number" tick={{ fill: '#6b7280', fontSize: 10 }} axisLine={false} tickLine={false} tickFormatter={(v) => `${Number(v || 0).toFixed(1)}x`} />
                       <YAxis type="category" dataKey="format" tick={{ fill: '#9ca3af', fontSize: 11 }} axisLine={false} tickLine={false} width={120} interval={0} />
                       <Tooltip
@@ -1491,7 +1491,7 @@ export default function CreativeAnalysis() {
                   allowFullScreen
                 />
               ) : videoModal.thumbnail_url ? (
-                <img src={videoModal.thumbnail_url} alt="" className="w-full max-h-[80vh] object-contain" />
+                <img src={videoModal.thumbnail_url} alt="" className="w-full max-h-[80vh] object-contain" onError={(e) => { e.target.src = ''; e.target.className = 'hidden'; }} />
               ) : null}
               {videoModal.ad_name && (
                 <div className="p-3 border-t border-white/10">
