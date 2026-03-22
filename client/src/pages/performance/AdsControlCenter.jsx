@@ -918,7 +918,7 @@ export default function AdsControlCenter() {
     if (!silent) setLoading((p) => ({ ...p, activity: true }));
     try {
       const { data } = await api.get('/ads-control/activity', { params: { limit: 50, offset: 0 } });
-      if (data.success) setActivity(data.data || []);
+      if (data.success) setActivity(data.data?.entries || []);
     } catch (err) {
       console.error('Failed to fetch activity:', err);
     } finally {
@@ -1399,3 +1399,4 @@ export default function AdsControlCenter() {
     </div>
   );
 }
+
