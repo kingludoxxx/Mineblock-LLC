@@ -88,7 +88,15 @@ const navGroups = [
     icon: BarChart3,
     items: [
       { to: '/app/creative-analysis', icon: BarChart3, label: 'Creative Analysis' },
-      { to: '/app/kpi-system', icon: DollarSign, label: 'KPI System' },
+      {
+        icon: DollarSign,
+        label: 'KPI System',
+        children: [
+          { to: '/app/kpi-system', label: 'Dashboard' },
+          { to: '/app/kpi-system/cost-sheet', label: 'Supplier Costs' },
+          { to: '/app/kpi-system/fees', label: 'Fee Breakdown' },
+        ],
+      },
     ],
   },
   {
@@ -114,6 +122,7 @@ export default function Sidebar() {
     });
     return initial;
   });
+  const [expandedItems, setExpandedItems] = useState({});
   const { user } = useAuth();
   const location = useLocation();
 
@@ -124,8 +133,20 @@ export default function Sidebar() {
     setExpandedGroups((prev) => ({ ...prev, [label]: !prev[label] }));
   };
 
+  const toggleItem = (label) => {
+    setExpandedItems((prev) => ({ ...prev, [label]: !prev[label] }));
+  };
+
+  const isItemParentActive = (item) => {
+    return item.children?.some((child) => location.pathname === child.to);
+  };
+
   const isGroupActive = (group) => {
-    return group.items.some((item) => location.pathname.startsWith(item.to));
+    return group.items.some((item) =>
+      item.children
+        ? item.children.some((child) => location.pathname.startsWith(child.to))
+        : location.pathname.startsWith(item.to)
+    );
   };
 
   return (
@@ -199,6 +220,44 @@ export default function Sidebar() {
                 <div className="ml-3 pl-3 border-l border-border-subtle space-y-0.5 mt-0.5 mb-1">
                   {group.items.map((item) => {
                     const ItemIcon = item.icon;
+
+                    if (item.children) {
+                      const parentActive = isItemParentActive(item);
+                      const isItemExpanded = expandedItems[item.label] ?? parentActive;
+                      return (
+                        <div key={item.label}>
+                          <button
+                            onClick={() => toggleItem(item.label)}
+                            className={`w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-md text-sm transition-colors cursor-pointer
+                              ${parentActive ? 'bg-bg-hover text-text-primary' : 'text-text-muted hover:text-text-primary hover:bg-bg-hover'}`}
+                          >
+                            <ItemIcon className="w-3.5 h-3.5 shrink-0" />
+                            <span className="flex-1 text-left">{item.label}</span>
+                            <ChevronDown
+                              className={`w-3 h-3 transition-transform ${isItemExpanded ? '' : '-rotate-90'}`}
+                            />
+                          </button>
+                          {isItemExpanded && (
+                            <div className="ml-3 pl-3 border-l border-border-subtle space-y-0.5 mt-0.5 mb-0.5">
+                              {item.children.map((child) => (
+                                <NavLink
+                                  key={child.to}
+                                  to={child.to}
+                                  end={child.to === '/app/kpi-system'}
+                                  className={({ isActive }) =>
+                                    `flex items-center gap-2.5 px-2.5 py-1 rounded-md text-xs transition-colors
+                                    ${isActive ? 'bg-bg-hover text-text-primary' : 'text-text-muted hover:text-text-primary hover:bg-bg-hover'}`
+                                  }
+                                >
+                                  <span>{child.label}</span>
+                                </NavLink>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    }
+
                     return (
                       <NavLink
                         key={item.to}

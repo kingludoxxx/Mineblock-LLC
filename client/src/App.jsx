@@ -51,6 +51,9 @@ import LtvPage from './pages/performance/LtvPage';
 import RoasPage from './pages/performance/RoasPage';
 import CreativeAnalysisPage from './pages/performance/CreativeAnalysisPage';
 import KpiSystem from './pages/performance/KpiSystem';
+import KpiDashboard from './pages/performance/KpiDashboard';
+import SupplierCostSheet from './pages/performance/SupplierCostSheet';
+import FeeBreakdown from './pages/performance/FeeBreakdown';
 
 // Library
 import TeamHubPage from './pages/library/TeamHubPage';
@@ -120,7 +123,9 @@ export default function App() {
 
           {/* Performance */}
           <Route path="creative-analysis" element={<CreativeAnalysisPage />} />
-          <Route path="kpi-system" element={<KpiSystem />} />
+          <Route path="kpi-system" element={<KpiDashboard />} />
+          <Route path="kpi-system/cost-sheet" element={<SupplierCostSheet />} />
+          <Route path="kpi-system/fees" element={<FeeBreakdown />} />
           <Route path="attribution" element={<AttributionPage />} />
           <Route path="live" element={<LivePage />} />
           <Route path="ltv" element={<LtvPage />} />
@@ -138,6 +143,9 @@ export default function App() {
           <Route path="scrape-runs" element={<ScrapeRunsPage />} />
           <Route path="status" element={<StatusPage />} />
         </Route>
+
+        {/* Public supplier route (token-based auth via query param) */}
+        <Route path="/supplier/cost-sheet" element={<div>Public supplier sheet — coming soon</div>} />
 
         {/* Redirects */}
         <Route path="/" element={<Navigate to="/app/dashboard" replace />} />

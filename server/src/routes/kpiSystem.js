@@ -7,6 +7,8 @@ const router = Router();
 // ── Config ──────────────────────────────────────────────────────────
 const SHOPIFY_STORE = '17cca0-2.myshopify.com';
 const SHOPIFY_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN || '';
+// SUPPLIER_SHARE_TOKEN — env var for public /public/cost-sheet token-based access
+const SUPPLIER_SHARE_TOKEN = process.env.SUPPLIER_SHARE_TOKEN || '';
 const SHOPIFY_API_VERSION = '2024-01';
 const MIN_ORDER_NUMBER = 0; // Sync ALL orders
 
@@ -1171,56 +1173,75 @@ router.get('/dashboard', authenticate, async (req, res) => {
   }
 });
 
+// ── Shared cost-sheet helper (used by authenticated + public endpoints) ──
+async function buildCostSheet(period, date) {
+  await ensureTables();
+  const { start, end } = getPeriodRange(period, date);
+
+  const orders = await pgQuery(`
+    SELECT order_number, created_at, total_price, subtotal_price, cogs, shipping_cost,
+           gross_profit, profit_margin, total_miners, total_rig_units,
+           line_items, country, financial_status
+    FROM shopify_orders_cache
+    WHERE DATE(created_at AT TIME ZONE 'Europe/Berlin') BETWEEN $1 AND $2
+      AND financial_status NOT IN ('refunded', 'voided')
+    ORDER BY created_at DESC
+  `, [start, end]);
+
+  const summary = {
+    totalOrders: orders.length,
+    totalRevenue: orders.reduce((s, o) => s + parseFloat(o.subtotal_price || o.total_price), 0),
+    totalCogs: orders.reduce((s, o) => s + parseFloat(o.cogs), 0),
+    totalShipping: orders.reduce((s, o) => s + parseFloat(o.shipping_cost), 0),
+    totalGrossProfit: orders.reduce((s, o) => s + parseFloat(o.gross_profit), 0),
+  };
+  summary.overallMargin = summary.totalRevenue > 0
+    ? Math.round((summary.totalGrossProfit / summary.totalRevenue) * 10000) / 100
+    : 0;
+
+  return {
+    period, start, end,
+    summary,
+    orders: orders.map(o => ({
+      orderNumber: o.order_number,
+      date: o.created_at,
+      revenue: parseFloat(o.subtotal_price || o.total_price),
+      cogs: parseFloat(o.cogs),
+      shipping: parseFloat(o.shipping_cost),
+      grossProfit: parseFloat(o.gross_profit),
+      margin: parseFloat(o.profit_margin),
+      miners: parseInt(o.total_miners),
+      rigs: parseInt(o.total_rig_units),
+      country: o.country,
+      status: o.financial_status,
+    })),
+  };
+}
+
 /** GET /cost-sheet — Detailed cost breakdown for a period */
 router.get('/cost-sheet', authenticate, async (req, res) => {
   try {
-    await ensureTables();
     const { period = 'daily', date } = req.query;
     if (!date) return res.status(400).json({ success: false, error: { message: 'date is required' } });
+    const data = await buildCostSheet(period, date);
+    res.json({ success: true, data });
+  } catch (err) {
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
 
-    const { start, end } = getPeriodRange(period, date);
+/** GET /public/cost-sheet — Public supplier cost sheet (token-based auth) */
+router.get('/public/cost-sheet', async (req, res) => {
+  try {
+    const { token, period, date } = req.query;
 
-    const orders = await pgQuery(`
-      SELECT order_number, created_at, total_price, subtotal_price, cogs, shipping_cost,
-             gross_profit, profit_margin, total_miners, total_rig_units,
-             line_items, country, financial_status
-      FROM shopify_orders_cache
-      WHERE DATE(created_at AT TIME ZONE 'Europe/Berlin') BETWEEN $1 AND $2
-        AND financial_status NOT IN ('refunded', 'voided')
-      ORDER BY created_at DESC
-    `, [start, end]);
+    if (!token || !SUPPLIER_SHARE_TOKEN || token !== SUPPLIER_SHARE_TOKEN) {
+      return res.status(403).json({ success: false, error: { message: 'Invalid or missing share token' } });
+    }
+    if (!date) return res.status(400).json({ success: false, error: { message: 'date is required' } });
 
-    const summary = {
-      totalOrders: orders.length,
-      totalRevenue: orders.reduce((s, o) => s + parseFloat(o.subtotal_price || o.total_price), 0),
-      totalCogs: orders.reduce((s, o) => s + parseFloat(o.cogs), 0),
-      totalShipping: orders.reduce((s, o) => s + parseFloat(o.shipping_cost), 0),
-      totalGrossProfit: orders.reduce((s, o) => s + parseFloat(o.gross_profit), 0),
-    };
-    summary.overallMargin = summary.totalRevenue > 0
-      ? Math.round((summary.totalGrossProfit / summary.totalRevenue) * 10000) / 100
-      : 0;
-
-    res.json({
-      success: true,
-      data: {
-        period, start, end,
-        summary,
-        orders: orders.map(o => ({
-          orderNumber: o.order_number,
-          date: o.created_at,
-          revenue: parseFloat(o.subtotal_price || o.total_price),
-          cogs: parseFloat(o.cogs),
-          shipping: parseFloat(o.shipping_cost),
-          grossProfit: parseFloat(o.gross_profit),
-          margin: parseFloat(o.profit_margin),
-          miners: parseInt(o.total_miners),
-          rigs: parseInt(o.total_rig_units),
-          country: o.country,
-          status: o.financial_status,
-        })),
-      },
-    });
+    const data = await buildCostSheet(period || 'daily', date);
+    res.json({ success: true, data });
   } catch (err) {
     res.status(500).json({ success: false, error: { message: err.message } });
   }
