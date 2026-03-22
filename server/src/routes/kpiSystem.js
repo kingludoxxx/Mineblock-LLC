@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { authenticate } from '../middleware/auth.js';
 import { pgQuery } from '../db/pg.js';
+import { fetchDailyAdSpend } from './creativeAnalysis.js';
 
 const router = Router();
 
@@ -1118,6 +1119,93 @@ router.post('/sync', authenticate, async (req, res) => {
     });
   } catch (err) {
     console.error('[KPI Sync] Error:', err);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+/** GET /home-dashboard — Main dashboard overview with sparklines + day-over-day comparison */
+router.get('/home-dashboard', authenticate, async (req, res) => {
+  try {
+    await ensureTables();
+    const dateStr = req.query.date || new Date().toISOString().slice(0, 10);
+
+    // 8-day window: selected date + 7 previous days
+    const endDate = dateStr;
+    const sd = new Date(dateStr + 'T00:00:00Z');
+    sd.setUTCDate(sd.getUTCDate() - 7);
+    const startDate = sd.toISOString().slice(0, 10);
+
+    // Parallel: snapshots, fees, ad spend
+    const [snapshots, feeRows, adSpendRows] = await Promise.all([
+      pgQuery(`SELECT * FROM daily_kpi_snapshots WHERE snapshot_date BETWEEN $1 AND $2 ORDER BY snapshot_date`, [startDate, endDate]),
+      pgQuery(`SELECT DATE(paid_at AT TIME ZONE 'Europe/Berlin') as fee_date, COALESCE(SUM(total_fees),0) as total_fees, COALESCE(SUM(whop_fees),0) as whop_fees, COALESCE(SUM(processing_fees),0) as processing_fees, COALESCE(SUM(other_fees),0) as other_fees, COALESCE(SUM(lasso_fees),0) as lasso_fees FROM whop_payment_fees WHERE DATE(paid_at AT TIME ZONE 'Europe/Berlin') BETWEEN $1 AND $2 GROUP BY DATE(paid_at AT TIME ZONE 'Europe/Berlin') ORDER BY fee_date`, [startDate, endDate]),
+      fetchDailyAdSpend(startDate, endDate),
+    ]);
+
+    // Build fee lookup by date
+    const feeLookup = {};
+    for (const r of feeRows) {
+      const d = typeof r.fee_date === 'string' ? r.fee_date.slice(0, 10) : new Date(r.fee_date).toISOString().slice(0, 10);
+      feeLookup[d] = parseFloat(r.total_fees || 0);
+    }
+
+    // Build ad spend lookup by date
+    const spendLookup = {};
+    for (const r of adSpendRows) {
+      spendLookup[r.date] = r.spend;
+    }
+
+    // Build snapshot lookup by date
+    const snapLookup = {};
+    for (const s of snapshots) {
+      const d = typeof s.snapshot_date === 'string' ? s.snapshot_date.slice(0, 10) : new Date(s.snapshot_date).toISOString().slice(0, 10);
+      snapLookup[d] = s;
+    }
+
+    // Helper: build metrics object for a date
+    function metricsForDate(d) {
+      const s = snapLookup[d];
+      const revenue = s ? parseFloat(s.total_revenue || 0) : 0;
+      const cogs = s ? parseFloat(s.total_cogs || 0) : 0;
+      const shipping = s ? parseFloat(s.total_shipping || 0) : 0;
+      const fees = feeLookup[d] || 0;
+      const orders = s ? parseInt(s.total_orders || 0) : 0;
+      const adSpend = spendLookup[d] || 0;
+      const costs = cogs + shipping + fees;
+      const profit = revenue - costs;
+      const netMargin = revenue > 0 ? Math.round((profit / revenue) * 10000) / 100 : 0;
+      const aov = orders > 0 ? Math.round((revenue / orders) * 100) / 100 : 0;
+      const roas = adSpend > 0 ? Math.round((revenue / adSpend) * 100) / 100 : 0;
+      return { date: d, revenue, adSpend, roas, orders, aov, costs, cogs, shipping, fees, profit, netMargin, conversionRate: null };
+    }
+
+    // Build sparklines for all 8 days (fill gaps with zeros)
+    const allDays = [];
+    for (let i = 0; i <= 7; i++) {
+      const dt = new Date(startDate + 'T00:00:00Z');
+      dt.setUTCDate(dt.getUTCDate() + i);
+      allDays.push(dt.toISOString().slice(0, 10));
+    }
+    const dailyMetrics = allDays.map(d => metricsForDate(d));
+
+    // Current = exact match for selected date
+    const current = dailyMetrics.find(m => m.date === dateStr) || null;
+
+    // Previous = day before selected date
+    const prevDate = new Date(dateStr + 'T00:00:00Z');
+    prevDate.setUTCDate(prevDate.getUTCDate() - 1);
+    const prevDateStr = prevDate.toISOString().slice(0, 10);
+    const previous = dailyMetrics.find(m => m.date === prevDateStr) || null;
+
+    // Sparklines = last 7 entries (excluding today for a clean trailing view)
+    const sparklines = dailyMetrics.slice(0, 7);
+
+    res.json({
+      success: true,
+      data: { current, previous, sparklines },
+    });
+  } catch (err) {
+    console.error('[KPI] home-dashboard error:', err);
     res.status(500).json({ success: false, error: { message: err.message } });
   }
 });

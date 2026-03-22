@@ -1748,4 +1748,36 @@ setTimeout(() => {
   setInterval(() => syncMetaThumbnails().catch(() => {}), 30 * 60 * 1000);
 }, 30_000);
 
+// ── Exported helpers for cross-module use ──────────────────────────
+
+/**
+ * Fetch daily ad spend totals from Triple Whale for a date range.
+ * Returns array of { date: 'YYYY-MM-DD', spend: Number }
+ */
+export async function fetchDailyAdSpend(startDate, endDate) {
+  if (!TW_API_KEY) return [];
+  try {
+    const res = await fetch(TW_SQL_URL, {
+      method: 'POST',
+      headers: { 'x-api-key': TW_API_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        shopId: TW_SHOP_ID,
+        query: `SELECT event_date, SUM(spend) as total_spend FROM pixel_joined_tvf WHERE event_date BETWEEN @startDate AND @endDate GROUP BY event_date ORDER BY event_date`,
+        period: { startDate, endDate },
+      }),
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!res.ok) return [];
+    const data = await res.json();
+    const rows = Array.isArray(data) ? data : (data?.data || data?.rows || []);
+    return rows.map(r => ({
+      date: (r.event_date || '').slice(0, 10),
+      spend: parseFloat(r.total_spend || 0),
+    }));
+  } catch (err) {
+    console.error('[TW] fetchDailyAdSpend error:', err.message);
+    return [];
+  }
+}
+
 export default router;
