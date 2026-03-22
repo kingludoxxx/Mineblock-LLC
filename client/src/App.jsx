@@ -13,6 +13,7 @@ import VerifyEmail from './pages/VerifyEmail';
 import Dashboard from './pages/Dashboard';
 import Settings from './pages/Settings';
 import NotFound from './pages/NotFound';
+import SupplierPublicSheet from './pages/public/SupplierPublicSheet';
 
 // Intel
 import MetaPage from './pages/intel/MetaPage';
@@ -145,7 +146,7 @@ export default function App() {
         </Route>
 
         {/* Public supplier route (token-based auth via query param) */}
-        <Route path="/supplier/cost-sheet" element={<div>Public supplier sheet — coming soon</div>} />
+        <Route path="/supplier/cost-sheet" element={<SupplierPublicSheet />} />
 
         {/* Redirects */}
         <Route path="/" element={<Navigate to="/app/dashboard" replace />} />

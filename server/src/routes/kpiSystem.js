@@ -19,6 +19,7 @@ const WHOP_COMPANY_ID = 'biz_pkN7XmNrvouslh';
 const UNIT_COST_PER_MINER = 10.92;
 const UNIT_COST_PER_MINER_2920 = 11.28; // Orders #2722-#5716
 const UNIT_COST_PER_MINER_ORIGINAL = 12.13; // Orders before #2722
+const BITAXE_UNIT_COST = 55.00; // Bitaxe Gamma product cost
 
 const MR_MINER_COUNTS = {
   'MR-01': 1, 'MR-02': 2, 'MR-04': 4, 'MR-05': 5, 'MR-08': 8, 'MR-15': 15, 'MR-16': 16, 'M5-05': 5,
@@ -93,6 +94,20 @@ const SHIPPING_RATES_RIG = {
   'Saudi Arabia': { 1: 0.28, 2: 0.55, 4: 0.94 },
   'United States': { 1: 0.28, 2: 0.65, 4: 1.2 },
   'Switzerland': { 1: 0.72, 2: 1.29, 4: 1.85 },
+};
+
+// Bitaxe Gamma shipping rates per country (single unit only)
+const SHIPPING_RATES_BITAXE = {
+  'U.A.E': 9.65, 'United Arab Emirates': 9.65,
+  'Austria': 10.12, 'Australia': 14.45, 'Belgium': 11.26,
+  'Canada': 9.35, 'Cyprus': 16.05, 'Germany': 9.00,
+  'Estonia': 9.73, 'Spain': 8.45, 'Finland': 11.11,
+  'France': 9.64, 'United Kingdom': 6.69, 'Greece': 11.22,
+  'Hong Kong': 4.99, 'Croatia': 14.13, 'Ireland': 13.46,
+  'Italy': 9.77, 'Lithuania': 9.53, 'Luxembourg': 16.61, 'Luxambourg': 16.61,
+  'Malta': 20.48, 'Mexico': 8.79, 'Netherlands': 10.69,
+  'Poland': 8.73, 'Portugal': 9.73, 'Saudi Arabia': 23.01,
+  'United States': 12.21, 'Switzerland': 16.61,
 };
 
 // Shipping rates for orders #2920-#6008 (older quotation)
@@ -435,6 +450,11 @@ function parseSku(sku, title, variantTitle) {
   if (sku) {
     const upper = sku.toUpperCase().trim();
 
+    // Check for Bitaxe SKU
+    if (upper === 'BX' || upper.startsWith('BX-')) {
+      return { type: 'BITAXE', sku: 'BX', unitCost: BITAXE_UNIT_COST };
+    }
+
     for (const [prefix, minerCount] of Object.entries(MR_MINER_COUNTS)) {
       if (upper === prefix || upper.startsWith(prefix + '-') || upper.startsWith(prefix)) {
         return { type: 'MR', sku: prefix, minerCount };
@@ -451,6 +471,11 @@ function parseSku(sku, title, variantTitle) {
   // Fallback: title-based matching for older orders without SKUs
   if (!sku && title) {
     const lowerTitle = title.toLowerCase();
+
+    // Check if it's a Bitaxe Gamma
+    if (lowerTitle.includes('bitaxe')) {
+      return { type: 'BITAXE', sku: 'BX', unitCost: BITAXE_UNIT_COST };
+    }
 
     // Check if it's a Winner Pack (5 miners upsell)
     if (lowerTitle.includes('winner pack')) {
@@ -551,6 +576,9 @@ function calculateOrderCosts(order) {
   let totalMiners = 0;
   let totalRigUnits = 0;
   let rigCogs = 0;
+  let bitaxeCogs = 0;
+  let bitaxeShipping = 0;
+  let bitaxeUnits = 0;
   const skuBreakdown = [];
 
   for (const item of lineItems) {
@@ -566,6 +594,13 @@ function calculateOrderCosts(order) {
       rigCogs += parsed.unitCost * qty;
       totalRigUnits += parsed.slotCount * qty;
       skuBreakdown.push({ sku: parsed.sku, type: 'RIG', quantity: qty, units: parsed.slotCount * qty });
+    } else if (parsed.type === 'BITAXE') {
+      const qty = item.quantity || 1;
+      bitaxeCogs += BITAXE_UNIT_COST * qty;
+      const shipRate = SHIPPING_RATES_BITAXE[country] || SHIPPING_RATES_BITAXE['United States'];
+      bitaxeShipping += shipRate * qty;
+      bitaxeUnits += qty;
+      skuBreakdown.push({ sku: 'BX', type: 'BITAXE', quantity: qty });
     }
   }
 
@@ -606,8 +641,8 @@ function calculateOrderCosts(order) {
     }
   }
 
-  const totalCogs = mrCogs + rigCogs;
-  const totalShipping = mrShipping + rigShipping;
+  const totalCogs = mrCogs + rigCogs + bitaxeCogs;
+  const totalShipping = mrShipping + rigShipping + bitaxeShipping;
   // Use subtotal_price (product revenue only, excludes customer-paid shipping)
   const revenue = parseFloat(order.subtotal_price || order.total_price || 0);
   const grossProfit = revenue - totalCogs - totalShipping;
