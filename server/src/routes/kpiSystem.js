@@ -304,11 +304,13 @@ async function ensureTables() {
       whop_fees NUMERIC,
       processing_fees NUMERIC,
       other_fees NUMERIC,
+      lasso_fees NUMERIC DEFAULT 0,
       fee_details JSONB,
       paid_at TIMESTAMPTZ,
       synced_at TIMESTAMPTZ DEFAULT NOW()
     )
   `);
+  await pgQuery('ALTER TABLE whop_payment_fees ADD COLUMN IF NOT EXISTS lasso_fees NUMERIC DEFAULT 0').catch(() => {});
 
   await pgQuery(`
     CREATE TABLE IF NOT EXISTS lasso_revenue_shares (
@@ -842,7 +844,7 @@ function getPeriodRange(period, dateStr) {
 }
 
 // ── Whop Fee Sync ───────────────────────────────────────────────────
-async function fetchPaymentFees(paymentId) {
+async function fetchPaymentFees(paymentId, paymentAmount = 0) {
   if (!WHOP_API_TOKEN) return null;
   try {
     const resp = await fetch(`${WHOP_API_URL}/v1/payments/${paymentId}/fees`, {
@@ -867,12 +869,16 @@ async function fetchPaymentFees(paymentId) {
       }
     }
 
+    // Add Lasso fee (1% of payment amount) — charged as revenue share, not in per-payment fees
+    const lassoFee = Math.round(paymentAmount * 0.01 * 100) / 100;
+
     return {
-      totalFees: whopFees + processingFees + otherFees,
+      totalFees: whopFees + processingFees + otherFees + lassoFee,
       whopFees,
       processingFees,
       otherFees,
-      feeDetails: fees,
+      lassoFees: lassoFee,
+      feeDetails: [...fees, { name: 'Lasso CRM fee (1%)', amount: lassoFee, type: 'lasso_percentage_fee' }],
     };
   } catch (err) {
     console.error(`[KPI] Error fetching fees for ${paymentId}:`, err.message);
@@ -919,18 +925,18 @@ async function syncWhopFees(lookbackDays = 3) {
         const existing = await pgQuery('SELECT payment_id FROM whop_payment_fees WHERE payment_id = $1', [payment.id]);
         if (existing.length > 0) continue;
 
-        // Fetch fee breakdown
-        const fees = await fetchPaymentFees(payment.id);
+        // Fetch fee breakdown (pass amount for Lasso 1% calculation)
+        const fees = await fetchPaymentFees(payment.id, payment.final_amount || 0);
         if (!fees) continue;
 
         const paidAt = new Date(payment.paid_at * 1000).toISOString();
         await pgQuery(`
-          INSERT INTO whop_payment_fees (payment_id, payment_amount, currency, total_fees, whop_fees, processing_fees, other_fees, fee_details, paid_at)
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+          INSERT INTO whop_payment_fees (payment_id, payment_amount, currency, total_fees, whop_fees, processing_fees, other_fees, lasso_fees, fee_details, paid_at)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
           ON CONFLICT (payment_id) DO UPDATE SET
             total_fees=EXCLUDED.total_fees, whop_fees=EXCLUDED.whop_fees, processing_fees=EXCLUDED.processing_fees,
-            other_fees=EXCLUDED.other_fees, fee_details=EXCLUDED.fee_details, synced_at=NOW()
-        `, [payment.id, payment.final_amount, payment.currency, fees.totalFees, fees.whopFees, fees.processingFees, fees.otherFees, JSON.stringify(fees.feeDetails), paidAt]);
+            other_fees=EXCLUDED.other_fees, lasso_fees=EXCLUDED.lasso_fees, fee_details=EXCLUDED.fee_details, synced_at=NOW()
+        `, [payment.id, payment.final_amount, payment.currency, fees.totalFees, fees.whopFees, fees.processingFees, fees.otherFees, fees.lassoFees, JSON.stringify(fees.feeDetails), paidAt]);
 
         synced++;
         if (synced % 10 === 0) await new Promise(r => setTimeout(r, 500));
@@ -1113,6 +1119,7 @@ router.get('/dashboard', authenticate, async (req, res) => {
         COALESCE(SUM(whop_fees), 0) as whop_fees,
         COALESCE(SUM(processing_fees), 0) as processing_fees,
         COALESCE(SUM(other_fees), 0) as other_fees,
+        COALESCE(SUM(lasso_fees), 0) as lasso_fees,
         COUNT(*) as fee_count
       FROM whop_payment_fees
       WHERE DATE(paid_at AT TIME ZONE 'Europe/Berlin') BETWEEN $1 AND $2
@@ -1122,6 +1129,7 @@ router.get('/dashboard', authenticate, async (req, res) => {
     const whopFees = parseFloat(feeRows[0]?.whop_fees || 0);
     const processingFees = parseFloat(feeRows[0]?.processing_fees || 0);
     const otherFees = parseFloat(feeRows[0]?.other_fees || 0);
+    const lassoFees = parseFloat(feeRows[0]?.lasso_fees || 0);
 
     // Subtract fees from gross profit
     agg.grossProfit = agg.totalRevenue - agg.totalCogs - agg.totalShipping - totalFees;
@@ -1143,6 +1151,7 @@ router.get('/dashboard', authenticate, async (req, res) => {
         whopFees: Math.round(whopFees * 100) / 100,
         processingFees: Math.round(processingFees * 100) / 100,
         otherFees: Math.round(otherFees * 100) / 100,
+        lassoFees: Math.round(lassoFees * 100) / 100,
         topSku,
         days: snapshots.map(s => ({
           date: s.snapshot_date,
