@@ -811,7 +811,7 @@ async function recalculateSnapshots(startDate, endDate) {
     const totalDiscounts = orders.reduce((s, o) => s + parseFloat(o.total_discounts || 0), 0);
     const grossProfit = totalRevenue - totalCogs - totalShipping;
     const avgOv = orders.length > 0 ? totalRevenue / orders.length : 0;
-    const avgMargin = orders.length > 0 ? orders.reduce((s, o) => s + parseFloat(o.profit_margin || 0), 0) / orders.length : 0;
+    const avgMargin = totalRevenue > 0 ? (grossProfit / totalRevenue) * 100 : 0;
     const totalMiners = orders.reduce((s, o) => s + (parseInt(o.total_miners) || 0), 0);
     const totalRigs = orders.reduce((s, o) => s + (parseInt(o.total_rig_units) || 0), 0);
     const refunds = refundedOrders.length;
@@ -1668,18 +1668,19 @@ async function upsertOrders(orders) {
 
     await pgQuery(`
       INSERT INTO shopify_orders_cache (order_id, order_number, created_at, country, financial_status,
-        total_price, subtotal_price, total_discounts, line_items, cogs, shipping_cost, gross_profit, profit_margin, synced_at)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,NOW())
+        total_price, subtotal_price, total_discounts, line_items, cogs, shipping_cost, gross_profit, profit_margin, total_miners, total_rig_units, synced_at)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,NOW())
       ON CONFLICT (order_id) DO UPDATE SET
         financial_status=EXCLUDED.financial_status, total_price=EXCLUDED.total_price,
         subtotal_price=EXCLUDED.subtotal_price, total_discounts=EXCLUDED.total_discounts,
         line_items=EXCLUDED.line_items, cogs=EXCLUDED.cogs, shipping_cost=EXCLUDED.shipping_cost,
-        gross_profit=EXCLUDED.gross_profit, profit_margin=EXCLUDED.profit_margin, country=EXCLUDED.country, synced_at=NOW()
+        gross_profit=EXCLUDED.gross_profit, profit_margin=EXCLUDED.profit_margin, country=EXCLUDED.country,
+        total_miners=EXCLUDED.total_miners, total_rig_units=EXCLUDED.total_rig_units, synced_at=NOW()
     `, [order.id, order.order_number, order.created_at,
         order.shipping_address?.country || 'United States', order.financial_status,
         order.total_price, order.subtotal_price, order.total_discounts,
         JSON.stringify(order.line_items), costs.cogs, costs.shippingCost,
-        costs.grossProfit, costs.profitMargin]);
+        costs.grossProfit, costs.profitMargin, costs.totalMiners || 0, costs.totalRigUnits || 0]);
     if (orderDate) affectedDates.add(orderDate);
     synced++;
   }
