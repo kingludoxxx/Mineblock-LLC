@@ -9,6 +9,11 @@ const SHOPIFY_STORE = '17cca0-2.myshopify.com';
 const SHOPIFY_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN || '';
 // SUPPLIER_SHARE_TOKEN — env var for public /public/cost-sheet token-based access
 const SUPPLIER_SHARE_TOKEN = process.env.SUPPLIER_SHARE_TOKEN || '';
+const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN || '';
+const SLACK_KPI_CHANNEL = process.env.SLACK_REJECTION_CHANNEL || ''; // reuse bm-alerts channel
+
+// Track already-alerted unknown products to avoid spam
+const alertedUnknownProducts = new Set();
 const SHOPIFY_API_VERSION = '2024-01';
 const MIN_ORDER_NUMBER = 0; // Sync ALL orders
 
@@ -581,9 +586,18 @@ function calculateOrderCosts(order) {
   let bitaxeUnits = 0;
   const skuBreakdown = [];
 
+  const unrecognizedItems = [];
+
   for (const item of lineItems) {
     const parsed = parseSku(item.sku, item.title, item.variant_title);
-    if (!parsed) continue;
+    if (!parsed) {
+      // Track unrecognized products (skip setup/verification/shipping/whop items)
+      const title = (item.title || '').toLowerCase();
+      if (title && !title.includes('setup') && !title.includes('verification') && !title.includes('shipping') && !title.includes('whop') && !title.includes('protection') && parseFloat(item.price || 0) > 0) {
+        unrecognizedItems.push({ sku: item.sku, title: item.title, price: item.price, quantity: item.quantity });
+      }
+      continue;
+    }
 
     if (parsed.type === 'MR') {
       const minersInLine = parsed.minerCount * (item.quantity || 1);
@@ -656,6 +670,7 @@ function calculateOrderCosts(order) {
     grossProfit: Math.round(grossProfit * 100) / 100,
     profitMargin: Math.round(profitMargin * 100) / 100,
     skuBreakdown,
+    unrecognizedItems,
   };
 }
 
@@ -1620,6 +1635,17 @@ router.get('/export', authenticate, async (req, res) => {
 // ── Auto-sync every 60 seconds ──────────────────────────────────────
 let autoSyncCount = 0;
 
+async function sendKpiSlackAlert(text) {
+  if (!SLACK_BOT_TOKEN || !SLACK_KPI_CHANNEL) return;
+  try {
+    await fetch('https://slack.com/api/chat.postMessage', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${SLACK_BOT_TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channel: SLACK_KPI_CHANNEL, text, username: 'Mineblock Bot', icon_url: 'https://i.imgur.com/PJCRE4g.png' }),
+    });
+  } catch {}
+}
+
 async function upsertOrders(orders) {
   let synced = 0;
   const affectedDates = new Set();
@@ -1627,6 +1653,19 @@ async function upsertOrders(orders) {
     if (order.order_number < MIN_ORDER_NUMBER) continue;
     const costs = calculateOrderCosts(order);
     const orderDate = order.created_at ? new Date(order.created_at).toLocaleDateString('en-CA', { timeZone: 'Europe/Berlin' }) : null;
+
+    // Alert on unrecognized products
+    if (costs.unrecognizedItems && costs.unrecognizedItems.length > 0) {
+      for (const item of costs.unrecognizedItems) {
+        const key = `${item.title}|${item.sku || 'null'}`;
+        if (!alertedUnknownProducts.has(key)) {
+          alertedUnknownProducts.add(key);
+          console.warn(`[KPI] ⚠️ Unrecognized product in order #${order.order_number}: "${item.title}" (SKU: ${item.sku || 'null'}) — $${item.price} x${item.quantity}. COGS = $0!`);
+          await sendKpiSlackAlert(`⚠️ *Unknown Product Detected*\n\nOrder #${order.order_number} contains an unrecognized product:\n• *Title:* ${item.title}\n• *SKU:* ${item.sku || 'null'}\n• *Price:* $${item.price}\n• *Qty:* ${item.quantity}\n\n⚠️ This product has *$0 COGS* — please add its cost data to the KPI system.`);
+        }
+      }
+    }
+
     await pgQuery(`
       INSERT INTO shopify_orders_cache (order_id, order_number, created_at, country, financial_status,
         total_price, subtotal_price, total_discounts, line_items, cogs, shipping_cost, gross_profit, profit_margin, synced_at)
