@@ -28,7 +28,8 @@ const ACCOUNT_NAMES = {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function formatDate(d) {
-  return d.toISOString().slice(0, 10);
+  // Use Berlin timezone to match store/TW data
+  return d.toLocaleDateString('en-CA', { timeZone: 'Europe/Berlin' }); // YYYY-MM-DD
 }
 
 function getDateRange(timeWindow) {
@@ -260,9 +261,23 @@ async function findAdByName(adName) {
 
   for (const accountId of META_AD_ACCOUNT_IDS) {
     try {
-      const url = `${META_GRAPH_URL}/${accountId}/ads?fields=id,name,effective_status,configured_status,adset_id,adset{daily_budget,name},campaign{name}&filtering=[{"field":"name","operator":"CONTAIN","value":"${encodeURIComponent(adName)}"}]&limit=5&access_token=${META_ACCESS_TOKEN}`;
-      const res = await fetch(url);
+      const filtering = JSON.stringify([{ field: 'name', operator: 'CONTAIN', value: adName }]);
+      const params = new URLSearchParams({
+        fields: 'id,name,effective_status,configured_status,adset_id,adset{daily_budget,name},campaign{name}',
+        filtering,
+        limit: '5',
+        access_token: META_ACCESS_TOKEN,
+      });
+      const url = `${META_GRAPH_URL}/${accountId}/ads?${params}`;
+      const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
       if (!res.ok) {
+        const errBody = await res.text().catch(() => '');
+        // Detect rate limiting (Meta error codes 32, 17, or HTTP 429)
+        if (res.status === 429 || errBody.includes('"code":32') || errBody.includes('"code":17')) {
+          console.warn(`[Ads Control] Meta rate limited on ${accountId}, backing off`);
+          await sleep(5000);
+          continue;
+        }
         console.warn(`[Ads Control] Meta search failed for ${accountId}: ${res.status}`);
         await sleep(300);
         continue;
@@ -296,7 +311,7 @@ async function findAdByName(adName) {
 
 async function pauseAd(adId) {
   const res = await fetch(`${META_GRAPH_URL}/${adId}?status=PAUSED&access_token=${META_ACCESS_TOKEN}`, {
-    method: 'POST',
+    method: 'POST', signal: AbortSignal.timeout(15000),
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data?.error?.message || `Failed to pause ad ${adId}`);
@@ -305,7 +320,7 @@ async function pauseAd(adId) {
 
 async function resumeAd(adId) {
   const res = await fetch(`${META_GRAPH_URL}/${adId}?status=ACTIVE&access_token=${META_ACCESS_TOKEN}`, {
-    method: 'POST',
+    method: 'POST', signal: AbortSignal.timeout(15000),
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data?.error?.message || `Failed to resume ad ${adId}`);
@@ -314,7 +329,7 @@ async function resumeAd(adId) {
 
 async function updateAdsetBudget(adsetId, newBudgetCents) {
   const res = await fetch(`${META_GRAPH_URL}/${adsetId}?daily_budget=${Math.round(newBudgetCents)}&access_token=${META_ACCESS_TOKEN}`, {
-    method: 'POST',
+    method: 'POST', signal: AbortSignal.timeout(15000),
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data?.error?.message || `Failed to update adset budget ${adsetId}`);
@@ -405,6 +420,9 @@ async function evaluateRules() {
   let errorsCount = 0;
   let totalAdsChecked = 0;
 
+  // Cross-rule dedup: track which ads have been acted on this cycle
+  const actedAdsThisCycle = new Set();
+
   for (const rule of rules) {
     const tw = rule.time_window || 'today';
     const ads = twDataCache[tw] || [];
@@ -425,6 +443,9 @@ async function evaluateRules() {
     }
 
     for (const ad of ads) {
+      // Cross-rule dedup: skip ads already acted on this cycle (except alerts)
+      if (actedAdsThisCycle.has(ad.ad_name) && !['send_alert', 'flag_promising'].includes(rule.action)) continue;
+
       // Check min_spend
       if (ad.total_spend < Number(rule.min_spend || 0)) continue;
 
@@ -566,7 +587,7 @@ async function evaluateRules() {
             logEntry.account_name = metaAd.accountName;
 
             const currentBudgetCents = metaAd.adsetBudget; // Meta returns budget in cents
-            const actionValue = Number(rule.action_value) || 0;
+            const actionValue = Math.abs(Number(rule.action_value) || 0); // Always positive
             let newBudgetCents;
 
             if (action === 'increase_budget_pct') {
@@ -636,6 +657,7 @@ async function evaluateRules() {
         [rule.id]
       );
 
+      actedAdsThisCycle.add(ad.ad_name);
       actionsTaken++;
     }
   }
