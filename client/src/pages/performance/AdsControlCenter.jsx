@@ -79,7 +79,7 @@ function formatAction(rule) {
 }
 
 function formatConditions(conditions, logicOperator) {
-  if (!conditions || !conditions.length) return 'No conditions';
+  if (!Array.isArray(conditions) || conditions.length === 0) return 'No conditions';
   const opMap = { '>': '>', '<': '<', '>=': '\u2265', '<=': '\u2264', '=': '=' };
   const metricLabels = {
     spend: 'Spend',
@@ -507,8 +507,8 @@ function RuleModal({ show, onClose, editingRule, onSave }) {
           ...emptyRule,
           ...editingRule,
           conditions:
-            editingRule.conditions?.length > 0
-              ? editingRule.conditions
+            Array.isArray(editingRule.conditions) && editingRule.conditions.length > 0
+              ? editingRule.conditions.map(c => ({ ...c }))
               : [{ metric: 'spend', operator: '>', value: '' }],
         });
       } else {
@@ -1031,12 +1031,12 @@ export default function AdsControlCenter() {
     delete copy.last_triggered_at;
     copy.name = `${rule.name} (Copy)`;
     copy.enabled = false;
-    setEditingRule(null);
+    // Deep copy conditions to avoid shared reference
+    copy.conditions = Array.isArray(rule.conditions)
+      ? rule.conditions.map(c => ({ ...c }))
+      : [{ metric: 'spend', operator: '>', value: '' }];
+    setEditingRule(copy);
     setShowModal(true);
-    // Slight delay to let modal mount with empty state, then populate
-    setTimeout(() => {
-      setEditingRule(copy);
-    }, 0);
   };
 
   const openCreate = () => {
