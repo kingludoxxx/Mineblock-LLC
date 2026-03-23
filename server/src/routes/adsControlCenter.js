@@ -270,7 +270,8 @@ async function findAdByName(adName) {
       const data = await res.json();
       const ads = data?.data || [];
       if (ads.length > 0) {
-        const ad = ads[0];
+        // Prefer exact name match over partial CONTAIN match
+        const ad = ads.find(a => a.name === adName) || ads[0];
         return {
           adId: ad.id,
           adName: ad.name,
@@ -440,7 +441,9 @@ async function evaluateRules() {
       if (recentActions.length > 0) continue;
 
       // Evaluate conditions
-      const conditions = Array.isArray(rule.conditions) ? rule.conditions : [];
+      let conditions = rule.conditions;
+      if (typeof conditions === 'string') try { conditions = JSON.parse(conditions); } catch { conditions = []; }
+      conditions = Array.isArray(conditions) ? conditions : [];
       if (conditions.length === 0) continue;
 
       const logicOp = (rule.logic_operator || 'AND').toUpperCase();
@@ -470,6 +473,7 @@ async function evaluateRules() {
       const logEntry = {
         rule_id: rule.id,
         rule_name: rule.name,
+        ad_id: null,
         ad_name: ad.ad_name,
         adset_name: null,
         campaign_name: null,
@@ -490,13 +494,13 @@ async function evaluateRules() {
         logEntry.execution_status = 'dry_run';
         await pgQuery(
           `INSERT INTO ad_automation_log
-           (rule_id, rule_name, ad_name, adset_name, campaign_name, entity_level,
+           (rule_id, rule_name, ad_id, ad_name, adset_name, campaign_name, entity_level,
             account_id, account_name, action, reason, metrics_snapshot,
             old_value, new_value, execution_status, execution_error, meta_response)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
-          [logEntry.rule_id, logEntry.rule_name, logEntry.ad_name, logEntry.adset_name,
-           logEntry.campaign_name, logEntry.entity_level, logEntry.account_id,
-           logEntry.account_name, logEntry.action, logEntry.reason,
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
+          [logEntry.rule_id, logEntry.rule_name, logEntry.ad_id, logEntry.ad_name,
+           logEntry.adset_name, logEntry.campaign_name, logEntry.entity_level,
+           logEntry.account_id, logEntry.account_name, logEntry.action, logEntry.reason,
            JSON.stringify(logEntry.metrics_snapshot), logEntry.old_value,
            logEntry.new_value, logEntry.execution_status, logEntry.execution_error,
            logEntry.meta_response]
@@ -516,6 +520,7 @@ async function evaluateRules() {
             logEntry.execution_status = 'error';
             logEntry.execution_error = 'Ad not found in Meta';
           } else {
+            logEntry.ad_id = metaAd.adId;
             logEntry.ad_name = metaAd.adName;
             logEntry.adset_name = metaAd.adsetName;
             logEntry.campaign_name = metaAd.campaignName;
@@ -532,6 +537,7 @@ async function evaluateRules() {
             logEntry.execution_status = 'error';
             logEntry.execution_error = 'Ad not found in Meta';
           } else {
+            logEntry.ad_id = metaAd.adId;
             logEntry.ad_name = metaAd.adName;
             logEntry.adset_name = metaAd.adsetName;
             logEntry.campaign_name = metaAd.campaignName;
@@ -552,6 +558,7 @@ async function evaluateRules() {
             logEntry.execution_status = 'error';
             logEntry.execution_error = 'Adset or budget not found';
           } else {
+            logEntry.ad_id = metaAd.adId;
             logEntry.ad_name = metaAd.adName;
             logEntry.adset_name = metaAd.adsetName;
             logEntry.campaign_name = metaAd.campaignName;
@@ -563,17 +570,17 @@ async function evaluateRules() {
             let newBudgetCents;
 
             if (action === 'increase_budget_pct') {
-              newBudgetCents = currentBudgetCents * (1 + actionValue / 100);
+              newBudgetCents = Math.round(currentBudgetCents * (1 + actionValue / 100));
             } else if (action === 'decrease_budget_pct') {
-              newBudgetCents = currentBudgetCents * (1 - actionValue / 100);
+              newBudgetCents = Math.round(currentBudgetCents * (1 - actionValue / 100));
             } else if (action === 'increase_budget_fixed') {
-              newBudgetCents = currentBudgetCents + actionValue * 100; // actionValue in dollars
+              newBudgetCents = Math.round(currentBudgetCents + actionValue * 100);
             } else {
-              newBudgetCents = currentBudgetCents - actionValue * 100;
+              newBudgetCents = Math.round(currentBudgetCents - actionValue * 100);
             }
 
             // Enforce max 50% change cap
-            const maxChange = currentBudgetCents * 0.5;
+            const maxChange = Math.round(currentBudgetCents * 0.5);
             const diff = Math.abs(newBudgetCents - currentBudgetCents);
             if (diff > maxChange) {
               newBudgetCents = action.includes('increase')
@@ -691,12 +698,12 @@ router.post('/rules', authenticate, async (req, res) => {
         description || '',
         rule_type || 'kill',
         entity_level || 'ad',
-        JSON.stringify(conditions || []),
+        JSON.stringify(typeof conditions === 'string' ? JSON.parse(conditions) : (conditions || [])),
         logic_operator || 'AND',
         time_window || 'today',
         action || 'pause_ad',
-        action_value || 0,
-        min_spend || 0,
+        action_value ?? 0,
+        min_spend ?? 0,
         cooldown_minutes ?? 60,
         max_executions_per_day ?? 50,
         dry_run ?? false,
@@ -746,7 +753,11 @@ router.put('/rules/:id', authenticate, async (req, res) => {
 
     for (const field of allowedFields) {
       if (body[field] !== undefined) {
-        const val = field === 'conditions' ? JSON.stringify(body[field]) : body[field];
+        let val = body[field];
+        if (field === 'conditions') {
+          const parsed = typeof val === 'string' ? JSON.parse(val) : val;
+          val = JSON.stringify(parsed || []);
+        }
         setClauses.push(`${field} = $${idx}`);
         values.push(val);
         idx++;
