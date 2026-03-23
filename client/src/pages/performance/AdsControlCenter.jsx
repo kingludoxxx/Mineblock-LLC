@@ -47,6 +47,7 @@ function timeAgo(date) {
   if (!date) return 'Never';
   const now = Date.now();
   const then = new Date(date).getTime();
+  if (isNaN(then)) return 'Unknown';
   const rawDiff = now - then;
   const isFuture = rawDiff < 0;
   const diff = Math.abs(rawDiff);
@@ -554,18 +555,25 @@ function RuleModal({ show, onClose, editingRule, onSave }) {
   };
 
   const handleSave = async () => {
+    // Validate conditions have values
+    const hasEmptyConditions = form.conditions.some((c) => c.value === '' || c.value === undefined);
+    if (hasEmptyConditions) { alert('All conditions must have a value.'); return; }
+    // Validate budget actions have a meaningful value
+    if (budgetActions.has(form.action) && (!form.action_value || Number(form.action_value) <= 0)) {
+      alert('Budget actions require a value greater than 0.'); return;
+    }
     setSaving(true);
     try {
       const payload = {
         ...form,
-        action_value: budgetActions.has(form.action) ? Number(form.action_value) || 0 : null,
-        min_spend: Number(form.min_spend) || 0,
+        action_value: budgetActions.has(form.action) ? Number(form.action_value) ?? 0 : null,
+        min_spend: Number(form.min_spend) ?? 0,
         cooldown_minutes: Number(form.cooldown_minutes) || 60,
         max_executions_per_day: Number(form.max_executions_per_day) || 50,
-        priority: Number(form.priority) || 10,
+        priority: Number(form.priority) ?? 10,
         conditions: form.conditions.map((c) => ({
           ...c,
-          value: Number(c.value) || 0,
+          value: Number(c.value) ?? 0,
         })),
       };
       await onSave(payload, editingRule?.id);
@@ -975,10 +983,11 @@ export default function AdsControlCenter() {
   // ── Actions ────────────────────────────────────────────────────────────
 
   const handleEvaluate = async () => {
+    if (evaluating) return; // Guard against double-click race
     setEvaluating(true);
     try {
       await api.post('/ads-control/evaluate');
-      await Promise.all([fetchActivity(true), fetchStatus(), fetchPromising(true)]);
+      await Promise.all([fetchRules(), fetchActivity(true), fetchStatus(), fetchPromising(true)]);
     } catch (err) {
       console.error('Evaluation failed:', err);
     } finally {
@@ -1012,6 +1021,7 @@ export default function AdsControlCenter() {
   };
 
   const handleDeleteRule = async (rule) => {
+    if (!window.confirm(`Delete rule "${rule.name}"? This cannot be undone.`)) return;
     try {
       const { data } = await api.delete(`/ads-control/rules/${rule.id}`);
       if (data.success) {
@@ -1086,7 +1096,7 @@ export default function AdsControlCenter() {
   // ── Render ─────────────────────────────────────────────────────────────
 
   return (
-    <div className="space-y-6">
+    <div className="p-6 space-y-6 min-h-screen">
       {/* ── HEADER ──────────────────────────────────────────────────────── */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
