@@ -363,7 +363,14 @@ async function sendSlackAlert(logEntry) {
 // ── Rule Condition Evaluator ────────────────────────────────────────────
 function evaluateCondition(condition, ad) {
   const { metric, operator, value } = condition;
-  const adValue = ad[metric];
+  // Map user-facing metric names to TW data field names
+  const metricFieldMap = {
+    spend: 'total_spend',
+    purchases: 'total_purchases',
+    revenue: 'total_revenue',
+  };
+  const field = metricFieldMap[metric] || metric;
+  const adValue = ad[field];
   if (adValue === undefined || adValue === null) return false;
 
   const numValue = Number(value);
@@ -381,8 +388,10 @@ function evaluateCondition(condition, ad) {
 }
 
 function buildConditionReason(conditions, ad) {
+  const metricFieldMap = { spend: 'total_spend', purchases: 'total_purchases', revenue: 'total_revenue' };
   return conditions.map((c) => {
-    const adVal = ad[c.metric] !== undefined ? Number(ad[c.metric]).toFixed(2) : 'N/A';
+    const field = metricFieldMap[c.metric] || c.metric;
+    const adVal = ad[field] !== undefined ? Number(ad[field]).toFixed(2) : 'N/A';
     return `${c.metric} ${c.operator} ${c.value} (actual: ${adVal})`;
   }).join(', ');
 }
@@ -443,6 +452,9 @@ async function evaluateRules() {
     }
 
     for (const ad of ads) {
+      // Skip unnamed/invalid ads
+      if (!ad.ad_name || ad.ad_name === '(not set)') continue;
+
       // Cross-rule dedup: skip ads already acted on this cycle (except alerts)
       if (actedAdsThisCycle.has(ad.ad_name) && !['send_alert', 'flag_promising'].includes(rule.action)) continue;
 
@@ -480,15 +492,15 @@ async function evaluateRules() {
       // Conditions passed — execute action
       const reason = buildConditionReason(conditions, ad);
       const metricsSnapshot = {
-        total_spend: ad.total_spend,
-        total_revenue: ad.total_revenue,
-        total_purchases: ad.total_purchases,
+        spend: ad.total_spend,
+        revenue: ad.total_revenue,
+        purchases: ad.total_purchases,
         roas: ad.roas,
         cpa: ad.cpa,
         ctr: ad.ctr,
         cpc: ad.cpc,
-        total_impressions: ad.total_impressions,
-        total_clicks: ad.total_clicks,
+        impressions: ad.total_impressions,
+        clicks: ad.total_clicks,
       };
 
       const logEntry = {
@@ -636,13 +648,13 @@ async function evaluateRules() {
       // Log to DB
       await pgQuery(
         `INSERT INTO ad_automation_log
-         (rule_id, rule_name, ad_name, adset_name, campaign_name, entity_level,
+         (rule_id, rule_name, ad_id, ad_name, adset_name, campaign_name, entity_level,
           account_id, account_name, action, reason, metrics_snapshot,
           old_value, new_value, execution_status, execution_error, meta_response)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
-        [logEntry.rule_id, logEntry.rule_name, logEntry.ad_name, logEntry.adset_name,
-         logEntry.campaign_name, logEntry.entity_level, logEntry.account_id,
-         logEntry.account_name, logEntry.action, logEntry.reason,
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
+        [logEntry.rule_id, logEntry.rule_name, logEntry.ad_id, logEntry.ad_name,
+         logEntry.adset_name, logEntry.campaign_name, logEntry.entity_level,
+         logEntry.account_id, logEntry.account_name, logEntry.action, logEntry.reason,
          JSON.stringify(logEntry.metrics_snapshot), logEntry.old_value,
          logEntry.new_value, logEntry.execution_status, logEntry.execution_error,
          logEntry.meta_response]
@@ -882,7 +894,7 @@ router.get('/promising', authenticate, async (req, res) => {
     const ads = await fetchTWAdPerformance(dateStr, dateStr);
 
     const promising = ads
-      .filter((ad) => ad.roas > 2.0 && ad.total_spend > 20)
+      .filter((ad) => ad.roas > 2.0 && ad.total_spend > 20 && ad.ad_name && ad.ad_name !== '(not set)')
       .sort((a, b) => b.roas - a.roas)
       .slice(0, 20)
       .map((ad) => {

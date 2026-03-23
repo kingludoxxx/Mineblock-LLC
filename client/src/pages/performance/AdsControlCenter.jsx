@@ -398,7 +398,7 @@ function PromisingAdCard({ ad }) {
       <div className="grid grid-cols-3 gap-x-4 gap-y-1 text-[11px] mb-1.5">
         <div>
           <span className="text-white/20">Spend</span>{' '}
-          <span className="text-white/60">{fmtMoney(ad.spend)}</span>
+          <span className="text-white/60">{fmtMoney(ad.total_spend)}</span>
         </div>
         <div>
           <span className="text-white/20">ROAS</span>{' '}
@@ -410,7 +410,7 @@ function PromisingAdCard({ ad }) {
         </div>
         <div>
           <span className="text-white/20">Purchases</span>{' '}
-          <span className="text-white/60">{ad.purchases ?? '-'}</span>
+          <span className="text-white/60">{ad.total_purchases ?? '-'}</span>
         </div>
         <div>
           <span className="text-white/20">CTR</span>{' '}
@@ -1188,7 +1188,7 @@ export default function AdsControlCenter() {
         <StatCard
           icon={Clock}
           label="Last Sync"
-          value={status?.lastEvaluatedAt ? timeAgo(status.last_evaluated) : '-'}
+          value={status?.lastEvaluatedAt ? timeAgo(status.lastEvaluatedAt) : '-'}
           accent="cyan"
           loading={false}
         />
@@ -1350,7 +1350,7 @@ export default function AdsControlCenter() {
           <div>
             <p className="text-[10px] text-white/25 uppercase tracking-wider">Last Evaluated</p>
             <p className="text-xs text-white/60 font-medium mt-0.5">
-              {status?.lastEvaluatedAt ? timeAgo(status.last_evaluated) : 'Never'}
+              {status?.lastEvaluatedAt ? timeAgo(status.lastEvaluatedAt) : 'Never'}
             </p>
           </div>
         </div>
@@ -1361,7 +1361,7 @@ export default function AdsControlCenter() {
           <div>
             <p className="text-[10px] text-white/25 uppercase tracking-wider">Next Evaluation</p>
             <p className="text-xs text-white/60 font-medium mt-0.5">
-              {status?.nextEvaluation ? timeAgo(status.next_evaluation) : '~30 min'}
+              {status?.nextEvaluation ? timeAgo(status.nextEvaluation) : '~30 min'}
             </p>
           </div>
         </div>
