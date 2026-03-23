@@ -706,6 +706,18 @@ if (TW_API_KEY && META_ACCESS_TOKEN) {
   console.log('[Ads Control] Scheduler active — evaluating every 30 minutes');
 }
 
+// ── Helpers ──────────────────────────────────────────────────────────────
+
+// postgres.js unsafe() may return JSONB columns as strings; ensure conditions is always a parsed array
+function parseRule(r) {
+  if (!r) return r;
+  if (typeof r.conditions === 'string') {
+    try { r.conditions = JSON.parse(r.conditions); } catch { r.conditions = []; }
+  }
+  if (!Array.isArray(r.conditions)) r.conditions = [];
+  return r;
+}
+
 // ── API Endpoints ───────────────────────────────────────────────────────
 
 // POST /rules — Create rule
@@ -732,7 +744,7 @@ router.post('/rules', authenticate, async (req, res) => {
         description || '',
         rule_type || 'kill',
         entity_level || 'ad',
-        JSON.stringify(typeof conditions === 'string' ? JSON.parse(conditions) : (conditions || [])),
+        Array.isArray(conditions) ? JSON.stringify(conditions) : (typeof conditions === 'string' ? conditions : '[]'),
         logic_operator || 'AND',
         time_window || 'today',
         action || 'pause_ad',
@@ -747,7 +759,7 @@ router.post('/rules', authenticate, async (req, res) => {
       ]
     );
 
-    res.json({ success: true, data: rows[0] });
+    res.json({ success: true, data: parseRule(rows[0]) });
   } catch (err) {
     console.error('[Ads Control] POST /rules error:', err.message);
     res.status(500).json({ success: false, error: { message: err.message } });
@@ -761,7 +773,7 @@ router.get('/rules', authenticate, async (req, res) => {
     const rows = await pgQuery(
       'SELECT * FROM ad_automation_rules ORDER BY priority DESC, created_at DESC'
     );
-    res.json({ success: true, data: rows });
+    res.json({ success: true, data: rows.map(parseRule) });
   } catch (err) {
     console.error('[Ads Control] GET /rules error:', err.message);
     res.status(500).json({ success: false, error: { message: err.message } });
@@ -814,7 +826,7 @@ router.put('/rules/:id', authenticate, async (req, res) => {
       return res.status(404).json({ success: false, error: { message: 'Rule not found' } });
     }
 
-    res.json({ success: true, data: rows[0] });
+    res.json({ success: true, data: parseRule(rows[0]) });
   } catch (err) {
     console.error('[Ads Control] PUT /rules/:id error:', err.message);
     res.status(500).json({ success: false, error: { message: err.message } });
@@ -849,7 +861,7 @@ router.post('/rules/:id/toggle', authenticate, async (req, res) => {
     if (rows.length === 0) {
       return res.status(404).json({ success: false, error: { message: 'Rule not found' } });
     }
-    res.json({ success: true, data: rows[0] });
+    res.json({ success: true, data: parseRule(rows[0]) });
   } catch (err) {
     console.error('[Ads Control] POST /rules/:id/toggle error:', err.message);
     res.status(500).json({ success: false, error: { message: err.message } });
