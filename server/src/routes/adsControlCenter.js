@@ -339,7 +339,7 @@ async function updateAdsetBudget(adsetId, newBudgetCents) {
 // ── Slack Alert ─────────────────────────────────────────────────────────
 async function sendSlackAlert(logEntry) {
   if (!SLACK_BOT_TOKEN) return;
-  const actionEmoji = logEntry.action === 'paused' ? ':octagonal_sign:' : logEntry.action.includes('budget') ? ':chart_with_upwards_trend:' : ':bell:';
+  const actionEmoji = logEntry.action === 'pause_ad' ? ':octagonal_sign:' : logEntry.action === 'resume_ad' ? ':arrow_forward:' : logEntry.action.includes('budget') ? ':chart_with_upwards_trend:' : ':bell:';
   const blocks = [
     { type: 'header', text: { type: 'plain_text', text: `${actionEmoji} Ad Automation Action`, emoji: true } },
     { type: 'section', fields: [
@@ -374,7 +374,7 @@ function evaluateCondition(condition, ad) {
     case '>=': return numAdValue >= numValue;
     case '<':  return numAdValue < numValue;
     case '<=': return numAdValue <= numValue;
-    case '==': return numAdValue === numValue;
+    case '=': case '==': return numAdValue === numValue;
     case '!=': return numAdValue !== numValue;
     default:   return false;
   }
@@ -952,6 +952,7 @@ router.get('/status', authenticate, async (req, res) => {
       success: true,
       data: {
         lastEvaluatedAt,
+        nextEvaluation: lastEvaluatedAt ? new Date(new Date(lastEvaluatedAt).getTime() + 30 * 60000).toISOString() : null,
         evaluationRunning,
         activeRules: parseInt(activeRulesRows[0]?.cnt || 0),
         actionsToday: parseInt(actionsTodayRows[0]?.cnt || 0),

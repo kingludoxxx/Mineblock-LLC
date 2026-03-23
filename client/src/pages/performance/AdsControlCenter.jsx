@@ -137,6 +137,7 @@ const ruleTypeBadge = {
 const statusBadges = {
   success: { bg: 'bg-green-500/15', text: 'text-green-400', label: 'Executed' },
   failed: { bg: 'bg-red-500/15', text: 'text-red-400', label: 'Failed' },
+  error: { bg: 'bg-red-500/15', text: 'text-red-400', label: 'Error' },
   dry_run: { bg: 'bg-amber-500/15', text: 'text-amber-400', label: 'Dry Run' },
   skipped: { bg: 'bg-white/[0.06]', text: 'text-white/40', label: 'Skipped' },
 };
@@ -566,14 +567,14 @@ function RuleModal({ show, onClose, editingRule, onSave }) {
     try {
       const payload = {
         ...form,
-        action_value: budgetActions.has(form.action) ? Number(form.action_value) ?? 0 : null,
-        min_spend: Number(form.min_spend) ?? 0,
+        action_value: budgetActions.has(form.action) ? Number(form.action_value) || 0 : null,
+        min_spend: Number(form.min_spend) || 0,
         cooldown_minutes: Number(form.cooldown_minutes) || 60,
         max_executions_per_day: Number(form.max_executions_per_day) || 50,
-        priority: Number(form.priority) ?? 10,
+        priority: Number(form.priority) || 10,
         conditions: form.conditions.map((c) => ({
           ...c,
-          value: Number(c.value) ?? 0,
+          value: Number(c.value) || 0,
         })),
       };
       await onSave(payload, editingRule?.id);
@@ -1073,7 +1074,7 @@ export default function AdsControlCenter() {
   const budgetDecreasesToday = todayActivity.filter(
     (a) => a.action === 'decrease_budget_pct' || a.action === 'decrease_budget_fixed',
   ).length;
-  const errorsToday = todayActivity.filter((a) => a.execution_status === 'failed').length;
+  const errorsToday = todayActivity.filter((a) => a.execution_status === 'error').length;
 
   const filteredActivity = (() => {
     if (activityFilter === 'all') return activity;
@@ -1081,7 +1082,7 @@ export default function AdsControlCenter() {
     if (activityFilter === 'budget')
       return activity.filter((a) => a.action?.includes('budget'));
     if (activityFilter === 'promising') return activity.filter((a) => a.action === 'flag_promising');
-    if (activityFilter === 'errors') return activity.filter((a) => a.execution_status === 'failed');
+    if (activityFilter === 'errors') return activity.filter((a) => a.execution_status === 'error');
     return activity;
   })();
 
@@ -1187,7 +1188,7 @@ export default function AdsControlCenter() {
         <StatCard
           icon={Clock}
           label="Last Sync"
-          value={status?.last_evaluated ? timeAgo(status.last_evaluated) : '-'}
+          value={status?.lastEvaluatedAt ? timeAgo(status.last_evaluated) : '-'}
           accent="cyan"
           loading={false}
         />
@@ -1349,7 +1350,7 @@ export default function AdsControlCenter() {
           <div>
             <p className="text-[10px] text-white/25 uppercase tracking-wider">Last Evaluated</p>
             <p className="text-xs text-white/60 font-medium mt-0.5">
-              {status?.last_evaluated ? timeAgo(status.last_evaluated) : 'Never'}
+              {status?.lastEvaluatedAt ? timeAgo(status.last_evaluated) : 'Never'}
             </p>
           </div>
         </div>
@@ -1360,7 +1361,7 @@ export default function AdsControlCenter() {
           <div>
             <p className="text-[10px] text-white/25 uppercase tracking-wider">Next Evaluation</p>
             <p className="text-xs text-white/60 font-medium mt-0.5">
-              {status?.next_evaluation ? timeAgo(status.next_evaluation) : '~30 min'}
+              {status?.nextEvaluation ? timeAgo(status.next_evaluation) : '~30 min'}
             </p>
           </div>
         </div>
@@ -1386,7 +1387,7 @@ export default function AdsControlCenter() {
           <div>
             <p className="text-[10px] text-white/25 uppercase tracking-wider">Scheduler</p>
             <p className="text-xs font-medium mt-0.5">
-              {status?.scheduler_active !== false ? (
+              {status?.schedulerActive !== false ? (
                 <span className="text-green-400/60">Active</span>
               ) : (
                 <span className="text-red-400/60">Inactive</span>
