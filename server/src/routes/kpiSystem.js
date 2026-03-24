@@ -1889,22 +1889,14 @@ async function sendDailyPnlReport(dateStr) {
       'SELECT * FROM daily_kpi_snapshots WHERE snapshot_date = $1', [dateStr]
     );
 
-    // Get fees for the date
+    // Get fees for the date (use total_fees to match dashboard)
     const feeRows = await pgQuery(
-      `SELECT COALESCE(SUM(total_fees),0) as total_fees, COALESCE(SUM(processing_fees),0) as processing_fees
+      `SELECT COALESCE(SUM(total_fees),0) as total_fees
        FROM whop_payment_fees WHERE DATE(paid_at AT TIME ZONE 'Europe/Berlin') = $1`, [dateStr]
     );
 
     // Get ad spend from Triple Whale
     const adSpendRows = await fetchDailyAdSpend(dateStr, dateStr);
-
-    // Get refund/discount totals from orders
-    const discountRows = await pgQuery(
-      `SELECT COALESCE(SUM(CAST(total_discounts AS NUMERIC)),0) as total_discounts,
-              COALESCE(SUM(CASE WHEN financial_status IN ('refunded','voided') THEN CAST(subtotal_price AS NUMERIC) ELSE 0 END),0) as refund_total
-       FROM shopify_orders_cache
-       WHERE DATE(created_at AT TIME ZONE 'Europe/Berlin') = $1`, [dateStr]
-    );
 
     const snap = snapRows[0];
     if (!snap) {
@@ -1912,18 +1904,17 @@ async function sendDailyPnlReport(dateStr) {
       return;
     }
 
-    // Calculate metrics
-    const grossSales = parseFloat(snap.total_revenue || 0);
-    const discounts = parseFloat(discountRows[0]?.total_discounts || 0);
-    const refunds = parseFloat(discountRows[0]?.refund_total || 0);
-    const discountsReturns = discounts + refunds;
-    const netSales = grossSales - discountsReturns;
-    const cogs = parseFloat(snap.total_cogs || 0) + parseFloat(snap.total_shipping || 0);
+    // Calculate metrics — MUST match dashboard formula exactly
+    // Dashboard: profit = revenue - (cogs + shipping + total_fees + adSpend)
+    const revenue = parseFloat(snap.total_revenue || 0);
+    const cogs = parseFloat(snap.total_cogs || 0);
+    const shipping = parseFloat(snap.total_shipping || 0);
+    const fees = parseFloat(feeRows[0]?.total_fees || 0);
     const adSpend = adSpendRows[0]?.spend || 0;
-    const processingFee = parseFloat(feeRows[0]?.processing_fees || parseFloat(feeRows[0]?.total_fees || 0));
-    const roas = adSpend > 0 ? (netSales / adSpend) : 0;
-    const netProfit = netSales - cogs - adSpend - processingFee;
-    const netMarginPct = netSales > 0 ? (netProfit / netSales) * 100 : 0;
+    const totalCosts = cogs + shipping + fees + adSpend;
+    const profit = revenue - totalCosts;
+    const roas = adSpend > 0 ? (revenue / adSpend) : 0;
+    const netMarginPct = revenue > 0 ? (profit / revenue) * 100 : 0;
 
     // Format date as MM/DD/YYYY
     const [y, m, d] = dateStr.split('-');
@@ -1939,22 +1930,22 @@ async function sendDailyPnlReport(dateStr) {
 
     const msgText = [
       `*${displayDate}*`,
-      `Gross Sales:  ${fmt(grossSales)}`,
-      `Discounts/Returns/Addbacks:  ${discountsReturns > 0 ? '-' : ''}${fmt(discountsReturns)}`,
-      `Net Sales:  ${fmt(netSales)}`,
-      `COGS:  ${fmt(cogs)} _(product + shipping)_`,
+      `Revenue:  ${fmt(revenue)}`,
+      `COGS:  ${fmt(cogs)}`,
+      `Shipping:  ${fmt(shipping)}`,
+      `Fees:  ${fmt(fees)}`,
       `Ad Spend:  ${fmt(adSpend)}`,
-      `Processing Fee:  ${fmt(processingFee)}`,
-      `ROAS:  ${roas.toFixed(2)}`,
-      `Net Margin %:  ${netMarginPct.toFixed(1)}%`,
-      `Net Profit:  ${fmt(netProfit)}`,
+      `Total Costs:  ${fmt(totalCosts)}`,
+      `ROAS:  ${roas.toFixed(2)}x`,
+      `Net Margin:  ${netMarginPct.toFixed(1)}%`,
+      `Profit:  ${fmt(profit)}`,
     ].join('\n');
 
-    const profitEmoji = netProfit >= 0 ? ':chart_with_upwards_trend:' : ':chart_with_downwards_trend:';
+    const profitEmoji = profit >= 0 ? ':chart_with_upwards_trend:' : ':chart_with_downwards_trend:';
     const marginColor = netMarginPct >= 15 ? '#10b981' : netMarginPct >= 0 ? '#f59e0b' : '#ef4444';
 
     const blocks = [
-      { type: 'header', text: { type: 'plain_text', text: `${netProfit >= 0 ? '📊' : '📉'} Daily P&L — ${displayDate}`, emoji: true } },
+      { type: 'header', text: { type: 'plain_text', text: `${profit >= 0 ? '📊' : '📉'} Daily P&L — ${displayDate}`, emoji: true } },
       { type: 'divider' },
       { type: 'section', text: { type: 'mrkdwn', text: msgText } },
       { type: 'divider' },
@@ -1972,7 +1963,7 @@ async function sendDailyPnlReport(dateStr) {
       headers: { 'Authorization': `Bearer ${SLACK_BOT_TOKEN}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         channel: SLACK_DAILY_PNL_CHANNEL,
-        text: `Daily P&L for ${displayDate}: Net Profit ${fmt(netProfit)}`,
+        text: `Daily P&L for ${displayDate}: Profit ${fmt(profit)}`,
         blocks,
         username: 'Mineblock Bot',
         icon_url: 'https://i.imgur.com/PJCRE4g.png',
@@ -1983,7 +1974,7 @@ async function sendDailyPnlReport(dateStr) {
     if (!result.ok) {
       console.error('[Daily P&L] Slack error:', result.error);
     } else {
-      console.log(`[Daily P&L] Sent report for ${displayDate}: Net Profit ${fmt(netProfit)}`);
+      console.log(`[Daily P&L] Sent report for ${displayDate}: Profit ${fmt(profit)}`);
     }
   } catch (err) {
     console.error('[Daily P&L] Error:', err.message);
@@ -2007,8 +1998,8 @@ function scheduleDailyPnl() {
     const minute = parseInt(get('minute'));
     const berlinDate = `${get('year')}-${get('month')}-${get('day')}`;
 
-    // Trigger at 00:03 CET (hour=0, minute=3)
-    if (hour === 0 && minute >= 3 && minute < 5 && lastSentDate !== berlinDate) {
+    // Trigger at 10:03 CET (hour=10, minute=3) — delayed to let Triple Whale ad spend data settle
+    if (hour === 10 && minute >= 3 && minute < 5 && lastSentDate !== berlinDate) {
       lastSentDate = berlinDate;
       // Report for yesterday (the day that just ended)
       const yDate = new Date(berlinDate + 'T00:00:00Z');
@@ -2019,7 +2010,7 @@ function scheduleDailyPnl() {
     }
   }, checkInterval);
 
-  console.log('[Daily P&L] Scheduler active — will fire at 00:03 CET daily');
+  console.log('[Daily P&L] Scheduler active — will fire at 10:03 CET daily');
 }
 
 // Also expose as API endpoint for manual testing
