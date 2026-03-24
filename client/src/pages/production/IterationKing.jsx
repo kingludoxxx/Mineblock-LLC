@@ -333,6 +333,8 @@ export default function IterationKing() {
   // Keyboard shortcuts (use ref to avoid re-registering every render)
   const shortcutRef = useRef();
   shortcutRef.current = (e) => {
+    // Skip when focused on input/textarea
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); if (originalScript && !scriptsLoading) handleGenerateScripts(); }
     if ((e.metaKey || e.ctrlKey) && e.key === 'h') { e.preventDefault(); if (selectedScriptIdx !== null && !hooksLoading && generationMode === 'iterate') handleGenerateHooks(); }
     if ((e.metaKey || e.ctrlKey) && e.key === 'b') { e.preventDefault(); handleMoveToBriefAgent(); }
@@ -470,13 +472,10 @@ export default function IterationKing() {
     if (scripts.length > 0 && analysis) setAnalysisCollapsed(true);
   }, [scripts.length, analysis]);
 
-  // Keyboard shortcuts for navigation
+  // Arrow key navigation for script selection
   useEffect(() => {
     const handler = (e) => {
-      const tag = document.activeElement?.tagName?.toLowerCase();
-      if (tag === 'input' || tag === 'textarea') return;
-      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); handleGenerateScripts(); return; }
-      if ((e.metaKey || e.ctrlKey) && e.key === 'h') { e.preventDefault(); handleGenerateHooks(); return; }
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
       if (e.key === 'ArrowDown' && scripts.length > 0) {
         e.preventDefault();
         setSelectedScriptIdx((prev) => prev === null ? 0 : Math.min(prev + 1, scripts.length - 1));
