@@ -1069,7 +1069,7 @@ export default function CreativeAnalysis() {
                     </div>
                     {creative.first_seen && (
                       <div className="text-[10px] text-white/30 mt-1">
-                        Launched {creative.first_seen.replace('WK', 'W').replace('_', ' ')}
+                        Launched {weekToDate(creative.first_seen)}
                       </div>
                     )}
                     {/* Tags */}
@@ -1179,7 +1179,7 @@ export default function CreativeAnalysis() {
                     </div>
                     {creative.first_seen && (
                       <div className="text-[10px] text-white/30 mt-1">
-                        Launched {creative.first_seen.replace('WK', 'W').replace('_', ' ')}
+                        Launched {weekToDate(creative.first_seen)}
                       </div>
                     )}
                     {/* Tags */}
