@@ -558,21 +558,31 @@ export default function CreativeAnalysis() {
 
   const newWinners = useMemo(() => {
     return (data || [])
-      .filter(c => c.first_seen === currentWeekLabel && c.roas >= 1.5 && c.total_spend >= 20)
+      .filter(c => c.first_seen === currentWeekLabel && c.roas >= 1.5 && (c.total_spend ?? 0) >= 20)
+      .map(c => ({
+        ...c,
+        ad_name: c.ad_name || c.hooks?.reduce((best, h) => (h.spend > (best?.spend ?? -1) ? h : best), null)?.ad_name || c.creative_id,
+      }))
       .sort((a, b) => b.roas - a.roas);
   }, [data, currentWeekLabel]);
 
   const sortedCreatives = useMemo(() => {
-    let filtered = [...(data || [])];
+    // Normalize raw data so cards have consistent field names
+    let filtered = (data || []).map(c => ({
+      ...c,
+      spend: c.total_spend ?? c.spend ?? 0,
+      revenue: c.total_revenue ?? c.revenue ?? 0,
+      ad_name: c.ad_name || c.hooks?.reduce((best, h) => (h.spend > (best?.spend ?? -1) ? h : best), null)?.ad_name || c.creative_id,
+    }));
     // For ROAS and velocity sorts, require minimum spend to avoid noise
-    if (creativeSort === 'roas') filtered = filtered.filter(c => c.total_spend >= 50);
-    if (creativeSort === 'velocity') filtered = filtered.filter(c => c.total_spend >= 20);
+    if (creativeSort === 'roas') filtered = filtered.filter(c => c.spend >= 50);
+    if (creativeSort === 'velocity') filtered = filtered.filter(c => c.spend >= 20);
     return filtered.sort((a, b) => {
       switch (creativeSort) {
         case 'roas': return b.roas - a.roas;
-        case 'newest': return (b.first_seen || '').localeCompare(a.first_seen || '') || b.total_spend - a.total_spend;
-        case 'velocity': return ((b.total_spend / (b.weeks_active || 1)) - (a.total_spend / (a.weeks_active || 1)));
-        default: return b.total_spend - a.total_spend;
+        case 'newest': return (b.first_seen || '').localeCompare(a.first_seen || '') || b.spend - a.spend;
+        case 'velocity': return ((b.spend / (b.weeks_active || 1)) - (a.spend / (a.weeks_active || 1)));
+        default: return b.spend - a.spend;
       }
     }).slice(0, 15);
   }, [data, creativeSort]);
