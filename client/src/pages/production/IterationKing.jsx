@@ -314,9 +314,12 @@ export default function IterationKing() {
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState(null);
   const [generationMode, setGenerationMode] = useState('iterate');
+  const [analysisCollapsed, setAnalysisCollapsed] = useState(false);
   const searchTimer = useRef(null);
   const scriptAbortRef = useRef(null);
   const hookAbortRef = useRef(null);
+
+  const isFullMode = generationMode === 'full';
 
   // Cleanup timers and abort controllers on unmount
   useEffect(() => {
@@ -462,35 +465,41 @@ export default function IterationKing() {
     if (generationMode === 'full' && selectedScriptIdx !== null) setFinalScript(scripts[selectedScriptIdx]?.text || '');
   }, [generationMode, selectedScriptIdx, scripts]);
 
-  // Auto-scroll to hook generator when script is selected
+  // Auto-collapse analysis once scripts are generated
   useEffect(() => {
-    if (selectedScriptIdx !== null && !isFullMode) {
-      setTimeout(() => {
-        document.getElementById('hook-generator-section')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      }, 300);
-    }
-  }, [selectedScriptIdx, isFullMode]);
+    if (scripts.length > 0 && analysis) setAnalysisCollapsed(true);
+  }, [scripts.length, analysis]);
 
-  // Keyboard shortcuts
+  // Keyboard shortcuts for navigation
   useEffect(() => {
     const handler = (e) => {
-      // Don't capture when in input/textarea
-      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
-
-      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); handleGenerateScripts(); }
-      if ((e.metaKey || e.ctrlKey) && e.key === 'h') { e.preventDefault(); handleGenerateHooks(); }
+      const tag = document.activeElement?.tagName?.toLowerCase();
+      if (tag === 'input' || tag === 'textarea') return;
+      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); handleGenerateScripts(); return; }
+      if ((e.metaKey || e.ctrlKey) && e.key === 'h') { e.preventDefault(); handleGenerateHooks(); return; }
       if (e.key === 'ArrowDown' && scripts.length > 0) {
         e.preventDefault();
-        setSelectedScriptIdx(i => i === null ? 0 : Math.min(i + 1, scripts.length - 1));
+        setSelectedScriptIdx((prev) => prev === null ? 0 : Math.min(prev + 1, scripts.length - 1));
       }
       if (e.key === 'ArrowUp' && scripts.length > 0) {
         e.preventDefault();
-        setSelectedScriptIdx(i => i === null ? 0 : Math.max(i - 1, 0));
+        setSelectedScriptIdx((prev) => prev === null ? 0 : Math.max(prev - 1, 0));
       }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [scripts.length]); // eslint-disable-line
+  }, [scripts.length]);
+
+  // Auto-scroll to hook generator when a script is selected
+  useEffect(() => {
+    if (selectedScriptIdx !== null && !isFullMode) {
+      const timer = setTimeout(() => {
+        const el = document.getElementById('hook-generator-section');
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }, 300);
+      return () => clearTimeout(timer);
+    }
+  }, [selectedScriptIdx, isFullMode]);
 
   const handleMoveToBriefAgent = () => { const t = getEffectiveFinalText(); if (!t) return; localStorage.setItem('iterationKing_briefText', t); setMoveSuccess(true); setTimeout(() => navigate('/app/brief-agent'), 1000); };
   const handleCopy = () => { const t = getEffectiveFinalText(); if (!t) return; navigator.clipboard.writeText(t); setCopied(true); setTimeout(() => setCopied(false), 2000); };
@@ -501,19 +510,11 @@ export default function IterationKing() {
     setSearchQuery(''); setSearchResults([]); setSelectedBrief(null); setOriginalScript(''); setAnalysis(null);
     setScripts([]); setSelectedScriptIdx(null); setHooks([]); setSelectedHookIdxs(new Set());
     setFinalScript(''); setMoveSuccess(false); setError(null); setCopied(false);
-    setAggressiveness(5); setSimilarity(5); setGenerationMode('iterate');
+    setAggressiveness(5); setSimilarity(5); setGenerationMode('iterate'); setAnalysisCollapsed(false);
     setBriefLoading(false); setAnalysisLoading(false); setScriptsLoading(false); setHooksLoading(false);
     // Session cleared on reset
   };
 
-  const [analysisCollapsed, setAnalysisCollapsed] = useState(false);
-
-  // Auto-collapse analysis once scripts are generated
-  useEffect(() => {
-    if (scripts.length > 0 && analysis) setAnalysisCollapsed(true);
-  }, [scripts.length > 0]); // eslint-disable-line
-
-  const isFullMode = generationMode === 'full';
   const pipelineSteps = isFullMode
     ? ['Source Brief', 'Controls', 'Full Scripts', 'Final Assembly']
     : ['Source Brief', 'Controls', 'Script Variations', 'Hook Generator', 'Final Assembly'];
@@ -642,19 +643,19 @@ export default function IterationKing() {
             )}
           </div>
 
-          {/* Winner Analysis (collapsible) */}
+          {/* Winner Analysis */}
           {(analysisLoading || analysis) && (
             <div className="ik-panel ik-card-enter">
-              <div className="ik-panel-header cursor-pointer" onClick={() => analysis && setAnalysisCollapsed(!analysisCollapsed)}>
+              <div className="ik-panel-header cursor-pointer select-none" onClick={() => analysis && setAnalysisCollapsed(!analysisCollapsed)}>
                 <Brain className="w-4 h-4" style={{ color: '#3B82F6' }} />
                 <span>Winner Analysis</span>
                 {analysis && (
-                  <>
-                    <span className="text-base font-mono font-bold ml-auto" style={{ color: (analysis.overallStrength || 0) >= 7 ? '#00FF88' : '#FBBF24', textShadow: `0 0 10px ${(analysis.overallStrength || 0) >= 7 ? '#00FF88' : '#FBBF24'}44` }}>
+                  <div className="flex items-center gap-2 ml-auto">
+                    <span className="text-sm font-mono font-bold" style={{ color: (analysis.overallStrength || 0) >= 7 ? '#00FF88' : '#FBBF24', textShadow: `0 0 10px ${(analysis.overallStrength || 0) >= 7 ? '#00FF88' : '#FBBF24'}44` }}>
                       {analysis.overallStrength}/10
                     </span>
-                    <ChevronRight className={`w-3.5 h-3.5 transition-transform ${analysisCollapsed ? '' : 'rotate-90'}`} style={{ color: '#555' }} />
-                  </>
+                    <ChevronRight className="w-3.5 h-3.5 transition-transform duration-200" style={{ color: '#555', transform: analysisCollapsed ? 'rotate(0deg)' : 'rotate(90deg)' }} />
+                  </div>
                 )}
               </div>
               {analysisLoading ? (
@@ -734,21 +735,22 @@ export default function IterationKing() {
               <div className="flex items-center gap-2 mb-5">
                 <Zap className="w-4 h-4" style={{ color: '#00FF88' }} />
                 <span className="text-xs font-semibold uppercase tracking-wider" style={{ color: '#9CA3AF' }}>
-                  Generating...
+                  {isFullMode ? 'Generating Full Ad Scripts...' : 'Generating Script Variations...'}
                 </span>
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
                 {Array.from({ length: 6 }, (_, i) => (
-                  <div key={i} className="rounded-xl p-5 ik-card-enter" style={{ background: '#111111', border: '1px solid #1E1E1E', animationDelay: `${i * 80}ms` }}>
-                    <div className="animate-pulse space-y-3">
-                      <div className="flex items-center justify-between">
-                        <div className="h-3 w-16 rounded" style={{ background: '#1E1E1E' }} />
-                        <div className="h-4 w-20 rounded" style={{ background: '#1E1E1E' }} />
-                      </div>
-                      <div className="h-3 w-full rounded" style={{ background: '#1E1E1E' }} />
-                      <div className="h-3 w-5/6 rounded" style={{ background: '#1E1E1E' }} />
-                      <div className="h-3 w-4/6 rounded" style={{ background: '#1E1E1E' }} />
-                      <div className="h-3 w-3/6 rounded" style={{ background: '#1E1E1E' }} />
+                  <div key={i} className="rounded-xl p-5 ik-skeleton-card" style={{ background: '#111111', border: '1px solid #1E1E1E', animationDelay: `${i * 100}ms` }}>
+                    <div className="flex items-center justify-between mb-4">
+                      <div className="h-3 w-20 rounded ik-skeleton-line" />
+                      <div className="h-4 w-24 rounded ik-skeleton-line" />
+                    </div>
+                    <div className="space-y-2.5">
+                      <div className="h-3 w-full rounded ik-skeleton-line" />
+                      <div className="h-3 w-full rounded ik-skeleton-line" style={{ animationDelay: '0.1s' }} />
+                      <div className="h-3 w-4/5 rounded ik-skeleton-line" style={{ animationDelay: '0.2s' }} />
+                      <div className="h-3 w-full rounded ik-skeleton-line" style={{ animationDelay: '0.3s' }} />
+                      <div className="h-3 w-3/5 rounded ik-skeleton-line" style={{ animationDelay: '0.4s' }} />
                     </div>
                   </div>
                 ))}
@@ -776,24 +778,24 @@ export default function IterationKing() {
             </div>
           )}
 
-          {/* Hook Generator (moved to right panel for linear flow) */}
+          {/* Hook Generator */}
           {selectedScriptIdx !== null && !isFullMode && (
-            <div className="ik-panel ik-card-enter" id="hook-generator-section">
+            <div id="hook-generator-section" className="ik-panel ik-card-enter">
               <div className="ik-panel-header">
                 <Sparkles className="w-4 h-4" style={{ color: '#A78BFA' }} />
                 <span>Hook Generator</span>
-                <span className="text-[10px] font-mono ml-auto" style={{ color: '#555' }}>⌘H to generate</span>
+                <span className="ml-auto text-[10px] font-mono" style={{ color: '#333' }}>⌘H to generate</span>
               </div>
               <button onClick={handleGenerateHooks} disabled={hooksLoading}
                 className={`ik-btn-secondary w-full ${hooksLoading ? 'ik-generating' : ''}`}>
                 {hooksLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}
-                Generate Hooks for Script #{selectedScriptIdx + 1}
+                Generate Hooks
               </button>
               {hooksLoading && <AnimatedStatus steps={HOOK_STEPS} />}
             </div>
           )}
 
-          {/* Generated Hooks */}
+          {/* Hooks */}
           {hooks.length > 0 && !isFullMode && (
             <div>
               <div className="flex items-center gap-2 mb-5">
@@ -862,6 +864,7 @@ export default function IterationKing() {
         @keyframes pulseDot { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.5; transform: scale(0.7); } }
         @keyframes borderPulse { 0%, 100% { border-color: #00FF8844; } 50% { border-color: #00FF8888; } }
         @keyframes checkPop { from { transform: scale(0); } to { transform: scale(1); } }
+        @keyframes skeletonPulse { 0%, 100% { opacity: 0.15; } 50% { opacity: 0.3; } }
 
         .ik-card-enter { animation: slideUp 0.4s ease-out both; }
         .ik-selected-glow { animation: pulseGlow 2s ease-in-out infinite; }
@@ -871,6 +874,10 @@ export default function IterationKing() {
         .ik-generating { animation: borderPulse 1.5s ease-in-out infinite !important; }
         .ik-pipeline-active { animation: borderPulse 2s ease-in-out infinite; }
         .ik-logo-glow { background: #00FF8815; box-shadow: 0 0 24px #00FF8822, 0 0 48px #00FF8811; }
+
+        /* Skeleton */
+        .ik-skeleton-card { animation: slideUp 0.4s ease-out both; }
+        .ik-skeleton-line { background: #1E1E1E; animation: skeletonPulse 1.5s ease-in-out infinite; }
 
         /* Panels */
         .ik-panel { background: #111111; border: 1px solid #1E1E1E; border-radius: 16px; padding: 24px; }
