@@ -887,10 +887,12 @@ export default function Assets() {
         resp = await api.post('/product-profiles', payload);
       }
 
-      console.log('[ProductSave] response:', JSON.stringify({ product_code: resp.data?.data?.product_code, oneliner: resp.data?.data?.oneliner }));
+      const saved = resp.data?.data || resp.data;
+      console.log('[ProductSave] response saved:', JSON.stringify({ id: saved?.id, product_code: saved?.product_code, oneliner: saved?.oneliner, tagline: saved?.tagline }));
 
       await fetchProducts();
       closeEditor();
+      console.log('[ProductSave] Success — products refreshed');
     } catch (err) {
       console.error('Save failed:', err);
       alert(`Save failed: ${err.response?.data?.error?.message || err.message}`);
