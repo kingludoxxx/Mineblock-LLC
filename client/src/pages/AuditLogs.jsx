@@ -46,7 +46,9 @@ export default function AuditLogs() {
       .get('/audit-logs', { params })
       .then((res) => {
         setLogs(res.data.logs || []);
-        setTotalPages(res.data.totalPages || 1);
+        const total = res.data.total || 0;
+        const limit = res.data.limit || 15;
+        setTotalPages(Math.ceil(total / limit) || 1);
       })
       .catch(() => setLogs([]))
       .finally(() => setLoading(false));

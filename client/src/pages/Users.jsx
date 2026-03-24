@@ -50,7 +50,8 @@ export default function UsersPage() {
       .get('/users', { params: { page, search, limit: 10 } })
       .then((res) => {
         setUsers(res.data.users || []);
-        setTotalPages(res.data.totalPages || 1);
+        const total = res.data.total || 0;
+        setTotalPages(Math.ceil(total / 10) || 1);
       })
       .catch(() => setUsers([]))
       .finally(() => setLoading(false));

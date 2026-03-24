@@ -19,9 +19,9 @@ export default function Departments() {
 
   const toggleDepartment = async (id, isActive) => {
     try {
-      await api.patch(`/departments/${id}`, { isActive: !isActive });
+      await api.patch(`/departments/${id}/status`);
       setDepartments((prev) =>
-        prev.map((d) => (d.id === id ? { ...d, isActive: !isActive } : d))
+        prev.map((d) => (d.id === id ? { ...d, is_active: !isActive } : d))
       );
     } catch {
       // ignore
@@ -57,8 +57,8 @@ export default function Departments() {
                     <p className="text-slate-400 text-sm">{dept.code}</p>
                   </div>
                 </div>
-                <Badge color={dept.isActive ? 'green' : 'red'}>
-                  {dept.isActive ? 'Active' : 'Inactive'}
+                <Badge color={dept.is_active ? 'green' : 'red'}>
+                  {dept.is_active ? 'Active' : 'Inactive'}
                 </Badge>
               </div>
               {dept.description && (
@@ -67,17 +67,17 @@ export default function Departments() {
               <div className="flex items-center justify-between pt-4 border-t border-slate-700">
                 <div className="flex items-center gap-2 text-sm text-slate-400">
                   <Users className="w-4 h-4" />
-                  <span>{dept.memberCount ?? 0} members</span>
+                  <span>{dept.member_count ?? 0} members</span>
                 </div>
                 <PermissionGate permission="departments:manage">
                   <button
-                    onClick={() => toggleDepartment(dept.id, dept.isActive)}
+                    onClick={() => toggleDepartment(dept.id, dept.is_active)}
                     className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors cursor-pointer
-                      ${dept.isActive ? 'bg-blue-600' : 'bg-slate-600'}`}
+                      ${dept.is_active ? 'bg-blue-600' : 'bg-slate-600'}`}
                   >
                     <span
                       className={`inline-block h-4 w-4 rounded-full bg-white transition-transform
-                        ${dept.isActive ? 'translate-x-6' : 'translate-x-1'}`}
+                        ${dept.is_active ? 'translate-x-6' : 'translate-x-1'}`}
                     />
                   </button>
                 </PermissionGate>

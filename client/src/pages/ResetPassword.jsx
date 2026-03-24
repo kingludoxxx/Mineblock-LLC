@@ -59,7 +59,7 @@ export default function ResetPassword() {
     try {
       await api.post('/auth/reset-password', {
         token,
-        password: form.password,
+        newPassword: form.password,
       });
       setSuccess(true);
       setTimeout(() => navigate('/login'), 3000);
