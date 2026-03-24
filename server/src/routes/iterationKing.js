@@ -258,7 +258,7 @@ Return ONLY valid JSON with this exact structure (no markdown, no explanation, n
   "summary": "string - 1-2 sentence summary of why this script wins"
 }`;
 
-    const result = await callClaude(prompt, 1024);
+    const result = await callClaude(prompt, 1024, { fast: true });
     const analysis = safeParseJSON(result);
 
     res.json({ success: true, analysis });
