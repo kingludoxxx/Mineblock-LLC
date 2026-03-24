@@ -12,6 +12,8 @@ import productProfileRoutes from './productProfiles.js';
 import adRejectionMonitorRoutes from './adRejectionMonitor.js';
 import kpiSystemRoutes from './kpiSystem.js';
 import adsControlCenterRoutes from './adsControlCenter.js';
+import advertorialRoutes from './advertorialPipeline.js';
+import adLauncherRoutes from './adLauncher.js';
 
 const mountRoutes = (app) => {
   app.use('/api/v1/users', userRoutes);
@@ -28,6 +30,8 @@ const mountRoutes = (app) => {
   app.use('/api/v1/ad-rejection-monitor', adRejectionMonitorRoutes);
   app.use('/api/v1/kpi-system', kpiSystemRoutes);
   app.use('/api/v1/ads-control', adsControlCenterRoutes);
+  app.use('/api/v1/advertorial', advertorialRoutes);
+  app.use('/api/v1/ad-launcher', adLauncherRoutes);
 };
 
 export default mountRoutes;
