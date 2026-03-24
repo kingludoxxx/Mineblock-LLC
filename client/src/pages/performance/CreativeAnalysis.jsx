@@ -19,6 +19,7 @@ import {
   ChevronLeft,
   Calendar,
   Play,
+  Sparkles,
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -67,6 +68,12 @@ function getISOWeek(date) {
 function getCurrentWeek() {
   const now = new Date();
   const { week, year } = getISOWeek(now);
+  return `WK${String(week).padStart(2, '0')}_${year}`;
+}
+
+function getWeekLabel(date) {
+  const d = new Date(date);
+  const { week, year } = getISOWeek(d);
   return `WK${String(week).padStart(2, '0')}_${year}`;
 }
 
@@ -256,6 +263,7 @@ export default function CreativeAnalysis() {
     editor: '',
   });
 
+  const [creativeSort, setCreativeSort] = useState('spend');
   const [expandedCreatives, setExpandedCreatives] = useState(new Set());
   const [sortConfig, setSortConfig] = useState({ key: 'spend', direction: 'desc' });
   const [chartCreative, setChartCreative] = useState(null); // creative_id showing chart
@@ -543,6 +551,27 @@ export default function CreativeAnalysis() {
       .sort((a, b) => (b.roas ?? 0) - (a.roas ?? 0))
       .slice(0, 10);
   }, [processedData]);
+
+  // ── New Winners & Sort for Top Creatives ──
+
+  const currentWeekLabel = useMemo(() => getWeekLabel(endDate || new Date()), [endDate]);
+
+  const newWinners = useMemo(() => {
+    return (data || [])
+      .filter(c => c.first_seen === currentWeekLabel && c.roas >= 1.5 && c.total_spend >= 20)
+      .sort((a, b) => b.roas - a.roas);
+  }, [data, currentWeekLabel]);
+
+  const sortedCreatives = useMemo(() => {
+    return [...(data || [])].sort((a, b) => {
+      switch (creativeSort) {
+        case 'roas': return (a.total_spend >= 50 ? b.roas - a.roas : 1);
+        case 'newest': return (b.first_seen || '').localeCompare(a.first_seen || '') || b.total_spend - a.total_spend;
+        case 'velocity': return ((b.total_spend / (b.weeks_active || 1)) - (a.total_spend / (a.weeks_active || 1)));
+        default: return b.total_spend - a.total_spend;
+      }
+    }).slice(0, 15);
+  }, [data, creativeSort]);
 
   // ── Interactions ──
 
@@ -960,12 +989,129 @@ export default function CreativeAnalysis() {
         </div>
       )}
 
+      {/* New Winners This Period */}
+      {newWinners.length > 0 && (
+        <div className="mb-8">
+          <div className="flex items-center gap-2 mb-4">
+            <Sparkles className="w-4 h-4 text-emerald-400" />
+            <h2 className="text-sm font-semibold text-white/60 uppercase tracking-wider">
+              New Winners This Period
+            </h2>
+            <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+              {newWinners.length} new
+            </span>
+          </div>
+          <div className="flex gap-4 overflow-x-auto pb-2" style={{ scrollbarWidth: 'thin' }}>
+            {newWinners.map((creative) => {
+              const isVideo = (creative.type || '').toLowerCase() === 'video';
+              const angleColor = getTagColor(creative.angle);
+              const formatColor = getTagColor(creative.format);
+              return (
+                <div
+                  key={creative.creative_id}
+                  className="shrink-0 w-64 bg-[#111] rounded-xl overflow-hidden hover:border-white/[0.12] transition-colors"
+                  style={{ border: '1px solid #10b98166', boxShadow: '0 0 20px #10b98122' }}
+                >
+                  {/* Visual header */}
+                  <div
+                    className={`h-64 flex items-center justify-center relative cursor-pointer group ${creative.thumbnail_url ? 'bg-black' : isVideo ? 'bg-gradient-to-br from-blue-900/40 to-purple-900/30' : 'bg-gradient-to-br from-cyan-900/30 to-emerald-900/20'}`}
+                    onClick={() => (creative.thumbnail_url || creative.video_url) && setVideoModal({ thumbnail_url: creative.thumbnail_url, video_url: creative.video_url, ad_name: creative.ad_name })}
+                  >
+                    {creative.thumbnail_url ? (
+                      <>
+                        <img src={creative.thumbnail_url} alt="" className="w-full h-full object-cover" onError={(e) => { e.target.src = ''; e.target.className = 'hidden'; }} />
+                        {creative.video_url && (
+                          <div className="absolute inset-0 flex items-center justify-center bg-black/20 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <div className="w-10 h-10 rounded-full bg-white/90 flex items-center justify-center">
+                              <Play className="w-5 h-5 text-black ml-0.5" />
+                            </div>
+                          </div>
+                        )}
+                      </>
+                    ) : isVideo ? (
+                      <Video className="w-10 h-10 text-blue-400/40" />
+                    ) : (
+                      <Image className="w-10 h-10 text-cyan-400/40" />
+                    )}
+                    <div className="absolute top-2 left-2 z-10 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase"
+                      style={{ background: '#10b981', color: '#000' }}>
+                      NEW
+                    </div>
+                    <span className={`absolute bottom-2 left-2 text-[10px] font-bold px-1.5 py-0.5 rounded ${isVideo ? 'bg-blue-500 text-white' : 'bg-cyan-500 text-white'}`}>
+                      {creative.type || '?'}
+                    </span>
+                    {creative.is_winner && (
+                      <span className="absolute top-2 right-2 text-[10px] font-bold px-1.5 py-0.5 rounded bg-yellow-500/30 text-yellow-400">Winner</span>
+                    )}
+                  </div>
+                  {/* Info */}
+                  <div className="p-3">
+                    <p className="text-white text-xs font-medium truncate mb-2" title={creative.ad_name || creative.creative_id}>
+                      {creative.ad_name || creative.creative_id}
+                    </p>
+                    <div className="space-y-1.5 text-xs">
+                      <div className="flex justify-between">
+                        <span className="text-gray-500">Spend</span>
+                        <span className="text-white font-medium">{fmtMoney(creative.total_spend)}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-gray-500">ROAS</span>
+                        <span className={creative.roas >= 1.5 ? 'text-emerald-400 font-semibold' : creative.roas >= 1.0 ? 'text-yellow-400' : 'text-red-400'}>{fmtRoas(creative.roas)}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-gray-500">CPA</span>
+                        <span className="text-gray-300">{fmtMoney(creative.cpa)}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-gray-500">CTR</span>
+                        <span className="text-gray-300">{fmtPct(creative.ctr)}</span>
+                      </div>
+                    </div>
+                    {creative.first_seen && (
+                      <div className="text-[10px] text-white/30 mt-1">
+                        Launched {creative.first_seen.replace('WK', 'W').replace('_', ' ')}
+                      </div>
+                    )}
+                    {/* Tags */}
+                    <div className="flex flex-wrap gap-1 mt-2">
+                      {creative.format && formatColor && (
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${formatColor.bg} ${formatColor.text}`}>{creative.format}</span>
+                      )}
+                      {creative.angle && angleColor && (
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${angleColor.bg} ${angleColor.text}`}>{creative.angle}</span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {/* Top Creatives Visual Cards (Motion-style) */}
       {processedData.length > 0 && (
         <div className="mb-8">
-          <h2 className="text-white font-semibold text-lg mb-4">Top Creatives</h2>
+          <div className="flex items-center mb-4">
+            <h2 className="text-white font-semibold text-lg">Top Creatives</h2>
+            <div className="flex items-center gap-2 ml-auto">
+              {['spend', 'roas', 'newest', 'velocity'].map(key => {
+                const labels = { spend: 'Top Spend', roas: 'Best ROAS', newest: 'Newest', velocity: 'Fastest Scaling' };
+                return (
+                  <button key={key} onClick={() => setCreativeSort(key)}
+                    className={`px-3 py-1 rounded-lg text-xs font-medium transition-all cursor-pointer ${
+                      creativeSort === key
+                        ? 'bg-blue-600/20 text-blue-400 border border-blue-500/30'
+                        : 'text-white/40 hover:text-white/60 border border-transparent'
+                    }`}>
+                    {labels[key]}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
           <div className="flex gap-3 overflow-x-auto pb-2">
-            {processedData.slice(0, 15).map((creative) => {
+            {sortedCreatives.map((creative) => {
               const isVideo = (creative.type || '').toLowerCase() === 'video';
               const angleColor = getTagColor(creative.angle);
               const formatColor = getTagColor(creative.format);
@@ -994,6 +1140,12 @@ export default function CreativeAnalysis() {
                       <Video className="w-10 h-10 text-blue-400/40" />
                     ) : (
                       <Image className="w-10 h-10 text-cyan-400/40" />
+                    )}
+                    {creative.first_seen === currentWeekLabel && (
+                      <div className="absolute top-2 left-2 z-10 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase"
+                        style={{ background: '#10b981', color: '#000' }}>
+                        NEW
+                      </div>
                     )}
                     <span className={`absolute bottom-2 left-2 text-[10px] font-bold px-1.5 py-0.5 rounded ${isVideo ? 'bg-blue-500 text-white' : 'bg-cyan-500 text-white'}`}>
                       {creative.type || '?'}
@@ -1025,6 +1177,11 @@ export default function CreativeAnalysis() {
                         <span className="text-gray-300">{fmtPct(creative.ctr)}</span>
                       </div>
                     </div>
+                    {creative.first_seen && (
+                      <div className="text-[10px] text-white/30 mt-1">
+                        Launched {creative.first_seen.replace('WK', 'W').replace('_', ' ')}
+                      </div>
+                    )}
                     {/* Tags */}
                     <div className="flex flex-wrap gap-1 mt-2">
                       {creative.format && formatColor && (
