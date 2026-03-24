@@ -731,6 +731,21 @@ router.get('/weekly-recap/:editor', async (req, res) => {
   }
 });
 
+// ── Manual trigger for editor reports ────────────────────────────────
+router.post('/send-editor-reports', async (req, res) => {
+  try {
+    const results = {};
+    for (const editorName of Object.keys(EDITOR_SLACK_CHANNELS)) {
+      await sendEditorWeeklyReport(editorName);
+      results[editorName] = 'sent';
+    }
+    res.json({ success: true, data: results });
+  } catch (err) {
+    console.error('[EditorReport] Manual trigger error:', err.message);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
 // ── Monday Editor Report Scheduler ──────────────────────────────────
 // Runs every Monday at 10:03 CET — posts weekly recap to each editor's Slack channel
 
