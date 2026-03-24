@@ -141,15 +141,19 @@ async function processAdsForAccount(accountId, accountName) {
       { type: 'divider' },
     ];
 
-    await sendSlackMessage(`${statusLabel}: ${adName} (${accountName})`, blocks);
+    const slackResult = await sendSlackMessage(`${statusLabel}: ${adName} (${accountName})`, blocks);
 
-    await pgQuery(
-      'INSERT INTO ad_rejections_notified (ad_id, ad_name, account_id, status) VALUES ($1, $2, $3, $4) ON CONFLICT (ad_id) DO NOTHING',
-      [ad.id, adName, accountId, status]
-    );
-
-    newRejections++;
-    console.log(`[Ad Rejection] Notified: "${adName}" [${status}] from ${accountName}`);
+    // Only mark as notified if Slack succeeded — otherwise retry next cycle
+    if (slackResult?.ok) {
+      await pgQuery(
+        'INSERT INTO ad_rejections_notified (ad_id, ad_name, account_id, status) VALUES ($1, $2, $3, $4) ON CONFLICT (ad_id) DO NOTHING',
+        [ad.id, adName, accountId, status]
+      );
+      newRejections++;
+      console.log(`[Ad Rejection] Notified: "${adName}" [${status}] from ${accountName}`);
+    } else {
+      console.error(`[Ad Rejection] Slack failed for "${adName}" — will retry next cycle`);
+    }
   }
 
   return { success: true, rateLimit: false, accountId, checked: ads.length, newRejections };
@@ -253,6 +257,22 @@ router.post('/check-now', authenticate, async (req, res) => {
   try {
     const result = await checkRejectedAds();
     res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// Re-notify: clear an ad from notified list so it gets re-checked
+router.post('/re-notify', authenticate, async (req, res) => {
+  try {
+    await ensureTable();
+    const { ad_name } = req.body;
+    if (!ad_name) return res.status(400).json({ success: false, error: { message: 'ad_name required' } });
+    const deleted = await pgQuery('DELETE FROM ad_rejections_notified WHERE ad_name LIKE $1 RETURNING ad_id', [`%${ad_name}%`]);
+    if (deleted.length === 0) return res.json({ success: true, message: 'No matching notifications found' });
+    // Force immediate re-check
+    const result = await checkRejectedAds();
+    res.json({ success: true, cleared: deleted.length, recheckResult: result });
   } catch (err) {
     res.status(500).json({ success: false, error: { message: err.message } });
   }
