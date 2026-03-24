@@ -563,9 +563,13 @@ export default function CreativeAnalysis() {
   }, [data, currentWeekLabel]);
 
   const sortedCreatives = useMemo(() => {
-    return [...(data || [])].sort((a, b) => {
+    let filtered = [...(data || [])];
+    // For ROAS and velocity sorts, require minimum spend to avoid noise
+    if (creativeSort === 'roas') filtered = filtered.filter(c => c.total_spend >= 50);
+    if (creativeSort === 'velocity') filtered = filtered.filter(c => c.total_spend >= 20);
+    return filtered.sort((a, b) => {
       switch (creativeSort) {
-        case 'roas': return (a.total_spend >= 50 ? b.roas - a.roas : 1);
+        case 'roas': return b.roas - a.roas;
         case 'newest': return (b.first_seen || '').localeCompare(a.first_seen || '') || b.total_spend - a.total_spend;
         case 'velocity': return ((b.total_spend / (b.weeks_active || 1)) - (a.total_spend / (a.weeks_active || 1)));
         default: return b.total_spend - a.total_spend;
