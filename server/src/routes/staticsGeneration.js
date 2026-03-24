@@ -61,7 +61,7 @@ async function pollNanoBanana(taskId) {
     if (!res.ok) throw new Error(`NanoBanana status check failed: ${res.status}`);
 
     const data = await res.json();
-    const flag = data.successFlag ?? data.data?.successFlag;
+    const flag = Number(data.successFlag ?? data.data?.successFlag);
 
     if (flag === 1) {
       const imageUrl = data.resultImageUrl || data.data?.resultImageUrl;

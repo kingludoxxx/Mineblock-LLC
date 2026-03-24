@@ -12,6 +12,7 @@ import {
   ArrowRight,
   Check,
   AlertCircle,
+  AlertTriangle,
   RotateCcw,
 } from 'lucide-react';
 import api from '../../services/api';
@@ -317,7 +318,7 @@ export default function StaticsGeneration() {
       clearTimeout(stepTimer2);
       clearTimeout(stepTimer3);
 
-      setResult(response.data);
+      setResult(response.data?.data || response.data);
       setGenerationStep(0);
     } catch (err) {
       const message =
@@ -756,6 +757,18 @@ export default function StaticsGeneration() {
           {/* ---- Results State ---- */}
           {!generating && result && (
             <div className="space-y-6">
+              {/* No image warning */}
+              {!result.generated_image_url && (
+                <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-4 flex items-start gap-3">
+                  <AlertTriangle className="w-4 h-4 text-yellow-400 mt-0.5 shrink-0" />
+                  <div>
+                    <p className="text-sm text-yellow-300 font-medium">Image generation skipped</p>
+                    <p className="text-xs text-yellow-400/70 mt-1">
+                      {result._note || 'Provide a reference image via URL (not file upload) to enable image generation.'}
+                    </p>
+                  </div>
+                </div>
+              )}
               {/* Generated Image */}
               {result.generated_image_url && (
                 <div className="bg-[#111] border border-white/[0.06] rounded-lg p-5">
@@ -812,53 +825,53 @@ export default function StaticsGeneration() {
               )}
 
               {/* Adapted Copy Card */}
-              {result.adapted_copy && (
+              {result.adapted_text && (
                 <div className="bg-[#111] border border-white/[0.06] rounded-lg p-5">
                   <h3 className="text-sm font-medium text-white mb-4">Adapted Copy</h3>
                   <div className="space-y-4">
-                    {result.adapted_copy.headline && (
+                    {result.adapted_text.headline && (
                       <div>
                         <span className={labelClasses}>Headline</span>
-                        <p className="text-sm text-white">{result.adapted_copy.headline}</p>
+                        <p className="text-sm text-white">{result.adapted_text.headline}</p>
                       </div>
                     )}
-                    {result.adapted_copy.subheadline && (
+                    {result.adapted_text.subheadline && (
                       <div>
                         <span className={labelClasses}>Subheadline</span>
-                        <p className="text-sm text-slate-300">{result.adapted_copy.subheadline}</p>
+                        <p className="text-sm text-slate-300">{result.adapted_text.subheadline}</p>
                       </div>
                     )}
-                    {result.adapted_copy.body && (
+                    {result.adapted_text.body && (
                       <div>
                         <span className={labelClasses}>Body</span>
                         <p className="text-sm text-slate-300 whitespace-pre-line">
-                          {result.adapted_copy.body}
+                          {result.adapted_text.body}
                         </p>
                       </div>
                     )}
-                    {result.adapted_copy.cta && (
+                    {result.adapted_text.cta && (
                       <div>
                         <span className={labelClasses}>CTA</span>
                         <span className="inline-block px-3 py-1.5 text-sm rounded-lg bg-violet-600 text-white">
-                          {result.adapted_copy.cta}
+                          {result.adapted_text.cta}
                         </span>
                       </div>
                     )}
-                    {result.adapted_copy.badges && result.adapted_copy.badges.length > 0 && (
+                    {result.adapted_text.badges && result.adapted_text.badges.length > 0 && (
                       <div>
                         <span className={labelClasses}>Badges</span>
                         <div className="flex flex-wrap gap-1.5">
-                          {result.adapted_copy.badges.map((badge, i) => (
+                          {result.adapted_text.badges.map((badge, i) => (
                             <CopyBadge key={i} text={badge} />
                           ))}
                         </div>
                       </div>
                     )}
-                    {result.adapted_copy.bullets && result.adapted_copy.bullets.length > 0 && (
+                    {result.adapted_text.bullets && result.adapted_text.bullets.length > 0 && (
                       <div>
                         <span className={labelClasses}>Bullets</span>
                         <div className="flex flex-wrap gap-1.5">
-                          {result.adapted_copy.bullets.map((bullet, i) => (
+                          {result.adapted_text.bullets.map((bullet, i) => (
                             <CopyBadge key={i} text={bullet} />
                           ))}
                         </div>
@@ -869,7 +882,7 @@ export default function StaticsGeneration() {
               )}
 
               {/* Text Swaps Table */}
-              {result.text_swaps && result.text_swaps.length > 0 && (
+              {result.swap_pairs && result.swap_pairs.length > 0 && (
                 <div className="bg-[#111] border border-white/[0.06] rounded-lg p-5">
                   <h3 className="text-sm font-medium text-white mb-3">Text Swaps</h3>
                   <div className="overflow-x-auto">
@@ -886,7 +899,7 @@ export default function StaticsGeneration() {
                         </tr>
                       </thead>
                       <tbody>
-                        {result.text_swaps.map((swap, i) => (
+                        {result.swap_pairs.map((swap, i) => (
                           <tr key={i} className="border-b border-white/[0.03] last:border-0">
                             <td className="py-2.5 pr-4 text-slate-400">{swap.original}</td>
                             <td className="py-2.5 text-center">
