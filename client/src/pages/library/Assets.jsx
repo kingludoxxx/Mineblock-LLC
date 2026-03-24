@@ -850,6 +850,7 @@ export default function Assets() {
     try {
       setSaving(true);
       // Map camelCase frontend fields to snake_case backend columns
+      console.log('[ProductSave] form state:', JSON.stringify({ productCode: form.productCode, oneLiner: form.oneLiner, tagline: form.tagline }));
       const payload = {
         name: form.name,
         description: form.description,
@@ -877,16 +878,22 @@ export default function Assets() {
         scripts: form.scripts.filter((s) => s.title.trim() || s.content.trim()),
       };
 
+      console.log('[ProductSave] payload:', JSON.stringify({ product_code: payload.product_code, oneliner: payload.oneliner, tagline: payload.tagline }));
+
+      let resp;
       if (editingProduct) {
-        await api.put(`/product-profiles/${editingProduct.id ?? editingProduct._id}`, payload);
+        resp = await api.put(`/product-profiles/${editingProduct.id ?? editingProduct._id}`, payload);
       } else {
-        await api.post('/product-profiles', payload);
+        resp = await api.post('/product-profiles', payload);
       }
+
+      console.log('[ProductSave] response:', JSON.stringify({ product_code: resp.data?.data?.product_code, oneliner: resp.data?.data?.oneliner }));
 
       await fetchProducts();
       closeEditor();
     } catch (err) {
       console.error('Save failed:', err);
+      alert(`Save failed: ${err.response?.data?.error?.message || err.message}`);
     } finally {
       setSaving(false);
     }
