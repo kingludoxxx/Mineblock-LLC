@@ -5,6 +5,13 @@ const router = express.Router();
 const CLICKUP_TOKEN = 'pk_266421907_38TVGF16690R1U9EZOZLBK9BJ6J0YPRD';
 const VIDEO_ADS_LIST_ID = '901518716584';
 const CLICKUP_API = 'https://api.clickup.com/api/v2';
+const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN || '';
+
+// Editor Slack channels for Monday reports
+const EDITOR_SLACK_CHANNELS = {
+  Faiz: 'C0AFCJ4UN9L',
+  Antoni: 'C0AEZ6UQANT',
+};
 
 const headers = {
   Authorization: CLICKUP_TOKEN,
@@ -723,5 +730,150 @@ router.get('/weekly-recap/:editor', async (req, res) => {
     res.status(500).json({ success: false, error: { message: 'Failed to generate weekly recap.' } });
   }
 });
+
+// ── Monday Editor Report Scheduler ──────────────────────────────────
+// Runs every Monday at 10:03 CET — posts weekly recap to each editor's Slack channel
+
+async function sendEditorWeeklyReport(editorName) {
+  const editorId = USER_IDS[editorName];
+  const channel = EDITOR_SLACK_CHANNELS[editorName];
+  if (!editorId || !channel || !SLACK_BOT_TOKEN) return;
+
+  try {
+    // Get current week boundaries (Monday 00:00 → Sunday 23:59)
+    const now = new Date();
+    const dayOfWeek = now.getDay();
+    const mondayOffset = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
+    const weekStart = new Date(now);
+    weekStart.setDate(now.getDate() + mondayOffset);
+    weekStart.setHours(0, 0, 0, 0);
+    const weekEnd = new Date(weekStart);
+    weekEnd.setDate(weekStart.getDate() + 6);
+    weekEnd.setHours(23, 59, 59, 999);
+
+    // Fetch "ready to launch" tasks assigned to this editor
+    const readyTasks = [];
+    let page = 0;
+    let hasMore = true;
+    while (hasMore) {
+      const data = await clickupFetch(
+        `${CLICKUP_API}/list/${VIDEO_ADS_LIST_ID}/task?page=${page}&limit=100&statuses%5B%5D=ready%20to%20launch&include_closed=false&subtasks=true`,
+      );
+      const tasks = data.tasks || [];
+      for (const task of tasks) {
+        if ((task.assignees || []).some((a) => a.id === editorId)) {
+          readyTasks.push({ name: task.name, url: task.url || `https://app.clickup.com/t/${task.id}` });
+        }
+      }
+      hasMore = tasks.length === 100;
+      page++;
+    }
+
+    // Fetch "launched" tasks this week
+    const launchedTasks = [];
+    page = 0;
+    hasMore = true;
+    while (hasMore) {
+      const data = await clickupFetch(
+        `${CLICKUP_API}/list/${VIDEO_ADS_LIST_ID}/task?page=${page}&limit=100&statuses%5B%5D=launched&include_closed=false&subtasks=true&date_updated_gt=${weekStart.getTime()}&date_updated_lt=${weekEnd.getTime()}`,
+      );
+      const tasks = data.tasks || [];
+      for (const task of tasks) {
+        if ((task.assignees || []).some((a) => a.id === editorId)) {
+          launchedTasks.push({ name: task.name, url: task.url || `https://app.clickup.com/t/${task.id}` });
+        }
+      }
+      hasMore = tasks.length === 100;
+      page++;
+    }
+
+    const { weekNum, year } = getISOWeekNumber();
+    const weekLabel = `WK${String(weekNum).padStart(2, '0')} ${year}`;
+
+    const lines = [
+      `📊 *Weekly Report — ${editorName}* (${weekLabel})`,
+      `📅 ${now.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}`,
+      '',
+      `🚀 *Ready to Launch: ${readyTasks.length}*`,
+    ];
+    if (readyTasks.length > 0) {
+      for (const t of readyTasks) lines.push(`    • <${t.url}|${t.name}>`);
+    } else {
+      lines.push('    _No cards ready to launch_');
+    }
+    lines.push('');
+    lines.push(`✅ *Launched this week: ${launchedTasks.length}*`);
+    if (launchedTasks.length > 0) {
+      for (const t of launchedTasks) lines.push(`    • <${t.url}|${t.name}>`);
+    }
+
+    // Post to Slack
+    await fetch('https://slack.com/api/conversations.join', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${SLACK_BOT_TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channel }),
+    }).catch(() => {});
+
+    const resp = await fetch('https://slack.com/api/chat.postMessage', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${SLACK_BOT_TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        channel,
+        text: `Weekly Report for ${editorName} (${weekLabel})`,
+        blocks: [
+          { type: 'section', text: { type: 'mrkdwn', text: lines.join('\n') } },
+        ],
+        username: 'Mineblock Bot',
+        icon_url: 'https://i.imgur.com/PJCRE4g.png',
+      }),
+    });
+
+    const result = await resp.json();
+    if (!result.ok) {
+      console.error(`[EditorReport] Slack error for ${editorName}:`, result.error);
+    } else {
+      console.log(`[EditorReport] Sent weekly report for ${editorName} to ${channel}`);
+    }
+  } catch (err) {
+    console.error(`[EditorReport] Error for ${editorName}:`, err.message);
+  }
+}
+
+function scheduleMondayEditorReports() {
+  const checkInterval = 30_000;
+  let lastSentDate = null;
+
+  setInterval(() => {
+    const now = new Date();
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Europe/Berlin', year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', hour12: false,
+    }).formatToParts(now);
+    const get = (type) => parts.find(p => p.type === type)?.value;
+    const hour = parseInt(get('hour'));
+    const minute = parseInt(get('minute'));
+    const berlinDate = `${get('year')}-${get('month')}-${get('day')}`;
+
+    // Check if it's Monday (day of week in Berlin timezone)
+    const berlinDay = new Intl.DateTimeFormat('en-US', { timeZone: 'Europe/Berlin', weekday: 'long' }).format(now);
+    const isMonday = berlinDay === 'Monday';
+
+    // Fire at 10:03 CET on Mondays
+    if (isMonday && hour === 10 && minute >= 3 && minute < 5 && lastSentDate !== berlinDate) {
+      lastSentDate = berlinDate;
+      console.log(`[EditorReport] Triggering Monday reports for ${berlinDate}`);
+      for (const editorName of Object.keys(EDITOR_SLACK_CHANNELS)) {
+        sendEditorWeeklyReport(editorName).catch(err =>
+          console.error(`[EditorReport] Failed for ${editorName}:`, err.message)
+        );
+      }
+    }
+  }, checkInterval);
+
+  console.log('[EditorReport] Monday scheduler active — will fire at 10:03 CET every Monday');
+}
+
+// Start the scheduler
+scheduleMondayEditorReports();
 
 export default router;
