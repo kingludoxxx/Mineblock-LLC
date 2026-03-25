@@ -11,6 +11,7 @@ const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN || '';
 const EDITOR_SLACK_CHANNELS = {
   Faiz: 'C0AFCJ4UN9L',
   Antoni: 'C0AEZ6UQANT',
+  Uly: 'C0ANNMMPUCC',
 };
 
 const headers = {
@@ -100,6 +101,7 @@ const USER_IDS = {
   Ludovico: 266421907,
   Antoni: 94595626,
   Faiz: 170558610,
+  Uly: 106674594,
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────
