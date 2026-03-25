@@ -359,7 +359,7 @@ router.post('/copies/:id/classify', async (req, res) => {
     try { classification = JSON.parse(jsonMatch[0]); } catch (e) { throw new Error('Failed to parse classification JSON'); }
 
     const updated = await pgQuery(
-      'UPDATE advertorial_copies SET archetype = $1, secondary_archetype = $2, metadata = metadata || $3, updated_at = NOW() WHERE id = $4 RETURNING *',
+      'UPDATE advertorial_copies SET archetype = $1, secondary_archetype = $2, metadata = COALESCE(metadata, \'{}\'::jsonb) || $3::jsonb, updated_at = NOW() WHERE id = $4 RETURNING *',
       [classification.primary_archetype, classification.secondary_archetype, JSON.stringify({ classification }), req.params.id]
     );
 
