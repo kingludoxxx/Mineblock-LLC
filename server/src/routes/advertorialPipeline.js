@@ -193,7 +193,7 @@ router.post('/copies/:id/ai-edit', async (req, res) => {
       model: 'claude-sonnet-4-20250514',
       max_tokens: 16384,
       system: buildCopySystemPrompt(),
-      messages: [{ role: 'user', content: buildInlineEditPrompt(copy.ad_copy, instruction, copy) }],
+      messages: [{ role: 'user', content: buildInlineEditPrompt(copy.ad_copy, instruction, copy.ad_copy) }],
     });
 
     const editedCopy = response.content?.[0]?.text?.match(/<adcopy>([\s\S]*?)<\/adcopy>/)?.[1]?.trim() || response.content?.[0]?.text || copy.ad_copy;
@@ -228,7 +228,8 @@ router.post('/copies/:id/classify', async (req, res) => {
     const jsonMatch = text.match(/\{[\s\S]*\}/);
     if (!jsonMatch) throw new Error('Could not parse classification JSON');
 
-    const classification = JSON.parse(jsonMatch[0]);
+    let classification;
+    try { classification = JSON.parse(jsonMatch[0]); } catch (e) { throw new Error('Failed to parse classification JSON'); }
 
     const updated = await pgQuery(
       'UPDATE advertorial_copies SET archetype = $1, secondary_archetype = $2, metadata = metadata || $3, updated_at = NOW() WHERE id = $4 RETURNING *',
@@ -259,7 +260,8 @@ router.post('/copies/:id/generate-images', async (req, res) => {
         messages: [{ role: 'user', content: buildClassificationPrompt(copy.ad_copy) }],
       });
       const classText = classifyRes.content?.[0]?.text || '';
-      const classJson = JSON.parse(classText.match(/\{[\s\S]*\}/)?.[0] || '{}');
+      let classJson = {};
+      try { classJson = JSON.parse(classText.match(/\{[\s\S]*\}/)?.[0] || '{}'); } catch {}
       archetype = classJson.primary_archetype || 'MIRROR';
       await pgQuery('UPDATE advertorial_copies SET archetype = $1, updated_at = NOW() WHERE id = $2', [archetype, copy.id]);
     }
@@ -273,7 +275,8 @@ router.post('/copies/:id/generate-images', async (req, res) => {
       messages: [{ role: 'user', content: buildConceptPrompt(archetype, copy.ad_copy) }],
     });
     const conceptText = conceptRes.content?.[0]?.text || '';
-    const conceptsJson = JSON.parse(conceptText.match(/\[[\s\S]*\]/)?.[0] || '[]');
+    let conceptsJson = [];
+    try { conceptsJson = JSON.parse(conceptText.match(/\[[\s\S]*\]/)?.[0] || '[]'); } catch {}
 
     // Build Gemini prompts from concepts
     const geminiPrompts = conceptsJson.slice(0, count_ai).map(concept => {

@@ -62,7 +62,7 @@ function copyToClipboard(text) {
 // ---------------------------------------------------------------------------
 
 const STANDARD_CREATIVE_STATUSES = ['review', 'approved', 'queued', 'launched'];
-const ADVERTORIAL_STATUSES = ['draft', 'copy_review', 'images_pending', 'images_review', 'ready', 'launched'];
+const ADVERTORIAL_STATUSES = ['draft', 'copy_review', 'copy_approved', 'images_pending', 'images_review', 'ready', 'queued', 'launched', 'archived'];
 
 const STATUS_COLORS = {
   review: { bg: 'bg-amber-500/10', text: 'text-amber-300', border: 'border-amber-500/20' },
@@ -712,10 +712,9 @@ export default function StaticsGeneration() {
       const res = await api.post('/advertorial/copies/generate', {
         source_copy: advSourceCopy,
         product_id: advSelectedProductId || undefined,
-        product_name: advProductName,
         angle: advAngle || undefined,
       });
-      const newCopies = res.data?.data || res.data || [];
+      const newCopies = res.data?.data?.copies || res.data?.copies || [];
       setAdvCopies((prev) => [...newCopies, ...prev]);
     } catch (err) {
       setAdvError(
@@ -756,10 +755,10 @@ export default function StaticsGeneration() {
     setAdvGeneratingImagesFor(id);
     try {
       const res = await api.post(`/advertorial/copies/${id}/generate-images`);
-      const images = res.data?.data?.images || res.data?.images || [];
+      const creatives = res.data?.data?.creatives || res.data?.creatives || [];
       setAdvCopies((prev) =>
         prev.map((c) =>
-          c.id === id ? { ...c, images, status: 'images_review' } : c,
+          c.id === id ? { ...c, images: creatives, status: 'images_review' } : c,
         ),
       );
     } catch {
