@@ -400,4 +400,71 @@ Generate exactly 10 hooks.`;
   }
 });
 
+// ── POST /generate-brief-hooks — Auto-generate 5 hook variations with angles ─
+router.post('/generate-brief-hooks', authenticate, async (req, res) => {
+  try {
+    const { script, aggressiveness = 5, analysis } = req.body;
+    if (!script) return res.status(400).json({ success: false, error: 'Source script is required' });
+
+    // Extract the body (everything after HOOKS: section ends, or after BODY: marker)
+    const bodyMatch = script.match(/\bBODY:\s*/i);
+    const hooksMatch = script.match(/\bHOOKS?:\s*/i);
+    let body = script;
+    if (bodyMatch) {
+      body = script.slice(bodyMatch.index + bodyMatch[0].length).trim();
+    } else if (hooksMatch) {
+      // If there's a HOOKS section but no BODY marker, skip past hooks to body
+      const lines = script.slice(hooksMatch.index).split('\n');
+      const bodyStart = lines.findIndex((l, i) => i > 0 && !l.trim().startsWith('-') && !l.trim().startsWith('•') && l.trim().length > 30);
+      if (bodyStart > 0) body = lines.slice(bodyStart).join('\n').trim();
+    }
+
+    const analysisContext = analysis ? `
+Winner Analysis Context:
+- Hook mechanism: ${analysis.hookMechanism || 'Unknown'}
+- Core angle: ${analysis.coreAngle || 'Unknown'}
+- Emotional trigger: ${analysis.emotionalTrigger || 'Unknown'}
+- Narrative structure: ${analysis.narrativeStructure || 'Unknown'}
+` : '';
+
+    const prompt = `You are a world-class direct response hook writer specializing in scroll-stopping ad openings.
+
+Your task: Generate exactly 5 hooks for this ad body. Each hook uses a DIFFERENT angle/style.
+
+ANGLES TO USE (one per hook):
+1. SHOCK — Pattern interrupt. Something unexpected, counterintuitive, or hard to believe.
+2. CURIOSITY — Open a loop the viewer MUST close. Tease without revealing.
+3. AUTHORITY — Lead with credibility, proof, or expert framing.
+4. CONTRARIAN — Challenge conventional wisdom. "Everyone says X, but actually..."
+5. SOCIAL PROOF — Lead with results, testimonials, or "people are doing X."
+
+Rules:
+- Hooks are the first 1-2 sentences of the ad. They must flow naturally into the body below.
+- DO NOT introduce claims the body doesn't support.
+- Each hook must be materially different in tone and approach.
+- Match the aggressiveness level in language intensity.
+- Hooks should be conversational, NOT formal or corporate.
+${analysisContext}
+Ad Body:
+${body.slice(0, 5000)}
+
+Aggressiveness: ${aggressiveness}/10 (1=soft conversational, 5=balanced direct response, 10=extremely aggressive/urgent)
+
+Return ONLY a valid JSON array. Each object:
+- "id": number (1-5)
+- "angle": string (exactly one of: "Shock", "Curiosity", "Authority", "Contrarian", "Social Proof")
+- "text": string (the hook text — 1-2 sentences max)
+- "strength": number (1-10, predicted scroll-stop strength)
+- "rationale": string (1 sentence explaining why this hook works for this body)
+- "scrollStopProbability": string ("Weak" or "Moderate" or "Strong")
+
+Generate exactly 5 hooks.`;
+
+    await streamJSONArray(res, prompt, 2048, { fast: true });
+  } catch (err) {
+    console.error('[IterationKing] Generate brief hooks error:', err.message);
+    if (!res.headersSent) res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 export default router;

@@ -313,7 +313,7 @@ export default function IterationKing() {
   const [moveSuccess, setMoveSuccess] = useState(false);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState(null);
-  const [generationMode, setGenerationMode] = useState('iterate');
+  const [generationMode, setGenerationMode] = useState('quick-hooks');
   const [analysisCollapsed, setAnalysisCollapsed] = useState(false);
   const searchTimer = useRef(null);
   const scriptAbortRef = useRef(null);
@@ -335,7 +335,7 @@ export default function IterationKing() {
   shortcutRef.current = (e) => {
     // Skip when focused on input/textarea
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
-    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); if (originalScript && !scriptsLoading) handleGenerateScripts(); }
+    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); if (originalScript && !scriptsLoading && !hooksLoading) { generationMode === 'quick-hooks' ? handleGenerateQuickHooks() : handleGenerateScripts(); } }
     if ((e.metaKey || e.ctrlKey) && e.key === 'h') { e.preventDefault(); if (selectedScriptIdx !== null && !hooksLoading && generationMode === 'iterate') handleGenerateHooks(); }
     if ((e.metaKey || e.ctrlKey) && e.key === 'b') { e.preventDefault(); handleMoveToBriefAgent(); }
   };
@@ -452,16 +452,67 @@ export default function IterationKing() {
     }
   };
 
+  // Generate quick hooks directly from source brief (5 hooks, 5 angles)
+  const handleGenerateQuickHooks = async () => {
+    if (!originalScript) return;
+    if (hookAbortRef.current) hookAbortRef.current.abort();
+    const controller = new AbortController();
+    hookAbortRef.current = controller;
+    setHooksLoading(true); setHooks([]); setSelectedHookIdxs(new Set()); setFinalScript(''); setError(null);
+    try {
+      await consumeSSEStream(`${API}/generate-brief-hooks`, { script: originalScript, aggressiveness, analysis }, {
+        onItem: (item) => {
+          const h = {
+            id: item.id || 0,
+            text: item.text || '',
+            angle: item.angle || 'Unknown',
+            strength: typeof item.strength === 'number' ? item.strength : parseFloat(item.strength) || 5,
+            rationale: item.rationale || '',
+            scrollStopProbability: ['Weak', 'Moderate', 'Strong'].includes(item.scrollStopProbability) ? item.scrollStopProbability : 'Moderate',
+          };
+          setHooks((prev) => [...prev, h]);
+        },
+        onError: (err) => setError(err),
+        onDone: () => setHooksLoading(false),
+        signal: controller.signal,
+      });
+    } catch (e) {
+      if (e.name !== 'AbortError') setError(e.message || 'Failed to generate hooks');
+    } finally {
+      if (hookAbortRef.current === controller) setHooksLoading(false);
+    }
+  };
+
   const toggleHook = (idx) => { setSelectedHookIdxs((prev) => { const n = new Set(prev); if (n.has(idx)) n.delete(idx); else n.add(idx); return n; }); };
 
   // Build final script
   useEffect(() => {
     if (generationMode === 'full') return;
+    if (generationMode === 'quick-hooks') {
+      if (selectedHookIdxs.size === 0) { setFinalScript(''); return; }
+      const selectedHooks = [...selectedHookIdxs].sort().map((i) => hooks[i]).filter(Boolean);
+      // Extract body from original script
+      const bodyMatch = originalScript.match(/\bBODY:\s*/i);
+      const hooksMatch = originalScript.match(/\bHOOKS?:\s*/i);
+      let body = originalScript;
+      if (bodyMatch) body = originalScript.slice(bodyMatch.index + bodyMatch[0].length).trim();
+      else if (hooksMatch) {
+        const lines = originalScript.slice(hooksMatch.index).split('\n');
+        const bodyStart = lines.findIndex((l, i) => i > 0 && !l.trim().startsWith('-') && !l.trim().startsWith('•') && l.trim().length > 30);
+        if (bodyStart > 0) body = lines.slice(bodyStart).join('\n').trim();
+      }
+      setFinalScript([
+        '--- Hooks ---', '',
+        ...selectedHooks.map((h, i) => `Hook ${i + 1} [${h.angle}]:\n${h.text}`),
+        '', '--- Body ---', '', body
+      ].join('\n'));
+      return;
+    }
     if (selectedHookIdxs.size === 0 || selectedScriptIdx === null) { setFinalScript(''); return; }
     const h = [...selectedHookIdxs].sort().map((i) => hooks[i]?.text).filter(Boolean);
     const body = scripts[selectedScriptIdx]?.text || '';
     setFinalScript(['--- Hooks ---', '', ...h.map((t, i) => `Hook ${i + 1}:\n${t}`), '', '--- Body ---', '', body].join('\n'));
-  }, [selectedHookIdxs, selectedScriptIdx, hooks, scripts, generationMode]);
+  }, [selectedHookIdxs, selectedScriptIdx, hooks, scripts, generationMode, originalScript]);
 
   useEffect(() => {
     if (generationMode === 'full' && selectedScriptIdx !== null) setFinalScript(scripts[selectedScriptIdx]?.text || '');
@@ -509,27 +560,35 @@ export default function IterationKing() {
     setSearchQuery(''); setSearchResults([]); setSelectedBrief(null); setOriginalScript(''); setAnalysis(null);
     setScripts([]); setSelectedScriptIdx(null); setHooks([]); setSelectedHookIdxs(new Set());
     setFinalScript(''); setMoveSuccess(false); setError(null); setCopied(false);
-    setAggressiveness(5); setSimilarity(5); setGenerationMode('iterate'); setAnalysisCollapsed(false);
+    setAggressiveness(5); setSimilarity(5); setGenerationMode('quick-hooks'); setAnalysisCollapsed(false);
     setBriefLoading(false); setAnalysisLoading(false); setScriptsLoading(false); setHooksLoading(false);
     // Session cleared on reset
   };
 
-  const pipelineSteps = isFullMode
-    ? ['Source Brief', 'Controls', 'Full Scripts', 'Final Assembly']
-    : ['Source Brief', 'Controls', 'Script Variations', 'Hook Generator', 'Final Assembly'];
+  const isQuickHooks = generationMode === 'quick-hooks';
+
+  const pipelineSteps = isQuickHooks
+    ? ['Source Brief', 'Controls', '5 Hook Variations', 'Final Assembly']
+    : isFullMode
+      ? ['Source Brief', 'Controls', 'Full Scripts', 'Final Assembly']
+      : ['Source Brief', 'Controls', 'Script Variations', 'Hook Generator', 'Final Assembly'];
 
   const getStepState = (step) => {
     switch (step) {
       case 'Source Brief': return { active: !selectedBrief, done: !!selectedBrief };
-      case 'Controls': return { active: !!selectedBrief && scripts.length === 0, done: scripts.length > 0 };
+      case 'Controls': return { active: !!selectedBrief && scripts.length === 0 && hooks.length === 0, done: isQuickHooks ? hooks.length > 0 : scripts.length > 0 };
+      case '5 Hook Variations': return { active: hooks.length > 0 && selectedHookIdxs.size === 0, done: selectedHookIdxs.size > 0 };
       case 'Script Variations': case 'Full Scripts': return { active: scripts.length > 0 && selectedScriptIdx === null, done: selectedScriptIdx !== null };
       case 'Hook Generator': return { active: selectedScriptIdx !== null && selectedHookIdxs.size === 0 && hooks.length === 0, done: selectedHookIdxs.size > 0 };
-      case 'Final Assembly': { const o = isFullMode ? selectedScriptIdx !== null : selectedHookIdxs.size > 0; return { active: o && !moveSuccess, done: moveSuccess }; }
+      case 'Final Assembly': {
+        const o = isQuickHooks ? selectedHookIdxs.size > 0 : isFullMode ? selectedScriptIdx !== null : selectedHookIdxs.size > 0;
+        return { active: o && !moveSuccess, done: moveSuccess };
+      }
       default: return { active: false, done: false };
     }
   };
 
-  const showFinalAssembly = isFullMode ? selectedScriptIdx !== null : (finalScript && selectedHookIdxs.size > 0);
+  const showFinalAssembly = isQuickHooks ? (finalScript && selectedHookIdxs.size > 0) : isFullMode ? selectedScriptIdx !== null : (finalScript && selectedHookIdxs.size > 0);
 
   return (
     <div className="p-6 pb-24 space-y-0" style={{ background: '#0A0A0A' }}>
@@ -697,22 +756,24 @@ export default function IterationKing() {
 
                 <div className="pt-4" style={{ borderTop: '1px solid #1E1E1E' }}>
                   <span className="text-[10px] uppercase tracking-wider font-semibold" style={{ color: '#444' }}>Generation Mode</span>
-                  <div className="flex gap-2 mt-2.5">
-                    {[{ key: 'iterate', label: 'Script Body' }, { key: 'full', label: 'Full Ad Script' }].map((m) => (
-                      <button key={m.key} onClick={() => setGenerationMode(m.key)}
-                        className={`flex-1 px-3 py-2.5 rounded-lg text-xs font-semibold transition-all ${generationMode === m.key ? 'ik-mode-active' : 'ik-mode-inactive'}`}>
+                  <div className="flex gap-1 mt-2.5">
+                    {[{ key: 'quick-hooks', label: '5 Hooks' }, { key: 'iterate', label: 'Script Body' }, { key: 'full', label: 'Full Script' }].map((m) => (
+                      <button key={m.key} onClick={() => { setGenerationMode(m.key); setScripts([]); setHooks([]); setSelectedScriptIdx(null); setSelectedHookIdxs(new Set()); setFinalScript(''); }}
+                        className={`flex-1 px-2 py-2.5 rounded-lg text-xs font-semibold transition-all ${generationMode === m.key ? 'ik-mode-active' : 'ik-mode-inactive'}`}>
                         {m.label}
                       </button>
                     ))}
                   </div>
                 </div>
 
-                <button onClick={handleGenerateScripts} disabled={!originalScript || scriptsLoading}
-                  className={`ik-btn-primary w-full ${scriptsLoading ? 'ik-generating' : ''}`}>
-                  {scriptsLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}
-                  {isFullMode ? 'Generate Full Ad Scripts' : 'Generate Script Variations'}
+                <button
+                  onClick={isQuickHooks ? handleGenerateQuickHooks : handleGenerateScripts}
+                  disabled={!originalScript || scriptsLoading || hooksLoading}
+                  className={`ik-btn-primary w-full ${(scriptsLoading || hooksLoading) ? 'ik-generating' : ''}`}>
+                  {(scriptsLoading || hooksLoading) ? <Loader2 className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}
+                  {isQuickHooks ? 'Generate 5 Hook Variations' : isFullMode ? 'Generate Full Ad Scripts' : 'Generate Script Variations'}
                 </button>
-                {scriptsLoading && <AnimatedStatus steps={SCRIPT_STEPS} />}
+                {(scriptsLoading || (isQuickHooks && hooksLoading)) && <AnimatedStatus steps={isQuickHooks ? ['Analyzing winning body...', 'Crafting 5 unique angles...', 'Optimizing hooks...'] : SCRIPT_STEPS} />}
               </div>
             </div>
           )}
@@ -727,6 +788,86 @@ export default function IterationKing() {
         {/* RIGHT PANEL                                           */}
         {/* ═══════════════════════════════════════════════════════ */}
         <div className="lg:col-span-8 space-y-8">
+
+          {/* ── QUICK HOOKS RESULTS ────────────────────────────── */}
+          {isQuickHooks && hooksLoading && hooks.length === 0 && (
+            <div>
+              <div className="flex items-center gap-2 mb-5">
+                <Zap className="w-4 h-4" style={{ color: '#00FF88' }} />
+                <span className="text-xs font-semibold uppercase tracking-wider" style={{ color: '#9CA3AF' }}>Generating 5 Hook Variations...</span>
+              </div>
+              <div className="grid grid-cols-1 gap-4">
+                {Array.from({ length: 5 }, (_, i) => (
+                  <div key={i} className="rounded-xl p-5 ik-skeleton-card" style={{ background: '#111111', border: '1px solid #1E1E1E', animationDelay: `${i * 100}ms` }}>
+                    <div className="h-3 w-24 rounded ik-skeleton-line mb-3" />
+                    <div className="h-3 w-full rounded ik-skeleton-line mb-2" />
+                    <div className="h-3 w-3/4 rounded ik-skeleton-line" />
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {isQuickHooks && hooks.length > 0 && (
+            <div>
+              <div className="flex items-center justify-between mb-5">
+                <div className="flex items-center gap-2">
+                  <Zap className="w-4 h-4" style={{ color: '#00FF88' }} />
+                  <span className="text-xs font-semibold uppercase tracking-wider" style={{ color: '#9CA3AF' }}>
+                    Hook Variations ({hooks.length})
+                  </span>
+                </div>
+                {selectedHookIdxs.size > 0 && (
+                  <span className="text-xs font-semibold" style={{ color: '#00FF88' }}>{selectedHookIdxs.size} hook{selectedHookIdxs.size > 1 ? 's' : ''} selected</span>
+                )}
+              </div>
+              <div className="grid grid-cols-1 gap-4">
+                {hooks.map((hook, idx) => {
+                  const isSelected = selectedHookIdxs.has(idx);
+                  const angleColors = { 'Shock': '#EF4444', 'Curiosity': '#00FF88', 'Authority': '#3B82F6', 'Contrarian': '#FBBF24', 'Social Proof': '#10B981' };
+                  const color = angleColors[hook.angle] || '#6B7280';
+                  const sspColor = hook.scrollStopProbability === 'Strong' ? '#00FF88' : hook.scrollStopProbability === 'Moderate' ? '#FBBF24' : '#EF4444';
+                  return (
+                    <div
+                      key={idx}
+                      onClick={() => toggleHook(idx)}
+                      className="rounded-xl p-5 cursor-pointer transition-all"
+                      style={{
+                        background: isSelected ? '#111' : '#0F0F0F',
+                        border: isSelected ? `1px solid ${color}55` : '1px solid #1E1E1E',
+                        boxShadow: isSelected ? `0 0 20px ${color}15` : 'none',
+                        animation: `slideUp 0.4s ease-out ${idx * 80}ms both`,
+                      }}
+                    >
+                      <div className="flex items-center justify-between mb-3">
+                        <div className="flex items-center gap-2">
+                          <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded"
+                            style={{ background: `${color}15`, color, border: `1px solid ${color}30` }}>
+                            {hook.angle}
+                          </span>
+                          <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded"
+                            style={{ background: `${sspColor}15`, color: sspColor }}>
+                            {hook.scrollStopProbability}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-[10px]" style={{ color: '#666' }}>Strength</span>
+                          <span className="text-sm font-bold" style={{ color: hook.strength >= 7 ? '#00FF88' : hook.strength >= 5 ? '#FBBF24' : '#EF4444' }}>
+                            {hook.strength}/10
+                          </span>
+                          {isSelected && <div className="w-2 h-2 rounded-full" style={{ background: '#00FF88' }} />}
+                        </div>
+                      </div>
+                      <p className="text-sm text-white leading-relaxed mb-2">{hook.text}</p>
+                      {hook.rationale && (
+                        <p className="text-[11px] italic" style={{ color: '#666' }}>{hook.rationale}</p>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
           {/* Script Skeleton Loaders */}
           {scriptsLoading && scripts.length === 0 && (
