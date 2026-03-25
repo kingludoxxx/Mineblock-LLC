@@ -414,7 +414,7 @@ export default function IterationKing() {
         signal: controller.signal,
       });
     } catch (e) {
-      if (e.name !== 'AbortError') setError(e.message || 'Failed to generate scripts');
+      if (e.name !== 'AbortError' && e.message !== 'terminated' && e.message !== 'The operation was aborted' && !controller.signal.aborted) setError(e.message || 'Failed to generate scripts');
     } finally {
       if (scriptAbortRef.current === controller) setScriptsLoading(false);
     }
@@ -446,7 +446,7 @@ export default function IterationKing() {
         signal: controller.signal,
       });
     } catch (e) {
-      if (e.name !== 'AbortError') setError(e.message || 'Failed to generate hooks');
+      if (e.name !== 'AbortError' && e.message !== 'terminated' && e.message !== 'The operation was aborted' && !controller.signal.aborted) setError(e.message || 'Failed to generate hooks');
     } finally {
       if (hookAbortRef.current === controller) setHooksLoading(false);
     }
@@ -477,7 +477,7 @@ export default function IterationKing() {
         signal: controller.signal,
       });
     } catch (e) {
-      if (e.name !== 'AbortError') setError(e.message || 'Failed to generate hooks');
+      if (e.name !== 'AbortError' && e.message !== 'terminated' && e.message !== 'The operation was aborted' && !controller.signal.aborted) setError(e.message || 'Failed to generate hooks');
     } finally {
       if (hookAbortRef.current === controller) setHooksLoading(false);
     }
