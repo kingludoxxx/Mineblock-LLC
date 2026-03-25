@@ -20,6 +20,7 @@ import {
   Calendar,
   Play,
   Sparkles,
+  AlertTriangle,
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -572,6 +573,7 @@ export default function CreativeAnalysis() {
       ...c,
       spend: c.total_spend ?? c.spend ?? 0,
       revenue: c.total_revenue ?? c.revenue ?? 0,
+      purchases: c.total_purchases ?? c.purchases ?? 0,
       ad_name: c.ad_name || c.hooks?.reduce((best, h) => (h.spend > (best?.spend ?? -1) ? h : best), null)?.ad_name || c.creative_id,
     }));
     // For ROAS and velocity sorts, require minimum spend to avoid noise
@@ -1073,6 +1075,10 @@ export default function CreativeAnalysis() {
                         <span className={creative.roas >= 1.5 ? 'text-emerald-400 font-semibold' : creative.roas >= 1.0 ? 'text-yellow-400' : 'text-red-400'}>{fmtRoas(creative.roas)}</span>
                       </div>
                       <div className="flex justify-between">
+                        <span className="text-gray-500">Purchases</span>
+                        <span className="text-white font-medium">{creative.purchases ?? creative.total_purchases ?? 0}</span>
+                      </div>
+                      <div className="flex justify-between">
                         <span className="text-gray-500">CPA</span>
                         <span className="text-gray-300">{fmtMoney(creative.cpa)}</span>
                       </div>
@@ -1181,6 +1187,10 @@ export default function CreativeAnalysis() {
                       <div className="flex justify-between">
                         <span className="text-gray-500">ROAS</span>
                         <span className={creative.roas >= 1.5 ? 'text-emerald-400 font-semibold' : creative.roas >= 1.0 ? 'text-yellow-400' : 'text-red-400'}>{fmtRoas(creative.roas)}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-gray-500">Purchases</span>
+                        <span className="text-white font-medium">{creative.purchases ?? creative.total_purchases ?? 0}</span>
                       </div>
                       <div className="flex justify-between">
                         <span className="text-gray-500">CPA</span>
@@ -1654,19 +1664,40 @@ export default function CreativeAnalysis() {
             </button>
             <div className="bg-[#111] rounded-xl overflow-hidden">
               {videoModal.video_url ? (
-                <iframe
-                  src={videoModal.video_url}
-                  className="w-full border-0"
-                  style={{ height: '80vh' }}
-                  allow="autoplay; fullscreen"
-                  allowFullScreen
-                />
-              ) : videoModal.thumbnail_url ? (
-                <img src={videoModal.thumbnail_url} alt="" className="w-full max-h-[80vh] object-contain" onError={(e) => { e.target.src = ''; e.target.className = 'hidden'; }} />
+                videoModal.video_url.endsWith('.mp4') || videoModal.video_url.includes('.mp4') ? (
+                  <video
+                    src={videoModal.video_url}
+                    className="w-full max-h-[80vh]"
+                    controls
+                    autoPlay
+                    onError={(e) => { e.target.style.display = 'none'; e.target.nextSibling && (e.target.nextSibling.style.display = 'flex'); }}
+                  />
+                ) : (
+                  <iframe
+                    src={videoModal.video_url}
+                    className="w-full border-0"
+                    style={{ height: '80vh' }}
+                    allow="autoplay; fullscreen"
+                    allowFullScreen
+                  />
+                )
               ) : null}
+              {videoModal.thumbnail_url && !videoModal.video_url ? (
+                <img
+                  src={videoModal.thumbnail_url}
+                  alt=""
+                  className="w-full max-h-[80vh] object-contain"
+                  onError={(e) => { e.target.style.display = 'none'; e.target.nextSibling && (e.target.nextSibling.style.display = 'flex'); }}
+                />
+              ) : null}
+              <div className="hidden items-center justify-center py-16 text-gray-500 text-sm flex-col gap-2">
+                <AlertTriangle className="w-8 h-8 text-yellow-500/60" />
+                <p>Preview expired or unavailable</p>
+                <p className="text-xs text-gray-600">Meta preview URLs expire periodically. Try syncing thumbnails.</p>
+              </div>
               {videoModal.ad_name && (
                 <div className="p-3 border-t border-white/10">
-                  <p className="text-white text-sm truncate">{videoModal.ad_name}</p>
+                  <p className="text-white text-sm">{videoModal.ad_name}</p>
                 </div>
               )}
             </div>
