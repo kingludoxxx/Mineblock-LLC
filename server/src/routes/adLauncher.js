@@ -5,9 +5,47 @@ import crypto from 'crypto';
 
 const router = Router();
 
+let tablesReady = false;
+async function ensureTables() {
+  if (tablesReady) return;
+  await pgQuery(`
+    CREATE TABLE IF NOT EXISTS ad_batches (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      product_id INTEGER NOT NULL,
+      pipeline TEXT NOT NULL DEFAULT 'standard',
+      name TEXT,
+      angle TEXT,
+      batch_size INTEGER DEFAULT 6,
+      status TEXT DEFAULT 'assembling',
+      meta_campaign_id TEXT,
+      meta_adset_id TEXT,
+      launch_config JSONB DEFAULT '{}',
+      launched_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+  await pgQuery(`
+    CREATE TABLE IF NOT EXISTS ad_launches (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      batch_id UUID,
+      creative_id UUID,
+      copy_id UUID,
+      meta_ad_id TEXT,
+      meta_creative_id TEXT,
+      status TEXT DEFAULT 'pending',
+      error_message TEXT,
+      launched_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+  tablesReady = true;
+}
+
 // POST /batches — Create batch from approved creatives
 router.post('/batches', async (req, res) => {
   try {
+    await ensureTables();
     const { product_id, pipeline, creative_ids, angle, name } = req.body;
     if (!product_id || !pipeline || !creative_ids?.length) {
       return res.status(400).json({ success: false, error: { message: 'product_id, pipeline, and creative_ids are required' } });
@@ -46,6 +84,7 @@ router.post('/batches', async (req, res) => {
 // GET /batches — List batches
 router.get('/batches', async (req, res) => {
   try {
+    await ensureTables();
     const { product_id, status, pipeline } = req.query;
     let query = 'SELECT b.*, COUNT(c.id) as creative_count FROM ad_batches b LEFT JOIN spy_creatives c ON c.batch_id = b.id WHERE 1=1';
     const params = [];

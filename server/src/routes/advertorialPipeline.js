@@ -17,9 +17,135 @@ import crypto from 'crypto';
 const router = Router();
 const anthropic = new Anthropic();
 
+// ── Ensure tables exist ──────────────────────────────────────────────
+let tablesReady = false;
+async function ensureTables() {
+  if (tablesReady) return;
+  await pgQuery(`
+    CREATE TABLE IF NOT EXISTS advertorial_copies (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      product_id INTEGER NOT NULL,
+      title TEXT,
+      concept_name TEXT,
+      ad_copy TEXT NOT NULL,
+      ad_copy_word_count INTEGER,
+      original_copy TEXT,
+      source_type TEXT DEFAULT 'competitor',
+      source_brand_name TEXT,
+      angle TEXT,
+      adaptation_type TEXT,
+      headlines JSONB DEFAULT '[]',
+      descriptions JSONB DEFAULT '[]',
+      compliance_score INTEGER,
+      compliance_notes TEXT,
+      archetype TEXT,
+      secondary_archetype TEXT,
+      image_concepts JSONB DEFAULT '[]',
+      images JSONB DEFAULT '[]',
+      image_status TEXT DEFAULT 'pending',
+      status TEXT DEFAULT 'draft',
+      group_id UUID,
+      group_name TEXT,
+      batch_number INTEGER,
+      generation INTEGER DEFAULT 1,
+      parent_copy_id UUID,
+      rewrite_prompt TEXT,
+      metadata JSONB DEFAULT '{}',
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+  await pgQuery(`
+    CREATE TABLE IF NOT EXISTS spy_creatives (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      product_id INTEGER NOT NULL,
+      pipeline TEXT NOT NULL DEFAULT 'standard',
+      reference_image_id UUID,
+      advertorial_copy_id UUID,
+      image_url TEXT,
+      r2_key TEXT,
+      thumbnail_url TEXT,
+      source_label TEXT,
+      claude_analysis JSONB,
+      adapted_text JSONB,
+      swap_pairs JSONB,
+      generation_prompt TEXT,
+      generation_provider TEXT DEFAULT 'nanobanana',
+      generation_model TEXT,
+      generation_task_id TEXT,
+      angle TEXT,
+      archetype TEXT,
+      aspect_ratio TEXT DEFAULT '4:5',
+      group_id UUID,
+      parent_creative_id UUID,
+      generation INTEGER DEFAULT 1,
+      status TEXT DEFAULT 'review',
+      batch_id UUID,
+      batch_position INTEGER,
+      review_notes TEXT,
+      is_organic BOOLEAN DEFAULT false,
+      feedback_action TEXT,
+      feedback_reason TEXT,
+      feedback_tags JSONB,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+  await pgQuery(`
+    CREATE TABLE IF NOT EXISTS organic_images (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      image_url TEXT NOT NULL,
+      r2_key TEXT,
+      source TEXT NOT NULL DEFAULT 'reddit',
+      source_url TEXT,
+      title TEXT,
+      description TEXT,
+      subreddit TEXT,
+      board TEXT,
+      author TEXT,
+      upvotes INTEGER DEFAULT 0,
+      tags JSONB DEFAULT '[]',
+      tag_source TEXT DEFAULT 'auto',
+      organic_score NUMERIC,
+      usage_count INTEGER DEFAULT 0,
+      last_used_at TIMESTAMPTZ,
+      status TEXT DEFAULT 'active',
+      product_id INTEGER,
+      match_score NUMERIC,
+      keyword_weight NUMERIC,
+      scrape_keyword TEXT,
+      scrape_job_id UUID,
+      is_rejected BOOLEAN DEFAULT false,
+      rejection_reason TEXT,
+      rejected_by TEXT,
+      vision_data JSONB,
+      highlighted BOOLEAN DEFAULT false,
+      highlight_reason TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+  await pgQuery(`
+    CREATE TABLE IF NOT EXISTS image_scrape_jobs (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      platform TEXT NOT NULL DEFAULT 'reddit',
+      keyword TEXT,
+      subreddit TEXT,
+      status TEXT DEFAULT 'pending',
+      images_found INTEGER DEFAULT 0,
+      images_saved INTEGER DEFAULT 0,
+      error_message TEXT,
+      started_at TIMESTAMPTZ,
+      completed_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+  tablesReady = true;
+}
+
 // POST /copies/generate — Generate 3 copy variants from source copy
 router.post('/copies/generate', async (req, res) => {
   try {
+    await ensureTables();
     const { product_id, source_copy, angle, custom_instructions } = req.body;
     if (!product_id || !source_copy || !angle) {
       return res.status(400).json({ success: false, error: { message: 'product_id, source_copy, and angle are required' } });
@@ -101,6 +227,7 @@ router.post('/copies/generate', async (req, res) => {
 // GET /copies — List copies with filters
 router.get('/copies', async (req, res) => {
   try {
+    await ensureTables();
     const { product_id, status, angle } = req.query;
     let query = 'SELECT * FROM advertorial_copies WHERE 1=1';
     const params = [];
