@@ -109,7 +109,7 @@ router.post('/generate', async (req, res) => {
     // Try AI first, fall back to mock
     const aiResult = await generateWithAI(req.body);
     const variants = aiResult || generateMockVariants(req.body);
-    const source = aiResult ? 'claude-sonnet-4.6' : 'mock';
+    const source = aiResult ? 'claude-sonnet-4-20250514' : 'mock';
 
     res.json({ success: true, variants, source });
   } catch (err) {

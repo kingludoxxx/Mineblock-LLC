@@ -150,7 +150,7 @@ export default function BriefAgent() {
         setForm(INITIAL_FORM);
         fetchEditorCounts(); // refresh queue counts
         // Increment locally — ClickUp API has a delay before the new task is indexed
-        setNextBrief((prev) => (prev || data.task.briefNumber) + 1);
+        setNextBrief((prev) => (prev ?? data.task.briefNumber) + 1);
       } else {
         setError(data.error?.message || 'Failed to create brief.');
       }
