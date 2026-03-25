@@ -1988,7 +1988,7 @@ function scheduleDailyPnl() {
 
   setInterval(() => {
     const now = new Date();
-    // Get current time parts in Europe/Berlin
+    // Get current time parts in Europe/Berlin (Shopify store timezone)
     const parts = new Intl.DateTimeFormat('en-CA', {
       timeZone: 'Europe/Berlin', year: 'numeric', month: '2-digit', day: '2-digit',
       hour: '2-digit', minute: '2-digit', hour12: false,
@@ -1998,19 +1998,20 @@ function scheduleDailyPnl() {
     const minute = parseInt(get('minute'));
     const berlinDate = `${get('year')}-${get('month')}-${get('day')}`;
 
-    // Trigger at 10:03 CET (hour=10, minute=3) — delayed to let Triple Whale ad spend data settle
-    if (hour === 10 && minute >= 3 && minute < 5 && lastSentDate !== berlinDate) {
+    // Fire at 00:30 Berlin time (when the Shopify day just ended)
+    // Report is for "yesterday" = the day that just completed at midnight
+    if (hour === 0 && minute >= 30 && minute < 33 && lastSentDate !== berlinDate) {
       lastSentDate = berlinDate;
-      // Report for yesterday (the day that just ended)
+      // The day that just ended = yesterday in Berlin
       const yDate = new Date(berlinDate + 'T00:00:00Z');
       yDate.setUTCDate(yDate.getUTCDate() - 1);
       const yStr = yDate.toISOString().slice(0, 10);
-      console.log(`[Daily P&L] Triggering report for ${yStr}`);
+      console.log(`[Daily P&L] Triggering report for ${yStr} (00:30 Berlin)`);
       sendDailyPnlReport(yStr).catch(err => console.error('[Daily P&L] Send error:', err.message));
     }
   }, checkInterval);
 
-  console.log('[Daily P&L] Scheduler active — will fire at 10:03 CET daily');
+  console.log('[Daily P&L] Scheduler active — fires daily at 00:30 CET (after Shopify day ends)');
 }
 
 // Also expose as API endpoint for manual testing
