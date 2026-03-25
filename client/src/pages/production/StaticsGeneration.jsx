@@ -68,7 +68,7 @@ const STATUS_COLORS = {
   review: { bg: 'bg-amber-500/10', text: 'text-amber-300', border: 'border-amber-500/20' },
   approved: { bg: 'bg-emerald-500/10', text: 'text-emerald-300', border: 'border-emerald-500/20' },
   queued: { bg: 'bg-blue-500/10', text: 'text-blue-300', border: 'border-blue-500/20' },
-  launched: { bg: 'bg-violet-500/10', text: 'text-violet-300', border: 'border-violet-500/20' },
+  launched: { bg: 'bg-blue-500/10', text: 'text-blue-300', border: 'border-blue-500/20' },
   draft: { bg: 'bg-slate-500/10', text: 'text-slate-300', border: 'border-slate-500/20' },
   copy_review: { bg: 'bg-amber-500/10', text: 'text-amber-300', border: 'border-amber-500/20' },
   images_pending: { bg: 'bg-blue-500/10', text: 'text-blue-300', border: 'border-blue-500/20' },
@@ -79,7 +79,7 @@ const STATUS_COLORS = {
 const VARIANT_TYPE_COLORS = {
   direct_adapt: { bg: 'bg-blue-500/10', text: 'text-blue-300', border: 'border-blue-500/20', label: 'Direct Adapt' },
   pain_pivot: { bg: 'bg-orange-500/10', text: 'text-orange-300', border: 'border-orange-500/20', label: 'Pain Pivot' },
-  creative_swing: { bg: 'bg-purple-500/10', text: 'text-purple-300', border: 'border-purple-500/20', label: 'Creative Swing' },
+  creative_swing: { bg: 'bg-blue-500/10', text: 'text-blue-300', border: 'border-blue-500/20', label: 'Creative Swing' },
 };
 
 // ---------------------------------------------------------------------------
@@ -142,7 +142,7 @@ function UploadZone({ preview, onFile, onUrlChange, urlValue, onClear, label, co
           compact ? 'py-4' : 'py-8'
         } ${
           dragging
-            ? 'border-violet-500/60 bg-violet-500/5'
+            ? 'border-blue-500/60 bg-blue-500/5'
             : 'border-white/[0.1] hover:border-white/[0.2] bg-transparent'
         }`}
       >
@@ -164,7 +164,7 @@ function UploadZone({ preview, onFile, onUrlChange, urlValue, onClear, label, co
           value={urlValue || ''}
           onChange={(e) => onUrlChange(e.target.value)}
           placeholder="Or paste image URL..."
-          className="w-full bg-[#0a0a0a] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white placeholder-slate-600 focus:border-violet-500/50 focus:outline-none"
+          className="w-full bg-[#0a0a0a] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white placeholder-slate-600 focus:border-blue-500/50 focus:outline-none"
         />
       )}
     </div>
@@ -182,7 +182,7 @@ function StepperIndicator({ step, currentStep, label }) {
           isCompleted
             ? 'bg-emerald-600 text-white'
             : isActive
-              ? 'bg-violet-600 text-white'
+              ? 'bg-blue-600 text-white'
               : 'bg-white/[0.04] text-slate-600 border border-white/[0.06]'
         }`}
       >
@@ -193,14 +193,14 @@ function StepperIndicator({ step, currentStep, label }) {
       >
         {label}
       </span>
-      {isActive && <Loader2 className="w-4 h-4 text-violet-400 animate-spin ml-auto" />}
+      {isActive && <Loader2 className="w-4 h-4 text-blue-400 animate-spin ml-auto" />}
     </div>
   );
 }
 
 function CopyBadge({ text }) {
   return (
-    <span className="inline-block px-2 py-0.5 text-xs rounded-full bg-violet-500/10 text-violet-300 border border-violet-500/20">
+    <span className="inline-block px-2 py-0.5 text-xs rounded-full bg-blue-500/10 text-blue-300 border border-blue-500/20">
       {text}
     </span>
   );
@@ -233,7 +233,7 @@ function PipelineToggle({ active, onChange }) {
         onClick={() => onChange('standard')}
         className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-md text-sm font-medium transition-colors cursor-pointer ${
           active === 'standard'
-            ? 'bg-violet-600 text-white'
+            ? 'bg-blue-600 text-white'
             : 'text-slate-400 hover:text-white'
         }`}
       >
@@ -245,7 +245,7 @@ function PipelineToggle({ active, onChange }) {
         onClick={() => onChange('advertorial')}
         className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-md text-sm font-medium transition-colors cursor-pointer ${
           active === 'advertorial'
-            ? 'bg-violet-600 text-white'
+            ? 'bg-blue-600 text-white'
             : 'text-slate-400 hover:text-white'
         }`}
       >
@@ -344,7 +344,7 @@ function AdvertorialCopyCard({ copy, onStatusChange, onGenerateImages, generatin
           {copy.cta && (
             <div>
               <span className="text-xs text-slate-400 mb-1 block">CTA</span>
-              <span className="inline-block px-3 py-1.5 text-sm rounded-lg bg-violet-600 text-white">
+              <span className="inline-block px-3 py-1.5 text-sm rounded-lg bg-blue-600 text-white">
                 {copy.cta}
               </span>
             </div>
@@ -425,7 +425,7 @@ function AdvertorialCopyCard({ copy, onStatusChange, onGenerateImages, generatin
           <button
             type="button"
             onClick={() => onStatusChange(copy.id, 'launched')}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-violet-500/10 border border-violet-500/20 text-xs text-violet-300 hover:bg-violet-500/20 transition-colors cursor-pointer"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-500/10 border border-blue-500/20 text-xs text-blue-300 hover:bg-blue-500/20 transition-colors cursor-pointer"
           >
             <Rocket className="w-3 h-3" />
             Mark Launched
@@ -780,7 +780,7 @@ export default function StaticsGeneration() {
   // --- Render helpers ---
 
   const inputClasses =
-    'w-full bg-[#0a0a0a] border border-white/[0.08] rounded-lg px-3 py-2.5 text-sm text-white placeholder-slate-600 focus:border-violet-500/50 focus:outline-none';
+    'w-full bg-[#0a0a0a] border border-white/[0.08] rounded-lg px-3 py-2.5 text-sm text-white placeholder-slate-600 focus:border-blue-500/50 focus:outline-none';
   const labelClasses = 'text-xs text-slate-400 mb-1.5 block';
 
   const ratios = ['4:5', '9:16', '1:1'];
@@ -793,8 +793,8 @@ export default function StaticsGeneration() {
     <div className="p-6">
       {/* Header */}
       <div className="flex items-center gap-3 mb-6">
-        <div className="p-2 rounded-lg bg-violet-500/20">
-          <Layers className="w-5 h-5 text-violet-400" />
+        <div className="p-2 rounded-lg bg-blue-500/20">
+          <Layers className="w-5 h-5 text-blue-400" />
         </div>
         <div>
           <h1 className="text-2xl font-bold text-white">Statics Generation</h1>
@@ -829,7 +829,7 @@ export default function StaticsGeneration() {
               {/* Reference Ad Image */}
               <div className="bg-[#111] border border-white/[0.06] rounded-lg p-5 space-y-3">
                 <label className={labelClasses}>
-                  Reference Ad Image <span className="text-violet-400">*</span>
+                  Reference Ad Image <span className="text-blue-400">*</span>
                 </label>
                 <UploadZone
                   preview={referencePreview}
@@ -853,7 +853,7 @@ export default function StaticsGeneration() {
 
                     <div>
                       <label className={labelClasses}>
-                        Product Name <span className="text-violet-400">*</span>
+                        Product Name <span className="text-blue-400">*</span>
                       </label>
                       <input
                         type="text"
@@ -888,7 +888,7 @@ export default function StaticsGeneration() {
 
                     <div>
                       <label className={labelClasses}>
-                        Product Photo <span className="text-violet-400">*</span>
+                        Product Photo <span className="text-blue-400">*</span>
                       </label>
                       <UploadZone
                         preview={productPreview}
@@ -1088,7 +1088,7 @@ export default function StaticsGeneration() {
                       onClick={() => setAspectRatio(r)}
                       className={`flex-1 px-3 py-2 text-sm rounded-lg border transition-colors cursor-pointer ${
                         aspectRatio === r
-                          ? 'bg-violet-600 border-violet-500 text-white'
+                          ? 'bg-blue-600 border-blue-500 text-white'
                           : 'bg-transparent border-white/[0.06] text-slate-400 hover:text-white hover:border-white/[0.12]'
                       }`}
                     >
@@ -1105,8 +1105,8 @@ export default function StaticsGeneration() {
                 disabled={!canGenerate}
                 className={`w-full flex items-center justify-center gap-2 px-4 py-3 rounded-lg text-sm font-medium transition-colors cursor-pointer ${
                   canGenerate
-                    ? 'bg-violet-600 hover:bg-violet-700 text-white'
-                    : 'bg-violet-600/30 text-white/40 cursor-not-allowed'
+                    ? 'bg-blue-600 hover:bg-blue-700 text-white'
+                    : 'bg-blue-600/30 text-white/40 cursor-not-allowed'
                 }`}
               >
                 {generating ? (
@@ -1174,7 +1174,7 @@ export default function StaticsGeneration() {
                   </div>
                   <div className="mt-6 h-1.5 rounded-full bg-white/[0.04] overflow-hidden">
                     <div
-                      className="h-full bg-violet-600 rounded-full transition-all duration-1000 ease-out"
+                      className="h-full bg-blue-600 rounded-full transition-all duration-1000 ease-out"
                       style={{
                         width:
                           generationStep === 1
@@ -1228,7 +1228,7 @@ export default function StaticsGeneration() {
                         <button
                           type="button"
                           onClick={() => downloadImage(result.generated_image_url)}
-                          className="flex items-center gap-2 px-4 py-2 rounded-lg border border-violet-500/30 text-sm text-violet-300 hover:bg-violet-500/10 transition-colors cursor-pointer"
+                          className="flex items-center gap-2 px-4 py-2 rounded-lg border border-blue-500/30 text-sm text-blue-300 hover:bg-blue-500/10 transition-colors cursor-pointer"
                         >
                           <Download className="w-3.5 h-3.5" />
                           Download
@@ -1236,7 +1236,7 @@ export default function StaticsGeneration() {
                         <button
                           type="button"
                           onClick={handleGenerateAnother}
-                          className="flex items-center gap-2 px-4 py-2 rounded-lg bg-violet-600 hover:bg-violet-700 text-sm text-white transition-colors cursor-pointer"
+                          className="flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-sm text-white transition-colors cursor-pointer"
                         >
                           <RotateCcw className="w-3.5 h-3.5" />
                           Generate Another
@@ -1298,7 +1298,7 @@ export default function StaticsGeneration() {
                         {result.adapted_text.cta && (
                           <div>
                             <span className={labelClasses}>CTA</span>
-                            <span className="inline-block px-3 py-1.5 text-sm rounded-lg bg-violet-600 text-white">
+                            <span className="inline-block px-3 py-1.5 text-sm rounded-lg bg-blue-600 text-white">
                               {result.adapted_text.cta}
                             </span>
                           </div>
@@ -1376,7 +1376,7 @@ export default function StaticsGeneration() {
                           setReferencePreview(ref.url || ref.image_url);
                           setReferenceFile(null);
                         }}
-                        className="group relative rounded-lg overflow-hidden border border-white/[0.06] hover:border-violet-500/40 transition-colors cursor-pointer"
+                        className="group relative rounded-lg overflow-hidden border border-white/[0.06] hover:border-blue-500/40 transition-colors cursor-pointer"
                       >
                         <img
                           src={ref.url || ref.image_url}
@@ -1445,7 +1445,7 @@ export default function StaticsGeneration() {
               {!advSelectedProductId && (
                 <div className="pt-1">
                   <label className={labelClasses}>
-                    Product Name <span className="text-violet-400">*</span>
+                    Product Name <span className="text-blue-400">*</span>
                   </label>
                   <input
                     type="text"
@@ -1490,7 +1490,7 @@ export default function StaticsGeneration() {
             <div className="bg-[#111] border border-white/[0.06] rounded-lg p-5 space-y-3">
               <div className="flex items-center justify-between">
                 <label className={labelClasses + ' mb-0'}>
-                  Source Copy <span className="text-violet-400">*</span>
+                  Source Copy <span className="text-blue-400">*</span>
                 </label>
                 <span className={`text-[10px] ${advSourceCopy.length >= 100 ? 'text-emerald-400' : 'text-slate-600'}`}>
                   {advSourceCopy.split(/\s+/).filter(Boolean).length} words
@@ -1517,8 +1517,8 @@ export default function StaticsGeneration() {
               disabled={!canGenerateAdv}
               className={`w-full flex items-center justify-center gap-2 px-4 py-3 rounded-lg text-sm font-medium transition-colors cursor-pointer ${
                 canGenerateAdv
-                  ? 'bg-violet-600 hover:bg-violet-700 text-white'
-                  : 'bg-violet-600/30 text-white/40 cursor-not-allowed'
+                  ? 'bg-blue-600 hover:bg-blue-700 text-white'
+                  : 'bg-blue-600/30 text-white/40 cursor-not-allowed'
               }`}
             >
               {advGenerating ? (
@@ -1579,7 +1579,7 @@ export default function StaticsGeneration() {
             {advGenerating && (
               <div className="bg-[#111] border border-white/[0.06] rounded-lg p-8">
                 <div className="flex items-center gap-3">
-                  <Loader2 className="w-5 h-5 text-violet-400 animate-spin" />
+                  <Loader2 className="w-5 h-5 text-blue-400 animate-spin" />
                   <div>
                     <h3 className="text-sm font-medium text-white">Generating copy variants...</h3>
                     <p className="text-xs text-slate-400 mt-1">
@@ -1588,7 +1588,7 @@ export default function StaticsGeneration() {
                   </div>
                 </div>
                 <div className="mt-6 h-1.5 rounded-full bg-white/[0.04] overflow-hidden">
-                  <div className="h-full bg-violet-600 rounded-full animate-pulse" style={{ width: '60%' }} />
+                  <div className="h-full bg-blue-600 rounded-full animate-pulse" style={{ width: '60%' }} />
                 </div>
               </div>
             )}
