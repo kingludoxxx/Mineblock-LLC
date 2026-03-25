@@ -245,4 +245,114 @@ router.get('/status/:taskId', async (req, res) => {
   }
 });
 
+// ── Creatives CRUD (for standard pipeline review flow) ────────────────
+
+let crTableReady = false;
+async function ensureCreativesTable() {
+  if (crTableReady) return;
+  await pgQuery(`
+    CREATE TABLE IF NOT EXISTS spy_creatives (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      product_id INTEGER,
+      pipeline TEXT NOT NULL DEFAULT 'standard',
+      reference_image_id UUID,
+      advertorial_copy_id UUID,
+      image_url TEXT,
+      r2_key TEXT,
+      thumbnail_url TEXT,
+      source_label TEXT,
+      claude_analysis JSONB,
+      adapted_text JSONB,
+      swap_pairs JSONB,
+      generation_prompt TEXT,
+      generation_provider TEXT DEFAULT 'nanobanana',
+      generation_model TEXT,
+      generation_task_id TEXT,
+      angle TEXT,
+      archetype TEXT,
+      aspect_ratio TEXT DEFAULT '4:5',
+      group_id UUID,
+      parent_creative_id UUID,
+      generation INTEGER DEFAULT 1,
+      status TEXT DEFAULT 'review',
+      batch_id UUID,
+      batch_position INTEGER,
+      review_notes TEXT,
+      is_organic BOOLEAN DEFAULT false,
+      feedback_action TEXT,
+      feedback_reason TEXT,
+      feedback_tags JSONB,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+  crTableReady = true;
+}
+
+// GET /creatives — List creatives with optional filters
+router.get('/creatives', async (req, res) => {
+  try {
+    await ensureCreativesTable();
+    const { product_id, status, pipeline = 'standard' } = req.query;
+    let query = "SELECT * FROM spy_creatives WHERE pipeline = $1";
+    const params = [pipeline];
+    let idx = 2;
+
+    if (product_id) { query += ` AND product_id = $${idx++}`; params.push(product_id); }
+    if (status) { query += ` AND status = $${idx++}`; params.push(status); }
+
+    query += ' ORDER BY created_at DESC';
+    const rows = await pgQuery(query, params);
+    res.json({ success: true, data: rows });
+  } catch (err) {
+    console.error('[staticsGeneration] /creatives error:', err);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// PATCH /creatives/:id/status — Update creative status
+router.patch('/creatives/:id/status', async (req, res) => {
+  try {
+    await ensureCreativesTable();
+    const { status } = req.body;
+    const validStatuses = ['generating', 'review', 'approved', 'queued', 'launched', 'rejected', 'archived'];
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({ success: false, error: { message: `Invalid status. Must be one of: ${validStatuses.join(', ')}` } });
+    }
+    const rows = await pgQuery(
+      'UPDATE spy_creatives SET status = $1, updated_at = NOW() WHERE id = $2 RETURNING *',
+      [status, req.params.id]
+    );
+    if (rows.length === 0) return res.status(404).json({ success: false, error: { message: 'Creative not found' } });
+    res.json({ success: true, data: rows[0] });
+  } catch (err) {
+    console.error('[staticsGeneration] /creatives/:id/status error:', err);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// GET /creatives/:id — Get single creative
+router.get('/creatives/:id', async (req, res) => {
+  try {
+    await ensureCreativesTable();
+    const rows = await pgQuery('SELECT * FROM spy_creatives WHERE id = $1', [req.params.id]);
+    if (rows.length === 0) return res.status(404).json({ success: false, error: { message: 'Creative not found' } });
+    res.json({ success: true, data: rows[0] });
+  } catch (err) {
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// DELETE /creatives/:id — Delete creative
+router.delete('/creatives/:id', async (req, res) => {
+  try {
+    await ensureCreativesTable();
+    const rows = await pgQuery('DELETE FROM spy_creatives WHERE id = $1 RETURNING id', [req.params.id]);
+    if (rows.length === 0) return res.status(404).json({ success: false, error: { message: 'Creative not found' } });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
 export default router;
