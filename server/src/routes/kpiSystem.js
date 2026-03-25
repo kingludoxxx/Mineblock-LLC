@@ -1981,37 +1981,65 @@ async function sendDailyPnlReport(dateStr) {
   }
 }
 
-// Schedule daily at 00:03 CET (Europe/Berlin)
-function scheduleDailyPnl() {
-  const checkInterval = 30_000; // Check every 30s
-  let lastSentDate = null;
+// ── Startup catch-up: check if yesterday's report was sent, if not send it ──
+// Render free tier spins down the server after 15min idle, so setInterval
+// schedulers miss their window. This catch-up runs on every server boot
+// and checks Slack channel history — if yesterday's report wasn't posted, send it.
+async function catchUpDailyPnl() {
+  if (!SLACK_BOT_TOKEN) return;
+  try {
+    await ensureTables();
 
-  setInterval(() => {
+    // Get yesterday's date in Berlin timezone
     const now = new Date();
-    // Get current time parts in Europe/Berlin (Shopify store timezone)
     const parts = new Intl.DateTimeFormat('en-CA', {
       timeZone: 'Europe/Berlin', year: 'numeric', month: '2-digit', day: '2-digit',
-      hour: '2-digit', minute: '2-digit', hour12: false,
+      hour: '2-digit', hour12: false,
     }).formatToParts(now);
     const get = (type) => parts.find(p => p.type === type)?.value;
-    const hour = parseInt(get('hour'));
-    const minute = parseInt(get('minute'));
     const berlinDate = `${get('year')}-${get('month')}-${get('day')}`;
+    const hour = parseInt(get('hour'));
 
-    // Fire at 00:30 Berlin time (when the Shopify day just ended)
-    // Report is for "yesterday" = the day that just completed at midnight
-    if (hour === 0 && minute >= 30 && minute < 33 && lastSentDate !== berlinDate) {
-      lastSentDate = berlinDate;
-      // The day that just ended = yesterday in Berlin
-      const yDate = new Date(berlinDate + 'T00:00:00Z');
-      yDate.setUTCDate(yDate.getUTCDate() - 1);
-      const yStr = yDate.toISOString().slice(0, 10);
-      console.log(`[Daily P&L] Triggering report for ${yStr} (00:30 Berlin)`);
-      sendDailyPnlReport(yStr).catch(err => console.error('[Daily P&L] Send error:', err.message));
+    // Only catch up after midnight Berlin (the Shopify day has ended)
+    // Before midnight, "yesterday" data isn't complete yet
+    const yDate = new Date(berlinDate + 'T00:00:00Z');
+    yDate.setUTCDate(yDate.getUTCDate() - 1);
+    const yStr = yDate.toISOString().slice(0, 10);
+    const [y, m, d] = yStr.split('-');
+    const displayDate = `${m}/${d}/${y}`;
+
+    // Check Slack channel history for yesterday's report
+    const oldest = Math.floor(new Date(berlinDate + 'T00:00:00+01:00').getTime() / 1000) - 86400;
+    const histResp = await fetch(
+      `https://slack.com/api/conversations.history?channel=${SLACK_DAILY_PNL_CHANNEL}&oldest=${oldest}&limit=50`,
+      { headers: { Authorization: `Bearer ${SLACK_BOT_TOKEN}` } }
+    );
+    const hist = await histResp.json();
+
+    if (hist.ok) {
+      const alreadySent = (hist.messages || []).some(msg =>
+        msg.text?.includes(`Daily P&L for ${displayDate}`)
+      );
+      if (alreadySent) {
+        console.log(`[Daily P&L] Report for ${displayDate} already sent — skipping catch-up`);
+        return;
+      }
     }
-  }, checkInterval);
 
-  console.log('[Daily P&L] Scheduler active — fires daily at 00:30 CET (after Shopify day ends)');
+    // Check if we have a snapshot for yesterday (data is available)
+    const snapRows = await pgQuery(
+      'SELECT 1 FROM daily_kpi_snapshots WHERE snapshot_date = $1 LIMIT 1', [yStr]
+    );
+    if (snapRows.length === 0) {
+      console.log(`[Daily P&L] No snapshot for ${yStr} yet — skipping catch-up`);
+      return;
+    }
+
+    console.log(`[Daily P&L] Catch-up: sending missed report for ${displayDate}`);
+    await sendDailyPnlReport(yStr);
+  } catch (err) {
+    console.error('[Daily P&L] Catch-up error:', err.message);
+  }
 }
 
 // Also expose as API endpoint for manual testing
@@ -2030,8 +2058,8 @@ router.post('/daily-pnl', authenticate, async (req, res) => {
   }
 });
 
-// Start the scheduler
-setTimeout(() => scheduleDailyPnl(), 60_000);
+// Run catch-up 90s after boot (let DB connections settle)
+setTimeout(() => catchUpDailyPnl(), 90_000);
 
 export default router;
 export {
