@@ -489,7 +489,7 @@ export default function IterationKing() {
   useEffect(() => {
     if (generationMode === 'full') return;
     if (generationMode === 'quick-hooks') {
-      if (selectedHookIdxs.size === 0) { setFinalScript(''); return; }
+      if (!originalScript || selectedHookIdxs.size === 0) { setFinalScript(''); return; }
       const selectedHooks = [...selectedHookIdxs].sort().map((i) => hooks[i]).filter(Boolean);
       // Extract body from original script
       const bodyMatch = originalScript.match(/\bBODY:\s*/i);
