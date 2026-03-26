@@ -1664,7 +1664,6 @@ export default function CreativeAnalysis() {
             </button>
             <div className="bg-[#111] rounded-xl overflow-hidden">
               {videoModal.video_url ? (
-                videoModal.video_url.endsWith('.mp4') || videoModal.video_url.includes('.mp4') ? (
                   <video
                     src={videoModal.video_url}
                     className="w-full max-h-[80vh]"
@@ -1672,15 +1671,6 @@ export default function CreativeAnalysis() {
                     autoPlay
                     onError={(e) => { e.target.style.display = 'none'; e.target.nextSibling && (e.target.nextSibling.style.display = 'flex'); }}
                   />
-                ) : (
-                  <iframe
-                    src={videoModal.video_url}
-                    className="w-full border-0"
-                    style={{ height: '80vh' }}
-                    allow="autoplay; fullscreen"
-                    allowFullScreen
-                  />
-                )
               ) : null}
               {videoModal.thumbnail_url && !videoModal.video_url ? (
                 <img

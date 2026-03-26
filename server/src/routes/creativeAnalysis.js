@@ -752,9 +752,13 @@ async function syncMetaThumbnails() {
 
   await ensureTable();
 
-  // 1. Get all unique ad_names from our DB that don't have a thumbnail yet
+  // 1. Get all unique ad_names that need thumbnails OR have expired iframe preview URLs
+  //    Permanent video URLs are direct .mp4 links; expired ones are iframe src URLs
   const dbRows = await pgQuery(
-    `SELECT DISTINCT ad_name FROM creative_analysis WHERE ad_name IS NOT NULL AND (thumbnail_url IS NULL OR thumbnail_url = '')`
+    `SELECT DISTINCT ad_name FROM creative_analysis
+     WHERE ad_name IS NOT NULL
+       AND (thumbnail_url IS NULL OR thumbnail_url = ''
+            OR (video_url IS NOT NULL AND video_url NOT LIKE '%.mp4%'))`
   );
   const dbAdNames = new Set(dbRows.map(r => r.ad_name));
 
@@ -802,30 +806,29 @@ async function syncMetaThumbnails() {
     });
   }
 
-  // 4. For video ads, fetch the ad preview iframe URL
+  // 4. For video ads, fetch the PERMANENT video source URL (not the expiring preview iframe)
   const adIdsWithVideo = updates.filter(u => u.video_id);
-  const previewUrls = new Map();
+  const videoSourceUrls = new Map();
 
   for (let i = 0; i < adIdsWithVideo.length; i += 10) {
     const batch = adIdsWithVideo.slice(i, i + 10);
     const promises = batch.map(async (upd) => {
       try {
-        const resp = await fetch(`${META_GRAPH_URL}/${upd.meta_ad_id}/previews?ad_format=MOBILE_FEED_STANDARD&access_token=${META_ACCESS_TOKEN}`);
+        // Fetch the actual video source URL from the video object — this is permanent
+        const resp = await fetch(`${META_GRAPH_URL}/${upd.video_id}?fields=source&access_token=${META_ACCESS_TOKEN}`);
         const data = await resp.json();
-        const body = data.data?.[0]?.body;
-        if (body) {
-          const match = body.match(/src=["']([^"']+)["']/);
-          if (match) previewUrls.set(upd.meta_ad_id, match[1].replace(/&amp;/g, '&'));
+        if (data.source) {
+          videoSourceUrls.set(upd.meta_ad_id, data.source);
         }
-      } catch (err) { console.warn('[Creative] Preview fetch error:', err.message); }
+      } catch (err) { console.warn('[Creative] Video source fetch error:', err.message); }
     });
     await Promise.all(promises);
   }
-  console.log(`[Meta Sync] Fetched ${previewUrls.size} ad preview URLs for ${adIdsWithVideo.length} video ads`);
+  console.log(`[Meta Sync] Fetched ${videoSourceUrls.size} permanent video URLs for ${adIdsWithVideo.length} video ads`);
 
   // 5. Update DB rows
   for (const upd of updates) {
-    const videoUrl = previewUrls.get(upd.meta_ad_id) || null;
+    const videoUrl = videoSourceUrls.get(upd.meta_ad_id) || null;
     const finalThumb = upd.thumbnail_url;
 
     try {
