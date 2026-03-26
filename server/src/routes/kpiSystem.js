@@ -2042,7 +2042,7 @@ async function catchUpDailyPnl() {
   }
 }
 
-// Also expose as API endpoint for manual testing
+// Manual trigger (authenticated)
 router.post('/daily-pnl', authenticate, async (req, res) => {
   try {
     const dateStr = req.query.date || (() => {
@@ -2055,6 +2055,29 @@ router.post('/daily-pnl', authenticate, async (req, res) => {
     res.json({ success: true, date: dateStr });
   } catch (err) {
     res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// ── Cron-triggered endpoint (called by Render Cron Job daily) ──────────────
+// Protected by CRON_SECRET env var instead of JWT auth
+router.get('/cron/daily-pnl', async (req, res) => {
+  const secret = process.env.CRON_SECRET;
+  if (!secret || req.query.secret !== secret) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+  try {
+    // Calculate yesterday's date in Berlin timezone
+    const now = new Date();
+    const berlin = new Date(now.toLocaleString('en-US', { timeZone: 'Europe/Berlin' }));
+    berlin.setDate(berlin.getDate() - 1);
+    const dateStr = `${berlin.getFullYear()}-${String(berlin.getMonth() + 1).padStart(2, '0')}-${String(berlin.getDate()).padStart(2, '0')}`;
+
+    console.log(`[Daily P&L] Cron trigger for ${dateStr}`);
+    await sendDailyPnlReport(dateStr);
+    res.json({ success: true, date: dateStr });
+  } catch (err) {
+    console.error('[Daily P&L] Cron error:', err.message);
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
