@@ -803,25 +803,34 @@ router.post('/creatives/:id/publish-clickup', authenticate, async (req, res) => 
       });
 
       // Upload to the presigned URL
+      const mimeType = `image/${ext === 'jpg' ? 'jpeg' : ext}`;
       if (asset?.upload_url) {
         const uploadRes = await fetch(asset.upload_url, {
           method: 'PUT',
-          headers: { 'Content-Type': `image/${ext === 'jpg' ? 'jpeg' : ext}` },
+          headers: { 'Content-Type': mimeType },
           body: imageBuf,
         });
         if (!uploadRes.ok) {
           console.error(`[publish-clickup] Frame.io upload PUT failed: ${uploadRes.status}`);
         }
       } else if (asset?.upload_urls?.length) {
-        // Multi-part upload: single chunk for images
+        // Multi-part upload: upload chunk then complete
         const uploadRes = await fetch(asset.upload_urls[0], {
           method: 'PUT',
-          headers: { 'Content-Type': `image/${ext === 'jpg' ? 'jpeg' : ext}` },
+          headers: { 'Content-Type': mimeType },
           body: imageBuf,
         });
         if (!uploadRes.ok) {
           console.error(`[publish-clickup] Frame.io upload PUT failed: ${uploadRes.status}`);
         }
+        // Complete the multi-part upload
+        try {
+          await frameioFetch(`/assets/${asset.id}/complete`, { method: 'POST', body: JSON.stringify({}) });
+        } catch (completeErr) {
+          console.error(`[publish-clickup] Frame.io complete failed: ${completeErr.message}`);
+        }
+      } else {
+        console.warn(`[publish-clickup] Frame.io asset has no upload URL — image not uploaded`);
       }
 
       frameLink = folderUrl;
