@@ -27,9 +27,16 @@ import {
   CheckCircle2,
   CircleDot,
   Send,
+  BookOpen,
+  Filter,
 } from 'lucide-react';
 import api from '../../services/api';
 import ProductSelector from '../../components/ProductSelector';
+import { PipelineView } from './statics/PipelineView';
+import { LibraryView } from './statics/LibraryView';
+import { TemplateSelectModal } from './statics/TemplateSelectModal';
+import { CreativeDetailModal } from './statics/CreativeDetailModal';
+import { ConfigSidebar } from './statics/ConfigSidebar';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -81,6 +88,12 @@ const VARIANT_TYPE_COLORS = {
   pain_pivot: { bg: 'bg-orange-500/10', text: 'text-orange-300', border: 'border-orange-500/20', label: 'Pain Pivot' },
   creative_swing: { bg: 'bg-blue-500/10', text: 'text-blue-300', border: 'border-blue-500/20', label: 'Creative Swing' },
 };
+
+const TOP_TABS = [
+  { key: 'pipeline', label: 'Pipeline', icon: Rocket },
+  { key: 'library', label: 'Library', icon: BookOpen },
+  { key: 'generated', label: 'Generated', icon: Image },
+];
 
 // ---------------------------------------------------------------------------
 // Sub-components
@@ -227,7 +240,7 @@ function VariantTypeBadge({ type }) {
 
 function PipelineToggle({ active, onChange }) {
   return (
-    <div className="flex bg-[#0a0a0a] border border-white/[0.06] rounded-lg p-1 mb-6">
+    <div className="flex bg-[#0a0a0a] border border-white/[0.06] rounded-lg p-1">
       <button
         type="button"
         onClick={() => onChange('standard')}
@@ -460,11 +473,107 @@ function AdvertorialCopyCard({ copy, onStatusChange, onGenerateImages, generatin
 }
 
 // ---------------------------------------------------------------------------
+// Generated Tab — History grid of all generated images
+// ---------------------------------------------------------------------------
+
+function GeneratedView({ creatives, loading, onRefresh, onCreativeClick }) {
+  const [statusFilter, setStatusFilter] = useState('all');
+
+  const filtered = statusFilter === 'all'
+    ? creatives
+    : creatives.filter((c) => c.status === statusFilter);
+
+  return (
+    <div className="space-y-4">
+      {/* Filters */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Filter className="w-4 h-4 text-slate-500" />
+          <div className="flex gap-1">
+            {['all', ...STANDARD_CREATIVE_STATUSES].map((s) => (
+              <button
+                key={s}
+                type="button"
+                onClick={() => setStatusFilter(s)}
+                className={`px-3 py-1.5 text-xs rounded-lg border transition-colors cursor-pointer ${
+                  statusFilter === s
+                    ? 'bg-blue-600 border-blue-500 text-white'
+                    : 'bg-transparent border-white/[0.06] text-slate-400 hover:text-white hover:border-white/[0.12]'
+                }`}
+              >
+                {s === 'all' ? 'All' : s.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())}
+              </button>
+            ))}
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={onRefresh}
+          disabled={loading}
+          className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-white transition-colors cursor-pointer"
+        >
+          <RefreshCw className={`w-3 h-3 ${loading ? 'animate-spin' : ''}`} />
+          Refresh
+        </button>
+      </div>
+
+      {/* Grid */}
+      {filtered.length === 0 && !loading && (
+        <div className="flex flex-col items-center justify-center min-h-[400px] text-center">
+          <Image className="w-12 h-12 text-slate-700 mb-4" />
+          <p className="text-sm text-slate-500">No generated images yet</p>
+        </div>
+      )}
+
+      {loading && (
+        <div className="flex items-center justify-center min-h-[200px]">
+          <Loader2 className="w-6 h-6 text-blue-400 animate-spin" />
+        </div>
+      )}
+
+      {filtered.length > 0 && (
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
+          {filtered.map((creative) => (
+            <button
+              key={creative.id}
+              type="button"
+              onClick={() => onCreativeClick(creative)}
+              className="group relative bg-[#111] border border-white/[0.06] rounded-lg overflow-hidden hover:border-blue-500/40 transition-colors cursor-pointer text-left"
+            >
+              {creative.image_url ? (
+                <img
+                  src={creative.image_url}
+                  alt={creative.name || 'Creative'}
+                  className="w-full h-40 object-cover"
+                />
+              ) : (
+                <div className="w-full h-40 bg-white/[0.02] flex items-center justify-center">
+                  <Image className="w-8 h-8 text-slate-700" />
+                </div>
+              )}
+              <div className="p-3 space-y-1.5">
+                <p className="text-xs text-white font-medium truncate">
+                  {creative.name || 'Untitled'}
+                </p>
+                <StatusBadge status={creative.status || 'review'} />
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main Component
 // ---------------------------------------------------------------------------
 
 export default function StaticsGeneration() {
-  // Pipeline toggle
+  // Top-level tab
+  const [activeTab, setActiveTab] = useState('pipeline');
+
+  // Pipeline sub-toggle
   const [activePipeline, setActivePipeline] = useState('standard');
 
   // =========================================================================
@@ -508,6 +617,14 @@ export default function StaticsGeneration() {
   const [creatives, setCreatives] = useState([]);
   const [creativesLoading, setCreativesLoading] = useState(false);
   const [references, setReferences] = useState([]);
+
+  // Templates state
+  const [templates, setTemplates] = useState([]);
+  const [templatesLoading, setTemplatesLoading] = useState(false);
+
+  // Modal state
+  const [detailModal, setDetailModal] = useState(null);
+  const [templateModal, setTemplateModal] = useState(false);
 
   // =========================================================================
   // ADVERTORIAL PIPELINE STATE
@@ -596,7 +713,6 @@ export default function StaticsGeneration() {
       if (referenceFile) {
         resolvedReferenceUrl = await fileToBase64(referenceFile);
       }
-
       let resolvedProductUrl = productImageUrl;
       if (productFile) {
         resolvedProductUrl = await fileToBase64(productFile);
@@ -653,8 +769,21 @@ export default function StaticsGeneration() {
     setGenerationStep(0);
   };
 
-  // Fetch creatives for review
+  // Fetch creatives for pipeline
   const fetchCreatives = async () => {
+    setCreativesLoading(true);
+    try {
+      const res = await api.get('/statics-generation/creatives/pipeline');
+      setCreatives(res.data?.data || res.data || []);
+    } catch {
+      // silently fail
+    } finally {
+      setCreativesLoading(false);
+    }
+  };
+
+  // Fetch all creatives (for Generated tab)
+  const fetchAllCreatives = async () => {
     setCreativesLoading(true);
     try {
       const res = await api.get('/statics-generation/creatives');
@@ -663,6 +792,19 @@ export default function StaticsGeneration() {
       // silently fail
     } finally {
       setCreativesLoading(false);
+    }
+  };
+
+  // Fetch templates
+  const fetchTemplates = async () => {
+    setTemplatesLoading(true);
+    try {
+      const res = await api.get('/statics-templates');
+      setTemplates(res.data?.data || res.data || []);
+    } catch {
+      // silently fail
+    } finally {
+      setTemplatesLoading(false);
     }
   };
 
@@ -682,6 +824,17 @@ export default function StaticsGeneration() {
     } catch {
       // silently fail
     }
+  };
+
+  // Template selection handler
+  const handleTemplateSelect = (template) => {
+    if (template.image_url || template.thumbnail_url) {
+      const url = template.image_url || template.thumbnail_url;
+      setReferenceImageUrl(url);
+      setReferencePreview(url);
+      setReferenceFile(null);
+    }
+    setTemplateModal(false);
   };
 
   // =========================================================================
@@ -768,14 +921,20 @@ export default function StaticsGeneration() {
     }
   };
 
-  // Fetch data on pipeline switch
+  // Fetch data on tab / pipeline switch
   useEffect(() => {
-    if (activePipeline === 'standard') {
-      fetchCreatives();
-    } else {
-      fetchAdvCopies();
+    if (activeTab === 'pipeline') {
+      if (activePipeline === 'standard') {
+        fetchCreatives();
+      } else {
+        fetchAdvCopies();
+      }
+    } else if (activeTab === 'library') {
+      fetchTemplates();
+    } else if (activeTab === 'generated') {
+      fetchAllCreatives();
     }
-  }, [activePipeline]);
+  }, [activeTab, activePipeline]);
 
   // --- Render helpers ---
 
@@ -791,859 +950,756 @@ export default function StaticsGeneration() {
 
   return (
     <div className="p-6">
-      {/* Header */}
-      <div className="flex items-center gap-3 mb-6">
-        <div className="p-2 rounded-lg bg-blue-500/20">
-          <Layers className="w-5 h-5 text-blue-400" />
+      {/* Header + Top Navigation */}
+      <div className="flex items-center gap-6 mb-6 border-b border-white/[0.06] pb-4">
+        {/* Page title (not clickable) */}
+        <div className="flex items-center gap-3 mr-4">
+          <div className="p-2 rounded-lg bg-blue-500/20">
+            <Layers className="w-5 h-5 text-blue-400" />
+          </div>
+          <h1 className="text-lg font-bold text-white whitespace-nowrap">Static Ads</h1>
         </div>
-        <div>
-          <h1 className="text-2xl font-bold text-white">Statics Generation</h1>
-          <p className="text-sm text-slate-400">
-            Generate new ad creatives from a reference image and product details
-          </p>
-        </div>
+
+        {/* Tab navigation */}
+        <nav className="flex items-center gap-1">
+          {TOP_TABS.map((tab) => {
+            const Icon = tab.icon;
+            const isActive = activeTab === tab.key;
+            return (
+              <button
+                key={tab.key}
+                type="button"
+                onClick={() => setActiveTab(tab.key)}
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors cursor-pointer ${
+                  isActive
+                    ? 'bg-white/[0.08] text-white'
+                    : 'text-slate-400 hover:text-white hover:bg-white/[0.04]'
+                }`}
+              >
+                <Icon className="w-4 h-4" />
+                {tab.label}
+              </button>
+            );
+          })}
+        </nav>
       </div>
 
-      {/* Pipeline Toggle */}
-      <PipelineToggle active={activePipeline} onChange={setActivePipeline} />
-
       {/* ================================================================= */}
-      {/* STANDARD PIPELINE                                                  */}
+      {/* PIPELINE TAB                                                       */}
       {/* ================================================================= */}
-      {activePipeline === 'standard' && (
+      {activeTab === 'pipeline' && (
         <>
-          {/* Product Selector */}
+          {/* Sub-tab: Standard / Advertorial toggle */}
           <div className="mb-6">
-            <label className="text-xs text-slate-400 mb-1.5 block">Load from Product Library</label>
-            <ProductSelector
-              selectedId={selectedProductId}
-              onSelect={handleProductSelect}
-            />
+            <PipelineToggle active={activePipeline} onChange={setActivePipeline} />
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            {/* =========================================================== */}
-            {/* LEFT PANEL -- Form                                           */}
-            {/* =========================================================== */}
-            <div className="lg:col-span-1 space-y-4">
-              {/* Reference Ad Image */}
-              <div className="bg-[#111] border border-white/[0.06] rounded-lg p-5 space-y-3">
-                <label className={labelClasses}>
-                  Reference Ad Image <span className="text-blue-400">*</span>
-                </label>
-                <UploadZone
-                  preview={referencePreview}
-                  onFile={handleReferenceFile}
-                  onUrlChange={(url) => {
+          {/* ---- Standard Pipeline ---- */}
+          {activePipeline === 'standard' && (
+            <div className="flex gap-6">
+              {/* Left: ConfigSidebar (250px fixed) */}
+              <div className="w-[250px] shrink-0 space-y-4">
+                <ConfigSidebar
+                  selectedProductId={selectedProductId}
+                  onProductSelect={handleProductSelect}
+                  marketingAngle={marketingAngle}
+                  onAngleChange={setMarketingAngle}
+                  aspectRatio={aspectRatio}
+                  onAspectRatioChange={setAspectRatio}
+                  referencePreview={referencePreview}
+                  referenceImageUrl={referenceImageUrl}
+                  onReferenceFile={handleReferenceFile}
+                  onReferenceUrlChange={(url) => {
                     setReferenceImageUrl(url);
                     setReferenceFile(null);
                     setReferencePreview('');
                   }}
-                  urlValue={referenceImageUrl}
-                  onClear={clearReference}
-                  label="Reference ad"
+                  onReferenceClear={clearReference}
+                  onOpenTemplateLibrary={() => setTemplateModal(true)}
+                  canGenerate={canGenerate}
+                  generating={generating}
+                  onGenerate={handleGenerate}
                 />
+
+                {/* Manual product info (when no product selected from library) */}
+                {!selectedProductId && (
+                  <>
+                    <div className="bg-[#111] border border-white/[0.06] rounded-lg p-4 space-y-3">
+                      <h3 className="text-sm font-medium text-white mb-1">Product Info</h3>
+
+                      <div>
+                        <label className={labelClasses}>
+                          Product Name <span className="text-blue-400">*</span>
+                        </label>
+                        <input
+                          type="text"
+                          value={productName}
+                          onChange={(e) => setProductName(e.target.value)}
+                          placeholder="e.g. GlowSkin Serum"
+                          className={inputClasses}
+                        />
+                      </div>
+
+                      <div>
+                        <label className={labelClasses}>Description</label>
+                        <textarea
+                          value={productDescription}
+                          onChange={(e) => setProductDescription(e.target.value)}
+                          placeholder="Short product description..."
+                          rows={3}
+                          className={inputClasses + ' resize-none'}
+                        />
+                      </div>
+
+                      <div>
+                        <label className={labelClasses}>Price</label>
+                        <input
+                          type="text"
+                          value={productPrice}
+                          onChange={(e) => setProductPrice(e.target.value)}
+                          placeholder="e.g. $49.99"
+                          className={inputClasses}
+                        />
+                      </div>
+
+                      <div>
+                        <label className={labelClasses}>
+                          Product Photo <span className="text-blue-400">*</span>
+                        </label>
+                        <UploadZone
+                          preview={productPreview}
+                          onFile={handleProductFile}
+                          onUrlChange={(url) => {
+                            setProductImageUrl(url);
+                            setProductFile(null);
+                            setProductPreview('');
+                          }}
+                          urlValue={productImageUrl}
+                          onClear={clearProduct}
+                          label="Product photo"
+                          compact
+                        />
+                      </div>
+                    </div>
+
+                    {/* Product Profile (collapsible) */}
+                    <div className="bg-[#111] border border-white/[0.06] rounded-lg">
+                      <button
+                        type="button"
+                        onClick={() => setProfileOpen(!profileOpen)}
+                        className="w-full flex items-center justify-between p-4 cursor-pointer"
+                      >
+                        <span className="text-sm font-medium text-white">Product Profile</span>
+                        {profileOpen ? (
+                          <ChevronDown className="w-4 h-4 text-slate-400" />
+                        ) : (
+                          <ChevronRight className="w-4 h-4 text-slate-400" />
+                        )}
+                      </button>
+
+                      {profileOpen && (
+                        <div className="px-4 pb-4 space-y-3 border-t border-white/[0.04] pt-3">
+                          <div>
+                            <label className={labelClasses}>Oneliner</label>
+                            <input type="text" value={oneliner} onChange={(e) => setOneliner(e.target.value)} placeholder="One-sentence product pitch" className={inputClasses} />
+                          </div>
+                          <div>
+                            <label className={labelClasses}>Customer Avatar</label>
+                            <input type="text" value={customerAvatar} onChange={(e) => setCustomerAvatar(e.target.value)} placeholder="Who is your ideal customer?" className={inputClasses} />
+                          </div>
+                          <div>
+                            <label className={labelClasses}>Customer Frustration</label>
+                            <textarea value={customerFrustration} onChange={(e) => setCustomerFrustration(e.target.value)} placeholder="What frustrates them?" rows={2} className={inputClasses + ' resize-none'} />
+                          </div>
+                          <div>
+                            <label className={labelClasses}>Customer Dream</label>
+                            <textarea value={customerDream} onChange={(e) => setCustomerDream(e.target.value)} placeholder="What do they aspire to?" rows={2} className={inputClasses + ' resize-none'} />
+                          </div>
+                          <div>
+                            <label className={labelClasses}>Big Promise</label>
+                            <textarea value={bigPromise} onChange={(e) => setBigPromise(e.target.value)} placeholder="Your main value proposition" rows={2} className={inputClasses + ' resize-none'} />
+                          </div>
+                          <div>
+                            <label className={labelClasses}>Mechanism</label>
+                            <textarea value={mechanism} onChange={(e) => setMechanism(e.target.value)} placeholder="How does it work?" rows={2} className={inputClasses + ' resize-none'} />
+                          </div>
+                          <div>
+                            <label className={labelClasses}>Differentiator</label>
+                            <textarea value={differentiator} onChange={(e) => setDifferentiator(e.target.value)} placeholder="What makes it unique?" rows={2} className={inputClasses + ' resize-none'} />
+                          </div>
+                          <div>
+                            <label className={labelClasses}>Voice / Tone</label>
+                            <input type="text" value={voice} onChange={(e) => setVoice(e.target.value)} placeholder="e.g. Bold, friendly, clinical" className={inputClasses} />
+                          </div>
+                          <div>
+                            <label className={labelClasses}>Guarantee</label>
+                            <input type="text" value={guarantee} onChange={(e) => setGuarantee(e.target.value)} placeholder="e.g. 30-day money-back guarantee" className={inputClasses} />
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </>
+                )}
+
+                {/* Selected product summary */}
+                {selectedProductId && (
+                  <div className="bg-[#111] border border-emerald-500/20 rounded-lg p-4 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-sm font-medium text-emerald-400">Product Loaded</h3>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedProductId(null);
+                          setProductName('');
+                          setProductDescription('');
+                          setProductPrice('');
+                          setProductImageUrl('');
+                          setProductPreview('');
+                          setOneliner('');
+                          setCustomerAvatar('');
+                          setCustomerFrustration('');
+                          setCustomerDream('');
+                          setBigPromise('');
+                          setMechanism('');
+                          setDifferentiator('');
+                          setVoice('');
+                          setGuarantee('');
+                          setMarketingAngle('');
+                        }}
+                        className="text-[10px] text-slate-500 hover:text-white transition-colors cursor-pointer"
+                      >
+                        Clear
+                      </button>
+                    </div>
+                    <p className="text-white text-sm font-medium">{productName}</p>
+                    {productDescription && <p className="text-xs text-slate-400 line-clamp-2">{productDescription}</p>}
+                    {productPreview && (
+                      <img src={productPreview} alt="" className="w-16 h-16 rounded-md object-cover border border-white/[0.06] mt-1" />
+                    )}
+                  </div>
+                )}
               </div>
 
-              {/* Product Info -- hidden when product selected from library */}
-              {!selectedProductId && (
-                <>
-                  <div className="bg-[#111] border border-white/[0.06] rounded-lg p-5 space-y-3">
-                    <h3 className="text-sm font-medium text-white mb-1">Product Info</h3>
+              {/* Right: Pipeline content (fills remaining) */}
+              <div className="flex-1 min-w-0 space-y-6">
+                <PipelineView
+                  creatives={creatives}
+                  loading={creativesLoading}
+                  onRefresh={fetchCreatives}
+                  onApprove={handleApproveCreative}
+                  onReject={handleRejectCreative}
+                  onCreativeClick={(creative) => setDetailModal(creative)}
+                />
 
-                    <div>
+                {/* ---- Error State ---- */}
+                {error && !generating && (
+                  <div className="bg-red-500/5 border border-red-500/20 rounded-lg p-6">
+                    <div className="flex items-start gap-3">
+                      <AlertCircle className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
+                      <div className="flex-1">
+                        <h3 className="text-sm font-medium text-red-300 mb-1">Generation Failed</h3>
+                        <p className="text-sm text-red-400/80">{error}</p>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setError(null);
+                        handleGenerate();
+                      }}
+                      className="mt-4 flex items-center gap-2 px-4 py-2 rounded-lg bg-red-500/10 border border-red-500/20 text-sm text-red-300 hover:bg-red-500/20 transition-colors cursor-pointer"
+                    >
+                      <RotateCcw className="w-3.5 h-3.5" />
+                      Try Again
+                    </button>
+                  </div>
+                )}
+
+                {/* ---- Loading State ---- */}
+                {generating && (
+                  <div className="bg-[#111] border border-white/[0.06] rounded-lg p-8">
+                    <h3 className="text-sm font-medium text-white mb-4">Generating your creative...</h3>
+                    <div className="space-y-1">
+                      <StepperIndicator step={1} currentStep={generationStep} label="Analyzing reference ad with AI..." />
+                      <StepperIndicator step={2} currentStep={generationStep} label="Generating new creative..." />
+                      <StepperIndicator step={3} currentStep={generationStep} label="Finalizing image..." />
+                    </div>
+                    <div className="mt-6 h-1.5 rounded-full bg-white/[0.04] overflow-hidden">
+                      <div
+                        className="h-full bg-blue-600 rounded-full transition-all duration-1000 ease-out"
+                        style={{
+                          width:
+                            generationStep === 1
+                              ? '25%'
+                              : generationStep === 2
+                                ? '60%'
+                                : generationStep === 3
+                                  ? '90%'
+                                  : '0%',
+                        }}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {/* ---- Results State ---- */}
+                {!generating && result && (
+                  <div className="space-y-6">
+                    {/* No image warning */}
+                    {!result.generated_image_url && (
+                      <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-4 flex items-start gap-3">
+                        <AlertTriangle className="w-4 h-4 text-yellow-400 mt-0.5 shrink-0" />
+                        <div>
+                          <p className="text-sm text-yellow-300 font-medium">Image generation skipped</p>
+                          <p className="text-xs text-yellow-400/70 mt-1">
+                            {result._note || 'Provide a reference image via URL (not file upload) to enable image generation.'}
+                          </p>
+                        </div>
+                      </div>
+                    )}
+                    {/* Generated Image */}
+                    {result.generated_image_url && (
+                      <div className="bg-[#111] border border-white/[0.06] rounded-lg p-5">
+                        <h3 className="text-sm font-medium text-white mb-3">Generated Creative</h3>
+                        <img
+                          src={result.generated_image_url}
+                          alt="Generated creative"
+                          className="w-full rounded-lg border border-white/[0.06]"
+                        />
+                        <div className="flex gap-3 mt-4">
+                          <button
+                            type="button"
+                            onClick={() => downloadImage(result.generated_image_url)}
+                            className="flex items-center gap-2 px-4 py-2 rounded-lg border border-blue-500/30 text-sm text-blue-300 hover:bg-blue-500/10 transition-colors cursor-pointer"
+                          >
+                            <Download className="w-3.5 h-3.5" />
+                            Download
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleGenerateAnother}
+                            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-sm text-white transition-colors cursor-pointer"
+                          >
+                            <RotateCcw className="w-3.5 h-3.5" />
+                            Generate Another
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Side-by-side Comparison */}
+                    {result.generated_image_url && (referencePreview || referenceImageUrl) && (
+                      <div className="bg-[#111] border border-white/[0.06] rounded-lg p-5">
+                        <h3 className="text-sm font-medium text-white mb-3">Comparison</h3>
+                        <div className="flex gap-4">
+                          <div className="flex-1">
+                            <span className="text-xs text-slate-400 mb-1.5 block">Reference</span>
+                            <img
+                              src={referencePreview || referenceImageUrl}
+                              alt="Reference"
+                              className="w-full rounded-lg border border-white/[0.06] object-cover"
+                            />
+                          </div>
+                          <div className="flex-1">
+                            <span className="text-xs text-slate-400 mb-1.5 block">Generated</span>
+                            <img
+                              src={result.generated_image_url}
+                              alt="Generated"
+                              className="w-full rounded-lg border border-white/[0.06] object-cover"
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Adapted Copy Card */}
+                    {result.adapted_text && (
+                      <div className="bg-[#111] border border-white/[0.06] rounded-lg p-5">
+                        <h3 className="text-sm font-medium text-white mb-4">Adapted Copy</h3>
+                        <div className="space-y-4">
+                          {result.adapted_text.headline && (
+                            <div>
+                              <span className={labelClasses}>Headline</span>
+                              <p className="text-sm text-white">{result.adapted_text.headline}</p>
+                            </div>
+                          )}
+                          {result.adapted_text.subheadline && (
+                            <div>
+                              <span className={labelClasses}>Subheadline</span>
+                              <p className="text-sm text-slate-300">{result.adapted_text.subheadline}</p>
+                            </div>
+                          )}
+                          {result.adapted_text.body && (
+                            <div>
+                              <span className={labelClasses}>Body</span>
+                              <p className="text-sm text-slate-300 whitespace-pre-line">
+                                {result.adapted_text.body}
+                              </p>
+                            </div>
+                          )}
+                          {result.adapted_text.cta && (
+                            <div>
+                              <span className={labelClasses}>CTA</span>
+                              <span className="inline-block px-3 py-1.5 text-sm rounded-lg bg-blue-600 text-white">
+                                {result.adapted_text.cta}
+                              </span>
+                            </div>
+                          )}
+                          {result.adapted_text.badges && result.adapted_text.badges.length > 0 && (
+                            <div>
+                              <span className={labelClasses}>Badges</span>
+                              <div className="flex flex-wrap gap-1.5">
+                                {result.adapted_text.badges.map((badge, i) => (
+                                  <CopyBadge key={i} text={badge} />
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          {result.adapted_text.bullets && result.adapted_text.bullets.length > 0 && (
+                            <div>
+                              <span className={labelClasses}>Bullets</span>
+                              <div className="flex flex-wrap gap-1.5">
+                                {result.adapted_text.bullets.map((bullet, i) => (
+                                  <CopyBadge key={i} text={bullet} />
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Text Swaps Table */}
+                    {result.swap_pairs && result.swap_pairs.length > 0 && (
+                      <div className="bg-[#111] border border-white/[0.06] rounded-lg p-5">
+                        <h3 className="text-sm font-medium text-white mb-3">Text Swaps</h3>
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-sm">
+                            <thead>
+                              <tr className="border-b border-white/[0.06]">
+                                <th className="text-left py-2 pr-4 text-xs font-medium text-slate-400">Original</th>
+                                <th className="w-8" />
+                                <th className="text-left py-2 pl-4 text-xs font-medium text-slate-400">Adapted</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {result.swap_pairs.map((swap, i) => (
+                                <tr key={i} className="border-b border-white/[0.03] last:border-0">
+                                  <td className="py-2.5 pr-4 text-slate-400">{swap.original}</td>
+                                  <td className="py-2.5 text-center">
+                                    <ArrowRight className="w-3.5 h-3.5 text-slate-600 inline-block" />
+                                  </td>
+                                  <td className="py-2.5 pl-4 text-white">{swap.adapted}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* ---- Reference Images Grid ---- */}
+                {references.length > 0 && !generating && !result && (
+                  <div className="bg-[#111] border border-white/[0.06] rounded-lg p-5">
+                    <h3 className="text-sm font-medium text-white mb-3">Saved References</h3>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+                      {references.map((ref, i) => (
+                        <button
+                          key={ref.id || i}
+                          type="button"
+                          onClick={() => {
+                            setReferenceImageUrl(ref.url || ref.image_url);
+                            setReferencePreview(ref.url || ref.image_url);
+                            setReferenceFile(null);
+                          }}
+                          className="group relative rounded-lg overflow-hidden border border-white/[0.06] hover:border-blue-500/40 transition-colors cursor-pointer"
+                        >
+                          <img
+                            src={ref.url || ref.image_url}
+                            alt={ref.name || 'Reference'}
+                            className="w-full h-24 object-cover"
+                          />
+                          <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition-colors flex items-center justify-center">
+                            <span className="text-white text-xs opacity-0 group-hover:opacity-100 transition-opacity">
+                              Use
+                            </span>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* ---- Advertorial Pipeline ---- */}
+          {activePipeline === 'advertorial' && (
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+              {/* LEFT PANEL -- Advertorial Form */}
+              <div className="lg:col-span-1 space-y-4">
+                {/* Product Selector */}
+                <div className="bg-[#111] border border-white/[0.06] rounded-lg p-5 space-y-3">
+                  <label className={labelClasses}>Product</label>
+                  <ProductSelector
+                    selectedId={advSelectedProductId}
+                    onSelect={handleAdvProductSelect}
+                  />
+                  {!advSelectedProductId && (
+                    <div className="pt-1">
                       <label className={labelClasses}>
                         Product Name <span className="text-blue-400">*</span>
                       </label>
                       <input
                         type="text"
-                        value={productName}
-                        onChange={(e) => setProductName(e.target.value)}
+                        value={advProductName}
+                        onChange={(e) => setAdvProductName(e.target.value)}
                         placeholder="e.g. GlowSkin Serum"
                         className={inputClasses}
                       />
                     </div>
-
-                    <div>
-                      <label className={labelClasses}>Description</label>
-                      <textarea
-                        value={productDescription}
-                        onChange={(e) => setProductDescription(e.target.value)}
-                        placeholder="Short product description..."
-                        rows={3}
-                        className={inputClasses + ' resize-none'}
-                      />
-                    </div>
-
-                    <div>
-                      <label className={labelClasses}>Price</label>
-                      <input
-                        type="text"
-                        value={productPrice}
-                        onChange={(e) => setProductPrice(e.target.value)}
-                        placeholder="e.g. $49.99"
-                        className={inputClasses}
-                      />
-                    </div>
-
-                    <div>
-                      <label className={labelClasses}>
-                        Product Photo <span className="text-blue-400">*</span>
-                      </label>
-                      <UploadZone
-                        preview={productPreview}
-                        onFile={handleProductFile}
-                        onUrlChange={(url) => {
-                          setProductImageUrl(url);
-                          setProductFile(null);
-                          setProductPreview('');
+                  )}
+                  {advSelectedProductId && (
+                    <div className="flex items-center gap-2 pt-1">
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                      <span className="text-sm text-emerald-300">{advProductName}</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAdvSelectedProductId(null);
+                          setAdvProductName('');
                         }}
-                        urlValue={productImageUrl}
-                        onClear={clearProduct}
-                        label="Product photo"
-                        compact
-                      />
+                        className="ml-auto text-[10px] text-slate-500 hover:text-white cursor-pointer"
+                      >
+                        Clear
+                      </button>
                     </div>
-                  </div>
-
-                  {/* Product Profile (collapsible) */}
-                  <div className="bg-[#111] border border-white/[0.06] rounded-lg">
-                    <button
-                      type="button"
-                      onClick={() => setProfileOpen(!profileOpen)}
-                      className="w-full flex items-center justify-between p-5 cursor-pointer"
-                    >
-                      <span className="text-sm font-medium text-white">Product Profile</span>
-                      {profileOpen ? (
-                        <ChevronDown className="w-4 h-4 text-slate-400" />
-                      ) : (
-                        <ChevronRight className="w-4 h-4 text-slate-400" />
-                      )}
-                    </button>
-
-                    {profileOpen && (
-                      <div className="px-5 pb-5 space-y-3 border-t border-white/[0.04] pt-4">
-                        <div>
-                          <label className={labelClasses}>Oneliner</label>
-                          <input
-                            type="text"
-                            value={oneliner}
-                            onChange={(e) => setOneliner(e.target.value)}
-                            placeholder="One-sentence product pitch"
-                            className={inputClasses}
-                          />
-                        </div>
-
-                        <div>
-                          <label className={labelClasses}>Customer Avatar</label>
-                          <input
-                            type="text"
-                            value={customerAvatar}
-                            onChange={(e) => setCustomerAvatar(e.target.value)}
-                            placeholder="Who is your ideal customer?"
-                            className={inputClasses}
-                          />
-                        </div>
-
-                        <div>
-                          <label className={labelClasses}>Customer Frustration</label>
-                          <textarea
-                            value={customerFrustration}
-                            onChange={(e) => setCustomerFrustration(e.target.value)}
-                            placeholder="What frustrates them?"
-                            rows={2}
-                            className={inputClasses + ' resize-none'}
-                          />
-                        </div>
-
-                        <div>
-                          <label className={labelClasses}>Customer Dream</label>
-                          <textarea
-                            value={customerDream}
-                            onChange={(e) => setCustomerDream(e.target.value)}
-                            placeholder="What do they aspire to?"
-                            rows={2}
-                            className={inputClasses + ' resize-none'}
-                          />
-                        </div>
-
-                        <div>
-                          <label className={labelClasses}>Big Promise</label>
-                          <textarea
-                            value={bigPromise}
-                            onChange={(e) => setBigPromise(e.target.value)}
-                            placeholder="Your main value proposition"
-                            rows={2}
-                            className={inputClasses + ' resize-none'}
-                          />
-                        </div>
-
-                        <div>
-                          <label className={labelClasses}>Mechanism</label>
-                          <textarea
-                            value={mechanism}
-                            onChange={(e) => setMechanism(e.target.value)}
-                            placeholder="How does it work?"
-                            rows={2}
-                            className={inputClasses + ' resize-none'}
-                          />
-                        </div>
-
-                        <div>
-                          <label className={labelClasses}>Differentiator</label>
-                          <textarea
-                            value={differentiator}
-                            onChange={(e) => setDifferentiator(e.target.value)}
-                            placeholder="What makes it unique?"
-                            rows={2}
-                            className={inputClasses + ' resize-none'}
-                          />
-                        </div>
-
-                        <div>
-                          <label className={labelClasses}>Voice / Tone</label>
-                          <input
-                            type="text"
-                            value={voice}
-                            onChange={(e) => setVoice(e.target.value)}
-                            placeholder="e.g. Bold, friendly, clinical"
-                            className={inputClasses}
-                          />
-                        </div>
-
-                        <div>
-                          <label className={labelClasses}>Guarantee</label>
-                          <input
-                            type="text"
-                            value={guarantee}
-                            onChange={(e) => setGuarantee(e.target.value)}
-                            placeholder="e.g. 30-day money-back guarantee"
-                            className={inputClasses}
-                          />
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </>
-              )}
-
-              {/* Selected product summary */}
-              {selectedProductId && (
-                <div className="bg-[#111] border border-emerald-500/20 rounded-lg p-5 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <h3 className="text-sm font-medium text-emerald-400">Product Loaded</h3>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setSelectedProductId(null);
-                        setProductName('');
-                        setProductDescription('');
-                        setProductPrice('');
-                        setProductImageUrl('');
-                        setProductPreview('');
-                        setOneliner('');
-                        setCustomerAvatar('');
-                        setCustomerFrustration('');
-                        setCustomerDream('');
-                        setBigPromise('');
-                        setMechanism('');
-                        setDifferentiator('');
-                        setVoice('');
-                        setGuarantee('');
-                        setMarketingAngle('');
-                      }}
-                      className="text-[10px] text-slate-500 hover:text-white transition-colors cursor-pointer"
-                    >
-                      Clear & enter manually
-                    </button>
-                  </div>
-                  <p className="text-white text-sm font-medium">{productName}</p>
-                  {productDescription && <p className="text-xs text-slate-400 line-clamp-2">{productDescription}</p>}
-                  {productPreview && (
-                    <img src={productPreview} alt="" className="w-16 h-16 rounded-md object-cover border border-white/[0.06] mt-1" />
                   )}
                 </div>
-              )}
 
-              {/* Marketing Angle */}
-              <div className="bg-[#111] border border-white/[0.06] rounded-lg p-5">
-                <label className={labelClasses}>Marketing Angle</label>
-                <input
-                  type="text"
-                  value={marketingAngle}
-                  onChange={(e) => setMarketingAngle(e.target.value)}
-                  placeholder="e.g. Social proof, urgency, before/after"
-                  className={inputClasses}
-                />
-              </div>
+                {/* Marketing Angle */}
+                <div className="bg-[#111] border border-white/[0.06] rounded-lg p-5">
+                  <label className={labelClasses}>Angle / Hook Direction</label>
+                  <input
+                    type="text"
+                    value={advAngle}
+                    onChange={(e) => setAdvAngle(e.target.value)}
+                    placeholder="e.g. Pain point, social proof, curiosity"
+                    className={inputClasses}
+                  />
+                </div>
 
-              {/* Aspect Ratio */}
-              <div className="bg-[#111] border border-white/[0.06] rounded-lg p-5">
-                <label className={labelClasses}>Aspect Ratio</label>
-                <div className="flex gap-2">
-                  {ratios.map((r) => (
-                    <button
-                      key={r}
-                      type="button"
-                      onClick={() => setAspectRatio(r)}
-                      className={`flex-1 px-3 py-2 text-sm rounded-lg border transition-colors cursor-pointer ${
-                        aspectRatio === r
-                          ? 'bg-blue-600 border-blue-500 text-white'
-                          : 'bg-transparent border-white/[0.06] text-slate-400 hover:text-white hover:border-white/[0.12]'
-                      }`}
-                    >
-                      {r}
-                    </button>
-                  ))}
+                {/* Source Copy */}
+                <div className="bg-[#111] border border-white/[0.06] rounded-lg p-5 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <label className={labelClasses + ' mb-0'}>
+                      Source Copy <span className="text-blue-400">*</span>
+                    </label>
+                    <span className={`text-[10px] ${advSourceCopy.length >= 100 ? 'text-emerald-400' : 'text-slate-600'}`}>
+                      {advSourceCopy.split(/\s+/).filter(Boolean).length} words
+                    </span>
+                  </div>
+                  <textarea
+                    value={advSourceCopy}
+                    onChange={(e) => setAdvSourceCopy(e.target.value)}
+                    placeholder="Paste competitor's advertorial copy here (300+ words recommended)..."
+                    rows={12}
+                    className={inputClasses + ' resize-none'}
+                  />
+                  {advSourceCopy.trim().length > 0 && advSourceCopy.trim().length < 100 && (
+                    <p className="text-[10px] text-amber-400">
+                      Copy is short. 300+ words recommended for best results.
+                    </p>
+                  )}
+                </div>
+
+                {/* Generate Button */}
+                <button
+                  type="button"
+                  onClick={handleAdvGenerate}
+                  disabled={!canGenerateAdv}
+                  className={`w-full flex items-center justify-center gap-2 px-4 py-3 rounded-lg text-sm font-medium transition-colors cursor-pointer ${
+                    canGenerateAdv
+                      ? 'bg-blue-600 hover:bg-blue-700 text-white'
+                      : 'bg-blue-600/30 text-white/40 cursor-not-allowed'
+                  }`}
+                >
+                  {advGenerating ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      Generating Variants...
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="w-4 h-4" />
+                      Generate 3 Copy Variants
+                    </>
+                  )}
+                </button>
+
+                {/* Status flow legend */}
+                <div className="bg-[#111] border border-white/[0.06] rounded-lg p-5">
+                  <label className={labelClasses}>Status Flow</label>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {ADVERTORIAL_STATUSES.map((s, i) => (
+                      <div key={s} className="flex items-center gap-1.5">
+                        <StatusBadge status={s} />
+                        {i < ADVERTORIAL_STATUSES.length - 1 && (
+                          <ArrowRight className="w-3 h-3 text-slate-600" />
+                        )}
+                      </div>
+                    ))}
+                  </div>
                 </div>
               </div>
 
-              {/* Generate Button */}
-              <button
-                type="button"
-                onClick={handleGenerate}
-                disabled={!canGenerate}
-                className={`w-full flex items-center justify-center gap-2 px-4 py-3 rounded-lg text-sm font-medium transition-colors cursor-pointer ${
-                  canGenerate
-                    ? 'bg-blue-600 hover:bg-blue-700 text-white'
-                    : 'bg-blue-600/30 text-white/40 cursor-not-allowed'
-                }`}
-              >
-                {generating ? (
-                  <>
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    Generating...
-                  </>
-                ) : (
-                  <>
-                    <Sparkles className="w-4 h-4" />
-                    Generate Creative
-                  </>
-                )}
-              </button>
-            </div>
-
-            {/* =========================================================== */}
-            {/* RIGHT PANEL -- Results + Creative Review                      */}
-            {/* =========================================================== */}
-            <div className="lg:col-span-2 space-y-6">
-              {/* ---- Error State ---- */}
-              {error && !generating && (
-                <div className="bg-red-500/5 border border-red-500/20 rounded-lg p-6">
-                  <div className="flex items-start gap-3">
-                    <AlertCircle className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
-                    <div className="flex-1">
-                      <h3 className="text-sm font-medium text-red-300 mb-1">Generation Failed</h3>
-                      <p className="text-sm text-red-400/80">{error}</p>
+              {/* RIGHT PANEL -- Advertorial Copies */}
+              <div className="lg:col-span-2 space-y-6">
+                {/* Error */}
+                {advError && !advGenerating && (
+                  <div className="bg-red-500/5 border border-red-500/20 rounded-lg p-6">
+                    <div className="flex items-start gap-3">
+                      <AlertCircle className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
+                      <div className="flex-1">
+                        <h3 className="text-sm font-medium text-red-300 mb-1">Generation Failed</h3>
+                        <p className="text-sm text-red-400/80">{advError}</p>
+                      </div>
                     </div>
+                    <button
+                      type="button"
+                      onClick={() => setAdvError(null)}
+                      className="mt-4 flex items-center gap-2 px-4 py-2 rounded-lg bg-red-500/10 border border-red-500/20 text-sm text-red-300 hover:bg-red-500/20 transition-colors cursor-pointer"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                      Dismiss
+                    </button>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setError(null);
-                      handleGenerate();
-                    }}
-                    className="mt-4 flex items-center gap-2 px-4 py-2 rounded-lg bg-red-500/10 border border-red-500/20 text-sm text-red-300 hover:bg-red-500/20 transition-colors cursor-pointer"
-                  >
-                    <RotateCcw className="w-3.5 h-3.5" />
-                    Try Again
-                  </button>
-                </div>
-              )}
+                )}
 
-              {/* ---- Loading State ---- */}
-              {generating && (
-                <div className="bg-[#111] border border-white/[0.06] rounded-lg p-8">
-                  <h3 className="text-sm font-medium text-white mb-4">Generating your creative...</h3>
-                  <div className="space-y-1">
-                    <StepperIndicator
-                      step={1}
-                      currentStep={generationStep}
-                      label="Analyzing reference ad with AI..."
-                    />
-                    <StepperIndicator
-                      step={2}
-                      currentStep={generationStep}
-                      label="Generating new creative..."
-                    />
-                    <StepperIndicator
-                      step={3}
-                      currentStep={generationStep}
-                      label="Finalizing image..."
-                    />
-                  </div>
-                  <div className="mt-6 h-1.5 rounded-full bg-white/[0.04] overflow-hidden">
-                    <div
-                      className="h-full bg-blue-600 rounded-full transition-all duration-1000 ease-out"
-                      style={{
-                        width:
-                          generationStep === 1
-                            ? '25%'
-                            : generationStep === 2
-                              ? '60%'
-                              : generationStep === 3
-                                ? '90%'
-                                : '0%',
-                      }}
-                    />
-                  </div>
-                </div>
-              )}
-
-              {/* ---- Empty State ---- */}
-              {!generating && !result && !error && creatives.length === 0 && (
-                <div className="flex flex-col items-center justify-center h-full min-h-[400px] text-center">
-                  <Layers className="w-12 h-12 text-slate-700 mb-4" />
-                  <p className="text-sm text-slate-500 max-w-xs">
-                    Upload a reference ad and fill in product details to generate a new creative
-                  </p>
-                </div>
-              )}
-
-              {/* ---- Results State ---- */}
-              {!generating && result && (
-                <div className="space-y-6">
-                  {/* No image warning */}
-                  {!result.generated_image_url && (
-                    <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-4 flex items-start gap-3">
-                      <AlertTriangle className="w-4 h-4 text-yellow-400 mt-0.5 shrink-0" />
+                {/* Loading */}
+                {advGenerating && (
+                  <div className="bg-[#111] border border-white/[0.06] rounded-lg p-8">
+                    <div className="flex items-center gap-3">
+                      <Loader2 className="w-5 h-5 text-blue-400 animate-spin" />
                       <div>
-                        <p className="text-sm text-yellow-300 font-medium">Image generation skipped</p>
-                        <p className="text-xs text-yellow-400/70 mt-1">
-                          {result._note || 'Provide a reference image via URL (not file upload) to enable image generation.'}
+                        <h3 className="text-sm font-medium text-white">Generating copy variants...</h3>
+                        <p className="text-xs text-slate-400 mt-1">
+                          Creating direct adapt, pain pivot, and creative swing variants
                         </p>
                       </div>
                     </div>
-                  )}
-                  {/* Generated Image */}
-                  {result.generated_image_url && (
-                    <div className="bg-[#111] border border-white/[0.06] rounded-lg p-5">
-                      <h3 className="text-sm font-medium text-white mb-3">Generated Creative</h3>
-                      <img
-                        src={result.generated_image_url}
-                        alt="Generated creative"
-                        className="w-full rounded-lg border border-white/[0.06]"
-                      />
-                      <div className="flex gap-3 mt-4">
-                        <button
-                          type="button"
-                          onClick={() => downloadImage(result.generated_image_url)}
-                          className="flex items-center gap-2 px-4 py-2 rounded-lg border border-blue-500/30 text-sm text-blue-300 hover:bg-blue-500/10 transition-colors cursor-pointer"
-                        >
-                          <Download className="w-3.5 h-3.5" />
-                          Download
-                        </button>
-                        <button
-                          type="button"
-                          onClick={handleGenerateAnother}
-                          className="flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-sm text-white transition-colors cursor-pointer"
-                        >
-                          <RotateCcw className="w-3.5 h-3.5" />
-                          Generate Another
-                        </button>
-                      </div>
+                    <div className="mt-6 h-1.5 rounded-full bg-white/[0.04] overflow-hidden">
+                      <div className="h-full bg-blue-600 rounded-full animate-pulse" style={{ width: '60%' }} />
                     </div>
-                  )}
+                  </div>
+                )}
 
-                  {/* Side-by-side Comparison */}
-                  {result.generated_image_url && (referencePreview || referenceImageUrl) && (
-                    <div className="bg-[#111] border border-white/[0.06] rounded-lg p-5">
-                      <h3 className="text-sm font-medium text-white mb-3">Comparison</h3>
-                      <div className="flex gap-4">
-                        <div className="flex-1">
-                          <span className="text-xs text-slate-400 mb-1.5 block">Reference</span>
-                          <img
-                            src={referencePreview || referenceImageUrl}
-                            alt="Reference"
-                            className="w-full rounded-lg border border-white/[0.06] object-cover"
-                          />
+                {/* Empty State */}
+                {!advGenerating && advCopies.length === 0 && !advError && (
+                  <div className="flex flex-col items-center justify-center h-full min-h-[400px] text-center">
+                    <FileText className="w-12 h-12 text-slate-700 mb-4" />
+                    <p className="text-sm text-slate-500 max-w-xs">
+                      Paste competitor copy and select a product to generate advertorial variants
+                    </p>
+                    <div className="flex items-center gap-4 mt-6">
+                      {Object.entries(VARIANT_TYPE_COLORS).map(([key, config]) => (
+                        <div key={key} className="flex items-center gap-1.5">
+                          <CircleDot className={`w-3 h-3 ${config.text}`} />
+                          <span className="text-xs text-slate-500">{config.label}</span>
                         </div>
-                        <div className="flex-1">
-                          <span className="text-xs text-slate-400 mb-1.5 block">Generated</span>
-                          <img
-                            src={result.generated_image_url}
-                            alt="Generated"
-                            className="w-full rounded-lg border border-white/[0.06] object-cover"
-                          />
-                        </div>
-                      </div>
+                      ))}
                     </div>
-                  )}
+                  </div>
+                )}
 
-                  {/* Adapted Copy Card */}
-                  {result.adapted_text && (
-                    <div className="bg-[#111] border border-white/[0.06] rounded-lg p-5">
-                      <h3 className="text-sm font-medium text-white mb-4">Adapted Copy</h3>
-                      <div className="space-y-4">
-                        {result.adapted_text.headline && (
-                          <div>
-                            <span className={labelClasses}>Headline</span>
-                            <p className="text-sm text-white">{result.adapted_text.headline}</p>
-                          </div>
-                        )}
-                        {result.adapted_text.subheadline && (
-                          <div>
-                            <span className={labelClasses}>Subheadline</span>
-                            <p className="text-sm text-slate-300">{result.adapted_text.subheadline}</p>
-                          </div>
-                        )}
-                        {result.adapted_text.body && (
-                          <div>
-                            <span className={labelClasses}>Body</span>
-                            <p className="text-sm text-slate-300 whitespace-pre-line">
-                              {result.adapted_text.body}
-                            </p>
-                          </div>
-                        )}
-                        {result.adapted_text.cta && (
-                          <div>
-                            <span className={labelClasses}>CTA</span>
-                            <span className="inline-block px-3 py-1.5 text-sm rounded-lg bg-blue-600 text-white">
-                              {result.adapted_text.cta}
-                            </span>
-                          </div>
-                        )}
-                        {result.adapted_text.badges && result.adapted_text.badges.length > 0 && (
-                          <div>
-                            <span className={labelClasses}>Badges</span>
-                            <div className="flex flex-wrap gap-1.5">
-                              {result.adapted_text.badges.map((badge, i) => (
-                                <CopyBadge key={i} text={badge} />
-                              ))}
-                            </div>
-                          </div>
-                        )}
-                        {result.adapted_text.bullets && result.adapted_text.bullets.length > 0 && (
-                          <div>
-                            <span className={labelClasses}>Bullets</span>
-                            <div className="flex flex-wrap gap-1.5">
-                              {result.adapted_text.bullets.map((bullet, i) => (
-                                <CopyBadge key={i} text={bullet} />
-                              ))}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Text Swaps Table */}
-                  {result.swap_pairs && result.swap_pairs.length > 0 && (
-                    <div className="bg-[#111] border border-white/[0.06] rounded-lg p-5">
-                      <h3 className="text-sm font-medium text-white mb-3">Text Swaps</h3>
-                      <div className="overflow-x-auto">
-                        <table className="w-full text-sm">
-                          <thead>
-                            <tr className="border-b border-white/[0.06]">
-                              <th className="text-left py-2 pr-4 text-xs font-medium text-slate-400">
-                                Original
-                              </th>
-                              <th className="w-8" />
-                              <th className="text-left py-2 pl-4 text-xs font-medium text-slate-400">
-                                Adapted
-                              </th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {result.swap_pairs.map((swap, i) => (
-                              <tr key={i} className="border-b border-white/[0.03] last:border-0">
-                                <td className="py-2.5 pr-4 text-slate-400">{swap.original}</td>
-                                <td className="py-2.5 text-center">
-                                  <ArrowRight className="w-3.5 h-3.5 text-slate-600 inline-block" />
-                                </td>
-                                <td className="py-2.5 pl-4 text-white">{swap.adapted}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* ---- Reference Images Grid ---- */}
-              {references.length > 0 && !generating && !result && (
-                <div className="bg-[#111] border border-white/[0.06] rounded-lg p-5">
-                  <h3 className="text-sm font-medium text-white mb-3">Saved References</h3>
-                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
-                    {references.map((ref, i) => (
+                {/* Copy Cards */}
+                {advCopies.length > 0 && !advGenerating && (
+                  <div>
+                    <div className="flex items-center justify-between mb-3">
+                      <h3 className="text-sm font-medium text-white">
+                        Copy Variants
+                        <span className="ml-2 text-xs text-slate-500">({advCopies.length})</span>
+                      </h3>
                       <button
-                        key={ref.id || i}
                         type="button"
-                        onClick={() => {
-                          setReferenceImageUrl(ref.url || ref.image_url);
-                          setReferencePreview(ref.url || ref.image_url);
-                          setReferenceFile(null);
-                        }}
-                        className="group relative rounded-lg overflow-hidden border border-white/[0.06] hover:border-blue-500/40 transition-colors cursor-pointer"
+                        onClick={fetchAdvCopies}
+                        disabled={advCopiesLoading}
+                        className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-white transition-colors cursor-pointer"
                       >
-                        <img
-                          src={ref.url || ref.image_url}
-                          alt={ref.name || 'Reference'}
-                          className="w-full h-24 object-cover"
-                        />
-                        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition-colors flex items-center justify-center">
-                          <span className="text-white text-xs opacity-0 group-hover:opacity-100 transition-opacity">
-                            Use
-                          </span>
-                        </div>
+                        <RefreshCw className={`w-3 h-3 ${advCopiesLoading ? 'animate-spin' : ''}`} />
+                        Refresh
                       </button>
-                    ))}
+                    </div>
+                    <div className="space-y-4">
+                      {advCopies.map((copy) => (
+                        <AdvertorialCopyCard
+                          key={copy.id}
+                          copy={copy}
+                          onStatusChange={handleAdvStatusChange}
+                          onGenerateImages={handleAdvGenerateImages}
+                          generatingImages={advGeneratingImagesFor === copy.id}
+                        />
+                      ))}
+                    </div>
                   </div>
-                </div>
-              )}
-
-              {/* ---- Creative Review Cards ---- */}
-              {creatives.length > 0 && !generating && (
-                <div>
-                  <div className="flex items-center justify-between mb-3">
-                    <h3 className="text-sm font-medium text-white">Creative Review</h3>
-                    <button
-                      type="button"
-                      onClick={fetchCreatives}
-                      disabled={creativesLoading}
-                      className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-white transition-colors cursor-pointer"
-                    >
-                      <RefreshCw className={`w-3 h-3 ${creativesLoading ? 'animate-spin' : ''}`} />
-                      Refresh
-                    </button>
-                  </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    {creatives.map((creative) => (
-                      <CreativeReviewCard
-                        key={creative.id}
-                        creative={creative}
-                        onApprove={handleApproveCreative}
-                        onReject={handleRejectCreative}
-                      />
-                    ))}
-                  </div>
-                </div>
-              )}
+                )}
+              </div>
             </div>
-          </div>
+          )}
         </>
       )}
 
       {/* ================================================================= */}
-      {/* ADVERTORIAL PIPELINE                                               */}
+      {/* LIBRARY TAB                                                        */}
       {/* ================================================================= */}
-      {activePipeline === 'advertorial' && (
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* ============================================================= */}
-          {/* LEFT PANEL -- Advertorial Form                                  */}
-          {/* ============================================================= */}
-          <div className="lg:col-span-1 space-y-4">
-            {/* Product Selector */}
-            <div className="bg-[#111] border border-white/[0.06] rounded-lg p-5 space-y-3">
-              <label className={labelClasses}>Product</label>
-              <ProductSelector
-                selectedId={advSelectedProductId}
-                onSelect={handleAdvProductSelect}
-              />
-              {!advSelectedProductId && (
-                <div className="pt-1">
-                  <label className={labelClasses}>
-                    Product Name <span className="text-blue-400">*</span>
-                  </label>
-                  <input
-                    type="text"
-                    value={advProductName}
-                    onChange={(e) => setAdvProductName(e.target.value)}
-                    placeholder="e.g. GlowSkin Serum"
-                    className={inputClasses}
-                  />
-                </div>
-              )}
-              {advSelectedProductId && (
-                <div className="flex items-center gap-2 pt-1">
-                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                  <span className="text-sm text-emerald-300">{advProductName}</span>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setAdvSelectedProductId(null);
-                      setAdvProductName('');
-                    }}
-                    className="ml-auto text-[10px] text-slate-500 hover:text-white cursor-pointer"
-                  >
-                    Clear
-                  </button>
-                </div>
-              )}
-            </div>
+      {activeTab === 'library' && (
+        <LibraryView
+          templates={templates}
+          loading={templatesLoading}
+          onRefresh={fetchTemplates}
+          onTemplateSelect={handleTemplateSelect}
+        />
+      )}
 
-            {/* Marketing Angle */}
-            <div className="bg-[#111] border border-white/[0.06] rounded-lg p-5">
-              <label className={labelClasses}>Angle / Hook Direction</label>
-              <input
-                type="text"
-                value={advAngle}
-                onChange={(e) => setAdvAngle(e.target.value)}
-                placeholder="e.g. Pain point, social proof, curiosity"
-                className={inputClasses}
-              />
-            </div>
+      {/* ================================================================= */}
+      {/* GENERATED TAB                                                      */}
+      {/* ================================================================= */}
+      {activeTab === 'generated' && (
+        <GeneratedView
+          creatives={creatives}
+          loading={creativesLoading}
+          onRefresh={fetchAllCreatives}
+          onCreativeClick={(creative) => setDetailModal(creative)}
+        />
+      )}
 
-            {/* Source Copy */}
-            <div className="bg-[#111] border border-white/[0.06] rounded-lg p-5 space-y-3">
-              <div className="flex items-center justify-between">
-                <label className={labelClasses + ' mb-0'}>
-                  Source Copy <span className="text-blue-400">*</span>
-                </label>
-                <span className={`text-[10px] ${advSourceCopy.length >= 100 ? 'text-emerald-400' : 'text-slate-600'}`}>
-                  {advSourceCopy.split(/\s+/).filter(Boolean).length} words
-                </span>
-              </div>
-              <textarea
-                value={advSourceCopy}
-                onChange={(e) => setAdvSourceCopy(e.target.value)}
-                placeholder="Paste competitor's advertorial copy here (300+ words recommended)..."
-                rows={12}
-                className={inputClasses + ' resize-none'}
-              />
-              {advSourceCopy.trim().length > 0 && advSourceCopy.trim().length < 100 && (
-                <p className="text-[10px] text-amber-400">
-                  Copy is short. 300+ words recommended for best results.
-                </p>
-              )}
-            </div>
+      {/* ================================================================= */}
+      {/* MODALS                                                             */}
+      {/* ================================================================= */}
+      {templateModal && (
+        <TemplateSelectModal
+          templates={templates}
+          loading={templatesLoading}
+          onSelect={handleTemplateSelect}
+          onClose={() => setTemplateModal(false)}
+        />
+      )}
 
-            {/* Generate Button */}
-            <button
-              type="button"
-              onClick={handleAdvGenerate}
-              disabled={!canGenerateAdv}
-              className={`w-full flex items-center justify-center gap-2 px-4 py-3 rounded-lg text-sm font-medium transition-colors cursor-pointer ${
-                canGenerateAdv
-                  ? 'bg-blue-600 hover:bg-blue-700 text-white'
-                  : 'bg-blue-600/30 text-white/40 cursor-not-allowed'
-              }`}
-            >
-              {advGenerating ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  Generating Variants...
-                </>
-              ) : (
-                <>
-                  <Sparkles className="w-4 h-4" />
-                  Generate 3 Copy Variants
-                </>
-              )}
-            </button>
-
-            {/* Status flow legend */}
-            <div className="bg-[#111] border border-white/[0.06] rounded-lg p-5">
-              <label className={labelClasses}>Status Flow</label>
-              <div className="flex flex-wrap items-center gap-1.5">
-                {ADVERTORIAL_STATUSES.map((s, i) => (
-                  <div key={s} className="flex items-center gap-1.5">
-                    <StatusBadge status={s} />
-                    {i < ADVERTORIAL_STATUSES.length - 1 && (
-                      <ArrowRight className="w-3 h-3 text-slate-600" />
-                    )}
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          {/* ============================================================= */}
-          {/* RIGHT PANEL -- Advertorial Copies                               */}
-          {/* ============================================================= */}
-          <div className="lg:col-span-2 space-y-6">
-            {/* Error */}
-            {advError && !advGenerating && (
-              <div className="bg-red-500/5 border border-red-500/20 rounded-lg p-6">
-                <div className="flex items-start gap-3">
-                  <AlertCircle className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
-                  <div className="flex-1">
-                    <h3 className="text-sm font-medium text-red-300 mb-1">Generation Failed</h3>
-                    <p className="text-sm text-red-400/80">{advError}</p>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setAdvError(null)}
-                  className="mt-4 flex items-center gap-2 px-4 py-2 rounded-lg bg-red-500/10 border border-red-500/20 text-sm text-red-300 hover:bg-red-500/20 transition-colors cursor-pointer"
-                >
-                  <X className="w-3.5 h-3.5" />
-                  Dismiss
-                </button>
-              </div>
-            )}
-
-            {/* Loading */}
-            {advGenerating && (
-              <div className="bg-[#111] border border-white/[0.06] rounded-lg p-8">
-                <div className="flex items-center gap-3">
-                  <Loader2 className="w-5 h-5 text-blue-400 animate-spin" />
-                  <div>
-                    <h3 className="text-sm font-medium text-white">Generating copy variants...</h3>
-                    <p className="text-xs text-slate-400 mt-1">
-                      Creating direct adapt, pain pivot, and creative swing variants
-                    </p>
-                  </div>
-                </div>
-                <div className="mt-6 h-1.5 rounded-full bg-white/[0.04] overflow-hidden">
-                  <div className="h-full bg-blue-600 rounded-full animate-pulse" style={{ width: '60%' }} />
-                </div>
-              </div>
-            )}
-
-            {/* Empty State */}
-            {!advGenerating && advCopies.length === 0 && !advError && (
-              <div className="flex flex-col items-center justify-center h-full min-h-[400px] text-center">
-                <FileText className="w-12 h-12 text-slate-700 mb-4" />
-                <p className="text-sm text-slate-500 max-w-xs">
-                  Paste competitor copy and select a product to generate advertorial variants
-                </p>
-                <div className="flex items-center gap-4 mt-6">
-                  {Object.entries(VARIANT_TYPE_COLORS).map(([key, config]) => (
-                    <div key={key} className="flex items-center gap-1.5">
-                      <CircleDot className={`w-3 h-3 ${config.text}`} />
-                      <span className="text-xs text-slate-500">{config.label}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Copy Cards */}
-            {advCopies.length > 0 && !advGenerating && (
-              <div>
-                <div className="flex items-center justify-between mb-3">
-                  <h3 className="text-sm font-medium text-white">
-                    Copy Variants
-                    <span className="ml-2 text-xs text-slate-500">({advCopies.length})</span>
-                  </h3>
-                  <button
-                    type="button"
-                    onClick={fetchAdvCopies}
-                    disabled={advCopiesLoading}
-                    className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-white transition-colors cursor-pointer"
-                  >
-                    <RefreshCw className={`w-3 h-3 ${advCopiesLoading ? 'animate-spin' : ''}`} />
-                    Refresh
-                  </button>
-                </div>
-                <div className="space-y-4">
-                  {advCopies.map((copy) => (
-                    <AdvertorialCopyCard
-                      key={copy.id}
-                      copy={copy}
-                      onStatusChange={handleAdvStatusChange}
-                      onGenerateImages={handleAdvGenerateImages}
-                      generatingImages={advGeneratingImagesFor === copy.id}
-                    />
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
+      {detailModal && (
+        <CreativeDetailModal
+          creative={detailModal}
+          onClose={() => setDetailModal(null)}
+          onApprove={(id) => {
+            handleApproveCreative(id);
+            setDetailModal(null);
+          }}
+          onReject={(id) => {
+            handleRejectCreative(id);
+            setDetailModal(null);
+          }}
+        />
       )}
     </div>
   );

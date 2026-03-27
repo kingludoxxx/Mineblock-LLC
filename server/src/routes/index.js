@@ -14,6 +14,7 @@ import kpiSystemRoutes from './kpiSystem.js';
 import adsControlCenterRoutes from './adsControlCenter.js';
 import advertorialRoutes from './advertorialPipeline.js';
 import adLauncherRoutes from './adLauncher.js';
+import staticsTemplatesRoutes from './staticsTemplates.js';
 
 const mountRoutes = (app) => {
   app.use('/api/v1/users', userRoutes);
@@ -32,6 +33,7 @@ const mountRoutes = (app) => {
   app.use('/api/v1/ads-control', adsControlCenterRoutes);
   app.use('/api/v1/advertorial', advertorialRoutes);
   app.use('/api/v1/ad-launcher', adLauncherRoutes);
+  app.use('/api/v1/statics-templates', staticsTemplatesRoutes);
 };
 
 export default mountRoutes;
