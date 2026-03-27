@@ -1061,9 +1061,9 @@ export default function StaticsGeneration() {
 
           {/* ---- Standard Pipeline ---- */}
           {activePipeline === 'standard' && (
-            <div className="flex gap-6">
-              {/* Left: ConfigSidebar (250px fixed) */}
-              <div className="w-[250px] shrink-0 space-y-4">
+            <div className="flex gap-0">
+              {/* Left: ConfigSidebar */}
+              <div className="w-[260px] shrink-0 space-y-4 pr-5 border-r border-white/[0.06]">
                 <ConfigSidebar
                   products={products}
                   selectedProduct={selectedProductId}
@@ -1257,7 +1257,7 @@ export default function StaticsGeneration() {
               </div>
 
               {/* Right: Pipeline content (fills remaining) */}
-              <div className="flex-1 min-w-0 space-y-6">
+              <div className="flex-1 min-w-0 space-y-6 pl-5">
                 <PipelineView
                   creatives={creatives}
                   loading={creativesLoading}

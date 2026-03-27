@@ -80,7 +80,7 @@ export function ConfigSidebar({
   const selectedProductData = products?.find((p) => p.id === selectedProduct);
 
   return (
-    <aside className="w-80 shrink-0 border-r border-white/[0.06] bg-[#0a0a0a] flex flex-col h-full overflow-y-auto">
+    <aside className="w-full shrink-0 bg-[#0a0a0a] flex flex-col h-full overflow-y-auto">
       {/* ---- CONFIGURATION header ---- */}
       <div className="px-5 pt-5 pb-4">
         <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-500">
