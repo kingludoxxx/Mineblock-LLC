@@ -1029,7 +1029,7 @@ export default function StaticsGeneration() {
         </div>
 
         {/* Tab navigation */}
-        <nav className="flex items-center gap-1">
+        <nav className="flex items-center gap-1 flex-1">
           {TOP_TABS.map((tab) => {
             const Icon = tab.icon;
             const isActive = activeTab === tab.key;
@@ -1050,6 +1050,16 @@ export default function StaticsGeneration() {
             );
           })}
         </nav>
+
+        {/* Add Reference button */}
+        <button
+          type="button"
+          onClick={() => setAddRefModal(true)}
+          className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium bg-emerald-600 hover:bg-emerald-500 text-white transition-colors cursor-pointer whitespace-nowrap"
+        >
+          <ImagePlus className="w-4 h-4" />
+          Add Reference
+        </button>
       </div>
 
       {/* ================================================================= */}
