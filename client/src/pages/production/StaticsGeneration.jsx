@@ -679,7 +679,7 @@ export default function StaticsGeneration() {
   // Derived
   const hasReferenceImage = !!(referencePreview || referenceImageUrl);
   const hasProductImage = !!(productPreview || productImageUrl);
-  const canGenerate = hasReferenceImage && productName.trim() && hasProductImage && !generating;
+  const canGenerate = hasReferenceImage && productName.trim() && !generating;
 
   const handleReferenceFile = useCallback((file) => {
     setReferenceFile(file);
@@ -753,8 +753,29 @@ export default function StaticsGeneration() {
       clearTimeout(stepTimer2);
       clearTimeout(stepTimer3);
 
-      setResult(response.data?.data || response.data);
+      const genResult = response.data?.data || response.data;
+      setResult(genResult);
       setGenerationStep(0);
+
+      // Auto-save to pipeline as "review" creative
+      try {
+        const saveRes = await api.post('/statics-generation/creatives', {
+          product_id: selectedProductId || null,
+          product_name: productName,
+          angle: marketingAngle || customAngle || null,
+          aspect_ratio: aspectRatio,
+          image_url: genResult?.resultImageUrl || genResult?.generatedImageUrl || null,
+          reference_name: references[0]?.name || null,
+          adapted_text: genResult?.adaptedCopy ? JSON.stringify(genResult.adaptedCopy) : null,
+          claude_analysis: genResult?.claudeAnalysis ? JSON.stringify(genResult.claudeAnalysis) : null,
+          swap_pairs: genResult?.textSwaps ? JSON.stringify(genResult.textSwaps) : null,
+          generation_prompt: genResult?.generationPrompt || null,
+          status: 'review',
+        });
+        if (saveRes.data?.success) {
+          setCreatives(prev => [saveRes.data.data, ...prev]);
+        }
+      } catch { /* silent — result is still shown inline */ }
     } catch (err) {
       const message =
         err.response?.data?.error ||
@@ -1044,7 +1065,10 @@ export default function StaticsGeneration() {
                   aspectRatio={aspectRatio}
                   onAspectRatioChange={setAspectRatio}
                   references={references}
-                  onOpenLibrary={() => setTemplateModal(true)}
+                  onOpenLibrary={() => {
+                    setTemplateModal(true);
+                    if (!templatesFetched.current) { fetchTemplates(); templatesFetched.current = true; }
+                  }}
                   onUploadReference={(file) => {
                     const preview = URL.createObjectURL(file);
                     setReferenceFile(file);
