@@ -1818,11 +1818,17 @@ export default function StaticsGeneration() {
             try {
               const res = await api.post(`/statics-generation/creatives/${id}/publish-clickup`);
               if (res.data?.success) {
-                setCreatives(prev => prev.map(c => c.id === id ? { ...c, status: 'launched', clickup_url: res.data.data?.taskUrl } : c));
-                setDetailModal(null);
+                const clickupUrl = res.data.data?.clickup_task_url || res.data.data?.taskUrl;
+                setCreatives(prev => prev.map(c => c.id === id ? { ...c, status: 'launched', clickup_url: clickupUrl } : c));
+                // Update modal creative with URL so success message shows
+                setDetailModal(prev => prev ? { ...prev, status: 'launched', clickup_url: clickupUrl } : null);
+                // Auto-close after 3s so user sees the success message
+                setTimeout(() => setDetailModal(null), 3000);
+                return clickupUrl; // Return URL for modal's publishSuccess state
               }
             } catch (err) {
               console.error('Publish failed:', err);
+              throw err; // Re-throw so modal shows error state
             }
           }}
         />

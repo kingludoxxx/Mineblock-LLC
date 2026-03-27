@@ -285,10 +285,10 @@ export function CreativeDetailModal({
                     setPublishing(true);
                     setPublishSuccess(null);
                     try {
-                      await onPublish?.(creative.id);
-                      setPublishSuccess(creative.clickup_url || true);
+                      const url = await onPublish?.(creative.id);
+                      setPublishSuccess(url || true);
                     } catch {
-                      /* handled upstream */
+                      setPublishSuccess(null);
                     } finally {
                       setPublishing(false);
                     }
