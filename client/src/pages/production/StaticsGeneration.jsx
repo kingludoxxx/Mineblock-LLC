@@ -609,6 +609,7 @@ export default function StaticsGeneration() {
   const [guarantee, setGuarantee] = useState('');
 
   const [selectedProductId, setSelectedProductId] = useState(null);
+  const selectedProductRef = useRef(null); // full product object for generation
 
   // Generation state
   const [generating, setGenerating] = useState(false);
@@ -652,9 +653,11 @@ export default function StaticsGeneration() {
   const handleProductSelect = (product) => {
     if (!product) {
       setSelectedProductId(null);
+      selectedProductRef.current = null;
       return;
     }
     setSelectedProductId(product.id);
+    selectedProductRef.current = product;
     setProductName(product.name || '');
     setProductDescription(product.description || '');
     setProductPrice(product.price || '');
@@ -733,6 +736,20 @@ export default function StaticsGeneration() {
       if (differentiator) profile.differentiator = differentiator;
       if (voice) profile.voice = voice;
       if (guarantee) profile.guarantee = guarantee;
+      // Pass all new product profile fields from library
+      const full = selectedProductRef.current;
+      if (full) {
+        if (full.pain_points) profile.painPoints = full.pain_points;
+        if (full.common_objections) profile.commonObjections = full.common_objections;
+        if (full.winning_angles) profile.winningAngles = full.winning_angles;
+        if (full.custom_angles_text) profile.customAngles = full.custom_angles_text;
+        if (full.competitive_edge) profile.competitiveEdge = full.competitive_edge;
+        if (full.offer_details) profile.offerDetails = full.offer_details;
+        if (full.max_discount) profile.maxDiscount = full.max_discount;
+        if (full.discount_codes) profile.discountCodes = full.discount_codes;
+        if (full.bundle_variants) profile.bundleVariants = full.bundle_variants;
+        if (full.compliance_restrictions) profile.complianceRestrictions = full.compliance_restrictions;
+      }
 
       const stepTimer2 = setTimeout(() => setGenerationStep(2), 10000);
       const stepTimer3 = setTimeout(() => setGenerationStep(3), 30000);

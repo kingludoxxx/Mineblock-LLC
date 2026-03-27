@@ -61,25 +61,30 @@ function CollapsibleSection({ icon: Icon, title, subtitle, defaultOpen = false, 
 /*  Auto-Save Field                                                   */
 /* ------------------------------------------------------------------ */
 
-function AutoSaveField({ label, value, onChange, onSave, placeholder, rows }) {
-  // Track local value to fix stale-state bug on blur
-  const latestRef = useRef(value || '');
+function AutoSaveField({ label, value, onSave, placeholder, rows }) {
+  // Fully local state — only syncs to parent + API on blur
   const [local, setLocal] = useState(value || '');
+  const [saved, setSaved] = useState(false);
+  const dirtyRef = useRef(false);
 
-  // Sync from parent when product changes (e.g. after AI fill)
+  // Sync from parent when value changes externally (e.g. AI fill, page load)
   useEffect(() => {
     setLocal(value || '');
-    latestRef.current = value || '';
+    dirtyRef.current = false;
   }, [value]);
 
   const handleChange = (v) => {
     setLocal(v);
-    latestRef.current = v;
-    onChange(v);
+    dirtyRef.current = true;
+    setSaved(false);
   };
 
   const handleBlur = () => {
-    onSave(latestRef.current);
+    if (!dirtyRef.current) return; // skip save if nothing changed
+    dirtyRef.current = false;
+    onSave(local);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 1500);
   };
 
   const isTextarea = rows && rows > 1;
@@ -88,9 +93,14 @@ function AutoSaveField({ label, value, onChange, onSave, placeholder, rows }) {
   return (
     <div>
       {label && (
-        <label className="block text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-2">
-          {label}
-        </label>
+        <div className="flex items-center justify-between mb-2">
+          <label className="block text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+            {label}
+          </label>
+          {saved && (
+            <span className="text-[10px] text-emerald-400 animate-pulse">Saved</span>
+          )}
+        </div>
       )}
       <Component
         value={local}

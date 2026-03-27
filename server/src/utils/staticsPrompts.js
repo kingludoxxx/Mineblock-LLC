@@ -16,6 +16,15 @@ PRODUCT CONTEXT:
 - Differentiator: ${profile.differentiator || 'N/A'}
 - Voice/Tone: ${profile.voice || 'N/A'}
 - Guarantee: ${profile.guarantee || 'N/A'}
+${profile.painPoints ? `- Pain Points & Triggers: ${profile.painPoints}` : ''}
+${profile.commonObjections ? `- Common Objections: ${profile.commonObjections}` : ''}
+${profile.winningAngles ? `- Winning Angles: ${profile.winningAngles}` : ''}
+${profile.competitiveEdge ? `- Competitive Edge: ${profile.competitiveEdge}` : ''}
+${profile.maxDiscount ? `- Max Discount: ${profile.maxDiscount}` : ''}
+${profile.discountCodes ? `- Discount Codes: ${profile.discountCodes}` : ''}
+${profile.bundleVariants ? `- Bundle Variants: ${profile.bundleVariants}` : ''}
+${profile.offerDetails ? `- Offer Rules: ${profile.offerDetails}` : ''}
+${profile.complianceRestrictions ? `- COMPLIANCE (NEVER claim): ${profile.complianceRestrictions}` : ''}
 ${angle ? `- Marketing Angle: ${angle}` : ''}
 
 INSTRUCTIONS — Analyze the reference ad image in 5 layers:
