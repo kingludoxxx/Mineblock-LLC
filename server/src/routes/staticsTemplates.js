@@ -193,7 +193,9 @@ router.post('/bulk-import', async (req, res) => {
   if (secret !== process.env.CRON_SECRET) return res.status(403).json({ error: 'Forbidden' });
   try {
     await ensureTable();
-    const { templates } = req.body;
+    let { templates } = req.body;
+    // Handle form-urlencoded POST (templates comes as a JSON string)
+    if (typeof templates === 'string') { try { templates = JSON.parse(templates); } catch { return res.status(400).json({ error: 'invalid JSON' }); } }
     if (!Array.isArray(templates)) return res.status(400).json({ error: 'templates array required' });
     let count = 0;
     for (const t of templates) {
