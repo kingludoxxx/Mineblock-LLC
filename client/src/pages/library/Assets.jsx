@@ -1,78 +1,11 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
-  Package,
-  Plus,
-  Pencil,
-  Trash2,
-  X,
-  Save,
-  Image,
-  FileText,
-  Target,
-  Megaphone,
-  ChevronRight,
-  Loader2,
-  Users,
-  Sparkles,
-  Shield,
-  Upload,
+  Package, Plus, Pencil, Trash2, X, Image,
+  Target, ChevronRight, ChevronDown, Loader2,
+  Sparkles, Upload, ArrowLeft, Link, Globe, Zap,
+  AlertTriangle, MessageSquare, Tag,
 } from 'lucide-react';
 import api from '../../services/api';
-
-/* ------------------------------------------------------------------ */
-/*  Constants                                                         */
-/* ------------------------------------------------------------------ */
-
-const CATEGORIES = [
-  { value: 'supplement', label: 'Supplement' },
-  { value: 'saas', label: 'SaaS' },
-  { value: 'physical', label: 'Physical' },
-  { value: 'digital', label: 'Digital' },
-  { value: 'service', label: 'Service' },
-  { value: 'other', label: 'Other' },
-];
-
-const SCRIPT_TYPES = [
-  { value: 'vsl', label: 'VSL' },
-  { value: 'email', label: 'Email' },
-  { value: 'ad', label: 'Ad' },
-  { value: 'other', label: 'Other' },
-];
-
-const TABS = [
-  { key: 'basic', label: 'Basic Info', icon: Package },
-  { key: 'audience', label: 'Audience & Marketing', icon: Users },
-  { key: 'details', label: 'Product Details', icon: Sparkles },
-  { key: 'angles', label: 'Marketing Angles', icon: Megaphone },
-  { key: 'images', label: 'Images & Logos', icon: Image },
-  { key: 'fonts', label: 'Brand Fonts', icon: FileText },
-  { key: 'scripts', label: 'Scripts', icon: FileText },
-];
-
-const emptyProduct = {
-  name: '',
-  productCode: '',
-  category: 'supplement',
-  price: '',
-  description: '',
-  oneLiner: '',
-  tagline: '',
-  targetCustomer: '',
-  customerFrustration: '',
-  customerDream: '',
-  targetDemographics: '',
-  voiceTone: '',
-  bigPromise: '',
-  uniqueMechanism: '',
-  differentiator: '',
-  guarantee: '',
-  benefits: [''],
-  angles: [{ name: '', description: '' }],
-  images: [''],
-  logos: [''],
-  fonts: [{ name: '', url: '', usage: 'headline' }],
-  scripts: [{ title: '', type: 'vsl', content: '' }],
-};
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                           */
@@ -90,123 +23,203 @@ const categoryColor = (cat) => {
   return map[cat] || map.other;
 };
 
-const statCount = (arr) => (Array.isArray(arr) ? arr.filter((v) => (typeof v === 'string' ? v.trim() : v?.name?.trim() || v?.title?.trim())).length : 0);
-
 /* ------------------------------------------------------------------ */
-/*  Reusable tiny components                                          */
+/*  Collapsible Section                                               */
 /* ------------------------------------------------------------------ */
 
-function Input({ label, value, onChange, placeholder, type = 'text', required }) {
+function CollapsibleSection({ icon: Icon, title, subtitle, defaultOpen = false, children }) {
+  const [open, setOpen] = useState(defaultOpen);
   return (
-    <div>
-      <label className="block text-xs font-medium text-slate-400 mb-1.5">
-        {label}{required && <span className="text-emerald-400 ml-0.5">*</span>}
-      </label>
-      <input
-        type={type}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder={placeholder}
-        className="w-full bg-[#0a0a0a] border border-white/[0.08] rounded-lg px-3 py-2.5 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-emerald-500/40 focus:ring-1 focus:ring-emerald-500/20 transition-colors"
-      />
+    <div className="bg-[#111] border border-white/[0.06] rounded-xl overflow-hidden">
+      <button
+        onClick={() => setOpen(!open)}
+        className="w-full flex items-center gap-3 px-5 py-4 text-left cursor-pointer hover:bg-white/[0.02] transition-colors"
+      >
+        <div className="w-9 h-9 rounded-lg bg-white/[0.04] flex items-center justify-center shrink-0">
+          <Icon className="w-[18px] h-[18px] text-slate-400" />
+        </div>
+        <div className="flex-1 min-w-0">
+          <h3 className="text-sm font-semibold text-white">{title}</h3>
+          <p className="text-xs text-slate-500 mt-0.5">{subtitle}</p>
+        </div>
+        {open ? (
+          <ChevronDown className="w-4 h-4 text-slate-500" />
+        ) : (
+          <ChevronRight className="w-4 h-4 text-slate-500" />
+        )}
+      </button>
+      {open && (
+        <div className="px-5 pb-5 pt-1 space-y-4 border-t border-white/[0.06]">
+          {children}
+        </div>
+      )}
     </div>
   );
 }
 
-function TextArea({ label, value, onChange, placeholder, rows = 3 }) {
+/* ------------------------------------------------------------------ */
+/*  Auto-Save Field                                                   */
+/* ------------------------------------------------------------------ */
+
+function AutoSaveField({ label, value, onChange, onSave, placeholder, rows }) {
+  // Track local value to fix stale-state bug on blur
+  const latestRef = useRef(value || '');
+  const [local, setLocal] = useState(value || '');
+
+  // Sync from parent when product changes (e.g. after AI fill)
+  useEffect(() => {
+    setLocal(value || '');
+    latestRef.current = value || '';
+  }, [value]);
+
+  const handleChange = (v) => {
+    setLocal(v);
+    latestRef.current = v;
+    onChange(v);
+  };
+
+  const handleBlur = () => {
+    onSave(latestRef.current);
+  };
+
+  const isTextarea = rows && rows > 1;
+  const Component = isTextarea ? 'textarea' : 'input';
+
   return (
     <div>
-      <label className="block text-xs font-medium text-slate-400 mb-1.5">{label}</label>
-      <textarea
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
+      {label && (
+        <label className="block text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-2">
+          {label}
+        </label>
+      )}
+      <Component
+        value={local}
+        onChange={(e) => handleChange(e.target.value)}
+        onBlur={handleBlur}
         placeholder={placeholder}
         rows={rows}
-        className="w-full bg-[#0a0a0a] border border-white/[0.08] rounded-lg px-3 py-2.5 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-emerald-500/40 focus:ring-1 focus:ring-emerald-500/20 transition-colors resize-none"
+        className="w-full bg-[#0a0a0a] border border-white/[0.06] rounded-lg px-4 py-3 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-white/[0.15] transition-colors resize-none leading-relaxed"
       />
     </div>
   );
 }
 
-function Select({ label, value, onChange, options }) {
+/* ------------------------------------------------------------------ */
+/*  Quick Info Bar                                                     */
+/* ------------------------------------------------------------------ */
+
+function QuickInfoBar({ product, onSave }) {
+  const boxes = [
+    { key: 'short_name', label: 'Short Name', placeholder: 'e.g. EstroGuard+' },
+    { key: 'product_type', label: 'Type', placeholder: 'e.g. Capsules' },
+    { key: 'product_group', label: 'Group', placeholder: 'e.g. Supplements' },
+    { key: 'unit_details', label: 'Unit Details', placeholder: 'e.g. 1 Jar / 24 Capsules' },
+  ];
+
   return (
-    <div>
-      <label className="block text-xs font-medium text-slate-400 mb-1.5">{label}</label>
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="w-full bg-[#0a0a0a] border border-white/[0.08] rounded-lg px-3 py-2.5 text-sm text-white focus:outline-none focus:border-emerald-500/40 focus:ring-1 focus:ring-emerald-500/20 transition-colors"
-      >
-        {options.map((o) => (
-          <option key={o.value} value={o.value}>{o.label}</option>
-        ))}
-      </select>
+    <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      {boxes.map((box) => (
+        <QuickInfoBox key={box.key} box={box} initialValue={product[box.key] || ''} onSave={onSave} />
+      ))}
+    </div>
+  );
+}
+
+function QuickInfoBox({ box, initialValue, onSave }) {
+  const [val, setVal] = useState(initialValue);
+  const latestRef = useRef(initialValue);
+
+  useEffect(() => {
+    setVal(initialValue);
+    latestRef.current = initialValue;
+  }, [initialValue]);
+
+  return (
+    <div className="bg-[#111] border border-white/[0.06] rounded-lg px-4 py-3">
+      <label className="block text-[11px] text-slate-500 uppercase tracking-wider font-semibold mb-1.5">
+        {box.label}
+      </label>
+      <input
+        value={val}
+        onChange={(e) => {
+          setVal(e.target.value);
+          latestRef.current = e.target.value;
+        }}
+        onBlur={() => onSave(box.key, latestRef.current)}
+        placeholder={box.placeholder}
+        className="w-full bg-transparent text-sm text-white font-medium placeholder-slate-600 focus:outline-none"
+      />
     </div>
   );
 }
 
 /* ------------------------------------------------------------------ */
-/*  Product Card                                                      */
+/*  Product Card (List View)                                          */
 /* ------------------------------------------------------------------ */
 
-function ProductCard({ product, onEdit, onDelete }) {
-  const imgCount = statCount(product.images);
-  const scriptCount = statCount(product.scripts);
-  const angleCount = statCount(product.angles);
-  const benefitCount = statCount(product.benefits);
+function ProductCard({ product, onClick, onDelete }) {
+  const images = Array.isArray(product.product_images) ? product.product_images : [];
+  const imgCount = images.filter((v) => v).length;
 
   return (
-    <div className="bg-[#111] border border-white/[0.06] rounded-lg p-5 flex flex-col justify-between hover:border-white/[0.12] transition-colors group">
+    <div
+      onClick={onClick}
+      className="bg-[#111] border border-white/[0.06] rounded-lg p-5 flex flex-col justify-between hover:border-white/[0.12] transition-colors group cursor-pointer"
+    >
       <div>
-        {/* Header */}
         <div className="flex items-start justify-between mb-3">
           <div className="min-w-0 flex-1">
             <h3 className="text-base font-semibold text-white truncate">{product.name}</h3>
             {product.category && (
-              <span className={`inline-block mt-1.5 text-[10px] font-medium uppercase tracking-wider px-2 py-0.5 rounded-full border ${categoryColor(product.category)}`}>
+              <span
+                className={`inline-block mt-1.5 text-[10px] font-medium uppercase tracking-wider px-2 py-0.5 rounded-full border ${categoryColor(product.category)}`}
+              >
                 {product.category}
               </span>
             )}
           </div>
           {product.price && (
-            <span className="text-sm font-semibold text-emerald-400 ml-3 shrink-0">{product.price}</span>
+            <span className="text-sm font-semibold text-emerald-400 ml-3 shrink-0">
+              {product.price}
+            </span>
           )}
         </div>
 
-        {/* Description */}
-        {(product.oneLiner || product.description) && (
+        {(product.oneliner || product.description) && (
           <p className="text-sm text-slate-400 line-clamp-2 mb-4 leading-relaxed">
-            {product.oneLiner || product.description}
+            {product.oneliner || product.description}
           </p>
         )}
 
-        {/* Stats */}
         <div className="flex items-center gap-4 text-[11px] text-slate-500 mb-4">
           {imgCount > 0 && (
-            <span className="flex items-center gap-1"><Image className="w-3 h-3" />{imgCount} image{imgCount !== 1 && 's'}</span>
+            <span className="flex items-center gap-1">
+              <Image className="w-3 h-3" />
+              {imgCount} image{imgCount !== 1 && 's'}
+            </span>
           )}
-          {scriptCount > 0 && (
-            <span className="flex items-center gap-1"><FileText className="w-3 h-3" />{scriptCount} script{scriptCount !== 1 && 's'}</span>
+          {product.big_promise && (
+            <span className="flex items-center gap-1">
+              <Sparkles className="w-3 h-3" /> Promise set
+            </span>
           )}
-          {angleCount > 0 && (
-            <span className="flex items-center gap-1"><Target className="w-3 h-3" />{angleCount} angle{angleCount !== 1 && 's'}</span>
-          )}
-          {benefitCount > 0 && (
-            <span className="flex items-center gap-1"><Sparkles className="w-3 h-3" />{benefitCount} benefit{benefitCount !== 1 && 's'}</span>
+          {product.customer_avatar && (
+            <span className="flex items-center gap-1">
+              <Target className="w-3 h-3" /> Avatar set
+            </span>
           )}
         </div>
       </div>
 
-      {/* Actions */}
       <div className="flex items-center gap-2 pt-3 border-t border-white/[0.06]">
         <button
-          onClick={() => onEdit(product)}
+          onClick={(e) => { e.stopPropagation(); onClick(); }}
           className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-white px-2.5 py-1.5 rounded-md hover:bg-white/[0.05] transition-colors"
         >
           <Pencil className="w-3 h-3" /> Edit
         </button>
         <button
-          onClick={() => onDelete(product)}
+          onClick={(e) => { e.stopPropagation(); onDelete(product); }}
           className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-red-400 px-2.5 py-1.5 rounded-md hover:bg-red-500/[0.05] transition-colors"
         >
           <Trash2 className="w-3 h-3" /> Delete
@@ -227,7 +240,9 @@ function EmptyState({ onCreate }) {
         <Package className="w-7 h-7 text-emerald-400" />
       </div>
       <h3 className="text-lg font-semibold text-white mb-1.5">No products yet</h3>
-      <p className="text-sm text-slate-400 mb-6 max-w-xs">Add your first product to get started. All production tools pull from these profiles.</p>
+      <p className="text-sm text-slate-400 mb-6 max-w-xs">
+        Add your first product to get started. All production tools pull from these profiles.
+      </p>
       <button
         onClick={onCreate}
         className="inline-flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium px-5 py-2.5 rounded-lg transition-colors"
@@ -256,7 +271,8 @@ function DeleteDialog({ product, onConfirm, onCancel }) {
           </div>
         </div>
         <p className="text-sm text-slate-300 mb-6">
-          Are you sure you want to delete <span className="text-white font-medium">{product.name}</span>?
+          Are you sure you want to delete{' '}
+          <span className="text-white font-medium">{product.name}</span>?
         </p>
         <div className="flex items-center justify-end gap-2">
           <button onClick={onCancel} className="text-sm text-slate-400 hover:text-white px-4 py-2 rounded-lg hover:bg-white/[0.05] transition-colors">
@@ -272,496 +288,396 @@ function DeleteDialog({ product, onConfirm, onCancel }) {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Editor Modal                                                      */
+/*  Product Detail View                                               */
 /* ------------------------------------------------------------------ */
 
-function EditorModal({ isCreating, form, setForm, activeTab, setActiveTab, saving, onSave, onCancel }) {
-  /* ---- list helpers ---- */
-  const updateBenefit = (i, val) => {
-    const list = [...form.benefits];
-    list[i] = val;
-    setForm({ ...form, benefits: list });
-  };
-  const addBenefit = () => setForm({ ...form, benefits: [...form.benefits, ''] });
-  const removeBenefit = (i) => {
-    const list = form.benefits.filter((_, idx) => idx !== i);
-    setForm({ ...form, benefits: list.length ? list : [''] });
+function ProductDetailView({ product, onBack, onFieldSave, onAiFill, onProductChange, onDelete }) {
+  const [aiUrl, setAiUrl] = useState(product.product_url || '');
+  const [aiFilling, setAiFilling] = useState(false);
+  const [imageUrlInput, setImageUrlInput] = useState('');
+  const fileInputRef = useRef(null);
+  // Use ref to get latest product for image operations (avoids stale closure)
+  const productRef = useRef(product);
+  productRef.current = product;
+
+  const handleAiFillClick = async () => {
+    if (!aiUrl.trim()) return;
+    setAiFilling(true);
+    try {
+      await onAiFill(aiUrl);
+    } finally {
+      setAiFilling(false);
+    }
   };
 
-  const updateAngle = (i, key, val) => {
-    const list = [...form.angles];
-    list[i] = { ...list[i], [key]: val };
-    setForm({ ...form, angles: list });
-  };
-  const addAngle = () => setForm({ ...form, angles: [...form.angles, { name: '', description: '' }] });
-  const removeAngle = (i) => {
-    const list = form.angles.filter((_, idx) => idx !== i);
-    setForm({ ...form, angles: list.length ? list : [{ name: '', description: '' }] });
+  const updateField = (key, value) => {
+    onProductChange({ ...productRef.current, [key]: value });
   };
 
-  const removeImage = (i) => {
-    const list = form.images.filter((_, idx) => idx !== i);
-    setForm({ ...form, images: list.length ? list : [] });
+  // Save with latest value passed directly (fixes stale-state bug)
+  const saveFieldDirect = (key, latestValue) => {
+    onFieldSave(key, latestValue);
   };
+
+  /* Image handlers — use productRef to avoid stale closure */
   const handleImageUpload = (files) => {
     Array.from(files).forEach((file) => {
       if (!file.type.startsWith('image/')) return;
       const reader = new FileReader();
       reader.onload = () => {
-        setForm((prev) => ({
-          ...prev,
-          images: [...prev.images.filter((img) => img), reader.result],
-        }));
+        const current = Array.isArray(productRef.current.product_images) ? productRef.current.product_images : [];
+        const updated = [...current.filter((img) => img), reader.result];
+        onProductChange({ ...productRef.current, product_images: updated });
+        onFieldSave('product_images', updated);
       };
       reader.readAsDataURL(file);
     });
   };
-  const [imageUrlInput, setImageUrlInput] = useState('');
+
   const addImageUrl = () => {
     if (!imageUrlInput.trim()) return;
-    setForm((prev) => ({
-      ...prev,
-      images: [...prev.images.filter((img) => img), imageUrlInput.trim()],
-    }));
+    const current = Array.isArray(productRef.current.product_images) ? productRef.current.product_images : [];
+    const updated = [...current.filter((img) => img), imageUrlInput.trim()];
+    onProductChange({ ...productRef.current, product_images: updated });
+    onFieldSave('product_images', updated);
     setImageUrlInput('');
   };
 
-  const removeLogo = (i) => {
-    const list = form.logos.filter((_, idx) => idx !== i);
-    setForm({ ...form, logos: list.length ? list : [] });
-  };
-  const handleLogoUpload = (files) => {
-    Array.from(files).forEach((file) => {
-      if (!file.type.startsWith('image/')) return;
-      const reader = new FileReader();
-      reader.onload = () => {
-        setForm((prev) => ({
-          ...prev,
-          logos: [...prev.logos.filter((l) => l), reader.result],
-        }));
-      };
-      reader.readAsDataURL(file);
-    });
+  const removeImage = (i) => {
+    const current = Array.isArray(productRef.current.product_images) ? productRef.current.product_images : [];
+    const updated = current.filter((_, idx) => idx !== i);
+    onProductChange({ ...productRef.current, product_images: updated });
+    onFieldSave('product_images', updated);
   };
 
-  const updateFont = (i, key, val) => {
-    const list = [...form.fonts];
-    list[i] = { ...list[i], [key]: val };
-    setForm({ ...form, fonts: list });
-  };
-  const addFont = () => setForm({ ...form, fonts: [...form.fonts, { name: '', url: '', usage: 'headline' }] });
-  const removeFont = (i) => {
-    const list = form.fonts.filter((_, idx) => idx !== i);
-    setForm({ ...form, fonts: list.length ? list : [{ name: '', url: '', usage: 'headline' }] });
-  };
-  const handleFontUpload = (i, file) => {
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      const list = [...form.fonts];
-      list[i] = { ...list[i], url: reader.result, name: list[i].name || file.name.replace(/\.[^.]+$/, '') };
-      setForm({ ...form, fonts: list });
-    };
-    reader.readAsDataURL(file);
-  };
-
-  const updateScript = (i, key, val) => {
-    const list = [...form.scripts];
-    list[i] = { ...list[i], [key]: val };
-    setForm({ ...form, scripts: list });
-  };
-  const addScript = () => setForm({ ...form, scripts: [...form.scripts, { title: '', type: 'vsl', content: '' }] });
-  const removeScript = (i) => {
-    const list = form.scripts.filter((_, idx) => idx !== i);
-    setForm({ ...form, scripts: list.length ? list : [{ title: '', type: 'vsl', content: '' }] });
-  };
-
-  const field = (key, val) => setForm({ ...form, [key]: val });
-
-  /* ---- tab renderers ---- */
-  const renderBasic = () => (
-    <div className="space-y-4">
-      <Input label="Product Name" value={form.name} onChange={(v) => field('name', v)} placeholder="e.g. SuperGreens Pro" required />
-      <Input label="Product Code" value={form.productCode} onChange={(v) => field('productCode', v)} placeholder="e.g. SGP-001" />
-      <Select label="Category" value={form.category} onChange={(v) => field('category', v)} options={CATEGORIES} />
-      <Input label="Price" value={form.price} onChange={(v) => field('price', v)} placeholder="e.g. $49.99" />
-      <TextArea label="Description" value={form.description} onChange={(v) => field('description', v)} placeholder="Describe the product..." rows={4} />
-      <Input label="One-liner" value={form.oneLiner} onChange={(v) => field('oneLiner', v)} placeholder="A single punchy line about the product" />
-      <Input label="Tagline" value={form.tagline} onChange={(v) => field('tagline', v)} placeholder="Short tagline for ads / headers" />
-    </div>
+  const firstImage = (Array.isArray(product.product_images) ? product.product_images : []).find(
+    (img) => img
   );
-
-  const renderAudience = () => (
-    <div className="space-y-4">
-      <TextArea label="Target Customer / Avatar" value={form.targetCustomer} onChange={(v) => field('targetCustomer', v)} placeholder="Who is this for?" rows={2} />
-      <TextArea label="Customer Frustration" value={form.customerFrustration} onChange={(v) => field('customerFrustration', v)} placeholder="What keeps them up at night?" rows={2} />
-      <TextArea label="Customer Dream" value={form.customerDream} onChange={(v) => field('customerDream', v)} placeholder="What does their ideal outcome look like?" rows={2} />
-      <Input label="Target Demographics" value={form.targetDemographics} onChange={(v) => field('targetDemographics', v)} placeholder="e.g. Males 25-45, USA" />
-      <Input label="Voice / Tone" value={form.voiceTone} onChange={(v) => field('voiceTone', v)} placeholder="e.g. Direct, authoritative, slightly edgy" />
-    </div>
-  );
-
-  const renderDetails = () => (
-    <div className="space-y-4">
-      <TextArea label="Big Promise" value={form.bigPromise} onChange={(v) => field('bigPromise', v)} placeholder="The #1 result your product delivers" rows={2} />
-      <TextArea label="Unique Mechanism" value={form.uniqueMechanism} onChange={(v) => field('uniqueMechanism', v)} placeholder="What makes it work differently?" rows={3} />
-      <TextArea label="Differentiator" value={form.differentiator} onChange={(v) => field('differentiator', v)} placeholder="Why choose this over competitors?" rows={2} />
-      <Input label="Guarantee" value={form.guarantee} onChange={(v) => field('guarantee', v)} placeholder="e.g. 60-day money-back guarantee" />
-
-      {/* Benefits */}
-      <div>
-        <label className="block text-xs font-medium text-slate-400 mb-2">Benefits</label>
-        <div className="space-y-2">
-          {form.benefits.map((b, i) => (
-            <div key={i} className="flex items-center gap-2">
-              <input
-                value={b}
-                onChange={(e) => updateBenefit(i, e.target.value)}
-                placeholder={`Benefit ${i + 1}`}
-                className="flex-1 bg-[#0a0a0a] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-emerald-500/40 transition-colors"
-              />
-              <button onClick={() => removeBenefit(i)} className="text-slate-500 hover:text-red-400 p-1 transition-colors" title="Remove">
-                <X className="w-3.5 h-3.5" />
-              </button>
-            </div>
-          ))}
-        </div>
-        <button onClick={addBenefit} className="mt-2 text-xs text-emerald-400 hover:text-emerald-300 flex items-center gap-1 transition-colors">
-          <Plus className="w-3 h-3" /> Add benefit
-        </button>
-      </div>
-    </div>
-  );
-
-  const renderAngles = () => (
-    <div>
-      <label className="block text-xs font-medium text-slate-400 mb-3">Marketing Angles</label>
-      <div className="space-y-3">
-        {form.angles.map((a, i) => (
-          <div key={i} className="bg-[#0a0a0a] border border-white/[0.08] rounded-lg p-3 space-y-2">
-            <div className="flex items-center gap-2">
-              <input
-                value={a.name}
-                onChange={(e) => updateAngle(i, 'name', e.target.value)}
-                placeholder="Angle name"
-                className="flex-1 bg-transparent border-b border-white/[0.06] pb-1 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-emerald-500/40 transition-colors"
-              />
-              <button onClick={() => removeAngle(i)} className="text-slate-500 hover:text-red-400 p-1 transition-colors" title="Remove">
-                <X className="w-3.5 h-3.5" />
-              </button>
-            </div>
-            <textarea
-              value={a.description}
-              onChange={(e) => updateAngle(i, 'description', e.target.value)}
-              placeholder="Describe this angle..."
-              rows={2}
-              className="w-full bg-transparent border border-white/[0.06] rounded-md px-2.5 py-2 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-emerald-500/40 transition-colors resize-none"
-            />
-          </div>
-        ))}
-      </div>
-      <button onClick={addAngle} className="mt-3 text-xs text-emerald-400 hover:text-emerald-300 flex items-center gap-1 transition-colors">
-        <Plus className="w-3 h-3" /> Add angle
-      </button>
-    </div>
-  );
-
-  const renderImages = () => (
-    <div className="space-y-4">
-      <div>
-        <label className="block text-xs font-medium text-slate-400 mb-2">Product Images</label>
-        {/* Upload zone */}
-        <div
-          className="border-2 border-dashed border-white/[0.08] rounded-lg p-6 text-center hover:border-emerald-500/30 transition-colors cursor-pointer mb-3"
-          onDragOver={(e) => { e.preventDefault(); e.currentTarget.classList.add('border-emerald-500/40'); }}
-          onDragLeave={(e) => { e.currentTarget.classList.remove('border-emerald-500/40'); }}
-          onDrop={(e) => { e.preventDefault(); e.currentTarget.classList.remove('border-emerald-500/40'); handleImageUpload(e.dataTransfer.files); }}
-          onClick={() => document.getElementById('product-image-upload-input').click()}
-        >
-          <Upload className="w-6 h-6 text-slate-500 mx-auto mb-2" />
-          <p className="text-xs text-slate-400">Drop product images here or <span className="text-emerald-400">browse</span></p>
-          <p className="text-[10px] text-slate-600 mt-1">PNG, JPG, WebP — multiple files supported</p>
-          <input
-            id="product-image-upload-input"
-            type="file"
-            accept="image/*"
-            multiple
-            className="hidden"
-            onChange={(e) => { handleImageUpload(e.target.files); e.target.value = ''; }}
-          />
-        </div>
-        {/* URL paste fallback */}
-        <div className="flex items-center gap-2 mb-3">
-          <input
-            value={imageUrlInput}
-            onChange={(e) => setImageUrlInput(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && addImageUrl()}
-            placeholder="Or paste image URL..."
-            className="flex-1 bg-[#0a0a0a] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-emerald-500/40 transition-colors"
-          />
-          <button
-            onClick={addImageUrl}
-            disabled={!imageUrlInput.trim()}
-            className="text-xs text-emerald-400 hover:text-emerald-300 disabled:text-slate-600 disabled:cursor-not-allowed px-3 py-2 rounded-lg border border-white/[0.08] hover:border-emerald-500/30 transition-colors"
-          >
-            Add
-          </button>
-        </div>
-        {/* Image previews grid */}
-        {form.images.filter((img) => img).length > 0 && (
-          <div className="flex flex-wrap gap-3">
-            {form.images.map((url, i) =>
-              url ? (
-                <div key={i} className="relative group w-20 h-20 rounded-lg overflow-hidden border border-white/[0.06] bg-[#0a0a0a]">
-                  <img src={url} alt="" className="w-full h-full object-cover" onError={(e) => { e.target.style.display = 'none'; }} />
-                  <button
-                    onClick={() => removeImage(i)}
-                    className="absolute top-1 right-1 w-5 h-5 rounded-full bg-black/70 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity text-red-400 hover:text-red-300"
-                  >
-                    <X className="w-3 h-3" />
-                  </button>
-                </div>
-              ) : null
-            )}
-          </div>
-        )}
-      </div>
-
-      <div>
-        <label className="block text-xs font-medium text-slate-400 mb-2">Logos</label>
-        {/* Upload zone */}
-        <div
-          className="border-2 border-dashed border-white/[0.08] rounded-lg p-6 text-center hover:border-emerald-500/30 transition-colors cursor-pointer mb-3"
-          onDragOver={(e) => { e.preventDefault(); e.currentTarget.classList.add('border-emerald-500/40'); }}
-          onDragLeave={(e) => { e.currentTarget.classList.remove('border-emerald-500/40'); }}
-          onDrop={(e) => { e.preventDefault(); e.currentTarget.classList.remove('border-emerald-500/40'); handleLogoUpload(e.dataTransfer.files); }}
-          onClick={() => document.getElementById('logo-upload-input').click()}
-        >
-          <Upload className="w-6 h-6 text-slate-500 mx-auto mb-2" />
-          <p className="text-xs text-slate-400">Drop logos here or <span className="text-emerald-400">browse</span></p>
-          <p className="text-[10px] text-slate-600 mt-1">PNG, SVG, JPG — multiple files supported</p>
-          <input
-            id="logo-upload-input"
-            type="file"
-            accept="image/*"
-            multiple
-            className="hidden"
-            onChange={(e) => { handleLogoUpload(e.target.files); e.target.value = ''; }}
-          />
-        </div>
-        {/* Logo previews */}
-        {form.logos.filter((l) => l).length > 0 && (
-          <div className="flex flex-wrap gap-3">
-            {form.logos.map((url, i) =>
-              url ? (
-                <div key={i} className="relative group w-20 h-20 rounded-lg overflow-hidden border border-white/[0.06] bg-[#0a0a0a] flex items-center justify-center">
-                  <img src={url} alt="" className="max-w-full max-h-full object-contain p-1" />
-                  <button
-                    onClick={() => removeLogo(i)}
-                    className="absolute top-1 right-1 w-5 h-5 rounded-full bg-black/70 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity text-red-400 hover:text-red-300"
-                  >
-                    <X className="w-3 h-3" />
-                  </button>
-                </div>
-              ) : null
-            )}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-
-  const renderScripts = () => (
-    <div>
-      <label className="block text-xs font-medium text-slate-400 mb-3">Scripts</label>
-      <div className="space-y-4">
-        {form.scripts.map((s, i) => (
-          <div key={i} className="bg-[#0a0a0a] border border-white/[0.08] rounded-lg p-4 space-y-3">
-            <div className="flex items-start gap-2">
-              <div className="flex-1 space-y-3">
-                <input
-                  value={s.title}
-                  onChange={(e) => updateScript(i, 'title', e.target.value)}
-                  placeholder="Script title"
-                  className="w-full bg-transparent border-b border-white/[0.06] pb-1 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-emerald-500/40 transition-colors"
-                />
-                <select
-                  value={s.type}
-                  onChange={(e) => updateScript(i, 'type', e.target.value)}
-                  className="bg-[#111] border border-white/[0.08] rounded-md px-2 py-1.5 text-xs text-white focus:outline-none focus:border-emerald-500/40 transition-colors"
-                >
-                  {SCRIPT_TYPES.map((t) => (
-                    <option key={t.value} value={t.value}>{t.label}</option>
-                  ))}
-                </select>
-              </div>
-              <button onClick={() => removeScript(i)} className="text-slate-500 hover:text-red-400 p-1 transition-colors mt-0.5" title="Remove">
-                <X className="w-3.5 h-3.5" />
-              </button>
-            </div>
-            <textarea
-              value={s.content}
-              onChange={(e) => updateScript(i, 'content', e.target.value)}
-              placeholder="Paste or write the script content..."
-              rows={5}
-              className="w-full bg-transparent border border-white/[0.06] rounded-md px-3 py-2 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-emerald-500/40 transition-colors resize-none font-mono text-xs leading-relaxed"
-            />
-          </div>
-        ))}
-      </div>
-      <button onClick={addScript} className="mt-3 text-xs text-emerald-400 hover:text-emerald-300 flex items-center gap-1 transition-colors">
-        <Plus className="w-3 h-3" /> Add script
-      </button>
-    </div>
-  );
-
-  const FONT_USAGES = [
-    { value: 'headline', label: 'Headline' },
-    { value: 'subheadline', label: 'Subheadline' },
-    { value: 'body', label: 'Body' },
-    { value: 'cta', label: 'CTA / Button' },
-    { value: 'accent', label: 'Accent' },
-    { value: 'other', label: 'Other' },
-  ];
-
-  const renderFonts = () => (
-    <div>
-      <label className="block text-xs font-medium text-slate-400 mb-1">Brand Fonts</label>
-      <p className="text-[11px] text-slate-500 mb-4">Upload your brand fonts (.ttf, .otf, .woff, .woff2) — these will be used in Statics Generation.</p>
-      <div className="space-y-3">
-        {form.fonts.map((f, i) => (
-          <div key={i} className="bg-[#0a0a0a] border border-white/[0.08] rounded-lg p-4 space-y-3">
-            <div className="flex items-start gap-2">
-              <div className="flex-1 space-y-3">
-                <input
-                  value={f.name}
-                  onChange={(e) => updateFont(i, 'name', e.target.value)}
-                  placeholder="Font name (e.g. Montserrat Bold)"
-                  className="w-full bg-transparent border-b border-white/[0.06] pb-1 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-emerald-500/40 transition-colors"
-                />
-                <div className="flex items-center gap-3">
-                  <select
-                    value={f.usage}
-                    onChange={(e) => updateFont(i, 'usage', e.target.value)}
-                    className="bg-[#111] border border-white/[0.08] rounded-md px-2 py-1.5 text-xs text-white focus:outline-none focus:border-emerald-500/40 transition-colors"
-                  >
-                    {FONT_USAGES.map((u) => (
-                      <option key={u.value} value={u.value}>{u.label}</option>
-                    ))}
-                  </select>
-                  {f.url ? (
-                    <span className="text-[10px] text-emerald-400 flex items-center gap-1">
-                      <Shield className="w-3 h-3" /> Font uploaded
-                    </span>
-                  ) : (
-                    <label className="text-xs text-emerald-400 hover:text-emerald-300 cursor-pointer flex items-center gap-1 transition-colors">
-                      <Upload className="w-3 h-3" /> Upload font file
-                      <input
-                        type="file"
-                        accept=".ttf,.otf,.woff,.woff2"
-                        className="hidden"
-                        onChange={(e) => { handleFontUpload(i, e.target.files[0]); e.target.value = ''; }}
-                      />
-                    </label>
-                  )}
-                </div>
-              </div>
-              <button onClick={() => removeFont(i)} className="text-slate-500 hover:text-red-400 p-1 transition-colors mt-0.5" title="Remove">
-                <X className="w-3.5 h-3.5" />
-              </button>
-            </div>
-            {f.url && (
-              <div className="flex items-center justify-between">
-                <p className="text-xs text-slate-500 truncate max-w-[200px]">{f.name || 'Unnamed font'} — {f.usage}</p>
-                <button
-                  onClick={() => updateFont(i, 'url', '')}
-                  className="text-[10px] text-slate-500 hover:text-red-400 transition-colors"
-                >
-                  Remove file
-                </button>
-              </div>
-            )}
-          </div>
-        ))}
-      </div>
-      <button onClick={addFont} className="mt-3 text-xs text-emerald-400 hover:text-emerald-300 flex items-center gap-1 transition-colors">
-        <Plus className="w-3 h-3" /> Add font
-      </button>
-    </div>
-  );
-
-  const tabContent = {
-    basic: renderBasic,
-    audience: renderAudience,
-    details: renderDetails,
-    angles: renderAngles,
-    images: renderImages,
-    fonts: renderFonts,
-    scripts: renderScripts,
-  };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 backdrop-blur-sm overflow-y-auto py-8">
-      <div className="bg-[#151515] border border-white/[0.08] rounded-xl w-full max-w-2xl mx-4 shadow-2xl flex flex-col max-h-[90vh]">
-        {/* Modal Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-white/[0.06] shrink-0">
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-lg bg-emerald-500/10 flex items-center justify-center">
-              <Package className="w-4 h-4 text-emerald-400" />
-            </div>
-            <h2 className="text-base font-semibold text-white">
-              {isCreating ? 'New Product' : 'Edit Product'}
-            </h2>
+    <div className="p-6 space-y-5 max-w-4xl mx-auto">
+      {/* Header */}
+      <div className="flex items-center gap-4">
+        <button
+          onClick={onBack}
+          className="w-9 h-9 rounded-lg bg-white/[0.04] border border-white/[0.06] flex items-center justify-center hover:bg-white/[0.08] transition-colors shrink-0 cursor-pointer"
+        >
+          <ArrowLeft className="w-4 h-4 text-slate-400" />
+        </button>
+        {firstImage && (
+          <div className="w-10 h-10 rounded-lg overflow-hidden border border-white/[0.06] bg-[#0a0a0a] shrink-0">
+            <img src={firstImage} alt="" className="w-full h-full object-cover" />
           </div>
-          <button onClick={onCancel} className="text-slate-400 hover:text-white p-1.5 rounded-lg hover:bg-white/[0.05] transition-colors">
-            <X className="w-4 h-4" />
-          </button>
+        )}
+        <div className="flex-1 min-w-0">
+          <AutoSaveField
+            value={product.name}
+            onChange={(v) => updateField('name', v)}
+            onSave={(v) => saveFieldDirect('name', v)}
+            placeholder="Product name..."
+          />
         </div>
+        <button
+          onClick={() => onDelete(product)}
+          className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-red-400 px-3 py-2 rounded-lg hover:bg-red-500/[0.05] border border-white/[0.06] transition-colors cursor-pointer"
+        >
+          <Trash2 className="w-3.5 h-3.5" /> Delete
+        </button>
+      </div>
 
-        {/* Tabs */}
-        <div className="flex items-center gap-1 px-6 pt-3 border-b border-white/[0.06] overflow-x-auto shrink-0">
-          {TABS.map((tab) => {
-            const Icon = tab.icon;
-            const isActive = activeTab === tab.key;
-            return (
-              <button
-                key={tab.key}
-                onClick={() => setActiveTab(tab.key)}
-                className={`flex items-center gap-1.5 text-xs font-medium px-3 py-2.5 rounded-t-md border-b-2 transition-colors whitespace-nowrap ${
-                  isActive
-                    ? 'text-emerald-400 border-emerald-400 bg-emerald-500/[0.05]'
-                    : 'text-slate-500 border-transparent hover:text-slate-300 hover:border-white/[0.1]'
-                }`}
-              >
-                <Icon className="w-3.5 h-3.5" />
-                {tab.label}
-              </button>
-            );
-          })}
+      {/* AI Auto-fill Card */}
+      <div className="bg-[#111] border border-white/[0.06] rounded-xl p-5">
+        <div className="flex items-start gap-3 mb-4">
+          <div className="w-9 h-9 rounded-lg bg-violet-500/10 flex items-center justify-center shrink-0">
+            <Sparkles className="w-[18px] h-[18px] text-violet-400" />
+          </div>
+          <div>
+            <h3 className="text-sm font-semibold text-white">Auto-fill with AI</h3>
+            <p className="text-xs text-slate-500 mt-0.5">
+              Paste the product URL &mdash; Claude scrapes the page and fills every field automatically
+            </p>
+          </div>
         </div>
-
-        {/* Tab Content */}
-        <div className="flex-1 overflow-y-auto px-6 py-5">
-          {tabContent[activeTab]()}
-        </div>
-
-        {/* Modal Footer */}
-        <div className="flex items-center justify-end gap-2 px-6 py-4 border-t border-white/[0.06] shrink-0">
+        <div className="flex items-center gap-2">
+          <div className="flex-1 relative">
+            <Link className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+            <input
+              value={aiUrl}
+              onChange={(e) => setAiUrl(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && handleAiFillClick()}
+              placeholder="https://example.com/product-page"
+              className="w-full bg-[#0a0a0a] border border-white/[0.06] rounded-lg pl-10 pr-4 py-3 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-white/[0.15] transition-colors"
+            />
+          </div>
           <button
-            onClick={onCancel}
-            className="text-sm text-slate-400 hover:text-white px-4 py-2 rounded-lg hover:bg-white/[0.05] transition-colors"
+            onClick={handleAiFillClick}
+            disabled={aiFilling || !aiUrl.trim()}
+            className="inline-flex items-center gap-2 bg-violet-600 hover:bg-violet-500 disabled:opacity-40 disabled:pointer-events-none text-white text-sm font-medium px-5 py-3 rounded-lg transition-colors whitespace-nowrap cursor-pointer"
           >
-            Cancel
-          </button>
-          <button
-            onClick={onSave}
-            disabled={saving || !form.name.trim()}
-            className="inline-flex items-center gap-2 text-sm font-medium text-white bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 disabled:pointer-events-none px-5 py-2 rounded-lg transition-colors"
-          >
-            {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-            {saving ? 'Saving...' : 'Save'}
+            {aiFilling ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+            {aiFilling ? 'Filling...' : 'Fill with AI'}
           </button>
         </div>
+      </div>
+
+      {/* Quick Info Bar */}
+      <QuickInfoBar
+        product={product}
+        onSave={(key, val) => saveFieldDirect(key, val)}
+      />
+
+      {/* Sections */}
+      <div className="space-y-3">
+        {/* AI Brand Intelligence */}
+        <CollapsibleSection
+          icon={Globe}
+          title="AI Brand Intelligence"
+          subtitle="Everything the AI needs to generate perfect static ads, scripts, and copy"
+          defaultOpen
+        >
+          <AutoSaveField
+            label="Product Description & Mechanism"
+            value={product.description}
+            onChange={(v) => updateField('description', v)}
+            onSave={(v) => saveFieldDirect('description', v)}
+            placeholder="Describe the product, how it works, and what makes it effective..."
+            rows={6}
+          />
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <AutoSaveField
+              label="Big Promise / Core Transformation"
+              value={product.big_promise}
+              onChange={(v) => updateField('big_promise', v)}
+              onSave={(v) => saveFieldDirect('big_promise', v)}
+              placeholder="The #1 result your product delivers"
+              rows={3}
+            />
+            <AutoSaveField
+              label="Unique Mechanism / Differentiator"
+              value={product.mechanism}
+              onChange={(v) => updateField('mechanism', v)}
+              onSave={(v) => saveFieldDirect('mechanism', v)}
+              placeholder="How does it work? What's the unique approach?"
+              rows={3}
+            />
+          </div>
+        </CollapsibleSection>
+
+        {/* Target Audience & Avatar */}
+        <CollapsibleSection
+          icon={Target}
+          title="Target Audience & Avatar"
+          subtitle="Who we're speaking to — shapes tone, angles, and hooks"
+        >
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <AutoSaveField
+              label="Primary Customer Avatar"
+              value={product.customer_avatar}
+              onChange={(v) => updateField('customer_avatar', v)}
+              onSave={(v) => saveFieldDirect('customer_avatar', v)}
+              placeholder="Who is this for? Age, gender, lifestyle, mindset..."
+              rows={4}
+            />
+            <AutoSaveField
+              label="Pain Points & Emotional Triggers"
+              value={product.pain_points}
+              onChange={(v) => updateField('pain_points', v)}
+              onSave={(v) => saveFieldDirect('pain_points', v)}
+              placeholder="What keeps them up at night? What are they frustrated by?"
+              rows={4}
+            />
+          </div>
+          <AutoSaveField
+            label="Common Objections & How to Handle Them"
+            value={product.common_objections}
+            onChange={(v) => updateField('common_objections', v)}
+            onSave={(v) => saveFieldDirect('common_objections', v)}
+            placeholder="List the top objections and how your product or copy addresses each..."
+            rows={4}
+          />
+        </CollapsibleSection>
+
+        {/* Brand Voice & Copy Style */}
+        <CollapsibleSection
+          icon={MessageSquare}
+          title="Brand Voice & Copy Style"
+          subtitle="Tone, style, and personality the AI should write in"
+        >
+          <AutoSaveField
+            label="Brand Voice & Tone"
+            value={product.voice}
+            onChange={(v) => updateField('voice', v)}
+            onSave={(v) => saveFieldDirect('voice', v)}
+            placeholder="e.g. Direct, authoritative, slightly edgy. Speaks like a knowledgeable friend..."
+            rows={4}
+          />
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <AutoSaveField
+              label="Winning Angles (What's Working Right Now)"
+              value={product.winning_angles}
+              onChange={(v) => updateField('winning_angles', v)}
+              onSave={(v) => saveFieldDirect('winning_angles', v)}
+              placeholder="List proven angles, hooks, and themes that convert..."
+              rows={4}
+            />
+            <AutoSaveField
+              label="Custom Angles to Test"
+              value={product.custom_angles_text}
+              onChange={(v) => updateField('custom_angles_text', v)}
+              onSave={(v) => saveFieldDirect('custom_angles_text', v)}
+              placeholder="New angles you want the AI to try..."
+              rows={4}
+            />
+          </div>
+        </CollapsibleSection>
+
+        {/* Competitive Edge & Offer */}
+        <CollapsibleSection
+          icon={Zap}
+          title="Competitive Edge & Offer"
+          subtitle="What makes us better and why buy now"
+        >
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <AutoSaveField
+              label="Competitive Edge"
+              value={product.competitive_edge}
+              onChange={(v) => updateField('competitive_edge', v)}
+              onSave={(v) => saveFieldDirect('competitive_edge', v)}
+              placeholder="Why choose this over competitors? What do they miss?"
+              rows={4}
+            />
+            <AutoSaveField
+              label="Guarantee / Risk Reversal"
+              value={product.guarantee}
+              onChange={(v) => updateField('guarantee', v)}
+              onSave={(v) => saveFieldDirect('guarantee', v)}
+              placeholder="e.g. 60-day money-back guarantee, no questions asked"
+              rows={4}
+            />
+          </div>
+        </CollapsibleSection>
+
+        {/* Offers & Promotions */}
+        <CollapsibleSection
+          icon={Tag}
+          title="Offers & Promotions"
+          subtitle="Discounts, codes, bundles — what the AI can reference in ads"
+        >
+          <AutoSaveField
+            label="Max Discount Allowed in Ads"
+            value={product.max_discount}
+            onChange={(v) => updateField('max_discount', v)}
+            onSave={(v) => saveFieldDirect('max_discount', v)}
+            placeholder="e.g. Up to 40% off — never exceed this in any generated copy"
+          />
+          <AutoSaveField
+            label="Active Discount Codes"
+            value={product.discount_codes}
+            onChange={(v) => updateField('discount_codes', v)}
+            onSave={(v) => saveFieldDirect('discount_codes', v)}
+            placeholder="e.g. SAVE20 = 20% off first order, BUNDLE30 = 30% off 3+ bottles, FLASH50 = 50% off (flash sale only)"
+            rows={3}
+          />
+          <AutoSaveField
+            label="Bundle Variants & Pricing"
+            value={product.bundle_variants}
+            onChange={(v) => updateField('bundle_variants', v)}
+            onSave={(v) => saveFieldDirect('bundle_variants', v)}
+            placeholder="e.g. 1 bottle = $49, 3 bottles = $117 (save $30), 6 bottles = $198 (save $96 + free shipping)"
+            rows={3}
+          />
+          <AutoSaveField
+            label="Offer Rules & Notes"
+            value={product.offer_details}
+            onChange={(v) => updateField('offer_details', v)}
+            onSave={(v) => saveFieldDirect('offer_details', v)}
+            placeholder="Any rules for the AI — e.g. always push 3-bottle bundle as best value, never mention free shipping on single bottles..."
+            rows={3}
+          />
+        </CollapsibleSection>
+
+        {/* Compliance & Restrictions */}
+        <CollapsibleSection
+          icon={AlertTriangle}
+          title="Compliance & Restrictions"
+          subtitle="What the AI must NEVER claim or say"
+        >
+          <AutoSaveField
+            label="Compliance Restrictions"
+            value={product.compliance_restrictions}
+            onChange={(v) => updateField('compliance_restrictions', v)}
+            onSave={(v) => saveFieldDirect('compliance_restrictions', v)}
+            placeholder="List any claims, words, or phrases that are off-limits. Include regulatory notes..."
+            rows={4}
+          />
+        </CollapsibleSection>
+
+        {/* Product Gallery */}
+        <CollapsibleSection
+          icon={Image}
+          title="Product Gallery"
+          subtitle="Product images, logos, and visual assets"
+        >
+          {/* Upload zone */}
+          <div
+            className="border-2 border-dashed border-white/[0.08] rounded-lg p-6 text-center hover:border-emerald-500/30 transition-colors cursor-pointer"
+            onDragOver={(e) => { e.preventDefault(); e.currentTarget.classList.add('border-emerald-500/40'); }}
+            onDragLeave={(e) => { e.currentTarget.classList.remove('border-emerald-500/40'); }}
+            onDrop={(e) => { e.preventDefault(); e.currentTarget.classList.remove('border-emerald-500/40'); handleImageUpload(e.dataTransfer.files); }}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            <Upload className="w-6 h-6 text-slate-500 mx-auto mb-2" />
+            <p className="text-xs text-slate-400">
+              Drop product images here or <span className="text-emerald-400">browse</span>
+            </p>
+            <p className="text-[10px] text-slate-600 mt-1">PNG, JPG, WebP — multiple files supported</p>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              multiple
+              className="hidden"
+              onChange={(e) => { handleImageUpload(e.target.files); e.target.value = ''; }}
+            />
+          </div>
+
+          {/* URL paste */}
+          <div className="flex items-center gap-2">
+            <input
+              value={imageUrlInput}
+              onChange={(e) => setImageUrlInput(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && addImageUrl()}
+              placeholder="Or paste image URL..."
+              className="flex-1 bg-[#0a0a0a] border border-white/[0.06] rounded-lg px-4 py-3 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-white/[0.15] transition-colors"
+            />
+            <button
+              onClick={addImageUrl}
+              disabled={!imageUrlInput.trim()}
+              className="text-xs text-emerald-400 hover:text-emerald-300 disabled:text-slate-600 disabled:cursor-not-allowed px-4 py-3 rounded-lg border border-white/[0.06] hover:border-emerald-500/30 transition-colors cursor-pointer"
+            >
+              Add
+            </button>
+          </div>
+
+          {/* Image grid */}
+          {(Array.isArray(product.product_images) ? product.product_images : []).filter((img) => img).length > 0 && (
+            <div className="flex flex-wrap gap-3">
+              {(product.product_images || []).map((url, i) =>
+                url ? (
+                  <div key={i} className="relative group w-24 h-24 rounded-lg overflow-hidden border border-white/[0.06] bg-[#0a0a0a]">
+                    <img src={url} alt="" className="w-full h-full object-cover" onError={(e) => { e.target.style.display = 'none'; }} />
+                    <button
+                      onClick={() => removeImage(i)}
+                      className="absolute top-1 right-1 w-5 h-5 rounded-full bg-black/70 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity text-red-400 hover:text-red-300 cursor-pointer"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                ) : null
+              )}
+            </div>
+          )}
+        </CollapsibleSection>
       </div>
     </div>
   );
@@ -774,130 +690,74 @@ function EditorModal({ isCreating, form, setForm, activeTab, setActiveTab, savin
 export default function Assets() {
   const [products, setProducts] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [editingProduct, setEditingProduct] = useState(null);
-  const [isCreating, setIsCreating] = useState(false);
-  const [activeTab, setActiveTab] = useState('basic');
-  const [form, setForm] = useState({ ...emptyProduct });
-  const [saving, setSaving] = useState(false);
+  const [viewMode, setViewMode] = useState('list');
+  const [selectedProduct, setSelectedProduct] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState(null);
+  const [creating, setCreating] = useState(false);
 
-  /* ---- Fetch ---- */
   const fetchProducts = useCallback(async () => {
     try {
       setLoading(true);
       const { data } = await api.get('/product-profiles');
-      setProducts(Array.isArray(data) ? data : data.data ?? []);
+      const list = Array.isArray(data) ? data : data.data ?? [];
+      setProducts(list);
+      return list;
     } catch (err) {
       console.error('Failed to load products:', err);
       setProducts([]);
+      return [];
     } finally {
       setLoading(false);
     }
   }, []);
 
-  useEffect(() => {
+  useEffect(() => { fetchProducts(); }, [fetchProducts]);
+
+  const openDetail = (product) => {
+    setSelectedProduct({ ...product });
+    setViewMode('detail');
+  };
+
+  const goBackToList = () => {
+    setViewMode('list');
+    setSelectedProduct(null);
     fetchProducts();
-  }, [fetchProducts]);
-
-  /* ---- Helpers to normalise form arrays ---- */
-  const normaliseForm = (p) => ({
-    name: p.name ?? '',
-    productCode: p.product_code ?? p.productCode ?? '',
-    category: p.category ?? 'supplement',
-    price: p.price ?? '',
-    description: p.description ?? '',
-    oneLiner: p.oneliner ?? p.oneLiner ?? '',
-    tagline: p.tagline ?? '',
-    targetCustomer: p.customer_avatar ?? p.targetCustomer ?? '',
-    customerFrustration: p.customer_frustration ?? p.customerFrustration ?? '',
-    customerDream: p.customer_dream ?? p.customerDream ?? '',
-    targetDemographics: p.target_demographics ?? p.targetDemographics ?? '',
-    voiceTone: p.voice ?? p.voiceTone ?? '',
-    bigPromise: p.big_promise ?? p.bigPromise ?? '',
-    uniqueMechanism: p.mechanism ?? p.uniqueMechanism ?? '',
-    differentiator: p.differentiator ?? '',
-    guarantee: p.guarantee ?? '',
-    benefits: Array.isArray(p.benefits) && p.benefits.length ? [...p.benefits] : [''],
-    angles: Array.isArray(p.angles) && p.angles.length ? p.angles.map((a) => ({ name: a.name ?? '', description: a.description ?? '' })) : [{ name: '', description: '' }],
-    images: Array.isArray(p.product_images || p.images) && (p.product_images || p.images).length ? (p.product_images || p.images).filter((img) => img) : [],
-    logos: Array.isArray(p.logos) && p.logos.length ? [...p.logos] : (p.logo_url ? [p.logo_url] : []),
-    fonts: Array.isArray(p.fonts) && p.fonts.length ? p.fonts.map((f) => ({ name: f.name ?? '', url: f.url ?? '', usage: f.usage ?? 'headline' })) : [{ name: '', url: '', usage: 'headline' }],
-    scripts: Array.isArray(p.scripts) && p.scripts.length ? p.scripts.map((s) => ({ title: s.title ?? '', type: s.type ?? 'vsl', content: s.content ?? '' })) : [{ title: '', type: 'vsl', content: '' }],
-  });
-
-  /* ---- CRUD actions ---- */
-  const openCreate = () => {
-    setForm({ ...emptyProduct, benefits: [''], angles: [{ name: '', description: '' }], images: [], logos: [], fonts: [{ name: '', url: '', usage: 'headline' }], scripts: [{ title: '', type: 'vsl', content: '' }] });
-    setEditingProduct(null);
-    setIsCreating(true);
-    setActiveTab('basic');
   };
 
-  const openEdit = (product) => {
-    setForm(normaliseForm(product));
-    setEditingProduct(product);
-    setIsCreating(false);
-    setActiveTab('basic');
-  };
-
-  const closeEditor = () => {
-    setEditingProduct(null);
-    setIsCreating(false);
-  };
-
-  const handleSave = async () => {
-    if (!form.name.trim()) return;
+  const handleCreate = async () => {
+    if (creating) return;
+    setCreating(true);
     try {
-      setSaving(true);
-      // Map camelCase frontend fields to snake_case backend columns
-      console.log('[ProductSave] form state:', JSON.stringify({ productCode: form.productCode, oneLiner: form.oneLiner, tagline: form.tagline }));
-      const payload = {
-        name: form.name,
-        description: form.description,
-        price: form.price,
-        category: form.category,
-        product_code: form.productCode,
-        logo_url: form.logoUrl,
-        oneliner: form.oneLiner,
-        tagline: form.tagline,
-        customer_avatar: form.targetCustomer,
-        customer_frustration: form.customerFrustration,
-        customer_dream: form.customerDream,
-        big_promise: form.bigPromise,
-        mechanism: form.uniqueMechanism,
-        differentiator: form.differentiator,
-        voice: form.voiceTone,
-        guarantee: form.guarantee,
-        target_demographics: form.targetDemographics,
-        brand_colors: form.brandColors,
-        benefits: form.benefits.filter((b) => b.trim()),
-        angles: form.angles.filter((a) => a.name.trim() || a.description.trim()),
-        product_images: form.images.filter((u) => u),
-        logos: form.logos.filter((u) => u),
-        fonts: form.fonts.filter((f) => f.name.trim() || f.url),
-        scripts: form.scripts.filter((s) => s.title.trim() || s.content.trim()),
-      };
-
-      console.log('[ProductSave] payload:', JSON.stringify({ product_code: payload.product_code, oneliner: payload.oneliner, tagline: payload.tagline }));
-
-      let resp;
-      if (editingProduct) {
-        resp = await api.put(`/product-profiles/${editingProduct.id ?? editingProduct._id}`, payload);
-      } else {
-        resp = await api.post('/product-profiles', payload);
-      }
-
-      const saved = resp.data?.data || resp.data;
-      console.log('[ProductSave] response saved:', JSON.stringify({ id: saved?.id, product_code: saved?.product_code, oneliner: saved?.oneliner, tagline: saved?.tagline }));
-
-      await fetchProducts();
-      closeEditor();
-      console.log('[ProductSave] Success — products refreshed');
+      const resp = await api.post('/product-profiles', { name: 'Untitled Product' });
+      const created = resp.data?.data || resp.data;
+      openDetail(created);
     } catch (err) {
-      console.error('Save failed:', err);
-      alert(`Save failed: ${err.response?.data?.error?.message || err.message}`);
+      console.error('Create failed:', err);
     } finally {
-      setSaving(false);
+      setCreating(false);
+    }
+  };
+
+  // Save field — value passed directly from AutoSaveField's ref (never stale)
+  const handleFieldSave = async (key, value) => {
+    if (!selectedProduct?.id) return;
+    try {
+      const payload = { [key]: value };
+      await api.put(`/product-profiles/${selectedProduct.id}`, payload);
+    } catch (err) {
+      console.error(`Auto-save failed for ${key}:`, err);
+    }
+  };
+
+  const handleAiFill = async (url) => {
+    if (!selectedProduct?.id) return;
+    try {
+      const resp = await api.post(`/product-profiles/${selectedProduct.id}/ai-fill`, { url });
+      const updated = resp.data?.data || resp.data;
+      setSelectedProduct({ ...selectedProduct, ...updated });
+    } catch (err) {
+      console.error('AI fill failed:', err);
+      alert(`AI fill failed: ${err.response?.data?.error?.message || err.message}`);
     }
   };
 
@@ -905,6 +765,9 @@ export default function Assets() {
     if (!deleteTarget) return;
     try {
       await api.delete(`/product-profiles/${deleteTarget.id ?? deleteTarget._id}`);
+      if (viewMode === 'detail' && selectedProduct?.id === deleteTarget.id) {
+        goBackToList();
+      }
       await fetchProducts();
     } catch (err) {
       console.error('Delete failed:', err);
@@ -913,12 +776,26 @@ export default function Assets() {
     }
   };
 
-  /* ---- Render ---- */
-  const showEditor = isCreating || editingProduct;
+  if (viewMode === 'detail' && selectedProduct) {
+    return (
+      <div>
+        <ProductDetailView
+          product={selectedProduct}
+          onBack={goBackToList}
+          onFieldSave={handleFieldSave}
+          onAiFill={handleAiFill}
+          onProductChange={(updated) => setSelectedProduct(updated)}
+          onDelete={(p) => setDeleteTarget(p)}
+        />
+        {deleteTarget && (
+          <DeleteDialog product={deleteTarget} onConfirm={handleDelete} onCancel={() => setDeleteTarget(null)} />
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="p-6 space-y-6">
-      {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-lg bg-emerald-500/10 flex items-center justify-center">
@@ -930,54 +807,36 @@ export default function Assets() {
           </div>
         </div>
         <button
-          onClick={openCreate}
-          className="inline-flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium px-4 py-2.5 rounded-lg transition-colors"
+          onClick={handleCreate}
+          disabled={creating}
+          className="inline-flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-sm font-medium px-4 py-2.5 rounded-lg transition-colors cursor-pointer"
         >
-          <Plus className="w-4 h-4" /> Add Product
+          {creating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
+          Add Product
         </button>
       </div>
 
-      {/* Content */}
       {loading ? (
         <div className="flex items-center justify-center py-24">
           <Loader2 className="w-6 h-6 text-emerald-400 animate-spin" />
         </div>
       ) : products.length === 0 ? (
-        <EmptyState onCreate={openCreate} />
+        <EmptyState onCreate={handleCreate} />
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
           {products.map((p) => (
             <ProductCard
               key={p.id ?? p._id}
               product={p}
-              onEdit={openEdit}
-              onDelete={setDeleteTarget}
+              onClick={() => openDetail(p)}
+              onDelete={(prod) => setDeleteTarget(prod)}
             />
           ))}
         </div>
       )}
 
-      {/* Editor Modal */}
-      {showEditor && (
-        <EditorModal
-          isCreating={!editingProduct}
-          form={form}
-          setForm={setForm}
-          activeTab={activeTab}
-          setActiveTab={setActiveTab}
-          saving={saving}
-          onSave={handleSave}
-          onCancel={closeEditor}
-        />
-      )}
-
-      {/* Delete Confirmation */}
       {deleteTarget && (
-        <DeleteDialog
-          product={deleteTarget}
-          onConfirm={handleDelete}
-          onCancel={() => setDeleteTarget(null)}
-        />
+        <DeleteDialog product={deleteTarget} onConfirm={handleDelete} onCancel={() => setDeleteTarget(null)} />
       )}
     </div>
   );
