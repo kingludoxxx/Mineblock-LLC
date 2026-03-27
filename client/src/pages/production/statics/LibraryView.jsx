@@ -155,13 +155,13 @@ export function LibraryView({
   );
 
   const hiddenCount = useMemo(
-    () => templates.filter((t) => t.hidden).length,
+    () => templates.filter((t) => t.is_hidden).length,
     [templates],
   );
 
   const filtered = useMemo(() => {
-    if (!selectedCategory) return templates.filter((t) => !t.hidden);
-    return templates.filter((t) => t.category === selectedCategory && !t.hidden);
+    if (!selectedCategory) return templates.filter((t) => !t.is_hidden);
+    return templates.filter((t) => t.category === selectedCategory && !t.is_hidden);
   }, [templates, selectedCategory]);
 
   const heading = selectedCategory
