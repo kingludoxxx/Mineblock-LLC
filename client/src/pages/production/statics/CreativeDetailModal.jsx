@@ -63,6 +63,31 @@ function SectionLabel({ children }) {
 // CreativeDetailModal
 // ---------------------------------------------------------------------------
 
+function ReferenceLightbox({ url, name, onClose }) {
+  if (!url) return null;
+  return (
+    <div className="fixed inset-0 z-[60] flex flex-col items-center justify-center bg-black/80 backdrop-blur-sm" onClick={onClose}>
+      <div className="relative max-w-[90vw] max-h-[90vh]" onClick={(e) => e.stopPropagation()}>
+        <button
+          onClick={onClose}
+          className="absolute -top-3 -right-3 z-10 p-1.5 rounded-full bg-white/10 hover:bg-white/20 text-white transition-colors cursor-pointer"
+        >
+          <X className="w-4 h-4" />
+        </button>
+        <div className="bg-[#111] border border-white/[0.06] rounded-lg px-4 py-2 mb-3">
+          <p className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">Reference Image</p>
+          <p className="text-xs text-slate-300 truncate max-w-md">{name || 'Reference'}</p>
+        </div>
+        <img
+          src={url}
+          alt="Reference"
+          className="max-w-full max-h-[75vh] rounded-xl object-contain shadow-2xl"
+        />
+      </div>
+    </div>
+  );
+}
+
 export function CreativeDetailModal({
   creative,
   isOpen,
@@ -81,6 +106,7 @@ export function CreativeDetailModal({
   const [publishSuccess, setPublishSuccess] = useState(null);
   const [aiAdjusting, setAiAdjusting] = useState(false);
   const [aiError, setAiError] = useState(null);
+  const [refLightbox, setRefLightbox] = useState(false);
 
   if (!isOpen || !creative) return null;
 
@@ -112,7 +138,7 @@ export function CreativeDetailModal({
         {/* ----------------------------------------------------------------- */}
         <div className="w-[70%] flex flex-col items-center justify-center p-8 overflow-hidden">
           {/* Main preview */}
-          <div className="flex-1 flex items-center justify-center w-full min-h-0">
+          <div className="relative flex-1 flex items-center justify-center w-full min-h-0">
             {creative.image_url ? (
               <img
                 src={creative.image_url}
@@ -125,20 +151,36 @@ export function CreativeDetailModal({
                 <span className="text-sm">No image available</span>
               </div>
             )}
+
+            {/* Reference image overlay — bottom left */}
+            {creative.reference_thumbnail && (
+              <button
+                type="button"
+                onClick={() => setRefLightbox(true)}
+                className="absolute bottom-2 left-2 group flex items-center gap-2 bg-black/70 backdrop-blur-sm border border-white/[0.1] rounded-lg p-1.5 pr-3 hover:bg-black/80 hover:border-white/[0.2] transition-all cursor-pointer"
+              >
+                <img
+                  src={creative.reference_thumbnail}
+                  alt="Reference"
+                  className="w-14 h-14 rounded-md object-cover border border-white/[0.08]"
+                />
+                <div className="text-left">
+                  <p className="text-[9px] uppercase tracking-wider text-slate-500 font-semibold">Reference</p>
+                  <p className="text-[11px] text-slate-300 truncate max-w-[120px] group-hover:text-white transition-colors">
+                    {creative.reference_name || 'View original'}
+                  </p>
+                </div>
+              </button>
+            )}
           </div>
 
-          {/* Reference thumbnail */}
-          {creative.reference_thumbnail && (
-            <div className="mt-6 flex items-center gap-3">
-              <img
-                src={creative.reference_thumbnail}
-                alt="Reference"
-                className="w-16 h-16 rounded-md border border-white/[0.08] object-cover"
-              />
-              <span className="text-xs text-slate-400">
-                {creative.reference_name || 'Reference template'}
-              </span>
-            </div>
+          {/* Reference lightbox */}
+          {refLightbox && (
+            <ReferenceLightbox
+              url={creative.reference_thumbnail}
+              name={creative.reference_name}
+              onClose={() => setRefLightbox(false)}
+            />
           )}
         </div>
 
