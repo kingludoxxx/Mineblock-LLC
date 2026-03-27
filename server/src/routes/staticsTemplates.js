@@ -182,6 +182,34 @@ router.post('/', authenticate, async (req, res) => {
   }
 });
 
+// ── POST /bulk-import — Temporary unauthenticated import (CORS-enabled) ──
+router.options('/bulk-import', (req, res) => {
+  res.set({ 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'POST', 'Access-Control-Allow-Headers': 'Content-Type' });
+  res.sendStatus(204);
+});
+router.post('/bulk-import', async (req, res) => {
+  res.set('Access-Control-Allow-Origin', '*');
+  const secret = req.query.secret;
+  if (secret !== process.env.CRON_SECRET) return res.status(403).json({ error: 'Forbidden' });
+  try {
+    await ensureTable();
+    const { templates } = req.body;
+    if (!Array.isArray(templates)) return res.status(400).json({ error: 'templates array required' });
+    let count = 0;
+    for (const t of templates) {
+      if (!t.name || !t.image_url) continue;
+      await pgQuery(
+        `INSERT INTO statics_templates (name, category, image_url, tags) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING`,
+        [t.name, t.category || 'Uncategorized', t.image_url, JSON.stringify(t.tags || [])]
+      );
+      count++;
+    }
+    res.status(201).json({ success: true, count });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── POST /bulk — Bulk create templates ──────────────────────────────────
 
 router.post('/bulk', authenticate, async (req, res) => {
