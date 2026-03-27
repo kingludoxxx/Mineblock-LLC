@@ -322,7 +322,7 @@ export function CreativeDetailModal({
             </button>
 
             {/* Approve */}
-            {creative.status !== 'approved' && (
+            {creative.status === 'review' && (
               <button
                 type="button"
                 onClick={() => onApprove?.(creative.id)}

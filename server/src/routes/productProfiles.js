@@ -95,9 +95,6 @@ const UPDATABLE_FIELDS = [
   'pain_points', 'common_objections', 'winning_angles', 'custom_angles_text',
   'compliance_restrictions', 'competitive_edge', 'offer_details',
   'max_discount', 'discount_codes', 'bundle_variants',
-  'short_name', 'product_type', 'product_group', 'unit_details', 'product_url',
-  'pain_points', 'common_objections', 'winning_angles', 'custom_angles_text',
-  'compliance_restrictions', 'competitive_edge', 'offer_details',
 ];
 
 const JSONB_FIELDS = new Set([

@@ -44,9 +44,10 @@ import { AddReferenceModal } from './statics/AddReferenceModal';
 // ---------------------------------------------------------------------------
 
 const fileToBase64 = (file) =>
-  new Promise((resolve) => {
+  new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error);
     reader.readAsDataURL(file);
   });
 
@@ -82,6 +83,8 @@ const STATUS_COLORS = {
   images_pending: { bg: 'bg-blue-500/10', text: 'text-blue-300', border: 'border-blue-500/20' },
   images_review: { bg: 'bg-cyan-500/10', text: 'text-cyan-300', border: 'border-cyan-500/20' },
   ready: { bg: 'bg-emerald-500/10', text: 'text-emerald-300', border: 'border-emerald-500/20' },
+  copy_approved: { bg: 'bg-emerald-500/10', text: 'text-emerald-300', border: 'border-emerald-500/20' },
+  archived: { bg: 'bg-slate-500/10', text: 'text-slate-300', border: 'border-slate-500/20' },
 };
 
 const VARIANT_TYPE_COLORS = {
@@ -222,7 +225,7 @@ function CopyBadge({ text }) {
 
 function StatusBadge({ status }) {
   const colors = STATUS_COLORS[status] || STATUS_COLORS.draft;
-  const display = status.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+  const display = (status || 'draft').replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
   return (
     <span className={`inline-block px-2 py-0.5 text-[10px] font-medium rounded-full ${colors.bg} ${colors.text} border ${colors.border}`}>
       {display}
@@ -1226,6 +1229,7 @@ export default function StaticsGeneration() {
                         type="button"
                         onClick={() => {
                           setSelectedProductId(null);
+                          selectedProductRef.current = null;
                           setProductName('');
                           setProductDescription('');
                           setProductPrice('');
@@ -1273,7 +1277,7 @@ export default function StaticsGeneration() {
                     try {
                       const res = await api.post(`/statics-generation/creatives/${id}/publish-clickup`);
                       if (res.data?.success) {
-                        setCreatives(prev => prev.map(c => c.id === id ? { ...c, status: 'launched', clickup_url: res.data.data?.taskUrl } : c));
+                        setCreatives(prev => prev.map(c => c.id === id ? { ...c, status: 'launched', clickup_url: res.data.data?.clickup_task_url } : c));
                         setDetailModal(null);
                       }
                     } catch (err) {
@@ -1758,6 +1762,7 @@ export default function StaticsGeneration() {
 
       {detailModal && (
         <CreativeDetailModal
+          key={detailModal?.id}
           creative={detailModal}
           isOpen={true}
           onClose={() => setDetailModal(null)}
@@ -1791,6 +1796,8 @@ export default function StaticsGeneration() {
             if (res.data?.success) {
               setCreatives(prev => prev.map(c => c.id === id ? { ...c, image_url: res.data.data.image_url } : c));
               setDetailModal(prev => ({ ...prev, image_url: res.data.data.image_url }));
+            } else {
+              throw new Error(res.data?.error || 'AI adjustment failed');
             }
           }}
           onStatusChange={async (id, status) => {
