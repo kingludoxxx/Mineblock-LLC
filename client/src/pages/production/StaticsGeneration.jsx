@@ -775,7 +775,14 @@ export default function StaticsGeneration() {
     setCreativesLoading(true);
     try {
       const res = await api.get('/statics-generation/creatives/pipeline');
-      setCreatives(res.data?.data || res.data || []);
+      const pipeline = res.data?.data || {};
+      const flat = [
+        ...(pipeline.review || []),
+        ...(pipeline.approved || []),
+        ...(pipeline.ready || []),
+        ...(pipeline.launched || []),
+      ];
+      setCreatives(flat);
     } catch {
       // silently fail
     } finally {

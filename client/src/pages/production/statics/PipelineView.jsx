@@ -35,10 +35,10 @@ const COLUMNS = [
     headerBorder: 'border-emerald-500/40',
     placeholder: null,
     actionLabel: 'Ready',
-    nextStatus: 'queued',
+    nextStatus: 'ready',
   },
   {
-    key: 'queued',
+    key: 'ready',
     label: 'Ready to Launch',
     icon: Rocket,
     color: 'purple',
@@ -66,7 +66,7 @@ const COLUMNS = [
 const STATUS_BADGE = {
   review: { bg: 'bg-amber-500/80', text: 'text-white', label: 'To Review' },
   approved: { bg: 'bg-emerald-500/80', text: 'text-white', label: 'Approved' },
-  queued: { bg: 'bg-purple-500/80', text: 'text-white', label: 'Ready' },
+  ready: { bg: 'bg-purple-500/80', text: 'text-white', label: 'Ready' },
   launched: { bg: 'bg-blue-500/80', text: 'text-white', label: 'Launched' },
 };
 
@@ -199,7 +199,7 @@ function PipelineColumn({ column, items, onStatusChange, onCardClick }) {
 export function PipelineView({ creatives = [], onStatusChange, onCardClick, onRefresh, loading }) {
   // Bucket creatives into columns by status
   const buckets = useMemo(() => {
-    const map = { review: [], approved: [], queued: [], launched: [] };
+    const map = { review: [], approved: [], ready: [], launched: [] };
     for (const c of creatives) {
       const key = c.status in map ? c.status : 'review';
       map[key].push(c);
