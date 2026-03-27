@@ -685,7 +685,7 @@ export default function StaticsGeneration() {
   // Derived
   const hasReferenceImage = !!(referencePreview || referenceImageUrl);
   const hasProductImage = !!(productPreview || productImageUrl);
-  const canGenerate = hasReferenceImage && productName.trim() && !generating;
+  const canGenerate = (hasReferenceImage || references.length > 0) && productName.trim() && !generating;
 
   const handleReferenceFile = useCallback((file) => {
     setReferenceFile(file);
@@ -724,6 +724,9 @@ export default function StaticsGeneration() {
       let resolvedReferenceUrl = referenceImageUrl;
       if (referenceFile) {
         resolvedReferenceUrl = await fileToBase64(referenceFile);
+      }
+      if (!resolvedReferenceUrl && references.length > 0) {
+        resolvedReferenceUrl = references[0].image_url || references[0].thumbnail || references[0].url || '';
       }
       let resolvedProductUrl = productImageUrl;
       if (productFile) {

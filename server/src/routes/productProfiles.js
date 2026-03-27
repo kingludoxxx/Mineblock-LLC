@@ -62,24 +62,29 @@ async function ensureTable() {
   `);
 
   // Migrations for existing tables
-  await pgQuery(`ALTER TABLE product_profiles ADD COLUMN IF NOT EXISTS logos JSONB DEFAULT '[]'`).catch(() => {});
-  await pgQuery(`ALTER TABLE product_profiles ADD COLUMN IF NOT EXISTS fonts JSONB DEFAULT '[]'`).catch(() => {});
-  await pgQuery(`ALTER TABLE product_profiles ADD COLUMN IF NOT EXISTS product_code TEXT`).catch(() => {});
-  await pgQuery(`ALTER TABLE product_profiles ADD COLUMN IF NOT EXISTS short_name TEXT`).catch(() => {});
-  await pgQuery(`ALTER TABLE product_profiles ADD COLUMN IF NOT EXISTS product_type TEXT`).catch(() => {});
-  await pgQuery(`ALTER TABLE product_profiles ADD COLUMN IF NOT EXISTS product_group TEXT`).catch(() => {});
-  await pgQuery(`ALTER TABLE product_profiles ADD COLUMN IF NOT EXISTS unit_details TEXT`).catch(() => {});
-  await pgQuery(`ALTER TABLE product_profiles ADD COLUMN IF NOT EXISTS product_url TEXT`).catch(() => {});
-  await pgQuery(`ALTER TABLE product_profiles ADD COLUMN IF NOT EXISTS pain_points TEXT`).catch(() => {});
-  await pgQuery(`ALTER TABLE product_profiles ADD COLUMN IF NOT EXISTS common_objections TEXT`).catch(() => {});
-  await pgQuery(`ALTER TABLE product_profiles ADD COLUMN IF NOT EXISTS winning_angles TEXT`).catch(() => {});
-  await pgQuery(`ALTER TABLE product_profiles ADD COLUMN IF NOT EXISTS custom_angles_text TEXT`).catch(() => {});
-  await pgQuery(`ALTER TABLE product_profiles ADD COLUMN IF NOT EXISTS compliance_restrictions TEXT`).catch(() => {});
-  await pgQuery(`ALTER TABLE product_profiles ADD COLUMN IF NOT EXISTS competitive_edge TEXT`).catch(() => {});
-  await pgQuery(`ALTER TABLE product_profiles ADD COLUMN IF NOT EXISTS offer_details TEXT`).catch(() => {});
-  await pgQuery(`ALTER TABLE product_profiles ADD COLUMN IF NOT EXISTS max_discount TEXT`).catch(() => {});
-  await pgQuery(`ALTER TABLE product_profiles ADD COLUMN IF NOT EXISTS discount_codes TEXT`).catch(() => {});
-  await pgQuery(`ALTER TABLE product_profiles ADD COLUMN IF NOT EXISTS bundle_variants TEXT`).catch(() => {});
+  await pgQuery(`
+    DO $$ BEGIN
+      ALTER TABLE product_profiles ADD COLUMN IF NOT EXISTS logos JSONB DEFAULT '[]';
+      ALTER TABLE product_profiles ADD COLUMN IF NOT EXISTS fonts JSONB DEFAULT '[]';
+      ALTER TABLE product_profiles ADD COLUMN IF NOT EXISTS product_code TEXT;
+      ALTER TABLE product_profiles ADD COLUMN IF NOT EXISTS short_name TEXT;
+      ALTER TABLE product_profiles ADD COLUMN IF NOT EXISTS product_type TEXT;
+      ALTER TABLE product_profiles ADD COLUMN IF NOT EXISTS product_group TEXT;
+      ALTER TABLE product_profiles ADD COLUMN IF NOT EXISTS unit_details TEXT;
+      ALTER TABLE product_profiles ADD COLUMN IF NOT EXISTS product_url TEXT;
+      ALTER TABLE product_profiles ADD COLUMN IF NOT EXISTS pain_points TEXT;
+      ALTER TABLE product_profiles ADD COLUMN IF NOT EXISTS common_objections TEXT;
+      ALTER TABLE product_profiles ADD COLUMN IF NOT EXISTS winning_angles TEXT;
+      ALTER TABLE product_profiles ADD COLUMN IF NOT EXISTS custom_angles_text TEXT;
+      ALTER TABLE product_profiles ADD COLUMN IF NOT EXISTS compliance_restrictions TEXT;
+      ALTER TABLE product_profiles ADD COLUMN IF NOT EXISTS competitive_edge TEXT;
+      ALTER TABLE product_profiles ADD COLUMN IF NOT EXISTS offer_details TEXT;
+      ALTER TABLE product_profiles ADD COLUMN IF NOT EXISTS max_discount TEXT;
+      ALTER TABLE product_profiles ADD COLUMN IF NOT EXISTS discount_codes TEXT;
+      ALTER TABLE product_profiles ADD COLUMN IF NOT EXISTS bundle_variants TEXT;
+    EXCEPTION WHEN OTHERS THEN NULL;
+    END $$;
+  `);
 
   tableReady = true;
 }

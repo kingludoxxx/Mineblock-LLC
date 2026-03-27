@@ -8,9 +8,10 @@ import api from '../../../services/api';
 // ---------------------------------------------------------------------------
 
 const fileToBase64 = (file) =>
-  new Promise((resolve) => {
+  new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error);
     reader.readAsDataURL(file);
   });
 

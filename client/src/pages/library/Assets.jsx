@@ -61,7 +61,7 @@ function CollapsibleSection({ icon: Icon, title, subtitle, defaultOpen = false, 
 /*  Auto-Save Field                                                   */
 /* ------------------------------------------------------------------ */
 
-function AutoSaveField({ label, value, onSave, placeholder, rows }) {
+function AutoSaveField({ label, value, onChange, onSave, placeholder, rows }) {
   // Fully local state — only syncs to parent + API on blur
   const [local, setLocal] = useState(value || '');
   const [saved, setSaved] = useState(false);
@@ -75,6 +75,7 @@ function AutoSaveField({ label, value, onSave, placeholder, rows }) {
 
   const handleChange = (v) => {
     setLocal(v);
+    onChange?.(v);
     dirtyRef.current = true;
     setSaved(false);
   };

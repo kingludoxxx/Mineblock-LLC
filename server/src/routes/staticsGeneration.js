@@ -288,6 +288,11 @@ async function ensureCreativesTable() {
       updated_at TIMESTAMPTZ DEFAULT NOW()
     )
   `);
+  await pgQuery('ALTER TABLE spy_creatives ADD COLUMN IF NOT EXISTS product_name TEXT').catch(() => {});
+  await pgQuery(`CREATE INDEX IF NOT EXISTS idx_spy_creatives_pipeline ON spy_creatives(pipeline)`).catch(() => {});
+  await pgQuery(`CREATE INDEX IF NOT EXISTS idx_spy_creatives_status ON spy_creatives(status)`).catch(() => {});
+  await pgQuery(`CREATE INDEX IF NOT EXISTS idx_spy_creatives_product_id ON spy_creatives(product_id)`).catch(() => {});
+  await pgQuery(`CREATE INDEX IF NOT EXISTS idx_spy_creatives_created ON spy_creatives(created_at DESC)`).catch(() => {});
   crTableReady = true;
 }
 
@@ -296,7 +301,7 @@ router.get('/creatives', authenticate, async (req, res) => {
   try {
     await ensureCreativesTable();
     const { product_id, status, pipeline = 'standard' } = req.query;
-    let query = "SELECT * FROM spy_creatives WHERE pipeline = $1";
+    let query = "SELECT id, product_id, product_name, image_url, thumbnail_url, source_label, angle, archetype, aspect_ratio, status, reference_thumbnail, reference_name, pipeline, created_at FROM spy_creatives WHERE pipeline = $1";
     const params = [pipeline];
     let idx = 2;
 
@@ -339,7 +344,7 @@ router.get('/creatives/pipeline', authenticate, async (req, res) => {
     await ensureCreativesTable();
     const { product_id } = req.query;
 
-    let query = 'SELECT * FROM spy_creatives';
+    let query = 'SELECT id, product_id, product_name, image_url, thumbnail_url, source_label, angle, archetype, aspect_ratio, status, reference_thumbnail, reference_name, pipeline, created_at FROM spy_creatives';
     const params = [];
     if (product_id) {
       query += ' WHERE product_id = $1';
@@ -410,13 +415,14 @@ router.post('/creatives', authenticate, async (req, res) => {
 
     const rows = await pgQuery(
       `INSERT INTO spy_creatives
-        (product_id, angle, aspect_ratio, image_url,
+        (product_id, product_name, angle, aspect_ratio, image_url,
          reference_image_id, source_label, adapted_text,
          claude_analysis, swap_pairs, generation_prompt, status)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
        RETURNING *`,
       [
         product_id || null,
+        product_name || null,
         angle || null,
         aspect_ratio || '4:5',
         image_url,
