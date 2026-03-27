@@ -37,6 +37,7 @@ import { LibraryView } from './statics/LibraryView';
 import { TemplateSelectModal } from './statics/TemplateSelectModal';
 import { CreativeDetailModal } from './statics/CreativeDetailModal';
 import { ConfigSidebar } from './statics/ConfigSidebar';
+import { AddReferenceModal } from './statics/AddReferenceModal';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -625,6 +626,7 @@ export default function StaticsGeneration() {
   // Modal state
   const [detailModal, setDetailModal] = useState(null);
   const [templateModal, setTemplateModal] = useState(false);
+  const [addRefModal, setAddRefModal] = useState(false);
   const [selectedCategory, setSelectedCategory] = useState(null);
 
   // =========================================================================
@@ -1672,7 +1674,7 @@ export default function StaticsGeneration() {
             handleTemplateSelect(template);
             setActiveTab('pipeline');
           }}
-          onAddReference={() => setTemplateModal(true)}
+          onAddReference={() => setAddRefModal(true)}
           selectedCategory={selectedCategory}
           onCategoryChange={setSelectedCategory}
         />
@@ -1740,6 +1742,17 @@ export default function StaticsGeneration() {
             await api.patch(`/statics-generation/creatives/${id}/status`, { status });
             setCreatives(prev => prev.map(c => c.id === id ? { ...c, status } : c));
             setDetailModal(null);
+          }}
+        />
+      )}
+
+      {addRefModal && (
+        <AddReferenceModal
+          isOpen={true}
+          onClose={() => setAddRefModal(false)}
+          onImportComplete={(newTemplates) => {
+            setTemplates(prev => [...newTemplates, ...prev]);
+            setAddRefModal(false);
           }}
         />
       )}
