@@ -214,8 +214,8 @@ export function ConfigSidebar({
             />
           </div>
 
-          {/* Reference thumbnails grid */}
-          <div className="mt-3">
+          {/* Reference thumbnails */}
+          <div className="mt-3 space-y-2">
             {references.length === 0 ? (
               <p className="text-xs text-slate-600 text-center py-3">
                 No reference images yet.{' '}
@@ -228,27 +228,30 @@ export function ConfigSidebar({
                 </button>
               </p>
             ) : (
-              <div className="grid grid-cols-3 gap-2">
-                {references.map((ref) => (
-                  <div key={ref.id} className="relative group">
-                    <img
-                      src={ref.thumbnail || ref.image_url || ref.url}
-                      alt="Reference"
-                      className="w-full h-20 object-cover rounded-lg border border-white/[0.06]"
-                    />
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onRemoveReference(ref.id);
-                      }}
-                      className="absolute top-1 right-1 p-0.5 rounded-full bg-black/70 text-white opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
-                    >
-                      <X className="w-3 h-3" />
-                    </button>
-                  </div>
-                ))}
-              </div>
+              references.map((ref) => (
+                <div key={ref.id} className="relative group rounded-lg overflow-hidden border border-white/[0.06] bg-[#0a0a0a]">
+                  <img
+                    src={ref.thumbnail || ref.image_url || ref.url}
+                    alt="Reference"
+                    className="w-full aspect-[4/5] object-cover"
+                  />
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onRemoveReference(ref.id);
+                    }}
+                    className="absolute top-1.5 right-1.5 p-1 rounded-full bg-black/70 text-white opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer hover:bg-black/90"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                  {ref.name && (
+                    <div className="px-2 py-1.5 bg-[#0a0a0a]">
+                      <p className="text-[10px] text-slate-500 truncate">{ref.name}</p>
+                    </div>
+                  )}
+                </div>
+              ))
             )}
           </div>
         </div>

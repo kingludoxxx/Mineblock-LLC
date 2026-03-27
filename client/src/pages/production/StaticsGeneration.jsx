@@ -1491,37 +1491,7 @@ export default function StaticsGeneration() {
                   </div>
                 )}
 
-                {/* ---- Reference Images Grid ---- */}
-                {references.length > 0 && !generating && !result && (
-                  <div className="bg-[#111] border border-white/[0.06] rounded-lg p-5">
-                    <h3 className="text-sm font-medium text-white mb-3">Saved References</h3>
-                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
-                      {references.map((ref, i) => (
-                        <button
-                          key={ref.id || i}
-                          type="button"
-                          onClick={() => {
-                            setReferenceImageUrl(ref.url || ref.image_url);
-                            setReferencePreview(ref.url || ref.image_url);
-                            setReferenceFile(null);
-                          }}
-                          className="group relative rounded-lg overflow-hidden border border-white/[0.06] hover:border-blue-500/40 transition-colors cursor-pointer"
-                        >
-                          <img
-                            src={ref.url || ref.image_url}
-                            alt={ref.name || 'Reference'}
-                            className="w-full h-24 object-cover"
-                          />
-                          <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition-colors flex items-center justify-center">
-                            <span className="text-white text-xs opacity-0 group-hover:opacity-100 transition-opacity">
-                              Use
-                            </span>
-                          </div>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                )}
+                {/* Saved References removed — references show in sidebar */}
               </div>
             </div>
           )}
@@ -1750,6 +1720,7 @@ export default function StaticsGeneration() {
           templates={templates}
           onSelectTemplate={(template) => {
             handleTemplateSelect(template);
+            setReferences(prev => [...prev, { id: template.id || Date.now(), image_url: template.image_url, name: template.name }]);
             setActiveTab('pipeline');
           }}
           onAddReference={() => setAddRefModal(true)}
