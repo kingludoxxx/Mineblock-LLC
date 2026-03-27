@@ -232,7 +232,7 @@ export function ConfigSidebar({
                 {references.map((ref) => (
                   <div key={ref.id} className="relative group">
                     <img
-                      src={ref.thumbnail || ref.url}
+                      src={ref.thumbnail || ref.image_url || ref.url}
                       alt="Reference"
                       className="w-full h-20 object-cover rounded-lg border border-white/[0.06]"
                     />

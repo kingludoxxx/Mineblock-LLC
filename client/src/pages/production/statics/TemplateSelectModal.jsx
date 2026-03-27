@@ -8,12 +8,24 @@ import { X, Search, LayoutGrid } from 'lucide-react';
 
 const CATEGORIES = [
   { key: 'all', label: 'All' },
-  { key: 'supplement', label: 'Supplement' },
-  { key: 'saas', label: 'SaaS' },
-  { key: 'ecommerce', label: 'E-Commerce' },
-  { key: 'finance', label: 'Finance' },
-  { key: 'health', label: 'Health' },
-  { key: 'other', label: 'Other' },
+  { key: 'Headline', label: 'Headline' },
+  { key: 'Feature/Benefit', label: 'Feature/Benefit' },
+  { key: 'Offer/Sale', label: 'Offer/Sale' },
+  { key: 'Testimonial', label: 'Testimonial' },
+  { key: 'Before & After', label: 'Before & After' },
+  { key: 'Us vs Them', label: 'Us vs Them' },
+  { key: 'Article/News', label: 'Article/News' },
+  { key: 'Native', label: 'Native' },
+  { key: 'Bold Claim', label: 'Bold Claim' },
+  { key: 'Statistics', label: 'Statistics' },
+  { key: 'Problem + Solution', label: 'Problem + Solution' },
+  { key: 'Google Search', label: 'Google Search' },
+  { key: 'Apple Notes', label: 'Apple Notes' },
+  { key: 'AirDrop', label: 'AirDrop' },
+  { key: 'Meme', label: 'Meme' },
+  { key: 'Negative Hook', label: 'Negative Hook' },
+  { key: "What's Inside", label: "What's Inside" },
+  { key: 'Uncategorized', label: 'Uncategorized' },
 ];
 
 // ---------------------------------------------------------------------------

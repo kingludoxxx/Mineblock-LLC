@@ -51,15 +51,17 @@ async function categorizeImage(imageUrl) {
         content: [
           {
             type: 'text',
-            text: `Analyze this ad/marketing template image. Return a JSON object with:
-- "category": a short category label (e.g. "Food & Beverage", "Fashion", "Health & Beauty", "Tech", "Fitness", "E-commerce", "Finance", "Travel", "Lifestyle", "Automotive", "Real Estate", "Education", "Entertainment", "Uncategorized")
-- "tags": an array of 3-5 descriptive tags (e.g. ["minimal", "dark-theme", "product-shot", "luxury"])
+            text: `Analyze this static ad template image. Classify it into ONE of these exact categories:
+Headline, Feature/Benefit, Offer/Sale, Testimonial, Before & After, Us vs Them, Article/News, Native, Bold Claim, Statistics, Problem + Solution, Google Search, Apple Notes, AirDrop, Meme, Negative Hook, What's Inside, Uncategorized
+
+Return a JSON object with:
+- "category": one of the exact categories above
+- "tags": an array of 3-5 descriptive tags (e.g. ["before-after", "product-comparison", "dark-theme"])
 Return ONLY valid JSON, no markdown fences.`,
           },
-          {
-            type: 'image',
-            source: { type: 'url', url: imageUrl },
-          },
+          imageUrl.startsWith('data:')
+            ? { type: 'image', source: { type: 'base64', media_type: imageUrl.match(/data:([^;]+)/)?.[1] || 'image/png', data: imageUrl.split(',')[1] } }
+            : { type: 'image', source: { type: 'url', url: imageUrl } },
         ],
       }],
     }),
@@ -197,14 +199,23 @@ router.post('/bulk-import', async (req, res) => {
     // Handle form-urlencoded POST (templates comes as a JSON string)
     if (typeof templates === 'string') { try { templates = JSON.parse(templates); } catch { return res.status(400).json({ error: 'invalid JSON' }); } }
     if (!Array.isArray(templates)) return res.status(400).json({ error: 'templates array required' });
+    // Batch insert for performance (up to 200 per query)
+    const valid = templates.filter(t => t.name && t.image_url);
     let count = 0;
-    for (const t of templates) {
-      if (!t.name || !t.image_url) continue;
+    for (let i = 0; i < valid.length; i += 200) {
+      const batch = valid.slice(i, i + 200);
+      const values = [];
+      const params = [];
+      batch.forEach((t, idx) => {
+        const off = idx * 4;
+        values.push(`($${off+1}, $${off+2}, $${off+3}, $${off+4})`);
+        params.push(t.name, t.category || 'Uncategorized', t.image_url, JSON.stringify(t.tags || []));
+      });
       await pgQuery(
-        `INSERT INTO statics_templates (name, category, image_url, tags) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING`,
-        [t.name, t.category || 'Uncategorized', t.image_url, JSON.stringify(t.tags || [])]
+        `INSERT INTO statics_templates (name, category, image_url, tags) VALUES ${values.join(', ')} ON CONFLICT DO NOTHING`,
+        params
       );
-      count++;
+      count += batch.length;
     }
     res.status(201).json({ success: true, count });
   } catch (err) {
