@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react';
-import { Plus, ScanSearch, MousePointerSquareDashed, EyeOff, AlertCircle } from 'lucide-react';
+import { Plus, ScanSearch, MousePointerSquareDashed, EyeOff, AlertCircle, X, Check } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
 // Categories
@@ -99,10 +99,10 @@ function Sidebar({ templates, selectedCategory, onCategoryChange }) {
 // Template Card
 // ---------------------------------------------------------------------------
 
-function TemplateCard({ template, onClick }) {
+function TemplateCard({ template, onView }) {
   return (
     <button
-      onClick={() => onClick(template)}
+      onClick={() => onView(template)}
       className="group flex flex-col rounded-xl border border-white/[0.06] bg-white/[0.02] overflow-hidden transition-all hover:border-white/[0.12] hover:bg-white/[0.04] cursor-pointer text-left"
     >
       {/* Thumbnail */}
@@ -137,6 +137,64 @@ function TemplateCard({ template, onClick }) {
 }
 
 // ---------------------------------------------------------------------------
+// Reference Lightbox
+// ---------------------------------------------------------------------------
+
+function ReferenceLightbox({ template, onClose, onSelect }) {
+  if (!template) return null;
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        className="relative flex flex-col items-center max-w-[90vw] max-h-[90vh]"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Close */}
+        <button
+          onClick={onClose}
+          className="absolute -top-3 -right-3 z-10 p-1.5 rounded-full bg-white/10 hover:bg-white/20 text-white transition-colors cursor-pointer"
+        >
+          <X className="w-4 h-4" />
+        </button>
+
+        {/* Image */}
+        {template.image_url ? (
+          <img
+            src={template.image_url}
+            alt={template.name || 'Reference Ad'}
+            className="max-w-full max-h-[75vh] rounded-xl object-contain shadow-2xl"
+          />
+        ) : (
+          <div className="w-80 h-96 rounded-xl bg-[#1a1a1a] flex items-center justify-center text-slate-600">
+            <AlertCircle className="w-12 h-12" />
+          </div>
+        )}
+
+        {/* Footer */}
+        <div className="mt-4 flex items-center gap-3">
+          <span className="text-sm text-slate-400">
+            {template.name || 'Reference Ad'}
+            {template.category ? ` \u00b7 ${template.category}` : ''}
+          </span>
+          <button
+            onClick={() => {
+              onSelect(template);
+              onClose();
+            }}
+            className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-medium bg-blue-600 text-white hover:bg-blue-500 transition-colors cursor-pointer"
+          >
+            <Check className="w-3.5 h-3.5" />
+            Use as Reference
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // LibraryView
 // ---------------------------------------------------------------------------
 
@@ -148,6 +206,7 @@ export function LibraryView({
   onCategoryChange,
 }) {
   const [selectMode, setSelectMode] = useState(false);
+  const [viewingTemplate, setViewingTemplate] = useState(null);
 
   const uncategorizedCount = useMemo(
     () => templates.filter((t) => !t.category).length,
@@ -238,13 +297,20 @@ export function LibraryView({
                 <TemplateCard
                   key={tpl.id}
                   template={tpl}
-                  onClick={onSelectTemplate}
+                  onView={setViewingTemplate}
                 />
               ))}
             </div>
           </div>
         )}
       </div>
+
+      {/* Lightbox */}
+      <ReferenceLightbox
+        template={viewingTemplate}
+        onClose={() => setViewingTemplate(null)}
+        onSelect={onSelectTemplate}
+      />
     </div>
   );
 }

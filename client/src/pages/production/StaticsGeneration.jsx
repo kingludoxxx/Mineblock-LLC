@@ -241,30 +241,30 @@ function VariantTypeBadge({ type }) {
 
 function PipelineToggle({ active, onChange }) {
   return (
-    <div className="flex bg-[#0a0a0a] border border-white/[0.06] rounded-lg p-1">
+    <div className="inline-flex bg-[#0a0a0a] border border-white/[0.06] rounded-lg p-1 gap-1">
       <button
         type="button"
         onClick={() => onChange('standard')}
-        className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-md text-sm font-medium transition-colors cursor-pointer ${
+        className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-md text-xs font-medium transition-colors cursor-pointer ${
           active === 'standard'
-            ? 'bg-blue-600 text-white'
-            : 'text-slate-400 hover:text-white'
+            ? 'bg-white/[0.1] text-white'
+            : 'text-slate-500 hover:text-slate-300'
         }`}
       >
-        <Layers className="w-4 h-4" />
+        <Layers className="w-3.5 h-3.5" />
         Standard Statics
       </button>
       <button
         type="button"
         onClick={() => onChange('advertorial')}
-        className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-md text-sm font-medium transition-colors cursor-pointer ${
+        className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-md text-xs font-medium transition-colors cursor-pointer ${
           active === 'advertorial'
-            ? 'bg-blue-600 text-white'
-            : 'text-slate-400 hover:text-white'
+            ? 'bg-white/[0.1] text-white'
+            : 'text-slate-500 hover:text-slate-300'
         }`}
       >
-        <FileText className="w-4 h-4" />
-        Advertorial Statics
+        <FileText className="w-3.5 h-3.5" />
+        Advertorial
       </button>
     </div>
   );
