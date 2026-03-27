@@ -1878,38 +1878,41 @@ const SLACK_DAILY_PNL_CHANNEL = 'C0AF724MJPR';
 // Track sent reports to prevent duplicates within the same server instance
 const sentReports = new Set();
 
-async function sendDailyPnlReport(dateStr) {
+async function sendDailyPnlReport(dateStr, { force = false } = {}) {
   if (!SLACK_BOT_TOKEN) {
     console.warn('[Daily P&L] No SLACK_BOT_TOKEN configured');
     return;
   }
 
-  // Prevent duplicate sends — add to Set IMMEDIATELY to block concurrent calls (race condition fix)
-  if (sentReports.has(dateStr)) {
-    console.log(`[Daily P&L] Already sent for ${dateStr} in this instance — skipping`);
-    return;
-  }
-  sentReports.add(dateStr); // Reserve this date immediately to prevent TOCTOU race
-
-  // Also check Slack history before sending (look back 7 days for manual triggers)
-  try {
-    const [y, m, d] = dateStr.split('-');
-    const displayDateCheck = `${m}/${d}/${y}`;
-    const oldest = Math.floor(Date.now() / 1000) - 604800; // last 7 days
-    const histResp = await fetch(
-      `https://slack.com/api/conversations.history?channel=${SLACK_DAILY_PNL_CHANNEL}&oldest=${oldest}&limit=100`,
-      { headers: { Authorization: `Bearer ${SLACK_BOT_TOKEN}` } }
-    );
-    const hist = await histResp.json();
-    if (hist.ok && (hist.messages || []).some(msg => msg.text?.includes(`Daily P&L for ${displayDateCheck}`))) {
-      console.log(`[Daily P&L] Report for ${displayDateCheck} already in Slack — skipping`);
+  if (!force) {
+    // Prevent duplicate sends — add to Set IMMEDIATELY to block concurrent calls
+    if (sentReports.has(dateStr)) {
+      console.log(`[Daily P&L] Already sent for ${dateStr} in this instance — skipping`);
       return;
     }
-  } catch (checkErr) {
-    // If we can't verify Slack history, STOP — do NOT send a potentially duplicate report
-    console.error(`[Daily P&L] Slack history check failed: ${checkErr.message} — aborting to prevent duplicates`);
-    sentReports.delete(dateStr); // Release the reservation
-    return;
+    sentReports.add(dateStr);
+
+    // Check Slack history before sending (look back 7 days)
+    try {
+      const [y, m, d] = dateStr.split('-');
+      const displayDateCheck = `${m}/${d}/${y}`;
+      const oldest = Math.floor(Date.now() / 1000) - 604800;
+      const histResp = await fetch(
+        `https://slack.com/api/conversations.history?channel=${SLACK_DAILY_PNL_CHANNEL}&oldest=${oldest}&limit=100`,
+        { headers: { Authorization: `Bearer ${SLACK_BOT_TOKEN}` } }
+      );
+      const hist = await histResp.json();
+      if (hist.ok && (hist.messages || []).some(msg => msg.text?.includes(`Daily P&L for ${displayDateCheck}`))) {
+        console.log(`[Daily P&L] Report for ${displayDateCheck} already in Slack — skipping`);
+        return;
+      }
+    } catch (checkErr) {
+      console.error(`[Daily P&L] Slack history check failed: ${checkErr.message} — aborting`);
+      sentReports.delete(dateStr);
+      return;
+    }
+  } else {
+    console.log(`[Daily P&L] Force-sending report for ${dateStr}`);
   }
 
   try {
@@ -2025,8 +2028,9 @@ router.post('/daily-pnl', authenticate, async (req, res) => {
       berlin.setDate(berlin.getDate() - 1);
       return `${berlin.getFullYear()}-${String(berlin.getMonth() + 1).padStart(2, '0')}-${String(berlin.getDate()).padStart(2, '0')}`;
     })();
-    await sendDailyPnlReport(dateStr);
-    res.json({ success: true, date: dateStr });
+    const force = req.query.force === 'true';
+    await sendDailyPnlReport(dateStr, { force });
+    res.json({ success: true, date: dateStr, forced: force });
   } catch (err) {
     res.status(500).json({ success: false, error: { message: err.message } });
   }
