@@ -77,7 +77,10 @@ Return ONLY valid JSON, no markdown fences.`,
   const jsonMatch = rawText.match(/\{[\s\S]*\}/);
   if (!jsonMatch) throw new Error('Could not parse JSON from Claude response');
 
-  return JSON.parse(jsonMatch[0]);
+  let result;
+  try { result = JSON.parse(jsonMatch[0]); }
+  catch (parseErr) { throw new Error(`Failed to parse Claude JSON: ${parseErr.message}`); }
+  return result;
 }
 
 // ── GET / — List templates ──────────────────────────────────────────────

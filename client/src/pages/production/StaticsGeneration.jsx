@@ -625,6 +625,7 @@ export default function StaticsGeneration() {
   // Modal state
   const [detailModal, setDetailModal] = useState(null);
   const [templateModal, setTemplateModal] = useState(false);
+  const [selectedCategory, setSelectedCategory] = useState(null);
 
   // =========================================================================
   // ADVERTORIAL PIPELINE STATE
@@ -1000,25 +1001,24 @@ export default function StaticsGeneration() {
               {/* Left: ConfigSidebar (250px fixed) */}
               <div className="w-[250px] shrink-0 space-y-4">
                 <ConfigSidebar
-                  selectedProductId={selectedProductId}
-                  onProductSelect={handleProductSelect}
-                  marketingAngle={marketingAngle}
+                  products={processedData?.products || []}
+                  selectedProduct={selectedProductId}
+                  onProductChange={handleProductSelect}
+                  angle={marketingAngle}
                   onAngleChange={setMarketingAngle}
+                  customAngle={customAngle || ''}
+                  onCustomAngleChange={setCustomAngle || (() => {})}
                   aspectRatio={aspectRatio}
                   onAspectRatioChange={setAspectRatio}
-                  referencePreview={referencePreview}
-                  referenceImageUrl={referenceImageUrl}
-                  onReferenceFile={handleReferenceFile}
-                  onReferenceUrlChange={(url) => {
-                    setReferenceImageUrl(url);
-                    setReferenceFile(null);
-                    setReferencePreview('');
+                  references={references}
+                  onOpenLibrary={() => setTemplateModal(true)}
+                  onUploadReference={(file) => {
+                    handleReferenceFile({ target: { files: [file] } });
+                    setReferences(prev => [...prev, { id: Date.now(), image_url: URL.createObjectURL(file), name: file.name }]);
                   }}
-                  onReferenceClear={clearReference}
-                  onOpenTemplateLibrary={() => setTemplateModal(true)}
-                  canGenerate={canGenerate}
-                  generating={generating}
+                  onRemoveReference={(id) => setReferences(prev => prev.filter(r => r.id !== id))}
                   onGenerate={handleGenerate}
+                  generating={generating}
                 />
 
                 {/* Manual product info (when no product selected from library) */}
@@ -1186,9 +1186,13 @@ export default function StaticsGeneration() {
                   creatives={creatives}
                   loading={creativesLoading}
                   onRefresh={fetchCreatives}
-                  onApprove={handleApproveCreative}
-                  onReject={handleRejectCreative}
-                  onCreativeClick={(creative) => setDetailModal(creative)}
+                  onStatusChange={async (id, newStatus) => {
+                    try {
+                      await api.patch(`/statics-generation/creatives/${id}/status`, { status: newStatus });
+                      setCreatives(prev => prev.map(c => c.id === id ? { ...c, status: newStatus } : c));
+                    } catch { /* silently fail */ }
+                  }}
+                  onCardClick={(creative) => setDetailModal(creative)}
                 />
 
                 {/* ---- Error State ---- */}
@@ -1657,9 +1661,13 @@ export default function StaticsGeneration() {
       {activeTab === 'library' && (
         <LibraryView
           templates={templates}
-          loading={templatesLoading}
-          onRefresh={fetchTemplates}
-          onTemplateSelect={handleTemplateSelect}
+          onSelectTemplate={(template) => {
+            handleTemplateSelect(template);
+            setActiveTab('pipeline');
+          }}
+          onAddReference={() => setTemplateModal(true)}
+          selectedCategory={selectedCategory}
+          onCategoryChange={setSelectedCategory}
         />
       )}
 
@@ -1680,9 +1688,12 @@ export default function StaticsGeneration() {
       {/* ================================================================= */}
       {templateModal && (
         <TemplateSelectModal
+          isOpen={true}
           templates={templates}
-          loading={templatesLoading}
-          onSelect={handleTemplateSelect}
+          onSelect={(template) => {
+            handleTemplateSelect(template);
+            setReferences(prev => [...prev, { id: template.id || Date.now(), image_url: template.image_url, name: template.name }]);
+          }}
           onClose={() => setTemplateModal(false)}
         />
       )}
@@ -1690,13 +1701,37 @@ export default function StaticsGeneration() {
       {detailModal && (
         <CreativeDetailModal
           creative={detailModal}
+          isOpen={true}
           onClose={() => setDetailModal(null)}
-          onApprove={(id) => {
-            handleApproveCreative(id);
+          onApprove={async (id) => {
+            await api.patch(`/statics-generation/creatives/${id}/status`, { status: 'approved' });
+            setCreatives(prev => prev.map(c => c.id === id ? { ...c, status: 'approved' } : c));
             setDetailModal(null);
           }}
-          onReject={(id) => {
-            handleRejectCreative(id);
+          onReject={async (id) => {
+            await api.patch(`/statics-generation/creatives/${id}/status`, { status: 'rejected' });
+            setCreatives(prev => prev.filter(c => c.id !== id));
+            setDetailModal(null);
+          }}
+          onDelete={async (id) => {
+            await api.delete(`/statics-generation/creatives/${id}`);
+            setCreatives(prev => prev.filter(c => c.id !== id));
+            setDetailModal(null);
+          }}
+          onDownload={(id) => {
+            const creative = creatives.find(c => c.id === id);
+            if (creative?.image_url) window.open(creative.image_url, '_blank');
+          }}
+          onAiAdjust={async (id, instruction) => {
+            const res = await api.post(`/statics-generation/creatives/${id}/ai-adjust`, { instruction });
+            if (res.data?.success) {
+              setCreatives(prev => prev.map(c => c.id === id ? { ...c, image_url: res.data.data.image_url } : c));
+              setDetailModal(prev => ({ ...prev, image_url: res.data.data.image_url }));
+            }
+          }}
+          onStatusChange={async (id, status) => {
+            await api.patch(`/statics-generation/creatives/${id}/status`, { status });
+            setCreatives(prev => prev.map(c => c.id === id ? { ...c, status } : c));
             setDetailModal(null);
           }}
         />

@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { buildClaudePrompt, buildNanoBananaPrompt, buildSwapPairs } from '../utils/staticsPrompts.js';
 import { pgQuery } from '../db/pg.js';
+import { authenticate } from '../middleware/auth.js';
 
 const router = Router();
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -80,7 +81,7 @@ async function pollNanoBanana(taskId) {
 
 // ── POST /generate ─────────────────────────────────────────────────────
 
-router.post('/generate', async (req, res) => {
+router.post('/generate', authenticate, async (req, res) => {
   try {
     const { reference_image_url, product, angle, ratio } = req.body;
 
@@ -209,7 +210,7 @@ router.post('/generate', async (req, res) => {
 
 // ── GET /status/:taskId ────────────────────────────────────────────────
 
-router.get('/status/:taskId', async (req, res) => {
+router.get('/status/:taskId', authenticate, async (req, res) => {
   try {
     const { taskId } = req.params;
     if (!taskId) return res.status(400).json({ success: false, error: 'taskId is required' });
@@ -291,7 +292,7 @@ async function ensureCreativesTable() {
 }
 
 // GET /creatives — List creatives with optional filters
-router.get('/creatives', async (req, res) => {
+router.get('/creatives', authenticate, async (req, res) => {
   try {
     await ensureCreativesTable();
     const { product_id, status, pipeline = 'standard' } = req.query;
@@ -312,7 +313,7 @@ router.get('/creatives', async (req, res) => {
 });
 
 // PATCH /creatives/:id/status — Update creative status
-router.patch('/creatives/:id/status', async (req, res) => {
+router.patch('/creatives/:id/status', authenticate, async (req, res) => {
   try {
     await ensureCreativesTable();
     const { status } = req.body;
@@ -333,7 +334,7 @@ router.patch('/creatives/:id/status', async (req, res) => {
 });
 
 // GET /creatives/pipeline — Creatives grouped by status for pipeline view
-router.get('/creatives/pipeline', async (req, res) => {
+router.get('/creatives/pipeline', authenticate, async (req, res) => {
   try {
     await ensureCreativesTable();
     const { product_id } = req.query;
@@ -372,7 +373,7 @@ router.get('/creatives/pipeline', async (req, res) => {
 });
 
 // GET /creatives/:id — Get single creative
-router.get('/creatives/:id', async (req, res) => {
+router.get('/creatives/:id', authenticate, async (req, res) => {
   try {
     await ensureCreativesTable();
     const rows = await pgQuery('SELECT * FROM spy_creatives WHERE id = $1', [req.params.id]);
@@ -384,7 +385,7 @@ router.get('/creatives/:id', async (req, res) => {
 });
 
 // DELETE /creatives/:id — Delete creative
-router.delete('/creatives/:id', async (req, res) => {
+router.delete('/creatives/:id', authenticate, async (req, res) => {
   try {
     await ensureCreativesTable();
     const rows = await pgQuery('DELETE FROM spy_creatives WHERE id = $1 RETURNING id', [req.params.id]);
@@ -396,7 +397,7 @@ router.delete('/creatives/:id', async (req, res) => {
 });
 
 // ── POST /creatives — Save a generated creative to the pipeline ────────
-router.post('/creatives', async (req, res) => {
+router.post('/creatives', authenticate, async (req, res) => {
   try {
     await ensureCreativesTable();
     const {
@@ -436,7 +437,7 @@ router.post('/creatives', async (req, res) => {
 });
 
 // ── POST /creatives/:id/ai-adjust — AI adjustment on existing creative ─
-router.post('/creatives/:id/ai-adjust', async (req, res) => {
+router.post('/creatives/:id/ai-adjust', authenticate, async (req, res) => {
   try {
     await ensureCreativesTable();
     const { instruction } = req.body;
@@ -565,7 +566,7 @@ Generate an updated image generation prompt that applies the user's requested ch
 });
 
 // ── POST /creatives/:id/download — Proxy download the creative image ───
-router.post('/creatives/:id/download', async (req, res) => {
+router.post('/creatives/:id/download', authenticate, async (req, res) => {
   try {
     await ensureCreativesTable();
     const rows = await pgQuery('SELECT * FROM spy_creatives WHERE id = $1', [req.params.id]);
