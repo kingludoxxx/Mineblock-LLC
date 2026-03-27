@@ -12,13 +12,14 @@ PRODUCT CONTEXT:
 - Customer Dream: ${profile.customerDream || 'N/A'}
 - Big Promise: ${profile.bigPromise || 'N/A'}
 - Mechanism: ${profile.mechanism || 'N/A'}
-- Key Ingredients/Features: ${profile.ingredients || profile.features || 'N/A'}
+- Key Benefits: ${Array.isArray(profile.benefits) ? profile.benefits.join(', ') : (profile.benefits || 'N/A')}
 - Differentiator: ${profile.differentiator || 'N/A'}
 - Voice/Tone: ${profile.voice || 'N/A'}
 - Guarantee: ${profile.guarantee || 'N/A'}
 ${profile.painPoints ? `- Pain Points & Triggers: ${profile.painPoints}` : ''}
 ${profile.commonObjections ? `- Common Objections: ${profile.commonObjections}` : ''}
 ${profile.winningAngles ? `- Winning Angles: ${profile.winningAngles}` : ''}
+${profile.customAngles ? '- Custom Angles to Test: ' + profile.customAngles : ''}
 ${profile.competitiveEdge ? `- Competitive Edge: ${profile.competitiveEdge}` : ''}
 ${profile.maxDiscount ? `- Max Discount: ${profile.maxDiscount}` : ''}
 ${profile.discountCodes ? `- Discount Codes: ${profile.discountCodes}` : ''}

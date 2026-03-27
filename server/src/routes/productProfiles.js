@@ -1,7 +1,10 @@
 import { Router } from 'express';
 import { pgQuery } from '../db/pg.js';
+import { authenticate } from '../middleware/auth.js';
 
 const router = Router();
+
+router.use(authenticate);
 
 let tableReady = false;
 
@@ -527,7 +530,7 @@ ${pageContent}`
     ];
 
     for (const field of fieldsToSave) {
-      if (extracted[field] && extracted[field].trim()) {
+      if (typeof extracted[field] === 'string' && extracted[field].trim()) {
         setClauses.push(`${field} = $${idx}`);
         values.push(extracted[field]);
         idx++;

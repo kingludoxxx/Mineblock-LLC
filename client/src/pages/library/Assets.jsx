@@ -138,10 +138,12 @@ function QuickInfoBar({ product, onSave }) {
 function QuickInfoBox({ box, initialValue, onSave }) {
   const [val, setVal] = useState(initialValue);
   const latestRef = useRef(initialValue);
+  const dirtyRef = useRef(false);
 
   useEffect(() => {
     setVal(initialValue);
     latestRef.current = initialValue;
+    dirtyRef.current = false;
   }, [initialValue]);
 
   return (
@@ -154,8 +156,14 @@ function QuickInfoBox({ box, initialValue, onSave }) {
         onChange={(e) => {
           setVal(e.target.value);
           latestRef.current = e.target.value;
+          dirtyRef.current = true;
         }}
-        onBlur={() => onSave(box.key, latestRef.current)}
+        onBlur={() => {
+          if (dirtyRef.current) {
+            onSave(box.key, latestRef.current);
+            dirtyRef.current = false;
+          }
+        }}
         placeholder={box.placeholder}
         className="w-full bg-transparent text-sm text-white font-medium placeholder-slate-600 focus:outline-none"
       />
@@ -764,7 +772,7 @@ export default function Assets() {
     try {
       const resp = await api.post(`/product-profiles/${selectedProduct.id}/ai-fill`, { url });
       const updated = resp.data?.data || resp.data;
-      setSelectedProduct({ ...selectedProduct, ...updated });
+      setSelectedProduct(prev => ({ ...prev, ...updated }));
     } catch (err) {
       console.error('AI fill failed:', err);
       alert(`AI fill failed: ${err.response?.data?.error?.message || err.message}`);

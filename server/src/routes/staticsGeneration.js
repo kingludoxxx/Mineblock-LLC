@@ -597,7 +597,7 @@ router.post('/creatives/:id/download', authenticate, async (req, res) => {
 
 // ── ClickUp / Frame.io constants for publish-clickup ────────────────────
 
-const CLICKUP_TOKEN = 'pk_266421907_38TVGF16690R1U9EZOZLBK9BJ6J0YPRD';
+const CLICKUP_TOKEN = process.env.CLICKUP_API_TOKEN || process.env.CLICKUP_TOKEN || '';
 const CLICKUP_API = 'https://api.clickup.com/api/v2';
 const STATIC_ADS_LIST = '901518769479';
 

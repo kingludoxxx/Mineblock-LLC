@@ -719,6 +719,7 @@ export default function StaticsGeneration() {
     setResult(null);
     setError(null);
 
+    let stepTimer2, stepTimer3;
     try {
       let resolvedReferenceUrl = referenceImageUrl;
       if (referenceFile) {
@@ -754,8 +755,8 @@ export default function StaticsGeneration() {
         if (full.compliance_restrictions) profile.complianceRestrictions = full.compliance_restrictions;
       }
 
-      const stepTimer2 = setTimeout(() => setGenerationStep(2), 10000);
-      const stepTimer3 = setTimeout(() => setGenerationStep(3), 30000);
+      stepTimer2 = setTimeout(() => setGenerationStep(2), 10000);
+      stepTimer3 = setTimeout(() => setGenerationStep(3), 30000);
 
       const response = await api.post('/statics-generation/generate', {
         reference_image_url: resolvedReferenceUrl,
@@ -770,9 +771,6 @@ export default function StaticsGeneration() {
         ratio: aspectRatio,
       });
 
-      clearTimeout(stepTimer2);
-      clearTimeout(stepTimer3);
-
       const genResult = response.data?.data || response.data;
       setResult(genResult);
       setGenerationStep(0);
@@ -786,9 +784,9 @@ export default function StaticsGeneration() {
           aspect_ratio: aspectRatio,
           image_url: genResult?.generated_image_url || genResult?.resultImageUrl || genResult?.generatedImageUrl || null,
           reference_name: references[0]?.name || null,
-          adapted_text: genResult?.adapted_text ? JSON.stringify(genResult.adapted_text) : (genResult?.adaptedCopy ? JSON.stringify(genResult.adaptedCopy) : null),
-          claude_analysis: genResult?.claude_analysis ? JSON.stringify(genResult.claude_analysis) : (genResult?.claudeAnalysis ? JSON.stringify(genResult.claudeAnalysis) : null),
-          swap_pairs: genResult?.swap_pairs ? JSON.stringify(genResult.swap_pairs) : (genResult?.textSwaps ? JSON.stringify(genResult.textSwaps) : null),
+          adapted_text: genResult?.adapted_text || genResult?.adaptedCopy || null,
+          claude_analysis: genResult?.claude_analysis || genResult?.claudeAnalysis || null,
+          swap_pairs: genResult?.swap_pairs || genResult?.textSwaps || null,
           generation_prompt: genResult?.generation_prompt || genResult?.generationPrompt || null,
           status: 'review',
         });
@@ -805,6 +803,8 @@ export default function StaticsGeneration() {
       setError(message);
       setGenerationStep(0);
     } finally {
+      clearTimeout(stepTimer2);
+      clearTimeout(stepTimer3);
       setGenerating(false);
     }
   };
@@ -1805,7 +1805,7 @@ export default function StaticsGeneration() {
             const res = await api.post(`/statics-generation/creatives/${id}/ai-adjust`, { instruction });
             if (res.data?.success) {
               setCreatives(prev => prev.map(c => c.id === id ? { ...c, image_url: res.data.data.image_url } : c));
-              setDetailModal(prev => ({ ...prev, image_url: res.data.data.image_url }));
+              setDetailModal(prev => prev ? { ...prev, image_url: res.data.data.image_url } : null);
             } else {
               throw new Error(res.data?.error || 'AI adjustment failed');
             }

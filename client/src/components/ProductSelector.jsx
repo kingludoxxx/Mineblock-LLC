@@ -124,7 +124,7 @@ export default function ProductSelector({ selectedId, onSelect, className = '' }
                         <div className="flex items-center gap-2 text-xs text-white/40">
                           {product.category && <span>{product.category}</span>}
                           {product.price != null && (
-                            <span>${Number(product.price).toFixed(2)}</span>
+                            <span>{product.price}</span>
                           )}
                         </div>
                       </div>
