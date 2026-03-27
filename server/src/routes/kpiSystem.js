@@ -1906,7 +1906,10 @@ async function sendDailyPnlReport(dateStr) {
       return;
     }
   } catch (checkErr) {
-    console.warn(`[Daily P&L] Slack history check failed: ${checkErr.message} — proceeding`);
+    // If we can't verify Slack history, STOP — do NOT send a potentially duplicate report
+    console.error(`[Daily P&L] Slack history check failed: ${checkErr.message} — aborting to prevent duplicates`);
+    sentReports.delete(dateStr); // Release the reservation
+    return;
   }
 
   try {
@@ -2010,67 +2013,8 @@ async function sendDailyPnlReport(dateStr) {
   }
 }
 
-// ── Startup catch-up: check if yesterday's report was sent, if not send it ──
-// Render free tier spins down the server after 15min idle, so setInterval
-// schedulers miss their window. This catch-up runs on every server boot
-// and checks Slack channel history — if yesterday's report wasn't posted, send it.
-async function catchUpDailyPnl() {
-  if (!SLACK_BOT_TOKEN) return;
-  try {
-    await ensureTables();
-
-    // Get yesterday's date in Berlin timezone
-    const now = new Date();
-    const parts = new Intl.DateTimeFormat('en-CA', {
-      timeZone: 'Europe/Berlin', year: 'numeric', month: '2-digit', day: '2-digit',
-      hour: '2-digit', hour12: false,
-    }).formatToParts(now);
-    const get = (type) => parts.find(p => p.type === type)?.value;
-    const berlinDate = `${get('year')}-${get('month')}-${get('day')}`;
-    const hour = parseInt(get('hour'));
-
-    // Only catch up after midnight Berlin (the Shopify day has ended)
-    // Before midnight, "yesterday" data isn't complete yet
-    const yDate = new Date(berlinDate + 'T00:00:00Z');
-    yDate.setUTCDate(yDate.getUTCDate() - 1);
-    const yStr = yDate.toISOString().slice(0, 10);
-    const [y, m, d] = yStr.split('-');
-    const displayDate = `${m}/${d}/${y}`;
-
-    // Check Slack channel history for yesterday's report
-    // Use current time minus 48h to cover yesterday regardless of DST
-    const oldest = Math.floor(Date.now() / 1000) - 172800;
-    const histResp = await fetch(
-      `https://slack.com/api/conversations.history?channel=${SLACK_DAILY_PNL_CHANNEL}&oldest=${oldest}&limit=50`,
-      { headers: { Authorization: `Bearer ${SLACK_BOT_TOKEN}` } }
-    );
-    const hist = await histResp.json();
-
-    if (hist.ok) {
-      const alreadySent = (hist.messages || []).some(msg =>
-        msg.text?.includes(`Daily P&L for ${displayDate}`)
-      );
-      if (alreadySent) {
-        console.log(`[Daily P&L] Report for ${displayDate} already sent — skipping catch-up`);
-        return;
-      }
-    }
-
-    // Check if we have a snapshot for yesterday (data is available)
-    const snapRows = await pgQuery(
-      'SELECT 1 FROM daily_kpi_snapshots WHERE snapshot_date = $1 LIMIT 1', [yStr]
-    );
-    if (snapRows.length === 0) {
-      console.log(`[Daily P&L] No snapshot for ${yStr} yet — skipping catch-up`);
-      return;
-    }
-
-    console.log(`[Daily P&L] Catch-up: sending missed report for ${displayDate}`);
-    await sendDailyPnlReport(yStr);
-  } catch (err) {
-    console.error('[Daily P&L] Catch-up error:', err.message);
-  }
-}
+// Catch-up removed — P&L is triggered ONLY by Render cron job at 00:30 CET.
+// The old catch-up fired on every server restart, causing duplicate reports.
 
 // Manual trigger (authenticated)
 router.post('/daily-pnl', authenticate, async (req, res) => {
@@ -2114,8 +2058,8 @@ router.get('/cron/daily-pnl', async (req, res) => {
   }
 });
 
-// Run catch-up 90s after boot (let DB connections settle)
-setTimeout(() => catchUpDailyPnl(), 90_000);
+// P&L report is triggered ONLY by the Render cron job endpoint (GET /cron/daily-pnl).
+// No startup catch-up — prevents duplicate messages on server restarts.
 
 export default router;
 export {

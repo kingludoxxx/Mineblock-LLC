@@ -1,35 +1,46 @@
 #!/usr/bin/env node
-// Render Cron Job: pings the server to wake it up.
-// The server's catch-up mechanism then checks if yesterday's
-// Daily P&L report was sent to Slack — if not, it sends it.
+/**
+ * Render Cron Job: Triggers the Daily P&L report.
+ * Wakes the server, then calls the /cron/daily-pnl endpoint directly.
+ * Scheduled at 23:30 UTC (00:30 CET) — after the Shopify day ends at midnight CET.
+ */
 
 const BASE = process.env.RENDER_EXTERNAL_URL || 'https://mineblock-dashboard.onrender.com';
+const CRON_SECRET = process.env.CRON_SECRET || '';
 
 async function main() {
-  console.log(`[cron] Pinging ${BASE} to wake server...`);
-  try {
-    const res = await fetch(`${BASE}/api/v1/kpi-system/health`);
-    console.log(`[cron] Server responded: ${res.status}`);
-  } catch (err) {
-    console.log(`[cron] First ping failed (server cold start), retrying in 30s...`);
-    await new Promise(r => setTimeout(r, 30000));
+  // Step 1: Wake the server (Render free tier may be sleeping)
+  console.log(`[cron] Waking server at ${BASE}...`);
+  for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       const res = await fetch(`${BASE}/api/v1/kpi-system/health`);
-      console.log(`[cron] Retry responded: ${res.status}`);
-    } catch (err2) {
-      console.error(`[cron] Retry also failed:`, err2.message);
+      console.log(`[cron] Server awake (attempt ${attempt}): ${res.status}`);
+      break;
+    } catch (err) {
+      console.log(`[cron] Attempt ${attempt} failed: ${err.message}`);
+      if (attempt < 3) await new Promise(r => setTimeout(r, 15000));
     }
   }
 
-  // Wait 2 minutes for the server's catch-up to fire (runs 90s after boot)
-  console.log('[cron] Waiting 120s for catch-up mechanism...');
-  await new Promise(r => setTimeout(r, 120000));
+  // Step 2: Wait for DB connections to settle
+  console.log('[cron] Waiting 30s for DB to settle...');
+  await new Promise(r => setTimeout(r, 30000));
 
-  // Ping once more to confirm server is still alive
+  // Step 3: Call the daily P&L endpoint directly
+  if (!CRON_SECRET) {
+    console.error('[cron] CRON_SECRET not set — cannot trigger P&L');
+    process.exit(1);
+  }
+
+  console.log('[cron] Triggering Daily P&L report...');
   try {
-    const res = await fetch(`${BASE}/api/v1/kpi-system/health`);
-    console.log(`[cron] Final check: ${res.status}`);
-  } catch {}
+    const res = await fetch(`${BASE}/api/v1/kpi-system/cron/daily-pnl?secret=${encodeURIComponent(CRON_SECRET)}`);
+    const data = await res.json();
+    console.log(`[cron] Result: ${res.status}`, JSON.stringify(data));
+  } catch (err) {
+    console.error(`[cron] P&L trigger failed: ${err.message}`);
+    process.exit(1);
+  }
 
   console.log('[cron] Done.');
 }
