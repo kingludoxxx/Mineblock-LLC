@@ -2066,11 +2066,14 @@ router.get('/cron/daily-pnl', async (req, res) => {
     return res.status(403).json({ error: 'Forbidden' });
   }
   try {
-    // Calculate yesterday's date in Berlin timezone
-    const now = new Date();
-    const berlin = new Date(now.toLocaleString('en-US', { timeZone: 'Europe/Berlin' }));
-    berlin.setDate(berlin.getDate() - 1);
-    const dateStr = `${berlin.getFullYear()}-${String(berlin.getMonth() + 1).padStart(2, '0')}-${String(berlin.getDate()).padStart(2, '0')}`;
+    // Use explicit date if provided, otherwise calculate yesterday in Berlin timezone
+    let dateStr = req.query.date;
+    if (!dateStr) {
+      const now = new Date();
+      const berlin = new Date(now.toLocaleString('en-US', { timeZone: 'Europe/Berlin' }));
+      berlin.setDate(berlin.getDate() - 1);
+      dateStr = `${berlin.getFullYear()}-${String(berlin.getMonth() + 1).padStart(2, '0')}-${String(berlin.getDate()).padStart(2, '0')}`;
+    }
 
     console.log(`[Daily P&L] Cron trigger for ${dateStr}`);
     await sendDailyPnlReport(dateStr);
