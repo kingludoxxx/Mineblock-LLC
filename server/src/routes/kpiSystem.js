@@ -1884,25 +1884,25 @@ async function sendDailyPnlReport(dateStr) {
     return;
   }
 
-  // Prevent duplicate sends within same server instance
+  // Prevent duplicate sends — add to Set IMMEDIATELY to block concurrent calls (race condition fix)
   if (sentReports.has(dateStr)) {
     console.log(`[Daily P&L] Already sent for ${dateStr} in this instance — skipping`);
     return;
   }
+  sentReports.add(dateStr); // Reserve this date immediately to prevent TOCTOU race
 
-  // Also check Slack history before sending
+  // Also check Slack history before sending (look back 7 days for manual triggers)
   try {
     const [y, m, d] = dateStr.split('-');
     const displayDateCheck = `${m}/${d}/${y}`;
-    const oldest = Math.floor(Date.now() / 1000) - 172800; // last 48h
+    const oldest = Math.floor(Date.now() / 1000) - 604800; // last 7 days
     const histResp = await fetch(
-      `https://slack.com/api/conversations.history?channel=${SLACK_DAILY_PNL_CHANNEL}&oldest=${oldest}&limit=50`,
+      `https://slack.com/api/conversations.history?channel=${SLACK_DAILY_PNL_CHANNEL}&oldest=${oldest}&limit=100`,
       { headers: { Authorization: `Bearer ${SLACK_BOT_TOKEN}` } }
     );
     const hist = await histResp.json();
     if (hist.ok && (hist.messages || []).some(msg => msg.text?.includes(`Daily P&L for ${displayDateCheck}`))) {
       console.log(`[Daily P&L] Report for ${displayDateCheck} already in Slack — skipping`);
-      sentReports.add(dateStr);
       return;
     }
   } catch (checkErr) {
@@ -2038,7 +2038,8 @@ async function catchUpDailyPnl() {
     const displayDate = `${m}/${d}/${y}`;
 
     // Check Slack channel history for yesterday's report
-    const oldest = Math.floor(new Date(berlinDate + 'T00:00:00+01:00').getTime() / 1000) - 86400;
+    // Use current time minus 48h to cover yesterday regardless of DST
+    const oldest = Math.floor(Date.now() / 1000) - 172800;
     const histResp = await fetch(
       `https://slack.com/api/conversations.history?channel=${SLACK_DAILY_PNL_CHANNEL}&oldest=${oldest}&limit=50`,
       { headers: { Authorization: `Bearer ${SLACK_BOT_TOKEN}` } }
