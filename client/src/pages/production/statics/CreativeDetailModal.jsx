@@ -79,15 +79,25 @@ export function CreativeDetailModal({
   const [debugOpen, setDebugOpen] = useState(false);
   const [publishing, setPublishing] = useState(false);
   const [publishSuccess, setPublishSuccess] = useState(null);
+  const [aiAdjusting, setAiAdjusting] = useState(false);
+  const [aiError, setAiError] = useState(null);
 
   if (!isOpen || !creative) return null;
 
   const adaptedText = creative.adapted_text || creative.swap_pairs || {};
 
-  const handleAiSubmit = () => {
-    if (!aiInstruction.trim()) return;
-    onAiAdjust?.(creative.id, aiInstruction.trim());
-    setAiInstruction('');
+  const handleAiSubmit = async () => {
+    if (!aiInstruction.trim() || aiAdjusting) return;
+    setAiAdjusting(true);
+    setAiError(null);
+    try {
+      await onAiAdjust?.(creative.id, aiInstruction.trim());
+      setAiInstruction('');
+    } catch (err) {
+      setAiError(err.message || 'AI adjustment failed. Please try again.');
+    } finally {
+      setAiAdjusting(false);
+    }
   };
 
   return (
@@ -242,12 +252,18 @@ export function CreativeDetailModal({
               <button
                 type="button"
                 onClick={handleAiSubmit}
-                disabled={!aiInstruction.trim()}
+                disabled={!aiInstruction.trim() || aiAdjusting}
                 className="mt-2 w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-blue-600/20 border border-blue-500/30 text-sm text-blue-300 hover:bg-blue-600/30 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
               >
-                <Sparkles className="w-4 h-4" />
-                Regenerate with Correction
+                {aiAdjusting ? (
+                  <><Loader2 className="w-4 h-4 animate-spin" /> Generating...</>
+                ) : (
+                  <><Sparkles className="w-4 h-4" /> Regenerate with Correction</>
+                )}
               </button>
+              {aiError && (
+                <p className="text-xs text-red-400 mt-1">{aiError}</p>
+              )}
             </div>
           </div>
 

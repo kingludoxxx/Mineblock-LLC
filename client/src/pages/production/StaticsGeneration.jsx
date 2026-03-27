@@ -764,12 +764,12 @@ export default function StaticsGeneration() {
           product_name: productName,
           angle: marketingAngle || customAngle || null,
           aspect_ratio: aspectRatio,
-          image_url: genResult?.resultImageUrl || genResult?.generatedImageUrl || null,
+          image_url: genResult?.generated_image_url || genResult?.resultImageUrl || genResult?.generatedImageUrl || null,
           reference_name: references[0]?.name || null,
-          adapted_text: genResult?.adaptedCopy ? JSON.stringify(genResult.adaptedCopy) : null,
-          claude_analysis: genResult?.claudeAnalysis ? JSON.stringify(genResult.claudeAnalysis) : null,
-          swap_pairs: genResult?.textSwaps ? JSON.stringify(genResult.textSwaps) : null,
-          generation_prompt: genResult?.generationPrompt || null,
+          adapted_text: genResult?.adapted_text ? JSON.stringify(genResult.adapted_text) : (genResult?.adaptedCopy ? JSON.stringify(genResult.adaptedCopy) : null),
+          claude_analysis: genResult?.claude_analysis ? JSON.stringify(genResult.claude_analysis) : (genResult?.claudeAnalysis ? JSON.stringify(genResult.claudeAnalysis) : null),
+          swap_pairs: genResult?.swap_pairs ? JSON.stringify(genResult.swap_pairs) : (genResult?.textSwaps ? JSON.stringify(genResult.textSwaps) : null),
+          generation_prompt: genResult?.generation_prompt || genResult?.generationPrompt || null,
           status: 'review',
         });
         if (saveRes.data?.success) {
@@ -1799,13 +1799,11 @@ export default function StaticsGeneration() {
             if (creative?.image_url) window.open(creative.image_url, '_blank');
           }}
           onAiAdjust={async (id, instruction) => {
-            try {
-              const res = await api.post(`/statics-generation/creatives/${id}/ai-adjust`, { instruction });
-              if (res.data?.success) {
-                setCreatives(prev => prev.map(c => c.id === id ? { ...c, image_url: res.data.data.image_url } : c));
-                setDetailModal(prev => ({ ...prev, image_url: res.data.data.image_url }));
-              }
-            } catch { /* silently fail */ }
+            const res = await api.post(`/statics-generation/creatives/${id}/ai-adjust`, { instruction });
+            if (res.data?.success) {
+              setCreatives(prev => prev.map(c => c.id === id ? { ...c, image_url: res.data.data.image_url } : c));
+              setDetailModal(prev => ({ ...prev, image_url: res.data.data.image_url }));
+            }
           }}
           onStatusChange={async (id, status) => {
             try {
