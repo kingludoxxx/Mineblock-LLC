@@ -1875,10 +1875,38 @@ setTimeout(() => {
 const SLACK_DAILY_PNL_CHANNEL = 'C0AF724MJPR';
 // Operations & Teams removed from P&L report per request
 
+// Track sent reports to prevent duplicates within the same server instance
+const sentReports = new Set();
+
 async function sendDailyPnlReport(dateStr) {
   if (!SLACK_BOT_TOKEN) {
     console.warn('[Daily P&L] No SLACK_BOT_TOKEN configured');
     return;
+  }
+
+  // Prevent duplicate sends within same server instance
+  if (sentReports.has(dateStr)) {
+    console.log(`[Daily P&L] Already sent for ${dateStr} in this instance — skipping`);
+    return;
+  }
+
+  // Also check Slack history before sending
+  try {
+    const [y, m, d] = dateStr.split('-');
+    const displayDateCheck = `${m}/${d}/${y}`;
+    const oldest = Math.floor(Date.now() / 1000) - 172800; // last 48h
+    const histResp = await fetch(
+      `https://slack.com/api/conversations.history?channel=${SLACK_DAILY_PNL_CHANNEL}&oldest=${oldest}&limit=50`,
+      { headers: { Authorization: `Bearer ${SLACK_BOT_TOKEN}` } }
+    );
+    const hist = await histResp.json();
+    if (hist.ok && (hist.messages || []).some(msg => msg.text?.includes(`Daily P&L for ${displayDateCheck}`))) {
+      console.log(`[Daily P&L] Report for ${displayDateCheck} already in Slack — skipping`);
+      sentReports.add(dateStr);
+      return;
+    }
+  } catch (checkErr) {
+    console.warn(`[Daily P&L] Slack history check failed: ${checkErr.message} — proceeding`);
   }
 
   try {
@@ -1974,6 +2002,7 @@ async function sendDailyPnlReport(dateStr) {
     if (!result.ok) {
       console.error('[Daily P&L] Slack error:', result.error);
     } else {
+      sentReports.add(dateStr);
       console.log(`[Daily P&L] Sent report for ${displayDate}: Profit ${fmt(profit)}`);
     }
   } catch (err) {

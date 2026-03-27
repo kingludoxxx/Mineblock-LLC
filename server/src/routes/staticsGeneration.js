@@ -595,4 +595,269 @@ router.post('/creatives/:id/download', authenticate, async (req, res) => {
   }
 });
 
+// ── ClickUp / Frame.io constants for publish-clickup ────────────────────
+
+const CLICKUP_TOKEN = 'pk_266421907_38TVGF16690R1U9EZOZLBK9BJ6J0YPRD';
+const CLICKUP_API = 'https://api.clickup.com/api/v2';
+const STATIC_ADS_LIST = '901518769479';
+
+const FRAMEIO_TOKEN = process.env.FRAMEIO_TOKEN || '';
+const FRAMEIO_PROJECT_ID = '19c0ce1f-f357-4da8-ba1f-bd7eb201e660';
+const FRAMEIO_API = 'https://api.frame.io/v2';
+
+const FIELD_IDS = {
+  briefNumber: '62b61cc4-2d35-4dfc-86f4-a3913e2bbca3',
+  briefType: '98d04d2d-9575-4363-8eee-9bf150b1c319',
+  angle: '7e740c52-a05b-4b3b-9798-0801acd84b8a',
+  namingConvention: 'c97d93bc-ad82-4b90-98e0-092df383d9b8',
+  creationWeek: 'a609d8d0-661e-400f-87cb-2557bd48857b',
+  adsFrameLink: 'd90f9f25-d7a0-4eb4-9ded-aca0b4519a3b',
+};
+
+const ANGLE_OPTIONS = {
+  NA: '2933a618-a7aa-4b42-9e61-c5ee9e0903e5',
+  Lottery: '4a493db2-441e-46db-9c58-7b7c3fd0a163',
+  Againstcompetition: '0efc2411-1a1a-4d1d-96c6-760e6cff503e',
+  'BTC Made easy': '4a1ef4f4-d3e1-4dd3-90a5-b2bd9303d423',
+  GTRS: 'c1c56755-f2e4-410d-9f5f-9b3e048c1b36',
+  livestream: 'c5e44df4-d814-41dc-acf2-58ab90a2726c',
+  Hiddenopportunity: '068ce448-b78e-4b4e-b531-180c422daaa4',
+  Rebranding: '1c4f33a4-1034-4101-93ca-93842ca7dc92',
+  Missedopportunity: '74f4e8a6-d831-454f-9b39-f15026765a6e',
+  BTCFARM: '666601ea-21c1-4685-b1c0-7a951f84dc5f',
+  Sale: 'f6cca7fe-4626-4592-90a5-f30efb7a62ba',
+  Scarcity: 'e15fc1b9-d90b-4e1b-a4d8-04553e3b8d15',
+  Breakingnews: 'e5cd049f-13a5-45e4-a8d7-6b78f0acc9a3',
+  Offer: 'e0c1d0fd-b376-4146-8887-ad7c0c209489',
+  Reaction: 'bbe5f0c0-8bbf-45a2-bc04-fbcebb11e242',
+};
+
+const BRIEF_TYPE_OPTIONS = {
+  NN: '1e274045-a4b3-4b0d-85c2-d7ec1a347d3c',
+  IT: 'e0999d3c-faab-4d4e-8336-a6272dab8393',
+};
+
+// ── ClickUp helpers ─────────────────────────────────────────────────────
+
+async function clickupFetch(url, options = {}) {
+  const res = await fetch(`${CLICKUP_API}${url}`, {
+    ...options,
+    headers: {
+      Authorization: CLICKUP_TOKEN,
+      'Content-Type': 'application/json',
+      ...options.headers,
+    },
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`ClickUp API error ${res.status}: ${text}`);
+  }
+  return res.json();
+}
+
+async function setCustomField(taskId, fieldId, value) {
+  return clickupFetch(`/task/${taskId}/field/${fieldId}`, {
+    method: 'POST',
+    body: JSON.stringify({ value }),
+  });
+}
+
+// ── Frame.io helpers ────────────────────────────────────────────────────
+
+async function frameioFetch(url, options = {}) {
+  if (!FRAMEIO_TOKEN) throw new Error('FRAMEIO_TOKEN not configured');
+  const res = await fetch(`${FRAMEIO_API}${url}`, {
+    ...options,
+    headers: {
+      Authorization: `Bearer ${FRAMEIO_TOKEN}`,
+      'Content-Type': 'application/json',
+      ...options.headers,
+    },
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Frame.io API error ${res.status}: ${text.slice(0, 200)}`);
+  }
+  return res.json();
+}
+
+// ── POST /creatives/:id/publish-clickup ─────────────────────────────────
+
+router.post('/creatives/:id/publish-clickup', authenticate, async (req, res) => {
+  try {
+    await ensureCreativesTable();
+
+    // 1. Fetch the creative
+    const rows = await pgQuery('SELECT * FROM spy_creatives WHERE id = $1', [req.params.id]);
+    if (rows.length === 0) return res.status(404).json({ success: false, error: { message: 'Creative not found' } });
+    const creative = rows[0];
+
+    if (!creative.image_url) {
+      return res.status(400).json({ success: false, error: { message: 'Creative has no image_url' } });
+    }
+
+    // 2. Scan Static Ads list for highest B#### number
+    let maxBrief = 0;
+    let page = 0;
+    let hasMore = true;
+
+    while (hasMore) {
+      const data = await clickupFetch(
+        `/list/${STATIC_ADS_LIST}/task?page=${page}&limit=100&include_closed=true&subtasks=true`,
+      );
+      const tasks = data.tasks || [];
+
+      for (const task of tasks) {
+        const briefField = task.custom_fields?.find((f) => f.id === FIELD_IDS.briefNumber);
+        if (briefField?.value != null) {
+          const num = parseInt(briefField.value, 10);
+          if (!isNaN(num) && num > maxBrief) maxBrief = num;
+        }
+        const match = task.name?.match(/B(\d{2,5})/);
+        if (match) {
+          const num = parseInt(match[1], 10);
+          if (!isNaN(num) && num > maxBrief) maxBrief = num;
+        }
+      }
+
+      hasMore = tasks.length === 100;
+      page++;
+    }
+
+    const nextNumber = maxBrief + 1;
+    const briefId = `B${String(nextNumber).padStart(4, '0')}`;
+
+    // 3. Build naming convention
+    const rawAngle = creative.angle || 'NA';
+    const angleForName = rawAngle.charAt(0).toUpperCase() + rawAngle.slice(1).replace(/\s+/g, '');
+
+    const now = new Date();
+    const d = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()));
+    const dayNum = d.getUTCDay() || 7;
+    d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+    const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+    const weekNum = Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+    const weekLabel = `WK${String(weekNum).padStart(2, '0')}_${d.getUTCFullYear()}`;
+
+    const namingConvention = `MR - ${briefId} - IM - NN - NA - ${angleForName} - ${weekLabel}`;
+
+    // 4. Resolve angle dropdown UUID
+    const angleKey = Object.keys(ANGLE_OPTIONS).find(
+      (k) => k.toLowerCase() === rawAngle.toLowerCase(),
+    ) || 'NA';
+    const angleUuid = ANGLE_OPTIONS[angleKey] || ANGLE_OPTIONS.NA;
+
+    // 4. Create the ClickUp task
+    const taskPayload = {
+      name: namingConvention,
+      status: 'ready to launch',
+      custom_fields: [
+        { id: FIELD_IDS.briefNumber, value: nextNumber },
+        { id: FIELD_IDS.briefType, value: BRIEF_TYPE_OPTIONS.NN },
+        { id: FIELD_IDS.angle, value: angleUuid },
+        { id: FIELD_IDS.namingConvention, value: namingConvention },
+        { id: FIELD_IDS.creationWeek, value: weekLabel },
+      ],
+    };
+
+    const createdTask = await clickupFetch(`/list/${STATIC_ADS_LIST}/task`, {
+      method: 'POST',
+      body: JSON.stringify(taskPayload),
+    });
+
+    const clickupTaskId = createdTask.id;
+    const clickupTaskUrl = createdTask.url || `https://app.clickup.com/t/${clickupTaskId}`;
+
+    // 5. Upload to Frame.io
+    let frameLink = null;
+    try {
+      // Get root folder
+      const project = await frameioFetch(`/projects/${FRAMEIO_PROJECT_ID}`);
+      const rootFolderId = project?.root_asset_id;
+      if (!rootFolderId) throw new Error('Could not get Frame.io project root folder');
+
+      // Create subfolder with brief ID
+      const folder = await frameioFetch(`/assets/${rootFolderId}/children`, {
+        method: 'POST',
+        body: JSON.stringify({ name: briefId, type: 'folder' }),
+      });
+      if (!folder?.id) throw new Error('Failed to create Frame.io folder');
+
+      const folderUrl = `https://next.frame.io/project/${FRAMEIO_PROJECT_ID}/${folder.id}`;
+
+      // Upload the image: create asset then PUT bytes
+      const imageRes = await fetch(creative.image_url);
+      if (!imageRes.ok) throw new Error(`Failed to fetch creative image: ${imageRes.status}`);
+      const imageBuf = Buffer.from(await imageRes.arrayBuffer());
+      const ext = creative.image_url.match(/\.(png|jpg|jpeg|webp)/i)?.[1] || 'png';
+      const fileName = `${briefId}.${ext}`;
+
+      const asset = await frameioFetch(`/assets/${folder.id}/children`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: fileName,
+          type: 'file',
+          filetype: `image/${ext === 'jpg' ? 'jpeg' : ext}`,
+          filesize: imageBuf.length,
+        }),
+      });
+
+      // Upload to the presigned URL
+      if (asset?.upload_url) {
+        const uploadRes = await fetch(asset.upload_url, {
+          method: 'PUT',
+          headers: { 'Content-Type': `image/${ext === 'jpg' ? 'jpeg' : ext}` },
+          body: imageBuf,
+        });
+        if (!uploadRes.ok) {
+          console.error(`[publish-clickup] Frame.io upload PUT failed: ${uploadRes.status}`);
+        }
+      } else if (asset?.upload_urls?.length) {
+        // Multi-part upload: single chunk for images
+        const uploadRes = await fetch(asset.upload_urls[0], {
+          method: 'PUT',
+          headers: { 'Content-Type': `image/${ext === 'jpg' ? 'jpeg' : ext}` },
+          body: imageBuf,
+        });
+        if (!uploadRes.ok) {
+          console.error(`[publish-clickup] Frame.io upload PUT failed: ${uploadRes.status}`);
+        }
+      }
+
+      frameLink = folderUrl;
+
+      // Set the Frame link on the ClickUp task
+      await setCustomField(clickupTaskId, FIELD_IDS.adsFrameLink, folderUrl);
+    } catch (frameErr) {
+      console.error(`[publish-clickup] Frame.io error: ${frameErr.message}`);
+      // Don't fail the whole request if Frame.io fails
+    }
+
+    // 6. Update the spy_creatives record
+    await pgQuery(
+      `UPDATE spy_creatives
+       SET status = 'launched',
+           generation_task_id = $1,
+           updated_at = NOW()
+       WHERE id = $2`,
+      [clickupTaskId, req.params.id],
+    );
+
+    // 7. Return result
+    return res.json({
+      success: true,
+      data: {
+        clickup_task_id: clickupTaskId,
+        clickup_task_url: clickupTaskUrl,
+        frame_link: frameLink,
+        naming_convention: namingConvention,
+        brief_number: nextNumber,
+      },
+    });
+  } catch (err) {
+    console.error('[staticsGeneration] /creatives/:id/publish-clickup error:', err);
+    return res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
 export default router;

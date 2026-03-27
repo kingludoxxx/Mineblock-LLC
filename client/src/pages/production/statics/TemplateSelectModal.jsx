@@ -19,6 +19,11 @@ const CATEGORIES = [
   { key: 'Bold Claim', label: 'Bold Claim' },
   { key: 'Statistics', label: 'Statistics' },
   { key: 'Problem + Solution', label: 'Problem + Solution' },
+  { key: 'Social Proof & Testimonials', label: 'Social Proof & Testimonials' },
+  { key: 'Offer & Promotion', label: 'Offer & Promotion' },
+  { key: 'Benefits & Features', label: 'Benefits & Features' },
+  { key: 'Lifestyle & Brand', label: 'Lifestyle & Brand' },
+  { key: 'UGC & Reviews', label: 'UGC & Reviews' },
   { key: 'Google Search', label: 'Google Search' },
   { key: 'Apple Notes', label: 'Apple Notes' },
   { key: 'AirDrop', label: 'AirDrop' },
@@ -68,7 +73,7 @@ export function TemplateSelectModal({ isOpen, onClose, onSelect, templates = [] 
   const categoryCounts = useMemo(() => {
     const counts = { all: templates.length };
     for (const t of templates) {
-      const cat = t.category || 'other';
+      const cat = t.category || 'Uncategorized';
       counts[cat] = (counts[cat] || 0) + 1;
     }
     return counts;
@@ -78,7 +83,7 @@ export function TemplateSelectModal({ isOpen, onClose, onSelect, templates = [] 
   const filtered = useMemo(() => {
     let list = templates;
     if (activeCategory !== 'all') {
-      list = list.filter((t) => (t.category || 'other') === activeCategory);
+      list = list.filter((t) => (t.category || 'Uncategorized') === activeCategory);
     }
     if (search.trim()) {
       const q = search.trim().toLowerCase();

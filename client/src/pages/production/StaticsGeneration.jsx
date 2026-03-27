@@ -1228,6 +1228,17 @@ export default function StaticsGeneration() {
                     } catch { /* silently fail */ }
                   }}
                   onCardClick={(creative) => setDetailModal(creative)}
+                  onPublish={async (id) => {
+                    try {
+                      const res = await api.post(`/statics-generation/creatives/${id}/publish-clickup`);
+                      if (res.data?.success) {
+                        setCreatives(prev => prev.map(c => c.id === id ? { ...c, status: 'launched', clickup_url: res.data.data?.taskUrl } : c));
+                        setDetailModal(null);
+                      }
+                    } catch (err) {
+                      console.error('Publish failed:', err);
+                    }
+                  }}
                 />
 
                 {/* ---- Error State ---- */}
@@ -1778,6 +1789,17 @@ export default function StaticsGeneration() {
               setCreatives(prev => prev.map(c => c.id === id ? { ...c, status } : c));
               setDetailModal(null);
             } catch { /* silently fail */ }
+          }}
+          onPublish={async (id) => {
+            try {
+              const res = await api.post(`/statics-generation/creatives/${id}/publish-clickup`);
+              if (res.data?.success) {
+                setCreatives(prev => prev.map(c => c.id === id ? { ...c, status: 'launched', clickup_url: res.data.data?.taskUrl } : c));
+                setDetailModal(null);
+              }
+            } catch (err) {
+              console.error('Publish failed:', err);
+            }
           }}
         />
       )}
