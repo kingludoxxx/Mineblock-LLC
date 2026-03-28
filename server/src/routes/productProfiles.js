@@ -109,13 +109,25 @@ const JSONB_FIELDS = new Set([
   'product_images', 'logos', 'fonts', 'benefits', 'angles', 'scripts', 'offers', 'brand_colors',
 ]);
 
+// postgres.js unsafe() returns JSONB columns as strings — parse them before sending
+function parseRow(row) {
+  if (!row) return row;
+  const out = { ...row };
+  for (const field of JSONB_FIELDS) {
+    if (typeof out[field] === 'string') {
+      try { out[field] = JSON.parse(out[field]); } catch { out[field] = field === 'brand_colors' ? {} : []; }
+    }
+  }
+  return out;
+}
+
 // ── GET / — List all profiles ───────────────────────────────────────
 
 router.get('/', async (req, res) => {
   try {
     await ensureTable();
     const rows = await pgQuery('SELECT * FROM product_profiles ORDER BY updated_at DESC');
-    return res.json({ success: true, data: rows });
+    return res.json({ success: true, data: rows.map(parseRow) });
   } catch (err) {
     console.error('GET /product-profiles error:', err);
     return res.status(500).json({ success: false, error: { message: err.message } });
@@ -131,7 +143,7 @@ router.get('/:id', async (req, res) => {
     if (rows.length === 0) {
       return res.status(404).json({ success: false, error: { message: 'Profile not found' } });
     }
-    return res.json({ success: true, data: rows[0] });
+    return res.json({ success: true, data: parseRow(rows[0]) });
   } catch (err) {
     console.error('GET /product-profiles/:id error:', err);
     return res.status(500).json({ success: false, error: { message: err.message } });
@@ -171,7 +183,7 @@ router.post('/', async (req, res) => {
       values
     );
 
-    return res.status(201).json({ success: true, data: rows[0] });
+    return res.status(201).json({ success: true, data: parseRow(rows[0]) });
   } catch (err) {
     console.error('POST /product-profiles error:', err);
     return res.status(500).json({ success: false, error: { message: err.message } });
@@ -218,7 +230,7 @@ router.put('/:id', async (req, res) => {
       return res.status(404).json({ success: false, error: { message: 'Profile not found' } });
     }
 
-    return res.json({ success: true, data: rows[0] });
+    return res.json({ success: true, data: parseRow(rows[0]) });
   } catch (err) {
     console.error('PUT /product-profiles/:id error:', err);
     return res.status(500).json({ success: false, error: { message: err.message } });
@@ -265,7 +277,7 @@ router.post('/:id/images', async (req, res) => {
     if (rows.length === 0) {
       return res.status(404).json({ success: false, error: { message: 'Profile not found' } });
     }
-    return res.json({ success: true, data: rows[0] });
+    return res.json({ success: true, data: parseRow(rows[0]) });
   } catch (err) {
     console.error('POST /product-profiles/:id/images error:', err);
     return res.status(500).json({ success: false, error: { message: err.message } });
@@ -297,7 +309,7 @@ router.delete('/:id/images', async (req, res) => {
     if (rows.length === 0) {
       return res.status(404).json({ success: false, error: { message: 'Profile not found' } });
     }
-    return res.json({ success: true, data: rows[0] });
+    return res.json({ success: true, data: parseRow(rows[0]) });
   } catch (err) {
     console.error('DELETE /product-profiles/:id/images error:', err);
     return res.status(500).json({ success: false, error: { message: err.message } });
@@ -333,7 +345,7 @@ router.post('/:id/scripts', async (req, res) => {
     if (rows.length === 0) {
       return res.status(404).json({ success: false, error: { message: 'Profile not found' } });
     }
-    return res.json({ success: true, data: rows[0] });
+    return res.json({ success: true, data: parseRow(rows[0]) });
   } catch (err) {
     console.error('POST /product-profiles/:id/scripts error:', err);
     return res.status(500).json({ success: false, error: { message: err.message } });
@@ -361,7 +373,7 @@ router.delete('/:id/scripts/:scriptId', async (req, res) => {
     if (rows.length === 0) {
       return res.status(404).json({ success: false, error: { message: 'Profile not found' } });
     }
-    return res.json({ success: true, data: rows[0] });
+    return res.json({ success: true, data: parseRow(rows[0]) });
   } catch (err) {
     console.error('DELETE /product-profiles/:id/scripts/:scriptId error:', err);
     return res.status(500).json({ success: false, error: { message: err.message } });
@@ -396,7 +408,7 @@ router.post('/:id/angles', async (req, res) => {
     if (rows.length === 0) {
       return res.status(404).json({ success: false, error: { message: 'Profile not found' } });
     }
-    return res.json({ success: true, data: rows[0] });
+    return res.json({ success: true, data: parseRow(rows[0]) });
   } catch (err) {
     console.error('POST /product-profiles/:id/angles error:', err);
     return res.status(500).json({ success: false, error: { message: err.message } });
@@ -430,7 +442,7 @@ router.post('/:id/benefits', async (req, res) => {
     if (rows.length === 0) {
       return res.status(404).json({ success: false, error: { message: 'Profile not found' } });
     }
-    return res.json({ success: true, data: rows[0] });
+    return res.json({ success: true, data: parseRow(rows[0]) });
   } catch (err) {
     console.error('POST /product-profiles/:id/benefits error:', err);
     return res.status(500).json({ success: false, error: { message: err.message } });
