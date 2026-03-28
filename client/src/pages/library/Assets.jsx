@@ -190,13 +190,6 @@ function ProductCard({ product, onClick, onDelete }) {
         <div className="flex items-start justify-between mb-3">
           <div className="min-w-0 flex-1">
             <h3 className="text-base font-semibold text-white truncate">{product.name}</h3>
-            {product.category && (
-              <span
-                className={`inline-block mt-1.5 text-[10px] font-medium uppercase tracking-wider px-2 py-0.5 rounded-full border ${categoryColor(product.category)}`}
-              >
-                {product.category}
-              </span>
-            )}
           </div>
           {product.price && (
             <span className="text-sm font-semibold text-emerald-400 ml-3 shrink-0">
