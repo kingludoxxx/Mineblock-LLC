@@ -987,6 +987,15 @@ export default function StaticsGeneration() {
   // Fetch data on tab / pipeline switch (with caching)
   const templatesFetched = useRef(false);
   const creativesFetched = useRef(false);
+
+  // Prefetch templates on mount so the library modal opens instantly
+  useEffect(() => {
+    if (!templatesFetched.current) {
+      fetchTemplates();
+      templatesFetched.current = true;
+    }
+  }, []);
+
   useEffect(() => {
     if (activeTab === 'pipeline') {
       if (activePipeline === 'standard') {
@@ -1100,7 +1109,6 @@ export default function StaticsGeneration() {
                   references={references}
                   onOpenLibrary={() => {
                     setTemplateModal(true);
-                    if (!templatesFetched.current) { fetchTemplates(); templatesFetched.current = true; }
                   }}
                   onUploadReference={(file) => {
                     const preview = URL.createObjectURL(file);
