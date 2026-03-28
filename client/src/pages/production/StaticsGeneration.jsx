@@ -1107,11 +1107,13 @@ export default function StaticsGeneration() {
                   onOpenLibrary={() => {
                     setTemplateModal(true);
                   }}
-                  onUploadReference={(file) => {
+                  onUploadReference={async (file) => {
                     const preview = URL.createObjectURL(file);
-                    setReferenceFile(file);
                     setReferencePreview(preview);
-                    setReferences(prev => [...prev, { id: Date.now(), image_url: preview, name: file.name }]);
+                    // Convert to base64 so the server can receive it (blob URLs are browser-only)
+                    const b64 = await fileToBase64(file);
+                    setReferenceFile(file);
+                    setReferences(prev => [...prev, { id: Date.now(), image_url: b64, thumbnail: preview, name: file.name }]);
                   }}
                   onRemoveReference={(id) => setReferences(prev => prev.filter(r => r.id !== id))}
                   onGenerate={handleGenerate}
