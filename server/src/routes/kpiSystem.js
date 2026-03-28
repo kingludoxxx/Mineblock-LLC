@@ -22,6 +22,12 @@ const WHOP_API_TOKEN = process.env.WHOP_API_TOKEN || '';
 const WHOP_API_URL = 'https://api.whop.com/api';
 const WHOP_COMPANY_ID = 'biz_pkN7XmNrvouslh';
 
+// Meta Ads API — primary source for ad spend
+const META_TOKEN = process.env.META_ACCESS_TOKEN || '';
+const META_ACCOUNT_IDS = (process.env.META_AD_ACCOUNT_IDS || '')
+  .split(',').map(s => s.trim()).filter(Boolean);
+const META_GRAPH = 'https://graph.facebook.com/v21.0';
+
 const UNIT_COST_PER_MINER = 10.92;
 const UNIT_COST_PER_MINER_2920 = 11.28; // Orders #2722-#5716
 const UNIT_COST_PER_MINER_ORIGINAL = 12.13; // Orders before #2722
@@ -334,6 +340,17 @@ async function ensureTables() {
     )
   `);
   await pgQuery('ALTER TABLE whop_payment_fees ADD COLUMN IF NOT EXISTS lasso_fees NUMERIC DEFAULT 0').catch(() => {});
+
+  // Cache for Meta Ads spend — refreshed every 5 min by autoSync
+  await pgQuery(`
+    CREATE TABLE IF NOT EXISTS meta_ad_spend_cache (
+      spend_date DATE PRIMARY KEY,
+      total_spend NUMERIC(12,2) DEFAULT 0,
+      total_clicks BIGINT DEFAULT 0,
+      total_purchases INT DEFAULT 0,
+      synced_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
 
   await pgQuery(`
     CREATE TABLE IF NOT EXISTS lasso_revenue_shares (
@@ -1135,11 +1152,12 @@ router.get('/home-dashboard', authenticate, async (req, res) => {
     sd.setUTCDate(sd.getUTCDate() - 7);
     const startDate = sd.toISOString().slice(0, 10);
 
-    // Parallel: snapshots, fees, ad spend
-    const [snapshots, feeRows, adSpendRows] = await Promise.all([
+    // Parallel: snapshots, fees, Meta spend cache, TripleWhale fallback
+    const [snapshots, feeRows, metaSpendRows, twSpendRows] = await Promise.all([
       pgQuery(`SELECT * FROM daily_kpi_snapshots WHERE snapshot_date BETWEEN $1 AND $2 ORDER BY snapshot_date`, [startDate, endDate]),
       pgQuery(`SELECT DATE(paid_at AT TIME ZONE 'Europe/Berlin') as fee_date, COALESCE(SUM(total_fees),0) as total_fees, COALESCE(SUM(whop_fees),0) as whop_fees, COALESCE(SUM(processing_fees),0) as processing_fees, COALESCE(SUM(other_fees),0) as other_fees, COALESCE(SUM(lasso_fees),0) as lasso_fees FROM whop_payment_fees WHERE DATE(paid_at AT TIME ZONE 'Europe/Berlin') BETWEEN $1 AND $2 GROUP BY DATE(paid_at AT TIME ZONE 'Europe/Berlin') ORDER BY fee_date`, [startDate, endDate]),
-      fetchDailyAdSpend(startDate, endDate),
+      pgQuery(`SELECT spend_date::text AS date, total_spend AS spend, total_clicks AS clicks, total_purchases AS meta_purchases FROM meta_ad_spend_cache WHERE spend_date BETWEEN $1 AND $2`, [startDate, endDate]),
+      fetchDailyAdSpend(startDate, endDate).catch(() => []),
     ]);
 
     // Build fee lookup by date
@@ -1149,10 +1167,19 @@ router.get('/home-dashboard', authenticate, async (req, res) => {
       feeLookup[d] = parseFloat(r.total_fees || 0);
     }
 
-    // Build ad spend lookup by date
+    // Build ad spend lookup: TripleWhale first (fallback), then Meta overwrites (primary)
     const spendLookup = {};
-    for (const r of adSpendRows) {
-      spendLookup[r.date] = r.spend;
+    const clicksLookup = {};
+    const metaPurchasesLookup = {};
+    for (const r of twSpendRows) {
+      if (r.spend > 0) spendLookup[r.date] = r.spend;
+    }
+    for (const r of metaSpendRows) {
+      const d = typeof r.date === 'string' ? r.date.slice(0, 10) : new Date(r.date).toISOString().slice(0, 10);
+      const spend = parseFloat(r.spend || 0);
+      if (spend > 0) spendLookup[d] = spend; // Meta is primary source
+      clicksLookup[d] = parseInt(r.clicks || 0);
+      metaPurchasesLookup[d] = parseInt(r.meta_purchases || 0);
     }
 
     // Build snapshot lookup by date
@@ -1160,56 +1187,6 @@ router.get('/home-dashboard', authenticate, async (req, res) => {
     for (const s of snapshots) {
       const d = typeof s.snapshot_date === 'string' ? s.snapshot_date.slice(0, 10) : new Date(s.snapshot_date).toISOString().slice(0, 10);
       snapLookup[d] = s;
-    }
-
-    // Fetch Shopify online store sessions for conversion rate
-    const sessionLookup = {};
-    try {
-      if (SHOPIFY_TOKEN) {
-        // Shopify Analytics API - get daily sessions
-        const analyticsRes = await fetch(
-          `https://${SHOPIFY_STORE}/admin/api/${SHOPIFY_API_VERSION}/reports.json`,
-          { headers: { 'X-Shopify-Access-Token': SHOPIFY_TOKEN }, signal: AbortSignal.timeout(10000) }
-        ).catch(() => null);
-        // Fallback: use orders count from cache to estimate (Shopify Analytics API may not be available)
-        // Try the REST approach for visitor data
-        if (!analyticsRes || !analyticsRes.ok) {
-          // Use GraphQL to get online store sessions
-          const gqlBody = JSON.stringify({
-            query: `{
-              shopifyqlQuery(query: "FROM visits SHOW sum(visitor_count) AS sessions GROUP BY day SINCE ${startDate} UNTIL ${endDate} ORDER BY day") {
-                __typename
-                ... on TableResponse {
-                  tableData { rowData columns { name dataType } }
-                }
-              }
-            }`
-          });
-          const gqlRes = await fetch(`https://${SHOPIFY_STORE}/admin/api/${SHOPIFY_API_VERSION}/graphql.json`, {
-            method: 'POST',
-            headers: { 'X-Shopify-Access-Token': SHOPIFY_TOKEN, 'Content-Type': 'application/json' },
-            body: gqlBody,
-            signal: AbortSignal.timeout(10000),
-          }).catch(() => null);
-          if (gqlRes && gqlRes.ok) {
-            const gqlData = await gqlRes.json();
-            const tableData = gqlData?.data?.shopifyqlQuery?.tableData;
-            if (tableData?.rowData) {
-              const cols = tableData.columns?.map(c => c.name) || [];
-              const dayIdx = cols.findIndex(c => c === 'day');
-              const sessIdx = cols.findIndex(c => c === 'sessions');
-              if (dayIdx >= 0 && sessIdx >= 0) {
-                for (const row of tableData.rowData) {
-                  const d = row[dayIdx]?.slice(0, 10);
-                  if (d) sessionLookup[d] = parseInt(row[sessIdx] || 0);
-                }
-              }
-            }
-          }
-        }
-      }
-    } catch (err) {
-      console.warn('[KPI] sessions fetch failed:', err.message);
     }
 
     // Helper: build metrics object for a date
@@ -1221,13 +1198,16 @@ router.get('/home-dashboard', authenticate, async (req, res) => {
       const fees = feeLookup[d] || 0;
       const orders = s ? parseInt(s.total_orders || 0) : 0;
       const adSpend = spendLookup[d] || 0;
-      const costs = cogs + shipping + fees + adSpend; // Include ad spend in total costs
+      const costs = cogs + shipping + fees + adSpend;
       const profit = revenue - costs;
       const netMargin = revenue > 0 ? Math.round((profit / revenue) * 10000) / 100 : 0;
       const aov = orders > 0 ? Math.round((revenue / orders) * 100) / 100 : 0;
       const roas = adSpend > 0 ? Math.round((revenue / adSpend) * 100) / 100 : 0;
-      const sessions = sessionLookup[d] || null;
-      const conversionRate = (sessions && sessions > 0 && orders > 0) ? Math.round((orders / sessions) * 10000) / 100 : null;
+      // Conversion rate: use Meta clicks as denominator when Shopify sessions unavailable
+      const clicks = clicksLookup[d] || 0;
+      const conversionRate = (clicks > 0 && orders > 0)
+        ? Math.round((orders / clicks) * 10000) / 100
+        : null;
       return { date: d, revenue, adSpend, roas, orders, aov, costs, cogs, shipping, fees, profit, netMargin, conversionRate };
     }
 
@@ -1827,6 +1807,73 @@ async function upsertOrders(orders) {
   return { synced, affectedDates };
 }
 
+/**
+ * Fetch ad spend (+ clicks, purchases) from Meta Graph API and cache in DB.
+ * Runs every 5 min via autoSync. Dashboard reads from cache — no live API calls per request.
+ */
+async function syncMetaAdSpend(days = 8) {
+  if (!META_TOKEN || !META_ACCOUNT_IDS.length) return;
+
+  const end = new Date();
+  const start = new Date(end);
+  start.setDate(start.getDate() - days);
+  const startDate = start.toISOString().slice(0, 10);
+  const endDate = end.toISOString().slice(0, 10);
+
+  const byDate = {}; // { 'YYYY-MM-DD': { spend, clicks, purchases } }
+
+  for (const accountId of META_ACCOUNT_IDS) {
+    try {
+      const params = new URLSearchParams({
+        fields: 'spend,clicks,actions,date_start',
+        time_range: JSON.stringify({ since: startDate, until: endDate }),
+        time_increment: '1',
+        level: 'account',
+        access_token: META_TOKEN,
+      });
+      const res = await fetch(`${META_GRAPH}/${accountId}/insights?${params}`, {
+        signal: AbortSignal.timeout(20000),
+      });
+      const data = await res.json();
+      if (data.error) {
+        console.warn(`[Meta Spend] ${accountId}: ${data.error.message}`);
+        continue;
+      }
+      for (const row of (data.data || [])) {
+        const d = (row.date_start || '').slice(0, 10);
+        if (!d) continue;
+        if (!byDate[d]) byDate[d] = { spend: 0, clicks: 0, purchases: 0 };
+        byDate[d].spend += parseFloat(row.spend || 0);
+        byDate[d].clicks += parseInt(row.clicks || 0);
+        // Extract purchase events from actions array
+        const purchaseAction = (row.actions || []).find(a =>
+          a.action_type === 'purchase' || a.action_type === 'offsite_conversion.fb_pixel_purchase'
+        );
+        if (purchaseAction) byDate[d].purchases += parseInt(purchaseAction.value || 0);
+      }
+    } catch (err) {
+      console.warn(`[Meta Spend] ${accountId} failed:`, err.message);
+    }
+  }
+
+  if (!Object.keys(byDate).length) {
+    console.warn('[Meta Spend] No data returned from any account');
+    return;
+  }
+
+  for (const [date, { spend, clicks, purchases }] of Object.entries(byDate)) {
+    await pgQuery(
+      `INSERT INTO meta_ad_spend_cache (spend_date, total_spend, total_clicks, total_purchases, synced_at)
+       VALUES ($1, $2, $3, $4, NOW())
+       ON CONFLICT (spend_date) DO UPDATE SET total_spend=$2, total_clicks=$3, total_purchases=$4, synced_at=NOW()`,
+      [date, spend, clicks, purchases]
+    ).catch(err => console.warn('[Meta Spend] DB upsert failed:', err.message));
+  }
+
+  const total = Object.values(byDate).reduce((s, r) => s + r.spend, 0);
+  console.log(`[Meta Spend] Synced ${Object.keys(byDate).length} days — $${total.toFixed(2)} total spend`);
+}
+
 async function autoSync() {
   if (!SHOPIFY_TOKEN) return;
   try {
@@ -1857,9 +1904,10 @@ async function autoSync() {
     for (const d of affectedDates) await recalculateSnapshots(d);
     if (synced > 0) console.log(`[KPI Auto-Sync] ${synced} new orders synced`);
 
-    // Also sync Whop fees every 5th cycle (~5 min)
+    // Every 5th cycle (~5 min): sync fees + Meta ad spend
     if (autoSyncCount % 5 === 0) {
       await syncWhopFees().catch(err => console.error('[KPI] Fee sync error:', err.message));
+      await syncMetaAdSpend().catch(err => console.error('[KPI] Meta spend sync error:', err.message));
     }
   } catch (err) {
     console.error('[KPI Auto-Sync] Error:', err.message);
@@ -1868,6 +1916,7 @@ async function autoSync() {
 
 setTimeout(() => {
   autoSync().catch(() => {});
+  syncMetaAdSpend().catch(() => {}); // Fetch Meta spend immediately on boot
   setInterval(() => autoSync().catch(() => {}), 60_000); // Every 60 seconds
 }, 30_000); // Start 30s after boot
 
@@ -1929,8 +1978,15 @@ async function sendDailyPnlReport(dateStr, { force = false } = {}) {
        FROM whop_payment_fees WHERE DATE(paid_at AT TIME ZONE 'Europe/Berlin') = $1`, [dateStr]
     );
 
-    // Get ad spend from Triple Whale
-    const adSpendRows = await fetchDailyAdSpend(dateStr, dateStr);
+    // Get ad spend: prefer Meta cache, fallback to TripleWhale
+    const metaCacheRows = await pgQuery(
+      `SELECT total_spend as spend FROM meta_ad_spend_cache WHERE spend_date = $1`, [dateStr]
+    ).catch(() => []);
+    let adSpendFallback = 0;
+    if (!metaCacheRows.length || parseFloat(metaCacheRows[0]?.spend || 0) === 0) {
+      const twRows = await fetchDailyAdSpend(dateStr, dateStr).catch(() => []);
+      adSpendFallback = twRows[0]?.spend || 0;
+    }
 
     const snap = snapRows[0];
     if (!snap) {
@@ -1944,7 +2000,7 @@ async function sendDailyPnlReport(dateStr, { force = false } = {}) {
     const cogs = parseFloat(snap.total_cogs || 0);
     const shipping = parseFloat(snap.total_shipping || 0);
     const fees = parseFloat(feeRows[0]?.total_fees || 0);
-    const adSpend = adSpendRows[0]?.spend || 0;
+    const adSpend = parseFloat(metaCacheRows[0]?.spend || 0) || adSpendFallback;
     const totalCosts = cogs + shipping + fees + adSpend;
     const profit = revenue - totalCosts;
     const roas = adSpend > 0 ? (revenue / adSpend) : 0;
