@@ -179,32 +179,51 @@ function QuickInfoBox({ box, initialValue, onSave, onChange }) {
 
 function ProductCard({ product, onClick, onDelete }) {
   const images = Array.isArray(product.product_images) ? product.product_images : [];
-  const imgCount = images.filter((v) => v).length;
+  const validImages = images.filter((v) => v);
+  const imgCount = validImages.length;
+  const thumbs = validImages.slice(0, 4);
 
   return (
     <div
       onClick={onClick}
-      className="bg-[#111] border border-white/[0.06] rounded-lg p-5 flex flex-col justify-between hover:border-white/[0.12] transition-colors group cursor-pointer"
+      className="bg-[#111] border border-white/[0.06] rounded-lg overflow-hidden flex flex-col justify-between hover:border-white/[0.12] transition-colors group cursor-pointer"
     >
-      <div>
-        <div className="flex items-start justify-between mb-3">
-          <div className="min-w-0 flex-1">
-            <h3 className="text-base font-semibold text-white truncate">{product.name}</h3>
+      {/* Image strip */}
+      {thumbs.length > 0 ? (
+        <div className={`grid gap-0.5 bg-[#0a0a0a] ${thumbs.length === 1 ? 'grid-cols-1' : 'grid-cols-2'}`} style={{ height: 140 }}>
+          {thumbs.map((url, i) => (
+            <div key={i} className="relative overflow-hidden">
+              <img src={url} alt="" className="w-full h-full object-cover" onError={(e) => { e.target.style.display = 'none'; }} />
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="h-24 bg-[#0a0a0a] flex items-center justify-center">
+          <Image className="w-8 h-8 text-white/10" />
+        </div>
+      )}
+
+      <div className="p-5 flex flex-col gap-3 flex-1">
+        <div>
+          <div className="flex items-start justify-between mb-1">
+            <div className="min-w-0 flex-1">
+              <h3 className="text-base font-semibold text-white truncate">{product.name}</h3>
+            </div>
+            {product.price && (
+              <span className="text-sm font-semibold text-emerald-400 ml-3 shrink-0">
+                {product.price}
+              </span>
+            )}
           </div>
-          {product.price && (
-            <span className="text-sm font-semibold text-emerald-400 ml-3 shrink-0">
-              {product.price}
-            </span>
+
+          {(product.oneliner || product.description) && (
+            <p className="text-sm text-slate-400 line-clamp-2 leading-relaxed">
+              {product.oneliner || product.description}
+            </p>
           )}
         </div>
 
-        {(product.oneliner || product.description) && (
-          <p className="text-sm text-slate-400 line-clamp-2 mb-4 leading-relaxed">
-            {product.oneliner || product.description}
-          </p>
-        )}
-
-        <div className="flex items-center gap-4 text-[11px] text-slate-500 mb-4">
+        <div className="flex items-center gap-4 text-[11px] text-slate-500">
           {imgCount > 0 && (
             <span className="flex items-center gap-1">
               <Image className="w-3 h-3" />
@@ -222,21 +241,21 @@ function ProductCard({ product, onClick, onDelete }) {
             </span>
           )}
         </div>
-      </div>
 
-      <div className="flex items-center gap-2 pt-3 border-t border-white/[0.06]">
-        <button
-          onClick={(e) => { e.stopPropagation(); onClick(); }}
-          className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-white px-2.5 py-1.5 rounded-md hover:bg-white/[0.05] transition-colors"
-        >
-          <Pencil className="w-3 h-3" /> Edit
-        </button>
-        <button
-          onClick={(e) => { e.stopPropagation(); onDelete(product); }}
-          className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-red-400 px-2.5 py-1.5 rounded-md hover:bg-red-500/[0.05] transition-colors"
-        >
-          <Trash2 className="w-3 h-3" /> Delete
-        </button>
+        <div className="flex items-center gap-2 pt-3 border-t border-white/[0.06]">
+          <button
+            onClick={(e) => { e.stopPropagation(); onClick(); }}
+            className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-white px-2.5 py-1.5 rounded-md hover:bg-white/[0.05] transition-colors"
+          >
+            <Pencil className="w-3 h-3" /> Edit
+          </button>
+          <button
+            onClick={(e) => { e.stopPropagation(); onDelete(product); }}
+            className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-red-400 px-2.5 py-1.5 rounded-md hover:bg-red-500/[0.05] transition-colors"
+          >
+            <Trash2 className="w-3 h-3" /> Delete
+          </button>
+        </div>
       </div>
     </div>
   );
