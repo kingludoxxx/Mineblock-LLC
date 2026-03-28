@@ -328,6 +328,8 @@ function ProductDetailView({ product, onBack, onFieldSave, onAiFill, onProductCh
       await onFieldSave('__all__', productRef.current);
       setSavedFlash(true);
       setTimeout(() => setSavedFlash(false), 2000);
+    } catch (err) {
+      alert(`Save failed: ${err?.response?.data?.error?.message || err?.message || 'Unknown error'}. Please try again.`);
     } finally {
       setSaving(false);
     }
@@ -763,15 +765,22 @@ export default function Assets() {
 
   useEffect(() => { fetchProducts(); }, [fetchProducts]);
 
-  const openDetail = (product) => {
+  const openDetail = async (product) => {
+    // Show cached data immediately, then refresh from DB in background
     setSelectedProduct({ ...product });
     setViewMode('detail');
+    try {
+      const { data } = await api.get(`/product-profiles/${product.id}`);
+      const fresh = data?.data || data;
+      if (fresh?.id) setSelectedProduct(fresh);
+    } catch {
+      // keep cached data if fetch fails
+    }
   };
 
   const goBackToList = () => {
     setViewMode('list');
     setSelectedProduct(null);
-    fetchProducts();
   };
 
   const handleCreate = async () => {
@@ -792,14 +801,12 @@ export default function Assets() {
   // Pass key='__all__' and value=fullProductObject to save everything at once
   const handleFieldSave = async (key, value) => {
     if (!selectedProduct?.id) return;
-    try {
-      const payload = key === '__all__' ? value : { [key]: value };
-      const { data } = await api.put(`/product-profiles/${selectedProduct.id}`, payload);
-      if (key === '__all__') {
-        setSelectedProduct(prev => ({ ...prev, ...(data?.data || data) }));
-      }
-    } catch (err) {
-      console.error(`Auto-save failed for ${key}:`, err);
+    const payload = key === '__all__' ? value : { [key]: value };
+    const { data } = await api.put(`/product-profiles/${selectedProduct.id}`, payload);
+    const updated = data?.data || data;
+    if (updated?.id) {
+      setSelectedProduct(prev => ({ ...prev, ...updated }));
+      setProducts(prev => prev.map(p => p.id === selectedProduct.id ? { ...p, ...updated } : p));
     }
   };
 
