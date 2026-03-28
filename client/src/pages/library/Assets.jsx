@@ -339,18 +339,26 @@ function ProductDetailView({ product, onBack, onFieldSave, onAiFill, onProductCh
   };
 
   /* Image handlers — use productRef to avoid stale closure */
-  const handleImageUpload = (files) => {
-    Array.from(files).forEach((file) => {
-      if (!file.type.startsWith('image/')) return;
-      const reader = new FileReader();
-      reader.onload = () => {
-        const current = Array.isArray(productRef.current.product_images) ? productRef.current.product_images : [];
-        const updated = [...current.filter((img) => img), reader.result];
-        onProductChange({ ...productRef.current, product_images: updated });
-        onFieldSave('product_images', updated);
-      };
-      reader.readAsDataURL(file);
-    });
+  const handleImageUpload = async (files) => {
+    const imageFiles = Array.from(files).filter((f) => f.type.startsWith('image/'));
+    if (imageFiles.length === 0) return;
+
+    // Read all files first, then do a single batch update
+    const results = await Promise.all(
+      imageFiles.map(
+        (file) =>
+          new Promise((resolve) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.readAsDataURL(file);
+          })
+      )
+    );
+
+    const current = Array.isArray(productRef.current.product_images) ? productRef.current.product_images : [];
+    const updated = [...current.filter((img) => img), ...results];
+    onProductChange({ ...productRef.current, product_images: updated });
+    onFieldSave('product_images', updated);
   };
 
   const addImageUrl = () => {
