@@ -181,25 +181,25 @@ function ProductCard({ product, onClick, onDelete }) {
   const images = Array.isArray(product.product_images) ? product.product_images : [];
   const validImages = images.filter((v) => v);
   const imgCount = validImages.length;
-  const thumbs = validImages.slice(0, 4);
 
   return (
     <div
       onClick={onClick}
       className="bg-[#111] border border-white/[0.06] rounded-lg overflow-hidden flex flex-col justify-between hover:border-white/[0.12] transition-colors group cursor-pointer"
     >
-      {/* Image strip */}
-      {thumbs.length > 0 ? (
-        <div className={`grid gap-0.5 bg-[#0a0a0a] ${thumbs.length === 1 ? 'grid-cols-1' : 'grid-cols-2'}`} style={{ height: 140 }}>
-          {thumbs.map((url, i) => (
-            <div key={i} className="relative overflow-hidden">
-              <img src={url} alt="" className="w-full h-full object-cover" onError={(e) => { e.target.style.display = 'none'; }} />
-            </div>
-          ))}
+      {/* Hero image */}
+      {validImages[0] ? (
+        <div className="relative overflow-hidden bg-[#0a0a0a]" style={{ height: 140 }}>
+          <img src={validImages[0]} alt="" className="w-full h-full object-cover" onError={(e) => { e.target.parentElement.style.display = 'none'; }} />
+          {imgCount > 1 && (
+            <span className="absolute bottom-2 right-2 bg-black/60 text-white/80 text-[10px] font-medium px-1.5 py-0.5 rounded backdrop-blur-sm">
+              +{imgCount - 1}
+            </span>
+          )}
         </div>
       ) : (
-        <div className="h-24 bg-[#0a0a0a] flex items-center justify-center">
-          <Image className="w-8 h-8 text-white/10" />
+        <div className="h-20 bg-[#0a0a0a] flex items-center justify-center">
+          <Image className="w-7 h-7 text-white/10" />
         </div>
       )}
 

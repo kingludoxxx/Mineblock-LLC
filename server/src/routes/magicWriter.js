@@ -31,13 +31,30 @@ async function generateWithAI(body) {
     const { default: Anthropic } = await import('@anthropic-ai/sdk');
     const client = new Anthropic({ apiKey });
 
-    const { referenceText, productName, targetAudience, mode, variantCount = 3, aggressiveness = 5 } = body;
+    const { referenceText, productName, targetAudience, productProfile, mode, variantCount = 3, aggressiveness = 5 } = body;
     const count = mode === 'clone' ? 1 : variantCount;
 
     const modeInstruction =
       mode === 'clone'
         ? 'Create a 1:1 structural clone of the reference copy, maintaining the same flow, hooks, and persuasion techniques, but rewritten for the given product and audience.'
         : `Generate ${count} distinct variant(s) of marketing copy inspired by the reference content, each with a different angle or hook.`;
+
+    const p = productProfile || {};
+    const profileSection = [
+      p.big_promise      && `Big Promise: ${p.big_promise}`,
+      p.mechanism        && `Unique Mechanism: ${p.mechanism}`,
+      p.benefits?.length && `Key Benefits: ${Array.isArray(p.benefits) ? p.benefits.join(', ') : p.benefits}`,
+      p.differentiator   && `Differentiator: ${p.differentiator}`,
+      p.guarantee        && `Guarantee: ${p.guarantee}`,
+      p.customer_frustration && `Customer Frustration: ${p.customer_frustration}`,
+      p.customer_dream   && `Customer Dream Outcome: ${p.customer_dream}`,
+      p.voice            && `Brand Voice/Tone: ${p.voice}`,
+      p.angles?.length   && `Proven Angles: ${Array.isArray(p.angles) ? p.angles.map(a => a.name || a).join(', ') : p.angles}`,
+      p.pain_points      && `Pain Points: ${p.pain_points}`,
+      p.common_objections && `Common Objections to Address: ${p.common_objections}`,
+      p.competitive_edge && `Competitive Edge: ${p.competitive_edge}`,
+      p.compliance_restrictions && `COMPLIANCE — Never claim: ${p.compliance_restrictions}`,
+    ].filter(Boolean).join('\n');
 
     const message = await client.messages.create({
       model: 'claude-sonnet-4-20250514',
@@ -52,6 +69,7 @@ ${referenceText}
 
 Product: ${productName}
 Target Audience: ${targetAudience}
+${profileSection ? `\nProduct Intelligence:\n${profileSection}` : ''}
 Conversion Aggressiveness (1=subtle, 10=hard sell): ${aggressiveness}
 
 Return ONLY a JSON array of objects with "id" (number) and "text" (string) fields. No markdown, no explanation, just valid JSON.`,

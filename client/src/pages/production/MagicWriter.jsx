@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import {
   Sparkles,
   Copy,
@@ -54,13 +54,16 @@ export default function MagicWriter() {
   const [copiedIndex, setCopiedIndex] = useState(null);
   const [aiSource, setAiSource] = useState(null);
   const [selectedProductId, setSelectedProductId] = useState(null);
+  const selectedProductRef = useRef(null);
 
   const handleProductSelect = (product) => {
     if (!product) {
       setSelectedProductId(null);
+      selectedProductRef.current = null;
       return;
     }
     setSelectedProductId(product.id);
+    selectedProductRef.current = product;
     setProductName(product.name || '');
     setTargetAudience(product.customer_avatar || '');
   };
@@ -73,10 +76,26 @@ export default function MagicWriter() {
     setGenerating(true);
     setVariants([]);
     try {
+      const full = selectedProductRef.current;
       const res = await api.post('/magic-writer/generate', {
         referenceText: referenceMode === 'text' ? referenceText : referenceUrl,
         productName,
         targetAudience,
+        productProfile: full ? {
+          big_promise: full.big_promise,
+          mechanism: full.mechanism,
+          benefits: full.benefits,
+          differentiator: full.differentiator,
+          guarantee: full.guarantee,
+          customer_frustration: full.customer_frustration,
+          customer_dream: full.customer_dream,
+          voice: full.voice,
+          angles: full.angles,
+          pain_points: full.pain_points,
+          common_objections: full.common_objections,
+          competitive_edge: full.competitive_edge,
+          compliance_restrictions: full.compliance_restrictions,
+        } : undefined,
         mode: outputMode,
         variantCount: outputMode === 'variants' ? variantCount : 1,
         aggressiveness,

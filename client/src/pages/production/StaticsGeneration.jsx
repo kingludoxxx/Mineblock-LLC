@@ -746,6 +746,7 @@ export default function StaticsGeneration() {
       // Pass all new product profile fields from library
       const full = selectedProductRef.current;
       if (full) {
+        if (full.benefits) profile.benefits = full.benefits;
         if (full.pain_points) profile.painPoints = full.pain_points;
         if (full.common_objections) profile.commonObjections = full.common_objections;
         if (full.winning_angles) profile.winningAngles = full.winning_angles;
