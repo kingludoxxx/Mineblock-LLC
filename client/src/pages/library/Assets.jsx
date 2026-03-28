@@ -3,7 +3,7 @@ import {
   Package, Plus, Pencil, Trash2, X, Image,
   Target, ChevronRight, ChevronDown, Loader2,
   Sparkles, Upload, ArrowLeft, Link, Globe, Zap,
-  AlertTriangle, MessageSquare, Tag,
+  AlertTriangle, MessageSquare, Tag, Check,
 } from 'lucide-react';
 import api from '../../services/api';
 
@@ -119,7 +119,7 @@ function AutoSaveField({ label, value, onChange, onSave, placeholder, rows }) {
 /*  Quick Info Bar                                                     */
 /* ------------------------------------------------------------------ */
 
-function QuickInfoBar({ product, onSave }) {
+function QuickInfoBar({ product, onSave, onChange }) {
   const boxes = [
     { key: 'short_name', label: 'Short Name', placeholder: 'e.g. EstroGuard+' },
     { key: 'product_type', label: 'Type', placeholder: 'e.g. Capsules' },
@@ -130,13 +130,13 @@ function QuickInfoBar({ product, onSave }) {
   return (
     <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
       {boxes.map((box) => (
-        <QuickInfoBox key={box.key} box={box} initialValue={product[box.key] || ''} onSave={onSave} />
+        <QuickInfoBox key={box.key} box={box} initialValue={product[box.key] || ''} onSave={onSave} onChange={onChange} />
       ))}
     </div>
   );
 }
 
-function QuickInfoBox({ box, initialValue, onSave }) {
+function QuickInfoBox({ box, initialValue, onSave, onChange }) {
   const [val, setVal] = useState(initialValue);
   const latestRef = useRef(initialValue);
   const dirtyRef = useRef(false);
@@ -158,6 +158,7 @@ function QuickInfoBox({ box, initialValue, onSave }) {
           setVal(e.target.value);
           latestRef.current = e.target.value;
           dirtyRef.current = true;
+          onChange?.(box.key, e.target.value);
         }}
         onBlur={() => {
           if (dirtyRef.current) {
@@ -314,10 +315,23 @@ function ProductDetailView({ product, onBack, onFieldSave, onAiFill, onProductCh
   const [aiUrl, setAiUrl] = useState(product.product_url || '');
   const [aiFilling, setAiFilling] = useState(false);
   const [imageUrlInput, setImageUrlInput] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [savedFlash, setSavedFlash] = useState(false);
   const fileInputRef = useRef(null);
   // Use ref to get latest product for image operations (avoids stale closure)
   const productRef = useRef(product);
   productRef.current = product;
+
+  const handleSaveAll = async () => {
+    setSaving(true);
+    try {
+      await onFieldSave('__all__', productRef.current);
+      setSavedFlash(true);
+      setTimeout(() => setSavedFlash(false), 2000);
+    } finally {
+      setSaving(false);
+    }
+  };
 
   const handleAiFillClick = async () => {
     if (!aiUrl.trim()) return;
@@ -405,6 +419,14 @@ function ProductDetailView({ product, onBack, onFieldSave, onAiFill, onProductCh
           />
         </div>
         <button
+          onClick={handleSaveAll}
+          disabled={saving}
+          className="flex items-center gap-1.5 text-xs font-medium px-3 py-2 rounded-lg border transition-colors cursor-pointer disabled:opacity-50 disabled:pointer-events-none text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/[0.08]"
+        >
+          {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : savedFlash ? <Check className="w-3.5 h-3.5" /> : null}
+          {saving ? 'Saving...' : savedFlash ? 'Saved!' : 'Save'}
+        </button>
+        <button
           onClick={() => onDelete(product)}
           className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-red-400 px-3 py-2 rounded-lg hover:bg-red-500/[0.05] border border-white/[0.06] transition-colors cursor-pointer"
         >
@@ -451,6 +473,7 @@ function ProductDetailView({ product, onBack, onFieldSave, onAiFill, onProductCh
       <QuickInfoBar
         product={product}
         onSave={(key, val) => saveFieldDirect(key, val)}
+        onChange={(key, val) => updateField(key, val)}
       />
 
       {/* Sections */}
@@ -766,11 +789,15 @@ export default function Assets() {
   };
 
   // Save field — value passed directly from AutoSaveField's ref (never stale)
+  // Pass key='__all__' and value=fullProductObject to save everything at once
   const handleFieldSave = async (key, value) => {
     if (!selectedProduct?.id) return;
     try {
-      const payload = { [key]: value };
-      await api.put(`/product-profiles/${selectedProduct.id}`, payload);
+      const payload = key === '__all__' ? value : { [key]: value };
+      const { data } = await api.put(`/product-profiles/${selectedProduct.id}`, payload);
+      if (key === '__all__') {
+        setSelectedProduct(prev => ({ ...prev, ...(data?.data || data) }));
+      }
     } catch (err) {
       console.error(`Auto-save failed for ${key}:`, err);
     }
