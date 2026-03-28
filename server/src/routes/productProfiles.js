@@ -157,12 +157,13 @@ router.post('/', async (req, res) => {
       if (field === 'name') continue;
       if (req.body[field] !== undefined) {
         fields.push(field);
-        values.push(JSONB_FIELDS.has(field) ? JSON.stringify(req.body[field]) : req.body[field]);
+        const v = req.body[field];
+        values.push(JSONB_FIELDS.has(field) ? (typeof v === 'string' ? v : JSON.stringify(v)) : v);
         idx++;
       }
     }
 
-    const placeholders = fields.map((_, i) => `$${i + 1}`).join(', ');
+    const placeholders = fields.map((f, i) => JSONB_FIELDS.has(f) ? `$${i + 1}::jsonb` : `$${i + 1}`).join(', ');
     const columns = fields.join(', ');
 
     const rows = await pgQuery(
@@ -189,8 +190,14 @@ router.put('/:id', async (req, res) => {
 
     for (const field of UPDATABLE_FIELDS) {
       if (req.body[field] !== undefined) {
-        setClauses.push(`${field} = $${idx}`);
-        values.push(JSONB_FIELDS.has(field) ? JSON.stringify(req.body[field]) : req.body[field]);
+        if (JSONB_FIELDS.has(field)) {
+          setClauses.push(`${field} = $${idx}::jsonb`);
+          const v = req.body[field];
+          values.push(typeof v === 'string' ? v : JSON.stringify(v));
+        } else {
+          setClauses.push(`${field} = $${idx}`);
+          values.push(req.body[field]);
+        }
         idx++;
       }
     }

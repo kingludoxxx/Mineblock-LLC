@@ -63,9 +63,6 @@ export default function ProductSelector({ selectedId, onSelect, className = '' }
           {selected ? (
             <>
               <span className="truncate">{selected.name}</span>
-              <span className="shrink-0 text-[10px] font-medium uppercase tracking-wider px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-300">
-                {selected.category}
-              </span>
             </>
           ) : (
             <span className="text-white/40">Select Product</span>
@@ -122,7 +119,6 @@ export default function ProductSelector({ selectedId, onSelect, className = '' }
                       <div className="flex flex-col gap-0.5 min-w-0">
                         <span className="text-white/90 truncate">{product.name}</span>
                         <div className="flex items-center gap-2 text-xs text-white/40">
-                          {product.category && <span>{product.category}</span>}
                           {product.price != null && (
                             <span>{product.price}</span>
                           )}

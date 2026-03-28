@@ -740,11 +740,24 @@ export default function Assets() {
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [creating, setCreating] = useState(false);
 
+  // Normalize a product so JSONB fields are always arrays/objects, never strings
+  const normalizeProduct = (p) => {
+    if (!p) return p;
+    const jsonbFields = ['product_images', 'logos', 'fonts', 'benefits', 'angles', 'scripts', 'offers'];
+    const out = { ...p };
+    for (const f of jsonbFields) {
+      if (typeof out[f] === 'string') {
+        try { out[f] = JSON.parse(out[f]); } catch { out[f] = []; }
+      }
+    }
+    return out;
+  };
+
   const fetchProducts = useCallback(async () => {
     try {
       setLoading(true);
       const { data } = await api.get('/product-profiles');
-      const list = Array.isArray(data) ? data : data.data ?? [];
+      const list = (Array.isArray(data) ? data : data.data ?? []).map(normalizeProduct);
       setProducts(list);
       return list;
     } catch (err) {
@@ -760,11 +773,11 @@ export default function Assets() {
 
   const openDetail = async (product) => {
     // Show cached data immediately, then refresh from DB in background
-    setSelectedProduct({ ...product });
+    setSelectedProduct(normalizeProduct({ ...product }));
     setViewMode('detail');
     try {
       const { data } = await api.get(`/product-profiles/${product.id}`);
-      const fresh = data?.data || data;
+      const fresh = normalizeProduct(data?.data || data);
       if (fresh?.id) setSelectedProduct(fresh);
     } catch {
       // keep cached data if fetch fails
@@ -796,7 +809,7 @@ export default function Assets() {
     if (!selectedProduct?.id) return;
     const payload = key === '__all__' ? value : { [key]: value };
     const { data } = await api.put(`/product-profiles/${selectedProduct.id}`, payload);
-    const updated = data?.data || data;
+    const updated = normalizeProduct(data?.data || data);
     if (updated?.id) {
       setSelectedProduct(prev => ({ ...prev, ...updated }));
       setProducts(prev => prev.map(p => p.id === selectedProduct.id ? { ...p, ...updated } : p));
