@@ -268,15 +268,39 @@ Return ONLY valid JSON with this exact structure (no markdown, no explanation, n
   }
 });
 
+// ── Product profile context builder ───────────────────────────────
+function buildProductContext(p) {
+  if (!p) return '';
+  const lines = [
+    p.name             && `Product: ${p.name}`,
+    p.big_promise      && `Big Promise: ${p.big_promise}`,
+    p.mechanism        && `Unique Mechanism: ${p.mechanism}`,
+    p.benefits?.length && `Key Benefits: ${Array.isArray(p.benefits) ? p.benefits.join(', ') : p.benefits}`,
+    p.differentiator   && `Differentiator: ${p.differentiator}`,
+    p.guarantee        && `Guarantee: ${p.guarantee}`,
+    p.customer_avatar  && `Target Customer: ${p.customer_avatar}`,
+    p.customer_frustration && `Customer Frustration: ${p.customer_frustration}`,
+    p.customer_dream   && `Customer Dream Outcome: ${p.customer_dream}`,
+    p.voice            && `Brand Voice/Tone: ${p.voice}`,
+    p.angles?.length   && `Proven Angles: ${Array.isArray(p.angles) ? p.angles.map(a => a.name || a).join(', ') : p.angles}`,
+    p.pain_points      && `Pain Points: ${p.pain_points}`,
+    p.common_objections && `Common Objections: ${p.common_objections}`,
+    p.competitive_edge && `Competitive Edge: ${p.competitive_edge}`,
+    p.compliance_restrictions && `COMPLIANCE — Never claim: ${p.compliance_restrictions}`,
+  ].filter(Boolean);
+  return lines.length ? `\nProduct Intelligence:\n${lines.join('\n')}\n` : '';
+}
+
 // ── POST /generate-scripts — Generate script iterations (SSE stream) ───────────
 router.post('/generate-scripts', authenticate, async (req, res) => {
   try {
-    const { script, aggressiveness = 5, similarity = 5, analysis } = req.body;
+    const { script, aggressiveness = 5, similarity = 5, analysis, productProfile } = req.body;
     if (!script) return res.status(400).json({ success: false, error: 'Script is required' });
 
     const analysisContext = analysis
       ? `\nWinner Analysis:\n- Hook Mechanism: ${analysis.hookMechanism || 'N/A'}\n- Core Angle: ${analysis.coreAngle || 'N/A'}\n- Emotional Trigger: ${analysis.emotionalTrigger || 'N/A'}\n- Structure: ${analysis.narrativeStructure || 'N/A'}\n`
       : '';
+    const productContext = buildProductContext(productProfile);
 
     const prompt = `You are a world-class direct response ad copy iteration engine.
 
@@ -292,7 +316,8 @@ Rules:
 - Each variation must be materially different from the others.
 - Match the aggressiveness level specified.
 - Match the similarity-to-original level specified.
-${analysisContext}
+- Use the product intelligence below to ensure claims, benefits, and language are accurate and specific to this product.
+${analysisContext}${productContext}
 Input script:
 ${script.slice(0, 5000)}
 
@@ -317,12 +342,13 @@ Generate exactly 10 variations.`;
 // ── POST /generate-full-scripts — Generate complete ad scripts (SSE stream) ────
 router.post('/generate-full-scripts', authenticate, async (req, res) => {
   try {
-    const { script, aggressiveness = 5, similarity = 5, analysis } = req.body;
+    const { script, aggressiveness = 5, similarity = 5, analysis, productProfile } = req.body;
     if (!script) return res.status(400).json({ success: false, error: 'Script is required' });
 
     const analysisContext = analysis
       ? `\nWinner Analysis:\n- Hook Mechanism: ${analysis.hookMechanism || 'N/A'}\n- Core Angle: ${analysis.coreAngle || 'N/A'}\n- Emotional Trigger: ${analysis.emotionalTrigger || 'N/A'}\n- Structure: ${analysis.narrativeStructure || 'N/A'}\n`
       : '';
+    const productContext = buildProductContext(productProfile);
 
     const prompt = `You are a world-class direct response ad scriptwriter.
 
@@ -337,7 +363,8 @@ Rules:
 - Avoid robotic language or generic marketing copy.
 - Maintain direct-response energy.
 - Each script must be materially different.
-${analysisContext}
+- Use the product intelligence below to ensure claims and language are accurate and specific.
+${analysisContext}${productContext}
 Original winning script:
 ${script.slice(0, 5000)}
 
@@ -362,8 +389,9 @@ Generate exactly 10 complete scripts.`;
 // ── POST /generate-hooks — Generate hooks for selected body (SSE stream) ───────
 router.post('/generate-hooks', authenticate, async (req, res) => {
   try {
-    const { body, aggressiveness = 5 } = req.body;
+    const { body, aggressiveness = 5, productProfile } = req.body;
     if (!body) return res.status(400).json({ success: false, error: 'Body script is required' });
+    const productContext = buildProductContext(productProfile);
 
     const prompt = `You are a world-class direct response hook writer.
 
@@ -377,7 +405,8 @@ Rules:
 - Hooks must increase scroll-stopping power while preserving continuity.
 - Hooks must not create tone mismatch with the body.
 - Each hook must be materially different from the others.
-
+- Match the brand voice and use accurate product-specific language when provided.
+${productContext}
 Body:
 ${body.slice(0, 5000)}
 
@@ -403,8 +432,9 @@ Generate exactly 10 hooks.`;
 // ── POST /generate-brief-hooks — Auto-generate 5 hook variations with angles ─
 router.post('/generate-brief-hooks', authenticate, async (req, res) => {
   try {
-    const { script, aggressiveness = 5, analysis } = req.body;
+    const { script, aggressiveness = 5, analysis, productProfile } = req.body;
     if (!script) return res.status(400).json({ success: false, error: 'Source script is required' });
+    const productContext = buildProductContext(productProfile);
 
     // Extract the body (everything after HOOKS: section ends, or after BODY: marker)
     const bodyMatch = script.match(/\bBODY:\s*/i);
@@ -444,7 +474,8 @@ Rules:
 - Each hook must be materially different in tone and approach.
 - Match the aggressiveness level in language intensity.
 - Hooks should be conversational, NOT formal or corporate.
-${analysisContext}
+- Use accurate product-specific language, benefits, and claims from the product intelligence below.
+${analysisContext}${productContext}
 Ad Body:
 ${body.slice(0, 5000)}
 

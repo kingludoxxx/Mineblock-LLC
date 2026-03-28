@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
+import ProductSelector from '../../components/ProductSelector';
 import {
   Search,
   Zap,
@@ -315,6 +316,7 @@ export default function IterationKing() {
   const [error, setError] = useState(null);
   const [generationMode, setGenerationMode] = useState('quick-hooks');
   const [analysisCollapsed, setAnalysisCollapsed] = useState(false);
+  const [selectedProduct, setSelectedProduct] = useState(null);
   const searchTimer = useRef(null);
   const scriptAbortRef = useRef(null);
   const hookAbortRef = useRef(null);
@@ -407,7 +409,7 @@ export default function IterationKing() {
     setScriptsLoading(true); setScripts([]); setSelectedScriptIdx(null); setHooks([]); setSelectedHookIdxs(new Set()); setFinalScript(''); setError(null);
     try {
       const ep = generationMode === 'full' ? '/generate-full-scripts' : '/generate-scripts';
-      await consumeSSEStream(`${API}${ep}`, { script: originalScript, aggressiveness, similarity, analysis }, {
+      await consumeSSEStream(`${API}${ep}`, { script: originalScript, aggressiveness, similarity, analysis, productProfile: selectedProduct }, {
         onItem: (item) => setScripts((prev) => [...prev, item]),
         onError: (err) => setError(err),
         onDone: () => setScriptsLoading(false),
@@ -428,7 +430,7 @@ export default function IterationKing() {
     hookAbortRef.current = controller;
     setHooksLoading(true); setHooks([]); setSelectedHookIdxs(new Set()); setFinalScript(''); setError(null);
     try {
-      await consumeSSEStream(`${API}/generate-hooks`, { body: scripts[selectedScriptIdx].text, aggressiveness }, {
+      await consumeSSEStream(`${API}/generate-hooks`, { body: scripts[selectedScriptIdx].text, aggressiveness, productProfile: selectedProduct }, {
         onItem: (item) => {
           // Normalize hook fields on the fly
           const h = {
@@ -460,7 +462,7 @@ export default function IterationKing() {
     hookAbortRef.current = controller;
     setHooksLoading(true); setHooks([]); setSelectedHookIdxs(new Set()); setFinalScript(''); setError(null);
     try {
-      await consumeSSEStream(`${API}/generate-brief-hooks`, { script: originalScript, aggressiveness, analysis }, {
+      await consumeSSEStream(`${API}/generate-brief-hooks`, { script: originalScript, aggressiveness, analysis, productProfile: selectedProduct }, {
         onItem: (item) => {
           const h = {
             id: item.id || 0,
@@ -646,6 +648,26 @@ export default function IterationKing() {
         {/* LEFT PANEL                                            */}
         {/* ═══════════════════════════════════════════════════════ */}
         <div className="lg:col-span-4 space-y-6 lg:sticky lg:top-6 lg:self-start lg:max-h-[calc(100vh-4rem)] lg:overflow-y-auto ik-sidebar-scroll">
+
+          {/* Product */}
+          <div className="ik-panel">
+            <div className="ik-panel-header">
+              <Target className="w-4 h-4" style={{ color: '#A78BFA' }} />
+              <span>Target Product</span>
+            </div>
+            <ProductSelector
+              selectedId={selectedProduct?.id}
+              onSelect={(p) => setSelectedProduct(p)}
+              className="w-full"
+            />
+            {selectedProduct && (
+              <div className="mt-3 space-y-1 text-xs" style={{ color: '#666' }}>
+                {selectedProduct.big_promise && <p><span style={{ color: '#444' }}>Promise:</span> <span style={{ color: '#999' }}>{selectedProduct.big_promise}</span></p>}
+                {selectedProduct.mechanism && <p><span style={{ color: '#444' }}>Mechanism:</span> <span style={{ color: '#999' }}>{selectedProduct.mechanism}</span></p>}
+                {selectedProduct.voice && <p><span style={{ color: '#444' }}>Voice:</span> <span style={{ color: '#999' }}>{selectedProduct.voice}</span></p>}
+              </div>
+            )}
+          </div>
 
           {/* Source Brief */}
           <div className="ik-panel">
