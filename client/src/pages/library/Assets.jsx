@@ -347,27 +347,46 @@ function ProductDetailView({ product, onBack, onFieldSave, onAiFill, onProductCh
     onFieldSave(key, latestValue);
   };
 
+  /* Compress an image file to JPEG at max 1200px, quality 0.82 — keeps files small enough to persist reliably */
+  const compressImage = (file) =>
+    new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const img = new window.Image();
+        img.onload = () => {
+          const MAX = 1200;
+          let { width, height } = img;
+          if (width > MAX || height > MAX) {
+            if (width > height) { height = Math.round((height * MAX) / width); width = MAX; }
+            else { width = Math.round((width * MAX) / height); height = MAX; }
+          }
+          const canvas = document.createElement('canvas');
+          canvas.width = width;
+          canvas.height = height;
+          canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+          resolve(canvas.toDataURL('image/jpeg', 0.82));
+        };
+        img.src = e.target.result;
+      };
+      reader.readAsDataURL(file);
+    });
+
   /* Image handlers — use productRef to avoid stale closure */
   const handleImageUpload = async (files) => {
     const imageFiles = Array.from(files).filter((f) => f.type.startsWith('image/'));
     if (imageFiles.length === 0) return;
 
-    // Read all files first, then do a single batch update
-    const results = await Promise.all(
-      imageFiles.map(
-        (file) =>
-          new Promise((resolve) => {
-            const reader = new FileReader();
-            reader.onload = () => resolve(reader.result);
-            reader.readAsDataURL(file);
-          })
-      )
-    );
+    // Compress all images first, then batch update
+    const results = await Promise.all(imageFiles.map(compressImage));
 
     const current = Array.isArray(productRef.current.product_images) ? productRef.current.product_images : [];
     const updated = [...current.filter((img) => img), ...results];
     onProductChange({ ...productRef.current, product_images: updated });
-    onFieldSave('product_images', updated);
+    try {
+      await onFieldSave('product_images', updated);
+    } catch (err) {
+      alert(`Failed to save images: ${err?.response?.data?.error?.message || err?.message || 'Unknown error'}. Try fewer images at once.`);
+    }
   };
 
   const addImageUrl = () => {

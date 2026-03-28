@@ -223,7 +223,8 @@ router.put('/:id', async (req, res) => {
 
     const rows = await pgQuery(
       `UPDATE product_profiles SET ${setClauses.join(', ')} WHERE id = $${idx} RETURNING *`,
-      values
+      values,
+      { timeout: 30_000 } // 30s for large base64 image payloads
     );
 
     if (rows.length === 0) {
