@@ -612,6 +612,7 @@ export default function StaticsGeneration() {
   const [guarantee, setGuarantee] = useState('');
 
   const [selectedProductId, setSelectedProductId] = useState(null);
+  const [selectedProductObj, setSelectedProductObj] = useState(null);
   const selectedProductRef = useRef(null); // full product object for generation
 
   // Generation state
@@ -656,10 +657,12 @@ export default function StaticsGeneration() {
   const handleProductSelect = (product) => {
     if (!product) {
       setSelectedProductId(null);
+      setSelectedProductObj(null);
       selectedProductRef.current = null;
       return;
     }
     setSelectedProductId(product.id);
+    setSelectedProductObj(product);
     selectedProductRef.current = product;
     setProductName(product.name || '');
     setProductDescription(product.description || '');
@@ -1091,16 +1094,9 @@ export default function StaticsGeneration() {
               {/* Left: ConfigSidebar */}
               <div className="w-[260px] shrink-0 space-y-4 pr-5 border-r border-white/[0.06]">
                 <ConfigSidebar
-                  products={products}
                   selectedProduct={selectedProductId}
-                  onProductChange={(idOrProduct) => {
-                    // ConfigSidebar sends product ID string from select onChange
-                    const product = typeof idOrProduct === 'string'
-                      ? products.find(p => String(p.id) === idOrProduct)
-                      : idOrProduct;
-                    if (product) handleProductSelect(product);
-                    else handleProductSelect(null);
-                  }}
+                  selectedProductData={selectedProductObj}
+                  onProductChange={(product) => handleProductSelect(product)}
                   angle={marketingAngle}
                   onAngleChange={setMarketingAngle}
                   customAngle={customAngle}
@@ -1251,6 +1247,7 @@ export default function StaticsGeneration() {
                         type="button"
                         onClick={() => {
                           setSelectedProductId(null);
+                          setSelectedProductObj(null);
                           selectedProductRef.current = null;
                           setProductName('');
                           setProductDescription('');

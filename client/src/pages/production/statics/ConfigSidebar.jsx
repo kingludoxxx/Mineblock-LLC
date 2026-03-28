@@ -1,13 +1,16 @@
 import { useRef, useCallback, useState } from 'react';
 import {
-  ChevronDown,
   ImagePlus,
   Layers,
   Upload,
   X,
   Loader2,
   Sparkles,
+  Package,
+  Zap,
+  Star,
 } from 'lucide-react';
+import ProductSelector from '../../../components/ProductSelector';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -29,8 +32,8 @@ const ASPECT_RATIOS = ['1:1', '9:10', '4:5', '16:9', '2:3'];
 // ---------------------------------------------------------------------------
 
 export function ConfigSidebar({
-  products,
   selectedProduct,
+  selectedProductData,
   onProductChange,
   angle,
   onAngleChange,
@@ -75,12 +78,11 @@ export function ConfigSidebar({
     e.target.value = '';
   };
 
-  // -- Selected product display -----------------------------------------------
-
-  const selectedProductData = products?.find((p) => p.id === selectedProduct);
+  // -- Product preview image -------------------------------------------------
+  const heroImage = selectedProductData?.product_images?.[0] || null;
 
   return (
-    <aside className="w-full shrink-0 bg-[#0a0a0a] flex flex-col h-full overflow-y-auto">
+    <aside className="w-full shrink-0 bg-[#0a0a0a] flex flex-col overflow-y-auto">
       {/* ---- CONFIGURATION header ---- */}
       <div className="px-5 pt-5 pb-4">
         <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-500">
@@ -88,34 +90,60 @@ export function ConfigSidebar({
         </h2>
       </div>
 
-      <div className="px-5 space-y-6 flex-1">
+      <div className="px-5 space-y-6">
         {/* ---- Target Product ---- */}
         <div className="space-y-2">
           <label className="text-sm font-medium text-slate-300">
             Target Product
           </label>
-          <div className="relative">
-            <select
-              value={selectedProduct || ''}
-              onChange={(e) => onProductChange(e.target.value || null)}
-              className="w-full appearance-none bg-[#111] border border-white/[0.08] rounded-lg px-3 py-2.5 pr-9 text-sm text-white placeholder-slate-600 focus:border-blue-500/50 focus:outline-none cursor-pointer"
-            >
-              <option value="" disabled>
-                Select product...
-              </option>
-              {products?.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                  {p.category ? ` — ${p.category}` : ''}
-                </option>
-              ))}
-            </select>
-            <ChevronDown className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
-          </div>
+
+          <ProductSelector
+            selectedId={selectedProduct}
+            onSelect={(product) => onProductChange(product)}
+          />
+
+          {/* Product preview card */}
           {selectedProductData && (
-            <p className="text-xs text-slate-500 truncate">
-              {selectedProductData.category || selectedProductData.type || ''}
-            </p>
+            <div className="rounded-xl border border-white/[0.06] bg-[#111] overflow-hidden">
+              {/* Hero image */}
+              {heroImage ? (
+                <div className="relative h-28 bg-[#0a0a0a] overflow-hidden">
+                  <img
+                    src={heroImage}
+                    alt={selectedProductData.name}
+                    className="w-full h-full object-cover"
+                    onError={(e) => { e.target.parentElement.style.display = 'none'; }}
+                  />
+                </div>
+              ) : (
+                <div className="h-14 bg-[#0a0a0a] flex items-center justify-center">
+                  <Package className="w-6 h-6 text-white/10" />
+                </div>
+              )}
+
+              {/* Info */}
+              <div className="p-3 space-y-2">
+                <p className="text-xs font-semibold text-white truncate">{selectedProductData.name}</p>
+
+                {selectedProductData.big_promise && (
+                  <div className="flex items-start gap-1.5">
+                    <Star className="w-3 h-3 text-amber-400 shrink-0 mt-0.5" />
+                    <p className="text-[11px] text-slate-400 leading-snug line-clamp-2">{selectedProductData.big_promise}</p>
+                  </div>
+                )}
+
+                {selectedProductData.mechanism && (
+                  <div className="flex items-start gap-1.5">
+                    <Zap className="w-3 h-3 text-violet-400 shrink-0 mt-0.5" />
+                    <p className="text-[11px] text-slate-400 leading-snug line-clamp-2">{selectedProductData.mechanism}</p>
+                  </div>
+                )}
+
+                {selectedProductData.guarantee && (
+                  <p className="text-[10px] text-emerald-500/80 truncate">✓ {selectedProductData.guarantee}</p>
+                )}
+              </div>
+            </div>
           )}
         </div>
 
@@ -257,8 +285,8 @@ export function ConfigSidebar({
         </div>
       </div>
 
-      {/* ---- Generate button (sticky bottom) ---- */}
-      <div className="px-5 py-4 border-t border-white/[0.06] mt-auto">
+      {/* ---- Generate button ---- */}
+      <div className="px-5 py-4 border-t border-white/[0.06] mt-6">
         <button
           type="button"
           onClick={onGenerate}
