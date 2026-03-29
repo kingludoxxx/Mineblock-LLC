@@ -137,8 +137,8 @@ async function processRejectedAdIds(adIds, accountId) {
       const existing = await pgQuery('SELECT ad_id FROM ad_rejections_notified WHERE ad_id = $1', [String(adId)]);
       if (existing.length > 0) continue;
 
-      // Fetch ad details
-      const resp = await fetch(`${META_GRAPH_URL}/${adId}?fields=name,effective_status,account_id&access_token=${META_ACCESS_TOKEN}`);
+      // Fetch ad details (include configured_status at ad/adset/campaign level)
+      const resp = await fetch(`${META_GRAPH_URL}/${adId}?fields=name,effective_status,configured_status,account_id,adset{configured_status},campaign{configured_status}&access_token=${META_ACCESS_TOKEN}`);
       const ad = await resp.json();
 
       if (ad.error) {
@@ -148,6 +148,17 @@ async function processRejectedAdIds(adIds, accountId) {
 
       const status = ad.effective_status;
       if (status !== 'DISAPPROVED' && status !== 'WITH_ISSUES') continue;
+
+      // Skip ads that are already turned off (paused/archived at any level)
+      const adConfig = ad.configured_status;
+      const adsetConfig = ad.adset?.configured_status;
+      const campaignConfig = ad.campaign?.configured_status;
+      if (adConfig === 'PAUSED' || adConfig === 'ARCHIVED' ||
+          adsetConfig === 'PAUSED' || adsetConfig === 'ARCHIVED' ||
+          campaignConfig === 'PAUSED' || campaignConfig === 'ARCHIVED') {
+        console.log(`[Meta Webhook] Skipping paused/archived ad ${adId} (ad=${adConfig}, adset=${adsetConfig}, campaign=${campaignConfig})`);
+        continue;
+      }
 
       const resolvedAccountId = accountId || (ad.account_id ? `act_${ad.account_id}` : 'unknown');
       const accountName = ACCOUNT_NAMES[resolvedAccountId] || resolvedAccountId;
@@ -163,7 +174,7 @@ async function processRejectedAdIds(adIds, accountId) {
 // ── Fetch and notify for an account ─────────────────────────────────
 async function fetchAndNotifyAccount(accountId) {
   try {
-    const url = `${META_GRAPH_URL}/${accountId}/ads?fields=name,effective_status&effective_status=["DISAPPROVED","WITH_ISSUES"]&limit=100&access_token=${META_ACCESS_TOKEN}`;
+    const url = `${META_GRAPH_URL}/${accountId}/ads?fields=name,effective_status,configured_status,adset{configured_status},campaign{configured_status}&effective_status=["DISAPPROVED","WITH_ISSUES"]&limit=100&access_token=${META_ACCESS_TOKEN}`;
     const resp = await fetch(url);
     const data = await resp.json();
 
@@ -175,6 +186,16 @@ async function fetchAndNotifyAccount(accountId) {
     const accountName = ACCOUNT_NAMES[accountId] || accountId;
 
     for (const ad of (data.data || [])) {
+      // Skip ads that are already turned off (paused/archived at any level)
+      const adConfig = ad.configured_status;
+      const adsetConfig = ad.adset?.configured_status;
+      const campaignConfig = ad.campaign?.configured_status;
+      if (adConfig === 'PAUSED' || adConfig === 'ARCHIVED' ||
+          adsetConfig === 'PAUSED' || adsetConfig === 'ARCHIVED' ||
+          campaignConfig === 'PAUSED' || campaignConfig === 'ARCHIVED') {
+        continue;
+      }
+
       const existing = await pgQuery('SELECT ad_id FROM ad_rejections_notified WHERE ad_id = $1', [ad.id]);
       if (existing.length > 0) continue;
 
