@@ -406,6 +406,20 @@ async function generateVariant(parent, newAspectRatio) {
   try {
     console.log(`[staticsGeneration] Generating ${newAspectRatio} variant for creative ${parent.id}`);
 
+    // 0. Clean up old rejected/failed variants and skip if a good one exists
+    await pgQuery(
+      "DELETE FROM spy_creatives WHERE parent_creative_id = $1 AND aspect_ratio = $2 AND status IN ('rejected', 'archived')",
+      [parent.id, newAspectRatio]
+    );
+    const existingGood = await pgQuery(
+      "SELECT id FROM spy_creatives WHERE parent_creative_id = $1 AND aspect_ratio = $2 AND status NOT IN ('rejected', 'archived')",
+      [parent.id, newAspectRatio]
+    );
+    if (existingGood.length > 0) {
+      console.log(`[staticsGeneration] Variant ${newAspectRatio} already exists for ${parent.id}, skipping`);
+      return;
+    }
+
     // 1. Create placeholder creative
     const childRows = await pgQuery(
       `INSERT INTO spy_creatives
@@ -606,14 +620,19 @@ router.post('/creatives/:id/create-variant', authenticate, async (req, res) => {
     if (rows.length === 0) return res.status(404).json({ success: false, error: { message: 'Creative not found' } });
     const parent = rows[0];
 
-    // Check if variant already exists
+    // Check if a non-rejected variant already exists
     const existing = await pgQuery(
-      'SELECT id FROM spy_creatives WHERE parent_creative_id = $1 AND aspect_ratio = $2',
+      "SELECT id FROM spy_creatives WHERE parent_creative_id = $1 AND aspect_ratio = $2 AND status NOT IN ('rejected', 'archived')",
       [parent.id, aspect_ratio]
     );
     if (existing.length > 0) {
       return res.status(400).json({ success: false, error: { message: `A ${aspect_ratio} variant already exists` } });
     }
+    // Clean up old rejected variants so the new one can be created
+    await pgQuery(
+      "DELETE FROM spy_creatives WHERE parent_creative_id = $1 AND aspect_ratio = $2 AND status IN ('rejected', 'archived')",
+      [parent.id, aspect_ratio]
+    );
 
     res.json({ success: true, message: `${aspect_ratio} variant generation started` });
 
