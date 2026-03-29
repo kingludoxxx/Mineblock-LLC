@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import logger from '../utils/logger.js';
+import { pgQuery } from '../db/pg.js';
 
 const router = Router();
 
@@ -367,6 +368,9 @@ async function handleStatusSync(taskId, historyItems) {
     `[ClickUp Webhook] Task "${task.name}" in list ${taskListId} changed to "${newStatus}". Syncing ${linkedTasks.length} linked task(s).`
   );
 
+  // Collect all ClickUp task IDs to sync back to spy_creatives DB
+  const clickupIdsToSync = [taskId];
+
   for (const link of linkedTasks) {
     const linkedTaskId = link.task_id;
     try {
@@ -377,11 +381,33 @@ async function handleStatusSync(taskId, historyItems) {
       if (linkedTask.status?.status?.toLowerCase() === newStatus) continue;
 
       await updateTaskStatus(linkedTaskId, newStatus);
+      clickupIdsToSync.push(linkedTaskId);
       logger.info(
         `[ClickUp Webhook] Synced "${linkedTask.name}" (${linkedListId}) → "${newStatus}"`
       );
     } catch (err) {
       logger.error(`[ClickUp Webhook] Failed to sync linked task ${linkedTaskId}: ${err.message}`);
+    }
+  }
+
+  // Sync status back to Mineblock DB (spy_creatives table)
+  if (newStatus === 'launched') {
+    for (const clickupId of clickupIdsToSync) {
+      try {
+        const result = await pgQuery(
+          `UPDATE spy_creatives SET status = 'launched', updated_at = NOW()
+           WHERE generation_task_id = $1 AND status != 'launched'
+           RETURNING id, product_name`,
+          [clickupId]
+        );
+        if (result.length > 0) {
+          logger.info(
+            `[ClickUp Webhook] Synced "launched" to spy_creatives: ${result.map(r => r.product_name || r.id).join(', ')} (ClickUp task ${clickupId})`
+          );
+        }
+      } catch (dbErr) {
+        logger.error(`[ClickUp Webhook] DB sync failed for ClickUp task ${clickupId}: ${dbErr.message}`);
+      }
     }
   }
 }
