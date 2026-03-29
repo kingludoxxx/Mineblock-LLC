@@ -205,29 +205,27 @@ export async function generateFullPipeline(referenceImageUrl, product, angle, ra
   // Step C: Build swap pairs
   const swapPairs = buildSwapPairs(claudeResult.original_text, claudeResult.adapted_text);
 
-  // Upload base64 reference to R2 so NanoBanana gets an HTTP URL
+  // Upload base64 images to R2 (or skip if not configured — caller's route
+  // provides a temp-image fallback in that case).
   let finalReferenceUrl = referenceImageUrl;
-  if (!isUrl) {
-    if (!isR2Configured()) {
-      throw new Error('R2 storage is not configured. Cannot upload base64 image for generation.');
-    }
+  if (!isUrl && isR2Configured()) {
     const buf = Buffer.from(base64, 'base64');
     const ext = mediaType.includes('png') ? 'png' : 'jpg';
     const key = `statics-refs/${crypto.randomUUID()}.${ext}`;
     finalReferenceUrl = await uploadBuffer(buf, key, mediaType);
     console.log(`[imageGeneration] Uploaded base64 reference to R2: ${finalReferenceUrl}`);
+  } else if (!isUrl) {
+    throw new Error('Cannot convert base64 reference to URL — R2 not configured and no fallback available in service layer. Use the route endpoint instead.');
   }
 
-  // Also upload product image to R2 if it's base64
   let finalProductUrl = product.product_image_url;
-  if (finalProductUrl && finalProductUrl.startsWith('data:image')) {
+  if (finalProductUrl?.startsWith('data:image') && isR2Configured()) {
     const pMatch = finalProductUrl.match(/^data:(image\/[^;]+);base64,(.+)$/);
-    if (pMatch && isR2Configured()) {
+    if (pMatch) {
       const pBuf = Buffer.from(pMatch[2], 'base64');
       const pExt = pMatch[1].includes('png') ? 'png' : 'jpg';
       const pKey = `statics-products/${crypto.randomUUID()}.${pExt}`;
       finalProductUrl = await uploadBuffer(pBuf, pKey, pMatch[1]);
-      console.log(`[imageGeneration] Uploaded base64 product image to R2: ${finalProductUrl}`);
     }
   }
 

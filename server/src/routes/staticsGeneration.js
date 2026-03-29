@@ -8,6 +8,25 @@ import crypto from 'crypto';
 const router = Router();
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
+// ── Temporary image store (serves base64 as HTTP URLs for NanoBanana) ──
+const tempImages = new Map();
+const TEMP_IMAGE_TTL = 10 * 60 * 1000; // 10 minutes
+
+function storeTempImage(buf, contentType) {
+  const id = crypto.randomUUID();
+  tempImages.set(id, { buf, contentType });
+  setTimeout(() => tempImages.delete(id), TEMP_IMAGE_TTL);
+  return id;
+}
+
+router.get('/tmp-img/:id', (req, res) => {
+  const entry = tempImages.get(req.params.id);
+  if (!entry) return res.status(404).send('Expired or not found');
+  res.set('Content-Type', entry.contentType);
+  res.set('Cache-Control', 'no-store');
+  res.send(entry.buf);
+});
+
 const ANTHROPIC_API_KEY   = process.env.ANTHROPIC_API_KEY || '';
 const NANOBANANA_API_KEY  = process.env.NANOBANANA_API_KEY || '';
 
@@ -140,32 +159,31 @@ router.post('/generate', authenticate, async (req, res) => {
     const swapPairs = buildSwapPairs(claudeResult.original_text, claudeResult.adapted_text);
 
     // ── Step D: Submit to NanoBanana ───────────────────────────────────
-    // NanoBanana requires actual HTTP URLs, not base64 — upload to R2 first
-    if (!isR2Configured()) {
-      return res.status(500).json({ success: false, error: 'R2 storage is not configured. Cannot upload images for generation.' });
-    }
+    // NanoBanana requires actual HTTP URLs, not base64.
+    // Prefer R2 if configured; otherwise self-host temp images.
+    const SERVER_URL = process.env.RENDER_EXTERNAL_URL || `http://localhost:${process.env.PORT || 3000}`;
 
-    let finalReferenceUrl = reference_image_url;
-    if (!isUrl) {
-      const buf = Buffer.from(base64, 'base64');
-      const ext = mediaType.includes('png') ? 'png' : 'jpg';
-      const key = `statics-refs/${crypto.randomUUID()}.${ext}`;
-      finalReferenceUrl = await uploadBuffer(buf, key, mediaType);
-      console.log(`[staticsGeneration] Uploaded base64 reference to R2: ${finalReferenceUrl}`);
-    }
-
-    // Also upload product image to R2 if it's base64
-    let finalProductUrl = product.product_image_url;
-    if (finalProductUrl && finalProductUrl.startsWith('data:image')) {
-      const pMatch = finalProductUrl.match(/^data:(image\/[^;]+);base64,(.+)$/);
-      if (pMatch) {
-        const pBuf = Buffer.from(pMatch[2], 'base64');
-        const pExt = pMatch[1].includes('png') ? 'png' : 'jpg';
-        const pKey = `statics-products/${crypto.randomUUID()}.${pExt}`;
-        finalProductUrl = await uploadBuffer(pBuf, pKey, pMatch[1]);
-        console.log(`[staticsGeneration] Uploaded base64 product image to R2: ${finalProductUrl}`);
+    async function ensureHttpUrl(dataUri, label) {
+      if (!dataUri || !dataUri.startsWith('data:image')) return dataUri;
+      const m = dataUri.match(/^data:(image\/[^;]+);base64,(.+)$/);
+      if (!m) return dataUri;
+      const buf = Buffer.from(m[2], 'base64');
+      if (isR2Configured()) {
+        const ext = m[1].includes('png') ? 'png' : 'jpg';
+        const key = `statics-${label}/${crypto.randomUUID()}.${ext}`;
+        const url = await uploadBuffer(buf, key, m[1]);
+        console.log(`[staticsGeneration] Uploaded ${label} to R2: ${url}`);
+        return url;
       }
+      // Fallback: self-host as temp image
+      const id = storeTempImage(buf, m[1]);
+      const url = `${SERVER_URL}/api/v1/statics-generation/tmp-img/${id}`;
+      console.log(`[staticsGeneration] Stored ${label} as temp image: ${url}`);
+      return url;
     }
+
+    let finalReferenceUrl = isUrl ? reference_image_url : await ensureHttpUrl(reference_image_url, 'refs');
+    let finalProductUrl = await ensureHttpUrl(product.product_image_url, 'products');
 
     const nbPrompt = buildNanoBananaPrompt(claudeResult, swapPairs, product);
 
