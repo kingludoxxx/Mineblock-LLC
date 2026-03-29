@@ -891,6 +891,14 @@ const FIELD_IDS = {
   idea: '0c5460ee-2645-4892-815d-7913fb5d241d',
   creationWeek: 'a609d8d0-661e-400f-87cb-2557bd48857b',
   adsFrameLink: 'd90f9f25-d7a0-4eb4-9ded-aca0b4519a3b',
+  product: '11a3ee08-50c8-4c19-b8cc-7c50eaabbe65',
+  parentBriefId: '4f72235e-0a41-4824-9e67-d27e38ba16d9',
+};
+
+// Product code → ClickUp relationship task IDs
+const PRODUCT_TASK_IDS = {
+  'MR': '86c75fure',       // Miner Forge Pro
+  'Miner Forge Pro': '86c75fure',
 };
 
 const ANGLE_OPTIONS = {
@@ -1112,6 +1120,21 @@ router.post('/creatives/:id/publish-clickup', authenticate, async (req, res) => 
     const clickupTaskId = createdTask.id;
     const clickupTaskUrl = createdTask.url || `https://app.clickup.com/t/${clickupTaskId}`;
 
+    // 7. Set Product relationship field (list_relationship can't be set in creation payload)
+    const productCode = parent.product_name || '';
+    const productTaskId = PRODUCT_TASK_IDS[productCode] || PRODUCT_TASK_IDS['MR']; // default to MR
+    if (productTaskId) {
+      try {
+        await clickupFetch(`/task/${clickupTaskId}/field/${FIELD_IDS.product}`, {
+          method: 'POST',
+          body: JSON.stringify({ value: { add: [productTaskId], rem: [] } }),
+        });
+        console.log(`[publish-clickup] Set Product field to ${productCode} (${productTaskId})`);
+      } catch (err) {
+        console.error(`[publish-clickup] Failed to set Product field: ${err.message}`);
+      }
+    }
+
     // 7. Attach ALL dimension images to the ClickUp task
     // (Frame.io folder is auto-created by ClickUp automation)
     for (const c of allCreatives) {
@@ -1151,8 +1174,8 @@ router.post('/creatives/:id/publish-clickup', authenticate, async (req, res) => 
       }
     }
 
-    // 8. Override task name after ClickUp automation may have rewritten it
-    // Wait 3s for ClickUp automation to fire, then set name + naming convention again
+    // Override task name after ClickUp automation may have rewritten it
+    // Wait 10s for ClickUp automation to fire, then set name + naming convention again
     setTimeout(async () => {
       try {
         await clickupFetch(`/task/${clickupTaskId}`, {
@@ -1164,7 +1187,7 @@ router.post('/creatives/:id/publish-clickup', authenticate, async (req, res) => 
       } catch (err) {
         console.error(`[publish-clickup] Failed to re-set task name: ${err.message}`);
       }
-    }, 5000);
+    }, 10000);
 
     // 9. Mark ALL creatives as ready to launch
     const allIds = allCreatives.map(c => c.id);
