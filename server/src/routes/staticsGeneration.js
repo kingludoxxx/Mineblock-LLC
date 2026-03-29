@@ -469,11 +469,16 @@ async function generateVariant(parent, newAspectRatio) {
       return;
     }
 
-    // 4. Build prompt from parent's swap_pairs
+    // 4. Build prompt from parent's claude_analysis (full context) or fall back to swap_pairs
     const swapPairs = (typeof parent.swap_pairs === 'string' ? JSON.parse(parent.swap_pairs) : parent.swap_pairs) || [];
+    const claudeAnalysis = (typeof parent.claude_analysis === 'string' ? JSON.parse(parent.claude_analysis) : parent.claude_analysis) || {};
     const adaptedText = (typeof parent.adapted_text === 'string' ? JSON.parse(parent.adapted_text) : parent.adapted_text) || {};
     const product = { name: parent.product_name };
-    const nbPrompt = buildNanoBananaPrompt({ adapted_text: adaptedText }, swapPairs, product);
+    // Use full claude_analysis if available (has layout, visual_elements, etc.), otherwise minimal
+    const claudeResult = Object.keys(claudeAnalysis).length > 0
+      ? { ...claudeAnalysis, adapted_text: adaptedText }
+      : { adapted_text: adaptedText };
+    const nbPrompt = buildNanoBananaPrompt(claudeResult, swapPairs, product);
 
     // 5. Submit to NanoBanana
     const nbRes = await fetch(`${NB_BASE}/generate-2`, {
@@ -799,6 +804,9 @@ Generate an updated image generation prompt that applies the user's requested ch
       [newImageUrl, adjustResult.adjusted_prompt, req.params.id]
     );
 
+    if (!updated || updated.length === 0) {
+      return res.status(404).json({ success: false, error: { message: 'Creative not found after update' } });
+    }
     res.json({
       success: true,
       data: {
