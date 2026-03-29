@@ -384,7 +384,7 @@ router.get('/creatives', authenticate, async (req, res) => {
   try {
     await ensureCreativesTable();
     const { product_id, status, pipeline = 'standard' } = req.query;
-    let query = "SELECT id, product_id, product_name, image_url, thumbnail_url, source_label, angle, archetype, aspect_ratio, status, reference_thumbnail, reference_name, pipeline, created_at FROM spy_creatives WHERE pipeline = $1";
+    let query = "SELECT id, product_id, product_name, image_url, thumbnail_url, source_label, angle, archetype, aspect_ratio, status, reference_thumbnail, reference_name, parent_creative_id, pipeline, created_at FROM spy_creatives WHERE pipeline = $1";
     const params = [pipeline];
     let idx = 2;
 
@@ -400,6 +400,109 @@ router.get('/creatives', authenticate, async (req, res) => {
   }
 });
 
+// ── Auto-generate variant (fire-and-forget) ──────────────────────────
+
+async function generateVariant(parent, newAspectRatio) {
+  try {
+    console.log(`[staticsGeneration] Generating ${newAspectRatio} variant for creative ${parent.id}`);
+
+    // 1. Create placeholder creative
+    const childRows = await pgQuery(
+      `INSERT INTO spy_creatives
+        (product_id, product_name, angle, aspect_ratio, status,
+         parent_creative_id, reference_name, reference_thumbnail,
+         adapted_text, swap_pairs, generation_prompt, source_label, pipeline)
+       VALUES ($1,$2,$3,$4,'generating',$5,$6,$7,$8,$9,$10,$11,$12)
+       RETURNING *`,
+      [
+        parent.product_id || null,
+        parent.product_name || null,
+        parent.angle || null,
+        newAspectRatio,
+        parent.id,
+        parent.reference_name || null,
+        parent.reference_thumbnail || null,
+        parent.adapted_text ? (typeof parent.adapted_text === 'string' ? parent.adapted_text : JSON.stringify(parent.adapted_text)) : null,
+        parent.swap_pairs ? (typeof parent.swap_pairs === 'string' ? parent.swap_pairs : JSON.stringify(parent.swap_pairs)) : null,
+        parent.generation_prompt || null,
+        parent.source_label || null,
+        parent.pipeline || 'standard',
+      ]
+    );
+    const child = childRows[0];
+
+    // 2. Get product image from product_profiles
+    let productImageUrl = null;
+    if (parent.product_id) {
+      const productRows = await pgQuery('SELECT product_images FROM product_profiles WHERE id = $1', [parent.product_id]);
+      if (productRows.length > 0) {
+        const imgs = productRows[0].product_images;
+        productImageUrl = Array.isArray(imgs) ? imgs[0] : null;
+      }
+    }
+
+    // 3. Get reference image URL
+    const referenceUrl = parent.reference_thumbnail || parent.image_url;
+    if (!referenceUrl || !productImageUrl) {
+      console.warn(`[staticsGeneration] Variant missing images: ref=${!!referenceUrl}, product=${!!productImageUrl}`);
+      await pgQuery("UPDATE spy_creatives SET status = 'rejected', review_notes = 'Missing reference or product image for variant' WHERE id = $1", [child.id]);
+      return;
+    }
+
+    // 4. Build prompt from parent's swap_pairs
+    const swapPairs = typeof parent.swap_pairs === 'string' ? JSON.parse(parent.swap_pairs) : parent.swap_pairs;
+    const adaptedText = typeof parent.adapted_text === 'string' ? JSON.parse(parent.adapted_text) : parent.adapted_text;
+    const product = { name: parent.product_name };
+    const nbPrompt = buildNanoBananaPrompt({ adapted_text: adaptedText }, swapPairs, product);
+
+    // 5. Submit to NanoBanana
+    const nbRes = await fetch(`${NB_BASE}/generate-2`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${NANOBANANA_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        prompt: nbPrompt,
+        model: 'nano-banana-2',
+        imageUrls: [productImageUrl, referenceUrl],
+        aspectRatio: newAspectRatio,
+        resolution: '1K',
+        outputFormat: 'png',
+      }),
+    });
+
+    if (!nbRes.ok) {
+      const errText = await nbRes.text();
+      throw new Error(`NanoBanana submit error ${nbRes.status}: ${errText}`);
+    }
+
+    const nbData = await nbRes.json();
+    const taskId = nbData.taskId || nbData.data?.taskId;
+    if (!taskId) throw new Error('No taskId returned from NanoBanana');
+
+    // 6. Poll for completion
+    const imageUrl = await pollNanoBanana(taskId);
+
+    // 7. Update child creative with result
+    await pgQuery(
+      "UPDATE spy_creatives SET image_url = $1, generation_task_id = $2, status = 'review', updated_at = NOW() WHERE id = $3",
+      [imageUrl, taskId, child.id]
+    );
+
+    console.log(`[staticsGeneration] Variant ${child.id} (${newAspectRatio}) generated successfully`);
+  } catch (err) {
+    console.error(`[staticsGeneration] Variant generation failed:`, err.message);
+    // Try to mark as rejected if we have a child ID
+    try {
+      await pgQuery(
+        "UPDATE spy_creatives SET status = 'rejected', review_notes = $1, updated_at = NOW() WHERE parent_creative_id = $2 AND status = 'generating'",
+        [`Variant generation failed: ${err.message}`, parent.id]
+      );
+    } catch { /* best effort */ }
+  }
+}
+
 // PATCH /creatives/:id/status — Update creative status
 router.patch('/creatives/:id/status', authenticate, async (req, res) => {
   try {
@@ -414,7 +517,15 @@ router.patch('/creatives/:id/status', authenticate, async (req, res) => {
       [status, req.params.id]
     );
     if (rows.length === 0) return res.status(404).json({ success: false, error: { message: 'Creative not found' } });
-    res.json({ success: true, data: rows[0] });
+    const creative = rows[0];
+    res.json({ success: true, data: creative });
+
+    // Fire-and-forget: generate 9:16 variant when a non-variant is approved
+    if (status === 'approved' && creative.aspect_ratio !== '9:16' && !creative.parent_creative_id) {
+      generateVariant(creative, '9:16').catch(err =>
+        console.error('[staticsGeneration] Background variant generation error:', err.message)
+      );
+    }
   } catch (err) {
     console.error('[staticsGeneration] /creatives/:id/status error:', err);
     res.status(500).json({ success: false, error: { message: err.message } });
@@ -427,7 +538,7 @@ router.get('/creatives/pipeline', authenticate, async (req, res) => {
     await ensureCreativesTable();
     const { product_id } = req.query;
 
-    let query = 'SELECT id, product_id, product_name, image_url, thumbnail_url, source_label, angle, archetype, aspect_ratio, status, reference_thumbnail, reference_name, pipeline, created_at FROM spy_creatives';
+    let query = 'SELECT id, product_id, product_name, image_url, thumbnail_url, source_label, angle, archetype, aspect_ratio, status, reference_thumbnail, reference_name, parent_creative_id, pipeline, created_at FROM spy_creatives';
     const params = [];
     if (product_id) {
       query += ' WHERE product_id = $1';

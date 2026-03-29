@@ -88,18 +88,35 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, onPublish
                  hover:border-white/[0.12] hover:shadow-lg hover:shadow-black/20 transition-all duration-150"
     >
       {/* Thumbnail */}
-      <div className="relative aspect-[4/5] bg-[#0a0a0a]">
-        {/* Eye fallback always present underneath */}
-        <div className="absolute inset-0 flex items-center justify-center text-gray-700">
-          <Eye className="w-8 h-8" />
+      <div className={`relative ${creative.aspect_ratio === '9:16' ? 'aspect-[9/16]' : 'aspect-[4/5]'} bg-[#0a0a0a]`}>
+        {/* Eye fallback / generating state */}
+        <div className="absolute inset-0 flex flex-col items-center justify-center text-gray-700 gap-2">
+          {creative.status === 'generating' ? (
+            <>
+              <Loader2 className="w-6 h-6 animate-spin text-blue-400" />
+              <span className="text-[10px] text-blue-400/70">Generating…</span>
+            </>
+          ) : (
+            <Eye className="w-8 h-8" />
+          )}
         </div>
-        {creative.image_url && (
+        {creative.image_url && creative.status !== 'generating' && (
           <img
             src={creative.image_url}
             alt=""
             className="absolute inset-0 w-full h-full object-cover"
             onError={(e) => { e.target.style.display = 'none'; }}
           />
+        )}
+        {/* Aspect ratio badge */}
+        <span className="absolute top-1.5 right-1.5 text-[9px] font-semibold bg-black/60 text-white/70 px-1.5 py-0.5 rounded">
+          {creative.aspect_ratio || '4:5'}
+        </span>
+        {/* Variant indicator */}
+        {creative.parent_creative_id && (
+          <span className="absolute top-1.5 left-1.5 text-[9px] font-medium bg-blue-500/20 text-blue-300 px-1.5 py-0.5 rounded">
+            Variant
+          </span>
         )}
       </div>
 
