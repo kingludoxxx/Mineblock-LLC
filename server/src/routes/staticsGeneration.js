@@ -1106,11 +1106,11 @@ router.post('/creatives/:id/publish-clickup', authenticate, async (req, res) => 
       console.error(`[publish-clickup] Frame.io error: ${frameErr.message}`);
     }
 
-    // 8. Mark ALL creatives as launched
+    // 8. Mark ALL creatives as ready to launch
     const allIds = allCreatives.map(c => c.id);
     await pgQuery(
       `UPDATE spy_creatives
-       SET status = 'launched', generation_task_id = $1, updated_at = NOW()
+       SET status = 'ready', generation_task_id = $1, updated_at = NOW()
        WHERE id = ANY($2::uuid[])`,
       [clickupTaskId, allIds],
     );

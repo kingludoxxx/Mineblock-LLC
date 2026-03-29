@@ -1329,7 +1329,7 @@ export default function StaticsGeneration() {
                       if (res.data?.success) {
                         const publishedIds = res.data.data?.published_ids || [id];
                         const clickupUrl = res.data.data?.clickup_task_url;
-                        setCreatives(prev => prev.map(c => publishedIds.includes(c.id) ? { ...c, status: 'launched', clickup_url: clickupUrl } : c));
+                        setCreatives(prev => prev.map(c => publishedIds.includes(c.id) ? { ...c, status: 'ready', clickup_url: clickupUrl } : c));
                         setDetailModal(null);
                       }
                     } catch (err) {
@@ -1737,8 +1737,8 @@ export default function StaticsGeneration() {
               if (res.data?.success) {
                 const clickupUrl = res.data.data?.clickup_task_url || res.data.data?.taskUrl;
                 const publishedIds = res.data.data?.published_ids || [id];
-                setCreatives(prev => prev.map(c => publishedIds.includes(c.id) ? { ...c, status: 'launched', clickup_url: clickupUrl } : c));
-                setDetailModal(prev => prev ? { ...prev, status: 'launched', clickup_url: clickupUrl } : null);
+                setCreatives(prev => prev.map(c => publishedIds.includes(c.id) ? { ...c, status: 'ready', clickup_url: clickupUrl } : c));
+                setDetailModal(prev => prev ? { ...prev, status: 'ready', clickup_url: clickupUrl } : null);
                 setTimeout(() => setDetailModal(null), 3000);
                 return clickupUrl;
               }
