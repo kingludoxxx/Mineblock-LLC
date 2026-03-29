@@ -56,7 +56,7 @@ export default function ProductSelector({ selectedId, onSelect, className = '' }
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        className="flex items-center justify-between w-full gap-2 bg-[#111] border border-white/[0.06] rounded-lg px-3 py-2.5 text-sm text-white/90 hover:border-white/[0.12] transition-colors"
+        className="flex items-center justify-between w-full gap-2 bg-[#0a0a0a] border border-white/[0.06] rounded-lg px-2.5 py-2 text-[13px] text-white/90 hover:border-white/[0.12] transition-colors"
       >
         <div className="flex items-center gap-2.5 min-w-0">
           {selected ? (
@@ -93,7 +93,7 @@ export default function ProductSelector({ selectedId, onSelect, className = '' }
 
       {/* Dropdown */}
       {open && (
-        <div className="absolute z-50 mt-1.5 w-full min-w-[260px] bg-[#1a1a2e] border border-white/[0.1] rounded-xl shadow-2xl overflow-hidden">
+        <div className="absolute z-50 mt-1.5 w-full min-w-[220px] bg-[#0a0a0a] border border-white/[0.1] rounded-xl shadow-2xl overflow-hidden">
           {loading ? (
             <div className="flex items-center justify-center py-6">
               <Loader2 className="w-5 h-5 text-violet-400 animate-spin" />
