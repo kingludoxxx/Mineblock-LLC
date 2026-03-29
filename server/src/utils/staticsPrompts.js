@@ -27,6 +27,7 @@ ${profile.bundleVariants ? `- Bundle Variants: ${profile.bundleVariants}` : ''}
 ${profile.offerDetails ? `- Offer Rules: ${profile.offerDetails}` : ''}
 ${profile.complianceRestrictions ? `- COMPLIANCE (NEVER claim): ${profile.complianceRestrictions}` : ''}
 ${angle ? `- Marketing Angle: ${angle}` : ''}
+- PRODUCT IDENTITY NOTE: The product is a MINI BITCOIN MINER — a small, compact electronic device with a color display screen. NEVER describe it as a "USB stick", "flash drive", "thumb drive", or anything USB-related. It is NOT a USB device. When describing product placement, refer to it as "mini bitcoin miner" or "compact mining device with display screen".
 
 INSTRUCTIONS — Analyze the reference ad image in 5 layers:
 
@@ -194,6 +195,7 @@ PRODUCT REPLACEMENT:
 - Replace with product from image 1 (${product.name})
 - Show exactly ${pCount2} product(s)
 - Product placement: ${visualDir.product_placement || 'same position as reference product'}
+- CRITICAL: The product is a MINI BITCOIN MINER with a display screen — NOT a USB stick. Reproduce it EXACTLY as shown in image 1. NEVER render it as a USB stick, flash drive, or thumb drive.
 - Realistic lighting, shadows, and perspective matching the reference style
 
 TEXT REPLACEMENTS (${swapPairs.length} swaps — apply ALL of them):
@@ -217,6 +219,7 @@ ABSOLUTE RULES:
 4. No extra faces beyond ${pCount}
 5. No extra text beyond the specified swaps
 6. Comparison labels, timeline labels, ingredient labels ALL get swapped
+7. The product is a MINI BITCOIN MINER — NEVER show a USB-looking product. Copy the device from image 1 exactly.
 7. Hands: exactly 5 fingers, realistic proportions
 8. Match reference style, color palette, mood, and visual quality
 9. Brand logo for ${product.name} should replace competitor logo in same position`;
