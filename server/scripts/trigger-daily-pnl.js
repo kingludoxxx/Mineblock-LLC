@@ -13,7 +13,7 @@ async function main() {
   console.log(`[cron] Waking server at ${BASE}...`);
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      const res = await fetch(`${BASE}/api/v1/kpi-system/health`);
+      const res = await fetch(`${BASE}/api/v1/health`);
       console.log(`[cron] Server awake (attempt ${attempt}): ${res.status}`);
       break;
     } catch (err) {

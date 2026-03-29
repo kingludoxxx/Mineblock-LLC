@@ -2079,10 +2079,12 @@ async function sendDailyPnlReport(dateStr, { force = false } = {}) {
 router.post('/daily-pnl', authenticate, async (req, res) => {
   try {
     const dateStr = req.query.date || (() => {
-      const now = new Date();
-      const berlin = new Date(now.toLocaleString('en-US', { timeZone: 'Europe/Berlin' }));
-      berlin.setDate(berlin.getDate() - 1);
-      return `${berlin.getFullYear()}-${String(berlin.getMonth() + 1).padStart(2, '0')}-${String(berlin.getDate()).padStart(2, '0')}`;
+      const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Berlin', year: 'numeric', month: '2-digit', day: '2-digit' });
+      const berlinToday = fmt.format(new Date());
+      const [y, m, d] = berlinToday.split('-').map(Number);
+      const yesterday = new Date(y, m - 1, d);
+      yesterday.setDate(yesterday.getDate() - 1);
+      return `${yesterday.getFullYear()}-${String(yesterday.getMonth() + 1).padStart(2, '0')}-${String(yesterday.getDate()).padStart(2, '0')}`;
     })();
     const force = req.query.force === 'true';
     await sendDailyPnlReport(dateStr, { force });
@@ -2103,10 +2105,13 @@ router.get('/cron/daily-pnl', async (req, res) => {
     // Use explicit date if provided, otherwise calculate yesterday in Berlin timezone
     let dateStr = req.query.date;
     if (!dateStr) {
-      const now = new Date();
-      const berlin = new Date(now.toLocaleString('en-US', { timeZone: 'Europe/Berlin' }));
-      berlin.setDate(berlin.getDate() - 1);
-      dateStr = `${berlin.getFullYear()}-${String(berlin.getMonth() + 1).padStart(2, '0')}-${String(berlin.getDate()).padStart(2, '0')}`;
+      // Use Intl.DateTimeFormat for reliable timezone conversion (works on all Node versions)
+      const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Berlin', year: 'numeric', month: '2-digit', day: '2-digit' });
+      const berlinToday = fmt.format(new Date()); // YYYY-MM-DD in Berlin time
+      const [y, m, d] = berlinToday.split('-').map(Number);
+      const yesterday = new Date(y, m - 1, d);
+      yesterday.setDate(yesterday.getDate() - 1);
+      dateStr = `${yesterday.getFullYear()}-${String(yesterday.getMonth() + 1).padStart(2, '0')}-${String(yesterday.getDate()).padStart(2, '0')}`;
     }
 
     console.log(`[Daily P&L] Cron trigger for ${dateStr}`);
