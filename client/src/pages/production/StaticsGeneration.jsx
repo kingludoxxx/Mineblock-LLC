@@ -1715,8 +1715,12 @@ export default function StaticsGeneration() {
           onCreateVariant={async (id) => {
             try {
               await api.post(`/statics-generation/creatives/${id}/create-variant`, { aspect_ratio: '9:16' });
+              alert('9:16 variant is being generated. It will appear in the pipeline shortly.');
               setDetailModal(null);
-            } catch { /* silently fail */ }
+            } catch (err) {
+              const msg = err.response?.data?.error?.message || 'Failed to create variant';
+              alert(msg);
+            }
           }}
           onStatusChange={async (id, status) => {
             try {
