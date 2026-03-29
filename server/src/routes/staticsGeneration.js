@@ -1151,7 +1151,22 @@ router.post('/creatives/:id/publish-clickup', authenticate, async (req, res) => 
       }
     }
 
-    // 8. Mark ALL creatives as ready to launch
+    // 8. Override task name after ClickUp automation may have rewritten it
+    // Wait 3s for ClickUp automation to fire, then set name + naming convention again
+    setTimeout(async () => {
+      try {
+        await clickupFetch(`/task/${clickupTaskId}`, {
+          method: 'PUT',
+          body: JSON.stringify({ name: namingConvention }),
+        });
+        await setCustomField(clickupTaskId, FIELD_IDS.namingConvention, namingConvention);
+        console.log(`[publish-clickup] Re-set task name to: ${namingConvention}`);
+      } catch (err) {
+        console.error(`[publish-clickup] Failed to re-set task name: ${err.message}`);
+      }
+    }, 5000);
+
+    // 9. Mark ALL creatives as ready to launch
     const allIds = allCreatives.map(c => c.id);
     await pgQuery(
       `UPDATE spy_creatives
