@@ -156,7 +156,7 @@ Return ONLY valid JSON (no markdown, no code fences):
 }`;
 }
 
-export function buildNanoBananaPrompt(claudeResult, swapPairs, product) {
+export function buildNanoBananaPrompt(claudeResult, swapPairs, product, logoCount = 0) {
   const {
     layout, brand_elements, visual_elements, adapted_visual_direction,
     people_count, product_count, adapted_audience, character_adaptation, visual_adaptations
@@ -197,7 +197,11 @@ ${layout.has_rounded_corners ? '- Keep rounded corners on sections' : ''}
     `  ${i + 1}. ${v.position}: ${v.original_visual} → ${v.adapted_visual}${v.is_angle_specific ? ' [MANDATORY]' : ''}`
   ).join('\n');
 
-  return `Generate a new ad creative based on the reference ad (LAST image). The first images show the product from multiple angles — reproduce it EXACTLY.
+  const logoNote = logoCount > 0
+    ? `\nBRAND LOGO: The brand logo is provided in the images (before the reference ad). Use this EXACT logo where the reference ad has the competitor's logo. Do NOT create or invent any logo — use the provided one pixel-for-pixel.`
+    : '';
+
+  return `Generate a new ad creative based on the reference ad (LAST image). The first images show the product from multiple angles — reproduce it EXACTLY.${logoNote}
 ${layoutSection}
 
 PRODUCT REPLACEMENT:
@@ -232,7 +236,7 @@ ABSOLUTE RULES:
 7. The product is a MINI BITCOIN MINER — NEVER show a USB-looking product. Copy the device from image 1 exactly.
 8. Hands: exactly 5 fingers, realistic proportions
 9. Match reference style, color palette, mood, and visual quality
-10. Brand logo for ${product.name} should replace competitor logo in same position
+10. Brand logo: ${logoCount > 0 ? 'Use the PROVIDED logo image (not invented text). Place it where the competitor logo was.' : `Use "${product.name}" text as logo in same position as competitor logo.`}
 11. PRICES MUST MATCH the text swap list EXACTLY — do not invent or modify any price, discount percentage, or dollar amount`;
 }
 

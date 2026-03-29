@@ -250,10 +250,19 @@ router.post('/generate', authenticate, async (req, res) => {
       }
     }
 
-    const nbPrompt = buildNanoBananaPrompt(claudeResult, swapPairs, product);
+    // Resolve logo URLs for brand accuracy
+    const logoUrls = [];
+    const allLogos = product.logos || [];
+    if (product.logo_url) allLogos.unshift(product.logo_url);
+    for (let i = 0; i < Math.min(allLogos.length, 2); i++) {
+      const url = await ensureHttpUrl(allLogos[i], `logos-${i}`);
+      if (url) logoUrls.push(url);
+    }
 
-    // Send product images first (main + extras), then reference last
-    const imageUrls = [finalProductUrl, ...extraProductUrls, finalReferenceUrl];
+    const nbPrompt = buildNanoBananaPrompt(claudeResult, swapPairs, product, logoUrls.length);
+
+    // Send: product images, then logos, then reference ad (last)
+    const imageUrls = [finalProductUrl, ...extraProductUrls, ...logoUrls, finalReferenceUrl];
 
     const nbRes = await fetch(`${NB_BASE}/generate-2`, {
       method: 'POST',

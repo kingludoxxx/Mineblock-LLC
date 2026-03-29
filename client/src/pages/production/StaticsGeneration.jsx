@@ -763,6 +763,8 @@ export default function StaticsGeneration() {
           price: productPrice || undefined,
           product_image_url: resolvedProductUrl,
           product_images: selectedProductRef.current?.product_images || [],
+          logos: selectedProductRef.current?.logos || [],
+          logo_url: selectedProductRef.current?.logo_url || undefined,
           profile: Object.keys(profile).length > 0 ? profile : undefined,
         },
         angle: marketingAngle || undefined,
