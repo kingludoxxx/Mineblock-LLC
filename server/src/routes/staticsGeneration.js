@@ -230,14 +230,12 @@ router.post('/generate', authenticate, async (req, res) => {
       throw new Error('No taskId returned from NanoBanana');
     }
 
-    // ── Step E: Poll for completion ────────────────────────────────────
-    const generatedImageUrl = await pollNanoBanana(taskId);
-
-    // ── Step F: Return final response ──────────────────────────────────
+    // ── Step E: Return immediately — client polls /status/:taskId ──────
+    console.log(`[staticsGeneration] NanoBanana task submitted: ${taskId}`);
     return res.json({
       success: true,
       data: {
-        generated_image_url: generatedImageUrl,
+        taskId,
         reference_url: finalReferenceUrl,
         adapted_text: claudeResult.adapted_text,
         original_text: claudeResult.original_text,
@@ -279,13 +277,17 @@ router.get('/status/:taskId', authenticate, async (req, res) => {
     else if (flag === 1) status = 'completed';
     else                 status = 'failed';
 
+    // NanoBanana puts the image URL in data.data.response
+    const resultImageUrl = data.data?.response || data.data?.resultImageUrl
+      || data.resultImageUrl || data.data?.imageUrl || null;
+
     return res.json({
       success: true,
       data: {
         taskId,
         status,
         successFlag: flag,
-        resultImageUrl: data.resultImageUrl || data.data?.resultImageUrl || null,
+        resultImageUrl,
       },
     });
   } catch (err) {

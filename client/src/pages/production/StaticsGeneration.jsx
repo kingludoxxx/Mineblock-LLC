@@ -714,7 +714,6 @@ export default function StaticsGeneration() {
     setResult(null);
     setError(null);
 
-    let stepTimer2, stepTimer3;
     try {
       let resolvedReferenceUrl = referenceImageUrl;
       if (referenceFile) {
@@ -754,9 +753,8 @@ export default function StaticsGeneration() {
         if (full.compliance_restrictions) profile.complianceRestrictions = full.compliance_restrictions;
       }
 
-      stepTimer2 = setTimeout(() => setGenerationStep(2), 10000);
-      stepTimer3 = setTimeout(() => setGenerationStep(3), 30000);
-
+      // Step 1: Submit to server (Claude analysis + NanoBanana submit — returns fast)
+      setGenerationStep(1);
       const response = await api.post('/statics-generation/generate', {
         reference_image_url: resolvedReferenceUrl,
         product: {
@@ -771,7 +769,45 @@ export default function StaticsGeneration() {
       });
 
       const genResult = response.data?.data || response.data;
-      setResult(genResult);
+      const { taskId } = genResult;
+
+      if (!taskId) {
+        // No taskId means generation was skipped (e.g. no NanoBanana call)
+        setResult(genResult);
+        setGenerationStep(0);
+        return;
+      }
+
+      // Step 2: Poll NanoBanana via /status/:taskId
+      setGenerationStep(2);
+      const POLL_INTERVAL = 5000;
+      const MAX_POLLS = 60;
+      let imageUrl = null;
+
+      for (let i = 0; i < MAX_POLLS; i++) {
+        await new Promise(r => setTimeout(r, POLL_INTERVAL));
+        if (i > 4) setGenerationStep(3); // progress indicator
+
+        const statusRes = await api.get(`/statics-generation/status/${taskId}`);
+        const statusData = statusRes.data?.data || statusRes.data;
+
+        if (statusData.status === 'completed') {
+          imageUrl = statusData.resultImageUrl;
+          break;
+        }
+        if (statusData.status === 'failed') {
+          throw new Error('Image generation failed');
+        }
+        // status === 'pending' → keep polling
+      }
+
+      if (!imageUrl) {
+        throw new Error('Image generation timed out');
+      }
+
+      // Step 3: Set final result
+      const finalResult = { ...genResult, generated_image_url: imageUrl };
+      setResult(finalResult);
       setGenerationStep(0);
 
       // Auto-save to pipeline as "review" creative
@@ -782,13 +818,13 @@ export default function StaticsGeneration() {
           product_name: productName,
           angle: marketingAngle || customAngle || null,
           aspect_ratio: aspectRatio,
-          image_url: genResult?.generated_image_url || genResult?.resultImageUrl || genResult?.generatedImageUrl || null,
+          image_url: imageUrl,
           reference_name: refImg?.name || null,
           reference_thumbnail: refImg?.thumbnail || refImg?.image_url || refImg?.url || null,
-          adapted_text: genResult?.adapted_text || genResult?.adaptedCopy || null,
-          claude_analysis: genResult?.claude_analysis || genResult?.claudeAnalysis || null,
-          swap_pairs: genResult?.swap_pairs || genResult?.textSwaps || null,
-          generation_prompt: genResult?.generation_prompt || genResult?.generationPrompt || null,
+          adapted_text: finalResult?.adapted_text || null,
+          claude_analysis: finalResult?.claude_analysis || null,
+          swap_pairs: finalResult?.swap_pairs || null,
+          generation_prompt: finalResult?.generation_prompt || null,
           status: 'review',
         });
         if (saveRes.data?.success) {
@@ -806,8 +842,6 @@ export default function StaticsGeneration() {
       setError(message);
       setGenerationStep(0);
     } finally {
-      clearTimeout(stepTimer2);
-      clearTimeout(stepTimer3);
       setGenerating(false);
     }
   };
