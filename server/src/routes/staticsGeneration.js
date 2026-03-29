@@ -866,6 +866,7 @@ const FIELD_IDS = {
   briefType: '98d04d2d-9575-4363-8eee-9bf150b1c319',
   angle: '7e740c52-a05b-4b3b-9798-0801acd84b8a',
   namingConvention: 'c97d93bc-ad82-4b90-98e0-092df383d9b8',
+  idea: '0c5460ee-2645-4892-815d-7913fb5d241d',
   creationWeek: 'a609d8d0-661e-400f-87cb-2557bd48857b',
   adsFrameLink: 'd90f9f25-d7a0-4eb4-9ded-aca0b4519a3b',
 };
@@ -886,6 +887,8 @@ const ANGLE_OPTIONS = {
   Breakingnews: 'e5cd049f-13a5-45e4-a8d7-6b78f0acc9a3',
   Offer: 'e0c1d0fd-b376-4146-8887-ad7c0c209489',
   Reaction: 'bbe5f0c0-8bbf-45a2-bc04-fbcebb11e242',
+  Miningwhilesleep: '8bfcbdeb-c21b-4d78-b2f4-fa45f7856b18',
+  Apology: '3c59aca9-f26b-4d8d-95b9-652fd4d30044',
 };
 
 const BRIEF_TYPE_OPTIONS = {
@@ -1059,6 +1062,7 @@ router.post('/creatives/:id/publish-clickup', authenticate, async (req, res) => 
         { id: FIELD_IDS.briefType, value: BRIEF_TYPE_OPTIONS.NN },
         { id: FIELD_IDS.angle, value: angleUuid },
         { id: FIELD_IDS.namingConvention, value: namingConvention },
+        { id: FIELD_IDS.idea, value: namingConvention },
         { id: FIELD_IDS.creationWeek, value: weekLabel },
       ],
     };
