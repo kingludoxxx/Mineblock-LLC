@@ -666,15 +666,19 @@ router.get('/creatives/pipeline', authenticate, async (req, res) => {
     const rows = await pgQuery(query, params);
 
     const pipeline = { review: [], approved: [], ready: [], launched: [] };
+    const variants = []; // generating/rejected variants tracked separately
     for (const row of rows) {
       if (pipeline[row.status]) {
         pipeline[row.status].push(row);
+      } else if (row.parent_creative_id && (row.status === 'generating' || row.status === 'rejected')) {
+        variants.push(row);
       }
     }
 
     res.json({
       success: true,
       data: pipeline,
+      variants,
       counts: {
         review: pipeline.review.length,
         approved: pipeline.approved.length,

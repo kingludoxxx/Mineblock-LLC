@@ -869,11 +869,13 @@ export default function StaticsGeneration() {
     try {
       const res = await api.get('/statics-generation/creatives/pipeline');
       const pipeline = res.data?.data || {};
+      const variants = res.data?.variants || [];
       const flat = [
         ...(pipeline.review || []),
         ...(pipeline.approved || []),
         ...(pipeline.ready || []),
         ...(pipeline.launched || []),
+        ...variants,
       ];
       setCreatives(flat);
     } catch {
@@ -1071,6 +1073,14 @@ export default function StaticsGeneration() {
       }
     }
   }, [activeTab, activePipeline]);
+
+  // Auto-refresh pipeline when 9:16 variants are generating
+  useEffect(() => {
+    const hasGenerating = creatives.some(c => c.parent_creative_id && c.status === 'generating');
+    if (!hasGenerating || activeTab !== 'pipeline') return;
+    const interval = setInterval(() => fetchCreatives(), 15000);
+    return () => clearInterval(interval);
+  }, [creatives, activeTab]);
 
   // --- Render helpers ---
 
@@ -1361,6 +1371,68 @@ export default function StaticsGeneration() {
                     }
                   }}
                 />
+
+                {/* ---- 9:16 Variant Tracker ---- */}
+                {(() => {
+                  const parentCreatives = creatives.filter(c => !c.parent_creative_id && c.aspect_ratio !== '9:16');
+                  const variants = creatives.filter(c => c.parent_creative_id && c.aspect_ratio === '9:16');
+                  const tracked = parentCreatives
+                    .map(p => {
+                      const v = variants.find(v => v.parent_creative_id === p.id);
+                      if (!v) return null;
+                      const status = v.status === 'generating' ? 'generating'
+                        : v.status === 'rejected' ? 'failed'
+                        : v.image_url ? 'done' : 'generating';
+                      return { parent: p, variant: v, status };
+                    })
+                    .filter(Boolean);
+                  const generating916 = tracked.filter(t => t.status === 'generating');
+                  const failed916 = tracked.filter(t => t.status === 'failed');
+                  if (generating916.length === 0 && failed916.length === 0) return null;
+                  return (
+                    <div className="bg-[#0d0d0d] border border-white/[0.06] rounded-lg p-3 mt-2">
+                      <div className="flex items-center gap-2 mb-2">
+                        <Loader2 className={`w-3.5 h-3.5 ${generating916.length > 0 ? 'animate-spin text-blue-400' : 'text-gray-500'}`} />
+                        <span className="text-xs font-medium text-gray-300">9:16 Variants</span>
+                        {generating916.length > 0 && (
+                          <span className="text-[10px] bg-blue-500/15 text-blue-400 px-1.5 py-0.5 rounded-full">{generating916.length} generating</span>
+                        )}
+                        {failed916.length > 0 && (
+                          <span className="text-[10px] bg-red-500/15 text-red-400 px-1.5 py-0.5 rounded-full">{failed916.length} failed</span>
+                        )}
+                      </div>
+                      <div className="space-y-1.5">
+                        {[...generating916, ...failed916].map(({ parent, variant, status }) => (
+                          <div key={variant.id} className="flex items-center gap-2 text-[11px]">
+                            {status === 'generating' ? (
+                              <div className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
+                            ) : (
+                              <div className="w-1.5 h-1.5 rounded-full bg-red-400" />
+                            )}
+                            <span className="text-gray-400 truncate flex-1">{parent.product_name || 'Untitled'} — {parent.angle || 'No angle'}</span>
+                            <span className={status === 'generating' ? 'text-blue-400' : 'text-red-400'}>
+                              {status === 'generating' ? 'Generating...' : 'Failed'}
+                            </span>
+                            {status === 'failed' && (
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  try {
+                                    await api.post(`/statics-generation/creatives/${parent.id}/create-variant`, { aspect_ratio: '9:16' });
+                                    fetchCreatives();
+                                  } catch {}
+                                }}
+                                className="text-[10px] text-blue-400 hover:text-blue-300 cursor-pointer"
+                              >
+                                Retry
+                              </button>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })()}
 
                 {/* ---- Error State ---- */}
                 {error && !generating && (

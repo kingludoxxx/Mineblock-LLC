@@ -250,16 +250,29 @@ function PipelineColumn({ column, items, onStatusChange, onCardClick, onPublish,
             <p className="text-xs text-gray-600">No creatives</p>
           </div>
         ) : (
-          items.map((creative) => (
-            <CreativeCard
-              key={creative.id}
-              creative={creative}
-              column={column}
-              onStatusChange={onStatusChange}
-              onCardClick={onCardClick}
-              onPublish={onPublish}
-            />
-          ))
+          items.map((creative) => {
+            // Compute 9:16 variant status for parent cards
+            let vStatus = null;
+            if (!creative.parent_creative_id && allCreatives) {
+              const variant = allCreatives.find(c => c.parent_creative_id === creative.id && c.aspect_ratio === '9:16');
+              if (variant) {
+                vStatus = variant.status === 'generating' ? 'generating'
+                  : variant.status === 'rejected' ? 'failed'
+                  : variant.image_url ? 'done' : 'generating';
+              }
+            }
+            return (
+              <CreativeCard
+                key={creative.id}
+                creative={creative}
+                column={column}
+                onStatusChange={onStatusChange}
+                onCardClick={onCardClick}
+                onPublish={onPublish}
+                variantStatus={vStatus}
+              />
+            );
+          })
         )}
       </div>
     </div>
@@ -315,6 +328,7 @@ export function PipelineView({ creatives = [], onStatusChange, onCardClick, onRe
             onStatusChange={onStatusChange}
             onCardClick={onCardClick}
             onPublish={onPublish}
+            allCreatives={creatives}
           />
         ))}
       </div>
