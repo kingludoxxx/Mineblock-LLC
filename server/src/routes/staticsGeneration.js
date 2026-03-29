@@ -86,21 +86,30 @@ async function pollNanoBanana(taskId) {
     const data = await res.json();
     const flag = Number(data.successFlag ?? data.data?.successFlag);
 
+    // Log every poll response for debugging
+    console.log(`[staticsGeneration] Poll ${i+1}/${MAX_POLLS} — flag=${flag}, keys=${Object.keys(data)}, data.keys=${data.data ? Object.keys(data.data) : 'N/A'}`);
+
     if (flag === 1) {
+      // Search broadly for the result image URL
       const imageUrl = data.resultImageUrl || data.data?.resultImageUrl
         || data.imageUrl || data.data?.imageUrl
         || data.outputUrl || data.data?.outputUrl
-        || data.result?.imageUrl || data.result?.url;
+        || data.result?.imageUrl || data.result?.url
+        || data.data?.result || data.data?.url;
       if (!imageUrl) {
-        console.error('[staticsGeneration] NanoBanana success but no image URL. Full response:', JSON.stringify(data).slice(0, 1000));
+        console.error('[staticsGeneration] NanoBanana success but no image URL.');
+        console.error('[staticsGeneration] Top-level keys:', JSON.stringify(Object.keys(data)));
+        console.error('[staticsGeneration] data.data keys:', data.data ? JSON.stringify(Object.keys(data.data)) : 'N/A');
+        console.error('[staticsGeneration] Full response (3000 chars):', JSON.stringify(data).slice(0, 3000));
         throw new Error('NanoBanana completed but no resultImageUrl found');
       }
       return imageUrl;
     }
     if (flag >= 2) {
+      console.error('[staticsGeneration] NanoBanana failed. Full response:', JSON.stringify(data).slice(0, 2000));
       throw new Error(`NanoBanana generation failed (successFlag=${flag})`);
     }
-    // flag === 0 → still pending, keep polling
+    // flag === 0 or NaN → still pending, keep polling
   }
 
   throw new Error('NanoBanana generation timed out after 5 minutes');
