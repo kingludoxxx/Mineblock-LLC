@@ -87,8 +87,14 @@ async function pollNanoBanana(taskId) {
     const flag = Number(data.successFlag ?? data.data?.successFlag);
 
     if (flag === 1) {
-      const imageUrl = data.resultImageUrl || data.data?.resultImageUrl;
-      if (!imageUrl) throw new Error('NanoBanana completed but no resultImageUrl found');
+      const imageUrl = data.resultImageUrl || data.data?.resultImageUrl
+        || data.imageUrl || data.data?.imageUrl
+        || data.outputUrl || data.data?.outputUrl
+        || data.result?.imageUrl || data.result?.url;
+      if (!imageUrl) {
+        console.error('[staticsGeneration] NanoBanana success but no image URL. Full response:', JSON.stringify(data).slice(0, 1000));
+        throw new Error('NanoBanana completed but no resultImageUrl found');
+      }
       return imageUrl;
     }
     if (flag >= 2) {
