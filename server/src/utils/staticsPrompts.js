@@ -187,15 +187,15 @@ ${layout.has_rounded_corners ? '- Keep rounded corners on sections' : ''}
     `  ${i + 1}. ${v.position}: ${v.original_visual} → ${v.adapted_visual}${v.is_angle_specific ? ' [MANDATORY]' : ''}`
   ).join('\n');
 
-  return `Generate a new ad creative based on the reference ad (image 2). Use the product from image 1.
+  return `Generate a new ad creative based on the reference ad (LAST image). The first images show the product from multiple angles — reproduce it EXACTLY.
 ${layoutSection}
 
 PRODUCT REPLACEMENT:
 - Remove ALL competitor branding, logos, product imagery
-- Replace with product from image 1 (${product.name})
+- Replace with the product shown in the first images (${product.name}). Multiple angles of the same product are provided — use them to reproduce it with perfect accuracy.
 - Show exactly ${pCount2} product(s)
 - Product placement: ${visualDir.product_placement || 'same position as reference product'}
-- CRITICAL: The product is a MINI BITCOIN MINER with a display screen — NOT a USB stick. Reproduce it EXACTLY as shown in image 1. NEVER render it as a USB stick, flash drive, or thumb drive.
+- CRITICAL: The product is a MINI BITCOIN MINER with a display screen — NOT a USB stick. Reproduce it EXACTLY as shown. NEVER render it as a USB stick, flash drive, or thumb drive.
 - Realistic lighting, shadows, and perspective matching the reference style
 
 TEXT REPLACEMENTS (${swapPairs.length} swaps — apply ALL of them):

@@ -239,7 +239,21 @@ router.post('/generate', authenticate, async (req, res) => {
     let finalReferenceUrl = isUrl ? reference_image_url : await ensureHttpUrl(reference_image_url, 'refs');
     let finalProductUrl = await ensureHttpUrl(product.product_image_url, 'products');
 
+    // Gather ALL product images (up to 5) for better product fidelity
+    const allProductImages = product.product_images || [];
+    const extraProductUrls = [];
+    for (let i = 0; i < Math.min(allProductImages.length, 4); i++) {
+      const img = allProductImages[i];
+      if (img && img !== product.product_image_url) {
+        const url = await ensureHttpUrl(img, `products-${i}`);
+        if (url) extraProductUrls.push(url);
+      }
+    }
+
     const nbPrompt = buildNanoBananaPrompt(claudeResult, swapPairs, product);
+
+    // Send product images first (main + extras), then reference last
+    const imageUrls = [finalProductUrl, ...extraProductUrls, finalReferenceUrl];
 
     const nbRes = await fetch(`${NB_BASE}/generate-2`, {
       method: 'POST',
@@ -250,7 +264,7 @@ router.post('/generate', authenticate, async (req, res) => {
       body: JSON.stringify({
         prompt: nbPrompt,
         model: 'nano-banana-2',
-        imageUrls: [finalProductUrl, finalReferenceUrl],
+        imageUrls,
         aspectRatio: ratio || '4:5',
         resolution: '1K',
         outputFormat: 'png',
@@ -447,13 +461,17 @@ async function generateVariant(parent, newAspectRatio) {
     }
     child = childRows[0];
 
-    // 2. Get product image from product_profiles, with fallbacks
+    // 2. Get ALL product images from product_profiles for better fidelity
     let productImageUrl = null;
+    let allProductImgUrls = [];
     if (parent.product_id) {
       const productRows = await pgQuery('SELECT product_images FROM product_profiles WHERE id = $1', [parent.product_id]);
       if (productRows.length > 0) {
         const imgs = productRows[0].product_images;
-        productImageUrl = Array.isArray(imgs) && imgs.length > 0 ? imgs[0] : null;
+        if (Array.isArray(imgs) && imgs.length > 0) {
+          productImageUrl = imgs[0];
+          allProductImgUrls = imgs.slice(0, 5); // up to 5 product angles
+        }
       }
     }
     // Fallback: use the parent's generated image as the product reference
@@ -480,7 +498,11 @@ async function generateVariant(parent, newAspectRatio) {
       : { adapted_text: adaptedText };
     const nbPrompt = buildNanoBananaPrompt(claudeResult, swapPairs, product);
 
-    // 5. Submit to NanoBanana
+    // 5. Submit to NanoBanana — send all product images + reference
+    const variantImageUrls = allProductImgUrls.length > 0
+      ? [...allProductImgUrls, referenceUrl]
+      : [productImageUrl, referenceUrl];
+
     const nbRes = await fetch(`${NB_BASE}/generate-2`, {
       method: 'POST',
       headers: {
@@ -490,7 +512,7 @@ async function generateVariant(parent, newAspectRatio) {
       body: JSON.stringify({
         prompt: nbPrompt,
         model: 'nano-banana-2',
-        imageUrls: [productImageUrl, referenceUrl],
+        imageUrls: variantImageUrls,
         aspectRatio: newAspectRatio,
         resolution: '1K',
         outputFormat: 'png',
