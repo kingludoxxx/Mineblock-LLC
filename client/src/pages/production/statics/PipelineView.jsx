@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import {
   Eye,
   Check,
@@ -83,8 +83,13 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, onPublish
 
   return (
     <div
+      draggable
+      onDragStart={(e) => {
+        e.dataTransfer.setData('text/plain', JSON.stringify({ id: creative.id, status: creative.status }));
+        e.dataTransfer.effectAllowed = 'move';
+      }}
       onClick={() => onCardClick?.(creative)}
-      className="group bg-[#0a0a0a] border border-white/[0.06] rounded-lg overflow-hidden cursor-pointer
+      className="group bg-[#0a0a0a] border border-white/[0.06] rounded-lg overflow-hidden cursor-grab active:cursor-grabbing
                  hover:border-white/[0.12] hover:shadow-lg hover:shadow-black/20 transition-all duration-150"
     >
       {/* Thumbnail */}
@@ -172,9 +177,26 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, onPublish
 
 function PipelineColumn({ column, items, onStatusChange, onCardClick, onPublish }) {
   const Icon = column.icon;
+  const [dragOver, setDragOver] = useState(false);
+
+  const handleDrop = (e) => {
+    e.preventDefault();
+    setDragOver(false);
+    try {
+      const data = JSON.parse(e.dataTransfer.getData('text/plain'));
+      if (data.id && data.status !== column.key) {
+        onStatusChange?.(data.id, column.key);
+      }
+    } catch { /* ignore */ }
+  };
 
   return (
-    <div className="flex flex-col min-w-[260px] max-w-[320px] flex-1">
+    <div
+      className="flex flex-col min-w-[260px] max-w-[320px] flex-1"
+      onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+      onDragLeave={() => setDragOver(false)}
+      onDrop={handleDrop}
+    >
       {/* Column header */}
       <div
         className={`flex items-center gap-2 px-3 py-2.5 border-b-2 ${column.headerBorder} mb-3`}
@@ -191,7 +213,7 @@ function PipelineColumn({ column, items, onStatusChange, onCardClick, onPublish 
       </div>
 
       {/* Scrollable card list */}
-      <div className="flex-1 overflow-y-auto pr-1 space-y-3 pb-4 custom-scrollbar">
+      <div className={`flex-1 overflow-y-auto pr-1 space-y-3 pb-4 custom-scrollbar transition-colors rounded-lg ${dragOver ? 'bg-white/[0.03] ring-1 ring-blue-500/30' : ''}`}>
         {items.length === 0 && column.placeholder ? (
           <div className="flex items-center justify-center h-32 border border-dashed border-gray-700/50 rounded-lg">
             <p className="text-xs text-gray-500 italic">{column.placeholder}</p>
