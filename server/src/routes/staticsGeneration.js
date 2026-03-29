@@ -82,7 +82,12 @@ function extractNanoBananaImageUrl(data) {
       || data.data?.outputUrl || data.outputUrl || null;
   }
 
-  console.log(`[staticsGeneration] extractNanoBananaImageUrl: raw type=${typeof raw}, len=${String(raw).length}, first200=${String(raw).slice(0, 200)}, extracted=${String(url).slice(0, 120)}`);
+  if (typeof raw === 'object' && raw !== null) {
+    console.log(`[staticsGeneration] extractNanoBananaImageUrl: raw is OBJECT, keys=${JSON.stringify(Object.keys(raw))}, full=${JSON.stringify(raw).slice(0, 500)}`);
+  } else {
+    console.log(`[staticsGeneration] extractNanoBananaImageUrl: raw type=${typeof raw}, len=${String(raw).length}, first500=${String(raw).slice(0, 500)}`);
+  }
+  console.log(`[staticsGeneration] extractNanoBananaImageUrl: extracted=${String(url).slice(0, 200)}`);
   return url;
 }
 
