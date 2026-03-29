@@ -197,49 +197,51 @@ export function TemplateSelectModal({ isOpen, onClose, onSelect, templates = [] 
                   <span className="text-sm">No templates found</span>
                 </div>
               ) : (
-                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
-                  {filtered.slice(0, visibleCount).map((template) => (
-                    <button
-                      key={template.id || template.name}
-                      onClick={() => handleSelect(template)}
-                      className="group relative rounded-xl overflow-hidden border border-white/[0.06] bg-white/[0.02] hover:border-blue-500/40 hover:bg-white/[0.04] transition-all cursor-pointer focus:outline-none focus:ring-1 focus:ring-blue-500/50"
-                    >
-                      <div className="aspect-[4/5] w-full bg-white/[0.03]">
-                        {template.image_url || template.thumbnail_url ? (
-                          <img
-                            src={template.image_url || template.thumbnail_url}
-                            alt={template.name || template.title || 'Template'}
-                            className="w-full h-full object-cover group-hover:scale-[1.02] transition-transform duration-200"
-                            loading="lazy"
-                            onError={(e) => {
-                              e.target.style.display = 'none';
-                            }}
-                          />
-                        ) : (
-                          <div className="w-full h-full flex items-center justify-center text-slate-700">
-                            <LayoutGrid className="w-8 h-8" />
+                <>
+                  <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
+                    {filtered.slice(0, visibleCount).map((template) => (
+                      <button
+                        key={template.id || template.name}
+                        onClick={() => handleSelect(template)}
+                        className="group relative rounded-xl overflow-hidden border border-white/[0.06] bg-white/[0.02] hover:border-blue-500/40 hover:bg-white/[0.04] transition-all cursor-pointer focus:outline-none focus:ring-1 focus:ring-blue-500/50"
+                      >
+                        <div className="aspect-[4/5] w-full bg-white/[0.03]">
+                          {template.image_url || template.thumbnail_url ? (
+                            <img
+                              src={template.image_url || template.thumbnail_url}
+                              alt={template.name || template.title || 'Template'}
+                              className="w-full h-full object-cover group-hover:scale-[1.02] transition-transform duration-200"
+                              loading="lazy"
+                              onError={(e) => {
+                                e.target.style.display = 'none';
+                              }}
+                            />
+                          ) : (
+                            <div className="w-full h-full flex items-center justify-center text-slate-700">
+                              <LayoutGrid className="w-8 h-8" />
+                            </div>
+                          )}
+                        </div>
+                        {(template.name || template.title) && (
+                          <div className="px-2.5 py-2 border-t border-white/[0.04]">
+                            <span className="text-xs text-slate-400 truncate block">
+                              {template.name || template.title}
+                            </span>
                           </div>
                         )}
-                      </div>
-                      {(template.name || template.title) && (
-                        <div className="px-2.5 py-2 border-t border-white/[0.04]">
-                          <span className="text-xs text-slate-400 truncate block">
-                            {template.name || template.title}
-                          </span>
-                        </div>
-                      )}
+                      </button>
+                    ))}
+                  </div>
+                  {filtered.length > visibleCount && (
+                    <button
+                      type="button"
+                      onClick={() => setVisibleCount((c) => c + PAGE_SIZE)}
+                      className="mt-4 w-full py-2.5 rounded-lg bg-white/[0.04] border border-white/[0.08] text-sm text-slate-300 hover:text-white hover:bg-white/[0.08] transition-colors cursor-pointer"
+                    >
+                      Show More ({filtered.length - visibleCount} remaining)
                     </button>
-                  ))}
-                </div>
-                {filtered.length > visibleCount && (
-                  <button
-                    type="button"
-                    onClick={() => setVisibleCount((c) => c + PAGE_SIZE)}
-                    className="mt-4 w-full py-2.5 rounded-lg bg-white/[0.04] border border-white/[0.08] text-sm text-slate-300 hover:text-white hover:bg-white/[0.08] transition-colors cursor-pointer"
-                  >
-                    Show More ({filtered.length - visibleCount} remaining)
-                  </button>
-                )}
+                  )}
+                </>
               )}
             </div>
           </div>
