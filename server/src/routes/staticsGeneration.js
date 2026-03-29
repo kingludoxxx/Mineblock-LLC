@@ -717,14 +717,14 @@ router.post('/creatives', authenticate, async (req, res) => {
   }
 });
 
-// ── POST /creatives/:id/ai-adjust — AI adjustment on existing creative ─
+// ── POST /creatives/:id/ai-adjust — AI adjustment on existing creative (async) ─
+// Returns immediately, processes in background, client polls creative for updated image_url
 router.post('/creatives/:id/ai-adjust', authenticate, async (req, res) => {
   try {
     await ensureCreativesTable();
     const { instruction } = req.body;
     if (!instruction) return res.status(400).json({ success: false, error: { message: 'instruction is required' } });
 
-    // Fetch the creative
     const rows = await pgQuery('SELECT * FROM spy_creatives WHERE id = $1', [req.params.id]);
     if (rows.length === 0) return res.status(404).json({ success: false, error: { message: 'Creative not found' } });
     const creative = rows[0];
@@ -733,20 +733,31 @@ router.post('/creatives/:id/ai-adjust', authenticate, async (req, res) => {
       return res.status(400).json({ success: false, error: { message: 'Creative has no image_url to adjust' } });
     }
 
-    // Call Claude with the adjustment instruction + original analysis
-    const existingAnalysis = creative.claude_analysis
-      ? (typeof creative.claude_analysis === 'string' ? creative.claude_analysis : JSON.stringify(creative.claude_analysis))
-      : 'No prior analysis available.';
+    // Store previous image and mark as adjusting
+    const previousImageUrl = creative.image_url;
+    await pgQuery(
+      "UPDATE spy_creatives SET review_notes = 'AI adjusting...', updated_at = NOW() WHERE id = $1",
+      [req.params.id]
+    );
 
-    const claudeBody = {
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 2000,
-      messages: [{
-        role: 'user',
-        content: [
-          {
-            type: 'text',
-            text: `You are an AI creative director. A user wants to adjust an existing ad creative.
+    // Respond immediately
+    res.json({ success: true, data: { status: 'adjusting', message: 'AI adjustment started. The image will update shortly.' } });
+
+    // Fire-and-forget: do the actual work in background
+    (async () => {
+      try {
+        const existingAnalysis = creative.claude_analysis
+          ? (typeof creative.claude_analysis === 'string' ? creative.claude_analysis : JSON.stringify(creative.claude_analysis))
+          : 'No prior analysis available.';
+
+        const claudeBody = {
+          model: 'claude-sonnet-4-20250514',
+          max_tokens: 2000,
+          messages: [{
+            role: 'user',
+            content: [{
+              type: 'text',
+              text: `You are an AI creative director. A user wants to adjust an existing ad creative.
 
 Original creative analysis:
 ${existingAnalysis}
@@ -761,91 +772,64 @@ Generate an updated image generation prompt that applies the user's requested ch
   "adjusted_prompt": "the full updated generation prompt",
   "changes_summary": "brief description of what changed"
 }`,
+            }],
+          }],
+        };
+
+        const claudeRes = await fetch(CLAUDE_API_URL, {
+          method: 'POST',
+          headers: {
+            'x-api-key': ANTHROPIC_API_KEY,
+            'anthropic-version': '2023-06-01',
+            'Content-Type': 'application/json',
           },
-        ],
-      }],
-    };
+          body: JSON.stringify(claudeBody),
+        });
 
-    const claudeRes = await fetch(CLAUDE_API_URL, {
-      method: 'POST',
-      headers: {
-        'x-api-key': ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(claudeBody),
-    });
+        if (!claudeRes.ok) throw new Error(`Claude API error ${claudeRes.status}: ${await claudeRes.text()}`);
 
-    if (!claudeRes.ok) {
-      const errText = await claudeRes.text();
-      throw new Error(`Claude API error ${claudeRes.status}: ${errText}`);
-    }
+        const claudeData = await claudeRes.json();
+        const rawText = claudeData.content?.[0]?.text;
+        if (!rawText) throw new Error('Empty response from Claude');
 
-    const claudeData = await claudeRes.json();
-    const rawText = claudeData.content?.[0]?.text;
-    if (!rawText) throw new Error('Empty response from Claude');
+        const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+        if (!jsonMatch) throw new Error('Could not parse JSON from Claude response');
+        const adjustResult = JSON.parse(jsonMatch[0]);
 
-    const jsonMatch = rawText.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) throw new Error('Could not parse JSON from Claude response');
+        // Submit to NanoBanana
+        const nbRes = await fetch(`${NB_BASE}/generate-2`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${NANOBANANA_API_KEY}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            prompt: adjustResult.adjusted_prompt,
+            model: 'nano-banana-2',
+            imageUrls: [creative.image_url],
+            aspectRatio: creative.aspect_ratio || '4:5',
+            resolution: '1K',
+            outputFormat: 'png',
+          }),
+        });
 
-    let adjustResult;
-    try {
-      adjustResult = JSON.parse(jsonMatch[0]);
-    } catch (parseErr) {
-      throw new Error(`Failed to parse Claude JSON: ${parseErr.message}`);
-    }
+        if (!nbRes.ok) throw new Error(`NanoBanana error ${nbRes.status}: ${await nbRes.text()}`);
+        const nbData = await nbRes.json();
+        const taskId = nbData.taskId || nbData.data?.taskId;
+        if (!taskId) throw new Error('No taskId from NanoBanana');
 
-    // Submit to NanoBanana with adjusted prompt
-    const nbRes = await fetch(`${NB_BASE}/generate-2`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${NANOBANANA_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        prompt: adjustResult.adjusted_prompt,
-        model: 'nano-banana-2',
-        imageUrls: [creative.image_url],
-        aspectRatio: creative.aspect_ratio || '4:5',
-        resolution: '1K',
-        outputFormat: 'png',
-      }),
-    });
+        const newImageUrl = await pollNanoBanana(taskId);
 
-    if (!nbRes.ok) {
-      const errText = await nbRes.text();
-      throw new Error(`NanoBanana submit error ${nbRes.status}: ${errText}`);
-    }
-
-    const nbData = await nbRes.json();
-    const taskId = nbData.taskId || nbData.data?.taskId;
-    if (!taskId) {
-      console.error('[staticsGeneration] Unexpected NanoBanana response:', JSON.stringify(nbData).slice(0, 500));
-      throw new Error('No taskId returned from NanoBanana');
-    }
-
-    // Poll for completion
-    const newImageUrl = await pollNanoBanana(taskId);
-
-    // Update the creative with new image
-    const updated = await pgQuery(
-      `UPDATE spy_creatives
-       SET image_url = $1, generation_prompt = $2, updated_at = NOW()
-       WHERE id = $3 RETURNING *`,
-      [newImageUrl, adjustResult.adjusted_prompt, req.params.id]
-    );
-
-    if (!updated || updated.length === 0) {
-      return res.status(404).json({ success: false, error: { message: 'Creative not found after update' } });
-    }
-    res.json({
-      success: true,
-      data: {
-        ...updated[0],
-        changes_summary: adjustResult.changes_summary,
-        previous_image_url: creative.image_url,
-      },
-    });
+        await pgQuery(
+          `UPDATE spy_creatives SET image_url = $1, generation_prompt = $2, review_notes = NULL, updated_at = NOW() WHERE id = $3`,
+          [newImageUrl, adjustResult.adjusted_prompt, creative.id]
+        );
+        console.log(`[ai-adjust] Success for ${creative.id}: ${newImageUrl}`);
+      } catch (err) {
+        console.error(`[ai-adjust] Failed for ${creative.id}:`, err.message);
+        await pgQuery(
+          "UPDATE spy_creatives SET review_notes = $1, updated_at = NOW() WHERE id = $2",
+          [`AI adjustment failed: ${err.message}`, creative.id]
+        ).catch(() => {});
+      }
+    })();
   } catch (err) {
     console.error('[staticsGeneration] /creatives/:id/ai-adjust error:', err);
     res.status(500).json({ success: false, error: { message: err.message } });

@@ -1711,10 +1711,24 @@ export default function StaticsGeneration() {
           }}
           onAiAdjust={async (id, instruction) => {
             const res = await api.post(`/statics-generation/creatives/${id}/ai-adjust`, { instruction });
-            if (res.data?.success && res.data?.data) {
-              const newUrl = res.data.data.image_url;
-              setCreatives(prev => prev.map(c => c.id === id ? { ...c, image_url: newUrl } : c));
-              setDetailModal(prev => prev ? { ...prev, image_url: newUrl } : null);
+            if (res.data?.success) {
+              // Async — image will update in background. Poll for changes.
+              setDetailModal(null);
+              alert('AI adjustment started. The image will update in the pipeline shortly (~1-2 min).');
+              // Poll for updated image every 10s for up to 3 minutes
+              let attempts = 0;
+              const poller = setInterval(async () => {
+                attempts++;
+                if (attempts > 18) { clearInterval(poller); return; }
+                try {
+                  const check = await api.get(`/statics-generation/creatives`);
+                  const updated = (check.data?.data || []).find(c => c.id === id);
+                  if (updated && updated.image_url && updated.image_url !== res.data?.data?.previous_image_url) {
+                    setCreatives(prev => prev.map(c => c.id === id ? { ...c, ...updated } : c));
+                    clearInterval(poller);
+                  }
+                } catch { /* ignore poll errors */ }
+              }, 10000);
             } else {
               throw new Error(res.data?.error?.message || res.data?.error || 'AI adjustment failed');
             }
