@@ -119,12 +119,16 @@ export function CreativeDetailModal({
   // If it's an array (swap_pairs), skip — only show object entries
   if (Array.isArray(adaptedText)) adaptedText = {};
 
+  const [aiSuccess, setAiSuccess] = useState(false);
+
   const handleAiSubmit = async () => {
     if (!aiInstruction.trim() || aiAdjusting) return;
     setAiAdjusting(true);
     setAiError(null);
+    setAiSuccess(false);
     try {
       await onAiAdjust?.(creative.id, aiInstruction.trim());
+      setAiSuccess(true);
       setAiInstruction('');
     } catch (err) {
       setAiError(err.message || 'AI adjustment failed. Please try again.');
@@ -310,6 +314,9 @@ export function CreativeDetailModal({
                   <><Sparkles className="w-4 h-4" /> Regenerate with Correction</>
                 )}
               </button>
+              {aiSuccess && (
+                <p className="text-xs text-emerald-400 mt-1">✓ AI adjustment started. Close this modal and refresh the pipeline in ~1-2 minutes to see the updated image.</p>
+              )}
               {aiError && (
                 <p className="text-xs text-red-400 mt-1">{aiError}</p>
               )}
