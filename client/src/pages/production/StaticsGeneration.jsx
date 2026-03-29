@@ -1375,45 +1375,65 @@ export default function StaticsGeneration() {
                 {/* ---- 9:16 Variant Tracker ---- */}
                 {(() => {
                   const parentCreatives = creatives.filter(c => !c.parent_creative_id && c.aspect_ratio !== '9:16');
+                  if (parentCreatives.length === 0) return null;
                   const variants = creatives.filter(c => c.parent_creative_id && c.aspect_ratio === '9:16');
-                  const tracked = parentCreatives
-                    .map(p => {
-                      const v = variants.find(v => v.parent_creative_id === p.id);
-                      if (!v) return null;
-                      const status = v.status === 'generating' ? 'generating'
-                        : v.status === 'rejected' ? 'failed'
-                        : v.image_url ? 'done' : 'generating';
-                      return { parent: p, variant: v, status };
-                    })
-                    .filter(Boolean);
-                  const generating916 = tracked.filter(t => t.status === 'generating');
-                  const failed916 = tracked.filter(t => t.status === 'failed');
-                  if (generating916.length === 0 && failed916.length === 0) return null;
+                  const tracked = parentCreatives.map(p => {
+                    const v = variants.find(v => v.parent_creative_id === p.id);
+                    if (!v) return { parent: p, variant: null, status: 'none' };
+                    const status = v.status === 'generating' ? 'generating'
+                      : v.status === 'rejected' ? 'failed'
+                      : v.image_url ? 'done' : 'generating';
+                    return { parent: p, variant: v, status };
+                  });
+                  const counts = { generating: 0, done: 0, failed: 0, none: 0 };
+                  tracked.forEach(t => counts[t.status]++);
                   return (
                     <div className="bg-[#0d0d0d] border border-white/[0.06] rounded-lg p-3 mt-2">
-                      <div className="flex items-center gap-2 mb-2">
-                        <Loader2 className={`w-3.5 h-3.5 ${generating916.length > 0 ? 'animate-spin text-blue-400' : 'text-gray-500'}`} />
+                      <div className="flex items-center gap-2 mb-2.5">
                         <span className="text-xs font-medium text-gray-300">9:16 Variants</span>
-                        {generating916.length > 0 && (
-                          <span className="text-[10px] bg-blue-500/15 text-blue-400 px-1.5 py-0.5 rounded-full">{generating916.length} generating</span>
-                        )}
-                        {failed916.length > 0 && (
-                          <span className="text-[10px] bg-red-500/15 text-red-400 px-1.5 py-0.5 rounded-full">{failed916.length} failed</span>
-                        )}
-                      </div>
-                      <div className="space-y-1.5">
-                        {[...generating916, ...failed916].map(({ parent, variant, status }) => (
-                          <div key={variant.id} className="flex items-center gap-2 text-[11px]">
-                            {status === 'generating' ? (
-                              <div className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
-                            ) : (
-                              <div className="w-1.5 h-1.5 rounded-full bg-red-400" />
-                            )}
-                            <span className="text-gray-400 truncate flex-1">{parent.product_name || 'Untitled'} — {parent.angle || 'No angle'}</span>
-                            <span className={status === 'generating' ? 'text-blue-400' : 'text-red-400'}>
-                              {status === 'generating' ? 'Generating...' : 'Failed'}
+                        <div className="flex items-center gap-1.5 ml-auto">
+                          {counts.done > 0 && (
+                            <span className="text-[10px] bg-emerald-500/15 text-emerald-400 px-1.5 py-0.5 rounded-full flex items-center gap-1">
+                              <Check className="w-2.5 h-2.5" />{counts.done}
                             </span>
-                            {status === 'failed' && (
+                          )}
+                          {counts.generating > 0 && (
+                            <span className="text-[10px] bg-blue-500/15 text-blue-400 px-1.5 py-0.5 rounded-full flex items-center gap-1">
+                              <Loader2 className="w-2.5 h-2.5 animate-spin" />{counts.generating}
+                            </span>
+                          )}
+                          {counts.failed > 0 && (
+                            <span className="text-[10px] bg-red-500/15 text-red-400 px-1.5 py-0.5 rounded-full flex items-center gap-1">
+                              <AlertCircle className="w-2.5 h-2.5" />{counts.failed}
+                            </span>
+                          )}
+                          {counts.none > 0 && (
+                            <span className="text-[10px] bg-gray-500/15 text-gray-500 px-1.5 py-0.5 rounded-full">{counts.none} pending</span>
+                          )}
+                        </div>
+                      </div>
+                      <div className="space-y-1">
+                        {tracked.map(({ parent, variant, status }) => (
+                          <div key={parent.id} className="flex items-center gap-2 text-[11px]">
+                            <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                              status === 'generating' ? 'bg-blue-400 animate-pulse'
+                              : status === 'done' ? 'bg-emerald-400'
+                              : status === 'failed' ? 'bg-red-400'
+                              : 'bg-gray-600'
+                            }`} />
+                            <span className="text-gray-400 truncate flex-1">{parent.product_name || 'Untitled'} — {parent.angle || 'No angle'}</span>
+                            <span className={
+                              status === 'generating' ? 'text-blue-400'
+                              : status === 'done' ? 'text-emerald-400'
+                              : status === 'failed' ? 'text-red-400'
+                              : 'text-gray-600'
+                            }>
+                              {status === 'generating' ? 'Generating...'
+                                : status === 'done' ? 'Ready'
+                                : status === 'failed' ? 'Failed'
+                                : '—'}
+                            </span>
+                            {(status === 'failed' || status === 'none') && (
                               <button
                                 type="button"
                                 onClick={async () => {
@@ -1422,9 +1442,9 @@ export default function StaticsGeneration() {
                                     fetchCreatives();
                                   } catch {}
                                 }}
-                                className="text-[10px] text-blue-400 hover:text-blue-300 cursor-pointer"
+                                className="text-[10px] text-blue-400 hover:text-blue-300 cursor-pointer shrink-0"
                               >
-                                Retry
+                                {status === 'failed' ? 'Retry' : 'Create'}
                               </button>
                             )}
                           </div>
