@@ -99,6 +99,7 @@ export function CreativeDetailModal({
   onAiAdjust,
   onStatusChange,
   onPublish,
+  onCreateVariant,
 }) {
   const [aiInstruction, setAiInstruction] = useState('');
   const [debugOpen, setDebugOpen] = useState(false);
@@ -326,6 +327,18 @@ export function CreativeDetailModal({
               <Download className="w-4 h-4" />
               Download
             </button>
+
+            {/* Create 9:16 variant */}
+            {creative.aspect_ratio !== '9:16' && !creative.parent_creative_id && onCreateVariant && (
+              <button
+                type="button"
+                onClick={() => onCreateVariant(creative.id)}
+                className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-purple-600/15 border border-purple-500/25 text-sm text-purple-300 hover:bg-purple-600/25 transition-colors cursor-pointer"
+              >
+                <Sparkles className="w-4 h-4" />
+                Create 9:16 Version
+              </button>
+            )}
 
             {/* Approve */}
             {creative.status === 'review' && (

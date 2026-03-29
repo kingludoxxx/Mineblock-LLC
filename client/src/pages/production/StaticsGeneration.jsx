@@ -1712,6 +1712,12 @@ export default function StaticsGeneration() {
               throw new Error(res.data?.error?.message || res.data?.error || 'AI adjustment failed');
             }
           }}
+          onCreateVariant={async (id) => {
+            try {
+              await api.post(`/statics-generation/creatives/${id}/create-variant`, { aspect_ratio: '9:16' });
+              setDetailModal(null);
+            } catch { /* silently fail */ }
+          }}
           onStatusChange={async (id, status) => {
             try {
               await api.patch(`/statics-generation/creatives/${id}/status`, { status });

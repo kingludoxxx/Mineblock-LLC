@@ -597,6 +597,36 @@ router.delete('/creatives/:id', authenticate, async (req, res) => {
   }
 });
 
+// ── POST /creatives/:id/create-variant — Manually trigger variant generation ──
+router.post('/creatives/:id/create-variant', authenticate, async (req, res) => {
+  try {
+    await ensureCreativesTable();
+    const { aspect_ratio = '9:16' } = req.body;
+    const rows = await pgQuery('SELECT * FROM spy_creatives WHERE id = $1', [req.params.id]);
+    if (rows.length === 0) return res.status(404).json({ success: false, error: { message: 'Creative not found' } });
+    const parent = rows[0];
+
+    // Check if variant already exists
+    const existing = await pgQuery(
+      'SELECT id FROM spy_creatives WHERE parent_creative_id = $1 AND aspect_ratio = $2',
+      [parent.id, aspect_ratio]
+    );
+    if (existing.length > 0) {
+      return res.status(400).json({ success: false, error: { message: `A ${aspect_ratio} variant already exists` } });
+    }
+
+    res.json({ success: true, message: `${aspect_ratio} variant generation started` });
+
+    // Fire-and-forget
+    generateVariant(parent, aspect_ratio).catch(err =>
+      console.error('[staticsGeneration] Manual variant generation error:', err.message)
+    );
+  } catch (err) {
+    console.error('[staticsGeneration] /creatives/:id/create-variant error:', err);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
 // ── POST /creatives — Save a generated creative to the pipeline ────────
 router.post('/creatives', authenticate, async (req, res) => {
   try {
