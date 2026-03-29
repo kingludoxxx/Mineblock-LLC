@@ -81,14 +81,18 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, onPublish
     .filter(Boolean)
     .join(' \u00b7 ');
 
+  const [wasDragged, setWasDragged] = useState(false);
+
   return (
     <div
       draggable
       onDragStart={(e) => {
+        setWasDragged(true);
         e.dataTransfer.setData('text/plain', JSON.stringify({ id: creative.id, status: creative.status }));
         e.dataTransfer.effectAllowed = 'move';
       }}
-      onClick={() => onCardClick?.(creative)}
+      onDragEnd={() => setTimeout(() => setWasDragged(false), 100)}
+      onClick={() => { if (!wasDragged) onCardClick?.(creative); }}
       className="group bg-[#0a0a0a] border border-white/[0.06] rounded-lg overflow-hidden cursor-grab active:cursor-grabbing
                  hover:border-white/[0.12] hover:shadow-lg hover:shadow-black/20 transition-all duration-150"
     >

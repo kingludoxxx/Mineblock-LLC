@@ -1320,7 +1320,9 @@ export default function StaticsGeneration() {
                     try {
                       await api.patch(`/statics-generation/creatives/${id}/status`, { status: newStatus });
                       setCreatives(prev => prev.map(c => c.id === id ? { ...c, status: newStatus } : c));
-                    } catch { /* silently fail */ }
+                    } catch (err) {
+                      console.error('[Pipeline] Status change failed:', err.message);
+                    }
                   }}
                   onCardClick={(creative) => setDetailModal(creative)}
                   onPublish={async (id) => {
