@@ -11,8 +11,13 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 // ── Temporary image store (serves base64 as HTTP URLs for NanoBanana) ──
 const tempImages = new Map();
 const TEMP_IMAGE_TTL = 10 * 60 * 1000; // 10 minutes
+const MAX_TEMP_IMAGES = 100;
 
 function storeTempImage(buf, contentType) {
+  if (tempImages.size >= MAX_TEMP_IMAGES) {
+    const oldest = tempImages.keys().next().value;
+    tempImages.delete(oldest);
+  }
   const id = crypto.randomUUID();
   tempImages.set(id, { buf, contentType });
   setTimeout(() => tempImages.delete(id), TEMP_IMAGE_TTL);
@@ -376,6 +381,7 @@ async function ensureCreativesTable() {
   await pgQuery(`CREATE INDEX IF NOT EXISTS idx_spy_creatives_status ON spy_creatives(status)`).catch(() => {});
   await pgQuery(`CREATE INDEX IF NOT EXISTS idx_spy_creatives_product_id ON spy_creatives(product_id)`).catch(() => {});
   await pgQuery(`CREATE INDEX IF NOT EXISTS idx_spy_creatives_created ON spy_creatives(created_at DESC)`).catch(() => {});
+  await pgQuery(`CREATE INDEX IF NOT EXISTS idx_spy_creatives_parent_id ON spy_creatives(parent_creative_id)`).catch(() => {});
   crTableReady = true;
 }
 
@@ -413,6 +419,7 @@ async function generateVariant(parent, newAspectRatio) {
     );
 
     // 1. Create placeholder creative
+    let child;
     const childRows = await pgQuery(
       `INSERT INTO spy_creatives
         (product_id, product_name, angle, aspect_ratio, status,
@@ -435,7 +442,10 @@ async function generateVariant(parent, newAspectRatio) {
         parent.pipeline || 'standard',
       ]
     );
-    const child = childRows[0];
+    if (!childRows || childRows.length === 0) {
+      throw new Error('Failed to create variant creative in DB');
+    }
+    child = childRows[0];
 
     // 2. Get product image from product_profiles, with fallbacks
     let productImageUrl = null;
@@ -460,8 +470,8 @@ async function generateVariant(parent, newAspectRatio) {
     }
 
     // 4. Build prompt from parent's swap_pairs
-    const swapPairs = typeof parent.swap_pairs === 'string' ? JSON.parse(parent.swap_pairs) : parent.swap_pairs;
-    const adaptedText = typeof parent.adapted_text === 'string' ? JSON.parse(parent.adapted_text) : parent.adapted_text;
+    const swapPairs = (typeof parent.swap_pairs === 'string' ? JSON.parse(parent.swap_pairs) : parent.swap_pairs) || [];
+    const adaptedText = (typeof parent.adapted_text === 'string' ? JSON.parse(parent.adapted_text) : parent.adapted_text) || {};
     const product = { name: parent.product_name };
     const nbPrompt = buildNanoBananaPrompt({ adapted_text: adaptedText }, swapPairs, product);
 

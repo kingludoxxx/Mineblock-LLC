@@ -16,26 +16,24 @@ export default function ProductSelector({ selectedId, onSelect, className = '' }
         setProducts(r.data.data || []);
         setLoading(false);
       })
-      .catch(() => setLoading(false));
+      .catch((err) => {
+        console.error('Failed to load products:', err.message);
+        setLoading(false);
+      });
   }, []);
 
-  // Close on outside click
+  // Close on outside click or escape — only listen when open
   useEffect(() => {
-    const handler = (e) => {
-      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
+    if (!open) return;
+    const handleClick = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    const handleKey = (e) => { if (e.key === 'Escape') setOpen(false); };
+    document.addEventListener('mousedown', handleClick);
+    document.addEventListener('keydown', handleKey);
+    return () => {
+      document.removeEventListener('mousedown', handleClick);
+      document.removeEventListener('keydown', handleKey);
     };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, []);
-
-  // Close on escape
-  useEffect(() => {
-    const handler = (e) => {
-      if (e.key === 'Escape') setOpen(false);
-    };
-    document.addEventListener('keydown', handler);
-    return () => document.removeEventListener('keydown', handler);
-  }, []);
+  }, [open]);
 
   const selected = products.find((p) => p.id === selectedId);
 

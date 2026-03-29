@@ -107,9 +107,10 @@ router.get('/', authenticate, async (req, res) => {
       params.push(category);
     }
     if (search) {
-      query += ` AND (name ILIKE $${idx} OR category ILIKE $${idx})`;
-      params.push(`%${search}%`);
-      idx++;
+      const searchTerm = `%${search}%`;
+      query += ` AND (name ILIKE $${idx} OR category ILIKE $${idx + 1})`;
+      params.push(searchTerm, searchTerm);
+      idx += 2;
     }
 
     query += ' ORDER BY sort_order ASC, created_at DESC';
