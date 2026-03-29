@@ -918,6 +918,34 @@ async function frameioFetch(url, options = {}) {
   return res.json();
 }
 
+// ── Helper: upload one image to Frame.io folder ─────────────────────────
+
+async function uploadToFrameFolder(folderId, imageUrl, fileName) {
+  const imageRes = await fetch(imageUrl);
+  if (!imageRes.ok) throw new Error(`Failed to fetch image: ${imageRes.status}`);
+  const imageBuf = Buffer.from(await imageRes.arrayBuffer());
+  const ext = fileName.match(/\.(png|jpg|jpeg|webp)$/i)?.[1] || 'png';
+  const mimeType = `image/${ext === 'jpg' ? 'jpeg' : ext}`;
+
+  const asset = await frameioFetch(`/assets/${folderId}/children`, {
+    method: 'POST',
+    body: JSON.stringify({
+      name: fileName,
+      type: 'file',
+      filetype: mimeType,
+      filesize: imageBuf.length,
+    }),
+  });
+
+  if (asset?.upload_url) {
+    await fetch(asset.upload_url, { method: 'PUT', headers: { 'Content-Type': mimeType }, body: imageBuf });
+  } else if (asset?.upload_urls?.length) {
+    await fetch(asset.upload_urls[0], { method: 'PUT', headers: { 'Content-Type': mimeType }, body: imageBuf });
+    try { await frameioFetch(`/assets/${asset.id}/complete`, { method: 'POST', body: '{}' }); } catch { /* best effort */ }
+  }
+  return asset;
+}
+
 // ── POST /creatives/:id/publish-clickup ─────────────────────────────────
 
 router.post('/creatives/:id/publish-clickup', authenticate, async (req, res) => {
@@ -927,17 +955,31 @@ router.post('/creatives/:id/publish-clickup', authenticate, async (req, res) => 
   try {
     await ensureCreativesTable();
 
-    // 1. Fetch the creative
-    const rows = await pgQuery('SELECT * FROM spy_creatives WHERE id = $1', [req.params.id]);
+    // 1. Fetch the creative — resolve to parent if a variant was clicked
+    let rows = await pgQuery('SELECT * FROM spy_creatives WHERE id = $1', [req.params.id]);
     if (rows.length === 0) return res.status(404).json({ success: false, error: { message: 'Creative not found' } });
-    const creative = rows[0];
+    let parent = rows[0];
 
-    if (!creative.image_url) {
-      return res.status(400).json({ success: false, error: { message: 'Creative has no image_url' } });
+    if (parent.parent_creative_id) {
+      // User clicked publish on a variant — find the actual parent
+      rows = await pgQuery('SELECT * FROM spy_creatives WHERE id = $1', [parent.parent_creative_id]);
+      if (rows.length === 0) return res.status(404).json({ success: false, error: { message: 'Parent creative not found' } });
+      parent = rows[0];
     }
 
-    // 2. Scan Static Ads list for highest B#### number
-    let maxBrief = 0;
+    // 2. Gather all variants with images
+    const variantRows = await pgQuery(
+      "SELECT * FROM spy_creatives WHERE parent_creative_id = $1 AND image_url IS NOT NULL",
+      [parent.id]
+    );
+    const allCreatives = [parent, ...variantRows].filter(c => c.image_url);
+
+    if (allCreatives.length === 0) {
+      return res.status(400).json({ success: false, error: { message: 'No creatives with images to publish' } });
+    }
+
+    // 3. Scan Static Ads list for highest IM number
+    let maxNum = 0;
     let page = 0;
     let hasMore = true;
 
@@ -948,15 +990,17 @@ router.post('/creatives/:id/publish-clickup', authenticate, async (req, res) => 
       const tasks = data.tasks || [];
 
       for (const task of tasks) {
+        // Check briefNumber custom field
         const briefField = task.custom_fields?.find((f) => f.id === FIELD_IDS.briefNumber);
         if (briefField?.value != null) {
           const num = parseInt(briefField.value, 10);
-          if (!isNaN(num) && num > maxBrief) maxBrief = num;
+          if (!isNaN(num) && num > maxNum) maxNum = num;
         }
-        const match = task.name?.match(/B(\d{2,5})/);
+        // Also check task name for IM{number} pattern
+        const match = task.name?.match(/IM(\d+)/);
         if (match) {
           const num = parseInt(match[1], 10);
-          if (!isNaN(num) && num > maxBrief) maxBrief = num;
+          if (!isNaN(num) && num > maxNum) maxNum = num;
         }
       }
 
@@ -964,11 +1008,11 @@ router.post('/creatives/:id/publish-clickup', authenticate, async (req, res) => 
       page++;
     }
 
-    const nextNumber = maxBrief + 1;
-    const briefId = `B${String(nextNumber).padStart(4, '0')}`;
+    const nextNumber = maxNum + 1;
+    const imId = `IM${nextNumber}`;
 
-    // 3. Build naming convention
-    const rawAngle = creative.angle || 'NA';
+    // 4. Build naming convention: MR - IM{N} - NN - {Angle} - WK{W}_{Y}
+    const rawAngle = parent.angle || 'NA';
     const angleForName = rawAngle.charAt(0).toUpperCase() + rawAngle.slice(1).replace(/\s+/g, '');
 
     const now = new Date();
@@ -979,15 +1023,15 @@ router.post('/creatives/:id/publish-clickup', authenticate, async (req, res) => 
     const weekNum = Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
     const weekLabel = `WK${String(weekNum).padStart(2, '0')}_${d.getUTCFullYear()}`;
 
-    const namingConvention = `MR - ${briefId} - IM - NN - NA - ${angleForName} - ${weekLabel}`;
+    const namingConvention = `MR - ${imId} - NN - ${angleForName} - ${weekLabel}`;
 
-    // 4. Resolve angle dropdown UUID
+    // 5. Resolve angle dropdown UUID
     const angleKey = Object.keys(ANGLE_OPTIONS).find(
       (k) => k.toLowerCase() === rawAngle.toLowerCase(),
     ) || 'NA';
     const angleUuid = ANGLE_OPTIONS[angleKey] || ANGLE_OPTIONS.NA;
 
-    // 4. Create the ClickUp task
+    // 6. Create the ClickUp task
     const taskPayload = {
       name: namingConvention,
       status: 'ready to launch',
@@ -1008,91 +1052,51 @@ router.post('/creatives/:id/publish-clickup', authenticate, async (req, res) => 
     const clickupTaskId = createdTask.id;
     const clickupTaskUrl = createdTask.url || `https://app.clickup.com/t/${clickupTaskId}`;
 
-    // 5. Upload to Frame.io
+    // 7. Upload ALL dimensions to Frame.io
     let frameLink = null;
     try {
-      // Get root folder
       const project = await frameioFetch(`/projects/${FRAMEIO_PROJECT_ID}`);
       const rootFolderId = project?.root_asset_id;
       if (!rootFolderId) throw new Error('Could not get Frame.io project root folder');
 
-      // Create subfolder with brief ID
+      // Create one folder named with IM ID
       const folder = await frameioFetch(`/assets/${rootFolderId}/children`, {
         method: 'POST',
-        body: JSON.stringify({ name: briefId, type: 'folder' }),
+        body: JSON.stringify({ name: imId, type: 'folder' }),
       });
       if (!folder?.id) throw new Error('Failed to create Frame.io folder');
 
       const folderUrl = `https://next.frame.io/project/${FRAMEIO_PROJECT_ID}/${folder.id}`;
 
-      // Upload the image: create asset then PUT bytes
-      const imageRes = await fetch(creative.image_url);
-      if (!imageRes.ok) throw new Error(`Failed to fetch creative image: ${imageRes.status}`);
-      const imageBuf = Buffer.from(await imageRes.arrayBuffer());
-      const ext = creative.image_url.match(/\.(png|jpg|jpeg|webp)/i)?.[1] || 'png';
-      const fileName = `${briefId}.${ext}`;
-
-      const asset = await frameioFetch(`/assets/${folder.id}/children`, {
-        method: 'POST',
-        body: JSON.stringify({
-          name: fileName,
-          type: 'file',
-          filetype: `image/${ext === 'jpg' ? 'jpeg' : ext}`,
-          filesize: imageBuf.length,
-        }),
-      });
-
-      // Upload to the presigned URL
-      const mimeType = `image/${ext === 'jpg' ? 'jpeg' : ext}`;
-      if (asset?.upload_url) {
-        const uploadRes = await fetch(asset.upload_url, {
-          method: 'PUT',
-          headers: { 'Content-Type': mimeType },
-          body: imageBuf,
-        });
-        if (!uploadRes.ok) {
-          console.error(`[publish-clickup] Frame.io upload PUT failed: ${uploadRes.status}`);
-        }
-      } else if (asset?.upload_urls?.length) {
-        // Multi-part upload: upload chunk then complete
-        const uploadRes = await fetch(asset.upload_urls[0], {
-          method: 'PUT',
-          headers: { 'Content-Type': mimeType },
-          body: imageBuf,
-        });
-        if (!uploadRes.ok) {
-          console.error(`[publish-clickup] Frame.io upload PUT failed: ${uploadRes.status}`);
-        }
-        // Complete the multi-part upload
+      // Upload each creative's image with dimension suffix
+      for (const c of allCreatives) {
+        const ratio = (c.aspect_ratio || '4:5').replace(':', 'x');
+        const ext = c.image_url.match(/\.(png|jpg|jpeg|webp)/i)?.[1] || 'png';
+        const fileName = `${namingConvention} - ${ratio}.${ext}`;
         try {
-          await frameioFetch(`/assets/${asset.id}/complete`, { method: 'POST', body: JSON.stringify({}) });
-        } catch (completeErr) {
-          console.error(`[publish-clickup] Frame.io complete failed: ${completeErr.message}`);
+          await uploadToFrameFolder(folder.id, c.image_url, fileName);
+          console.log(`[publish-clickup] Uploaded ${ratio} to Frame.io: ${fileName}`);
+        } catch (uploadErr) {
+          console.error(`[publish-clickup] Failed to upload ${ratio}: ${uploadErr.message}`);
         }
-      } else {
-        console.warn(`[publish-clickup] Frame.io asset has no upload URL — image not uploaded`);
       }
 
       frameLink = folderUrl;
-
-      // Set the Frame link on the ClickUp task
       await setCustomField(clickupTaskId, FIELD_IDS.adsFrameLink, folderUrl);
     } catch (frameErr) {
       console.error(`[publish-clickup] Frame.io error: ${frameErr.message}`);
-      // Don't fail the whole request if Frame.io fails
     }
 
-    // 6. Update the spy_creatives record
+    // 8. Mark ALL creatives as launched
+    const allIds = allCreatives.map(c => c.id);
     await pgQuery(
       `UPDATE spy_creatives
-       SET status = 'launched',
-           generation_task_id = $1,
-           updated_at = NOW()
-       WHERE id = $2`,
-      [clickupTaskId, req.params.id],
+       SET status = 'launched', generation_task_id = $1, updated_at = NOW()
+       WHERE id = ANY($2::uuid[])`,
+      [clickupTaskId, allIds],
     );
 
-    // 7. Return result
+    // 9. Return result with all published IDs
     return res.json({
       success: true,
       data: {
@@ -1101,6 +1105,7 @@ router.post('/creatives/:id/publish-clickup', authenticate, async (req, res) => 
         frame_link: frameLink,
         naming_convention: namingConvention,
         brief_number: nextNumber,
+        published_ids: allIds,
       },
     });
   } catch (err) {
