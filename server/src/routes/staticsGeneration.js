@@ -1079,39 +1079,43 @@ router.post('/creatives/:id/publish-clickup', authenticate, async (req, res) => 
     const clickupTaskId = createdTask.id;
     const clickupTaskUrl = createdTask.url || `https://app.clickup.com/t/${clickupTaskId}`;
 
-    // 7. Upload ALL dimensions to Frame.io
-    let frameLink = null;
-    try {
-      const project = await frameioFetch(`/projects/${FRAMEIO_PROJECT_ID}`);
-      const rootFolderId = project?.root_asset_id;
-      if (!rootFolderId) throw new Error('Could not get Frame.io project root folder');
-
-      // Create one folder named with IM ID
-      const folder = await frameioFetch(`/assets/${rootFolderId}/children`, {
-        method: 'POST',
-        body: JSON.stringify({ name: imId, type: 'folder' }),
-      });
-      if (!folder?.id) throw new Error('Failed to create Frame.io folder');
-
-      const folderUrl = `https://next.frame.io/project/${FRAMEIO_PROJECT_ID}/${folder.id}`;
-
-      // Upload each creative's image with dimension suffix
-      for (const c of allCreatives) {
+    // 7. Attach ALL dimension images to the ClickUp task
+    // (Frame.io folder is auto-created by ClickUp automation)
+    for (const c of allCreatives) {
+      try {
         const ratio = (c.aspect_ratio || '4:5').replace(':', 'x');
         const ext = c.image_url.match(/\.(png|jpg|jpeg|webp)/i)?.[1] || 'png';
         const fileName = `${namingConvention} - ${ratio}.${ext}`;
-        try {
-          await uploadToFrameFolder(folder.id, c.image_url, fileName);
-          console.log(`[publish-clickup] Uploaded ${ratio} to Frame.io: ${fileName}`);
-        } catch (uploadErr) {
-          console.error(`[publish-clickup] Failed to upload ${ratio}: ${uploadErr.message}`);
-        }
-      }
 
-      frameLink = folderUrl;
-      await setCustomField(clickupTaskId, FIELD_IDS.adsFrameLink, folderUrl);
-    } catch (frameErr) {
-      console.error(`[publish-clickup] Frame.io error: ${frameErr.message}`);
+        const imageRes = await fetch(c.image_url);
+        if (!imageRes.ok) throw new Error(`Failed to fetch image: ${imageRes.status}`);
+        const imageBuf = Buffer.from(await imageRes.arrayBuffer());
+
+        const boundary = `----FormBoundary${crypto.randomUUID().replace(/-/g, '')}`;
+        const mimeType = `image/${ext === 'jpg' ? 'jpeg' : ext}`;
+        const body = Buffer.concat([
+          Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="attachment"; filename="${fileName}"\r\nContent-Type: ${mimeType}\r\n\r\n`),
+          imageBuf,
+          Buffer.from(`\r\n--${boundary}--\r\n`),
+        ]);
+
+        const attachRes = await fetch(`${CLICKUP_API}/task/${clickupTaskId}/attachment`, {
+          method: 'POST',
+          headers: {
+            Authorization: CLICKUP_TOKEN,
+            'Content-Type': `multipart/form-data; boundary=${boundary}`,
+          },
+          body,
+        });
+
+        if (attachRes.ok) {
+          console.log(`[publish-clickup] Attached ${ratio} to ClickUp task: ${fileName}`);
+        } else {
+          console.error(`[publish-clickup] ClickUp attachment failed (${attachRes.status}): ${await attachRes.text()}`);
+        }
+      } catch (attachErr) {
+        console.error(`[publish-clickup] Failed to attach ${c.aspect_ratio}: ${attachErr.message}`);
+      }
     }
 
     // 8. Mark ALL creatives as ready to launch
@@ -1129,7 +1133,6 @@ router.post('/creatives/:id/publish-clickup', authenticate, async (req, res) => 
       data: {
         clickup_task_id: clickupTaskId,
         clickup_task_url: clickupTaskUrl,
-        frame_link: frameLink,
         naming_convention: namingConvention,
         brief_number: nextNumber,
         published_ids: allIds,
