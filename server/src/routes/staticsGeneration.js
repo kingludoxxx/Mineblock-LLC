@@ -891,8 +891,18 @@ const ANGLE_OPTIONS = {
   Apology: '3c59aca9-f26b-4d8d-95b9-652fd4d30044',
 };
 
-// Map statics tool angles to ClickUp dropdown options (fetched dynamically below)
-// Angles not in the ClickUp dropdown will use their name in the naming convention but default to NA in the dropdown
+// Map statics tool angles → ClickUp dropdown keys (case-insensitive lookup on line 1055)
+// Statics angles that don't exist in ClickUp dropdown default to NA in the field but keep their name in the title
+const STATICS_ANGLE_MAP = {
+  'urgency': 'Scarcity',
+  'social proof': 'NA',
+  'problem/solution': 'NA',
+  'before & after': 'NA',
+  'curiosity': 'Hiddenopportunity',
+  'authority': 'NA',
+  'offer': 'Offer',
+  'sale': 'Sale',
+};
 
 
 const BRIEF_TYPE_OPTIONS = {
@@ -1051,9 +1061,10 @@ router.post('/creatives/:id/publish-clickup', authenticate, async (req, res) => 
 
     const namingConvention = `MR - ${imId} - NN - ${angleForName} - ${weekLabel}`;
 
-    // 5. Resolve angle dropdown UUID
+    // 5. Resolve angle dropdown UUID — map statics angles to ClickUp dropdown
+    const mappedAngle = STATICS_ANGLE_MAP[rawAngle.toLowerCase()] || rawAngle;
     const angleKey = Object.keys(ANGLE_OPTIONS).find(
-      (k) => k.toLowerCase() === rawAngle.toLowerCase(),
+      (k) => k.toLowerCase() === mappedAngle.toLowerCase(),
     ) || 'NA';
     const angleUuid = ANGLE_OPTIONS[angleKey] || ANGLE_OPTIONS.NA;
 
