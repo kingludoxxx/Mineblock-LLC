@@ -607,6 +607,14 @@ export default function StaticsGeneration() {
   const [selectedProductObj, setSelectedProductObj] = useState(null);
   const selectedProductRef = useRef(null); // full product object for generation
 
+  // Toast notifications
+  const [toasts, setToasts] = useState([]);
+  const addToast = useCallback((message, type = 'info', duration = 5000) => {
+    const id = Date.now();
+    setToasts(prev => [...prev, { id, message, type }]);
+    setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), duration);
+  }, []);
+
   // Generation state
   const [generating, setGenerating] = useState(false);
   const [generationStep, setGenerationStep] = useState(0);
@@ -905,8 +913,19 @@ export default function StaticsGeneration() {
     try {
       await api.patch(`/statics-generation/creatives/${id}/status`, { status: 'approved' });
       setCreatives((prev) => prev.map((c) => (c.id === id ? { ...c, status: 'approved' } : c)));
+
+      // Auto-trigger 9:16 variant generation on approve (non-variant creatives only)
+      const creative = creatives.find(c => c.id === id);
+      if (creative && !creative.parent_creative_id && creative.aspect_ratio !== '9:16') {
+        try {
+          await api.post(`/statics-generation/creatives/${id}/create-variant`, { aspect_ratio: '9:16' });
+          addToast('✨ 9:16 version is being generated...', 'generating', 60000);
+        } catch {
+          // variant generation failed silently — user can manually trigger later
+        }
+      }
     } catch {
-      // silently fail
+      addToast('Failed to approve creative', 'error');
     }
   };
 
@@ -1759,6 +1778,37 @@ export default function StaticsGeneration() {
             setAddRefModal(false);
           }}
         />
+      )}
+
+      {/* Toast notifications */}
+      {toasts.length > 0 && (
+        <div className="fixed bottom-6 right-6 z-[9999] flex flex-col gap-2 pointer-events-none">
+          {toasts.map(toast => (
+            <div
+              key={toast.id}
+              className={`pointer-events-auto flex items-center gap-3 px-4 py-3 rounded-xl shadow-2xl border backdrop-blur-sm ${
+                toast.type === 'generating'
+                  ? 'bg-blue-950/90 border-blue-500/30 text-blue-200'
+                  : toast.type === 'success'
+                    ? 'bg-emerald-950/90 border-emerald-500/30 text-emerald-200'
+                    : toast.type === 'error'
+                      ? 'bg-red-950/90 border-red-500/30 text-red-200'
+                      : 'bg-[#111]/90 border-white/10 text-slate-200'
+              }`}
+            >
+              {toast.type === 'generating' && <Loader2 className="w-4 h-4 animate-spin text-blue-400 shrink-0" />}
+              {toast.type === 'success' && <Check className="w-4 h-4 text-emerald-400 shrink-0" />}
+              {toast.type === 'error' && <AlertCircle className="w-4 h-4 text-red-400 shrink-0" />}
+              <span className="text-sm font-medium">{toast.message}</span>
+              <button
+                onClick={() => setToasts(prev => prev.filter(t => t.id !== toast.id))}
+                className="ml-2 p-0.5 rounded hover:bg-white/10 text-white/40 hover:text-white/80 transition-colors cursor-pointer"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          ))}
+        </div>
       )}
     </div>
   );
