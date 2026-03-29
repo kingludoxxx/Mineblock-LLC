@@ -406,19 +406,11 @@ async function generateVariant(parent, newAspectRatio) {
   try {
     console.log(`[staticsGeneration] Generating ${newAspectRatio} variant for creative ${parent.id}`);
 
-    // 0. Clean up old rejected/failed variants and skip if a good one exists
+    // 0. Clean up any previous variants for this aspect ratio
     await pgQuery(
-      "DELETE FROM spy_creatives WHERE parent_creative_id = $1 AND aspect_ratio = $2 AND status IN ('rejected', 'archived')",
+      "DELETE FROM spy_creatives WHERE parent_creative_id = $1 AND aspect_ratio = $2",
       [parent.id, newAspectRatio]
     );
-    const existingGood = await pgQuery(
-      "SELECT id FROM spy_creatives WHERE parent_creative_id = $1 AND aspect_ratio = $2 AND status NOT IN ('rejected', 'archived')",
-      [parent.id, newAspectRatio]
-    );
-    if (existingGood.length > 0) {
-      console.log(`[staticsGeneration] Variant ${newAspectRatio} already exists for ${parent.id}, skipping`);
-      return;
-    }
 
     // 1. Create placeholder creative
     const childRows = await pgQuery(
@@ -459,6 +451,8 @@ async function generateVariant(parent, newAspectRatio) {
 
     // 3. Get reference image URL — prefer original reference, fall back to parent image
     const referenceUrl = parent.reference_thumbnail || parent.image_url;
+    // For old creatives, use the parent's generated image as both reference and product if needed
+    if (!productImageUrl) productImageUrl = parent.image_url;
     if (!referenceUrl || !productImageUrl) {
       console.warn(`[staticsGeneration] Variant missing images: ref=${!!referenceUrl}, product=${!!productImageUrl}`);
       await pgQuery("UPDATE spy_creatives SET status = 'rejected', review_notes = 'Missing reference or product image for variant' WHERE id = $1", [child.id]);
@@ -495,7 +489,10 @@ async function generateVariant(parent, newAspectRatio) {
 
     const nbData = await nbRes.json();
     const taskId = nbData.taskId || nbData.data?.taskId;
-    if (!taskId) throw new Error('No taskId returned from NanoBanana');
+    if (!taskId) {
+      console.error('[staticsGeneration] Variant NanoBanana response:', JSON.stringify(nbData).slice(0, 500));
+      throw new Error('No taskId returned from NanoBanana');
+    }
 
     // 6. Poll for completion
     const imageUrl = await pollNanoBanana(taskId);
