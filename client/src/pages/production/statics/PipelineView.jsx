@@ -140,7 +140,7 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, onPublish
         )}
 
         {/* Action button */}
-        {column.key === 'approved' && onPublish && !creative.parent_creative_id ? (
+        {(column.key === 'approved' || column.key === 'ready') && onPublish && !creative.parent_creative_id ? (
           <button
             type="button"
             onClick={(e) => {
