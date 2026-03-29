@@ -91,8 +91,8 @@ CRITICAL RULES:
 - Comparison labels must adapt to the new product's context (e.g. "On GLP-1" → "With Man Boobs", "GLP-1 + Mars Men" → "Man Boobs + Estro Guard+")
 - Ingredient labels must use the new product's actual ingredients
 - Timeline labels should match the new product's realistic timeline
-- Stats should be realistic for the new product
-- CTA should match the new product's offer
+- PRICING: NEVER invent prices. Use ONLY the exact prices, discounts, and codes from the PRODUCT CONTEXT above. If the product has Bundle Variants, use those exact prices. If it has a Max Discount, never exceed it. If it has Discount Codes, use those exact codes. If no pricing info is available, use generic CTAs like "Shop Now" or "Learn More" instead of made-up prices.
+- CTA should match the new product's offer and discount codes from the PRODUCT CONTEXT
 - Disclaimer should reference the new brand
 
 Return ONLY valid JSON (no markdown, no code fences):
@@ -230,9 +230,10 @@ ABSOLUTE RULES:
 5. No extra text beyond the specified swaps
 6. Comparison labels, timeline labels, ingredient labels ALL get swapped
 7. The product is a MINI BITCOIN MINER — NEVER show a USB-looking product. Copy the device from image 1 exactly.
-7. Hands: exactly 5 fingers, realistic proportions
-8. Match reference style, color palette, mood, and visual quality
-9. Brand logo for ${product.name} should replace competitor logo in same position`;
+8. Hands: exactly 5 fingers, realistic proportions
+9. Match reference style, color palette, mood, and visual quality
+10. Brand logo for ${product.name} should replace competitor logo in same position
+11. PRICES MUST MATCH the text swap list EXACTLY — do not invent or modify any price, discount percentage, or dollar amount`;
 }
 
 export function buildSwapPairs(originalText, adaptedText) {
