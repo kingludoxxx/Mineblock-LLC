@@ -1,19 +1,29 @@
+function stripUsb(text) {
+  if (!text) return text;
+  return text
+    .replace(/\bUSB[-\s]?C?\b/gi, '')
+    .replace(/\bflash\s*drive\b/gi, '')
+    .replace(/\bthumb\s*drive\b/gi, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
 export function buildClaudePrompt(product, angle) {
   const profile = product.profile || {};
   return `You are an elite ad creative analyst and copywriter. Your job is to deconstruct a reference ad image with surgical precision, then adapt every element for a new product.
 
 PRODUCT CONTEXT:
 - Product Name: ${product.name}
-- Description: ${product.description || 'N/A'}
+- Description: ${stripUsb(product.description) || 'N/A'}
 - Price: ${product.price || 'N/A'}
-- One-liner: ${profile.oneliner || 'N/A'}
+- One-liner: ${stripUsb(profile.oneliner) || 'N/A'}
 - Target Customer: ${profile.customerAvatar || 'N/A'}
 - Customer Frustration: ${profile.customerFrustration || 'N/A'}
 - Customer Dream: ${profile.customerDream || 'N/A'}
-- Big Promise: ${profile.bigPromise || 'N/A'}
-- Mechanism: ${profile.mechanism || 'N/A'}
+- Big Promise: ${stripUsb(profile.bigPromise) || 'N/A'}
+- Mechanism: ${stripUsb(profile.mechanism) || 'N/A'}
 - Key Benefits: ${Array.isArray(profile.benefits) ? profile.benefits.join(', ') : (profile.benefits || 'N/A')}
-- Differentiator: ${profile.differentiator || 'N/A'}
+- Differentiator: ${stripUsb(profile.differentiator) || 'N/A'}
 - Voice/Tone: ${profile.voice || 'N/A'}
 - Guarantee: ${profile.guarantee || 'N/A'}
 ${profile.painPoints ? `- Pain Points & Triggers: ${profile.painPoints}` : ''}
