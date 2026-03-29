@@ -110,7 +110,13 @@ export function CreativeDetailModal({
 
   if (!isOpen || !creative) return null;
 
-  const adaptedText = creative.adapted_text || creative.swap_pairs || {};
+  // Parse adapted_text — may be a JSON string from the DB
+  let adaptedText = creative.adapted_text || creative.swap_pairs || {};
+  if (typeof adaptedText === 'string') {
+    try { adaptedText = JSON.parse(adaptedText); } catch { adaptedText = {}; }
+  }
+  // If it's an array (swap_pairs), skip — only show object entries
+  if (Array.isArray(adaptedText)) adaptedText = {};
 
   const handleAiSubmit = async () => {
     if (!aiInstruction.trim() || aiAdjusting) return;
@@ -232,7 +238,7 @@ export function CreativeDetailModal({
                         {ADAPTED_TEXT_LABELS[key] || key}:
                       </span>
                       <span className="text-slate-300 break-words">
-                        {typeof value === 'string' ? `"${value}"` : JSON.stringify(value)}
+                        {typeof value === 'string' ? value : Array.isArray(value) ? value.join(', ') : JSON.stringify(value)}
                       </span>
                     </div>
                   ))}

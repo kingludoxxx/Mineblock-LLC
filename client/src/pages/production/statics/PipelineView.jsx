@@ -88,7 +88,7 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, onPublish
                  hover:border-gray-500/60 hover:shadow-lg hover:shadow-black/20 transition-all duration-150"
     >
       {/* Thumbnail */}
-      <div className="relative aspect-square bg-black/30">
+      <div className="relative aspect-[4/5] bg-black/30">
         {creative.image_url ? (
           <img
             src={creative.image_url}
@@ -100,19 +100,12 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, onPublish
             <Eye className="w-8 h-8" />
           </div>
         )}
-
-        {/* Status badge overlay */}
-        <span
-          className={`absolute top-2 left-2 px-2 py-0.5 rounded text-[10px] font-medium ${badge.bg} ${badge.text}`}
-        >
-          {badge.label}
-        </span>
       </div>
 
       {/* Info */}
       <div className="p-3 space-y-1.5">
         <p className="text-sm font-medium text-gray-100 truncate">
-          {creative.product_name || creative.source_label || 'Untitled'}
+          {creative.product_name || 'Untitled'}
         </p>
 
         {angleLabel && (
