@@ -58,14 +58,21 @@ export default function ProductSelector({ selectedId, onSelect, className = '' }
         onClick={() => setOpen((o) => !o)}
         className="flex items-center justify-between w-full gap-2 bg-[#111] border border-white/[0.06] rounded-lg px-3 py-2.5 text-sm text-white/90 hover:border-white/[0.12] transition-colors"
       >
-        <div className="flex items-center gap-2 min-w-0">
-          <Package className="w-4 h-4 shrink-0 text-white/40" />
+        <div className="flex items-center gap-2.5 min-w-0">
           {selected ? (
             <>
+              {selected.product_images?.[0] ? (
+                <img src={selected.product_images[0]} alt="" className="w-6 h-6 rounded object-cover shrink-0" />
+              ) : (
+                <Package className="w-4 h-4 shrink-0 text-white/40" />
+              )}
               <span className="truncate">{selected.name}</span>
             </>
           ) : (
-            <span className="text-white/40">Select Product</span>
+            <>
+              <Package className="w-4 h-4 shrink-0 text-white/40" />
+              <span className="text-white/40">Select Product</span>
+            </>
           )}
         </div>
         <div className="flex items-center gap-1 shrink-0">
@@ -116,13 +123,13 @@ export default function ProductSelector({ selectedId, onSelect, className = '' }
                         isSelected ? 'bg-white/[0.06]' : 'hover:bg-white/[0.04]'
                       }`}
                     >
-                      <div className="flex flex-col gap-0.5 min-w-0">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        {product.product_images?.[0] ? (
+                          <img src={product.product_images[0]} alt="" className="w-6 h-6 rounded object-cover shrink-0" />
+                        ) : (
+                          <Package className="w-4 h-4 shrink-0 text-white/20" />
+                        )}
                         <span className="text-white/90 truncate">{product.name}</span>
-                        <div className="flex items-center gap-2 text-xs text-white/40">
-                          {product.price != null && (
-                            <span>{product.price}</span>
-                          )}
-                        </div>
                       </div>
                       {isSelected && (
                         <Check className="w-4 h-4 shrink-0 text-emerald-400" />

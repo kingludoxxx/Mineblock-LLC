@@ -359,9 +359,10 @@ export function AddReferenceModal({ isOpen, onClose, onImportComplete }) {
             idx === i ? { ...q, status: 'done', category } : q,
           ),
         );
-      } catch {
+      } catch (err) {
+        console.warn(`[AddReferenceModal] Failed to import item ${i + 1}:`, err.message);
         setQueue((prev) =>
-          prev.map((q, idx) => (idx === i ? { ...q, status: 'error' } : q)),
+          prev.map((q, idx) => (idx === i ? { ...q, status: 'error', errorMessage: err.message } : q)),
         );
       }
 

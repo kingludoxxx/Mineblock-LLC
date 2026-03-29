@@ -1,14 +1,10 @@
 import { useRef, useCallback, useState } from 'react';
 import {
-  ImagePlus,
   Layers,
   Upload,
   X,
   Loader2,
   Sparkles,
-  Package,
-  Zap,
-  Star,
 } from 'lucide-react';
 import ProductSelector from '../../../components/ProductSelector';
 
@@ -33,7 +29,6 @@ const ASPECT_RATIOS = ['1:1', '9:10', '4:5', '16:9', '2:3'];
 
 export function ConfigSidebar({
   selectedProduct,
-  selectedProductData,
   onProductChange,
   angle,
   onAngleChange,
@@ -78,9 +73,6 @@ export function ConfigSidebar({
     e.target.value = '';
   };
 
-  // -- Product preview image -------------------------------------------------
-  const heroImage = selectedProductData?.product_images?.[0] || null;
-
   return (
     <aside className="w-full shrink-0 bg-[#0a0a0a] flex flex-col overflow-y-auto">
       {/* ---- CONFIGURATION header ---- */}
@@ -101,50 +93,6 @@ export function ConfigSidebar({
             selectedId={selectedProduct}
             onSelect={(product) => onProductChange(product)}
           />
-
-          {/* Product preview card */}
-          {selectedProductData && (
-            <div className="rounded-xl border border-white/[0.06] bg-[#111] overflow-hidden">
-              {/* Hero image */}
-              {heroImage ? (
-                <div className="relative h-28 bg-[#0a0a0a] overflow-hidden">
-                  <img
-                    src={heroImage}
-                    alt={selectedProductData.name}
-                    className="w-full h-full object-cover"
-                    onError={(e) => { e.target.parentElement.style.display = 'none'; }}
-                  />
-                </div>
-              ) : (
-                <div className="h-14 bg-[#0a0a0a] flex items-center justify-center">
-                  <Package className="w-6 h-6 text-white/10" />
-                </div>
-              )}
-
-              {/* Info */}
-              <div className="p-3 space-y-2">
-                <p className="text-xs font-semibold text-white truncate">{selectedProductData.name}</p>
-
-                {selectedProductData.big_promise && (
-                  <div className="flex items-start gap-1.5">
-                    <Star className="w-3 h-3 text-amber-400 shrink-0 mt-0.5" />
-                    <p className="text-[11px] text-slate-400 leading-snug line-clamp-2">{selectedProductData.big_promise}</p>
-                  </div>
-                )}
-
-                {selectedProductData.mechanism && (
-                  <div className="flex items-start gap-1.5">
-                    <Zap className="w-3 h-3 text-violet-400 shrink-0 mt-0.5" />
-                    <p className="text-[11px] text-slate-400 leading-snug line-clamp-2">{selectedProductData.mechanism}</p>
-                  </div>
-                )}
-
-                {selectedProductData.guarantee && (
-                  <p className="text-[10px] text-emerald-500/80 truncate">✓ {selectedProductData.guarantee}</p>
-                )}
-              </div>
-            </div>
-          )}
         </div>
 
         {/* ---- Ad Angle ---- */}

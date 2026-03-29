@@ -2,6 +2,8 @@ import { Router } from 'express';
 import { buildClaudePrompt, buildNanoBananaPrompt, buildSwapPairs } from '../utils/staticsPrompts.js';
 import { pgQuery } from '../db/pg.js';
 import { authenticate } from '../middleware/auth.js';
+import { uploadBuffer, isR2Configured } from '../services/r2.js';
+import crypto from 'crypto';
 
 const router = Router();
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -138,23 +140,31 @@ router.post('/generate', authenticate, async (req, res) => {
     const swapPairs = buildSwapPairs(claudeResult.original_text, claudeResult.adapted_text);
 
     // ── Step D: Submit to NanoBanana ───────────────────────────────────
-    // NanoBanana requires actual HTTP URLs, not base64
+    // NanoBanana requires actual HTTP URLs, not base64 — upload to R2 first
+    if (!isR2Configured()) {
+      return res.status(500).json({ success: false, error: 'R2 storage is not configured. Cannot upload images for generation.' });
+    }
+
+    let finalReferenceUrl = reference_image_url;
     if (!isUrl) {
-      console.warn('[staticsGeneration] Reference image was base64 — skipping NanoBanana (URL required for image generation)');
-      return res.json({
-        success: true,
-        data: {
-          generated_image_url: null,
-          adapted_text: claudeResult.adapted_text,
-          original_text: claudeResult.original_text,
-          swap_pairs: swapPairs,
-          people_count: claudeResult.people_count,
-          product_count: claudeResult.product_count,
-          visual_adaptations: claudeResult.visual_adaptations,
-          adapted_audience: claudeResult.adapted_audience,
-          _note: 'Reference image was provided as base64. An HTTP URL is required for image generation.',
-        },
-      });
+      const buf = Buffer.from(base64, 'base64');
+      const ext = mediaType.includes('png') ? 'png' : 'jpg';
+      const key = `statics-refs/${crypto.randomUUID()}.${ext}`;
+      finalReferenceUrl = await uploadBuffer(buf, key, mediaType);
+      console.log(`[staticsGeneration] Uploaded base64 reference to R2: ${finalReferenceUrl}`);
+    }
+
+    // Also upload product image to R2 if it's base64
+    let finalProductUrl = product.product_image_url;
+    if (finalProductUrl && finalProductUrl.startsWith('data:image')) {
+      const pMatch = finalProductUrl.match(/^data:(image\/[^;]+);base64,(.+)$/);
+      if (pMatch) {
+        const pBuf = Buffer.from(pMatch[2], 'base64');
+        const pExt = pMatch[1].includes('png') ? 'png' : 'jpg';
+        const pKey = `statics-products/${crypto.randomUUID()}.${pExt}`;
+        finalProductUrl = await uploadBuffer(pBuf, pKey, pMatch[1]);
+        console.log(`[staticsGeneration] Uploaded base64 product image to R2: ${finalProductUrl}`);
+      }
     }
 
     const nbPrompt = buildNanoBananaPrompt(claudeResult, swapPairs, product);
@@ -168,7 +178,7 @@ router.post('/generate', authenticate, async (req, res) => {
       body: JSON.stringify({
         prompt: nbPrompt,
         model: 'nano-banana-2',
-        imageUrls: [product.product_image_url, reference_image_url],
+        imageUrls: [finalProductUrl, finalReferenceUrl],
         aspectRatio: ratio || '4:5',
         resolution: '1K',
         outputFormat: 'png',
@@ -182,7 +192,10 @@ router.post('/generate', authenticate, async (req, res) => {
 
     const nbData = await nbRes.json();
     const taskId = nbData.taskId || nbData.data?.taskId;
-    if (!taskId) throw new Error('No taskId returned from NanoBanana');
+    if (!taskId) {
+      console.error('[staticsGeneration] Unexpected NanoBanana response:', JSON.stringify(nbData).slice(0, 500));
+      throw new Error('No taskId returned from NanoBanana');
+    }
 
     // ── Step E: Poll for completion ────────────────────────────────────
     const generatedImageUrl = await pollNanoBanana(taskId);
@@ -192,6 +205,7 @@ router.post('/generate', authenticate, async (req, res) => {
       success: true,
       data: {
         generated_image_url: generatedImageUrl,
+        reference_url: finalReferenceUrl,
         adapted_text: claudeResult.adapted_text,
         original_text: claudeResult.original_text,
         swap_pairs: swapPairs,
@@ -289,6 +303,8 @@ async function ensureCreativesTable() {
     )
   `);
   await pgQuery('ALTER TABLE spy_creatives ADD COLUMN IF NOT EXISTS product_name TEXT').catch(() => {});
+  await pgQuery('ALTER TABLE spy_creatives ADD COLUMN IF NOT EXISTS reference_thumbnail TEXT').catch(() => {});
+  await pgQuery('ALTER TABLE spy_creatives ADD COLUMN IF NOT EXISTS reference_name TEXT').catch(() => {});
   await pgQuery(`CREATE INDEX IF NOT EXISTS idx_spy_creatives_pipeline ON spy_creatives(pipeline)`).catch(() => {});
   await pgQuery(`CREATE INDEX IF NOT EXISTS idx_spy_creatives_status ON spy_creatives(status)`).catch(() => {});
   await pgQuery(`CREATE INDEX IF NOT EXISTS idx_spy_creatives_product_id ON spy_creatives(product_id)`).catch(() => {});
@@ -407,7 +423,7 @@ router.post('/creatives', authenticate, async (req, res) => {
     await ensureCreativesTable();
     const {
       product_id, product_name, angle, aspect_ratio, image_url,
-      reference_template_id, reference_name, adapted_text,
+      reference_template_id, reference_name, reference_thumbnail, adapted_text,
       claude_analysis, swap_pairs, generation_prompt, status = 'review',
     } = req.body;
 
@@ -416,9 +432,9 @@ router.post('/creatives', authenticate, async (req, res) => {
     const rows = await pgQuery(
       `INSERT INTO spy_creatives
         (product_id, product_name, angle, aspect_ratio, image_url,
-         reference_image_id, source_label, adapted_text,
-         claude_analysis, swap_pairs, generation_prompt, status)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+         reference_image_id, source_label, reference_name, reference_thumbnail,
+         adapted_text, claude_analysis, swap_pairs, generation_prompt, status)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
        RETURNING *`,
       [
         product_id || null,
@@ -427,7 +443,9 @@ router.post('/creatives', authenticate, async (req, res) => {
         aspect_ratio || '4:5',
         image_url,
         reference_template_id || null,
-        reference_name || product_name || null,
+        reference_template_id ? 'template' : 'upload',
+        reference_name || null,
+        reference_thumbnail || null,
         adapted_text ? JSON.stringify(adapted_text) : null,
         claude_analysis ? JSON.stringify(claude_analysis) : null,
         swap_pairs ? JSON.stringify(swap_pairs) : null,
@@ -544,7 +562,10 @@ Generate an updated image generation prompt that applies the user's requested ch
 
     const nbData = await nbRes.json();
     const taskId = nbData.taskId || nbData.data?.taskId;
-    if (!taskId) throw new Error('No taskId returned from NanoBanana');
+    if (!taskId) {
+      console.error('[staticsGeneration] Unexpected NanoBanana response:', JSON.stringify(nbData).slice(0, 500));
+      throw new Error('No taskId returned from NanoBanana');
+    }
 
     // Poll for completion
     const newImageUrl = await pollNanoBanana(taskId);
@@ -690,6 +711,9 @@ async function frameioFetch(url, options = {}) {
 // ── POST /creatives/:id/publish-clickup ─────────────────────────────────
 
 router.post('/creatives/:id/publish-clickup', authenticate, async (req, res) => {
+  if (!CLICKUP_TOKEN) {
+    return res.status(500).json({ success: false, error: { message: 'ClickUp integration is not configured (missing CLICKUP_API_TOKEN)' } });
+  }
   try {
     await ensureCreativesTable();
 

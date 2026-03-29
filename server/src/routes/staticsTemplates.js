@@ -9,9 +9,10 @@ const CLAUDE_API_URL = 'https://api.anthropic.com/v1/messages';
 
 // ── Ensure table ───────────────────────────────────────────────────────
 
-let tableReady = false;
+let tableReadyPromise = null;
 async function ensureTable() {
-  if (tableReady) return;
+  if (tableReadyPromise) return tableReadyPromise;
+  tableReadyPromise = (async () => {
   await pgQuery(`
     CREATE TABLE IF NOT EXISTS statics_templates (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -30,7 +31,8 @@ async function ensureTable() {
   `);
   await pgQuery(`CREATE INDEX IF NOT EXISTS idx_statics_templates_category ON statics_templates(category)`);
   await pgQuery(`CREATE INDEX IF NOT EXISTS idx_statics_templates_hidden ON statics_templates(is_hidden)`);
-  tableReady = true;
+  })();
+  return tableReadyPromise;
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────

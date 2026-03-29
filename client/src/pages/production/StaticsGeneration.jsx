@@ -215,14 +215,6 @@ function StepperIndicator({ step, currentStep, label }) {
   );
 }
 
-function CopyBadge({ text }) {
-  return (
-    <span className="inline-block px-2 py-0.5 text-xs rounded-full bg-blue-500/10 text-blue-300 border border-blue-500/20">
-      {text}
-    </span>
-  );
-}
-
 function StatusBadge({ status }) {
   const colors = STATUS_COLORS[status] || STATUS_COLORS.draft;
   const display = (status || 'draft').replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
@@ -691,26 +683,26 @@ export default function StaticsGeneration() {
   const canGenerate = (hasReferenceImage || references.length > 0) && productName.trim() && !generating;
 
   const handleReferenceFile = useCallback((file) => {
+    setReferencePreview((prev) => { if (prev?.startsWith('blob:')) URL.revokeObjectURL(prev); return URL.createObjectURL(file); });
     setReferenceFile(file);
-    setReferencePreview(URL.createObjectURL(file));
     setReferenceImageUrl('');
   }, []);
 
   const clearReference = useCallback(() => {
+    setReferencePreview((prev) => { if (prev?.startsWith('blob:')) URL.revokeObjectURL(prev); return ''; });
     setReferenceFile(null);
-    setReferencePreview('');
     setReferenceImageUrl('');
   }, []);
 
   const handleProductFile = useCallback((file) => {
+    setProductPreview((prev) => { if (prev?.startsWith('blob:')) URL.revokeObjectURL(prev); return URL.createObjectURL(file); });
     setProductFile(file);
-    setProductPreview(URL.createObjectURL(file));
     setProductImageUrl('');
   }, []);
 
   const clearProduct = useCallback(() => {
+    setProductPreview((prev) => { if (prev?.startsWith('blob:')) URL.revokeObjectURL(prev); return ''; });
     setProductFile(null);
-    setProductPreview('');
     setProductImageUrl('');
   }, []);
 
@@ -784,13 +776,15 @@ export default function StaticsGeneration() {
 
       // Auto-save to pipeline as "review" creative
       try {
+        const refImg = references[0];
         const saveRes = await api.post('/statics-generation/creatives', {
           product_id: selectedProductId || null,
           product_name: productName,
           angle: marketingAngle || customAngle || null,
           aspect_ratio: aspectRatio,
           image_url: genResult?.generated_image_url || genResult?.resultImageUrl || genResult?.generatedImageUrl || null,
-          reference_name: references[0]?.name || null,
+          reference_name: refImg?.name || null,
+          reference_thumbnail: refImg?.thumbnail || refImg?.image_url || refImg?.url || null,
           adapted_text: genResult?.adapted_text || genResult?.adaptedCopy || null,
           claude_analysis: genResult?.claude_analysis || genResult?.claudeAnalysis || null,
           swap_pairs: genResult?.swap_pairs || genResult?.textSwaps || null,
@@ -800,7 +794,9 @@ export default function StaticsGeneration() {
         if (saveRes.data?.success) {
           setCreatives(prev => [saveRes.data.data, ...prev]);
         }
-      } catch { /* silent — result is still shown inline */ }
+      } catch (saveErr) {
+        console.warn('[StaticsGeneration] Generated OK but failed to save to pipeline:', saveErr.message);
+      }
     } catch (err) {
       const message =
         err.response?.data?.error ||
@@ -1095,7 +1091,6 @@ export default function StaticsGeneration() {
               <div className="w-[260px] shrink-0 space-y-4 pr-5 border-r border-white/[0.06]">
                 <ConfigSidebar
                   selectedProduct={selectedProductId}
-                  selectedProductData={selectedProductObj}
                   onProductChange={(product) => handleProductSelect(product)}
                   angle={marketingAngle}
                   onAngleChange={setMarketingAngle}
@@ -1428,91 +1423,7 @@ export default function StaticsGeneration() {
                       </div>
                     )}
 
-                    {/* Adapted Copy Card */}
-                    {result.adapted_text && (
-                      <div className="bg-[#111] border border-white/[0.06] rounded-lg p-5">
-                        <h3 className="text-sm font-medium text-white mb-4">Adapted Copy</h3>
-                        <div className="space-y-4">
-                          {result.adapted_text.headline && (
-                            <div>
-                              <span className={labelClasses}>Headline</span>
-                              <p className="text-sm text-white">{result.adapted_text.headline}</p>
-                            </div>
-                          )}
-                          {result.adapted_text.subheadline && (
-                            <div>
-                              <span className={labelClasses}>Subheadline</span>
-                              <p className="text-sm text-slate-300">{result.adapted_text.subheadline}</p>
-                            </div>
-                          )}
-                          {result.adapted_text.body && (
-                            <div>
-                              <span className={labelClasses}>Body</span>
-                              <p className="text-sm text-slate-300 whitespace-pre-line">
-                                {result.adapted_text.body}
-                              </p>
-                            </div>
-                          )}
-                          {result.adapted_text.cta && (
-                            <div>
-                              <span className={labelClasses}>CTA</span>
-                              <span className="inline-block px-3 py-1.5 text-sm rounded-lg bg-blue-600 text-white">
-                                {result.adapted_text.cta}
-                              </span>
-                            </div>
-                          )}
-                          {result.adapted_text.badges && result.adapted_text.badges.length > 0 && (
-                            <div>
-                              <span className={labelClasses}>Badges</span>
-                              <div className="flex flex-wrap gap-1.5">
-                                {result.adapted_text.badges.map((badge, i) => (
-                                  <CopyBadge key={i} text={badge} />
-                                ))}
-                              </div>
-                            </div>
-                          )}
-                          {result.adapted_text.bullets && result.adapted_text.bullets.length > 0 && (
-                            <div>
-                              <span className={labelClasses}>Bullets</span>
-                              <div className="flex flex-wrap gap-1.5">
-                                {result.adapted_text.bullets.map((bullet, i) => (
-                                  <CopyBadge key={i} text={bullet} />
-                                ))}
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Text Swaps Table */}
-                    {result.swap_pairs && result.swap_pairs.length > 0 && (
-                      <div className="bg-[#111] border border-white/[0.06] rounded-lg p-5">
-                        <h3 className="text-sm font-medium text-white mb-3">Text Swaps</h3>
-                        <div className="overflow-x-auto">
-                          <table className="w-full text-sm">
-                            <thead>
-                              <tr className="border-b border-white/[0.06]">
-                                <th className="text-left py-2 pr-4 text-xs font-medium text-slate-400">Original</th>
-                                <th className="w-8" />
-                                <th className="text-left py-2 pl-4 text-xs font-medium text-slate-400">Adapted</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {result.swap_pairs.map((swap, i) => (
-                                <tr key={i} className="border-b border-white/[0.03] last:border-0">
-                                  <td className="py-2.5 pr-4 text-slate-400">{swap.original}</td>
-                                  <td className="py-2.5 text-center">
-                                    <ArrowRight className="w-3.5 h-3.5 text-slate-600 inline-block" />
-                                  </td>
-                                  <td className="py-2.5 pl-4 text-white">{swap.adapted}</td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
-                      </div>
-                    )}
+                    {/* Adapted copy & text swaps are stored in the pipeline creative but not shown inline */}
                   </div>
                 )}
 

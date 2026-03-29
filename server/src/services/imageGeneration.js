@@ -1,4 +1,6 @@
 import { buildClaudePrompt, buildNanoBananaPrompt as _buildNBPrompt, buildSwapPairs as _buildSwapPairs } from '../utils/staticsPrompts.js';
+import { uploadBuffer, isR2Configured } from './r2.js';
+import crypto from 'crypto';
 
 const ANTHROPIC_API_KEY  = process.env.ANTHROPIC_API_KEY || '';
 const NANOBANANA_API_KEY = process.env.NANOBANANA_API_KEY || '';
@@ -203,25 +205,35 @@ export async function generateFullPipeline(referenceImageUrl, product, angle, ra
   // Step C: Build swap pairs
   const swapPairs = buildSwapPairs(claudeResult.original_text, claudeResult.adapted_text);
 
-  // If reference was base64, NanoBanana can't use it (needs HTTP URL)
+  // Upload base64 reference to R2 so NanoBanana gets an HTTP URL
+  let finalReferenceUrl = referenceImageUrl;
   if (!isUrl) {
-    console.warn('[imageGeneration] Reference image was base64 — skipping NanoBanana (URL required)');
-    return {
-      generated_image_url: null,
-      adapted_text: claudeResult.adapted_text,
-      original_text: claudeResult.original_text,
-      swap_pairs: swapPairs,
-      people_count: claudeResult.people_count,
-      product_count: claudeResult.product_count,
-      visual_adaptations: claudeResult.visual_adaptations,
-      adapted_audience: claudeResult.adapted_audience,
-      _note: 'Reference image was provided as base64. An HTTP URL is required for image generation.',
-    };
+    if (!isR2Configured()) {
+      throw new Error('R2 storage is not configured. Cannot upload base64 image for generation.');
+    }
+    const buf = Buffer.from(base64, 'base64');
+    const ext = mediaType.includes('png') ? 'png' : 'jpg';
+    const key = `statics-refs/${crypto.randomUUID()}.${ext}`;
+    finalReferenceUrl = await uploadBuffer(buf, key, mediaType);
+    console.log(`[imageGeneration] Uploaded base64 reference to R2: ${finalReferenceUrl}`);
+  }
+
+  // Also upload product image to R2 if it's base64
+  let finalProductUrl = product.product_image_url;
+  if (finalProductUrl && finalProductUrl.startsWith('data:image')) {
+    const pMatch = finalProductUrl.match(/^data:(image\/[^;]+);base64,(.+)$/);
+    if (pMatch && isR2Configured()) {
+      const pBuf = Buffer.from(pMatch[2], 'base64');
+      const pExt = pMatch[1].includes('png') ? 'png' : 'jpg';
+      const pKey = `statics-products/${crypto.randomUUID()}.${pExt}`;
+      finalProductUrl = await uploadBuffer(pBuf, pKey, pMatch[1]);
+      console.log(`[imageGeneration] Uploaded base64 product image to R2: ${finalProductUrl}`);
+    }
   }
 
   // Step D: Submit to NanoBanana
   const nbPrompt = buildNanoBananaPrompt(claudeResult, swapPairs, product);
-  const imageUrls = [product.product_image_url, referenceImageUrl];
+  const imageUrls = [finalProductUrl, finalReferenceUrl];
   const taskId = await submitToNanoBanana(nbPrompt, imageUrls, ratio);
 
   // Step E: Poll for completion
