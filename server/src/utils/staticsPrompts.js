@@ -37,7 +37,7 @@ ${profile.bundleVariants ? `- Bundle Variants: ${profile.bundleVariants}` : ''}
 ${profile.offerDetails ? `- Offer Rules: ${profile.offerDetails}` : ''}
 ${profile.complianceRestrictions ? `- COMPLIANCE (NEVER claim): ${profile.complianceRestrictions}` : ''}
 ${angle ? `- Marketing Angle: ${angle}` : ''}
-- PRODUCT IDENTITY NOTE: The product is a MINI BITCOIN MINER — a small, compact electronic device with a color display screen. NEVER describe it as a "USB stick", "flash drive", "thumb drive", or anything USB-related. It is NOT a USB device. When describing product placement, refer to it as "mini bitcoin miner" or "compact mining device with display screen".
+- PRODUCT IDENTITY NOTE: The product is a MINI BITCOIN MINER — a small, compact electronic device with a color display screen showing mining hashrate data. NEVER describe it as a "USB stick", "flash drive", "thumb drive", or anything USB-related. It is NOT a USB device. When describing product placement, refer to it as "mini bitcoin miner" or "compact mining device with display screen". IMPORTANT: The product's screen displays mining statistics (hashrate numbers like 995.4 KH/s) — do NOT put logos, brand names, or text overlays on the device screen. The screen content must match exactly what is shown in the product images.
 
 INSTRUCTIONS — Analyze the reference ad image in 5 layers:
 
@@ -205,7 +205,7 @@ PRODUCT REPLACEMENT:
 - Replace with the product shown in the first images (${product.name}). Multiple angles of the same product are provided — use them to reproduce it with perfect accuracy.
 - Show exactly ${pCount2} product(s)
 - Product placement: ${visualDir.product_placement || 'same position as reference product'}
-- CRITICAL: The product is a MINI BITCOIN MINER with a display screen — NOT a USB stick. Reproduce it EXACTLY as shown. NEVER render it as a USB stick, flash drive, or thumb drive.
+- CRITICAL: The product is a MINI BITCOIN MINER with a display screen — NOT a USB stick. Reproduce it EXACTLY as shown. NEVER render it as a USB stick, flash drive, or thumb drive. Do NOT add logos or brand names onto the device screen — the screen shows mining hashrate data only.
 - Realistic lighting, shadows, and perspective matching the reference style
 
 TEXT REPLACEMENTS (${swapPairs.length} swaps — apply ALL of them):
