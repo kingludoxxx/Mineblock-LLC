@@ -431,17 +431,19 @@ async function generateVariant(parent, newAspectRatio) {
     );
     const child = childRows[0];
 
-    // 2. Get product image from product_profiles
+    // 2. Get product image from product_profiles, with fallbacks
     let productImageUrl = null;
     if (parent.product_id) {
       const productRows = await pgQuery('SELECT product_images FROM product_profiles WHERE id = $1', [parent.product_id]);
       if (productRows.length > 0) {
         const imgs = productRows[0].product_images;
-        productImageUrl = Array.isArray(imgs) ? imgs[0] : null;
+        productImageUrl = Array.isArray(imgs) && imgs.length > 0 ? imgs[0] : null;
       }
     }
+    // Fallback: use the parent's generated image as the product reference
+    if (!productImageUrl) productImageUrl = parent.image_url;
 
-    // 3. Get reference image URL
+    // 3. Get reference image URL — prefer original reference, fall back to parent image
     const referenceUrl = parent.reference_thumbnail || parent.image_url;
     if (!referenceUrl || !productImageUrl) {
       console.warn(`[staticsGeneration] Variant missing images: ref=${!!referenceUrl}, product=${!!productImageUrl}`);
