@@ -1704,11 +1704,12 @@ export default function StaticsGeneration() {
           }}
           onAiAdjust={async (id, instruction) => {
             const res = await api.post(`/statics-generation/creatives/${id}/ai-adjust`, { instruction });
-            if (res.data?.success) {
-              setCreatives(prev => prev.map(c => c.id === id ? { ...c, image_url: res.data.data.image_url } : c));
-              setDetailModal(prev => prev ? { ...prev, image_url: res.data.data.image_url } : null);
+            if (res.data?.success && res.data?.data) {
+              const newUrl = res.data.data.image_url;
+              setCreatives(prev => prev.map(c => c.id === id ? { ...c, image_url: newUrl } : c));
+              setDetailModal(prev => prev ? { ...prev, image_url: newUrl } : null);
             } else {
-              throw new Error(res.data?.error || 'AI adjustment failed');
+              throw new Error(res.data?.error?.message || res.data?.error || 'AI adjustment failed');
             }
           }}
           onStatusChange={async (id, status) => {
