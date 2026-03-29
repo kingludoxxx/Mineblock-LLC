@@ -353,7 +353,7 @@ export function CreativeDetailModal({
             )}
 
             {/* Publish to ClickUp */}
-            {creative.status === 'approved' && (
+            {(creative.status === 'approved' || creative.status === 'ready') && (
               <>
                 <button
                   type="button"
