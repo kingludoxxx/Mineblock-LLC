@@ -271,16 +271,18 @@ router.get('/status/:taskId', authenticate, async (req, res) => {
     }
 
     const data = await nbRes.json();
-    const flag = data.successFlag ?? data.data?.successFlag;
+    const flag = Number(data.successFlag ?? data.data?.successFlag);
 
     let status;
-    if (flag === 0)      status = 'pending';
-    else if (flag === 1) status = 'completed';
-    else                 status = 'failed';
+    if (flag === 0 || isNaN(flag)) status = 'pending';
+    else if (flag === 1)           status = 'completed';
+    else                           status = 'failed';
 
     // NanoBanana puts the image URL in data.data.response
     const resultImageUrl = data.data?.response || data.data?.resultImageUrl
       || data.resultImageUrl || data.data?.imageUrl || null;
+
+    console.log(`[staticsGeneration] /status/${taskId} — flag=${flag}, status=${status}, hasUrl=${!!resultImageUrl}`);
 
     return res.json({
       success: true,

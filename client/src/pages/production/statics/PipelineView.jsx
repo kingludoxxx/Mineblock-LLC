@@ -84,8 +84,8 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, onPublish
   return (
     <div
       onClick={() => onCardClick?.(creative)}
-      className="group bg-[#1a1a2e] border border-gray-700/60 rounded-lg overflow-hidden cursor-pointer
-                 hover:border-gray-500/60 hover:shadow-lg hover:shadow-black/20 transition-all duration-150"
+      className="group bg-[#0a0a0a] border border-white/[0.06] rounded-lg overflow-hidden cursor-pointer
+                 hover:border-white/[0.12] hover:shadow-lg hover:shadow-black/20 transition-all duration-150"
     >
       {/* Thumbnail */}
       <div className="relative aspect-[4/5] bg-black/30">
