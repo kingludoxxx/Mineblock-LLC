@@ -142,37 +142,37 @@ export function CreativeDetailModal({
         {/* ----------------------------------------------------------------- */}
         {/* Left panel — image preview (70%) */}
         {/* ----------------------------------------------------------------- */}
-        <div className="w-[70%] flex flex-col items-center justify-center p-8 overflow-hidden">
-          {/* Main preview */}
-          <div className="relative flex-1 flex items-center justify-center w-full min-h-0">
+        <div className="w-[70%] flex items-center justify-center p-10 overflow-hidden">
+          {/* Image + reference wrapper */}
+          <div className="relative max-w-[520px] w-full">
             {creative.image_url ? (
               <img
                 src={creative.image_url}
                 alt={creative.product_name || 'Creative'}
-                className="max-w-full max-h-full rounded-lg object-contain shadow-2xl"
+                className="w-full rounded-lg object-contain shadow-2xl"
               />
             ) : (
-              <div className="flex flex-col items-center gap-3 text-slate-600">
+              <div className="flex flex-col items-center justify-center aspect-[4/5] gap-3 text-slate-600">
                 <Image className="w-16 h-16" />
                 <span className="text-sm">No image available</span>
               </div>
             )}
 
-            {/* Reference image overlay — bottom left */}
+            {/* Reference image overlay — bottom left, anchored to image */}
             {creative.reference_thumbnail && (
               <button
                 type="button"
                 onClick={() => setRefLightbox(true)}
-                className="absolute bottom-2 left-2 group flex items-center gap-2 bg-black/70 backdrop-blur-sm border border-white/[0.1] rounded-lg p-1.5 pr-3 hover:bg-black/80 hover:border-white/[0.2] transition-all cursor-pointer"
+                className="absolute -bottom-3 -left-3 group flex items-center gap-2 bg-black/80 border border-white/[0.1] rounded-lg p-1.5 pr-3 hover:bg-black/90 hover:border-white/[0.2] transition-all cursor-pointer shadow-xl"
               >
                 <img
                   src={creative.reference_thumbnail}
                   alt="Reference"
-                  className="w-14 h-14 rounded-md object-cover border border-white/[0.08]"
+                  className="w-12 h-12 rounded-md object-cover border border-white/[0.08]"
                 />
                 <div className="text-left">
                   <p className="text-[9px] uppercase tracking-wider text-slate-500 font-semibold">Reference</p>
-                  <p className="text-[11px] text-slate-300 truncate max-w-[120px] group-hover:text-white transition-colors">
+                  <p className="text-[11px] text-slate-300 truncate max-w-[100px] group-hover:text-white transition-colors">
                     {creative.reference_name || 'View original'}
                   </p>
                 </div>
