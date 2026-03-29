@@ -85,14 +85,22 @@ Identify every visual element:
 ━━━ LAYER 5: COPY ADAPTATION ━━━
 Now adapt EVERY text element for the product above.
 
+⚠️ MANDATORY PRICING RULES (VIOLATION = FAILURE):
+- The product base price is $59.99 for 1 unit
+- Bundle prices: 2 units = $55 each ($109.99), 3+1 free = $45 each ($179.99), 6+2 free = $40 each ($320)
+- Maximum discount allowed: 58% — NEVER exceed this
+- The ONLY discount code is MINER10 (extra 10% off)
+- NEVER write "$35", "$29", "$25" or any price not listed above
+- If the reference ad has a price, replace it with the CORRECT price from this list
+- When in doubt, use "Up to 40% OFF" or "Starting at $59.99" — do NOT invent prices
+
 CRITICAL RULES:
 - Match the EXACT sentence structure and approximate word count of original
 - Keep the same emotional tone and persuasion technique
-- Comparison labels must adapt to the new product's context (e.g. "On GLP-1" → "With Man Boobs", "GLP-1 + Mars Men" → "Man Boobs + Estro Guard+")
+- Comparison labels must adapt to the new product's context
 - Ingredient labels must use the new product's actual ingredients
 - Timeline labels should match the new product's realistic timeline
-- PRICING: NEVER invent prices. Use ONLY the exact prices, discounts, and codes from the PRODUCT CONTEXT above. If the product has Bundle Variants, use those exact prices. If it has a Max Discount, never exceed it. If it has Discount Codes, use those exact codes. If no pricing info is available, use generic CTAs like "Shop Now" or "Learn More" instead of made-up prices.
-- CTA should match the new product's offer and discount codes from the PRODUCT CONTEXT
+- CTA should use discount code MINER10 if the reference has a promo code
 - Disclaimer should reference the new brand
 
 Return ONLY valid JSON (no markdown, no code fences):
