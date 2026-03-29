@@ -75,7 +75,7 @@ const STATUS_BADGE = {
 // Creative card
 // ---------------------------------------------------------------------------
 
-function CreativeCard({ creative, column, onStatusChange, onCardClick, onPublish }) {
+function CreativeCard({ creative, column, onStatusChange, onCardClick, onPublish, variantStatus }) {
   const badge = STATUS_BADGE[creative.status] || STATUS_BADGE.review;
   const angleLabel = [creative.angle, creative.aspect_ratio]
     .filter(Boolean)
@@ -139,6 +139,29 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, onPublish
           <p className="text-xs text-gray-400 truncate">{angleLabel}</p>
         )}
 
+        {/* 9:16 variant status — only on parent (non-variant) cards */}
+        {!creative.parent_creative_id && variantStatus && (
+          <div className={`flex items-center gap-1.5 text-[11px] px-2 py-1 rounded-md mt-1 ${
+            variantStatus === 'generating'
+              ? 'bg-blue-500/10 text-blue-400'
+              : variantStatus === 'done'
+                ? 'bg-emerald-500/10 text-emerald-400'
+                : variantStatus === 'failed'
+                  ? 'bg-red-500/10 text-red-400'
+                  : 'bg-gray-500/10 text-gray-500'
+          }`}>
+            {variantStatus === 'generating' && <Loader2 className="w-3 h-3 animate-spin" />}
+            {variantStatus === 'done' && <Check className="w-3 h-3" />}
+            {variantStatus === 'failed' && <Eye className="w-3 h-3" />}
+            <span>
+              {variantStatus === 'generating' ? '9:16 generating...'
+                : variantStatus === 'done' ? '9:16 ready'
+                : variantStatus === 'failed' ? '9:16 failed'
+                : 'No 9:16'}
+            </span>
+          </div>
+        )}
+
         {/* Action button */}
         {(column.key === 'approved' || column.key === 'ready') && onPublish && !creative.parent_creative_id ? (
           <button
@@ -179,7 +202,7 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, onPublish
 // Pipeline column
 // ---------------------------------------------------------------------------
 
-function PipelineColumn({ column, items, onStatusChange, onCardClick, onPublish }) {
+function PipelineColumn({ column, items, onStatusChange, onCardClick, onPublish, allCreatives }) {
   const Icon = column.icon;
   const [dragOver, setDragOver] = useState(false);
 

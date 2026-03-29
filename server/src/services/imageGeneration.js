@@ -34,7 +34,14 @@ export async function resolveImage(referenceImageUrl) {
     return { base64: match[2], mediaType: match[1], isUrl: false };
   }
 
-  const res = await fetch(referenceImageUrl);
+  // Relative paths (e.g. /static-templates/...) need a base URL for Node fetch
+  let fetchUrl = referenceImageUrl;
+  if (referenceImageUrl.startsWith('/')) {
+    const base = process.env.RENDER_EXTERNAL_URL || `http://localhost:${process.env.PORT || 3000}`;
+    fetchUrl = `${base}${referenceImageUrl}`;
+  }
+
+  const res = await fetch(fetchUrl);
   if (!res.ok) throw new Error(`Failed to fetch reference image: ${res.status} ${res.statusText}`);
   const buf = Buffer.from(await res.arrayBuffer());
   const mediaType = detectMime(buf);

@@ -108,8 +108,15 @@ async function resolveImage(referenceImageUrl) {
     return { base64: match[2], mediaType: match[1], isUrl: false };
   }
 
+  // Relative paths (e.g. /static-templates/...) need a base URL for Node fetch
+  let fetchUrl = referenceImageUrl;
+  if (referenceImageUrl.startsWith('/')) {
+    const base = process.env.RENDER_EXTERNAL_URL || `http://localhost:${process.env.PORT || 3000}`;
+    fetchUrl = `${base}${referenceImageUrl}`;
+  }
+
   // Fetch from URL
-  const res = await fetch(referenceImageUrl);
+  const res = await fetch(fetchUrl);
   if (!res.ok) throw new Error(`Failed to fetch reference image: ${res.status} ${res.statusText}`);
   const buf = Buffer.from(await res.arrayBuffer());
   const mediaType = detectMime(buf);
@@ -218,7 +225,10 @@ router.post('/generate', authenticate, async (req, res) => {
     const SERVER_URL = process.env.RENDER_EXTERNAL_URL || `http://localhost:${process.env.PORT || 3000}`;
 
     async function ensureHttpUrl(dataUri, label) {
-      if (!dataUri || !dataUri.startsWith('data:image')) return dataUri;
+      if (!dataUri) return dataUri;
+      // Convert relative paths to full URLs (NanoBanana needs absolute HTTP URLs)
+      if (dataUri.startsWith('/')) return `${SERVER_URL}${dataUri}`;
+      if (!dataUri.startsWith('data:image')) return dataUri;
       const m = dataUri.match(/^data:(image\/[^;]+);base64,(.+)$/);
       if (!m) return dataUri;
       const buf = Buffer.from(m[2], 'base64');
@@ -405,6 +415,16 @@ async function ensureCreativesTable() {
   await pgQuery(`CREATE INDEX IF NOT EXISTS idx_spy_creatives_product_id ON spy_creatives(product_id)`).catch(() => {});
   await pgQuery(`CREATE INDEX IF NOT EXISTS idx_spy_creatives_created ON spy_creatives(created_at DESC)`).catch(() => {});
   await pgQuery(`CREATE INDEX IF NOT EXISTS idx_spy_creatives_parent_id ON spy_creatives(parent_creative_id)`).catch(() => {});
+
+  // Fix existing relative reference_thumbnail paths (one-time migration)
+  const baseUrl = process.env.RENDER_EXTERNAL_URL;
+  if (baseUrl) {
+    await pgQuery(
+      `UPDATE spy_creatives SET reference_thumbnail = $1 || reference_thumbnail WHERE reference_thumbnail LIKE '/%'`,
+      [baseUrl]
+    ).catch(() => {});
+  }
+
   crTableReady = true;
 }
 
@@ -433,7 +453,7 @@ router.get('/creatives', authenticate, async (req, res) => {
 
 async function generateVariant(parent, newAspectRatio) {
   try {
-    console.log(`[staticsGeneration] Generating ${newAspectRatio} variant for creative ${parent.id}`);
+    console.log(`[staticsGeneration] Generating ${newAspectRatio} variant for creative ${parent.id}, ref_thumb=${String(parent.reference_thumbnail).slice(0, 80)}, image_url=${String(parent.image_url).slice(0, 80)}`);
 
     // 0. Clean up any previous variants for this aspect ratio
     await pgQuery(
@@ -507,10 +527,41 @@ async function generateVariant(parent, newAspectRatio) {
       : { adapted_text: adaptedText };
     const nbPrompt = buildNanoBananaPrompt(claudeResult, swapPairs, product);
 
-    // 5. Submit to NanoBanana — with retry on 500 errors
-    const variantImageUrls = allProductImgUrls.length > 0
-      ? [...allProductImgUrls, referenceUrl]
-      : [productImageUrl, referenceUrl];
+    // 5. Resolve all image URLs to absolute HTTP URLs (NanoBanana can't handle base64 or relative paths)
+    const VARIANT_SERVER_URL = process.env.RENDER_EXTERNAL_URL || `http://localhost:${process.env.PORT || 3000}`;
+
+    async function resolveUrl(url, label) {
+      if (!url) return null;
+      if (url.startsWith('/')) return `${VARIANT_SERVER_URL}${url}`;
+      if (url.startsWith('data:image')) {
+        const m = url.match(/^data:(image\/[^;]+);base64,(.+)$/);
+        if (!m) return null;
+        const buf = Buffer.from(m[2], 'base64');
+        if (isR2Configured()) {
+          const ext = m[1].includes('png') ? 'png' : 'jpg';
+          const key = `statics-${label}/${crypto.randomUUID()}.${ext}`;
+          return await uploadBuffer(buf, key, m[1]);
+        }
+        const id = storeTempImage(buf, m[1]);
+        return `${VARIANT_SERVER_URL}/api/v1/statics-generation/tmp-img/${id}`;
+      }
+      return url;
+    }
+
+    const resolvedRefUrl = await resolveUrl(referenceUrl, 'variant-ref');
+    const resolvedProductUrl = await resolveUrl(productImageUrl, 'variant-prod');
+    const resolvedProductImgs = [];
+    for (let i = 0; i < allProductImgUrls.length; i++) {
+      const u = await resolveUrl(allProductImgUrls[i], `variant-prod-${i}`);
+      if (u) resolvedProductImgs.push(u);
+    }
+
+    // Submit to NanoBanana — with retry on 500 errors
+    const variantImageUrls = resolvedProductImgs.length > 0
+      ? [...resolvedProductImgs, resolvedRefUrl]
+      : [resolvedProductUrl, resolvedRefUrl].filter(Boolean);
+
+    console.log(`[staticsGeneration] Variant ${parent.id} → ${newAspectRatio}: sending ${variantImageUrls.length} image URLs to NanoBanana`, variantImageUrls.map(u => String(u).slice(0, 120)));
 
     const nbPayload = {
       prompt: nbPrompt,
@@ -700,6 +751,13 @@ router.post('/creatives', authenticate, async (req, res) => {
 
     if (!image_url) return res.status(400).json({ success: false, error: { message: 'image_url is required' } });
 
+    // Convert relative reference_thumbnail to absolute URL so variant generation always works
+    let resolvedRefThumb = reference_thumbnail || null;
+    if (resolvedRefThumb && resolvedRefThumb.startsWith('/')) {
+      const base = process.env.RENDER_EXTERNAL_URL || `http://localhost:${process.env.PORT || 3000}`;
+      resolvedRefThumb = `${base}${resolvedRefThumb}`;
+    }
+
     const rows = await pgQuery(
       `INSERT INTO spy_creatives
         (product_id, product_name, angle, aspect_ratio, image_url,
@@ -716,7 +774,7 @@ router.post('/creatives', authenticate, async (req, res) => {
         reference_template_id || null,
         reference_template_id ? 'template' : 'upload',
         reference_name || null,
-        reference_thumbnail || null,
+        resolvedRefThumb,
         adapted_text ? JSON.stringify(adapted_text) : null,
         claude_analysis ? JSON.stringify(claude_analysis) : null,
         swap_pairs ? JSON.stringify(swap_pairs) : null,
