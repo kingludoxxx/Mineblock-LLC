@@ -507,37 +507,51 @@ async function generateVariant(parent, newAspectRatio) {
       : { adapted_text: adaptedText };
     const nbPrompt = buildNanoBananaPrompt(claudeResult, swapPairs, product);
 
-    // 5. Submit to NanoBanana — send all product images + reference
+    // 5. Submit to NanoBanana — with retry on 500 errors
     const variantImageUrls = allProductImgUrls.length > 0
       ? [...allProductImgUrls, referenceUrl]
       : [productImageUrl, referenceUrl];
 
-    const nbRes = await fetch(`${NB_BASE}/generate-2`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${NANOBANANA_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        prompt: nbPrompt,
-        model: 'nano-banana-2',
-        imageUrls: variantImageUrls,
-        aspectRatio: newAspectRatio,
-        resolution: '1K',
-        outputFormat: 'png',
-      }),
-    });
+    const nbPayload = {
+      prompt: nbPrompt,
+      model: 'nano-banana-2',
+      imageUrls: variantImageUrls,
+      aspectRatio: newAspectRatio,
+      resolution: '1K',
+      outputFormat: 'png',
+    };
 
-    if (!nbRes.ok) {
-      const errText = await nbRes.text();
-      throw new Error(`NanoBanana submit error ${nbRes.status}: ${errText}`);
-    }
+    let taskId = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const nbRes = await fetch(`${NB_BASE}/generate-2`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${NANOBANANA_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(nbPayload),
+      });
 
-    const nbData = await nbRes.json();
-    const taskId = nbData.taskId || nbData.data?.taskId;
-    if (!taskId) {
-      console.error('[staticsGeneration] Variant NanoBanana response:', JSON.stringify(nbData).slice(0, 500));
-      throw new Error('No taskId returned from NanoBanana');
+      if (!nbRes.ok) {
+        const errText = await nbRes.text();
+        console.warn(`[staticsGeneration] Variant NanoBanana attempt ${attempt}/3 HTTP error: ${nbRes.status}`);
+        if (attempt < 3) { await sleep(10000 * attempt); continue; }
+        throw new Error(`NanoBanana submit error ${nbRes.status}: ${errText}`);
+      }
+
+      const nbData = await nbRes.json();
+      taskId = nbData.taskId || nbData.data?.taskId;
+      if (taskId) break;
+
+      console.warn(`[staticsGeneration] Variant NanoBanana attempt ${attempt}/3 no taskId:`, JSON.stringify(nbData).slice(0, 300));
+      if (nbData.code === 500 && attempt < 3) {
+        await sleep(10000 * attempt);
+        continue;
+      }
+      if (!taskId) {
+        console.error('[staticsGeneration] Variant NanoBanana response:', JSON.stringify(nbData).slice(0, 500));
+        throw new Error('No taskId returned from NanoBanana after 3 attempts');
+      }
     }
 
     // 6. Poll for completion
