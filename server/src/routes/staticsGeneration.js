@@ -71,7 +71,7 @@ function extractNanoBananaImageUrl(data) {
       if (raw.startsWith('data:image')) url = raw;
     }
   } else if (typeof raw === 'object' && raw !== null) {
-    url = raw.imageUrl || raw.image_url || raw.url
+    url = raw.resultImageUrl || raw.imageUrl || raw.image_url || raw.url
       || raw.output?.url || raw.output?.image_url || null;
   }
 
