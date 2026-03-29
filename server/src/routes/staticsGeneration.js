@@ -891,6 +891,10 @@ const ANGLE_OPTIONS = {
   Apology: '3c59aca9-f26b-4d8d-95b9-652fd4d30044',
 };
 
+// Map statics tool angles to ClickUp dropdown options (fetched dynamically below)
+// Angles not in the ClickUp dropdown will use their name in the naming convention but default to NA in the dropdown
+
+
 const BRIEF_TYPE_OPTIONS = {
   NN: '1e274045-a4b3-4b0d-85c2-d7ec1a347d3c',
   IT: 'e0999d3c-faab-4d4e-8336-a6272dab8393',
