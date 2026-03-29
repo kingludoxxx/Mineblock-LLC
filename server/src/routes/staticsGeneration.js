@@ -90,8 +90,9 @@ async function pollNanoBanana(taskId) {
     console.log(`[staticsGeneration] Poll ${i+1}/${MAX_POLLS} — flag=${flag}, keys=${Object.keys(data)}, data.keys=${data.data ? Object.keys(data.data) : 'N/A'}`);
 
     if (flag === 1) {
-      // Search broadly for the result image URL
-      const imageUrl = data.resultImageUrl || data.data?.resultImageUrl
+      // NanoBanana returns the image URL in data.data.response
+      const imageUrl = data.data?.response
+        || data.resultImageUrl || data.data?.resultImageUrl
         || data.imageUrl || data.data?.imageUrl
         || data.outputUrl || data.data?.outputUrl
         || data.result?.imageUrl || data.result?.url
