@@ -1929,22 +1929,20 @@ const sentReports = new Set();
 
 async function sendDailyPnlReport(dateStr, { force = false } = {}) {
   if (!SLACK_BOT_TOKEN) {
-    console.warn('[Daily P&L] No SLACK_BOT_TOKEN configured');
-    return;
+    throw new Error('No SLACK_BOT_TOKEN configured');
   }
 
   if (!force) {
-    // Prevent duplicate sends — add to Set IMMEDIATELY to block concurrent calls
+    // Check in-memory dedup (blocks concurrent calls within same instance)
     if (sentReports.has(dateStr)) {
       console.log(`[Daily P&L] Already sent for ${dateStr} in this instance — skipping`);
       return;
     }
-    sentReports.add(dateStr);
 
     // Check Slack history before sending (look back 7 days)
+    const [cy, cm, cd] = dateStr.split('-');
+    const displayDateCheck = `${cm}/${cd}/${cy}`;
     try {
-      const [y, m, d] = dateStr.split('-');
-      const displayDateCheck = `${m}/${d}/${y}`;
       const oldest = Math.floor(Date.now() / 1000) - 604800;
       const histResp = await fetch(
         `https://slack.com/api/conversations.history?channel=${SLACK_DAILY_PNL_CHANNEL}&oldest=${oldest}&limit=100`,
@@ -1953,46 +1951,48 @@ async function sendDailyPnlReport(dateStr, { force = false } = {}) {
       const hist = await histResp.json();
       if (hist.ok && (hist.messages || []).some(msg => msg.text?.includes(`Daily P&L for ${displayDateCheck}`))) {
         console.log(`[Daily P&L] Report for ${displayDateCheck} already in Slack — skipping`);
+        sentReports.add(dateStr); // Safe to mark — it IS in Slack
         return;
       }
+      // If Slack history check fails (not ok), proceed anyway — better to risk a dupe than skip
+      if (!hist.ok) {
+        console.warn(`[Daily P&L] Slack history check returned error: ${hist.error} — proceeding anyway`);
+      }
     } catch (checkErr) {
-      console.error(`[Daily P&L] Slack history check failed: ${checkErr.message} — aborting`);
-      sentReports.delete(dateStr);
-      return;
+      // Network error — proceed anyway, don't abort
+      console.warn(`[Daily P&L] Slack history check failed: ${checkErr.message} — proceeding anyway`);
     }
   } else {
     console.log(`[Daily P&L] Force-sending report for ${dateStr}`);
   }
 
-  try {
-    await ensureTables();
+  await ensureTables();
 
-    // Get snapshot for the date
-    const snapRows = await pgQuery(
-      'SELECT * FROM daily_kpi_snapshots WHERE snapshot_date = $1', [dateStr]
-    );
+  // Get snapshot for the date
+  const snapRows = await pgQuery(
+    'SELECT * FROM daily_kpi_snapshots WHERE snapshot_date = $1', [dateStr]
+  );
 
-    // Get fees for the date (use total_fees to match dashboard)
-    const feeRows = await pgQuery(
-      `SELECT COALESCE(SUM(total_fees),0) as total_fees
-       FROM whop_payment_fees WHERE DATE(paid_at AT TIME ZONE 'Europe/Berlin') = $1`, [dateStr]
-    );
+  // Get fees for the date (use total_fees to match dashboard)
+  const feeRows = await pgQuery(
+    `SELECT COALESCE(SUM(total_fees),0) as total_fees
+     FROM whop_payment_fees WHERE DATE(paid_at AT TIME ZONE 'Europe/Berlin') = $1`, [dateStr]
+  );
 
-    // Get ad spend: prefer Meta cache, fallback to TripleWhale
-    const metaCacheRows = await pgQuery(
-      `SELECT total_spend as spend FROM meta_ad_spend_cache WHERE spend_date = $1`, [dateStr]
-    ).catch(() => []);
-    let adSpendFallback = 0;
-    if (!metaCacheRows.length || parseFloat(metaCacheRows[0]?.spend || 0) === 0) {
-      const twRows = await fetchDailyAdSpend(dateStr, dateStr).catch(() => []);
-      adSpendFallback = twRows[0]?.spend || 0;
-    }
+  // Get ad spend: prefer Meta cache, fallback to TripleWhale
+  const metaCacheRows = await pgQuery(
+    `SELECT total_spend as spend FROM meta_ad_spend_cache WHERE spend_date = $1`, [dateStr]
+  ).catch(() => []);
+  let adSpendFallback = 0;
+  if (!metaCacheRows.length || parseFloat(metaCacheRows[0]?.spend || 0) === 0) {
+    const twRows = await fetchDailyAdSpend(dateStr, dateStr).catch(() => []);
+    adSpendFallback = twRows[0]?.spend || 0;
+  }
 
-    const snap = snapRows[0];
-    if (!snap) {
-      console.warn(`[Daily P&L] No snapshot for ${dateStr}`);
-      return;
-    }
+  const snap = snapRows[0];
+  if (!snap) {
+    throw new Error(`No snapshot for ${dateStr} — data may not be synced yet`);
+  }
 
     // Calculate metrics — MUST match dashboard formula exactly
     // Dashboard: profit = revenue - (cogs + shipping + total_fees + adSpend)
@@ -2062,14 +2062,11 @@ async function sendDailyPnlReport(dateStr, { force = false } = {}) {
 
     const result = await resp.json();
     if (!result.ok) {
-      console.error('[Daily P&L] Slack error:', result.error);
-    } else {
-      sentReports.add(dateStr);
-      console.log(`[Daily P&L] Sent report for ${displayDate}: Profit ${fmt(profit)}`);
+      throw new Error(`Slack postMessage failed: ${result.error}`);
     }
-  } catch (err) {
-    console.error('[Daily P&L] Error:', err.message);
-  }
+
+    sentReports.add(dateStr);
+    console.log(`[Daily P&L] Sent report for ${displayDate}: Profit ${fmt(profit)}`);
 }
 
 // Catch-up removed — P&L is triggered ONLY by Render cron job at 00:30 CET.
@@ -2082,9 +2079,9 @@ router.post('/daily-pnl', authenticate, async (req, res) => {
       const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Berlin', year: 'numeric', month: '2-digit', day: '2-digit' });
       const berlinToday = fmt.format(new Date());
       const [y, m, d] = berlinToday.split('-').map(Number);
-      const yesterday = new Date(y, m - 1, d);
-      yesterday.setDate(yesterday.getDate() - 1);
-      return `${yesterday.getFullYear()}-${String(yesterday.getMonth() + 1).padStart(2, '0')}-${String(yesterday.getDate()).padStart(2, '0')}`;
+      const yesterday = new Date(Date.UTC(y, m - 1, d));
+      yesterday.setUTCDate(yesterday.getUTCDate() - 1);
+      return `${yesterday.getUTCFullYear()}-${String(yesterday.getUTCMonth() + 1).padStart(2, '0')}-${String(yesterday.getUTCDate()).padStart(2, '0')}`;
     })();
     const force = req.query.force === 'true';
     await sendDailyPnlReport(dateStr, { force });
@@ -2105,13 +2102,13 @@ router.get('/cron/daily-pnl', async (req, res) => {
     // Use explicit date if provided, otherwise calculate yesterday in Berlin timezone
     let dateStr = req.query.date;
     if (!dateStr) {
-      // Use Intl.DateTimeFormat for reliable timezone conversion (works on all Node versions)
+      // Calculate yesterday in Berlin timezone using UTC to avoid local timezone issues
       const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Berlin', year: 'numeric', month: '2-digit', day: '2-digit' });
       const berlinToday = fmt.format(new Date()); // YYYY-MM-DD in Berlin time
       const [y, m, d] = berlinToday.split('-').map(Number);
-      const yesterday = new Date(y, m - 1, d);
-      yesterday.setDate(yesterday.getDate() - 1);
-      dateStr = `${yesterday.getFullYear()}-${String(yesterday.getMonth() + 1).padStart(2, '0')}-${String(yesterday.getDate()).padStart(2, '0')}`;
+      const yesterday = new Date(Date.UTC(y, m - 1, d));
+      yesterday.setUTCDate(yesterday.getUTCDate() - 1);
+      dateStr = `${yesterday.getUTCFullYear()}-${String(yesterday.getUTCMonth() + 1).padStart(2, '0')}-${String(yesterday.getUTCDate()).padStart(2, '0')}`;
     }
 
     console.log(`[Daily P&L] Cron trigger for ${dateStr}`);
