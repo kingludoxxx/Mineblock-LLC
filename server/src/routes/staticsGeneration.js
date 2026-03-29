@@ -51,6 +51,42 @@ function detectMime(buf) {
 }
 
 /**
+ * Extract the generated image URL from a NanoBanana response.
+ * The API returns the URL in data.data.response — but it can be a plain URL string,
+ * a JSON string containing a URL, or an object with a url property.
+ */
+function extractNanoBananaImageUrl(data) {
+  const raw = data.data?.response;
+  let url = null;
+
+  if (typeof raw === 'string' && raw.startsWith('http')) {
+    url = raw;
+  } else if (typeof raw === 'string' && raw.length > 0) {
+    try {
+      const parsed = JSON.parse(raw);
+      url = parsed.imageUrl || parsed.image_url || parsed.url
+        || parsed.output?.url || parsed.output?.image_url
+        || parsed.data?.url || parsed.data?.image_url || null;
+    } catch {
+      if (raw.startsWith('data:image')) url = raw;
+    }
+  } else if (typeof raw === 'object' && raw !== null) {
+    url = raw.imageUrl || raw.image_url || raw.url
+      || raw.output?.url || raw.output?.image_url || null;
+  }
+
+  // Fallback to other known fields
+  if (!url) {
+    url = data.data?.resultImageUrl || data.resultImageUrl
+      || data.data?.imageUrl || data.imageUrl
+      || data.data?.outputUrl || data.outputUrl || null;
+  }
+
+  console.log(`[staticsGeneration] extractNanoBananaImageUrl: raw type=${typeof raw}, len=${String(raw).length}, first200=${String(raw).slice(0, 200)}, extracted=${String(url).slice(0, 120)}`);
+  return url;
+}
+
+/**
  * Resolve a reference image (URL or data-URI) into { base64, mediaType, isUrl }.
  * `isUrl` indicates whether the original input was a fetchable URL.
  */
@@ -90,17 +126,9 @@ async function pollNanoBanana(taskId) {
     console.log(`[staticsGeneration] Poll ${i+1}/${MAX_POLLS} — flag=${flag}, keys=${Object.keys(data)}, data.keys=${data.data ? Object.keys(data.data) : 'N/A'}`);
 
     if (flag === 1) {
-      // NanoBanana returns the image URL in data.data.response
-      const imageUrl = data.data?.response
-        || data.resultImageUrl || data.data?.resultImageUrl
-        || data.imageUrl || data.data?.imageUrl
-        || data.outputUrl || data.data?.outputUrl
-        || data.result?.imageUrl || data.result?.url
-        || data.data?.result || data.data?.url;
+      const imageUrl = extractNanoBananaImageUrl(data);
       if (!imageUrl) {
-        console.error('[staticsGeneration] NanoBanana success but no image URL.');
-        console.error('[staticsGeneration] Top-level keys:', JSON.stringify(Object.keys(data)));
-        console.error('[staticsGeneration] data.data keys:', data.data ? JSON.stringify(Object.keys(data.data)) : 'N/A');
+        console.error('[staticsGeneration] NanoBanana success but no image URL extracted.');
         console.error('[staticsGeneration] Full response (3000 chars):', JSON.stringify(data).slice(0, 3000));
         throw new Error('NanoBanana completed but no resultImageUrl found');
       }
@@ -278,11 +306,7 @@ router.get('/status/:taskId', authenticate, async (req, res) => {
     else if (flag === 1)           status = 'completed';
     else                           status = 'failed';
 
-    // NanoBanana puts the image URL in data.data.response
-    const resultImageUrl = data.data?.response || data.data?.resultImageUrl
-      || data.resultImageUrl || data.data?.imageUrl || null;
-
-    console.log(`[staticsGeneration] /status/${taskId} — flag=${flag}, status=${status}, hasUrl=${!!resultImageUrl}`);
+    const resultImageUrl = status === 'completed' ? extractNanoBananaImageUrl(data) : null;
 
     return res.json({
       success: true,

@@ -1387,77 +1387,22 @@ export default function StaticsGeneration() {
                   </div>
                 )}
 
-                {/* ---- Results State ---- */}
+                {/* Results auto-saved to pipeline — click the card there to view */}
                 {!generating && result && (
-                  <div className="space-y-6">
-                    {/* No image warning */}
-                    {!result.generated_image_url && (
-                      <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-4 flex items-start gap-3">
-                        <AlertTriangle className="w-4 h-4 text-yellow-400 mt-0.5 shrink-0" />
-                        <div>
-                          <p className="text-sm text-yellow-300 font-medium">Image generation skipped</p>
-                          <p className="text-xs text-yellow-400/70 mt-1">
-                            {result._note || 'Provide a reference image via URL (not file upload) to enable image generation.'}
-                          </p>
-                        </div>
-                      </div>
-                    )}
-                    {/* Generated Image */}
-                    {result.generated_image_url && (
-                      <div className="bg-[#111] border border-white/[0.06] rounded-lg p-5">
-                        <h3 className="text-sm font-medium text-white mb-3">Generated Creative</h3>
-                        <img
-                          src={result.generated_image_url}
-                          alt="Generated creative"
-                          className="w-full rounded-lg border border-white/[0.06]"
-                        />
-                        <div className="flex gap-3 mt-4">
-                          <button
-                            type="button"
-                            onClick={() => downloadImage(result.generated_image_url)}
-                            className="flex items-center gap-2 px-4 py-2 rounded-lg border border-blue-500/30 text-sm text-blue-300 hover:bg-blue-500/10 transition-colors cursor-pointer"
-                          >
-                            <Download className="w-3.5 h-3.5" />
-                            Download
-                          </button>
-                          <button
-                            type="button"
-                            onClick={handleGenerateAnother}
-                            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-sm text-white transition-colors cursor-pointer"
-                          >
-                            <RotateCcw className="w-3.5 h-3.5" />
-                            Generate Another
-                          </button>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Side-by-side Comparison */}
-                    {result.generated_image_url && (referencePreview || referenceImageUrl) && (
-                      <div className="bg-[#111] border border-white/[0.06] rounded-lg p-5">
-                        <h3 className="text-sm font-medium text-white mb-3">Comparison</h3>
-                        <div className="flex gap-4">
-                          <div className="flex-1">
-                            <span className="text-xs text-slate-400 mb-1.5 block">Reference</span>
-                            <img
-                              src={referencePreview || referenceImageUrl}
-                              alt="Reference"
-                              className="w-full rounded-lg border border-white/[0.06] object-cover"
-                            />
-                          </div>
-                          <div className="flex-1">
-                            <span className="text-xs text-slate-400 mb-1.5 block">Generated</span>
-                            <img
-                              src={result.generated_image_url}
-                              alt="Generated"
-                              className="w-full rounded-lg border border-white/[0.06] object-cover"
-                            />
-                          </div>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Adapted copy & text swaps are stored in the pipeline creative but not shown inline */}
+                  <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-lg p-4 flex items-start gap-3">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400 mt-0.5 shrink-0" />
+                    <div>
+                      <p className="text-sm text-emerald-300 font-medium">Creative generated &amp; saved to Pipeline</p>
+                      <p className="text-xs text-emerald-400/60 mt-1">Switch to the Pipeline tab to review, approve, or download.</p>
+                      <button
+                        type="button"
+                        onClick={handleGenerateAnother}
+                        className="mt-3 flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.1] text-xs text-white transition-colors cursor-pointer"
+                      >
+                        <RotateCcw className="w-3 h-3" />
+                        Generate Another
+                      </button>
+                    </div>
                   </div>
                 )}
 
