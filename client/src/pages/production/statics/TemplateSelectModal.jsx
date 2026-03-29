@@ -37,15 +37,19 @@ const CATEGORIES = [
 // TemplateSelectModal
 // ---------------------------------------------------------------------------
 
+const PAGE_SIZE = 40;
+
 export function TemplateSelectModal({ isOpen, onClose, onSelect, templates = [] }) {
   const [search, setSearch] = useState('');
   const [activeCategory, setActiveCategory] = useState('all');
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
 
   // Reset state when modal opens
   useEffect(() => {
     if (isOpen) {
       setSearch('');
       setActiveCategory('all');
+      setVisibleCount(PAGE_SIZE);
     }
   }, [isOpen]);
 
@@ -113,7 +117,7 @@ export function TemplateSelectModal({ isOpen, onClose, onSelect, templates = [] 
       onClick={onClose}
     >
       {/* Backdrop */}
-      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
+      <div className="absolute inset-0 bg-black/80" />
 
       {/* Modal */}
       <div
@@ -194,7 +198,7 @@ export function TemplateSelectModal({ isOpen, onClose, onSelect, templates = [] 
                 </div>
               ) : (
                 <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
-                  {filtered.map((template) => (
+                  {filtered.slice(0, visibleCount).map((template) => (
                     <button
                       key={template.id || template.name}
                       onClick={() => handleSelect(template)}
@@ -227,6 +231,15 @@ export function TemplateSelectModal({ isOpen, onClose, onSelect, templates = [] 
                     </button>
                   ))}
                 </div>
+                {filtered.length > visibleCount && (
+                  <button
+                    type="button"
+                    onClick={() => setVisibleCount((c) => c + PAGE_SIZE)}
+                    className="mt-4 w-full py-2.5 rounded-lg bg-white/[0.04] border border-white/[0.08] text-sm text-slate-300 hover:text-white hover:bg-white/[0.08] transition-colors cursor-pointer"
+                  >
+                    Show More ({filtered.length - visibleCount} remaining)
+                  </button>
+                )}
               )}
             </div>
           </div>

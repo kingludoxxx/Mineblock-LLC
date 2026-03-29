@@ -92,14 +92,14 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, onPublish
         {creative.image_url ? (
           <img
             src={creative.image_url}
-            alt={creative.product_name || creative.source_label || 'Creative'}
+            alt={creative.product_name || 'Creative'}
             className="w-full h-full object-cover"
+            onError={(e) => { e.target.style.display = 'none'; e.target.nextSibling?.classList?.remove('hidden'); }}
           />
-        ) : (
-          <div className="w-full h-full flex items-center justify-center text-gray-600">
-            <Eye className="w-8 h-8" />
-          </div>
-        )}
+        ) : null}
+        <div className={`w-full h-full flex items-center justify-center text-gray-600 ${creative.image_url ? 'hidden' : ''}`}>
+          <Eye className="w-8 h-8" />
+        </div>
       </div>
 
       {/* Info */}
