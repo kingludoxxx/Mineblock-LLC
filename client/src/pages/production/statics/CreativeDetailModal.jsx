@@ -328,8 +328,8 @@ export function CreativeDetailModal({
               Download
             </button>
 
-            {/* Create 9:16 variant — only if approved and no auto-variant was triggered */}
-            {creative.aspect_ratio !== '9:16' && !creative.parent_creative_id && onCreateVariant && creative.status !== 'approved' && (
+            {/* Create 9:16 variant */}
+            {creative.aspect_ratio !== '9:16' && !creative.parent_creative_id && onCreateVariant && (
               <button
                 type="button"
                 onClick={() => onCreateVariant(creative.id)}
@@ -338,9 +338,6 @@ export function CreativeDetailModal({
                 <Sparkles className="w-4 h-4" />
                 Create 9:16 Version
               </button>
-            )}
-            {creative.aspect_ratio !== '9:16' && !creative.parent_creative_id && creative.status === 'approved' && (
-              <p className="text-xs text-blue-400/70 text-center">9:16 variant is auto-generating...</p>
             )}
 
             {/* Approve */}
