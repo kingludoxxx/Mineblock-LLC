@@ -1243,6 +1243,33 @@ router.post('/creatives/:id/publish-clickup', authenticate, async (req, res) => 
       }
     }
 
+    // 8b. Create a linked task in Media Buying pipeline so it appears there too
+    const MEDIA_BUYING_LIST = '901518769621';
+    try {
+      const mbTask = await clickupFetch(`/list/${MEDIA_BUYING_LIST}/task`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: namingConvention,
+          status: 'ready to launch',
+          custom_fields: [
+            { id: FIELD_IDS.briefNumber, value: nextNumber },
+            { id: FIELD_IDS.briefType, value: BRIEF_TYPE_OPTIONS.NN },
+            { id: FIELD_IDS.angle, value: angleUuid },
+            { id: FIELD_IDS.namingConvention, value: namingConvention },
+            { id: FIELD_IDS.creationWeek, value: weekLabel },
+          ],
+        }),
+      });
+      const mbTaskId = mbTask.id;
+      console.log(`[publish-clickup] Created Media Buying task ${mbTaskId}`);
+
+      // Link the two tasks together
+      await clickupFetch(`/task/${clickupTaskId}/link/${mbTaskId}`, { method: 'POST' });
+      console.log(`[publish-clickup] Linked Static Ads ${clickupTaskId} ↔ Media Buying ${mbTaskId}`);
+    } catch (mbErr) {
+      console.error(`[publish-clickup] Failed to create Media Buying task: ${mbErr.message}`);
+    }
+
     // Override task name after ClickUp automation may have rewritten it
     // Wait 10s for ClickUp automation to fire, then set name + naming convention again
     setTimeout(async () => {
