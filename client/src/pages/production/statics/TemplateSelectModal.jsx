@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useCallback } from 'react';
+import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { X, Search, LayoutGrid } from 'lucide-react';
 
@@ -32,6 +32,25 @@ const CATEGORIES = [
   { key: "What's Inside", label: "What's Inside" },
   { key: 'Uncategorized', label: 'Uncategorized' },
 ];
+
+// ---------------------------------------------------------------------------
+// Infinite-scroll sentinel
+// ---------------------------------------------------------------------------
+
+function ScrollSentinel({ onVisible }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const observer = new IntersectionObserver(
+      ([entry]) => { if (entry.isIntersecting) onVisible(); },
+      { rootMargin: '200px' },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [onVisible]);
+  return <div ref={ref} className="h-1" />;
+}
 
 // ---------------------------------------------------------------------------
 // TemplateSelectModal
@@ -233,13 +252,7 @@ export function TemplateSelectModal({ isOpen, onClose, onSelect, templates = [] 
                     ))}
                   </div>
                   {filtered.length > visibleCount && (
-                    <button
-                      type="button"
-                      onClick={() => setVisibleCount((c) => c + PAGE_SIZE)}
-                      className="mt-4 w-full py-2.5 rounded-lg bg-white/[0.04] border border-white/[0.08] text-sm text-slate-300 hover:text-white hover:bg-white/[0.08] transition-colors cursor-pointer"
-                    >
-                      Show More ({filtered.length - visibleCount} remaining)
-                    </button>
+                    <ScrollSentinel onVisible={() => setVisibleCount((c) => c + PAGE_SIZE)} />
                   )}
                 </>
               )}
