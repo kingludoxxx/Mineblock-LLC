@@ -27,6 +27,7 @@ const CREATIVE_TYPE_CODES = {
   VSL: 'VL',
   'Mini VSL': 'MV',
   'Long VSL': 'LV',
+  Cartoon: 'CT',
 };
 
 // Custom field IDs
@@ -78,6 +79,7 @@ const CREATIVE_TYPE_OPTIONS = {
   VSL: 'ba975681-cebb-416c-8b1f-0880a9cd9e56',
   'Mini VSL': 'e5efc26b-a8bc-4306-9ede-cec47d37ce32',
   'Long VSL': '3cdf6abf-a162-4e81-b32c-e30ae3c7d4ba',
+  Cartoon: '3edf3ba9-2518-4699-808d-364ed6831383',
 };
 
 // Relationship task IDs
@@ -521,6 +523,14 @@ router.post('/create', async (req, res) => {
     );
 
     await Promise.all(relationshipPromises);
+
+    // Re-set the task name AFTER relationships are set, so the ClickUp webhook
+    // (which fires on taskCreated and reads product from the relationship field)
+    // doesn't overwrite it with "NA" due to a race condition.
+    await clickupFetch(`${CLICKUP_API}/task/${taskId}`, {
+      method: 'PUT',
+      body: JSON.stringify({ name: taskName }),
+    }).catch((err) => console.error('[BriefAgent] Name re-set error:', err.message));
 
     res.json({
       success: true,

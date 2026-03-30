@@ -57,7 +57,7 @@ const BRIEF_TYPE_MAP = { 0: 'NN', 1: 'IT' };
 
 const CREATIVE_TYPE_MAP = {
   0: 'Mashup', 1: 'ShortVid', 2: 'UGC', 3: 'VSL',
-  4: 'MiniVSL', 5: 'LongVSL', 6: 'IMG', 7: 'GIF',
+  4: 'MiniVSL', 5: 'LongVSL', 6: 'IMG', 7: 'GIF', 8: 'Cartoon',
 };
 
 async function clickupFetch(url, options = {}) {
@@ -251,8 +251,10 @@ async function createFrameFolder(parentFolderId, folderName) {
 
 // Handle taskCreated — auto-generate naming convention + create Frame.io folder
 async function handleTaskCreated(taskId) {
-  // Small delay to let ClickUp populate custom fields
-  await new Promise((r) => setTimeout(r, 3000));
+  // Longer delay to let Brief Agent set relationship fields (product, avatar, creator)
+  // before we read them back for naming convention generation.
+  // Brief Agent creates task → then sets relationships (~3-5s) → webhook must wait.
+  await new Promise((r) => setTimeout(r, 10000));
 
   const task = await getTask(taskId);
   const listId = task.list?.id;
