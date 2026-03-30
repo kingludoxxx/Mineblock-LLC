@@ -317,12 +317,24 @@ export default function IterationKing() {
   const [generationMode, setGenerationMode] = useState('quick-hooks');
   const [analysisCollapsed, setAnalysisCollapsed] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState(null);
-  const productAutoSelected = useRef(false);
   const searchTimer = useRef(null);
   const scriptAbortRef = useRef(null);
   const hookAbortRef = useRef(null);
 
   const isFullMode = generationMode === 'full';
+
+  // Auto-select Miner Forge Pro on mount
+  useEffect(() => {
+    const t = localStorage.getItem('accessToken');
+    fetch('/api/v1/product-profiles', { headers: t ? { Authorization: `Bearer ${t}` } : {} })
+      .then((r) => r.json())
+      .then((r) => {
+        const products = r.data || [];
+        const mfp = products.find((p) => /miner\s*forge/i.test(p.name));
+        if (mfp) setSelectedProduct(mfp);
+      })
+      .catch(() => {});
+  }, []);
 
   // Cleanup timers and abort controllers on unmount
   useEffect(() => {
@@ -659,12 +671,6 @@ export default function IterationKing() {
             <ProductSelector
               selectedId={selectedProduct?.id}
               onSelect={(p) => setSelectedProduct(p)}
-              onLoad={(products) => {
-                if (!productAutoSelected.current && !selectedProduct) {
-                  const mfp = products.find((p) => /miner\s*forge/i.test(p.name));
-                  if (mfp) { setSelectedProduct(mfp); productAutoSelected.current = true; }
-                }
-              }}
               className="w-full"
             />
           </div>
