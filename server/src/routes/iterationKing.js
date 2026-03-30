@@ -302,23 +302,30 @@ router.post('/generate-scripts', authenticate, async (req, res) => {
       : '';
     const productContext = buildProductContext(productProfile);
 
-    const prompt = `You are a world-class direct response ad copy iteration engine.
+    const prompt = `You are a world-class direct response ad copy iteration engine used by a media buying team to create winning ad variations.
 
 Your task is to generate 10 high-quality iterations of a winning ad script.
 
-Rules:
-- Preserve the core angle and persuasion mechanism.
-- Do not generate random rewrites.
-- These must feel like performance-focused iterations of a proven ad.
-- Vary language, pacing, emotional tension and framing.
-- Avoid robotic language or generic marketing copy.
-- Maintain direct-response energy.
-- Each variation must be materially different from the others.
-- Match the aggressiveness level specified.
-- Match the similarity-to-original level specified.
-- Use the product intelligence below to ensure claims, benefits, and language are accurate and specific to this product.
+STEP 1 — STRUCTURAL ANALYSIS (do this internally, do NOT output it):
+Before generating, identify these parts of the original script:
+- HOOK: The first 1-3 sentences that grab attention and stop the scroll.
+- TRANSITION: How the hook connects to the body (the bridge sentence).
+- BODY: The core persuasion, story, or argument.
+- CTA: The closing call to action.
+
+STEP 2 — GENERATION RULES:
+- Each iteration MUST follow the same structural flow: Hook → Transition → Body → CTA.
+- The hook of each iteration must NATURALLY LEAD INTO its own body. The viewer should feel no "seam" between hook and body — they must read as one continuous script.
+- Preserve the core angle, persuasion mechanism, and key claims of the original.
+- Keep hooks at a similar LENGTH and FORMAT to the original hook (if the original hook is 1 short sentence, don't write a 3-sentence hook).
+- The body must deliver on whatever the hook promises or teases. No bait-and-switch.
+- Vary the emotional angle, framing, and language across iterations — but NOT the structure or flow.
+- Write like a real person talking, not a marketer. No corporate jargon, no "unlock", no "revolutionize", no "game-changer" unless the original uses those exact words.
+- Each variation must be materially different from the others in approach, not just synonym swaps.
+- Match the aggressiveness and similarity levels specified.
+- Use the product intelligence below to ensure claims, benefits, and language are accurate.
 ${analysisContext}${productContext}
-Input script:
+ORIGINAL WINNING SCRIPT:
 ${script.slice(0, 5000)}
 
 Aggressiveness: ${aggressiveness}/10 (1=soft persuasion, 5=balanced DR, 10=highly aggressive)
@@ -326,13 +333,13 @@ Similarity to original: ${similarity}/10 (1=creative exploration, 5=moderate ite
 
 Return ONLY a valid JSON array (no markdown, no backticks, no explanation). Each object must have:
 - "id": number (1-10)
-- "text": string (full script text)
+- "text": string (full script text — hook and body as one continuous script, no labels or markers)
 - "aggressionLevel": number (1-10)
 - "toneLabel": string (one of: Curiosity, Authority, UGC Story, Emotional, Direct Response, Minimalist, Shock, Contrarian, Urgency, Social Proof)
 
 Generate exactly 10 variations.`;
 
-    await streamJSONArray(res, prompt, 8192, { fast: true });
+    await streamJSONArray(res, prompt, 8192, { fast: false });
   } catch (err) {
     console.error('[IterationKing] Generate scripts error:', err.message);
     if (!res.headersSent) res.status(500).json({ success: false, error: err.message });
@@ -350,22 +357,30 @@ router.post('/generate-full-scripts', authenticate, async (req, res) => {
       : '';
     const productContext = buildProductContext(productProfile);
 
-    const prompt = `You are a world-class direct response ad scriptwriter.
+    const prompt = `You are a world-class direct response ad scriptwriter for a media buying team.
 
-Your task is to generate 10 complete ad scripts (hooks + body combined) based on a winning ad.
+Your task is to generate 10 complete, ready-to-use ad scripts based on a winning ad.
 
-This mode generates full ready-to-use ad scripts. Each script should include its own unique hook seamlessly integrated with the body.
+STEP 1 — STRUCTURAL ANALYSIS (do this internally, do NOT output it):
+Break down the original script:
+- HOOK: First 1-3 sentences (the scroll-stopper).
+- BODY: The persuasion narrative (story, argument, proof).
+- CTA: The closing action.
+- TONE: The conversational register (casual/intense/story-driven/etc).
+- HOOK→BODY BRIDGE: How the original transitions from hook to body.
 
-Rules:
-- Each script is a complete ad — hook and body together.
-- Preserve the core angle and persuasion mechanism of the original.
-- Vary hooks, framing, language, pacing, and emotional tension.
-- Avoid robotic language or generic marketing copy.
-- Maintain direct-response energy.
-- Each script must be materially different.
-- Use the product intelligence below to ensure claims and language are accurate and specific.
+STEP 2 — GENERATION RULES:
+- Each script is a COMPLETE ad — hook flows naturally into body into CTA as ONE continuous piece.
+- The hook must SET UP what the body DELIVERS. If the hook teases a secret, the body must reveal it. If the hook states a problem, the body must address it. No disconnect.
+- Keep hooks at a similar length and intensity to the original hook. Don't write a 3-sentence hook if the original uses 1 punchy line.
+- Preserve the core angle, persuasion mechanism, and key product claims.
+- The body should feel like a natural continuation of the hook — same voice, same energy, same person talking.
+- Write like a real human. Match the original's register. If it's casual/UGC-style, stay casual. If it's authoritative, stay authoritative. No corporate marketing speak unless the original uses it.
+- Each script must take a genuinely different creative approach — different hooks, different framings, different emotional entry points. NOT just synonym replacements.
+- Match aggressiveness and similarity levels.
+- Use the product intelligence to keep claims accurate.
 ${analysisContext}${productContext}
-Original winning script:
+ORIGINAL WINNING SCRIPT:
 ${script.slice(0, 5000)}
 
 Aggressiveness: ${aggressiveness}/10 (1=soft persuasion, 5=balanced DR, 10=highly aggressive)
@@ -373,13 +388,13 @@ Similarity to original: ${similarity}/10 (1=creative exploration, 5=moderate ite
 
 Return ONLY a valid JSON array (no markdown, no backticks, no explanation). Each object must have:
 - "id": number (1-10)
-- "text": string (complete ad script with hook and body)
+- "text": string (complete ad script — one continuous flow, no section labels)
 - "aggressionLevel": number (1-10)
 - "toneLabel": string (one of: Curiosity, Authority, UGC Story, Emotional, Direct Response, Minimalist, Shock, Contrarian, Urgency, Social Proof)
 
 Generate exactly 10 complete scripts.`;
 
-    await streamJSONArray(res, prompt, 8192, { fast: true });
+    await streamJSONArray(res, prompt, 8192, { fast: false });
   } catch (err) {
     console.error('[IterationKing] Generate full scripts error:', err.message);
     if (!res.headersSent) res.status(500).json({ success: false, error: err.message });
@@ -393,28 +408,31 @@ router.post('/generate-hooks', authenticate, async (req, res) => {
     if (!body) return res.status(400).json({ success: false, error: 'Body script is required' });
     const productContext = buildProductContext(productProfile);
 
-    const prompt = `You are a world-class direct response hook writer.
+    const prompt = `You are a world-class direct response hook writer for a media buying team.
 
 Your task is to generate 10 hooks for the ad body below.
 
-Rules:
-- Hooks are the first 1-2 phrases of the ad.
-- From phrase 3 onward the body must remain natural.
-- Hooks must blend seamlessly with the body.
-- Hooks must not introduce claims the body does not support.
-- Hooks must increase scroll-stopping power while preserving continuity.
-- Hooks must not create tone mismatch with the body.
-- Each hook must be materially different from the others.
-- Match the brand voice and use accurate product-specific language when provided.
+CRITICAL — HOOK-BODY CONTINUITY:
+Read the body carefully FIRST. Understand:
+- What the body is about (the topic, the story, the argument).
+- What tone/voice the body uses (casual, authoritative, story-driven, urgent).
+- What the body's opening sentences expect to follow from (what setup do they assume?).
+
+Then write hooks that:
+1. MATCH the body's tone and voice exactly. If the body is casual UGC-style, the hook must be too. If it's authoritative, the hook must be too.
+2. SET UP what the body delivers. The body's first line after the hook must read as a natural continuation — no jarring shift in topic or energy.
+3. DO NOT introduce claims, topics, or promises the body doesn't address.
+4. Are 1-2 sentences max. Keep them punchy.
+5. Each hook takes a genuinely different angle — not just rewording the same idea.
 ${productContext}
-Body:
+AD BODY (the hook must flow naturally into this):
 ${body.slice(0, 5000)}
 
 Aggressiveness: ${aggressiveness}/10 (1=soft, 5=balanced, 10=highly aggressive)
 
 Return ONLY a valid JSON array (no markdown, no backticks, no explanation). Each object must have:
 - "id": number (1-10)
-- "text": string (hook text, 1-2 phrases)
+- "text": string (hook text, 1-2 sentences)
 - "strength": number (1-10, predicted hook strength)
 - "curiosityTrigger": string ("Low" or "Medium" or "High")
 - "clarity": string ("Low" or "Medium" or "High")
@@ -422,7 +440,7 @@ Return ONLY a valid JSON array (no markdown, no backticks, no explanation). Each
 
 Generate exactly 10 hooks.`;
 
-    await streamJSONArray(res, prompt, 2048, { fast: true });
+    await streamJSONArray(res, prompt, 2048, { fast: false });
   } catch (err) {
     console.error('[IterationKing] Generate hooks error:', err.message);
     if (!res.headersSent) res.status(500).json({ success: false, error: err.message });
@@ -457,26 +475,29 @@ Winner Analysis Context:
 - Narrative structure: ${analysis.narrativeStructure || 'Unknown'}
 ` : '';
 
-    const prompt = `You are a world-class direct response hook writer specializing in scroll-stopping ad openings.
+    const prompt = `You are a world-class direct response hook writer for a media buying team.
 
 Your task: Generate exactly 5 hooks for this ad body. Each hook uses a DIFFERENT angle/style.
 
-ANGLES TO USE (one per hook):
-1. SHOCK — Pattern interrupt. Something unexpected, counterintuitive, or hard to believe.
-2. CURIOSITY — Open a loop the viewer MUST close. Tease without revealing.
-3. AUTHORITY — Lead with credibility, proof, or expert framing.
-4. CONTRARIAN — Challenge conventional wisdom. "Everyone says X, but actually..."
-5. SOCIAL PROOF — Lead with results, testimonials, or "people are doing X."
+STEP 1 — READ THE BODY FIRST (do NOT output this analysis):
+- What is the body about? What story/argument does it make?
+- What tone does it use? (casual, authoritative, story-driven, etc.)
+- What does the body's first sentence assume comes before it?
 
-Rules:
-- Hooks are the first 1-2 sentences of the ad. They must flow naturally into the body below.
-- DO NOT introduce claims the body doesn't support.
-- Each hook must be materially different in tone and approach.
-- Match the aggressiveness level in language intensity.
-- Hooks should be conversational, NOT formal or corporate.
-- Use accurate product-specific language, benefits, and claims from the product intelligence below.
+STEP 2 — GENERATE HOOKS USING THESE ANGLES (one per hook):
+1. SHOCK — Pattern interrupt. Something unexpected or hard to believe that relates to what the body actually discusses.
+2. CURIOSITY — Open a loop the viewer MUST close. Tease the body's key revelation without giving it away.
+3. AUTHORITY — Lead with credibility or proof that sets up the body's claims.
+4. CONTRARIAN — Challenge conventional wisdom in a way the body then supports.
+5. SOCIAL PROOF — Lead with results or social validation that the body elaborates on.
+
+HOOK-BODY CONTINUITY (CRITICAL):
+- Each hook must flow DIRECTLY into the body's first line with zero friction. Read hook + body together — they must sound like one person talking.
+- Match the body's tone exactly. If the body is casual/UGC, the hook must be casual. If authoritative, stay authoritative.
+- DO NOT introduce claims, topics, or promises the body doesn't address.
+- Hooks are 1-2 sentences MAX. Keep them punchy and natural.
 ${analysisContext}${productContext}
-Ad Body:
+AD BODY (hooks must flow naturally into this):
 ${body.slice(0, 5000)}
 
 Aggressiveness: ${aggressiveness}/10 (1=soft conversational, 5=balanced direct response, 10=extremely aggressive/urgent)
@@ -491,7 +512,7 @@ Return ONLY a valid JSON array. Each object:
 
 Generate exactly 5 hooks.`;
 
-    await streamJSONArray(res, prompt, 2048, { fast: true });
+    await streamJSONArray(res, prompt, 2048, { fast: false });
   } catch (err) {
     console.error('[IterationKing] Generate brief hooks error:', err.message);
     if (!res.headersSent) res.status(500).json({ success: false, error: err.message });
