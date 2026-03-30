@@ -3,7 +3,7 @@ import { Package, ChevronDown, Check, ExternalLink, X, Loader2 } from 'lucide-re
 import { useNavigate } from 'react-router-dom';
 import api from '../services/api';
 
-export default function ProductSelector({ selectedId, onSelect, className = '' }) {
+export default function ProductSelector({ selectedId, onSelect, onLoad, className = '' }) {
   const [products, setProducts] = useState([]);
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -13,8 +13,10 @@ export default function ProductSelector({ selectedId, onSelect, className = '' }
   useEffect(() => {
     api.get('/product-profiles')
       .then((r) => {
-        setProducts(r.data.data || []);
+        const list = r.data.data || [];
+        setProducts(list);
         setLoading(false);
+        onLoad?.(list);
       })
       .catch((err) => {
         console.error('Failed to load products:', err.message);

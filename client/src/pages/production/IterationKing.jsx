@@ -317,6 +317,7 @@ export default function IterationKing() {
   const [generationMode, setGenerationMode] = useState('quick-hooks');
   const [analysisCollapsed, setAnalysisCollapsed] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState(null);
+  const productAutoSelected = useRef(false);
   const searchTimer = useRef(null);
   const scriptAbortRef = useRef(null);
   const hookAbortRef = useRef(null);
@@ -658,15 +659,14 @@ export default function IterationKing() {
             <ProductSelector
               selectedId={selectedProduct?.id}
               onSelect={(p) => setSelectedProduct(p)}
+              onLoad={(products) => {
+                if (!productAutoSelected.current && !selectedProduct) {
+                  const mfp = products.find((p) => /miner\s*forge/i.test(p.name));
+                  if (mfp) { setSelectedProduct(mfp); productAutoSelected.current = true; }
+                }
+              }}
               className="w-full"
             />
-            {selectedProduct && (
-              <div className="mt-3 space-y-1 text-xs" style={{ color: '#666' }}>
-                {selectedProduct.big_promise && <p><span style={{ color: '#444' }}>Promise:</span> <span style={{ color: '#999' }}>{selectedProduct.big_promise}</span></p>}
-                {selectedProduct.mechanism && <p><span style={{ color: '#444' }}>Mechanism:</span> <span style={{ color: '#999' }}>{selectedProduct.mechanism}</span></p>}
-                {selectedProduct.voice && <p><span style={{ color: '#444' }}>Voice:</span> <span style={{ color: '#999' }}>{selectedProduct.voice}</span></p>}
-              </div>
-            )}
           </div>
 
           {/* Source Brief */}
