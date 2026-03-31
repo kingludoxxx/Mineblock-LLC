@@ -452,7 +452,9 @@ router.post('/create', async (req, res) => {
       { id: FIELD_IDS.creationWeek, value: weekStr },
       { id: FIELD_IDS.creativeStrategist, value: { add: [USER_IDS.Ludovico], rem: [] } },
       { id: FIELD_IDS.copywriter, value: { add: [USER_IDS.Ludovico], rem: [] } },
-      finalReferenceLink ? { id: FIELD_IDS.adsFrameLink, value: finalReferenceLink } : null,
+      // NOTE: Do NOT set adsFrameLink here — it gets auto-created as a NEW folder
+      // by the clickupWebhook handler when the task is created.
+      // finalReferenceLink is only used in the task description for reference.
     ].filter((f) => f != null && f.value != null);
 
     // 5) Create the task — goes straight to edit queue since editor is assigned

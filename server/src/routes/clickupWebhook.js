@@ -303,9 +303,8 @@ async function handleTaskCreated(taskId) {
       return;
     }
 
-    // Use the brief ID as folder name (e.g. "B0131")
-    const briefId = `B${String(briefNumber).padStart(4, '0')}`;
-    const folderName = briefId;
+    // Use the full task name as folder name (e.g. "MR - B0139 - IT - B0067 - ...")
+    const folderName = task.name || `B${String(briefNumber).padStart(4, '0')}`;
 
     const result = await createFrameFolder(rootFolderId, folderName);
     if (!result) {
