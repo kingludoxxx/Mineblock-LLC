@@ -1751,6 +1751,188 @@ setTimeout(() => {
   setInterval(() => syncMetaThumbnails().catch(() => {}), 30 * 60 * 1000);
 }, 30_000);
 
+/**
+ * GET /creative-daily?creative_id=B0066&startDate=YYYY-MM-DD&endDate=YYYY-MM-DD
+ * Returns daily performance data for a specific creative_id by querying
+ * Triple Whale with daily granularity, filtered to ads matching the creative.
+ */
+router.get('/creative-daily', authenticate, async (req, res) => {
+  try {
+    const { creative_id, startDate, endDate } = req.query;
+    if (!creative_id) {
+      return res.status(400).json({ success: false, error: { message: 'creative_id query param is required' } });
+    }
+    if (!startDate || !endDate) {
+      return res.status(400).json({ success: false, error: { message: 'startDate and endDate query params are required (YYYY-MM-DD)' } });
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(startDate) || !/^\d{4}-\d{2}-\d{2}$/.test(endDate)) {
+      return res.status(400).json({ success: false, error: { message: 'Dates must be in YYYY-MM-DD format' } });
+    }
+
+    if (!TW_API_KEY) {
+      return res.status(500).json({ success: false, error: { message: 'Triple Whale API key not configured' } });
+    }
+
+    // Revenue & purchase column discovery (same pattern as fetchTripleWhaleAds)
+    const revenueColumns = ['order_revenue', 'pixel_revenue', 'revenue'];
+    const purchaseColumns = [
+      'website_purchases', 'orders_quantity', 'pixel purchases', 'pixel_purchases',
+      'purchases', 'pixel_capi_purchases', 'total_purchases', 'conversions',
+    ];
+
+    async function twQuery(sql) {
+      const r = await fetch(TW_SQL_URL, {
+        method: 'POST',
+        headers: { 'x-api-key': TW_API_KEY, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ shopId: TW_SHOP_ID, query: sql.trim(), period: { startDate, endDate } }),
+        signal: AbortSignal.timeout(30000),
+      });
+      if (!r.ok) {
+        const text = await r.text();
+        if (r.status === 401 || r.status === 403 || r.status >= 500) return { ok: false, fatal: true };
+        return { ok: false, fatal: false, errorText: text.slice(0, 100) };
+      }
+      const data = await r.json();
+      const rows = Array.isArray(data) ? data : (data?.data || data?.rows || []);
+      return { ok: true, rows };
+    }
+
+    // Try to find working revenue + purchase columns with daily granularity
+    let dailyRows = [];
+    let foundRevCol = null;
+    let foundPurCol = null;
+
+    for (const revenueCol of revenueColumns) {
+      const revRef = revenueCol.includes(' ') ? `\`${revenueCol}\`` : revenueCol;
+      // Try with purchase columns
+      for (const purchaseCol of purchaseColumns) {
+        const colRef = purchaseCol.includes(' ') ? `\`${purchaseCol}\`` : purchaseCol;
+        const sql = `
+          SELECT event_date, ad_name, SUM(spend) as total_spend, SUM(${revRef}) as total_revenue,
+                 SUM(${colRef}) as total_purchases,
+                 SUM(impressions) as total_impressions, SUM(clicks) as total_clicks
+          FROM pixel_joined_tvf
+          WHERE event_date BETWEEN @startDate AND @endDate
+          GROUP BY event_date, ad_name
+          HAVING SUM(spend) > 0.01
+          ORDER BY event_date ASC
+          LIMIT 5000
+        `;
+        const result = await twQuery(sql);
+        if (result.fatal) {
+          return res.status(502).json({ success: false, error: { message: 'Triple Whale API error' } });
+        }
+        if (result.ok) {
+          dailyRows = result.rows;
+          foundRevCol = revenueCol;
+          foundPurCol = purchaseCol;
+          break;
+        }
+      }
+      if (foundRevCol) break;
+
+      // Try revenue-only (no purchases)
+      const revOnlySql = `
+        SELECT event_date, ad_name, SUM(spend) as total_spend, SUM(${revRef}) as total_revenue,
+               SUM(impressions) as total_impressions, SUM(clicks) as total_clicks
+        FROM pixel_joined_tvf
+        WHERE event_date BETWEEN @startDate AND @endDate
+        GROUP BY event_date, ad_name
+        HAVING SUM(spend) > 0.01
+        ORDER BY event_date ASC
+        LIMIT 5000
+      `;
+      const revResult = await twQuery(revOnlySql);
+      if (revResult.fatal) {
+        return res.status(502).json({ success: false, error: { message: 'Triple Whale API error' } });
+      }
+      if (revResult.ok) {
+        dailyRows = revResult.rows;
+        foundRevCol = revenueCol;
+        break;
+      }
+    }
+
+    if (!foundRevCol) {
+      return res.status(502).json({ success: false, error: { message: 'Could not query Triple Whale (all column variants failed)' } });
+    }
+
+    // Filter rows to only those matching the creative_id
+    const cid = creative_id.toUpperCase();
+    const matchingRows = dailyRows.filter(row => {
+      const parsed = parseAdName(row.ad_name);
+      return parsed && parsed.creative_id && parsed.creative_id.toUpperCase() === cid;
+    });
+
+    // Aggregate by date
+    const dateMap = {};
+    let totalSpend = 0, totalRevenue = 0, totalPurchases = 0, totalImpressions = 0, totalClicks = 0;
+
+    for (const row of matchingRows) {
+      const date = (row.event_date || '').slice(0, 10);
+      if (!date) continue;
+
+      const spend = Number(row.total_spend) || 0;
+      const revenue = Number(row.total_revenue) || 0;
+      const purchases = Number(row.total_purchases) || 0;
+      const impressions = Number(row.total_impressions) || 0;
+      const clicks = Number(row.total_clicks) || 0;
+
+      totalSpend += spend;
+      totalRevenue += revenue;
+      totalPurchases += purchases;
+      totalImpressions += impressions;
+      totalClicks += clicks;
+
+      if (!dateMap[date]) {
+        dateMap[date] = { date, spend: 0, revenue: 0, purchases: 0, impressions: 0, clicks: 0 };
+      }
+      dateMap[date].spend += spend;
+      dateMap[date].revenue += revenue;
+      dateMap[date].purchases += purchases;
+      dateMap[date].impressions += impressions;
+      dateMap[date].clicks += clicks;
+    }
+
+    const daily = Object.values(dateMap)
+      .sort((a, b) => a.date.localeCompare(b.date))
+      .map(d => ({
+        date: d.date,
+        spend: Math.round(d.spend * 100) / 100,
+        revenue: Math.round(d.revenue * 100) / 100,
+        purchases: d.purchases,
+        impressions: d.impressions,
+        clicks: d.clicks,
+      }));
+
+    const aggSpend = Math.round(totalSpend * 100) / 100;
+    const aggRevenue = Math.round(totalRevenue * 100) / 100;
+
+    res.json({
+      success: true,
+      data: {
+        creative_id: cid,
+        daily,
+        totals: {
+          total_spend: aggSpend,
+          total_revenue: aggRevenue,
+          total_purchases: totalPurchases,
+          total_impressions: totalImpressions,
+          total_clicks: totalClicks,
+          roas: aggSpend > 0 ? Math.round((aggRevenue / aggSpend) * 100) / 100 : 0,
+          cpa: totalPurchases > 0 ? Math.round((aggSpend / totalPurchases) * 100) / 100 : 0,
+          ctr: totalImpressions > 0 ? Math.round(((totalClicks / totalImpressions) * 100) * 100) / 100 : 0,
+          cpm: totalImpressions > 0 ? Math.round((aggSpend / totalImpressions * 1000) * 100) / 100 : 0,
+        },
+        dateRange: { startDate, endDate },
+      },
+    });
+  } catch (err) {
+    console.error('[Creative Analysis] /creative-daily error:', err);
+    res.status(500).json({ success: false, error: { message: 'Internal server error' } });
+  }
+});
+
 // ── Exported helpers for cross-module use ──────────────────────────
 
 /**
