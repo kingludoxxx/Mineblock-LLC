@@ -351,6 +351,9 @@ router.get('/status/:taskId', authenticate, async (req, res) => {
 
     const resultImageUrl = status === 'completed' ? extractNanoBananaImageUrl(data) : null;
 
+    // Prevent browser caching so polling always gets fresh data
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
+    res.set('Pragma', 'no-cache');
     return res.json({
       success: true,
       data: {

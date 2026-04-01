@@ -799,7 +799,7 @@ export default function StaticsGeneration() {
         await new Promise(r => setTimeout(r, POLL_INTERVAL));
         if (i > 4) setGenerationStep(3); // progress indicator
 
-        const statusRes = await api.get(`/statics-generation/status/${taskId}`);
+        const statusRes = await api.get(`/statics-generation/status/${taskId}?_t=${Date.now()}`);
         const statusData = statusRes.data?.data || statusRes.data;
 
         if (statusData.status === 'completed') {
