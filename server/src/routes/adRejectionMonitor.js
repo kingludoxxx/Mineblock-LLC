@@ -109,15 +109,10 @@ async function processAdsForAccount(accountId, accountName) {
     const status = ad.effective_status;
     if (status !== 'DISAPPROVED' && status !== 'WITH_ISSUES') continue;
 
-    // Skip ads that are already turned off (paused/archived at any level)
+    // Skip archived ads only — don't skip paused, since Meta often pauses ads
+    // automatically after rejection and we still want to notify about those
     const adConfig = ad.configured_status;
-    const adsetConfig = ad.adset?.configured_status;
-    const campaignConfig = ad.campaign?.configured_status;
-    if (adConfig === 'PAUSED' || adConfig === 'ARCHIVED' ||
-        adsetConfig === 'PAUSED' || adsetConfig === 'ARCHIVED' ||
-        campaignConfig === 'PAUSED' || campaignConfig === 'ARCHIVED') {
-      continue;
-    }
+    if (adConfig === 'ARCHIVED') continue;
 
     const existing = await pgQuery(
       'SELECT ad_id FROM ad_rejections_notified WHERE ad_id = $1',
