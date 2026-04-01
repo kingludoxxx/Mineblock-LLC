@@ -1357,19 +1357,6 @@ export default function StaticsGeneration() {
                     }
                   }}
                   onCardClick={(creative) => setDetailModal(creative)}
-                  onPublish={async (id) => {
-                    try {
-                      const res = await api.post(`/statics-generation/creatives/${id}/publish-clickup`);
-                      if (res.data?.success) {
-                        const publishedIds = res.data.data?.published_ids || [id];
-                        const clickupUrl = res.data.data?.clickup_task_url;
-                        setCreatives(prev => prev.map(c => publishedIds.includes(c.id) ? { ...c, status: 'ready', clickup_url: clickupUrl } : c));
-                        setDetailModal(null);
-                      }
-                    } catch (err) {
-                      console.error('Publish failed:', err);
-                    }
-                  }}
                 />
 
                 {/* ---- 9:16 Variant Tracker ---- */}
@@ -1841,22 +1828,6 @@ export default function StaticsGeneration() {
               setCreatives(prev => prev.map(c => c.id === id ? { ...c, status } : c));
               setDetailModal(null);
             } catch { /* silently fail */ }
-          }}
-          onPublish={async (id) => {
-            try {
-              const res = await api.post(`/statics-generation/creatives/${id}/publish-clickup`);
-              if (res.data?.success) {
-                const clickupUrl = res.data.data?.clickup_task_url || res.data.data?.taskUrl;
-                const publishedIds = res.data.data?.published_ids || [id];
-                setCreatives(prev => prev.map(c => publishedIds.includes(c.id) ? { ...c, status: 'ready', clickup_url: clickupUrl } : c));
-                setDetailModal(prev => prev ? { ...prev, status: 'ready', clickup_url: clickupUrl } : null);
-                setTimeout(() => setDetailModal(null), 3000);
-                return clickupUrl;
-              }
-            } catch (err) {
-              console.error('Publish failed:', err);
-              throw err;
-            }
           }}
         />
       )}

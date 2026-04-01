@@ -6,7 +6,6 @@ import {
   CheckCircle2,
   RefreshCw,
   Loader2,
-  ExternalLink,
 } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
@@ -75,7 +74,7 @@ const STATUS_BADGE = {
 // Creative card
 // ---------------------------------------------------------------------------
 
-function CreativeCard({ creative, column, onStatusChange, onCardClick, onPublish, variantStatus }) {
+function CreativeCard({ creative, column, onStatusChange, onCardClick, variantStatus }) {
   const badge = STATUS_BADGE[creative.status] || STATUS_BADGE.review;
   const angleLabel = [creative.angle, creative.aspect_ratio]
     .filter(Boolean)
@@ -163,19 +162,7 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, onPublish
         )}
 
         {/* Action button */}
-        {(column.key === 'approved' || column.key === 'ready') && onPublish && !creative.parent_creative_id ? (
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              onPublish?.(creative.id);
-            }}
-            className="mt-1 w-full flex items-center justify-center gap-1.5 text-xs font-medium py-1.5 rounded-md transition-colors bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25 cursor-pointer"
-          >
-            <ExternalLink className="w-3.5 h-3.5" />
-            Publish to ClickUp
-          </button>
-        ) : column.actionLabel ? (
+        {column.actionLabel ? (
           <button
             type="button"
             onClick={(e) => {
@@ -202,7 +189,7 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, onPublish
 // Pipeline column
 // ---------------------------------------------------------------------------
 
-function PipelineColumn({ column, items, onStatusChange, onCardClick, onPublish, allCreatives }) {
+function PipelineColumn({ column, items, onStatusChange, onCardClick, allCreatives }) {
   const Icon = column.icon;
   const [dragOver, setDragOver] = useState(false);
 
@@ -268,7 +255,6 @@ function PipelineColumn({ column, items, onStatusChange, onCardClick, onPublish,
                 column={column}
                 onStatusChange={onStatusChange}
                 onCardClick={onCardClick}
-                onPublish={onPublish}
                 variantStatus={vStatus}
               />
             );
@@ -283,7 +269,7 @@ function PipelineColumn({ column, items, onStatusChange, onCardClick, onPublish,
 // Main PipelineView component
 // ---------------------------------------------------------------------------
 
-export function PipelineView({ creatives = [], onStatusChange, onCardClick, onRefresh, loading, onPublish }) {
+export function PipelineView({ creatives = [], onStatusChange, onCardClick, onRefresh, loading }) {
   // Bucket creatives into columns by status
   const buckets = useMemo(() => {
     const map = { review: [], approved: [], ready: [], launched: [] };
@@ -327,7 +313,6 @@ export function PipelineView({ creatives = [], onStatusChange, onCardClick, onRe
             items={buckets[col.key]}
             onStatusChange={onStatusChange}
             onCardClick={onCardClick}
-            onPublish={onPublish}
             allCreatives={creatives}
           />
         ))}

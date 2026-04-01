@@ -10,7 +10,6 @@ import {
   Send,
   Sparkles,
   Image,
-  ExternalLink,
   Loader2,
 } from 'lucide-react';
 
@@ -98,13 +97,10 @@ export function CreativeDetailModal({
   onDownload,
   onAiAdjust,
   onStatusChange,
-  onPublish,
   onCreateVariant,
 }) {
   const [aiInstruction, setAiInstruction] = useState('');
   const [debugOpen, setDebugOpen] = useState(false);
-  const [publishing, setPublishing] = useState(false);
-  const [publishSuccess, setPublishSuccess] = useState(null);
   const [aiAdjusting, setAiAdjusting] = useState(false);
   const [aiError, setAiError] = useState(null);
   const [refLightbox, setRefLightbox] = useState(false);
@@ -357,46 +353,6 @@ export function CreativeDetailModal({
                 <Check className="w-4 h-4" />
                 Approve
               </button>
-            )}
-
-            {/* Publish to ClickUp */}
-            {(creative.status === 'approved' || creative.status === 'ready') && (
-              <>
-                <button
-                  type="button"
-                  disabled={publishing}
-                  onClick={async () => {
-                    setPublishing(true);
-                    setPublishSuccess(null);
-                    try {
-                      const url = await onPublish?.(creative.id);
-                      setPublishSuccess(url || true);
-                    } catch {
-                      setPublishSuccess(null);
-                    } finally {
-                      setPublishing(false);
-                    }
-                  }}
-                  className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-emerald-600 text-sm font-medium text-white hover:bg-emerald-500 transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
-                >
-                  {publishing ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                  ) : (
-                    <ExternalLink className="w-4 h-4" />
-                  )}
-                  {publishing ? 'Publishing...' : 'Publish to ClickUp'}
-                </button>
-                {publishSuccess && (
-                  <p className="text-xs text-emerald-400 text-center">
-                    Published!{' '}
-                    {typeof publishSuccess === 'string' && (
-                      <a href={publishSuccess} target="_blank" rel="noopener noreferrer" className="underline hover:text-emerald-300">
-                        View in ClickUp
-                      </a>
-                    )}
-                  </p>
-                )}
-              </>
             )}
 
             {/* Reject */}

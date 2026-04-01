@@ -17,14 +17,13 @@ const FRAMEIO_API = 'https://api.frame.io/v2';
 // List IDs
 const MEDIA_BUYING_LIST = '901518769621';
 const VIDEO_ADS_LIST = '901518716584';
-const STATIC_ADS_LIST = '901518769479';
-const SYNC_LISTS = [MEDIA_BUYING_LIST, VIDEO_ADS_LIST, STATIC_ADS_LIST];
-const NAMING_LISTS = [VIDEO_ADS_LIST, STATIC_ADS_LIST];
+const SYNC_LISTS = [MEDIA_BUYING_LIST, VIDEO_ADS_LIST];
+const NAMING_LISTS = [VIDEO_ADS_LIST];
 
 // Statuses to sync
 const SYNC_STATUSES = ['launched', 'ready to launch'];
 
-// Custom field IDs — some differ between Video Ads and Static Ads lists
+// Custom field IDs for Video Ads list
 const FIELD_IDS = {
   // Shared across both lists
   angle: '7e740c52-a05b-4b3b-9798-0801acd84b8a',
@@ -40,9 +39,6 @@ const FIELD_IDS = {
   avatarVideo: '4ad59f88-89cc-45e5-bc56-0027a4ab8624',
   creativeType: 'b7f50dff-c752-47a7-830d-c3780021a27f',
   creator: 'be5a2a58-f355-4fac-8263-2824725eaa64',
-  // Static Ads only
-  productStatic: '11a3ee08-50c8-4c19-b8cc-7c50eaabbe65',
-  avatarStatic: 'a007dc5d-2422-4fc4-b3ca-e9e53489e76b',
 };
 
 // Dropdown index → label mappings
@@ -170,9 +166,7 @@ async function getNextBriefNumber() {
 
 // Generate naming convention from task custom fields
 function generateNamingConvention(task, listId, briefNumber) {
-  const isVideo = listId === VIDEO_ADS_LIST;
-
-  const product = getFieldValue(task, isVideo ? FIELD_IDS.productVideo : FIELD_IDS.productStatic) || 'NA';
+  const product = getFieldValue(task, FIELD_IDS.productVideo) || 'NA';
   const parentBriefId = getFieldValue(task, FIELD_IDS.parentBriefId) || 'NA';
 
   // Brief ID always uses B prefix
@@ -180,9 +174,9 @@ function generateNamingConvention(task, listId, briefNumber) {
 
   const angle = getFieldValue(task, FIELD_IDS.angle) || 'NA';
   const briefType = getFieldValue(task, FIELD_IDS.briefType) || 'NA';
-  const creativeType = isVideo ? (getFieldValue(task, FIELD_IDS.creativeType) || 'NA') : 'IMG';
-  const avatar = getFieldValue(task, isVideo ? FIELD_IDS.avatarVideo : FIELD_IDS.avatarStatic) || 'NA';
-  const creator = isVideo ? (getFieldValue(task, FIELD_IDS.creator) || 'NA') : 'NA';
+  const creativeType = getFieldValue(task, FIELD_IDS.creativeType) || 'NA';
+  const avatar = getFieldValue(task, FIELD_IDS.avatarVideo) || 'NA';
+  const creator = getFieldValue(task, FIELD_IDS.creator) || 'NA';
   const editor = getFieldValue(task, FIELD_IDS.editor) || 'NA';
   const strategist = getFieldValue(task, FIELD_IDS.creativeStrategist) || 'NA';
 
@@ -281,7 +275,7 @@ async function handleTaskCreated(taskId) {
   logger.info(`[ClickUp Webhook] Auto-named task ${taskId} → "${namingConv}"`);
 
   // ── Frame.io: Create folder and set link on ClickUp task ──
-  // Works for both Video Ads and Static Ads (Images) pipelines
+  // Creates a Frame.io folder for the Video Ads task
   try {
     if (!FRAMEIO_TOKEN) {
       logger.warn('[ClickUp Webhook] Skipping Frame.io folder — no token configured');
@@ -349,10 +343,10 @@ async function handleCustomFieldChanged(taskId) {
   }
 }
 
-// ── Create Media Buying task when VA/SA task reaches "ready to launch" ──
+// ── Create Media Buying task when VA task reaches "ready to launch" ──
 async function ensureMediaBuyingTask(task, taskListId) {
-  // Only applies to Video Ads and Static Ads lists
-  if (taskListId !== VIDEO_ADS_LIST && taskListId !== STATIC_ADS_LIST) return;
+  // Only applies to Video Ads list
+  if (taskListId !== VIDEO_ADS_LIST) return;
 
   // Check if a linked Media Buying task already exists
   const linkedTasks = task.linked_tasks || [];
@@ -369,8 +363,7 @@ async function ensureMediaBuyingTask(task, taskListId) {
   }
 
   // No Media Buying counterpart — create one
-  const pipelineLabel = taskListId === VIDEO_ADS_LIST ? 'Video' : 'Static';
-  logger.info(`[ClickUp Webhook] Creating Media Buying task for ${pipelineLabel} Ads task "${task.name}" (${task.id})`);
+  logger.info(`[ClickUp Webhook] Creating Media Buying task for Video Ads task "${task.name}" (${task.id})`);
 
   try {
     const mbTask = await clickupFetch(`/list/${MEDIA_BUYING_LIST}/task`, {
@@ -378,7 +371,7 @@ async function ensureMediaBuyingTask(task, taskListId) {
       body: JSON.stringify({
         name: task.name,
         status: 'ready to launch',
-        description: `Auto-created from ${pipelineLabel} Ads pipeline.\nSource task: https://app.clickup.com/t/${task.id}`,
+        description: `Auto-created from Video Ads pipeline.\nSource task: https://app.clickup.com/t/${task.id}`,
       }),
     });
 
@@ -406,7 +399,7 @@ async function handleStatusSync(taskId, historyItems) {
 
   if (!SYNC_LISTS.includes(taskListId)) return;
 
-  // When a VA/SA task hits "ready to launch", auto-create Media Buying counterpart
+  // When a VA task hits "ready to launch", auto-create Media Buying counterpart
   if (newStatus === 'ready to launch') {
     await ensureMediaBuyingTask(task, taskListId);
   }
@@ -465,7 +458,7 @@ async function handleStatusSync(taskId, historyItems) {
 // ── Periodic status reconciliation ──────────────────────────────────────
 // Webhooks are unreliable on Render free tier (server sleeps, misses events).
 // Every 30 minutes, scan Media Buying "launched" tasks and ensure linked
-// Video Ads / Static Ads tasks are also "launched".
+// Video Ads tasks are also "launched".
 
 async function reconcileStatuses() {
   try {
