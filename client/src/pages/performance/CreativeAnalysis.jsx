@@ -1101,7 +1101,7 @@ export default function CreativeAnalysis() {
                   {/* Visual header */}
                   <div
                     className={`h-64 flex items-center justify-center relative cursor-pointer group ${creative.thumbnail_url ? 'bg-black' : isVideo ? 'bg-gradient-to-br from-blue-900/40 to-purple-900/30' : 'bg-gradient-to-br from-cyan-900/30 to-emerald-900/20'}`}
-                    onClick={() => (creative.thumbnail_url || creative.video_url) && setVideoModal({ thumbnail_url: creative.thumbnail_url, video_url: creative.video_url, ad_name: creative.ad_name })}
+                    onClick={() => openDetailPanel(creative)}
                   >
                     {creative.thumbnail_url ? (
                       <>
@@ -1213,7 +1213,7 @@ export default function CreativeAnalysis() {
                   {/* Visual header */}
                   <div
                     className={`h-64 flex items-center justify-center relative cursor-pointer group ${creative.thumbnail_url ? 'bg-black' : isVideo ? 'bg-gradient-to-br from-blue-900/40 to-purple-900/30' : 'bg-gradient-to-br from-cyan-900/30 to-emerald-900/20'}`}
-                    onClick={() => (creative.thumbnail_url || creative.video_url) && setVideoModal({ thumbnail_url: creative.thumbnail_url, video_url: creative.video_url, ad_name: creative.ad_name })}
+                    onClick={() => openDetailPanel(creative)}
                   >
                     {creative.thumbnail_url ? (
                       <>
@@ -1744,7 +1744,7 @@ export default function CreativeAnalysis() {
         const chartPoints = daily.map(d => ({
           date: new Date(d.date + 'T00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
           spend: d.spend,
-          revenue: d.revenue,
+          roas: d.spend > 0 ? Math.round((d.revenue / d.spend) * 100) / 100 : 0,
         }));
 
         return (
@@ -1856,7 +1856,7 @@ export default function CreativeAnalysis() {
               <div className="px-6 pb-4">
                 <div className="bg-white/[0.04] border border-white/[0.06] rounded-xl p-4">
                   <div className="flex items-center justify-between mb-4">
-                    <h4 className="text-white font-semibold text-sm uppercase tracking-wider">Spend & Revenue</h4>
+                    <h4 className="text-white font-semibold text-sm uppercase tracking-wider">Ad Spend & ROAS</h4>
                     <div className="flex items-center gap-1">
                       {DETAIL_RANGES.map(r => (
                         <button
@@ -1889,14 +1889,18 @@ export default function CreativeAnalysis() {
                         </defs>
                         <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
                         <XAxis dataKey="date" tick={{ fill: '#6b7280', fontSize: 10 }} axisLine={{ stroke: 'rgba(255,255,255,0.1)' }} tickLine={false} />
-                        <YAxis tick={{ fill: '#6b7280', fontSize: 10 }} axisLine={{ stroke: 'rgba(255,255,255,0.1)' }} tickLine={false} tickFormatter={(v) => `$${v}`} />
+                        <YAxis yAxisId="left" tick={{ fill: '#6b7280', fontSize: 10 }} axisLine={{ stroke: 'rgba(255,255,255,0.1)' }} tickLine={false} tickFormatter={(v) => `$${v}`} />
+                        <YAxis yAxisId="right" orientation="right" tick={{ fill: '#6b7280', fontSize: 10 }} axisLine={{ stroke: 'rgba(255,255,255,0.1)' }} tickLine={false} tickFormatter={(v) => `${v}x`} />
                         <Tooltip
                           contentStyle={{ background: '#1c1c1c', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, color: '#fff', fontSize: 12 }}
-                          formatter={(value, name) => [`$${Number(value || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, name === 'spend' ? 'Spend' : 'Revenue']}
+                          formatter={(value, name) => {
+                            if (name === 'Spend') return [`$${Number(value || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, 'Ad Spend'];
+                            return [`${Number(value || 0).toFixed(2)}x`, 'ROAS'];
+                          }}
                         />
                         <Legend wrapperStyle={{ fontSize: 11, color: '#9ca3af' }} />
-                        <Area type="monotone" dataKey="spend" name="Spend" fill="url(#detailSpendGrad)" stroke="#3b82f6" strokeWidth={2} />
-                        <Line type="monotone" dataKey="revenue" name="Revenue" stroke="#10b981" strokeWidth={2} dot={false} />
+                        <Area type="monotone" dataKey="spend" name="Spend" yAxisId="left" fill="url(#detailSpendGrad)" stroke="#3b82f6" strokeWidth={2} />
+                        <Line type="monotone" dataKey="roas" name="ROAS" yAxisId="right" stroke="#10b981" strokeWidth={2} dot={false} />
                       </ComposedChart>
                     </ResponsiveContainer>
                   ) : (
