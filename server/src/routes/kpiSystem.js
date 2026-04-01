@@ -2046,6 +2046,14 @@ async function sendDailyPnlReport(dateStr, { force = false } = {}) {
 
   await ensureTables();
 
+  // Force a fresh Meta spend sync so P&L numbers match the live dashboard
+  try {
+    await syncMetaAdSpend(2);
+    console.log('[Daily P&L] Refreshed Meta spend cache before generating report');
+  } catch (syncErr) {
+    console.warn(`[Daily P&L] Meta spend sync failed, using cached data: ${syncErr.message}`);
+  }
+
   // Get snapshot for the date
   const snapRows = await pgQuery(
     'SELECT * FROM daily_kpi_snapshots WHERE snapshot_date = $1', [dateStr]
@@ -2057,7 +2065,7 @@ async function sendDailyPnlReport(dateStr, { force = false } = {}) {
      FROM whop_payment_fees WHERE DATE(paid_at AT TIME ZONE 'Europe/Berlin') = $1`, [dateStr]
   );
 
-  // Get ad spend: prefer Meta cache, fallback to TripleWhale
+  // Get ad spend from Meta cache (same source as dashboard)
   const metaCacheRows = await pgQuery(
     `SELECT total_spend as spend FROM meta_ad_spend_cache WHERE spend_date = $1`, [dateStr]
   ).catch(() => []);
