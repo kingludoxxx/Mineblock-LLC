@@ -519,71 +519,10 @@ async function reconcileStatuses() {
   }
 }
 
-// ── Reconcile "ready to launch" tasks missing Media Buying counterparts ──
-async function reconcileReadyToLaunch() {
-  try {
-    let created = 0;
-
-    for (const listId of [VIDEO_ADS_LIST, STATIC_ADS_LIST]) {
-      const label = listId === VIDEO_ADS_LIST ? 'Video Ads' : 'Static Ads';
-      let page = 0, hasMore = true;
-
-      while (hasMore) {
-        const data = await clickupFetch(
-          `/list/${listId}/task?page=${page}&limit=100&statuses[]=ready%20to%20launch`
-        );
-        const tasks = data.tasks || [];
-
-        for (const task of tasks) {
-          // Check if any linked task is in Media Buying
-          const linked = task.linked_tasks || [];
-          let hasMB = false;
-
-          for (const link of linked) {
-            try {
-              const lt = await getTask(link.task_id);
-              if (lt.list?.id === MEDIA_BUYING_LIST) { hasMB = true; break; }
-            } catch (_) { /* skip */ }
-          }
-
-          if (!hasMB) {
-            try {
-              const mbTask = await clickupFetch(`/list/${MEDIA_BUYING_LIST}/task`, {
-                method: 'POST',
-                body: JSON.stringify({
-                  name: task.name,
-                  status: 'ready to launch',
-                  description: `Auto-created from ${label} pipeline (reconciliation).\nSource task: https://app.clickup.com/t/${task.id}`,
-                }),
-              });
-              await clickupFetch(`/task/${task.id}/link/${mbTask.id}`, { method: 'POST' });
-              created++;
-              logger.info(`[RTL-Reconcile] Created MB task ${mbTask.id} for ${label} "${task.name}" (${task.id})`);
-            } catch (err) {
-              logger.error(`[RTL-Reconcile] Failed to create MB task for ${task.id}: ${err.message}`);
-            }
-          }
-        }
-
-        hasMore = tasks.length === 100;
-        page++;
-      }
-    }
-
-    if (created > 0) {
-      logger.info(`[RTL-Reconcile] Created ${created} Media Buying task(s)`);
-    }
-  } catch (err) {
-    logger.error(`[RTL-Reconcile] Error: ${err.message}`);
-  }
-}
-
 // Run reconciliation every 30 minutes (backup for missed webhooks)
 setTimeout(() => {
   reconcileStatuses(); // Run once on startup (after 60s delay)
-  reconcileReadyToLaunch(); // Also reconcile missing MB tasks on startup
   setInterval(() => reconcileStatuses(), 30 * 60 * 1000);
-  setInterval(() => reconcileReadyToLaunch(), 30 * 60 * 1000);
 }, 60_000);
 
 // POST /api/v1/clickup-webhook — receives ClickUp webhook events
