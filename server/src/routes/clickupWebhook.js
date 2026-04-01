@@ -349,6 +349,50 @@ async function handleCustomFieldChanged(taskId) {
   }
 }
 
+// ── Create Media Buying task when VA/SA task reaches "ready to launch" ──
+async function ensureMediaBuyingTask(task, taskListId) {
+  // Only applies to Video Ads and Static Ads lists
+  if (taskListId !== VIDEO_ADS_LIST && taskListId !== STATIC_ADS_LIST) return;
+
+  // Check if a linked Media Buying task already exists
+  const linkedTasks = task.linked_tasks || [];
+  for (const link of linkedTasks) {
+    try {
+      const lt = await getTask(link.task_id);
+      if (lt.list?.id === MEDIA_BUYING_LIST) {
+        logger.info(`[ClickUp Webhook] Task "${task.name}" already has Media Buying counterpart ${link.task_id}, skipping creation`);
+        return;
+      }
+    } catch (err) {
+      // If we can't fetch a linked task, continue checking others
+    }
+  }
+
+  // No Media Buying counterpart — create one
+  const pipelineLabel = taskListId === VIDEO_ADS_LIST ? 'Video' : 'Static';
+  logger.info(`[ClickUp Webhook] Creating Media Buying task for ${pipelineLabel} Ads task "${task.name}" (${task.id})`);
+
+  try {
+    const mbTask = await clickupFetch(`/list/${MEDIA_BUYING_LIST}/task`, {
+      method: 'POST',
+      body: JSON.stringify({
+        name: task.name,
+        status: 'ready to launch',
+        description: `Auto-created from ${pipelineLabel} Ads pipeline.\nSource task: https://app.clickup.com/t/${task.id}`,
+      }),
+    });
+
+    // Link the two tasks together
+    await clickupFetch(`/task/${task.id}/link/${mbTask.id}`, {
+      method: 'POST',
+    });
+
+    logger.info(`[ClickUp Webhook] Created Media Buying task ${mbTask.id} ("${task.name}") and linked to ${task.id}`);
+  } catch (err) {
+    logger.error(`[ClickUp Webhook] Failed to create Media Buying task for ${task.id}: ${err.message}`);
+  }
+}
+
 // Handle status sync between linked tasks
 async function handleStatusSync(taskId, historyItems) {
   const statusChange = historyItems?.find((h) => h.field === 'status');
@@ -361,6 +405,11 @@ async function handleStatusSync(taskId, historyItems) {
   const taskListId = task.list?.id;
 
   if (!SYNC_LISTS.includes(taskListId)) return;
+
+  // When a VA/SA task hits "ready to launch", auto-create Media Buying counterpart
+  if (newStatus === 'ready to launch') {
+    await ensureMediaBuyingTask(task, taskListId);
+  }
 
   const linkedTasks = task.linked_tasks || [];
   if (linkedTasks.length === 0) return;
@@ -470,10 +519,71 @@ async function reconcileStatuses() {
   }
 }
 
+// ── Reconcile "ready to launch" tasks missing Media Buying counterparts ──
+async function reconcileReadyToLaunch() {
+  try {
+    let created = 0;
+
+    for (const listId of [VIDEO_ADS_LIST, STATIC_ADS_LIST]) {
+      const label = listId === VIDEO_ADS_LIST ? 'Video Ads' : 'Static Ads';
+      let page = 0, hasMore = true;
+
+      while (hasMore) {
+        const data = await clickupFetch(
+          `/list/${listId}/task?page=${page}&limit=100&statuses[]=ready%20to%20launch`
+        );
+        const tasks = data.tasks || [];
+
+        for (const task of tasks) {
+          // Check if any linked task is in Media Buying
+          const linked = task.linked_tasks || [];
+          let hasMB = false;
+
+          for (const link of linked) {
+            try {
+              const lt = await getTask(link.task_id);
+              if (lt.list?.id === MEDIA_BUYING_LIST) { hasMB = true; break; }
+            } catch (_) { /* skip */ }
+          }
+
+          if (!hasMB) {
+            try {
+              const mbTask = await clickupFetch(`/list/${MEDIA_BUYING_LIST}/task`, {
+                method: 'POST',
+                body: JSON.stringify({
+                  name: task.name,
+                  status: 'ready to launch',
+                  description: `Auto-created from ${label} pipeline (reconciliation).\nSource task: https://app.clickup.com/t/${task.id}`,
+                }),
+              });
+              await clickupFetch(`/task/${task.id}/link/${mbTask.id}`, { method: 'POST' });
+              created++;
+              logger.info(`[RTL-Reconcile] Created MB task ${mbTask.id} for ${label} "${task.name}" (${task.id})`);
+            } catch (err) {
+              logger.error(`[RTL-Reconcile] Failed to create MB task for ${task.id}: ${err.message}`);
+            }
+          }
+        }
+
+        hasMore = tasks.length === 100;
+        page++;
+      }
+    }
+
+    if (created > 0) {
+      logger.info(`[RTL-Reconcile] Created ${created} Media Buying task(s)`);
+    }
+  } catch (err) {
+    logger.error(`[RTL-Reconcile] Error: ${err.message}`);
+  }
+}
+
 // Run reconciliation every 30 minutes (backup for missed webhooks)
 setTimeout(() => {
   reconcileStatuses(); // Run once on startup (after 60s delay)
+  reconcileReadyToLaunch(); // Also reconcile missing MB tasks on startup
   setInterval(() => reconcileStatuses(), 30 * 60 * 1000);
+  setInterval(() => reconcileReadyToLaunch(), 30 * 60 * 1000);
 }, 60_000);
 
 // POST /api/v1/clickup-webhook — receives ClickUp webhook events
