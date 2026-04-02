@@ -848,7 +848,7 @@ Return ONLY valid JSON:
 async function pushBriefToClickUp(generatedBrief) {
   const {
     brief_number, product_code, angle, format, avatar,
-    editor, strategist, creator, parent_creative_id, hooks, body, naming_convention,
+    editor, strategist, creator, parent_creative_id, hooks, body, naming_convention, iteration_direction,
   } = generatedBrief;
 
   const weekLabel = getCurrentWeekLabel();
@@ -872,6 +872,7 @@ async function pushBriefToClickUp(generatedBrief) {
     { id: FIELD_IDS.briefNumber, value: brief_number },
     { id: FIELD_IDS.briefType, value: briefTypeUuid },
     { id: FIELD_IDS.parentBriefId, value: parent_creative_id },
+    { id: FIELD_IDS.idea, value: iteration_direction || '-' },
     { id: FIELD_IDS.angle, value: angleUuid },
     { id: FIELD_IDS.creativeType, value: creativeTypeUuid },
     { id: FIELD_IDS.namingConvention, value: namingConvention },
@@ -1151,28 +1152,41 @@ router.post('/generate/:id', authenticate, async (req, res) => {
     }
     const winner = winnerRows[0];
 
-    // Update status to generating
-    await pgQuery(
-      `UPDATE brief_pipeline_winners SET status = 'generating' WHERE id = $1`,
+    // Guard against concurrent generation
+    if (winner.status === 'generating') {
+      return res.status(409).json({ success: false, error: { message: 'Generation already in progress for this winner.' } });
+    }
+
+    // Update status to generating (atomic check)
+    const updated = await pgQuery(
+      `UPDATE brief_pipeline_winners SET status = 'generating' WHERE id = $1 AND status != 'generating' RETURNING id`,
       [winner.id]
     );
+    if (!updated.length) {
+      return res.status(409).json({ success: false, error: { message: 'Generation already in progress for this winner.' } });
+    }
 
     console.log(`[BriefPipeline] Starting generation pipeline for ${winner.creative_id}`);
 
     // Step 3: Extract script from ClickUp if needed
     if (!winner.raw_script && winner.clickup_task_id) {
-      const scriptData = await extractScript(winner.clickup_task_id);
-      winner.raw_script = scriptData.raw;
-      await pgQuery(
-        `UPDATE brief_pipeline_winners SET raw_script = $1 WHERE id = $2`,
-        [scriptData.raw, winner.id]
-      );
+      try {
+        const scriptData = await extractScript(winner.clickup_task_id);
+        winner.raw_script = scriptData.raw;
+        await pgQuery(
+          `UPDATE brief_pipeline_winners SET raw_script = $1 WHERE id = $2`,
+          [scriptData.raw, winner.id]
+        );
+      } catch (scriptErr) {
+        console.error(`[BriefPipeline] Script extraction failed:`, scriptErr.message);
+      }
     }
 
     if (!winner.raw_script) {
+      await pgQuery(`UPDATE brief_pipeline_winners SET status = 'selected' WHERE id = $1`, [winner.id]);
       return res.status(400).json({
         success: false,
-        error: { message: 'No script available. Ensure the winner has a ClickUp task with a script.' },
+        error: { message: 'No script available. Ensure the winner has a ClickUp task with a script in the description.' },
       });
     }
 
@@ -1182,6 +1196,9 @@ router.post('/generate/:id', authenticate, async (req, res) => {
     if (!parsedScript) {
       const { system, user } = buildScriptParserPrompt(winner.raw_script, winner.ad_name || winner.creative_id);
       parsedScript = await callClaude(system, user, 2000);
+      if (!parsedScript || (!parsedScript.hooks && !parsedScript.body)) {
+        throw new Error('Claude failed to parse the script into a valid structure (missing hooks/body).');
+      }
       await pgQuery(
         `UPDATE brief_pipeline_winners SET parsed_script = $1 WHERE id = $2`,
         [JSON.stringify(parsedScript), winner.id]

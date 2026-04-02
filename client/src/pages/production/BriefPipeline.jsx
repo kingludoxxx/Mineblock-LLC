@@ -96,6 +96,7 @@ export default function BriefPipeline() {
   const [selectedWinner, setSelectedWinner] = useState(null);
   const [configPanel, setConfigPanel] = useState(false);
   const [detailModal, setDetailModal] = useState(null);
+  const [error, setError] = useState(null);
 
   // ---------------------------------------------------------------------------
   // Data fetching
@@ -145,6 +146,7 @@ export default function BriefPipeline() {
       await fetchWinners();
     } catch (err) {
       console.error('Detection failed:', err);
+      setError('Failed to detect winners. Check console for details.');
     } finally {
       setDetecting(false);
     }
@@ -158,6 +160,7 @@ export default function BriefPipeline() {
       await fetchWinners();
     } catch (err) {
       console.error('Select failed:', err);
+      setError('Failed to select winner.');
     }
   }, [fetchWinners]);
 
@@ -184,7 +187,9 @@ export default function BriefPipeline() {
       await fetchGenerated();
       await fetchWinners();
     } catch (err) {
+      clearInterval(stepInterval);
       console.error('Generate failed:', err);
+      setError(err.response?.data?.error?.message || 'Brief generation failed.');
     } finally {
       setGenerating(false);
       setGeneratingId(null);
@@ -216,6 +221,7 @@ export default function BriefPipeline() {
       await fetchGenerated();
     } catch (err) {
       console.error('Push failed:', err);
+      setError('Failed to push brief to ClickUp.');
     }
   }, [fetchGenerated]);
 
@@ -424,9 +430,19 @@ export default function BriefPipeline() {
         </div>
       </div>
 
+      {/* Error toast */}
+      {error && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-red-950 border border-red-500/30 rounded-lg px-4 py-3 shadow-xl flex items-center gap-3 z-50 max-w-md">
+          <p className="text-xs text-red-200 flex-1">{error}</p>
+          <button type="button" onClick={() => setError(null)} className="text-red-400 hover:text-red-200 text-xs font-medium shrink-0 cursor-pointer">
+            Dismiss
+          </button>
+        </div>
+      )}
+
       {/* Generating overlay indicator */}
       {generating && (
-        <div className="fixed bottom-6 right-6 bg-[#141414] border border-white/[0.08] rounded-lg px-4 py-3 shadow-xl flex items-center gap-3 z-50">
+        <div className="fixed bottom-6 right-6 bg-[#141414] border border-white/[0.08] rounded-lg px-4 py-3 shadow-xl flex items-center gap-3 z-40">
           <Loader2 className="w-4 h-4 animate-spin text-purple-400" />
           <div>
             <p className="text-xs font-medium text-gray-200">Generating briefs...</p>
