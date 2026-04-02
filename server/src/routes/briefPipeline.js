@@ -956,22 +956,29 @@ ${direction.description}
 - Maintain the same emotional progression
 - AWARENESS LEVEL LOCK: Target the same market awareness stage as the original
 
-## Hook Generation
-- Generate 3 hooks for this iteration
-- Each hook must use the SAME hook framework as the original (identified in the structural skeleton above)
-- If the original uses confession/apology hooks, ALL 3 hooks must be confession/apology hooks — but each with a different angle
-- Each hook must BLEND PERFECTLY with the body — reading hook + body must feel like one continuous script written by the same person
-- Vary sentence length and structure
-- Do NOT reuse exact phrasing from original hooks — but KEEP the same framework/technique
-- The hook framework is NON-NEGOTIABLE. Only the specific words change.
+## Hook Generation — REPHRASE the original hooks, don't invent new ones
+- Generate 3 hooks that are VARIATIONS of the original hooks — same framework, same emotional trigger, different words
+- Look at the original hooks above. Your 3 hooks must achieve the EXACT SAME THING those hooks achieve.
+- If the original hooks use confession/apology ("I need to apologize", "I lied"), your hooks MUST also use confession/apology. Not curiosity. Not pain. Not contrarian. Confession/apology.
+- Each hook is a REPHRASING of the original hook concept — not a new concept
+- H1 = closest to original hook energy, strongest version
+- H2 = same framework, slightly different angle
+- H3 = same framework, different entry point but same emotional trigger
+- Each hook must BLEND PERFECTLY with the body — reading hook + body must feel like one continuous script
+- Do NOT reuse exact phrases from original hooks
+- The hook framework is NON-NEGOTIABLE. If the original says "I apologize because I lied", your hooks must also be about apologizing/confessing/admitting something — NOT about lottery comparisons, NOT about product features, NOT about warnings.
 
-## Body Generation
-- Rewrite the ENTIRE body using NEW words and phrasing
-- Keep the EXACT SAME sequence of ideas and sections as the original
-- Preserve ALL persuasion elements and rhetorical devices
-- If the original has 6 sections, your iteration must have 6 sections covering the same points in the same order
-- Do NOT shorten in a way that removes impact
-- Do NOT copy phrases or swap synonyms — fully rephrase while maintaining the structural skeleton
+## Body Generation — SECTION-BY-SECTION REPHRASING (NOT rewriting)
+- Go through the original body paragraph by paragraph, section by section
+- For EACH section of the original, write the EQUIVALENT section in your iteration
+- Same point. Same purpose. Same position in the script. Different words.
+- If the original body has 8 paragraphs, your iteration must have ~8 paragraphs making the same points in the same order
+- Do NOT add new sections that aren't in the original
+- Do NOT remove sections that are in the original
+- Do NOT rearrange the order of sections
+- Do NOT introduce new angles, comparisons, or narratives that weren't in the original
+- The iteration body should feel like the SAME PERSON saying the SAME THINGS in a SLIGHTLY DIFFERENT WAY — not a different person writing a different script
+- Think of it like re-recording the same speech with different word choices, not writing a new speech
 
 ## Style & Tone
 - Match the tone of the original (direct, conversational, persuasive)
