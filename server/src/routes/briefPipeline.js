@@ -547,6 +547,175 @@ async function transcribeWithGemini(mediaUrl) {
   return transcript.trim();
 }
 
+// ── Smart URL extraction: handles FB Ad Library, Atria, direct video, HTML pages ──
+async function extractScriptFromUrl(url) {
+  // Strategy 1: Facebook Ad Library URL → extract ad ID → Meta Graph API → get video → Gemini transcribe
+  const fbAdMatch = url.match(/facebook\.com\/ads\/library\/?\?.*id=(\d+)/i)
+    || url.match(/fb\.com\/ads\/library\/?\?.*id=(\d+)/i);
+  if (fbAdMatch) {
+    const adId = fbAdMatch[1];
+    console.log(`[BriefPipeline] Facebook Ad Library detected, ad ID: ${adId}`);
+    return await extractFromMetaAdId(adId);
+  }
+
+  // Strategy 2: Atria URL → extract Meta ad ID → Meta Graph API
+  const atriaMatch = url.match(/tryatria\.com\/ad\/m(\d+)/i);
+  if (atriaMatch) {
+    const adId = atriaMatch[1];
+    console.log(`[BriefPipeline] Atria ad detected, Meta ad ID: ${adId}`);
+    return await extractFromMetaAdId(adId);
+  }
+
+  // Strategy 3: Direct media URL
+  const isDirectMedia = /\.(mp4|mp3|wav|webm|m4a|ogg|mov)(\?|$)/i.test(url);
+  if (isDirectMedia) {
+    console.log(`[BriefPipeline] Direct media URL detected`);
+    return await transcribeWithGemini(url);
+  }
+
+  // Strategy 4: Fetch HTML page
+  const fetchRes = await fetch(url, {
+    headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' },
+    redirect: 'follow',
+    signal: AbortSignal.timeout(15000),
+  });
+  const contentType = fetchRes.headers.get('content-type') || '';
+
+  // If response is media, transcribe directly
+  if (contentType.startsWith('audio/') || contentType.startsWith('video/')) {
+    return await transcribeWithGemini(url);
+  }
+
+  const html = await fetchRes.text();
+
+  // Strategy 5: Try to extract ad text from HTML
+  if (html.length > 200) {
+    const extracted = await callClaude(
+      'You are a text extraction tool for ad pages.',
+      `Extract the main ad copy, sales text, or video script from this HTML. If there is readable ad copy or sales text, return it as plain text. If the page is mostly JavaScript with no readable content, respond with exactly "NO_CONTENT_FOUND".\n\nHTML (first 15000 chars):\n${html.slice(0, 15000)}`,
+      2000,
+      { rawText: true },
+    );
+    if (extracted && extracted !== 'NO_CONTENT_FOUND' && extracted.length >= 50) {
+      return extracted;
+    }
+  }
+
+  // Strategy 6: Search HTML for video URLs → transcribe
+  console.log(`[BriefPipeline] No text found, searching for video URLs in HTML`);
+  const videoUrlPatterns = [
+    /(?:src|href|data-src|data-video|content|url)\s*[=:]\s*["']?(https?:\/\/[^"'\s>]+\.(?:mp4|webm|m4v|mov)(?:\?[^"'\s>]*)?)/gi,
+    /property=["']og:video["'][^>]*content=["'](https?:\/\/[^"']+)/gi,
+    /content=["'](https?:\/\/[^"']+)["'][^>]*property=["']og:video/gi,
+    /"(?:video_url|videoUrl|video_src|video_sd_url|video_hd_url|source|src|url)"\s*:\s*"(https?:\/\/[^"]+\.(?:mp4|webm|m4v)[^"]*)"/gi,
+  ];
+
+  let videoUrl = null;
+  for (const pattern of videoUrlPatterns) {
+    const match = pattern.exec(html);
+    if (match?.[1]) { videoUrl = match[1]; break; }
+  }
+
+  if (videoUrl) {
+    console.log(`[BriefPipeline] Found video URL in HTML: ${videoUrl.slice(0, 80)}...`);
+    return await transcribeWithGemini(videoUrl);
+  }
+
+  throw new Error('Could not extract text or find a video on this page. Try pasting the ad text manually.');
+}
+
+// ── Extract video from Meta ad ID via Graph API → transcribe ─────────
+async function extractFromMetaAdId(adId) {
+  if (!META_ACCESS_TOKEN) {
+    throw new Error('META_ACCESS_TOKEN not configured — cannot fetch ad from Meta API. Try pasting the ad text manually.');
+  }
+
+  // Search for the ad across all configured ad accounts
+  for (const accountId of META_AD_ACCOUNT_IDS) {
+    try {
+      // Search by ad archive ID
+      const searchUrl = `${META_GRAPH_URL}/${accountId}/ads?fields=name,creative.fields(thumbnail_url,video_id,body,title,link_description).thumbnail_width(720)&filtering=[{"field":"ad.id","operator":"EQUAL","value":"${adId}"}]&limit=5&access_token=${META_ACCESS_TOKEN}`;
+      const searchRes = await fetch(searchUrl, { signal: AbortSignal.timeout(15000) });
+      const searchData = await searchRes.json();
+
+      if (searchData.data?.length) {
+        const ad = searchData.data[0];
+        const creative = ad.creative || {};
+
+        // If the ad has text body, use it directly (no transcription needed)
+        if (creative.body && creative.body.length > 30) {
+          console.log(`[BriefPipeline] Found ad text from Meta API: ${creative.body.length} chars`);
+          let fullText = creative.body;
+          if (creative.title) fullText = `${creative.title}\n\n${fullText}`;
+          if (creative.link_description) fullText += `\n\n${creative.link_description}`;
+          return fullText;
+        }
+
+        // If has video, get the video source URL and transcribe
+        if (creative.video_id) {
+          console.log(`[BriefPipeline] Found video ID ${creative.video_id}, fetching source URL`);
+          const vidRes = await fetch(`${META_GRAPH_URL}/${creative.video_id}?fields=source&access_token=${META_ACCESS_TOKEN}`, { signal: AbortSignal.timeout(10000) });
+          const vidData = await vidRes.json();
+          if (vidData.source) {
+            console.log(`[BriefPipeline] Got video source, transcribing with Gemini`);
+            return await transcribeWithGemini(vidData.source);
+          }
+        }
+      }
+    } catch (err) {
+      console.warn(`[BriefPipeline] Meta API search failed for account ${accountId}:`, err.message);
+    }
+  }
+
+  // Fallback: try the ad library API directly with the archive ID
+  try {
+    console.log(`[BriefPipeline] Trying Meta Ad Library API with archive ID ${adId}`);
+    const libUrl = `${META_GRAPH_URL}/ads_archive?search_terms=*&ad_reached_countries=US&ad_archive_id=${adId}&fields=ad_snapshot_url,ad_creative_bodies,ad_creative_link_titles,ad_creative_link_descriptions&access_token=${META_ACCESS_TOKEN}&limit=1`;
+    const libRes = await fetch(libUrl, { signal: AbortSignal.timeout(15000) });
+    const libData = await libRes.json();
+
+    if (libData.data?.length) {
+      const ad = libData.data[0];
+      const bodies = ad.ad_creative_bodies || [];
+      const titles = ad.ad_creative_link_titles || [];
+      const descs = ad.ad_creative_link_descriptions || [];
+
+      if (bodies.length && bodies[0].length > 30) {
+        let fullText = bodies.join('\n\n');
+        if (titles.length) fullText = `${titles[0]}\n\n${fullText}`;
+        if (descs.length) fullText += `\n\n${descs[0]}`;
+        console.log(`[BriefPipeline] Got ad text from Ad Library API: ${fullText.length} chars`);
+        return fullText;
+      }
+
+      // If has snapshot URL, try to fetch the snapshot page for video
+      if (ad.ad_snapshot_url) {
+        console.log(`[BriefPipeline] Trying ad snapshot URL for video extraction`);
+        try {
+          const snapRes = await fetch(ad.ad_snapshot_url, {
+            headers: { 'User-Agent': 'Mozilla/5.0' },
+            redirect: 'follow',
+            signal: AbortSignal.timeout(10000),
+          });
+          const snapHtml = await snapRes.text();
+          // Look for video in snapshot
+          const vidMatch = snapHtml.match(/"(?:sd_src|hd_src|video_url|src)"\s*:\s*"(https?:[^"]+\.mp4[^"]*)"/i)
+            || snapHtml.match(/src=["'](https?:\/\/[^"']+\.mp4[^"']*)/i);
+          if (vidMatch?.[1]) {
+            const videoSrc = vidMatch[1].replace(/\\\//g, '/');
+            console.log(`[BriefPipeline] Found video in snapshot, transcribing`);
+            return await transcribeWithGemini(videoSrc);
+          }
+        } catch {}
+      }
+    }
+  } catch (err) {
+    console.warn(`[BriefPipeline] Ad Library API fallback failed:`, err.message);
+  }
+
+  throw new Error(`Could not find ad with ID ${adId} in Meta API. The ad may be from a different account or expired. Try pasting the ad text manually.`);
+}
+
 // ── Fetch product profile from DB ────────────────────────────────────
 async function fetchProductProfile(productCode) {
   try {
@@ -2021,74 +2190,10 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
 
     let rawScript = script || '';
 
-    // URL mode: fetch page → extract text OR find video → transcribe with Gemini
+    // URL mode: smart multi-strategy extraction
     if (url && !rawScript) {
       try {
-        // Check if URL points directly to a video/audio file
-        const isDirectMedia = /\.(mp4|mp3|wav|webm|m4a|ogg|mov)(\?|$)/i.test(url);
-
-        if (isDirectMedia) {
-          // Direct media URL — transcribe with Gemini
-          console.log(`[BriefPipeline] Direct media URL detected, transcribing with Gemini`);
-          rawScript = await transcribeWithGemini(url);
-        } else {
-          // Fetch HTML page
-          const fetchRes = await fetch(url, {
-            headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' },
-            redirect: 'follow',
-            signal: AbortSignal.timeout(15000),
-          });
-          const contentType = fetchRes.headers.get('content-type') || '';
-
-          // If response is media, transcribe directly
-          if (contentType.startsWith('audio/') || contentType.startsWith('video/')) {
-            console.log(`[BriefPipeline] Media content-type detected, transcribing with Gemini`);
-            rawScript = await transcribeWithGemini(url);
-          } else {
-            const html = await fetchRes.text();
-
-            // Step 1: Try to extract ad text from HTML
-            if (html.length > 200) {
-              const extracted = await callClaude(
-                'You are a text extraction tool for ad pages.',
-                `Extract the main ad copy, sales text, or video script from this HTML. If there is readable ad copy or sales text, return it as plain text. If the page is mostly JavaScript with no readable content, respond with exactly "NO_CONTENT_FOUND".\n\nHTML (first 15000 chars):\n${html.slice(0, 15000)}`,
-                2000,
-                { rawText: true },
-              );
-
-              if (extracted && extracted !== 'NO_CONTENT_FOUND' && extracted.length >= 50) {
-                rawScript = extracted;
-              }
-            }
-
-            // Step 2: If no text found, look for video URLs in HTML and transcribe
-            if (!rawScript || rawScript.length < 50) {
-              console.log(`[BriefPipeline] No text extracted, searching for video URLs in HTML`);
-              const videoUrlPatterns = [
-                // Common video source patterns in HTML
-                /(?:src|href|data-src|data-video|content|url)\s*[=:]\s*["']?(https?:\/\/[^"'\s>]+\.(?:mp4|webm|m4v|mov)(?:\?[^"'\s>]*)?)/gi,
-                // Meta og:video tags
-                /property=["']og:video["'][^>]*content=["'](https?:\/\/[^"']+)/gi,
-                /content=["'](https?:\/\/[^"']+)["'][^>]*property=["']og:video/gi,
-                // JSON-embedded video URLs
-                /"(?:video_url|videoUrl|video_src|source|src|url)"\s*:\s*"(https?:\/\/[^"]+\.(?:mp4|webm|m4v)[^"]*)"/gi,
-              ];
-
-              let videoUrl = null;
-              for (const pattern of videoUrlPatterns) {
-                const match = pattern.exec(html);
-                if (match?.[1]) { videoUrl = match[1]; break; }
-              }
-
-              if (videoUrl) {
-                console.log(`[BriefPipeline] Found video URL in HTML, transcribing: ${videoUrl.slice(0, 80)}...`);
-                rawScript = await transcribeWithGemini(videoUrl);
-              } else {
-                throw new Error('Could not extract text or find a video on this page. The page may be a JavaScript app. Try pasting the ad text manually.');
-              }
-            }
-          }
-        }
+        rawScript = await extractScriptFromUrl(url);
       } catch (urlErr) {
         return res.status(400).json({ success: false, error: { message: urlErr.message || 'Failed to process URL' } });
       }
