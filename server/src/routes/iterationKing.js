@@ -243,13 +243,15 @@ router.get('/brief/:taskId', authenticate, async (req, res) => {
 // ── POST /analyze — Analyze winning pattern ───────────────────────
 router.post('/analyze', authenticate, async (req, res) => {
   try {
-    const { script } = req.body;
+    const { script, productProfile } = req.body;
     if (!script || script.length < 10) {
       return res.status(400).json({ success: false, error: 'Script is required (minimum 10 characters)' });
     }
 
-    const prompt = `You are an expert direct-response ad analyst. Analyze this winning ad script and identify why it works.
+    const productContext = buildProductContext(productProfile);
 
+    const prompt = `You are an expert direct-response ad analyst. Analyze this winning ad script and identify why it works.
+${productContext}
 Script:
 ${script.slice(0, 5000)}
 
@@ -265,7 +267,7 @@ Return ONLY valid JSON with this exact structure (no markdown, no explanation, n
   "summary": "string - 1-2 sentence summary of why this script wins"
 }`;
 
-    const result = await callClaude(prompt, 1024, { fast: true });
+    const result = await callClaude(prompt, 1024, { fast: false });
     const analysis = safeParseJSON(result);
 
     res.json({ success: true, analysis });

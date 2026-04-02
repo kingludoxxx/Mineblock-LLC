@@ -404,7 +404,7 @@ export default function IterationKing() {
         if (cleanScript.length > 10) {
           setAnalysisLoading(true);
           try {
-            const a = await fetch(`${API}/analyze`, { method: 'POST', headers: authHeaders(), body: JSON.stringify({ script: cleanScript }) });
+            const a = await fetch(`${API}/analyze`, { method: 'POST', headers: authHeaders(), body: JSON.stringify({ script: cleanScript, productProfile: selectedProduct }) });
             const ad = await a.json();
             if (ad.success) setAnalysis(ad.analysis);
           } catch {} finally { setAnalysisLoading(false); }
