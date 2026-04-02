@@ -1074,8 +1074,8 @@ router.post('/detect', authenticate, async (_req, res) => {
           winner_reason = EXCLUDED.winner_reason,
           iteration_readiness = EXCLUDED.iteration_readiness,
           thumbnail_url = EXCLUDED.thumbnail_url,
-          video_url = EXCLUDED.video_url,
-          detected_at = NOW()
+          video_url = EXCLUDED.video_url
+        WHERE brief_pipeline_winners.status = 'detected'
         RETURNING *
       `, [
         w.creative_id, w.ad_name, w.angle, w.format, w.avatar, w.editor,
@@ -1203,11 +1203,7 @@ router.post('/winners/:id/select', authenticate, async (req, res) => {
       return res.status(404).json({ success: false, error: { message: 'Winner not found' } });
     }
 
-    // Store config alongside the winner (we pass it to generation later)
-    const winner = rows[0];
-    winner._config = { mode, aggressiveness, num_variations, fixed_elements };
-
-    res.json({ success: true, winner });
+    res.json({ success: true, winner: rows[0] });
   } catch (err) {
     console.error('[BriefPipeline] POST /winners/:id/select error:', err.message);
     res.status(500).json({ success: false, error: { message: err.message } });
@@ -1236,14 +1232,20 @@ router.post('/generate/:id', authenticate, async (req, res) => {
     const fixed_elements = req.body.fixed_elements || savedConfig.fixed_elements || [];
     const configEditor = req.body.editor || savedConfig.editor || null;
 
-    // Guard against concurrent generation
+    // Guard: only allow generation from 'selected' status
     if (winner.status === 'generating') {
       return res.status(409).json({ success: false, error: { message: 'Generation already in progress for this winner.' } });
     }
+    if (winner.status === 'generated') {
+      return res.status(409).json({ success: false, error: { message: 'Briefs already generated for this winner.' } });
+    }
+    if (winner.status !== 'selected') {
+      return res.status(400).json({ success: false, error: { message: `Winner must be in "selected" status to generate. Current status: "${winner.status}".` } });
+    }
 
-    // Update status to generating (atomic check)
+    // Update status to generating (atomic check — only from 'selected')
     const updated = await pgQuery(
-      `UPDATE brief_pipeline_winners SET status = 'generating' WHERE id = $1 AND status != 'generating' RETURNING id`,
+      `UPDATE brief_pipeline_winners SET status = 'generating' WHERE id = $1 AND status = 'selected' RETURNING id`,
       [winner.id]
     );
     if (!updated.length) {
@@ -1440,7 +1442,7 @@ router.get('/generated', authenticate, async (_req, res) => {
   try {
     await ensureTables();
     const rows = await pgQuery(
-      `SELECT * FROM brief_pipeline_generated ORDER BY overall_score DESC, created_at DESC`
+      `SELECT * FROM brief_pipeline_generated WHERE status != 'rejected' ORDER BY overall_score DESC, created_at DESC`
     );
     res.json({ success: true, briefs: rows });
   } catch (err) {
@@ -1477,11 +1479,20 @@ router.patch('/generated/:id', authenticate, async (req, res) => {
       return res.status(400).json({ success: false, error: { message: 'Status must be "approved" or "rejected"' } });
     }
 
+    // Only allow transitions from 'generated' status
     const extra = status === 'approved' ? ', approved_at = NOW()' : '';
     const rows = await pgQuery(
-      `UPDATE brief_pipeline_generated SET status = $1${extra} WHERE id = $2 RETURNING *`,
+      `UPDATE brief_pipeline_generated SET status = $1${extra} WHERE id = $2 AND status = 'generated' RETURNING *`,
       [status, req.params.id]
     );
+
+    if (!rows.length) {
+      // Check if brief exists but is in wrong status
+      const existing = await pgQuery(`SELECT id, status FROM brief_pipeline_generated WHERE id = $1`, [req.params.id]);
+      if (existing.length) {
+        return res.status(409).json({ success: false, error: { message: `Brief is already "${existing[0].status}" and cannot be changed.` } });
+      }
+    }
 
     if (!rows.length) {
       return res.status(404).json({ success: false, error: { message: 'Brief not found' } });
