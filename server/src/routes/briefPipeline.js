@@ -143,9 +143,19 @@ async function ensureTables() {
         selected_at TIMESTAMPTZ,
         winner_reason TEXT,
         iteration_readiness TEXT,
+        iteration_mode TEXT,
+        iteration_config JSONB,
+        thumbnail_url TEXT,
+        video_url TEXT,
         UNIQUE(creative_id)
       )
     `, [], { timeout: 15000 });
+
+    // Add columns that may not exist on older tables
+    await pgQuery(`ALTER TABLE brief_pipeline_winners ADD COLUMN IF NOT EXISTS thumbnail_url TEXT`).catch(() => {});
+    await pgQuery(`ALTER TABLE brief_pipeline_winners ADD COLUMN IF NOT EXISTS video_url TEXT`).catch(() => {});
+    await pgQuery(`ALTER TABLE brief_pipeline_winners ADD COLUMN IF NOT EXISTS iteration_mode TEXT`).catch(() => {});
+    await pgQuery(`ALTER TABLE brief_pipeline_winners ADD COLUMN IF NOT EXISTS iteration_config JSONB`).catch(() => {});
 
     await pgQuery(`
       CREATE TABLE IF NOT EXISTS brief_pipeline_generated (
@@ -982,7 +992,9 @@ router.post('/detect', authenticate, async (_req, res) => {
              MAX(avatar) as avatar,
              MAX(editor) as editor,
              MAX(hook_id) as hook_type,
-             MAX(week) as week
+             MAX(week) as week,
+             MAX(thumbnail_url) as thumbnail_url,
+             MAX(video_url) as video_url
       FROM creative_analysis
       WHERE synced_at >= NOW() - INTERVAL '7 days'
         AND type = 'video'
@@ -1023,11 +1035,11 @@ router.post('/detect', authenticate, async (_req, res) => {
           creative_id, ad_name, product_code, angle, format, avatar, editor,
           hook_type, week, spend, revenue, roas, purchases, cpa, ctr,
           impressions, clicks, clickup_task_id, existing_iterations,
-          iteration_codes, winner_reason, iteration_readiness, status, detected_at
+          iteration_codes, winner_reason, iteration_readiness, thumbnail_url, video_url, status, detected_at
         ) VALUES (
           $1, $2, 'MR', $3, $4, $5, $6, $7, $8,
           $9, $10, $11, $12, $13, $14, $15, $16,
-          $17, $18, $19, $20, $21, 'detected', NOW()
+          $17, $18, $19, $20, $21, $22, $23, 'detected', NOW()
         )
         ON CONFLICT (creative_id) DO UPDATE SET
           ad_name = EXCLUDED.ad_name,
@@ -1050,6 +1062,8 @@ router.post('/detect', authenticate, async (_req, res) => {
           iteration_codes = EXCLUDED.iteration_codes,
           winner_reason = EXCLUDED.winner_reason,
           iteration_readiness = EXCLUDED.iteration_readiness,
+          thumbnail_url = EXCLUDED.thumbnail_url,
+          video_url = EXCLUDED.video_url,
           detected_at = NOW()
         RETURNING *
       `, [
@@ -1059,6 +1073,7 @@ router.post('/detect', authenticate, async (_req, res) => {
         clickupTaskId, iterations.length,
         JSON.stringify(iterations.map(i => i.code)),
         winnerReason, readiness,
+        w.thumbnail_url || null, w.video_url || null,
       ], { timeout: 10000 });
 
       results.push(upserted[0]);
@@ -1110,15 +1125,18 @@ router.get('/winners/:id', authenticate, async (req, res) => {
 router.post('/winners/:id/select', authenticate, async (req, res) => {
   try {
     await ensureTables();
-    const { mode, aggressiveness, num_variations, fixed_elements } = req.body;
+    const { iteration_mode, mode: modeAlt, aggressiveness, num_variations, fixed_elements, editor } = req.body;
+    const mode = iteration_mode || modeAlt || 'hook_body';
 
     const rows = await pgQuery(
       `UPDATE brief_pipeline_winners
        SET status = 'selected',
-           selected_at = NOW()
+           selected_at = NOW(),
+           iteration_mode = $2,
+           iteration_config = $3
        WHERE id = $1
        RETURNING *`,
-      [req.params.id]
+      [req.params.id, mode, JSON.stringify({ mode, aggressiveness, num_variations, fixed_elements, editor })]
     );
 
     if (!rows.length) {
@@ -1140,8 +1158,6 @@ router.post('/winners/:id/select', authenticate, async (req, res) => {
 router.post('/generate/:id', authenticate, async (req, res) => {
   try {
     await ensureTables();
-    const { mode = 'hook_body', aggressiveness = 'medium', num_variations = 3, fixed_elements = [] } = req.body;
-
     // Fetch the winner
     const winnerRows = await pgQuery(
       `SELECT * FROM brief_pipeline_winners WHERE id = $1`,
@@ -1151,6 +1167,13 @@ router.post('/generate/:id', authenticate, async (req, res) => {
       return res.status(404).json({ success: false, error: { message: 'Winner not found' } });
     }
     const winner = winnerRows[0];
+
+    // Read config from request body, or fall back to saved iteration_config from select step
+    const savedConfig = winner.iteration_config || {};
+    const mode = req.body.mode || req.body.iteration_mode || savedConfig.mode || 'hook_body';
+    const aggressiveness = req.body.aggressiveness || savedConfig.aggressiveness || 'medium';
+    const num_variations = req.body.num_variations || savedConfig.num_variations || 3;
+    const fixed_elements = req.body.fixed_elements || savedConfig.fixed_elements || [];
 
     // Guard against concurrent generation
     if (winner.status === 'generating') {

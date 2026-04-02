@@ -15,6 +15,7 @@ import WinnerCard from './briefs/WinnerCard';
 import GeneratedBriefCard from './briefs/GeneratedBriefCard';
 import BriefDetailModal from './briefs/BriefDetailModal';
 import IterationConfigPanel from './briefs/IterationConfigPanel';
+import WinnerDetailModal from './briefs/WinnerDetailModal';
 
 // ---------------------------------------------------------------------------
 // Column definitions
@@ -96,6 +97,7 @@ export default function BriefPipeline() {
   const [selectedWinner, setSelectedWinner] = useState(null);
   const [configPanel, setConfigPanel] = useState(false);
   const [detailModal, setDetailModal] = useState(null);
+  const [winnerDetail, setWinnerDetail] = useState(null);
   const [error, setError] = useState(null);
 
   // ---------------------------------------------------------------------------
@@ -138,6 +140,17 @@ export default function BriefPipeline() {
   // ---------------------------------------------------------------------------
   // Actions
   // ---------------------------------------------------------------------------
+
+  const handleViewWinner = useCallback(async (winner) => {
+    // Fetch full winner detail (includes script from ClickUp)
+    try {
+      const { data } = await api.get(`/brief-pipeline/winners/${winner.id}`);
+      setWinnerDetail(data.winner || data);
+    } catch (err) {
+      // Fallback to the data we already have
+      setWinnerDetail(winner);
+    }
+  }, []);
 
   const handleDetect = useCallback(async () => {
     setDetecting(true);
@@ -338,10 +351,7 @@ export default function BriefPipeline() {
                           <WinnerCard
                             key={item.id}
                             winner={item}
-                            onSelect={() => {
-                              setSelectedWinner(item);
-                              setConfigPanel(true);
-                            }}
+                            onSelect={() => handleViewWinner(item)}
                           />
                         );
                       }
@@ -352,10 +362,7 @@ export default function BriefPipeline() {
                           <WinnerCard
                             key={item.id}
                             winner={item}
-                            onSelect={() => {
-                              setSelectedWinner(item);
-                              setConfigPanel(true);
-                            }}
+                            onSelect={() => handleViewWinner(item)}
                             showGenerate
                             onGenerate={() => handleGenerate(item.id)}
                           />
@@ -449,6 +456,20 @@ export default function BriefPipeline() {
             <p className="text-[10px] text-gray-500">{generatingStep}</p>
           </div>
         </div>
+      )}
+
+      {/* Winner Detail Modal */}
+      {winnerDetail && (
+        <WinnerDetailModal
+          winner={winnerDetail}
+          isOpen={!!winnerDetail}
+          onClose={() => setWinnerDetail(null)}
+          onSelect={(w) => {
+            setWinnerDetail(null);
+            setSelectedWinner(w);
+            setConfigPanel(true);
+          }}
+        />
       )}
 
       {/* Iteration Config Panel (sidebar) */}

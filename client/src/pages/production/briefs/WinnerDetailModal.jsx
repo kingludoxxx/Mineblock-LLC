@@ -1,0 +1,284 @@
+import { X, Check, Play, Film } from 'lucide-react';
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function SectionLabel({ children }) {
+  return (
+    <h4 className="text-[10px] uppercase tracking-widest text-slate-500 font-semibold mb-2">
+      {children}
+    </h4>
+  );
+}
+
+function MetricCell({ label, value }) {
+  return (
+    <div className="flex flex-col items-center gap-0.5 py-3 px-2 rounded-lg bg-white/[0.03] border border-white/[0.06]">
+      <span className="text-lg font-bold text-white leading-none">{value ?? '—'}</span>
+      <span className="text-[10px] text-slate-500 uppercase tracking-wider">{label}</span>
+    </div>
+  );
+}
+
+function InfoPill({ label, value }) {
+  if (value == null || value === '') return null;
+  return (
+    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-full bg-white/[0.04] border border-white/[0.08] text-slate-300">
+      <span className="text-slate-500">{label}:</span>
+      <span className="font-medium">{value}</span>
+    </span>
+  );
+}
+
+function HookCard({ hook, index }) {
+  const label = `H${index + 1}`;
+  return (
+    <div className="p-3 bg-white/[0.03] border border-white/[0.06] rounded-lg space-y-1.5">
+      <div className="flex items-center gap-2">
+        <span className="text-[10px] font-bold uppercase tracking-wider text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded">
+          {label}
+        </span>
+        {hook.mechanism && (
+          <span className="text-[10px] text-slate-500 bg-white/[0.04] px-2 py-0.5 rounded">
+            {hook.mechanism}
+          </span>
+        )}
+      </div>
+      <p className="text-sm text-slate-300 leading-relaxed">{hook.text}</p>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Formatting helpers
+// ---------------------------------------------------------------------------
+
+function fmtCurrency(val) {
+  if (val == null) return '—';
+  return `$${Number(val).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+function fmtNumber(val) {
+  if (val == null) return '—';
+  return Number(val).toLocaleString();
+}
+
+function fmtPercent(val) {
+  if (val == null) return '—';
+  return `${Number(val).toFixed(2)}%`;
+}
+
+function fmtRoas(val) {
+  if (val == null) return '—';
+  return `${Number(val).toFixed(2)}x`;
+}
+
+// ---------------------------------------------------------------------------
+// Parse script helper
+// ---------------------------------------------------------------------------
+
+function parseScript(parsed, raw) {
+  if (!parsed && !raw) return null;
+  if (!parsed) return { type: 'raw', content: raw };
+
+  let obj = parsed;
+  if (typeof parsed === 'string') {
+    try {
+      obj = JSON.parse(parsed);
+    } catch {
+      return { type: 'raw', content: parsed };
+    }
+  }
+
+  const hooks = (() => {
+    if (Array.isArray(obj.hooks)) return obj.hooks;
+    if (Array.isArray(obj)) return obj;
+    return [];
+  })();
+
+  const body = obj.body || obj.script || obj.text || null;
+
+  if (hooks.length === 0 && !body) {
+    return { type: 'raw', content: typeof parsed === 'string' ? parsed : JSON.stringify(parsed, null, 2) };
+  }
+
+  return { type: 'parsed', hooks, body };
+}
+
+// ---------------------------------------------------------------------------
+// WinnerDetailModal
+// ---------------------------------------------------------------------------
+
+export default function WinnerDetailModal({ winner, isOpen, onClose, onSelect }) {
+  if (!isOpen || !winner) return null;
+
+  const script = parseScript(winner.parsed_script, winner.raw_script);
+
+  const iterationCodes = (() => {
+    if (Array.isArray(winner.iteration_codes)) return winner.iteration_codes;
+    if (typeof winner.iteration_codes === 'string') {
+      try { return JSON.parse(winner.iteration_codes); } catch { return []; }
+    }
+    return [];
+  })();
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end">
+      {/* Backdrop */}
+      <div className="absolute inset-0 bg-black/60" onClick={onClose} />
+
+      {/* Slide-over panel */}
+      <div
+        className="relative w-[560px] h-full bg-[#0a0a0a] border-l border-white/[0.08] flex flex-col"
+        style={{ animation: 'slideInRight 0.25s ease-out' }}
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-white/[0.06] shrink-0">
+          <h2 className="text-sm font-semibold text-white tracking-wide">Winner Detail</h2>
+          <button
+            type="button"
+            onClick={onClose}
+            className="p-1.5 rounded-lg text-slate-500 hover:text-white hover:bg-white/[0.06] transition-colors cursor-pointer"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Scrollable content */}
+        <div className="flex-1 overflow-y-auto px-6 py-5 space-y-6">
+          {/* Ad name / naming convention */}
+          {winner.ad_name && (
+            <div>
+              <SectionLabel>Ad Name</SectionLabel>
+              <p className="text-xs font-mono text-slate-400 bg-white/[0.03] border border-white/[0.06] rounded-lg px-3 py-2 break-all">
+                {winner.ad_name}
+              </p>
+            </div>
+          )}
+
+          {/* Video / Thumbnail preview */}
+          {(winner.video_url || winner.thumbnail_url) && (
+            <div>
+              <SectionLabel>Preview</SectionLabel>
+              {winner.video_url ? (
+                <video
+                  src={winner.video_url}
+                  poster={winner.thumbnail_url || undefined}
+                  controls
+                  className="w-full max-w-full rounded-lg border border-white/[0.06]"
+                />
+              ) : (
+                <img
+                  src={winner.thumbnail_url}
+                  alt="Winner thumbnail"
+                  className="w-full max-w-full rounded-lg border border-white/[0.06]"
+                />
+              )}
+            </div>
+          )}
+
+          {/* Metrics grid */}
+          <div>
+            <SectionLabel>Metrics</SectionLabel>
+            <div className="grid grid-cols-4 gap-2">
+              <MetricCell label="ROAS" value={fmtRoas(winner.roas)} />
+              <MetricCell label="Spend" value={fmtCurrency(winner.spend)} />
+              <MetricCell label="CPA" value={fmtCurrency(winner.cpa)} />
+              <MetricCell label="CTR" value={fmtPercent(winner.ctr)} />
+              <MetricCell label="Purchases" value={fmtNumber(winner.purchases)} />
+              <MetricCell label="Revenue" value={fmtCurrency(winner.revenue)} />
+              <MetricCell label="Impressions" value={fmtNumber(winner.impressions)} />
+              <MetricCell label="Clicks" value={fmtNumber(winner.clicks)} />
+            </div>
+          </div>
+
+          {/* Info pills */}
+          <div>
+            <SectionLabel>Details</SectionLabel>
+            <div className="flex flex-wrap gap-2">
+              <InfoPill label="Angle" value={winner.angle} />
+              <InfoPill label="Format" value={winner.format} />
+              <InfoPill label="Avatar" value={winner.avatar} />
+              <InfoPill label="Editor" value={winner.editor} />
+              <InfoPill label="Hook" value={winner.hook_type} />
+              <InfoPill label="Week" value={winner.week} />
+              <InfoPill label="Winner" value={winner.winner_reason} />
+              <InfoPill label="Readiness" value={winner.iteration_readiness} />
+            </div>
+          </div>
+
+          {/* Iterations */}
+          {(winner.existing_iterations != null || iterationCodes.length > 0) && (
+            <div>
+              <SectionLabel>Iterations</SectionLabel>
+              <div className="p-3 bg-white/[0.03] border border-white/[0.06] rounded-lg space-y-2">
+                {winner.existing_iterations != null && (
+                  <p className="text-sm text-slate-300">
+                    <span className="text-slate-500">Existing iterations:</span>{' '}
+                    <span className="font-semibold text-white">{winner.existing_iterations}</span>
+                  </p>
+                )}
+                {iterationCodes.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {iterationCodes.map((code, i) => (
+                      <span
+                        key={i}
+                        className="px-2 py-0.5 text-[11px] font-mono rounded bg-white/[0.06] border border-white/[0.08] text-slate-400"
+                      >
+                        {code}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Script */}
+          {script && (
+            <div>
+              <SectionLabel>Script</SectionLabel>
+              {script.type === 'parsed' ? (
+                <div className="space-y-3">
+                  {script.hooks.length > 0 && (
+                    <div className="space-y-2">
+                      {script.hooks.map((hook, i) => (
+                        <HookCard key={i} hook={typeof hook === 'string' ? { text: hook } : hook} index={i} />
+                      ))}
+                    </div>
+                  )}
+                  {script.body && (
+                    <div className="max-h-80 overflow-y-auto p-4 bg-white/[0.03] border border-white/[0.06] rounded-lg">
+                      <p className="text-sm text-slate-300 leading-relaxed whitespace-pre-line">
+                        {script.body}
+                      </p>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="max-h-80 overflow-y-auto p-4 bg-white/[0.03] border border-white/[0.06] rounded-lg">
+                  <pre className="text-sm text-slate-300 leading-relaxed whitespace-pre-wrap font-mono">
+                    {script.content}
+                  </pre>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="px-6 py-4 border-t border-white/[0.06] shrink-0">
+          <button
+            type="button"
+            onClick={() => onSelect?.(winner)}
+            className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-emerald-600 text-sm font-medium text-white hover:bg-emerald-500 transition-colors cursor-pointer"
+          >
+            <Check className="w-4 h-4" />
+            Select for Iteration
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}

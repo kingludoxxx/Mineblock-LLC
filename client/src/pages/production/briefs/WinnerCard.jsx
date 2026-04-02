@@ -1,4 +1,4 @@
-import { TrendingUp, DollarSign, Target, BarChart3, Layers } from 'lucide-react';
+import { TrendingUp, DollarSign, Target, BarChart3, Layers, Play } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
 // Readiness badge config
@@ -51,6 +51,24 @@ function WinnerCard({ winner, onSelect, onGenerate, showGenerate = false }) {
                  hover:border-white/[0.12] hover:shadow-lg hover:shadow-black/20
                  transition-all duration-150 cursor-pointer"
     >
+      {/* Thumbnail preview */}
+      {(winner.thumbnail_url || winner.video_url) && (
+        <div className="relative -mx-3.5 -mt-3.5 mb-1">
+          <img
+            src={winner.thumbnail_url || ''}
+            alt={winner.creative_id}
+            className="w-full aspect-video object-cover rounded-t-lg"
+          />
+          {winner.video_url && (
+            <div className="absolute inset-0 flex items-center justify-center">
+              <div className="w-8 h-8 rounded-full bg-black/60 flex items-center justify-center">
+                <Play className="w-4 h-4 text-white fill-white ml-0.5" />
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Header: creative_id + readiness badge */}
       <div className="flex items-center justify-between gap-2">
         <span className="text-sm font-bold text-gray-100">{winner.creative_id}</span>
@@ -60,6 +78,13 @@ function WinnerCard({ winner, onSelect, onGenerate, showGenerate = false }) {
           {readiness.label}
         </span>
       </div>
+
+      {/* Full naming convention */}
+      {winner.ad_name && (
+        <p className="text-[10px] text-gray-500 leading-snug break-all font-mono">
+          {winner.ad_name}
+        </p>
+      )}
 
       {/* Angle + Format pills */}
       <div className="flex items-center gap-1.5 flex-wrap">
