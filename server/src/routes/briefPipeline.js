@@ -1327,21 +1327,27 @@ router.get('/winners', authenticate, async (_req, res) => {
         }
       }
 
-      // On-demand Meta refresh for winners with missing thumbnails
-      // For stale CDN URLs (403), the frontend handles it with a fallback icon,
-      // and a fresh URL is fetched when the user opens the detail modal (GET /winners/:id)
-      const missingRows = rows.filter(r => !r.thumbnail_url);
-      if (missingRows.length > 0 && META_ACCESS_TOKEN) {
-        const refreshPromises = missingRows.map(async (row) => {
-          const fresh = await refreshMetaThumbnail(row.creative_id);
-          if (fresh) {
-            if (fresh.thumbnail_url) row.thumbnail_url = fresh.thumbnail_url;
-            if (fresh.video_url && !row.video_url) row.video_url = fresh.video_url;
-            await pgQuery(
-              `UPDATE brief_pipeline_winners SET thumbnail_url = COALESCE($1, thumbnail_url), video_url = COALESCE($2, video_url) WHERE id = $3`,
-              [fresh.thumbnail_url, fresh.video_url, row.id]
-            ).catch(() => {});
-          }
+      // On-demand Meta refresh for winners with missing or stale thumbnails
+      const staleRows = rows.filter(r =>
+        !r.thumbnail_url ||
+        (r.thumbnail_url && r.thumbnail_url.includes('fbcdn.net')) ||
+        (r.video_url && !r.video_url.includes('.mp4'))
+      );
+      if (staleRows.length > 0 && META_ACCESS_TOKEN) {
+        // Limit concurrent refreshes to avoid rate limiting
+        const toRefresh = staleRows.slice(0, 10);
+        const refreshPromises = toRefresh.map(async (row) => {
+          try {
+            const fresh = await refreshMetaThumbnail(row.creative_id);
+            if (fresh) {
+              if (fresh.thumbnail_url) row.thumbnail_url = fresh.thumbnail_url;
+              if (fresh.video_url) row.video_url = fresh.video_url;
+              await pgQuery(
+                `UPDATE brief_pipeline_winners SET thumbnail_url = COALESCE($1, thumbnail_url), video_url = COALESCE($2, video_url) WHERE id = $3`,
+                [fresh.thumbnail_url, fresh.video_url, row.id]
+              ).catch(() => {});
+            }
+          } catch (_) { /* ignore individual refresh failures */ }
         });
         await Promise.all(refreshPromises);
       }
