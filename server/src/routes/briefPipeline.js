@@ -459,6 +459,52 @@ function buildNamingConvention({ product_code, brief_number, parent_creative_id,
   ].join(' - ');
 }
 
+// ── Fetch product profile from DB ────────────────────────────────────
+async function fetchProductProfile(productCode) {
+  try {
+    const rows = await pgQuery(
+      `SELECT * FROM product_profiles WHERE LOWER(short_name) = LOWER($1) OR LOWER(product_code) = LOWER($1) OR LOWER(name) ILIKE '%' || LOWER($1) || '%' ORDER BY updated_at DESC LIMIT 1`,
+      [productCode || 'MR']
+    );
+    if (!rows.length) return null;
+    const p = rows[0];
+    // Parse JSONB fields
+    for (const f of ['product_images', 'logos', 'fonts', 'brand_colors', 'benefits', 'angles', 'scripts', 'offers']) {
+      if (p[f] && typeof p[f] === 'string') try { p[f] = JSON.parse(p[f]); } catch {}
+    }
+    return p;
+  } catch { return null; }
+}
+
+function buildProductContextForBrief(p) {
+  if (!p) return 'No product profile available.';
+  const lines = [
+    p.name             && `Product: ${p.name}`,
+    p.description      && `Description: ${p.description}`,
+    p.price            && `Price: ${p.price}`,
+    p.big_promise      && `Big Promise: ${p.big_promise}`,
+    p.mechanism        && `Unique Mechanism: ${p.mechanism}`,
+    p.benefits?.length && `Key Benefits: ${Array.isArray(p.benefits) ? p.benefits.map(b => b.text || b.name || b).join(', ') : p.benefits}`,
+    p.differentiator   && `Differentiator: ${p.differentiator}`,
+    p.guarantee        && `Guarantee: ${p.guarantee}`,
+    p.customer_avatar  && `Target Customer: ${p.customer_avatar}`,
+    p.customer_frustration && `Customer Frustration: ${p.customer_frustration}`,
+    p.customer_dream   && `Customer Dream Outcome: ${p.customer_dream}`,
+    p.target_demographics && `Target Demographics: ${p.target_demographics}`,
+    p.voice            && `Brand Voice/Tone: ${p.voice}`,
+    p.winning_angles   && `Winning Angles: ${p.winning_angles}`,
+    p.angles?.length   && `Proven Angles: ${Array.isArray(p.angles) ? p.angles.map(a => a.name || a).join(', ') : p.angles}`,
+    p.pain_points      && `Pain Points: ${p.pain_points}`,
+    p.common_objections && `Common Objections: ${p.common_objections}`,
+    p.competitive_edge && `Competitive Edge: ${p.competitive_edge}`,
+    p.offer_details    && `Offer Details: ${p.offer_details}`,
+    p.discount_codes   && `Discount Codes: ${p.discount_codes}`,
+    p.bundle_variants  && `Bundle Variants: ${p.bundle_variants}`,
+    p.compliance_restrictions && `COMPLIANCE — Never claim: ${p.compliance_restrictions}`,
+  ].filter(Boolean);
+  return lines.join('\n');
+}
+
 // ── Claude Prompts ────────────────────────────────────────────────────
 
 function buildScriptParserPrompt(rawScript, taskName) {
@@ -498,132 +544,173 @@ RULES:
   return { system, user };
 }
 
-function buildWinAnalysisPrompt(winner, parsedScript) {
+// ── 3-Agent Deep Analysis (replaces old single win analysis) ─────────
+function buildDeepAnalysisPrompts(winner, parsedScript, productContext) {
   const hooksFormatted = (parsedScript.hooks || [])
     .map(h => `${h.id}: ${h.text}`)
     .join('\n');
+  const scriptText = `Hooks:\n${hooksFormatted}\n\nBody:\n${parsedScript.body || '(no body)'}`;
+  const perfContext = `Performance (last 7 days): Spend $${winner.spend}, ROAS ${winner.roas}x, CPA $${winner.cpa}, CTR ${winner.ctr}%, Purchases ${winner.purchases}`;
 
-  const system = `You are a world-class direct response copywriter and ad creative strategist. You've generated over $500M in tracked revenue from paid social ads. Your job is to perform a surgical analysis of WHY this ad script is winning.`;
+  // ── Agent 1: Script DNA ──
+  const dnaPrompt = {
+    system: 'You are a senior direct-response strategist and copy analyst.',
+    user: `# TASK
+Deconstruct this winning ad into its core conversion components AND map its narrative structure step-by-step. Identify the logical engine — WHY this ad converts, not just what it says.
 
-  const user = `WINNING AD CONTEXT:
+# AD CONTEXT
 - Brief Code: ${winner.creative_id}
-- Product: MinerForge Pro — a mini Bitcoin miner, $59.99, 144 daily mining attempts, plug-and-play
 - Angle: ${winner.angle || 'NA'}
 - Format: ${winner.format || 'Mashup'}
-- Performance (last 7 days):
-  - Spend: $${winner.spend}
-  - ROAS: ${winner.roas}x
-  - CPA: $${winner.cpa}
-  - CTR: ${winner.ctr}%
-  - Purchases: ${winner.purchases}
+- ${perfContext}
 
-WINNING SCRIPT:
-Hooks:
-${hooksFormatted}
+# PRODUCT CONTEXT
+${productContext}
 
-Body:
-${parsedScript.body || '(no body extracted)'}
+# WINNING AD SCRIPT
+${scriptText}
 
-ANALYZE THIS AD IN 8 DIMENSIONS:
-
-1. HOOK MECHANISM
-What psychological trigger does each hook use? Why does it stop the scroll?
-Rate each hook's strength (1-10) and explain why.
-
-2. EMOTIONAL DRIVER
-What primary emotion powers this ad? (fear, greed, curiosity, anger, hope, shame, pride, FOMO)
-What secondary emotions support it?
-
-3. BELIEF SHIFT
-What does the viewer believe BEFORE watching? What do they believe AFTER?
-Map the exact belief transformation arc.
-
-4. PROOF ARCHITECTURE
-How does the ad prove its claims? (demonstration, social proof, authority, comparison, data, testimonial, logic chain)
-Rate the proof strength (1-10).
-
-5. ENEMY/VILLAIN STRUCTURE
-Who or what is the enemy? How is the enemy introduced and defeated?
-Does the ad create an us-vs-them dynamic?
-
-6. OFFER POSITIONING
-How is the product positioned? (solution, opportunity, weapon, secret, ticket, insurance)
-What makes the offer feel urgent or scarce?
-
-7. CTA LOGIC
-What drives the click? Fear of missing out? Desire for proof? Curiosity gap?
-
-8. STRUCTURAL PATTERN
-What is the narrative arc? (problem-agitate-solve, story-proof-offer, hook-demo-cta, enemy-proof-opportunity)
-What makes the pacing work?
-
-Return ONLY valid JSON:
+# OUTPUT (JSON only, no markdown, no backticks, no explanation)
 {
-  "hook_analysis": [
-    {
-      "hook_id": "H1",
-      "mechanism": "fear/curiosity/etc",
-      "strength": 8,
-      "why_it_works": "one sentence",
-      "scroll_stop_factor": "what makes someone stop scrolling"
-    }
-  ],
-  "emotional_driver": {
-    "primary": "fear",
-    "secondary": ["curiosity", "greed"],
-    "intensity": 8,
-    "trigger_sentence": "the exact sentence that hits hardest"
+  "core_angle": "the central persuasion angle driving the ad",
+  "primary_emotion": "the dominant emotion leveraged",
+  "secondary_emotions": ["list", "of", "supporting", "emotions"],
+  "target_desire": "what the viewer wants that this ad promises",
+  "target_fear": "what the viewer is afraid of that this ad addresses",
+  "belief_shift": "what belief must change for the viewer to buy",
+  "problem_presented": "the specific problem framed in the ad",
+  "solution_presented": "how the product/offer is positioned as the answer",
+  "mechanism": "the unique mechanism or reason WHY the solution works",
+  "proof_type": "how credibility is established",
+  "cta_type": "how the call to action is structured",
+  "audience_awareness_level": "unaware / problem-aware / solution-aware / product-aware / most-aware",
+  "narrative_structure": {
+    "hook_type": "the hook technique used",
+    "opening_tension": "what tension or open loop is created immediately",
+    "problem_escalation": "how the problem is intensified after the hook",
+    "explanation": "how the solution/mechanism is introduced and explained",
+    "proof_moment": "where and how proof or credibility is delivered",
+    "contrast": "any before/after or us-vs-them comparison (or null if absent)",
+    "resolution": "how tension is resolved and the viewer is moved toward action",
+    "cta_structure": "exact CTA approach"
   },
-  "belief_shift": {
-    "before": "what they believe before",
-    "after": "what they believe after",
-    "pivot_moment": "the exact moment the shift happens"
-  },
-  "proof_architecture": {
-    "type": "demonstration",
-    "elements": ["blockchain verification", "side-by-side comparison"],
-    "strength": 9,
-    "most_convincing_line": "exact quote"
-  },
-  "enemy_structure": {
-    "villain": "cheap knockoff miners / scammers",
-    "introduction": "how the enemy is introduced",
-    "defeat": "how the enemy is defeated",
-    "us_vs_them": true
-  },
-  "offer_positioning": {
-    "frame": "solution/opportunity/weapon/etc",
-    "urgency_mechanism": "what creates urgency",
-    "value_anchor": "what they compare the price against"
-  },
-  "cta_logic": {
-    "driver": "fear_of_fakes",
-    "click_motivation": "why someone clicks now"
-  },
-  "structural_pattern": {
-    "arc": "enemy-proof-opportunity",
-    "pacing": "fast/medium/slow",
-    "section_count": 4,
-    "key_transitions": ["hook → problem", "problem → proof", "proof → offer"]
-  },
-  "winning_elements_ranked": [
-    "1. Enemy framing (scam knockoffs) creates immediate tension",
-    "2. Live blockchain verification = undeniable proof",
-    "3. Side-by-side comparison makes choice obvious",
-    "4. 'Verified storefront' CTA removes purchase anxiety"
-  ],
-  "iteration_opportunities": [
-    "Test different enemies (banks, big mining companies, crypto exchanges)",
-    "Try curiosity-first hooks instead of fear-first",
-    "Add social proof layer (X people already mining)",
-    "Test urgency (limited stock / price increase)"
-  ]
-}`;
-
-  return { system, user };
+  "why_it_works": "1-2 sentences on WHY this ad converts",
+  "core_argument": "the central argument in one sentence",
+  "undeniable_truth": "the fact or truth used to make the argument believable",
+  "what_makes_it_believable": "the credibility mechanism",
+  "what_would_break_it": "the single change that would destroy this ad's effectiveness"
 }
 
-function buildIterationStrategyPrompt(winAnalysis, parsedScript, config) {
+# RULES
+- Be precise, not generic. Every field must be specific to THIS ad.
+- Do NOT rewrite the ad. Extract what makes it convert.
+- Focus on reasoning, not wording.`
+  };
+
+  // ── Agent 2: Psychology ──
+  const psychologyPrompt = {
+    system: 'You are a consumer psychology expert and hook specialist for paid social ads.',
+    user: `# TASK
+Perform three analyses on this winning ad:
+1. Map the emotional journey of the viewer at each stage
+2. Deep-analyze every hook in the ad
+3. Infer and validate the target audience against the product profile
+
+# PRODUCT CONTEXT
+${productContext}
+
+# WINNING AD SCRIPT
+${scriptText}
+
+# OUTPUT (JSON only, no markdown, no backticks, no explanation)
+{
+  "emotional_arc": {
+    "at_hook": "what the viewer feels in the first 1-3 seconds",
+    "after_problem": "emotional state once the problem is presented",
+    "during_explanation": "how the viewer feels as the mechanism/solution unfolds",
+    "at_proof": "emotional response to the credibility moment",
+    "before_cta": "emotional state right before the call to action",
+    "final_state": "the emotion the viewer is left with"
+  },
+  "hooks": [
+    {
+      "text": "exact hook text from the ad",
+      "hook_type": "curiosity / warning / contrarian / shock / story / authority / social proof / pattern interrupt",
+      "scroll_stop_mechanism": "what specifically makes someone stop scrolling",
+      "emotional_trigger": "the emotion activated by this hook",
+      "why_it_works": "1 sentence on why this hook is effective",
+      "strength": 8
+    }
+  ],
+  "hook_patterns": {
+    "shared_patterns": "what patterns all hooks share",
+    "must_not_change": "what must stay fixed in any new hook variation"
+  },
+  "audience": {
+    "who_is_this_for": "specific description of the target viewer",
+    "what_they_already_believe": "existing beliefs the ad leverages",
+    "what_they_are_skeptical_about": "doubts or objections they carry",
+    "awareness_stage": "unaware / problem-aware / solution-aware / product-aware / most-aware",
+    "implicit_objection_handled": "the objection the ad addresses without stating it directly",
+    "product_alignment": "how well the ad matches the product profile's target customer"
+  }
+}
+
+# RULES
+- Describe FEELINGS, not content.
+- Extract EXACT hook text. List every hook present.
+- Cross-reference audience against the product profile.`
+  };
+
+  // ── Agent 3: Iteration Rules ──
+  const rulesPrompt = {
+    system: 'You are a senior creative director specializing in direct-response ad iteration for a media buying team.',
+    user: `# TASK
+Define the precise boundaries for iteration — what MUST stay fixed, what CAN be varied, and what is HIGH-RISK to change. This output directly constrains the script generator.
+
+# PRODUCT CONTEXT
+${productContext}
+
+# WINNING AD SCRIPT
+${scriptText}
+
+# OUTPUT (JSON only, no markdown, no backticks, no explanation)
+{
+  "must_stay_fixed": [
+    "list of elements that must NOT change in any iteration"
+  ],
+  "can_be_varied": [
+    "list of elements safe to change"
+  ],
+  "high_risk_changes": [
+    "list of changes that could break the ad"
+  ],
+  "safe_iteration_directions": [
+    "specific creative directions that would produce strong variations"
+  ],
+  "hook_rules": {
+    "must_preserve": "what every new hook must achieve",
+    "safe_variations": "specific hook reframing ideas that maintain the core mechanism",
+    "avoid": "hook approaches that would disconnect from the body"
+  },
+  "tone_boundaries": {
+    "current_register": "the tone of the original",
+    "acceptable_range": "how far the tone can shift",
+    "never_do": "tone shifts that would break the ad"
+  },
+  "compliance_notes": "any claims that must stay within product profile compliance restrictions"
+}
+
+# RULES
+- Be specific to THIS ad. Generic advice is useless.
+- Think like a creative director briefing a copywriter.
+- If the product profile has compliance restrictions, flag any original claims that are borderline.`
+  };
+
+  return { dnaPrompt, psychologyPrompt, rulesPrompt };
+}
+
+function buildIterationStrategyPrompt(winAnalysis, parsedScript, config, productContext) {
   const hooksFormatted = (parsedScript.hooks || [])
     .map(h => `${h.id}: ${h.text}`)
     .join('\n');
@@ -654,11 +741,7 @@ ITERATION CONFIG:
 - Elements that can change: ${changeableElements}
 
 PRODUCT CONTEXT:
-- Product: MinerForge Pro
-- Price: $59.99
-- Key promise: 144 daily Bitcoin mining attempts, keep 100% of block reward
-- Winning angles: Lottery, Against Competition, BTC Made Easy, Hidden Opportunity, Scarcity
-- Discount code: MINER10
+${productContext}
 
 Based on the analysis, propose exactly ${config.num_variations || 3} distinct iteration directions.
 
@@ -704,26 +787,75 @@ Return ONLY valid JSON:
   return { system, user };
 }
 
-function buildBriefGeneratorPrompt(parsedScript, winAnalysis, direction, config) {
+function buildBriefGeneratorPrompt(parsedScript, deepAnalysis, direction, config, productContext) {
   const originalHooks = (parsedScript.hooks || [])
     .map(h => `${h.id}: ${h.text}`)
     .join('\n');
 
-  const system = `You are an elite direct response copywriter for crypto/Bitcoin products. You write scripts that convert cold traffic into buyers. Your scripts are aggressive, specific, and impossible to scroll past.`;
+  // Build analysis context from the 3-agent results
+  const { scriptDna, psychology, iterationRules } = deepAnalysis || {};
+  const analysisLines = [];
+  if (scriptDna) {
+    analysisLines.push(`SCRIPT DNA:
+- Core Angle: ${scriptDna.core_angle || 'N/A'}
+- Primary Emotion: ${scriptDna.primary_emotion || 'N/A'}
+- Belief Shift: ${scriptDna.belief_shift || 'N/A'}
+- Mechanism: ${scriptDna.mechanism || 'N/A'}
+- Awareness Level: ${scriptDna.audience_awareness_level || 'N/A'}
+- Why It Works: ${scriptDna.why_it_works || 'N/A'}
+- What Would Break It: ${scriptDna.what_would_break_it || 'N/A'}`);
+  }
+  if (psychology?.emotional_arc) {
+    const ea = psychology.emotional_arc;
+    analysisLines.push(`EMOTIONAL ARC: ${ea.at_hook} → ${ea.after_problem} → ${ea.during_explanation} → ${ea.at_proof} → ${ea.before_cta} → ${ea.final_state}`);
+  }
+  if (iterationRules) {
+    if (iterationRules.must_stay_fixed?.length) analysisLines.push(`MUST STAY FIXED:\n- ${iterationRules.must_stay_fixed.join('\n- ')}`);
+    if (iterationRules.can_be_varied?.length) analysisLines.push(`CAN BE VARIED:\n- ${iterationRules.can_be_varied.join('\n- ')}`);
+    if (iterationRules.high_risk_changes?.length) analysisLines.push(`HIGH-RISK (AVOID):\n- ${iterationRules.high_risk_changes.join('\n- ')}`);
+    if (iterationRules.tone_boundaries) {
+      analysisLines.push(`TONE: ${iterationRules.tone_boundaries.current_register || 'N/A'} — Range: ${iterationRules.tone_boundaries.acceptable_range || 'N/A'} — Never: ${iterationRules.tone_boundaries.never_do || 'N/A'}`);
+    }
+    if (iterationRules.hook_rules) {
+      analysisLines.push(`HOOK RULES: Preserve: ${iterationRules.hook_rules.must_preserve || 'N/A'} | Avoid: ${iterationRules.hook_rules.avoid || 'N/A'}`);
+    }
+    if (iterationRules.compliance_notes) analysisLines.push(`COMPLIANCE: ${iterationRules.compliance_notes}`);
+  }
+  const analysisContext = analysisLines.length ? analysisLines.join('\n\n') : '';
 
-  const user = `You are generating iteration #${direction.id} of a winning ad.
+  const system = `You are a senior direct-response copywriter specialized in Facebook and TikTok ad iteration.
 
-ORIGINAL WINNING SCRIPT:
+You understand that the goal is NOT to create new ads, but to generate variations of a proven winner while preserving its psychological mechanism, persuasive structure, and conversion logic.
+
+You write like a human performance marketer — not like an AI, not like a brand copywriter.`;
+
+  const user = `# OBJECTIVE
+
+Generate a high-quality iteration of a winning ad script.
+
+This iteration must:
+- Preserve the original angle and mechanism
+- Follow the same narrative flow
+- Maintain the same emotional journey
+- Use completely new wording, phrasing, and sentence structures
+- The 3 hooks must blend PERFECTLY with the body — each hook must flow naturally into the body as if they were written together
+
+The goal is to create a variation that feels fresh while behaving identically in terms of conversion.
+
+# PRODUCT CONTEXT
+${productContext}
+
+# ORIGINAL WINNING SCRIPT
 Hooks:
 ${originalHooks}
 
 Body:
 ${parsedScript.body || '(no body)'}
 
-WIN ANALYSIS:
-${JSON.stringify(winAnalysis, null, 2)}
+# DEEP ANALYSIS
+${analysisContext}
 
-ITERATION DIRECTION:
+# ITERATION DIRECTION
 ${direction.description}
 - What changes: ${direction.what_changes}
 - What stays: ${direction.what_stays}
@@ -731,36 +863,49 @@ ${direction.description}
 - Body direction: ${direction.body_direction}
 - Emotional shift: ${direction.emotional_shift}
 
-PRODUCT CONTEXT:
-- Product: MinerForge Pro — a mini plug-and-play Bitcoin mining device
-- Price: $59.99 (bundles: 2 for $109.99, 3+1 free for $179.99)
-- Key facts: 144 daily mining attempts, 1 watt power, solo mining, keep 100% of block reward
-- Discount: MINER10
-- What it is NOT: NOT a USB stick, NOT a flash drive. It's a compact electronic device with a display screen.
+# ITERATION RULES
 
-ITERATION MODE: ${config.mode || 'hook_body'}
-AGGRESSIVENESS: ${config.aggressiveness || 'medium'}
+## Angle & Narrative Preservation
+- Keep the exact same core angle
+- Do NOT introduce new selling points or mechanisms
+- Do NOT change the story structure
+- Do NOT remove any persuasive step
+- Maintain the same emotional progression
+- AWARENESS LEVEL LOCK: Target the same market awareness stage as the original
 
-RULES:
-1. Write exactly 3 hooks (H1, H2, H3) — each must be a COMPLETELY different approach to stopping the scroll
-2. H1 = strongest hook (the one you'd bet money on)
-3. Every hook must be under 25 words
-4. Hooks must contain a SPECIFIC claim, number, or provocative statement — no vague generalities
-5. The body must flow naturally from any of the 3 hooks
-6. Body should be 150-300 words (60-90 seconds when read aloud)
-7. Include a clear CTA with the discount code MINER10
-8. Match the aggressiveness level: ${config.aggressiveness || 'medium'}
-9. NEVER use these weak phrases: "works at home", "easy to use", "get started today", "join the revolution"
-10. Every sentence must either create tension, provide proof, or drive toward the CTA
-11. Pricing must be accurate: $59.99 base, bundles as listed above
-12. Respect the iteration direction — this is not a free rewrite, it's a STRATEGIC variation
+## Hook Generation
+- Generate 3 hooks for this iteration
+- Each hook must use a DIFFERENT pattern:
+  1. Curiosity-based
+  2. Problem/pain-based
+  3. Bold/contrarian statement
+- Each hook must BLEND PERFECTLY with the body — reading hook + body must feel like one continuous script written by the same person
+- Vary sentence length and structure
+- Do NOT reuse phrasing or structure from original hooks
+- Do NOT start hooks the same way as the original
 
-HOOK QUALITY CHECKLIST (every hook must pass ALL):
-- Contains a specific number, dollar amount, or timeframe
-- Creates an information gap or emotional reaction
-- Could NOT be used for any other product (it's specific to Bitcoin mining)
-- A normal person would stop scrolling to find out more
-- It does NOT sound like a product description or tagline
+## Body Generation
+- Rewrite the ENTIRE body from scratch
+- Keep the same sequence of ideas
+- Preserve all persuasion elements
+- Do NOT shorten in a way that removes impact
+- Do NOT copy phrases or swap synonyms — fully rephrase
+
+## Style & Tone
+- Match the tone of the original (direct, conversational, persuasive)
+- Avoid robotic or "clean marketing" language
+- Write like a human speaking to one person
+- Keep rhythm natural and engaging
+
+# HARD CONSTRAINTS
+- Do NOT introduce new claims not supported by the product profile
+- Do NOT change product positioning
+- Do NOT simplify to the point of losing persuasion
+- Do NOT generate generic or bland copy
+- Be aggressive and direct to consumer — the goal is to convert cold traffic
+- If iteration rules specify "must stay fixed" items, treat them as absolute constraints
+- If iteration rules specify "high-risk changes", treat them as forbidden
+- If compliance restrictions exist, respect them absolutely
 
 Return ONLY valid JSON:
 {
@@ -768,7 +913,7 @@ Return ONLY valid JSON:
     {
       "id": "H1",
       "text": "the hook text",
-      "mechanism": "fear/curiosity/shock/etc",
+      "mechanism": "curiosity/pain/contrarian",
       "scroll_stop_reason": "why someone stops"
     },
     {
@@ -1409,8 +1554,13 @@ router.post('/generate/:id', authenticate, async (req, res) => {
       );
     }
 
-    // Step 5: Win Analysis (check cache first)
-    console.log(`[BriefPipeline] Step 5: Analyzing win pattern for ${winner.creative_id}`);
+    // Step 5: Fetch product profile from library
+    console.log(`[BriefPipeline] Step 5a: Fetching product profile for ${winner.product_code || 'MR'}`);
+    const productProfile = await fetchProductProfile(winner.product_code || 'MR');
+    const productContext = buildProductContextForBrief(productProfile);
+
+    // Step 5b: Deep 3-agent analysis (check cache first)
+    console.log(`[BriefPipeline] Step 5b: Running deep analysis for ${winner.creative_id}`);
     const scriptHash = crypto.createHash('md5').update(winner.raw_script).digest('hex');
     let winAnalysis = null;
 
@@ -1421,10 +1571,19 @@ router.post('/generate/:id', authenticate, async (req, res) => {
 
     if (cacheRows.length) {
       winAnalysis = cacheRows[0].win_analysis;
-      console.log(`[BriefPipeline] Using cached win analysis for ${winner.creative_id}`);
+      console.log(`[BriefPipeline] Using cached deep analysis for ${winner.creative_id}`);
     } else {
-      const { system, user } = buildWinAnalysisPrompt(winner, parsedScript);
-      winAnalysis = await callClaude(system, user, 4000);
+      const { dnaPrompt, psychologyPrompt, rulesPrompt } = buildDeepAnalysisPrompts(winner, parsedScript, productContext);
+
+      // Run all 3 agents in parallel
+      const [scriptDna, psychology, iterationRules] = await Promise.all([
+        callClaude(dnaPrompt.system, dnaPrompt.user, 2048),
+        callClaude(psychologyPrompt.system, psychologyPrompt.user, 2048),
+        callClaude(rulesPrompt.system, rulesPrompt.user, 2048),
+      ]);
+
+      winAnalysis = { scriptDna, psychology, iterationRules };
+
       await pgQuery(
         `INSERT INTO brief_pipeline_analysis_cache (creative_id, script_hash, win_analysis)
          VALUES ($1, $2, $3)
@@ -1436,7 +1595,7 @@ router.post('/generate/:id', authenticate, async (req, res) => {
     // Step 6: Propose iteration directions
     console.log(`[BriefPipeline] Step 6: Proposing ${num_variations} iteration directions`);
     const config = { mode, aggressiveness, num_variations, fixed_elements };
-    const { system: stratSystem, user: stratUser } = buildIterationStrategyPrompt(winAnalysis, parsedScript, config);
+    const { system: stratSystem, user: stratUser } = buildIterationStrategyPrompt(winAnalysis, parsedScript, config, productContext);
     const strategyResult = await callClaude(stratSystem, stratUser, 3000);
     const directions = strategyResult.directions || [];
 
@@ -1449,7 +1608,7 @@ router.post('/generate/:id', authenticate, async (req, res) => {
 
     for (const direction of directions) {
       try {
-        const { system: genSystem, user: genUser } = buildBriefGeneratorPrompt(parsedScript, winAnalysis, direction, config);
+        const { system: genSystem, user: genUser } = buildBriefGeneratorPrompt(parsedScript, winAnalysis, direction, config, productContext);
         const generated = await callClaude(genSystem, genUser, 3000);
 
         // Step 8: Score this brief
