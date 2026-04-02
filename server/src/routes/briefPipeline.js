@@ -598,13 +598,21 @@ ${scriptText}
   "core_argument": "the central argument in one sentence",
   "undeniable_truth": "the fact or truth used to make the argument believable",
   "what_makes_it_believable": "the credibility mechanism",
-  "what_would_break_it": "the single change that would destroy this ad's effectiveness"
+  "what_would_break_it": "the single change that would destroy this ad's effectiveness",
+  "structural_skeleton": {
+    "hook_framework": "the exact hook technique/framework used (e.g. 'confession/apology', 'warning', 'story opening', 'question', 'bold claim')",
+    "rhetorical_devices": ["list every distinct rhetorical device or pattern used in the body — e.g. 'repetition (yes it's true that...)', 'twist reveal (here's where I lied)', 'us-vs-them comparison', 'social proof anecdote', 'stacking benefits'"],
+    "section_by_section": ["list each section of the script in order — e.g. 'Apology/confession hook', 'Repetitive validation (5x yes statements)', 'Emotional testimonial', 'Twist reveal', 'Competitor callout', 'Urgency close'"],
+    "signature_phrases": ["list any distinctive phrases or patterns that define this script's identity — e.g. 'Yes, it's true that...', 'Here's where I lied', 'A lottery ticket that never expires'"],
+    "pacing_rhythm": "describe the sentence rhythm pattern (e.g. 'Short punchy opener, then long flowing validation paragraphs, then short twist')"
+  }
 }
 
 # RULES
 - Be precise, not generic. Every field must be specific to THIS ad.
 - Do NOT rewrite the ad. Extract what makes it convert.
-- Focus on reasoning, not wording.`
+- Focus on reasoning, not wording.
+- The structural_skeleton is CRITICAL — it must capture the exact rhetorical framework so iterations can replicate the same skeleton with different words.`
   };
 
   // ── Agent 2: Psychology ──
@@ -839,6 +847,18 @@ function buildBriefGeneratorPrompt(parsedScript, deepAnalysis, direction, config
 - Awareness Level: ${scriptDna.audience_awareness_level || 'N/A'}
 - Why It Works: ${scriptDna.why_it_works || 'N/A'}
 - What Would Break It: ${scriptDna.what_would_break_it || 'N/A'}`);
+
+    // Add structural skeleton — this is the most critical part for iteration fidelity
+    if (scriptDna.structural_skeleton) {
+      const sk = scriptDna.structural_skeleton;
+      const skLines = [`STRUCTURAL SKELETON (YOUR ITERATION MUST FOLLOW THIS EXACT FRAMEWORK):`];
+      if (sk.hook_framework) skLines.push(`Hook Framework: ${sk.hook_framework}`);
+      if (sk.rhetorical_devices?.length) skLines.push(`Rhetorical Devices: ${sk.rhetorical_devices.join(' | ')}`);
+      if (sk.section_by_section?.length) skLines.push(`Section Flow:\n  ${sk.section_by_section.map((s, i) => `${i + 1}. ${s}`).join('\n  ')}`);
+      if (sk.signature_phrases?.length) skLines.push(`Signature Patterns (use equivalent patterns, NOT these exact words): ${sk.signature_phrases.join(' | ')}`);
+      if (sk.pacing_rhythm) skLines.push(`Pacing: ${sk.pacing_rhythm}`);
+      analysisLines.push(skLines.join('\n'));
+    }
   }
   if (psychology?.emotional_arc) {
     const ea = psychology.emotional_arc;
@@ -900,6 +920,16 @@ ${direction.description}
 
 # ITERATION RULES
 
+## STRUCTURAL SKELETON PRESERVATION (MOST IMPORTANT RULE)
+- The STRUCTURAL SKELETON section above describes the exact rhetorical framework of the original.
+- Your iteration MUST follow the SAME section-by-section flow as the original.
+- If the original uses a confession/apology hook framework, your hooks MUST also use confession/apology.
+- If the original uses repetition patterns (e.g. "Yes, it's true that..."), your iteration MUST use an equivalent repetition pattern — different words, SAME device.
+- If the original has a twist/reveal moment, your iteration MUST have a twist/reveal at the same structural point.
+- If the original uses competitor callouts, your iteration MUST include competitor callouts.
+- Every rhetorical device listed in the skeleton must appear in your iteration. You can rephrase it, but you CANNOT remove it.
+- The section flow must match: if the original goes Apology → Validation → Proof → Twist → Urgency, your iteration must go through those same stages in that order.
+
 ## Angle & Narrative Preservation
 - Keep the exact same core angle
 - Do NOT introduce new selling points or mechanisms
@@ -910,21 +940,20 @@ ${direction.description}
 
 ## Hook Generation
 - Generate 3 hooks for this iteration
-- Each hook must use a DIFFERENT pattern:
-  1. Curiosity-based
-  2. Problem/pain-based
-  3. Bold/contrarian statement
+- Each hook must use the SAME hook framework as the original (identified in the structural skeleton above)
+- If the original uses confession/apology hooks, ALL 3 hooks must be confession/apology hooks — but each with a different angle
 - Each hook must BLEND PERFECTLY with the body — reading hook + body must feel like one continuous script written by the same person
 - Vary sentence length and structure
-- Do NOT reuse phrasing or structure from original hooks
-- Do NOT start hooks the same way as the original
+- Do NOT reuse exact phrasing from original hooks — but KEEP the same framework/technique
+- The hook framework is NON-NEGOTIABLE. Only the specific words change.
 
 ## Body Generation
-- Rewrite the ENTIRE body from scratch
-- Keep the same sequence of ideas
-- Preserve all persuasion elements
+- Rewrite the ENTIRE body using NEW words and phrasing
+- Keep the EXACT SAME sequence of ideas and sections as the original
+- Preserve ALL persuasion elements and rhetorical devices
+- If the original has 6 sections, your iteration must have 6 sections covering the same points in the same order
 - Do NOT shorten in a way that removes impact
-- Do NOT copy phrases or swap synonyms — fully rephrase
+- Do NOT copy phrases or swap synonyms — fully rephrase while maintaining the structural skeleton
 
 ## Style & Tone
 - Match the tone of the original (direct, conversational, persuasive)
@@ -1672,10 +1701,14 @@ router.post('/generate/:id', authenticate, async (req, res) => {
       [winner.creative_id, scriptHash]
     );
 
-    if (cacheRows.length) {
-      winAnalysis = cacheRows[0].win_analysis;
+    const cachedAnalysis = cacheRows.length ? cacheRows[0].win_analysis : null;
+    // Validate cache has new 3-agent format (scriptDna/psychology/iterationRules)
+    // Old format had flat keys like hookMechanism — invalidate those
+    if (cachedAnalysis?.scriptDna && cachedAnalysis?.psychology && cachedAnalysis?.iterationRules) {
+      winAnalysis = cachedAnalysis;
       console.log(`[BriefPipeline] Using cached deep analysis for ${winner.creative_id}`);
     } else {
+      if (cachedAnalysis) console.log(`[BriefPipeline] Stale analysis cache for ${winner.creative_id} — re-analyzing with 3-agent pipeline`);
       const { dnaPrompt, psychologyPrompt, rulesPrompt } = buildDeepAnalysisPrompts(winner, parsedScript, productContext);
 
       // Run all 3 agents in parallel
