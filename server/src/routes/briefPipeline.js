@@ -730,6 +730,7 @@ ${scriptText}
 # RULES
 - Be specific to THIS ad. Generic advice is useless.
 - Think like a creative director briefing a copywriter.
+- Keep each array item to ONE SHORT sentence (under 20 words). Be concise — no long explanations in list items.
 - If the product profile has compliance restrictions, flag any original claims that are borderline.`
   };
 
@@ -1739,8 +1740,8 @@ router.post('/generate/:id', authenticate, async (req, res) => {
       // Run all 3 agents in parallel
       const [scriptDna, psychology, iterationRules] = await Promise.all([
         callClaude(dnaPrompt.system, dnaPrompt.user, 4096),
-        callClaude(psychologyPrompt.system, psychologyPrompt.user, 3000),
-        callClaude(rulesPrompt.system, rulesPrompt.user, 3000),
+        callClaude(psychologyPrompt.system, psychologyPrompt.user, 4096),
+        callClaude(rulesPrompt.system, rulesPrompt.user, 4096),
       ]);
 
       winAnalysis = { scriptDna, psychology, iterationRules };
