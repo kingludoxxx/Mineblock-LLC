@@ -866,7 +866,7 @@ Return ONLY valid JSON:
 
 // ── Push to ClickUp ───────────────────────────────────────────────────
 
-async function pushBriefToClickUp(generatedBrief) {
+async function pushBriefToClickUp(generatedBrief, parentClickupTaskId) {
   const {
     brief_number, product_code, angle, format, avatar,
     editor, strategist, creator, parent_creative_id, hooks, body, naming_convention, iteration_direction,
@@ -878,6 +878,20 @@ async function pushBriefToClickUp(generatedBrief) {
     strategist, creator, editor, week: weekLabel,
   });
 
+  // Fetch parent ad's Frame.io link from ClickUp
+  let referenceLink = '';
+  if (parentClickupTaskId) {
+    try {
+      const parentTask = await clickupFetch(`/task/${parentClickupTaskId}`);
+      const frameField = parentTask.custom_fields?.find(f => f.id === FIELD_IDS.adsFrameLink);
+      if (frameField?.value) {
+        referenceLink = frameField.value;
+      }
+    } catch (err) {
+      console.warn(`[BriefPipeline] Could not fetch parent Frame link from ${parentClickupTaskId}:`, err.message);
+    }
+  }
+
   // Build description with script
   const parsedHooks = (() => {
     if (Array.isArray(hooks)) return hooks;
@@ -885,9 +899,11 @@ async function pushBriefToClickUp(generatedBrief) {
     return [];
   })();
   const hooksFormatted = parsedHooks
-    .map(h => `${h.id || ''}\n${h.text || ''}`.trim())
-    .join('\n\n');
-  const description = `Hooks:\n\n${hooksFormatted}\n\nBody:\n\n${body || ''}\n\n[brief-pipeline]`;
+    .map((h, i) => `Hook ${i + 1}:\n${h.text || ''}`.trim())
+    .join('\n');
+
+  const referenceLine = referenceLink ? `Reference: ${referenceLink}\n\n` : '';
+  const description = `${referenceLine}--- Hooks ---\n\n${hooksFormatted}\n\n--- Body ---\n\n${body || ''}\n\n[brief-pipeline]`;
 
   // Resolve dropdown option IDs
   const angleUuid = ANGLE_OPTIONS[angle] || ANGLE_OPTIONS.NA;
@@ -1565,7 +1581,14 @@ router.post('/generated/:id/push', authenticate, async (req, res) => {
       return res.status(400).json({ success: false, error: { message: 'Brief already pushed to ClickUp' } });
     }
 
-    const result = await pushBriefToClickUp(brief);
+    // Look up parent winner's ClickUp task ID for the Frame.io reference link
+    let parentClickupTaskId = null;
+    if (brief.winner_id) {
+      const winnerRows = await pgQuery(`SELECT clickup_task_id FROM brief_pipeline_winners WHERE id = $1`, [brief.winner_id]);
+      parentClickupTaskId = winnerRows[0]?.clickup_task_id || null;
+    }
+
+    const result = await pushBriefToClickUp(brief, parentClickupTaskId);
 
     await pgQuery(
       `UPDATE brief_pipeline_generated
@@ -1592,7 +1615,11 @@ router.post('/batch-push', authenticate, async (_req, res) => {
   try {
     await ensureTables();
     const approvedRows = await pgQuery(
-      `SELECT * FROM brief_pipeline_generated WHERE status = 'approved' AND clickup_task_id IS NULL ORDER BY rank ASC`
+      `SELECT g.*, w.clickup_task_id AS parent_clickup_task_id
+       FROM brief_pipeline_generated g
+       LEFT JOIN brief_pipeline_winners w ON g.winner_id = w.id
+       WHERE g.status = 'approved' AND g.clickup_task_id IS NULL
+       ORDER BY g.rank ASC`
     );
 
     if (!approvedRows.length) {
@@ -1604,7 +1631,7 @@ router.post('/batch-push', authenticate, async (_req, res) => {
 
     for (const brief of approvedRows) {
       try {
-        const result = await pushBriefToClickUp(brief);
+        const result = await pushBriefToClickUp(brief, brief.parent_clickup_task_id);
 
         await pgQuery(
           `UPDATE brief_pipeline_generated
