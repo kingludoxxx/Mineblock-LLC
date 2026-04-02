@@ -282,7 +282,7 @@ export default function BriefPipeline() {
   const isLoading = loadingWinners || loadingGenerated;
 
   return (
-    <div className="flex flex-col h-full min-h-0 bg-[#0a0a0a]">
+    <div className="flex flex-col min-h-screen bg-[#0a0a0a]">
       {/* Header */}
       <div className="flex items-center justify-between px-6 py-4 border-b border-white/[0.06]">
         <h1 className="text-lg font-semibold text-gray-100">Brief Pipeline</h1>
@@ -321,7 +321,7 @@ export default function BriefPipeline() {
       </div>
 
       {/* Kanban columns */}
-      <div className="flex-1 min-h-0 overflow-x-auto px-6 py-4">
+      <div className="flex-1 overflow-x-auto px-6 py-4" style={{ minHeight: 'calc(100vh - 120px)' }}>
         <div className="flex gap-4 h-full">
           {COLUMNS.map((col) => {
             const items = buckets[col.key];
