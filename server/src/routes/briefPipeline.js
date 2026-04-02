@@ -2800,36 +2800,328 @@ async function getCustomPrompts() {
   }
 }
 
-// Extract default prompts for the settings UI
+// Extract default prompts for the settings UI — full actual prompts used in production
 function getDefaultPrompts() {
   return {
     scriptParser: {
       system: 'You are a script parser for video ad briefs. Extract the structured components from the raw script text below.',
-      user: '(Dynamic — includes raw script and task name. Template variables: {{rawScript}}, {{taskName}})',
+      user: `RAW SCRIPT:
+{{rawScript}}
+
+TASK NAME: {{taskName}}
+
+Extract and return ONLY valid JSON:
+{
+  "hooks": [
+    {
+      "id": "H1",
+      "text": "the full hook text",
+      "mechanism": "fear" | "curiosity" | "social_proof" | "authority" | "controversy" | "shock" | "question" | "statistic" | "story" | "challenge",
+      "length": "short" | "medium" | "long"
+    }
+  ],
+  "body": "the full body script text, preserving paragraphs",
+  "cta": "the call-to-action text if present",
+  "format_notes": "any production notes, visual directions, or format instructions",
+  "estimated_length_seconds": number,
+  "villains": ["list of enemies/villains mentioned"],
+  "proof_elements": ["list of proof mechanisms used"],
+  "offer_mentioned": true/false,
+  "discount_code_used": "code" or null
+}
+
+RULES:
+- Hooks are usually labeled H1, H2, H3 or Hook 1, Hook 2, Hook 3 or numbered
+- If hooks aren't explicitly labeled, the first 1-3 sentences before the body are hooks
+- The body is everything after the hooks until the CTA
+- Preserve the exact wording — do NOT paraphrase or rewrite
+- If the script has multiple sections (e.g. "Body:", "CTA:"), respect those boundaries`,
     },
     scriptDna: {
       system: 'You are a senior direct-response strategist and copy analyst.',
-      user: '(Dynamic — includes product context, winning ad script, and performance data. Extracts core_angle, primary_emotion, belief_shift, mechanism, narrative_structure, structural_skeleton, and more.)',
+      user: `# TASK
+Deconstruct this winning ad into its core conversion components AND map its narrative structure step-by-step. Identify the logical engine — WHY this ad converts, not just what it says.
+
+# AD CONTEXT
+{{adContext}}
+
+# PRODUCT CONTEXT
+{{productContext}}
+
+# WINNING AD SCRIPT
+{{scriptText}}
+
+# OUTPUT (JSON only, no markdown, no backticks, no explanation)
+{
+  "core_angle": "the central persuasion angle driving the ad",
+  "primary_emotion": "the dominant emotion leveraged",
+  "secondary_emotions": ["list", "of", "supporting", "emotions"],
+  "target_desire": "what the viewer wants that this ad promises",
+  "target_fear": "what the viewer is afraid of that this ad addresses",
+  "belief_shift": "what belief must change for the viewer to buy",
+  "problem_presented": "the specific problem framed in the ad",
+  "solution_presented": "how the product/offer is positioned as the answer",
+  "mechanism": "the unique mechanism or reason WHY the solution works",
+  "proof_type": "how credibility is established",
+  "cta_type": "how the call to action is structured",
+  "audience_awareness_level": "unaware / problem-aware / solution-aware / product-aware / most-aware",
+  "narrative_structure": {
+    "hook_type": "the hook technique used",
+    "opening_tension": "what tension or open loop is created immediately",
+    "problem_escalation": "how the problem is intensified after the hook",
+    "explanation": "how the solution/mechanism is introduced and explained",
+    "proof_moment": "where and how proof or credibility is delivered",
+    "contrast": "any before/after or us-vs-them comparison (or null if absent)",
+    "resolution": "how tension is resolved and the viewer is moved toward action",
+    "cta_structure": "exact CTA approach"
+  },
+  "why_it_works": "1-2 sentences on WHY this ad converts",
+  "core_argument": "the central argument in one sentence",
+  "undeniable_truth": "the fact or truth used to make the argument believable",
+  "what_makes_it_believable": "the credibility mechanism",
+  "what_would_break_it": "the single change that would destroy this ad's effectiveness",
+  "structural_skeleton": {
+    "hook_framework": "the exact hook technique/framework used",
+    "rhetorical_devices": ["list every distinct rhetorical device or pattern used"],
+    "section_by_section": ["list each section of the script in order"],
+    "signature_phrases": ["list any distinctive phrases or patterns that define this script's identity"],
+    "pacing_rhythm": "describe the sentence rhythm pattern"
+  }
+}
+
+# RULES
+- Be precise, not generic. Every field must be specific to THIS ad.
+- Do NOT rewrite the ad. Extract what makes it convert.
+- Focus on reasoning, not wording.
+- The structural_skeleton is CRITICAL — it must capture the exact rhetorical framework so iterations can replicate the same skeleton with different words.`,
     },
     psychology: {
       system: 'You are a consumer psychology expert and hook specialist for paid social ads.',
-      user: '(Dynamic — includes product context and winning ad script. Maps emotional_arc, analyzes hooks, profiles audience.)',
+      user: `# TASK
+Perform three analyses on this winning ad:
+1. Map the emotional journey of the viewer at each stage
+2. Deep-analyze every hook in the ad
+3. Infer and validate the target audience against the product profile
+
+# PRODUCT CONTEXT
+{{productContext}}
+
+# WINNING AD SCRIPT
+{{scriptText}}
+
+# OUTPUT (JSON only, no markdown, no backticks, no explanation)
+{
+  "emotional_arc": {
+    "at_hook": "what the viewer feels in the first 1-3 seconds",
+    "after_problem": "emotional state once the problem is presented",
+    "during_explanation": "how the viewer feels as the mechanism/solution unfolds",
+    "at_proof": "emotional response to the credibility moment",
+    "before_cta": "emotional state right before the call to action",
+    "final_state": "the emotion the viewer is left with"
+  },
+  "hooks": [
+    {
+      "text": "exact hook text from the ad",
+      "hook_type": "curiosity / warning / contrarian / shock / story / authority / social proof / pattern interrupt",
+      "scroll_stop_mechanism": "what specifically makes someone stop scrolling",
+      "emotional_trigger": "the emotion activated by this hook",
+      "why_it_works": "1 sentence on why this hook is effective",
+      "strength": 8
+    }
+  ],
+  "hook_patterns": {
+    "shared_patterns": "what patterns all hooks share",
+    "must_not_change": "what must stay fixed in any new hook variation"
+  },
+  "audience": {
+    "who_is_this_for": "specific description of the target viewer",
+    "what_they_already_believe": "existing beliefs the ad leverages",
+    "what_they_are_skeptical_about": "doubts or objections they carry",
+    "awareness_stage": "unaware / problem-aware / solution-aware / product-aware / most-aware",
+    "implicit_objection_handled": "the objection the ad addresses without stating it directly",
+    "product_alignment": "how well the ad matches the product profile's target customer"
+  }
+}
+
+# RULES
+- Describe FEELINGS, not content.
+- Extract EXACT hook text. List every hook present.
+- Cross-reference audience against the product profile.`,
     },
     iterationRules: {
       system: 'You are a senior creative director specializing in direct-response ad iteration for a media buying team.',
-      user: '(Dynamic — includes product context and winning ad script. Outputs must_stay_fixed, can_be_varied, high_risk_changes, safe_iteration_directions, hook_rules, tone_boundaries.)',
+      user: `# TASK
+Define the precise boundaries for iteration — what MUST stay fixed, what CAN be varied, and what is HIGH-RISK to change. This output directly constrains the script generator.
+
+# PRODUCT CONTEXT
+{{productContext}}
+
+# WINNING AD SCRIPT
+{{scriptText}}
+
+# OUTPUT (JSON only, no markdown, no backticks, no explanation)
+{
+  "must_stay_fixed": ["list of elements that must NOT change in any iteration"],
+  "can_be_varied": ["list of elements safe to change"],
+  "high_risk_changes": ["list of changes that could break the ad"],
+  "safe_iteration_directions": ["specific creative directions that would produce strong variations"],
+  "hook_rules": {
+    "must_preserve": "what every new hook must achieve",
+    "safe_variations": "specific hook reframing ideas that maintain the core mechanism",
+    "avoid": "hook approaches that would disconnect from the body"
+  },
+  "tone_boundaries": {
+    "current_register": "the tone of the original",
+    "acceptable_range": "how far the tone can shift",
+    "never_do": "tone shifts that would break the ad"
+  },
+  "compliance_notes": "any claims that must stay within product profile compliance restrictions"
+}
+
+# RULES
+- Be specific to THIS ad. Generic advice is useless.
+- Think like a creative director briefing a copywriter.
+- Keep each array item to ONE SHORT sentence (under 20 words). Be concise.
+- If the product profile has compliance restrictions, flag any original claims that are borderline.`,
     },
     generator: {
-      system: 'You are a senior direct-response copywriter specialized in Facebook and TikTok ad iteration.\n\nYou understand that the goal is NOT to create new ads, but to generate variations of a proven winner while preserving its psychological mechanism, persuasive structure, and conversion logic.\n\nYou write like a human performance marketer — not like an AI, not like a brand copywriter.',
-      user: '(Dynamic — includes original script, deep analysis context, iteration direction, product context, iteration rules. Generates 1 body + 3 hooks.)',
+      system: `You are a senior direct-response copywriter specialized in Facebook and TikTok ad iteration.
+
+You understand that the goal is NOT to create new ads, but to generate variations of a proven winner while preserving its psychological mechanism, persuasive structure, and conversion logic.
+
+You write like a human performance marketer — not like an AI, not like a brand copywriter.`,
+      user: `# OBJECTIVE
+Generate a high-quality iteration of a winning ad script.
+
+This iteration must:
+- Preserve the original angle and mechanism
+- Follow the same narrative flow
+- Maintain the same emotional journey
+- Use completely new wording, phrasing, and sentence structures
+- The 3 hooks must blend PERFECTLY with the body
+
+# PRODUCT CONTEXT
+{{productContext}}
+
+# ORIGINAL WINNING SCRIPT
+{{originalScript}}
+
+# DEEP ANALYSIS
+{{analysisContext}}
+
+# ITERATION DIRECTION
+{{iterationDirection}}
+
+# ITERATION RULES
+
+## STRUCTURAL SKELETON PRESERVATION (MOST IMPORTANT RULE)
+- Your iteration MUST follow the SAME section-by-section flow as the original.
+- If the original uses a confession/apology hook framework, your hooks MUST also use confession/apology.
+- If the original uses repetition patterns, your iteration MUST use an equivalent repetition pattern — different words, SAME device.
+- If the original has a twist/reveal moment, your iteration MUST have a twist/reveal at the same structural point.
+- Every rhetorical device listed in the skeleton must appear in your iteration.
+
+## Hook Generation — REPHRASE the original hooks, don't invent new ones
+- Generate 3 hooks that are VARIATIONS of the original hooks — same framework, same emotional trigger, different words
+- Each hook must BLEND PERFECTLY with the body
+- The hook framework is NON-NEGOTIABLE. Only the specific words change.
+
+## Body Generation — SECTION-BY-SECTION REPHRASING (NOT rewriting)
+- Go through the original body paragraph by paragraph, section by section
+- For EACH section of the original, write the EQUIVALENT section in your iteration
+- Same point. Same purpose. Same position in the script. Different words.
+- Do NOT add new sections or remove existing ones
+- Think of it like re-recording the same speech with different word choices
+
+## HARD CONSTRAINTS
+- Do NOT introduce new claims not supported by the product profile
+- Do NOT change product positioning
+- Do NOT simplify to the point of losing persuasion
+- Be aggressive and direct to consumer — the goal is to convert cold traffic
+- AWARENESS LEVEL LOCK: Target the same market awareness stage as the original
+
+Return ONLY valid JSON:
+{
+  "hooks": [
+    { "id": "H1", "text": "hook text", "mechanism": "curiosity/pain/contrarian", "scroll_stop_reason": "why someone stops" },
+    { "id": "H2", "text": "...", "mechanism": "...", "scroll_stop_reason": "..." },
+    { "id": "H3", "text": "...", "mechanism": "...", "scroll_stop_reason": "..." }
+  ],
+  "body": "the full body script with natural paragraph breaks",
+  "cta": "the call-to-action text",
+  "word_count": number,
+  "estimated_seconds": number,
+  "key_changes_from_original": "2-3 sentence summary",
+  "emotional_arc": "hook_emotion → middle_emotion → close_emotion"
+}`,
     },
     scorer: {
       system: 'You are a performance media buyer who has spent $50M+ on paid social. You evaluate ad scripts purely on their likelihood to convert cold traffic. You are ruthlessly honest — most scripts are mediocre.',
-      user: '(Dynamic — includes original script, generated brief, product context, iteration rules. Scores on 5 dimensions.)',
+      user: `PRODUCT CONTEXT:
+{{productContext}}
+
+ORIGINAL WINNING SCRIPT (baseline):
+{{originalScript}}
+
+ORIGINAL PERFORMANCE:
+{{performanceData}}
+
+{{iterationRules}}
+
+GENERATED BRIEF:
+{{generatedBrief}}
+
+ITERATION DIRECTION: {{directionName}}
+
+Score this brief on 5 dimensions (1-10 scale):
+
+1. NOVELTY (1-10): How different is this from the original?
+2. AGGRESSION (1-10): How bold are the claims and hooks?
+3. COHERENCE (1-10): Does the script flow? Is the logic chain tight?
+4. HOOK-BODY BLEND (1-10): Do ALL 3 hooks flow naturally into the body?
+5. CONVERSION POTENTIAL (1-10): Will this actually convert cold traffic?
+
+Also check:
+- Did the iteration respect the "must stay fixed" elements? Flag any violations.
+- Did it make any "high-risk changes"? Flag them.
+- Are all product claims accurate per the product context?
+- Does it maintain the same market awareness level as the original?
+
+Return ONLY valid JSON:
+{
+  "novelty": { "score": 7, "reason": "one sentence" },
+  "aggression": { "score": 8, "reason": "one sentence" },
+  "coherence": { "score": 6, "reason": "one sentence" },
+  "hook_body_blend": { "score": 8, "reason": "one sentence" },
+  "conversion_potential": { "score": 7, "reason": "one sentence" },
+  "overall": 7.0,
+  "verdict": "SHIP" | "MAYBE" | "KILL",
+  "rule_violations": [],
+  "one_line_feedback": "what's strong and what's weak",
+  "suggested_improvement": "optional fix if verdict is MAYBE"
+}`,
     },
     blendValidator: {
       system: 'You are a continuity editor for direct response ad scripts. Your ONLY job is to check if hooks flow naturally into the body.',
-      user: '(Dynamic — includes generated hooks and body first line. Scores blend per hook.)',
+      user: `Read each hook below, then immediately read the body's opening. Judge if they sound like one continuous script written by the same person.
+
+{{hookBodyPairs}}
+
+For each hook, return:
+- blend_score (1-10): 1 = jarring disconnect, 10 = perfectly seamless
+- issue: null if score >= 7, otherwise describe the disconnect
+- fix_suggestion: null if score >= 7, otherwise suggest a fix
+
+Return ONLY valid JSON:
+{
+  "hooks": [
+    { "id": 1, "blend_score": 8, "issue": null, "fix_suggestion": null }
+  ],
+  "overall_blend": 7.3,
+  "pass": true
+}
+
+A brief PASSES if overall_blend >= 6.5.`,
     },
   };
 }
