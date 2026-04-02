@@ -255,24 +255,30 @@ async function handleTaskCreated(taskId) {
 
   if (!NAMING_LISTS.includes(listId)) return;
 
-  // Get brief number from field, or auto-assign next available
-  let briefNumber = getFieldValue(task, FIELD_IDS.briefNumber);
-  if (briefNumber != null) {
-    briefNumber = Math.round(briefNumber);
+  const isBriefPipeline = task.description?.includes('[brief-pipeline]');
+
+  if (!isBriefPipeline) {
+    // Get brief number from field, or auto-assign next available
+    let briefNumber = getFieldValue(task, FIELD_IDS.briefNumber);
+    if (briefNumber != null) {
+      briefNumber = Math.round(briefNumber);
+    } else {
+      briefNumber = await getNextBriefNumber();
+      // Save the assigned brief number to the task
+      await setCustomField(taskId, FIELD_IDS.briefNumber, briefNumber);
+      logger.info(`[ClickUp Webhook] Auto-assigned brief number B${String(briefNumber).padStart(4, '0')} to task ${taskId}`);
+    }
+
+    const namingConv = generateNamingConvention(task, listId, briefNumber);
+
+    // Update task name and naming convention custom field
+    await updateTask(taskId, { name: namingConv });
+    await setCustomField(taskId, FIELD_IDS.namingConvention, namingConv);
+
+    logger.info(`[ClickUp Webhook] Auto-named task ${taskId} → "${namingConv}"`);
   } else {
-    briefNumber = await getNextBriefNumber();
-    // Save the assigned brief number to the task
-    await setCustomField(taskId, FIELD_IDS.briefNumber, briefNumber);
-    logger.info(`[ClickUp Webhook] Auto-assigned brief number B${String(briefNumber).padStart(4, '0')} to task ${taskId}`);
+    logger.info(`[ClickUp Webhook] Skipping auto-naming for brief-pipeline task ${taskId}`);
   }
-
-  const namingConv = generateNamingConvention(task, listId, briefNumber);
-
-  // Update task name and naming convention custom field
-  await updateTask(taskId, { name: namingConv });
-  await setCustomField(taskId, FIELD_IDS.namingConvention, namingConv);
-
-  logger.info(`[ClickUp Webhook] Auto-named task ${taskId} → "${namingConv}"`);
 
   // ── Frame.io: Create folder and set link on ClickUp task ──
   // Creates a Frame.io folder for the Video Ads task
@@ -298,7 +304,7 @@ async function handleTaskCreated(taskId) {
     }
 
     // Use the full task name as folder name (e.g. "MR - B0139 - IT - B0067 - ...")
-    const folderName = task.name || `B${String(briefNumber).padStart(4, '0')}`;
+    const folderName = task.name || taskId;
 
     const result = await createFrameFolder(rootFolderId, folderName);
     if (!result) {
