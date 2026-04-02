@@ -1275,8 +1275,11 @@ router.get('/winners/:id', authenticate, async (req, res) => {
     // Respond immediately — don't block on Meta API
     res.json({ success: true, winner });
 
-    // Background: refresh Meta URLs if missing, for next time
-    if (META_ACCESS_TOKEN && (!winner.thumbnail_url || !winner.video_url)) {
+    // Background: refresh Meta URLs if missing or expired CDN (not permanent .mp4), for next time
+    const needsRefresh = !winner.thumbnail_url || !winner.video_url
+      || (winner.thumbnail_url && winner.thumbnail_url.includes('fbcdn.net'))
+      || (winner.video_url && !winner.video_url.includes('.mp4'));
+    if (META_ACCESS_TOKEN && needsRefresh) {
       refreshMetaThumbnail(winner.creative_id).then(fresh => {
         if (!fresh) return;
         const updates = [];

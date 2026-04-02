@@ -114,10 +114,20 @@ function parseScript(parsed, raw) {
 function VideoPreview({ videoUrl, thumbnailUrl }) {
   const [playing, setPlaying] = useState(false);
   const [videoError, setVideoError] = useState(false);
+  const [thumbError, setThumbError] = useState(false);
+
+  const showFallback = !thumbnailUrl || thumbError;
 
   if (!videoUrl || videoError) {
     // Thumbnail-only mode
-    if (!thumbnailUrl) return null;
+    if (showFallback) return (
+      <div>
+        <SectionLabel>Preview</SectionLabel>
+        <div className="w-full aspect-video rounded-lg border border-white/[0.06] bg-white/[0.03] flex items-center justify-center">
+          <Film className="w-12 h-12 text-gray-600" />
+        </div>
+      </div>
+    );
     return (
       <div>
         <SectionLabel>Preview</SectionLabel>
@@ -125,6 +135,7 @@ function VideoPreview({ videoUrl, thumbnailUrl }) {
           src={thumbnailUrl}
           alt="Winner thumbnail"
           className="w-full max-w-full rounded-lg border border-white/[0.06]"
+          onError={() => setThumbError(true)}
         />
       </div>
     );
@@ -136,7 +147,7 @@ function VideoPreview({ videoUrl, thumbnailUrl }) {
       {playing ? (
         <video
           src={videoUrl}
-          poster={thumbnailUrl || undefined}
+          poster={!showFallback ? thumbnailUrl : undefined}
           controls
           autoPlay
           onError={() => setVideoError(true)}
@@ -147,15 +158,16 @@ function VideoPreview({ videoUrl, thumbnailUrl }) {
           className="relative cursor-pointer group"
           onClick={() => setPlaying(true)}
         >
-          {thumbnailUrl ? (
+          {!showFallback ? (
             <img
               src={thumbnailUrl}
               alt="Click to play"
               className="w-full max-w-full rounded-lg border border-white/[0.06]"
+              onError={() => setThumbError(true)}
             />
           ) : (
             <div className="w-full aspect-video rounded-lg border border-white/[0.06] bg-white/[0.03] flex items-center justify-center">
-              <Film className="w-8 h-8 text-slate-600" />
+              <Film className="w-12 h-12 text-gray-600" />
             </div>
           )}
           <div className="absolute inset-0 flex items-center justify-center">
