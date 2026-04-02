@@ -987,6 +987,15 @@ async function pushBriefToClickUp(generatedBrief) {
 // ROUTES
 // ══════════════════════════════════════════════════════════════════════
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function validateUuid(req, res) {
+  if (!UUID_RE.test(req.params.id)) {
+    res.status(400).json({ success: false, error: { message: 'Invalid ID format' } });
+    return false;
+  }
+  return true;
+}
+
 // GET /winners — list all detected winners
 router.get('/winners', authenticate, async (_req, res) => {
   try {
@@ -1121,6 +1130,7 @@ router.post('/detect', authenticate, async (_req, res) => {
 
 // GET /winners/:id — get winner detail including ClickUp script
 router.get('/winners/:id', authenticate, async (req, res) => {
+  if (!validateUuid(req, res)) return;
   try {
     await ensureTables();
     const rows = await pgQuery(
@@ -1205,6 +1215,7 @@ router.get('/winners/:id', authenticate, async (req, res) => {
 
 // POST /winners/:id/select — update status to 'selected', save iteration config
 router.post('/winners/:id/select', authenticate, async (req, res) => {
+  if (!validateUuid(req, res)) return;
   try {
     await ensureTables();
     const body = req.body || {};
@@ -1235,6 +1246,7 @@ router.post('/winners/:id/select', authenticate, async (req, res) => {
 
 // POST /generate/:id — the MAIN generation pipeline (Steps 4-8)
 router.post('/generate/:id', authenticate, async (req, res) => {
+  if (!validateUuid(req, res)) return;
   try {
     await ensureTables();
     // Fetch the winner
@@ -1249,11 +1261,12 @@ router.post('/generate/:id', authenticate, async (req, res) => {
 
     // Read config from request body, or fall back to saved iteration_config from select step
     const savedConfig = winner.iteration_config || {};
-    const mode = req.body.mode || req.body.iteration_mode || savedConfig.mode || 'hook_body';
-    const aggressiveness = req.body.aggressiveness || savedConfig.aggressiveness || 'medium';
-    const num_variations = req.body.num_variations || savedConfig.num_variations || 3;
-    const fixed_elements = req.body.fixed_elements || savedConfig.fixed_elements || [];
-    const configEditor = req.body.editor || savedConfig.editor || null;
+    const body = req.body || {};
+    const mode = body.mode || body.iteration_mode || savedConfig.mode || 'hook_body';
+    const aggressiveness = body.aggressiveness || savedConfig.aggressiveness || 'medium';
+    const num_variations = body.num_variations || savedConfig.num_variations || 3;
+    const fixed_elements = body.fixed_elements || savedConfig.fixed_elements || [];
+    const configEditor = body.editor || savedConfig.editor || null;
 
     // Guard: only allow generation from 'selected' status
     if (winner.status === 'generating') {
@@ -1476,6 +1489,7 @@ router.get('/generated', authenticate, async (_req, res) => {
 
 // GET /generated/:id — get generated brief detail
 router.get('/generated/:id', authenticate, async (req, res) => {
+  if (!validateUuid(req, res)) return;
   try {
     await ensureTables();
     const rows = await pgQuery(
@@ -1494,6 +1508,7 @@ router.get('/generated/:id', authenticate, async (req, res) => {
 
 // PATCH /generated/:id — update status (approve/reject)
 router.patch('/generated/:id', authenticate, async (req, res) => {
+  if (!validateUuid(req, res)) return;
   try {
     await ensureTables();
     const { status } = req.body;
@@ -1530,6 +1545,7 @@ router.patch('/generated/:id', authenticate, async (req, res) => {
 
 // POST /generated/:id/push — push approved brief to ClickUp
 router.post('/generated/:id/push', authenticate, async (req, res) => {
+  if (!validateUuid(req, res)) return;
   try {
     await ensureTables();
     const rows = await pgQuery(
