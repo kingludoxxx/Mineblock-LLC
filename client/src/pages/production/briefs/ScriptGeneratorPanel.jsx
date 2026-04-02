@@ -65,7 +65,7 @@ export default function ScriptGeneratorPanel({ onGenerated, generating, generati
             type="button"
             onClick={() => setInputMode('text')}
             className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-md text-[11px] font-medium transition-colors cursor-pointer ${
-              inputMode === 'text' ? 'bg-[#00FF88]/15 text-[#00FF88]' : 'text-gray-500 hover:text-gray-300'
+              inputMode === 'text' ? 'bg-[#C6A85C]/15 text-[#C6A85C]' : 'text-gray-500 hover:text-gray-300'
             }`}
           >
             <FileText className="w-3 h-3" />
@@ -75,7 +75,7 @@ export default function ScriptGeneratorPanel({ onGenerated, generating, generati
             type="button"
             onClick={() => setInputMode('url')}
             className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-md text-[11px] font-medium transition-colors cursor-pointer ${
-              inputMode === 'url' ? 'bg-[#00FF88]/15 text-[#00FF88]' : 'text-gray-500 hover:text-gray-300'
+              inputMode === 'url' ? 'bg-[#C6A85C]/15 text-[#C6A85C]' : 'text-gray-500 hover:text-gray-300'
             }`}
           >
             <Link className="w-3 h-3" />
@@ -89,14 +89,14 @@ export default function ScriptGeneratorPanel({ onGenerated, generating, generati
               value={scriptText}
               onChange={(e) => setScriptText(e.target.value)}
               placeholder="Paste competitor copy, landing page text, article, ad, email..."
-              className="w-full h-32 bg-[#111] border border-white/[0.06] rounded-lg p-2.5 text-xs text-white placeholder-gray-600 resize-y focus:outline-none focus:border-[#00FF88]/30 transition-colors"
+              className="w-full h-32 bg-[#111] border border-white/[0.06] rounded-lg p-2.5 text-xs text-white placeholder-gray-600 resize-y focus:outline-none focus:border-[#C6A85C]/30 transition-colors"
             />
             {scriptText.trim().length > 20 && (
               <button
                 type="button"
                 onClick={handleEnhance}
                 disabled={enhancing}
-                className="absolute bottom-2 right-2 flex items-center gap-1 px-2 py-1 text-[10px] font-medium text-[#00FF88] bg-[#00FF88]/10 rounded border border-[#00FF88]/20 hover:bg-[#00FF88]/20 transition-colors cursor-pointer disabled:opacity-40"
+                className="absolute bottom-2 right-2 flex items-center gap-1 px-2 py-1 text-[10px] font-medium text-[#C6A85C] bg-[#C6A85C]/10 rounded border border-[#C6A85C]/20 hover:bg-[#C6A85C]/20 transition-colors cursor-pointer disabled:opacity-40"
               >
                 {enhancing ? <Loader2 className="w-3 h-3 animate-spin" /> : <Wand2 className="w-3 h-3" />}
                 Enhance
@@ -109,7 +109,7 @@ export default function ScriptGeneratorPanel({ onGenerated, generating, generati
             value={scriptUrl}
             onChange={(e) => setScriptUrl(e.target.value)}
             placeholder="https://example.com/ad-page"
-            className="w-full bg-[#111] border border-white/[0.06] rounded-lg p-2.5 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-[#00FF88]/30 transition-colors"
+            className="w-full bg-[#111] border border-white/[0.06] rounded-lg p-2.5 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-[#C6A85C]/30 transition-colors"
           />
         )}
       </div>
@@ -137,7 +137,7 @@ export default function ScriptGeneratorPanel({ onGenerated, generating, generati
                 onClick={() => setSelectedAngle(selectedAngle === a ? null : a)}
                 className={`px-2 py-1 rounded text-[10px] font-medium border transition-colors cursor-pointer ${
                   selectedAngle === a
-                    ? 'bg-[#00FF88]/15 border-[#00FF88]/30 text-[#00FF88]'
+                    ? 'bg-[#C6A85C]/15 border-[#C6A85C]/30 text-[#C6A85C]'
                     : 'bg-transparent border-white/[0.08] text-gray-500 hover:border-white/[0.15] hover:text-gray-300'
                 }`}
               >
@@ -150,7 +150,7 @@ export default function ScriptGeneratorPanel({ onGenerated, generating, generati
             value={customAngle}
             onChange={(e) => { setCustomAngle(e.target.value); setSelectedAngle(null); }}
             placeholder="Custom angle... (or leave blank for AI to decide)"
-            className="w-full bg-[#111] border border-white/[0.06] rounded-lg p-2 text-[11px] text-white placeholder-gray-600 focus:outline-none focus:border-[#00FF88]/30 transition-colors"
+            className="w-full bg-[#111] border border-white/[0.06] rounded-lg p-2 text-[11px] text-white placeholder-gray-600 focus:outline-none focus:border-[#C6A85C]/30 transition-colors"
           />
         </div>
       </div>
@@ -164,12 +164,12 @@ export default function ScriptGeneratorPanel({ onGenerated, generating, generati
             onClick={() => setOutputMode('variants')}
             className={`w-full flex items-start gap-2.5 p-2.5 rounded-lg border transition-colors cursor-pointer ${
               outputMode === 'variants'
-                ? 'bg-[#00FF88]/8 border-[#00FF88]/25'
+                ? 'bg-[#C6A85C]/8 border-[#C6A85C]/25'
                 : 'bg-transparent border-white/[0.06] hover:border-white/[0.12]'
             }`}
           >
             <div className={`w-3 h-3 rounded-full mt-0.5 border-2 flex-shrink-0 ${
-              outputMode === 'variants' ? 'border-[#00FF88] bg-[#00FF88]' : 'border-gray-600'
+              outputMode === 'variants' ? 'border-[#C6A85C] bg-[#C6A85C]' : 'border-gray-600'
             }`} />
             <div className="text-left">
               <div className="text-[11px] font-semibold text-gray-100">Generate Variants</div>
@@ -181,12 +181,12 @@ export default function ScriptGeneratorPanel({ onGenerated, generating, generati
             onClick={() => setOutputMode('clone')}
             className={`w-full flex items-start gap-2.5 p-2.5 rounded-lg border transition-colors cursor-pointer ${
               outputMode === 'clone'
-                ? 'bg-[#00FF88]/8 border-[#00FF88]/25'
+                ? 'bg-[#C6A85C]/8 border-[#C6A85C]/25'
                 : 'bg-transparent border-white/[0.06] hover:border-white/[0.12]'
             }`}
           >
             <div className={`w-3 h-3 rounded-full mt-0.5 border-2 flex-shrink-0 ${
-              outputMode === 'clone' ? 'border-[#00FF88] bg-[#00FF88]' : 'border-gray-600'
+              outputMode === 'clone' ? 'border-[#C6A85C] bg-[#C6A85C]' : 'border-gray-600'
             }`} />
             <div className="text-left">
               <div className="text-[11px] font-semibold text-gray-100">1:1 Script Clone</div>
@@ -205,7 +205,7 @@ export default function ScriptGeneratorPanel({ onGenerated, generating, generati
                 onClick={() => setVariantCount(n)}
                 className={`w-7 h-7 rounded text-[11px] font-semibold transition-colors cursor-pointer ${
                   variantCount === n
-                    ? 'bg-[#00FF88]/15 text-[#00FF88] border border-[#00FF88]/30'
+                    ? 'bg-[#C6A85C]/15 text-[#C6A85C] border border-[#C6A85C]/30'
                     : 'bg-transparent text-gray-500 border border-white/[0.06] hover:border-white/[0.12]'
                 }`}
               >
@@ -230,9 +230,9 @@ export default function ScriptGeneratorPanel({ onGenerated, generating, generati
         disabled={!hasInput || generating}
         className="w-full flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-semibold transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
         style={{
-          background: generating ? '#0a1a10' : 'linear-gradient(135deg, #00FF88, #00CC6A)',
-          color: generating ? '#00FF88' : '#000',
-          border: generating ? '1px solid #00FF8833' : 'none',
+          background: generating ? '#1a1710' : 'linear-gradient(135deg, #C6A85C, #BFA14A)',
+          color: generating ? '#C6A85C' : '#000',
+          border: generating ? '1px solid #C6A85C33' : 'none',
         }}
       >
         {generating ? (

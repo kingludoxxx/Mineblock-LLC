@@ -355,9 +355,9 @@ export default function BriefPipeline() {
         <div className="flex gap-4 h-full">
           {/* Script Generator — dedicated first column */}
           <div className="flex flex-col min-w-[260px] max-w-[320px] flex-1">
-            <div className="flex items-center gap-2 px-3 py-2.5 border-b-2 mb-3" style={{ borderColor: 'rgba(0, 255, 136, 0.4)' }}>
-              <Sparkles className="w-4 h-4" style={{ color: '#00FF88' }} />
-              <span className="text-sm font-semibold text-gray-200">Script Generator</span>
+            <div className="flex items-center gap-2 px-3 py-2.5 border-b-2 mb-3" style={{ borderColor: 'rgba(198, 168, 92, 0.4)' }}>
+              <Sparkles className="w-4 h-4" style={{ color: '#C6A85C' }} />
+              <span className="text-sm font-semibold" style={{ color: '#C6A85C' }}>Script Generator</span>
             </div>
             <div className="flex-1 overflow-y-auto pr-1 pb-4 custom-scrollbar">
               <ScriptGeneratorPanel
