@@ -129,11 +129,18 @@ async function streamJSONArray(res, prompt, maxTokens, { fast = true, eventName 
 
     await stream.finalMessage();
 
-    // Final pass: parse the complete response and send any remaining items
-    const finalParsed = safeParseJSON(fullText);
-    const items = Array.isArray(finalParsed) ? finalParsed : [];
-    for (let i = sentCount; i < items.length; i++) {
-      res.write(`data: ${JSON.stringify(items[i])}\n\n`);
+    // Final pass: use brace-depth parser (resilient to truncated responses)
+    const cleaned = extractJSON(fullText);
+    const allObjects = extractJSONObjects(cleaned);
+    const items = [];
+    for (let i = 0; i < allObjects.length; i++) {
+      try {
+        const obj = JSON.parse(allObjects[i]);
+        items.push(obj);
+        if (i >= sentCount) {
+          res.write(`data: ${JSON.stringify(obj)}\n\n`);
+        }
+      } catch { /* skip malformed */ }
     }
 
     res.write(`data: [DONE]\n\n`);
@@ -339,7 +346,7 @@ Return ONLY a valid JSON array (no markdown, no backticks, no explanation). Each
 
 Generate exactly 10 variations.`;
 
-    await streamJSONArray(res, prompt, 8192, { fast: false });
+    await streamJSONArray(res, prompt, 16384, { fast: false });
   } catch (err) {
     console.error('[IterationKing] Generate scripts error:', err.message);
     if (!res.headersSent) res.status(500).json({ success: false, error: err.message });
@@ -394,7 +401,7 @@ Return ONLY a valid JSON array (no markdown, no backticks, no explanation). Each
 
 Generate exactly 10 complete scripts.`;
 
-    await streamJSONArray(res, prompt, 8192, { fast: false });
+    await streamJSONArray(res, prompt, 16384, { fast: false });
   } catch (err) {
     console.error('[IterationKing] Generate full scripts error:', err.message);
     if (!res.headersSent) res.status(500).json({ success: false, error: err.message });
