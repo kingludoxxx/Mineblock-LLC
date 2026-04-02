@@ -2,85 +2,63 @@ import { useState, useCallback, useRef } from 'react';
 import {
   Sparkles,
   Copy,
-  Save,
   RefreshCw,
   Wand2,
   Link,
-  Type,
   FileText,
   Zap,
-  Target,
-  ArrowRight,
+  Eye,
+  Globe,
+  Loader2,
+  BookOpen,
 } from 'lucide-react';
 import api from '../../services/api';
 import ProductSelector from '../../components/ProductSelector';
 
-const EXAMPLE_PROMPTS = [
-  {
-    title: 'High-Converting VSL Script',
-    description: 'Generate a video sales letter script from a competitor ad',
-    reference: 'Paste your competitor\'s ad copy here and we\'ll generate a high-converting VSL script tailored to your product.',
-    product: 'Digital Course',
-    audience: 'Entrepreneurs 25-45',
-  },
-  {
-    title: 'Email Sequence',
-    description: 'Create a 5-email nurture sequence from a sales page',
-    reference: 'Paste the sales page copy to generate a warming email sequence that builds desire and urgency.',
-    product: 'SaaS Platform',
-    audience: 'Small Business Owners',
-  },
-  {
-    title: 'Ad Creative Variants',
-    description: 'Generate multiple ad angles from winning copy',
-    reference: 'Drop in your best-performing ad and get fresh angles that maintain the same persuasion framework.',
-    product: 'Supplement Brand',
-    audience: 'Health-conscious adults 30-55',
-  },
-];
+const ANGLES = ['Pain Point', 'Social Proof', 'Before/After', 'Curiosity Hook', 'Direct Offer', 'Authority'];
 
 export default function MagicWriter() {
-  const [referenceMode, setReferenceMode] = useState('text');
+  // Input state
+  const [inputMode, setInputMode] = useState('text'); // 'spy' | 'text' | 'url'
   const [referenceText, setReferenceText] = useState('');
   const [referenceUrl, setReferenceUrl] = useState('');
-  const [productName, setProductName] = useState('');
-  const [targetAudience, setTargetAudience] = useState('');
+  const [selectedProduct, setSelectedProduct] = useState(null);
+  const [selectedAngle, setSelectedAngle] = useState(null);
+  const [customAngle, setCustomAngle] = useState('');
   const [outputMode, setOutputMode] = useState('variants');
   const [variantCount, setVariantCount] = useState(3);
-  const [aggressiveness, setAggressiveness] = useState(5);
+
+  // Generation state
   const [variants, setVariants] = useState([]);
   const [generating, setGenerating] = useState(false);
-  const [enhancingField, setEnhancingField] = useState(null);
+  const [generatingStep, setGeneratingStep] = useState('');
+  const [enhancing, setEnhancing] = useState(false);
   const [copiedIndex, setCopiedIndex] = useState(null);
-  const [aiSource, setAiSource] = useState(null);
-  const [selectedProductId, setSelectedProductId] = useState(null);
-  const selectedProductRef = useRef(null);
+  const [error, setError] = useState(null);
 
-  const handleProductSelect = (product) => {
-    if (!product) {
-      setSelectedProductId(null);
-      selectedProductRef.current = null;
-      return;
-    }
-    setSelectedProductId(product.id);
-    selectedProductRef.current = product;
-    setProductName(product.name || '');
-    setTargetAudience(product.customer_avatar || '');
-  };
-
-  const referenceContent = referenceMode === 'text' ? referenceText : referenceUrl;
-  const canGenerate = referenceContent.trim() && productName.trim() && targetAudience.trim();
+  const referenceContent = inputMode === 'text' ? referenceText : referenceUrl;
+  const hasInput = inputMode === 'text' ? referenceText.trim().length > 20 : referenceUrl.trim().length > 5;
 
   const handleGenerate = useCallback(async () => {
-    if (!canGenerate) return;
+    if (!hasInput) return;
     setGenerating(true);
     setVariants([]);
+    setError(null);
+
+    const stepMessages = ['Analyzing reference...', 'Running deep analysis...', 'Generating variants...', 'Scoring output...', 'Finalizing...'];
+    let stepIdx = 0;
+    setGeneratingStep(stepMessages[0]);
+    const stepInterval = setInterval(() => {
+      stepIdx = Math.min(stepIdx + 1, stepMessages.length - 1);
+      setGeneratingStep(stepMessages[stepIdx]);
+    }, 3000);
+
     try {
-      const full = selectedProductRef.current;
+      const full = selectedProduct;
       const res = await api.post('/magic-writer/generate', {
-        referenceText: referenceMode === 'text' ? referenceText : referenceUrl,
-        productName,
-        targetAudience,
+        referenceText: inputMode === 'text' ? referenceText : referenceUrl,
+        productName: full?.name || '',
+        targetAudience: full?.customer_avatar || '',
         productProfile: full ? {
           big_promise: full.big_promise,
           mechanism: full.mechanism,
@@ -98,44 +76,29 @@ export default function MagicWriter() {
         } : undefined,
         mode: outputMode,
         variantCount: outputMode === 'variants' ? variantCount : 1,
-        aggressiveness,
+        angle: selectedAngle || customAngle || null,
+        aggressiveness: 7,
       });
       setVariants(res.data.variants || []);
-      setAiSource(res.data.source || 'unknown');
-    } catch {
-      // Fallback mock response
-      await new Promise((r) => setTimeout(r, 2000));
-      const count = outputMode === 'variants' ? variantCount : 1;
-      const mockVariants = Array.from({ length: count }, (_, i) => ({
-        id: i + 1,
-        text: `[Variant ${i + 1}] Attention ${targetAudience}!\n\nAre you tired of [pain point]? Introducing ${productName} - the breakthrough solution that finally delivers real results.\n\nHere's what makes ${productName} different:\n\n- Unique mechanism that addresses the root cause\n- Proven results backed by real testimonials\n- Risk-free guarantee so you have nothing to lose\n\nDon't wait. The longer you delay, the longer you suffer. Click below to claim your exclusive offer before it expires.\n\n[CTA: Get ${productName} Now - Limited Time Offer]`,
-      }));
-      setVariants(mockVariants);
+    } catch (err) {
+      setError(err.response?.data?.error || err.message || 'Generation failed');
     } finally {
+      clearInterval(stepInterval);
       setGenerating(false);
+      setGeneratingStep('');
     }
-  }, [canGenerate, referenceMode, referenceText, referenceUrl, productName, targetAudience, outputMode, variantCount, aggressiveness]);
+  }, [hasInput, inputMode, referenceText, referenceUrl, selectedProduct, outputMode, variantCount, selectedAngle, customAngle]);
 
-  const handleEnhance = useCallback(async (field) => {
-    const value = field === 'productName' ? productName : targetAudience;
-    if (!value.trim()) return;
-    setEnhancingField(field);
+  const handleEnhance = async () => {
+    if (!referenceText.trim()) return;
+    setEnhancing(true);
     try {
-      const res = await api.post('/magic-writer/enhance', { field, value });
-      if (field === 'productName') setProductName(res.data.enhanced);
-      else setTargetAudience(res.data.enhanced);
-    } catch {
-      // Mock enhancement
-      await new Promise((r) => setTimeout(r, 1000));
-      if (field === 'productName') {
-        setProductName((v) => `${v} - Premium Edition`);
-      } else {
-        setTargetAudience((v) => `${v} who are frustrated with existing solutions and ready to invest in real change`);
-      }
-    } finally {
-      setEnhancingField(null);
+      const res = await api.post('/magic-writer/enhance', { text: referenceText, type: 'script' });
+      if (res.data.enhanced) setReferenceText(res.data.enhanced);
+    } catch {} finally {
+      setEnhancing(false);
     }
-  }, [productName, targetAudience]);
+  };
 
   const handleCopy = useCallback((text, index) => {
     navigator.clipboard.writeText(text);
@@ -143,314 +106,250 @@ export default function MagicWriter() {
     setTimeout(() => setCopiedIndex(null), 2000);
   }, []);
 
-  const handleRegenerate = useCallback(async (index) => {
-    const updated = [...variants];
-    updated[index] = { ...updated[index], regenerating: true };
-    setVariants(updated);
-    await new Promise((r) => setTimeout(r, 1500));
-    updated[index] = {
-      ...updated[index],
-      regenerating: false,
-      text: updated[index].text.replace('[Variant', '[Regenerated Variant'),
-    };
-    setVariants([...updated]);
-  }, [variants]);
-
-  const handlePromptClick = useCallback((prompt) => {
-    setReferenceMode('text');
-    setReferenceText(prompt.reference);
-    setProductName(prompt.product);
-    setTargetAudience(prompt.audience);
-  }, []);
-
-  const aggressivenessColor = () => {
-    if (aggressiveness <= 3) return 'from-green-500 to-green-400';
-    if (aggressiveness <= 6) return 'from-yellow-500 to-orange-400';
-    return 'from-orange-500 to-red-500';
-  };
-
   return (
-    <div className="flex h-full">
-      {/* Left Panel - Input */}
-      <div className="w-[60%] min-w-[380px] overflow-y-auto p-6 border-r border-white/[0.06]">
-        <div className="flex items-center gap-3 mb-6">
-          <div className="p-2 rounded-lg bg-purple-500/20">
-            <Wand2 className="w-5 h-5 text-purple-400" />
+    <div className="flex h-full bg-[#0a0a0a]">
+      {/* Left Panel — Input */}
+      <div className="w-[340px] min-w-[300px] max-w-[380px] overflow-y-auto border-r border-white/[0.06]">
+        {/* Header */}
+        <div className="flex items-center gap-3 px-4 py-4 border-b border-white/[0.06]">
+          <div className="p-2 rounded-lg" style={{ background: 'rgba(0,255,136,0.1)' }}>
+            <BookOpen className="w-5 h-5" style={{ color: '#00FF88' }} />
           </div>
           <div>
-            <h1 className="text-xl font-bold text-white">Magic Writer</h1>
-            <p className="text-sm text-slate-400">AI-powered copy generation</p>
+            <h1 className="text-base font-bold text-white">AD SCRIPTS</h1>
+            <p className="text-[11px] text-gray-500">Rewrite & variant generator</p>
           </div>
         </div>
 
-        {/* Reference Content */}
-        <section className="mb-6">
-          <label className="text-sm font-medium text-slate-300 mb-2 block">Reference Content</label>
-          <div className="flex bg-[#111] rounded-lg border border-white/[0.06] p-0.5 mb-3">
-            <button
-              onClick={() => setReferenceMode('text')}
-              className={`flex-1 flex items-center justify-center gap-2 py-2 px-3 rounded-md text-sm font-medium transition-colors cursor-pointer ${
-                referenceMode === 'text'
-                  ? 'bg-purple-600 text-white'
-                  : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              <Type className="w-4 h-4" />
-              Paste Text
-            </button>
-            <button
-              onClick={() => setReferenceMode('url')}
-              className={`flex-1 flex items-center justify-center gap-2 py-2 px-3 rounded-md text-sm font-medium transition-colors cursor-pointer ${
-                referenceMode === 'url'
-                  ? 'bg-purple-600 text-white'
-                  : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              <Link className="w-4 h-4" />
-              URL
-            </button>
-          </div>
-          {referenceMode === 'text' ? (
-            <textarea
-              value={referenceText}
-              onChange={(e) => setReferenceText(e.target.value)}
-              placeholder="Paste competitor ad copy, sales page text, or any reference content..."
-              className="w-full h-40 bg-[#111] border border-white/[0.06] rounded-lg p-3 text-sm text-white placeholder-slate-500 resize-none focus:outline-none focus:border-purple-500/50 transition-colors"
-            />
-          ) : (
-            <input
-              type="url"
-              value={referenceUrl}
-              onChange={(e) => setReferenceUrl(e.target.value)}
-              placeholder="https://example.com/ad-page"
-              className="w-full bg-[#111] border border-white/[0.06] rounded-lg p-3 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-purple-500/50 transition-colors"
-            />
-          )}
-        </section>
-
-        {/* Your Product */}
-        <section className="mb-6">
-          <label className="text-sm font-medium text-slate-300 mb-3 block">Your Product</label>
-          <div className="mb-3">
-            <ProductSelector
-              selectedId={selectedProductId}
-              onSelect={handleProductSelect}
-            />
-          </div>
-          <div className="space-y-3">
-            <div>
-              <label className="text-xs text-slate-500 mb-1 block">Product Name</label>
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={productName}
-                  onChange={(e) => setProductName(e.target.value)}
-                  placeholder="e.g. FitPro Max Supplement"
-                  className="flex-1 bg-[#111] border border-white/[0.06] rounded-lg p-3 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-purple-500/50 transition-colors"
-                />
+        <div className="px-4 py-4 space-y-4">
+          {/* Reference Content */}
+          <div>
+            <div className="text-[9px] uppercase tracking-wider font-semibold text-gray-500 mb-1.5">Reference Content</div>
+            <div className="flex bg-[#111] rounded-lg border border-white/[0.06] p-0.5 mb-2">
+              {[
+                { key: 'spy', icon: Eye, label: 'Spy Ad' },
+                { key: 'text', icon: FileText, label: 'Paste Text' },
+                { key: 'url', icon: Globe, label: 'URL' },
+              ].map((m) => (
                 <button
-                  onClick={() => handleEnhance('productName')}
-                  disabled={enhancingField === 'productName' || !productName.trim()}
-                  className="px-3 bg-[#111] border border-white/[0.06] rounded-lg text-purple-400 hover:text-purple-300 hover:border-purple-500/30 disabled:opacity-40 disabled:cursor-not-allowed transition-colors cursor-pointer"
-                  title="Enhance with AI"
-                >
-                  <Sparkles className={`w-4 h-4 ${enhancingField === 'productName' ? 'animate-spin' : ''}`} />
-                </button>
-              </div>
-            </div>
-            <div>
-              <label className="text-xs text-slate-500 mb-1 block">Target Audience</label>
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={targetAudience}
-                  onChange={(e) => setTargetAudience(e.target.value)}
-                  placeholder="e.g. Men 30-50 who want to lose weight"
-                  className="flex-1 bg-[#111] border border-white/[0.06] rounded-lg p-3 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-purple-500/50 transition-colors"
-                />
-                <button
-                  onClick={() => handleEnhance('targetAudience')}
-                  disabled={enhancingField === 'targetAudience' || !targetAudience.trim()}
-                  className="px-3 bg-[#111] border border-white/[0.06] rounded-lg text-purple-400 hover:text-purple-300 hover:border-purple-500/30 disabled:opacity-40 disabled:cursor-not-allowed transition-colors cursor-pointer"
-                  title="Enhance with AI"
-                >
-                  <Sparkles className={`w-4 h-4 ${enhancingField === 'targetAudience' ? 'animate-spin' : ''}`} />
-                </button>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        {/* Output Mode */}
-        <section className="mb-6">
-          <label className="text-sm font-medium text-slate-300 mb-3 block">Output Mode</label>
-          <div className="flex bg-[#111] rounded-lg border border-white/[0.06] p-0.5">
-            <button
-              onClick={() => setOutputMode('variants')}
-              className={`flex-1 py-2 px-3 rounded-md text-sm font-medium transition-colors cursor-pointer ${
-                outputMode === 'variants'
-                  ? 'bg-purple-600 text-white'
-                  : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              Generate Variants
-            </button>
-            <button
-              onClick={() => setOutputMode('clone')}
-              className={`flex-1 py-2 px-3 rounded-md text-sm font-medium transition-colors cursor-pointer ${
-                outputMode === 'clone'
-                  ? 'bg-purple-600 text-white'
-                  : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              1:1 Script Clone
-            </button>
-          </div>
-        </section>
-
-        {/* Variant Count */}
-        {outputMode === 'variants' && (
-          <section className="mb-6">
-            <label className="text-sm font-medium text-slate-300 mb-3 block">Number of Variants</label>
-            <div className="flex gap-2">
-              {[2, 3, 4, 5].map((n) => (
-                <button
-                  key={n}
-                  onClick={() => setVariantCount(n)}
-                  className={`flex-1 py-2 rounded-lg text-sm font-medium border transition-colors cursor-pointer ${
-                    variantCount === n
-                      ? 'bg-purple-600 border-purple-500 text-white'
-                      : 'bg-[#111] border-white/[0.06] text-slate-400 hover:text-white hover:border-white/[0.12]'
+                  key={m.key}
+                  type="button"
+                  onClick={() => setInputMode(m.key)}
+                  className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-md text-[11px] font-medium transition-colors cursor-pointer ${
+                    inputMode === m.key ? 'bg-[#00FF88]/15 text-[#00FF88]' : 'text-gray-500 hover:text-gray-300'
                   }`}
                 >
-                  {n}
+                  <m.icon className="w-3 h-3" />
+                  {m.label}
                 </button>
               ))}
             </div>
-          </section>
-        )}
 
-        {/* Aggressiveness Slider */}
-        <section className="mb-8">
-          <div className="flex justify-between items-center mb-3">
-            <label className="text-sm font-medium text-slate-300">Conversion Aggressiveness</label>
-            <span className="text-sm font-mono text-slate-400">{aggressiveness}/10</span>
+            {inputMode === 'text' || inputMode === 'spy' ? (
+              <div className="relative">
+                <textarea
+                  value={referenceText}
+                  onChange={(e) => setReferenceText(e.target.value)}
+                  placeholder="Paste competitor copy, landing page text, article, ad, email..."
+                  className="w-full h-36 bg-[#111] border border-white/[0.06] rounded-lg p-2.5 text-xs text-white placeholder-gray-600 resize-y focus:outline-none focus:border-[#00FF88]/30 transition-colors"
+                />
+                {referenceText.trim().length > 20 && (
+                  <button
+                    type="button"
+                    onClick={handleEnhance}
+                    disabled={enhancing}
+                    className="absolute bottom-2 right-2 flex items-center gap-1 px-2 py-1 text-[10px] font-medium text-[#00FF88] bg-[#00FF88]/10 rounded border border-[#00FF88]/20 hover:bg-[#00FF88]/20 transition-colors cursor-pointer disabled:opacity-40"
+                  >
+                    {enhancing ? <Loader2 className="w-3 h-3 animate-spin" /> : <Wand2 className="w-3 h-3" />}
+                    Enhance
+                  </button>
+                )}
+              </div>
+            ) : (
+              <input
+                type="url"
+                value={referenceUrl}
+                onChange={(e) => setReferenceUrl(e.target.value)}
+                placeholder="https://example.com/ad-page"
+                className="w-full bg-[#111] border border-white/[0.06] rounded-lg p-2.5 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-[#00FF88]/30 transition-colors"
+              />
+            )}
           </div>
-          <div className="relative">
-            <input
-              type="range"
-              min="1"
-              max="10"
-              value={aggressiveness}
-              onChange={(e) => setAggressiveness(Number(e.target.value))}
-              className="w-full h-2 rounded-full appearance-none cursor-pointer"
-              style={{
-                background: `linear-gradient(to right, #22c55e 0%, #eab308 50%, #ef4444 100%)`,
-              }}
-            />
-            <div className="flex justify-between mt-1">
-              <span className="text-xs text-green-400">Subtle</span>
-              <span className="text-xs text-red-400">Aggressive</span>
+
+          {/* Configuration */}
+          <div>
+            <div className="text-[9px] uppercase tracking-wider font-semibold text-gray-500 mb-1.5">Configuration</div>
+
+            <div className="mb-2.5">
+              <div className="text-[11px] font-medium text-gray-300 mb-1">Target Product</div>
+              <ProductSelector
+                selectedId={selectedProduct?.id}
+                onSelect={(p) => setSelectedProduct(p)}
+                className="w-full"
+              />
+            </div>
+
+            <div className="mb-2.5">
+              <div className="text-[11px] font-medium text-gray-300 mb-1">Ad Angle <span className="text-gray-600">(optional)</span></div>
+              <div className="flex flex-wrap gap-1 mb-1.5">
+                {ANGLES.map((a) => (
+                  <button
+                    key={a}
+                    type="button"
+                    onClick={() => setSelectedAngle(selectedAngle === a ? null : a)}
+                    className={`px-2 py-1 rounded text-[10px] font-medium border transition-colors cursor-pointer ${
+                      selectedAngle === a
+                        ? 'bg-[#00FF88]/15 border-[#00FF88]/30 text-[#00FF88]'
+                        : 'bg-transparent border-white/[0.08] text-gray-500 hover:border-white/[0.15] hover:text-gray-300'
+                    }`}
+                  >
+                    {a}
+                  </button>
+                ))}
+              </div>
+              <input
+                type="text"
+                value={customAngle}
+                onChange={(e) => { setCustomAngle(e.target.value); setSelectedAngle(null); }}
+                placeholder="Custom angle... (or leave blank for AI to decide)"
+                className="w-full bg-[#111] border border-white/[0.06] rounded-lg p-2 text-[11px] text-white placeholder-gray-600 focus:outline-none focus:border-[#00FF88]/30 transition-colors"
+              />
             </div>
           </div>
-        </section>
 
-        {/* Generate Button */}
-        <button
-          onClick={handleGenerate}
-          disabled={!canGenerate || generating}
-          className={`w-full py-3.5 rounded-lg font-semibold text-sm flex items-center justify-center gap-2 transition-all cursor-pointer ${
-            canGenerate && !generating
-              ? 'bg-gradient-to-r from-purple-600 to-pink-600 text-white hover:from-purple-500 hover:to-pink-500 shadow-lg shadow-purple-500/25'
-              : 'bg-slate-800 text-slate-500 cursor-not-allowed'
-          }`}
-        >
-          {generating ? (
-            <>
-              <RefreshCw className="w-4 h-4 animate-spin" />
-              Generating...
-            </>
-          ) : (
-            <>
-              <Zap className="w-4 h-4" />
-              Generate Copy
-            </>
+          {/* Output Mode */}
+          <div>
+            <div className="text-[9px] uppercase tracking-wider font-semibold text-gray-500 mb-1.5">Output Mode</div>
+            <div className="space-y-1.5">
+              <button
+                type="button"
+                onClick={() => setOutputMode('variants')}
+                className={`w-full flex items-start gap-2.5 p-2.5 rounded-lg border transition-colors cursor-pointer ${
+                  outputMode === 'variants'
+                    ? 'bg-[#00FF88]/8 border-[#00FF88]/25'
+                    : 'bg-transparent border-white/[0.06] hover:border-white/[0.12]'
+                }`}
+              >
+                <div className={`w-3 h-3 rounded-full mt-0.5 border-2 flex-shrink-0 ${
+                  outputMode === 'variants' ? 'border-[#00FF88] bg-[#00FF88]' : 'border-gray-600'
+                }`} />
+                <div className="text-left">
+                  <div className="text-[11px] font-semibold text-gray-100">Generate Variants</div>
+                  <div className="text-[10px] text-gray-500">Multiple versions across different conversion angles</div>
+                </div>
+              </button>
+              <button
+                type="button"
+                onClick={() => setOutputMode('clone')}
+                className={`w-full flex items-start gap-2.5 p-2.5 rounded-lg border transition-colors cursor-pointer ${
+                  outputMode === 'clone'
+                    ? 'bg-[#00FF88]/8 border-[#00FF88]/25'
+                    : 'bg-transparent border-white/[0.06] hover:border-white/[0.12]'
+                }`}
+              >
+                <div className={`w-3 h-3 rounded-full mt-0.5 border-2 flex-shrink-0 ${
+                  outputMode === 'clone' ? 'border-[#00FF88] bg-[#00FF88]' : 'border-gray-600'
+                }`} />
+                <div className="text-left">
+                  <div className="text-[11px] font-semibold text-gray-100">1:1 Script Clone</div>
+                  <div className="text-[10px] text-gray-500">Keeps structure word-for-word, swaps product & avatar</div>
+                </div>
+              </button>
+            </div>
+
+            {outputMode === 'variants' && (
+              <div className="flex items-center gap-2 mt-2">
+                <span className="text-[11px] text-gray-400">Variants:</span>
+                {[2, 3, 4, 5].map((n) => (
+                  <button
+                    key={n}
+                    type="button"
+                    onClick={() => setVariantCount(n)}
+                    className={`w-7 h-7 rounded text-[11px] font-semibold transition-colors cursor-pointer ${
+                      variantCount === n
+                        ? 'bg-[#00FF88]/15 text-[#00FF88] border border-[#00FF88]/30'
+                        : 'bg-transparent text-gray-500 border border-white/[0.06] hover:border-white/[0.12]'
+                    }`}
+                  >
+                    {n}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Error */}
+          {error && (
+            <div className="text-[11px] text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-2.5 py-1.5">
+              {typeof error === 'string' ? error : error.message || 'Generation failed'}
+            </div>
           )}
-        </button>
+
+          {/* Generate button */}
+          <button
+            type="button"
+            onClick={handleGenerate}
+            disabled={!hasInput || generating}
+            className="w-full flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-semibold transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+            style={{
+              background: generating ? '#0a1a10' : 'linear-gradient(135deg, #00FF88, #00CC6A)',
+              color: generating ? '#00FF88' : '#000',
+              border: generating ? '1px solid #00FF8833' : 'none',
+            }}
+          >
+            {generating ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                <span className="text-xs">{generatingStep || 'Generating...'}</span>
+              </>
+            ) : (
+              <>
+                <Zap className="w-4 h-4" />
+                Generate {outputMode === 'clone' ? 'Clone' : `${variantCount} Variants`}
+              </>
+            )}
+          </button>
+        </div>
       </div>
 
-      {/* Right Panel - Output */}
+      {/* Right Panel — Output */}
       <div className="flex-1 overflow-y-auto p-6">
         {variants.length === 0 && !generating ? (
-          /* Empty State */
           <div className="flex flex-col items-center justify-center h-full max-w-lg mx-auto">
-            <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-purple-500/20 to-pink-500/20 flex items-center justify-center mb-6">
-              <FileText className="w-10 h-10 text-purple-400" />
+            <div className="w-20 h-20 rounded-2xl flex items-center justify-center mb-6" style={{ background: 'rgba(0,255,136,0.08)' }}>
+              <FileText className="w-10 h-10" style={{ color: '#00FF88' }} />
             </div>
             <h2 className="text-xl font-bold text-white mb-2">Ready to Create</h2>
-            <p className="text-slate-400 text-sm text-center mb-8">
-              Fill in the details on the left and hit Generate, or try one of these examples to get started.
+            <p className="text-gray-500 text-sm text-center">
+              Paste reference content, select your product, and hit Generate.
             </p>
-            <div className="w-full space-y-3">
-              {EXAMPLE_PROMPTS.map((prompt, i) => (
-                <button
-                  key={i}
-                  onClick={() => handlePromptClick(prompt)}
-                  className="w-full text-left p-4 bg-[#111] border border-white/[0.06] rounded-lg hover:border-purple-500/30 transition-colors group cursor-pointer"
-                >
-                  <div className="flex items-start justify-between">
-                    <div>
-                      <h3 className="text-sm font-medium text-white group-hover:text-purple-300 transition-colors">
-                        {prompt.title}
-                      </h3>
-                      <p className="text-xs text-slate-500 mt-1">{prompt.description}</p>
-                    </div>
-                    <ArrowRight className="w-4 h-4 text-slate-600 group-hover:text-purple-400 transition-colors mt-0.5" />
-                  </div>
-                </button>
-              ))}
-            </div>
           </div>
         ) : generating ? (
-          /* Loading State */
           <div className="flex flex-col items-center justify-center h-full">
-            <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-purple-500/20 to-pink-500/20 flex items-center justify-center mb-4 animate-pulse">
-              <Wand2 className="w-8 h-8 text-purple-400" />
+            <div className="w-16 h-16 rounded-2xl flex items-center justify-center mb-4 animate-pulse" style={{ background: 'rgba(0,255,136,0.1)' }}>
+              <Wand2 className="w-8 h-8" style={{ color: '#00FF88' }} />
             </div>
-            <h2 className="text-lg font-semibold text-white mb-1">Crafting your copy...</h2>
-            <p className="text-sm text-slate-400">AI is analyzing your reference and generating variants</p>
+            <h2 className="text-lg font-semibold text-white mb-1">Crafting your scripts...</h2>
+            <p className="text-sm text-gray-400">{generatingStep}</p>
             <div className="mt-6 flex gap-1">
               {[0, 1, 2].map((i) => (
-                <div
-                  key={i}
-                  className="w-2 h-2 rounded-full bg-purple-500 animate-bounce"
-                  style={{ animationDelay: `${i * 0.15}s` }}
-                />
+                <div key={i} className="w-2 h-2 rounded-full animate-bounce" style={{ background: '#00FF88', animationDelay: `${i * 0.15}s` }} />
               ))}
             </div>
           </div>
         ) : (
-          /* Results */
           <div>
             <div className="flex items-center justify-between mb-6">
               <h2 className="text-lg font-bold text-white">
-                Generated Copy
-                <span className="text-sm font-normal text-slate-400 ml-2">
+                Generated Scripts
+                <span className="text-sm font-normal text-gray-400 ml-2">
                   {variants.length} variant{variants.length !== 1 ? 's' : ''}
                 </span>
-                {aiSource && (
-                  <span className={`ml-3 text-xs font-medium px-2 py-0.5 rounded-full ${
-                    aiSource === 'mock'
-                      ? 'bg-yellow-500/20 text-yellow-400'
-                      : 'bg-green-500/20 text-green-400'
-                  }`}>
-                    {aiSource === 'mock' ? 'Mock Data' : `Powered by ${aiSource}`}
-                  </span>
-                )}
               </h2>
               <button
                 onClick={handleGenerate}
-                className="flex items-center gap-2 px-3 py-1.5 text-sm text-purple-400 hover:text-purple-300 bg-purple-500/10 rounded-lg transition-colors cursor-pointer"
+                className="flex items-center gap-2 px-3 py-1.5 text-sm rounded-lg transition-colors cursor-pointer"
+                style={{ color: '#00FF88', background: 'rgba(0,255,136,0.08)' }}
               >
                 <RefreshCw className="w-3.5 h-3.5" />
                 Regenerate All
@@ -458,43 +357,23 @@ export default function MagicWriter() {
             </div>
             <div className="space-y-4">
               {variants.map((variant, index) => (
-                <div
-                  key={variant.id}
-                  className="bg-[#111] border border-white/[0.06] rounded-lg overflow-hidden"
-                >
+                <div key={variant.id || index} className="bg-[#111] border border-white/[0.06] rounded-lg overflow-hidden">
                   <div className="flex items-center justify-between px-4 py-2.5 border-b border-white/[0.06] bg-white/[0.02]">
-                    <span className="text-xs font-medium text-slate-400">
+                    <span className="text-xs font-medium text-gray-400">
                       Variant {index + 1} of {variants.length}
                     </span>
-                    <div className="flex items-center gap-1">
-                      <button
-                        onClick={() => handleCopy(variant.text, index)}
-                        className="p-1.5 text-slate-400 hover:text-white rounded-md hover:bg-white/[0.06] transition-colors cursor-pointer"
-                        title="Copy to clipboard"
-                      >
-                        <Copy className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        className="p-1.5 text-slate-400 hover:text-white rounded-md hover:bg-white/[0.06] transition-colors cursor-pointer"
-                        title="Save to library"
-                      >
-                        <Save className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        onClick={() => handleRegenerate(index)}
-                        disabled={variant.regenerating}
-                        className="p-1.5 text-slate-400 hover:text-white rounded-md hover:bg-white/[0.06] transition-colors disabled:opacity-40 cursor-pointer"
-                        title="Regenerate this variant"
-                      >
-                        <RefreshCw className={`w-3.5 h-3.5 ${variant.regenerating ? 'animate-spin' : ''}`} />
-                      </button>
-                    </div>
+                    <button
+                      onClick={() => handleCopy(variant.text, index)}
+                      className="p-1.5 text-gray-400 hover:text-white rounded-md hover:bg-white/[0.06] transition-colors cursor-pointer"
+                    >
+                      <Copy className="w-3.5 h-3.5" />
+                    </button>
                   </div>
                   <div className="p-4">
                     {copiedIndex === index && (
-                      <div className="text-xs text-green-400 mb-2">Copied to clipboard!</div>
+                      <div className="text-xs mb-2" style={{ color: '#00FF88' }}>Copied to clipboard!</div>
                     )}
-                    <pre className="text-sm text-slate-300 whitespace-pre-wrap font-sans leading-relaxed">
+                    <pre className="text-sm text-gray-300 whitespace-pre-wrap font-sans leading-relaxed">
                       {variant.text}
                     </pre>
                   </div>
