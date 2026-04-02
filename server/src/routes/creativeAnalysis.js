@@ -253,10 +253,19 @@ function parseAdName(name) {
     const clean = pool.filter(s => s && !junkPattern.test(s) && !['-', 'NA', 'NN', 'na', 'nn'].includes(s));
 
     // Scan for known values
+    // Track all angle matches — if two known angles appear, first is avatar, second is angle
+    const angleMatches = [];
     for (const seg of clean) {
       if (!editor && knownHas(KNOWN_EDITORS, seg)) { editor = seg; continue; }
       if (!format && knownHas(KNOWN_FORMATS, seg)) { format = seg; continue; }
-      if (!angle && knownHas(KNOWN_ANGLES, seg)) { angle = seg; continue; }
+      if (knownHas(KNOWN_ANGLES, seg)) { angleMatches.push(seg); continue; }
+    }
+    if (angleMatches.length >= 2) {
+      // Convention: Avatar - Angle - Format → first match is avatar, second is angle
+      avatar = angleMatches[0];
+      angle = angleMatches[1];
+    } else if (angleMatches.length === 1) {
+      angle = angleMatches[0];
     }
 
     // Second pass: if angle still missing, check for two-word angles (adjacent segments)
