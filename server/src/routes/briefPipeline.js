@@ -887,7 +887,7 @@ async function pushBriefToClickUp(generatedBrief) {
   const hooksFormatted = parsedHooks
     .map(h => `${h.id || ''}\n${h.text || ''}`.trim())
     .join('\n\n');
-  const description = `Hooks:\n\n${hooksFormatted}\n\nBody:\n\n${body || ''}`;
+  const description = `Hooks:\n\n${hooksFormatted}\n\nBody:\n\n${body || ''}\n\n[brief-pipeline]`;
 
   // Resolve dropdown option IDs
   const angleUuid = ANGLE_OPTIONS[angle] || ANGLE_OPTIONS.NA;
@@ -975,21 +975,6 @@ async function pushBriefToClickUp(generatedBrief) {
   );
 
   await Promise.all(relationshipPromises);
-
-  // Wait for webhook to fire and process before re-setting the name
-  await new Promise(resolve => setTimeout(resolve, 3000));
-
-  // Re-set task name and naming convention field after webhook race window
-  await clickupFetch(`/task/${taskId}`, {
-    method: 'PUT',
-    body: JSON.stringify({ name: namingConvention }),
-  }).catch(err => console.error('[BriefPipeline] Name re-set error:', err.message));
-
-  // Also re-set the naming convention custom field so future webhook triggers keep it correct
-  await clickupFetch(`/task/${taskId}/field/${FIELD_IDS.namingConvention}`, {
-    method: 'POST',
-    body: JSON.stringify({ value: namingConvention }),
-  }).catch(err => console.error('[BriefPipeline] Naming convention field re-set error:', err.message));
 
   return {
     taskId,

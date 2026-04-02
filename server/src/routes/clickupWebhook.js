@@ -323,6 +323,9 @@ async function handleCustomFieldChanged(taskId) {
 
   if (!NAMING_LISTS.includes(listId)) return;
 
+  // Skip renaming for tasks created by the Brief Pipeline (they set their own naming)
+  if (task.description?.includes('[brief-pipeline]')) return;
+
   // Check if naming convention field already has a value (task was named before)
   const existingName = getFieldValue(task, FIELD_IDS.namingConvention);
   if (!existingName) return; // Only regenerate if it was previously generated
