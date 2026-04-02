@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import api from '../../services/api';
 import WinnerCard from './briefs/WinnerCard';
+import ScriptGeneratorPanel from './briefs/ScriptGeneratorPanel';
 import GeneratedBriefCard from './briefs/GeneratedBriefCard';
 import BriefDetailModal from './briefs/BriefDetailModal';
 import WinnerDetailModal from './briefs/WinnerDetailModal';
@@ -215,6 +216,49 @@ export default function BriefPipeline() {
     }
   }, [fetchGenerated]);
 
+  const [scriptGenerating, setScriptGenerating] = useState(false);
+  const [scriptGenStep, setScriptGenStep] = useState('');
+
+  const handleGenerateFromScript = useCallback(async (config) => {
+    setScriptGenerating(true);
+    setScriptGenStep('Analyzing script...');
+    let stepInterval;
+    try {
+      const stepMessages = [
+        'Analyzing script...',
+        'Running deep analysis (3 agents)...',
+        'Generating variations...',
+        'Scoring & validating...',
+        'Finalizing briefs...',
+      ];
+      let stepIdx = 0;
+      stepInterval = setInterval(() => {
+        stepIdx = Math.min(stepIdx + 1, stepMessages.length - 1);
+        setScriptGenStep(stepMessages[stepIdx]);
+      }, 4000);
+
+      await api.post('/brief-pipeline/generate-from-script', {
+        script: config.script,
+        url: config.url,
+        productCode: config.productCode,
+        angle: config.angle,
+        mode: config.mode === 'clone' ? 'clone' : 'variants',
+        numVariations: config.numVariations,
+      });
+      clearInterval(stepInterval);
+      await fetchGenerated();
+      await fetchWinners();
+    } catch (err) {
+      clearInterval(stepInterval);
+      const msg = err.response?.data?.error?.message || err.message || 'Generation failed';
+      setError(msg);
+      throw new Error(msg);
+    } finally {
+      setScriptGenerating(false);
+      setScriptGenStep('');
+    }
+  }, [fetchGenerated, fetchWinners]);
+
   const handlePush = useCallback(async (briefId) => {
     try {
       await api.post(`/brief-pipeline/generated/${briefId}/push`);
@@ -311,6 +355,15 @@ export default function BriefPipeline() {
                     {items.length}
                   </span>
                 </div>
+
+                {/* Script Generator Panel — only in Winning Ads column */}
+                {col.key === 'detected' && (
+                  <ScriptGeneratorPanel
+                    onGenerated={handleGenerateFromScript}
+                    generating={scriptGenerating}
+                    generatingStep={scriptGenStep}
+                  />
+                )}
 
                 {/* Card list */}
                 <div className="flex-1 overflow-y-auto pr-1 space-y-3 pb-4 custom-scrollbar">

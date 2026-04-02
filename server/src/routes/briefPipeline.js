@@ -1943,6 +1943,225 @@ router.post('/generate/:id', authenticate, async (req, res) => {
   }
 });
 
+// POST /generate-from-script — Generate briefs from manually pasted/URL script
+router.post('/generate-from-script', authenticate, async (req, res) => {
+  try {
+    await ensureTables();
+    const { script, url, productId, productCode, angle, mode, numVariations = 3 } = req.body;
+
+    let rawScript = script || '';
+
+    // URL mode: fetch and extract text
+    if (url && !rawScript) {
+      try {
+        const fetchRes = await fetch(url, {
+          headers: { 'User-Agent': 'Mozilla/5.0 (compatible; MineblockBot/1.0)' },
+          redirect: 'follow',
+          signal: AbortSignal.timeout(15000),
+        });
+        const html = await fetchRes.text();
+        // Use Claude to extract the ad copy from the HTML
+        const extracted = await callClaude(
+          'You are a text extraction tool. Extract the main ad copy, sales text, or script from this webpage HTML. Return ONLY the extracted text, no commentary.',
+          `Extract the main ad copy or script text from this HTML. If it contains a video ad script, transcribe it. Return only the clean text.\n\nHTML (first 15000 chars):\n${html.slice(0, 15000)}`,
+          2000,
+        );
+        rawScript = typeof extracted === 'object' ? (extracted.text || JSON.stringify(extracted)) : String(extracted);
+      } catch (urlErr) {
+        return res.status(400).json({ success: false, error: { message: `Failed to fetch URL: ${urlErr.message}` } });
+      }
+    }
+
+    if (!rawScript || rawScript.length < 20) {
+      return res.status(400).json({ success: false, error: { message: 'Script text is required (minimum 20 characters).' } });
+    }
+
+    console.log(`[BriefPipeline] generate-from-script: ${rawScript.length} chars, ${numVariations} variants`);
+
+    // Create a virtual winner record
+    const creativeId = `MANUAL-${Date.now().toString(36).toUpperCase()}`;
+    const insertedWinner = await pgQuery(`
+      INSERT INTO brief_pipeline_winners (
+        creative_id, ad_name, product_code, angle, format, raw_script,
+        status, spend, roas, cpa, ctr, purchases, winner_reason
+      ) VALUES ($1, $2, $3, $4, $5, $6, 'generating', 0, 0, 0, 0, 0, 'manual')
+      RETURNING *
+    `, [
+      creativeId,
+      `Manual script — ${rawScript.slice(0, 50)}...`,
+      productCode || 'MR',
+      angle || 'NA',
+      'Mashup',
+      rawScript,
+    ]);
+    const winner = insertedWinner[0];
+
+    // Step 4: Parse script
+    console.log(`[BriefPipeline] Parsing manual script`);
+    const { system: parseSystem, user: parseUser } = buildScriptParserPrompt(rawScript, creativeId);
+    let parsedScript = await callClaude(parseSystem, parseUser, 2000);
+    if (!parsedScript || (!parsedScript.hooks?.length && !parsedScript.body?.trim())) {
+      parsedScript = { hooks: [], body: rawScript, cta: '', format_notes: '' };
+    }
+    await pgQuery(`UPDATE brief_pipeline_winners SET parsed_script = $1 WHERE id = $2`, [JSON.stringify(parsedScript), winner.id]);
+
+    // Step 5: Product + Deep analysis
+    const productProfile = await fetchProductProfile(productCode || 'MR');
+    const productContext = buildProductContextForBrief(productProfile);
+
+    const { dnaPrompt, psychologyPrompt, rulesPrompt } = buildDeepAnalysisPrompts(winner, parsedScript, productContext);
+    const [scriptDna, psychology, iterationRules] = await Promise.all([
+      callClaude(dnaPrompt.system, dnaPrompt.user, 4096),
+      callClaude(psychologyPrompt.system, psychologyPrompt.user, 4096),
+      callClaude(rulesPrompt.system, rulesPrompt.user, 4096),
+    ]);
+    const winAnalysis = { scriptDna, psychology, iterationRules };
+
+    // Cache analysis
+    const scriptHash = crypto.createHash('md5').update(rawScript).digest('hex');
+    await pgQuery(
+      `INSERT INTO brief_pipeline_analysis_cache (creative_id, script_hash, win_analysis)
+       VALUES ($1, $2, $3) ON CONFLICT (creative_id) DO UPDATE SET script_hash = $2, win_analysis = $3, analyzed_at = NOW()`,
+      [creativeId, scriptHash, JSON.stringify(winAnalysis)]
+    );
+
+    // Step 6: Build directions
+    const safeDirections = iterationRules?.safe_iteration_directions || [];
+    const config = { mode: mode === 'clone' ? 'hook_only' : 'hook_body', aggressiveness: 'medium', num_variations: numVariations, fixed_elements: [] };
+    const directions = [];
+    for (let i = 0; i < numVariations; i++) {
+      const dirText = safeDirections[i] || `Variation ${i + 1}: Fresh creative approach`;
+      directions.push({
+        id: i + 1,
+        name: `Direction ${i + 1}`,
+        description: dirText,
+        what_changes: dirText,
+        what_stays: (iterationRules?.must_stay_fixed || []).slice(0, 3).join('; ') || 'Core angle and mechanism',
+        hook_direction: `Variation ${i + 1} of ${numVariations}`,
+        body_direction: mode === 'clone' ? 'Keep body nearly identical — only change product references' : dirText,
+        emotional_shift: psychology?.emotional_arc
+          ? `${psychology.emotional_arc?.at_hook || '?'} → ${psychology.emotional_arc?.final_state || '?'}`
+          : 'Maintain original arc',
+      });
+    }
+
+    // Step 7: Generate in parallel
+    const provenScripts = productProfile?.scripts;
+    const styleRef = Array.isArray(provenScripts) && provenScripts.length
+      ? provenScripts.slice(0, 2).map((s, i) => `STYLE REF ${i + 1}: ${typeof s === 'string' ? s.slice(0, 300) : (s.text || s.body || JSON.stringify(s)).slice(0, 300)}`).join('\n\n')
+      : '';
+
+    let nextBriefNum = await getNextBriefNumber();
+
+    const generationResults = await Promise.all(directions.map(async (direction) => {
+      try {
+        const { system: genSystem, user: genUser } = buildBriefGeneratorPrompt(parsedScript, winAnalysis, direction, config, productContext);
+        let enhancedUser = genUser;
+        if (styleRef) enhancedUser += `\n\n# STYLE REFERENCE\n${styleRef}`;
+        enhancedUser += `\n\n# VARIATION IDENTITY\nThis is variation ${direction.id} of ${directions.length}. Be COMPLETELY UNIQUE.`;
+
+        const generated = await callClaude(genSystem, enhancedUser, 3000);
+        if (!generated || (!generated.hooks && !generated.body)) throw new Error('Invalid response');
+        if (!Array.isArray(generated.hooks)) generated.hooks = [];
+        if (!generated.body) generated.body = '';
+
+        // Score + blend in parallel
+        const { system: blendSystem, user: blendUser } = buildBlendValidationPrompt(generated);
+        const { system: scoreSystem, user: scoreUser } = buildBriefScorerPrompt(winner, parsedScript, generated, direction.name, winAnalysis, productContext);
+
+        let blendResult = null;
+        let scores = { novelty: { score: 5 }, aggression: { score: 5 }, coherence: { score: 5 }, hook_body_blend: { score: 5 }, conversion_potential: { score: 5 } };
+        try {
+          const [br, sc] = await Promise.all([
+            callClaude(blendSystem, blendUser, 1000, { fast: true }),
+            callClaude(scoreSystem, scoreUser, 1500),
+          ]);
+          blendResult = br;
+          if (sc) scores = sc;
+        } catch {}
+
+        if (blendResult?.overall_blend != null) {
+          scores.hook_body_blend = scores.hook_body_blend || {};
+          scores.hook_body_blend.blend_validation = blendResult;
+        }
+
+        const overall = scores.overall ?? (
+          ((scores.novelty?.score ?? 5) * 0.15) +
+          ((scores.aggression?.score ?? 5) * 0.15) +
+          ((scores.coherence?.score ?? 5) * 0.25) +
+          ((scores.hook_body_blend?.score ?? 5) * 0.15) +
+          ((scores.conversion_potential?.score ?? 5) * 0.30)
+        );
+
+        return { generated, scores, overall, direction, success: true };
+      } catch (err) {
+        console.error(`[BriefPipeline] generate-from-script direction #${direction.id}:`, err.message);
+        return { direction, success: false };
+      }
+    }));
+
+    // Save results
+    const generatedBriefs = [];
+    for (const result of generationResults) {
+      if (!result.success) continue;
+      const { generated, scores, overall, direction } = result;
+      const briefNumber = nextBriefNum++;
+      const weekLabel = getCurrentWeekLabel();
+      const namingConvention = buildNamingConvention({
+        product_code: productCode || 'MR', brief_number: briefNumber,
+        parent_creative_id: creativeId, avatar: 'NA', angle: angle || 'NA',
+        format: 'Mashup', strategist: 'Ludovico', creator: 'NA', editor: 'Antoni', week: weekLabel,
+      });
+
+      try {
+        const inserted = await pgQuery(`
+          INSERT INTO brief_pipeline_generated (
+            winner_id, parent_creative_id, iteration_mode, aggressiveness,
+            win_analysis, hooks, body, iteration_direction,
+            novelty_score, aggression_score, coherence_score, overall_score,
+            verdict, scores_json,
+            brief_number, product_code, angle, format, avatar, editor,
+            strategist, creator, naming_convention, status
+          ) VALUES (
+            $1, $2, $3, $4, $5, $6, $7, $8,
+            $9, $10, $11, $12, $13, $14,
+            $15, $16, $17, $18, $19, $20,
+            $21, $22, $23, 'generated'
+          ) RETURNING *
+        `, [
+          winner.id, creativeId, config.mode, 'medium',
+          JSON.stringify(winAnalysis), JSON.stringify(generated.hooks), generated.body,
+          `${direction.name}: ${direction.description}`,
+          scores.novelty?.score || 5, scores.aggression?.score || 5,
+          scores.coherence?.score || 5, overall,
+          scores.verdict || 'MAYBE', JSON.stringify(scores),
+          briefNumber, productCode || 'MR', angle || 'NA', 'Mashup',
+          'NA', 'Antoni', 'Ludovico', 'NA', namingConvention,
+        ], { timeout: 10000 });
+        generatedBriefs.push({ ...inserted[0], scores, direction });
+      } catch (dbErr) {
+        console.error(`[BriefPipeline] DB error:`, dbErr.message);
+      }
+    }
+
+    // Rank
+    generatedBriefs.sort((a, b) => (b.overall_score || 0) - (a.overall_score || 0));
+    for (let i = 0; i < generatedBriefs.length; i++) {
+      generatedBriefs[i].rank = i + 1;
+      await pgQuery(`UPDATE brief_pipeline_generated SET rank = $1 WHERE id = $2`, [i + 1, generatedBriefs[i].id]);
+    }
+
+    // Mark virtual winner as detected (keeps it in the winning ads column)
+    await pgQuery(`UPDATE brief_pipeline_winners SET status = 'detected' WHERE id = $1`, [winner.id]);
+
+    console.log(`[BriefPipeline] generate-from-script complete: ${generatedBriefs.length} briefs`);
+    res.json({ success: true, creative_id: creativeId, briefs_generated: generatedBriefs.length, briefs: generatedBriefs });
+  } catch (err) {
+    console.error('[BriefPipeline] generate-from-script error:', err.message);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
 // GET /generated — list all generated briefs
 router.get('/generated', authenticate, async (_req, res) => {
   try {
