@@ -6,7 +6,6 @@ import {
   CheckCircle2,
   Sparkles,
   Trophy,
-  Target,
   Rocket,
   ExternalLink,
 } from 'lucide-react';
@@ -14,7 +13,6 @@ import api from '../../services/api';
 import WinnerCard from './briefs/WinnerCard';
 import GeneratedBriefCard from './briefs/GeneratedBriefCard';
 import BriefDetailModal from './briefs/BriefDetailModal';
-import IterationConfigPanel from './briefs/IterationConfigPanel';
 import WinnerDetailModal from './briefs/WinnerDetailModal';
 
 // ---------------------------------------------------------------------------
@@ -29,14 +27,6 @@ const COLUMNS = [
     badgeBg: 'bg-amber-500/20',
     badgeText: 'text-amber-300',
     headerBorder: 'border-amber-500/40',
-  },
-  {
-    key: 'selected',
-    label: 'In Queue',
-    icon: Target,
-    badgeBg: 'bg-blue-500/20',
-    badgeText: 'text-blue-300',
-    headerBorder: 'border-blue-500/40',
   },
   {
     key: 'generated',
@@ -94,8 +84,6 @@ export default function BriefPipeline() {
   const [generatingStep, setGeneratingStep] = useState('');
 
   // UI state
-  const [selectedWinner, setSelectedWinner] = useState(null);
-  const [configPanel, setConfigPanel] = useState(false);
   const [detailModal, setDetailModal] = useState(null);
   const [winnerDetail, setWinnerDetail] = useState(null);
   const [error, setError] = useState(null);
@@ -165,19 +153,7 @@ export default function BriefPipeline() {
     }
   }, [fetchWinners]);
 
-  const handleSelect = useCallback(async (winnerId, config) => {
-    try {
-      await api.post(`/brief-pipeline/winners/${winnerId}/select`, config);
-      setConfigPanel(false);
-      setSelectedWinner(null);
-      await fetchWinners();
-    } catch (err) {
-      console.error('Select failed:', err);
-      setError('Failed to select winner.');
-    }
-  }, [fetchWinners]);
-
-  const handleGenerate = useCallback(async (winnerId) => {
+  const handleGenerate = useCallback(async (winnerId, config) => {
     setGenerating(true);
     setGeneratingId(winnerId);
     setGeneratingStep('Analyzing winning ad...');
@@ -196,7 +172,7 @@ export default function BriefPipeline() {
         setGeneratingStep(stepMessages[stepIdx]);
       }, 3000);
 
-      await api.post(`/brief-pipeline/generate/${winnerId}`);
+      await api.post(`/brief-pipeline/generate/${winnerId}`, config || {});
       clearInterval(stepInterval);
       await fetchGenerated();
       await fetchWinners();
@@ -229,6 +205,16 @@ export default function BriefPipeline() {
     }
   }, [fetchGenerated]);
 
+  const handleSaveBrief = useCallback(async (briefId, updates) => {
+    try {
+      await api.patch(`/brief-pipeline/generated/${briefId}`, updates);
+      await fetchGenerated();
+      setDetailModal(prev => prev ? { ...prev, ...updates } : null);
+    } catch (err) {
+      setError('Failed to save brief changes.');
+    }
+  }, [fetchGenerated]);
+
   const handlePush = useCallback(async (briefId) => {
     try {
       await api.post(`/brief-pipeline/generated/${briefId}/push`);
@@ -244,22 +230,10 @@ export default function BriefPipeline() {
   // ---------------------------------------------------------------------------
 
   const buckets = useMemo(() => {
-    const map = {
-      detected: [],
-      selected: [],
-      generated: [],
-      approved: [],
-      pushed: [],
-    };
+    const map = { detected: [], generated: [], approved: [], pushed: [] };
 
-    // Winners go into detected or selected (generating/generated stay in selected)
-    for (const w of winners) {
-      if (w.status === 'selected' || w.status === 'generating' || w.status === 'generated') {
-        map.selected.push(w);
-      } else {
-        map.detected.push(w);
-      }
-    }
+    // All winners go to detected
+    for (const w of winners) map.detected.push(w);
 
     // Generated briefs go into generated, approved, or pushed
     for (const b of generated) {
@@ -357,20 +331,7 @@ export default function BriefPipeline() {
                         );
                       }
 
-                      // Column 2: Selected
-                      if (col.key === 'selected') {
-                        return (
-                          <WinnerCard
-                            key={item.id}
-                            winner={item}
-                            onSelect={() => handleViewWinner(item)}
-                            showGenerate
-                            onGenerate={() => handleGenerate(item.id)}
-                          />
-                        );
-                      }
-
-                      // Column 3: Generated
+                      // Column 2: Generated
                       if (col.key === 'generated') {
                         return (
                           <GeneratedBriefCard
@@ -465,24 +426,11 @@ export default function BriefPipeline() {
           winner={winnerDetail}
           isOpen={!!winnerDetail}
           onClose={() => setWinnerDetail(null)}
-          onSelect={(w) => {
+          onGenerate={(winnerId, config) => {
             setWinnerDetail(null);
-            setSelectedWinner(w);
-            setConfigPanel(true);
+            handleGenerate(winnerId, config);
           }}
-        />
-      )}
-
-      {/* Iteration Config Panel (sidebar) */}
-      {configPanel && selectedWinner && (
-        <IterationConfigPanel
-          winner={selectedWinner}
-          isOpen={configPanel}
-          onClose={() => {
-            setConfigPanel(false);
-            setSelectedWinner(null);
-          }}
-          onSubmit={(config) => handleSelect(selectedWinner.id, config)}
+          generating={generating}
         />
       )}
 
@@ -493,6 +441,8 @@ export default function BriefPipeline() {
           isOpen={!!detailModal}
           onClose={() => setDetailModal(null)}
           winAnalysis={detailModal.win_analysis}
+          onSave={handleSaveBrief}
+          originalScript={detailModal?.original_script}
           onApprove={() => {
             handleApprove(detailModal.id);
             setDetailModal(null);

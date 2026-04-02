@@ -75,6 +75,26 @@ function GeneratedBriefCard({ brief, onApprove, onReject, onPush, onClick, showA
           </p>
         )}
 
+        {/* Original script preview */}
+        {brief.original_script && (() => {
+          const origHooks = (() => {
+            if (!brief.original_script) return [];
+            let obj = brief.original_script;
+            if (typeof obj === 'string') { try { obj = JSON.parse(obj); } catch { return []; } }
+            if (Array.isArray(obj.hooks)) return obj.hooks;
+            if (Array.isArray(obj)) return obj;
+            return [];
+          })();
+          const firstOrigHook = origHooks[0]?.text;
+          if (!firstOrigHook) return null;
+          return (
+            <div className="text-[10px] text-gray-500 border-l-2 border-gray-700 pl-2 line-clamp-2">
+              <span className="text-gray-600 font-medium">Original: </span>
+              {firstOrigHook.length > 60 ? firstOrigHook.slice(0, 60) + '...' : firstOrigHook}
+            </div>
+          );
+        })()}
+
         {/* Score bars */}
         <div className="space-y-1 pt-1">
           {SCORE_BARS.map(({ key, label, icon: Icon }) => {

@@ -207,7 +207,7 @@ async function ensureTables() {
 
     // Recover any winners stuck in 'generating' from a previous crash
     const stuck = await pgQuery(
-      `UPDATE brief_pipeline_winners SET status = 'selected' WHERE status = 'generating' RETURNING creative_id`
+      `UPDATE brief_pipeline_winners SET status = 'detected' WHERE status = 'generating' RETURNING creative_id`
     ).catch(() => []);
     if (stuck.length) {
       console.log(`[BriefPipeline] Recovered ${stuck.length} stuck winners: ${stuck.map(r => r.creative_id).join(', ')}`);
@@ -1318,20 +1318,17 @@ router.post('/generate/:id', authenticate, async (req, res) => {
     const fixed_elements = body.fixed_elements || savedConfig.fixed_elements || [];
     const configEditor = body.editor || savedConfig.editor || null;
 
-    // Guard: only allow generation from 'selected' status
+    // Guard: only allow generation from 'detected' or 'selected' status
     if (winner.status === 'generating') {
       return res.status(409).json({ success: false, error: { message: 'Generation already in progress for this winner.' } });
     }
-    if (winner.status === 'generated') {
-      return res.status(409).json({ success: false, error: { message: 'Briefs already generated for this winner.' } });
-    }
-    if (winner.status !== 'selected') {
-      return res.status(400).json({ success: false, error: { message: `Winner must be in "selected" status to generate. Current status: "${winner.status}".` } });
+    if (!['detected', 'selected'].includes(winner.status)) {
+      return res.status(400).json({ success: false, error: { message: `Winner must be in "detected" or "selected" status to generate. Current status: "${winner.status}".` } });
     }
 
-    // Update status to generating (atomic check — only from 'selected')
+    // Update status to generating (atomic check — only from 'detected' or 'selected')
     const updated = await pgQuery(
-      `UPDATE brief_pipeline_winners SET status = 'generating' WHERE id = $1 AND status = 'selected' RETURNING id`,
+      `UPDATE brief_pipeline_winners SET status = 'generating' WHERE id = $1 AND status IN ('detected', 'selected') RETURNING id`,
       [winner.id]
     );
     if (!updated.length) {
@@ -1355,7 +1352,7 @@ router.post('/generate/:id', authenticate, async (req, res) => {
     }
 
     if (!winner.raw_script) {
-      await pgQuery(`UPDATE brief_pipeline_winners SET status = 'selected' WHERE id = $1`, [winner.id]);
+      await pgQuery(`UPDATE brief_pipeline_winners SET status = 'detected' WHERE id = $1`, [winner.id]);
       return res.status(400).json({
         success: false,
         error: { message: 'No script available. Ensure the winner has a ClickUp task with a script in the description.' },
@@ -1497,9 +1494,9 @@ router.post('/generate/:id', authenticate, async (req, res) => {
       );
     }
 
-    // Update winner status
+    // Reset winner status back to detected so it stays in Winning Ads column
     await pgQuery(
-      `UPDATE brief_pipeline_winners SET status = 'generated' WHERE id = $1`,
+      `UPDATE brief_pipeline_winners SET status = 'detected' WHERE id = $1`,
       [winner.id]
     );
 
@@ -1516,7 +1513,7 @@ router.post('/generate/:id', authenticate, async (req, res) => {
     console.error('[BriefPipeline] POST /generate/:id error:', err.message);
     // Reset status on failure
     await pgQuery(
-      `UPDATE brief_pipeline_winners SET status = 'selected' WHERE id = $1`,
+      `UPDATE brief_pipeline_winners SET status = 'detected' WHERE id = $1`,
       [req.params.id]
     ).catch(() => {});
     res.status(500).json({ success: false, error: { message: err.message } });
@@ -1528,7 +1525,11 @@ router.get('/generated', authenticate, async (_req, res) => {
   try {
     await ensureTables();
     const rows = await pgQuery(
-      `SELECT * FROM brief_pipeline_generated WHERE status != 'rejected' ORDER BY overall_score DESC, created_at DESC`
+      `SELECT g.*, w.parsed_script AS original_script, w.raw_script AS original_raw_script
+       FROM brief_pipeline_generated g
+       LEFT JOIN brief_pipeline_winners w ON g.winner_id = w.id
+       WHERE g.status != 'rejected'
+       ORDER BY g.overall_score DESC, g.created_at DESC`
     );
     res.json({ success: true, briefs: rows });
   } catch (err) {
@@ -1543,7 +1544,10 @@ router.get('/generated/:id', authenticate, async (req, res) => {
   try {
     await ensureTables();
     const rows = await pgQuery(
-      `SELECT * FROM brief_pipeline_generated WHERE id = $1`,
+      `SELECT g.*, w.parsed_script AS original_script, w.raw_script AS original_raw_script
+       FROM brief_pipeline_generated g
+       LEFT JOIN brief_pipeline_winners w ON g.winner_id = w.id
+       WHERE g.id = $1`,
       [req.params.id]
     );
     if (!rows.length) {
@@ -1561,17 +1565,34 @@ router.patch('/generated/:id', authenticate, async (req, res) => {
   if (!validateUuid(req, res)) return;
   try {
     await ensureTables();
-    const { status } = req.body;
+    const reqBody = req.body || {};
+    const { status: newStatus, hooks, body: briefBody } = reqBody;
 
-    if (!['approved', 'rejected'].includes(status)) {
+    // If content edit (hooks/body) - handle this BEFORE status change
+    if (hooks !== undefined || briefBody !== undefined) {
+      const setClauses = [];
+      const params = [];
+      let idx = 1;
+      if (hooks !== undefined) { setClauses.push(`hooks = $${idx++}`); params.push(JSON.stringify(hooks)); }
+      if (briefBody !== undefined) { setClauses.push(`body = $${idx++}`); params.push(briefBody); }
+      params.push(req.params.id);
+      const rows = await pgQuery(
+        `UPDATE brief_pipeline_generated SET ${setClauses.join(', ')} WHERE id = $${idx} RETURNING *`,
+        params
+      );
+      if (!rows.length) return res.status(404).json({ success: false, error: { message: 'Brief not found' } });
+      if (!newStatus) return res.json({ success: true, brief: rows[0] });
+    }
+
+    if (!['approved', 'rejected'].includes(newStatus)) {
       return res.status(400).json({ success: false, error: { message: 'Status must be "approved" or "rejected"' } });
     }
 
     // Only allow transitions from 'generated' status
-    const extra = status === 'approved' ? ', approved_at = NOW()' : '';
+    const extra = newStatus === 'approved' ? ', approved_at = NOW()' : '';
     const rows = await pgQuery(
       `UPDATE brief_pipeline_generated SET status = $1${extra} WHERE id = $2 AND status = 'generated' RETURNING *`,
-      [status, req.params.id]
+      [newStatus, req.params.id]
     );
 
     if (!rows.length) {
@@ -1589,6 +1610,88 @@ router.patch('/generated/:id', authenticate, async (req, res) => {
     res.json({ success: true, brief: rows[0] });
   } catch (err) {
     console.error('[BriefPipeline] PATCH /generated/:id error:', err.message);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// POST /generated/:id/enhance — AI enhancement endpoint
+router.post('/generated/:id/enhance', authenticate, async (req, res) => {
+  if (!validateUuid(req, res)) return;
+  try {
+    const { instruction, currentHooks, currentBody } = req.body || {};
+
+    if (!instruction?.trim()) {
+      return res.status(400).json({ success: false, error: { message: 'Instruction is required' } });
+    }
+
+    // Verify brief exists
+    const rows = await pgQuery(`SELECT * FROM brief_pipeline_generated WHERE id = $1`, [req.params.id]);
+    if (!rows.length) return res.status(404).json({ success: false, error: { message: 'Brief not found' } });
+
+    const hooksFormatted = (currentHooks || []).map((h, i) => `Hook ${i+1}: ${h.text}${h.mechanism ? ` [${h.mechanism}]` : ''}`).join('\n');
+
+    const response = await fetch(CLAUDE_API_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: CLAUDE_MODEL,
+        max_tokens: 3000,
+        messages: [{
+          role: 'user',
+          content: `You are an elite direct response copywriter editing an existing ad brief.
+
+CURRENT BRIEF:
+--- Hooks ---
+${hooksFormatted}
+
+--- Body ---
+${currentBody || '(no body)'}
+
+USER INSTRUCTION: ${instruction}
+
+Apply the instruction and return the COMPLETE updated brief as JSON (no markdown, no code fences, just raw JSON):
+{
+  "hooks": [
+    { "id": "H1", "text": "...", "mechanism": "..." },
+    { "id": "H2", "text": "...", "mechanism": "..." }
+  ],
+  "body": "the complete updated body text"
+}
+
+RULES:
+- Apply ONLY what the user asked for
+- Keep everything else unchanged
+- If asked to add a hook, add it as the next number
+- If asked to change a specific hook, change ONLY that hook
+- Return ALL hooks and the full body, not just changes
+- Preserve the ad's tone and style`
+        }],
+      }),
+    });
+
+    const data = await response.json();
+    const text = data.content?.[0]?.text || '';
+
+    // Parse JSON from response
+    let enhanced;
+    try {
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      enhanced = jsonMatch ? JSON.parse(jsonMatch[0]) : JSON.parse(text);
+    } catch (parseErr) {
+      return res.status(500).json({ success: false, error: { message: 'Failed to parse AI response' } });
+    }
+
+    res.json({
+      success: true,
+      hooks: enhanced.hooks || currentHooks,
+      body: enhanced.body || currentBody,
+    });
+  } catch (err) {
+    console.error('[BriefPipeline] POST /generated/:id/enhance error:', err.message);
     res.status(500).json({ success: false, error: { message: err.message } });
   }
 });

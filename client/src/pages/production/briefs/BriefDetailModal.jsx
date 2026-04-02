@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   X,
   Check,
@@ -10,7 +10,11 @@ import {
   Zap,
   Target,
   Shield,
+  Loader2,
+  Sparkles,
+  Save,
 } from 'lucide-react';
+import api from '../../../services/api';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -78,9 +82,30 @@ export default function BriefDetailModal({
   onApprove,
   onReject,
   onPush,
+  onSave,
+  originalScript,
   winAnalysis,
 }) {
   const [winAnalysisOpen, setWinAnalysisOpen] = useState(false);
+  const [editableHooks, setEditableHooks] = useState([]);
+  const [editableBody, setEditableBody] = useState('');
+  const [hasChanges, setHasChanges] = useState(false);
+  const [enhancePrompt, setEnhancePrompt] = useState('');
+  const [enhancing, setEnhancing] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  // Initialize editable state (must be before early return to satisfy rules of hooks)
+  useEffect(() => {
+    if (!brief) return;
+    const parsedHooks = (() => {
+      if (Array.isArray(brief.hooks)) return brief.hooks;
+      if (typeof brief.hooks === 'string') { try { return JSON.parse(brief.hooks); } catch { return []; } }
+      return [];
+    })();
+    setEditableHooks(parsedHooks);
+    setEditableBody(brief.body || '');
+    setHasChanges(false);
+  }, [brief?.id]);
 
   if (!isOpen || !brief) return null;
 
@@ -97,6 +122,42 @@ export default function BriefDetailModal({
     if (typeof brief.hooks === 'string') { try { return JSON.parse(brief.hooks); } catch { return []; } }
     return [];
   })();
+
+  // Parse original script
+  const originalHooks = (() => {
+    if (!originalScript) return [];
+    let obj = originalScript;
+    if (typeof obj === 'string') { try { obj = JSON.parse(obj); } catch { return []; } }
+    if (Array.isArray(obj.hooks)) return obj.hooks;
+    if (Array.isArray(obj)) return obj;
+    return [];
+  })();
+
+  const originalBody = (() => {
+    if (!originalScript) return null;
+    let obj = originalScript;
+    if (typeof obj === 'string') { try { obj = JSON.parse(obj); } catch { return null; } }
+    return obj.body || obj.script || obj.text || null;
+  })();
+
+  const handleEnhance = async () => {
+    setEnhancing(true);
+    try {
+      const { data } = await api.post(`/brief-pipeline/generated/${brief.id}/enhance`, {
+        instruction: enhancePrompt,
+        currentHooks: editableHooks,
+        currentBody: editableBody,
+      });
+      if (data.hooks) setEditableHooks(data.hooks);
+      if (data.body) setEditableBody(data.body);
+      setHasChanges(true);
+      setEnhancePrompt('');
+    } catch (err) {
+      console.error('Enhance failed:', err);
+    } finally {
+      setEnhancing(false);
+    }
+  };
 
   // Safely parse winAnalysis if it's a JSON string
   const parsedWinAnalysis = (() => {
@@ -165,29 +226,96 @@ export default function BriefDetailModal({
             </div>
           )}
 
-          {/* Hooks */}
-          {hooks.length > 0 && (
+          {/* Original Script (collapsible) */}
+          {(originalHooks.length > 0 || originalBody) && (
+            <div>
+              <SectionLabel>Original Script</SectionLabel>
+              <div className="p-3 bg-white/[0.02] border border-white/[0.06] border-l-2 border-l-slate-600 rounded-lg space-y-2 opacity-70">
+                {originalHooks.map((hook, i) => (
+                  <div key={i} className="text-xs text-slate-500 leading-relaxed">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-600 mr-1.5">H{i + 1}</span>
+                    {typeof hook === 'string' ? hook : hook.text}
+                  </div>
+                ))}
+                {originalBody && (
+                  <p className="text-xs text-slate-500 leading-relaxed whitespace-pre-line mt-1">{originalBody}</p>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Hooks (editable) */}
+          {editableHooks.length > 0 && (
             <div>
               <SectionLabel>Hooks</SectionLabel>
               <div className="space-y-2">
-                {hooks.map((hook, i) => (
-                  <HookCard key={hook.id || i} hook={hook} index={i} />
+                {editableHooks.map((hook, i) => (
+                  <div key={hook.id || i} className="p-3 bg-white/[0.03] border border-white/[0.06] rounded-lg space-y-1.5">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded">
+                        H{i + 1}
+                      </span>
+                      {hook.mechanism && (
+                        <span className="text-[10px] text-slate-500 bg-white/[0.04] px-2 py-0.5 rounded">
+                          {hook.mechanism}
+                        </span>
+                      )}
+                    </div>
+                    <textarea
+                      value={hook.text || ''}
+                      onChange={(e) => {
+                        const updated = [...editableHooks];
+                        updated[i] = { ...updated[i], text: e.target.value };
+                        setEditableHooks(updated);
+                        setHasChanges(true);
+                      }}
+                      className="w-full bg-transparent text-sm text-slate-300 leading-relaxed resize-none focus:outline-none border-0 p-0"
+                      rows={3}
+                    />
+                  </div>
                 ))}
               </div>
             </div>
           )}
 
-          {/* Body */}
-          {brief.body && (
+          {/* Body (editable) */}
+          {(editableBody || brief.body) && (
             <div>
               <SectionLabel>Body</SectionLabel>
-              <div className="max-h-80 overflow-y-auto p-4 bg-white/[0.03] border border-white/[0.06] rounded-lg">
-                <p className="text-sm text-slate-300 leading-relaxed whitespace-pre-line">
-                  {brief.body}
-                </p>
+              <div className="p-4 bg-white/[0.03] border border-white/[0.06] rounded-lg">
+                <textarea
+                  value={editableBody}
+                  onChange={(e) => { setEditableBody(e.target.value); setHasChanges(true); }}
+                  className="w-full bg-transparent text-sm text-slate-300 leading-relaxed resize-none focus:outline-none"
+                  rows={10}
+                />
               </div>
             </div>
           )}
+
+          {/* Enhance with AI */}
+          <div className="space-y-2">
+            <SectionLabel>Enhance with AI</SectionLabel>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={enhancePrompt}
+                onChange={(e) => setEnhancePrompt(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && !enhancing && enhancePrompt.trim() && handleEnhance()}
+                placeholder="e.g. 'add a hook about scarcity' or 'make hook 1 more aggressive'"
+                className="flex-1 bg-white/[0.03] border border-white/[0.06] rounded-lg px-3 py-2 text-sm text-slate-300 placeholder-slate-600 focus:border-purple-500/50 focus:outline-none"
+              />
+              <button
+                type="button"
+                onClick={handleEnhance}
+                disabled={enhancing || !enhancePrompt.trim()}
+                className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-purple-600 text-sm font-medium text-white hover:bg-purple-500 transition-colors disabled:opacity-40 cursor-pointer shrink-0"
+              >
+                {enhancing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+                Enhance
+              </button>
+            </div>
+          </div>
 
           {/* Win Analysis */}
           {parsedWinAnalysis && (
@@ -266,6 +394,26 @@ export default function BriefDetailModal({
         {/* Action buttons — pinned to bottom */}
         {/* --------------------------------------------------------------- */}
         <div className="px-6 py-4 border-t border-white/[0.06] space-y-2 shrink-0">
+          {hasChanges && (
+            <button
+              type="button"
+              onClick={async () => {
+                setSaving(true);
+                try {
+                  await onSave?.(brief.id, { hooks: editableHooks, body: editableBody });
+                  setHasChanges(false);
+                } finally {
+                  setSaving(false);
+                }
+              }}
+              disabled={saving}
+              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-blue-600 text-sm font-medium text-white hover:bg-blue-500 transition-colors cursor-pointer disabled:opacity-40"
+            >
+              {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+              Save Changes
+            </button>
+          )}
+
           {status === 'generated' && (
             <>
               <button

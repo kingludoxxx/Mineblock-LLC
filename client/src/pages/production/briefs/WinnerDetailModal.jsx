@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { X, Check, Play, Film } from 'lucide-react';
+import { X, Play, Film, Loader2, Sparkles } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -173,7 +173,53 @@ function VideoPreview({ videoUrl, thumbnailUrl }) {
 // WinnerDetailModal
 // ---------------------------------------------------------------------------
 
-export default function WinnerDetailModal({ winner, isOpen, onClose, onSelect }) {
+const ITER_MODES = [
+  { value: 'hook_only', label: 'Hook Only' },
+  { value: 'hook_body', label: 'Hook + Body' },
+  { value: 'full_rewrite', label: 'Full Rewrite' },
+  { value: 'angle_expansion', label: 'Angle Expansion' },
+];
+
+const AGGRESSIVENESS = [
+  { value: 'conservative', label: 'Conservative' },
+  { value: 'medium', label: 'Medium' },
+  { value: 'aggressive', label: 'Aggressive' },
+  { value: 'extreme', label: 'Extreme' },
+];
+
+const VARIATION_COUNTS = [3, 5, 10];
+
+function PillGroup({ options, value, onChange }) {
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {options.map((opt) => {
+        const val = typeof opt === 'object' ? opt.value : opt;
+        const label = typeof opt === 'object' ? opt.label : opt;
+        const active = val === value;
+        return (
+          <button
+            key={val}
+            type="button"
+            onClick={() => onChange(val)}
+            className={`px-2.5 py-1 text-[11px] font-medium rounded-full border transition-colors cursor-pointer ${
+              active
+                ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-300'
+                : 'bg-white/[0.03] border-white/[0.08] text-slate-400 hover:bg-white/[0.06]'
+            }`}
+          >
+            {label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+export default function WinnerDetailModal({ winner, isOpen, onClose, onGenerate, generating }) {
+  const [iterMode, setIterMode] = useState('hook_body');
+  const [aggressiveness, setAggressiveness] = useState('medium');
+  const [numVariations, setNumVariations] = useState(5);
+
   if (!isOpen || !winner) return null;
 
   const script = parseScript(winner.parsed_script, winner.raw_script);
@@ -315,17 +361,48 @@ export default function WinnerDetailModal({ winner, isOpen, onClose, onSelect })
               )}
             </div>
           )}
+
+          {/* Iteration config */}
+          <div className="space-y-3">
+            <SectionLabel>Iteration Config</SectionLabel>
+            <div className="space-y-2">
+              <span className="text-[11px] text-slate-500">Mode</span>
+              <PillGroup options={ITER_MODES} value={iterMode} onChange={setIterMode} />
+            </div>
+            <div className="space-y-2">
+              <span className="text-[11px] text-slate-500">Aggressiveness</span>
+              <PillGroup options={AGGRESSIVENESS} value={aggressiveness} onChange={setAggressiveness} />
+            </div>
+            <div className="space-y-2">
+              <span className="text-[11px] text-slate-500">Variations</span>
+              <PillGroup options={VARIATION_COUNTS} value={numVariations} onChange={setNumVariations} />
+            </div>
+          </div>
         </div>
 
         {/* Footer */}
         <div className="px-6 py-4 border-t border-white/[0.06] shrink-0">
           <button
             type="button"
-            onClick={() => onSelect?.(winner)}
-            className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-emerald-600 text-sm font-medium text-white hover:bg-emerald-500 transition-colors cursor-pointer"
+            onClick={() => onGenerate?.(winner.id, {
+              iteration_mode: iterMode,
+              aggressiveness,
+              num_variations: numVariations,
+            })}
+            disabled={generating}
+            className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-emerald-600 text-sm font-medium text-white hover:bg-emerald-500 transition-colors cursor-pointer disabled:opacity-40"
           >
-            <Check className="w-4 h-4" />
-            Select for Iteration
+            {generating ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                Generating...
+              </>
+            ) : (
+              <>
+                <Sparkles className="w-4 h-4" />
+                Generate Iterations
+              </>
+            )}
           </button>
         </div>
       </div>
