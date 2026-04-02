@@ -1,4 +1,5 @@
-import { TrendingUp, DollarSign, Target, BarChart3, Layers, Play } from 'lucide-react';
+import { useState } from 'react';
+import { TrendingUp, DollarSign, Target, BarChart3, Layers, Play, Film } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
 // Readiness badge config
@@ -38,6 +39,7 @@ function fmtPct(v) {
 // ---------------------------------------------------------------------------
 
 function WinnerCard({ winner, onSelect, onGenerate, showGenerate = false }) {
+  const [imgError, setImgError] = useState(false);
   const readiness = READINESS[winner.iteration_readiness] || READINESS.not_enough_data;
   const reasonLabel = REASON_LABELS[winner.winner_reason] || winner.winner_reason;
 
@@ -51,13 +53,14 @@ function WinnerCard({ winner, onSelect, onGenerate, showGenerate = false }) {
                  hover:border-white/[0.12] hover:shadow-lg hover:shadow-black/20
                  transition-all duration-150 cursor-pointer"
     >
-      {/* Thumbnail preview */}
-      {winner.thumbnail_url && (
+      {/* Thumbnail / Video preview */}
+      {(winner.thumbnail_url || winner.video_url) && !imgError && (
         <div className="relative -mx-3.5 -mt-3.5 mb-1">
           <img
             src={winner.thumbnail_url}
             alt={winner.creative_id}
             className="w-full aspect-video object-cover rounded-t-lg"
+            onError={() => setImgError(true)}
           />
           {winner.video_url && (
             <div className="absolute inset-0 flex items-center justify-center">
@@ -66,6 +69,18 @@ function WinnerCard({ winner, onSelect, onGenerate, showGenerate = false }) {
               </div>
             </div>
           )}
+        </div>
+      )}
+      {imgError && winner.video_url && (
+        <div className="relative -mx-3.5 -mt-3.5 mb-1">
+          <div className="w-full aspect-video rounded-t-lg bg-white/[0.03] flex items-center justify-center">
+            <Film className="w-8 h-8 text-gray-600" />
+          </div>
+          <div className="absolute inset-0 flex items-center justify-center">
+            <div className="w-8 h-8 rounded-full bg-black/60 flex items-center justify-center">
+              <Play className="w-4 h-4 text-white fill-white ml-0.5" />
+            </div>
+          </div>
         </div>
       )}
 
