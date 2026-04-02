@@ -251,9 +251,9 @@ function getCurrentWeekLabel() {
 /**
  * Call Claude API and return parsed JSON from the response.
  */
-async function callClaude(systemPrompt, userPrompt, maxTokens = 3000) {
+async function callClaude(systemPrompt, userPrompt, maxTokens = 3000, { fast = false } = {}) {
   const body = {
-    model: CLAUDE_MODEL,
+    model: fast ? 'claude-haiku-4-5-20251001' : CLAUDE_MODEL,
     max_tokens: maxTokens,
     messages: [
       { role: 'user', content: userPrompt },
@@ -1686,16 +1686,29 @@ router.post('/generate/:id', authenticate, async (req, res) => {
       );
     }
 
-    // Step 6: Propose iteration directions
-    console.log(`[BriefPipeline] Step 6: Proposing ${num_variations} iteration directions`);
+    // Step 6: Build directions from analysis (skip separate strategy call)
+    console.log(`[BriefPipeline] Step 6: Building ${num_variations} directions from analysis`);
     const config = { mode, aggressiveness, num_variations, fixed_elements };
-    const { system: stratSystem, user: stratUser } = buildIterationStrategyPrompt(winAnalysis, parsedScript, config, productContext);
-    const strategyResult = await callClaude(stratSystem, stratUser, 3000);
-    const directions = strategyResult.directions || [];
+    const safeDirections = winAnalysis.iterationRules?.safe_iteration_directions || [];
+    const directions = [];
+    for (let i = 0; i < num_variations; i++) {
+      const dirText = safeDirections[i] || `Variation ${i + 1}: Fresh creative approach with different hook framing and tone`;
+      directions.push({
+        id: i + 1,
+        name: `Direction ${i + 1}`,
+        description: dirText,
+        what_changes: dirText,
+        what_stays: (winAnalysis.iterationRules?.must_stay_fixed || []).slice(0, 3).join('; ') || 'Core angle and mechanism',
+        hook_direction: `Use a completely different hook approach than the original — variation ${i + 1} of ${num_variations}`,
+        body_direction: dirText,
+        emotional_shift: winAnalysis.psychology?.emotional_arc
+          ? `${winAnalysis.psychology.emotional_arc.at_hook} → ${winAnalysis.psychology.emotional_arc.final_state}`
+          : 'Maintain original emotional arc',
+      });
+    }
 
-    // Step 7: Generate briefs (one per direction)
-    console.log(`[BriefPipeline] Step 7: Generating ${directions.length} briefs`);
-    const generatedBriefs = [];
+    // Step 7: Generate ALL briefs in parallel
+    console.log(`[BriefPipeline] Step 7: Generating ${directions.length} briefs in parallel`);
 
     // Extract proven scripts from product profile as style reference
     const provenScripts = productProfile?.scripts;
@@ -1703,48 +1716,34 @@ router.post('/generate/:id', authenticate, async (req, res) => {
       ? provenScripts.slice(0, 2).map((s, i) => `STYLE REF ${i + 1}: ${typeof s === 'string' ? s.slice(0, 300) : (s.text || s.body || JSON.stringify(s)).slice(0, 300)}`).join('\n\n')
       : '';
 
-    // Track previous outputs for cross-variation deduplication
-    const previousOutputs = [];
-
-    // Get next brief number range
     let nextBriefNum = await getNextBriefNumber();
 
-    for (const direction of directions) {
+    // Generate all variations in parallel — each direction is naturally different
+    const generationResults = await Promise.all(directions.map(async (direction) => {
       try {
         const { system: genSystem, user: genUser } = buildBriefGeneratorPrompt(parsedScript, winAnalysis, direction, config, productContext);
-
-        // Inject style reference and cross-variation awareness
         let enhancedUser = genUser;
         if (styleRef) {
           enhancedUser += `\n\n# STYLE REFERENCE (proven scripts for this product — match this voice/tone)\n${styleRef}`;
         }
-        if (previousOutputs.length > 0) {
-          const prevHooks = previousOutputs.map((p, i) =>
-            `Variation ${i + 1} hooks: ${p.hooks.map(h => `"${h.text}"`).join(' | ')}`
-          ).join('\n');
-          enhancedUser += `\n\n# PREVIOUS VARIATIONS (DO NOT OVERLAP — your hooks and phrasing must be COMPLETELY different)\n${prevHooks}\n\nYour iteration must take a genuinely different creative approach from the above. Do NOT reuse any hook patterns, opening structures, or key phrases.`;
-        }
+        // Add dedup instruction without needing previous outputs
+        enhancedUser += `\n\n# VARIATION IDENTITY\nThis is variation ${direction.id} of ${directions.length}. Each variation follows a DIFFERENT iteration direction. Your creative approach must be COMPLETELY UNIQUE — different hook angles, different phrasing, different emotional entry point. Do NOT produce generic or safe copy.`;
 
         const generated = await callClaude(genSystem, enhancedUser, 3000);
 
-        // Track this output for next variation
-        previousOutputs.push({ hooks: generated.hooks || [], body: (generated.body || '').slice(0, 100) });
-
-        // Step 8a: Hook-body blend validation
-        console.log(`[BriefPipeline] Step 8a: Validating hook-body blend for direction #${direction.id}`);
+        // Step 8: Blend validation + Scoring IN PARALLEL (both read generated, don't depend on each other)
         const { system: blendSystem, user: blendUser } = buildBlendValidationPrompt(generated);
-        const blendResult = await callClaude(blendSystem, blendUser, 1000);
-
-        // Step 8b: Score this brief
-        console.log(`[BriefPipeline] Step 8b: Scoring brief direction #${direction.id}`);
         const { system: scoreSystem, user: scoreUser } = buildBriefScorerPrompt(winner, parsedScript, generated, direction.name, winAnalysis, productContext);
-        const scores = await callClaude(scoreSystem, scoreUser, 1500);
+
+        const [blendResult, scores] = await Promise.all([
+          callClaude(blendSystem, blendUser, 1000, { fast: true }),  // Haiku for blend check
+          callClaude(scoreSystem, scoreUser, 1500),                  // Sonnet for scoring
+        ]);
 
         // Incorporate blend validation into scores
         if (blendResult) {
           scores.hook_body_blend = scores.hook_body_blend || {};
           scores.hook_body_blend.blend_validation = blendResult;
-          // If blend validation failed, downgrade the score
           if (blendResult.overall_blend && blendResult.overall_blend < 6.5) {
             scores.hook_body_blend.score = Math.min(scores.hook_body_blend.score || 5, Math.round(blendResult.overall_blend));
           }
@@ -1758,23 +1757,35 @@ router.post('/generate/:id', authenticate, async (req, res) => {
           ((scores.conversion_potential?.score || 5) * 0.30)
         );
 
-        const briefNumber = nextBriefNum++;
-        const weekLabel = getCurrentWeekLabel();
+        return { generated, scores, overall, direction, success: true };
+      } catch (dirErr) {
+        console.error(`[BriefPipeline] Error generating direction #${direction.id}:`, dirErr.message);
+        return { direction, success: false, error: dirErr.message };
+      }
+    }));
 
-        const namingConvention = buildNamingConvention({
-          product_code: winner.product_code || 'MR',
-          brief_number: briefNumber,
-          parent_creative_id: winner.creative_id,
-          avatar: winner.avatar,
-          angle: winner.angle,
-          format: winner.format,
-          strategist: 'Ludovico',
-          creator: 'NA',
-          editor: configEditor || winner.editor || 'Antoni',
-          week: weekLabel,
-        });
+    // Step 9: Save all successful briefs to DB
+    const generatedBriefs = [];
+    for (const result of generationResults) {
+      if (!result.success) continue;
+      const { generated, scores, overall, direction } = result;
 
-        // Save to DB
+      const briefNumber = nextBriefNum++;
+      const weekLabel = getCurrentWeekLabel();
+      const namingConvention = buildNamingConvention({
+        product_code: winner.product_code || 'MR',
+        brief_number: briefNumber,
+        parent_creative_id: winner.creative_id,
+        avatar: winner.avatar,
+        angle: winner.angle,
+        format: winner.format,
+        strategist: 'Ludovico',
+        creator: 'NA',
+        editor: configEditor || winner.editor || 'Antoni',
+        week: weekLabel,
+      });
+
+      try {
         const inserted = await pgQuery(`
           INSERT INTO brief_pipeline_generated (
             winner_id, parent_creative_id, iteration_mode, aggressiveness,
@@ -1807,8 +1818,8 @@ router.post('/generate/:id', authenticate, async (req, res) => {
           scores,
           direction,
         });
-      } catch (dirErr) {
-        console.error(`[BriefPipeline] Error generating direction #${direction.id}:`, dirErr.message);
+      } catch (dbErr) {
+        console.error(`[BriefPipeline] DB insert error for direction #${direction.id}:`, dbErr.message);
       }
     }
 
