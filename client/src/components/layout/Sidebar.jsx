@@ -38,6 +38,7 @@ import {
   Video,
   Music,
   Sparkles,
+  FileText,
   // Performance icons
   Target,
   Activity,
@@ -73,6 +74,7 @@ const navGroups = [
       { to: '/app/magic-writer', icon: PenTool, label: 'Magic Writer' },
 { to: '/app/iteration-king', icon: Crown, label: 'Iteration King' },
 { to: '/app/statics-generation', icon: Layers, label: 'Statics Generation' },
+      { to: '/app/brief-pipeline', icon: FileText, label: 'Brief Pipeline' },
     ],
   },
   {

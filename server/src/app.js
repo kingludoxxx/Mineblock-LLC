@@ -20,6 +20,7 @@ import clickupWebhookRoutes from './routes/clickupWebhook.js';
 import metaWebhookRoutes from './routes/metaWebhook.js';
 import shopifyWebhookRoutes from './routes/shopifyWebhook.js';
 import departmentRegistry from './departments/registry.js';
+import briefPipelineRouter from './routes/briefPipeline.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -75,6 +76,8 @@ app.use('/api/auth', authRoutes);       // alias for client compatibility
 
 // Mount CRUD routes (users, departments, audit, settings)
 mountRoutes(app);
+
+app.use('/api/v1/brief-pipeline', briefPipelineRouter);
 
 
 

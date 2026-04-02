@@ -44,6 +44,7 @@ import ImagesPage from './pages/production/ImagesPage';
 import VideoPage from './pages/production/VideoPage';
 import AudioPage from './pages/production/AudioPage';
 import StaticsGenerationPage from './pages/production/StaticsGenerationPage';
+import BriefPipeline from './pages/production/BriefPipeline';
 
 // Performance
 import AttributionPage from './pages/performance/AttributionPage';
@@ -122,6 +123,7 @@ export default function App() {
           <Route path="video" element={<VideoPage />} />
           <Route path="audio" element={<AudioPage />} />
           <Route path="statics-generation" element={<StaticsGenerationPage />} />
+          <Route path="brief-pipeline" element={<BriefPipeline />} />
 
           {/* Performance */}
           <Route path="creative-analysis" element={<CreativeAnalysisPage />} />
