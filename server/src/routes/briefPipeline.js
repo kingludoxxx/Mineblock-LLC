@@ -1272,28 +1272,23 @@ router.get('/winners/:id', authenticate, async (req, res) => {
       }
     }
 
-    // On-demand Meta refresh — always fetch fresh URLs when viewing detail
-    // (Meta CDN URLs expire after ~24h, so we always refresh here)
-    if (META_ACCESS_TOKEN) {
-      try {
-        const fresh = await refreshMetaThumbnail(winner.creative_id);
-        if (fresh) {
-          if (fresh.thumbnail_url) {
-            winner.thumbnail_url = fresh.thumbnail_url;
-            await pgQuery(`UPDATE brief_pipeline_winners SET thumbnail_url = $1 WHERE id = $2`, [fresh.thumbnail_url, winner.id]).catch(() => {});
-          }
-          if (fresh.video_url) {
-            winner.video_url = fresh.video_url;
-            await pgQuery(`UPDATE brief_pipeline_winners SET video_url = $1 WHERE id = $2`, [fresh.video_url, winner.id]).catch(() => {});
-          }
-          console.log(`[BriefPipeline] Refreshed Meta URLs for ${winner.creative_id}`);
-        }
-      } catch (err) {
-        console.error(`[BriefPipeline] Meta refresh error for ${winner.creative_id}:`, err.message);
-      }
-    }
-
+    // Respond immediately — don't block on Meta API
     res.json({ success: true, winner });
+
+    // Background: refresh Meta URLs if missing, for next time
+    if (META_ACCESS_TOKEN && (!winner.thumbnail_url || !winner.video_url)) {
+      refreshMetaThumbnail(winner.creative_id).then(fresh => {
+        if (!fresh) return;
+        const updates = [];
+        const params = [];
+        if (fresh.thumbnail_url) { updates.push(`thumbnail_url = $${params.length + 1}`); params.push(fresh.thumbnail_url); }
+        if (fresh.video_url) { updates.push(`video_url = $${params.length + 1}`); params.push(fresh.video_url); }
+        if (updates.length) {
+          params.push(winner.id);
+          pgQuery(`UPDATE brief_pipeline_winners SET ${updates.join(', ')} WHERE id = $${params.length}`, params).catch(() => {});
+        }
+      }).catch(err => console.warn(`[BriefPipeline] Background Meta refresh error:`, err.message));
+    }
   } catch (err) {
     console.error('[BriefPipeline] GET /winners/:id error:', err.message);
     res.status(500).json({ success: false, error: { message: err.message } });
