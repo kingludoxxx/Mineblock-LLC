@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { X, Check, Play, Film } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
@@ -107,6 +108,68 @@ function parseScript(parsed, raw) {
 }
 
 // ---------------------------------------------------------------------------
+// VideoPreview — plays video or shows clickable thumbnail
+// ---------------------------------------------------------------------------
+
+function VideoPreview({ videoUrl, thumbnailUrl }) {
+  const [playing, setPlaying] = useState(false);
+  const [videoError, setVideoError] = useState(false);
+
+  if (!videoUrl || videoError) {
+    // Thumbnail-only mode
+    if (!thumbnailUrl) return null;
+    return (
+      <div>
+        <SectionLabel>Preview</SectionLabel>
+        <img
+          src={thumbnailUrl}
+          alt="Winner thumbnail"
+          className="w-full max-w-full rounded-lg border border-white/[0.06]"
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <SectionLabel>Preview</SectionLabel>
+      {playing ? (
+        <video
+          src={videoUrl}
+          poster={thumbnailUrl || undefined}
+          controls
+          autoPlay
+          onError={() => setVideoError(true)}
+          className="w-full max-w-full rounded-lg border border-white/[0.06]"
+        />
+      ) : (
+        <div
+          className="relative cursor-pointer group"
+          onClick={() => setPlaying(true)}
+        >
+          {thumbnailUrl ? (
+            <img
+              src={thumbnailUrl}
+              alt="Click to play"
+              className="w-full max-w-full rounded-lg border border-white/[0.06]"
+            />
+          ) : (
+            <div className="w-full aspect-video rounded-lg border border-white/[0.06] bg-white/[0.03] flex items-center justify-center">
+              <Film className="w-8 h-8 text-slate-600" />
+            </div>
+          )}
+          <div className="absolute inset-0 flex items-center justify-center">
+            <div className="w-14 h-14 rounded-full bg-black/60 group-hover:bg-black/80 flex items-center justify-center transition-colors">
+              <Play className="w-6 h-6 text-white fill-white ml-1" />
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // WinnerDetailModal
 // ---------------------------------------------------------------------------
 
@@ -159,23 +222,10 @@ export default function WinnerDetailModal({ winner, isOpen, onClose, onSelect })
 
           {/* Video / Thumbnail preview */}
           {(winner.video_url || winner.thumbnail_url) && (
-            <div>
-              <SectionLabel>Preview</SectionLabel>
-              {winner.video_url ? (
-                <video
-                  src={winner.video_url}
-                  poster={winner.thumbnail_url || undefined}
-                  controls
-                  className="w-full max-w-full rounded-lg border border-white/[0.06]"
-                />
-              ) : (
-                <img
-                  src={winner.thumbnail_url}
-                  alt="Winner thumbnail"
-                  className="w-full max-w-full rounded-lg border border-white/[0.06]"
-                />
-              )}
-            </div>
+            <VideoPreview
+              videoUrl={winner.video_url}
+              thumbnailUrl={winner.thumbnail_url}
+            />
           )}
 
           {/* Metrics grid */}

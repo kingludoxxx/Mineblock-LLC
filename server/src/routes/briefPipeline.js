@@ -10,6 +10,9 @@ const CLICKUP_TOKEN = 'pk_266421907_38TVGF16690R1U9EZOZLBK9BJ6J0YPRD';
 const VIDEO_ADS_LIST = '901518716584';
 const MEDIA_BUYING_LIST = '901518769621';
 const CLICKUP_API = 'https://api.clickup.com/api/v2';
+const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN || '';
+const META_AD_ACCOUNT_IDS = (process.env.META_AD_ACCOUNT_IDS || '').split(',').filter(Boolean);
+const META_GRAPH_URL = 'https://graph.facebook.com/v22.0';
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
 const CLAUDE_API_URL = 'https://api.anthropic.com/v1/messages';
 const CLAUDE_MODEL = 'claude-sonnet-4-6';
@@ -1111,6 +1114,42 @@ router.get('/winners/:id', authenticate, async (req, res) => {
         winner.raw_script = scriptData.raw;
       } catch (err) {
         console.error(`[BriefPipeline] Script extraction error for ${winner.creative_id}:`, err.message);
+      }
+    }
+
+    // Fetch video URL from Meta if not cached
+    if (!winner.video_url && META_ACCESS_TOKEN && winner.ad_name) {
+      try {
+        // Look up video_url from creative_analysis first
+        const vidRows = await pgQuery(
+          `SELECT video_url FROM creative_analysis WHERE creative_id = $1 AND video_url IS NOT NULL LIMIT 1`,
+          [winner.creative_id]
+        );
+        if (vidRows.length && vidRows[0].video_url) {
+          winner.video_url = vidRows[0].video_url;
+          await pgQuery(`UPDATE brief_pipeline_winners SET video_url = $1 WHERE id = $2`, [winner.video_url, winner.id]);
+        } else {
+          // Try Meta API: search for the ad by name, get video_id, then fetch source
+          for (const accountId of META_AD_ACCOUNT_IDS) {
+            try {
+              const searchUrl = `${META_GRAPH_URL}/${accountId}/ads?fields=name,creative.fields(video_id)&search_terms=${encodeURIComponent(winner.creative_id)}&limit=5&access_token=${META_ACCESS_TOKEN}`;
+              const searchResp = await fetch(searchUrl);
+              const searchData = await searchResp.json();
+              const videoId = searchData.data?.find(a => a.creative?.video_id)?.creative?.video_id;
+              if (videoId) {
+                const vidResp = await fetch(`${META_GRAPH_URL}/${videoId}?fields=source&access_token=${META_ACCESS_TOKEN}`);
+                const vidData = await vidResp.json();
+                if (vidData.source) {
+                  winner.video_url = vidData.source;
+                  await pgQuery(`UPDATE brief_pipeline_winners SET video_url = $1 WHERE id = $2`, [winner.video_url, winner.id]);
+                  break;
+                }
+              }
+            } catch { /* skip account */ }
+          }
+        }
+      } catch (err) {
+        console.error(`[BriefPipeline] Video URL fetch error for ${winner.creative_id}:`, err.message);
       }
     }
 
