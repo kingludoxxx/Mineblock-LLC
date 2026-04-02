@@ -85,6 +85,24 @@ Identify every visual element:
 ━━━ LAYER 5: COPY ADAPTATION ━━━
 Now adapt EVERY text element for the product above.
 
+⚠️ HEADLINE RULES (HIGHEST PRIORITY):
+The headline is the most important element. Write AGGRESSIVE, high-converting headlines that create urgency and desire. The headline must:
+- Make a BOLD, specific money-related claim (e.g. "This $59 Device Mines $127/Month in Bitcoin While You Sleep", "People Are Making $3,800/Month With This Tiny Miner")
+- Use concrete dollar amounts, timeframes, or multipliers — vague claims like "works at home" are BANNED
+- Create FOMO, urgency, or disbelief (e.g. "Wall Street Doesn't Want You to Know About This", "Banks HATE This $59 Device")
+- Sound like a native ad / advertorial headline, NOT like a product description
+- Be punchy, provocative, and scroll-stopping — if it sounds like it could be a boring product tagline, REWRITE IT
+- NEVER use generic/weak phrases like "works at home", "easy to use", "quick mining", "get started today"
+- Match the approximate CHARACTER COUNT of the original headline (not word count — character count matters for layout fit)
+
+HEADLINE STYLE EXAMPLES (use these as inspiration, do NOT copy verbatim):
+- "I Bought a $59 Bitcoin Miner as a Joke — It's Paid for Itself 4x"
+- "Tiny Device Mines $4.20/Day in Bitcoin — No Experience Needed"
+- "Crypto Millionaires Started With This Exact Device"
+- "Your Electricity Bill Hides a $127/Month Bitcoin Goldmine"
+- "This Pocket-Sized Miner Made $847 Last Month on Autopilot"
+- "Forget Savings Accounts — This Mines Real Bitcoin 24/7"
+
 ⚠️ MANDATORY PRICING RULES (VIOLATION = FAILURE):
 - The product base price is $59.99 for 1 unit
 - Bundle prices: 2 units = $55 each ($109.99), 3+1 free = $45 each ($179.99), 6+2 free = $40 each ($320)
@@ -95,13 +113,15 @@ Now adapt EVERY text element for the product above.
 - When in doubt, use "Up to 40% OFF" or "Starting at $59.99" — do NOT invent prices
 
 CRITICAL RULES:
-- Match the EXACT sentence structure and approximate word count of original
-- Keep the same emotional tone and persuasion technique
+- Headlines must be AGGRESSIVE money-making claims (see rules above) — never generic product descriptions
+- Keep the same emotional tone but AMPLIFY the persuasion — make it more compelling than the original
+- Subheadlines should reinforce the headline's bold claim with a supporting proof point or benefit
 - Comparison labels must adapt to the new product's context
 - Ingredient labels must use the new product's actual ingredients
 - Timeline labels should match the new product's realistic timeline
 - CTA should use discount code MINER10 if the reference has a promo code
 - Disclaimer should reference the new brand
+- ALL copy should sound like it belongs in a high-converting paid ad, not a product manual
 
 Return ONLY valid JSON (no markdown, no code fences):
 {
@@ -224,7 +244,9 @@ TEXT REPLACEMENTS (${swapPairs.length} swaps — apply ALL of them):
 ${swapSection || '  (No text changes)'}
 - Font style, weight, size, color, and position must EXACTLY match reference for each text element
 - Do NOT add extra text blocks. Do NOT remove text that isn't in the swap list.
-- Text must be sharp, legible, and correctly spelled
+- Text must be sharp, legible, and correctly spelled — NO blurry, warped, or AI-looking text
+- Headlines must be rendered in BOLD, high-contrast, professional typography — as crisp as a real paid ad
+- CRITICAL: Every letter must be pixel-perfect and readable. If text looks "AI-generated" or distorted, the output is a failure.
 ${illustrationSection}
 ${comparisonSection}
 
