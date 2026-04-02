@@ -56,8 +56,8 @@ function GeneratedBriefCard({ brief, onApprove, onReject, onPush, onClick, showA
               #{brief.rank}
             </span>
           )}
-          <span className={`ml-auto text-sm font-bold ${scoreTextColor(brief.overall_score)}`}>
-            {brief.overall_score?.toFixed(1)}
+          <span className={`ml-auto text-sm font-bold ${scoreTextColor(Number(brief.overall_score))}`}>
+            {brief.overall_score != null ? Number(brief.overall_score).toFixed(1) : '—'}
           </span>
         </div>
 
