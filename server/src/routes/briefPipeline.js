@@ -480,6 +480,73 @@ function buildNamingConvention({ product_code, brief_number, parent_creative_id,
   ].join(' - ');
 }
 
+// ── Transcribe video/audio with Gemini ───────────────────────────────
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
+
+async function transcribeWithGemini(mediaUrl) {
+  if (!GEMINI_API_KEY) throw new Error('GEMINI_API_KEY not configured — cannot transcribe video');
+
+  console.log(`[BriefPipeline] Downloading media for transcription: ${mediaUrl.slice(0, 80)}...`);
+
+  // Download the media file
+  const mediaRes = await fetch(mediaUrl, {
+    headers: { 'User-Agent': 'Mozilla/5.0 (compatible; MineblockBot/1.0)' },
+    redirect: 'follow',
+    signal: AbortSignal.timeout(60000), // 60s for large videos
+  });
+
+  if (!mediaRes.ok) throw new Error(`Failed to download media: HTTP ${mediaRes.status}`);
+
+  const buffer = Buffer.from(await mediaRes.arrayBuffer());
+  const contentType = mediaRes.headers.get('content-type') || 'video/mp4';
+  const base64Data = buffer.toString('base64');
+
+  console.log(`[BriefPipeline] Media downloaded: ${(buffer.length / 1024 / 1024).toFixed(1)}MB, sending to Gemini for transcription`);
+
+  // Send to Gemini for transcription
+  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`;
+
+  const geminiRes = await fetch(geminiUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      contents: [{
+        parts: [
+          {
+            inlineData: {
+              mimeType: contentType.split(';')[0],
+              data: base64Data,
+            },
+          },
+          {
+            text: `Transcribe ALL spoken words in this video/audio. Return ONLY the transcript as plain text — no timestamps, no speaker labels, no commentary, no formatting. Just the exact words spoken, preserving the natural flow and paragraph breaks. If there are multiple speakers, separate their lines with paragraph breaks.`,
+          },
+        ],
+      }],
+      generationConfig: {
+        maxOutputTokens: 4096,
+        temperature: 0.1,
+      },
+    }),
+    signal: AbortSignal.timeout(120000), // 2 min for transcription
+  });
+
+  if (!geminiRes.ok) {
+    const errText = await geminiRes.text();
+    throw new Error(`Gemini transcription failed: HTTP ${geminiRes.status} — ${errText.slice(0, 200)}`);
+  }
+
+  const geminiData = await geminiRes.json();
+  const transcript = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || '';
+
+  if (!transcript || transcript.length < 20) {
+    throw new Error('Gemini could not transcribe the media — the audio may be too short or unclear.');
+  }
+
+  console.log(`[BriefPipeline] Transcription complete: ${transcript.length} chars`);
+  return transcript.trim();
+}
+
 // ── Fetch product profile from DB ────────────────────────────────────
 async function fetchProductProfile(productCode) {
   try {
@@ -1954,28 +2021,76 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
 
     let rawScript = script || '';
 
-    // URL mode: fetch and extract text
+    // URL mode: fetch page → extract text OR find video → transcribe with Gemini
     if (url && !rawScript) {
       try {
-        const fetchRes = await fetch(url, {
-          headers: { 'User-Agent': 'Mozilla/5.0 (compatible; MineblockBot/1.0)' },
-          redirect: 'follow',
-          signal: AbortSignal.timeout(15000),
-        });
-        const html = await fetchRes.text();
-        if (html.length < 100) throw new Error('Page returned very little content — it may require JavaScript to render.');
-        // Use Claude to extract the ad copy from the HTML (raw text mode, no JSON parsing)
-        rawScript = await callClaude(
-          'You are a text extraction tool. Extract the main ad copy, sales text, or script from this webpage HTML. Return ONLY the extracted text as plain text — no JSON, no commentary, no formatting. If the HTML contains mostly JavaScript and no readable ad copy, respond with "NO_CONTENT_FOUND".',
-          `Extract the main ad copy or script text from this HTML. If it contains a video ad script, extract it. Return only the clean text.\n\nHTML (first 15000 chars):\n${html.slice(0, 15000)}`,
-          2000,
-          { rawText: true },
-        );
-        if (!rawScript || rawScript === 'NO_CONTENT_FOUND' || rawScript.length < 30) {
-          throw new Error('Could not extract ad copy from this URL. The page may be a JavaScript app that requires a browser to render. Try pasting the text manually instead.');
+        // Check if URL points directly to a video/audio file
+        const isDirectMedia = /\.(mp4|mp3|wav|webm|m4a|ogg|mov)(\?|$)/i.test(url);
+
+        if (isDirectMedia) {
+          // Direct media URL — transcribe with Gemini
+          console.log(`[BriefPipeline] Direct media URL detected, transcribing with Gemini`);
+          rawScript = await transcribeWithGemini(url);
+        } else {
+          // Fetch HTML page
+          const fetchRes = await fetch(url, {
+            headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' },
+            redirect: 'follow',
+            signal: AbortSignal.timeout(15000),
+          });
+          const contentType = fetchRes.headers.get('content-type') || '';
+
+          // If response is media, transcribe directly
+          if (contentType.startsWith('audio/') || contentType.startsWith('video/')) {
+            console.log(`[BriefPipeline] Media content-type detected, transcribing with Gemini`);
+            rawScript = await transcribeWithGemini(url);
+          } else {
+            const html = await fetchRes.text();
+
+            // Step 1: Try to extract ad text from HTML
+            if (html.length > 200) {
+              const extracted = await callClaude(
+                'You are a text extraction tool for ad pages.',
+                `Extract the main ad copy, sales text, or video script from this HTML. If there is readable ad copy or sales text, return it as plain text. If the page is mostly JavaScript with no readable content, respond with exactly "NO_CONTENT_FOUND".\n\nHTML (first 15000 chars):\n${html.slice(0, 15000)}`,
+                2000,
+                { rawText: true },
+              );
+
+              if (extracted && extracted !== 'NO_CONTENT_FOUND' && extracted.length >= 50) {
+                rawScript = extracted;
+              }
+            }
+
+            // Step 2: If no text found, look for video URLs in HTML and transcribe
+            if (!rawScript || rawScript.length < 50) {
+              console.log(`[BriefPipeline] No text extracted, searching for video URLs in HTML`);
+              const videoUrlPatterns = [
+                // Common video source patterns in HTML
+                /(?:src|href|data-src|data-video|content|url)\s*[=:]\s*["']?(https?:\/\/[^"'\s>]+\.(?:mp4|webm|m4v|mov)(?:\?[^"'\s>]*)?)/gi,
+                // Meta og:video tags
+                /property=["']og:video["'][^>]*content=["'](https?:\/\/[^"']+)/gi,
+                /content=["'](https?:\/\/[^"']+)["'][^>]*property=["']og:video/gi,
+                // JSON-embedded video URLs
+                /"(?:video_url|videoUrl|video_src|source|src|url)"\s*:\s*"(https?:\/\/[^"]+\.(?:mp4|webm|m4v)[^"]*)"/gi,
+              ];
+
+              let videoUrl = null;
+              for (const pattern of videoUrlPatterns) {
+                const match = pattern.exec(html);
+                if (match?.[1]) { videoUrl = match[1]; break; }
+              }
+
+              if (videoUrl) {
+                console.log(`[BriefPipeline] Found video URL in HTML, transcribing: ${videoUrl.slice(0, 80)}...`);
+                rawScript = await transcribeWithGemini(videoUrl);
+              } else {
+                throw new Error('Could not extract text or find a video on this page. The page may be a JavaScript app. Try pasting the ad text manually.');
+              }
+            }
+          }
         }
       } catch (urlErr) {
-        return res.status(400).json({ success: false, error: { message: `Failed to fetch URL: ${urlErr.message}` } });
+        return res.status(400).json({ success: false, error: { message: urlErr.message || 'Failed to process URL' } });
       }
     }
 
