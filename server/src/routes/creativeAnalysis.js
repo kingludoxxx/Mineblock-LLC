@@ -752,13 +752,14 @@ async function syncMetaThumbnails() {
 
   await ensureTable();
 
-  // 1. Get all unique ad_names that need thumbnails OR have expired iframe preview URLs
-  //    Permanent video URLs are direct .mp4 links; expired ones are iframe src URLs
+  // 1. Get all unique ad_names that need thumbnails, have expired iframe preview URLs,
+  //    or have thumbnails older than 12 hours (Meta CDN URLs expire)
   const dbRows = await pgQuery(
     `SELECT DISTINCT ad_name FROM creative_analysis
      WHERE ad_name IS NOT NULL
        AND (thumbnail_url IS NULL OR thumbnail_url = ''
-            OR (video_url IS NOT NULL AND video_url NOT LIKE '%.mp4%'))`
+            OR (video_url IS NOT NULL AND video_url NOT LIKE '%.mp4%')
+            OR synced_at < NOW() - INTERVAL '12 hours')`
   );
   const dbAdNames = new Set(dbRows.map(r => r.ad_name));
 

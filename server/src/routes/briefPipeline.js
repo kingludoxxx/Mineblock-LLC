@@ -999,6 +999,52 @@ async function pushBriefToClickUp(generatedBrief, parentClickupTaskId) {
   };
 }
 
+// ── On-demand Meta thumbnail refresh ──────────────────────────────────
+/**
+ * Fetch a fresh thumbnail_url from Meta API for a given creative_id (e.g. "B0071").
+ * Returns { thumbnail_url, video_url } or null if not found.
+ */
+async function refreshMetaThumbnail(creativeId) {
+  if (!META_ACCESS_TOKEN || META_AD_ACCOUNT_IDS.length === 0) return null;
+
+  for (const accountId of META_AD_ACCOUNT_IDS) {
+    try {
+      const searchUrl = `${META_GRAPH_URL}/${accountId}/ads?fields=name,creative.fields(thumbnail_url,image_url,video_id).thumbnail_width(720).thumbnail_height(720)&filtering=[{"field":"name","operator":"CONTAIN","value":"${creativeId}"}]&limit=10&access_token=${META_ACCESS_TOKEN}`;
+      const resp = await fetch(searchUrl);
+      const data = await resp.json();
+      if (data.error || !data.data?.length) continue;
+
+      for (const ad of data.data) {
+        const thumbUrl = ad.creative?.image_url || ad.creative?.thumbnail_url || null;
+        if (!thumbUrl) continue;
+
+        // Also fetch permanent video source if there's a video_id
+        let videoUrl = null;
+        const videoId = ad.creative?.video_id;
+        if (videoId) {
+          try {
+            const vidResp = await fetch(`${META_GRAPH_URL}/${videoId}?fields=source&access_token=${META_ACCESS_TOKEN}`);
+            const vidData = await vidResp.json();
+            if (vidData.source) videoUrl = vidData.source;
+          } catch (_) { /* ignore */ }
+        }
+
+        // Update creative_analysis so other endpoints benefit
+        await pgQuery(
+          `UPDATE creative_analysis SET thumbnail_url = $1, video_url = COALESCE($2, video_url)
+           WHERE creative_id = $3`,
+          [thumbUrl, videoUrl, creativeId]
+        ).catch(() => {});
+
+        return { thumbnail_url: thumbUrl, video_url: videoUrl };
+      }
+    } catch (err) {
+      console.warn(`[BriefPipeline] Meta thumbnail refresh error for ${accountId}:`, err.message);
+    }
+  }
+  return null;
+}
+
 // ══════════════════════════════════════════════════════════════════════
 // ROUTES
 // ══════════════════════════════════════════════════════════════════════
@@ -1040,6 +1086,25 @@ router.get('/winners', authenticate, async (_req, res) => {
           if (fresh.thumbnail_url) row.thumbnail_url = fresh.thumbnail_url;
           if (fresh.video_url) row.video_url = fresh.video_url;
         }
+      }
+
+      // On-demand Meta refresh for winners with missing thumbnails
+      // For stale CDN URLs (403), the frontend handles it with a fallback icon,
+      // and a fresh URL is fetched when the user opens the detail modal (GET /winners/:id)
+      const missingRows = rows.filter(r => !r.thumbnail_url);
+      if (missingRows.length > 0 && META_ACCESS_TOKEN) {
+        const refreshPromises = missingRows.map(async (row) => {
+          const fresh = await refreshMetaThumbnail(row.creative_id);
+          if (fresh) {
+            if (fresh.thumbnail_url) row.thumbnail_url = fresh.thumbnail_url;
+            if (fresh.video_url && !row.video_url) row.video_url = fresh.video_url;
+            await pgQuery(
+              `UPDATE brief_pipeline_winners SET thumbnail_url = COALESCE($1, thumbnail_url), video_url = COALESCE($2, video_url) WHERE id = $3`,
+              [fresh.thumbnail_url, fresh.video_url, row.id]
+            ).catch(() => {});
+          }
+        });
+        await Promise.all(refreshPromises);
       }
     }
     res.json({ success: true, winners: rows });
@@ -1207,52 +1272,24 @@ router.get('/winners/:id', authenticate, async (req, res) => {
       }
     }
 
-    // Fetch video URL from Meta if not cached
-    if (!winner.video_url && META_ACCESS_TOKEN) {
+    // On-demand Meta refresh — always fetch fresh URLs when viewing detail
+    // (Meta CDN URLs expire after ~24h, so we always refresh here)
+    if (META_ACCESS_TOKEN) {
       try {
-        // Look up video_url from creative_analysis first
-        const vidRows = await pgQuery(
-          `SELECT video_url FROM creative_analysis WHERE creative_id = $1 AND video_url IS NOT NULL AND video_url != '' LIMIT 1`,
-          [winner.creative_id]
-        );
-        if (vidRows.length && vidRows[0].video_url) {
-          winner.video_url = vidRows[0].video_url;
-          await pgQuery(`UPDATE brief_pipeline_winners SET video_url = $1 WHERE id = $2`, [winner.video_url, winner.id]);
-          console.log(`[BriefPipeline] Found cached video URL for ${winner.creative_id}`);
-        } else {
-          // Try Meta API: search across accounts for the ad, get video_id, fetch source
-          const searchTerm = winner.creative_id; // e.g. "B0067"
-          console.log(`[BriefPipeline] Searching Meta for video of ${searchTerm}`);
-          let found = false;
-          for (const accountId of META_AD_ACCOUNT_IDS) {
-            if (found) break;
-            try {
-              const searchUrl = `${META_GRAPH_URL}/${accountId}/ads?fields=name,creative.fields(video_id,object_story_spec)&filtering=[{"field":"name","operator":"CONTAIN","value":"${searchTerm}"}]&limit=10&access_token=${META_ACCESS_TOKEN}`;
-              const searchResp = await fetch(searchUrl);
-              const searchData = await searchResp.json();
-              if (searchData.error) continue;
-              for (const ad of (searchData.data || [])) {
-                const videoId = ad.creative?.video_id
-                  || ad.creative?.object_story_spec?.video_data?.video_id;
-                if (!videoId) continue;
-                const vidResp = await fetch(`${META_GRAPH_URL}/${videoId}?fields=source&access_token=${META_ACCESS_TOKEN}`);
-                const vidData = await vidResp.json();
-                if (vidData.source) {
-                  winner.video_url = vidData.source;
-                  await pgQuery(`UPDATE brief_pipeline_winners SET video_url = $1 WHERE id = $2`, [winner.video_url, winner.id]);
-                  console.log(`[BriefPipeline] Found video URL for ${winner.creative_id} via Meta (${accountId})`);
-                  found = true;
-                  break;
-                }
-              }
-            } catch (err) {
-              console.warn(`[BriefPipeline] Meta search error for ${accountId}:`, err.message);
-            }
+        const fresh = await refreshMetaThumbnail(winner.creative_id);
+        if (fresh) {
+          if (fresh.thumbnail_url) {
+            winner.thumbnail_url = fresh.thumbnail_url;
+            await pgQuery(`UPDATE brief_pipeline_winners SET thumbnail_url = $1 WHERE id = $2`, [fresh.thumbnail_url, winner.id]).catch(() => {});
           }
-          if (!found) console.log(`[BriefPipeline] No video URL found for ${winner.creative_id} across ${META_AD_ACCOUNT_IDS.length} accounts`);
+          if (fresh.video_url) {
+            winner.video_url = fresh.video_url;
+            await pgQuery(`UPDATE brief_pipeline_winners SET video_url = $1 WHERE id = $2`, [fresh.video_url, winner.id]).catch(() => {});
+          }
+          console.log(`[BriefPipeline] Refreshed Meta URLs for ${winner.creative_id}`);
         }
       } catch (err) {
-        console.error(`[BriefPipeline] Video URL fetch error for ${winner.creative_id}:`, err.message);
+        console.error(`[BriefPipeline] Meta refresh error for ${winner.creative_id}:`, err.message);
       }
     }
 
