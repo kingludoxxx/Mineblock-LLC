@@ -1,18 +1,17 @@
 import { useState } from 'react';
-import { FileText, Link, Wand2, Loader2, Sparkles, ChevronDown, ChevronUp } from 'lucide-react';
+import { FileText, Link, Wand2, Loader2, Sparkles } from 'lucide-react';
 import ProductSelector from '../../../components/ProductSelector';
 
 const ANGLES = ['Pain Point', 'Social Proof', 'Before/After', 'Curiosity Hook', 'Direct Offer', 'Authority'];
 
 export default function ScriptGeneratorPanel({ onGenerated, generating, generatingStep }) {
-  const [collapsed, setCollapsed] = useState(false);
-  const [inputMode, setInputMode] = useState('text'); // 'text' | 'url'
+  const [inputMode, setInputMode] = useState('text');
   const [scriptText, setScriptText] = useState('');
   const [scriptUrl, setScriptUrl] = useState('');
   const [selectedProduct, setSelectedProduct] = useState(null);
   const [selectedAngle, setSelectedAngle] = useState(null);
   const [customAngle, setCustomAngle] = useState('');
-  const [outputMode, setOutputMode] = useState('variants'); // 'variants' | 'clone'
+  const [outputMode, setOutputMode] = useState('variants');
   const [variantCount, setVariantCount] = useState(3);
   const [enhancing, setEnhancing] = useState(false);
   const [error, setError] = useState(null);
@@ -57,221 +56,197 @@ export default function ScriptGeneratorPanel({ onGenerated, generating, generati
   };
 
   return (
-    <div className="bg-[#0d0d0d] border border-white/[0.06] rounded-lg overflow-hidden mb-3">
-      {/* Header */}
-      <button
-        type="button"
-        onClick={() => setCollapsed(!collapsed)}
-        className="w-full flex items-center gap-2 px-3.5 py-2.5 cursor-pointer hover:bg-white/[0.02] transition-colors"
-      >
-        <Sparkles className="w-4 h-4 text-[#b4f]" />
-        <span className="text-sm font-semibold text-gray-100">Script Generator</span>
-        <span className="text-[10px] text-gray-500 ml-1">Rewrite & variant generator</span>
-        {collapsed ? (
-          <ChevronDown className="w-3.5 h-3.5 text-gray-500 ml-auto" />
-        ) : (
-          <ChevronUp className="w-3.5 h-3.5 text-gray-500 ml-auto" />
-        )}
-      </button>
-
-      {!collapsed && (
-        <div className="px-3.5 pb-3.5 space-y-3">
-          {/* Input mode toggle */}
-          <div>
-            <div className="text-[9px] uppercase tracking-wider font-semibold text-gray-500 mb-1.5">Reference Content</div>
-            <div className="flex bg-[#111] rounded-lg border border-white/[0.06] p-0.5 mb-2">
-              <button
-                type="button"
-                onClick={() => setInputMode('text')}
-                className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-md text-[11px] font-medium transition-colors cursor-pointer ${
-                  inputMode === 'text' ? 'bg-[#b4f]/20 text-[#d8bfff]' : 'text-gray-500 hover:text-gray-300'
-                }`}
-              >
-                <FileText className="w-3 h-3" />
-                Paste Text
-              </button>
-              <button
-                type="button"
-                onClick={() => setInputMode('url')}
-                className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-md text-[11px] font-medium transition-colors cursor-pointer ${
-                  inputMode === 'url' ? 'bg-[#b4f]/20 text-[#d8bfff]' : 'text-gray-500 hover:text-gray-300'
-                }`}
-              >
-                <Link className="w-3 h-3" />
-                URL
-              </button>
-            </div>
-
-            {/* Input area */}
-            {inputMode === 'text' ? (
-              <div className="relative">
-                <textarea
-                  value={scriptText}
-                  onChange={(e) => setScriptText(e.target.value)}
-                  placeholder="Paste competitor copy, landing page text, article, ad, email..."
-                  className="w-full h-32 bg-[#111] border border-white/[0.06] rounded-lg p-2.5 text-xs text-white placeholder-gray-600 resize-y focus:outline-none focus:border-[#b4f]/40 transition-colors"
-                />
-                {scriptText.trim().length > 20 && (
-                  <button
-                    type="button"
-                    onClick={handleEnhance}
-                    disabled={enhancing}
-                    className="absolute bottom-2 right-2 flex items-center gap-1 px-2 py-1 text-[10px] font-medium text-[#b4f] bg-[#b4f]/10 rounded border border-[#b4f]/20 hover:bg-[#b4f]/20 transition-colors cursor-pointer disabled:opacity-40"
-                  >
-                    {enhancing ? <Loader2 className="w-3 h-3 animate-spin" /> : <Wand2 className="w-3 h-3" />}
-                    Enhance
-                  </button>
-                )}
-              </div>
-            ) : (
-              <input
-                type="url"
-                value={scriptUrl}
-                onChange={(e) => setScriptUrl(e.target.value)}
-                placeholder="https://example.com/ad-page"
-                className="w-full bg-[#111] border border-white/[0.06] rounded-lg p-2.5 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-[#b4f]/40 transition-colors"
-              />
-            )}
-          </div>
-
-          {/* Configuration */}
-          <div>
-            <div className="text-[9px] uppercase tracking-wider font-semibold text-gray-500 mb-1.5">Configuration</div>
-
-            {/* Product selector */}
-            <div className="mb-2">
-              <div className="text-[11px] font-medium text-gray-300 mb-1">Target Product</div>
-              <ProductSelector
-                selectedId={selectedProduct?.id}
-                onSelect={(p) => setSelectedProduct(p)}
-                className="w-full"
-              />
-            </div>
-
-            {/* Angle pills */}
-            <div className="mb-2">
-              <div className="text-[11px] font-medium text-gray-300 mb-1">Ad Angle <span className="text-gray-600">(optional)</span></div>
-              <div className="flex flex-wrap gap-1 mb-1.5">
-                {ANGLES.map((a) => (
-                  <button
-                    key={a}
-                    type="button"
-                    onClick={() => setSelectedAngle(selectedAngle === a ? null : a)}
-                    className={`px-2 py-1 rounded text-[10px] font-medium border transition-colors cursor-pointer ${
-                      selectedAngle === a
-                        ? 'bg-[#b4f]/20 border-[#b4f]/40 text-[#d8bfff]'
-                        : 'bg-transparent border-white/[0.08] text-gray-500 hover:border-white/[0.15] hover:text-gray-300'
-                    }`}
-                  >
-                    {a}
-                  </button>
-                ))}
-              </div>
-              <input
-                type="text"
-                value={customAngle}
-                onChange={(e) => { setCustomAngle(e.target.value); setSelectedAngle(null); }}
-                placeholder="Custom angle... (or leave blank for AI to decide)"
-                className="w-full bg-[#111] border border-white/[0.06] rounded-lg p-2 text-[11px] text-white placeholder-gray-600 focus:outline-none focus:border-[#b4f]/40 transition-colors"
-              />
-            </div>
-          </div>
-
-          {/* Output mode */}
-          <div>
-            <div className="text-[9px] uppercase tracking-wider font-semibold text-gray-500 mb-1.5">Output Mode</div>
-            <div className="space-y-1.5">
-              <button
-                type="button"
-                onClick={() => setOutputMode('variants')}
-                className={`w-full flex items-start gap-2.5 p-2.5 rounded-lg border transition-colors cursor-pointer ${
-                  outputMode === 'variants'
-                    ? 'bg-[#b4f]/10 border-[#b4f]/30'
-                    : 'bg-transparent border-white/[0.06] hover:border-white/[0.12]'
-                }`}
-              >
-                <div className={`w-3 h-3 rounded-full mt-0.5 border-2 flex-shrink-0 ${
-                  outputMode === 'variants' ? 'border-[#b4f] bg-[#b4f]' : 'border-gray-600'
-                }`} />
-                <div className="text-left">
-                  <div className="text-[11px] font-semibold text-gray-100">Generate Variants</div>
-                  <div className="text-[10px] text-gray-500">Multiple versions across different conversion angles</div>
-                </div>
-              </button>
-              <button
-                type="button"
-                onClick={() => setOutputMode('clone')}
-                className={`w-full flex items-start gap-2.5 p-2.5 rounded-lg border transition-colors cursor-pointer ${
-                  outputMode === 'clone'
-                    ? 'bg-[#b4f]/10 border-[#b4f]/30'
-                    : 'bg-transparent border-white/[0.06] hover:border-white/[0.12]'
-                }`}
-              >
-                <div className={`w-3 h-3 rounded-full mt-0.5 border-2 flex-shrink-0 ${
-                  outputMode === 'clone' ? 'border-[#b4f] bg-[#b4f]' : 'border-gray-600'
-                }`} />
-                <div className="text-left">
-                  <div className="text-[11px] font-semibold text-gray-100">1:1 Script Clone</div>
-                  <div className="text-[10px] text-gray-500">Keeps structure word-for-word, swaps product & avatar</div>
-                </div>
-              </button>
-            </div>
-
-            {/* Variant count */}
-            {outputMode === 'variants' && (
-              <div className="flex items-center gap-2 mt-2">
-                <span className="text-[11px] text-gray-400">Variants:</span>
-                {[2, 3, 4, 5].map((n) => (
-                  <button
-                    key={n}
-                    type="button"
-                    onClick={() => setVariantCount(n)}
-                    className={`w-7 h-7 rounded text-[11px] font-semibold transition-colors cursor-pointer ${
-                      variantCount === n
-                        ? 'bg-[#b4f]/20 text-[#d8bfff] border border-[#b4f]/40'
-                        : 'bg-transparent text-gray-500 border border-white/[0.06] hover:border-white/[0.12]'
-                    }`}
-                  >
-                    {n}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* Error */}
-          {error && (
-            <div className="text-[11px] text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-2.5 py-1.5">
-              {error}
-            </div>
-          )}
-
-          {/* Generate button */}
+    <div className="space-y-3">
+      {/* Input mode toggle */}
+      <div>
+        <div className="text-[9px] uppercase tracking-wider font-semibold text-gray-500 mb-1.5">Reference Content</div>
+        <div className="flex bg-[#111] rounded-lg border border-white/[0.06] p-0.5 mb-2">
           <button
             type="button"
-            onClick={handleGenerate}
-            disabled={!hasInput || generating}
-            className="w-full flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-semibold transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-            style={{
-              background: generating ? '#1a1a2e' : 'linear-gradient(135deg, #9333ea, #7c3aed)',
-              color: generating ? '#b4f' : '#fff',
-              border: generating ? '1px solid #b4f33' : 'none',
-            }}
+            onClick={() => setInputMode('text')}
+            className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-md text-[11px] font-medium transition-colors cursor-pointer ${
+              inputMode === 'text' ? 'bg-[#00FF88]/15 text-[#00FF88]' : 'text-gray-500 hover:text-gray-300'
+            }`}
           >
-            {generating ? (
-              <>
-                <Loader2 className="w-4 h-4 animate-spin" />
-                <span className="text-xs">{generatingStep || 'Generating...'}</span>
-              </>
-            ) : (
-              <>
-                <Sparkles className="w-4 h-4" />
-                Generate {outputMode === 'clone' ? 'Clone' : `${variantCount} Variants`}
-              </>
-            )}
+            <FileText className="w-3 h-3" />
+            Paste Text
+          </button>
+          <button
+            type="button"
+            onClick={() => setInputMode('url')}
+            className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-md text-[11px] font-medium transition-colors cursor-pointer ${
+              inputMode === 'url' ? 'bg-[#00FF88]/15 text-[#00FF88]' : 'text-gray-500 hover:text-gray-300'
+            }`}
+          >
+            <Link className="w-3 h-3" />
+            URL
           </button>
         </div>
+
+        {inputMode === 'text' ? (
+          <div className="relative">
+            <textarea
+              value={scriptText}
+              onChange={(e) => setScriptText(e.target.value)}
+              placeholder="Paste competitor copy, landing page text, article, ad, email..."
+              className="w-full h-32 bg-[#111] border border-white/[0.06] rounded-lg p-2.5 text-xs text-white placeholder-gray-600 resize-y focus:outline-none focus:border-[#00FF88]/30 transition-colors"
+            />
+            {scriptText.trim().length > 20 && (
+              <button
+                type="button"
+                onClick={handleEnhance}
+                disabled={enhancing}
+                className="absolute bottom-2 right-2 flex items-center gap-1 px-2 py-1 text-[10px] font-medium text-[#00FF88] bg-[#00FF88]/10 rounded border border-[#00FF88]/20 hover:bg-[#00FF88]/20 transition-colors cursor-pointer disabled:opacity-40"
+              >
+                {enhancing ? <Loader2 className="w-3 h-3 animate-spin" /> : <Wand2 className="w-3 h-3" />}
+                Enhance
+              </button>
+            )}
+          </div>
+        ) : (
+          <input
+            type="url"
+            value={scriptUrl}
+            onChange={(e) => setScriptUrl(e.target.value)}
+            placeholder="https://example.com/ad-page"
+            className="w-full bg-[#111] border border-white/[0.06] rounded-lg p-2.5 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-[#00FF88]/30 transition-colors"
+          />
+        )}
+      </div>
+
+      {/* Configuration */}
+      <div>
+        <div className="text-[9px] uppercase tracking-wider font-semibold text-gray-500 mb-1.5">Configuration</div>
+
+        <div className="mb-2">
+          <div className="text-[11px] font-medium text-gray-300 mb-1">Target Product</div>
+          <ProductSelector
+            selectedId={selectedProduct?.id}
+            onSelect={(p) => setSelectedProduct(p)}
+            className="w-full"
+          />
+        </div>
+
+        <div className="mb-2">
+          <div className="text-[11px] font-medium text-gray-300 mb-1">Ad Angle <span className="text-gray-600">(optional)</span></div>
+          <div className="flex flex-wrap gap-1 mb-1.5">
+            {ANGLES.map((a) => (
+              <button
+                key={a}
+                type="button"
+                onClick={() => setSelectedAngle(selectedAngle === a ? null : a)}
+                className={`px-2 py-1 rounded text-[10px] font-medium border transition-colors cursor-pointer ${
+                  selectedAngle === a
+                    ? 'bg-[#00FF88]/15 border-[#00FF88]/30 text-[#00FF88]'
+                    : 'bg-transparent border-white/[0.08] text-gray-500 hover:border-white/[0.15] hover:text-gray-300'
+                }`}
+              >
+                {a}
+              </button>
+            ))}
+          </div>
+          <input
+            type="text"
+            value={customAngle}
+            onChange={(e) => { setCustomAngle(e.target.value); setSelectedAngle(null); }}
+            placeholder="Custom angle... (or leave blank for AI to decide)"
+            className="w-full bg-[#111] border border-white/[0.06] rounded-lg p-2 text-[11px] text-white placeholder-gray-600 focus:outline-none focus:border-[#00FF88]/30 transition-colors"
+          />
+        </div>
+      </div>
+
+      {/* Output mode */}
+      <div>
+        <div className="text-[9px] uppercase tracking-wider font-semibold text-gray-500 mb-1.5">Output Mode</div>
+        <div className="space-y-1.5">
+          <button
+            type="button"
+            onClick={() => setOutputMode('variants')}
+            className={`w-full flex items-start gap-2.5 p-2.5 rounded-lg border transition-colors cursor-pointer ${
+              outputMode === 'variants'
+                ? 'bg-[#00FF88]/8 border-[#00FF88]/25'
+                : 'bg-transparent border-white/[0.06] hover:border-white/[0.12]'
+            }`}
+          >
+            <div className={`w-3 h-3 rounded-full mt-0.5 border-2 flex-shrink-0 ${
+              outputMode === 'variants' ? 'border-[#00FF88] bg-[#00FF88]' : 'border-gray-600'
+            }`} />
+            <div className="text-left">
+              <div className="text-[11px] font-semibold text-gray-100">Generate Variants</div>
+              <div className="text-[10px] text-gray-500">Multiple versions across different conversion angles</div>
+            </div>
+          </button>
+          <button
+            type="button"
+            onClick={() => setOutputMode('clone')}
+            className={`w-full flex items-start gap-2.5 p-2.5 rounded-lg border transition-colors cursor-pointer ${
+              outputMode === 'clone'
+                ? 'bg-[#00FF88]/8 border-[#00FF88]/25'
+                : 'bg-transparent border-white/[0.06] hover:border-white/[0.12]'
+            }`}
+          >
+            <div className={`w-3 h-3 rounded-full mt-0.5 border-2 flex-shrink-0 ${
+              outputMode === 'clone' ? 'border-[#00FF88] bg-[#00FF88]' : 'border-gray-600'
+            }`} />
+            <div className="text-left">
+              <div className="text-[11px] font-semibold text-gray-100">1:1 Script Clone</div>
+              <div className="text-[10px] text-gray-500">Keeps structure word-for-word, swaps product & avatar</div>
+            </div>
+          </button>
+        </div>
+
+        {outputMode === 'variants' && (
+          <div className="flex items-center gap-2 mt-2">
+            <span className="text-[11px] text-gray-400">Variants:</span>
+            {[2, 3, 4, 5].map((n) => (
+              <button
+                key={n}
+                type="button"
+                onClick={() => setVariantCount(n)}
+                className={`w-7 h-7 rounded text-[11px] font-semibold transition-colors cursor-pointer ${
+                  variantCount === n
+                    ? 'bg-[#00FF88]/15 text-[#00FF88] border border-[#00FF88]/30'
+                    : 'bg-transparent text-gray-500 border border-white/[0.06] hover:border-white/[0.12]'
+                }`}
+              >
+                {n}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Error */}
+      {error && (
+        <div className="text-[11px] text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-2.5 py-1.5">
+          {error}
+        </div>
       )}
+
+      {/* Generate button */}
+      <button
+        type="button"
+        onClick={handleGenerate}
+        disabled={!hasInput || generating}
+        className="w-full flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-semibold transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+        style={{
+          background: generating ? '#0a1a10' : 'linear-gradient(135deg, #00FF88, #00CC6A)',
+          color: generating ? '#00FF88' : '#000',
+          border: generating ? '1px solid #00FF8833' : 'none',
+        }}
+      >
+        {generating ? (
+          <>
+            <Loader2 className="w-4 h-4 animate-spin" />
+            <span className="text-xs">{generatingStep || 'Generating...'}</span>
+          </>
+        ) : (
+          <>
+            <Sparkles className="w-4 h-4" />
+            Generate {outputMode === 'clone' ? 'Clone' : `${variantCount} Variants`}
+          </>
+        )}
+      </button>
     </div>
   );
 }

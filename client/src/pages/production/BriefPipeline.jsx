@@ -341,6 +341,21 @@ export default function BriefPipeline() {
       {/* Kanban columns */}
       <div className="flex-1 overflow-x-auto px-6 py-4" style={{ minHeight: 'calc(100vh - 120px)' }}>
         <div className="flex gap-4 h-full">
+          {/* Script Generator — dedicated first column */}
+          <div className="flex flex-col min-w-[260px] max-w-[320px] flex-1">
+            <div className="flex items-center gap-2 px-3 py-2.5 border-b-2 mb-3" style={{ borderColor: 'rgba(0, 255, 136, 0.4)' }}>
+              <Sparkles className="w-4 h-4" style={{ color: '#00FF88' }} />
+              <span className="text-sm font-semibold text-gray-200">Script Generator</span>
+            </div>
+            <div className="flex-1 overflow-y-auto pr-1 pb-4 custom-scrollbar">
+              <ScriptGeneratorPanel
+                onGenerated={handleGenerateFromScript}
+                generating={scriptGenerating}
+                generatingStep={scriptGenStep}
+              />
+            </div>
+          </div>
+
           {COLUMNS.map((col) => {
             const items = buckets[col.key];
             const Icon = col.icon;
@@ -355,15 +370,6 @@ export default function BriefPipeline() {
                     {items.length}
                   </span>
                 </div>
-
-                {/* Script Generator Panel — only in Winning Ads column */}
-                {col.key === 'detected' && (
-                  <ScriptGeneratorPanel
-                    onGenerated={handleGenerateFromScript}
-                    generating={scriptGenerating}
-                    generatingStep={scriptGenStep}
-                  />
-                )}
 
                 {/* Card list */}
                 <div className="flex-1 overflow-y-auto pr-1 space-y-3 pb-4 custom-scrollbar">
