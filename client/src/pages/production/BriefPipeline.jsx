@@ -32,7 +32,7 @@ const COLUMNS = [
   },
   {
     key: 'selected',
-    label: 'Selected',
+    label: 'In Queue',
     icon: Target,
     badgeBg: 'bg-blue-500/20',
     badgeText: 'text-blue-300',
