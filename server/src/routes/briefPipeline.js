@@ -1118,35 +1118,48 @@ router.get('/winners/:id', authenticate, async (req, res) => {
     }
 
     // Fetch video URL from Meta if not cached
-    if (!winner.video_url && META_ACCESS_TOKEN && winner.ad_name) {
+    if (!winner.video_url && META_ACCESS_TOKEN) {
       try {
         // Look up video_url from creative_analysis first
         const vidRows = await pgQuery(
-          `SELECT video_url FROM creative_analysis WHERE creative_id = $1 AND video_url IS NOT NULL LIMIT 1`,
+          `SELECT video_url FROM creative_analysis WHERE creative_id = $1 AND video_url IS NOT NULL AND video_url != '' LIMIT 1`,
           [winner.creative_id]
         );
         if (vidRows.length && vidRows[0].video_url) {
           winner.video_url = vidRows[0].video_url;
           await pgQuery(`UPDATE brief_pipeline_winners SET video_url = $1 WHERE id = $2`, [winner.video_url, winner.id]);
+          console.log(`[BriefPipeline] Found cached video URL for ${winner.creative_id}`);
         } else {
-          // Try Meta API: search for the ad by name, get video_id, then fetch source
+          // Try Meta API: search across accounts for the ad, get video_id, fetch source
+          const searchTerm = winner.creative_id; // e.g. "B0067"
+          console.log(`[BriefPipeline] Searching Meta for video of ${searchTerm}`);
+          let found = false;
           for (const accountId of META_AD_ACCOUNT_IDS) {
+            if (found) break;
             try {
-              const searchUrl = `${META_GRAPH_URL}/${accountId}/ads?fields=name,creative.fields(video_id)&search_terms=${encodeURIComponent(winner.creative_id)}&limit=5&access_token=${META_ACCESS_TOKEN}`;
+              const searchUrl = `${META_GRAPH_URL}/${accountId}/ads?fields=name,creative.fields(video_id,object_story_spec)&filtering=[{"field":"name","operator":"CONTAIN","value":"${searchTerm}"}]&limit=10&access_token=${META_ACCESS_TOKEN}`;
               const searchResp = await fetch(searchUrl);
               const searchData = await searchResp.json();
-              const videoId = searchData.data?.find(a => a.creative?.video_id)?.creative?.video_id;
-              if (videoId) {
+              if (searchData.error) continue;
+              for (const ad of (searchData.data || [])) {
+                const videoId = ad.creative?.video_id
+                  || ad.creative?.object_story_spec?.video_data?.video_id;
+                if (!videoId) continue;
                 const vidResp = await fetch(`${META_GRAPH_URL}/${videoId}?fields=source&access_token=${META_ACCESS_TOKEN}`);
                 const vidData = await vidResp.json();
                 if (vidData.source) {
                   winner.video_url = vidData.source;
                   await pgQuery(`UPDATE brief_pipeline_winners SET video_url = $1 WHERE id = $2`, [winner.video_url, winner.id]);
+                  console.log(`[BriefPipeline] Found video URL for ${winner.creative_id} via Meta (${accountId})`);
+                  found = true;
                   break;
                 }
               }
-            } catch { /* skip account */ }
+            } catch (err) {
+              console.warn(`[BriefPipeline] Meta search error for ${accountId}:`, err.message);
+            }
           }
+          if (!found) console.log(`[BriefPipeline] No video URL found for ${winner.creative_id} across ${META_AD_ACCOUNT_IDS.length} accounts`);
         }
       } catch (err) {
         console.error(`[BriefPipeline] Video URL fetch error for ${winner.creative_id}:`, err.message);
