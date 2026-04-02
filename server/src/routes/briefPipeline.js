@@ -1016,22 +1016,32 @@ function validateUuid(req, res) {
 router.get('/winners', authenticate, async (_req, res) => {
   try {
     await ensureTables();
-    // Join with creative_analysis to get fresh thumbnail/video URLs (Meta CDN URLs expire)
-    const rows = await pgQuery(`
-      SELECT w.*,
-             COALESCE(ca.thumbnail_url, w.thumbnail_url) AS thumbnail_url,
-             COALESCE(ca.video_url, w.video_url) AS video_url
-      FROM brief_pipeline_winners w
-      LEFT JOIN LATERAL (
-        SELECT thumbnail_url, video_url
+    const rows = await pgQuery(
+      `SELECT * FROM brief_pipeline_winners ORDER BY roas DESC, detected_at DESC`
+    );
+
+    // Refresh stale thumbnail/video URLs from creative_analysis (Meta CDN URLs expire)
+    if (rows.length) {
+      const creativeIds = rows.map(r => r.creative_id);
+      const freshUrls = await pgQuery(`
+        SELECT DISTINCT ON (creative_id) creative_id, thumbnail_url, video_url
         FROM creative_analysis
-        WHERE creative_id = w.creative_id
+        WHERE creative_id = ANY($1)
           AND (thumbnail_url IS NOT NULL OR video_url IS NOT NULL)
-        ORDER BY synced_at DESC
-        LIMIT 1
-      ) ca ON true
-      ORDER BY w.roas DESC, w.detected_at DESC
-    `);
+        ORDER BY creative_id, synced_at DESC
+      `, [creativeIds]);
+
+      const urlMap = {};
+      for (const r of freshUrls) urlMap[r.creative_id] = r;
+
+      for (const row of rows) {
+        const fresh = urlMap[row.creative_id];
+        if (fresh) {
+          if (fresh.thumbnail_url) row.thumbnail_url = fresh.thumbnail_url;
+          if (fresh.video_url) row.video_url = fresh.video_url;
+        }
+      }
+    }
     res.json({ success: true, winners: rows });
   } catch (err) {
     console.error('[BriefPipeline] GET /winners error:', err.message);
@@ -1162,23 +1172,23 @@ router.get('/winners/:id', authenticate, async (req, res) => {
   if (!validateUuid(req, res)) return;
   try {
     await ensureTables();
-    const rows = await pgQuery(`
-      SELECT w.*,
-             COALESCE(ca.thumbnail_url, w.thumbnail_url) AS thumbnail_url,
-             COALESCE(ca.video_url, w.video_url) AS video_url
-      FROM brief_pipeline_winners w
-      LEFT JOIN LATERAL (
-        SELECT thumbnail_url, video_url
-        FROM creative_analysis
-        WHERE creative_id = w.creative_id
-          AND (thumbnail_url IS NOT NULL OR video_url IS NOT NULL)
-        ORDER BY synced_at DESC
-        LIMIT 1
-      ) ca ON true
-      WHERE w.id = $1
-    `, [req.params.id]);
+    const rows = await pgQuery(
+      `SELECT * FROM brief_pipeline_winners WHERE id = $1`,
+      [req.params.id]
+    );
     if (!rows.length) {
       return res.status(404).json({ success: false, error: { message: 'Winner not found' } });
+    }
+
+    // Refresh thumbnail/video from creative_analysis (Meta CDN URLs expire)
+    const freshUrls = await pgQuery(`
+      SELECT thumbnail_url, video_url FROM creative_analysis
+      WHERE creative_id = $1 AND (thumbnail_url IS NOT NULL OR video_url IS NOT NULL)
+      ORDER BY synced_at DESC LIMIT 1
+    `, [rows[0].creative_id]);
+    if (freshUrls.length) {
+      if (freshUrls[0].thumbnail_url) rows[0].thumbnail_url = freshUrls[0].thumbnail_url;
+      if (freshUrls[0].video_url) rows[0].video_url = freshUrls[0].video_url;
     }
 
     const winner = rows[0];
