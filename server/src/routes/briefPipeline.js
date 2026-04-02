@@ -710,7 +710,9 @@ ${scriptText}
   return { dnaPrompt, psychologyPrompt, rulesPrompt };
 }
 
-function buildIterationStrategyPrompt(winAnalysis, parsedScript, config, productContext) {
+// buildIterationStrategyPrompt removed — directions now built from iterationRules.safe_iteration_directions
+// Kept as comment for git history reference
+function _deprecated_buildIterationStrategyPrompt(winAnalysis, parsedScript, config, productContext) {
   const hooksFormatted = (parsedScript.hooks || [])
     .map(h => `${h.id}: ${h.text}`)
     .join('\n');
@@ -979,7 +981,7 @@ function buildBriefScorerPrompt(winner, parsedScript, generatedBrief, directionN
     .join('\n');
 
   const generatedHooks = (generatedBrief.hooks || [])
-    .map(h => `${h.id || h.mechanism}: ${h.text}`)
+    .map((h, i) => `${h.id || `H${i + 1}`}: ${h.text || '(empty)'}`)
     .join('\n');
 
   // Build iteration rules context for scoring
@@ -1642,6 +1644,7 @@ router.post('/generate/:id', authenticate, async (req, res) => {
     // Step 4: Parse script with Claude
     console.log(`[BriefPipeline] Step 4: Parsing script for ${winner.creative_id}`);
     let parsedScript = winner.parsed_script;
+    if (typeof parsedScript === 'string') { try { parsedScript = JSON.parse(parsedScript); } catch { parsedScript = null; } }
     if (!parsedScript) {
       const { system, user } = buildScriptParserPrompt(winner.raw_script, winner.ad_name || winner.creative_id);
       parsedScript = await callClaude(system, user, 2000);
@@ -1708,7 +1711,7 @@ router.post('/generate/:id', authenticate, async (req, res) => {
         hook_direction: `Use a completely different hook approach than the original — variation ${i + 1} of ${num_variations}`,
         body_direction: dirText,
         emotional_shift: winAnalysis.psychology?.emotional_arc
-          ? `${winAnalysis.psychology.emotional_arc.at_hook} → ${winAnalysis.psychology.emotional_arc.final_state}`
+          ? `${winAnalysis.psychology.emotional_arc?.at_hook || '?'} → ${winAnalysis.psychology.emotional_arc?.final_state || '?'}`
           : 'Maintain original emotional arc',
       });
     }
@@ -1737,30 +1740,45 @@ router.post('/generate/:id', authenticate, async (req, res) => {
 
         const generated = await callClaude(genSystem, enhancedUser, 3000);
 
+        // Validate generated response has required fields
+        if (!generated || (!generated.hooks && !generated.body)) {
+          throw new Error('Claude returned invalid brief structure (missing hooks/body)');
+        }
+        if (!Array.isArray(generated.hooks)) generated.hooks = [];
+        if (!generated.body) generated.body = '';
+
         // Step 8: Blend validation + Scoring IN PARALLEL (both read generated, don't depend on each other)
         const { system: blendSystem, user: blendUser } = buildBlendValidationPrompt(generated);
         const { system: scoreSystem, user: scoreUser } = buildBriefScorerPrompt(winner, parsedScript, generated, direction.name, winAnalysis, productContext);
 
-        const [blendResult, scores] = await Promise.all([
-          callClaude(blendSystem, blendUser, 1000, { fast: true }),  // Haiku for blend check
-          callClaude(scoreSystem, scoreUser, 1500),                  // Sonnet for scoring
-        ]);
+        let blendResult = null;
+        let scores = { novelty: { score: 5 }, aggression: { score: 5 }, coherence: { score: 5 }, hook_body_blend: { score: 5 }, conversion_potential: { score: 5 } };
+        try {
+          const [br, sc] = await Promise.all([
+            callClaude(blendSystem, blendUser, 1000, { fast: true }),  // Haiku for blend check
+            callClaude(scoreSystem, scoreUser, 1500),                  // Sonnet for scoring
+          ]);
+          blendResult = br;
+          if (sc) scores = sc;
+        } catch (evalErr) {
+          console.warn(`[BriefPipeline] Scoring/blend error for direction #${direction.id}:`, evalErr.message);
+        }
 
         // Incorporate blend validation into scores
-        if (blendResult) {
+        if (blendResult?.overall_blend != null) {
           scores.hook_body_blend = scores.hook_body_blend || {};
           scores.hook_body_blend.blend_validation = blendResult;
-          if (blendResult.overall_blend && blendResult.overall_blend < 6.5) {
-            scores.hook_body_blend.score = Math.min(scores.hook_body_blend.score || 5, Math.round(blendResult.overall_blend));
+          if (blendResult.overall_blend < 6.5) {
+            scores.hook_body_blend.score = Math.min(scores.hook_body_blend?.score ?? 5, Math.round(blendResult.overall_blend));
           }
         }
 
-        const overall = scores.overall || (
-          ((scores.novelty?.score || 5) * 0.15) +
-          ((scores.aggression?.score || 5) * 0.15) +
-          ((scores.coherence?.score || 5) * 0.25) +
-          ((scores.hook_body_blend?.score || 5) * 0.15) +
-          ((scores.conversion_potential?.score || 5) * 0.30)
+        const overall = scores.overall ?? (
+          ((scores.novelty?.score ?? 5) * 0.15) +
+          ((scores.aggression?.score ?? 5) * 0.15) +
+          ((scores.coherence?.score ?? 5) * 0.25) +
+          ((scores.hook_body_blend?.score ?? 5) * 0.15) +
+          ((scores.conversion_potential?.score ?? 5) * 0.30)
         );
 
         return { generated, scores, overall, direction, success: true };
