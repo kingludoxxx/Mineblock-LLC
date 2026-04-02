@@ -8,6 +8,7 @@ import {
   Trophy,
   Rocket,
   ExternalLink,
+  Settings,
 } from 'lucide-react';
 import api from '../../services/api';
 import WinnerCard from './briefs/WinnerCard';
@@ -15,6 +16,7 @@ import ScriptGeneratorPanel from './briefs/ScriptGeneratorPanel';
 import GeneratedBriefCard from './briefs/GeneratedBriefCard';
 import BriefDetailModal from './briefs/BriefDetailModal';
 import WinnerDetailModal from './briefs/WinnerDetailModal';
+import PipelineSettingsModal from './briefs/PipelineSettingsModal';
 
 // ---------------------------------------------------------------------------
 // Column definitions
@@ -88,6 +90,7 @@ export default function BriefPipeline() {
   const [detailModal, setDetailModal] = useState(null);
   const [winnerDetail, setWinnerDetail] = useState(null);
   const [error, setError] = useState(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   // ---------------------------------------------------------------------------
   // Data fetching
@@ -335,6 +338,15 @@ export default function BriefPipeline() {
             )}
             Refresh
           </button>
+          <button
+            type="button"
+            onClick={() => setSettingsOpen(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-300
+                       bg-white/[0.04] border border-white/[0.06] rounded-md
+                       hover:bg-white/[0.08] transition-colors cursor-pointer"
+          >
+            <Settings className="w-3.5 h-3.5" />
+          </button>
         </div>
       </div>
 
@@ -516,6 +528,12 @@ export default function BriefPipeline() {
           }}
         />
       )}
+
+      {/* Pipeline Settings Modal */}
+      <PipelineSettingsModal
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+      />
     </div>
   );
 }

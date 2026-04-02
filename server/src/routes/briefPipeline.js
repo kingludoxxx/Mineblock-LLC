@@ -2769,6 +2769,120 @@ router.get('/stats', authenticate, async (_req, res) => {
   }
 });
 
+// ── Settings: Prompt management ──────────────────────────────────────
+
+// Default prompt descriptions for the UI
+const PROMPT_TYPES = [
+  { key: 'scriptParser', label: 'Script Parser', description: 'Extracts hooks, body, and CTA from raw script text', icon: 'FileSearch' },
+  { key: 'scriptDna', label: 'Script DNA', description: 'Analyzes core angle, mechanism, narrative structure, and what makes the ad convert', icon: 'Dna' },
+  { key: 'psychology', label: 'Psychology', description: 'Maps emotional arc, analyzes hooks, and profiles target audience', icon: 'Brain' },
+  { key: 'iterationRules', label: 'Iteration Rules', description: 'Defines what must stay fixed, what can vary, and what is high-risk to change', icon: 'Shield' },
+  { key: 'generator', label: 'Brief Generator', description: 'Generates 1 body + 3 hooks per iteration direction, preserving structural skeleton', icon: 'Sparkles' },
+  { key: 'scorer', label: 'Scorer', description: 'Rates briefs on novelty, aggression, coherence, hook-body blend, and conversion potential', icon: 'BarChart3' },
+  { key: 'blendValidator', label: 'Blend Validator', description: 'Checks if each hook flows naturally into the body', icon: 'Link' },
+];
+
+// Cache for custom prompts from DB
+let customPromptsCache = { data: null, timestamp: 0 };
+const PROMPT_CACHE_TTL = 5 * 60 * 1000; // 5 min
+
+async function getCustomPrompts() {
+  if (customPromptsCache.data && Date.now() - customPromptsCache.timestamp < PROMPT_CACHE_TTL) {
+    return customPromptsCache.data;
+  }
+  try {
+    const rows = await pgQuery(`SELECT value FROM system_settings WHERE key = 'brief_pipeline_prompts'`);
+    const prompts = rows.length ? (typeof rows[0].value === 'string' ? JSON.parse(rows[0].value) : rows[0].value) : null;
+    customPromptsCache = { data: prompts, timestamp: Date.now() };
+    return prompts;
+  } catch {
+    return null;
+  }
+}
+
+// Extract default prompts for the settings UI
+function getDefaultPrompts() {
+  return {
+    scriptParser: {
+      system: 'You are a script parser for video ad briefs. Extract the structured components from the raw script text below.',
+      user: '(Dynamic — includes raw script and task name. Template variables: {{rawScript}}, {{taskName}})',
+    },
+    scriptDna: {
+      system: 'You are a senior direct-response strategist and copy analyst.',
+      user: '(Dynamic — includes product context, winning ad script, and performance data. Extracts core_angle, primary_emotion, belief_shift, mechanism, narrative_structure, structural_skeleton, and more.)',
+    },
+    psychology: {
+      system: 'You are a consumer psychology expert and hook specialist for paid social ads.',
+      user: '(Dynamic — includes product context and winning ad script. Maps emotional_arc, analyzes hooks, profiles audience.)',
+    },
+    iterationRules: {
+      system: 'You are a senior creative director specializing in direct-response ad iteration for a media buying team.',
+      user: '(Dynamic — includes product context and winning ad script. Outputs must_stay_fixed, can_be_varied, high_risk_changes, safe_iteration_directions, hook_rules, tone_boundaries.)',
+    },
+    generator: {
+      system: 'You are a senior direct-response copywriter specialized in Facebook and TikTok ad iteration.\n\nYou understand that the goal is NOT to create new ads, but to generate variations of a proven winner while preserving its psychological mechanism, persuasive structure, and conversion logic.\n\nYou write like a human performance marketer — not like an AI, not like a brand copywriter.',
+      user: '(Dynamic — includes original script, deep analysis context, iteration direction, product context, iteration rules. Generates 1 body + 3 hooks.)',
+    },
+    scorer: {
+      system: 'You are a performance media buyer who has spent $50M+ on paid social. You evaluate ad scripts purely on their likelihood to convert cold traffic. You are ruthlessly honest — most scripts are mediocre.',
+      user: '(Dynamic — includes original script, generated brief, product context, iteration rules. Scores on 5 dimensions.)',
+    },
+    blendValidator: {
+      system: 'You are a continuity editor for direct response ad scripts. Your ONLY job is to check if hooks flow naturally into the body.',
+      user: '(Dynamic — includes generated hooks and body first line. Scores blend per hook.)',
+    },
+  };
+}
+
+// GET /settings/prompts — return custom prompts or defaults
+router.get('/settings/prompts', authenticate, async (_req, res) => {
+  try {
+    const custom = await getCustomPrompts();
+    const defaults = getDefaultPrompts();
+    res.json({
+      success: true,
+      promptTypes: PROMPT_TYPES,
+      defaults,
+      custom: custom || {},
+      hasCustom: !!custom,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// PUT /settings/prompts — save custom prompts
+router.put('/settings/prompts', authenticate, async (req, res) => {
+  try {
+    const { prompts } = req.body;
+    if (!prompts || typeof prompts !== 'object') {
+      return res.status(400).json({ success: false, error: { message: 'prompts object is required' } });
+    }
+    await pgQuery(
+      `INSERT INTO system_settings (key, value, description)
+       VALUES ('brief_pipeline_prompts', $1, 'Custom prompts for the Brief Pipeline agents')
+       ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()`,
+      [JSON.stringify(prompts)]
+    );
+    // Invalidate cache
+    customPromptsCache = { data: prompts, timestamp: Date.now() };
+    res.json({ success: true, message: 'Prompts saved' });
+  } catch (err) {
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// POST /settings/prompts/reset — delete custom prompts, restore defaults
+router.post('/settings/prompts/reset', authenticate, async (_req, res) => {
+  try {
+    await pgQuery(`DELETE FROM system_settings WHERE key = 'brief_pipeline_prompts'`);
+    customPromptsCache = { data: null, timestamp: 0 };
+    res.json({ success: true, message: 'Prompts reset to defaults' });
+  } catch (err) {
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
 // ── Admin: Reset all winners back to detected ────────────────────────
 router.post('/admin/reset-winners', authenticate, async (_req, res) => {
   try {
