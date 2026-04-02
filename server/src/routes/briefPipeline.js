@@ -6,7 +6,7 @@ import crypto from 'crypto';
 const router = Router();
 
 // ── Config ────────────────────────────────────────────────────────────
-const CLICKUP_TOKEN = 'pk_266421907_38TVGF16690R1U9EZOZLBK9BJ6J0YPRD';
+const CLICKUP_TOKEN = process.env.CLICKUP_API_TOKEN || '';
 const VIDEO_ADS_LIST = '901518716584';
 const MEDIA_BUYING_LIST = '901518769621';
 const CLICKUP_API = 'https://api.clickup.com/api/v2';
@@ -204,6 +204,14 @@ async function ensureTables() {
         analyzed_at TIMESTAMPTZ DEFAULT NOW()
       )
     `, [], { timeout: 15000 });
+
+    // Recover any winners stuck in 'generating' from a previous crash
+    const stuck = await pgQuery(
+      `UPDATE brief_pipeline_winners SET status = 'selected' WHERE status = 'generating' RETURNING creative_id`
+    ).catch(() => []);
+    if (stuck.length) {
+      console.log(`[BriefPipeline] Recovered ${stuck.length} stuck winners: ${stuck.map(r => r.creative_id).join(', ')}`);
+    }
 
     tablesReady = true;
     console.log('[BriefPipeline] Tables ready');
@@ -1226,6 +1234,7 @@ router.post('/generate/:id', authenticate, async (req, res) => {
     const aggressiveness = req.body.aggressiveness || savedConfig.aggressiveness || 'medium';
     const num_variations = req.body.num_variations || savedConfig.num_variations || 3;
     const fixed_elements = req.body.fixed_elements || savedConfig.fixed_elements || [];
+    const configEditor = req.body.editor || savedConfig.editor || null;
 
     // Guard against concurrent generation
     if (winner.status === 'generating') {
@@ -1271,7 +1280,7 @@ router.post('/generate/:id', authenticate, async (req, res) => {
     if (!parsedScript) {
       const { system, user } = buildScriptParserPrompt(winner.raw_script, winner.ad_name || winner.creative_id);
       parsedScript = await callClaude(system, user, 2000);
-      if (!parsedScript || (!parsedScript.hooks && !parsedScript.body)) {
+      if (!parsedScript || (!parsedScript.hooks?.length && !parsedScript.body?.trim())) {
         throw new Error('Claude failed to parse the script into a valid structure (missing hooks/body).');
       }
       await pgQuery(
@@ -1347,7 +1356,7 @@ router.post('/generate/:id', authenticate, async (req, res) => {
           format: winner.format,
           strategist: 'Ludovico',
           creator: 'NA',
-          editor: winner.editor || 'Antoni',
+          editor: configEditor || winner.editor || 'Antoni',
           week: weekLabel,
         });
 
@@ -1375,7 +1384,7 @@ router.post('/generate/:id', authenticate, async (req, res) => {
           scores.coherence?.score || 5, overall,
           scores.verdict || 'MAYBE', JSON.stringify(scores),
           briefNumber, winner.product_code || 'MR', winner.angle, winner.format,
-          winner.avatar, winner.editor || 'Antoni',
+          winner.avatar, configEditor || winner.editor || 'Antoni',
           'Ludovico', 'NA', namingConvention,
         ], { timeout: 10000 });
 

@@ -52,10 +52,10 @@ function WinnerCard({ winner, onSelect, onGenerate, showGenerate = false }) {
                  transition-all duration-150 cursor-pointer"
     >
       {/* Thumbnail preview */}
-      {(winner.thumbnail_url || winner.video_url) && (
+      {winner.thumbnail_url && (
         <div className="relative -mx-3.5 -mt-3.5 mb-1">
           <img
-            src={winner.thumbnail_url || ''}
+            src={winner.thumbnail_url}
             alt={winner.creative_id}
             className="w-full aspect-video object-cover rounded-t-lg"
           />

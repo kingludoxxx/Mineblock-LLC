@@ -181,6 +181,7 @@ export default function BriefPipeline() {
     setGenerating(true);
     setGeneratingId(winnerId);
     setGeneratingStep('Analyzing winning ad...');
+    let stepInterval;
     try {
       const stepMessages = [
         'Analyzing winning ad...',
@@ -190,7 +191,7 @@ export default function BriefPipeline() {
         'Finalizing briefs...',
       ];
       let stepIdx = 0;
-      const stepInterval = setInterval(() => {
+      stepInterval = setInterval(() => {
         stepIdx = Math.min(stepIdx + 1, stepMessages.length - 1);
         setGeneratingStep(stepMessages[stepIdx]);
       }, 3000);
@@ -251,9 +252,9 @@ export default function BriefPipeline() {
       pushed: [],
     };
 
-    // Winners go into detected or selected
+    // Winners go into detected or selected (generating/generated stay in selected)
     for (const w of winners) {
-      if (w.status === 'selected') {
+      if (w.status === 'selected' || w.status === 'generating' || w.status === 'generated') {
         map.selected.push(w);
       } else {
         map.detected.push(w);
@@ -491,6 +492,7 @@ export default function BriefPipeline() {
           brief={detailModal}
           isOpen={!!detailModal}
           onClose={() => setDetailModal(null)}
+          winAnalysis={detailModal.win_analysis}
           onApprove={() => {
             handleApprove(detailModal.id);
             setDetailModal(null);

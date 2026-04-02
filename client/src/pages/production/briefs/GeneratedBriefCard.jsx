@@ -78,7 +78,7 @@ function GeneratedBriefCard({ brief, onApprove, onReject, onPush, onClick, showA
         {/* Score bars */}
         <div className="space-y-1 pt-1">
           {SCORE_BARS.map(({ key, label, icon: Icon }) => {
-            const value = brief[key] ?? 0;
+            const value = Number(brief[key]) || 0;
             return (
               <div key={key} className="flex items-center gap-1.5">
                 <Icon className="w-3 h-3 text-gray-600 shrink-0" />

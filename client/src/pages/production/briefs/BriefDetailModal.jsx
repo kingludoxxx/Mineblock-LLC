@@ -20,7 +20,7 @@ const SCORE_CONFIG = {
   novelty:    { label: 'Novelty',    icon: Zap,    color: 'bg-purple-500/20 text-purple-300 border-purple-500/30' },
   aggression: { label: 'Aggression', icon: Target, color: 'bg-red-500/20 text-red-300 border-red-500/30' },
   coherence:  { label: 'Coherence',  icon: Brain,  color: 'bg-blue-500/20 text-blue-300 border-blue-500/30' },
-  conversion: { label: 'Conversion', icon: Shield, color: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' },
+  overall:    { label: 'Overall',    icon: Shield, color: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' },
 };
 
 // ---------------------------------------------------------------------------
@@ -89,13 +89,20 @@ export default function BriefDetailModal({
     novelty: brief.novelty_score,
     aggression: brief.aggression_score,
     coherence: brief.coherence_score,
-    conversion: brief.overall_score,
+    overall: brief.overall_score,
   };
   const hasScores = Object.values(scores).some((v) => v != null);
   const hooks = (() => {
     if (Array.isArray(brief.hooks)) return brief.hooks;
     if (typeof brief.hooks === 'string') { try { return JSON.parse(brief.hooks); } catch { return []; } }
     return [];
+  })();
+
+  // Safely parse winAnalysis if it's a JSON string
+  const parsedWinAnalysis = (() => {
+    if (!winAnalysis) return null;
+    if (typeof winAnalysis === 'object') return winAnalysis;
+    try { return JSON.parse(winAnalysis); } catch { return null; }
   })();
 
   return (
@@ -141,7 +148,7 @@ export default function BriefDetailModal({
             <div>
               <SectionLabel>Scores</SectionLabel>
               <div className="flex gap-2">
-                {['novelty', 'aggression', 'coherence', 'conversion'].map((key) => (
+                {['novelty', 'aggression', 'coherence', 'overall'].map((key) => (
                   <ScoreCard key={key} scoreKey={key} value={scores[key]} />
                 ))}
               </div>
@@ -183,7 +190,7 @@ export default function BriefDetailModal({
           )}
 
           {/* Win Analysis */}
-          {winAnalysis && (
+          {parsedWinAnalysis && (
             <div>
               <button
                 type="button"
@@ -201,13 +208,13 @@ export default function BriefDetailModal({
               {winAnalysisOpen && (
                 <div className="mt-3 p-4 bg-white/[0.03] border border-white/[0.06] rounded-lg space-y-4">
                   {/* Winning elements ranked */}
-                  {winAnalysis.winning_elements_ranked?.length > 0 && (
+                  {parsedWinAnalysis.winning_elements_ranked?.length > 0 && (
                     <div>
                       <span className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold block mb-1.5">
                         Winning Elements
                       </span>
                       <ol className="space-y-1 text-sm text-slate-300 list-decimal list-inside">
-                        {winAnalysis.winning_elements_ranked.map((el, i) => (
+                        {parsedWinAnalysis.winning_elements_ranked.map((el, i) => (
                           <li key={i} className="leading-relaxed">{el}</li>
                         ))}
                       </ol>
@@ -215,35 +222,35 @@ export default function BriefDetailModal({
                   )}
 
                   {/* Emotional driver */}
-                  {winAnalysis.emotional_driver?.primary && (
+                  {parsedWinAnalysis.emotional_driver?.primary && (
                     <div>
                       <span className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold block mb-1.5">
                         Emotional Driver
                       </span>
                       <span className="inline-block px-2.5 py-1 text-xs font-medium rounded-full bg-violet-500/15 text-violet-300 border border-violet-500/25">
-                        {winAnalysis.emotional_driver.primary}
+                        {parsedWinAnalysis.emotional_driver.primary}
                       </span>
                     </div>
                   )}
 
                   {/* Enemy structure */}
-                  {winAnalysis.enemy_structure?.villain && (
+                  {parsedWinAnalysis.enemy_structure?.villain && (
                     <div>
                       <span className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold block mb-1.5">
                         Enemy / Villain
                       </span>
-                      <p className="text-sm text-slate-300">{winAnalysis.enemy_structure.villain}</p>
+                      <p className="text-sm text-slate-300">{parsedWinAnalysis.enemy_structure.villain}</p>
                     </div>
                   )}
 
                   {/* Iteration opportunities */}
-                  {winAnalysis.iteration_opportunities?.length > 0 && (
+                  {parsedWinAnalysis.iteration_opportunities?.length > 0 && (
                     <div>
                       <span className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold block mb-1.5">
                         Iteration Opportunities
                       </span>
                       <ul className="space-y-1 text-sm text-slate-300 list-disc list-inside">
-                        {winAnalysis.iteration_opportunities.map((opp, i) => (
+                        {parsedWinAnalysis.iteration_opportunities.map((opp, i) => (
                           <li key={i} className="leading-relaxed">{opp}</li>
                         ))}
                       </ul>
