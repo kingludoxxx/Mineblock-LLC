@@ -251,7 +251,7 @@ function getCurrentWeekLabel() {
 /**
  * Call Claude API and return parsed JSON from the response.
  */
-async function callClaude(systemPrompt, userPrompt, maxTokens = 3000, { fast = false } = {}) {
+async function callClaude(systemPrompt, userPrompt, maxTokens = 3000, { fast = false, rawText = false } = {}) {
   const body = {
     model: fast ? 'claude-haiku-4-5-20251001' : CLAUDE_MODEL,
     max_tokens: maxTokens,
@@ -278,6 +278,9 @@ async function callClaude(systemPrompt, userPrompt, maxTokens = 3000, { fast = f
 
   const data = await res.json();
   const text = data.content?.[0]?.text || '';
+
+  // Raw text mode — return plain text without JSON parsing
+  if (rawText) return text.trim();
 
   // Strip markdown fences if present, then parse JSON
   let cleaned = text.trim();
@@ -1960,13 +1963,17 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
           signal: AbortSignal.timeout(15000),
         });
         const html = await fetchRes.text();
-        // Use Claude to extract the ad copy from the HTML
-        const extracted = await callClaude(
-          'You are a text extraction tool. Extract the main ad copy, sales text, or script from this webpage HTML. Return ONLY the extracted text, no commentary.',
-          `Extract the main ad copy or script text from this HTML. If it contains a video ad script, transcribe it. Return only the clean text.\n\nHTML (first 15000 chars):\n${html.slice(0, 15000)}`,
+        if (html.length < 100) throw new Error('Page returned very little content — it may require JavaScript to render.');
+        // Use Claude to extract the ad copy from the HTML (raw text mode, no JSON parsing)
+        rawScript = await callClaude(
+          'You are a text extraction tool. Extract the main ad copy, sales text, or script from this webpage HTML. Return ONLY the extracted text as plain text — no JSON, no commentary, no formatting. If the HTML contains mostly JavaScript and no readable ad copy, respond with "NO_CONTENT_FOUND".',
+          `Extract the main ad copy or script text from this HTML. If it contains a video ad script, extract it. Return only the clean text.\n\nHTML (first 15000 chars):\n${html.slice(0, 15000)}`,
           2000,
+          { rawText: true },
         );
-        rawScript = typeof extracted === 'object' ? (extracted.text || JSON.stringify(extracted)) : String(extracted);
+        if (!rawScript || rawScript === 'NO_CONTENT_FOUND' || rawScript.length < 30) {
+          throw new Error('Could not extract ad copy from this URL. The page may be a JavaScript app that requires a browser to render. Try pasting the text manually instead.');
+        }
       } catch (urlErr) {
         return res.status(400).json({ success: false, error: { message: `Failed to fetch URL: ${urlErr.message}` } });
       }
