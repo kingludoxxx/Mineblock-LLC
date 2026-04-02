@@ -1,27 +1,4 @@
-import { Check, X, ExternalLink, Star, Zap, Brain, Target } from 'lucide-react';
-
-// ---------------------------------------------------------------------------
-// Score helpers
-// ---------------------------------------------------------------------------
-
-function scoreColor(value) {
-  if (value >= 7) return 'bg-emerald-500';
-  if (value >= 5) return 'bg-amber-500';
-  return 'bg-red-500';
-}
-
-function scoreTextColor(value) {
-  if (value >= 7) return 'text-emerald-400';
-  if (value >= 5) return 'text-amber-400';
-  return 'text-red-400';
-}
-
-const SCORE_BARS = [
-  { key: 'novelty_score', label: 'NOV', icon: Star },
-  { key: 'aggression_score', label: 'AGG', icon: Zap },
-  { key: 'coherence_score', label: 'COH', icon: Brain },
-  { key: 'overall_score', label: 'OVR', icon: Target },
-];
+import { Check, X, ExternalLink } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
 // GeneratedBriefCard
@@ -46,7 +23,7 @@ function GeneratedBriefCard({ brief, onApprove, onReject, onPush, onClick, showA
                  hover:border-white/[0.12] hover:shadow-lg hover:shadow-black/20 transition-all duration-150"
     >
       <div className="p-3 space-y-2">
-        {/* Top row: parent label + rank + overall score */}
+        {/* Top row: parent label + rank */}
         <div className="flex items-center gap-2">
           <span className="text-[11px] font-medium bg-blue-500/15 text-blue-300 px-1.5 py-0.5 rounded">
             IT of {brief.parent_creative_id}
@@ -56,17 +33,7 @@ function GeneratedBriefCard({ brief, onApprove, onReject, onPush, onClick, showA
               #{brief.rank}
             </span>
           )}
-          <span className={`ml-auto text-sm font-bold ${scoreTextColor(Number(brief.overall_score))}`}>
-            {brief.overall_score != null ? Number(brief.overall_score).toFixed(1) : '—'}
-          </span>
         </div>
-
-        {/* Direction */}
-        {brief.iteration_direction && (
-          <p className="text-[11px] italic text-gray-500 leading-snug truncate">
-            {brief.iteration_direction}
-          </p>
-        )}
 
         {/* Hook preview */}
         {hookPreview && (
@@ -75,47 +42,6 @@ function GeneratedBriefCard({ brief, onApprove, onReject, onPush, onClick, showA
           </p>
         )}
 
-        {/* Original script preview */}
-        {brief.original_script && (() => {
-          const origHooks = (() => {
-            if (!brief.original_script) return [];
-            let obj = brief.original_script;
-            if (typeof obj === 'string') { try { obj = JSON.parse(obj); } catch { return []; } }
-            if (Array.isArray(obj.hooks)) return obj.hooks;
-            if (Array.isArray(obj)) return obj;
-            return [];
-          })();
-          const firstOrigHook = origHooks[0]?.text;
-          if (!firstOrigHook) return null;
-          return (
-            <div className="text-[10px] text-gray-500 border-l-2 border-gray-700 pl-2 line-clamp-2">
-              <span className="text-gray-600 font-medium">Original: </span>
-              {firstOrigHook.length > 60 ? firstOrigHook.slice(0, 60) + '...' : firstOrigHook}
-            </div>
-          );
-        })()}
-
-        {/* Score bars */}
-        <div className="space-y-1 pt-1">
-          {SCORE_BARS.map(({ key, label, icon: Icon }) => {
-            const value = Number(brief[key]) || 0;
-            return (
-              <div key={key} className="flex items-center gap-1.5">
-                <Icon className="w-3 h-3 text-gray-600 shrink-0" />
-                <span className="text-[9px] text-gray-500 w-6 shrink-0">{label}</span>
-                <div className="flex-1 h-1 bg-white/[0.06] rounded-full overflow-hidden">
-                  <div
-                    className={`h-full rounded-full ${scoreColor(value)}`}
-                    style={{ width: `${(value / 10) * 100}%` }}
-                  />
-                </div>
-                <span className="text-[9px] text-gray-500 w-5 text-right shrink-0">
-                  {value.toFixed(1)}
-                </span>
-              </div>
-            );
-          })}
-        </div>
 
         {/* Actions */}
         <div className="pt-1">
