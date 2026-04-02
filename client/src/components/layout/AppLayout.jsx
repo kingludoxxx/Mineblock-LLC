@@ -2,6 +2,7 @@ import { useState, createContext, useContext } from 'react';
 import { Outlet } from 'react-router-dom';
 import Sidebar from './Sidebar';
 import Topbar from './Topbar';
+import ErrorBoundary from '../ErrorBoundary';
 
 const SidebarContext = createContext();
 export const useSidebar = () => useContext(SidebarContext);
@@ -21,7 +22,9 @@ export default function AppLayout() {
         >
           <Topbar />
           <main className="flex-1 overflow-y-auto">
-            <Outlet />
+            <ErrorBoundary>
+              <Outlet />
+            </ErrorBoundary>
           </main>
         </div>
       </div>
