@@ -452,7 +452,7 @@ function AdvertorialCopyCard({ copy, onStatusChange, onGenerateImages, generatin
                 <img
                   src={img.url || img}
                   alt={`Archetype ${i + 1}`}
-                  className="w-full h-24 rounded-md object-cover border border-white/[0.06]"
+                  className="w-full h-20 rounded-xl object-cover border border-white/[0.06]"
                 />
                 {img.archetype && (
                   <span className="absolute bottom-1 left-1 px-1.5 py-0.5 text-[9px] rounded bg-black/70 text-white">
@@ -528,27 +528,33 @@ function GeneratedView({ creatives, loading, onRefresh, onCreativeClick }) {
       )}
 
       {filtered.length > 0 && (
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
+        <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-7 gap-3">
           {filtered.map((creative) => (
             <button
               key={creative.id}
               type="button"
               onClick={() => onCreativeClick(creative)}
-              className="group relative bg-[#111] border border-white/[0.06] rounded-lg overflow-hidden hover:border-blue-500/40 transition-colors cursor-pointer text-left"
+              className="group relative bg-[#0a0a0a] border border-white/[0.06] rounded-2xl overflow-hidden hover:border-white/[0.15] hover:shadow-lg hover:shadow-black/30 transition-all duration-200 cursor-pointer text-left"
             >
               {creative.image_url ? (
                 <img
                   src={creative.image_url}
                   alt={creative.name || 'Creative'}
-                  className="w-full h-40 object-cover"
+                  className="w-full h-[120px] object-cover"
                 />
               ) : (
-                <div className="w-full h-40 bg-white/[0.02] flex items-center justify-center">
-                  <Image className="w-8 h-8 text-slate-700" />
+                <div className="w-full h-[120px] bg-white/[0.02] flex items-center justify-center">
+                  <Image className="w-5 h-5 text-slate-700" />
                 </div>
               )}
-              <div className="p-3 space-y-1.5">
-                <p className="text-xs text-white font-medium truncate">
+              {/* Hover overlay */}
+              <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center rounded-2xl">
+                <span className="text-[10px] font-medium text-white bg-white/[0.15] backdrop-blur-sm px-2.5 py-1 rounded-full">
+                  View Full
+                </span>
+              </div>
+              <div className="px-2.5 py-2 space-y-1">
+                <p className="text-[11px] text-gray-200 font-medium truncate">
                   {creative.name || 'Untitled'}
                 </p>
                 <StatusBadge status={creative.status || 'review'} />

@@ -92,20 +92,20 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, variantSt
       }}
       onDragEnd={() => setTimeout(() => setWasDragged(false), 100)}
       onClick={() => { if (!wasDragged) onCardClick?.(creative); }}
-      className="group bg-[#0a0a0a] border border-white/[0.06] rounded-lg overflow-hidden cursor-grab active:cursor-grabbing
-                 hover:border-white/[0.12] hover:shadow-lg hover:shadow-black/20 transition-all duration-150"
+      className="group bg-[#0a0a0a] border border-white/[0.06] rounded-2xl overflow-hidden cursor-grab active:cursor-grabbing
+                 hover:border-white/[0.15] hover:shadow-lg hover:shadow-black/30 transition-all duration-200"
     >
-      {/* Thumbnail */}
-      <div className={`relative ${creative.aspect_ratio === '9:16' ? 'aspect-[9/16]' : 'aspect-[4/5]'} bg-[#0a0a0a]`}>
-        {/* Eye fallback / generating state */}
-        <div className="absolute inset-0 flex flex-col items-center justify-center text-gray-700 gap-2">
+      {/* Thumbnail — fixed compact height, uniform for all cards */}
+      <div className="relative h-[140px] bg-[#080808]">
+        {/* Fallback / generating state */}
+        <div className="absolute inset-0 flex flex-col items-center justify-center text-gray-700 gap-1.5">
           {creative.status === 'generating' ? (
             <>
-              <Loader2 className="w-6 h-6 animate-spin text-blue-400" />
-              <span className="text-[10px] text-blue-400/70">Generating…</span>
+              <Loader2 className="w-5 h-5 animate-spin text-blue-400" />
+              <span className="text-[9px] text-blue-400/70">Generating…</span>
             </>
           ) : (
-            <Eye className="w-8 h-8" />
+            <Eye className="w-5 h-5" />
           )}
         </div>
         {creative.image_url && creative.status !== 'generating' && (
@@ -116,52 +116,51 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, variantSt
             onError={(e) => { e.target.style.display = 'none'; }}
           />
         )}
+        {/* Hover overlay */}
+        <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+          <span className="text-[10px] font-medium text-white bg-white/[0.15] backdrop-blur-sm px-2.5 py-1 rounded-full">
+            View Full
+          </span>
+        </div>
         {/* Aspect ratio badge */}
-        <span className="absolute top-1.5 right-1.5 text-[9px] font-semibold bg-black/60 text-white/70 px-1.5 py-0.5 rounded">
+        <span className="absolute top-1.5 right-1.5 text-[8px] font-semibold bg-black/60 text-white/60 px-1.5 py-0.5 rounded-full">
           {creative.aspect_ratio || '4:5'}
         </span>
         {/* Variant indicator */}
         {creative.parent_creative_id && (
-          <span className="absolute top-1.5 left-1.5 text-[9px] font-medium bg-blue-500/20 text-blue-300 px-1.5 py-0.5 rounded">
+          <span className="absolute top-1.5 left-1.5 text-[8px] font-medium bg-blue-500/20 text-blue-300 px-1.5 py-0.5 rounded-full">
             Variant
           </span>
         )}
       </div>
 
-      {/* Info */}
-      <div className="p-3 space-y-1.5">
-        <p className="text-sm font-medium text-gray-100 truncate">
+      {/* Info — compact */}
+      <div className="px-2.5 py-2 space-y-1">
+        <p className="text-[11px] font-medium text-gray-200 truncate">
           {creative.product_name || 'Untitled'}
         </p>
 
-        {angleLabel && (
-          <p className="text-xs text-gray-400 truncate">{angleLabel}</p>
-        )}
+        <div className="flex items-center justify-between">
+          {angleLabel && (
+            <p className="text-[10px] text-gray-500 truncate">{angleLabel}</p>
+          )}
 
-        {/* 9:16 variant status — only on parent (non-variant) cards */}
-        {!creative.parent_creative_id && variantStatus && (
-          <div className={`flex items-center gap-1.5 text-[11px] px-2 py-1 rounded-md mt-1 ${
-            variantStatus === 'generating'
-              ? 'bg-blue-500/10 text-blue-400'
-              : variantStatus === 'done'
-                ? 'bg-emerald-500/10 text-emerald-400'
-                : variantStatus === 'failed'
-                  ? 'bg-red-500/10 text-red-400'
-                  : 'bg-gray-500/10 text-gray-500'
-          }`}>
-            {variantStatus === 'generating' && <Loader2 className="w-3 h-3 animate-spin" />}
-            {variantStatus === 'done' && <Check className="w-3 h-3" />}
-            {variantStatus === 'failed' && <Eye className="w-3 h-3" />}
-            <span>
-              {variantStatus === 'generating' ? '9:16 generating...'
-                : variantStatus === 'done' ? '9:16 ready'
-                : variantStatus === 'failed' ? '9:16 failed'
-                : 'No 9:16'}
+          {/* 9:16 variant status — compact inline */}
+          {!creative.parent_creative_id && variantStatus && (
+            <span className={`flex items-center gap-1 text-[9px] ${
+              variantStatus === 'generating' ? 'text-blue-400'
+                : variantStatus === 'done' ? 'text-emerald-400'
+                : variantStatus === 'failed' ? 'text-red-400'
+                : 'text-gray-500'
+            }`}>
+              {variantStatus === 'generating' && <Loader2 className="w-2.5 h-2.5 animate-spin" />}
+              {variantStatus === 'done' && <Check className="w-2.5 h-2.5" />}
+              {variantStatus === 'generating' ? '9:16...' : variantStatus === 'done' ? '9:16' : ''}
             </span>
-          </div>
-        )}
+          )}
+        </div>
 
-        {/* Action button */}
+        {/* Action button — slim */}
         {column.actionLabel ? (
           <button
             type="button"
@@ -169,7 +168,7 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, variantSt
               e.stopPropagation();
               onStatusChange?.(creative.id, column.nextStatus);
             }}
-            className={`mt-1 w-full text-xs font-medium py-1.5 rounded-md transition-colors
+            className={`mt-0.5 w-full text-[10px] font-medium py-1 rounded-lg transition-colors
               ${column.color === 'green'
                 ? 'bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25'
                 : column.color === 'purple'
@@ -206,7 +205,7 @@ function PipelineColumn({ column, items, onStatusChange, onCardClick, allCreativ
 
   return (
     <div
-      className="flex flex-col min-w-[260px] max-w-[320px] flex-1"
+      className="flex flex-col min-w-[200px] max-w-[260px] flex-1"
       onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
       onDragLeave={() => setDragOver(false)}
       onDrop={handleDrop}
@@ -227,7 +226,7 @@ function PipelineColumn({ column, items, onStatusChange, onCardClick, allCreativ
       </div>
 
       {/* Scrollable card list */}
-      <div className={`flex-1 overflow-y-auto pr-1 space-y-3 pb-4 custom-scrollbar transition-colors rounded-lg ${dragOver ? 'bg-white/[0.03] ring-1 ring-blue-500/30' : ''}`}>
+      <div className={`flex-1 overflow-y-auto pr-1 space-y-2 pb-4 custom-scrollbar transition-colors rounded-lg ${dragOver ? 'bg-white/[0.03] ring-1 ring-blue-500/30' : ''}`}>
         {items.length === 0 && column.placeholder ? (
           <div className="flex items-center justify-center h-32 border border-dashed border-gray-700/50 rounded-lg">
             <p className="text-xs text-gray-500 italic">{column.placeholder}</p>
