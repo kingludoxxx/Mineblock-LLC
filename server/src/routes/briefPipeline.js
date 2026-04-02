@@ -1016,9 +1016,22 @@ function validateUuid(req, res) {
 router.get('/winners', authenticate, async (_req, res) => {
   try {
     await ensureTables();
-    const rows = await pgQuery(
-      `SELECT * FROM brief_pipeline_winners ORDER BY roas DESC, detected_at DESC`
-    );
+    // Join with creative_analysis to get fresh thumbnail/video URLs (Meta CDN URLs expire)
+    const rows = await pgQuery(`
+      SELECT w.*,
+             COALESCE(ca.thumbnail_url, w.thumbnail_url) AS thumbnail_url,
+             COALESCE(ca.video_url, w.video_url) AS video_url
+      FROM brief_pipeline_winners w
+      LEFT JOIN LATERAL (
+        SELECT thumbnail_url, video_url
+        FROM creative_analysis
+        WHERE creative_id = w.creative_id
+          AND (thumbnail_url IS NOT NULL OR video_url IS NOT NULL)
+        ORDER BY synced_at DESC
+        LIMIT 1
+      ) ca ON true
+      ORDER BY w.roas DESC, w.detected_at DESC
+    `);
     res.json({ success: true, winners: rows });
   } catch (err) {
     console.error('[BriefPipeline] GET /winners error:', err.message);
@@ -1149,10 +1162,21 @@ router.get('/winners/:id', authenticate, async (req, res) => {
   if (!validateUuid(req, res)) return;
   try {
     await ensureTables();
-    const rows = await pgQuery(
-      `SELECT * FROM brief_pipeline_winners WHERE id = $1`,
-      [req.params.id]
-    );
+    const rows = await pgQuery(`
+      SELECT w.*,
+             COALESCE(ca.thumbnail_url, w.thumbnail_url) AS thumbnail_url,
+             COALESCE(ca.video_url, w.video_url) AS video_url
+      FROM brief_pipeline_winners w
+      LEFT JOIN LATERAL (
+        SELECT thumbnail_url, video_url
+        FROM creative_analysis
+        WHERE creative_id = w.creative_id
+          AND (thumbnail_url IS NOT NULL OR video_url IS NOT NULL)
+        ORDER BY synced_at DESC
+        LIMIT 1
+      ) ca ON true
+      WHERE w.id = $1
+    `, [req.params.id]);
     if (!rows.length) {
       return res.status(404).json({ success: false, error: { message: 'Winner not found' } });
     }
