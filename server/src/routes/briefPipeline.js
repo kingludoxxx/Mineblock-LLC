@@ -894,6 +894,8 @@ async function pushBriefToClickUp(generatedBrief) {
   const briefTypeUuid = BRIEF_TYPE_OPTIONS.IT;
   const creativeTypeUuid = CREATIVE_TYPE_OPTIONS[format] || CREATIVE_TYPE_OPTIONS.Mashup;
 
+  const editorUserId = USER_IDS[editor] || USER_IDS.Ludovico;
+
   const customFields = [
     { id: FIELD_IDS.briefNumber, value: brief_number },
     { id: FIELD_IDS.briefType, value: briefTypeUuid },
@@ -905,21 +907,40 @@ async function pushBriefToClickUp(generatedBrief) {
     { id: FIELD_IDS.creationWeek, value: weekLabel },
     { id: FIELD_IDS.creativeStrategist, value: { add: [USER_IDS.Ludovico], rem: [] } },
     { id: FIELD_IDS.copywriter, value: { add: [USER_IDS.Ludovico], rem: [] } },
-    { id: FIELD_IDS.editor, value: { add: [USER_IDS[editor] || USER_IDS.Antoni], rem: [] } },
+    { id: FIELD_IDS.editor, value: { add: [editorUserId], rem: [] } },
   ].filter(f => f.value != null);
 
   const taskPayload = {
     name: namingConvention,
     description,
     status: 'edit queue',
-    assignees: [USER_IDS[editor] || USER_IDS.Antoni],
+    assignees: [editorUserId],
     custom_fields: customFields,
   };
 
-  const createdTask = await clickupFetch(
-    `/list/${VIDEO_ADS_LIST}/task`,
-    { method: 'POST', body: JSON.stringify(taskPayload) }
-  );
+  let createdTask;
+  try {
+    createdTask = await clickupFetch(
+      `/list/${VIDEO_ADS_LIST}/task`,
+      { method: 'POST', body: JSON.stringify(taskPayload) }
+    );
+  } catch (err) {
+    // If editor user doesn't have workspace access, retry without user fields
+    if (err.message.includes('FIELD_129') || err.message.includes('must have access')) {
+      console.warn(`[BriefPipeline] Editor ${editor} (${editorUserId}) not accessible, falling back to Ludovico`);
+      const fallbackFields = customFields.map(f => {
+        if (f.id === FIELD_IDS.editor) return { ...f, value: { add: [USER_IDS.Ludovico], rem: [] } };
+        return f;
+      });
+      const fallbackPayload = { ...taskPayload, assignees: [USER_IDS.Ludovico], custom_fields: fallbackFields };
+      createdTask = await clickupFetch(
+        `/list/${VIDEO_ADS_LIST}/task`,
+        { method: 'POST', body: JSON.stringify(fallbackPayload) }
+      );
+    } else {
+      throw err;
+    }
+  }
 
   const taskId = createdTask.id;
 
