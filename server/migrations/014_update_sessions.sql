@@ -4,5 +4,10 @@
 ALTER TABLE sessions
   ADD COLUMN IF NOT EXISTS token_hash VARCHAR(255);
 
--- Backfill token_hash from refresh_token_hash for existing rows
-UPDATE sessions SET token_hash = refresh_token_hash WHERE token_hash IS NULL AND refresh_token_hash IS NOT NULL;
+-- Backfill token_hash from refresh_token_hash for existing rows (only if column exists)
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'sessions' AND column_name = 'refresh_token_hash') THEN
+    UPDATE sessions SET token_hash = refresh_token_hash WHERE token_hash IS NULL AND refresh_token_hash IS NOT NULL;
+  END IF;
+END $$;
