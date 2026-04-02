@@ -279,12 +279,30 @@ async function callClaude(systemPrompt, userPrompt, maxTokens = 3000, { fast = f
   const data = await res.json();
   const text = data.content?.[0]?.text || '';
 
-  // Parse JSON from response — find the first { ... } block
-  const jsonMatch = text.match(/\{[\s\S]*\}/);
+  // Strip markdown fences if present, then parse JSON
+  let cleaned = text.trim();
+  const fenceMatch = cleaned.match(/```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/);
+  if (fenceMatch) cleaned = fenceMatch[1].trim();
+
+  const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
   if (!jsonMatch) {
-    throw new Error(`Claude returned no JSON block. Response: ${text.slice(0, 500)}`);
+    throw new Error(`Claude returned no JSON block. Response: ${cleaned.slice(0, 500)}`);
   }
-  return JSON.parse(jsonMatch[0]);
+  try {
+    return JSON.parse(jsonMatch[0]);
+  } catch (parseErr) {
+    // Try to fix common issues: trailing commas, truncated responses
+    let fixable = jsonMatch[0]
+      .replace(/,\s*([}\]])/g, '$1')  // remove trailing commas
+      .replace(/\n/g, '\\n')          // escape raw newlines in strings
+      .replace(/\\n/g, '\\n');        // keep escaped ones
+    // If still truncated, try to close open braces
+    const opens = (fixable.match(/\{/g) || []).length;
+    const closes = (fixable.match(/\}/g) || []).length;
+    for (let i = 0; i < opens - closes; i++) fixable += '}';
+    try { return JSON.parse(fixable); } catch {}
+    throw new Error(`Failed to parse Claude JSON: ${parseErr.message}\nRaw: ${jsonMatch[0].slice(0, 300)}`);
+  }
 }
 
 /**
@@ -1713,9 +1731,9 @@ router.post('/generate/:id', authenticate, async (req, res) => {
 
       // Run all 3 agents in parallel
       const [scriptDna, psychology, iterationRules] = await Promise.all([
-        callClaude(dnaPrompt.system, dnaPrompt.user, 2048),
-        callClaude(psychologyPrompt.system, psychologyPrompt.user, 2048),
-        callClaude(rulesPrompt.system, rulesPrompt.user, 2048),
+        callClaude(dnaPrompt.system, dnaPrompt.user, 4096),
+        callClaude(psychologyPrompt.system, psychologyPrompt.user, 3000),
+        callClaude(rulesPrompt.system, rulesPrompt.user, 3000),
       ]);
 
       winAnalysis = { scriptDna, psychology, iterationRules };
