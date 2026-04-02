@@ -442,7 +442,7 @@ export default function IterationKing() {
     hookAbortRef.current = controller;
     setHooksLoading(true); setHooks([]); setSelectedHookIdxs(new Set()); setFinalScript(''); setError(null);
     try {
-      await consumeSSEStream(`${API}/generate-hooks`, { body: scripts[selectedScriptIdx].text, aggressiveness, productProfile: selectedProduct }, {
+      await consumeSSEStream(`${API}/generate-hooks`, { body: scripts[selectedScriptIdx].text, aggressiveness, analysis, productProfile: selectedProduct }, {
         onItem: (item) => {
           // Normalize hook fields on the fly
           const h = {

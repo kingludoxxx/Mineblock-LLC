@@ -581,6 +581,8 @@ STEP 2 — GENERATION RULES:
 - Each variation must be materially different from the others in approach, not just synonym swaps.
 - Match the aggressiveness and similarity levels specified.
 - Use the product intelligence below to ensure claims, benefits, and language are accurate.
+- AWARENESS LEVEL LOCK: Every iteration MUST target the same market awareness stage as the original. If the original speaks to problem-aware viewers, do NOT write iterations that assume product awareness. The viewer's knowledge level dictates what you can and cannot assume they already know.
+- ITERATION BOUNDARIES: If iteration rules are provided below, treat "must stay fixed" items as hard constraints and "high-risk changes" as forbidden. Use "safe iteration directions" as creative starting points.
 ${analysisContext}${productContext}
 ORIGINAL WINNING SCRIPT:
 ${script.slice(0, 5000)}
@@ -634,6 +636,8 @@ STEP 2 — GENERATION RULES:
 - Each script must take a genuinely different creative approach — different hooks, different framings, different emotional entry points. NOT just synonym replacements.
 - Match aggressiveness and similarity levels.
 - Use the product intelligence to keep claims accurate.
+- AWARENESS LEVEL LOCK: Every script MUST target the same market awareness stage as the original. If the original speaks to problem-aware viewers, do NOT write scripts that assume product awareness. The viewer's knowledge level dictates what you can and cannot assume they already know.
+- ITERATION BOUNDARIES: If iteration rules are provided below, treat "must stay fixed" items as hard constraints and "high-risk changes" as forbidden. Use "safe iteration directions" as creative starting points.
 ${analysisContext}${productContext}
 ORIGINAL WINNING SCRIPT:
 ${script.slice(0, 5000)}
@@ -659,9 +663,10 @@ Generate exactly 10 complete scripts.`;
 // ── POST /generate-hooks — Generate hooks for selected body (SSE stream) ───────
 router.post('/generate-hooks', authenticate, async (req, res) => {
   try {
-    const { body, aggressiveness = 5, productProfile } = req.body;
+    const { body, aggressiveness = 5, analysis, productProfile } = req.body;
     if (!body) return res.status(400).json({ success: false, error: 'Body script is required' });
     const productContext = buildProductContext(productProfile);
+    const analysisContext = buildAnalysisContext(analysis);
 
     const prompt = `You are a world-class direct response hook writer for a media buying team.
 
@@ -679,7 +684,9 @@ Then write hooks that:
 3. DO NOT introduce claims, topics, or promises the body doesn't address.
 4. Are 1-2 sentences max. Keep them punchy.
 5. Each hook takes a genuinely different angle — not just rewording the same idea.
-${productContext}
+6. AWARENESS LEVEL LOCK: Hooks must match the original ad's market awareness stage. Do NOT write hooks that assume the viewer knows more (or less) than the original assumes.
+7. If hook rules are provided below, respect "must preserve" as hard constraints and "avoid" as forbidden approaches.
+${analysisContext}${productContext}
 AD BODY (the hook must flow naturally into this):
 ${body.slice(0, 5000)}
 
