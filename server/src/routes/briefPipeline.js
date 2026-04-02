@@ -879,8 +879,13 @@ async function pushBriefToClickUp(generatedBrief) {
   });
 
   // Build description with script
-  const hooksFormatted = (hooks || [])
-    .map(h => `${h.id}\n${h.text}`)
+  const parsedHooks = (() => {
+    if (Array.isArray(hooks)) return hooks;
+    if (typeof hooks === 'string') { try { return JSON.parse(hooks); } catch { return []; } }
+    return [];
+  })();
+  const hooksFormatted = parsedHooks
+    .map(h => `${h.id || ''}\n${h.text || ''}`.trim())
     .join('\n\n');
   const description = `Hooks:\n\n${hooksFormatted}\n\nBody:\n\n${body || ''}`;
 
@@ -1087,7 +1092,9 @@ router.post('/detect', authenticate, async (_req, res) => {
         w.thumbnail_url || null, w.video_url || null,
       ], { timeout: 10000 });
 
-      results.push(upserted[0]);
+      if (upserted && upserted[0]) {
+        results.push(upserted[0]);
+      }
     }
 
     res.json({ success: true, detected: results.length, winners: results });
@@ -1185,7 +1192,8 @@ router.get('/winners/:id', authenticate, async (req, res) => {
 router.post('/winners/:id/select', authenticate, async (req, res) => {
   try {
     await ensureTables();
-    const { iteration_mode, mode: modeAlt, aggressiveness, num_variations, fixed_elements, editor } = req.body;
+    const body = req.body || {};
+    const { iteration_mode, mode: modeAlt, aggressiveness, num_variations, fixed_elements, editor } = body;
     const mode = iteration_mode || modeAlt || 'hook_body';
 
     const rows = await pgQuery(
