@@ -240,7 +240,7 @@ router.get('/brief/:taskId', authenticate, async (req, res) => {
   }
 });
 
-// ── POST /analyze — Analyze winning pattern ───────────────────────
+// ── POST /analyze — Deep 3-call parallel analysis pipeline ───────
 router.post('/analyze', authenticate, async (req, res) => {
   try {
     const { script, productProfile } = req.body;
@@ -249,26 +249,171 @@ router.post('/analyze', authenticate, async (req, res) => {
     }
 
     const productContext = buildProductContext(productProfile);
+    const scriptText = script.slice(0, 6000);
 
-    const prompt = `You are an expert direct-response ad analyst. Analyze this winning ad script and identify why it works.
-${productContext}
-Script:
-${script.slice(0, 5000)}
+    // ── CALL 1: Script DNA (combines DNA Extraction + Mechanism ID + Narrative Mapping) ──
+    const dnaPrompt = `# ROLE
+You are a senior direct-response strategist and copy analyst.
 
-Return ONLY valid JSON with this exact structure (no markdown, no explanation, no backticks):
+# TASK
+Deconstruct this winning ad into its core conversion components AND map its narrative structure step-by-step. Identify the logical engine — WHY this ad converts, not just what it says.
+
+# PRODUCT CONTEXT
+${productContext || 'No product profile provided.'}
+
+# WINNING AD SCRIPT
+${scriptText}
+
+# OUTPUT (JSON only, no markdown, no backticks, no explanation)
 {
-  "hookMechanism": "string - the hook mechanism used (e.g. Curiosity, Authority, Shock, Story, Contrarian, Lottery Analogy)",
-  "coreAngle": "string - the core persuasion angle",
-  "emotionalTrigger": "string - the primary emotional trigger",
-  "narrativeStructure": "string - brief structure description (e.g. Hook > Curiosity > Explanation > Reward > CTA)",
-  "pacingPattern": "string - description of pacing (e.g. Fast open, slow build, urgent close)",
-  "ctaStructure": "string - how the call to action is structured",
-  "overallStrength": 8,
-  "summary": "string - 1-2 sentence summary of why this script wins"
-}`;
+  "core_angle": "the central persuasion angle driving the ad",
+  "primary_emotion": "the dominant emotion leveraged",
+  "secondary_emotions": ["list", "of", "supporting", "emotions"],
+  "target_desire": "what the viewer wants that this ad promises",
+  "target_fear": "what the viewer is afraid of that this ad addresses",
+  "belief_shift": "what belief must change for the viewer to buy",
+  "problem_presented": "the specific problem framed in the ad",
+  "solution_presented": "how the product/offer is positioned as the answer",
+  "mechanism": "the unique mechanism or reason WHY the solution works",
+  "proof_type": "how credibility is established (social proof, authority, demonstration, logic, etc.)",
+  "cta_type": "how the call to action is structured (urgency, curiosity, scarcity, etc.)",
+  "audience_awareness_level": "unaware / problem-aware / solution-aware / product-aware / most-aware",
+  "narrative_structure": {
+    "hook_type": "the hook technique used (curiosity, warning, contrarian, shock, story, etc.)",
+    "opening_tension": "what tension or open loop is created immediately",
+    "problem_escalation": "how the problem is intensified after the hook",
+    "explanation": "how the solution/mechanism is introduced and explained",
+    "proof_moment": "where and how proof or credibility is delivered",
+    "contrast": "any before/after or us-vs-them comparison (or null if absent)",
+    "resolution": "how tension is resolved and the viewer is moved toward action",
+    "cta_structure": "exact CTA approach — what the viewer is told to do and why NOW"
+  },
+  "why_it_works": "1-2 sentences on the logical engine — why this ad converts",
+  "core_argument": "the central argument being made in one sentence",
+  "undeniable_truth": "the fact or truth used to make the argument believable",
+  "what_makes_it_believable": "the credibility mechanism — why the viewer trusts this",
+  "what_would_break_it": "the single change that would destroy this ad's effectiveness"
+}
 
-    const result = await callClaude(prompt, 1024, { fast: false });
-    const analysis = safeParseJSON(result);
+# RULES
+- Be precise, not generic. Every field must be specific to THIS ad.
+- Do NOT rewrite the ad. Extract what makes it convert.
+- Focus on reasoning, not wording.`;
+
+    // ── CALL 2: Psychology (combines Emotional Flow + Hook Analysis + Audience) ──
+    const psychologyPrompt = `# ROLE
+You are a consumer psychology expert and hook specialist for paid social ads.
+
+# TASK
+Perform three analyses on this winning ad:
+1. Map the emotional journey of the viewer at each stage
+2. Deep-analyze every hook in the ad
+3. Infer and validate the target audience against the product profile
+
+# PRODUCT CONTEXT
+${productContext || 'No product profile provided.'}
+
+# WINNING AD SCRIPT
+${scriptText}
+
+# OUTPUT (JSON only, no markdown, no backticks, no explanation)
+{
+  "emotional_arc": {
+    "at_hook": "what the viewer feels in the first 1-3 seconds (e.g. curiosity, shock, recognition)",
+    "after_problem": "emotional state once the problem is presented (e.g. tension, fear, frustration)",
+    "during_explanation": "how the viewer feels as the mechanism/solution unfolds (e.g. intrigue, hope, skepticism shifting)",
+    "at_proof": "emotional response to the credibility moment (e.g. belief, trust, certainty)",
+    "before_cta": "emotional state right before the call to action (e.g. desire, urgency, FOMO)",
+    "final_state": "the emotion the viewer is left with (e.g. motivated, compelled, anxious to act)"
+  },
+  "hooks": [
+    {
+      "text": "exact hook text from the ad",
+      "hook_type": "curiosity / warning / contrarian / shock / story / authority / social proof / pattern interrupt",
+      "scroll_stop_mechanism": "what specifically makes someone stop scrolling",
+      "emotional_trigger": "the emotion activated by this hook",
+      "why_it_works": "1 sentence on why this hook is effective",
+      "strength": 8
+    }
+  ],
+  "hook_patterns": {
+    "shared_patterns": "what patterns all hooks share",
+    "must_not_change": "what must stay fixed in any new hook variation"
+  },
+  "audience": {
+    "who_is_this_for": "specific description of the target viewer",
+    "what_they_already_believe": "existing beliefs the ad leverages",
+    "what_they_are_skeptical_about": "doubts or objections they carry",
+    "awareness_stage": "unaware / problem-aware / solution-aware / product-aware / most-aware",
+    "implicit_objection_handled": "the objection the ad addresses without stating it directly",
+    "product_alignment": "how well the ad matches the product profile's target customer (strong / moderate / weak + why)"
+  }
+}
+
+# RULES
+- Use emotional language (curiosity, tension, relief, certainty, etc.) — describe FEELINGS, not content.
+- For hooks: extract the EXACT text from the ad. List every hook present.
+- For audience: cross-reference against the product profile. Flag any misalignment.
+- Be sharp and specific to THIS ad, not generic frameworks.`;
+
+    // ── CALL 3: Iteration Rules (Variation Boundaries) ──
+    const rulesPrompt = `# ROLE
+You are a senior creative director specializing in direct-response ad iteration for a media buying team.
+
+# TASK
+Based on this winning ad script and the product it promotes, define the precise boundaries for iteration — what MUST stay fixed, what CAN be varied, and what is HIGH-RISK to change. This output directly constrains the script generator.
+
+# PRODUCT CONTEXT
+${productContext || 'No product profile provided.'}
+
+# WINNING AD SCRIPT
+${scriptText}
+
+# OUTPUT (JSON only, no markdown, no backticks, no explanation)
+{
+  "must_stay_fixed": [
+    "list of elements that must NOT change in any iteration (e.g. core mechanism, key claim, CTA structure, specific proof point, emotional arc direction)"
+  ],
+  "can_be_varied": [
+    "list of elements safe to change (e.g. hook angle, opening framing, metaphor choice, sentence rhythm, specific word choices, example details)"
+  ],
+  "high_risk_changes": [
+    "list of changes that could break the ad (e.g. changing the core emotion, removing the mechanism, altering the proof type, switching awareness level)"
+  ],
+  "safe_iteration_directions": [
+    "specific creative directions that would produce strong variations (e.g. 'Reframe hook as a warning instead of curiosity', 'Shift POV from third-person to first-person UGC', 'Compress the explanation section for faster pacing', 'Add a stronger contrast/before-after moment')"
+  ],
+  "hook_rules": {
+    "must_preserve": "what every new hook must achieve (the open loop, the emotional trigger, the scroll-stop mechanism)",
+    "safe_variations": "specific hook reframing ideas that maintain the core mechanism",
+    "avoid": "hook approaches that would disconnect from the body"
+  },
+  "tone_boundaries": {
+    "current_register": "the tone of the original (e.g. casual UGC, authoritative expert, emotional storyteller, aggressive DR)",
+    "acceptable_range": "how far the tone can shift (e.g. 'can go slightly more aggressive but must stay conversational')",
+    "never_do": "tone shifts that would break the ad (e.g. 'never go corporate', 'never remove the personal/story element')"
+  },
+  "compliance_notes": "any claims that must stay within product profile compliance restrictions, or flags if the original ad makes non-compliant claims"
+}
+
+# RULES
+- Be specific to THIS ad. Generic advice like "keep the CTA" is useless.
+- Think like a creative director briefing a copywriter: precise, actionable constraints.
+- The generator will use this output to avoid producing broken iterations.
+- If the product profile has compliance restrictions, flag any original claims that are borderline.`;
+
+    // ── Run all 3 calls in parallel ──
+    const [dnaResult, psychologyResult, rulesResult] = await Promise.all([
+      callClaude(dnaPrompt, 2048).then(r => safeParseJSON(r)),
+      callClaude(psychologyPrompt, 2048).then(r => safeParseJSON(r)),
+      callClaude(rulesPrompt, 2048).then(r => safeParseJSON(r)),
+    ]);
+
+    const analysis = {
+      scriptDna: dnaResult,
+      psychology: psychologyResult,
+      iterationRules: rulesResult,
+    };
 
     res.json({ success: true, analysis });
   } catch (err) {
@@ -276,6 +421,111 @@ Return ONLY valid JSON with this exact structure (no markdown, no explanation, n
     res.status(500).json({ success: false, error: err.message });
   }
 });
+
+// ── Build rich analysis context from the 3-call pipeline ─────────
+function buildAnalysisContext(analysis) {
+  if (!analysis) return '';
+  const { scriptDna: dna, psychology: psy, iterationRules: rules } = analysis;
+  const sections = [];
+
+  if (dna) {
+    sections.push(`SCRIPT DNA:
+- Core Angle: ${dna.core_angle || 'N/A'}
+- Primary Emotion: ${dna.primary_emotion || 'N/A'}
+- Secondary Emotions: ${Array.isArray(dna.secondary_emotions) ? dna.secondary_emotions.join(', ') : 'N/A'}
+- Target Desire: ${dna.target_desire || 'N/A'}
+- Target Fear: ${dna.target_fear || 'N/A'}
+- Belief Shift: ${dna.belief_shift || 'N/A'}
+- Problem: ${dna.problem_presented || 'N/A'}
+- Solution: ${dna.solution_presented || 'N/A'}
+- Mechanism: ${dna.mechanism || 'N/A'}
+- Proof Type: ${dna.proof_type || 'N/A'}
+- CTA Type: ${dna.cta_type || 'N/A'}
+- Awareness Level: ${dna.audience_awareness_level || 'N/A'}
+- Why It Works: ${dna.why_it_works || 'N/A'}
+- Core Argument: ${dna.core_argument || 'N/A'}
+- Undeniable Truth: ${dna.undeniable_truth || 'N/A'}
+- What Makes It Believable: ${dna.what_makes_it_believable || 'N/A'}
+- What Would Break It: ${dna.what_would_break_it || 'N/A'}`);
+
+    if (dna.narrative_structure) {
+      const ns = dna.narrative_structure;
+      sections.push(`NARRATIVE STRUCTURE:
+- Hook Type: ${ns.hook_type || 'N/A'}
+- Opening Tension: ${ns.opening_tension || 'N/A'}
+- Problem Escalation: ${ns.problem_escalation || 'N/A'}
+- Explanation: ${ns.explanation || 'N/A'}
+- Proof Moment: ${ns.proof_moment || 'N/A'}
+- Contrast: ${ns.contrast || 'None'}
+- Resolution: ${ns.resolution || 'N/A'}
+- CTA Structure: ${ns.cta_structure || 'N/A'}`);
+    }
+  }
+
+  if (psy) {
+    if (psy.emotional_arc) {
+      const ea = psy.emotional_arc;
+      sections.push(`EMOTIONAL ARC:
+- At Hook: ${ea.at_hook || 'N/A'}
+- After Problem: ${ea.after_problem || 'N/A'}
+- During Explanation: ${ea.during_explanation || 'N/A'}
+- At Proof: ${ea.at_proof || 'N/A'}
+- Before CTA: ${ea.before_cta || 'N/A'}
+- Final State: ${ea.final_state || 'N/A'}`);
+    }
+    if (psy.hook_patterns) {
+      sections.push(`HOOK PATTERNS:
+- Shared Patterns: ${psy.hook_patterns.shared_patterns || 'N/A'}
+- Must Not Change: ${psy.hook_patterns.must_not_change || 'N/A'}`);
+    }
+    if (psy.audience) {
+      const aud = psy.audience;
+      sections.push(`AUDIENCE INSIGHT:
+- Who: ${aud.who_is_this_for || 'N/A'}
+- Existing Beliefs: ${aud.what_they_already_believe || 'N/A'}
+- Skepticism: ${aud.what_they_are_skeptical_about || 'N/A'}
+- Implicit Objection Handled: ${aud.implicit_objection_handled || 'N/A'}`);
+    }
+  }
+
+  if (rules) {
+    const fixed = Array.isArray(rules.must_stay_fixed) ? rules.must_stay_fixed.join('\n  - ') : 'N/A';
+    const variable = Array.isArray(rules.can_be_varied) ? rules.can_be_varied.join('\n  - ') : 'N/A';
+    const risky = Array.isArray(rules.high_risk_changes) ? rules.high_risk_changes.join('\n  - ') : 'N/A';
+    const safe = Array.isArray(rules.safe_iteration_directions) ? rules.safe_iteration_directions.join('\n  - ') : 'N/A';
+    sections.push(`ITERATION RULES:
+MUST STAY FIXED:
+  - ${fixed}
+CAN BE VARIED:
+  - ${variable}
+HIGH-RISK CHANGES (AVOID):
+  - ${risky}
+SAFE ITERATION DIRECTIONS:
+  - ${safe}`);
+
+    if (rules.tone_boundaries) {
+      const tb = rules.tone_boundaries;
+      sections.push(`TONE BOUNDARIES:
+- Current Register: ${tb.current_register || 'N/A'}
+- Acceptable Range: ${tb.acceptable_range || 'N/A'}
+- Never Do: ${tb.never_do || 'N/A'}`);
+    }
+
+    if (rules.hook_rules) {
+      const hr = rules.hook_rules;
+      sections.push(`HOOK RULES:
+- Must Preserve: ${hr.must_preserve || 'N/A'}
+- Safe Variations: ${hr.safe_variations || 'N/A'}
+- Avoid: ${hr.avoid || 'N/A'}`);
+    }
+
+    if (rules.compliance_notes) {
+      sections.push(`COMPLIANCE: ${rules.compliance_notes}`);
+    }
+  }
+
+  return sections.length ? '\n' + sections.join('\n\n') + '\n' : '';
+}
 
 // ── Product profile context builder ───────────────────────────────
 function buildProductContext(p) {
@@ -306,9 +556,7 @@ router.post('/generate-scripts', authenticate, async (req, res) => {
     const { script, aggressiveness = 5, similarity = 5, analysis, productProfile } = req.body;
     if (!script) return res.status(400).json({ success: false, error: 'Script is required' });
 
-    const analysisContext = analysis
-      ? `\nWinner Analysis:\n- Hook Mechanism: ${analysis.hookMechanism || 'N/A'}\n- Core Angle: ${analysis.coreAngle || 'N/A'}\n- Emotional Trigger: ${analysis.emotionalTrigger || 'N/A'}\n- Structure: ${analysis.narrativeStructure || 'N/A'}\n`
-      : '';
+    const analysisContext = buildAnalysisContext(analysis);
     const productContext = buildProductContext(productProfile);
 
     const prompt = `You are a world-class direct response ad copy iteration engine used by a media buying team to create winning ad variations.
@@ -361,9 +609,7 @@ router.post('/generate-full-scripts', authenticate, async (req, res) => {
     const { script, aggressiveness = 5, similarity = 5, analysis, productProfile } = req.body;
     if (!script) return res.status(400).json({ success: false, error: 'Script is required' });
 
-    const analysisContext = analysis
-      ? `\nWinner Analysis:\n- Hook Mechanism: ${analysis.hookMechanism || 'N/A'}\n- Core Angle: ${analysis.coreAngle || 'N/A'}\n- Emotional Trigger: ${analysis.emotionalTrigger || 'N/A'}\n- Structure: ${analysis.narrativeStructure || 'N/A'}\n`
-      : '';
+    const analysisContext = buildAnalysisContext(analysis);
     const productContext = buildProductContext(productProfile);
 
     const prompt = `You are a world-class direct response ad scriptwriter for a media buying team.
@@ -476,13 +722,7 @@ router.post('/generate-brief-hooks', authenticate, async (req, res) => {
       if (bodyStart > 0) body = lines.slice(bodyStart).join('\n').trim();
     }
 
-    const analysisContext = analysis ? `
-Winner Analysis Context:
-- Hook mechanism: ${analysis.hookMechanism || 'Unknown'}
-- Core angle: ${analysis.coreAngle || 'Unknown'}
-- Emotional trigger: ${analysis.emotionalTrigger || 'Unknown'}
-- Narrative structure: ${analysis.narrativeStructure || 'Unknown'}
-` : '';
+    const analysisContext = buildAnalysisContext(analysis);
 
     const prompt = `You are a world-class direct response hook writer for a media buying team.
 

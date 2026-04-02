@@ -253,6 +253,9 @@ function HookCard({ hook, selected, onToggle, index }) {
 // ── AI Insight Panel ──────────────────────────────────────────────
 function AIInsightPanel({ analysis, scripts, selectedScriptIdx }) {
   if (!analysis) return null;
+  const dna = analysis.scriptDna;
+  const psy = analysis.psychology;
+  const rules = analysis.iterationRules;
   const selectedScript = selectedScriptIdx !== null ? scripts[selectedScriptIdx] : null;
   return (
     <div className="rounded-xl p-4 ik-card-enter" style={{ background: '#111111', border: '1px solid #1E1E1E' }}>
@@ -262,25 +265,21 @@ function AIInsightPanel({ analysis, scripts, selectedScriptIdx }) {
       </div>
       <div className="grid grid-cols-2 gap-3">
         <div>
-          <div className="text-[9px] uppercase" style={{ color: '#444' }}>Hook Strength</div>
-          <div className="text-sm font-mono font-bold" style={{ color: '#00FF88', textShadow: '0 0 8px #00FF8844' }}>{analysis.overallStrength || '—'}/10</div>
+          <div className="text-[9px] uppercase" style={{ color: '#444' }}>Core Angle</div>
+          <div className="text-sm font-semibold" style={{ color: '#00FF88' }}>{dna?.core_angle || '—'}</div>
         </div>
         <div>
-          <div className="text-[9px] uppercase" style={{ color: '#444' }}>Curiosity Score</div>
-          <div className="text-sm font-semibold" style={{ color: '#FBBF24' }}>
-            {analysis.hookMechanism?.toLowerCase().includes('curiosity') ? 'High' : 'Medium'}
-          </div>
+          <div className="text-[9px] uppercase" style={{ color: '#444' }}>Primary Emotion</div>
+          <div className="text-sm font-semibold" style={{ color: '#FBBF24' }}>{dna?.primary_emotion || '—'}</div>
         </div>
         <div>
-          <div className="text-[9px] uppercase" style={{ color: '#444' }}>Scroll Stop</div>
-          <div className="text-sm font-semibold" style={{ color: (analysis.overallStrength || 0) >= 7 ? '#00FF88' : '#9CA3AF' }}>
-            {(analysis.overallStrength || 0) >= 7 ? 'Strong' : 'Moderate'}
-          </div>
+          <div className="text-[9px] uppercase" style={{ color: '#444' }}>Awareness Level</div>
+          <div className="text-sm font-semibold" style={{ color: '#3B82F6' }}>{dna?.audience_awareness_level || '—'}</div>
         </div>
         <div>
-          <div className="text-[9px] uppercase" style={{ color: '#444' }}>Ad Style</div>
+          <div className="text-[9px] uppercase" style={{ color: '#444' }}>Tone</div>
           <div className="text-sm font-semibold" style={{ color: '#A78BFA' }}>
-            {selectedScript?.toneLabel || 'Direct Response'}
+            {rules?.tone_boundaries?.current_register || selectedScript?.toneLabel || '—'}
           </div>
         </div>
       </div>
@@ -734,12 +733,10 @@ export default function IterationKing() {
             <div className="ik-panel ik-card-enter">
               <div className="ik-panel-header cursor-pointer select-none" onClick={() => analysis && setAnalysisCollapsed(!analysisCollapsed)}>
                 <Brain className="w-4 h-4" style={{ color: '#3B82F6' }} />
-                <span>Winner Analysis</span>
+                <span>Deep Analysis</span>
                 {analysis && (
                   <div className="flex items-center gap-2 ml-auto">
-                    <span className="text-sm font-mono font-bold" style={{ color: (analysis.overallStrength || 0) >= 7 ? '#00FF88' : '#FBBF24', textShadow: `0 0 10px ${(analysis.overallStrength || 0) >= 7 ? '#00FF88' : '#FBBF24'}44` }}>
-                      {analysis.overallStrength}/10
-                    </span>
+                    <span className="text-[10px] font-mono" style={{ color: '#00FF88' }}>3 agents complete</span>
                     <ChevronRight className="w-3.5 h-3.5 transition-transform duration-200" style={{ color: '#555', transform: analysisCollapsed ? 'rotate(0deg)' : 'rotate(90deg)' }} />
                   </div>
                 )}
@@ -747,23 +744,84 @@ export default function IterationKing() {
               {analysisLoading ? (
                 <div className="flex items-center gap-2" style={{ color: '#3B82F6' }}>
                   <Loader2 className="w-4 h-4 animate-spin" />
-                  <span className="text-sm font-mono">Analyzing winning pattern...</span>
+                  <span className="text-sm font-mono">Running 3 analysis agents in parallel...</span>
                 </div>
               ) : analysis && !analysisCollapsed ? (
-                <div className="space-y-3 text-sm">
-                  {[
-                    { l: 'Hook Mechanism', v: analysis.hookMechanism, c: '#00FF88', b: true },
-                    { l: 'Core Angle', v: analysis.coreAngle },
-                    { l: 'Emotional Trigger', v: analysis.emotionalTrigger },
-                    { l: 'Structure', v: analysis.narrativeStructure, mono: true },
-                  ].map((item) => (
-                    <div key={item.l}>
-                      <div className="text-[9px] uppercase tracking-wider mb-0.5" style={{ color: '#444' }}>{item.l}</div>
-                      <p className={item.mono ? 'font-mono text-xs' : 'text-[13px]'} style={{ color: item.c || (item.dim ? '#888' : '#fff'), fontWeight: item.b ? 600 : 400 }}>
-                        {item.v}
-                      </p>
+                <div className="space-y-4 text-sm">
+                  {/* Script DNA */}
+                  {analysis.scriptDna && (
+                    <div>
+                      <div className="text-[10px] uppercase tracking-wider font-bold mb-2" style={{ color: '#00FF88' }}>Script DNA</div>
+                      <div className="space-y-2">
+                        {[
+                          { l: 'Core Angle', v: analysis.scriptDna.core_angle, c: '#00FF88', b: true },
+                          { l: 'Primary Emotion', v: analysis.scriptDna.primary_emotion },
+                          { l: 'Belief Shift', v: analysis.scriptDna.belief_shift },
+                          { l: 'Mechanism', v: analysis.scriptDna.mechanism },
+                          { l: 'Why It Works', v: analysis.scriptDna.why_it_works, c: '#FBBF24' },
+                          { l: 'What Would Break It', v: analysis.scriptDna.what_would_break_it, c: '#EF4444' },
+                        ].filter(i => i.v).map((item) => (
+                          <div key={item.l}>
+                            <div className="text-[9px] uppercase tracking-wider mb-0.5" style={{ color: '#444' }}>{item.l}</div>
+                            <p className="text-[13px]" style={{ color: item.c || '#fff', fontWeight: item.b ? 600 : 400 }}>{item.v}</p>
+                          </div>
+                        ))}
+                      </div>
+                      {analysis.scriptDna.narrative_structure && (
+                        <div className="mt-3 pt-3" style={{ borderTop: '1px solid #1A1A1A' }}>
+                          <div className="text-[9px] uppercase tracking-wider mb-1" style={{ color: '#444' }}>Narrative Flow</div>
+                          <p className="font-mono text-xs" style={{ color: '#9CA3AF' }}>
+                            {[analysis.scriptDna.narrative_structure.hook_type, 'Problem', 'Explanation', analysis.scriptDna.narrative_structure.proof_moment ? 'Proof' : null, analysis.scriptDna.narrative_structure.contrast ? 'Contrast' : null, 'Resolution', 'CTA'].filter(Boolean).join(' → ')}
+                          </p>
+                        </div>
+                      )}
                     </div>
-                  ))}
+                  )}
+
+                  {/* Psychology */}
+                  {analysis.psychology && (
+                    <div className="pt-3" style={{ borderTop: '1px solid #1A1A1A' }}>
+                      <div className="text-[10px] uppercase tracking-wider font-bold mb-2" style={{ color: '#A78BFA' }}>Emotional Arc</div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {analysis.psychology.emotional_arc && Object.entries(analysis.psychology.emotional_arc).map(([key, val]) => (
+                          <span key={key} className="text-[11px] px-2 py-0.5 rounded-full" style={{ background: '#1A1A2E', color: '#A78BFA', border: '1px solid #2D2B55' }}>
+                            {val}
+                          </span>
+                        ))}
+                      </div>
+                      {analysis.psychology.audience && (
+                        <div className="mt-3">
+                          <div className="text-[9px] uppercase tracking-wider mb-1" style={{ color: '#444' }}>Target Audience</div>
+                          <p className="text-[13px]" style={{ color: '#E5E5E5' }}>{analysis.psychology.audience.who_is_this_for}</p>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Iteration Rules */}
+                  {analysis.iterationRules && (
+                    <div className="pt-3" style={{ borderTop: '1px solid #1A1A1A' }}>
+                      <div className="text-[10px] uppercase tracking-wider font-bold mb-2" style={{ color: '#3B82F6' }}>Iteration Boundaries</div>
+                      <div className="space-y-2">
+                        {analysis.iterationRules.must_stay_fixed?.length > 0 && (
+                          <div>
+                            <div className="text-[9px] uppercase tracking-wider mb-0.5" style={{ color: '#EF4444' }}>Must Stay Fixed</div>
+                            <ul className="text-[12px] space-y-0.5" style={{ color: '#9CA3AF' }}>
+                              {analysis.iterationRules.must_stay_fixed.slice(0, 4).map((r, i) => <li key={i}>• {r}</li>)}
+                            </ul>
+                          </div>
+                        )}
+                        {analysis.iterationRules.safe_iteration_directions?.length > 0 && (
+                          <div>
+                            <div className="text-[9px] uppercase tracking-wider mb-0.5" style={{ color: '#00FF88' }}>Safe Directions</div>
+                            <ul className="text-[12px] space-y-0.5" style={{ color: '#9CA3AF' }}>
+                              {analysis.iterationRules.safe_iteration_directions.slice(0, 4).map((r, i) => <li key={i}>• {r}</li>)}
+                            </ul>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </div>
               ) : null}
             </div>
