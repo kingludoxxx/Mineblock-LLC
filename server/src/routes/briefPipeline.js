@@ -624,96 +624,152 @@ async function extractScriptFromUrl(url) {
   throw new Error('Could not extract text or find a video on this page. Try pasting the ad text manually.');
 }
 
-// ── Extract video from Meta ad ID via Graph API → transcribe ─────────
+// ── Extract video/text from Meta ad ID → transcribe if needed ────────
 async function extractFromMetaAdId(adId) {
   if (!META_ACCESS_TOKEN) {
-    throw new Error('META_ACCESS_TOKEN not configured — cannot fetch ad from Meta API. Try pasting the ad text manually.');
+    throw new Error('META_ACCESS_TOKEN not configured. Try pasting the ad text manually.');
   }
 
-  // Search for the ad across all configured ad accounts
-  for (const accountId of META_AD_ACCOUNT_IDS) {
-    try {
-      // Search by ad archive ID
-      const searchUrl = `${META_GRAPH_URL}/${accountId}/ads?fields=name,creative.fields(thumbnail_url,video_id,body,title,link_description).thumbnail_width(720)&filtering=[{"field":"ad.id","operator":"EQUAL","value":"${adId}"}]&limit=5&access_token=${META_ACCESS_TOKEN}`;
-      const searchRes = await fetch(searchUrl, { signal: AbortSignal.timeout(15000) });
-      const searchData = await searchRes.json();
+  const errors = [];
 
-      if (searchData.data?.length) {
-        const ad = searchData.data[0];
-        const creative = ad.creative || {};
-
-        // If the ad has text body, use it directly (no transcription needed)
-        if (creative.body && creative.body.length > 30) {
-          console.log(`[BriefPipeline] Found ad text from Meta API: ${creative.body.length} chars`);
-          let fullText = creative.body;
-          if (creative.title) fullText = `${creative.title}\n\n${fullText}`;
-          if (creative.link_description) fullText += `\n\n${creative.link_description}`;
-          return fullText;
-        }
-
-        // If has video, get the video source URL and transcribe
-        if (creative.video_id) {
-          console.log(`[BriefPipeline] Found video ID ${creative.video_id}, fetching source URL`);
-          const vidRes = await fetch(`${META_GRAPH_URL}/${creative.video_id}?fields=source&access_token=${META_ACCESS_TOKEN}`, { signal: AbortSignal.timeout(10000) });
-          const vidData = await vidRes.json();
-          if (vidData.source) {
-            console.log(`[BriefPipeline] Got video source, transcribing with Gemini`);
-            return await transcribeWithGemini(vidData.source);
-          }
-        }
-      }
-    } catch (err) {
-      console.warn(`[BriefPipeline] Meta API search failed for account ${accountId}:`, err.message);
-    }
-  }
-
-  // Fallback: try the ad library API directly with the archive ID
+  // Strategy A: Ad Library API (works for ANY public ad, not just yours)
   try {
-    console.log(`[BriefPipeline] Trying Meta Ad Library API with archive ID ${adId}`);
-    const libUrl = `${META_GRAPH_URL}/ads_archive?search_terms=*&ad_reached_countries=US&ad_archive_id=${adId}&fields=ad_snapshot_url,ad_creative_bodies,ad_creative_link_titles,ad_creative_link_descriptions&access_token=${META_ACCESS_TOKEN}&limit=1`;
+    console.log(`[BriefPipeline] Trying Ad Library API for ad ${adId}`);
+    const libUrl = `${META_GRAPH_URL}/ads_archive?ad_reached_countries=US&search_terms=*&ad_archive_id=${adId}&fields=ad_snapshot_url,ad_creative_bodies,ad_creative_link_titles,ad_creative_link_descriptions&limit=1&access_token=${META_ACCESS_TOKEN}`;
     const libRes = await fetch(libUrl, { signal: AbortSignal.timeout(15000) });
     const libData = await libRes.json();
+    console.log(`[BriefPipeline] Ad Library response:`, JSON.stringify(libData).slice(0, 300));
 
     if (libData.data?.length) {
       const ad = libData.data[0];
-      const bodies = ad.ad_creative_bodies || [];
-      const titles = ad.ad_creative_link_titles || [];
-      const descs = ad.ad_creative_link_descriptions || [];
 
-      if (bodies.length && bodies[0].length > 30) {
+      // Try text bodies first
+      const bodies = ad.ad_creative_bodies || [];
+      if (bodies.length && bodies[0].length > 20) {
+        const titles = ad.ad_creative_link_titles || [];
+        const descs = ad.ad_creative_link_descriptions || [];
         let fullText = bodies.join('\n\n');
         if (titles.length) fullText = `${titles[0]}\n\n${fullText}`;
         if (descs.length) fullText += `\n\n${descs[0]}`;
-        console.log(`[BriefPipeline] Got ad text from Ad Library API: ${fullText.length} chars`);
+        console.log(`[BriefPipeline] Got ad text from Ad Library: ${fullText.length} chars`);
         return fullText;
       }
 
-      // If has snapshot URL, try to fetch the snapshot page for video
+      // Try snapshot URL for video extraction
       if (ad.ad_snapshot_url) {
-        console.log(`[BriefPipeline] Trying ad snapshot URL for video extraction`);
-        try {
-          const snapRes = await fetch(ad.ad_snapshot_url, {
-            headers: { 'User-Agent': 'Mozilla/5.0' },
-            redirect: 'follow',
-            signal: AbortSignal.timeout(10000),
-          });
-          const snapHtml = await snapRes.text();
-          // Look for video in snapshot
-          const vidMatch = snapHtml.match(/"(?:sd_src|hd_src|video_url|src)"\s*:\s*"(https?:[^"]+\.mp4[^"]*)"/i)
-            || snapHtml.match(/src=["'](https?:\/\/[^"']+\.mp4[^"']*)/i);
-          if (vidMatch?.[1]) {
-            const videoSrc = vidMatch[1].replace(/\\\//g, '/');
-            console.log(`[BriefPipeline] Found video in snapshot, transcribing`);
-            return await transcribeWithGemini(videoSrc);
+        console.log(`[BriefPipeline] Fetching ad snapshot: ${ad.ad_snapshot_url}`);
+        const snapRes = await fetch(ad.ad_snapshot_url, {
+          headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36' },
+          redirect: 'follow',
+          signal: AbortSignal.timeout(15000),
+        });
+        const snapHtml = await snapRes.text();
+        console.log(`[BriefPipeline] Snapshot HTML length: ${snapHtml.length}`);
+
+        // Look for video URLs in snapshot (multiple patterns)
+        const videoPatterns = [
+          /"(?:sd_src_no_ratelimit|sd_src|hd_src|hd_src_no_ratelimit|video_url)"\s*:\s*"(https?:[^"]+)"/gi,
+          /src=["'](https?:\/\/[^"']*?video[^"']*?\.mp4[^"']*)/gi,
+          /src=["'](https?:\/\/[^"']*?\.mp4[^"']*)/gi,
+          /"(https?:\\\/\\\/[^"]*?\.mp4[^"]*)"/gi,
+        ];
+
+        let videoSrc = null;
+        for (const pattern of videoPatterns) {
+          const match = pattern.exec(snapHtml);
+          if (match?.[1]) {
+            videoSrc = match[1].replace(/\\\//g, '/').replace(/&amp;/g, '&');
+            break;
           }
-        } catch {}
+        }
+
+        if (videoSrc) {
+          console.log(`[BriefPipeline] Found video in snapshot, transcribing: ${videoSrc.slice(0, 80)}...`);
+          return await transcribeWithGemini(videoSrc);
+        }
+
+        // If no video found, try to extract any text content from snapshot
+        const snapText = await callClaude(
+          'You are a text extraction tool.',
+          `Extract any ad copy, script text, or spoken dialogue from this HTML page. Return only the text, no commentary. If no ad text is found, respond "NO_CONTENT_FOUND".\n\nHTML:\n${snapHtml.slice(0, 15000)}`,
+          2000,
+          { rawText: true },
+        );
+        if (snapText && snapText !== 'NO_CONTENT_FOUND' && snapText.length > 30) {
+          return snapText;
+        }
       }
+    } else {
+      errors.push(`Ad Library: ${libData.error?.message || 'No results found'}`);
     }
   } catch (err) {
-    console.warn(`[BriefPipeline] Ad Library API fallback failed:`, err.message);
+    errors.push(`Ad Library: ${err.message}`);
+    console.warn(`[BriefPipeline] Ad Library API failed:`, err.message);
   }
 
-  throw new Error(`Could not find ad with ID ${adId} in Meta API. The ad may be from a different account or expired. Try pasting the ad text manually.`);
+  // Strategy B: Try your own ad accounts (works for your own ads)
+  for (const accountId of META_AD_ACCOUNT_IDS) {
+    try {
+      const searchUrl = `${META_GRAPH_URL}/${accountId}/ads?fields=name,creative.fields(thumbnail_url,video_id,body,title,link_description)&filtering=[{"field":"ad.id","operator":"EQUAL","value":"${adId}"}]&limit=5&access_token=${META_ACCESS_TOKEN}`;
+      const searchRes = await fetch(searchUrl, { signal: AbortSignal.timeout(10000) });
+      const searchData = await searchRes.json();
+
+      if (searchData.data?.length) {
+        const creative = searchData.data[0].creative || {};
+        if (creative.body && creative.body.length > 20) {
+          let fullText = creative.body;
+          if (creative.title) fullText = `${creative.title}\n\n${fullText}`;
+          return fullText;
+        }
+        if (creative.video_id) {
+          const vidRes = await fetch(`${META_GRAPH_URL}/${creative.video_id}?fields=source&access_token=${META_ACCESS_TOKEN}`);
+          const vidData = await vidRes.json();
+          if (vidData.source) return await transcribeWithGemini(vidData.source);
+        }
+      }
+    } catch (err) {
+      errors.push(`Account ${accountId}: ${err.message}`);
+    }
+  }
+
+  // Strategy C: Try fetching the FB Ad Library page directly and scraping
+  try {
+    console.log(`[BriefPipeline] Trying direct FB Ad Library page fetch`);
+    const fbPageUrl = `https://www.facebook.com/ads/library/?id=${adId}`;
+    const fbRes = await fetch(fbPageUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml',
+        'Accept-Language': 'en-US,en;q=0.9',
+      },
+      redirect: 'follow',
+      signal: AbortSignal.timeout(15000),
+    });
+    const fbHtml = await fbRes.text();
+
+    // Try to find video in the page
+    const vidMatch = fbHtml.match(/"(?:sd_src_no_ratelimit|sd_src|hd_src)"\s*:\s*"(https?:[^"]+)"/i);
+    if (vidMatch?.[1]) {
+      const videoSrc = vidMatch[1].replace(/\\\//g, '/').replace(/&amp;/g, '&');
+      console.log(`[BriefPipeline] Found video in FB page, transcribing`);
+      return await transcribeWithGemini(videoSrc);
+    }
+
+    // Try to extract text from the page
+    const fbText = await callClaude(
+      'You are a text extraction tool.',
+      `Extract any ad copy or text content from this Facebook Ad Library page HTML. Return only the ad text, no commentary. If no text found, respond "NO_CONTENT_FOUND".\n\nHTML:\n${fbHtml.slice(0, 20000)}`,
+      2000,
+      { rawText: true },
+    );
+    if (fbText && fbText !== 'NO_CONTENT_FOUND' && fbText.length > 30) {
+      return fbText;
+    }
+  } catch (err) {
+    errors.push(`Direct FB page: ${err.message}`);
+  }
+
+  throw new Error(`Could not extract ad ${adId}. Tried: ${errors.join(' | ')}. Try pasting the ad text manually.`);
 }
 
 // ── Fetch product profile from DB ────────────────────────────────────
