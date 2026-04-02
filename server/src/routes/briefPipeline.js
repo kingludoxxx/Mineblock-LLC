@@ -1712,7 +1712,7 @@ router.post('/admin/reset-winners', authenticate, async (_req, res) => {
   try {
     await pgQuery(`UPDATE brief_pipeline_winners SET status = 'detected' WHERE status IN ('selected', 'generating', 'generated')`);
     await pgQuery(`DELETE FROM brief_pipeline_generated WHERE status = 'pushed'`);
-    const rows = await pgQuery(`SELECT id, creative_id, status FROM brief_pipeline_winners ORDER BY created_at DESC`);
+    const rows = await pgQuery(`SELECT id, creative_id, status FROM brief_pipeline_winners ORDER BY detected_at DESC`);
     res.json({ success: true, message: 'All winners reset to detected', winners: rows });
   } catch (err) {
     console.error('[BriefPipeline] Reset error:', err.message);
