@@ -723,8 +723,41 @@ function buildIterationStrategyPrompt(winAnalysis, parsedScript, config, product
 
   const system = `You are an iteration strategist for direct response video ads. Based on the win analysis of a proven ad, you propose specific iteration directions that preserve what works while introducing strategic variation.`;
 
-  const user = `WIN ANALYSIS:
-${JSON.stringify(winAnalysis, null, 2)}
+  // Format the 3-agent analysis for the strategy prompt
+  const { scriptDna, psychology, iterationRules } = winAnalysis || {};
+  const analysisFormatted = [];
+  if (scriptDna) {
+    analysisFormatted.push(`SCRIPT DNA:
+- Core Angle: ${scriptDna.core_angle || 'N/A'}
+- Primary Emotion: ${scriptDna.primary_emotion || 'N/A'}
+- Mechanism: ${scriptDna.mechanism || 'N/A'}
+- Belief Shift: ${scriptDna.belief_shift || 'N/A'}
+- Awareness Level: ${scriptDna.audience_awareness_level || 'N/A'}
+- Why It Works: ${scriptDna.why_it_works || 'N/A'}
+- What Would Break It: ${scriptDna.what_would_break_it || 'N/A'}`);
+  }
+  if (psychology) {
+    if (psychology.emotional_arc) {
+      const ea = psychology.emotional_arc;
+      analysisFormatted.push(`EMOTIONAL ARC: ${ea.at_hook || '?'} → ${ea.after_problem || '?'} → ${ea.during_explanation || '?'} → ${ea.at_proof || '?'} → ${ea.before_cta || '?'} → ${ea.final_state || '?'}`);
+    }
+    if (psychology.hooks?.length) {
+      analysisFormatted.push(`HOOK ANALYSIS:\n${psychology.hooks.map(h => `- "${h.text?.slice(0, 60)}..." — ${h.hook_type}, strength ${h.strength}/10, stops scroll because: ${h.scroll_stop_mechanism}`).join('\n')}`);
+    }
+    if (psychology.audience) {
+      analysisFormatted.push(`AUDIENCE: ${psychology.audience.who_is_this_for || 'N/A'} — Awareness: ${psychology.audience.awareness_stage || 'N/A'}`);
+    }
+  }
+  if (iterationRules) {
+    analysisFormatted.push(`ITERATION BOUNDARIES:
+MUST STAY FIXED: ${(iterationRules.must_stay_fixed || []).join('; ')}
+CAN VARY: ${(iterationRules.can_be_varied || []).join('; ')}
+HIGH-RISK (AVOID): ${(iterationRules.high_risk_changes || []).join('; ')}
+SAFE DIRECTIONS: ${(iterationRules.safe_iteration_directions || []).join('; ')}`);
+  }
+
+  const user = `DEEP ANALYSIS:
+${analysisFormatted.join('\n\n')}
 
 ORIGINAL SCRIPT:
 Hooks:
@@ -940,18 +973,30 @@ Return ONLY valid JSON:
   return { system, user };
 }
 
-function buildBriefScorerPrompt(winner, parsedScript, generatedBrief, directionName) {
+function buildBriefScorerPrompt(winner, parsedScript, generatedBrief, directionName, deepAnalysis, productContext) {
   const originalHooks = (parsedScript.hooks || [])
     .map(h => `${h.id}: ${h.text}`)
     .join('\n');
 
   const generatedHooks = (generatedBrief.hooks || [])
-    .map(h => `${h.id}: ${h.text}`)
+    .map(h => `${h.id || h.mechanism}: ${h.text}`)
     .join('\n');
+
+  // Build iteration rules context for scoring
+  const rules = deepAnalysis?.iterationRules;
+  const rulesContext = rules ? `
+ITERATION RULES TO EVALUATE AGAINST:
+- Must stay fixed: ${(rules.must_stay_fixed || []).join('; ')}
+- High-risk changes (should NOT have been made): ${(rules.high_risk_changes || []).join('; ')}
+- Tone boundary: ${rules.tone_boundaries?.current_register || 'N/A'} (acceptable range: ${rules.tone_boundaries?.acceptable_range || 'N/A'})
+- Compliance: ${rules.compliance_notes || 'None'}` : '';
 
   const system = `You are a performance media buyer who has spent $50M+ on paid social. You evaluate ad scripts purely on their likelihood to convert cold traffic. You are ruthlessly honest — most scripts are mediocre.`;
 
-  const user = `ORIGINAL WINNING SCRIPT (baseline):
+  const user = `PRODUCT CONTEXT:
+${productContext}
+
+ORIGINAL WINNING SCRIPT (baseline):
 Hooks:
 ${originalHooks}
 
@@ -962,6 +1007,7 @@ ORIGINAL PERFORMANCE:
 - ROAS: ${winner.roas}x
 - CPA: $${winner.cpa}
 - CTR: ${winner.ctr}%
+${rulesContext}
 
 GENERATED BRIEF:
 Hooks:
@@ -972,10 +1018,10 @@ ${generatedBrief.body || '(no body)'}
 
 ITERATION DIRECTION: ${directionName}
 
-Score this brief on 4 dimensions (1-10 scale, 5 = equal to original, 10 = significantly better):
+Score this brief on 5 dimensions (1-10 scale):
 
 1. NOVELTY (1-10): How different is this from the original?
-   - 1 = basically the same script
+   - 1 = basically the same script / synonym swaps
    - 5 = recognizably related but distinct
    - 10 = completely fresh take
 
@@ -989,22 +1035,70 @@ Score this brief on 4 dimensions (1-10 scale, 5 = equal to original, 10 = signif
    - 5 = acceptable flow
    - 10 = seamless, every sentence earns the next
 
-4. CONVERSION POTENTIAL (1-10): Will this actually convert?
+4. HOOK-BODY BLEND (1-10): Do ALL 3 hooks flow naturally into the body?
+   - Read each hook followed immediately by the body's first sentence.
+   - 1 = jarring disconnect, different voice/topic
+   - 5 = acceptable transition
+   - 10 = perfectly seamless, sounds like one person talking
+
+5. CONVERSION POTENTIAL (1-10): Will this actually convert cold traffic?
    - 1 = waste of ad spend
    - 5 = will perform equal to original
    - 10 = likely to significantly outperform
+
+Also check:
+- Did the iteration respect the "must stay fixed" elements? Flag any violations.
+- Did it make any "high-risk changes"? Flag them.
+- Are all product claims accurate per the product context?
+- Does it maintain the same market awareness level as the original?
 
 Return ONLY valid JSON:
 {
   "novelty": { "score": 7, "reason": "one sentence" },
   "aggression": { "score": 8, "reason": "one sentence" },
   "coherence": { "score": 6, "reason": "one sentence" },
+  "hook_body_blend": { "score": 8, "reason": "one sentence" },
   "conversion_potential": { "score": 7, "reason": "one sentence" },
   "overall": 7.0,
   "verdict": "SHIP" | "MAYBE" | "KILL",
-  "one_line_feedback": "The scam-comparison hook is strong but the body loses tension in paragraph 3.",
+  "rule_violations": ["list any iteration rule violations, or empty array if none"],
+  "one_line_feedback": "what's strong and what's weak in one sentence",
   "suggested_improvement": "optional one-sentence fix if verdict is MAYBE"
 }`;
+
+  return { system, user };
+}
+
+// ── Hook-Body Blend Validation Agent ─────────────────────────────────
+function buildBlendValidationPrompt(generatedBrief) {
+  const hooks = (generatedBrief.hooks || []).map(h => h.text).filter(Boolean);
+  const body = generatedBrief.body || '';
+  const bodyFirstLine = body.split('\n').find(l => l.trim().length > 10) || body.slice(0, 200);
+
+  const system = `You are a continuity editor for direct response ad scripts. Your ONLY job is to check if hooks flow naturally into the body.`;
+
+  const user = `Read each hook below, then immediately read the body's opening. Judge if they sound like one continuous script written by the same person.
+
+${hooks.map((h, i) => `HOOK ${i + 1}: "${h}"
+→ BODY STARTS: "${bodyFirstLine}"`).join('\n\n')}
+
+For each hook, return:
+- blend_score (1-10): 1 = jarring disconnect, 10 = perfectly seamless
+- issue: null if score >= 7, otherwise describe the disconnect in one sentence
+- fix_suggestion: null if score >= 7, otherwise suggest a one-sentence fix
+
+Return ONLY valid JSON:
+{
+  "hooks": [
+    { "id": 1, "blend_score": 8, "issue": null, "fix_suggestion": null },
+    { "id": 2, "blend_score": 5, "issue": "Hook uses casual UGC tone but body opens with authoritative data", "fix_suggestion": "Soften the body's opening to match the casual hook tone" },
+    { "id": 3, "blend_score": 9, "issue": null, "fix_suggestion": null }
+  ],
+  "overall_blend": 7.3,
+  "pass": true
+}
+
+A brief PASSES if overall_blend >= 6.5.`;
 
   return { system, user };
 }
@@ -1603,24 +1697,65 @@ router.post('/generate/:id', authenticate, async (req, res) => {
     console.log(`[BriefPipeline] Step 7: Generating ${directions.length} briefs`);
     const generatedBriefs = [];
 
+    // Extract proven scripts from product profile as style reference
+    const provenScripts = productProfile?.scripts;
+    const styleRef = Array.isArray(provenScripts) && provenScripts.length
+      ? provenScripts.slice(0, 2).map((s, i) => `STYLE REF ${i + 1}: ${typeof s === 'string' ? s.slice(0, 300) : (s.text || s.body || JSON.stringify(s)).slice(0, 300)}`).join('\n\n')
+      : '';
+
+    // Track previous outputs for cross-variation deduplication
+    const previousOutputs = [];
+
     // Get next brief number range
     let nextBriefNum = await getNextBriefNumber();
 
     for (const direction of directions) {
       try {
         const { system: genSystem, user: genUser } = buildBriefGeneratorPrompt(parsedScript, winAnalysis, direction, config, productContext);
-        const generated = await callClaude(genSystem, genUser, 3000);
 
-        // Step 8: Score this brief
-        console.log(`[BriefPipeline] Step 8: Scoring brief direction #${direction.id}`);
-        const { system: scoreSystem, user: scoreUser } = buildBriefScorerPrompt(winner, parsedScript, generated, direction.name);
+        // Inject style reference and cross-variation awareness
+        let enhancedUser = genUser;
+        if (styleRef) {
+          enhancedUser += `\n\n# STYLE REFERENCE (proven scripts for this product — match this voice/tone)\n${styleRef}`;
+        }
+        if (previousOutputs.length > 0) {
+          const prevHooks = previousOutputs.map((p, i) =>
+            `Variation ${i + 1} hooks: ${p.hooks.map(h => `"${h.text}"`).join(' | ')}`
+          ).join('\n');
+          enhancedUser += `\n\n# PREVIOUS VARIATIONS (DO NOT OVERLAP — your hooks and phrasing must be COMPLETELY different)\n${prevHooks}\n\nYour iteration must take a genuinely different creative approach from the above. Do NOT reuse any hook patterns, opening structures, or key phrases.`;
+        }
+
+        const generated = await callClaude(genSystem, enhancedUser, 3000);
+
+        // Track this output for next variation
+        previousOutputs.push({ hooks: generated.hooks || [], body: (generated.body || '').slice(0, 100) });
+
+        // Step 8a: Hook-body blend validation
+        console.log(`[BriefPipeline] Step 8a: Validating hook-body blend for direction #${direction.id}`);
+        const { system: blendSystem, user: blendUser } = buildBlendValidationPrompt(generated);
+        const blendResult = await callClaude(blendSystem, blendUser, 1000);
+
+        // Step 8b: Score this brief
+        console.log(`[BriefPipeline] Step 8b: Scoring brief direction #${direction.id}`);
+        const { system: scoreSystem, user: scoreUser } = buildBriefScorerPrompt(winner, parsedScript, generated, direction.name, winAnalysis, productContext);
         const scores = await callClaude(scoreSystem, scoreUser, 1500);
 
+        // Incorporate blend validation into scores
+        if (blendResult) {
+          scores.hook_body_blend = scores.hook_body_blend || {};
+          scores.hook_body_blend.blend_validation = blendResult;
+          // If blend validation failed, downgrade the score
+          if (blendResult.overall_blend && blendResult.overall_blend < 6.5) {
+            scores.hook_body_blend.score = Math.min(scores.hook_body_blend.score || 5, Math.round(blendResult.overall_blend));
+          }
+        }
+
         const overall = scores.overall || (
-          ((scores.novelty?.score || 5) * 0.2) +
-          ((scores.aggression?.score || 5) * 0.2) +
-          ((scores.coherence?.score || 5) * 0.3) +
-          ((scores.conversion_potential?.score || 5) * 0.3)
+          ((scores.novelty?.score || 5) * 0.15) +
+          ((scores.aggression?.score || 5) * 0.15) +
+          ((scores.coherence?.score || 5) * 0.25) +
+          ((scores.hook_body_blend?.score || 5) * 0.15) +
+          ((scores.conversion_potential?.score || 5) * 0.30)
         );
 
         const briefNumber = nextBriefNum++;
