@@ -204,28 +204,6 @@ export default function BriefDetailModal({
             </div>
           )}
 
-          {/* Scores */}
-          {hasScores && (
-            <div>
-              <SectionLabel>Scores</SectionLabel>
-              <div className="flex gap-2">
-                {['novelty', 'aggression', 'coherence', 'overall'].map((key) => (
-                  <ScoreCard key={key} scoreKey={key} value={scores[key]} />
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Iteration direction */}
-          {brief.iteration_direction && (
-            <div>
-              <SectionLabel>Direction</SectionLabel>
-              <p className="text-sm text-slate-300 italic leading-relaxed">
-                {brief.iteration_direction}
-              </p>
-            </div>
-          )}
-
           {/* Original Script (collapsible) */}
           {(originalHooks.length > 0 || originalBody) && (
             <div>
