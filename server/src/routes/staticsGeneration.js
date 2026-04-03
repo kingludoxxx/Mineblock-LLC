@@ -272,6 +272,9 @@ router.post('/generate', authenticate, async (req, res) => {
       if (url) logoUrls.push(url);
     }
 
+    console.log(`[staticsGeneration] Logo data: logo_url=${product.logo_url ? 'yes' : 'no'}, logos=${(product.logos || []).length}, resolved logoUrls=${logoUrls.length}`);
+    console.log(`[staticsGeneration] Product images: main=${finalProductUrl ? 'yes' : 'no'}, extra=${extraProductUrls.length}`);
+
     const nbPrompt = buildNanoBananaPrompt(claudeResult, swapPairs, product, logoUrls.length, customPrompts);
 
     // Send: product images, then logos, then reference ad (last)
