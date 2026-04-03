@@ -99,7 +99,15 @@ Identify every visual element:
 
 THIS IS THE MOST IMPORTANT STEP. You must adapt EVERY SINGLE text element for the product above while PRESERVING THE EXACT COPYWRITING FORMULA.
 
-⚠️ STRICT REFERENCE FIDELITY: You may ONLY adapt text that is ACTUALLY VISIBLE in the reference image. Do NOT add new text elements, badges, discount callouts, guarantee text, or promotional copy that doesn't exist in the reference. The adapted_text arrays must have the EXACT SAME number of items as original_text arrays — no additions.
+⚠️⚠️⚠️ #1 RULE — STRICT 1:1 TEXT MAPPING (THIS OVERRIDES EVERYTHING ELSE):
+Count the EXACT number of text elements in the reference image. Your adapted version must have the EXACT SAME COUNT — not one more, not one less.
+- If the reference has 1 headline → adapted has 1 headline
+- If the reference has 3 bullet points → adapted has 3 bullet points
+- If the reference has 0 body paragraphs → adapted has 0 body paragraphs
+- If the reference has 1 CTA button → adapted has 1 CTA button
+- Do NOT add explanatory text, product descriptions, feature lists, stats, badges, or ANY content that doesn't have a direct 1:1 counterpart in the reference
+- Do NOT expand short labels into long sentences. If the original is 3 words, the adapted should be ~3 words.
+- Leave fields EMPTY ("") if no corresponding text exists in the reference. NEVER fill empty fields with invented copy.
 
 ⚠️ ZERO LEFTOVER TEXT: After adaptation, ZERO words from the original competitor's product/brand/niche must remain. Every single piece of text must be fully adapted to the bitcoin mining product. If the reference says "Comfort Insoles", "Hair Regrowth", "Weight Loss Serum", etc. — those words must be 100% replaced. Finding ANY competitor niche word in the output = FAILURE. Double-check every text field for leftover words from the reference product's niche.
 
@@ -279,8 +287,9 @@ ${layout ? `\nLAYOUT: ${layout.structure || 'match reference'}. Background: ${la
 PRODUCT: Replace all competitor product imagery with the ${product.name} shown in the first photos. Show ${pCount2} product(s) in ${visualDir.product_placement || 'same position as reference'}. The product is a mini bitcoin miner (compact device with color screen showing hashrate). Reproduce it exactly from the photos — do NOT add any text, logo, or overlay on the product or its screen.
 ${logoCount > 0 ? `\nBRAND LOGO: A brand logo image is provided (the image(s) between the product photos and the reference ad). Where the reference ad shows the competitor's logo or brand name text, place this PROVIDED logo image instead. Do NOT write the brand name as plain text — use the actual logo image. The logo must appear exactly as provided, not recreated or redrawn.` : `\nBRAND: Where the reference has a competitor logo, write "${product.name}" as clean text in the same style/position. Do not invent or generate any logo graphic.`}`
 
-FINAL TEXT (render these EXACTLY in the same positions/styles as the reference text):
+FINAL TEXT — render ONLY these text elements, nothing more. Each line maps 1:1 to a text element in the reference. If a field is not listed, it does NOT exist — do NOT invent it:
 ${finalTextLines.join('\n')}
+(Total: ${finalTextLines.length} text elements. Your output must have EXACTLY ${finalTextLines.length} text elements — no extra text, labels, stats, or descriptions.)
 
 ${origBrand ? `IMPORTANT: The competitor brand "${origBrand}" must NOT appear anywhere.` : ''}${origDescriptor ? ` "${origDescriptor}" must NOT appear anywhere.` : ''} Zero leftover competitor text.
 
@@ -290,11 +299,12 @@ ${visualDir.comparison_adaptation ? `Comparison: ${visualDir.comparison_adaptati
 ${visualDir.background_changes ? `Background: ${visualDir.background_changes}` : ''}
 
 RULES:
-- Same number of text blocks as reference — no additions, no removals
-- Text must be sharp, legible, correctly spelled. Product name: "${product.name}"
-- No text/logo/badge ON the product device or screen
-- No invented elements (no extra badges, banners, price tags not in reference)
-- Prices must match the text above exactly — do not invent amounts`;
+1. EXACT same number of text blocks as reference — adding ANY extra text = failure
+2. Text must be sharp, legible, correctly spelled. Product name: "${product.name}"
+3. No text/logo/badge ON the product device or screen
+4. NEVER add elements not in the reference (no extra badges, stats, feature lists, descriptions, price tags)
+5. Prices must match the text above exactly — do not invent amounts
+6. Match the reference's visual density — if the reference is clean/minimal, the output must be equally clean/minimal`;
 }
 
 export function buildSwapPairs(originalText, adaptedText, claudeResult = null) {
