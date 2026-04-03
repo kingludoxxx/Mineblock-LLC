@@ -1480,12 +1480,21 @@ router.get('/active', authenticate, async (req, res) => {
  */
 router.get('/leaderboard', authenticate, async (req, res) => {
   try {
-    const { week } = req.query;
-    if (!week) {
-      return res.status(400).json({ success: false, error: { message: 'week parameter is required' } });
-    }
+    let { week } = req.query;
 
     await ensureTable();
+
+    // Allow "latest" to auto-resolve to the most recent week (avoids an extra round-trip)
+    if (!week || week.toLowerCase() === 'latest') {
+      const latestRows = await pgQuery(
+        `SELECT week FROM (SELECT DISTINCT week FROM creative_analysis WHERE week IS NOT NULL) t
+         ORDER BY SPLIT_PART(week, '_', 2)::int DESC, REPLACE(SPLIT_PART(week, '_', 1), 'WK', '')::int DESC LIMIT 1`
+      );
+      if (latestRows.length === 0) {
+        return res.json({ success: true, data: { topRoas: [], topPurchases: [], topEfficiency: [] } });
+      }
+      week = latestRows[0].week;
+    }
 
     // Aggregate at creative_id level for the given week, min $200 spend
     // Use DISTINCT ON to pick metadata from the highest-spend hook per creative

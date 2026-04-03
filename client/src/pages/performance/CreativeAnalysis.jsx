@@ -382,29 +382,25 @@ export default function CreativeAnalysis() {
     setLoading(true);
     setError(null);
     try {
-      let dataRes;
-      let lbWeek = null;
       if (activeOnly) {
-        dataRes = await api.get('/creative-analysis/active', { signal });
-        const activeData = dataRes.data?.data || dataRes.data || {};
-        if (activeData.latest_week) {
-          lbWeek = activeData.latest_week;
-          setLatestWeek(activeData.latest_week);
-        }
-      } else {
-        dataRes = await api.get('/creative-analysis/data-by-date', { params: { startDate, endDate }, signal });
-      }
-      if (signal.aborted) return;
-      const respData = dataRes.data?.data || dataRes.data || {};
-      const creatives = respData.creatives || respData;
-      setData(Array.isArray(creatives) ? creatives : []);
-
-      // Leaderboard only in active mode (it's week-based)
-      if (activeOnly && lbWeek) {
-        const lbRes = await api.get('/creative-analysis/leaderboard', { params: { week: lbWeek }, signal });
+        // Fire both requests in parallel — /leaderboard resolves "latest" week on its own
+        const [dataRes, lbRes] = await Promise.all([
+          api.get('/creative-analysis/active', { signal }),
+          api.get('/creative-analysis/leaderboard', { params: { week: 'latest' }, signal }),
+        ]);
         if (signal.aborted) return;
+
+        const activeData = dataRes.data?.data || dataRes.data || {};
+        if (activeData.latest_week) setLatestWeek(activeData.latest_week);
+        const creatives = activeData.creatives || activeData;
+        setData(Array.isArray(creatives) ? creatives : []);
         setLeaderboard(lbRes.data?.data || lbRes.data || null);
       } else {
+        const dataRes = await api.get('/creative-analysis/data-by-date', { params: { startDate, endDate }, signal });
+        if (signal.aborted) return;
+        const respData = dataRes.data?.data || dataRes.data || {};
+        const creatives = respData.creatives || respData;
+        setData(Array.isArray(creatives) ? creatives : []);
         setLeaderboard(null);
       }
     } catch (err) {
