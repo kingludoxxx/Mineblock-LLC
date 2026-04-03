@@ -220,7 +220,7 @@ router.post('/generate', authenticate, async (req, res) => {
     }
 
     // ── Step C: Build swap pairs ───────────────────────────────────────
-    const swapPairs = buildSwapPairs(claudeResult.original_text, claudeResult.adapted_text);
+    const swapPairs = buildSwapPairs(claudeResult.original_text, claudeResult.adapted_text, claudeResult);
 
     // ── Step D: Submit to NanoBanana ───────────────────────────────────
     // NanoBanana requires actual HTTP URLs, not base64.

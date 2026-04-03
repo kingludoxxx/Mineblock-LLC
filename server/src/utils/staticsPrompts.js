@@ -67,6 +67,8 @@ Identify ALL brand-specific elements:
 
 ━━━ LAYER 3: TEXT EXTRACTION ━━━
 Extract EVERY piece of visible text ACTUALLY VISIBLE in the image:
+- Brand name (the competitor's brand name — e.g. "stepprs.", "Hims", "Oura", etc.)
+- Product descriptor (the competitor's product tagline or descriptor — e.g. "Comfort Insoles", "Hair Regrowth Solution", etc.)
 - Headline (the largest/most prominent text)
 - Subheadline
 - Body copy
@@ -82,6 +84,7 @@ Extract EVERY piece of visible text ACTUALLY VISIBLE in the image:
 IMPORTANT: Only extract text that is ACTUALLY VISIBLE. Do NOT hallucinate text.
 IMPORTANT: Progress/timeline labels ("Day 0", "Before", "After") are ALSO extracted.
 IMPORTANT: Include comparison labels, ingredient callouts — they ARE part of the copy.
+IMPORTANT: The brand_name and product_descriptor are CRITICAL — they MUST be extracted into original_text AND adapted in adapted_text. These are the #1 source of leftover competitor text if missed.
 
 ━━━ LAYER 4: VISUAL ELEMENTS ━━━
 Identify every visual element:
@@ -171,12 +174,15 @@ Return ONLY valid JSON (no markdown, no code fences):
     "has_rounded_corners": true/false
   },
   "brand_elements": {
+    "brand_name": "the competitor brand name visible in the ad",
     "logo_position": "top-center/bottom-center/etc",
     "brand_colors": ["#hex1", "#hex2"],
     "has_disclaimer": true/false,
     "has_trust_badges": true/false
   },
   "original_text": {
+    "brand_name": "",
+    "product_descriptor": "",
     "headline": "",
     "subheadline": "",
     "body": "",
@@ -191,6 +197,8 @@ Return ONLY valid JSON (no markdown, no code fences):
     "other_text": []
   },
   "adapted_text": {
+    "brand_name": "",
+    "product_descriptor": "",
     "headline": "",
     "subheadline": "",
     "body": "",
@@ -296,6 +304,17 @@ ${nb.productRules || `PRODUCT REPLACEMENT:
 - Do NOT invent or generate any logo. If no brand logo image is provided, do NOT create one.
 - Match realistic lighting, shadows, and perspective to the reference style`}
 
+COMPETITOR BRAND ELIMINATION:
+${(() => {
+    const brandSwap = swapPairs.find(p => p.field.startsWith('brand_name'));
+    const descSwap = swapPairs.find(p => p.field === 'product_descriptor');
+    let s = '';
+    if (brandSwap) s += `- The competitor brand "${brandSwap.original}" must be replaced with "${brandSwap.adapted}" EVERYWHERE it appears — headers, footers, labels, watermarks, product text, ALL instances.\n`;
+    if (descSwap) s += `- The competitor product descriptor "${descSwap.original}" must be replaced with "${descSwap.adapted}" EVERYWHERE.\n`;
+    s += `- If ANY text from the competitor's brand or niche remains visible in your output, that is a CRITICAL FAILURE. Scan every text element.`;
+    return s;
+  })()}
+
 TEXT REPLACEMENTS (${swapPairs.length} swaps — apply ALL):
 ${swapSection || '  (No text changes)'}
 
@@ -334,8 +353,15 @@ ${nb.absoluteRules || `ABSOLUTE RULES:
 14. ZERO leftover competitor text: Every word must be from the swap list. If you see any word from the original competitor's niche (insoles, serum, hair, supplement, etc.) in your output, it is WRONG — replace it.`}`;
 }
 
-export function buildSwapPairs(originalText, adaptedText) {
+export function buildSwapPairs(originalText, adaptedText, claudeResult = null) {
   const pairs = [];
+
+  // Brand name and product descriptor — these are the #1 cause of leftover competitor text
+  for (const field of ['brand_name', 'product_descriptor']) {
+    const orig = originalText[field], adapted = adaptedText[field];
+    if (orig && adapted && orig.trim() !== adapted.trim())
+      pairs.push({ original: orig.trim(), adapted: adapted.trim(), field });
+  }
 
   // Standard text fields
   for (const field of ['headline', 'subheadline', 'body', 'cta', 'disclaimer']) {
@@ -350,6 +376,23 @@ export function buildSwapPairs(originalText, adaptedText) {
     for (let i = 0; i < Math.min(origArr.length, adaptedArr.length); i++) {
       if (origArr[i] && adaptedArr[i] && origArr[i].trim() !== adaptedArr[i].trim())
         pairs.push({ original: origArr[i].trim(), adapted: adaptedArr[i].trim(), field: `${field}[${i}]` });
+    }
+  }
+
+  // Fallback: extract brand name from brand_elements if Claude didn't put it in original_text
+  if (claudeResult?.brand_elements) {
+    const be = claudeResult.brand_elements;
+    // Check if we already have a brand_name swap
+    const hasBrandSwap = pairs.some(p => p.field === 'brand_name');
+    if (!hasBrandSwap && be.brand_name) {
+      const brandName = typeof be.brand_name === 'string' ? be.brand_name.trim() : '';
+      if (brandName && brandName.toLowerCase() !== (adaptedText.brand_name || '').toLowerCase()) {
+        pairs.unshift({
+          original: brandName,
+          adapted: adaptedText.brand_name || claudeResult.adapted_text?.brand_name || '',
+          field: 'brand_name (from brand_elements)'
+        });
+      }
     }
   }
 
