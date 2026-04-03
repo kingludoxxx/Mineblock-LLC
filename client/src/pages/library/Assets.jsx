@@ -16,9 +16,9 @@ const categoryColor = (cat) => {
     supplement: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
     saas: 'bg-accent-muted text-accent-text border-accent/20',
     physical: 'bg-amber-500/10 text-amber-400 border-amber-500/20',
-    digital: 'bg-violet-500/10 text-violet-400 border-violet-500/20',
+    digital: 'bg-[#c9a84c]/10 text-[#e8d5a3] border-violet-500/20',
     service: 'bg-rose-500/10 text-rose-400 border-rose-500/20',
-    other: 'bg-slate-500/10 text-slate-400 border-slate-500/20',
+    other: 'bg-slate-500/10 text-zinc-400 border-slate-500/20',
   };
   return map[cat] || map.other;
 };
@@ -30,26 +30,26 @@ const categoryColor = (cat) => {
 function CollapsibleSection({ icon: Icon, title, subtitle, defaultOpen = false, children }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <div className="bg-[#111] border border-white/[0.06] rounded-xl overflow-hidden">
+    <div className="glass-card border border-white/[0.05] rounded-xl overflow-hidden shadow-[inset_0_1px_0_0_rgba(255,255,255,0.03)]">
       <button
         onClick={() => setOpen(!open)}
         className="w-full flex items-center gap-3 px-5 py-4 text-left cursor-pointer hover:bg-white/[0.02] transition-colors"
       >
-        <div className="w-9 h-9 rounded-lg bg-white/[0.04] flex items-center justify-center shrink-0">
-          <Icon className="w-[18px] h-[18px] text-slate-400" />
+        <div className="w-9 h-9 rounded-lg bg-white/[0.03] border border-white/[0.05] flex items-center justify-center shrink-0">
+          <Icon className="w-[18px] h-[18px] text-zinc-400" />
         </div>
         <div className="flex-1 min-w-0">
           <h3 className="text-sm font-semibold text-white">{title}</h3>
-          <p className="text-xs text-slate-500 mt-0.5">{subtitle}</p>
+          <p className="text-xs text-zinc-500 mt-0.5">{subtitle}</p>
         </div>
         {open ? (
-          <ChevronDown className="w-4 h-4 text-slate-500" />
+          <ChevronDown className="w-4 h-4 text-zinc-500" />
         ) : (
-          <ChevronRight className="w-4 h-4 text-slate-500" />
+          <ChevronRight className="w-4 h-4 text-zinc-500" />
         )}
       </button>
       {open && (
-        <div className="px-5 pb-5 pt-1 space-y-4 border-t border-white/[0.06]">
+        <div className="px-5 pb-5 pt-1 space-y-4 border-t border-white/[0.04]">
           {children}
         </div>
       )}
@@ -95,7 +95,7 @@ function AutoSaveField({ label, value, onChange, onSave, placeholder, rows }) {
     <div>
       {label && (
         <div className="flex items-center justify-between mb-2">
-          <label className="block text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+          <label className="block font-mono text-[10px] font-semibold text-[#c9a84c] uppercase tracking-[0.15em]">
             {label}
           </label>
           {saved && (
@@ -109,7 +109,7 @@ function AutoSaveField({ label, value, onChange, onSave, placeholder, rows }) {
         onBlur={handleBlur}
         placeholder={placeholder}
         rows={rows}
-        className="w-full bg-[#0a0a0a] border border-white/[0.06] rounded-lg px-4 py-3 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-white/[0.15] transition-colors resize-none leading-relaxed"
+        className="w-full bg-white/[0.02] border border-white/[0.05] rounded-lg px-4 py-3 text-sm text-zinc-300 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-[#c9a84c]/30 focus:border-[#c9a84c]/20 transition-all resize-none leading-relaxed shadow-[inset_0_1px_0_0_rgba(255,255,255,0.02)]"
       />
     </div>
   );
@@ -148,8 +148,8 @@ function QuickInfoBox({ box, initialValue, onSave, onChange }) {
   }, [initialValue]);
 
   return (
-    <div className="bg-[#111] border border-white/[0.06] rounded-lg px-4 py-3">
-      <label className="block text-[11px] text-slate-500 uppercase tracking-wider font-semibold mb-1.5">
+    <div className="glass-card border border-white/[0.05] rounded-lg px-4 py-3">
+      <label className="block font-mono text-[10px] text-zinc-500 uppercase tracking-[0.15em] font-semibold mb-1.5">
         {box.label}
       </label>
       <input
@@ -167,7 +167,7 @@ function QuickInfoBox({ box, initialValue, onSave, onChange }) {
           }
         }}
         placeholder={box.placeholder}
-        className="w-full bg-transparent text-sm text-white font-medium placeholder-slate-600 focus:outline-none"
+        className="w-full bg-transparent text-sm text-white font-medium placeholder-zinc-600 focus:outline-none"
       />
     </div>
   );
@@ -187,11 +187,14 @@ function ProductCard({ product, onClick, onDelete }) {
   return (
     <div
       onClick={onClick}
-      className="bg-[#111] border border-white/[0.06] rounded-lg overflow-hidden flex flex-col justify-between hover:border-white/[0.12] transition-colors group cursor-pointer"
+      className="animated-border-gradient rounded-xl cursor-pointer"
+    >
+    <div
+      className="glass-card border border-white/[0.05] rounded-xl overflow-hidden flex flex-col justify-between hover:border-white/[0.08] transition-all group shadow-[inset_0_1px_0_0_rgba(255,255,255,0.03)] relative z-10"
     >
       {/* Hero image */}
       {firstImg ? (
-        <div className="relative overflow-hidden bg-[#0a0a0a]" style={{ height: 140 }}>
+        <div className="relative overflow-hidden bg-black/30" style={{ height: 140 }}>
           <img src={firstImg} alt="" className="w-full h-full object-cover" onError={(e) => { e.target.parentElement.style.display = 'none'; }} />
           {imgCount > 1 && (
             <span className="absolute bottom-2 right-2 bg-black/60 text-white/80 text-[10px] font-medium px-1.5 py-0.5 rounded backdrop-blur-sm">
@@ -200,7 +203,7 @@ function ProductCard({ product, onClick, onDelete }) {
           )}
         </div>
       ) : (
-        <div className="h-20 bg-[#0a0a0a] flex items-center justify-center">
+        <div className="h-20 bg-black/30 flex items-center justify-center">
           <Image className="w-7 h-7 text-white/10" />
         </div>
       )}
@@ -219,13 +222,13 @@ function ProductCard({ product, onClick, onDelete }) {
           </div>
 
           {(product.oneliner || product.description) && (
-            <p className="text-sm text-slate-400 line-clamp-2 leading-relaxed">
+            <p className="text-sm text-zinc-400 line-clamp-2 leading-relaxed">
               {product.oneliner || product.description}
             </p>
           )}
         </div>
 
-        <div className="flex items-center gap-4 text-[11px] text-slate-500">
+        <div className="flex items-center gap-4 text-[11px] text-zinc-500">
           {imgCount > 0 && (
             <span className="flex items-center gap-1">
               <Image className="w-3 h-3" />
@@ -244,21 +247,22 @@ function ProductCard({ product, onClick, onDelete }) {
           )}
         </div>
 
-        <div className="flex items-center gap-2 pt-3 border-t border-white/[0.06]">
+        <div className="flex items-center gap-2 pt-3 border-t border-white/[0.04]">
           <button
             onClick={(e) => { e.stopPropagation(); onClick(); }}
-            className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-white px-2.5 py-1.5 rounded-md hover:bg-white/[0.05] transition-colors"
+            className="flex items-center gap-1.5 text-xs text-zinc-300 hover:text-white px-2.5 py-1.5 rounded-md hover:bg-white/[0.05] transition-colors flex-1"
           >
             <Pencil className="w-3 h-3" /> Edit
           </button>
           <button
             onClick={(e) => { e.stopPropagation(); onDelete(product); }}
-            className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-red-400 px-2.5 py-1.5 rounded-md hover:bg-red-500/[0.05] transition-colors"
+            className="flex items-center gap-1.5 text-xs text-zinc-400 hover:text-red-400 px-2.5 py-1.5 rounded-md hover:bg-red-500/[0.05] transition-colors flex-1"
           >
             <Trash2 className="w-3 h-3" /> Delete
           </button>
         </div>
       </div>
+    </div>
     </div>
   );
 }
@@ -274,12 +278,12 @@ function EmptyState({ onCreate }) {
         <Package className="w-7 h-7 text-emerald-400" />
       </div>
       <h3 className="text-lg font-semibold text-white mb-1.5">No products yet</h3>
-      <p className="text-sm text-slate-400 mb-6 max-w-xs">
+      <p className="text-sm text-zinc-400 mb-6 max-w-xs">
         Add your first product to get started. All production tools pull from these profiles.
       </p>
       <button
         onClick={onCreate}
-        className="inline-flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium px-5 py-2.5 rounded-lg transition-colors"
+        className="inline-flex items-center gap-2 bg-[#c9a84c] hover:bg-[#d4b55a] text-[#111113] text-white text-sm font-medium px-5 py-2.5 rounded-lg transition-colors"
       >
         <Plus className="w-4 h-4" /> Add Product
       </button>
@@ -294,22 +298,22 @@ function EmptyState({ onCreate }) {
 function DeleteDialog({ product, onConfirm, onCancel }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="bg-[#151515] border border-white/[0.08] rounded-xl p-6 w-full max-w-sm mx-4 shadow-2xl">
+      <div className="bg-[#131315]/95 backdrop-blur-xl border border-white/[0.08] rounded-xl p-6 w-full max-w-sm mx-4 shadow-2xl">
         <div className="flex items-center gap-3 mb-4">
           <div className="w-10 h-10 rounded-full bg-red-500/10 flex items-center justify-center shrink-0">
             <Trash2 className="w-5 h-5 text-red-400" />
           </div>
           <div>
             <h3 className="text-sm font-semibold text-white">Delete product</h3>
-            <p className="text-xs text-slate-400 mt-0.5">This action cannot be undone.</p>
+            <p className="text-xs text-zinc-400 mt-0.5">This action cannot be undone.</p>
           </div>
         </div>
-        <p className="text-sm text-slate-300 mb-6">
+        <p className="text-sm text-zinc-300 mb-6">
           Are you sure you want to delete{' '}
           <span className="text-white font-medium">{product.name}</span>?
         </p>
         <div className="flex items-center justify-end gap-2">
-          <button onClick={onCancel} className="text-sm text-slate-400 hover:text-white px-4 py-2 rounded-lg hover:bg-white/[0.05] transition-colors">
+          <button onClick={onCancel} className="text-sm text-zinc-400 hover:text-white px-4 py-2 rounded-lg hover:bg-white/[0.05] transition-colors">
             Cancel
           </button>
           <button onClick={onConfirm} className="text-sm font-medium text-white bg-red-600 hover:bg-red-500 px-4 py-2 rounded-lg transition-colors">
@@ -470,12 +474,12 @@ function ProductDetailView({ product, onBack, onFieldSave, onAiFill, onProductCh
       <div className="flex items-center gap-4">
         <button
           onClick={onBack}
-          className="w-9 h-9 rounded-lg bg-white/[0.04] border border-white/[0.06] flex items-center justify-center hover:bg-white/[0.08] transition-colors shrink-0 cursor-pointer"
+          className="w-9 h-9 rounded-lg bg-white/[0.04] border border-white/[0.05] flex items-center justify-center hover:bg-white/[0.08] transition-colors shrink-0 cursor-pointer"
         >
-          <ArrowLeft className="w-4 h-4 text-slate-400" />
+          <ArrowLeft className="w-4 h-4 text-zinc-400" />
         </button>
         {firstImage && (
-          <div className="w-10 h-10 rounded-lg overflow-hidden border border-white/[0.06] bg-[#0a0a0a] shrink-0">
+          <div className="w-10 h-10 rounded-lg overflow-hidden border border-white/[0.05] bg-black/30 shrink-0">
             <img src={firstImage} alt="" className="w-full h-full object-cover" />
           </div>
         )}
@@ -497,40 +501,40 @@ function ProductDetailView({ product, onBack, onFieldSave, onAiFill, onProductCh
         </button>
         <button
           onClick={() => onDelete(product)}
-          className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-red-400 px-3 py-2 rounded-lg hover:bg-red-500/[0.05] border border-white/[0.06] transition-colors cursor-pointer"
+          className="flex items-center gap-1.5 text-xs text-zinc-400 hover:text-red-400 px-3 py-2 rounded-lg hover:bg-red-500/[0.05] border border-white/[0.05] transition-colors cursor-pointer"
         >
           <Trash2 className="w-3.5 h-3.5" /> Delete
         </button>
       </div>
 
       {/* AI Auto-fill Card */}
-      <div className="bg-[#111] border border-white/[0.06] rounded-xl p-5">
+      <div className="glass-card border border-white/[0.05] rounded-xl p-5">
         <div className="flex items-start gap-3 mb-4">
-          <div className="w-9 h-9 rounded-lg bg-violet-500/10 flex items-center justify-center shrink-0">
-            <Sparkles className="w-[18px] h-[18px] text-violet-400" />
+          <div className="w-9 h-9 rounded-lg bg-[#c9a84c]/10 flex items-center justify-center shrink-0">
+            <Sparkles className="w-[18px] h-[18px] text-[#e8d5a3]" />
           </div>
           <div>
             <h3 className="text-sm font-semibold text-white">Auto-fill with AI</h3>
-            <p className="text-xs text-slate-500 mt-0.5">
+            <p className="text-xs text-zinc-500 mt-0.5">
               Paste the product URL &mdash; Claude scrapes the page and fills every field automatically
             </p>
           </div>
         </div>
         <div className="flex items-center gap-2">
           <div className="flex-1 relative">
-            <Link className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+            <Link className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
             <input
               value={aiUrl}
               onChange={(e) => setAiUrl(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && handleAiFillClick()}
               placeholder="https://example.com/product-page"
-              className="w-full bg-[#0a0a0a] border border-white/[0.06] rounded-lg pl-10 pr-4 py-3 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-white/[0.15] transition-colors"
+              className="w-full bg-white/[0.02] border border-white/[0.05] rounded-lg pl-10 pr-4 py-3 text-sm text-zinc-300 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-[#c9a84c]/30 focus:border-[#c9a84c]/20 transition-colors"
             />
           </div>
           <button
             onClick={handleAiFillClick}
             disabled={aiFilling || !aiUrl.trim()}
-            className="inline-flex items-center gap-2 bg-violet-600 hover:bg-violet-500 disabled:opacity-40 disabled:pointer-events-none text-white text-sm font-medium px-5 py-3 rounded-lg transition-colors whitespace-nowrap cursor-pointer"
+            className="inline-flex items-center gap-2 bg-[#c9a84c] hover:bg-[#d4b55a] text-[#111113] disabled:opacity-40 disabled:pointer-events-none text-white text-sm font-medium px-5 py-3 rounded-lg transition-colors whitespace-nowrap cursor-pointer"
           >
             {aiFilling ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
             {aiFilling ? 'Filling...' : 'Fill with AI'}
@@ -590,16 +594,16 @@ function ProductDetailView({ product, onBack, onFieldSave, onAiFill, onProductCh
         >
           <div className="space-y-2">
             {(Array.isArray(product.benefits) ? product.benefits : []).map((b, i) => (
-              <div key={i} className="flex items-center gap-2 bg-[#0a0a0a] border border-white/[0.06] rounded-lg px-3 py-2.5">
+              <div key={i} className="flex items-center gap-2 bg-white/[0.02] border border-white/[0.05] rounded-lg px-3 py-2.5">
                 <Star className="w-3.5 h-3.5 text-amber-400/60 shrink-0" />
-                <span className="flex-1 text-sm text-slate-200">{typeof b === 'object' ? (b.text || b.name || JSON.stringify(b)) : b}</span>
+                <span className="flex-1 text-sm text-zinc-300">{typeof b === 'object' ? (b.text || b.name || JSON.stringify(b)) : b}</span>
                 <button
                   onClick={() => {
                     const updated = (product.benefits || []).filter((_, idx) => idx !== i);
                     onProductChange({ ...product, benefits: updated });
                     onFieldSave('benefits', updated);
                   }}
-                  className="w-5 h-5 rounded flex items-center justify-center text-slate-600 hover:text-red-400 transition-colors cursor-pointer"
+                  className="w-5 h-5 rounded flex items-center justify-center text-zinc-600 hover:text-red-400 transition-colors cursor-pointer"
                 >
                   <X className="w-3 h-3" />
                 </button>
@@ -618,7 +622,7 @@ function ProductDetailView({ product, onBack, onFieldSave, onAiFill, onProductCh
                   }
                 }}
                 placeholder="Add a benefit... (press Enter)"
-                className="flex-1 bg-[#0a0a0a] border border-white/[0.06] rounded-lg px-4 py-3 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-white/[0.15] transition-colors"
+                className="flex-1 bg-white/[0.02] border border-white/[0.05] rounded-lg px-4 py-3 text-sm text-zinc-300 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-[#c9a84c]/30 focus:border-[#c9a84c]/20 transition-colors"
               />
               <button
                 onClick={() => {
@@ -629,7 +633,7 @@ function ProductDetailView({ product, onBack, onFieldSave, onAiFill, onProductCh
                   setBenefitInput('');
                 }}
                 disabled={!benefitInput.trim()}
-                className="text-xs text-emerald-400 hover:text-emerald-300 disabled:text-slate-600 disabled:cursor-not-allowed px-4 py-3 rounded-lg border border-white/[0.06] hover:border-emerald-500/30 transition-colors cursor-pointer"
+                className="text-xs text-emerald-400 hover:text-emerald-300 disabled:text-zinc-600 disabled:cursor-not-allowed px-4 py-3 rounded-lg border border-white/[0.05] hover:border-emerald-500/30 transition-colors cursor-pointer"
               >
                 Add
               </button>
@@ -826,11 +830,11 @@ function ProductDetailView({ product, onBack, onFieldSave, onAiFill, onProductCh
             onDrop={(e) => { e.preventDefault(); e.currentTarget.classList.remove('border-emerald-500/40'); handleImageUpload(e.dataTransfer.files); }}
             onClick={() => fileInputRef.current?.click()}
           >
-            <Upload className="w-6 h-6 text-slate-500 mx-auto mb-2" />
-            <p className="text-xs text-slate-400">
+            <Upload className="w-6 h-6 text-zinc-500 mx-auto mb-2" />
+            <p className="text-xs text-zinc-400">
               Drop product images here or <span className="text-emerald-400">browse</span>
             </p>
-            <p className="text-[10px] text-slate-600 mt-1">PNG, JPG, WebP — multiple files supported</p>
+            <p className="text-[10px] text-zinc-600 mt-1">PNG, JPG, WebP — multiple files supported</p>
             <input
               ref={fileInputRef}
               type="file"
@@ -848,12 +852,12 @@ function ProductDetailView({ product, onBack, onFieldSave, onAiFill, onProductCh
               onChange={(e) => setImageUrlInput(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && addImageUrl()}
               placeholder="Or paste image URL..."
-              className="flex-1 bg-[#0a0a0a] border border-white/[0.06] rounded-lg px-4 py-3 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-white/[0.15] transition-colors"
+              className="flex-1 bg-white/[0.02] border border-white/[0.05] rounded-lg px-4 py-3 text-sm text-zinc-300 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-[#c9a84c]/30 focus:border-[#c9a84c]/20 transition-colors"
             />
             <button
               onClick={addImageUrl}
               disabled={!imageUrlInput.trim()}
-              className="text-xs text-emerald-400 hover:text-emerald-300 disabled:text-slate-600 disabled:cursor-not-allowed px-4 py-3 rounded-lg border border-white/[0.06] hover:border-emerald-500/30 transition-colors cursor-pointer"
+              className="text-xs text-emerald-400 hover:text-emerald-300 disabled:text-zinc-600 disabled:cursor-not-allowed px-4 py-3 rounded-lg border border-white/[0.05] hover:border-emerald-500/30 transition-colors cursor-pointer"
             >
               Add
             </button>
@@ -864,7 +868,7 @@ function ProductDetailView({ product, onBack, onFieldSave, onAiFill, onProductCh
             <div className="flex flex-wrap gap-3">
               {(product.product_images || []).map((url, i) =>
                 url ? (
-                  <div key={i} className="relative group w-24 h-24 rounded-lg overflow-hidden border border-white/[0.06] bg-[#0a0a0a]">
+                  <div key={i} className="relative group w-24 h-24 rounded-lg overflow-hidden border border-white/[0.05] bg-black/30">
                     <img src={url} alt="" className="w-full h-full object-cover" onError={(e) => { e.target.style.display = 'none'; }} />
                     <button
                       onClick={() => removeImage(i)}
@@ -893,11 +897,11 @@ function ProductDetailView({ product, onBack, onFieldSave, onAiFill, onProductCh
             onDrop={(e) => { e.preventDefault(); e.currentTarget.classList.remove('border-accent/40'); handleLogoUpload(e.dataTransfer.files); }}
             onClick={() => logoFileInputRef.current?.click()}
           >
-            <Upload className="w-6 h-6 text-slate-500 mx-auto mb-2" />
-            <p className="text-xs text-slate-400">
+            <Upload className="w-6 h-6 text-zinc-500 mx-auto mb-2" />
+            <p className="text-xs text-zinc-400">
               Drop brand logos here or <span className="text-accent-text">browse</span>
             </p>
-            <p className="text-[10px] text-slate-600 mt-1">PNG with transparent background recommended — up to 2 logos used in generation</p>
+            <p className="text-[10px] text-zinc-600 mt-1">PNG with transparent background recommended — up to 2 logos used in generation</p>
             <input
               ref={logoFileInputRef}
               type="file"
@@ -915,12 +919,12 @@ function ProductDetailView({ product, onBack, onFieldSave, onAiFill, onProductCh
               onChange={(e) => setLogoUrlInput(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && addLogoUrl()}
               placeholder="Or paste logo URL..."
-              className="flex-1 bg-[#0a0a0a] border border-white/[0.06] rounded-lg px-4 py-3 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-white/[0.15] transition-colors"
+              className="flex-1 bg-white/[0.02] border border-white/[0.05] rounded-lg px-4 py-3 text-sm text-zinc-300 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-[#c9a84c]/30 focus:border-[#c9a84c]/20 transition-colors"
             />
             <button
               onClick={addLogoUrl}
               disabled={!logoUrlInput.trim()}
-              className="text-xs text-accent-text hover:text-accent disabled:text-slate-600 disabled:cursor-not-allowed px-4 py-3 rounded-lg border border-white/[0.06] hover:border-accent/30 transition-colors cursor-pointer"
+              className="text-xs text-accent-text hover:text-accent disabled:text-zinc-600 disabled:cursor-not-allowed px-4 py-3 rounded-lg border border-white/[0.05] hover:border-accent/30 transition-colors cursor-pointer"
             >
               Add
             </button>
@@ -931,7 +935,7 @@ function ProductDetailView({ product, onBack, onFieldSave, onAiFill, onProductCh
             <div className="flex flex-wrap gap-3">
               {(product.logos || []).map((url, i) =>
                 url ? (
-                  <div key={i} className="relative group w-28 h-20 rounded-lg overflow-hidden border border-white/[0.06] bg-[#0a0a0a] flex items-center justify-center p-2">
+                  <div key={i} className="relative group w-28 h-20 rounded-lg overflow-hidden border border-white/[0.05] bg-black/30 flex items-center justify-center p-2">
                     <img src={url} alt={`Logo ${i + 1}`} className="max-w-full max-h-full object-contain" onError={(e) => { e.target.style.display = 'none'; }} />
                     <button
                       onClick={() => removeLogo(i)}
@@ -946,7 +950,7 @@ function ProductDetailView({ product, onBack, onFieldSave, onAiFill, onProductCh
           )}
 
           {/* Hint */}
-          <p className="text-[10px] text-slate-600 leading-relaxed">
+          <p className="text-[10px] text-zinc-600 leading-relaxed">
             When generating ads, competitor logos in references will be automatically replaced with your brand logos.
             The first logo is used as the primary brand mark. Use PNG with transparent backgrounds for best results.
           </p>
@@ -1098,13 +1102,13 @@ export default function Assets() {
           </div>
           <div>
             <h1 className="text-xl font-semibold text-white">Product Library</h1>
-            <p className="text-sm text-slate-400 mt-0.5">Central hub for all your product data</p>
+            <p className="text-sm text-zinc-400 mt-0.5">Central hub for all your product data</p>
           </div>
         </div>
         <button
           onClick={handleCreate}
           disabled={creating}
-          className="inline-flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-sm font-medium px-4 py-2.5 rounded-lg transition-colors cursor-pointer"
+          className="inline-flex items-center gap-2 bg-[#c9a84c] hover:bg-[#d4b55a] text-[#111113] disabled:opacity-50 text-white text-sm font-medium px-4 py-2.5 rounded-lg transition-colors cursor-pointer"
         >
           {creating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
           Add Product
