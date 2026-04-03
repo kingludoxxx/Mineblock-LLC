@@ -21,10 +21,10 @@
   --color-text-faint: #52525b;
 
   /* ─── Gold Accent ──────────────────────────────────────────── */
-  --color-accent: #C9A227;
-  --color-accent-hover: #B8922D;
-  --color-accent-muted: rgba(201, 162, 39, 0.12);
-  --color-accent-text: #E8D5A3;
+  --color-accent: #c9a84c;
+  --color-accent-hover: #b8973f;
+  --color-accent-muted: rgba(201, 168, 76, 0.12);
+  --color-accent-text: #e8d5a3;
 
   /* ─── Semantic ─────────────────────────────────────────────── */
   --color-danger: #ef4444;

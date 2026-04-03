@@ -180,7 +180,7 @@ export default function Sidebar() {
           to="/app/dashboard"
           className={({ isActive }) =>
             `flex items-center gap-2.5 px-2.5 py-1.5 rounded-md text-sm transition-colors
-            ${isActive ? 'bg-accent text-bg-main font-semibold' : 'text-text-muted hover:text-text-primary hover:bg-bg-hover'}
+            ${isActive ? 'bg-accent-muted text-accent-text font-semibold border border-accent/20' : 'text-text-muted hover:text-text-primary hover:bg-bg-hover'}
             ${collapsed ? 'justify-center' : ''}`
           }
           title={collapsed ? 'Dashboard' : undefined}
