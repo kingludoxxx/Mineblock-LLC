@@ -127,7 +127,8 @@ export default function DottedSurface({ className = '' }) {
   return (
     <div
       ref={containerRef}
-      className={`pointer-events-none fixed inset-0 -z-10 ${className}`}
+      className={`pointer-events-none absolute inset-0 ${className}`}
+      style={{ zIndex: 0 }}
     />
   );
 }

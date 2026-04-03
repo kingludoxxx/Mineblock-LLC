@@ -37,7 +37,7 @@ export default function Login() {
   return (
     <div className="min-h-screen bg-[#111113] flex items-center justify-center px-4 relative overflow-hidden">
       <DottedSurface />
-      <div className="relative z-10 glass-card border border-white/[0.06] rounded-xl p-8 w-full max-w-md shadow-2xl">
+      <div className="relative glass-card border border-white/[0.06] rounded-xl p-8 w-full max-w-md shadow-2xl" style={{ zIndex: 1 }}>
         {/* Brand */}
         <div className="text-center mb-8">
           <img src="/logo-white.png" alt="Mineblock" className="h-6 w-auto mx-auto mb-4" />
