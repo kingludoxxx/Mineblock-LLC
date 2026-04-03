@@ -500,39 +500,135 @@ async function transcribeWithGemini(mediaUrl) {
   const mediaRes = await fetch(mediaUrl, {
     headers: { 'User-Agent': 'Mozilla/5.0 (compatible; MineblockBot/1.0)' },
     redirect: 'follow',
-    signal: AbortSignal.timeout(60000), // 60s for large videos
+    signal: AbortSignal.timeout(60000),
   });
 
   if (!mediaRes.ok) throw new Error(`Failed to download media: HTTP ${mediaRes.status}`);
 
   const buffer = Buffer.from(await mediaRes.arrayBuffer());
   const contentType = mediaRes.headers.get('content-type') || 'video/mp4';
-  const base64Data = buffer.toString('base64');
+  const sizeMB = buffer.length / 1024 / 1024;
 
-  console.log(`[BriefPipeline] Media downloaded: ${(buffer.length / 1024 / 1024).toFixed(1)}MB, sending to Gemini for transcription`);
+  console.log(`[BriefPipeline] Media downloaded: ${sizeMB.toFixed(1)}MB (${contentType})`);
 
-  // Send to Gemini for transcription — try multiple models with retry
+  const transcriptionPrompt = `Transcribe ALL spoken words in this video/audio. Return ONLY the transcript as plain text — no timestamps, no speaker labels, no commentary, no formatting. Just the exact words spoken, preserving the natural flow and paragraph breaks. If there are multiple speakers, separate their lines with paragraph breaks.`;
   const models = ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-flash-8b'];
+
+  // For files > 15MB, use Gemini File API (upload first, then reference)
+  // Inline base64 for large files causes 429 rate limits on free tier
+  if (sizeMB > 15) {
+    console.log(`[BriefPipeline] Large file (${sizeMB.toFixed(1)}MB) — using Gemini File API upload`);
+    const fileUri = await uploadToGeminiFileApi(buffer, contentType.split(';')[0]);
+    if (fileUri) {
+      const requestBody = {
+        contents: [{ parts: [
+          { fileData: { mimeType: contentType.split(';')[0], fileUri } },
+          { text: transcriptionPrompt },
+        ]}],
+        generationConfig: { maxOutputTokens: 4096, temperature: 0.1 },
+      };
+      const result = await callGeminiWithRetry(models, requestBody);
+      if (result) return result;
+    }
+    // If File API failed, fall through to inline (smaller chance of success but try anyway)
+    console.warn(`[BriefPipeline] File API failed, falling back to inline for ${sizeMB.toFixed(1)}MB file`);
+  }
+
+  // Inline base64 approach (works well for files < 15MB)
+  const base64Data = buffer.toString('base64');
   const requestBody = {
-    contents: [{
-      parts: [
-        {
-          inlineData: {
-            mimeType: contentType.split(';')[0],
-            data: base64Data,
-          },
-        },
-        {
-          text: `Transcribe ALL spoken words in this video/audio. Return ONLY the transcript as plain text — no timestamps, no speaker labels, no commentary, no formatting. Just the exact words spoken, preserving the natural flow and paragraph breaks. If there are multiple speakers, separate their lines with paragraph breaks.`,
-        },
-      ],
-    }],
-    generationConfig: {
-      maxOutputTokens: 4096,
-      temperature: 0.1,
-    },
+    contents: [{ parts: [
+      { inlineData: { mimeType: contentType.split(';')[0], data: base64Data } },
+      { text: transcriptionPrompt },
+    ]}],
+    generationConfig: { maxOutputTokens: 4096, temperature: 0.1 },
   };
 
+  const result = await callGeminiWithRetry(models, requestBody);
+  if (result) return result;
+
+  throw new Error('Video transcription failed on all models. Try again in a minute or paste the script text manually.');
+}
+
+// Upload file to Gemini File API for large media
+async function uploadToGeminiFileApi(buffer, mimeType) {
+  try {
+    // Step 1: Start resumable upload
+    const startRes = await fetch(
+      `https://generativelanguage.googleapis.com/upload/v1beta/files?key=${GEMINI_API_KEY}`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Goog-Upload-Protocol': 'resumable',
+          'X-Goog-Upload-Command': 'start',
+          'X-Goog-Upload-Header-Content-Length': buffer.length.toString(),
+          'X-Goog-Upload-Header-Content-Type': mimeType,
+        },
+        body: JSON.stringify({ file: { displayName: 'ad-video-transcription' } }),
+        signal: AbortSignal.timeout(30000),
+      }
+    );
+
+    const uploadUrl = startRes.headers.get('x-goog-upload-url');
+    if (!uploadUrl) {
+      console.warn('[BriefPipeline] Gemini File API: no upload URL returned');
+      return null;
+    }
+
+    // Step 2: Upload the file bytes
+    console.log(`[BriefPipeline] Uploading ${(buffer.length / 1024 / 1024).toFixed(1)}MB to Gemini File API...`);
+    const uploadRes = await fetch(uploadUrl, {
+      method: 'PUT',
+      headers: {
+        'Content-Length': buffer.length.toString(),
+        'X-Goog-Upload-Offset': '0',
+        'X-Goog-Upload-Command': 'upload, finalize',
+      },
+      body: buffer,
+      signal: AbortSignal.timeout(120000),
+    });
+
+    const uploadData = await uploadRes.json();
+    const fileUri = uploadData?.file?.uri;
+    const state = uploadData?.file?.state;
+
+    if (!fileUri) {
+      console.warn('[BriefPipeline] Gemini File API: no file URI in response', JSON.stringify(uploadData).slice(0, 200));
+      return null;
+    }
+
+    // Step 3: Wait for file processing (poll until ACTIVE)
+    if (state !== 'ACTIVE') {
+      console.log(`[BriefPipeline] File uploaded, waiting for processing (state: ${state})...`);
+      const fileName = uploadData.file.name;
+      for (let i = 0; i < 12; i++) {
+        await new Promise(r => setTimeout(r, 5000));
+        const checkRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/${fileName}?key=${GEMINI_API_KEY}`);
+        const checkData = await checkRes.json();
+        if (checkData.state === 'ACTIVE') {
+          console.log('[BriefPipeline] File processing complete');
+          return checkData.uri;
+        }
+        if (checkData.state === 'FAILED') {
+          console.warn('[BriefPipeline] File processing failed');
+          return null;
+        }
+      }
+      console.warn('[BriefPipeline] File processing timed out');
+      return null;
+    }
+
+    console.log(`[BriefPipeline] File uploaded and ready: ${fileUri.slice(0, 80)}`);
+    return fileUri;
+  } catch (err) {
+    console.warn('[BriefPipeline] Gemini File API upload error:', err.message);
+    return null;
+  }
+}
+
+// Call Gemini with retry across multiple models
+async function callGeminiWithRetry(models, requestBody) {
   let lastError = null;
   for (const model of models) {
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -551,7 +647,6 @@ async function transcribeWithGemini(mediaUrl) {
         });
 
         if (geminiRes.status === 429) {
-          const errText = await geminiRes.text();
           console.warn(`[BriefPipeline] ${model} rate limited (429), trying next...`);
           lastError = `${model}: Rate limited`;
           continue;
@@ -560,7 +655,7 @@ async function transcribeWithGemini(mediaUrl) {
         if (!geminiRes.ok) {
           const errText = await geminiRes.text();
           lastError = `${model}: HTTP ${geminiRes.status}`;
-          console.warn(`[BriefPipeline] ${model} failed: HTTP ${geminiRes.status}`);
+          console.warn(`[BriefPipeline] ${model} failed: HTTP ${geminiRes.status} — ${errText.slice(0, 150)}`);
           continue;
         }
 
@@ -577,41 +672,42 @@ async function transcribeWithGemini(mediaUrl) {
       }
     }
   }
-
-  throw new Error(`Video transcription failed on all models. ${lastError || 'Try again in a minute or paste the script text manually.'}`);
+  return null;
 }
 
 // ── Smart URL extraction: handles FB Ad Library, Atria, direct video, HTML pages ──
 // ── Extract video URL from any page using yt-dlp ────────────────────
-async function extractVideoUrlWithYtdlp(pageUrl) {
+async function extractVideoUrlWithYtdlp(pageUrl, { audioOnly = false } = {}) {
   if (!existsSync(YTDLP_PATH)) {
     console.warn('[BriefPipeline] yt-dlp not available at', YTDLP_PATH);
     return null;
   }
 
-  // Try multiple extraction strategies with yt-dlp
-  const strategies = [
-    // Strategy 1: Standard extraction with mp4 preference
+  // For transcription: prefer smallest audio to avoid huge uploads to Gemini
+  // For other uses: get best video
+  const strategies = audioOnly ? [
+    // Audio-only strategies (small files, fast transcription)
+    `"${YTDLP_PATH}" --get-url --no-warnings -f "worstaudio[ext=m4a]/worstaudio/worst" "${pageUrl}"`,
+    `"${YTDLP_PATH}" --get-url --no-warnings -f "bestaudio[ext=m4a]/bestaudio" "${pageUrl}"`,
+    `"${YTDLP_PATH}" --get-url --no-warnings -f "worst" "${pageUrl}"`,
+  ] : [
     `"${YTDLP_PATH}" --get-url --no-warnings -f "best[ext=mp4]/best" "${pageUrl}"`,
-    // Strategy 2: Any format (some FB ads only have dash formats)
     `"${YTDLP_PATH}" --get-url --no-warnings -f "best" "${pageUrl}"`,
-    // Strategy 3: Force generic extractor as fallback
     `"${YTDLP_PATH}" --get-url --no-warnings --force-generic-extractor "${pageUrl}"`,
   ];
 
   for (let i = 0; i < strategies.length; i++) {
     try {
-      console.log(`[BriefPipeline] yt-dlp strategy ${i + 1} for: ${pageUrl.slice(0, 100)}`);
+      console.log(`[BriefPipeline] yt-dlp strategy ${i + 1}${audioOnly ? ' (audio)' : ''} for: ${pageUrl.slice(0, 100)}`);
       const result = execSync(strategies[i], {
         timeout: 45000,
         encoding: 'utf8',
         stdio: ['pipe', 'pipe', 'pipe'],
       }).trim();
 
-      // yt-dlp may return multiple URLs (video + audio); take the first valid one
       const firstUrl = result.split('\n').find(line => line.startsWith('http'));
       if (firstUrl) {
-        console.log(`[BriefPipeline] yt-dlp extracted video URL (strategy ${i + 1}): ${firstUrl.slice(0, 120)}...`);
+        console.log(`[BriefPipeline] yt-dlp extracted URL (strategy ${i + 1}): ${firstUrl.slice(0, 120)}...`);
         return firstUrl;
       }
     } catch (err) {
@@ -630,10 +726,22 @@ async function extractScriptFromUrl(url) {
     const adId = fbAdMatch[1];
     console.log(`[BriefPipeline] Facebook Ad Library detected, ad ID: ${adId}`);
 
-    // Try yt-dlp first (most reliable for Facebook)
+    // Try yt-dlp: audio-only first (small file, fast Gemini transcription), then full video
+    const audioUrl = await extractVideoUrlWithYtdlp(url, { audioOnly: true });
+    if (audioUrl) {
+      try {
+        return await transcribeWithGemini(audioUrl);
+      } catch (audioErr) {
+        console.warn(`[BriefPipeline] Audio transcription failed, trying full video:`, audioErr.message);
+      }
+    }
     const videoUrl = await extractVideoUrlWithYtdlp(url);
     if (videoUrl) {
-      return await transcribeWithGemini(videoUrl);
+      try {
+        return await transcribeWithGemini(videoUrl);
+      } catch (videoErr) {
+        console.warn(`[BriefPipeline] Video transcription failed:`, videoErr.message);
+      }
     }
 
     // Fallback to Meta API
@@ -645,9 +753,13 @@ async function extractScriptFromUrl(url) {
     }
   }
 
-  // Strategy 1b: Any Facebook video URL → yt-dlp
+  // Strategy 1b: Any Facebook video URL → yt-dlp (audio first, then video)
   const isFacebookUrl = /facebook\.com|fb\.com|fb\.watch/i.test(url);
   if (isFacebookUrl) {
+    const audioUrl = await extractVideoUrlWithYtdlp(url, { audioOnly: true });
+    if (audioUrl) {
+      try { return await transcribeWithGemini(audioUrl); } catch {}
+    }
     const videoUrl = await extractVideoUrlWithYtdlp(url);
     if (videoUrl) {
       return await transcribeWithGemini(videoUrl);
