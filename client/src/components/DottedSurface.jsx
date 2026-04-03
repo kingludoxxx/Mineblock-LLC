@@ -6,32 +6,33 @@ export default function DottedSurface({ className = '' }) {
   const sceneRef = useRef(null);
 
   useEffect(() => {
-    if (!containerRef.current) return;
+    const container = containerRef.current;
+    if (!container) return;
 
-    const SEPARATION = 150;
-    const AMOUNTX = 40;
-    const AMOUNTY = 60;
+    const SEPARATION = 100;
+    const AMOUNTX = 50;
+    const AMOUNTY = 50;
 
     const scene = new THREE.Scene();
-    scene.fog = new THREE.Fog(0x000000, 2000, 10000);
 
     const camera = new THREE.PerspectiveCamera(
-      60,
-      window.innerWidth / window.innerHeight,
+      75,
+      container.clientWidth / container.clientHeight,
       1,
       10000,
     );
-    camera.position.set(0, 355, 1220);
+    camera.position.set(0, 800, 1400);
+    camera.lookAt(0, 0, 0);
 
     const renderer = new THREE.WebGLRenderer({
       alpha: true,
       antialias: true,
     });
-    renderer.setPixelRatio(window.devicePixelRatio);
-    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(container.clientWidth, container.clientHeight);
     renderer.setClearColor(0x000000, 0);
 
-    containerRef.current.appendChild(renderer.domElement);
+    container.appendChild(renderer.domElement);
 
     const positions = [];
     const colors = [];
@@ -43,7 +44,6 @@ export default function DottedSurface({ className = '' }) {
         const y = 0;
         const z = iy * SEPARATION - (AMOUNTY * SEPARATION) / 2;
         positions.push(x, y, z);
-        // Gold-tinted dots to match our theme
         colors.push(201 / 255, 168 / 255, 76 / 255);
       }
     }
@@ -52,10 +52,10 @@ export default function DottedSurface({ className = '' }) {
     geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
 
     const material = new THREE.PointsMaterial({
-      size: 8,
+      size: 6,
       vertexColors: true,
       transparent: true,
-      opacity: 0.6,
+      opacity: 0.5,
       sizeAttenuation: true,
     });
 
@@ -84,13 +84,14 @@ export default function DottedSurface({ className = '' }) {
 
       positionAttribute.needsUpdate = true;
       renderer.render(scene, camera);
-      count += 0.1;
+      count += 0.05;
     };
 
     const handleResize = () => {
-      camera.aspect = window.innerWidth / window.innerHeight;
+      if (!container) return;
+      camera.aspect = container.clientWidth / container.clientHeight;
       camera.updateProjectionMatrix();
-      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.setSize(container.clientWidth, container.clientHeight);
     };
 
     window.addEventListener('resize', handleResize);
@@ -117,8 +118,8 @@ export default function DottedSurface({ className = '' }) {
 
         sceneRef.current.renderer.dispose();
 
-        if (containerRef.current && sceneRef.current.renderer.domElement) {
-          containerRef.current.removeChild(sceneRef.current.renderer.domElement);
+        if (container && sceneRef.current.renderer.domElement) {
+          container.removeChild(sceneRef.current.renderer.domElement);
         }
       }
     };
@@ -127,7 +128,7 @@ export default function DottedSurface({ className = '' }) {
   return (
     <div
       ref={containerRef}
-      className={`pointer-events-none absolute inset-0 ${className}`}
+      className={`pointer-events-none absolute inset-0 overflow-hidden ${className}`}
       style={{ zIndex: 0 }}
     />
   );
