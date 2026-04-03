@@ -4,6 +4,10 @@ import { pgQuery } from '../db/pg.js';
 import { authenticate } from '../middleware/auth.js';
 import { uploadBuffer, isR2Configured } from '../services/r2.js';
 import crypto from 'crypto';
+import {
+  isMetaAdsConfigured, createAdSet, createFlexibleAdCreative, createAd,
+  uploadAdImageFromUrl
+} from '../services/metaAdsApi.js';
 
 const router = Router();
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -1108,6 +1112,188 @@ router.post('/settings/prompts/reset', authenticate, async (_req, res) => {
     staticsPromptsCache = { data: null, timestamp: 0 };
     res.json({ success: true, message: 'Prompts reset to defaults' });
   } catch (err) {
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// ── Launch Statics Creatives to Meta ──────────────────────────────────
+
+function buildLaunchName(pattern, vars) {
+  let result = pattern;
+  for (const [key, val] of Object.entries(vars)) {
+    result = result.replace(new RegExp(`\\{${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\}`, 'g'), val || '');
+  }
+  return result.trim();
+}
+
+router.post('/launch', authenticate, async (req, res) => {
+  try {
+    await ensureCreativesTable();
+    if (!isMetaAdsConfigured()) {
+      return res.status(400).json({ success: false, error: { message: 'Meta Ads API not configured' } });
+    }
+
+    const { creative_ids, template_id, copy_set_id } = req.body;
+    if (!creative_ids?.length || !template_id) {
+      return res.status(400).json({ success: false, error: { message: 'creative_ids and template_id are required' } });
+    }
+
+    // Load template from brief_pipeline launch_templates table
+    const templates = await pgQuery('SELECT * FROM launch_templates WHERE id = $1', [template_id]);
+    if (!templates.length) return res.status(404).json({ success: false, error: { message: 'Template not found' } });
+    const template = templates[0];
+
+    if (!template.campaign_id) {
+      return res.status(400).json({ success: false, error: { message: 'Template has no campaign configured. Please edit the template and select a campaign.' } });
+    }
+
+    // Load copy set if provided
+    let copySet = null;
+    if (copy_set_id) {
+      const cs = await pgQuery('SELECT * FROM brief_copy_sets WHERE id = $1', [copy_set_id]);
+      if (!cs.length) return res.status(404).json({ success: false, error: { message: 'Copy set not found' } });
+      copySet = cs[0];
+    }
+
+    // Load creatives
+    const creatives = await pgQuery(
+      `SELECT * FROM spy_creatives WHERE id = ANY($1) AND status IN ('approved', 'ready')`,
+      [creative_ids]
+    );
+    if (!creatives.length) {
+      return res.status(400).json({ success: false, error: { message: 'No launchable creatives found (must be approved or ready)' } });
+    }
+
+    // Mark as launching
+    await pgQuery(
+      `UPDATE spy_creatives SET status = 'launching' WHERE id = ANY($1)`,
+      [creative_ids]
+    );
+
+    const dateStr = new Date().toLocaleDateString('en-US', { month: '2-digit', day: '2-digit' }).replace('/', '');
+    const batchNum = Math.floor(Date.now() / 1000) % 10000;
+    const results = [];
+
+    // Round-robin page selection
+    const selectedPages = (template.page_ids || []).filter(p => p.selected !== false);
+
+    // Create ad set for this batch
+    let adsetId = null;
+    let adsetName = '';
+    adsetName = buildLaunchName(template.adset_name_pattern || '{date} - Batch {batch}', {
+      date: dateStr,
+      angle: creatives[0]?.angle || 'General',
+      batch: batchNum,
+      product: creatives[0]?.product_name || '',
+    });
+
+    try {
+      adsetId = await createAdSet(template.ad_account_id, {
+        name: adsetName,
+        campaignId: template.campaign_id,
+        dailyBudget: template.daily_budget,
+        optimizationGoal: template.optimization_goal,
+        bidStrategy: template.bid_strategy,
+        targetRoas: template.target_roas,
+        pixelId: template.pixel_id,
+        conversionEvent: template.conversion_event,
+        conversionLocation: template.conversion_location,
+        targeting: {
+          countries: template.countries || ['US'],
+          age_min: template.age_min,
+          age_max: template.age_max,
+          gender: template.gender,
+          include_audiences: template.include_audiences || [],
+          exclude_audiences: template.exclude_audiences || [],
+        },
+        attributionWindow: template.attribution_window,
+        pageId: selectedPages[0]?.id,
+        status: 'PAUSED',
+      });
+    } catch (err) {
+      await pgQuery(
+        `UPDATE spy_creatives SET status = 'ready' WHERE id = ANY($1)`,
+        [creative_ids]
+      );
+      return res.status(500).json({ success: false, error: { message: `Ad set creation failed: ${err.message}` } });
+    }
+
+    let pageIdx = 0;
+
+    for (let i = 0; i < creatives.length; i++) {
+      const creative = creatives[i];
+      const page = selectedPages.length ? selectedPages[pageIdx % selectedPages.length] : null;
+      pageIdx++;
+
+      const adName = buildLaunchName(template.ad_name_pattern || '{date} - {angle} {num}', {
+        date: dateStr,
+        angle: creative.angle || 'General',
+        num: i + 1,
+        batch: batchNum,
+        product: creative.product_name || '',
+      });
+
+      try {
+        // Upload image to Meta
+        let imageHashes = [];
+        if (creative.image_url) {
+          const { hash } = await uploadAdImageFromUrl(template.ad_account_id, creative.image_url);
+          imageHashes = [hash];
+        }
+
+        // Determine ad copy
+        const primaryTexts = copySet?.primary_texts?.length
+          ? copySet.primary_texts
+          : [creative.source_label || 'Check this out'];
+        const headlines = copySet?.headlines?.length
+          ? copySet.headlines
+          : [creative.angle || 'Shop Now'];
+        const descriptions = copySet?.descriptions?.length
+          ? copySet.descriptions
+          : [''];
+        const cta = copySet?.cta_button || 'SHOP_NOW';
+        const link = copySet?.landing_page_url || 'https://mineblock.com';
+
+        // Create ad creative
+        const creativeId = await createFlexibleAdCreative(template.ad_account_id, {
+          name: adName,
+          imageHashes,
+          primaryTexts,
+          headlines,
+          descriptions,
+          cta,
+          link,
+          pageId: page?.id || selectedPages[0]?.id,
+          utmParameters: template.utm_parameters,
+        });
+
+        // Create the ad
+        const metaAdId = await createAd(template.ad_account_id, {
+          name: adName,
+          adsetId,
+          creativeId,
+          status: 'PAUSED',
+        });
+
+        // Update creative status
+        await pgQuery(
+          `UPDATE spy_creatives SET status = 'launched', updated_at = NOW() WHERE id = $1`,
+          [creative.id]
+        );
+
+        results.push({ creative_id: creative.id, status: 'launched', meta_ad_id: metaAdId, ad_name: adName });
+      } catch (err) {
+        await pgQuery(
+          `UPDATE spy_creatives SET status = 'ready', review_notes = $1, updated_at = NOW() WHERE id = $2`,
+          [`Launch failed: ${err.message}`, creative.id]
+        );
+        results.push({ creative_id: creative.id, status: 'failed', error: err.message });
+      }
+    }
+
+    res.json({ success: true, data: { results, adset_id: adsetId, adset_name: adsetName } });
+  } catch (err) {
+    console.error('[StaticsGeneration] Launch error:', err);
     res.status(500).json({ success: false, error: { message: err.message } });
   }
 });

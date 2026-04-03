@@ -9,7 +9,7 @@ import { fileURLToPath } from 'url';
 import {
   getAdAccounts, getPages, getPixels, getCampaigns, getAdSets,
   getCustomAudiences, createAdSet, createFlexibleAdCreative, createAd,
-  uploadAdImage, uploadAdVideo, isMetaAdsConfigured, getAllAdAccountIds
+  uploadAdImage, uploadAdVideo, uploadAdImageFromUrl, isMetaAdsConfigured, getAllAdAccountIds
 } from '../services/metaAdsApi.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -4069,9 +4069,13 @@ router.post('/settings/prompts/reset', authenticate, async (_req, res) => {
 // LAUNCH TEMPLATES & COPY SETS
 // ═══════════════════════════════════════════════════════════════════════
 
-let launchTablesReady = false;
+let launchTablesPromise = null;
 async function ensureLaunchTables() {
-  if (launchTablesReady) return;
+  if (launchTablesPromise) return launchTablesPromise;
+  launchTablesPromise = _initLaunchTables();
+  return launchTablesPromise;
+}
+async function _initLaunchTables() {
   await pgQuery(`
     CREATE TABLE IF NOT EXISTS launch_templates (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -4148,11 +4152,11 @@ async function ensureLaunchTables() {
       created_at TIMESTAMPTZ DEFAULT NOW()
     )
   `);
+  await pgQuery(`CREATE UNIQUE INDEX IF NOT EXISTS idx_copy_sets_product_angle ON brief_copy_sets(product_id, angle)`).catch(() => {});
   // Add launch columns to generated table
   await pgQuery(`ALTER TABLE brief_pipeline_generated ADD COLUMN IF NOT EXISTS launched_at TIMESTAMPTZ`).catch(() => {});
   await pgQuery(`ALTER TABLE brief_pipeline_generated ADD COLUMN IF NOT EXISTS launch_error TEXT`).catch(() => {});
   await pgQuery(`ALTER TABLE brief_pipeline_generated ADD COLUMN IF NOT EXISTS meta_ad_ids JSONB DEFAULT '[]'`).catch(() => {});
-  launchTablesReady = true;
 }
 
 // ── Meta API Proxy Endpoints ───────────────────────────────────────────
@@ -4340,6 +4344,7 @@ router.put('/launch-templates/:id', authenticate, async (req, res) => {
 
 router.delete('/launch-templates/:id', authenticate, async (req, res) => {
   try {
+    await ensureLaunchTables();
     const rows = await pgQuery('DELETE FROM launch_templates WHERE id = $1 RETURNING id', [req.params.id]);
     if (!rows.length) return res.status(404).json({ success: false, error: { message: 'Template not found' } });
     res.json({ success: true });
@@ -4397,6 +4402,7 @@ router.post('/copy-sets', authenticate, async (req, res) => {
 
 router.put('/copy-sets/:id', authenticate, async (req, res) => {
   try {
+    await ensureLaunchTables();
     const c = req.body;
     const rows = await pgQuery(
       `UPDATE brief_copy_sets SET angle=$1, primary_texts=$2, headlines=$3, descriptions=$4, cta_button=$5, landing_page_url=$6, utm_parameters=$7, updated_at=NOW()
@@ -4421,6 +4427,7 @@ router.put('/copy-sets/:id', authenticate, async (req, res) => {
 
 router.delete('/copy-sets/:id', authenticate, async (req, res) => {
   try {
+    await ensureLaunchTables();
     const rows = await pgQuery('DELETE FROM brief_copy_sets WHERE id = $1 RETURNING id', [req.params.id]);
     if (!rows.length) return res.status(404).json({ success: false, error: { message: 'Copy set not found' } });
     res.json({ success: true });
@@ -4456,11 +4463,16 @@ router.post('/launch', authenticate, async (req, res) => {
     if (!templates.length) return res.status(404).json({ success: false, error: { message: 'Template not found' } });
     const template = templates[0];
 
+    if (!template.campaign_id) {
+      return res.status(400).json({ success: false, error: { message: 'Template has no campaign configured. Please edit the template and select a campaign.' } });
+    }
+
     // Load copy set if provided
     let copySet = null;
     if (copy_set_id) {
       const cs = await pgQuery('SELECT * FROM brief_copy_sets WHERE id = $1', [copy_set_id]);
-      if (cs.length) copySet = cs[0];
+      if (!cs.length) return res.status(404).json({ success: false, error: { message: 'Copy set not found' } });
+      copySet = cs[0];
     }
 
     // Load briefs
@@ -4486,11 +4498,11 @@ router.post('/launch', authenticate, async (req, res) => {
     const selectedPages = (template.page_ids || []).filter(p => p.selected !== false);
     let pageIdx = 0;
 
-    // Determine if we need to create an ad set
+    // Create ad set for this batch
     let adsetId = null;
-    if (template.campaign_id) {
-      // Create a new ad set for this batch
-      const adsetName = buildLaunchName(template.adset_name_pattern, {
+    let adsetName = '';
+    {
+      adsetName = buildLaunchName(template.adset_name_pattern, {
         date: dateStr,
         angle: briefs[0]?.angle || 'General',
         batch: batchNum,
@@ -4521,7 +4533,6 @@ router.post('/launch', authenticate, async (req, res) => {
           status: 'PAUSED',
         });
       } catch (err) {
-        // If ad set creation fails, mark all briefs as failed
         await pgQuery(
           `UPDATE brief_pipeline_generated SET status = 'launch_failed', launch_error = $1 WHERE id = ANY($2)`,
           [`Ad set creation failed: ${err.message}`, brief_ids]
@@ -4551,7 +4562,7 @@ router.post('/launch', authenticate, async (req, res) => {
         await pgQuery(
           `INSERT INTO brief_launches (id, brief_id, template_id, copy_set_id, ad_account_id, meta_campaign_id, meta_adset_id, ad_name, adset_name, page_id, page_name, batch_number, status)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'uploading')`,
-          [launchId, brief.id, template_id, copy_set_id || null, template.ad_account_id, template.campaign_id, adsetId, adName, '', page?.id, page?.name, batchNum]
+          [launchId, brief.id, template_id, copy_set_id || null, template.ad_account_id, template.campaign_id, adsetId, adName, adsetName, page?.id, page?.name, batchNum]
         );
 
         // Determine ad copy

@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
-  X, ArrowLeft, RefreshCw, Loader2, Check, ChevronDown, Plus, Minus,
-  Globe, Users, Target, DollarSign, BarChart3, Tag, Languages, Layout,
+  X, ArrowLeft, RefreshCw, Loader2, Check, ChevronDown, Plus,
+  Users, Target, DollarSign, BarChart3, Tag, Languages, Layout,
   Link2, Eye, Save, Megaphone,
 } from 'lucide-react';
 import api from '../../../services/api';
@@ -172,6 +172,7 @@ export default function LaunchTemplateEditor({ open, onClose, template, onSaved 
   const [audiences, setAudiences] = useState([]);
   const [syncing, setSyncing] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState('');
   const [loadingAccounts, setLoadingAccounts] = useState(false);
   const [countryInput, setCountryInput] = useState('');
 
@@ -193,17 +194,17 @@ export default function LaunchTemplateEditor({ open, onClose, template, onSaved 
         adNamePattern: template.ad_name_pattern || DEFAULT_FORM.adNamePattern,
         conversionLocation: template.conversion_location || 'WEBSITE',
         conversionEvent: template.conversion_event || 'PURCHASE',
-        dailyBudget: template.daily_budget || '',
+        dailyBudget: template.daily_budget ?? '',
         performanceGoal: template.performance_goal || 'MAXIMIZE_CONVERSIONS',
         optimizationGoal: template.optimization_goal || 'PURCHASE',
         bidStrategy: template.bid_strategy === 'LOWEST_COST_WITHOUT_CAP' ? 'LOWEST_COST' : template.bid_strategy === 'LOWEST_COST_WITH_MIN_ROAS' ? 'MINIMUM_ROAS' : template.bid_strategy || 'LOWEST_COST',
-        targetRoas: template.target_roas || '',
+        targetRoas: template.target_roas ?? '',
         attribution: template.attribution_window || '7d_click',
         includeAudiences: (template.include_audiences || []).map(a => a.id || a),
         excludeAudiences: (template.exclude_audiences || []).map(a => a.id || a),
         countries: template.countries || [],
-        ageMin: template.age_min || 18,
-        ageMax: template.age_max || 65,
+        ageMin: template.age_min ?? 18,
+        ageMax: template.age_max ?? 65,
         gender: template.gender ? template.gender.charAt(0).toUpperCase() + template.gender.slice(1) : 'All',
         adFormat: template.ad_format === 'FLEXIBLE' ? 'Flexible Ads' : (template.ad_format || 'Flexible Ads').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
         utmParams: template.utm_parameters || DEFAULT_FORM.utmParams,
@@ -279,17 +280,29 @@ export default function LaunchTemplateEditor({ open, onClose, template, onSaved 
   // -- Save -----------------------------------------------------------------
   const handleSave = async () => {
     setSaving(true);
+    setSaveError('');
     try {
+      // When sync data is available, use it; otherwise preserve original template data
+      const resolvedPages = pages.length
+        ? pages.filter(p => form.selectedPages.includes(p.id)).map(p => ({ id: p.id, name: p.name, selected: true }))
+        : (template?.page_ids || []).filter(p => form.selectedPages.includes(p.id));
+      const resolvedInclude = audiences.length
+        ? audiences.filter(a => form.includeAudiences.includes(a.id))
+        : (template?.include_audiences || []).filter(a => form.includeAudiences.includes(a.id || a));
+      const resolvedExclude = audiences.length
+        ? audiences.filter(a => form.excludeAudiences.includes(a.id))
+        : (template?.exclude_audiences || []).filter(a => form.excludeAudiences.includes(a.id || a));
+
       const payload = {
         name: form.name,
         ad_account_id: form.accountId,
         ad_account_name: accounts.find(a => a.id === form.accountId)?.name || form.accountId,
         page_mode: form.pageMode === 'round-robin' ? 'round_robin' : 'single',
-        page_ids: pages.filter(p => form.selectedPages.includes(p.id)).map(p => ({ id: p.id, name: p.name, selected: true })),
+        page_ids: resolvedPages,
         pixel_id: form.pixelId,
-        pixel_name: pixels.find(p => p.id === form.pixelId)?.name || '',
+        pixel_name: pixels.find(p => p.id === form.pixelId)?.name || (template?.pixel_name || ''),
         campaign_id: form.campaignId,
-        campaign_name: campaigns.find(c => c.id === form.campaignId)?.name || '',
+        campaign_name: campaigns.find(c => c.id === form.campaignId)?.name || (template?.campaign_name || ''),
         adset_name_pattern: form.adSetNamePattern,
         ad_name_pattern: form.adNamePattern,
         conversion_location: form.conversionLocation,
@@ -298,13 +311,13 @@ export default function LaunchTemplateEditor({ open, onClose, template, onSaved 
         performance_goal: form.performanceGoal,
         optimization_goal: form.optimizationGoal,
         bid_strategy: form.bidStrategy === 'MINIMUM_ROAS' ? 'LOWEST_COST_WITH_MIN_ROAS' : form.bidStrategy === 'LOWEST_COST' ? 'LOWEST_COST_WITHOUT_CAP' : form.bidStrategy,
-        target_roas: form.bidStrategy === 'MINIMUM_ROAS' ? parseFloat(form.targetRoas) || null : null,
+        target_roas: form.bidStrategy === 'MINIMUM_ROAS' ? (parseFloat(form.targetRoas) ?? null) : null,
         attribution_window: form.attribution,
-        include_audiences: audiences.filter(a => form.includeAudiences.includes(a.id)),
-        exclude_audiences: audiences.filter(a => form.excludeAudiences.includes(a.id)),
+        include_audiences: resolvedInclude,
+        exclude_audiences: resolvedExclude,
         countries: form.countries.length ? form.countries : ['US'],
-        age_min: form.ageMin || 18,
-        age_max: form.ageMax || 65,
+        age_min: form.ageMin ?? 18,
+        age_max: form.ageMax ?? 65,
         gender: form.gender.toLowerCase(),
         ad_format: form.adFormat === 'Flexible Ads' ? 'FLEXIBLE' : form.adFormat.toUpperCase().replace(/ /g, '_'),
         utm_parameters: form.utmParams,
@@ -320,6 +333,7 @@ export default function LaunchTemplateEditor({ open, onClose, template, onSaved 
       onClose();
     } catch (err) {
       console.error('Failed to save template:', err);
+      setSaveError(err.response?.data?.error?.message || err.message || 'Failed to save template');
     } finally {
       setSaving(false);
     }
@@ -860,17 +874,24 @@ export default function LaunchTemplateEditor({ open, onClose, template, onSaved 
           </button>
           <button
             onClick={handleSave}
-            disabled={saving || !form.name}
+            disabled={saving || syncing || !form.name}
             className="flex items-center gap-2 px-5 py-2 text-sm font-semibold bg-[#c9a84c] hover:bg-[#d4b55a] text-[#111113] rounded-lg transition disabled:opacity-50 cursor-pointer"
           >
             {saving ? (
               <Loader2 className="w-4 h-4 animate-spin" />
+            ) : syncing ? (
+              <RefreshCw className="w-4 h-4 animate-spin" />
             ) : (
               <Save className="w-4 h-4" />
             )}
-            Save Template
+            {syncing ? 'Syncing...' : 'Save Template'}
           </button>
         </div>
+        {saveError && (
+          <div className="px-6 py-2 bg-red-950/50 border-t border-red-500/20 text-red-300 text-xs">
+            {saveError}
+          </div>
+        )}
       </div>
     </div>
   );

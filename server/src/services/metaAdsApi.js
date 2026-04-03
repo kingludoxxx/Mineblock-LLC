@@ -14,10 +14,8 @@ const META_GRAPH_URL = 'https://graph.facebook.com/v21.0';
 export async function uploadAdImage(adAccountId, imageBuffer) {
   const formData = new FormData();
   formData.append('access_token', META_ACCESS_TOKEN);
-  formData.append('filename', 'creative.png');
-  // Image needs to be sent as bytes
   const blob = new Blob([imageBuffer], { type: 'image/png' });
-  formData.append('bytes', blob);
+  formData.append('bytes', blob, 'creative.png');
 
   const res = await fetch(`${META_GRAPH_URL}/${adAccountId}/adimages`, {
     method: 'POST',
@@ -43,7 +41,7 @@ export async function uploadAdImage(adAccountId, imageBuffer) {
  * @returns {string} creativeId
  */
 export async function createAdCreative(adAccountId, params) {
-  const { name, imageHashes, primaryText, headlines, descriptions, cta = 'LEARN_MORE', link } = params;
+  const { name, imageHashes, primaryText, headlines, descriptions, cta = 'LEARN_MORE', link, pageId } = params;
 
   // Build asset feed spec for flexible ad
   const assetFeedSpec = {
@@ -63,11 +61,7 @@ export async function createAdCreative(adAccountId, params) {
       name,
       asset_feed_spec: assetFeedSpec,
       object_story_spec: {
-        page_id: process.env.META_PAGE_ID || '',
-        link_data: {
-          link: link,
-          message: primaryText,
-        },
+        page_id: pageId || process.env.META_PAGE_ID || '',
       },
     }),
   });
@@ -197,9 +191,13 @@ export async function getPixels(adAccountId) {
  * Fetch campaigns for an ad account
  */
 export async function getCampaigns(adAccountId) {
-  const res = await fetch(
-    `${META_GRAPH_URL}/${adAccountId}/campaigns?fields=id,name,status,objective,daily_budget,lifetime_budget&limit=100&effective_status=["ACTIVE","PAUSED"]&access_token=${META_ACCESS_TOKEN}`
-  );
+  const params = new URLSearchParams({
+    fields: 'id,name,status,objective,daily_budget,lifetime_budget',
+    limit: '100',
+    effective_status: '["ACTIVE","PAUSED"]',
+    access_token: META_ACCESS_TOKEN,
+  });
+  const res = await fetch(`${META_GRAPH_URL}/${adAccountId}/campaigns?${params}`);
   if (!res.ok) {
     const err = await res.text();
     throw new Error(`Meta campaigns error ${res.status}: ${err.slice(0, 300)}`);
@@ -215,9 +213,13 @@ export async function getCampaigns(adAccountId) {
  * Fetch ad sets for a campaign
  */
 export async function getAdSets(campaignId) {
-  const res = await fetch(
-    `${META_GRAPH_URL}/${campaignId}/adsets?fields=id,name,status,daily_budget,targeting,optimization_goal,billing_event&limit=100&effective_status=["ACTIVE","PAUSED"]&access_token=${META_ACCESS_TOKEN}`
-  );
+  const params = new URLSearchParams({
+    fields: 'id,name,status,daily_budget,targeting,optimization_goal,billing_event',
+    limit: '100',
+    effective_status: '["ACTIVE","PAUSED"]',
+    access_token: META_ACCESS_TOKEN,
+  });
+  const res = await fetch(`${META_GRAPH_URL}/${campaignId}/adsets?${params}`);
   if (!res.ok) {
     const err = await res.text();
     throw new Error(`Meta adsets error ${res.status}: ${err.slice(0, 300)}`);
@@ -266,12 +268,13 @@ export async function createAdSet(adAccountId, params) {
     status,
     targeting: {
       geo_locations: targeting.countries ? { countries: targeting.countries } : { countries: ['US'] },
-      age_min: targeting.age_min || 18,
-      age_max: targeting.age_max || 65,
+      age_min: targeting.age_min ?? 18,
+      age_max: targeting.age_max ?? 65,
       ...(targeting.gender && targeting.gender !== 'all' ? { genders: [targeting.gender === 'male' ? 1 : 2] } : {}),
       ...(targeting.include_audiences?.length ? { custom_audiences: targeting.include_audiences.map(a => ({ id: a.id || a })) } : {}),
       ...(targeting.exclude_audiences?.length ? { excluded_custom_audiences: targeting.exclude_audiences.map(a => ({ id: a.id || a })) } : {}),
     },
+    destination_type: conversionLocation || 'WEBSITE',
     promoted_object: {
       pixel_id: pixelId,
       custom_event_type: conversionEvent,
@@ -358,6 +361,36 @@ export async function createFlexibleAdCreative(adAccountId, params) {
 
   const data = await res.json();
   return data.id;
+}
+
+/**
+ * Upload video to Meta ad account
+ */
+/**
+ * Upload image from URL to Meta ad account
+ */
+export async function uploadAdImageFromUrl(adAccountId, imageUrl) {
+  const imgRes = await fetch(imageUrl);
+  if (!imgRes.ok) throw new Error(`Failed to fetch image from ${imageUrl}: ${imgRes.status}`);
+  const buffer = Buffer.from(await imgRes.arrayBuffer());
+  return uploadAdImage(adAccountId, buffer);
+}
+
+/**
+ * Wait for a video to finish processing on Meta
+ */
+export async function waitForVideoReady(videoId, maxWaitMs = 120000) {
+  const start = Date.now();
+  while (Date.now() - start < maxWaitMs) {
+    const res = await fetch(`${META_GRAPH_URL}/${videoId}?fields=status&access_token=${META_ACCESS_TOKEN}`);
+    if (!res.ok) throw new Error(`Video status check failed: ${res.status}`);
+    const data = await res.json();
+    const phase = data.status?.processing_phase?.status;
+    if (phase === 'complete') return true;
+    if (phase === 'error') throw new Error('Video processing failed on Meta');
+    await new Promise(r => setTimeout(r, 3000));
+  }
+  throw new Error('Video processing timed out');
 }
 
 /**

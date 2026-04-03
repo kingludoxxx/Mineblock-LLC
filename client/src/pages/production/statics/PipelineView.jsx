@@ -108,7 +108,7 @@ function RatioPill({ label, status }) {
   return null;
 }
 
-function CreativeCard({ creative, column, onStatusChange, onCardClick, variantStatus }) {
+function CreativeCard({ creative, column, onStatusChange, onCardClick, variantStatus, isSelected, onToggleSelect }) {
   const [wasDragged, setWasDragged] = useState(false);
 
   return (
@@ -181,8 +181,23 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, variantSt
             )}
           </div>
 
+          {/* Select checkbox for Ready to Launch */}
+          {onToggleSelect && (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onToggleSelect(creative.id); }}
+              className={`w-full py-1.5 rounded-md text-xs font-medium border transition-colors cursor-pointer flex items-center justify-center gap-1.5
+                ${isSelected
+                  ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30'
+                  : 'bg-white/[0.03] text-zinc-400 border-white/[0.05] hover:bg-white/[0.06]'
+                }`}
+            >
+              <Check className={`w-3 h-3 ${isSelected ? 'opacity-100' : 'opacity-30'}`} />
+              {isSelected ? 'Selected' : 'Select for Launch'}
+            </button>
+          )}
           {/* Action button */}
-          {column.actionLabel ? (
+          {column.actionLabel && !onToggleSelect ? (
             <button
               type="button"
               onClick={(e) => {
@@ -210,7 +225,7 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, variantSt
 // Pipeline column
 // ---------------------------------------------------------------------------
 
-function PipelineColumn({ column, items, onStatusChange, onCardClick, allCreatives }) {
+function PipelineColumn({ column, items, onStatusChange, onCardClick, allCreatives, selectedForLaunch, onToggleSelect }) {
   const Icon = column.icon;
   const [dragOver, setDragOver] = useState(false);
 
@@ -276,6 +291,8 @@ function PipelineColumn({ column, items, onStatusChange, onCardClick, allCreativ
                 onStatusChange={onStatusChange}
                 onCardClick={onCardClick}
                 variantStatus={vStatus}
+                isSelected={selectedForLaunch?.includes(creative.id)}
+                onToggleSelect={column.key === 'ready' ? onToggleSelect : undefined}
               />
             );
           })
@@ -309,39 +326,67 @@ export function PipelineView({ creatives = [], onStatusChange, onCardClick, onRe
   const [selectedForLaunch, setSelectedForLaunch] = useState([]);
   const [launchModalOpen, setLaunchModalOpen] = useState(false);
   const [launchTemplates, setLaunchTemplates] = useState([]);
+  const [copySets, setCopySets] = useState([]);
   const [launching, setLaunching] = useState(false);
   const [launchError, setLaunchError] = useState(null);
+  const [selectedTemplateId, setSelectedTemplateId] = useState('');
+  const [selectedCopySetId, setSelectedCopySetId] = useState('');
 
-  // Fetch launch templates
-  useEffect(() => {
+  // Fetch launch templates & copy sets
+  const fetchLaunchData = useCallback(() => {
     api.get('/brief-pipeline/launch-templates')
       .then(({ data }) => setLaunchTemplates(data.data || []))
       .catch(() => {});
+    api.get('/brief-pipeline/copy-sets')
+      .then(({ data }) => setCopySets(data.data || []))
+      .catch(() => {});
   }, []);
+
+  useEffect(() => { fetchLaunchData(); }, [fetchLaunchData]);
+
+  // Refresh templates/copy-sets when launch modal opens
+  useEffect(() => {
+    if (launchModalOpen) fetchLaunchData();
+  }, [launchModalOpen, fetchLaunchData]);
+
+  // Prune stale selections when creatives change
+  useEffect(() => {
+    const readyIds = new Set(buckets.ready.map(c => c.id));
+    setSelectedForLaunch(prev => {
+      const pruned = prev.filter(id => readyIds.has(id));
+      return pruned.length !== prev.length ? pruned : prev;
+    });
+  }, [creatives]);
 
   const toggleSelectForLaunch = (id) => {
     setSelectedForLaunch(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
   };
 
-  const handleLaunch = async (templateId) => {
+  const selectAllReady = () => {
+    const readyIds = buckets.ready.map(c => c.id);
+    setSelectedForLaunch(readyIds);
+  };
+
+  const handleLaunch = async () => {
+    if (!selectedTemplateId) return;
     setLaunching(true);
     setLaunchError(null);
     try {
-      const { data } = await api.post('/brief-pipeline/launch', {
-        brief_ids: selectedForLaunch,
-        template_id: templateId,
+      const { data } = await api.post('/statics-generation/launch', {
+        creative_ids: selectedForLaunch,
+        template_id: selectedTemplateId,
+        copy_set_id: selectedCopySetId || undefined,
       });
-      // Update statuses locally
-      const launchedIds = (data.data?.results || []).filter(r => r.status === 'launched').map(r => r.brief_id);
-      for (const id of launchedIds) {
-        onStatusChange?.(id, 'launched');
-      }
+      const launchedIds = (data.data?.results || []).filter(r => r.status === 'launched').map(r => r.creative_id);
       const failed = (data.data?.results || []).filter(r => r.status === 'failed');
       if (failed.length) {
-        setLaunchError(`${launchedIds.length} launched, ${failed.length} failed`);
+        setLaunchError(`${launchedIds.length} launched, ${failed.length} failed: ${failed[0]?.error || ''}`);
+        // Keep failed IDs selected for retry
+        setSelectedForLaunch(prev => prev.filter(id => !launchedIds.includes(id)));
+      } else {
+        setSelectedForLaunch([]);
+        setLaunchModalOpen(false);
       }
-      setSelectedForLaunch([]);
-      setLaunchModalOpen(false);
       onRefresh?.();
     } catch (err) {
       setLaunchError(err.response?.data?.error?.message || 'Launch failed');
@@ -411,6 +456,9 @@ export function PipelineView({ creatives = [], onStatusChange, onCardClick, onRe
             {selectedForLaunch.length} creative{selectedForLaunch.length > 1 ? 's' : ''} selected for launch
           </span>
           <div className="flex items-center gap-2">
+            {buckets.ready.length > selectedForLaunch.length && (
+              <button onClick={selectAllReady} className="text-xs text-cyan-400 hover:text-cyan-300 px-2 py-1 cursor-pointer">Select All ({buckets.ready.length})</button>
+            )}
             <button onClick={() => setSelectedForLaunch([])} className="text-xs text-zinc-400 hover:text-white px-2 py-1 cursor-pointer">Clear</button>
             <button
               onClick={() => setLaunchModalOpen(true)}
@@ -442,6 +490,8 @@ export function PipelineView({ creatives = [], onStatusChange, onCardClick, onRe
             onStatusChange={handleStatusChange}
             onCardClick={onCardClick}
             allCreatives={creatives}
+            selectedForLaunch={selectedForLaunch}
+            onToggleSelect={toggleSelectForLaunch}
           />
         ))}
       </div>
@@ -462,9 +512,9 @@ export function PipelineView({ creatives = [], onStatusChange, onCardClick, onRe
               <div>
                 <label className="font-mono text-[10px] text-[#c9a84c] uppercase tracking-[0.15em] block mb-1.5">Launch Template</label>
                 <select
-                  id="statics-launch-template"
+                  value={selectedTemplateId}
+                  onChange={(e) => setSelectedTemplateId(e.target.value)}
                   className="w-full bg-white/[0.03] border border-white/[0.06] rounded-lg px-3 py-2 text-sm text-white focus:ring-1 focus:ring-[#c9a84c]/30 focus:border-[#c9a84c]/20"
-                  defaultValue=""
                 >
                   <option value="" disabled>Select a template...</option>
                   {launchTemplates.map(t => (
@@ -475,17 +525,27 @@ export function PipelineView({ creatives = [], onStatusChange, onCardClick, onRe
                   <p className="text-[10px] text-zinc-500 mt-1">No templates yet. Create one in Templates.</p>
                 )}
               </div>
+
+              <div>
+                <label className="font-mono text-[10px] text-[#c9a84c] uppercase tracking-[0.15em] block mb-1.5">Copy Set (optional)</label>
+                <select
+                  value={selectedCopySetId}
+                  onChange={(e) => setSelectedCopySetId(e.target.value)}
+                  className="w-full bg-white/[0.03] border border-white/[0.06] rounded-lg px-3 py-2 text-sm text-white focus:ring-1 focus:ring-[#c9a84c]/30 focus:border-[#c9a84c]/20"
+                >
+                  <option value="">None (use defaults)</option>
+                  {copySets.map(cs => (
+                    <option key={cs.id} value={cs.id}>{cs.angle} — {(cs.primary_texts?.length || 0)} texts</option>
+                  ))}
+                </select>
+              </div>
             </div>
 
             <div className="flex items-center gap-3 justify-end">
               <button onClick={() => setLaunchModalOpen(false)} disabled={launching} className="text-xs text-zinc-400 hover:text-white px-3 py-2 cursor-pointer">Cancel</button>
               <button
-                onClick={() => {
-                  const sel = document.getElementById('statics-launch-template');
-                  if (!sel?.value) return;
-                  handleLaunch(sel.value);
-                }}
-                disabled={launching || launchTemplates.length === 0}
+                onClick={handleLaunch}
+                disabled={launching || !selectedTemplateId}
                 className="inline-flex items-center gap-1.5 bg-cyan-500 hover:bg-cyan-600 text-white text-xs font-semibold px-4 py-2 rounded-lg cursor-pointer disabled:opacity-50"
               >
                 {launching ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}

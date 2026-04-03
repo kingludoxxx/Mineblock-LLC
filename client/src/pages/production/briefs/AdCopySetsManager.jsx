@@ -7,7 +7,6 @@ import {
   Upload,
   FileText,
   Loader2,
-  Trash2,
   ChevronRight,
 } from 'lucide-react';
 import api from '../../../services/api';
@@ -36,7 +35,7 @@ const EMPTY_COPY_SET = {
   primary_texts: [''],
   headlines: [''],
   descriptions: [''],
-  cta: 'SHOP_NOW',
+  cta_button: 'SHOP_NOW',
   landing_page_url: '',
   utm_parameters: '',
 };
@@ -64,7 +63,7 @@ function EditCopySetModal({ copySet, onSave, onClose, saving }) {
     primary_texts: copySet.primary_texts?.length ? [...copySet.primary_texts] : [''],
     headlines: copySet.headlines?.length ? [...copySet.headlines] : [''],
     descriptions: copySet.descriptions?.length ? [...copySet.descriptions] : [''],
-    cta: copySet.cta || 'SHOP_NOW',
+    cta_button: copySet.cta_button || 'SHOP_NOW',
     landing_page_url: copySet.landing_page_url || '',
     utm_parameters: copySet.utm_parameters || '',
   }));
@@ -93,6 +92,7 @@ function EditCopySetModal({ copySet, onSave, onClose, saving }) {
   const handleSave = () => {
     onSave({
       ...form,
+      angle: copySet.angle,
       primary_texts: form.primary_texts.filter((s) => s.trim()),
       headlines: form.headlines.filter((s) => s.trim()),
       descriptions: form.descriptions.filter((s) => s.trim()),
@@ -231,8 +231,8 @@ function EditCopySetModal({ copySet, onSave, onClose, saving }) {
             </label>
             <select
               className={inputClass + ' cursor-pointer'}
-              value={form.cta}
-              onChange={(e) => setForm((prev) => ({ ...prev, cta: e.target.value }))}
+              value={form.cta_button}
+              onChange={(e) => setForm((prev) => ({ ...prev, cta_button: e.target.value }))}
             >
               {CTA_OPTIONS.map((opt) => (
                 <option key={opt} value={opt} className="bg-[#1a1a1f] text-white">
@@ -323,9 +323,8 @@ export default function AdCopySetsManager({ open, onClose, productId, productNam
     setSaving(true);
     try {
       const { data } = await api.post('/brief-pipeline/copy-sets', {
-        product_id: productId,
-        angle: name,
         ...EMPTY_COPY_SET,
+        product_id: productId,
         angle: name,
       });
       const created = data.data || data;
@@ -394,7 +393,8 @@ export default function AdCopySetsManager({ open, onClose, productId, productNam
       // Group by angle
       const angleMap = {};
       lines.slice(1).forEach((line) => {
-        const cols = line.split(',').map((c) => c.trim().replace(/^"|"$/g, ''));
+        // Parse CSV respecting quoted fields (handles commas inside quotes)
+        const cols = (line.match(/(".*?"|[^,]+|(?<=,)(?=,))/g) || []).map((c) => c.trim().replace(/^"|"$/g, ''));
         const [angle, primaryText, headline, description, cta, url, utm] = cols;
         if (!angle) return;
         if (!angleMap[angle]) {
@@ -402,7 +402,7 @@ export default function AdCopySetsManager({ open, onClose, productId, productNam
             primary_texts: [],
             headlines: [],
             descriptions: [],
-            cta: cta || 'SHOP_NOW',
+            cta_button: cta || 'SHOP_NOW',
             landing_page_url: url || '',
             utm_parameters: utm || '',
           };
@@ -560,9 +560,9 @@ export default function AdCopySetsManager({ open, onClose, productId, productNam
 
                   {/* CTA / URL / UTM */}
                   <div className="flex items-center gap-4 text-[11px] text-white/25">
-                    {cs.cta && (
+                    {cs.cta_button && (
                       <span className="flex items-center gap-1">
-                        <ChevronRight className="w-3 h-3" /> {cs.cta.replace(/_/g, ' ')}
+                        <ChevronRight className="w-3 h-3" /> {cs.cta_button.replace(/_/g, ' ')}
                       </span>
                     )}
                     {cs.landing_page_url && (

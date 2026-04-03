@@ -2458,6 +2458,7 @@ export default function StaticsGeneration() {
 
       {templateEditorOpen && (
         <LaunchTemplateEditor
+          open
           template={editingTemplate}
           onClose={() => { setTemplateEditorOpen(false); setEditingTemplate(null); }}
           onSaved={() => { setTemplateEditorOpen(false); setEditingTemplate(null); }}
@@ -2466,6 +2467,7 @@ export default function StaticsGeneration() {
 
       {copySetsOpen && (
         <AdCopySetsManager
+          open
           onClose={() => setCopySetsOpen(false)}
         />
       )}
