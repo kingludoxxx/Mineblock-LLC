@@ -542,6 +542,7 @@ async function ensureTable() {
         -- Add indexes for common query patterns
         CREATE INDEX IF NOT EXISTS idx_ca_week_spend ON creative_analysis (week, spend DESC);
         CREATE INDEX IF NOT EXISTS idx_ca_creative_id ON creative_analysis (creative_id);
+        CREATE INDEX IF NOT EXISTS idx_ca_ad_name ON creative_analysis (ad_name);
       EXCEPTION WHEN OTHERS THEN
         -- Ignore migration errors (e.g. duplicate data blocking unique constraint)
         RAISE NOTICE 'Migration warning: %', SQLERRM;
@@ -764,13 +765,19 @@ async function syncMetaThumbnails() {
   // 1. Get all unique ad_names that need thumbnails, have expired iframe preview URLs,
   //    or have thumbnails older than 12 hours (Meta CDN URLs expire)
   const dbRows = await pgQuery(
-    `SELECT DISTINCT ad_name FROM creative_analysis
+    `SELECT DISTINCT ad_name, creative_id FROM creative_analysis
      WHERE ad_name IS NOT NULL
        AND (thumbnail_url IS NULL OR thumbnail_url = ''
             OR (video_url IS NOT NULL AND video_url NOT LIKE '%.mp4%')
             OR synced_at < NOW() - INTERVAL '12 hours')`
   );
   const dbAdNames = new Set(dbRows.map(r => r.ad_name));
+  // Build a map of creative_id -> ad_names for fuzzy matching
+  const creativeIdToAdNames = new Map();
+  for (const r of dbRows) {
+    if (!creativeIdToAdNames.has(r.creative_id)) creativeIdToAdNames.set(r.creative_id, []);
+    creativeIdToAdNames.get(r.creative_id).push(r.ad_name);
+  }
 
   // 2. Fetch ads from all Meta accounts
   const metaAds = [];
@@ -803,17 +810,33 @@ async function syncMetaThumbnails() {
   const updates = [];
 
   for (const ad of metaAds) {
-    if (!ad.name || !dbAdNames.has(ad.name)) continue;
+    if (!ad.name) continue;
     // Prefer image_url (full res for image ads) over thumbnail_url (720px for video ads)
     const thumbnailUrl = ad.creative?.image_url || ad.creative?.thumbnail_url || null;
     if (!thumbnailUrl) continue;
 
-    updates.push({
-      ad_name: ad.name,
-      thumbnail_url: thumbnailUrl,
-      video_id: ad.creative?.video_id || null,
-      meta_ad_id: ad.id,
-    });
+    if (dbAdNames.has(ad.name)) {
+      // Exact match
+      updates.push({
+        ad_name: ad.name,
+        thumbnail_url: thumbnailUrl,
+        video_id: ad.creative?.video_id || null,
+        meta_ad_id: ad.id,
+      });
+    } else {
+      // Fuzzy match: extract creative_id from Meta ad name and match to DB rows missing thumbnails
+      const parsed = parseAdName(ad.name);
+      if (parsed?.creative_id && creativeIdToAdNames.has(parsed.creative_id)) {
+        for (const dbName of creativeIdToAdNames.get(parsed.creative_id)) {
+          updates.push({
+            ad_name: dbName,
+            thumbnail_url: thumbnailUrl,
+            video_id: ad.creative?.video_id || null,
+            meta_ad_id: ad.id,
+          });
+        }
+      }
+    }
   }
 
   // 4. For video ads, fetch the PERMANENT video source URL (not the expiring preview iframe)
@@ -844,7 +867,7 @@ async function syncMetaThumbnails() {
     try {
       await pgQuery(
         `UPDATE creative_analysis
-         SET thumbnail_url = $1, video_url = $2, meta_ad_id = $3
+         SET thumbnail_url = $1, video_url = $2, meta_ad_id = $3, synced_at = NOW()
          WHERE ad_name = $4`,
         [finalThumb, videoUrl, upd.meta_ad_id, upd.ad_name]
       );
@@ -1328,11 +1351,24 @@ router.get('/active', authenticate, async (req, res) => {
     }
     const latestWeek = latestRows[0].week;
 
-    // Get active creatives (spend > 0 in latest week) with hook-level detail
-    const activeRows = await pgQuery(
-      `SELECT * FROM creative_analysis WHERE week = $1 AND spend > 0 ORDER BY spend DESC`,
-      [latestWeek]
-    );
+    // Get active creatives (spend > 0 in latest week) with hook-level detail + lifetime in one query
+    const [activeRows, lifetimeRows] = await Promise.all([
+      pgQuery(
+        `SELECT * FROM creative_analysis WHERE week = $1 AND spend > 0 ORDER BY spend DESC`,
+        [latestWeek]
+      ),
+      pgQuery(
+        `SELECT creative_id,
+           SUM(spend) as lifetime_spend, SUM(revenue) as lifetime_revenue,
+           SUM(purchases) as lifetime_purchases,
+           COUNT(DISTINCT CASE WHEN spend > 0 THEN week END) as weeks_active,
+           MIN(week) as first_seen, MAX(week) as last_seen
+         FROM creative_analysis
+         WHERE creative_id IN (SELECT DISTINCT creative_id FROM creative_analysis WHERE week = $1 AND spend > 0)
+         GROUP BY creative_id`,
+        [latestWeek]
+      ),
+    ]);
 
     // Group by creative_id — use highest-spend hook's metadata (same as /data)
     const grouped = {};
@@ -1390,9 +1426,20 @@ router.get('/active', authenticate, async (req, res) => {
       }
     }
 
-    // Get lifetime metrics for all active creative_ids
-    const creativeIds = Object.keys(grouped);
-    const lifetimeMap = await getLifetimeMetrics(creativeIds);
+    // Build lifetime map from pre-fetched data (ran in parallel with activeRows)
+    const lifetimeMap = new Map();
+    for (const r of lifetimeRows) {
+      const ls = Math.round(Number(r.lifetime_spend) * 100) / 100;
+      const lr = Math.round(Number(r.lifetime_revenue) * 100) / 100;
+      const lRoas = ls > 0 ? Math.round((lr / ls) * 100) / 100 : 0;
+      lifetimeMap.set(r.creative_id, {
+        lifetime_spend: ls, lifetime_revenue: lr, lifetime_roas: lRoas,
+        lifetime_purchases: Number(r.lifetime_purchases),
+        first_seen: r.first_seen, last_seen: r.last_seen,
+        weeks_active: Number(r.weeks_active),
+        is_winner: ls >= 500 && lRoas >= 1.80,
+      });
+    }
 
     const creatives = Object.values(grouped).map(c => {
       const lt = lifetimeMap.get(c.creative_id) || {
