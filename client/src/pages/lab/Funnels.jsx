@@ -41,7 +41,6 @@ export default function Funnels() {
   const [steps, setSteps] = useState([]);
   const [editId, setEditId] = useState(null);
   const [deleteConfirm, setDeleteConfirm] = useState(null);
-  const [dragIndex, setDragIndex] = useState(null);
 
   const openCreate = () => {
     setFunnelName('');

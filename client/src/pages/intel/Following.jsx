@@ -1,5 +1,5 @@
 import { useState, useMemo, useCallback } from 'react';
-import { UserPlus, Bell, Search as SearchIcon } from 'lucide-react';
+import { UserPlus, Bell } from 'lucide-react';
 import AdCard from '../../components/intel/AdCard';
 import AdDetailModal from '../../components/intel/AdDetailModal';
 import { generateMetaAds } from '../../utils/mockData';

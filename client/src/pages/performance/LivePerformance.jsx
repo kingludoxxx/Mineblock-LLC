@@ -118,68 +118,78 @@ export default function LivePerformance() {
         ))}
       </div>
 
-      {/* Campaign Table */}
-      <div className="bg-[#111] border border-white/[0.06] rounded-xl overflow-hidden">
-        <div className="px-5 py-4 border-b border-white/[0.06]">
-          <h2 className="text-lg font-semibold text-white">Campaigns</h2>
-        </div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-left">
-            <thead>
-              <tr className="border-b border-white/[0.06]">
-                <th className="px-5 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">
-                  Campaign Name
-                </th>
-                {[
-                  ['spend', 'Spend'],
-                  ['revenue', 'Revenue'],
-                  ['roas', 'ROAS'],
-                  ['cpc', 'CPC'],
-                  ['conversions', 'Conv.'],
-                ].map(([key, label]) => (
-                  <th
-                    key={key}
-                    className={colClass}
-                    onClick={() => toggleSort(key)}
-                  >
-                    <span className="flex items-center gap-1">
-                      {label}
-                      <ArrowUpDown className="w-3 h-3" />
-                    </span>
+      {/* Tab Content */}
+      {activeTab === 'Campaigns' ? (
+        <div className="bg-[#111] border border-white/[0.06] rounded-xl overflow-hidden">
+          <div className="px-5 py-4 border-b border-white/[0.06]">
+            <h2 className="text-lg font-semibold text-white">Campaigns</h2>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left">
+              <thead>
+                <tr className="border-b border-white/[0.06]">
+                  <th className="px-5 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">
+                    Campaign Name
                   </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {sorted.map((c) => (
-                <tr
-                  key={c.id}
-                  className="border-b border-white/[0.04] hover:bg-white/[0.02] transition-colors"
-                >
-                  <td className="px-5 py-3 text-sm text-white font-medium">{c.name}</td>
-                  <td className="px-5 py-3 text-sm text-slate-300">{fmt(c.spend)}</td>
-                  <td className="px-5 py-3 text-sm text-emerald-400 font-medium">{fmt(c.revenue)}</td>
-                  <td className="px-5 py-3 text-sm">
-                    <span
-                      className={
-                        c.roas >= 3
-                          ? 'text-emerald-400'
-                          : c.roas >= 2
-                          ? 'text-yellow-400'
-                          : 'text-red-400'
-                      }
+                  {[
+                    ['spend', 'Spend'],
+                    ['revenue', 'Revenue'],
+                    ['roas', 'ROAS'],
+                    ['cpc', 'CPC'],
+                    ['conversions', 'Conv.'],
+                  ].map(([key, label]) => (
+                    <th
+                      key={key}
+                      className={colClass}
+                      onClick={() => toggleSort(key)}
                     >
-                      {c.roas.toFixed(2)}x
-                    </span>
-                  </td>
-                  <td className="px-5 py-3 text-sm text-slate-300">${c.cpc.toFixed(2)}</td>
-                  <td className="px-5 py-3 text-sm text-slate-300">{c.conversions}</td>
+                      <span className="flex items-center gap-1">
+                        {label}
+                        <ArrowUpDown className="w-3 h-3" />
+                      </span>
+                    </th>
+                  ))}
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {sorted.map((c) => (
+                  <tr
+                    key={c.id}
+                    className="border-b border-white/[0.04] hover:bg-white/[0.02] transition-colors"
+                  >
+                    <td className="px-5 py-3 text-sm text-white font-medium">{c.name}</td>
+                    <td className="px-5 py-3 text-sm text-slate-300">{fmt(c.spend)}</td>
+                    <td className="px-5 py-3 text-sm text-emerald-400 font-medium">{fmt(c.revenue)}</td>
+                    <td className="px-5 py-3 text-sm">
+                      <span
+                        className={
+                          c.roas >= 3
+                            ? 'text-emerald-400'
+                            : c.roas >= 2
+                            ? 'text-yellow-400'
+                            : 'text-red-400'
+                        }
+                      >
+                        {c.roas.toFixed(2)}x
+                      </span>
+                    </td>
+                    <td className="px-5 py-3 text-sm text-slate-300">${c.cpc.toFixed(2)}</td>
+                    <td className="px-5 py-3 text-sm text-slate-300">{c.conversions}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
-      </div>
+      ) : (
+        <div className="bg-[#111] border border-white/[0.06] rounded-xl p-12 flex items-center justify-center">
+          <div className="text-center text-slate-500">
+            <BarChart3 className="w-10 h-10 mx-auto mb-3 opacity-50" />
+            <p className="text-sm font-medium text-slate-400">{activeTab}</p>
+            <p className="text-xs mt-1">Coming soon</p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

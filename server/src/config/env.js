@@ -21,4 +21,10 @@ const env = {
   TRIPLEWHALE_SHOP_ID: process.env.TRIPLEWHALE_SHOP_ID || '17cca0-2.myshopify.com',
 };
 
+if (env.NODE_ENV === 'production') {
+  if (env.JWT_ACCESS_SECRET === 'dev-access-secret-change-me' || env.JWT_REFRESH_SECRET === 'dev-refresh-secret-change-me') {
+    console.warn('[env] WARNING: JWT secrets are using default dev values in production — set JWT_ACCESS_SECRET and JWT_REFRESH_SECRET');
+  }
+}
+
 export default env;

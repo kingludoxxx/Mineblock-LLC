@@ -3,7 +3,7 @@ import { Search as SearchIcon, Play, Image, Clock } from 'lucide-react';
 import FilterBar from '../../components/intel/FilterBar';
 import AdDetailModal from '../../components/intel/AdDetailModal';
 import { generateYouTubeAds, languages, countries } from '../../utils/mockData';
-import { Bookmark, UserPlus, MoreHorizontal, ExternalLink, Link2 } from 'lucide-react';
+import { Bookmark, UserPlus } from 'lucide-react';
 
 const initialAds = generateYouTubeAds(40);
 

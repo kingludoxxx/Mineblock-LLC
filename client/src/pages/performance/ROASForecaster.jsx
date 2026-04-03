@@ -28,10 +28,12 @@ export default function ROASForecaster() {
   const calculate = () => {
     const multiplier =
       channel === 'Email' ? 8.4 : channel === 'Paid Search' ? 4.1 : channel === 'Paid Social' ? 3.8 : channel === 'YouTube' ? 1.8 : 3.9;
-    const projected = Math.round(budget * multiplier);
+    const rangeDays = range === '7d' ? 7 : range === '90d' ? 90 : 30;
+    const rangeScale = rangeDays / 30;
+    const projected = Math.round(budget * multiplier * rangeScale);
     const low = Math.round(projected * 0.82);
     const high = Math.round(projected * 1.18);
-    setForecast({ projected, roas: multiplier, low, high });
+    setForecast({ projected, roas: multiplier, low, high, rangeDays });
   };
 
   return (

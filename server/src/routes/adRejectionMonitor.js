@@ -86,6 +86,9 @@ function shuffleArray(arr) {
 async function fetchAdsForAccount(accountId) {
   const url = `${META_GRAPH_URL}/${accountId}/ads?fields=name,effective_status,configured_status,adset{configured_status},campaign{configured_status}&effective_status=["DISAPPROVED","WITH_ISSUES"]&limit=100&access_token=${META_ACCESS_TOKEN}`;
   const resp = await fetch(url);
+  if (!resp.ok) {
+    throw new Error(`Meta API error for ${accountId}: HTTP ${resp.status} ${resp.statusText}`);
+  }
   return resp.json();
 }
 

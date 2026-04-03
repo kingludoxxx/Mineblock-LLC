@@ -117,6 +117,9 @@ export default function Attribution() {
                 <span className="text-sm font-medium text-slate-300">{ch.name}</span>
               </div>
               <p className="text-xl font-bold text-white mb-1">{fmt(ch.revenue)}</p>
+              {compare && (
+                <p className="text-xs text-slate-500 mb-1">vs prev: {fmt(Math.round(ch.revenue * 0.91))}</p>
+              )}
               {ch.roas !== null && (
                 <div className="flex items-center gap-1 text-emerald-400 text-sm mb-3">
                   <TrendingUp className="w-3 h-3" />
@@ -178,7 +181,12 @@ export default function Attribution() {
                     </div>
                   </td>
                   <td className="px-5 py-3 text-sm text-slate-300">{cp.conversions}</td>
-                  <td className="px-5 py-3 text-sm text-white font-medium">{fmt(cp.revenue)}</td>
+                  <td className="px-5 py-3 text-sm text-white font-medium">
+                    {fmt(cp.revenue)}
+                    {compare && (
+                      <span className="text-xs text-slate-500 ml-2">vs {fmt(Math.round(cp.revenue * 0.91))}</span>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>

@@ -538,8 +538,8 @@ async function evaluateRules() {
            logEntry.new_value, logEntry.execution_status, logEntry.execution_error,
            logEntry.meta_response]
         );
-        await sendSlackAlert(logEntry);
-        actionsTaken++;
+        // Dry-run: log only, do not send Slack alerts or increment actionsTaken
+        console.log(`[Dry Run] Rule "${rule.name}" would act on "${ad.ad_name}": ${logEntry.reason}`);
         continue;
       }
 

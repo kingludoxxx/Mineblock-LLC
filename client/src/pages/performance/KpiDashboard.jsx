@@ -403,11 +403,11 @@ export default function KpiDashboard() {
               <ResponsiveContainer width="100%" height="100%">
                 <ComposedChart data={trends} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
                   <defs>
-                    <linearGradient id="gRevenue" x1="0" y1="0" x2="0" y2="1">
+                    <linearGradient id="gRevenueDash" x1="0" y1="0" x2="0" y2="1">
                       <stop offset="5%" stopColor="#C9A227" stopOpacity={0.2} />
                       <stop offset="95%" stopColor="#C9A227" stopOpacity={0} />
                     </linearGradient>
-                    <linearGradient id="gProfit" x1="0" y1="0" x2="0" y2="1">
+                    <linearGradient id="gProfitDash" x1="0" y1="0" x2="0" y2="1">
                       <stop offset="5%" stopColor="#16a34a" stopOpacity={0.2} />
                       <stop offset="95%" stopColor="#16a34a" stopOpacity={0} />
                     </linearGradient>
@@ -441,7 +441,7 @@ export default function KpiDashboard() {
                     dataKey="revenue"
                     stroke="#C9A227"
                     strokeWidth={2}
-                    fill="url(#gRevenue)"
+                    fill="url(#gRevenueDash)"
                     name="Revenue"
                   />
                   <Area
@@ -449,7 +449,7 @@ export default function KpiDashboard() {
                     dataKey="grossProfit"
                     stroke="#16a34a"
                     strokeWidth={2}
-                    fill="url(#gProfit)"
+                    fill="url(#gProfitDash)"
                     name="Profit"
                   />
                   <Line

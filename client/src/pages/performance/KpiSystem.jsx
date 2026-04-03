@@ -155,7 +155,6 @@ export default function KpiSystem() {
   const [costSheet, setCostSheet] = useState(null);
   const [alerts, setAlerts] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [lastRefresh, setLastRefresh] = useState(null);
   const [error, setError] = useState(null);
   const [skuSort, setSkuSort] = useState({ field: 'revenue', dir: 'desc' });
 
@@ -211,10 +210,7 @@ export default function KpiSystem() {
   useEffect(() => {
     fetchAll();
     // Auto-refresh every 60 seconds
-    const interval = setInterval(() => {
-      fetchAll();
-      setLastRefresh(new Date());
-    }, 60_000);
+    const interval = setInterval(fetchAll, 60_000);
     return () => clearInterval(interval);
   }, [fetchAll]);
 
@@ -452,11 +448,11 @@ export default function KpiSystem() {
               <ResponsiveContainer width="100%" height="100%">
                 <ComposedChart data={trends} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
                   <defs>
-                    <linearGradient id="gRevenue" x1="0" y1="0" x2="0" y2="1">
+                    <linearGradient id="gRevenueSys" x1="0" y1="0" x2="0" y2="1">
                       <stop offset="5%" stopColor="#C9A227" stopOpacity={0.2} />
                       <stop offset="95%" stopColor="#C9A227" stopOpacity={0} />
                     </linearGradient>
-                    <linearGradient id="gProfit" x1="0" y1="0" x2="0" y2="1">
+                    <linearGradient id="gProfitSys" x1="0" y1="0" x2="0" y2="1">
                       <stop offset="5%" stopColor="#16a34a" stopOpacity={0.2} />
                       <stop offset="95%" stopColor="#16a34a" stopOpacity={0} />
                     </linearGradient>
@@ -490,7 +486,7 @@ export default function KpiSystem() {
                     dataKey="revenue"
                     stroke="#C9A227"
                     strokeWidth={2}
-                    fill="url(#gRevenue)"
+                    fill="url(#gRevenueSys)"
                     name="Revenue"
                   />
                   <Area
@@ -498,7 +494,7 @@ export default function KpiSystem() {
                     dataKey="grossProfit"
                     stroke="#16a34a"
                     strokeWidth={2}
-                    fill="url(#gProfit)"
+                    fill="url(#gProfitSys)"
                     name="Profit"
                   />
                   <Line

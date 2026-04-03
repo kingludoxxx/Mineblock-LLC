@@ -1,5 +1,6 @@
 import pg from 'pg';
 import env from './env.js';
+import logger from '../utils/logger.js';
 
 const { Pool } = pg;
 
@@ -12,7 +13,7 @@ const pool = new Pool({
 });
 
 pool.on('error', (err) => {
-  console.error('Unexpected error on idle database client', err);
+  logger.error('Unexpected error on idle database client', err);
   // Don't crash on transient connection errors — let the pool recover
 });
 
@@ -21,12 +22,13 @@ export const query = (text, params) => pool.query(text, params);
 export const getClient = () => pool.connect();
 
 export const testConnection = async () => {
-  const client = await pool.connect();
+  let client;
   try {
+    client = await pool.connect();
     await client.query('SELECT NOW()');
     return true;
   } finally {
-    client.release();
+    if (client) client.release();
   }
 };
 

@@ -99,8 +99,15 @@ const priorityConfig = {
 
 export default function AdminSupport() {
   const [selected, setSelected] = useState(null);
+  const [replyText, setReplyText] = useState('');
 
   const ticket = selected ? tickets.find((t) => t.id === selected) : null;
+
+  const handleReply = () => {
+    if (!replyText.trim()) return;
+    alert(`Reply sent to ${ticket.id}: "${replyText.trim()}"`);
+    setReplyText('');
+  };
 
   if (ticket) {
     const sc = statusConfig[ticket.status];
@@ -161,10 +168,15 @@ export default function AdminSupport() {
           <textarea
             rows={3}
             placeholder="Type your reply..."
+            value={replyText}
+            onChange={(e) => setReplyText(e.target.value)}
             className="w-full bg-[#0a0a0a] border border-white/[0.06] rounded-lg px-4 py-3 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-accent/50 resize-none"
           />
           <div className="flex justify-end mt-3">
-            <button className="flex items-center gap-2 bg-accent hover:bg-accent-hover text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors cursor-pointer">
+            <button
+              onClick={handleReply}
+              className="flex items-center gap-2 bg-accent hover:bg-accent-hover text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors cursor-pointer"
+            >
               <Send className="w-4 h-4" /> Send Reply
             </button>
           </div>

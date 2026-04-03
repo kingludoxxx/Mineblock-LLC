@@ -71,9 +71,12 @@ async function runSeeds() {
   logger.info('Roles seeded');
 
   const email = process.env.SUPERADMIN_EMAIL || 'admin@try-mineblock.com';
+  const password = process.env.SUPERADMIN_PASSWORD || 'MineblockAdmin2026!';
+  if (env.NODE_ENV === 'production' && (!process.env.SUPERADMIN_EMAIL || !process.env.SUPERADMIN_PASSWORD)) {
+    logger.warn('SUPERADMIN_EMAIL and/or SUPERADMIN_PASSWORD not set — using hard-coded defaults in production is a security risk');
+  }
   const { rows: existing } = await pool.query('SELECT id FROM users WHERE email = $1', [email]);
   if (existing.length === 0) {
-    const password = process.env.SUPERADMIN_PASSWORD || 'MineblockAdmin2026!';
     const hash = await hashPassword(password);
     const { rows: [user] } = await pool.query(
       `INSERT INTO users (email, password_hash, first_name, last_name, must_change_password) VALUES ($1, $2, $3, $4, true) RETURNING id`,

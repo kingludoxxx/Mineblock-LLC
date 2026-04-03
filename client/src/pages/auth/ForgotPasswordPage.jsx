@@ -2,15 +2,26 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import Input from '../../components/ui/Input';
 import Button from '../../components/ui/Button';
+import api from '../../services/api';
 
 export default function ForgotPasswordPage() {
   const [email, setEmail] = useState('');
   const [sent, setSent] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    // TODO: implement
-    setSent(true);
+    setError('');
+    setLoading(true);
+    try {
+      await api.post('/auth/forgot-password', { email });
+      setSent(true);
+    } catch (err) {
+      setError(err.response?.data?.message || 'Something went wrong. Please try again.');
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -28,7 +39,8 @@ export default function ForgotPasswordPage() {
         ) : (
           <form onSubmit={handleSubmit} className="space-y-4">
             <Input label="Email" type="email" placeholder="you@example.com" value={email} onChange={(e) => setEmail(e.target.value)} />
-            <Button type="submit" className="w-full">Send reset link</Button>
+            {error && <p className="text-sm text-red-500">{error}</p>}
+            <Button type="submit" loading={loading} className="w-full">Send reset link</Button>
           </form>
         )}
         <p className="text-sm text-text-muted text-center mt-6">

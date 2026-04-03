@@ -1,5 +1,5 @@
 import { useState, useMemo, useRef, useEffect } from 'react';
-import { Search, Radar, Globe, BarChart3, ExternalLink, UserPlus, UserCheck } from 'lucide-react';
+import { Search, Radar, ExternalLink, UserPlus, UserCheck } from 'lucide-react';
 import { brands } from '../../utils/mockData';
 
 const platformColors = {

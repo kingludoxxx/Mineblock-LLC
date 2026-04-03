@@ -1,5 +1,5 @@
 import { useState, useMemo, useCallback } from 'react';
-import { Search as SearchIcon, SlidersHorizontal } from 'lucide-react';
+import { Search as SearchIcon } from 'lucide-react';
 import FilterBar from '../../components/intel/FilterBar';
 import AdCard from '../../components/intel/AdCard';
 import AdDetailModal from '../../components/intel/AdDetailModal';
