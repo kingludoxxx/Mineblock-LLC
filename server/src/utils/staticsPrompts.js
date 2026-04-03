@@ -111,7 +111,13 @@ Examples of correct formula preservation:
 
 Examples of WRONG adaptation (breaks the formula):
 - "Bye Bye, Beer Belly" → "Mine Bitcoin From Home" ❌ (completely different structure)
-- "Kill The Bloated Belly" → "Start Mining Bitcoin Today" ❌ (different sentence pattern)`}
+- "Kill The Bloated Belly" → "Start Mining Bitcoin Today" ❌ (different sentence pattern)
+- "Hair Regrowth Solution" → "Solo Mining Solution" ❌ (generic, boring, not a benefit)
+- "Hair Regrowth Solution" → "Passive Income Machine" ✅ (same slot, compelling benefit)
+- "Customized Hair Care Serum" → "Bitcoin Mining Device" ❌ (generic category, not compelling)
+- "Customized Hair Care Serum" → "$127/Month Profit Engine" ✅ (specific, benefit-driven)
+
+GOLDEN RULE: Every adapted text element must be something a Facebook scroller would STOP for. If it sounds like a Wikipedia description ("Solo Mining Solution", "Bitcoin Mining Device"), rewrite it as a BENEFIT ("Passive Income Machine", "$127/Month on Autopilot", "24/7 Profit Generator").`}
 
 ⚠️ CROSS-NICHE ADAPTATION:
 ${co.crossNicheAdaptation || `The reference ad may be from ANY niche (supplements, skincare, fitness, finance, etc.). Your job is to:
@@ -125,7 +131,9 @@ ${co.headlineRules || `- Make BOLD, specific claims with concrete numbers (e.g. 
 - Use the SAME emotional trigger as the original headline
 - Match the approximate CHARACTER COUNT of the original (critical for layout fit)
 - Sound like a native ad / advertorial — scroll-stopping, provocative
-- NEVER use generic phrases like "works at home", "easy to use", "get started today"`}
+- NEVER use generic phrases like "works at home", "easy to use", "get started today", "mining solution", "solo mining", "start mining"
+- When the reference has a product tagline/description (e.g. "Hair Regrowth Solution"), adapt it to a COMPELLING benefit statement, NOT a generic category descriptor. Example: "Hair Regrowth Solution" → "Passive Income Machine" or "$127/Month Device" — NEVER "Solo Mining Solution" or "Bitcoin Mining Device"
+- Product labels ON the device should be the product name ONLY ("Miner Forge Pro") — do NOT add taglines onto the product itself`}
 
 ${co.headlineExamples || ''}
 
@@ -270,7 +278,9 @@ ${layout.has_rounded_corners ? '- Keep rounded corners on sections' : ''}
     ? `\nBRAND LOGO: The brand logo is provided in the images (before the reference ad). Use this EXACT logo where the reference ad has the competitor's logo. Do NOT create or invent any logo — use the provided one pixel-for-pixel.`
     : '';
 
-  return `Generate a new ad creative based on the reference ad (LAST image). The first image(s) show the product from multiple angles — reproduce the product EXACTLY as shown in those photos.${logoNote}
+  return `Generate a new ad creative that is a PIXEL-PERFECT STYLE COPY of the reference ad (LAST image), with only the product and text swapped. The first image(s) show the product from multiple angles — reproduce the product EXACTLY as shown in those photos.${logoNote}
+
+CRITICAL STYLE REPLICATION: Your output must look like it came from the SAME designer who made the reference ad. Match EVERY visual detail: same background color/gradient, same font style/weight/size, same text positioning, same product placement, same number of product instances, same spacing, same border style, same shadow effects. A viewer should think both ads are from the same campaign.
 ${layoutSection}
 
 ${nb.productRules || `PRODUCT REPLACEMENT:
@@ -305,7 +315,7 @@ ${legacyVisuals || '  (Match reference style — keep backgrounds, icons, decora
 ${visualDir.background_changes ? `- Background: ${visualDir.background_changes}` : '- Keep exact same background color/gradient/texture'}
 
 ${nb.absoluteRules || `ABSOLUTE RULES:
-1. EXACT same layout structure as reference — same columns, same sections, same proportions
+1. EXACT same layout structure as reference — same columns, same sections, same proportions, same product arrangement. If the reference shows 3 products in a row, show 3 miners in a row at the same size and position. NEVER rearrange the product layout.
 2. ZERO competitor branding remaining (logos, names, product images)
 3. Every text swap must be applied — check all ${swapPairs.length} replacements
 4. No extra faces beyond ${pCount} — do NOT add people if reference has none
