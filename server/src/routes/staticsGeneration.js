@@ -669,10 +669,10 @@ router.get('/creatives/pipeline', authenticate, async (req, res) => {
     await ensureCreativesTable();
     const { product_id } = req.query;
 
-    let query = 'SELECT id, product_id, product_name, image_url, thumbnail_url, source_label, angle, archetype, aspect_ratio, status, reference_thumbnail, reference_name, parent_creative_id, pipeline, created_at FROM spy_creatives';
-    const params = [];
+    let query = 'SELECT id, product_id, product_name, image_url, thumbnail_url, source_label, angle, archetype, aspect_ratio, status, reference_thumbnail, reference_name, parent_creative_id, pipeline, created_at FROM spy_creatives WHERE pipeline = $1';
+    const params = ['standard'];
     if (product_id) {
-      query += ' WHERE product_id = $1';
+      query += ' AND product_id = $2';
       params.push(product_id);
     }
     query += ' ORDER BY created_at DESC';

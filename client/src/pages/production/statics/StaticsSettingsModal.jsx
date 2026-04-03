@@ -14,10 +14,13 @@ const TABS = [
 
 const FIELD_CONFIG = {
   claudeAnalysis: [
+    { key: 'productIdentity', label: 'Product Identity', type: 'textarea', placeholder: 'Product identity description...' },
     { key: 'headlineRules', label: 'Headline Rules', type: 'textarea', placeholder: 'Rules for headline generation...' },
     { key: 'headlineExamples', label: 'Headline Examples', type: 'textarea', placeholder: 'Example headlines for inspiration...' },
     { key: 'pricingRules', label: 'Pricing Rules', type: 'textarea', placeholder: 'Pricing constraints...' },
-    { key: 'productIdentity', label: 'Product Identity', type: 'textarea', placeholder: 'Product identity description...' },
+    { key: 'formulaPreservation', label: 'Formula Preservation', type: 'textarea', placeholder: 'Rules for preserving copywriting formulas...' },
+    { key: 'crossNicheAdaptation', label: 'Cross-Niche Adaptation', type: 'textarea', placeholder: 'Rules for adapting across product niches...' },
+    { key: 'visualAdaptation', label: 'Visual Adaptation', type: 'textarea', placeholder: 'How to map visual elements to your product...' },
     { key: 'bannedPhrases', label: 'Banned Phrases', type: 'input', placeholder: 'Comma-separated banned phrases...' },
   ],
   nanoBanana: [
