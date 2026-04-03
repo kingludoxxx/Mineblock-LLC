@@ -183,7 +183,7 @@ router.post('/generate', authenticate, async (req, res) => {
       messages: [{
         role: 'user',
         content: [
-          { type: 'text', text: buildClaudePrompt(product, angle, customPrompts) },
+          { type: 'text', text: buildClaudePrompt(product, angle) },
           { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } },
         ],
       }],
@@ -220,7 +220,7 @@ router.post('/generate', authenticate, async (req, res) => {
     }
 
     // ── Step C: Build swap pairs ───────────────────────────────────────
-    const swapPairs = buildSwapPairs(claudeResult.original_text, claudeResult.adapted_text, claudeResult);
+    const swapPairs = buildSwapPairs(claudeResult.original_text, claudeResult.adapted_text);
 
     // ── Step D: Submit to NanoBanana ───────────────────────────────────
     // NanoBanana requires actual HTTP URLs, not base64.
@@ -275,7 +275,7 @@ router.post('/generate', authenticate, async (req, res) => {
     console.log(`[staticsGeneration] Logo data: logo_url=${product.logo_url ? 'yes' : 'no'}, logos=${(product.logos || []).length}, resolved logoUrls=${logoUrls.length}`);
     console.log(`[staticsGeneration] Product images: main=${finalProductUrl ? 'yes' : 'no'}, extra=${extraProductUrls.length}`);
 
-    const nbPrompt = buildNanoBananaPrompt(claudeResult, swapPairs, product, logoUrls.length, customPrompts);
+    const nbPrompt = buildNanoBananaPrompt(claudeResult, swapPairs, product, logoUrls.length);
 
     // Send: product images, then logos, then reference ad (last)
     const imageUrls = [finalProductUrl, ...extraProductUrls, ...logoUrls, finalReferenceUrl];
@@ -547,8 +547,7 @@ async function generateVariant(parent, newAspectRatio) {
     const claudeResult = Object.keys(claudeAnalysis).length > 0
       ? { ...claudeAnalysis, adapted_text: adaptedText }
       : { adapted_text: adaptedText };
-    const variantCustomPrompts = await getCustomStaticsPrompts();
-    const nbPrompt = buildNanoBananaPrompt(claudeResult, swapPairs, product, 0, variantCustomPrompts);
+    const nbPrompt = buildNanoBananaPrompt(claudeResult, swapPairs, product, 0);
 
     // 5. Resolve all image URLs to absolute HTTP URLs (NanoBanana can't handle base64 or relative paths)
     const VARIANT_SERVER_URL = process.env.RENDER_EXTERNAL_URL || `http://localhost:${process.env.PORT || 3000}`;

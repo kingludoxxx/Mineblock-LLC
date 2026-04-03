@@ -1,17 +1,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// Static Ad Generation — Prompt Builders
-// Based on the proven Standard Statics Generation Pipeline structure
+// Standard Statics Generation Pipeline — Prompt Builders
+// Follows the proven pipeline structure exactly
 // ─────────────────────────────────────────────────────────────────────────────
-
-function stripUsb(text) {
-  if (!text) return text;
-  return text
-    .replace(/\bUSB[-\s]?C?\b/gi, '')
-    .replace(/\bflash\s*drive\b/gi, '')
-    .replace(/\bthumb\s*drive\b/gi, '')
-    .replace(/\s{2,}/g, ' ')
-    .trim();
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // STEP 1: Claude Vision — Copy Extraction + Rewriting
@@ -19,145 +9,110 @@ function stripUsb(text) {
 
 export function buildClaudePrompt(product, angle, customOverrides = null) {
   const profile = product.profile || {};
-  const co = customOverrides?.claudeAnalysis || {};
 
-  // Build product context from profile fields
-  const productContext = [
+  // Build product context from all available profile fields
+  const contextLines = [
     `Product Name: ${product.name}`,
-    `Description: ${stripUsb(product.description) || 'N/A'}`,
+    `Description: ${product.description || 'N/A'}`,
     `Price: ${product.price || 'N/A'}`,
-    profile.oneliner ? `One-liner: ${stripUsb(profile.oneliner)}` : null,
-    profile.customerAvatar ? `Target Customer: ${profile.customerAvatar}` : null,
-    profile.customerFrustration ? `Customer Frustration: ${profile.customerFrustration}` : null,
-    profile.customerDream ? `Customer Dream Outcome: ${profile.customerDream}` : null,
-    profile.bigPromise ? `Big Promise: ${stripUsb(profile.bigPromise)}` : null,
-    profile.mechanism ? `Unique Mechanism: ${stripUsb(profile.mechanism)}` : null,
+    profile.oneliner && `One-liner: ${profile.oneliner}`,
+    profile.customerAvatar && `Target Customer: ${profile.customerAvatar}`,
+    profile.customerFrustration && `Customer Frustration: ${profile.customerFrustration}`,
+    profile.customerDream && `Customer Dream Outcome: ${profile.customerDream}`,
+    profile.bigPromise && `Big Promise: ${profile.bigPromise}`,
+    profile.mechanism && `How It Works: ${profile.mechanism}`,
     Array.isArray(profile.benefits) && profile.benefits.length > 0
-      ? `Key Benefits: ${profile.benefits.map(b => typeof b === 'object' ? (b.text || b.name || b) : b).join(', ')}`
-      : profile.benefits ? `Key Benefits: ${profile.benefits}` : null,
-    profile.differentiator ? `Differentiator: ${stripUsb(profile.differentiator)}` : null,
-    profile.voice ? `Voice/Tone: ${profile.voice}` : null,
-    profile.guarantee ? `Guarantee: ${profile.guarantee}` : null,
-    profile.painPoints ? `Pain Points: ${profile.painPoints}` : null,
-    profile.commonObjections ? `Common Objections: ${profile.commonObjections}` : null,
-    profile.winningAngles ? `Winning Angles: ${profile.winningAngles}` : null,
-    profile.competitiveEdge ? `Competitive Edge: ${profile.competitiveEdge}` : null,
-    profile.maxDiscount ? `Max Discount: ${profile.maxDiscount}` : null,
-    profile.discountCodes ? `Discount Codes: ${profile.discountCodes}` : null,
-    profile.bundleVariants ? `Bundle Variants: ${profile.bundleVariants}` : null,
-    profile.offerDetails ? `Offer Rules: ${profile.offerDetails}` : null,
-    profile.complianceRestrictions ? `COMPLIANCE (NEVER claim): ${profile.complianceRestrictions}` : null,
-    profile.notes ? `IMPORTANT NOTES: ${profile.notes}` : null,
-    angle ? `MARKETING ANGLE FOR THIS AD: ${angle}` : null,
-  ].filter(Boolean).map(line => `- ${line}`).join('\n');
+      && `Key Benefits: ${profile.benefits.map(b => typeof b === 'object' ? (b.text || b.name || b) : b).join(', ')}`,
+    profile.differentiator && `Differentiator: ${profile.differentiator}`,
+    profile.voice && `Brand Voice/Tone: ${profile.voice}`,
+    profile.guarantee && `Guarantee: ${profile.guarantee}`,
+    profile.painPoints && `Pain Points: ${profile.painPoints}`,
+    profile.commonObjections && `Common Objections: ${profile.commonObjections}`,
+    profile.winningAngles && `Winning Angles: ${profile.winningAngles}`,
+    profile.competitiveEdge && `Competitive Edge: ${profile.competitiveEdge}`,
+    profile.maxDiscount && `Max Discount: ${profile.maxDiscount}`,
+    profile.discountCodes && `Discount Codes: ${profile.discountCodes}`,
+    profile.bundleVariants && `Bundle Variants: ${profile.bundleVariants}`,
+    profile.offerDetails && `Offer Rules: ${profile.offerDetails}`,
+    profile.complianceRestrictions && `COMPLIANCE (never claim): ${profile.complianceRestrictions}`,
+    profile.notes && `IMPORTANT NOTES: ${profile.notes}`,
+    angle && `MARKETING ANGLE FOR THIS AD: ${angle}`,
+  ].filter(Boolean).map(l => `- ${l}`).join('\n');
 
-  return `You are analyzing a reference ad image and rewriting its copy for a different product. You will:
-1. Extract every text element visible in the image
-2. Count people and product shots
+  return `You are analyzing a reference ad image and rewriting its copy for a different product.
+
+You will:
+1. Extract every text element actually visible in the image
+2. Count how many people and product shots appear
 3. Rewrite every text element for the product below, preserving the exact copywriting formula
 4. Identify what visual elements need to change
 
 PRODUCT CONTEXT:
-${productContext}
-
-${co.productIdentity || `PRODUCT IDENTITY: The product is a MINI BITCOIN MINER — a small, compact electronic device with a color display screen showing mining hashrate data. It is NOT a USB stick, flash drive, or thumb drive.`}
+${contextLines}
 
 ---
 
 TEXT EXTRACTION RULES:
 - Only extract text ACTUALLY VISIBLE in the image — do NOT hallucinate text
-- Extract the competitor brand name and product descriptor as separate fields
 - Progress/timeline labels ("Day 0", "Day 45", "Before", "After") are NOT extracted or swapped — they stay as-is
 - Prices are extracted exactly and adapted with the real product price
-- Multi-line headlines are kept as one string
-- Generic labels ("SPECIAL DEAL", "FREE SHIPPING", "THIS WEEK ONLY") stay exactly as-is
+- Multi-line headlines are kept as one string with natural line breaks
+- Generic labels like "SPECIAL DEAL", "THIS WEEK ONLY", "FREE SHIPPING" stay exactly as-is
 
 ---
 
 FORMULA PRESERVATION (the key concept):
-The adapted text must follow the EXACT SAME sentence structure, opening words, and approximate word count as the original. You are copying the PROVEN FORMULA, not inventing new copy.
+The adapted text must follow the EXACT SAME sentence structure, opening words, and approximate word count as the original. You are copying the PROVEN FORMULA, just swapping the subject matter.
 
 Examples:
 - "Bye Bye, Beer Belly" → "Bye Bye, Gut Bloat" (keeps "Bye Bye,")
 - "Kill The Bloated Belly" → "Kill The Aging Skin" (keeps "Kill The")
-- "3 Years of Back Pain Gone in 7 Days" → "10 Years of Wrinkles Gone in 14 Days" (keeps the structure)
-- "Now just £5 a bottle" → "Now just $59.99 a unit" (keeps "Now just ... a [container]")
-- "Doctor's #1 Recommendation" → keeps same structure with adapted authority
+- "3 Years of Back Pain Gone in 7 Days" → "10 Years of Wrinkles Gone in 14 Days" (keeps the "[X] of [problem] Gone in [Y]" structure)
+- "Now just £5 a bottle" → "Now just $24.95 a pouch" (keeps "Now just ... a [container]")
+- Generic labels stay exactly as-is — do NOT adapt them
 
-The adapted text count must EXACTLY MATCH the original — same number of headlines, bullets, badges, labels. Do not add or remove any text elements. Leave fields empty ("") if no corresponding text exists.
-
----
-
-COPY QUALITY:
-Your adapted copy must sound like a REAL direct-response copywriter wrote it — specific, concrete, benefit-driven. Use real product facts from the product context above.
-
-Write like this:
-- "Mines Bitcoin 24/7 — even while you sleep"
-- "144 block attempts every single day"
-- "Uses less power than a phone charger"
-- "$300K+ block reward potential"
-- "Plug in, connect WiFi, mine in 60 seconds"
-
-NEVER write generic AI copy like:
-- "Like printing money daily" (cliché)
-- "Unleash your mining potential" (generic)
-- "Revolutionary passive income" (meaningless hype)
-- "Your 24/7 profit machine" (scammy)
-- "Game-changing technology" (empty)
-
-If it sounds like ChatGPT wrote it, rewrite it with SPECIFIC details from the product context.
+The adapted text count must EXACTLY MATCH the original count — same number of headlines, bullets, badges, stats. Do not add or remove any elements. Leave fields empty ("") if no corresponding text exists in the reference.
 
 ---
 
 VISUAL ANALYSIS:
-For each visual element, note:
-- What it shows in the original
-- What it SHOULD show for this product
-- Whether it's generic (keep as-is) or angle-specific (must change)
+For each visual element in the ad, note:
+- What it shows in the original (e.g. "3 belly transformation photos in grid")
+- What it SHOULD show for the new product (e.g. "3 skin transformation photos showing improvement")
+- Where it appears in the layout
+- Whether it's generic (works for any product — keep as-is) or angle-specific (must change)
 
 ---
 
 Return ONLY valid JSON (no markdown, no code fences):
 {
   "original_text": {
-    "brand_name": "",
-    "product_descriptor": "",
     "headline": "",
     "subheadline": "",
     "body": "",
     "cta": "",
-    "comparison_labels": [],
-    "ingredient_labels": [],
-    "timeline_labels": [],
     "badges": [],
     "bullets": [],
     "stats": [],
-    "disclaimer": "",
     "other_text": []
   },
   "adapted_text": {
-    "brand_name": "",
-    "product_descriptor": "",
     "headline": "",
     "subheadline": "",
     "body": "",
     "cta": "",
-    "comparison_labels": [],
-    "ingredient_labels": [],
-    "timeline_labels": [],
     "badges": [],
     "bullets": [],
     "stats": [],
-    "disclaimer": "",
     "other_text": []
   },
   "people_count": 0,
   "product_count": 0,
-  "adapted_audience": "",
-  "character_adaptation": "",
+  "adapted_audience": "description of target demographic for people in ad",
+  "character_adaptation": "how to adapt people shown (age, gender, style)",
   "visual_adaptations": [
     {
-      "original_visual": "what the image shows",
+      "original_visual": "what the image shows in the reference",
       "adapted_visual": "what it should show for this product",
       "position": "where in the layout",
       "is_angle_specific": true
@@ -170,15 +125,8 @@ Return ONLY valid JSON (no markdown, no code fences):
 // STEP 2: Build swap pairs from Claude's original vs adapted text
 // ─────────────────────────────────────────────────────────────────────────────
 
-export function buildSwapPairs(originalText, adaptedText, claudeResult = null) {
+export function buildSwapPairs(originalText, adaptedText) {
   const pairs = [];
-
-  // Brand name and product descriptor first — #1 cause of leftover competitor text
-  for (const field of ['brand_name', 'product_descriptor']) {
-    const orig = originalText[field], adapted = adaptedText[field];
-    if (orig && adapted && orig.trim() !== adapted.trim())
-      pairs.push({ original: orig.trim(), adapted: adapted.trim(), field });
-  }
 
   // Standard text fields
   for (const field of ['headline', 'subheadline', 'body', 'cta', 'disclaimer']) {
@@ -196,22 +144,6 @@ export function buildSwapPairs(originalText, adaptedText, claudeResult = null) {
     }
   }
 
-  // Fallback: extract brand name from brand_elements if not in original_text
-  if (claudeResult?.brand_elements) {
-    const be = claudeResult.brand_elements;
-    const hasBrandSwap = pairs.some(p => p.field === 'brand_name');
-    if (!hasBrandSwap && be.brand_name) {
-      const brandName = typeof be.brand_name === 'string' ? be.brand_name.trim() : '';
-      if (brandName && brandName.toLowerCase() !== (adaptedText.brand_name || '').toLowerCase()) {
-        pairs.unshift({
-          original: brandName,
-          adapted: adaptedText.brand_name || claudeResult.adapted_text?.brand_name || '',
-          field: 'brand_name (from brand_elements)'
-        });
-      }
-    }
-  }
-
   return pairs;
 }
 
@@ -219,59 +151,61 @@ export function buildSwapPairs(originalText, adaptedText, claudeResult = null) {
 // STEP 3: NanoBanana (Gemini) — Image Generation Prompt
 // ─────────────────────────────────────────────────────────────────────────────
 
-export function buildNanoBananaPrompt(claudeResult, swapPairs, product, logoCount = 0, customOverrides = null) {
+export function buildNanoBananaPrompt(claudeResult, swapPairs, product, logoCount = 0) {
   const {
-    adapted_text, people_count, product_count, adapted_audience,
+    people_count, product_count, adapted_audience,
     character_adaptation, visual_adaptations
   } = claudeResult;
 
   const pCount = people_count ?? 0;
   const pCount2 = product_count ?? 1;
 
-  // Build swap section — "original" → "new" pairs
+  // Text swap pairs
   const swapSection = swapPairs.map((pair, i) =>
     `  ${i + 1}. "${pair.original}" → "${pair.adapted}"`
   ).join('\n');
 
-  // Character rules
-  const characterRules = pCount === 0
-    ? 'There are NO people in the reference ad. Do NOT add any human faces or bodies.'
-    : `The reference has EXACTLY ${pCount} person(s). Your output must have EXACTLY ${pCount}. Use DIFFERENT person(s) of same gender/age range. Do NOT add extra faces.${adapted_audience ? ' ' + adapted_audience : ''}${character_adaptation ? ' ' + character_adaptation : ''}`;
+  // Character/demographic rules
+  let characterRules;
+  if (pCount === 0) {
+    characterRules = 'There are NO people in the reference ad. Do NOT add any human faces or bodies.';
+  } else {
+    characterRules = `The reference has EXACTLY ${pCount} person(s). Your output must have EXACTLY ${pCount}. Use DIFFERENT person(s) of same gender/age range. Do NOT add extra faces.`;
+    if (adapted_audience) characterRules += ` Target: ${adapted_audience}.`;
+    if (character_adaptation) characterRules += ` ${character_adaptation}.`;
+  }
 
-  // Visual adaptation rules
-  const visualAdaptSection = (visual_adaptations || []).map((v, i) =>
+  // Visual adaptation instructions
+  const visualSection = (visual_adaptations || []).map((v, i) =>
     `  ${i + 1}. ${v.position}: "${v.original_visual}" → "${v.adapted_visual}"${v.is_angle_specific ? ' [MUST CHANGE]' : ' [keep as-is]'}`
   ).join('\n');
 
-  // Logo rules
-  const logoRules = logoCount > 0
-    ? `A brand logo image is provided between the product photos and the reference ad. Use this EXACT logo where the competitor's logo appears. Do NOT invent any additional logos, icons, or symbols.`
-    : `Where the competitor has a logo, write "${product.name}" as PLAIN TEXT in matching style. Do NOT generate, invent, or create ANY logo, icon, emblem, mascot, or graphic. TEXT ONLY.`;
+  return `Replicate the reference ad (LAST image) exactly, with only the product and text swapped.
 
-  return `Replicate the reference ad (LAST image) exactly, swapping only the product and text.
+The first image(s) show the replacement product — reproduce it EXACTLY as photographed. Multiple angles may be provided.
+${logoCount > 0 ? '\nA brand logo is provided between the product photos and the reference ad. Use this EXACT logo where the competitor logo appears.' : ''}
 
-The first image(s) show the replacement product — reproduce it EXACTLY as photographed.
+1. REPLICATE the reference ad's layout, composition, background color/gradient, font styles, text positions, spacing, shadows, borders — pixel-perfect style match.
 
-REPLICATION: Same layout, composition, background, fonts, colors, spacing, shadows, borders. It should look like the same designer made both ads.
+2. REPLACE the competitor's product with ${product.name} from the product photos. Show exactly ${pCount2} product(s) in the same position, matching shape, colors, and label exactly as photographed.
 
-PRODUCT: Replace competitor product with ${product.name} from the product photos. Show exactly ${pCount2} product(s) in the same position. The product is a mini bitcoin miner with a color display screen. Reproduce it exactly from the photos — no text, logos, or overlays on the product or its screen.
-
-LOGO: ${logoRules}
-
-TEXT SWAPS (${swapPairs.length} — apply all, matching original font style/weight/size/color/position):
+3. SWAP TEXT — only these specific pairs, matching original font style, weight, size, and color:
 ${swapSection || '  (No text changes)'}
 
-${characterRules}
+4. ${characterRules}
 
-${visualAdaptSection ? `VISUAL CHANGES:\n${visualAdaptSection}` : ''}
+5. VISUAL ADAPTATIONS:
+${visualSection || '  (Keep all visuals as-is)'}
 
-RULES:
-1. Exact same number of text blocks as reference — no additions, no removals
-2. Text must be sharp, legible, correctly spelled
-3. No text/logo/overlay on the product device or screen
-4. No invented elements (badges, seals, icons, logos, price tags not in reference)
-5. No trace of competitor brand remaining
-6. Layout labels (Day 0, Before, After, etc.) stay exactly as-is
-7. Hands: 5 fingers, realistic anatomy
-8. Product photos take highest priority — pixel-perfect fidelity`;
+ABSOLUTE RULES:
+- Product integrity is highest priority — pixel-perfect fidelity to product photos
+- Zero extra faces beyond reference count
+- Zero extra text elements beyond swap count — do NOT add text that isn't in the swap list
+- No duplicate objects
+- Layout labels (Day 0, Day 45, Before, After, etc.) stay exactly as-is
+- No trace of competitor product or brand remaining
+- Exact same background color/gradient/texture
+- Hands must have 5 fingers, realistic anatomy
+- Do NOT place any text, logo, or overlay on the product itself
+- Do NOT invent or generate any logo, icon, emblem, or symbol${logoCount > 0 ? ' beyond the provided logo' : ''}`;
 }
