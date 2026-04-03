@@ -2945,6 +2945,7 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
 
     let nextBriefNum = await getNextBriefNumber();
     let generationResults;
+    const config = { mode: isCloneMode ? 'clone' : 'hook_body', aggressiveness: 'medium', num_variations: numVariations, fixed_elements: [] };
 
     if (isCloneMode) {
       // ═══════════════════════════════════════════════════
@@ -3010,7 +3011,6 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
       // ═══════════════════════════════════════════════════
       // VARIANT MODE — Multiple creative variations
       // ═══════════════════════════════════════════════════
-      const config = { mode: 'hook_body', aggressiveness: 'medium', num_variations: numVariations, fixed_elements: [] };
       const directions = [];
       for (let i = 0; i < numVariations; i++) {
         const dirText = safeDirections[i] || `Variation ${i + 1}: Fresh creative approach`;
