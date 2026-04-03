@@ -96,6 +96,8 @@ Identify every visual element:
 
 THIS IS THE MOST IMPORTANT STEP. You must adapt every text element for the product above while PRESERVING THE EXACT COPYWRITING FORMULA.
 
+⚠️ STRICT REFERENCE FIDELITY: You may ONLY adapt text that is ACTUALLY VISIBLE in the reference image. Do NOT add new text elements, badges, discount callouts, guarantee text, or promotional copy that doesn't exist in the reference. The adapted_text arrays must have the EXACT SAME number of items as original_text arrays — no additions.
+
 ${co.formulaPreservation || `⚠️ FORMULA PRESERVATION RULES (CRITICAL):
 The adapted text must follow the EXACT SAME sentence structure, opening words, and approximate character count as the original. You are copying the PROVEN FORMULA, just swapping the subject matter.
 
@@ -132,7 +134,8 @@ ${co.pricingRules || `- Base price: $59.99 for 1 unit
 - Bundle: 2 units = $55 each ($109.99), 3+1 free = $45 each ($179.99), 6+2 free = $40 each ($320)
 - Max discount: 58% — NEVER exceed this
 - Only discount code: MINER10 (extra 10% off)
-- NEVER invent prices. When in doubt: "Starting at $59.99" or "Up to 40% OFF"`}
+- NEVER invent prices. When in doubt: "Starting at $59.99"
+- CRITICAL: Only adapt text that ACTUALLY EXISTS in the reference image. Do NOT add discount badges, guarantee text, price callouts, or promotional elements that are not visible in the reference. If the reference has no "X% OFF" badge, your adapted version must also have NO "X% OFF" badge.`}
 
 ⚠️ VISUAL ADAPTATION DIRECTION:
 ${co.crossNicheAdaptation || `For each visual element, specify what it should become for the bitcoin mining product:
@@ -283,9 +286,12 @@ ${swapSection || '  (No text changes)'}
 ${nb.textRules || `TEXT RENDERING RULES:
 - Font style, weight, size, color, and position must EXACTLY match reference for each text element
 - Do NOT add extra text blocks. Do NOT remove text that isn't in the swap list.
+- NEVER ADD elements that don't exist in the reference — no discount badges, guarantee badges, price tags, trust seals, or promotional callouts unless they exist in the reference image
+- The output must have the EXACT SAME number of text blocks, badges, and visual elements as the reference — no more, no less
 - Text must be sharp, legible, and correctly spelled — NO blurry, warped, or AI-looking text
 - Headlines must be rendered in BOLD, high-contrast, professional typography — as crisp as a real paid ad
-- CRITICAL: Every letter must be pixel-perfect and readable. Distorted text = failure.`}
+- CRITICAL: Every letter must be pixel-perfect and readable. Distorted text = failure.
+- SPELLING: The product name is "${product.name}" — spell it EXACTLY as written, letter by letter: ${product.name.split('').join('-')}. Double-check every letter.`}
 ${illustrationSection}
 ${comparisonSection}
 
@@ -300,7 +306,7 @@ ${nb.absoluteRules || `ABSOLUTE RULES:
 2. ZERO competitor branding remaining (logos, names, product images)
 3. Every text swap must be applied — check all ${swapPairs.length} replacements
 4. No extra faces beyond ${pCount} — do NOT add people if reference has none
-5. No extra text elements beyond the specified swaps — do NOT invent copy
+5. NEVER ADD visual elements that don't exist in the reference — no extra badges, banners, discount tags, guarantee seals, price callouts, or promotional elements. If the reference has 3 text blocks, the output has 3 text blocks. NOTHING MORE.
 6. Comparison labels, timeline labels, feature labels ALL get swapped per the list above
 7. The product is a MINI BITCOIN MINER — NEVER render it as a USB stick. Copy the device from the product photos exactly.
 8. Hands: exactly 5 fingers, realistic proportions
