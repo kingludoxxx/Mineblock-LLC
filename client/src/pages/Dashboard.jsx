@@ -200,9 +200,9 @@ function RevenueChart({ sparklines, dateRange, onDateRangeChange }) {
         </button>
       </div>
 
-      <div className="h-[280px] w-full">
+      <div className="h-[280px] w-full overflow-visible">
         <ResponsiveContainer width="100%" height="100%">
-          <AreaChart data={chartData} margin={{ top: 20, right: 15, left: -20, bottom: 0 }}>
+          <AreaChart data={chartData} margin={{ top: 20, right: 15, left: -20, bottom: 0 }} style={{ overflow: 'visible' }}>
             <defs>
               <linearGradient id="colorRevenue" x1="0" y1="0" x2="0" y2="1">
                 <stop offset="0%" stopColor="#c9a84c" stopOpacity={0.15} />
@@ -234,6 +234,7 @@ function RevenueChart({ sparklines, dateRange, onDateRangeChange }) {
               tickLine={false}
               axisLine={false}
               tickFormatter={(v) => `$${v / 1000}k`}
+              domain={[0, (dataMax) => Math.ceil(dataMax * 1.15)]}
               dx={-10}
             />
             <YAxis
@@ -244,7 +245,7 @@ function RevenueChart({ sparklines, dateRange, onDateRangeChange }) {
               tickLine={false}
               axisLine={false}
               tickFormatter={(v) => `${v}x`}
-              domain={[0, 'auto']}
+              domain={[0, (dataMax) => Math.ceil(dataMax * 1.3)]}
               dx={10}
             />
             <Tooltip
@@ -257,9 +258,9 @@ function RevenueChart({ sparklines, dateRange, onDateRangeChange }) {
               iconType="circle"
               wrapperStyle={{ fontSize: '12px', color: '#a1a1aa', paddingTop: '20px' }}
             />
-            <Area yAxisId="left" type="monotone" dataKey="adSpend" name="Ad Spend" stroke="rgba(232,213,163,0.4)" strokeWidth={1} fillOpacity={1} fill="url(#colorAdSpend)" dot={false} />
-            <Area yAxisId="right" type="monotone" dataKey="roas" name="ROAS" stroke="#5b9a6f" strokeWidth={1.5} fillOpacity={1} fill="url(#colorRoas)" dot={false} />
-            <Area yAxisId="left" type="monotone" dataKey="revenue" name="Revenue" stroke="#c9a84c" strokeWidth={1.5} fillOpacity={1} fill="url(#colorRevenue)" dot={false} />
+            <Area yAxisId="left" type="monotone" dataKey="adSpend" name="Ad Spend" stroke="rgba(232,213,163,0.4)" strokeWidth={1} fillOpacity={1} fill="url(#colorAdSpend)" dot={false} isAnimationActive={false} />
+            <Area yAxisId="right" type="monotone" dataKey="roas" name="ROAS" stroke="#5b9a6f" strokeWidth={1.5} fillOpacity={1} fill="url(#colorRoas)" dot={false} isAnimationActive={false} />
+            <Area yAxisId="left" type="monotone" dataKey="revenue" name="Revenue" stroke="#c9a84c" strokeWidth={1.5} fillOpacity={1} fill="url(#colorRevenue)" dot={false} isAnimationActive={false} />
           </AreaChart>
         </ResponsiveContainer>
       </div>
