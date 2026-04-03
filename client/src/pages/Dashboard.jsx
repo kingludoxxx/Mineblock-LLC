@@ -189,32 +189,32 @@ function RevenueChart({ sparklines, dateRange, onDateRangeChange }) {
   if (chartData.length === 0) return null;
 
   return (
-    <div className="glass-card border border-white/[0.05] rounded-xl p-6 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.03)]">
-      <div className="flex items-center justify-between mb-8">
+    <div className="glass-card border border-white/[0.05] rounded-xl p-5 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.03)]">
+      <div className="flex items-center justify-between mb-5">
         <div>
-          <h3 className="text-lg font-semibold text-white mb-1">Revenue Overview</h3>
-          <p className="text-sm text-zinc-500">Showing daily revenue for the last 30 days</p>
+          <h3 className="text-sm font-semibold text-white mb-0.5">Revenue Overview</h3>
+          <p className="text-xs text-zinc-500">Daily revenue, ad spend & ROAS — last 30 days</p>
         </div>
         <button className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white/[0.03] border border-white/[0.05] text-sm text-zinc-300 hover:bg-white/[0.05] transition-colors cursor-pointer">
           Last 30 days <ChevronDown className="w-4 h-4 text-zinc-500" />
         </button>
       </div>
 
-      <div className="h-[400px] w-full">
+      <div className="h-[280px] w-full">
         <ResponsiveContainer width="100%" height="100%">
           <AreaChart data={chartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
             <defs>
               <linearGradient id="colorRevenue" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor="#c9a84c" stopOpacity={0.3} />
+                <stop offset="5%" stopColor="#c9a84c" stopOpacity={0.25} />
                 <stop offset="95%" stopColor="#c9a84c" stopOpacity={0} />
               </linearGradient>
               <linearGradient id="colorAdSpend" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor="#0ea5e9" stopOpacity={0.3} />
-                <stop offset="95%" stopColor="#0ea5e9" stopOpacity={0} />
+                <stop offset="5%" stopColor="#e8d5a3" stopOpacity={0.15} />
+                <stop offset="95%" stopColor="#e8d5a3" stopOpacity={0} />
               </linearGradient>
               <linearGradient id="colorRoas" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor="#10b981" stopOpacity={0.3} />
-                <stop offset="95%" stopColor="#10b981" stopOpacity={0} />
+                <stop offset="5%" stopColor="#d4b55a" stopOpacity={0.2} />
+                <stop offset="95%" stopColor="#d4b55a" stopOpacity={0} />
               </linearGradient>
             </defs>
             <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" vertical={false} />
@@ -258,8 +258,8 @@ function RevenueChart({ sparklines, dateRange, onDateRangeChange }) {
               wrapperStyle={{ fontSize: '12px', color: '#a1a1aa', paddingTop: '20px' }}
             />
             <Area yAxisId="left" type="monotone" dataKey="revenue" name="Revenue" stroke="#c9a84c" strokeWidth={2} fillOpacity={1} fill="url(#colorRevenue)" />
-            <Area yAxisId="left" type="monotone" dataKey="adSpend" name="Ad Spend" stroke="#0ea5e9" strokeWidth={2} fillOpacity={1} fill="url(#colorAdSpend)" />
-            <Area yAxisId="right" type="monotone" dataKey="roas" name="ROAS" stroke="#10b981" strokeWidth={2} fillOpacity={1} fill="url(#colorRoas)" />
+            <Area yAxisId="left" type="monotone" dataKey="adSpend" name="Ad Spend" stroke="#e8d5a3" strokeWidth={1.5} fillOpacity={1} fill="url(#colorAdSpend)" />
+            <Area yAxisId="right" type="monotone" dataKey="roas" name="ROAS" stroke="#d4b55a" strokeWidth={1.5} fillOpacity={1} fill="url(#colorRoas)" />
           </AreaChart>
         </ResponsiveContainer>
       </div>
