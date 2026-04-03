@@ -471,6 +471,19 @@ async function getNextBriefNumber() {
 /**
  * Build the naming convention string.
  */
+// Map angle names to short codes for naming conventions
+const ANGLE_ABBREV = {
+  'pain point': 'PP', 'social proof': 'SP', 'before/after': 'BA',
+  'curiosity hook': 'CH', 'direct offer': 'DO', 'authority': 'AU',
+};
+function abbreviateAngle(angle) {
+  if (!angle || angle === 'NA') return 'NA';
+  const key = angle.toLowerCase().trim();
+  if (ANGLE_ABBREV[key]) return ANGLE_ABBREV[key];
+  // Custom angle — take first 2 words, capitalize initials
+  return angle.split(/\s+/).slice(0, 3).map(w => w[0]?.toUpperCase()).join('') || angle.slice(0, 6);
+}
+
 function buildNamingConvention({ product_code, brief_number, parent_creative_id, avatar, angle, format, strategist, creator, editor, week }) {
   const briefId = `B${String(brief_number).padStart(4, '0')}`;
   return [
@@ -479,7 +492,7 @@ function buildNamingConvention({ product_code, brief_number, parent_creative_id,
     'IT',
     parent_creative_id,
     avatar || 'NA',
-    angle || 'NA',
+    abbreviateAngle(angle),
     format || 'Mashup',
     strategist || 'Ludovico',
     creator || 'NA',
