@@ -1029,7 +1029,9 @@ export default function StaticsGeneration() {
       const pollTask = async (task) => {
         const maxPolls = 60;
         for (let i = 0; i < maxPolls; i++) {
-          await new Promise(r => setTimeout(r, 5000));
+          // Fast polls first (2s for first 10), then back off to 4s
+          const delay = i < 10 ? 2000 : 4000;
+          await new Promise(r => setTimeout(r, delay));
           const statusRes = await api.get(`/statics-generation/status/${task.taskId}`);
           const statusData = statusRes.data?.data || statusRes.data;
           if (statusData?.resultImageUrl) {
@@ -1258,11 +1260,12 @@ export default function StaticsGeneration() {
 
             if (tasks.length === 0) continue;
 
-            // Step 2: Poll tasks
+            // Step 2: Poll tasks (fast polls first, then back off)
             const pollTask = async (task) => {
               const maxPolls = 60;
               for (let i = 0; i < maxPolls; i++) {
-                await new Promise(r => setTimeout(r, 5000));
+                const delay = i < 10 ? 2000 : 4000;
+                await new Promise(r => setTimeout(r, delay));
                 const statusRes = await api.get(`/statics-generation/status/${task.taskId}`);
                 const statusData = statusRes.data?.data || statusRes.data;
                 if (statusData?.resultImageUrl) {

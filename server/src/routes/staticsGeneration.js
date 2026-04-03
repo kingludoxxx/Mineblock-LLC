@@ -280,24 +280,14 @@ router.post('/generate', authenticate, async (req, res) => {
     // Send: product images, then logos, then reference ad (last)
     const imageUrls = [finalProductUrl, ...extraProductUrls, ...logoUrls, finalReferenceUrl];
 
-    const nbBodies = ['1:1', '9:16'].map(r => JSON.stringify({
-      prompt: nbPrompt,
-      model: 'nano-banana-2',
-      imageUrls: imageUrls,
-      aspectRatio: r,
-      resolution: '1K',
-      outputFormat: 'png',
-    }));
+    // Determine which ratios to generate — use client-requested ratio, default to both
+    const requestedRatio = req.body.ratio;
+    const ratiosToGenerate = requestedRatio && requestedRatio !== 'all'
+      ? [requestedRatio]
+      : ['1:1', '9:16'];
 
-    const [nbRes1, nbRes2] = await Promise.all(
-      nbBodies.map(body => fetch(`${NB_BASE}/generate-2`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${NANOBANANA_API_KEY}` },
-        body,
-      }))
-    );
+    console.log(`[staticsGeneration] Generating ${ratiosToGenerate.length} ratio(s): ${ratiosToGenerate.join(', ')}`);
 
-    // Validate responses before parsing JSON
     const parseNbResponse = async (res, label) => {
       if (!res.ok) {
         const text = await res.text().catch(() => '');
@@ -306,17 +296,33 @@ router.post('/generate', authenticate, async (req, res) => {
       }
       return res.json().catch(err => { console.error(`[staticsGeneration] NanoBanana ${label} JSON parse error:`, err.message); return null; });
     };
-    const [nbData1, nbData2] = await Promise.all([parseNbResponse(nbRes1, '1:1'), parseNbResponse(nbRes2, '9:16')]);
-    const taskId1 = nbData1?.data?.taskId || nbData1?.taskId;
-    const taskId2 = nbData2?.data?.taskId || nbData2?.taskId;
 
-    if (!taskId1 && !taskId2) {
+    const nbResponses = await Promise.all(
+      ratiosToGenerate.map(async (r) => {
+        const body = JSON.stringify({
+          prompt: nbPrompt,
+          model: 'nano-banana-2',
+          imageUrls: imageUrls,
+          aspectRatio: r,
+          resolution: '1K',
+          outputFormat: 'png',
+        });
+        const res = await fetch(`${NB_BASE}/generate-2`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${NANOBANANA_API_KEY}` },
+          body,
+        });
+        const data = await parseNbResponse(res, r);
+        const taskId = data?.data?.taskId || data?.taskId;
+        return taskId ? { taskId, ratio: r } : null;
+      })
+    );
+
+    const tasks = nbResponses.filter(Boolean);
+
+    if (tasks.length === 0) {
       return res.status(500).json({ success: false, error: 'NanoBanana failed to return any task IDs' });
     }
-
-    const tasks = [];
-    if (taskId1) tasks.push({ taskId: taskId1, ratio: '1:1' });
-    if (taskId2) tasks.push({ taskId: taskId2, ratio: '9:16' });
 
     // ── Step E: Return immediately — client polls /status/:taskId ──────
     console.log(`[staticsGeneration] NanoBanana tasks submitted: ${tasks.map(t => `${t.ratio}=${t.taskId}`).join(', ')}`);
