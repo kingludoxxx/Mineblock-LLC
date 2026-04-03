@@ -58,7 +58,7 @@ export default function Images() {
   return (
     <div>
       <div className="flex items-center gap-3 mb-6">
-        <div className="p-2 rounded-lg bg-cyan-500/20"><ImageIcon className="w-5 h-5 text-cyan-400" /></div>
+        <div className="p-2 rounded-lg bg-accent/20"><ImageIcon className="w-5 h-5 text-accent-text" /></div>
         <div>
           <h1 className="text-2xl font-bold text-white">AI Image Generator</h1>
           <p className="text-sm text-slate-400">Create stunning visuals with AI</p>
@@ -73,19 +73,19 @@ export default function Images() {
               <label className="text-xs text-slate-400 mb-1 block">Prompt</label>
               <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)}
                 placeholder="Describe the image you want to create..."
-                rows={4} className="w-full bg-black/30 border border-white/[0.06] rounded-lg p-2.5 text-sm text-white placeholder-slate-500 resize-none focus:outline-none focus:border-cyan-500/50" />
+                rows={4} className="w-full bg-black/30 border border-white/[0.06] rounded-lg p-2.5 text-sm text-white placeholder-slate-500 resize-none focus:outline-none focus:border-accent/50" />
             </div>
             <div>
               <label className="text-xs text-slate-400 mb-1 block">Negative Prompt (optional)</label>
               <input type="text" value={negativePrompt} onChange={(e) => setNegativePrompt(e.target.value)}
-                placeholder="What to avoid..." className="w-full bg-black/30 border border-white/[0.06] rounded-lg p-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500/50" />
+                placeholder="What to avoid..." className="w-full bg-black/30 border border-white/[0.06] rounded-lg p-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-accent/50" />
             </div>
             <div>
               <label className="text-xs text-slate-400 mb-1.5 block">Model</label>
               <div className="grid grid-cols-2 gap-2">
                 {MODELS.map((m) => (
                   <button key={m.value} onClick={() => setModel(m.value)}
-                    className={`text-left p-2.5 rounded-lg border text-xs transition-colors cursor-pointer ${model === m.value ? 'bg-cyan-600/20 border-cyan-500/40 text-white' : 'border-white/[0.06] text-slate-400 hover:text-white hover:border-white/[0.12]'}`}>
+                    className={`text-left p-2.5 rounded-lg border text-xs transition-colors cursor-pointer ${model === m.value ? 'bg-accent/20 border-accent/40 text-white' : 'border-white/[0.06] text-slate-400 hover:text-white hover:border-white/[0.12]'}`}>
                     <div className="font-medium">{m.label}</div>
                     <div className="text-slate-500 mt-0.5">{m.description}</div>
                   </button>
@@ -97,7 +97,7 @@ export default function Images() {
               <div className="grid grid-cols-3 gap-2">
                 {ASPECT_RATIOS.map((ar) => (
                   <button key={ar.value} onClick={() => setAspectRatio(ar.value)}
-                    className={`py-2 rounded-lg border text-xs font-medium transition-colors cursor-pointer ${aspectRatio === ar.value ? 'bg-cyan-600 border-cyan-500 text-white' : 'border-white/[0.06] text-slate-400 hover:text-white'}`}>
+                    className={`py-2 rounded-lg border text-xs font-medium transition-colors cursor-pointer ${aspectRatio === ar.value ? 'bg-accent border-accent text-white' : 'border-white/[0.06] text-slate-400 hover:text-white'}`}>
                     {ar.label}
                   </button>
                 ))}
@@ -108,7 +108,7 @@ export default function Images() {
               <div className="flex flex-wrap gap-1.5">
                 {STYLES.map((s) => (
                   <button key={s} onClick={() => setStyle(s)}
-                    className={`px-2.5 py-1 text-xs rounded-full border transition-colors cursor-pointer ${style === s ? 'bg-cyan-600 border-cyan-500 text-white' : 'border-white/[0.06] text-slate-400 hover:text-white'}`}>
+                    className={`px-2.5 py-1 text-xs rounded-full border transition-colors cursor-pointer ${style === s ? 'bg-accent border-accent text-white' : 'border-white/[0.06] text-slate-400 hover:text-white'}`}>
                     {s}
                   </button>
                 ))}
@@ -119,14 +119,14 @@ export default function Images() {
               <div className="flex gap-2">
                 {[1, 2, 3, 4].map((n) => (
                   <button key={n} onClick={() => setCount(n)}
-                    className={`flex-1 py-2 rounded-lg border text-sm font-medium transition-colors cursor-pointer ${count === n ? 'bg-cyan-600 border-cyan-500 text-white' : 'border-white/[0.06] text-slate-400 hover:text-white'}`}>
+                    className={`flex-1 py-2 rounded-lg border text-sm font-medium transition-colors cursor-pointer ${count === n ? 'bg-accent border-accent text-white' : 'border-white/[0.06] text-slate-400 hover:text-white'}`}>
                     {n}
                   </button>
                 ))}
               </div>
             </div>
             <button onClick={handleGenerate} disabled={!canGenerate || generating}
-              className={`w-full py-3 rounded-lg font-semibold text-sm flex items-center justify-center gap-2 transition-all cursor-pointer ${canGenerate && !generating ? 'bg-gradient-to-r bg-accent text-bg-main hover:bg-accent-hover shadow-lg shadow-accent/25' : 'bg-slate-800 text-slate-500 cursor-not-allowed'}`}>
+              className={`w-full py-3 rounded-lg font-semibold text-sm flex items-center justify-center gap-2 transition-all cursor-pointer ${canGenerate && !generating ? 'bg-accent text-white hover:bg-accent-hover shadow-lg shadow-accent/25' : 'bg-slate-800 text-slate-500 cursor-not-allowed'}`}>
               {generating ? <><RefreshCw className="w-4 h-4 animate-spin" /> Generating...</> : <><Sparkles className="w-4 h-4" /> Generate Images</>}
             </button>
           </div>
@@ -141,7 +141,7 @@ export default function Images() {
             </div>
           ) : generating ? (
             <div className="flex flex-col items-center justify-center h-80 bg-[#111] border border-white/[0.06] rounded-lg">
-              <RefreshCw className="w-8 h-8 text-cyan-400 animate-spin mb-3" />
+              <RefreshCw className="w-8 h-8 text-accent-text animate-spin mb-3" />
               <p className="text-slate-400 text-sm">Generating {count} image{count > 1 ? 's' : ''} with {MODELS.find((m) => m.value === model)?.label}...</p>
             </div>
           ) : (

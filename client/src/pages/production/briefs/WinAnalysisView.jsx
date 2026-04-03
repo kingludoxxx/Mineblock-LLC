@@ -20,7 +20,7 @@ const EMOTION_COLORS = {
   fomo:      { bg: 'bg-orange-500/20',   text: 'text-orange-300',  bar: 'from-orange-500 to-orange-400' },
   desire:    { bg: 'bg-pink-500/20',     text: 'text-pink-300',    bar: 'from-pink-500 to-pink-400' },
   anger:     { bg: 'bg-rose-500/20',     text: 'text-rose-300',    bar: 'from-rose-500 to-rose-400' },
-  trust:     { bg: 'bg-cyan-500/20',     text: 'text-cyan-300',    bar: 'from-cyan-500 to-cyan-400' },
+  trust:     { bg: 'bg-accent/20',     text: 'text-accent-text',    bar: 'from-accent to-accent-hover' },
   hope:      { bg: 'bg-violet-500/20',   text: 'text-violet-300',  bar: 'from-violet-500 to-violet-400' },
 };
 
