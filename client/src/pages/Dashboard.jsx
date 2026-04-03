@@ -205,16 +205,16 @@ function RevenueChart({ sparklines, dateRange, onDateRangeChange }) {
           <AreaChart data={chartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
             <defs>
               <linearGradient id="colorRevenue" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="#c9a84c" stopOpacity={0.2} />
-                <stop offset="100%" stopColor="#c9a84c" stopOpacity={0.02} />
+                <stop offset="0%" stopColor="#c9a84c" stopOpacity={0.15} />
+                <stop offset="100%" stopColor="#c9a84c" stopOpacity={0.01} />
               </linearGradient>
               <linearGradient id="colorAdSpend" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="#e8d5a3" stopOpacity={0.1} />
+                <stop offset="0%" stopColor="#e8d5a3" stopOpacity={0.08} />
                 <stop offset="100%" stopColor="#e8d5a3" stopOpacity={0} />
               </linearGradient>
               <linearGradient id="colorRoas" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="#d4b55a" stopOpacity={0.08} />
-                <stop offset="100%" stopColor="#d4b55a" stopOpacity={0} />
+                <stop offset="0%" stopColor="#5b9a6f" stopOpacity={0.12} />
+                <stop offset="100%" stopColor="#5b9a6f" stopOpacity={0} />
               </linearGradient>
             </defs>
             <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" vertical={false} />
@@ -257,9 +257,9 @@ function RevenueChart({ sparklines, dateRange, onDateRangeChange }) {
               iconType="circle"
               wrapperStyle={{ fontSize: '12px', color: '#a1a1aa', paddingTop: '20px' }}
             />
+            <Area yAxisId="left" type="natural" dataKey="adSpend" name="Ad Spend" stroke="rgba(232,213,163,0.4)" strokeWidth={1} fillOpacity={1} fill="url(#colorAdSpend)" dot={false} />
+            <Area yAxisId="right" type="natural" dataKey="roas" name="ROAS" stroke="#5b9a6f" strokeWidth={1.5} fillOpacity={1} fill="url(#colorRoas)" dot={false} />
             <Area yAxisId="left" type="natural" dataKey="revenue" name="Revenue" stroke="#c9a84c" strokeWidth={1.5} fillOpacity={1} fill="url(#colorRevenue)" dot={false} />
-            <Area yAxisId="left" type="natural" dataKey="adSpend" name="Ad Spend" stroke="rgba(232,213,163,0.6)" strokeWidth={1} fillOpacity={1} fill="url(#colorAdSpend)" dot={false} />
-            <Area yAxisId="right" type="natural" dataKey="roas" name="ROAS" stroke="rgba(212,181,90,0.5)" strokeWidth={1} fillOpacity={1} fill="url(#colorRoas)" dot={false} />
           </AreaChart>
         </ResponsiveContainer>
       </div>
