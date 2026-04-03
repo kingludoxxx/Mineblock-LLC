@@ -30,7 +30,6 @@ import {
   Package,
   GitBranch,
   // Production icons
-  PenTool,
   Wand2,
   Crown,
   Image,
@@ -71,7 +70,6 @@ const navGroups = [
     icon: Factory,
     items: [
       { to: '/app/brief-agent', icon: Sparkles, label: 'Brief Agent' },
-      { to: '/app/magic-writer', icon: PenTool, label: 'Magic Writer' },
 { to: '/app/iteration-king', icon: Crown, label: 'Iteration King' },
 { to: '/app/statics-generation', icon: Layers, label: 'Statics Generation' },
       { to: '/app/brief-pipeline', icon: FileText, label: 'Brief Pipeline' },

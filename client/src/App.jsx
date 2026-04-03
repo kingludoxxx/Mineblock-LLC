@@ -38,7 +38,6 @@ import FunnelsPage from './pages/lab/FunnelsPage';
 
 // Production
 import BriefAgentPage from './pages/production/BriefAgentPage';
-import MagicWriterPage from './pages/production/MagicWriter';
 import MagicAdsPage from './pages/production/MagicAdsPage';
 import IterationKingPage from './pages/production/IterationKingPage';
 import ImagesPage from './pages/production/ImagesPage';
@@ -117,7 +116,6 @@ export default function App() {
 
           {/* Production */}
           <Route path="brief-agent" element={<BriefAgentPage />} />
-          <Route path="magic-writer" element={<MagicWriterPage />} />
           <Route path="magic-ads" element={<MagicAdsPage />} />
           <Route path="iteration-king" element={<IterationKingPage />} />
           <Route path="images" element={<ImagesPage />} />

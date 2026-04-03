@@ -242,26 +242,26 @@ function VariantTypeBadge({ type }) {
 
 function PipelineToggle({ active, onChange }) {
   return (
-    <div className="inline-flex bg-[#0a0a0a] border border-white/[0.06] rounded-lg p-1 gap-1">
+    <div className="flex p-1 bg-white/[0.02] rounded-lg border border-white/[0.05] inline-flex">
       <button
         type="button"
         onClick={() => onChange('standard')}
-        className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-md text-xs font-medium transition-colors cursor-pointer ${
+        className={`flex items-center justify-center gap-2 px-3.5 py-1.5 text-xs font-medium rounded-md transition-all duration-300 cursor-pointer ${
           active === 'standard'
-            ? 'bg-white/[0.1] text-white'
-            : 'text-slate-500 hover:text-slate-300'
+            ? 'bg-white/[0.06] text-white shadow-[0_1px_2px_rgba(0,0,0,0.2)] border border-white/[0.06]'
+            : 'text-zinc-500 hover:text-zinc-300 border border-transparent'
         }`}
       >
-        <Layers className="w-3.5 h-3.5" />
+        <Image className="w-3.5 h-3.5" />
         Standard Statics
       </button>
       <button
         type="button"
         onClick={() => onChange('advertorial')}
-        className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-md text-xs font-medium transition-colors cursor-pointer ${
+        className={`flex items-center justify-center gap-2 px-3.5 py-1.5 text-xs font-medium rounded-md transition-all duration-300 cursor-pointer ${
           active === 'advertorial'
-            ? 'bg-white/[0.1] text-white'
-            : 'text-slate-500 hover:text-slate-300'
+            ? 'bg-white/[0.06] text-white shadow-[0_1px_2px_rgba(0,0,0,0.2)] border border-white/[0.06]'
+            : 'text-zinc-500 hover:text-zinc-300 border border-transparent'
         }`}
       >
         <FileText className="w-3.5 h-3.5" />
@@ -1580,59 +1580,70 @@ export default function StaticsGeneration() {
   // -----------------------------------------------------------------------
 
   return (
-    <div className="p-6">
+    <div className="p-6 bg-[#111113] min-h-full">
       {/* Header + Top Navigation */}
-      <div className="flex items-center gap-6 mb-6 border-b border-border-subtle pb-4">
-        {/* Page title (not clickable) */}
-        <div className="flex items-center gap-3 mr-4">
-          <div className="p-2 rounded-lg bg-accent/15">
-            <Layers className="w-5 h-5 text-accent" />
+      <div className="h-16 border-b border-white/[0.04] bg-[#131315]/80 backdrop-blur-xl flex items-center justify-between px-6 -mx-6 -mt-6 mb-6 relative">
+        <div className="absolute bottom-0 left-0 right-0 h-[1px] bg-gradient-to-r from-[#c9a84c]/10 via-transparent to-transparent" />
+
+        <div className="flex items-center gap-8">
+          {/* Page title */}
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-lg bg-[#c9a84c]/10 border border-[#c9a84c]/20 flex items-center justify-center">
+              <Layers className="w-4 h-4 text-[#c9a84c]" />
+            </div>
+            <h1 className="text-lg font-semibold text-white tracking-wide">Static Ads</h1>
           </div>
-          <h1 className="text-lg font-bold text-text-primary whitespace-nowrap">Static Ads</h1>
+
+          {/* Tab navigation */}
+          <nav className="flex items-center gap-1 bg-white/[0.02] p-1 rounded-lg border border-white/[0.04]">
+            {TOP_TABS.map((tab) => {
+              const Icon = tab.icon;
+              const isActive = activeTab === tab.key;
+              return (
+                <button
+                  key={tab.key}
+                  type="button"
+                  onClick={() => setActiveTab(tab.key)}
+                  className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all cursor-pointer ${
+                    isActive
+                      ? 'bg-[#c9a84c]/10 text-[#e8d5a3] border border-[#c9a84c]/20 shadow-[0_0_10px_rgba(201,168,76,0.1)]'
+                      : 'text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.04] border border-transparent'
+                  }`}
+                >
+                  <Icon className="w-4 h-4" />
+                  {tab.label}
+                </button>
+              );
+            })}
+          </nav>
         </div>
 
-        {/* Tab navigation */}
-        <nav className="flex items-center gap-1 flex-1">
-          {TOP_TABS.map((tab) => {
-            const Icon = tab.icon;
-            const isActive = activeTab === tab.key;
-            return (
-              <button
-                key={tab.key}
-                type="button"
-                onClick={() => setActiveTab(tab.key)}
-                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors cursor-pointer ${
-                  isActive
-                    ? 'bg-accent/15 text-accent-text'
-                    : 'text-text-muted hover:text-text-primary hover:bg-bg-hover'
-                }`}
-              >
-                <Icon className="w-4 h-4" />
-                {tab.label}
-              </button>
-            );
-          })}
-        </nav>
+        <div className="flex items-center gap-4">
+          {/* Settings button */}
+          <button
+            type="button"
+            onClick={() => setSettingsOpen(true)}
+            className="text-zinc-400 hover:text-white transition-colors cursor-pointer"
+            title="Prompt & Logic Settings"
+          >
+            <Settings className="w-5 h-5" />
+          </button>
 
-        {/* Settings button */}
-        <button
-          type="button"
-          onClick={() => setSettingsOpen(true)}
-          className="p-2 rounded-lg text-text-muted hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer"
-          title="Prompt & Logic Settings"
-        >
-          <Settings className="w-5 h-5" />
-        </button>
-
-        {/* Add Reference button */}
-        <button
-          type="button"
-          onClick={() => setAddRefModal(true)}
-          className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold bg-accent hover:bg-accent-hover text-bg-main shadow-[0_1px_12px_rgba(201,162,39,0.25)] transition-colors cursor-pointer whitespace-nowrap"
-        >
-          <ImagePlus className="w-4 h-4" />
-          Add Reference
-        </button>
+          {/* Add Reference button */}
+          <button
+            type="button"
+            onClick={() => setAddRefModal(true)}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all cursor-pointer whitespace-nowrap"
+            style={{
+              background: 'linear-gradient(135deg, #c9a84c, #d4b55a)',
+              color: '#111113',
+              boxShadow: '0 0 15px rgba(201,168,76,0.2), 0 1px 3px rgba(0,0,0,0.4), inset 0 1px 0 0 rgba(255,255,255,0.2)',
+            }}
+          >
+            <ImagePlus className="w-4 h-4" />
+            Add Reference
+          </button>
+        </div>
       </div>
 
       {/* ================================================================= */}
@@ -1649,7 +1660,7 @@ export default function StaticsGeneration() {
           {activePipeline === 'standard' && (
             <div className="flex gap-0">
               {/* Left: ConfigSidebar */}
-              <div className="w-[260px] shrink-0 space-y-4 pr-5 border-r border-border-subtle">
+              <div className="w-[280px] shrink-0 space-y-4 pr-0 border-r border-white/[0.04]">
                 <ConfigSidebar
                   selectedProduct={selectedProductId}
                   selectedProductObj={selectedProductObj}

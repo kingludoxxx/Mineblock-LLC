@@ -14,6 +14,7 @@
       "runtimeExecutable": "/usr/local/bin/node",
       "runtimeArgs": ["node_modules/.bin/vite", "--host"],
       "port": 5173,
+      "autoPort": false,
       "cwd": "/Users/ludo/Mineblock-LLC/client",
       "env": { "PATH": "/usr/local/bin:/usr/bin:/bin" }
     },

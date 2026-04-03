@@ -76,18 +76,21 @@ export function ConfigSidebar({
   };
 
   return (
-    <aside className="w-full shrink-0 bg-[#0a0a0a] flex flex-col overflow-y-auto">
+    <aside className="w-full shrink-0 bg-[#131315]/80 backdrop-blur-xl flex flex-col overflow-y-auto relative">
+      <div className="absolute right-0 top-0 bottom-0 w-[1px] bg-gradient-to-b from-[#c9a84c]/15 via-transparent to-transparent" />
+
       {/* ---- CONFIGURATION header ---- */}
       <div className="px-5 pt-5 pb-4">
-        <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+        <div className="text-[10px] font-mono font-semibold text-zinc-500 uppercase tracking-[0.15em] flex items-center gap-2">
+          <div className="w-1 h-1 bg-[#c9a84c]/40 rounded-full" />
           Configuration
-        </h2>
+        </div>
       </div>
 
       <div className="px-5 space-y-6">
         {/* ---- Target Product ---- */}
         <div className="space-y-2">
-          <label className="text-sm font-medium text-slate-300">
+          <label className="text-xs text-zinc-400 font-medium">
             Target Product
           </label>
 
@@ -100,21 +103,22 @@ export function ConfigSidebar({
         </div>
 
         {/* ---- Ad Angle ---- */}
-        <div className="space-y-2">
-          <label className="text-sm font-medium text-slate-300">
-            Ad Angle{' '}
-            <span className="text-slate-600 font-normal">(optional)</span>
-          </label>
-          <div className="flex flex-wrap gap-1.5">
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <label className="text-xs text-zinc-400 font-mono">
+              Ad_Angle <span className="text-zinc-600 opacity-70">[OPTIONAL]</span>
+            </label>
+          </div>
+          <div className="flex flex-wrap gap-2">
             {AD_ANGLES.map((a) => (
               <button
                 key={a}
                 type="button"
                 onClick={() => onAngleChange(angle === a ? null : a)}
-                className={`px-2.5 py-1 rounded-full text-xs font-medium transition-colors cursor-pointer ${
+                className={`px-2.5 py-1 text-xs rounded-md border transition-all duration-300 cursor-pointer ${
                   angle === a
-                    ? 'bg-accent text-white'
-                    : 'bg-white/[0.04] text-slate-400 border border-white/[0.06] hover:border-white/[0.12] hover:text-white'
+                    ? 'bg-[#c9a84c]/10 border-[#c9a84c]/30 text-[#e8d5a3] shadow-[0_0_8px_rgba(201,168,76,0.1)]'
+                    : 'bg-white/[0.02] border-white/[0.05] text-zinc-400 hover:border-white/[0.1] hover:text-zinc-200 hover:bg-white/[0.04]'
                 }`}
               >
                 {a}
@@ -125,22 +129,23 @@ export function ConfigSidebar({
             type="text"
             value={customAngle || ''}
             onChange={(e) => onCustomAngleChange(e.target.value)}
-            placeholder="Custom angle... (or leave blank for AI to decide)"
-            className="w-full bg-[#111] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white placeholder-slate-600 focus:border-accent/50 focus:outline-none"
+            placeholder="Custom angle... (or leave blank)"
+            className="w-full bg-white/[0.02] border border-white/[0.05] rounded-lg p-2.5 text-sm text-zinc-300 placeholder:text-zinc-600 focus:outline-none focus:ring-1 focus:ring-[#c9a84c]/30 focus:border-[#c9a84c]/20 transition-all shadow-[inset_0_1px_0_0_rgba(255,255,255,0.02)]"
           />
         </div>
 
         {/* ---- REFERENCE IMAGES header ---- */}
-        <div className="pt-2">
-          <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-3">
+        <div className="pt-2 space-y-3">
+          <div className="text-[10px] font-mono font-semibold text-zinc-500 uppercase tracking-[0.15em] flex items-center gap-2">
+            <div className="w-1 h-1 bg-[#c9a84c]/40 rounded-full" />
             Reference Images
-          </h2>
+          </div>
 
           {/* Select from Library */}
           <button
             type="button"
             onClick={onOpenLibrary}
-            className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-white/[0.04] border border-white/[0.06] text-sm text-slate-300 hover:border-white/[0.12] hover:text-white transition-colors cursor-pointer"
+            className="w-full flex items-center justify-center gap-2 bg-white/[0.02] border border-white/[0.05] rounded-lg p-2.5 text-sm text-zinc-300 hover:bg-white/[0.04] transition-all cursor-pointer"
           >
             <Layers className="w-4 h-4" />
             Select from Library
@@ -152,14 +157,14 @@ export function ConfigSidebar({
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}
             onClick={() => fileInputRef.current?.click()}
-            className={`mt-3 flex flex-col items-center justify-center gap-2 border border-dashed rounded-lg py-5 cursor-pointer transition-colors ${
+            className={`flex flex-col items-center justify-center gap-2 border border-dashed rounded-lg py-6 cursor-pointer transition-colors ${
               dragging
-                ? 'border-accent/50 bg-accent/5'
-                : 'border-white/[0.1] hover:border-white/[0.2] bg-transparent'
+                ? 'border-[#c9a84c]/50 bg-[#c9a84c]/5'
+                : 'border-white/[0.08] hover:bg-white/[0.01]'
             }`}
           >
-            <Upload className="w-5 h-5 text-slate-600" />
-            <span className="text-xs text-slate-500">
+            <Upload className="w-5 h-5 text-zinc-500" />
+            <span className="text-xs text-zinc-500">
               or upload image / drag &amp; drop
             </span>
             <input
@@ -172,21 +177,24 @@ export function ConfigSidebar({
           </div>
 
           {/* Reference thumbnails */}
-          <div className="mt-3 space-y-2">
+          <div className="space-y-2">
             {references.length === 0 ? (
-              <p className="text-xs text-slate-600 text-center py-3">
-                No reference images yet.{' '}
-                <button
-                  type="button"
-                  onClick={onOpenLibrary}
-                  className="text-accent-text hover:text-accent underline cursor-pointer"
-                >
-                  Browse Library
-                </button>
-              </p>
+              <div className="text-center pt-2">
+                <p className="text-xs text-zinc-600">
+                  No reference images yet.
+                  <br />
+                  <button
+                    type="button"
+                    onClick={onOpenLibrary}
+                    className="text-[#c9a84c] hover:underline cursor-pointer"
+                  >
+                    Browse Library
+                  </button>
+                </p>
+              </div>
             ) : (
               references.map((ref) => (
-                <div key={ref.id} className="relative group rounded-lg overflow-hidden border border-white/[0.06] bg-[#0a0a0a]">
+                <div key={ref.id} className="relative group rounded-lg overflow-hidden border border-white/[0.05] bg-white/[0.02]">
                   <img
                     src={ref.thumbnail || ref.image_url || ref.url}
                     alt="Reference"
@@ -203,8 +211,8 @@ export function ConfigSidebar({
                     <X className="w-3 h-3" />
                   </button>
                   {ref.name && (
-                    <div className="px-2 py-1.5 bg-[#0a0a0a]">
-                      <p className="text-[10px] text-slate-500 truncate">{ref.name}</p>
+                    <div className="px-2 py-1.5 bg-white/[0.02]">
+                      <p className="text-[10px] text-zinc-500 truncate">{ref.name}</p>
                     </div>
                   )}
                 </div>
@@ -215,16 +223,18 @@ export function ConfigSidebar({
       </div>
 
       {/* ---- Generate & Queue buttons ---- */}
-      <div className="px-5 py-4 border-t border-white/[0.06] mt-6 space-y-2">
+      <div className="px-5 py-4 border-t border-white/[0.04] mt-6 space-y-3">
         <button
           type="button"
           onClick={onGenerate}
           disabled={!canGenerate}
-          className={`w-full flex items-center justify-center gap-2 px-4 py-3 rounded-lg text-sm font-semibold transition-colors cursor-pointer ${
-            canGenerate
-              ? 'bg-emerald-600 hover:bg-emerald-500 text-white'
-              : 'bg-white/[0.04] text-slate-600 border border-white/[0.06] cursor-not-allowed'
-          }`}
+          className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-lg text-sm font-mono font-semibold uppercase tracking-wide transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+          style={{
+            background: !canGenerate ? '#1a1710' : 'linear-gradient(135deg, #c9a84c, #d4b55a)',
+            color: !canGenerate ? '#c9a84c' : '#111113',
+            border: !canGenerate ? '1px solid rgba(201,168,76,0.2)' : 'none',
+            boxShadow: !canGenerate ? 'none' : '0 0 20px rgba(201,168,76,0.25), 0 1px 3px rgba(0,0,0,0.4), inset 0 1px 0 0 rgba(255,255,255,0.2)',
+          }}
         >
           {generating ? (
             <>
@@ -243,17 +253,30 @@ export function ConfigSidebar({
             type="button"
             onClick={onAddToQueue}
             disabled={!canGenerate}
-            className={`w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors cursor-pointer ${
-              canGenerate
-                ? 'bg-transparent border border-accent/40 text-accent-text hover:border-accent hover:bg-accent/10'
-                : 'bg-transparent border border-white/[0.06] text-slate-600 cursor-not-allowed'
-            }`}
+            className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-xs font-mono font-medium uppercase tracking-wide bg-transparent border border-white/[0.05] text-zinc-400 hover:border-white/[0.1] hover:text-zinc-200 transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
           >
             <ListPlus className="w-4 h-4" />
             Add to Queue
           </button>
         )}
       </div>
+
+      {/* Product loaded footer */}
+      {selectedProductObj && (
+        <div className="mt-auto border-t border-white/[0.04] p-4 bg-black/20">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-xs font-semibold text-emerald-500 uppercase tracking-wider font-mono">
+              Product Loaded
+            </span>
+          </div>
+          <h4 className="text-sm font-medium text-white mb-1">{selectedProductObj.name}</h4>
+          {selectedProductObj.oneliner && (
+            <p className="text-xs text-zinc-500 leading-relaxed line-clamp-2">
+              {selectedProductObj.oneliner}
+            </p>
+          )}
+        </div>
+      )}
     </aside>
   );
 }

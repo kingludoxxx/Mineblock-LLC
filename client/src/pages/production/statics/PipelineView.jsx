@@ -17,10 +17,11 @@ const COLUMNS = [
     key: 'review',
     label: 'To Review',
     icon: Eye,
-    color: 'gray',
-    badgeBg: 'bg-gray-500/20',
-    badgeText: 'text-gray-300',
-    headerBorder: 'border-gray-500/40',
+    color: 'gold',
+    iconClass: 'text-[#d4b55a] drop-shadow-[0_0_6px_rgba(201,168,76,0.5)]',
+    badgeBg: 'bg-[#c9a84c]/10',
+    badgeText: 'text-[#d4b55a]',
+    badgeBorder: 'border-[#c9a84c]/25',
     placeholder: null,
     actionLabel: 'Approve',
     nextStatus: 'approved',
@@ -28,11 +29,12 @@ const COLUMNS = [
   {
     key: 'approved',
     label: 'Approved',
-    icon: Check,
+    icon: CheckCircle2,
     color: 'green',
-    badgeBg: 'bg-emerald-500/20',
-    badgeText: 'text-emerald-300',
-    headerBorder: 'border-emerald-500/40',
+    iconClass: 'text-emerald-400 drop-shadow-[0_0_6px_rgba(16,185,129,0.5)]',
+    badgeBg: 'bg-emerald-500/10',
+    badgeText: 'text-emerald-400',
+    badgeBorder: 'border-emerald-500/25',
     placeholder: null,
     actionLabel: 'Ready',
     nextStatus: 'ready',
@@ -41,10 +43,11 @@ const COLUMNS = [
     key: 'ready',
     label: 'Ready to Launch',
     icon: Rocket,
-    color: 'purple',
-    badgeBg: 'bg-purple-500/20',
-    badgeText: 'text-purple-300',
-    headerBorder: 'border-purple-500/40',
+    color: 'cyan',
+    iconClass: 'text-cyan-400 drop-shadow-[0_0_6px_rgba(34,211,238,0.4)]',
+    badgeBg: 'bg-cyan-500/10',
+    badgeText: 'text-cyan-400',
+    badgeBorder: 'border-cyan-500/25',
     placeholder: 'Drag approved cards here',
     actionLabel: 'Launch',
     nextStatus: 'launched',
@@ -54,9 +57,10 @@ const COLUMNS = [
     label: 'Launched',
     icon: CheckCircle2,
     color: 'green',
-    badgeBg: 'bg-emerald-500/20',
-    badgeText: 'text-emerald-300',
-    headerBorder: 'border-emerald-500/40',
+    iconClass: 'text-emerald-500 drop-shadow-[0_0_6px_rgba(16,185,129,0.4)]',
+    badgeBg: 'bg-emerald-500/10',
+    badgeText: 'text-emerald-500',
+    badgeBorder: 'border-emerald-500/25',
     placeholder: 'Drag here to mark launched',
     actionLabel: null,
     nextStatus: null,
@@ -111,84 +115,86 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, variantSt
       }}
       onDragEnd={() => setTimeout(() => setWasDragged(false), 100)}
       onClick={() => { if (!wasDragged) onCardClick?.(creative); }}
-      className="group bg-[#0a0a0a] border border-white/[0.06] rounded-2xl overflow-hidden cursor-grab active:cursor-grabbing
-                 hover:border-white/[0.15] hover:shadow-lg hover:shadow-black/30 transition-all duration-200"
+      className="animated-border-gradient rounded-xl cursor-grab active:cursor-grabbing"
     >
-      {/* Thumbnail */}
-      <div className="relative h-[140px] bg-[#080808]">
-        <div className="absolute inset-0 flex flex-col items-center justify-center text-gray-700 gap-1.5">
-          {creative.status === 'generating' ? (
-            <>
-              <Loader2 className="w-5 h-5 animate-spin text-accent-text" />
-              <span className="text-[9px] text-accent-text/70">Generating…</span>
-            </>
-          ) : (
-            <Eye className="w-5 h-5" />
+      <div className="glass-card border border-white/[0.05] rounded-xl overflow-hidden group hover:border-white/[0.1] transition-all shadow-[inset_0_1px_0_0_rgba(255,255,255,0.03)] relative z-10">
+        {/* Thumbnail */}
+        <div className="relative aspect-[4/3] w-full overflow-hidden bg-black/40">
+          <div className="absolute inset-0 flex flex-col items-center justify-center text-zinc-700 gap-1.5">
+            {creative.status === 'generating' ? (
+              <>
+                <Loader2 className="w-5 h-5 animate-spin text-[#c9a84c]" />
+                <span className="text-[9px] text-[#c9a84c]/70">Generating…</span>
+              </>
+            ) : (
+              <Eye className="w-5 h-5" />
+            )}
+          </div>
+          {creative.image_url && creative.status !== 'generating' && (
+            <img
+              src={creative.image_url}
+              alt=""
+              className="absolute inset-0 w-full h-full object-cover opacity-90 group-hover:opacity-100 transition-opacity group-hover:scale-105 duration-500"
+              onError={(e) => { e.target.style.display = 'none'; }}
+            />
+          )}
+          {/* Hover overlay */}
+          <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+            <span className="text-[10px] font-medium text-white bg-white/[0.15] backdrop-blur-sm px-2.5 py-1 rounded-full">
+              View Full
+            </span>
+          </div>
+          {/* Variant indicator */}
+          {creative.parent_creative_id && (
+            <span className="absolute top-2 left-2 text-[9px] font-mono bg-[#c9a84c]/20 text-[#e8d5a3] px-1.5 py-0.5 rounded border border-[#c9a84c]/30 backdrop-blur-md">
+              Variant
+            </span>
+          )}
+          {/* Ratio pills — top right */}
+          {!creative.parent_creative_id && (
+            <div className="absolute top-2 right-2 flex items-center gap-1">
+              <RatioPill label={creative.aspect_ratio || '4:5'} status="done" />
+              <RatioPill label="9:16" status={variantStatus || null} />
+            </div>
+          )}
+          {creative.parent_creative_id && (
+            <span className="absolute top-2 right-2 text-[9px] font-mono bg-black/50 text-zinc-300 px-1.5 py-0.5 rounded border border-white/[0.1] backdrop-blur-md">
+              9:16
+            </span>
           )}
         </div>
-        {creative.image_url && creative.status !== 'generating' && (
-          <img
-            src={creative.image_url}
-            alt=""
-            className="absolute inset-0 w-full h-full object-cover"
-            onError={(e) => { e.target.style.display = 'none'; }}
-          />
-        )}
-        {/* Hover overlay */}
-        <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-          <span className="text-[10px] font-medium text-white bg-white/[0.15] backdrop-blur-sm px-2.5 py-1 rounded-full">
-            View Full
-          </span>
-        </div>
-        {/* Variant indicator */}
-        {creative.parent_creative_id && (
-          <span className="absolute top-1.5 left-1.5 text-[8px] font-medium bg-accent/20 text-accent-text px-1.5 py-0.5 rounded-full">
-            Variant
-          </span>
-        )}
-        {/* Ratio pills — top right */}
-        {!creative.parent_creative_id && (
-          <div className="absolute top-1.5 right-1.5 flex items-center gap-1">
-            <RatioPill label={creative.aspect_ratio || '4:5'} status="done" />
-            <RatioPill label="9:16" status={variantStatus || null} />
+
+        {/* Info */}
+        <div className="p-3 space-y-3">
+          <div>
+            <h4 className="text-xs font-medium text-zinc-200 mb-1 truncate">
+              {creative.product_name || 'Untitled'}
+            </h4>
+            {creative.angle && (
+              <span className="text-[10px] text-zinc-500">{creative.angle}</span>
+            )}
           </div>
-        )}
-        {creative.parent_creative_id && (
-          <span className="absolute top-1.5 right-1.5 text-[8px] font-semibold bg-black/60 text-white/60 px-1.5 py-0.5 rounded-full">
-            9:16
-          </span>
-        )}
-      </div>
 
-      {/* Info */}
-      <div className="px-2.5 py-2 space-y-1">
-        <p className="text-[11px] font-medium text-gray-200 truncate">
-          {creative.product_name || 'Untitled'}
-        </p>
-
-        {creative.angle && (
-          <p className="text-[10px] text-gray-500 truncate">{creative.angle}</p>
-        )}
-
-        {/* Action button */}
-        {column.actionLabel ? (
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              onStatusChange?.(creative.id, column.nextStatus);
-            }}
-            className={`mt-0.5 w-full text-[10px] font-medium py-1 rounded-lg transition-colors
-              ${column.color === 'green'
-                ? 'bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25'
-                : column.color === 'purple'
-                  ? 'bg-purple-500/15 text-purple-300 hover:bg-purple-500/25'
-                  : 'bg-gray-500/15 text-gray-300 hover:bg-gray-500/25'
-              } cursor-pointer`}
-          >
-            {column.actionLabel}
-          </button>
-        ) : null}
+          {/* Action button */}
+          {column.actionLabel ? (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onStatusChange?.(creative.id, column.nextStatus);
+              }}
+              className={`w-full py-1.5 rounded-md text-xs font-medium border transition-colors cursor-pointer
+                ${column.color === 'green'
+                  ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20 hover:bg-emerald-500/20'
+                  : column.color === 'cyan'
+                    ? 'bg-cyan-500/10 text-cyan-400 border-cyan-500/20 hover:bg-cyan-500/20'
+                    : 'bg-white/[0.03] text-zinc-300 border-white/[0.05] hover:bg-white/[0.06]'
+                }`}
+            >
+              {column.actionLabel}
+            </button>
+          ) : null}
+        </div>
       </div>
     </div>
   );
@@ -215,35 +221,34 @@ function PipelineColumn({ column, items, onStatusChange, onCardClick, allCreativ
 
   return (
     <div
-      className="flex flex-col min-w-[200px] max-w-[260px] flex-1"
+      className="flex flex-col min-w-[200px] max-w-[280px] flex-1 relative"
       onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
       onDragLeave={() => setDragOver(false)}
       onDrop={handleDrop}
     >
       {/* Column header */}
-      <div
-        className={`flex items-center gap-2 px-3 py-2.5 border-b-2 ${column.headerBorder} mb-3`}
-      >
-        <Icon className="w-4 h-4 text-gray-400" />
-        <span className="text-sm font-semibold text-gray-200">
-          {column.label}
-        </span>
-        <span
-          className={`ml-auto px-2 py-0.5 rounded-full text-[11px] font-medium ${column.badgeBg} ${column.badgeText}`}
-        >
+      <div className="flex items-center justify-between mb-4 pb-3 border-b border-white/[0.04] relative">
+        <div className="absolute bottom-0 left-0 w-1/3 h-[1px] bg-gradient-to-r from-current to-transparent opacity-30" />
+        <div className="flex items-center gap-2">
+          <Icon className={`w-4 h-4 ${column.iconClass}`} />
+          <h3 className="font-mono text-xs tracking-[0.15em] uppercase text-zinc-300 font-semibold">
+            {column.label}
+          </h3>
+        </div>
+        <span className={`text-[10px] font-mono px-2 py-0.5 rounded border ${column.badgeBg} ${column.badgeText} ${column.badgeBorder}`}>
           {items.length}
         </span>
       </div>
 
       {/* Scrollable card list */}
-      <div className={`flex-1 overflow-y-auto pr-1 space-y-2 pb-4 custom-scrollbar transition-colors rounded-lg ${dragOver ? 'bg-white/[0.03] ring-1 ring-accent/30' : ''}`}>
+      <div className={`flex-1 overflow-y-auto pr-2 space-y-4 pb-4 custom-scrollbar transition-colors rounded-lg ${dragOver ? 'bg-white/[0.03] ring-1 ring-[#c9a84c]/30' : ''}`}>
         {items.length === 0 && column.placeholder ? (
-          <div className="flex items-center justify-center h-32 border border-dashed border-gray-700/50 rounded-lg">
-            <p className="text-xs text-gray-500 italic">{column.placeholder}</p>
+          <div className="h-32 border border-dashed border-white/[0.08] rounded-xl flex items-center justify-center text-sm text-zinc-600 italic bg-white/[0.01]">
+            {column.placeholder}
           </div>
         ) : items.length === 0 ? (
           <div className="flex items-center justify-center h-32">
-            <p className="text-xs text-gray-600">No creatives</p>
+            <p className="text-xs text-zinc-600">No creatives</p>
           </div>
         ) : (
           items.map((creative) => {
@@ -297,15 +302,15 @@ export function PipelineView({ creatives = [], onStatusChange, onCardClick, onRe
   return (
     <div className="flex flex-col h-full">
       {/* Toolbar */}
-      <div className="flex items-center justify-between mb-4">
-        <h2 className="text-base font-semibold text-gray-200">Pipeline</h2>
+      <div className="flex items-center justify-between mb-6">
+        <h2 className="font-mono text-sm font-semibold text-white tracking-[0.15em] uppercase">Pipeline</h2>
         <button
           type="button"
           onClick={onRefresh}
           disabled={loading}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-300
-                     bg-white/[0.04] border border-white/[0.06] rounded-md
-                     hover:bg-white/[0.08] transition-colors disabled:opacity-40 cursor-pointer"
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-mono font-medium text-zinc-400 uppercase tracking-wide
+                     bg-transparent border border-white/[0.05] rounded-md
+                     hover:border-white/[0.1] hover:text-zinc-200 transition-all disabled:opacity-40 cursor-pointer"
         >
           {loading ? (
             <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -317,7 +322,7 @@ export function PipelineView({ creatives = [], onStatusChange, onCardClick, onRe
       </div>
 
       {/* Columns */}
-      <div className="flex gap-4 flex-1 min-h-0 overflow-x-auto">
+      <div className="flex gap-6 flex-1 min-h-0 overflow-x-auto">
         {COLUMNS.map((col) => (
           <PipelineColumn
             key={col.key}

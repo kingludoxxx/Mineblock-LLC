@@ -93,7 +93,7 @@ const categories = [
 ];
 
 const integrations = [
-  { id: 1, name: 'Anthropic', description: 'Claude models — powers Magic Writer & AI features', category: 'ai', connected: true, envVar: 'ANTHROPIC_API_KEY' },
+  { id: 1, name: 'Anthropic', description: 'Claude models — powers AI features', category: 'ai', connected: true, envVar: 'ANTHROPIC_API_KEY' },
   { id: 2, name: 'Google Gemini', description: 'Gemini models for multimodal AI tasks', category: 'ai', connected: true, envVar: 'GEMINI_API_KEY' },
   { id: 3, name: 'PostgreSQL', description: 'Primary database hosted on Render', category: 'infrastructure', connected: true, envVar: 'DATABASE_URL' },
   { id: 4, name: 'Redis', description: 'Session cache, rate limiting & response cache', category: 'infrastructure', connected: false, envVar: 'REDIS_URL' },
