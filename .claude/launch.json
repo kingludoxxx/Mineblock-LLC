@@ -3,17 +3,19 @@
   "configurations": [
     {
       "name": "Backend (Express API)",
-      "runtimeExecutable": "node",
+      "runtimeExecutable": "/usr/local/bin/node",
       "runtimeArgs": ["--watch", "server/src/server.js"],
       "port": 3000,
-      "autoPort": false
+      "autoPort": false,
+      "env": { "PATH": "/usr/local/bin:/usr/bin:/bin" }
     },
     {
       "name": "Frontend (Vite Dev)",
-      "runtimeExecutable": "npx",
-      "runtimeArgs": ["vite", "--host"],
+      "runtimeExecutable": "/usr/local/bin/node",
+      "runtimeArgs": ["node_modules/.bin/vite", "--host"],
       "port": 5173,
-      "cwd": "client"
+      "cwd": "/Users/ludo/Mineblock-LLC/client",
+      "env": { "PATH": "/usr/local/bin:/usr/bin:/bin" }
     },
     {
       "name": "Upsell Preview",

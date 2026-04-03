@@ -30,6 +30,7 @@ import {
   BookOpen,
   Filter,
   Settings,
+  Brain,
 } from 'lucide-react';
 import api from '../../services/api';
 import ProductSelector from '../../components/ProductSelector';
@@ -99,6 +100,7 @@ const TOP_TABS = [
   { key: 'pipeline', label: 'Pipeline', icon: Rocket },
   { key: 'library', label: 'Library', icon: BookOpen },
   { key: 'generated', label: 'Generated', icon: Image },
+  { key: 'settings', label: 'Logic & Settings', icon: Settings },
 ];
 
 // ---------------------------------------------------------------------------
@@ -570,6 +572,209 @@ function GeneratedView({ creatives, loading, onRefresh, onCreativeClick }) {
 }
 
 // ---------------------------------------------------------------------------
+// Inline Settings Component (for the "Logic & Settings" tab)
+// ---------------------------------------------------------------------------
+
+function StaticsSettingsInline() {
+  const [activeSection, setActiveSection] = useState('claudeAnalysis');
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [defaults, setDefaults] = useState({});
+  const [values, setValues] = useState({});
+  const [toast, setToast] = useState(null);
+
+  const SECTIONS = [
+    { key: 'claudeAnalysis', label: 'Claude Analysis', icon: Brain },
+    { key: 'nanoBanana', label: 'Image Generation', icon: ImagePlus },
+  ];
+
+  const FIELDS = {
+    claudeAnalysis: [
+      { key: 'productIdentity', label: 'Product Identity', desc: 'How the AI understands your product' },
+      { key: 'headlineRules', label: 'Headline Rules', desc: 'Rules for adapting headlines' },
+      { key: 'headlineExamples', label: 'Headline Examples', desc: 'Example headlines for reference' },
+      { key: 'pricingRules', label: 'Pricing Rules', desc: 'Pricing constraints and formats' },
+      { key: 'formulaPreservation', label: 'Formula Preservation', desc: 'How to preserve copywriting formulas' },
+      { key: 'crossNicheAdaptation', label: 'Cross-Niche Adaptation', desc: 'Rules for adapting across product niches' },
+    ],
+    nanoBanana: [
+      { key: 'productRules', label: 'Product Replacement Rules', desc: 'How to swap product imagery' },
+      { key: 'textRules', label: 'Text Rendering Rules', desc: 'Typography and text placement rules' },
+      { key: 'absoluteRules', label: 'Absolute Constraints', desc: 'Hard rules that cannot be broken' },
+    ],
+  };
+
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      try {
+        const { data } = await api.get('/statics-generation/settings/prompts');
+        setDefaults(data.defaults || {});
+        const merged = {};
+        for (const section of Object.keys(FIELDS)) {
+          merged[section] = {};
+          for (const field of FIELDS[section]) {
+            merged[section][field.key] = data.custom?.[section]?.[field.key] ?? data.defaults?.[section]?.[field.key] ?? '';
+          }
+        }
+        setValues(merged);
+      } catch (err) {
+        console.error('Failed to load settings:', err);
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
+
+  const handleChange = (section, key, value) => {
+    setValues(prev => ({ ...prev, [section]: { ...prev[section], [key]: value } }));
+  };
+
+  const isFieldCustom = (section, key) => {
+    return (values?.[section]?.[key] ?? '') !== (defaults?.[section]?.[key] ?? '');
+  };
+
+  const handleResetField = (section, key) => {
+    handleChange(section, key, defaults?.[section]?.[key] ?? '');
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      await api.put('/statics-generation/settings/prompts', { prompts: values });
+      setToast({ type: 'success', message: 'Settings saved' });
+      setTimeout(() => setToast(null), 3000);
+    } catch {
+      setToast({ type: 'error', message: 'Failed to save' });
+      setTimeout(() => setToast(null), 3000);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleResetAll = async () => {
+    try {
+      await api.post('/statics-generation/settings/prompts/reset');
+      const { data } = await api.get('/statics-generation/settings/prompts');
+      setDefaults(data.defaults || {});
+      const merged = {};
+      for (const section of Object.keys(FIELDS)) {
+        merged[section] = {};
+        for (const field of FIELDS[section]) {
+          merged[section][field.key] = data.defaults?.[section]?.[field.key] ?? '';
+        }
+      }
+      setValues(merged);
+      setToast({ type: 'success', message: 'All prompts reset to defaults' });
+      setTimeout(() => setToast(null), 3000);
+    } catch {
+      setToast({ type: 'error', message: 'Failed to reset' });
+      setTimeout(() => setToast(null), 3000);
+    }
+  };
+
+  const fields = FIELDS[activeSection] || [];
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <Loader2 className="w-6 h-6 animate-spin text-accent" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* Section tabs */}
+      <div className="flex items-center gap-2">
+        {SECTIONS.map(s => {
+          const Icon = s.icon;
+          const isActive = activeSection === s.key;
+          return (
+            <button
+              key={s.key}
+              type="button"
+              onClick={() => setActiveSection(s.key)}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors cursor-pointer ${
+                isActive
+                  ? 'bg-accent/15 text-accent-text border border-accent/20'
+                  : 'text-text-muted hover:text-text-primary bg-bg-elevated border border-border-default hover:bg-bg-hover'
+              }`}
+            >
+              <Icon className="w-4 h-4" />
+              {s.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Fields */}
+      <div className="space-y-4">
+        {fields.map(field => (
+          <div key={field.key} className="bg-bg-card border border-border-default rounded-xl p-4">
+            <div className="flex items-center justify-between mb-2">
+              <div>
+                <h3 className="text-sm font-medium text-text-primary">{field.label}</h3>
+                <p className="text-xs text-text-faint mt-0.5">{field.desc}</p>
+              </div>
+              {isFieldCustom(activeSection, field.key) && (
+                <button
+                  type="button"
+                  onClick={() => handleResetField(activeSection, field.key)}
+                  className="flex items-center gap-1 text-xs text-red-400 hover:text-red-300 transition-colors cursor-pointer"
+                >
+                  <RotateCcw className="w-3 h-3" />
+                  Reset
+                </button>
+              )}
+            </div>
+            <textarea
+              value={values?.[activeSection]?.[field.key] ?? ''}
+              onChange={(e) => handleChange(activeSection, field.key, e.target.value)}
+              rows={5}
+              className="w-full bg-bg-main border border-border-default rounded-lg px-3 py-2.5 text-sm text-text-primary font-mono placeholder:text-text-faint resize-y focus:outline-none focus:border-accent/30 transition-colors"
+            />
+          </div>
+        ))}
+      </div>
+
+      {/* Actions bar */}
+      <div className="flex items-center justify-between pt-2 pb-4">
+        <button
+          type="button"
+          onClick={handleResetAll}
+          className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium border border-red-500/30 text-red-400 hover:bg-red-500/10 transition-colors cursor-pointer"
+        >
+          <RotateCcw className="w-4 h-4" />
+          Reset All
+        </button>
+        <button
+          type="button"
+          onClick={handleSave}
+          disabled={saving}
+          className="flex items-center gap-2 px-5 py-2 rounded-lg text-sm font-semibold bg-accent hover:bg-accent-hover text-bg-main shadow-[0_1px_12px_rgba(201,162,39,0.25)] transition-all cursor-pointer disabled:opacity-50"
+        >
+          {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+          {saving ? 'Saving...' : 'Save Changes'}
+        </button>
+      </div>
+
+      {/* Toast */}
+      {toast && (
+        <div className={`fixed bottom-6 right-6 z-50 flex items-center gap-2 px-4 py-2.5 rounded-lg border text-sm font-medium shadow-lg ${
+          toast.type === 'success'
+            ? 'bg-emerald-950/90 border-emerald-500/30 text-emerald-200'
+            : 'bg-red-950/90 border-red-500/30 text-red-200'
+        }`}>
+          {toast.type === 'success' ? <Check className="w-4 h-4 text-emerald-400" /> : <AlertCircle className="w-4 h-4 text-red-400" />}
+          {toast.message}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main Component
 // ---------------------------------------------------------------------------
 
@@ -597,7 +802,6 @@ export default function StaticsGeneration() {
   const [marketingAngle, setMarketingAngle] = useState('');
   const [customAngle, setCustomAngle] = useState('');
   const [aspectRatio, setAspectRatio] = useState('4:5');
-  const [products, setProducts] = useState([]);
   const [profileOpen, setProfileOpen] = useState(false);
 
   // Profile fields
@@ -663,34 +867,46 @@ export default function StaticsGeneration() {
   // STANDARD PIPELINE HANDLERS
   // =========================================================================
 
-  const handleProductSelect = (product) => {
+  const handleProductSelect = async (product) => {
     if (!product) {
       setSelectedProductId(null);
       setSelectedProductObj(null);
       selectedProductRef.current = null;
       return;
     }
-    setSelectedProductId(product.id);
-    setSelectedProductObj(product);
-    selectedProductRef.current = product;
-    setProductName(product.name || '');
-    setProductDescription(product.description || '');
-    setProductPrice(product.price || '');
-    if (product.product_images?.length > 0) {
-      setProductImageUrl(product.product_images[0]);
-      setProductPreview(product.product_images[0]);
-    }
-    setOneliner(product.oneliner || '');
-    setCustomerAvatar(product.customer_avatar || '');
-    setCustomerFrustration(product.customer_frustration || '');
-    setCustomerDream(product.customer_dream || '');
-    setBigPromise(product.big_promise || '');
-    setMechanism(product.mechanism || '');
-    setDifferentiator(product.differentiator || '');
-    setVoice(product.voice || '');
-    setGuarantee(product.guarantee || '');
-    if (product.angles?.length > 0) {
-      setMarketingAngle(product.angles[0].name || '');
+    // Fetch full product profile for rich data (benefits, pain_points, etc.)
+    try {
+      const res = await api.get(`/product-profiles/${product.id}`);
+      const fullProduct = res.data.data || res.data;
+      setSelectedProductId(fullProduct.id);
+      setSelectedProductObj(fullProduct);
+      selectedProductRef.current = fullProduct;
+      setProductName(fullProduct.name || '');
+      setProductDescription(fullProduct.description || '');
+      setProductPrice(fullProduct.price || '');
+      if (fullProduct.product_images?.length > 0) {
+        setProductImageUrl(fullProduct.product_images[0]);
+        setProductPreview(fullProduct.product_images[0]);
+      }
+      setOneliner(fullProduct.oneliner || '');
+      setCustomerAvatar(fullProduct.customer_avatar || '');
+      setCustomerFrustration(fullProduct.customer_frustration || '');
+      setCustomerDream(fullProduct.customer_dream || '');
+      setBigPromise(fullProduct.big_promise || '');
+      setMechanism(fullProduct.mechanism || '');
+      setDifferentiator(fullProduct.differentiator || '');
+      setVoice(fullProduct.voice || '');
+      setGuarantee(fullProduct.guarantee || '');
+      if (fullProduct.angles?.length > 0) {
+        setMarketingAngle(fullProduct.angles[0].name || '');
+      }
+    } catch (err) {
+      console.error('Failed to fetch full product profile:', err);
+      // Fallback to the partial product
+      setSelectedProductId(product.id);
+      setSelectedProductObj(product);
+      selectedProductRef.current = product;
+      setProductName(product.name || '');
     }
   };
 
@@ -789,70 +1005,85 @@ export default function StaticsGeneration() {
       });
 
       const genResult = response.data?.data || response.data;
-      const { taskId } = genResult;
+      const tasks = genResult.tasks || (genResult.taskId ? [{ taskId: genResult.taskId, ratio: aspectRatio }] : []);
 
-      if (!taskId) {
-        // No taskId means generation was skipped (e.g. no NanoBanana call)
+      if (tasks.length === 0) {
+        // No tasks means generation was skipped (e.g. no NanoBanana call)
         setResult(genResult);
         setGenerationStep(0);
         return;
       }
 
-      // Step 2: Poll NanoBanana via /status/:taskId
+      // Step 2: Poll ALL tasks in parallel
       setGenerationStep(2);
-      const POLL_INTERVAL = 5000;
-      const MAX_POLLS = 60;
-      let imageUrl = null;
 
-      for (let i = 0; i < MAX_POLLS; i++) {
-        await new Promise(r => setTimeout(r, POLL_INTERVAL));
-        if (i > 4) setGenerationStep(3); // progress indicator
-
-        const statusRes = await api.get(`/statics-generation/status/${taskId}?_t=${Date.now()}`);
-        const statusData = statusRes.data?.data || statusRes.data;
-
-        if (statusData.status === 'completed') {
-          imageUrl = statusData.resultImageUrl;
-          break;
+      const pollTask = async (task) => {
+        const maxPolls = 60;
+        for (let i = 0; i < maxPolls; i++) {
+          await new Promise(r => setTimeout(r, 5000));
+          const statusRes = await api.get(`/statics-generation/status/${task.taskId}`);
+          const statusData = statusRes.data?.data || statusRes.data;
+          if (statusData?.resultImageUrl) {
+            return { ratio: task.ratio, imageUrl: statusData.resultImageUrl, taskId: task.taskId };
+          }
+          if (statusData?.status === 'failed' || statusData?.error) {
+            throw new Error(`Generation failed for ${task.ratio}: ${statusData?.error || 'Unknown error'}`);
+          }
         }
-        if (statusData.status === 'failed') {
-          throw new Error('Image generation failed');
-        }
-        // status === 'pending' → keep polling
+        throw new Error(`Generation timed out for ${task.ratio}`);
+      };
+
+      const taskResults = await Promise.allSettled(tasks.map(pollTask));
+      const completedTasks = taskResults
+        .filter(r => r.status === 'fulfilled')
+        .map(r => r.value);
+      const failedTasks = taskResults
+        .filter(r => r.status === 'rejected')
+        .map(r => r.reason?.message || 'Unknown error');
+
+      if (completedTasks.length === 0) {
+        throw new Error(failedTasks.join('; ') || 'All generation tasks failed');
+      }
+      if (failedTasks.length > 0) {
+        addToast(`Warning: ${failedTasks.length} ratio(s) failed — ${failedTasks.join(', ')}`, 'warning', 8000);
       }
 
-      if (!imageUrl) {
-        throw new Error('Image generation timed out');
-      }
+      // Step 3: Save all creatives with shared group
+      setGenerationStep(3);
+      const groupId = crypto.randomUUID();
+      const currentRef = references[0];
+      const resolvedRefUrl = currentRef?.image_url || currentRef?.thumbnail || currentRef?.url || resolvedReferenceUrl;
 
-      // Step 3: Set final result
-      const finalResult = { ...genResult, generated_image_url: imageUrl };
-      setResult(finalResult);
-      setGenerationStep(0);
-
-      // Auto-save to pipeline as "review" creative
-      try {
-        const refImg = references[0];
+      const savedCreatives = await Promise.all(completedTasks.map(async (task) => {
         const saveRes = await api.post('/statics-generation/creatives', {
           product_id: selectedProductId || null,
           product_name: productName,
-          angle: marketingAngle || customAngle || null,
-          aspect_ratio: aspectRatio,
-          image_url: imageUrl,
-          reference_name: refImg?.name || null,
-          reference_thumbnail: refImg?.thumbnail || refImg?.image_url || refImg?.url || null,
-          adapted_text: finalResult?.adapted_text || null,
-          claude_analysis: finalResult?.claude_analysis || null,
-          swap_pairs: finalResult?.swap_pairs || null,
-          generation_prompt: finalResult?.generation_prompt || null,
-          status: 'review',
+          image_url: task.imageUrl,
+          angle: marketingAngle || null,
+          aspect_ratio: task.ratio,
+          group_id: groupId,
+          generation_task_id: task.taskId,
+          adapted_text: genResult.adaptedText || genResult.claudeAnalysis?.adapted_text,
+          swap_pairs: genResult.swapPairs,
+          claude_analysis: genResult.claudeAnalysis,
+          reference_thumbnail: resolvedRefUrl,
+          reference_name: currentRef?.name || 'Reference',
+          source_label: currentRef?.source_label || currentRef?.name || null,
+          pipeline: 'standard',
         });
-        if (saveRes.data?.success) {
-          setCreatives(prev => [saveRes.data.data, ...prev]);
-        }
-      } catch (saveErr) {
-        console.warn('[StaticsGeneration] Generated OK but failed to save to pipeline:', saveErr.message);
-      }
+        return saveRes.data?.data || saveRes.data;
+      }));
+
+      const finalResult = {
+        results: completedTasks,
+        claudeAnalysis: genResult.claudeAnalysis,
+        adaptedText: genResult.adaptedText,
+        swapPairs: genResult.swapPairs,
+      };
+      setResult(finalResult);
+      addToast(`${completedTasks.length} creatives generated (${completedTasks.map(t => t.ratio).join(' + ')}) & saved to Pipeline`, 'success', 8000);
+      setGenerationStep(0);
+      setCreatives(prev => [...savedCreatives, ...prev]);
     } catch (err) {
       const message =
         err.response?.data?.error ||
@@ -924,17 +1155,6 @@ export default function StaticsGeneration() {
     try {
       await api.patch(`/statics-generation/creatives/${id}/status`, { status: 'approved' });
       setCreatives((prev) => prev.map((c) => (c.id === id ? { ...c, status: 'approved' } : c)));
-
-      // Auto-trigger 9:16 variant generation on approve (non-variant creatives only)
-      const creative = creatives.find(c => c.id === id);
-      if (creative && !creative.parent_creative_id && creative.aspect_ratio !== '9:16') {
-        try {
-          await api.post(`/statics-generation/creatives/${id}/create-variant`, { aspect_ratio: '9:16' });
-          addToast('✨ 9:16 version is being generated...', 'generating', 60000);
-        } catch {
-          // variant generation failed silently — user can manually trigger later
-        }
-      }
     } catch {
       addToast('Failed to approve creative', 'error');
     }
@@ -1044,13 +1264,6 @@ export default function StaticsGeneration() {
     }
   };
 
-  // Fetch products on mount
-  useEffect(() => {
-    api.get('/product-profiles').then(res => {
-      setProducts(res.data?.data || res.data || []);
-    }).catch(() => {});
-  }, []);
-
   // Fetch data on tab / pipeline switch (with caching)
   const templatesFetched = useRef(false);
   const creativesFetched = useRef(false);
@@ -1094,8 +1307,8 @@ export default function StaticsGeneration() {
   // --- Render helpers ---
 
   const inputClasses =
-    'w-full bg-[#0a0a0a] border border-white/[0.08] rounded-lg px-3 py-2.5 text-sm text-white placeholder-slate-600 focus:border-blue-500/50 focus:outline-none';
-  const labelClasses = 'text-xs text-slate-400 mb-1.5 block';
+    'w-full bg-bg-main border border-border-default rounded-lg px-3 py-2.5 text-sm text-text-primary placeholder:text-text-faint focus:border-accent/30 focus:outline-none';
+  const labelClasses = 'text-xs text-text-muted mb-1.5 block';
 
   const ratios = ['4:5', '9:16', '1:1'];
 
@@ -1106,13 +1319,13 @@ export default function StaticsGeneration() {
   return (
     <div className="p-6">
       {/* Header + Top Navigation */}
-      <div className="flex items-center gap-6 mb-6 border-b border-white/[0.06] pb-4">
+      <div className="flex items-center gap-6 mb-6 border-b border-border-subtle pb-4">
         {/* Page title (not clickable) */}
         <div className="flex items-center gap-3 mr-4">
-          <div className="p-2 rounded-lg bg-blue-500/20">
-            <Layers className="w-5 h-5 text-blue-400" />
+          <div className="p-2 rounded-lg bg-accent/15">
+            <Layers className="w-5 h-5 text-accent" />
           </div>
-          <h1 className="text-lg font-bold text-white whitespace-nowrap">Static Ads</h1>
+          <h1 className="text-lg font-bold text-text-primary whitespace-nowrap">Static Ads</h1>
         </div>
 
         {/* Tab navigation */}
@@ -1127,8 +1340,8 @@ export default function StaticsGeneration() {
                 onClick={() => setActiveTab(tab.key)}
                 className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors cursor-pointer ${
                   isActive
-                    ? 'bg-white/[0.08] text-white'
-                    : 'text-slate-400 hover:text-white hover:bg-white/[0.04]'
+                    ? 'bg-accent/15 text-accent-text'
+                    : 'text-text-muted hover:text-text-primary hover:bg-bg-hover'
                 }`}
               >
                 <Icon className="w-4 h-4" />
@@ -1142,7 +1355,7 @@ export default function StaticsGeneration() {
         <button
           type="button"
           onClick={() => setSettingsOpen(true)}
-          className="p-2 rounded-lg text-slate-400 hover:text-white hover:bg-white/[0.06] transition-colors cursor-pointer"
+          className="p-2 rounded-lg text-text-muted hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer"
           title="Prompt & Logic Settings"
         >
           <Settings className="w-5 h-5" />
@@ -1152,7 +1365,7 @@ export default function StaticsGeneration() {
         <button
           type="button"
           onClick={() => setAddRefModal(true)}
-          className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium bg-emerald-600 hover:bg-emerald-500 text-white transition-colors cursor-pointer whitespace-nowrap"
+          className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold bg-accent hover:bg-accent-hover text-bg-main shadow-[0_1px_12px_rgba(201,162,39,0.25)] transition-colors cursor-pointer whitespace-nowrap"
         >
           <ImagePlus className="w-4 h-4" />
           Add Reference
@@ -1173,7 +1386,7 @@ export default function StaticsGeneration() {
           {activePipeline === 'standard' && (
             <div className="flex gap-0">
               {/* Left: ConfigSidebar */}
-              <div className="w-[260px] shrink-0 space-y-4 pr-5 border-r border-white/[0.06]">
+              <div className="w-[260px] shrink-0 space-y-4 pr-5 border-r border-border-subtle">
                 <ConfigSidebar
                   selectedProduct={selectedProductId}
                   onProductChange={(product) => handleProductSelect(product)}
@@ -1181,8 +1394,6 @@ export default function StaticsGeneration() {
                   onAngleChange={setMarketingAngle}
                   customAngle={customAngle}
                   onCustomAngleChange={setCustomAngle}
-                  aspectRatio={aspectRatio}
-                  onAspectRatioChange={setAspectRatio}
                   references={references}
                   onOpenLibrary={() => {
                     setTemplateModal(true);
@@ -1198,6 +1409,15 @@ export default function StaticsGeneration() {
                   onRemoveReference={(id) => setReferences(prev => prev.filter(r => r.id !== id))}
                   onGenerate={handleGenerate}
                   generating={generating}
+                  onProductsLoaded={(list) => {
+                    // Auto-select Miner Forge Pro if no product is selected yet
+                    if (!selectedProductRef.current && list.length > 0) {
+                      const miner = list.find(p => /miner\s*forge\s*pro/i.test(p.name));
+                      if (miner) {
+                        handleProductSelect(miner); // fetches full profile internally
+                      }
+                    }
+                  }}
                 />
 
                 {/* Manual product info (when no product selected from library) */}
@@ -1778,6 +1998,19 @@ export default function StaticsGeneration() {
           onRefresh={fetchAllCreatives}
           onCreativeClick={(creative) => setDetailModal(creative)}
         />
+      )}
+
+      {/* ================================================================= */}
+      {/* SETTINGS TAB                                                       */}
+      {/* ================================================================= */}
+      {activeTab === 'settings' && (
+        <div className="max-w-4xl">
+          <div className="mb-6">
+            <h2 className="text-base font-semibold text-text-primary mb-1">Generation Logic & Prompt Settings</h2>
+            <p className="text-sm text-text-muted">Configure how Claude analyzes reference ads and how images are generated. Changes apply to all future generations.</p>
+          </div>
+          <StaticsSettingsInline />
+        </div>
       )}
 
       {/* ================================================================= */}

@@ -8,7 +8,7 @@ import { TrendingUp, DollarSign, Target, BarChart3, Layers, Play, Film } from 'l
 const READINESS = {
   ready: { label: 'Ready', bg: 'bg-emerald-500/20', text: 'text-emerald-300' },
   over_iterated: { label: 'Over-iterated', bg: 'bg-amber-500/20', text: 'text-amber-300' },
-  not_enough_data: { label: 'Not enough data', bg: 'bg-gray-500/20', text: 'text-gray-400' },
+  not_enough_data: { label: 'Not enough data', bg: 'bg-zinc-500/20', text: 'text-text-faint' },
 };
 
 const REASON_LABELS = {
@@ -44,13 +44,13 @@ function WinnerCard({ winner, onSelect, onGenerate, showGenerate = false }) {
   const reasonLabel = REASON_LABELS[winner.winner_reason] || winner.winner_reason;
 
   const roasColor =
-    winner.roas >= 2 ? 'text-emerald-400' : winner.roas >= 1.5 ? 'text-amber-400' : 'text-gray-300';
+    winner.roas >= 2 ? 'text-emerald-400' : winner.roas >= 1.5 ? 'text-amber-400' : 'text-text-muted';
 
   return (
     <div
       onClick={() => onSelect?.(winner)}
-      className="bg-[#0d0d0d] border border-white/[0.06] rounded-lg p-3.5 space-y-3
-                 hover:border-white/[0.12] hover:shadow-lg hover:shadow-black/20
+      className="bg-bg-main border border-border-default rounded-lg p-3.5 space-y-3
+                 hover:border-accent/20 hover:shadow-[0_2px_12px_rgba(201,162,39,0.06)]
                  transition-all duration-150 cursor-pointer"
     >
       {/* Thumbnail / Video preview */}
@@ -73,8 +73,8 @@ function WinnerCard({ winner, onSelect, onGenerate, showGenerate = false }) {
       )}
       {(imgError || !winner.thumbnail_url) && (
         <div className="relative -mx-3.5 -mt-3.5 mb-1">
-          <div className="w-full aspect-video rounded-t-lg bg-white/[0.03] flex items-center justify-center">
-            <Film className="w-8 h-8 text-gray-600" />
+          <div className="w-full aspect-video rounded-t-lg bg-bg-elevated flex items-center justify-center">
+            <Film className="w-8 h-8 text-text-faint" />
           </div>
           {winner.video_url && (
             <div className="absolute inset-0 flex items-center justify-center">
@@ -88,7 +88,7 @@ function WinnerCard({ winner, onSelect, onGenerate, showGenerate = false }) {
 
       {/* Header: creative_id + readiness badge */}
       <div className="flex items-center justify-between gap-2">
-        <span className="text-sm font-bold text-gray-100">{winner.creative_id}</span>
+        <span className="text-sm font-bold text-text-primary">{winner.creative_id}</span>
         <span
           className={`shrink-0 px-2 py-0.5 rounded-full text-[10px] font-medium ${readiness.bg} ${readiness.text}`}
         >
@@ -98,7 +98,7 @@ function WinnerCard({ winner, onSelect, onGenerate, showGenerate = false }) {
 
       {/* Full naming convention */}
       {winner.ad_name && (
-        <p className="text-[10px] text-gray-500 leading-snug break-all font-mono">
+        <p className="text-[10px] text-text-faint leading-snug break-all font-mono">
           {winner.ad_name}
         </p>
       )}
@@ -111,7 +111,7 @@ function WinnerCard({ winner, onSelect, onGenerate, showGenerate = false }) {
           </span>
         )}
         {winner.format && (
-          <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-blue-500/20 text-blue-300">
+          <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-accent-muted text-accent-text">
             {winner.format}
           </span>
         )}
@@ -119,40 +119,40 @@ function WinnerCard({ winner, onSelect, onGenerate, showGenerate = false }) {
 
       {/* Metrics grid 2x2 */}
       <div className="grid grid-cols-2 gap-2">
-        <div className="flex items-center gap-1.5 bg-white/[0.03] rounded-md px-2 py-1.5">
-          <TrendingUp className="w-3 h-3 text-gray-500 shrink-0" />
+        <div className="flex items-center gap-1.5 bg-bg-elevated rounded-md px-2 py-1.5">
+          <TrendingUp className="w-3 h-3 text-text-faint shrink-0" />
           <div>
-            <p className="text-[9px] text-gray-500 uppercase tracking-wide">ROAS</p>
+            <p className="text-[9px] text-text-faint uppercase tracking-wide">ROAS</p>
             <p className={`text-xs font-semibold ${roasColor}`}>{fmtRoas(winner.roas)}</p>
           </div>
         </div>
-        <div className="flex items-center gap-1.5 bg-white/[0.03] rounded-md px-2 py-1.5">
-          <DollarSign className="w-3 h-3 text-gray-500 shrink-0" />
+        <div className="flex items-center gap-1.5 bg-bg-elevated rounded-md px-2 py-1.5">
+          <DollarSign className="w-3 h-3 text-text-faint shrink-0" />
           <div>
-            <p className="text-[9px] text-gray-500 uppercase tracking-wide">Spend</p>
-            <p className="text-xs font-semibold text-gray-200">{fmt$(winner.spend)}</p>
+            <p className="text-[9px] text-text-faint uppercase tracking-wide">Spend</p>
+            <p className="text-xs font-semibold text-text-primary">{fmt$(winner.spend)}</p>
           </div>
         </div>
-        <div className="flex items-center gap-1.5 bg-white/[0.03] rounded-md px-2 py-1.5">
-          <Target className="w-3 h-3 text-gray-500 shrink-0" />
+        <div className="flex items-center gap-1.5 bg-bg-elevated rounded-md px-2 py-1.5">
+          <Target className="w-3 h-3 text-text-faint shrink-0" />
           <div>
-            <p className="text-[9px] text-gray-500 uppercase tracking-wide">CPA</p>
-            <p className="text-xs font-semibold text-gray-200">{fmt$(winner.cpa)}</p>
+            <p className="text-[9px] text-text-faint uppercase tracking-wide">CPA</p>
+            <p className="text-xs font-semibold text-text-primary">{fmt$(winner.cpa)}</p>
           </div>
         </div>
-        <div className="flex items-center gap-1.5 bg-white/[0.03] rounded-md px-2 py-1.5">
-          <BarChart3 className="w-3 h-3 text-gray-500 shrink-0" />
+        <div className="flex items-center gap-1.5 bg-bg-elevated rounded-md px-2 py-1.5">
+          <BarChart3 className="w-3 h-3 text-text-faint shrink-0" />
           <div>
-            <p className="text-[9px] text-gray-500 uppercase tracking-wide">CTR</p>
-            <p className="text-xs font-semibold text-gray-200">{fmtPct(winner.ctr)}</p>
+            <p className="text-[9px] text-text-faint uppercase tracking-wide">CTR</p>
+            <p className="text-xs font-semibold text-text-primary">{fmtPct(winner.ctr)}</p>
           </div>
         </div>
       </div>
 
       {/* Iterations row */}
       <div className="flex items-center gap-1.5">
-        <Layers className="w-3 h-3 text-gray-500 shrink-0" />
-        <span className="text-[11px] text-gray-400">
+        <Layers className="w-3 h-3 text-text-faint shrink-0" />
+        <span className="text-[11px] text-text-muted">
           {winner.existing_iterations} iteration{winner.existing_iterations !== 1 ? 's' : ''}
         </span>
         {(() => {
@@ -160,7 +160,7 @@ function WinnerCard({ winner, onSelect, onGenerate, showGenerate = false }) {
             ? (() => { try { return JSON.parse(winner.iteration_codes); } catch { return []; } })()
             : winner.iteration_codes;
           return codes?.length > 0 ? (
-            <span className="text-[10px] text-gray-600 truncate">
+            <span className="text-[10px] text-text-faint truncate">
               {codes.join(', ')}
             </span>
           ) : null;
@@ -169,7 +169,7 @@ function WinnerCard({ winner, onSelect, onGenerate, showGenerate = false }) {
 
       {/* Winner reason tag */}
       <div>
-        <span className="inline-block px-2 py-0.5 rounded text-[10px] font-medium bg-white/[0.04] text-gray-500">
+        <span className="inline-block px-2 py-0.5 rounded text-[10px] font-medium bg-bg-elevated text-text-faint">
           {reasonLabel}
         </span>
       </div>

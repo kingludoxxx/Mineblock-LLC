@@ -170,6 +170,9 @@ router.post('/generate', authenticate, async (req, res) => {
     if (!reference_image_url) return res.status(400).json({ success: false, error: 'reference_image_url is required' });
     if (!product)             return res.status(400).json({ success: false, error: 'product is required' });
 
+    // ── Load custom prompt overrides ──────────────────────────────────
+    const customPrompts = await getCustomStaticsPrompts();
+
     // ── Step A: Resolve reference image to base64 ──────────────────────
     const { base64, mediaType, isUrl } = await resolveImage(reference_image_url);
 
@@ -180,7 +183,7 @@ router.post('/generate', authenticate, async (req, res) => {
       messages: [{
         role: 'user',
         content: [
-          { type: 'text', text: buildClaudePrompt(product, angle) },
+          { type: 'text', text: buildClaudePrompt(product, angle, customPrompts) },
           { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } },
         ],
       }],
@@ -269,53 +272,51 @@ router.post('/generate', authenticate, async (req, res) => {
       if (url) logoUrls.push(url);
     }
 
-    const nbPrompt = buildNanoBananaPrompt(claudeResult, swapPairs, product, logoUrls.length);
+    const nbPrompt = buildNanoBananaPrompt(claudeResult, swapPairs, product, logoUrls.length, customPrompts);
 
     // Send: product images, then logos, then reference ad (last)
     const imageUrls = [finalProductUrl, ...extraProductUrls, ...logoUrls, finalReferenceUrl];
 
-    const nbRes = await fetch(`${NB_BASE}/generate-2`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${NANOBANANA_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        prompt: nbPrompt,
-        model: 'nano-banana-2',
-        imageUrls,
-        aspectRatio: ratio || '4:5',
-        resolution: '1K',
-        outputFormat: 'png',
-      }),
-    });
+    const nbBodies = ['1:1', '9:16'].map(r => JSON.stringify({
+      prompt: nbPrompt,
+      model: 'nano-banana-2',
+      imageUrls: imageUrls,
+      aspectRatio: r,
+      resolution: '1K',
+      outputFormat: 'png',
+    }));
 
-    if (!nbRes.ok) {
-      const errText = await nbRes.text();
-      throw new Error(`NanoBanana submit error ${nbRes.status}: ${errText}`);
+    const [nbRes1, nbRes2] = await Promise.all(
+      nbBodies.map(body => fetch(`${NB_BASE}/generate-2`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${NANOBANANA_API_KEY}` },
+        body,
+      }))
+    );
+
+    const [nbData1, nbData2] = await Promise.all([nbRes1.json(), nbRes2.json()]);
+    const taskId1 = nbData1?.data?.taskId || nbData1?.taskId;
+    const taskId2 = nbData2?.data?.taskId || nbData2?.taskId;
+
+    if (!taskId1 && !taskId2) {
+      return res.status(500).json({ success: false, error: 'NanoBanana failed to return any task IDs' });
     }
 
-    const nbData = await nbRes.json();
-    const taskId = nbData.taskId || nbData.data?.taskId;
-    if (!taskId) {
-      console.error('[staticsGeneration] Unexpected NanoBanana response:', JSON.stringify(nbData).slice(0, 500));
-      throw new Error('No taskId returned from NanoBanana');
-    }
+    const tasks = [];
+    if (taskId1) tasks.push({ taskId: taskId1, ratio: '1:1' });
+    if (taskId2) tasks.push({ taskId: taskId2, ratio: '9:16' });
 
     // ── Step E: Return immediately — client polls /status/:taskId ──────
-    console.log(`[staticsGeneration] NanoBanana task submitted: ${taskId}`);
-    return res.json({
+    console.log(`[staticsGeneration] NanoBanana tasks submitted: ${tasks.map(t => `${t.ratio}=${t.taskId}`).join(', ')}`);
+    res.json({
       success: true,
       data: {
-        taskId,
-        reference_url: finalReferenceUrl,
-        adapted_text: claudeResult.adapted_text,
-        original_text: claudeResult.original_text,
-        swap_pairs: swapPairs,
-        people_count: claudeResult.people_count,
-        product_count: claudeResult.product_count,
-        visual_adaptations: claudeResult.visual_adaptations,
-        adapted_audience: claudeResult.adapted_audience,
+        taskId: taskId1 || taskId2,  // backward compat
+        tasks,
+        claudeAnalysis: claudeResult,
+        adaptedText: claudeResult.adapted_text || claudeResult.adaptedText,
+        swapPairs,
+        originalText: claudeResult.original_text || claudeResult.originalText,
       },
     });
   } catch (err) {
@@ -528,7 +529,8 @@ async function generateVariant(parent, newAspectRatio) {
     const claudeResult = Object.keys(claudeAnalysis).length > 0
       ? { ...claudeAnalysis, adapted_text: adaptedText }
       : { adapted_text: adaptedText };
-    const nbPrompt = buildNanoBananaPrompt(claudeResult, swapPairs, product);
+    const variantCustomPrompts = await getCustomStaticsPrompts();
+    const nbPrompt = buildNanoBananaPrompt(claudeResult, swapPairs, product, 0, variantCustomPrompts);
 
     // 5. Resolve all image URLs to absolute HTTP URLs (NanoBanana can't handle base64 or relative paths)
     const VARIANT_SERVER_URL = process.env.RENDER_EXTERNAL_URL || `http://localhost:${process.env.PORT || 3000}`;
@@ -753,7 +755,9 @@ router.post('/creatives', authenticate, async (req, res) => {
     const {
       product_id, product_name, angle, aspect_ratio, image_url,
       reference_template_id, reference_name, reference_thumbnail, adapted_text,
-      claude_analysis, swap_pairs, generation_prompt, status = 'review',
+      claude_analysis, swap_pairs, generation_prompt, generation_task_id,
+      source_label, pipeline, status = 'review',
+      group_id,
     } = req.body;
 
     if (!image_url) return res.status(400).json({ success: false, error: { message: 'image_url is required' } });
@@ -769,8 +773,9 @@ router.post('/creatives', authenticate, async (req, res) => {
       `INSERT INTO spy_creatives
         (product_id, product_name, angle, aspect_ratio, image_url,
          reference_image_id, source_label, reference_name, reference_thumbnail,
-         adapted_text, claude_analysis, swap_pairs, generation_prompt, status)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+         adapted_text, claude_analysis, swap_pairs, generation_prompt,
+         generation_task_id, pipeline, status, group_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
        RETURNING *`,
       [
         product_id || null,
@@ -779,14 +784,17 @@ router.post('/creatives', authenticate, async (req, res) => {
         aspect_ratio || '4:5',
         image_url,
         reference_template_id || null,
-        reference_template_id ? 'template' : 'upload',
+        source_label || (reference_template_id ? 'template' : 'upload'),
         reference_name || null,
         resolvedRefThumb,
         adapted_text ? JSON.stringify(adapted_text) : null,
         claude_analysis ? JSON.stringify(claude_analysis) : null,
         swap_pairs ? JSON.stringify(swap_pairs) : null,
         generation_prompt || null,
+        generation_task_id || null,
+        pipeline || 'standard',
         status,
+        group_id || null,
       ]
     );
     res.json({ success: true, data: rows[0] });

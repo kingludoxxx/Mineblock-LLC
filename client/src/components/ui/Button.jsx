@@ -3,13 +3,13 @@ import { Loader2 } from 'lucide-react';
 
 const variants = {
   primary:
-    'bg-accent text-white hover:bg-accent-hover focus:ring-accent/40',
+    'bg-accent text-bg-main font-semibold hover:bg-accent-hover shadow-[0_1px_12px_rgba(201,162,39,0.25)] hover:shadow-[0_1px_20px_rgba(201,162,39,0.35)] focus:ring-accent/40',
   secondary:
-    'bg-bg-elevated text-text-primary border border-border-default hover:bg-bg-hover focus:ring-white/10',
+    'bg-bg-elevated text-text-primary border border-border-default hover:bg-bg-hover hover:border-border-strong focus:ring-white/10',
   ghost:
     'bg-transparent text-text-muted hover:text-text-primary hover:bg-bg-hover focus:ring-white/10',
   danger:
-    'bg-danger text-white hover:bg-danger-hover focus:ring-danger/40',
+    'bg-danger/90 text-white hover:bg-danger shadow-[0_1px_8px_rgba(239,68,68,0.2)] focus:ring-danger/40',
 };
 
 const sizes = {

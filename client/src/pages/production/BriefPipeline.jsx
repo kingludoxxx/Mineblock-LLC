@@ -27,25 +27,25 @@ const PIPELINE_COLUMNS = [
     key: 'generated',
     label: 'Generated',
     icon: Sparkles,
-    badgeBg: 'bg-purple-500/20',
-    badgeText: 'text-purple-300',
-    headerBorder: 'border-purple-500/40',
+    badgeBg: 'bg-purple-500/15',
+    badgeText: 'text-purple-400/80',
+    headerBorder: 'border-purple-500/30',
   },
   {
     key: 'approved',
     label: 'Approved',
     icon: CheckCircle2,
-    badgeBg: 'bg-emerald-500/20',
-    badgeText: 'text-emerald-300',
-    headerBorder: 'border-emerald-500/40',
+    badgeBg: 'bg-emerald-500/15',
+    badgeText: 'text-emerald-400/80',
+    headerBorder: 'border-emerald-500/30',
   },
   {
     key: 'pushed',
     label: 'Pushed',
     icon: Rocket,
-    badgeBg: 'bg-cyan-500/20',
-    badgeText: 'text-cyan-300',
-    headerBorder: 'border-cyan-500/40',
+    badgeBg: 'bg-cyan-500/15',
+    badgeText: 'text-cyan-400/80',
+    headerBorder: 'border-cyan-500/30',
   },
 ];
 
@@ -295,18 +295,18 @@ export default function BriefPipeline() {
   const isLoading = loadingWinners || loadingGenerated;
 
   return (
-    <div className="flex flex-col min-h-screen bg-[#0a0a0a]">
+    <div className="flex flex-col min-h-screen bg-bg-main">
       {/* Header */}
-      <div className="flex items-center justify-between px-6 py-4 border-b border-white/[0.06]">
-        <h1 className="text-lg font-semibold text-gray-100">Brief Pipeline</h1>
+      <div className="flex items-center justify-between px-6 py-4 border-b border-border-subtle">
+        <h1 className="text-lg font-semibold text-text-primary">Brief Pipeline</h1>
         <div className="flex items-center gap-2">
           <button
             type="button"
             onClick={handleDetect}
             disabled={detecting}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-300
-                       bg-white/[0.04] border border-white/[0.06] rounded-md
-                       hover:bg-white/[0.08] transition-colors disabled:opacity-40 cursor-pointer"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-accent-text
+                       bg-accent/10 border border-accent/20 rounded-md
+                       hover:bg-accent/20 transition-colors disabled:opacity-40 cursor-pointer"
           >
             {detecting ? (
               <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -319,9 +319,9 @@ export default function BriefPipeline() {
             type="button"
             onClick={refreshAll}
             disabled={isLoading}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-300
-                       bg-white/[0.04] border border-white/[0.06] rounded-md
-                       hover:bg-white/[0.08] transition-colors disabled:opacity-40 cursor-pointer"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-text-muted
+                       bg-bg-elevated border border-border-default rounded-md
+                       hover:bg-bg-hover hover:text-text-primary transition-colors disabled:opacity-40 cursor-pointer"
           >
             {isLoading ? (
               <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -333,9 +333,9 @@ export default function BriefPipeline() {
           <button
             type="button"
             onClick={() => setSettingsOpen(true)}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-300
-                       bg-white/[0.04] border border-white/[0.06] rounded-md
-                       hover:bg-white/[0.08] transition-colors cursor-pointer"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-text-muted
+                       bg-bg-elevated border border-border-default rounded-md
+                       hover:bg-bg-hover hover:text-text-primary transition-colors cursor-pointer"
           >
             <Settings className="w-3.5 h-3.5" />
           </button>
@@ -345,12 +345,12 @@ export default function BriefPipeline() {
       {/* Main layout: Left sidebar (Script Generator + Winning Ads) | Right pipeline columns */}
       <div className="flex-1 flex overflow-hidden" style={{ minHeight: 'calc(100vh - 120px)' }}>
         {/* Left sidebar — Script Generator + Winning Ads stacked */}
-        <div className="w-[300px] shrink-0 border-r border-white/[0.06] flex flex-col overflow-y-auto px-4 py-4 custom-scrollbar">
+        <div className="w-[300px] shrink-0 border-r border-border-subtle flex flex-col overflow-y-auto px-4 py-4 custom-scrollbar">
           {/* Script Generator */}
           <div className="mb-4">
-            <div className="flex items-center gap-2 px-1 py-2 border-b-2 mb-3" style={{ borderColor: 'rgba(198, 168, 92, 0.4)' }}>
-              <Sparkles className="w-4 h-4" style={{ color: '#C6A85C' }} />
-              <span className="text-sm font-semibold" style={{ color: '#C6A85C' }}>Script Generator</span>
+            <div className="flex items-center gap-2 px-1 py-2 border-b-2 border-accent/40 mb-3">
+              <Sparkles className="w-4 h-4 text-accent" />
+              <span className="text-sm font-semibold text-accent">Script Generator</span>
             </div>
             <ScriptGeneratorPanel
               onGenerated={handleGenerateFromScript}
@@ -361,17 +361,17 @@ export default function BriefPipeline() {
 
           {/* Winning Ads — below the generator */}
           <div className="flex-1">
-            <div className="flex items-center gap-2 px-1 py-2 border-b-2 border-amber-500/40 mb-3">
-              <Trophy className="w-4 h-4 text-amber-400" />
-              <span className="text-sm font-semibold text-gray-200">Winning Ads</span>
-              <span className="ml-auto px-2 py-0.5 rounded-full text-[11px] font-medium bg-amber-500/20 text-amber-300">
+            <div className="flex items-center gap-2 px-1 py-2 border-b-2 border-accent/40 mb-3">
+              <Trophy className="w-4 h-4 text-accent" />
+              <span className="text-sm font-semibold text-accent">Winning Ads</span>
+              <span className="ml-auto px-2 py-0.5 rounded-full text-[11px] font-medium bg-accent/15 text-accent-text">
                 {buckets.detected.length}
               </span>
             </div>
             <div className="space-y-3 pb-4">
               {buckets.detected.length === 0 ? (
                 <div className="flex items-center justify-center h-24">
-                  <p className="text-xs text-gray-600">No winners detected</p>
+                  <p className="text-xs text-text-faint">No winners detected</p>
                 </div>
               ) : (
                 buckets.detected.map((item) => (
@@ -397,8 +397,8 @@ export default function BriefPipeline() {
                 <div key={col.key} className="flex flex-col min-w-[260px] max-w-[360px] flex-1">
                   {/* Column header */}
                   <div className={`flex items-center gap-2 px-3 py-2.5 border-b-2 ${col.headerBorder} mb-3`}>
-                    <Icon className="w-4 h-4 text-gray-400" />
-                    <span className="text-sm font-semibold text-gray-200">{col.label}</span>
+                    <Icon className="w-4 h-4 text-text-muted" />
+                    <span className="text-sm font-semibold text-text-primary">{col.label}</span>
                     <span className={`ml-auto px-2 py-0.5 rounded-full text-[11px] font-medium ${col.badgeBg} ${col.badgeText}`}>
                       {items.length}
                     </span>
@@ -408,7 +408,7 @@ export default function BriefPipeline() {
                   <div className="flex-1 overflow-y-auto pr-1 space-y-3 pb-4 custom-scrollbar">
                     {items.length === 0 ? (
                       <div className="flex items-center justify-center h-32">
-                        <p className="text-xs text-gray-600">No items</p>
+                        <p className="text-xs text-text-faint">No items</p>
                       </div>
                     ) : (
                       items.map((item) => {
@@ -441,10 +441,10 @@ export default function BriefPipeline() {
                           return (
                             <div
                               key={item.id}
-                              className="bg-[#0a0a0a] border border-white/[0.06] rounded-lg p-3 space-y-2
-                                         hover:border-white/[0.12] hover:shadow-lg hover:shadow-black/20 transition-all duration-150"
+                              className="bg-bg-main border border-border-default rounded-lg p-3 space-y-2
+                                         hover:border-border-strong hover:shadow-lg hover:shadow-black/20 transition-all duration-150"
                             >
-                              <p className="text-sm font-medium text-gray-100 truncate">
+                              <p className="text-sm font-medium text-text-primary truncate">
                                 {item.naming_convention || 'Brief'}
                               </p>
                               {item.clickup_task_url && (
@@ -452,14 +452,14 @@ export default function BriefPipeline() {
                                   href={item.clickup_task_url}
                                   target="_blank"
                                   rel="noopener noreferrer"
-                                  className="flex items-center gap-1 text-[11px] text-cyan-400 hover:text-cyan-300 transition-colors"
+                                  className="flex items-center gap-1 text-[11px] text-accent-text hover:text-accent transition-colors"
                                 >
                                   <ExternalLink className="w-3 h-3" />
                                   ClickUp Task
                                 </a>
                               )}
                               {item.pushed_at && (
-                                <p className="text-[10px] text-gray-500">
+                                <p className="text-[10px] text-text-faint">
                                   Pushed {new Date(item.pushed_at).toLocaleDateString()}
                                 </p>
                               )}
@@ -480,7 +480,7 @@ export default function BriefPipeline() {
 
       {/* Error toast */}
       {error && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-red-950 border border-red-500/30 rounded-lg px-4 py-3 shadow-xl flex items-center gap-3 z-50 max-w-md">
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-red-950/90 border border-red-500/20 rounded-lg px-4 py-3 shadow-xl flex items-center gap-3 z-50 max-w-md">
           <p className="text-xs text-red-200 flex-1">{error}</p>
           <button type="button" onClick={() => setError(null)} className="text-red-400 hover:text-red-200 text-xs font-medium shrink-0 cursor-pointer">
             Dismiss
@@ -490,11 +490,11 @@ export default function BriefPipeline() {
 
       {/* Generating overlay indicator */}
       {generating && (
-        <div className="fixed bottom-6 right-6 bg-[#141414] border border-white/[0.08] rounded-lg px-4 py-3 shadow-xl flex items-center gap-3 z-40">
-          <Loader2 className="w-4 h-4 animate-spin text-purple-400" />
+        <div className="fixed bottom-6 right-6 bg-bg-card border border-border-default rounded-lg px-4 py-3 shadow-xl flex items-center gap-3 z-40">
+          <Loader2 className="w-4 h-4 animate-spin text-accent" />
           <div>
-            <p className="text-xs font-medium text-gray-200">Generating briefs...</p>
-            <p className="text-[10px] text-gray-500">{generatingStep}</p>
+            <p className="text-xs font-medium text-text-primary">Generating briefs...</p>
+            <p className="text-[10px] text-text-muted">{generatingStep}</p>
           </div>
         </div>
       )}

@@ -121,7 +121,7 @@ export default function Topbar() {
         </Link>
         <div className="h-5 w-px bg-border-default" />
         <div className="flex items-center gap-2.5">
-          <div className="w-7 h-7 rounded-full bg-accent flex items-center justify-center text-xs font-medium text-white">
+          <div className="w-7 h-7 rounded-full bg-accent flex items-center justify-center text-xs font-medium text-bg-main">
             {initials}
           </div>
           <div className="hidden sm:flex flex-col">

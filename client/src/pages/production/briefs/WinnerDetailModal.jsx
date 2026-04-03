@@ -7,7 +7,7 @@ import { X, Play, Film, Loader2, Sparkles } from 'lucide-react';
 
 function SectionLabel({ children }) {
   return (
-    <h4 className="text-[10px] uppercase tracking-widest text-slate-500 font-semibold mb-2">
+    <h4 className="text-[10px] uppercase tracking-widest text-accent-text font-semibold mb-2">
       {children}
     </h4>
   );
@@ -15,9 +15,9 @@ function SectionLabel({ children }) {
 
 function MetricCell({ label, value }) {
   return (
-    <div className="flex flex-col items-center gap-0.5 py-3 px-2 rounded-lg bg-white/[0.03] border border-white/[0.06]">
-      <span className="text-lg font-bold text-white leading-none">{value ?? '—'}</span>
-      <span className="text-[10px] text-slate-500 uppercase tracking-wider">{label}</span>
+    <div className="flex flex-col items-center gap-0.5 py-3 px-2 rounded-lg bg-bg-elevated border border-border-subtle">
+      <span className="text-lg font-bold text-text-primary leading-none">{value ?? '—'}</span>
+      <span className="text-[10px] text-text-faint uppercase tracking-wider">{label}</span>
     </div>
   );
 }
@@ -25,8 +25,8 @@ function MetricCell({ label, value }) {
 function InfoPill({ label, value }) {
   if (value == null || value === '') return null;
   return (
-    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-full bg-white/[0.04] border border-white/[0.08] text-slate-300">
-      <span className="text-slate-500">{label}:</span>
+    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-full bg-bg-elevated border border-border-default text-text-muted">
+      <span className="text-text-faint">{label}:</span>
       <span className="font-medium">{value}</span>
     </span>
   );
@@ -35,18 +35,18 @@ function InfoPill({ label, value }) {
 function HookCard({ hook, index }) {
   const label = `H${index + 1}`;
   return (
-    <div className="p-3 bg-white/[0.03] border border-white/[0.06] rounded-lg space-y-1.5">
+    <div className="p-3 bg-bg-main border border-border-subtle rounded-lg space-y-1.5">
       <div className="flex items-center gap-2">
-        <span className="text-[10px] font-bold uppercase tracking-wider text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded">
+        <span className="text-[10px] font-bold uppercase tracking-wider text-accent bg-accent/10 px-2 py-0.5 rounded">
           {label}
         </span>
         {hook.mechanism && (
-          <span className="text-[10px] text-slate-500 bg-white/[0.04] px-2 py-0.5 rounded">
+          <span className="text-[10px] text-text-faint bg-bg-elevated px-2 py-0.5 rounded">
             {hook.mechanism}
           </span>
         )}
       </div>
-      <p className="text-sm text-slate-300 leading-relaxed">{hook.text}</p>
+      <p className="text-sm text-text-muted leading-relaxed">{hook.text}</p>
     </div>
   );
 }
@@ -123,8 +123,8 @@ function VideoPreview({ videoUrl, thumbnailUrl }) {
     if (showFallback) return (
       <div>
         <SectionLabel>Preview</SectionLabel>
-        <div className="w-full aspect-video rounded-lg border border-white/[0.06] bg-white/[0.03] flex items-center justify-center">
-          <Film className="w-12 h-12 text-gray-600" />
+        <div className="w-full aspect-video rounded-lg border border-border-subtle bg-bg-main flex items-center justify-center">
+          <Film className="w-12 h-12 text-text-faint" />
         </div>
       </div>
     );
@@ -134,7 +134,7 @@ function VideoPreview({ videoUrl, thumbnailUrl }) {
         <img
           src={thumbnailUrl}
           alt="Winner thumbnail"
-          className="w-full max-w-full rounded-lg border border-white/[0.06]"
+          className="w-full max-w-full rounded-lg border border-border-subtle"
           onError={() => setThumbError(true)}
         />
       </div>
@@ -151,7 +151,7 @@ function VideoPreview({ videoUrl, thumbnailUrl }) {
           controls
           autoPlay
           onError={() => setVideoError(true)}
-          className="w-full max-w-full rounded-lg border border-white/[0.06]"
+          className="w-full max-w-full rounded-lg border border-border-subtle"
         />
       ) : (
         <div
@@ -162,12 +162,12 @@ function VideoPreview({ videoUrl, thumbnailUrl }) {
             <img
               src={thumbnailUrl}
               alt="Click to play"
-              className="w-full max-w-full rounded-lg border border-white/[0.06]"
+              className="w-full max-w-full rounded-lg border border-border-subtle"
               onError={() => setThumbError(true)}
             />
           ) : (
-            <div className="w-full aspect-video rounded-lg border border-white/[0.06] bg-white/[0.03] flex items-center justify-center">
-              <Film className="w-12 h-12 text-gray-600" />
+            <div className="w-full aspect-video rounded-lg border border-border-subtle bg-bg-main flex items-center justify-center">
+              <Film className="w-12 h-12 text-text-faint" />
             </div>
           )}
           <div className="absolute inset-0 flex items-center justify-center">
@@ -215,8 +215,8 @@ function PillGroup({ options, value, onChange }) {
             onClick={() => onChange(val)}
             className={`px-2.5 py-1 text-[11px] font-medium rounded-full border transition-colors cursor-pointer ${
               active
-                ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-300'
-                : 'bg-white/[0.03] border-white/[0.08] text-slate-400 hover:bg-white/[0.06]'
+                ? 'bg-accent-muted border-accent/40 text-accent-text'
+                : 'bg-bg-main border-border-default text-text-muted hover:bg-bg-hover'
             }`}
           >
             {label}
@@ -247,20 +247,20 @@ export default function WinnerDetailModal({ winner, isOpen, onClose, onGenerate,
   return (
     <div className="fixed inset-0 z-50 flex justify-end">
       {/* Backdrop */}
-      <div className="absolute inset-0 bg-black/60" onClick={onClose} />
+      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
 
       {/* Slide-over panel */}
       <div
-        className="relative w-[560px] h-full bg-[#0a0a0a] border-l border-white/[0.08] flex flex-col"
+        className="relative w-[560px] h-full bg-bg-card border-l border-border-default flex flex-col"
         style={{ animation: 'slideInRight 0.25s ease-out' }}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-white/[0.06] shrink-0">
-          <h2 className="text-sm font-semibold text-white tracking-wide">Winner Detail</h2>
+        <div className="flex items-center justify-between px-6 py-4 border-b border-border-default shrink-0">
+          <h2 className="text-sm font-semibold text-text-primary tracking-wide">Winner Detail</h2>
           <button
             type="button"
             onClick={onClose}
-            className="p-1.5 rounded-lg text-slate-500 hover:text-white hover:bg-white/[0.06] transition-colors cursor-pointer"
+            className="p-1.5 rounded-lg text-text-faint hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer"
           >
             <X className="w-4 h-4" />
           </button>
@@ -272,7 +272,7 @@ export default function WinnerDetailModal({ winner, isOpen, onClose, onGenerate,
           {winner.ad_name && (
             <div>
               <SectionLabel>Ad Name</SectionLabel>
-              <p className="text-xs font-mono text-slate-400 bg-white/[0.03] border border-white/[0.06] rounded-lg px-3 py-2 break-all">
+              <p className="text-xs font-mono text-text-muted bg-bg-main border border-border-subtle rounded-lg px-3 py-2 break-all">
                 {winner.ad_name}
               </p>
             </div>
@@ -320,10 +320,10 @@ export default function WinnerDetailModal({ winner, isOpen, onClose, onGenerate,
           {(winner.existing_iterations != null || iterationCodes.length > 0) && (
             <div>
               <SectionLabel>Iterations</SectionLabel>
-              <div className="p-3 bg-white/[0.03] border border-white/[0.06] rounded-lg space-y-2">
+              <div className="p-3 bg-bg-main border border-border-subtle rounded-lg space-y-2">
                 {winner.existing_iterations != null && (
-                  <p className="text-sm text-slate-300">
-                    <span className="text-slate-500">Existing iterations:</span>{' '}
+                  <p className="text-sm text-text-muted">
+                    <span className="text-text-faint">Existing iterations:</span>{' '}
                     <span className="font-semibold text-white">{winner.existing_iterations}</span>
                   </p>
                 )}
@@ -332,7 +332,7 @@ export default function WinnerDetailModal({ winner, isOpen, onClose, onGenerate,
                     {iterationCodes.map((code, i) => (
                       <span
                         key={i}
-                        className="px-2 py-0.5 text-[11px] font-mono rounded bg-white/[0.06] border border-white/[0.08] text-slate-400"
+                        className="px-2 py-0.5 text-[11px] font-mono rounded bg-bg-elevated border border-border-default text-text-muted"
                       >
                         {code}
                       </span>
@@ -357,16 +357,16 @@ export default function WinnerDetailModal({ winner, isOpen, onClose, onGenerate,
                     </div>
                   )}
                   {script.body && (
-                    <div className="max-h-80 overflow-y-auto p-4 bg-white/[0.03] border border-white/[0.06] rounded-lg">
-                      <p className="text-sm text-slate-300 leading-relaxed whitespace-pre-line">
+                    <div className="max-h-80 overflow-y-auto p-4 bg-bg-main border border-border-subtle rounded-lg">
+                      <p className="text-sm text-text-muted leading-relaxed whitespace-pre-line">
                         {script.body}
                       </p>
                     </div>
                   )}
                 </div>
               ) : (
-                <div className="max-h-80 overflow-y-auto p-4 bg-white/[0.03] border border-white/[0.06] rounded-lg">
-                  <pre className="text-sm text-slate-300 leading-relaxed whitespace-pre-wrap font-mono">
+                <div className="max-h-80 overflow-y-auto p-4 bg-bg-main border border-border-subtle rounded-lg">
+                  <pre className="text-sm text-text-muted leading-relaxed whitespace-pre-wrap font-mono">
                     {script.content}
                   </pre>
                 </div>
@@ -378,22 +378,22 @@ export default function WinnerDetailModal({ winner, isOpen, onClose, onGenerate,
           <div className="space-y-3">
             <SectionLabel>Iteration Config</SectionLabel>
             <div className="space-y-2">
-              <span className="text-[11px] text-slate-500">Mode</span>
+              <span className="text-[11px] text-text-faint">Mode</span>
               <PillGroup options={ITER_MODES} value={iterMode} onChange={setIterMode} />
             </div>
             <div className="space-y-2">
-              <span className="text-[11px] text-slate-500">Aggressiveness</span>
+              <span className="text-[11px] text-text-faint">Aggressiveness</span>
               <PillGroup options={AGGRESSIVENESS} value={aggressiveness} onChange={setAggressiveness} />
             </div>
             <div className="space-y-2">
-              <span className="text-[11px] text-slate-500">Variations</span>
+              <span className="text-[11px] text-text-faint">Variations</span>
               <PillGroup options={VARIATION_COUNTS} value={numVariations} onChange={setNumVariations} />
             </div>
           </div>
         </div>
 
         {/* Footer */}
-        <div className="px-6 py-4 border-t border-white/[0.06] shrink-0">
+        <div className="px-6 py-4 border-t border-border-default shrink-0">
           <button
             type="button"
             onClick={() => onGenerate?.(winner.id, {
@@ -402,7 +402,7 @@ export default function WinnerDetailModal({ winner, isOpen, onClose, onGenerate,
               num_variations: numVariations,
             })}
             disabled={generating}
-            className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-emerald-600 text-sm font-medium text-white hover:bg-emerald-500 transition-colors cursor-pointer disabled:opacity-40"
+            className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-accent text-sm font-semibold text-bg-main hover:bg-accent-hover shadow-[0_1px_12px_rgba(201,162,39,0.25)] transition-colors cursor-pointer disabled:opacity-40"
           >
             {generating ? (
               <>

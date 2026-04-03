@@ -61,8 +61,8 @@ export default function ProductSelector({ selectedId, onSelect, onLoad, classNam
         <div className="flex items-center gap-2.5 min-w-0">
           {selected ? (
             <>
-              {selected.product_images?.[0] ? (
-                <img src={selected.product_images[0]} alt="" className="w-6 h-6 rounded object-cover shrink-0" />
+              {(selected.product_images?.[0] || selected.first_image) ? (
+                <img src={selected.product_images?.[0] || selected.first_image} alt="" className="w-6 h-6 rounded object-cover shrink-0" />
               ) : (
                 <Package className="w-4 h-4 shrink-0 text-white/40" />
               )}
@@ -124,8 +124,8 @@ export default function ProductSelector({ selectedId, onSelect, onLoad, classNam
                       }`}
                     >
                       <div className="flex items-center gap-2.5 min-w-0">
-                        {product.product_images?.[0] ? (
-                          <img src={product.product_images[0]} alt="" className="w-6 h-6 rounded object-cover shrink-0" />
+                        {(product.product_images?.[0] || product.first_image) ? (
+                          <img src={product.product_images?.[0] || product.first_image} alt="" className="w-6 h-6 rounded object-cover shrink-0" />
                         ) : (
                           <Package className="w-4 h-4 shrink-0 text-white/20" />
                         )}

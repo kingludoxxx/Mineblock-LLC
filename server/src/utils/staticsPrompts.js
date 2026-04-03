@@ -8,8 +8,9 @@ function stripUsb(text) {
     .trim();
 }
 
-export function buildClaudePrompt(product, angle) {
+export function buildClaudePrompt(product, angle, customOverrides = null) {
   const profile = product.profile || {};
+  const co = customOverrides?.claudeAnalysis || {};
   return `You are an elite ad creative analyst and direct-response copywriter. Your job is to deconstruct a reference ad image and adapt it for a completely different product — potentially from a different niche entirely.
 
 THE CORE CONCEPT: You are copying the PROVEN COPYWRITING FORMULA and GRAPHIC STYLE of the reference ad, NOT the niche. The reference might be a supplement ad, a skincare ad, a fitness ad — it doesn't matter. You extract the visual style, layout structure, and copywriting formula, then rewrite everything for the target product below.
@@ -42,7 +43,7 @@ ${profile.offerDetails ? `- Offer Rules: ${profile.offerDetails}` : ''}
 ${profile.complianceRestrictions ? `- COMPLIANCE (NEVER claim): ${profile.complianceRestrictions}` : ''}
 ${angle ? `\n- MARKETING ANGLE FOR THIS AD: ${angle}` : ''}
 
-PRODUCT IDENTITY: The product is a MINI BITCOIN MINER — a small, compact electronic device with a color display screen showing mining hashrate data. It is NOT a USB stick, flash drive, or thumb drive. The screen displays mining statistics (hashrate numbers like 995.4 KH/s) — do NOT put logos, brand names, or text overlays on the device screen.
+${co.productIdentity || `PRODUCT IDENTITY: The product is a MINI BITCOIN MINER — a small, compact electronic device with a color display screen showing mining hashrate data. It is NOT a USB stick, flash drive, or thumb drive. The screen displays mining statistics (hashrate numbers like 995.4 KH/s) — do NOT put logos, brand names, or text overlays on the device screen.`}
 
 ═══════════════════════════════════════════════════════════════
 INSTRUCTIONS — Analyze the reference ad image in 5 layers
@@ -95,7 +96,7 @@ Identify every visual element:
 
 THIS IS THE MOST IMPORTANT STEP. You must adapt every text element for the product above while PRESERVING THE EXACT COPYWRITING FORMULA.
 
-⚠️ FORMULA PRESERVATION RULES (CRITICAL):
+${co.formulaPreservation || `⚠️ FORMULA PRESERVATION RULES (CRITICAL):
 The adapted text must follow the EXACT SAME sentence structure, opening words, and approximate character count as the original. You are copying the PROVEN FORMULA, just swapping the subject matter.
 
 Examples of correct formula preservation:
@@ -108,37 +109,39 @@ Examples of correct formula preservation:
 
 Examples of WRONG adaptation (breaks the formula):
 - "Bye Bye, Beer Belly" → "Mine Bitcoin From Home" ❌ (completely different structure)
-- "Kill The Bloated Belly" → "Start Mining Bitcoin Today" ❌ (different sentence pattern)
+- "Kill The Bloated Belly" → "Start Mining Bitcoin Today" ❌ (different sentence pattern)`}
 
 ⚠️ CROSS-NICHE ADAPTATION:
-The reference ad may be from ANY niche (supplements, skincare, fitness, finance, etc.). Your job is to:
+${co.crossNicheAdaptation || `The reference ad may be from ANY niche (supplements, skincare, fitness, finance, etc.). Your job is to:
 1. Understand the EMOTIONAL TRIGGER the original copy uses (fear, greed, curiosity, social proof, urgency)
 2. Apply the SAME emotional trigger to the bitcoin mining product
 3. Keep the SAME sentence structure but swap the subject/benefit/problem
-4. Make every claim specific to bitcoin mining, passive income, or the product's actual benefits
+4. Make every claim specific to bitcoin mining, passive income, or the product's actual benefits`}
 
 ⚠️ HEADLINE RULES:
-- Make BOLD, specific claims with concrete numbers (e.g. "$59 Device", "$127/Month", "24/7")
+${co.headlineRules || `- Make BOLD, specific claims with concrete numbers (e.g. "$59 Device", "$127/Month", "24/7")
 - Use the SAME emotional trigger as the original headline
 - Match the approximate CHARACTER COUNT of the original (critical for layout fit)
 - Sound like a native ad / advertorial — scroll-stopping, provocative
-- NEVER use generic phrases like "works at home", "easy to use", "get started today"
+- NEVER use generic phrases like "works at home", "easy to use", "get started today"`}
+
+${co.headlineExamples || ''}
 
 ⚠️ PRICING RULES:
-- Base price: $59.99 for 1 unit
+${co.pricingRules || `- Base price: $59.99 for 1 unit
 - Bundle: 2 units = $55 each ($109.99), 3+1 free = $45 each ($179.99), 6+2 free = $40 each ($320)
 - Max discount: 58% — NEVER exceed this
 - Only discount code: MINER10 (extra 10% off)
-- NEVER invent prices. When in doubt: "Starting at $59.99" or "Up to 40% OFF"
+- NEVER invent prices. When in doubt: "Starting at $59.99" or "Up to 40% OFF"`}
 
 ⚠️ VISUAL ADAPTATION DIRECTION:
-For each visual element, specify what it should become for the bitcoin mining product:
+${co.crossNicheAdaptation || `For each visual element, specify what it should become for the bitcoin mining product:
 - Supplement bottles → Miner Forge Pro device(s)
 - Skincare before/after → Mining earnings screenshots or device setup progression
 - Fitness transformations → Passive income growth charts
 - Food/ingredient callouts → Device feature callouts (hashrate, low power, silent operation)
 - Body part close-ups → Device screen close-ups showing mining stats
-- Kitchen/bathroom scenes → Desk/home office/nightstand scenes
+- Kitchen/bathroom scenes → Desk/home office/nightstand scenes`}
 
 Mark each visual adaptation as:
 - "generic" = works for any product (backgrounds, abstract elements) → keep as-is
@@ -217,7 +220,8 @@ Return ONLY valid JSON (no markdown, no code fences):
 }`;
 }
 
-export function buildNanoBananaPrompt(claudeResult, swapPairs, product, logoCount = 0) {
+export function buildNanoBananaPrompt(claudeResult, swapPairs, product, logoCount = 0, customOverrides = null) {
+  const nb = customOverrides?.nanoBanana || {};
   const {
     layout, brand_elements, visual_elements, adapted_visual_direction,
     people_count, product_count, adapted_audience, character_adaptation, visual_adaptations
@@ -265,23 +269,23 @@ ${layout.has_rounded_corners ? '- Keep rounded corners on sections' : ''}
   return `Generate a new ad creative based on the reference ad (LAST image). The first image(s) show the product from multiple angles — reproduce the product EXACTLY as shown in those photos.${logoNote}
 ${layoutSection}
 
-PRODUCT REPLACEMENT:
+${nb.productRules || `PRODUCT REPLACEMENT:
 - Remove ALL competitor branding, logos, product imagery — zero trace remaining
 - Replace with the product shown in the first images (${product.name}). Multiple angles may be provided — use them to reproduce the product with perfect accuracy.
 - Show exactly ${pCount2} product(s) in the output
 - Product placement: ${visualDir.product_placement || 'same position as reference product'}
 - CRITICAL: The product is a MINI BITCOIN MINER — a compact electronic device with a color display screen showing mining hashrate data. It is NOT a USB stick, flash drive, or thumb drive. Reproduce it EXACTLY as shown in the product photos. Do NOT add logos or brand names onto the device screen — the screen shows mining statistics only.
-- Match realistic lighting, shadows, and perspective to the reference style
+- Match realistic lighting, shadows, and perspective to the reference style`}
 
 TEXT REPLACEMENTS (${swapPairs.length} swaps — apply ALL):
 ${swapSection || '  (No text changes)'}
 
-TEXT RENDERING RULES:
+${nb.textRules || `TEXT RENDERING RULES:
 - Font style, weight, size, color, and position must EXACTLY match reference for each text element
 - Do NOT add extra text blocks. Do NOT remove text that isn't in the swap list.
 - Text must be sharp, legible, and correctly spelled — NO blurry, warped, or AI-looking text
 - Headlines must be rendered in BOLD, high-contrast, professional typography — as crisp as a real paid ad
-- CRITICAL: Every letter must be pixel-perfect and readable. Distorted text = failure.
+- CRITICAL: Every letter must be pixel-perfect and readable. Distorted text = failure.`}
 ${illustrationSection}
 ${comparisonSection}
 
@@ -291,7 +295,7 @@ VISUAL ADAPTATIONS:
 ${legacyVisuals || '  (Match reference style — keep backgrounds, icons, decorative elements as-is)'}
 ${visualDir.background_changes ? `- Background: ${visualDir.background_changes}` : '- Keep exact same background color/gradient/texture'}
 
-ABSOLUTE RULES:
+${nb.absoluteRules || `ABSOLUTE RULES:
 1. EXACT same layout structure as reference — same columns, same sections, same proportions
 2. ZERO competitor branding remaining (logos, names, product images)
 3. Every text swap must be applied — check all ${swapPairs.length} replacements
@@ -303,7 +307,7 @@ ABSOLUTE RULES:
 9. Match reference style, color palette, mood, and visual quality exactly
 10. Brand logo: ${logoCount > 0 ? 'Use the PROVIDED logo image (not invented text). Place it where the competitor logo was.' : `Use "${product.name}" text as logo in same position as competitor logo.`}
 11. PRICES MUST MATCH the text swap list EXACTLY — do not invent or modify any price, discount percentage, or dollar amount
-12. Product photos take highest priority — reproduce the device with pixel-perfect fidelity`;
+12. Product photos take highest priority — reproduce the device with pixel-perfect fidelity`}`;
 }
 
 export function buildSwapPairs(originalText, adaptedText) {

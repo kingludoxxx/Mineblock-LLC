@@ -575,7 +575,7 @@ ${pageContent}`
 
     // Handle benefits array
     if (Array.isArray(extracted.benefits) && extracted.benefits.length > 0) {
-      setClauses.push(`benefits = $${idx}`);
+      setClauses.push(`benefits = $${idx}::jsonb`);
       values.push(JSON.stringify(extracted.benefits));
       idx++;
     }
@@ -597,7 +597,7 @@ ${pageContent}`
       return res.status(404).json({ success: false, error: { message: 'Profile not found' } });
     }
 
-    return res.json({ success: true, data: rows[0], extracted });
+    return res.json({ success: true, data: parseRow(rows[0]), extracted });
   } catch (err) {
     console.error('POST /product-profiles/:id/ai-fill error:', err);
     return res.status(500).json({ success: false, error: { message: err.message } });

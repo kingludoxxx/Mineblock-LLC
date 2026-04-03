@@ -27,17 +27,17 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
+    <div className="min-h-screen bg-bg-main flex items-center justify-center p-4">
       <div className="w-full max-w-md">
         <div className="text-center mb-8">
-          <h1 className="text-3xl font-bold text-white">Mineblock LLC</h1>
-          <p className="text-slate-400 mt-2">Admin Dashboard</p>
+          <h1 className="text-3xl font-bold text-text-primary">Mineblock LLC</h1>
+          <p className="text-text-muted mt-2">Admin Dashboard</p>
         </div>
         <form
           onSubmit={handleSubmit}
-          className="bg-slate-800 rounded-xl p-8 border border-slate-700 shadow-2xl"
+          className="bg-bg-card rounded-xl p-8 border border-border-default shadow-2xl"
         >
-          <h2 className="text-xl font-semibold text-white mb-6">Sign In</h2>
+          <h2 className="text-xl font-semibold text-text-primary mb-6">Sign In</h2>
           {error && (
             <div className="mb-4 p-3 rounded-lg bg-red-600/20 border border-red-600/30 text-red-400 text-sm">
               {error}
@@ -45,30 +45,30 @@ export default function LoginPage() {
           )}
           <div className="space-y-4">
             <div>
-              <label className="block text-sm font-medium text-slate-300 mb-1.5">Email</label>
+              <label className="block text-sm font-medium text-text-muted mb-1.5">Email</label>
               <div className="relative">
-                <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+                <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-faint" />
                 <input
                   type="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  className="w-full pl-10 pr-4 py-2.5 bg-slate-900 border border-slate-600 rounded-lg
-                    text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                  className="w-full pl-10 pr-4 py-2.5 bg-bg-elevated border border-border-default rounded-lg
+                    text-text-primary placeholder:text-text-faint focus:outline-none focus:border-accent/50 focus:ring-1 focus:ring-accent/25"
                   placeholder="you@mineblock.com"
                   required
                 />
               </div>
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-300 mb-1.5">Password</label>
+              <label className="block text-sm font-medium text-text-muted mb-1.5">Password</label>
               <div className="relative">
-                <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+                <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-faint" />
                 <input
                   type="password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  className="w-full pl-10 pr-4 py-2.5 bg-slate-900 border border-slate-600 rounded-lg
-                    text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                  className="w-full pl-10 pr-4 py-2.5 bg-bg-elevated border border-border-default rounded-lg
+                    text-text-primary placeholder:text-text-faint focus:outline-none focus:border-accent/50 focus:ring-1 focus:ring-accent/25"
                   placeholder="Enter your password"
                   required
                 />

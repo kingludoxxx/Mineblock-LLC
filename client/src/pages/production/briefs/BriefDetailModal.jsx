@@ -33,7 +33,7 @@ const SCORE_CONFIG = {
 
 function SectionLabel({ children }) {
   return (
-    <h4 className="text-[10px] uppercase tracking-widest text-slate-500 font-semibold mb-2">
+    <h4 className="text-[10px] uppercase tracking-widest text-accent-text font-semibold mb-2">
       {children}
     </h4>
   );
@@ -55,18 +55,18 @@ function ScoreCard({ scoreKey, value }) {
 function HookCard({ hook, index }) {
   const label = `H${index + 1}`;
   return (
-    <div className="p-3 bg-white/[0.03] border border-white/[0.06] rounded-lg space-y-1.5">
+    <div className="p-3 bg-bg-main border border-border-subtle rounded-lg space-y-1.5">
       <div className="flex items-center gap-2">
-        <span className="text-[10px] font-bold uppercase tracking-wider text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded">
+        <span className="text-[10px] font-bold uppercase tracking-wider text-accent bg-accent/10 px-2 py-0.5 rounded">
           {label}
         </span>
         {hook.mechanism && (
-          <span className="text-[10px] text-slate-500 bg-white/[0.04] px-2 py-0.5 rounded">
+          <span className="text-[10px] text-text-faint bg-bg-elevated px-2 py-0.5 rounded">
             {hook.mechanism}
           </span>
         )}
       </div>
-      <p className="text-sm text-slate-300 leading-relaxed">{hook.text}</p>
+      <p className="text-sm text-text-muted leading-relaxed">{hook.text}</p>
     </div>
   );
 }
@@ -169,22 +169,22 @@ export default function BriefDetailModal({
   return (
     <div className="fixed inset-0 z-50 flex justify-end">
       {/* Backdrop */}
-      <div className="absolute inset-0 bg-black/60" onClick={onClose} />
+      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
 
       {/* Slide-over panel */}
       <div
-        className="relative w-[560px] h-full bg-[#0a0a0a] border-l border-white/[0.08] flex flex-col"
+        className="relative w-[560px] h-full bg-bg-card border-l border-border-default flex flex-col"
         style={{ animation: 'slideInRight 0.25s ease-out' }}
       >
         {/* --------------------------------------------------------------- */}
         {/* Header */}
         {/* --------------------------------------------------------------- */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-white/[0.06] shrink-0">
-          <h2 className="text-sm font-semibold text-white tracking-wide">Brief Detail</h2>
+        <div className="flex items-center justify-between px-6 py-4 border-b border-border-default shrink-0">
+          <h2 className="text-sm font-semibold text-text-primary tracking-wide">Brief Detail</h2>
           <button
             type="button"
             onClick={onClose}
-            className="p-1.5 rounded-lg text-slate-500 hover:text-white hover:bg-white/[0.06] transition-colors cursor-pointer"
+            className="p-1.5 rounded-lg text-text-faint hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer"
           >
             <X className="w-4 h-4" />
           </button>
@@ -198,7 +198,7 @@ export default function BriefDetailModal({
           {brief.naming_convention && (
             <div>
               <SectionLabel>Naming Convention</SectionLabel>
-              <p className="text-xs font-mono text-slate-400 bg-white/[0.03] border border-white/[0.06] rounded-lg px-3 py-2 break-all">
+              <p className="text-xs font-mono text-text-muted bg-bg-main border border-border-subtle rounded-lg px-3 py-2 break-all">
                 {brief.naming_convention}
               </p>
             </div>
@@ -208,15 +208,15 @@ export default function BriefDetailModal({
           {(originalHooks.length > 0 || originalBody) && (
             <div>
               <SectionLabel>Original Script</SectionLabel>
-              <div className="p-3 bg-white/[0.02] border border-white/[0.06] border-l-2 border-l-slate-600 rounded-lg space-y-2 opacity-70">
+              <div className="p-3 bg-bg-main border border-border-subtle border-l-2 border-l-text-faint rounded-lg space-y-2 opacity-70">
                 {originalHooks.map((hook, i) => (
-                  <div key={i} className="text-xs text-slate-500 leading-relaxed">
-                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-600 mr-1.5">H{i + 1}</span>
+                  <div key={i} className="text-xs text-text-faint leading-relaxed">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-text-faint mr-1.5">H{i + 1}</span>
                     {typeof hook === 'string' ? hook : hook.text}
                   </div>
                 ))}
                 {originalBody && (
-                  <p className="text-xs text-slate-500 leading-relaxed whitespace-pre-line mt-1">{originalBody}</p>
+                  <p className="text-xs text-text-faint leading-relaxed whitespace-pre-line mt-1">{originalBody}</p>
                 )}
               </div>
             </div>
@@ -228,13 +228,13 @@ export default function BriefDetailModal({
               <SectionLabel>Hooks</SectionLabel>
               <div className="space-y-2">
                 {editableHooks.map((hook, i) => (
-                  <div key={hook.id || i} className="p-3 bg-white/[0.03] border border-white/[0.06] rounded-lg space-y-1.5">
+                  <div key={hook.id || i} className="p-3 bg-bg-main border border-border-subtle rounded-lg space-y-1.5">
                     <div className="flex items-center gap-2">
-                      <span className="text-[10px] font-bold uppercase tracking-wider text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-accent bg-accent/10 px-2 py-0.5 rounded">
                         H{i + 1}
                       </span>
                       {hook.mechanism && (
-                        <span className="text-[10px] text-slate-500 bg-white/[0.04] px-2 py-0.5 rounded">
+                        <span className="text-[10px] text-text-faint bg-bg-elevated px-2 py-0.5 rounded">
                           {hook.mechanism}
                         </span>
                       )}
@@ -247,7 +247,7 @@ export default function BriefDetailModal({
                         setEditableHooks(updated);
                         setHasChanges(true);
                       }}
-                      className="w-full bg-transparent text-sm text-slate-300 leading-relaxed resize-none focus:outline-none border-0 p-0"
+                      className="w-full bg-transparent text-sm text-text-muted leading-relaxed resize-none focus:outline-none border-0 p-0"
                       rows={3}
                     />
                   </div>
@@ -260,11 +260,11 @@ export default function BriefDetailModal({
           {(editableBody || brief.body) && (
             <div>
               <SectionLabel>Body</SectionLabel>
-              <div className="p-4 bg-white/[0.03] border border-white/[0.06] rounded-lg">
+              <div className="p-4 bg-bg-main border border-border-subtle rounded-lg">
                 <textarea
                   value={editableBody}
                   onChange={(e) => { setEditableBody(e.target.value); setHasChanges(true); }}
-                  className="w-full bg-transparent text-sm text-slate-300 leading-relaxed resize-none focus:outline-none"
+                  className="w-full bg-transparent text-sm text-text-muted leading-relaxed resize-none focus:outline-none"
                   rows={10}
                 />
               </div>
@@ -281,13 +281,13 @@ export default function BriefDetailModal({
                 onChange={(e) => setEnhancePrompt(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && !enhancing && enhancePrompt.trim() && handleEnhance()}
                 placeholder="e.g. 'add a hook about scarcity' or 'make hook 1 more aggressive'"
-                className="flex-1 bg-white/[0.03] border border-white/[0.06] rounded-lg px-3 py-2 text-sm text-slate-300 placeholder-slate-600 focus:border-purple-500/50 focus:outline-none"
+                className="flex-1 bg-bg-elevated border border-border-default rounded-lg px-3 py-2 text-sm text-text-muted placeholder-text-faint focus:border-accent/50 focus:outline-none"
               />
               <button
                 type="button"
                 onClick={handleEnhance}
                 disabled={enhancing || !enhancePrompt.trim()}
-                className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-purple-600 text-sm font-medium text-white hover:bg-purple-500 transition-colors disabled:opacity-40 cursor-pointer shrink-0"
+                className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-accent text-sm font-medium text-bg-main hover:bg-accent-hover transition-colors disabled:opacity-40 cursor-pointer shrink-0"
               >
                 {enhancing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
                 Enhance
@@ -301,7 +301,7 @@ export default function BriefDetailModal({
               <button
                 type="button"
                 onClick={() => setWinAnalysisOpen(!winAnalysisOpen)}
-                className="flex items-center gap-2 text-[10px] uppercase tracking-widest text-slate-500 font-semibold hover:text-slate-300 transition-colors cursor-pointer"
+                className="flex items-center gap-2 text-[10px] uppercase tracking-widest text-accent-text font-semibold hover:text-accent transition-colors cursor-pointer"
               >
                 {winAnalysisOpen ? (
                   <ChevronDown className="w-3.5 h-3.5" />
@@ -312,14 +312,14 @@ export default function BriefDetailModal({
               </button>
 
               {winAnalysisOpen && (
-                <div className="mt-3 p-4 bg-white/[0.03] border border-white/[0.06] rounded-lg space-y-4">
+                <div className="mt-3 p-4 bg-bg-main border border-border-subtle rounded-lg space-y-4">
                   {/* Winning elements ranked */}
                   {parsedWinAnalysis.winning_elements_ranked?.length > 0 && (
                     <div>
-                      <span className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold block mb-1.5">
+                      <span className="text-[10px] uppercase tracking-wider text-accent-text font-semibold block mb-1.5">
                         Winning Elements
                       </span>
-                      <ol className="space-y-1 text-sm text-slate-300 list-decimal list-inside">
+                      <ol className="space-y-1 text-sm text-text-muted list-decimal list-inside">
                         {parsedWinAnalysis.winning_elements_ranked.map((el, i) => (
                           <li key={i} className="leading-relaxed">{el}</li>
                         ))}
@@ -330,7 +330,7 @@ export default function BriefDetailModal({
                   {/* Emotional driver */}
                   {parsedWinAnalysis.emotional_driver?.primary && (
                     <div>
-                      <span className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold block mb-1.5">
+                      <span className="text-[10px] uppercase tracking-wider text-accent-text font-semibold block mb-1.5">
                         Emotional Driver
                       </span>
                       <span className="inline-block px-2.5 py-1 text-xs font-medium rounded-full bg-violet-500/15 text-violet-300 border border-violet-500/25">
@@ -342,20 +342,20 @@ export default function BriefDetailModal({
                   {/* Enemy structure */}
                   {parsedWinAnalysis.enemy_structure?.villain && (
                     <div>
-                      <span className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold block mb-1.5">
+                      <span className="text-[10px] uppercase tracking-wider text-accent-text font-semibold block mb-1.5">
                         Enemy / Villain
                       </span>
-                      <p className="text-sm text-slate-300">{parsedWinAnalysis.enemy_structure.villain}</p>
+                      <p className="text-sm text-text-muted">{parsedWinAnalysis.enemy_structure.villain}</p>
                     </div>
                   )}
 
                   {/* Iteration opportunities */}
                   {parsedWinAnalysis.iteration_opportunities?.length > 0 && (
                     <div>
-                      <span className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold block mb-1.5">
+                      <span className="text-[10px] uppercase tracking-wider text-accent-text font-semibold block mb-1.5">
                         Iteration Opportunities
                       </span>
-                      <ul className="space-y-1 text-sm text-slate-300 list-disc list-inside">
+                      <ul className="space-y-1 text-sm text-text-muted list-disc list-inside">
                         {parsedWinAnalysis.iteration_opportunities.map((opp, i) => (
                           <li key={i} className="leading-relaxed">{opp}</li>
                         ))}
@@ -371,7 +371,7 @@ export default function BriefDetailModal({
         {/* --------------------------------------------------------------- */}
         {/* Action buttons — pinned to bottom */}
         {/* --------------------------------------------------------------- */}
-        <div className="px-6 py-4 border-t border-white/[0.06] space-y-2 shrink-0">
+        <div className="px-6 py-4 border-t border-border-default space-y-2 shrink-0">
           {hasChanges && (
             <button
               type="button"
@@ -385,7 +385,7 @@ export default function BriefDetailModal({
                 }
               }}
               disabled={saving}
-              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-blue-600 text-sm font-medium text-white hover:bg-blue-500 transition-colors cursor-pointer disabled:opacity-40"
+              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-accent text-sm font-medium text-bg-main hover:bg-accent-hover transition-colors cursor-pointer disabled:opacity-40"
             >
               {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
               Save Changes
@@ -429,7 +429,7 @@ export default function BriefDetailModal({
               href={brief.clickup_task_url}
               target="_blank"
               rel="noopener noreferrer"
-              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-white/[0.04] border border-white/[0.08] text-sm text-slate-300 hover:bg-white/[0.08] transition-colors"
+              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-bg-elevated border border-border-default text-sm text-text-muted hover:bg-bg-hover transition-colors"
             >
               <ExternalLink className="w-4 h-4" />
               View in ClickUp

@@ -24,7 +24,7 @@ const EMOTION_COLORS = {
   hope:      { bg: 'bg-violet-500/20',   text: 'text-violet-300',  bar: 'from-violet-500 to-violet-400' },
 };
 
-const DEFAULT_EMOTION = { bg: 'bg-white/10', text: 'text-white/70', bar: 'from-white/60 to-white/40' };
+const DEFAULT_EMOTION = { bg: 'bg-bg-elevated', text: 'text-text-muted', bar: 'from-white/60 to-white/40' };
 
 function emotionStyle(emotion) {
   return EMOTION_COLORS[emotion?.toLowerCase()] || DEFAULT_EMOTION;
@@ -35,14 +35,14 @@ function emotionStyle(emotion) {
 // ---------------------------------------------------------------------------
 
 const Card = ({ children, className = '' }) => (
-  <div className={`bg-[#0d0d0d] border border-white/[0.06] rounded-lg p-4 ${className}`}>
+  <div className={`bg-bg-main border border-border-default rounded-lg p-4 ${className}`}>
     {children}
   </div>
 );
 
 const SectionTitle = ({ icon: Icon, children }) => (
-  <h3 className="flex items-center gap-2 text-sm font-semibold text-white/90 mb-3">
-    <Icon size={15} className="text-white/50" />
+  <h3 className="flex items-center gap-2 text-sm font-semibold text-text-primary mb-3">
+    <Icon size={15} className="text-text-faint" />
     {children}
   </h3>
 );
@@ -58,13 +58,13 @@ const Pill = ({ color, children }) => {
 
 const StrengthBar = ({ value, max = 10, gradient = 'from-blue-500 to-cyan-400' }) => (
   <div className="flex items-center gap-2 w-full">
-    <div className="flex-1 h-1.5 rounded-full bg-white/[0.06] overflow-hidden">
+    <div className="flex-1 h-1.5 rounded-full bg-bg-elevated overflow-hidden">
       <div
         className={`h-full rounded-full bg-gradient-to-r ${gradient}`}
         style={{ width: `${(value / max) * 100}%` }}
       />
     </div>
-    <span className="text-[11px] text-white/40 tabular-nums w-5 text-right">{value}</span>
+    <span className="text-[11px] text-text-faint tabular-nums w-5 text-right">{value}</span>
   </div>
 );
 
@@ -81,10 +81,10 @@ function OverallStrength({ analysis }) {
   const avg = strengths.length ? Math.round(strengths.reduce((a, b) => a + b, 0) / strengths.length) : 0;
   return (
     <div className="flex items-center gap-3">
-      <span className="text-lg font-bold text-white">Win Analysis</span>
+      <span className="text-lg font-bold text-text-primary">Win Analysis</span>
       <div className="flex items-center gap-1.5 ml-auto">
         <TrendingUp size={14} className="text-emerald-400" />
-        <span className="text-xs text-white/50">Strength</span>
+        <span className="text-xs text-text-faint">Strength</span>
         <StrengthBar value={avg} gradient="from-emerald-500 to-emerald-300" />
       </div>
     </div>
@@ -102,14 +102,14 @@ function HookAnalysisSection({ hooks }) {
           return (
             <div
               key={hook.hook_id}
-              className="min-w-[200px] flex-shrink-0 bg-white/[0.03] border border-white/[0.06] rounded-md p-3 space-y-2"
+              className="min-w-[200px] flex-shrink-0 bg-bg-elevated border border-border-subtle rounded-md p-3 space-y-2"
             >
               <div className="flex items-center justify-between">
-                <span className="text-xs font-bold text-white/80">{hook.hook_id}</span>
+                <span className="text-xs font-bold text-text-primary">{hook.hook_id}</span>
                 <Pill color={hook.mechanism}>{hook.mechanism}</Pill>
               </div>
               <StrengthBar value={hook.strength} gradient={style.bar} />
-              <p className="text-[11px] text-white/50 leading-relaxed">{hook.why_it_works}</p>
+              <p className="text-[11px] text-text-faint leading-relaxed">{hook.why_it_works}</p>
             </div>
           );
         })}
@@ -134,11 +134,11 @@ function EmotionalDriverSection({ driver }) {
           ))}
         </div>
         <div>
-          <span className="text-[11px] text-white/40 block mb-1">Intensity</span>
+          <span className="text-[11px] text-text-faint block mb-1">Intensity</span>
           <StrengthBar value={driver.intensity} gradient={primary.bar} />
         </div>
         {driver.trigger_sentence && (
-          <p className="text-xs text-white/50 italic leading-relaxed">
+          <p className="text-xs text-text-faint italic leading-relaxed">
             &ldquo;{driver.trigger_sentence}&rdquo;
           </p>
         )}
@@ -153,19 +153,19 @@ function BeliefShiftSection({ shift }) {
     <Card>
       <SectionTitle icon={Target}>Belief Shift</SectionTitle>
       <div className="flex items-center gap-3">
-        <div className="flex-1 bg-white/[0.03] border border-white/[0.06] rounded-md p-3">
-          <span className="text-[10px] uppercase tracking-wider text-white/30 block mb-1">Before</span>
-          <p className="text-xs text-white/70 leading-relaxed">{shift.before}</p>
+        <div className="flex-1 bg-bg-elevated border border-border-subtle rounded-md p-3">
+          <span className="text-[10px] uppercase tracking-wider text-text-faint block mb-1">Before</span>
+          <p className="text-xs text-text-muted leading-relaxed">{shift.before}</p>
         </div>
-        <ArrowRight size={18} className="text-white/20 flex-shrink-0" />
-        <div className="flex-1 bg-white/[0.03] border border-white/[0.06] rounded-md p-3">
-          <span className="text-[10px] uppercase tracking-wider text-white/30 block mb-1">After</span>
-          <p className="text-xs text-white/70 leading-relaxed">{shift.after}</p>
+        <ArrowRight size={18} className="text-text-faint flex-shrink-0" />
+        <div className="flex-1 bg-bg-elevated border border-border-subtle rounded-md p-3">
+          <span className="text-[10px] uppercase tracking-wider text-text-faint block mb-1">After</span>
+          <p className="text-xs text-text-muted leading-relaxed">{shift.after}</p>
         </div>
       </div>
       {shift.pivot_moment && (
-        <p className="text-[11px] text-white/40 mt-2 text-center">
-          Pivot: <span className="text-white/60">{shift.pivot_moment}</span>
+        <p className="text-[11px] text-text-faint mt-2 text-center">
+          Pivot: <span className="text-text-muted">{shift.pivot_moment}</span>
         </p>
       )}
     </Card>
@@ -186,13 +186,13 @@ function ProofArchitectureSection({ proof }) {
         </div>
         <div className="flex gap-1.5 flex-wrap">
           {(proof.elements || []).map((el) => (
-            <span key={el} className="px-2 py-0.5 rounded-full text-[11px] bg-white/[0.06] text-white/50">
+            <span key={el} className="px-2 py-0.5 rounded-full text-[11px] bg-bg-elevated text-text-faint">
               {el}
             </span>
           ))}
         </div>
         {proof.most_convincing_line && (
-          <p className="text-xs text-white/50 italic leading-relaxed">
+          <p className="text-xs text-text-faint italic leading-relaxed">
             &ldquo;{proof.most_convincing_line}&rdquo;
           </p>
         )}
@@ -208,7 +208,7 @@ function EnemyStructureSection({ enemy }) {
       <SectionTitle icon={Target}>Enemy Structure</SectionTitle>
       <div className="space-y-2">
         <div className="flex items-center gap-2">
-          <span className="text-sm font-bold text-white/90">{enemy.villain}</span>
+          <span className="text-sm font-bold text-text-primary">{enemy.villain}</span>
           {enemy.us_vs_them && (
             <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-red-500/20 text-red-300">
               Us vs Them
@@ -216,13 +216,13 @@ function EnemyStructureSection({ enemy }) {
           )}
         </div>
         {enemy.introduction && (
-          <p className="text-[11px] text-white/50 leading-relaxed">
-            <span className="text-white/30">Intro:</span> {enemy.introduction}
+          <p className="text-[11px] text-text-faint leading-relaxed">
+            <span className="text-text-faint">Intro:</span> {enemy.introduction}
           </p>
         )}
         {enemy.defeat && (
-          <p className="text-[11px] text-white/50 leading-relaxed">
-            <span className="text-white/30">Defeat:</span> {enemy.defeat}
+          <p className="text-[11px] text-text-faint leading-relaxed">
+            <span className="text-text-faint">Defeat:</span> {enemy.defeat}
           </p>
         )}
       </div>
@@ -237,7 +237,7 @@ function WinningElementsList({ elements }) {
       <SectionTitle icon={CheckCircle2}>Winning Elements</SectionTitle>
       <ol className="space-y-1.5">
         {elements.map((el, i) => (
-          <li key={i} className="flex items-start gap-2 text-xs text-white/60 leading-relaxed">
+          <li key={i} className="flex items-start gap-2 text-xs text-text-muted leading-relaxed">
             <CheckCircle2 size={13} className="text-emerald-400 mt-0.5 flex-shrink-0" />
             <span>{el}</span>
           </li>
@@ -254,7 +254,7 @@ function IterationOpportunitiesList({ items }) {
       <SectionTitle icon={Lightbulb}>Iteration Opportunities</SectionTitle>
       <ol className="space-y-1.5">
         {items.map((item, i) => (
-          <li key={i} className="flex items-start gap-2 text-xs text-white/60 leading-relaxed">
+          <li key={i} className="flex items-start gap-2 text-xs text-text-muted leading-relaxed">
             <Lightbulb size={13} className="text-amber-400 mt-0.5 flex-shrink-0" />
             <span>{item}</span>
           </li>

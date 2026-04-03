@@ -151,16 +151,16 @@ export function StaticsSettingsModal({ isOpen, onClose }) {
   return createPortal(
     <>
       {/* Backdrop */}
-      <div className="fixed inset-0 bg-black/60 z-[9998]" onClick={onClose} />
+      <div className="fixed inset-0 bg-black/70 z-[9998]" onClick={onClose} />
 
       {/* Slide-over panel */}
-      <div className="fixed inset-y-0 right-0 w-full max-w-2xl bg-[#111] border-l border-white/[0.06] z-[9999] flex flex-col animate-slide-in-right">
+      <div className="fixed inset-y-0 right-0 w-full max-w-2xl bg-bg-card border-l border-border-subtle z-[9999] flex flex-col animate-slide-in-right">
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-white/[0.06] shrink-0">
-          <h2 className="text-base font-semibold text-white">Prompt &amp; Logic Settings</h2>
+        <div className="flex items-center justify-between px-6 py-4 border-b border-border-subtle shrink-0">
+          <h2 className="text-base font-semibold text-text-primary">Prompt &amp; Logic Settings</h2>
           <button
             onClick={onClose}
-            className="p-1.5 rounded-lg hover:bg-white/[0.06] text-slate-400 hover:text-white transition-colors cursor-pointer"
+            className="p-1.5 rounded-lg text-text-muted hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer"
           >
             <X className="w-5 h-5" />
           </button>
@@ -175,8 +175,8 @@ export function StaticsSettingsModal({ isOpen, onClose }) {
               onClick={() => setActiveTab(tab.key)}
               className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors cursor-pointer ${
                 activeTab === tab.key
-                  ? 'bg-white/[0.08] text-white'
-                  : 'text-slate-400 hover:text-white hover:bg-white/[0.04]'
+                  ? 'bg-accent/15 text-accent-text'
+                  : 'text-text-muted hover:text-text-primary hover:bg-bg-hover'
               }`}
             >
               {tab.label}
@@ -188,13 +188,13 @@ export function StaticsSettingsModal({ isOpen, onClose }) {
         <div className="flex-1 overflow-y-auto px-6 py-4 space-y-5">
           {loading ? (
             <div className="flex items-center justify-center py-20">
-              <Loader2 className="w-6 h-6 animate-spin text-slate-400" />
+              <Loader2 className="w-6 h-6 animate-spin text-accent" />
             </div>
           ) : (
             fields.map((field) => (
               <div key={field.key}>
                 <div className="flex items-center justify-between mb-1.5">
-                  <label className="text-xs text-slate-400 block">{field.label}</label>
+                  <label className="text-xs text-text-muted block">{field.label}</label>
                   {isFieldCustom(activeTab, field.key) && (
                     <button
                       type="button"
@@ -212,7 +212,7 @@ export function StaticsSettingsModal({ isOpen, onClose }) {
                     onChange={(e) => handleChange(activeTab, field.key, e.target.value)}
                     placeholder={field.placeholder}
                     rows={6}
-                    className="w-full bg-[#0a0a0a] border border-white/[0.06] rounded-lg px-3 py-2.5 text-sm text-white font-mono placeholder:text-slate-600 resize-y focus:outline-none focus:border-white/[0.12] transition-colors"
+                    className="w-full bg-bg-main border border-border-default rounded-lg px-3 py-2.5 text-sm text-text-primary font-mono placeholder:text-text-faint resize-y focus:outline-none focus:border-accent/30 transition-colors"
                   />
                 ) : (
                   <input
@@ -220,7 +220,7 @@ export function StaticsSettingsModal({ isOpen, onClose }) {
                     value={values?.[activeTab]?.[field.key] ?? ''}
                     onChange={(e) => handleChange(activeTab, field.key, e.target.value)}
                     placeholder={field.placeholder}
-                    className="w-full bg-[#0a0a0a] border border-white/[0.06] rounded-lg px-3 py-2.5 text-sm text-white placeholder:text-slate-600 focus:outline-none focus:border-white/[0.12] transition-colors"
+                    className="w-full bg-bg-main border border-border-default rounded-lg px-3 py-2.5 text-sm text-text-primary placeholder:text-text-faint focus:outline-none focus:border-accent/30 transition-colors"
                   />
                 )}
               </div>
@@ -230,7 +230,7 @@ export function StaticsSettingsModal({ isOpen, onClose }) {
 
         {/* Footer (sticky) */}
         {!loading && (
-          <div className="flex items-center justify-between px-6 py-4 border-t border-white/[0.06] shrink-0">
+          <div className="flex items-center justify-between px-6 py-4 border-t border-border-subtle shrink-0">
             <button
               type="button"
               onClick={handleResetAll}
@@ -243,7 +243,7 @@ export function StaticsSettingsModal({ isOpen, onClose }) {
               type="button"
               onClick={handleSave}
               disabled={saving}
-              className="flex items-center gap-2 px-5 py-2 rounded-lg text-sm font-medium bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-500 hover:to-emerald-400 text-white transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+              className="flex items-center gap-2 px-5 py-2 rounded-lg text-sm font-semibold bg-accent hover:bg-accent-hover text-bg-main shadow-[0_1px_12px_rgba(201,162,39,0.25)] transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
               {saving ? 'Saving...' : 'Save Changes'}

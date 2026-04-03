@@ -19,13 +19,13 @@ function GeneratedBriefCard({ brief, onApprove, onReject, onPush, onClick, showA
   return (
     <div
       onClick={() => onClick?.(brief)}
-      className="bg-[#0d0d0d] border border-white/[0.06] rounded-lg overflow-hidden cursor-pointer
-                 hover:border-white/[0.12] hover:shadow-lg hover:shadow-black/20 transition-all duration-150"
+      className="bg-bg-main border border-border-default rounded-lg overflow-hidden cursor-pointer
+                 hover:border-accent/20 hover:shadow-[0_2px_12px_rgba(201,162,39,0.06)] transition-all duration-150"
     >
       <div className="p-3 space-y-2">
         {/* Top row: parent label + rank */}
         <div className="flex items-center gap-2">
-          <span className="text-[11px] font-medium bg-blue-500/15 text-blue-300 px-1.5 py-0.5 rounded">
+          <span className="text-[11px] font-medium bg-accent-muted text-accent-text px-1.5 py-0.5 rounded">
             IT of {brief.parent_creative_id}
           </span>
           {brief.rank != null && (
@@ -37,7 +37,7 @@ function GeneratedBriefCard({ brief, onApprove, onReject, onPush, onClick, showA
 
         {/* Hook preview */}
         {hookPreview && (
-          <p className="text-xs text-gray-300 leading-relaxed line-clamp-2">
+          <p className="text-xs text-text-muted leading-relaxed line-clamp-2">
             &ldquo;{hookPreview}&rdquo;
           </p>
         )}
@@ -86,7 +86,7 @@ function GeneratedBriefCard({ brief, onApprove, onReject, onPush, onClick, showA
               target="_blank"
               rel="noopener noreferrer"
               onClick={(e) => e.stopPropagation()}
-              className="flex items-center justify-center gap-1.5 text-xs text-gray-500 hover:text-gray-300 transition-colors py-1.5"
+              className="flex items-center justify-center gap-1.5 text-xs text-text-faint hover:text-text-muted transition-colors py-1.5"
             >
               <ExternalLink className="w-3.5 h-3.5" />
               View in ClickUp

@@ -34,14 +34,13 @@ export function ConfigSidebar({
   onAngleChange,
   customAngle,
   onCustomAngleChange,
-  aspectRatio,
-  onAspectRatioChange,
   references,
   onOpenLibrary,
   onUploadReference,
   onRemoveReference,
   onGenerate,
   generating,
+  onProductsLoaded,
 }) {
   const fileInputRef = useRef(null);
   const [dragging, setDragging] = useState(false);
@@ -92,6 +91,7 @@ export function ConfigSidebar({
           <ProductSelector
             selectedId={selectedProduct}
             onSelect={(product) => onProductChange(product)}
+            onLoad={onProductsLoaded}
           />
         </div>
 
@@ -124,29 +124,6 @@ export function ConfigSidebar({
             placeholder="Custom angle... (or leave blank for AI to decide)"
             className="w-full bg-[#111] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white placeholder-slate-600 focus:border-blue-500/50 focus:outline-none"
           />
-        </div>
-
-        {/* ---- Aspect Ratio ---- */}
-        <div className="space-y-2">
-          <label className="text-sm font-medium text-slate-300">
-            Aspect Ratio
-          </label>
-          <div className="flex gap-1.5">
-            {ASPECT_RATIOS.map((r) => (
-              <button
-                key={r}
-                type="button"
-                onClick={() => onAspectRatioChange(r)}
-                className={`flex-1 px-2 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
-                  aspectRatio === r
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-white/[0.04] text-slate-400 border border-white/[0.06] hover:border-white/[0.12] hover:text-white'
-                }`}
-              >
-                {r}
-              </button>
-            ))}
-          </div>
         </div>
 
         {/* ---- REFERENCE IMAGES header ---- */}
