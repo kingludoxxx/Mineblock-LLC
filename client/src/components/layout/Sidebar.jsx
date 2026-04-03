@@ -58,14 +58,7 @@ import {
 import { useAuth } from '../../hooks/useAuth';
 
 const navGroups = [
-  {
-    label: 'Intelligence',
-    icon: Brain,
-    items: [
-      { to: '/app/creative-intelligence', icon: Brain, label: 'Creative Intel' },
-    ],
-  },
-  {
+{
     label: 'Production',
     icon: Factory,
     items: [
