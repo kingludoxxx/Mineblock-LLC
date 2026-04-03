@@ -294,7 +294,16 @@ router.post('/generate', authenticate, async (req, res) => {
       }))
     );
 
-    const [nbData1, nbData2] = await Promise.all([nbRes1.json(), nbRes2.json()]);
+    // Validate responses before parsing JSON
+    const parseNbResponse = async (res, label) => {
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        console.error(`[staticsGeneration] NanoBanana ${label} failed (${res.status}): ${text.slice(0, 200)}`);
+        return null;
+      }
+      return res.json().catch(err => { console.error(`[staticsGeneration] NanoBanana ${label} JSON parse error:`, err.message); return null; });
+    };
+    const [nbData1, nbData2] = await Promise.all([parseNbResponse(nbRes1, '1:1'), parseNbResponse(nbRes2, '9:16')]);
     const taskId1 = nbData1?.data?.taskId || nbData1?.taskId;
     const taskId2 = nbData2?.data?.taskId || nbData2?.taskId;
 
@@ -1020,6 +1029,13 @@ Reference ads may come from any niche. Map visuals to bitcoin mining context:
 - Body part close-ups → Device screen showing mining stats
 - Kitchen/bathroom scenes → Desk/home office/nightstand scenes
 - Medical/doctor imagery → Tech expert/crypto analyst imagery`,
+      visualAdaptation: `For each visual element, specify what it should become for the bitcoin mining product:
+- Supplement bottles → Miner Forge Pro device(s)
+- Skincare before/after → Mining earnings screenshots or device setup progression
+- Fitness transformations → Passive income growth charts
+- Food/ingredient callouts → Device feature callouts (hashrate, low power, silent operation)
+- Body part close-ups → Device screen close-ups showing mining stats
+- Kitchen/bathroom scenes → Desk/home office/nightstand scenes`,
     },
     nanoBanana: {
       productRules: `PRODUCT REPLACEMENT:

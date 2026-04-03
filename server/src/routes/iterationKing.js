@@ -3,7 +3,7 @@ import { authenticate } from '../middleware/auth.js';
 
 const router = express.Router();
 
-const CLICKUP_TOKEN = process.env.CLICKUP_API_TOKEN || 'pk_266421907_38TVGF16690R1U9EZOZLBK9BJ6J0YPRD';
+const CLICKUP_TOKEN = process.env.CLICKUP_API_TOKEN || '';
 const VIDEO_ADS_LIST_ID = '901518716584';
 const CLICKUP_API = 'https://api.clickup.com/api/v2';
 

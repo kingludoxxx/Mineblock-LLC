@@ -596,6 +596,8 @@ function StaticsSettingsInline() {
       { key: 'pricingRules', label: 'Pricing Rules', desc: 'Pricing constraints and formats' },
       { key: 'formulaPreservation', label: 'Formula Preservation', desc: 'How to preserve copywriting formulas' },
       { key: 'crossNicheAdaptation', label: 'Cross-Niche Adaptation', desc: 'Rules for adapting across product niches' },
+      { key: 'visualAdaptation', label: 'Visual Adaptation', desc: 'How to map visual elements to your product' },
+      { key: 'bannedPhrases', label: 'Banned Phrases', desc: 'Phrases the AI must never use in copy' },
     ],
     nanoBanana: [
       { key: 'productRules', label: 'Product Replacement Rules', desc: 'How to swap product imagery' },
@@ -1000,7 +1002,7 @@ export default function StaticsGeneration() {
           logo_url: selectedProductRef.current?.logo_url || undefined,
           profile: Object.keys(profile).length > 0 ? profile : undefined,
         },
-        angle: marketingAngle || undefined,
+        angle: customAngle || marketingAngle || undefined,
         ratio: aspectRatio,
       });
 

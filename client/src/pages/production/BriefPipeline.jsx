@@ -53,14 +53,6 @@ const PIPELINE_COLUMNS = [
 // Helpers
 // ---------------------------------------------------------------------------
 
-function StatusBadge({ label, bg, text }) {
-  return (
-    <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${bg} ${text}`}>
-      {label}
-    </span>
-  );
-}
-
 // ---------------------------------------------------------------------------
 // BriefPipeline (main page)
 // ---------------------------------------------------------------------------

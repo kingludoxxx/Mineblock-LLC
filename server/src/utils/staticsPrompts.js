@@ -136,9 +136,10 @@ ${co.pricingRules || `- Base price: $59.99 for 1 unit
 - Only discount code: MINER10 (extra 10% off)
 - NEVER invent prices. When in doubt: "Starting at $59.99"
 - CRITICAL: Only adapt text that ACTUALLY EXISTS in the reference image. Do NOT add discount badges, guarantee text, price callouts, or promotional elements that are not visible in the reference. If the reference has no "X% OFF" badge, your adapted version must also have NO "X% OFF" badge.`}
+${co.bannedPhrases ? `\n⚠️ BANNED PHRASES — NEVER use these in adapted text:\n${co.bannedPhrases}` : ''}
 
 ⚠️ VISUAL ADAPTATION DIRECTION:
-${co.crossNicheAdaptation || `For each visual element, specify what it should become for the bitcoin mining product:
+${co.visualAdaptation || `For each visual element, specify what it should become for the bitcoin mining product:
 - Supplement bottles → Miner Forge Pro device(s)
 - Skincare before/after → Mining earnings screenshots or device setup progression
 - Fitness transformations → Passive income growth charts

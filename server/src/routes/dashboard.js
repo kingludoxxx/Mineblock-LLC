@@ -1,7 +1,9 @@
 import { Router } from 'express';
 import { query } from '../config/db.js';
+import { authenticate } from '../middleware/auth.js';
 
 const router = Router();
+router.use(authenticate);
 
 router.get('/stats', async (req, res, next) => {
   try {

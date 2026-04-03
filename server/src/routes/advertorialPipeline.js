@@ -143,7 +143,7 @@ async function ensureTables() {
 }
 
 // POST /copies/generate — Generate 3 copy variants from source copy
-router.post('/copies/generate', async (req, res) => {
+router.post('/copies/generate', authenticate, async (req, res) => {
   try {
     await ensureTables();
     const { product_id, source_copy, angle, custom_instructions } = req.body;
@@ -225,7 +225,7 @@ router.post('/copies/generate', async (req, res) => {
 });
 
 // GET /copies — List copies with filters
-router.get('/copies', async (req, res) => {
+router.get('/copies', authenticate, async (req, res) => {
   try {
     await ensureTables();
     const { product_id, status, angle } = req.query;
@@ -247,7 +247,7 @@ router.get('/copies', async (req, res) => {
 });
 
 // GET /copies/:id — Get single copy
-router.get('/copies/:id', async (req, res) => {
+router.get('/copies/:id', authenticate, async (req, res) => {
   try {
     const rows = await pgQuery('SELECT * FROM advertorial_copies WHERE id = $1', [req.params.id]);
     if (rows.length === 0) return res.status(404).json({ success: false, error: { message: 'Copy not found' } });
@@ -258,7 +258,7 @@ router.get('/copies/:id', async (req, res) => {
 });
 
 // PATCH /copies/:id — Update copy text
-router.patch('/copies/:id', async (req, res) => {
+router.patch('/copies/:id', authenticate, async (req, res) => {
   try {
     const { ad_copy, title, headlines, descriptions } = req.body;
     const sets = ['updated_at = NOW()'];
@@ -280,7 +280,7 @@ router.patch('/copies/:id', async (req, res) => {
 });
 
 // PATCH /copies/:id/status — Move copy status
-router.patch('/copies/:id/status', async (req, res) => {
+router.patch('/copies/:id/status', authenticate, async (req, res) => {
   try {
     const { status } = req.body;
     const validStatuses = ['draft', 'copy_review', 'copy_approved', 'images_pending', 'images_review', 'ready', 'queued', 'launched', 'archived'];
@@ -296,7 +296,7 @@ router.patch('/copies/:id/status', async (req, res) => {
 });
 
 // DELETE /copies/:id
-router.delete('/copies/:id', async (req, res) => {
+router.delete('/copies/:id', authenticate, async (req, res) => {
   try {
     const rows = await pgQuery('DELETE FROM advertorial_copies WHERE id = $1 RETURNING id', [req.params.id]);
     if (rows.length === 0) return res.status(404).json({ success: false, error: { message: 'Copy not found' } });
@@ -307,7 +307,7 @@ router.delete('/copies/:id', async (req, res) => {
 });
 
 // POST /copies/:id/ai-edit — Inline AI editing
-router.post('/copies/:id/ai-edit', async (req, res) => {
+router.post('/copies/:id/ai-edit', authenticate, async (req, res) => {
   try {
     const { instruction } = req.body;
     if (!instruction) return res.status(400).json({ success: false, error: { message: 'instruction is required' } });
@@ -339,7 +339,7 @@ router.post('/copies/:id/ai-edit', async (req, res) => {
 });
 
 // POST /copies/:id/classify — Classify copy into archetype
-router.post('/copies/:id/classify', async (req, res) => {
+router.post('/copies/:id/classify', authenticate, async (req, res) => {
   try {
     const rows = await pgQuery('SELECT * FROM advertorial_copies WHERE id = $1', [req.params.id]);
     if (rows.length === 0) return res.status(404).json({ success: false, error: { message: 'Copy not found' } });
@@ -371,7 +371,7 @@ router.post('/copies/:id/classify', async (req, res) => {
 });
 
 // POST /copies/:id/generate-images — V3 archetype image pipeline
-router.post('/copies/:id/generate-images', async (req, res) => {
+router.post('/copies/:id/generate-images', authenticate, async (req, res) => {
   try {
     const { count_ai = 4, count_organic = 2 } = req.body;
     const rows = await pgQuery('SELECT * FROM advertorial_copies WHERE id = $1', [req.params.id]);
@@ -476,7 +476,7 @@ router.post('/copies/:id/generate-images', async (req, res) => {
 });
 
 // GET /organic-images — Browse organic pool
-router.get('/organic-images', async (req, res) => {
+router.get('/organic-images', authenticate, async (req, res) => {
   try {
     const { source, tags, limit = 50 } = req.query;
     let query = "SELECT * FROM organic_images WHERE is_rejected = false AND status = 'active'";
@@ -494,7 +494,7 @@ router.get('/organic-images', async (req, res) => {
 });
 
 // POST /organic-images/scrape — Trigger Reddit scrape
-router.post('/organic-images/scrape', async (req, res) => {
+router.post('/organic-images/scrape', authenticate, async (req, res) => {
   try {
     const { subreddit, query: searchQuery, limit = 25 } = req.body;
     if (!subreddit) return res.status(400).json({ success: false, error: { message: 'subreddit is required' } });
@@ -549,7 +549,7 @@ router.post('/organic-images/scrape', async (req, res) => {
 });
 
 // GET /scrape-jobs — List scrape jobs
-router.get('/scrape-jobs', async (req, res) => {
+router.get('/scrape-jobs', authenticate, async (req, res) => {
   try {
     const rows = await pgQuery('SELECT * FROM image_scrape_jobs ORDER BY created_at DESC LIMIT 20');
     res.json({ success: true, data: rows });

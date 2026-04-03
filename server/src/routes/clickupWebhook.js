@@ -5,7 +5,7 @@ import { pgQuery } from '../db/pg.js';
 const router = Router();
 
 // ClickUp API config
-const CLICKUP_TOKEN = 'pk_266421907_38TVGF16690R1U9EZOZLBK9BJ6J0YPRD';
+const CLICKUP_TOKEN = process.env.CLICKUP_API_TOKEN || '';
 const CLICKUP_API = 'https://api.clickup.com/api/v2';
 const TEAM_ID = '90152075024';
 
@@ -308,7 +308,7 @@ async function handleTaskCreated(taskId) {
 
     const result = await createFrameFolder(rootFolderId, folderName);
     if (!result) {
-      logger.error(`[ClickUp Webhook] Failed to create Frame.io folder for ${briefId}`);
+      logger.error(`[ClickUp Webhook] Failed to create Frame.io folder for ${taskId}`);
       return;
     }
 

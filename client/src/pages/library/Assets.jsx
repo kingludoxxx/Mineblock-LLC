@@ -329,10 +329,12 @@ function ProductDetailView({ product, onBack, onFieldSave, onAiFill, onProductCh
   const [aiUrl, setAiUrl] = useState(product.product_url || '');
   const [aiFilling, setAiFilling] = useState(false);
   const [imageUrlInput, setImageUrlInput] = useState('');
+  const [logoUrlInput, setLogoUrlInput] = useState('');
   const [saving, setSaving] = useState(false);
   const [savedFlash, setSavedFlash] = useState(false);
   const [benefitInput, setBenefitInput] = useState('');
   const fileInputRef = useRef(null);
+  const logoFileInputRef = useRef(null);
   // Use ref to get latest product for image operations (avoids stale closure)
   const productRef = useRef(product);
   productRef.current = product;
@@ -425,6 +427,37 @@ function ProductDetailView({ product, onBack, onFieldSave, onAiFill, onProductCh
     const updated = current.filter((_, idx) => idx !== i);
     onProductChange({ ...productRef.current, product_images: updated });
     onFieldSave('product_images', updated);
+  };
+
+  /* Logo handlers */
+  const handleLogoUpload = async (files) => {
+    const imageFiles = Array.from(files).filter((f) => f.type.startsWith('image/'));
+    if (imageFiles.length === 0) return;
+    const results = await Promise.all(imageFiles.map(compressImage));
+    const current = Array.isArray(productRef.current.logos) ? productRef.current.logos : [];
+    const updated = [...current.filter((l) => l), ...results];
+    onProductChange({ ...productRef.current, logos: updated });
+    try {
+      await onFieldSave('logos', updated);
+    } catch (err) {
+      alert(`Failed to save logos: ${err?.response?.data?.error?.message || err?.message || 'Unknown error'}.`);
+    }
+  };
+
+  const addLogoUrl = () => {
+    if (!logoUrlInput.trim()) return;
+    const current = Array.isArray(productRef.current.logos) ? productRef.current.logos : [];
+    const updated = [...current.filter((l) => l), logoUrlInput.trim()];
+    onProductChange({ ...productRef.current, logos: updated });
+    onFieldSave('logos', updated);
+    setLogoUrlInput('');
+  };
+
+  const removeLogo = (i) => {
+    const current = Array.isArray(productRef.current.logos) ? productRef.current.logos : [];
+    const updated = current.filter((_, idx) => idx !== i);
+    onProductChange({ ...productRef.current, logos: updated });
+    onFieldSave('logos', updated);
   };
 
   const firstImage = (Array.isArray(product.product_images) ? product.product_images : []).find(
@@ -844,6 +877,79 @@ function ProductDetailView({ product, onBack, onFieldSave, onAiFill, onProductCh
               )}
             </div>
           )}
+        </CollapsibleSection>
+
+        {/* Brand Logos */}
+        <CollapsibleSection
+          icon={Star}
+          title="Brand Logos"
+          subtitle="Logos used to replace competitor branding in generated ads"
+        >
+          {/* Upload zone */}
+          <div
+            className="border-2 border-dashed border-white/[0.08] rounded-lg p-6 text-center hover:border-accent/30 transition-colors cursor-pointer"
+            onDragOver={(e) => { e.preventDefault(); e.currentTarget.classList.add('border-accent/40'); }}
+            onDragLeave={(e) => { e.currentTarget.classList.remove('border-accent/40'); }}
+            onDrop={(e) => { e.preventDefault(); e.currentTarget.classList.remove('border-accent/40'); handleLogoUpload(e.dataTransfer.files); }}
+            onClick={() => logoFileInputRef.current?.click()}
+          >
+            <Upload className="w-6 h-6 text-slate-500 mx-auto mb-2" />
+            <p className="text-xs text-slate-400">
+              Drop brand logos here or <span className="text-accent-text">browse</span>
+            </p>
+            <p className="text-[10px] text-slate-600 mt-1">PNG with transparent background recommended — up to 2 logos used in generation</p>
+            <input
+              ref={logoFileInputRef}
+              type="file"
+              accept="image/*"
+              multiple
+              className="hidden"
+              onChange={(e) => { handleLogoUpload(e.target.files); e.target.value = ''; }}
+            />
+          </div>
+
+          {/* URL paste */}
+          <div className="flex items-center gap-2">
+            <input
+              value={logoUrlInput}
+              onChange={(e) => setLogoUrlInput(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && addLogoUrl()}
+              placeholder="Or paste logo URL..."
+              className="flex-1 bg-[#0a0a0a] border border-white/[0.06] rounded-lg px-4 py-3 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-white/[0.15] transition-colors"
+            />
+            <button
+              onClick={addLogoUrl}
+              disabled={!logoUrlInput.trim()}
+              className="text-xs text-accent-text hover:text-accent disabled:text-slate-600 disabled:cursor-not-allowed px-4 py-3 rounded-lg border border-white/[0.06] hover:border-accent/30 transition-colors cursor-pointer"
+            >
+              Add
+            </button>
+          </div>
+
+          {/* Logo grid */}
+          {(Array.isArray(product.logos) ? product.logos : []).filter((l) => l).length > 0 && (
+            <div className="flex flex-wrap gap-3">
+              {(product.logos || []).map((url, i) =>
+                url ? (
+                  <div key={i} className="relative group w-28 h-20 rounded-lg overflow-hidden border border-white/[0.06] bg-[#0a0a0a] flex items-center justify-center p-2">
+                    <img src={url} alt={`Logo ${i + 1}`} className="max-w-full max-h-full object-contain" onError={(e) => { e.target.style.display = 'none'; }} />
+                    <button
+                      onClick={() => removeLogo(i)}
+                      className="absolute top-1 right-1 w-5 h-5 rounded-full bg-black/70 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity text-red-400 hover:text-red-300 cursor-pointer"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                ) : null
+              )}
+            </div>
+          )}
+
+          {/* Hint */}
+          <p className="text-[10px] text-slate-600 leading-relaxed">
+            When generating ads, competitor logos in references will be automatically replaced with your brand logos.
+            The first logo is used as the primary brand mark. Use PNG with transparent backgrounds for best results.
+          </p>
         </CollapsibleSection>
       </div>
     </div>

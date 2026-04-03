@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { authenticate } from '../middleware/auth.js';
 import { pgQuery } from '../db/pg.js';
 import { uploadAdImage, createAdCreative, createAd, getDefaultAdAccountId, isMetaAdsConfigured } from '../services/metaAdsApi.js';
 import crypto from 'crypto';
@@ -43,7 +44,7 @@ async function ensureTables() {
 }
 
 // POST /batches — Create batch from approved creatives
-router.post('/batches', async (req, res) => {
+router.post('/batches', authenticate, async (req, res) => {
   try {
     await ensureTables();
     const { product_id, pipeline, creative_ids, angle, name } = req.body;
@@ -82,7 +83,7 @@ router.post('/batches', async (req, res) => {
 });
 
 // GET /batches — List batches
-router.get('/batches', async (req, res) => {
+router.get('/batches', authenticate, async (req, res) => {
   try {
     await ensureTables();
     const { product_id, status, pipeline } = req.query;
@@ -103,7 +104,7 @@ router.get('/batches', async (req, res) => {
 });
 
 // GET /batches/:id — Get batch with creatives
-router.get('/batches/:id', async (req, res) => {
+router.get('/batches/:id', authenticate, async (req, res) => {
   try {
     const batches = await pgQuery('SELECT * FROM ad_batches WHERE id = $1', [req.params.id]);
     if (batches.length === 0) return res.status(404).json({ success: false, error: { message: 'Batch not found' } });
@@ -115,7 +116,7 @@ router.get('/batches/:id', async (req, res) => {
 });
 
 // DELETE /batches/:id — Delete batch, un-queue creatives
-router.delete('/batches/:id', async (req, res) => {
+router.delete('/batches/:id', authenticate, async (req, res) => {
   try {
     await pgQuery("UPDATE spy_creatives SET batch_id = NULL, batch_position = NULL, status = 'approved', updated_at = NOW() WHERE batch_id = $1", [req.params.id]);
     await pgQuery('DELETE FROM ad_launches WHERE batch_id = $1', [req.params.id]);
@@ -128,7 +129,7 @@ router.delete('/batches/:id', async (req, res) => {
 });
 
 // POST /batches/:id/auto-assemble — Auto-group by angle into batches of 6
-router.post('/batches/:id/auto-assemble', async (req, res) => {
+router.post('/batches/:id/auto-assemble', authenticate, async (req, res) => {
   // Note: the :id here is actually the product_id (for semantic clarity, use a body param instead)
   try {
     const { product_id, pipeline = 'standard', batch_size = 6 } = req.body;
@@ -185,7 +186,7 @@ router.post('/batches/:id/auto-assemble', async (req, res) => {
 });
 
 // POST /batches/:id/launch — Launch batch to Meta
-router.post('/batches/:id/launch', async (req, res) => {
+router.post('/batches/:id/launch', authenticate, async (req, res) => {
   try {
     if (!isMetaAdsConfigured()) {
       return res.status(400).json({ success: false, error: { message: 'Meta Ads API not configured. Set META_ACCESS_TOKEN and META_AD_ACCOUNT_IDS.' } });
@@ -269,7 +270,7 @@ router.post('/batches/:id/launch', async (req, res) => {
 });
 
 // GET /batches/:id/launch-status
-router.get('/batches/:id/launch-status', async (req, res) => {
+router.get('/batches/:id/launch-status', authenticate, async (req, res) => {
   try {
     const launches = await pgQuery('SELECT * FROM ad_launches WHERE batch_id = $1 ORDER BY created_at', [req.params.id]);
     res.json({ success: true, data: launches });

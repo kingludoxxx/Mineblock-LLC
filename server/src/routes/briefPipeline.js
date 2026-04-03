@@ -706,15 +706,25 @@ async function callGeminiWithRetry(models, requestBody) {
 }
 
 
+// Sanitize URL for safe shell usage — reject anything with shell metacharacters
+function sanitizeUrlForShell(url) {
+  if (!url || typeof url !== 'string') return null;
+  // Only allow http/https URLs with safe characters
+  if (!/^https?:\/\/[^\s"'`$;|&()<>\\]+$/.test(url)) return null;
+  return url;
+}
+
 // ── Smart URL extraction: handles FB Ad Library, Atria, direct video, HTML pages ──
 // ── Extract video URL from any page using yt-dlp ────────────────────
 // Extract video metadata (title, description, ad copy) using yt-dlp — no API needed
 async function extractMetadataWithYtdlp(pageUrl) {
   if (!existsSync(YTDLP_PATH)) return null;
+  const safeUrl = sanitizeUrlForShell(pageUrl);
+  if (!safeUrl) { console.warn('[BriefPipeline] Rejected unsafe URL for yt-dlp'); return null; }
   try {
-    console.log(`[BriefPipeline] Extracting metadata with yt-dlp: ${pageUrl.slice(0, 100)}`);
+    console.log(`[BriefPipeline] Extracting metadata with yt-dlp: ${safeUrl.slice(0, 100)}`);
     const result = execSync(
-      `"${YTDLP_PATH}" -j --no-warnings --skip-download "${pageUrl}"`,
+      `"${YTDLP_PATH}" -j --no-warnings --skip-download "${safeUrl}"`,
       { timeout: 45000, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }
     ).trim();
     const data = JSON.parse(result);
@@ -735,18 +745,20 @@ async function extractVideoUrlWithYtdlp(pageUrl, { audioOnly = false } = {}) {
     console.warn('[BriefPipeline] yt-dlp not available at', YTDLP_PATH);
     return null;
   }
+  const safeUrl = sanitizeUrlForShell(pageUrl);
+  if (!safeUrl) { console.warn('[BriefPipeline] Rejected unsafe URL for yt-dlp'); return null; }
 
   // For transcription: prefer smallest audio to avoid huge uploads to Gemini
   // For other uses: get best video
   const strategies = audioOnly ? [
     // Audio-only strategies (small files, fast transcription)
-    `"${YTDLP_PATH}" --get-url --no-warnings -f "worstaudio[ext=m4a]/worstaudio/worst" "${pageUrl}"`,
-    `"${YTDLP_PATH}" --get-url --no-warnings -f "bestaudio[ext=m4a]/bestaudio" "${pageUrl}"`,
-    `"${YTDLP_PATH}" --get-url --no-warnings -f "worst" "${pageUrl}"`,
+    `"${YTDLP_PATH}" --get-url --no-warnings -f "worstaudio[ext=m4a]/worstaudio/worst" "${safeUrl}"`,
+    `"${YTDLP_PATH}" --get-url --no-warnings -f "bestaudio[ext=m4a]/bestaudio" "${safeUrl}"`,
+    `"${YTDLP_PATH}" --get-url --no-warnings -f "worst" "${safeUrl}"`,
   ] : [
-    `"${YTDLP_PATH}" --get-url --no-warnings -f "best[ext=mp4]/best" "${pageUrl}"`,
-    `"${YTDLP_PATH}" --get-url --no-warnings -f "best" "${pageUrl}"`,
-    `"${YTDLP_PATH}" --get-url --no-warnings --force-generic-extractor "${pageUrl}"`,
+    `"${YTDLP_PATH}" --get-url --no-warnings -f "best[ext=mp4]/best" "${safeUrl}"`,
+    `"${YTDLP_PATH}" --get-url --no-warnings -f "best" "${safeUrl}"`,
+    `"${YTDLP_PATH}" --get-url --no-warnings --force-generic-extractor "${safeUrl}"`,
   ];
 
   for (let i = 0; i < strategies.length; i++) {
@@ -3204,6 +3216,9 @@ router.patch('/generated/:id', authenticate, async (req, res) => {
     const reqBody = req.body || {};
     const { status: newStatus, hooks, body: briefBody } = reqBody;
 
+    let contentUpdated = false;
+    let contentResult = null;
+
     // If content edit (hooks/body) - handle this BEFORE status change
     if (hooks !== undefined || briefBody !== undefined) {
       const setClauses = [];
@@ -3217,6 +3232,8 @@ router.patch('/generated/:id', authenticate, async (req, res) => {
         params
       );
       if (!rows.length) return res.status(404).json({ success: false, error: { message: 'Brief not found' } });
+      contentUpdated = true;
+      contentResult = rows[0];
       if (!newStatus) return res.json({ success: true, brief: rows[0] });
     }
 
@@ -3235,6 +3252,14 @@ router.patch('/generated/:id', authenticate, async (req, res) => {
       // Check if brief exists but is in wrong status
       const existing = await pgQuery(`SELECT id, status FROM brief_pipeline_generated WHERE id = $1`, [req.params.id]);
       if (existing.length) {
+        // If content was already saved, return 200 with a warning instead of 409
+        if (contentUpdated) {
+          return res.json({
+            success: true,
+            brief: contentResult,
+            warning: `Content was saved, but status could not be changed — brief is already "${existing[0].status}".`
+          });
+        }
         return res.status(409).json({ success: false, error: { message: `Brief is already "${existing[0].status}" and cannot be changed.` } });
       }
     }
