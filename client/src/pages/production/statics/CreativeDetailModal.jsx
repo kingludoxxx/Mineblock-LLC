@@ -12,6 +12,7 @@ import {
   Image,
   Loader2,
 } from 'lucide-react';
+import api from '../../../services/api';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -120,20 +121,57 @@ export function CreativeDetailModal({
   if (Array.isArray(adaptedText)) adaptedText = {};
 
   const [aiSuccess, setAiSuccess] = useState(false);
+  const [aiPolling, setAiPolling] = useState(false);
+  const [aiPollProgress, setAiPollProgress] = useState('');
 
   const handleAiSubmit = async () => {
     if (!aiInstruction.trim() || aiAdjusting) return;
     setAiAdjusting(true);
     setAiError(null);
     setAiSuccess(false);
+    setAiPolling(false);
+    setAiPollProgress('');
     try {
       await onAiAdjust?.(creative.id, aiInstruction.trim());
-      setAiSuccess(true);
-      setAiInstruction('');
+      // Start polling for updated image
+      setAiPolling(true);
+      setAiPollProgress('Waiting for AI to process...');
+      const originalImageUrl = creative.image_url;
+      let found = false;
+      for (let i = 0; i < 40; i++) {
+        await new Promise(r => setTimeout(r, 5000));
+        setAiPollProgress(`Checking for update... (${i + 1})`);
+        try {
+          const { data } = await api.get(`/statics-generation/creatives/${creative.id}`);
+          const updated = data?.data || data;
+          if (updated?.image_url && updated.image_url !== originalImageUrl) {
+            // Image was updated — refresh the creative in parent
+            creative.image_url = updated.image_url;
+            creative.generation_prompt = updated.generation_prompt;
+            creative.review_notes = updated.review_notes;
+            found = true;
+            break;
+          }
+          if (updated?.review_notes && updated.review_notes.startsWith('AI adjustment failed')) {
+            throw new Error(updated.review_notes);
+          }
+        } catch (pollErr) {
+          if (pollErr.message?.includes('AI adjustment failed')) throw pollErr;
+          // Network error during poll — continue trying
+        }
+      }
+      if (found) {
+        setAiSuccess(true);
+        setAiInstruction('');
+      } else {
+        setAiError('Adjustment timed out. The image may still update — try refreshing.');
+      }
     } catch (err) {
       setAiError(err.message || 'AI adjustment failed. Please try again.');
     } finally {
       setAiAdjusting(false);
+      setAiPolling(false);
+      setAiPollProgress('');
     }
   };
 
@@ -348,13 +386,19 @@ export function CreativeDetailModal({
                 className="mt-2 w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-accent-muted border border-accent/30 text-sm text-accent-text hover:bg-accent/20 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 {aiAdjusting ? (
-                  <><Loader2 className="w-4 h-4 animate-spin" /> Generating...</>
+                  <><Loader2 className="w-4 h-4 animate-spin" /> {aiPolling ? 'Regenerating...' : 'Submitting...'}</>
                 ) : (
                   <><Sparkles className="w-4 h-4" /> Regenerate with Correction</>
                 )}
               </button>
+              {aiPolling && aiPollProgress && (
+                <p className="text-xs text-violet-400 mt-1 flex items-center gap-1.5">
+                  <Loader2 className="w-3 h-3 animate-spin inline" />
+                  {aiPollProgress}
+                </p>
+              )}
               {aiSuccess && (
-                <p className="text-xs text-emerald-400 mt-1">✓ AI adjustment started. Close this modal and refresh the pipeline in ~1-2 minutes to see the updated image.</p>
+                <p className="text-xs text-emerald-400 mt-1">✓ Image updated successfully! Close and reopen to see the new version.</p>
               )}
               {aiError && (
                 <p className="text-xs text-red-400 mt-1">{aiError}</p>

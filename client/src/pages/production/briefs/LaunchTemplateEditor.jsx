@@ -364,7 +364,7 @@ export default function LaunchTemplateEditor({ open, onClose, template, onSaved 
             <ArrowLeft className="w-5 h-5" />
           </button>
           <MetaIcon className="w-5 h-5 text-[#0081FB]" />
-          <h2 className="text-base font-semibold text-white flex-1 truncate">
+          <h2 className="text-sm font-mono font-semibold text-white tracking-[0.15em] uppercase flex-1 truncate">
             {isEdit ? form.name || 'Edit Template' : 'New Launch Template'}
           </h2>
           <button

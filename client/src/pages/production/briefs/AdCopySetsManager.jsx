@@ -235,7 +235,7 @@ function EditCopySetModal({ copySet, onSave, onClose, saving }) {
               onChange={(e) => setForm((prev) => ({ ...prev, cta_button: e.target.value }))}
             >
               {CTA_OPTIONS.map((opt) => (
-                <option key={opt} value={opt} className="bg-[#1a1a1f] text-white">
+                <option key={opt} value={opt} className="bg-[#111113] text-white">
                   {opt.replace(/_/g, ' ')}
                 </option>
               ))}

@@ -1260,7 +1260,8 @@ export default function StaticsGeneration() {
               return { ratio: task.ratio, imageUrl: statusData.resultImageUrl, taskId: task.taskId };
             }
             if (statusData?.status === 'failed' || statusData?.error) {
-              throw new Error(`Failed for ${task.ratio}: ${statusData?.error || 'Unknown'}`);
+              const errMsg = statusData?.error || `Generation failed (code ${statusData?.successFlag || '?'})`;
+              throw new Error(`Failed for ${task.ratio}: ${errMsg}`);
             }
           }
           throw new Error(`Timed out for ${task.ratio}`);
@@ -1379,6 +1380,7 @@ export default function StaticsGeneration() {
       const pipeline = res.data?.data || {};
       const variants = res.data?.variants || [];
       const flat = [
+        ...(pipeline.generating || []),
         ...(pipeline.review || []),
         ...(pipeline.approved || []),
         ...(pipeline.ready || []),
@@ -1564,13 +1566,15 @@ export default function StaticsGeneration() {
     }
   }, [activeTab, activePipeline]);
 
-  // Auto-refresh pipeline when 9:16 variants are generating
+  // Auto-refresh pipeline when items are generating (variants or standalone)
   useEffect(() => {
-    const hasGenerating = creatives.some(c => c.parent_creative_id && c.status === 'generating');
-    if (!hasGenerating || activeTab !== 'pipeline') return;
-    const interval = setInterval(() => fetchCreatives(), 15000);
+    const hasGenerating = creatives.some(c => c.status === 'generating');
+    const hasQueueActive = queue.some(q => q.status === 'generating' || q.status === 'queued');
+    if ((!hasGenerating && !hasQueueActive) || activeTab !== 'pipeline') return;
+    // Refresh every 8s when actively generating for faster feedback
+    const interval = setInterval(() => fetchCreatives(), 8000);
     return () => clearInterval(interval);
-  }, [creatives, activeTab]);
+  }, [creatives, activeTab, queue]);
 
   // --- Render helpers ---
 
@@ -1877,12 +1881,12 @@ export default function StaticsGeneration() {
                             {item.references.length} ref{item.references.length !== 1 ? 's' : ''}
                           </span>
                           {/* Result info or error */}
-                          <span className="text-[11px] w-[100px] text-right truncate shrink-0">
+                          <span className={`text-[11px] text-right shrink-0 ${item.status === 'error' ? 'flex-1 min-w-[150px]' : 'w-[100px] truncate'}`}>
                             {item.status === 'done' && item.result?.creativeCount && (
                               <span className="text-emerald-400">{item.result.creativeCount} creative{item.result.creativeCount !== 1 ? 's' : ''}</span>
                             )}
                             {item.status === 'error' && (
-                              <span className="text-red-400 truncate" title={item.error}>{item.error}</span>
+                              <span className="text-red-400" title={item.error}>{item.error}</span>
                             )}
                           </span>
                           {/* Remove button (only for queued items) */}

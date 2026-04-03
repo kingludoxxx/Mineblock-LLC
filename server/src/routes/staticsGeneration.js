@@ -386,9 +386,16 @@ router.get('/status/:taskId', authenticate, async (req, res) => {
     const flag = Number(data.successFlag ?? data.data?.successFlag);
 
     let status;
+    let errorDetail = null;
     if (flag === 0 || isNaN(flag)) status = 'pending';
     else if (flag === 1)           status = 'completed';
-    else                           status = 'failed';
+    else {
+      status = 'failed';
+      // Extract actual error detail from NanoBanana response
+      errorDetail = data.error || data.data?.error || data.data?.message || data.message
+        || `NanoBanana generation failed (code ${flag})`;
+      console.error('[staticsGeneration] NanoBanana failed for task', taskId, '— flag:', flag, '— error:', errorDetail);
+    }
 
     const resultImageUrl = status === 'completed' ? extractNanoBananaImageUrl(data) : null;
 
@@ -402,6 +409,7 @@ router.get('/status/:taskId', authenticate, async (req, res) => {
         status,
         successFlag: flag,
         resultImageUrl,
+        error: errorDetail,
       },
     });
   } catch (err) {
@@ -685,13 +693,17 @@ router.get('/creatives/pipeline', authenticate, async (req, res) => {
 
     const rows = await pgQuery(query, params);
 
-    const pipeline = { review: [], approved: [], ready: [], launched: [] };
+    const pipeline = { generating: [], review: [], approved: [], ready: [], launched: [] };
     const variants = []; // generating/rejected variants tracked separately
     for (const row of rows) {
-      if (pipeline[row.status]) {
-        pipeline[row.status].push(row);
-      } else if (row.parent_creative_id && (row.status === 'generating' || row.status === 'rejected')) {
+      if (row.parent_creative_id && (row.status === 'generating' || row.status === 'rejected')) {
+        // Child variants go to variants array (shown as pills on parent)
         variants.push(row);
+      } else if (row.status === 'generating' && !row.parent_creative_id) {
+        // Standalone generating items go to generating column
+        pipeline.generating.push(row);
+      } else if (pipeline[row.status]) {
+        pipeline[row.status].push(row);
       }
     }
 
@@ -700,6 +712,7 @@ router.get('/creatives/pipeline', authenticate, async (req, res) => {
       data: pipeline,
       variants,
       counts: {
+        generating: pipeline.generating.length,
         review: pipeline.review.length,
         approved: pipeline.approved.length,
         ready: pipeline.ready.length,
@@ -852,14 +865,26 @@ router.post('/creatives/:id/ai-adjust', authenticate, async (req, res) => {
           ? (typeof creative.claude_analysis === 'string' ? creative.claude_analysis : JSON.stringify(creative.claude_analysis))
           : 'No prior analysis available.';
 
-        const claudeBody = {
-          model: 'claude-sonnet-4-20250514',
-          max_tokens: 2000,
-          messages: [{
-            role: 'user',
-            content: [{
-              type: 'text',
-              text: `You are an AI creative director. A user wants to adjust an existing ad creative.
+        // Build Claude message with vision — include the current image so Claude can SEE
+        // what needs to change instead of guessing from text descriptions
+        const claudeContent = [];
+
+        // Add the current creative image as vision input
+        if (creative.image_url) {
+          try {
+            const { base64, mediaType } = await resolveImage(creative.image_url);
+            claudeContent.push({
+              type: 'image',
+              source: { type: 'base64', media_type: mediaType, data: base64 },
+            });
+          } catch (imgErr) {
+            console.warn('[ai-adjust] Could not resolve image for vision, proceeding without:', imgErr.message);
+          }
+        }
+
+        claudeContent.push({
+          type: 'text',
+          text: `You are an AI creative director. A user wants to adjust an existing ad creative. The image above is the CURRENT creative that needs modification.
 
 Original creative analysis:
 ${existingAnalysis}
@@ -869,12 +894,26 @@ ${creative.generation_prompt || 'N/A'}
 
 User's adjustment instruction: "${instruction}"
 
-Generate an updated image generation prompt that applies the user's requested change while keeping everything else about the creative the same. Return ONLY a JSON object with:
+IMPORTANT: Look at the image carefully. The user wants you to recreate this EXACT image but with ONLY the change described above. Everything else must remain identical — same layout, same colors (unless the change involves colors), same text, same product placement, same composition.
+
+Generate an updated image generation prompt that:
+1. Describes the current image in full detail (layout, colors, text, product, composition)
+2. Applies ONLY the user's requested change
+3. Keeps everything else exactly the same
+
+Return ONLY a JSON object with:
 {
-  "adjusted_prompt": "the full updated generation prompt",
+  "adjusted_prompt": "the full updated generation prompt that recreates the image with only the requested change",
   "changes_summary": "brief description of what changed"
 }`,
-            }],
+        });
+
+        const claudeBody = {
+          model: 'claude-sonnet-4-20250514',
+          max_tokens: 2000,
+          messages: [{
+            role: 'user',
+            content: claudeContent,
           }],
         };
 

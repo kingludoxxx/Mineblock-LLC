@@ -20,6 +20,20 @@ import api from '../../../services/api';
 
 const COLUMNS = [
   {
+    key: 'generating',
+    label: 'Generating',
+    icon: Loader2,
+    color: 'violet',
+    iconClass: 'text-violet-400 drop-shadow-[0_0_6px_rgba(139,92,246,0.5)] animate-spin',
+    badgeBg: 'bg-violet-500/10',
+    badgeText: 'text-violet-400',
+    badgeBorder: 'border-violet-500/25',
+    placeholder: 'Queued items appear here',
+    actionLabel: null,
+    nextStatus: null,
+    noDropZone: true,
+  },
+  {
     key: 'review',
     label: 'To Review',
     icon: Eye,
@@ -74,6 +88,7 @@ const COLUMNS = [
 ];
 
 const STATUS_BADGE = {
+  generating: { bg: 'bg-violet-500/80', text: 'text-white', label: 'Generating' },
   review: { bg: 'bg-amber-500/80', text: 'text-white', label: 'To Review' },
   approved: { bg: 'bg-emerald-500/80', text: 'text-white', label: 'Approved' },
   ready: { bg: 'bg-purple-500/80', text: 'text-white', label: 'Ready' },
@@ -230,6 +245,7 @@ function PipelineColumn({ column, items, onStatusChange, onCardClick, allCreativ
   const [dragOver, setDragOver] = useState(false);
 
   const handleDrop = (e) => {
+    if (column.noDropZone) return;
     e.preventDefault();
     setDragOver(false);
     try {
@@ -243,9 +259,9 @@ function PipelineColumn({ column, items, onStatusChange, onCardClick, allCreativ
   return (
     <div
       className="flex flex-col min-w-[200px] max-w-[280px] flex-1 relative"
-      onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
-      onDragLeave={() => setDragOver(false)}
-      onDrop={handleDrop}
+      onDragOver={column.noDropZone ? undefined : (e) => { e.preventDefault(); setDragOver(true); }}
+      onDragLeave={column.noDropZone ? undefined : () => setDragOver(false)}
+      onDrop={column.noDropZone ? undefined : handleDrop}
     >
       {/* Column header */}
       <div className="flex items-center justify-between mb-4 pb-3 border-b border-white/[0.04] relative">
@@ -310,11 +326,15 @@ export function PipelineView({ creatives = [], onStatusChange, onCardClick, onRe
   // Bucket creatives into columns by status
   // Variants (9:16 children) are shown as pills on their parent card, not as separate cards
   const buckets = useMemo(() => {
-    const map = { review: [], approved: [], ready: [], launched: [] };
+    const map = { generating: [], review: [], approved: [], ready: [], launched: [] };
     for (const c of creatives) {
       if (c.status === 'rejected' || c.status === 'archived') continue;
       if (c.parent_creative_id) continue;
-      if (c.status === 'generating' || c.status === 'launching') continue;
+      if (c.status === 'launching') continue;
+      if (c.status === 'generating') {
+        map.generating.push(c);
+        continue;
+      }
       const status = c.status === 'queued' ? 'ready' : c.status;
       const key = status in map ? status : 'review';
       map[key].push(c);
