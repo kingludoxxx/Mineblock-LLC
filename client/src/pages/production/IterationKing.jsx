@@ -91,7 +91,7 @@ function AnimatedStatus({ steps }) {
 }
 
 // ── Power Meter ───────────────────────────────────────────────────
-function PowerMeter({ label, value, onChange, icon: Icon, color = '#00FF88' }) {
+function PowerMeter({ label, value, onChange, icon: Icon, color = '#c9a84c' }) {
   const segments = 10;
   const levelLabel =
     label === 'Script Aggressiveness'
@@ -116,7 +116,7 @@ function PowerMeter({ label, value, onChange, icon: Icon, color = '#00FF88' }) {
             <button key={i} onClick={() => onChange(i + 1)}
               className="flex-1 h-4 rounded-sm transition-all duration-200 cursor-pointer"
               style={{
-                background: active ? segColor : '#1E1E1E',
+                background: active ? segColor : 'rgba(255,255,255,0.04)',
                 boxShadow: active ? `0 0 8px ${segColor}44` : 'none',
                 opacity: active ? (0.5 + (i / segments) * 0.5) : 0.3,
               }} />
@@ -134,7 +134,7 @@ function PowerMeter({ label, value, onChange, icon: Icon, color = '#00FF88' }) {
 
 // ── Tone Badge ────────────────────────────────────────────────────
 const TONE_COLORS = {
-  Curiosity: '#00FF88', Authority: '#3B82F6', 'UGC Story': '#A78BFA', Emotional: '#F472B6',
+  Curiosity: '#c9a84c', Authority: '#3B82F6', 'UGC Story': '#A78BFA', Emotional: '#F472B6',
   'Direct Response': '#FF6B00', Minimalist: '#6B7280', Shock: '#EF4444', Contrarian: '#FBBF24',
   Urgency: '#FF6B00', 'Social Proof': '#10B981',
 };
@@ -158,8 +158,8 @@ function ScriptCard({ script, selected, onSelect, index }) {
     <div onClick={onSelect}
       className={`relative rounded-xl p-5 cursor-pointer transition-all duration-300 group ik-card-enter ${selected ? 'ik-selected-glow' : ''}`}
       style={{
-        background: '#111111',
-        border: selected ? '1px solid #00FF88' : '1px solid #1E1E1E',
+        background: 'rgba(255,255,255,0.02)',
+        border: selected ? '1px solid rgba(201,168,76,0.4)' : '1px solid rgba(255,255,255,0.04)',
         animationDelay: `${index * 60}ms`,
       }}>
       {selected && (
@@ -168,11 +168,11 @@ function ScriptCard({ script, selected, onSelect, index }) {
         </div>
       )}
       <div className="flex items-center justify-between mb-3">
-        <span className="text-xs font-mono font-semibold" style={{ color: selected ? '#00FF88' : '#666' }}>SCRIPT #{index + 1}</span>
+        <span className="text-xs font-mono font-semibold" style={{ color: selected ? '#c9a84c' : '#666' }}>SCRIPT #{index + 1}</span>
         <div className="flex items-center gap-2">
           <ToneBadge tone={script.toneLabel || 'Direct Response'} />
           <span className="text-[10px] font-mono px-1.5 py-0.5 rounded"
-            style={{ color: aggLevel >= 7 ? '#FF6B00' : '#9CA3AF', border: `1px solid ${aggLevel >= 7 ? '#FF6B0044' : '#1E1E1E'}`, background: aggLevel >= 7 ? '#FF6B0011' : 'transparent' }}>
+            style={{ color: aggLevel >= 7 ? '#FF6B00' : '#9CA3AF', border: `1px solid ${aggLevel >= 7 ? '#FF6B0044' : 'rgba(255,255,255,0.06)'}`, background: aggLevel >= 7 ? '#FF6B0011' : 'transparent' }}>
             AGG {aggLevel}
           </span>
         </div>
@@ -180,13 +180,13 @@ function ScriptCard({ script, selected, onSelect, index }) {
       <pre className="text-sm whitespace-pre-wrap font-sans leading-relaxed" style={{ color: '#E5E5E5' }}>{preview}</pre>
       {text.length > 220 && (
         <button onClick={(e) => { e.stopPropagation(); setExpanded(!expanded); }}
-          className="mt-3 text-xs font-medium hover:underline" style={{ color: '#00FF88' }}>
+          className="mt-3 text-xs font-medium hover:underline" style={{ color: '#c9a84c' }}>
           {expanded ? 'Show less' : 'Expand full script'}
         </button>
       )}
       {/* Hover glow */}
       <div className="absolute inset-0 rounded-xl opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none"
-        style={{ boxShadow: '0 0 24px #00FF8818, inset 0 0 24px #00FF8808' }} />
+        style={{ boxShadow: '0 0 24px rgba(201,168,76,0.09), inset 0 0 24px rgba(201,168,76,0.03)' }} />
     </div>
   );
 }
@@ -194,13 +194,13 @@ function ScriptCard({ script, selected, onSelect, index }) {
 // ── Hook Card ─────────────────────────────────────────────────────
 function HookCard({ hook, selected, onToggle, index }) {
   const strength = typeof hook.strength === 'number' ? hook.strength : parseFloat(hook.strength) || 5;
-  const strengthColor = strength >= 8 ? '#00FF88' : strength >= 5 ? '#FBBF24' : '#EF4444';
+  const strengthColor = strength >= 8 ? '#c9a84c' : strength >= 5 ? '#FBBF24' : '#EF4444';
   return (
     <div onClick={onToggle}
       className={`relative rounded-xl p-5 cursor-pointer transition-all duration-300 group ik-card-enter ${selected ? 'ik-selected-glow' : ''}`}
       style={{
-        background: '#111111',
-        border: selected ? '1px solid #00FF88' : '1px solid #1E1E1E',
+        background: 'rgba(255,255,255,0.02)',
+        border: selected ? '1px solid rgba(201,168,76,0.4)' : '1px solid rgba(255,255,255,0.04)',
         animationDelay: `${index * 60}ms`,
       }}>
       {selected && (
@@ -209,7 +209,7 @@ function HookCard({ hook, selected, onToggle, index }) {
         </div>
       )}
       <div className="flex items-center justify-between mb-3">
-        <span className="text-xs font-mono font-semibold" style={{ color: selected ? '#00FF88' : '#666' }}>HOOK #{index + 1}</span>
+        <span className="text-xs font-mono font-semibold" style={{ color: selected ? '#c9a84c' : '#666' }}>HOOK #{index + 1}</span>
         <div className="flex items-center gap-1.5">
           <span className="text-[10px] uppercase font-mono" style={{ color: '#555' }}>Strength</span>
           <span className="text-sm font-mono font-bold px-2 py-0.5 rounded"
@@ -220,11 +220,11 @@ function HookCard({ hook, selected, onToggle, index }) {
       </div>
       <p className="text-sm leading-relaxed mb-4" style={{ color: '#E5E5E5' }}>{hook.text || ''}</p>
       {/* Hook analysis grid */}
-      <div className="grid grid-cols-3 gap-3 pt-3" style={{ borderTop: '1px solid #1E1E1E' }}>
+      <div className="grid grid-cols-3 gap-3 pt-3" style={{ borderTop: '1px solid rgba(255,255,255,0.04)' }}>
         {[
-          { label: 'Curiosity', value: hook.curiosityTrigger || 'Medium', highColor: '#00FF88' },
+          { label: 'Curiosity', value: hook.curiosityTrigger || 'Medium', highColor: '#c9a84c' },
           { label: 'Clarity', value: hook.clarity || 'Medium', highColor: '#3B82F6' },
-          { label: 'Scroll Stop', value: hook.scrollStopProbability || 'Moderate', highColor: '#00FF88', highValue: 'Strong' },
+          { label: 'Scroll Stop', value: hook.scrollStopProbability || 'Moderate', highColor: '#c9a84c', highValue: 'Strong' },
         ].map((m) => {
           const isHigh = m.value === 'High' || m.value === (m.highValue || 'High');
           return (
@@ -239,7 +239,7 @@ function HookCard({ hook, selected, onToggle, index }) {
       </div>
       {/* Hover glow */}
       <div className="absolute inset-0 rounded-xl opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none"
-        style={{ boxShadow: '0 0 24px #A78BFA18, inset 0 0 24px #A78BFA08' }} />
+        style={{ boxShadow: '0 0 24px rgba(201,168,76,0.09), inset 0 0 24px rgba(201,168,76,0.03)' }} />
     </div>
   );
 }
@@ -252,7 +252,7 @@ function AIInsightPanel({ analysis, scripts, selectedScriptIdx }) {
   const rules = analysis.iterationRules;
   const selectedScript = selectedScriptIdx !== null ? scripts[selectedScriptIdx] : null;
   return (
-    <div className="rounded-xl p-4 ik-card-enter" style={{ background: '#111111', border: '1px solid #1E1E1E' }}>
+    <div className="rounded-xl p-4 ik-card-enter" style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.04)' }}>
       <div className="flex items-center gap-2 mb-3">
         <Brain className="w-3.5 h-3.5" style={{ color: '#3B82F6' }} />
         <span className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: '#9CA3AF' }}>AI Analysis</span>
@@ -260,7 +260,7 @@ function AIInsightPanel({ analysis, scripts, selectedScriptIdx }) {
       <div className="grid grid-cols-2 gap-3">
         <div>
           <div className="text-[9px] uppercase" style={{ color: '#444' }}>Core Angle</div>
-          <div className="text-sm font-semibold" style={{ color: '#00FF88' }}>{dna?.core_angle || '—'}</div>
+          <div className="text-sm font-semibold" style={{ color: '#c9a84c' }}>{dna?.core_angle || '—'}</div>
         </div>
         <div>
           <div className="text-[9px] uppercase" style={{ color: '#444' }}>Primary Emotion</div>
@@ -596,17 +596,17 @@ export default function IterationKing() {
   const showFinalAssembly = isQuickHooks ? (finalScript && selectedHookIdxs.size > 0) : isFullMode ? selectedScriptIdx !== null : (finalScript && selectedHookIdxs.size > 0);
 
   return (
-    <div className="p-6 pb-24 space-y-0" style={{ background: '#0A0A0A' }}>
+    <div className="p-6 pb-24 space-y-0 bg-[#111113] min-h-full">
 
       {/* ── HEADER ─────────────────────────────────────────────── */}
       <div className="flex items-center justify-between mb-10">
         <div className="flex items-center gap-4">
-          <div className="w-12 h-12 rounded-2xl flex items-center justify-center ik-logo-glow">
-            <Crown className="w-6 h-6" style={{ color: '#00FF88' }} />
+          <div className="w-12 h-12 rounded-2xl flex items-center justify-center bg-[#c9a84c]/10 border border-[#c9a84c]/20 shadow-[0_0_24px_rgba(201,168,76,0.15)]">
+            <Crown className="w-6 h-6 text-[#c9a84c]" />
           </div>
           <div>
             <h1 className="text-2xl font-bold text-white tracking-tight">Iteration King</h1>
-            <p className="text-xs mt-0.5" style={{ color: '#666' }}>AI-powered ad script iteration engine</p>
+            <p className="text-xs mt-0.5 text-zinc-600">AI-powered ad script iteration engine</p>
           </div>
         </div>
         <button onClick={handleReset} className="ik-btn-ghost">
@@ -620,12 +620,12 @@ export default function IterationKing() {
           const { active, done } = getStepState(step);
           return (
             <div key={step} className="flex items-center gap-2 shrink-0">
-              {i > 0 && <ChevronRight className="w-3.5 h-3.5" style={{ color: '#222' }} />}
+              {i > 0 && <ChevronRight className="w-3.5 h-3.5 text-zinc-800" />}
               <div className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-[11px] font-mono uppercase tracking-wider transition-all duration-300 ${active ? 'ik-pipeline-active' : ''}`}
                 style={{
-                  color: active || done ? '#00FF88' : '#444',
-                  background: active ? '#00FF8810' : done ? '#00FF8808' : 'transparent',
-                  border: active ? '1px solid #00FF8833' : '1px solid transparent',
+                  color: active || done ? '#c9a84c' : '#444',
+                  background: active ? 'rgba(201,168,76,0.06)' : done ? 'rgba(201,168,76,0.03)' : 'transparent',
+                  border: active ? '1px solid rgba(201,168,76,0.2)' : '1px solid transparent',
                 }}>
                 {done && !active && <CheckCircle2 className="w-3 h-3" />}
                 {active && <div className="w-1.5 h-1.5 rounded-full ik-pulse-dot" />}
@@ -668,22 +668,22 @@ export default function IterationKing() {
           {/* Source Brief */}
           <div className="ik-panel">
             <div className="ik-panel-header">
-              <Search className="w-4 h-4" style={{ color: '#00FF88' }} />
+              <Search className="w-4 h-4" style={{ color: '#c9a84c' }} />
               <span>Source Brief</span>
             </div>
             <div className="relative">
               <input type="text" value={searchQuery} onChange={(e) => handleSearch(e.target.value)}
                 placeholder="Search ClickUp brief by name or code..."
                 className="ik-input" />
-              {searchLoading && <Loader2 className="absolute right-3 top-3 w-4 h-4 animate-spin" style={{ color: '#00FF88' }} />}
+              {searchLoading && <Loader2 className="absolute right-3 top-3 w-4 h-4 animate-spin" style={{ color: '#c9a84c' }} />}
             </div>
 
             {searchResults.length > 0 && (
-              <div className="mt-2 rounded-lg max-h-60 overflow-y-auto" style={{ background: '#0A0A0A', border: '1px solid #1E1E1E' }}>
+              <div className="mt-2 rounded-lg max-h-60 overflow-y-auto" style={{ background: 'rgba(255,255,255,0.01)', border: '1px solid rgba(255,255,255,0.04)' }}>
                 {searchResults.map((r) => (
                   <button key={r.id} onClick={() => handleSelectBrief(r)}
-                    className="w-full text-left px-3 py-3 text-sm hover:bg-[#1A1A1A] transition-all"
-                    style={{ color: '#E5E5E5', borderBottom: '1px solid #151515' }}>
+                    className="w-full text-left px-3 py-3 text-sm hover:bg-white/[0.04] transition-all"
+                    style={{ color: '#E5E5E5', borderBottom: '1px solid rgba(255,255,255,0.03)' }}>
                     <div className="font-medium truncate">{r.name}</div>
                     <div className="text-[10px] mt-0.5 font-mono" style={{ color: '#555' }}>{r.status}</div>
                   </button>
@@ -692,7 +692,7 @@ export default function IterationKing() {
             )}
 
             {briefLoading && (
-              <div className="mt-4 flex items-center gap-2" style={{ color: '#00FF88' }}>
+              <div className="mt-4 flex items-center gap-2" style={{ color: '#c9a84c' }}>
                 <Loader2 className="w-4 h-4 animate-spin" />
                 <span className="text-sm font-mono">Loading brief...</span>
               </div>
@@ -709,7 +709,7 @@ export default function IterationKing() {
                     </a>
                   )}
                   <button onClick={() => { setSelectedBrief(null); setOriginalScript(''); setSearchQuery(''); setAnalysis(null); setScripts([]); setSelectedScriptIdx(null); setHooks([]); setSelectedHookIdxs(new Set()); setFinalScript(''); }}
-                    className="ml-auto text-[10px] font-mono uppercase tracking-wider px-2 py-0.5 rounded hover:bg-[#1E1E1E] transition-colors cursor-pointer"
+                    className="ml-auto text-[10px] font-mono uppercase tracking-wider px-2 py-0.5 rounded hover:bg-white/[0.04] transition-colors cursor-pointer"
                     style={{ color: '#EF4444', border: '1px solid #EF444433' }}>
                     Clear
                   </button>
@@ -727,7 +727,7 @@ export default function IterationKing() {
                 <span>Deep Analysis</span>
                 {analysis && (
                   <div className="flex items-center gap-2 ml-auto">
-                    <span className="text-[10px] font-mono" style={{ color: '#00FF88' }}>3 agents complete</span>
+                    <span className="text-[10px] font-mono" style={{ color: '#c9a84c' }}>3 agents complete</span>
                     <ChevronRight className="w-3.5 h-3.5 transition-transform duration-200" style={{ color: '#555', transform: analysisCollapsed ? 'rotate(0deg)' : 'rotate(90deg)' }} />
                   </div>
                 )}
@@ -742,10 +742,10 @@ export default function IterationKing() {
                   {/* Script DNA */}
                   {analysis.scriptDna && (
                     <div>
-                      <div className="text-[10px] uppercase tracking-wider font-bold mb-2" style={{ color: '#00FF88' }}>Script DNA</div>
+                      <div className="text-[10px] uppercase tracking-wider font-bold mb-2" style={{ color: '#c9a84c' }}>Script DNA</div>
                       <div className="space-y-2">
                         {[
-                          { l: 'Core Angle', v: analysis.scriptDna.core_angle, c: '#00FF88', b: true },
+                          { l: 'Core Angle', v: analysis.scriptDna.core_angle, c: '#c9a84c', b: true },
                           { l: 'Primary Emotion', v: analysis.scriptDna.primary_emotion },
                           { l: 'Belief Shift', v: analysis.scriptDna.belief_shift },
                           { l: 'Mechanism', v: analysis.scriptDna.mechanism },
@@ -759,7 +759,7 @@ export default function IterationKing() {
                         ))}
                       </div>
                       {analysis.scriptDna.narrative_structure && (
-                        <div className="mt-3 pt-3" style={{ borderTop: '1px solid #1A1A1A' }}>
+                        <div className="mt-3 pt-3" style={{ borderTop: '1px solid rgba(255,255,255,0.04)' }}>
                           <div className="text-[9px] uppercase tracking-wider mb-1" style={{ color: '#444' }}>Narrative Flow</div>
                           <p className="font-mono text-xs" style={{ color: '#9CA3AF' }}>
                             {[analysis.scriptDna.narrative_structure.hook_type, 'Problem', 'Explanation', analysis.scriptDna.narrative_structure.proof_moment ? 'Proof' : null, analysis.scriptDna.narrative_structure.contrast ? 'Contrast' : null, 'Resolution', 'CTA'].filter(Boolean).join(' → ')}
@@ -771,11 +771,11 @@ export default function IterationKing() {
 
                   {/* Psychology */}
                   {analysis.psychology && (
-                    <div className="pt-3" style={{ borderTop: '1px solid #1A1A1A' }}>
+                    <div className="pt-3" style={{ borderTop: '1px solid rgba(255,255,255,0.04)' }}>
                       <div className="text-[10px] uppercase tracking-wider font-bold mb-2" style={{ color: '#A78BFA' }}>Emotional Arc</div>
                       <div className="flex flex-wrap gap-1.5">
                         {analysis.psychology.emotional_arc && Object.entries(analysis.psychology.emotional_arc).map(([key, val]) => (
-                          <span key={key} className="text-[11px] px-2 py-0.5 rounded-full" style={{ background: '#1A1A2E', color: '#A78BFA', border: '1px solid #2D2B55' }}>
+                          <span key={key} className="text-[11px] px-2 py-0.5 rounded-full" style={{ background: 'rgba(167,139,250,0.06)', color: '#A78BFA', border: '1px solid rgba(167,139,250,0.15)' }}>
                             {val}
                           </span>
                         ))}
@@ -791,7 +791,7 @@ export default function IterationKing() {
 
                   {/* Iteration Rules */}
                   {analysis.iterationRules && (
-                    <div className="pt-3" style={{ borderTop: '1px solid #1A1A1A' }}>
+                    <div className="pt-3" style={{ borderTop: '1px solid rgba(255,255,255,0.04)' }}>
                       <div className="text-[10px] uppercase tracking-wider font-bold mb-2" style={{ color: '#3B82F6' }}>Iteration Boundaries</div>
                       <div className="space-y-2">
                         {analysis.iterationRules.must_stay_fixed?.length > 0 && (
@@ -804,7 +804,7 @@ export default function IterationKing() {
                         )}
                         {analysis.iterationRules.safe_iteration_directions?.length > 0 && (
                           <div>
-                            <div className="text-[9px] uppercase tracking-wider mb-0.5" style={{ color: '#00FF88' }}>Safe Directions</div>
+                            <div className="text-[9px] uppercase tracking-wider mb-0.5" style={{ color: '#c9a84c' }}>Safe Directions</div>
                             <ul className="text-[12px] space-y-0.5" style={{ color: '#9CA3AF' }}>
                               {analysis.iterationRules.safe_iteration_directions.slice(0, 4).map((r, i) => <li key={i}>• {r}</li>)}
                             </ul>
@@ -827,11 +827,11 @@ export default function IterationKing() {
               </div>
               <div className="space-y-6">
                 <PowerMeter label="Script Aggressiveness" value={aggressiveness} onChange={setAggressiveness}
-                  icon={Flame} color={aggressiveness >= 7 ? '#FF6B00' : '#00FF88'} />
+                  icon={Flame} color={aggressiveness >= 7 ? '#FF6B00' : '#c9a84c'} />
                 <PowerMeter label="Similarity to Original" value={similarity} onChange={setSimilarity}
                   icon={Target} color="#3B82F6" />
 
-                <div className="pt-4" style={{ borderTop: '1px solid #1E1E1E' }}>
+                <div className="pt-4" style={{ borderTop: '1px solid rgba(255,255,255,0.04)' }}>
                   <span className="text-[10px] uppercase tracking-wider font-semibold" style={{ color: '#444' }}>Generation Mode</span>
                   <div className="flex gap-1 mt-2.5">
                     {[{ key: 'quick-hooks', label: '5 Hooks' }, { key: 'iterate', label: 'Script Body' }, { key: 'full', label: 'Full Script' }].map((m) => (
@@ -870,12 +870,12 @@ export default function IterationKing() {
           {isQuickHooks && hooksLoading && hooks.length === 0 && (
             <div>
               <div className="flex items-center gap-2 mb-5">
-                <Zap className="w-4 h-4" style={{ color: '#00FF88' }} />
+                <Zap className="w-4 h-4" style={{ color: '#c9a84c' }} />
                 <span className="text-xs font-semibold uppercase tracking-wider" style={{ color: '#9CA3AF' }}>Generating 5 Hook Variations...</span>
               </div>
               <div className="grid grid-cols-1 gap-4">
                 {Array.from({ length: 5 }, (_, i) => (
-                  <div key={i} className="rounded-xl p-5 ik-skeleton-card" style={{ background: '#111111', border: '1px solid #1E1E1E', animationDelay: `${i * 100}ms` }}>
+                  <div key={i} className="rounded-xl p-5 ik-skeleton-card" style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.04)', animationDelay: `${i * 100}ms` }}>
                     <div className="h-3 w-24 rounded ik-skeleton-line mb-3" />
                     <div className="h-3 w-full rounded ik-skeleton-line mb-2" />
                     <div className="h-3 w-3/4 rounded ik-skeleton-line" />
@@ -889,21 +889,21 @@ export default function IterationKing() {
             <div>
               <div className="flex items-center justify-between mb-5">
                 <div className="flex items-center gap-2">
-                  <Zap className="w-4 h-4" style={{ color: '#00FF88' }} />
+                  <Zap className="w-4 h-4" style={{ color: '#c9a84c' }} />
                   <span className="text-xs font-semibold uppercase tracking-wider" style={{ color: '#9CA3AF' }}>
                     Hook Variations ({hooks.length})
                   </span>
                 </div>
                 {selectedHookIdxs.size > 0 && (
-                  <span className="text-xs font-semibold" style={{ color: '#00FF88' }}>{selectedHookIdxs.size} hook{selectedHookIdxs.size > 1 ? 's' : ''} selected</span>
+                  <span className="text-xs font-semibold" style={{ color: '#c9a84c' }}>{selectedHookIdxs.size} hook{selectedHookIdxs.size > 1 ? 's' : ''} selected</span>
                 )}
               </div>
               <div className="grid grid-cols-1 gap-4">
                 {hooks.map((hook, idx) => {
                   const isSelected = selectedHookIdxs.has(idx);
-                  const angleColors = { 'Shock': '#EF4444', 'Curiosity': '#00FF88', 'Authority': '#3B82F6', 'Contrarian': '#FBBF24', 'Social Proof': '#10B981' };
+                  const angleColors = { 'Shock': '#EF4444', 'Curiosity': '#c9a84c', 'Authority': '#3B82F6', 'Contrarian': '#FBBF24', 'Social Proof': '#10B981' };
                   const color = angleColors[hook.angle] || '#6B7280';
-                  const sspColor = hook.scrollStopProbability === 'Strong' ? '#00FF88' : hook.scrollStopProbability === 'Moderate' ? '#FBBF24' : '#EF4444';
+                  const sspColor = hook.scrollStopProbability === 'Strong' ? '#c9a84c' : hook.scrollStopProbability === 'Moderate' ? '#FBBF24' : '#EF4444';
                   return (
                     <div
                       key={idx}
@@ -911,7 +911,7 @@ export default function IterationKing() {
                       className="rounded-xl p-5 cursor-pointer transition-all"
                       style={{
                         background: isSelected ? '#111' : '#0F0F0F',
-                        border: isSelected ? `1px solid ${color}55` : '1px solid #1E1E1E',
+                        border: isSelected ? `1px solid ${color}55` : '1px solid rgba(255,255,255,0.04)',
                         boxShadow: isSelected ? `0 0 20px ${color}15` : 'none',
                         animation: `slideUp 0.4s ease-out ${idx * 80}ms both`,
                       }}
@@ -929,10 +929,10 @@ export default function IterationKing() {
                         </div>
                         <div className="flex items-center gap-2">
                           <span className="text-[10px]" style={{ color: '#666' }}>Strength</span>
-                          <span className="text-sm font-bold" style={{ color: hook.strength >= 7 ? '#00FF88' : hook.strength >= 5 ? '#FBBF24' : '#EF4444' }}>
+                          <span className="text-sm font-bold" style={{ color: hook.strength >= 7 ? '#c9a84c' : hook.strength >= 5 ? '#FBBF24' : '#EF4444' }}>
                             {hook.strength}/10
                           </span>
-                          {isSelected && <div className="w-2 h-2 rounded-full" style={{ background: '#00FF88' }} />}
+                          {isSelected && <div className="w-2 h-2 rounded-full" style={{ background: '#c9a84c' }} />}
                         </div>
                       </div>
                       <p className="text-sm text-white leading-relaxed mb-2">{hook.text}</p>
@@ -950,14 +950,14 @@ export default function IterationKing() {
           {scriptsLoading && scripts.length === 0 && (
             <div>
               <div className="flex items-center gap-2 mb-5">
-                <Zap className="w-4 h-4" style={{ color: '#00FF88' }} />
+                <Zap className="w-4 h-4" style={{ color: '#c9a84c' }} />
                 <span className="text-xs font-semibold uppercase tracking-wider" style={{ color: '#9CA3AF' }}>
                   {isFullMode ? 'Generating Full Ad Scripts...' : 'Generating Script Variations...'}
                 </span>
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
                 {Array.from({ length: 6 }, (_, i) => (
-                  <div key={i} className="rounded-xl p-5 ik-skeleton-card" style={{ background: '#111111', border: '1px solid #1E1E1E', animationDelay: `${i * 100}ms` }}>
+                  <div key={i} className="rounded-xl p-5 ik-skeleton-card" style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.04)', animationDelay: `${i * 100}ms` }}>
                     <div className="flex items-center justify-between mb-4">
                       <div className="h-3 w-20 rounded ik-skeleton-line" />
                       <div className="h-4 w-24 rounded ik-skeleton-line" />
@@ -979,7 +979,7 @@ export default function IterationKing() {
           {scripts.length > 0 && (
             <div>
               <div className="flex items-center gap-2 mb-5">
-                <Zap className="w-4 h-4" style={{ color: '#00FF88' }} />
+                <Zap className="w-4 h-4" style={{ color: '#c9a84c' }} />
                 <span className="text-xs font-semibold uppercase tracking-wider" style={{ color: '#9CA3AF' }}>
                   {isFullMode ? 'Full Ad Scripts' : 'Script Variations'} ({scripts.length})
                 </span>
@@ -1034,9 +1034,9 @@ export default function IterationKing() {
 
           {/* Final Assembly */}
           {showFinalAssembly && (
-            <div className="ik-panel ik-card-enter" style={{ border: '1px solid #00FF8833', boxShadow: '0 0 40px #00FF8811' }}>
+            <div className="ik-panel ik-card-enter" style={{ border: '1px solid rgba(201,168,76,0.2)', boxShadow: '0 0 40px rgba(201,168,76,0.07)' }}>
               <div className="ik-panel-header">
-                <Target className="w-4 h-4" style={{ color: '#00FF88' }} />
+                <Target className="w-4 h-4" style={{ color: '#c9a84c' }} />
                 <span>Final Script Assembly</span>
               </div>
               <textarea value={getEffectiveFinalText()} onChange={(e) => setFinalScript(e.target.value)} rows={12}
@@ -1045,7 +1045,7 @@ export default function IterationKing() {
                 <button onClick={handleMoveToBriefAgent} className={`ik-btn-move ${moveSuccess ? 'ik-btn-move-done' : ''}`}>
                   {moveSuccess ? <><CheckCircle2 className="w-4 h-4" /> Script sent to Brief Agent!</> : <><Rocket className="w-4 h-4" /> Move to Brief Agent</>}
                 </button>
-                <button onClick={handleCopy} className="ik-btn-ghost" style={{ border: '1px solid #1E1E1E', color: copied ? '#00FF88' : '#9CA3AF' }}>
+                <button onClick={handleCopy} className="ik-btn-ghost" style={{ border: '1px solid rgba(255,255,255,0.05)', color: copied ? '#c9a84c' : '#9CA3AF' }}>
                   {copied ? <CheckCircle2 className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
                   {copied ? 'Copied!' : 'Copy'}
                 </button>
@@ -1063,10 +1063,10 @@ export default function IterationKing() {
               <p className="text-sm mt-1" style={{ color: '#333' }}>
                 {selectedBrief ? 'Adjust controls and hit generate' : 'Search and select a winning brief to begin'}
               </p>
-              <div className="flex gap-6 mt-8 text-[11px] font-mono" style={{ color: '#2A2A2A' }}>
-                <span className="px-2 py-1 rounded" style={{ border: '1px solid #1A1A1A' }}>Cmd+Enter</span>
-                <span className="px-2 py-1 rounded" style={{ border: '1px solid #1A1A1A' }}>Cmd+H</span>
-                <span className="px-2 py-1 rounded" style={{ border: '1px solid #1A1A1A' }}>Cmd+B</span>
+              <div className="flex gap-6 mt-8 text-[11px] font-mono" style={{ color: '#333' }}>
+                <span className="px-2 py-1 rounded" style={{ border: '1px solid rgba(255,255,255,0.04)' }}>Cmd+Enter</span>
+                <span className="px-2 py-1 rounded" style={{ border: '1px solid rgba(255,255,255,0.04)' }}>Cmd+H</span>
+                <span className="px-2 py-1 rounded" style={{ border: '1px solid rgba(255,255,255,0.04)' }}>Cmd+B</span>
               </div>
             </div>
           )}
@@ -1077,58 +1077,57 @@ export default function IterationKing() {
       <style>{`
         /* Animations */
         @keyframes slideUp { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: translateY(0); } }
-        @keyframes pulseGlow { 0%, 100% { box-shadow: 0 0 20px #00FF8833, 0 0 40px #00FF8811; } 50% { box-shadow: 0 0 30px #00FF8855, 0 0 60px #00FF8822; } }
+        @keyframes pulseGlow { 0%, 100% { box-shadow: 0 0 20px rgba(201,168,76,0.2), 0 0 40px rgba(201,168,76,0.07); } 50% { box-shadow: 0 0 30px rgba(201,168,76,0.35), 0 0 60px rgba(201,168,76,0.12); } }
         @keyframes pulseDot { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.5; transform: scale(0.7); } }
-        @keyframes borderPulse { 0%, 100% { border-color: #00FF8844; } 50% { border-color: #00FF8888; } }
+        @keyframes borderPulse { 0%, 100% { border-color: rgba(201,168,76,0.25); } 50% { border-color: rgba(201,168,76,0.5); } }
         @keyframes checkPop { from { transform: scale(0); } to { transform: scale(1); } }
         @keyframes skeletonPulse { 0%, 100% { opacity: 0.15; } 50% { opacity: 0.3; } }
 
         .ik-card-enter { animation: slideUp 0.4s ease-out both; }
         .ik-selected-glow { animation: pulseGlow 2s ease-in-out infinite; }
-        .ik-pulse-dot { background: #00FF88; animation: pulseDot 1.5s ease-in-out infinite; }
-        .ik-glow-text { color: #00FF88; text-shadow: 0 0 8px #00FF8844; }
-        .ik-check-badge { background: #00FF88; animation: checkPop 0.3s cubic-bezier(0.34, 1.56, 0.64, 1); }
+        .ik-pulse-dot { background: #c9a84c; animation: pulseDot 1.5s ease-in-out infinite; }
+        .ik-glow-text { color: #e8d5a3; text-shadow: 0 0 8px rgba(201,168,76,0.3); }
+        .ik-check-badge { background: #c9a84c; animation: checkPop 0.3s cubic-bezier(0.34, 1.56, 0.64, 1); }
         .ik-generating { animation: borderPulse 1.5s ease-in-out infinite !important; }
         .ik-pipeline-active { animation: borderPulse 2s ease-in-out infinite; }
-        .ik-logo-glow { background: #00FF8815; box-shadow: 0 0 24px #00FF8822, 0 0 48px #00FF8811; }
 
         /* Skeleton */
         .ik-skeleton-card { animation: slideUp 0.4s ease-out both; }
-        .ik-skeleton-line { background: #1E1E1E; animation: skeletonPulse 1.5s ease-in-out infinite; }
+        .ik-skeleton-line { background: rgba(255,255,255,0.04); animation: skeletonPulse 1.5s ease-in-out infinite; }
 
         /* Panels */
-        .ik-panel { background: #111111; border: 1px solid #1E1E1E; border-radius: 16px; padding: 24px; }
-        .ik-panel-header { display: flex; align-items: center; gap: 8px; margin-bottom: 20px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: #9CA3AF; }
+        .ik-panel { background: rgba(255,255,255,0.02); backdrop-filter: blur(12px); border: 1px solid rgba(255,255,255,0.04); border-radius: 16px; padding: 24px; }
+        .ik-panel-header { display: flex; align-items: center; gap: 8px; margin-bottom: 20px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.15em; color: #c9a84c; font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace; }
 
         /* Inputs */
-        .ik-input { width: 100%; padding: 10px 14px; font-size: 14px; border-radius: 10px; color: #fff; background: #0A0A0A; border: 1px solid #1E1E1E; outline: none; transition: all 0.2s; }
-        .ik-input:focus { border-color: #00FF8844; box-shadow: 0 0 0 3px #00FF8815; }
+        .ik-input { width: 100%; padding: 10px 14px; font-size: 14px; border-radius: 10px; color: #fff; background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.05); outline: none; transition: all 0.2s; }
+        .ik-input:focus { border-color: rgba(201,168,76,0.3); box-shadow: 0 0 0 3px rgba(201,168,76,0.08); }
         .ik-input::placeholder { color: #444; }
 
         /* Script box */
-        .ik-script-box { background: #0A0A0A; border: 1px solid #1E1E1E; border-radius: 10px; padding: 14px; max-height: 260px; overflow-y: auto; font-size: 13px; white-space: pre-wrap; line-height: 1.6; color: #E5E5E5; }
+        .ik-script-box { background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.05); border-radius: 10px; padding: 14px; max-height: 260px; overflow-y: auto; font-size: 13px; white-space: pre-wrap; line-height: 1.6; color: #E5E5E5; }
 
         /* Buttons */
-        .ik-btn-primary { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 14px 20px; border-radius: 12px; font-size: 14px; font-weight: 700; color: #00FF88; background: linear-gradient(135deg, #00FF8818, #00FF8808); border: 1px solid #00FF8844; box-shadow: 0 0 24px #00FF8822; transition: all 0.3s; cursor: pointer; }
-        .ik-btn-primary:hover:not(:disabled) { box-shadow: 0 0 36px #00FF8833; background: linear-gradient(135deg, #00FF8825, #00FF8812); }
-        .ik-btn-primary:disabled { opacity: 0.35; cursor: not-allowed; box-shadow: none; }
+        .ik-btn-primary { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 14px 20px; border-radius: 12px; font-size: 13px; font-weight: 700; font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace; text-transform: uppercase; letter-spacing: 0.05em; color: #111113; background: linear-gradient(135deg, #c9a84c, #d4b55a); border: none; box-shadow: 0 0 20px rgba(201,168,76,0.25), 0 1px 3px rgba(0,0,0,0.4), inset 0 1px 0 0 rgba(255,255,255,0.2); transition: all 0.3s; cursor: pointer; }
+        .ik-btn-primary:hover:not(:disabled) { box-shadow: 0 0 28px rgba(201,168,76,0.35), 0 1px 3px rgba(0,0,0,0.4); }
+        .ik-btn-primary:disabled { opacity: 0.35; cursor: not-allowed; box-shadow: none; background: rgba(201,168,76,0.1); color: #c9a84c; border: 1px solid rgba(201,168,76,0.2); }
 
-        .ik-btn-secondary { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 14px 20px; border-radius: 12px; font-size: 14px; font-weight: 700; color: #A78BFA; background: linear-gradient(135deg, #A78BFA18, #A78BFA08); border: 1px solid #A78BFA44; box-shadow: 0 0 24px #A78BFA22; transition: all 0.3s; cursor: pointer; }
-        .ik-btn-secondary:hover:not(:disabled) { box-shadow: 0 0 36px #A78BFA33; }
+        .ik-btn-secondary { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 14px 20px; border-radius: 12px; font-size: 13px; font-weight: 700; font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace; text-transform: uppercase; letter-spacing: 0.05em; color: #A78BFA; background: rgba(167,139,250,0.06); border: 1px solid rgba(167,139,250,0.25); box-shadow: 0 0 20px rgba(167,139,250,0.1); transition: all 0.3s; cursor: pointer; }
+        .ik-btn-secondary:hover:not(:disabled) { box-shadow: 0 0 28px rgba(167,139,250,0.2); }
         .ik-btn-secondary:disabled { opacity: 0.35; cursor: not-allowed; box-shadow: none; }
 
-        .ik-btn-ghost { display: flex; align-items: center; gap: 6px; padding: 8px 14px; border-radius: 8px; font-size: 12px; color: #9CA3AF; background: transparent; border: none; cursor: pointer; transition: all 0.2s; }
-        .ik-btn-ghost:hover { color: #fff; background: #1E1E1E; }
+        .ik-btn-ghost { display: flex; align-items: center; gap: 6px; padding: 8px 14px; border-radius: 8px; font-size: 12px; color: #9CA3AF; background: transparent; border: 1px solid rgba(255,255,255,0.05); cursor: pointer; transition: all 0.2s; }
+        .ik-btn-ghost:hover { color: #fff; background: rgba(255,255,255,0.04); border-color: rgba(255,255,255,0.1); }
 
-        .ik-btn-move { display: flex; align-items: center; gap: 8px; padding: 14px 28px; border-radius: 12px; font-size: 14px; font-weight: 800; color: #0A0A0A; background: linear-gradient(135deg, #00FF88, #00CC6A); border: none; box-shadow: 0 0 36px #00FF8844; cursor: pointer; transition: all 0.3s; }
-        .ik-btn-move:hover { box-shadow: 0 0 48px #00FF8866; transform: translateY(-1px); }
-        .ik-btn-move-done { background: #16a34a; box-shadow: 0 0 24px #16a34a44; }
+        .ik-btn-move { display: flex; align-items: center; gap: 8px; padding: 14px 28px; border-radius: 12px; font-size: 14px; font-weight: 800; color: #111113; background: linear-gradient(135deg, #c9a84c, #d4b55a); border: none; box-shadow: 0 0 30px rgba(201,168,76,0.3); cursor: pointer; transition: all 0.3s; }
+        .ik-btn-move:hover { box-shadow: 0 0 40px rgba(201,168,76,0.45); transform: translateY(-1px); }
+        .ik-btn-move-done { background: #16a34a; box-shadow: 0 0 24px rgba(22,163,74,0.25); }
 
-        .ik-mode-active { background: #00FF8818; border: 1px solid #00FF8844; color: #00FF88; }
-        .ik-mode-inactive { background: #0A0A0A; border: 1px solid #1E1E1E; color: #666; }
+        .ik-mode-active { background: rgba(201,168,76,0.08); border: 1px solid rgba(201,168,76,0.25); color: #e8d5a3; }
+        .ik-mode-inactive { background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.05); color: #666; }
         .ik-mode-active:hover, .ik-mode-inactive:hover { opacity: 0.9; }
 
-        .ik-empty-icon { background: #111111; border: 1px solid #1A1A1A; }
+        .ik-empty-icon { background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.04); }
 
         /* Scrollbar */
         .ik-script-box::-webkit-scrollbar, .ik-sidebar-scroll::-webkit-scrollbar { width: 4px; }
