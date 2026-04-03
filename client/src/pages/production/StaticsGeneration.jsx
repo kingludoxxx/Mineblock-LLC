@@ -2469,6 +2469,8 @@ export default function StaticsGeneration() {
         <AdCopySetsManager
           open
           onClose={() => setCopySetsOpen(false)}
+          productId={selectedProductId}
+          productName={productName}
         />
       )}
     </div>

@@ -312,9 +312,9 @@ export function PipelineView({ creatives = [], onStatusChange, onCardClick, onRe
   const buckets = useMemo(() => {
     const map = { review: [], approved: [], ready: [], launched: [] };
     for (const c of creatives) {
-      if (c.status === 'rejected') continue;
+      if (c.status === 'rejected' || c.status === 'archived') continue;
       if (c.parent_creative_id) continue;
-      if (c.status === 'generating') continue;
+      if (c.status === 'generating' || c.status === 'launching') continue;
       const status = c.status === 'queued' ? 'ready' : c.status;
       const key = status in map ? status : 'review';
       map[key].push(c);

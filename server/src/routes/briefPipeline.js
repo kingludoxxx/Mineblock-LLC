@@ -25,7 +25,7 @@ const MEDIA_BUYING_LIST = '901518769621';
 const CLICKUP_API = 'https://api.clickup.com/api/v2';
 const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN || '';
 const META_AD_ACCOUNT_IDS = (process.env.META_AD_ACCOUNT_IDS || '').split(',').filter(Boolean);
-const META_GRAPH_URL = 'https://graph.facebook.com/v22.0';
+const META_GRAPH_URL = 'https://graph.facebook.com/v21.0';
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
 const CLAUDE_API_URL = 'https://api.anthropic.com/v1/messages';
 const CLAUDE_MODEL = 'claude-sonnet-4-6';
@@ -4072,7 +4072,10 @@ router.post('/settings/prompts/reset', authenticate, async (_req, res) => {
 let launchTablesPromise = null;
 async function ensureLaunchTables() {
   if (launchTablesPromise) return launchTablesPromise;
-  launchTablesPromise = _initLaunchTables();
+  launchTablesPromise = _initLaunchTables().catch(err => {
+    launchTablesPromise = null;
+    throw err;
+  });
   return launchTablesPromise;
 }
 async function _initLaunchTables() {

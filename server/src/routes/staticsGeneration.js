@@ -636,7 +636,7 @@ router.patch('/creatives/:id/status', authenticate, async (req, res) => {
   try {
     await ensureCreativesTable();
     const { status } = req.body;
-    const validStatuses = ['generating', 'review', 'approved', 'ready', 'queued', 'launched', 'rejected', 'archived'];
+    const validStatuses = ['generating', 'review', 'approved', 'ready', 'queued', 'launching', 'launched', 'rejected', 'archived'];
     if (!validStatuses.includes(status)) {
       return res.status(400).json({ success: false, error: { message: `Invalid status. Must be one of: ${validStatuses.join(', ')}` } });
     }
@@ -1294,6 +1294,13 @@ router.post('/launch', authenticate, async (req, res) => {
     res.json({ success: true, data: { results, adset_id: adsetId, adset_name: adsetName } });
   } catch (err) {
     console.error('[StaticsGeneration] Launch error:', err);
+    // Reset any stuck 'launching' creatives back to 'ready'
+    if (req.body.creative_ids?.length) {
+      await pgQuery(
+        `UPDATE spy_creatives SET status = 'ready' WHERE id = ANY($1) AND status = 'launching'`,
+        [req.body.creative_ids]
+      ).catch(() => {});
+    }
     res.status(500).json({ success: false, error: { message: err.message } });
   }
 });

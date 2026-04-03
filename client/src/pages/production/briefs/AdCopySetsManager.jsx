@@ -104,11 +104,11 @@ function EditCopySetModal({ copySet, onSave, onClose, saving }) {
 
   return (
     <div className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/60" onClick={onClose} />
-      <div className="relative w-full max-w-2xl max-h-[85vh] flex flex-col bg-[#1a1a1f] border border-white/[0.08] rounded-2xl shadow-2xl animate-in slide-in-from-bottom-4">
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative w-full max-w-2xl max-h-[85vh] flex flex-col bg-[#111113] border border-white/[0.08] rounded-xl shadow-2xl animate-in slide-in-from-bottom-4">
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-white/[0.06]">
-          <h3 className="text-white font-semibold text-base">
+          <h3 className="text-sm font-mono font-semibold text-white uppercase tracking-wide">
             Edit Copy Set — <span className="text-[#c9a84c]">{copySet.angle}</span>
           </h3>
           <button onClick={onClose} className="text-white/40 hover:text-white transition-colors">
@@ -434,35 +434,35 @@ export default function AdCopySetsManager({ open, onClose, productId, productNam
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       {/* Backdrop */}
-      <div className="absolute inset-0 bg-[#131315]/95 backdrop-blur-xl" onClick={onClose} />
+      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
 
       {/* Modal */}
-      <div className="relative w-full max-w-4xl max-h-[90vh] flex flex-col bg-[#18181b] border border-white/[0.08] rounded-2xl shadow-2xl">
+      <div className="relative w-full max-w-4xl max-h-[90vh] flex flex-col bg-[#111113] border border-white/[0.08] rounded-xl shadow-2xl">
         {/* Header */}
         <div className="flex items-center justify-between gap-3 px-6 py-4 border-b border-white/[0.06]">
           <div className="flex items-center gap-3 min-w-0">
             <FileText className="w-5 h-5 text-[#c9a84c] shrink-0" />
-            <h2 className="text-white font-semibold text-lg truncate">
-              Ad Copy Sets — <span className="text-[#c9a84c]">{productName}</span>
+            <h2 className="text-sm font-mono font-semibold text-white uppercase tracking-wide truncate">
+              Ad Copy Sets {productName && <>— <span className="text-[#c9a84c]">{productName}</span></>}
             </h2>
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
             <button
               onClick={handleDownloadTemplate}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-white/60 hover:text-white border border-white/[0.08] hover:border-white/[0.15] transition-colors"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-mono font-medium text-zinc-400 uppercase tracking-wide border border-white/[0.05] hover:border-white/[0.1] hover:text-zinc-200 transition-colors"
             >
-              <Download className="w-3.5 h-3.5" /> Download Template
+              <Download className="w-3.5 h-3.5" /> Template
             </button>
             <button
               onClick={handleUploadCSV}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-white/60 hover:text-white border border-white/[0.08] hover:border-white/[0.15] transition-colors"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-mono font-medium text-zinc-400 uppercase tracking-wide border border-white/[0.05] hover:border-white/[0.1] hover:text-zinc-200 transition-colors"
             >
-              <Upload className="w-3.5 h-3.5" /> Upload CSV
+              <Upload className="w-3.5 h-3.5" /> CSV
             </button>
             <button
               onClick={() => { setAddingAngle(true); setNewAngleName(''); }}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-[#c9a84c] hover:bg-[#d4b55a] text-[#111113] transition-colors"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-mono font-semibold uppercase tracking-wide bg-[#c9a84c] hover:bg-[#d4b55a] text-[#111113] transition-colors"
             >
               <Plus className="w-3.5 h-3.5" /> Add Angle
             </button>
