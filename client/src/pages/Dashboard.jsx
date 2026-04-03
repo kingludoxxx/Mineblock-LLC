@@ -420,13 +420,13 @@ export default function Dashboard() {
           ))}
         </div>
 
+        {/* Daily Breakdown */}
+        {!loading && <DailyBreakdown current={current} date={date} />}
+
         {/* Revenue Overview Chart */}
         {!loading && chartData.length > 0 && (
           <RevenueChart sparklines={chartData} />
         )}
-
-        {/* Daily Breakdown */}
-        {!loading && <DailyBreakdown current={current} date={date} />}
       </div>
     </div>
   );
