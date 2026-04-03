@@ -1,28 +1,109 @@
 import { useState, useEffect } from 'react';
 import {
-  X, FileSearch, Dna, Brain, Shield, Sparkles, BarChart3, Link, ArrowRight,
-  Package, Layers, Save, RotateCcw, Loader2, Check, ChevronRight,
+  X,
+  FileText,
+  Package,
+  Dna,
+  Brain,
+  Shield,
+  GitBranch,
+  Sparkles,
+  Trophy,
+  ArrowDown,
+  Save,
+  RotateCcw,
+  Loader2,
+  Check,
+  ChevronRight,
+  AlertCircle,
 } from 'lucide-react';
 import api from '../../../services/api';
 
-const STEP_ICONS = { FileSearch, Dna, Brain, Shield, Sparkles, BarChart3, Link, Package, Layers };
+// ---------------------------------------------------------------------------
+// Pipeline step definitions
+// ---------------------------------------------------------------------------
 
 const PIPELINE_STEPS = [
-  { icon: 'FileSearch', title: 'Script Parser', desc: 'Extracts hooks, body, and CTA from raw script text', color: '#9CA3AF' },
-  { icon: 'Package', title: 'Product Profile', desc: 'Fetches full product data from Product Library', color: '#3B82F6' },
-  { icon: 'Dna', title: 'Script DNA Agent', desc: 'Core angle, mechanism, narrative structure, structural skeleton', color: '#C9A227' },
-  { icon: 'Brain', title: 'Psychology Agent', desc: 'Emotional arc, hook analysis, audience profiling', color: '#A78BFA' },
-  { icon: 'Shield', title: 'Iteration Rules Agent', desc: 'What stays fixed, what can vary, high-risk changes', color: '#F59E0B' },
-  { icon: 'Layers', title: 'Direction Builder', desc: 'Creates iteration directions from safe variation paths', color: '#6B7280' },
-  { icon: 'Sparkles', title: 'Brief Generator', desc: '1 body + 3 hooks per direction, section-by-section rephrasing', color: '#C9A227' },
-  { icon: 'BarChart3', title: 'Scorer + Blend Check', desc: '5-dimension scoring + hook-body continuity validation', color: '#EF4444' },
+  {
+    icon: FileText,
+    title: 'Script Parser',
+    desc: 'Extracts hooks, body, and CTA from raw script text',
+    color: '#9CA3AF',
+  },
+  {
+    icon: Package,
+    title: 'Product Profile',
+    desc: 'Fetches full product data from the Product Library',
+    color: '#3B82F6',
+  },
+  {
+    icon: Dna,
+    title: 'Script DNA Agent',
+    desc: 'Core angle, mechanism, narrative structure, structural skeleton',
+    color: '#C9A84C',
+    parallel: true,
+  },
+  {
+    icon: Brain,
+    title: 'Psychology Agent',
+    desc: 'Emotional arc, hook analysis, audience profiling',
+    color: '#A78BFA',
+    parallel: true,
+  },
+  {
+    icon: Shield,
+    title: 'Iteration Rules Agent',
+    desc: 'What stays fixed, what can vary, high-risk changes',
+    color: '#F59E0B',
+    parallel: true,
+  },
+  {
+    icon: GitBranch,
+    title: 'Direction Builder',
+    desc: 'Creates iteration directions from safe variation paths',
+    color: '#6B7280',
+  },
+  {
+    icon: Sparkles,
+    title: 'Brief Generator',
+    desc: '1 body + 3 hooks per direction, section-by-section rephrasing',
+    color: '#C9A84C',
+  },
+  {
+    icon: Trophy,
+    title: 'Scorer + Blend Check',
+    desc: '5-dimension scoring + hook-body continuity validation',
+    color: '#EF4444',
+  },
 ];
 
+// ---------------------------------------------------------------------------
+// Prompt type display names for the sidebar
+// ---------------------------------------------------------------------------
+
+const PROMPT_TYPE_META = {
+  scriptParser:    { label: 'Script Parser',      icon: FileText,  color: '#9CA3AF' },
+  scriptDna:       { label: 'Script DNA',         icon: Dna,       color: '#C9A84C' },
+  psychology:      { label: 'Psychology',          icon: Brain,     color: '#A78BFA' },
+  iterationRules:  { label: 'Iteration Rules',    icon: Shield,    color: '#F59E0B' },
+  generator:       { label: 'Generator',          icon: Sparkles,  color: '#C9A84C' },
+  scorer:          { label: 'Scorer',             icon: Trophy,    color: '#EF4444' },
+  blendValidator:  { label: 'Blend Validator',    icon: Check,     color: '#10B981' },
+};
+
+const PROMPT_KEYS = Object.keys(PROMPT_TYPE_META);
+
+// ---------------------------------------------------------------------------
+// PipelineSettingsModal
+// ---------------------------------------------------------------------------
+
 export default function PipelineSettingsModal({ open, onClose }) {
-  const [tab, setTab] = useState('overview'); // 'overview' | 'prompts'
-  const [promptTypes, setPromptTypes] = useState([]);
+  const [tab, setTab] = useState('overview');
+
+  // Prompt editor state
   const [defaults, setDefaults] = useState({});
   const [custom, setCustom] = useState({});
+  const [promptTypes, setPromptTypes] = useState([]);
   const [selectedPrompt, setSelectedPrompt] = useState(null);
   const [editSystem, setEditSystem] = useState('');
   const [editUser, setEditUser] = useState('');
@@ -30,7 +111,9 @@ export default function PipelineSettingsModal({ open, onClose }) {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [hasChanges, setHasChanges] = useState(false);
+  const [error, setError] = useState(null);
 
+  // ── Fetch prompts on open ────────────────────────────────────────────
   useEffect(() => {
     if (!open) return;
     loadPrompts();
@@ -38,21 +121,25 @@ export default function PipelineSettingsModal({ open, onClose }) {
 
   const loadPrompts = async () => {
     setLoading(true);
+    setError(null);
     try {
       const { data } = await api.get('/brief-pipeline/settings/prompts');
-      setPromptTypes(data.promptTypes || []);
+      const types = data.promptTypes || [];
+      setPromptTypes(types);
       setDefaults(data.defaults || {});
       setCustom(data.custom || {});
-      if (data.promptTypes?.length && !selectedPrompt) {
-        selectPrompt(data.promptTypes[0].key, data.custom, data.defaults);
+      if (types.length && !selectedPrompt) {
+        selectPrompt(types[0].key, data.custom, data.defaults);
       }
     } catch (err) {
       console.error('Failed to load prompts:', err);
+      setError('Failed to load prompts. Make sure the backend endpoints are available.');
     } finally {
       setLoading(false);
     }
   };
 
+  // ── Select a prompt type ─────────────────────────────────────────────
   const selectPrompt = (key, customOverride, defaultsOverride) => {
     const c = customOverride || custom;
     const d = defaultsOverride || defaults;
@@ -60,14 +147,26 @@ export default function PipelineSettingsModal({ open, onClose }) {
     setEditSystem(c[key]?.system || d[key]?.system || '');
     setEditUser(c[key]?.user || d[key]?.user || '');
     setHasChanges(false);
+    setSaved(false);
   };
 
-  const handleSystemChange = (v) => { setEditSystem(v); setHasChanges(true); setSaved(false); };
-  const handleUserChange = (v) => { setEditUser(v); setHasChanges(true); setSaved(false); };
+  const handleSystemChange = (v) => {
+    setEditSystem(v);
+    setHasChanges(true);
+    setSaved(false);
+  };
 
+  const handleUserChange = (v) => {
+    setEditUser(v);
+    setHasChanges(true);
+    setSaved(false);
+  };
+
+  // ── Save current prompt ──────────────────────────────────────────────
   const handleSave = async () => {
     if (!selectedPrompt) return;
     setSaving(true);
+    setError(null);
     try {
       const updated = { ...custom, [selectedPrompt]: { system: editSystem, user: editUser } };
       await api.put('/brief-pipeline/settings/prompts', { prompts: updated });
@@ -77,11 +176,13 @@ export default function PipelineSettingsModal({ open, onClose }) {
       setTimeout(() => setSaved(false), 2000);
     } catch (err) {
       console.error('Failed to save prompts:', err);
+      setError('Failed to save. Please try again.');
     } finally {
       setSaving(false);
     }
   };
 
+  // ── Reset single prompt to default ───────────────────────────────────
   const handleResetOne = () => {
     if (!selectedPrompt || !defaults[selectedPrompt]) return;
     setEditSystem(defaults[selectedPrompt].system || '');
@@ -90,8 +191,10 @@ export default function PipelineSettingsModal({ open, onClose }) {
     setSaved(false);
   };
 
+  // ── Reset all prompts to defaults ────────────────────────────────────
   const handleResetAll = async () => {
     setSaving(true);
+    setError(null);
     try {
       await api.post('/brief-pipeline/settings/prompts/reset');
       setCustom({});
@@ -104,6 +207,7 @@ export default function PipelineSettingsModal({ open, onClose }) {
       setTimeout(() => setSaved(false), 2000);
     } catch (err) {
       console.error('Failed to reset prompts:', err);
+      setError('Failed to reset. Please try again.');
     } finally {
       setSaving(false);
     }
@@ -111,40 +215,73 @@ export default function PipelineSettingsModal({ open, onClose }) {
 
   if (!open) return null;
 
-  const currentType = promptTypes.find(p => p.key === selectedPrompt);
-  const isCustomized = custom[selectedPrompt]?.system || custom[selectedPrompt]?.user;
+  // Resolve display info for the selected prompt
+  const currentMeta = selectedPrompt
+    ? (promptTypes.find(p => p.key === selectedPrompt) || PROMPT_TYPE_META[selectedPrompt])
+    : null;
+  const isCustomized = !!(custom[selectedPrompt]?.system || custom[selectedPrompt]?.user);
+
+  // Build sidebar list — prefer server-provided promptTypes, fall back to local
+  const sidebarItems = promptTypes.length
+    ? promptTypes.map(pt => ({
+        key: pt.key,
+        label: pt.label || PROMPT_TYPE_META[pt.key]?.label || pt.key,
+        icon: PROMPT_TYPE_META[pt.key]?.icon || Sparkles,
+        color: PROMPT_TYPE_META[pt.key]?.color || '#9CA3AF',
+      }))
+    : PROMPT_KEYS.map(key => ({
+        key,
+        label: PROMPT_TYPE_META[key].label,
+        icon: PROMPT_TYPE_META[key].icon,
+        color: PROMPT_TYPE_META[key].color,
+      }));
 
   return (
     <div className="fixed inset-0 z-50 flex">
       {/* Backdrop */}
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
 
-      {/* Panel */}
-      <div className="relative ml-auto w-full max-w-[900px] h-full bg-bg-card border-l border-border-default flex flex-col overflow-hidden">
-        {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-border-default">
-          <div>
-            <h2 className="text-base font-bold text-text-primary">Pipeline Settings</h2>
-            <p className="text-[11px] text-text-faint mt-0.5">Configure analysis agents and generation prompts</p>
+      {/* Slide-over panel from right */}
+      <div
+        className="relative ml-auto w-full max-w-[920px] h-full bg-[#111113] border-l border-white/[0.06] flex flex-col overflow-hidden shadow-2xl"
+        style={{ animation: 'slideInRight 0.25s ease-out' }}
+      >
+        {/* ── Header ──────────────────────────────────────────────────── */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-white/[0.06] shrink-0">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-lg bg-[#c9a84c]/10 border border-[#c9a84c]/20 flex items-center justify-center">
+              <Sparkles className="w-4 h-4 text-[#c9a84c]" />
+            </div>
+            <div>
+              <h2 className="text-sm font-mono font-semibold text-white uppercase tracking-wide">
+                Pipeline Settings
+              </h2>
+              <p className="text-[11px] text-zinc-500 mt-0.5">
+                Configure analysis agents and generation prompts
+              </p>
+            </div>
           </div>
-          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-bg-hover text-text-muted hover:text-text-primary transition-colors cursor-pointer">
+          <button
+            onClick={onClose}
+            className="p-1.5 rounded-lg hover:bg-white/[0.05] text-zinc-500 hover:text-white transition-colors cursor-pointer"
+          >
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        {/* Tab bar */}
-        <div className="flex border-b border-border-default px-5">
+        {/* ── Tab bar ─────────────────────────────────────────────────── */}
+        <div className="flex border-b border-white/[0.06] px-6 shrink-0">
           {[
             { key: 'overview', label: 'Pipeline Overview' },
             { key: 'prompts', label: 'Prompt Editor' },
-          ].map(t => (
+          ].map((t) => (
             <button
               key={t.key}
               onClick={() => setTab(t.key)}
-              className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors cursor-pointer ${
+              className={`px-4 py-2.5 text-xs font-mono font-medium uppercase tracking-wide border-b-2 transition-colors cursor-pointer ${
                 tab === t.key
-                  ? 'text-[#C9A227] border-[#C9A227]'
-                  : 'text-text-faint border-transparent hover:text-text-muted'
+                  ? 'text-[#d4b55a] border-[#c9a84c]'
+                  : 'text-zinc-500 border-transparent hover:text-zinc-300'
               }`}
             >
               {t.label}
@@ -152,180 +289,345 @@ export default function PipelineSettingsModal({ open, onClose }) {
           ))}
         </div>
 
-        {/* Content */}
-        <div className="flex-1 overflow-y-auto">
+        {/* ── Error toast ─────────────────────────────────────────────── */}
+        {error && (
+          <div className="mx-6 mt-4 flex items-center gap-2 px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/20 text-xs text-red-300">
+            <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+            <span className="flex-1">{error}</span>
+            <button
+              onClick={() => setError(null)}
+              className="text-red-400 hover:text-red-200 font-mono uppercase tracking-wide text-[10px] cursor-pointer"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
+
+        {/* ── Content ─────────────────────────────────────────────────── */}
+        <div className="flex-1 overflow-hidden">
           {tab === 'overview' ? (
-            /* Pipeline Overview */
-            <div className="p-5 space-y-1">
-              <p className="text-[11px] text-text-faint mb-4">Each winning ad goes through this 8-step pipeline before briefs are generated.</p>
-              {PIPELINE_STEPS.map((step, i) => {
-                const Icon = STEP_ICONS[step.icon] || Sparkles;
-                const isParallel = i >= 2 && i <= 4;
-                return (
-                  <div key={i}>
-                    <div className="flex items-start gap-3 py-3 px-3 rounded-lg hover:bg-bg-hover transition-colors">
-                      <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: `${step.color}15` }}>
-                        <Icon className="w-4 h-4" style={{ color: step.color }} />
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs font-mono font-bold" style={{ color: step.color }}>Step {i + 1}</span>
-                          <span className="text-sm font-semibold text-text-primary">{step.title}</span>
-                          {isParallel && (
-                            <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-[#C9A227]/10 text-[#C9A227] font-medium">parallel</span>
-                          )}
-                        </div>
-                        <p className="text-[12px] text-text-faint mt-0.5">{step.desc}</p>
-                      </div>
-                    </div>
-                    {i < PIPELINE_STEPS.length - 1 && (
-                      <div className="flex justify-center py-0.5">
-                        <div className="w-px h-3" style={{ background: 'rgba(255,255,255,0.06)' }} />
-                      </div>
+            <PipelineOverview />
+          ) : (
+            <PromptEditor
+              sidebarItems={sidebarItems}
+              selectedPrompt={selectedPrompt}
+              custom={custom}
+              currentMeta={currentMeta}
+              isCustomized={isCustomized}
+              editSystem={editSystem}
+              editUser={editUser}
+              loading={loading}
+              saving={saving}
+              saved={saved}
+              hasChanges={hasChanges}
+              onSelect={(key) => selectPrompt(key)}
+              onSystemChange={handleSystemChange}
+              onUserChange={handleUserChange}
+              onSave={handleSave}
+              onResetOne={handleResetOne}
+              onResetAll={handleResetAll}
+            />
+          )}
+        </div>
+      </div>
+
+      {/* Slide-in animation */}
+      <style>{`
+        @keyframes slideInRight {
+          from { transform: translateX(100%); opacity: 0.8; }
+          to   { transform: translateX(0);    opacity: 1; }
+        }
+      `}</style>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Tab 1: Pipeline Overview
+// ---------------------------------------------------------------------------
+
+function PipelineOverview() {
+  return (
+    <div className="h-full overflow-y-auto p-6">
+      <p className="text-[11px] text-zinc-500 font-mono uppercase tracking-wide mb-6">
+        Each script goes through this 8-step pipeline before briefs are generated
+      </p>
+
+      <div className="relative max-w-xl mx-auto">
+        {PIPELINE_STEPS.map((step, i) => {
+          const Icon = step.icon;
+          const isParallel = step.parallel;
+
+          return (
+            <div key={i}>
+              {/* Step card */}
+              <div className="flex items-start gap-4 group">
+                {/* Left: step number + icon */}
+                <div className="flex flex-col items-center shrink-0">
+                  <div
+                    className="w-10 h-10 rounded-xl flex items-center justify-center border transition-colors"
+                    style={{
+                      background: `${step.color}10`,
+                      borderColor: `${step.color}25`,
+                    }}
+                  >
+                    <Icon className="w-5 h-5" style={{ color: step.color }} />
+                  </div>
+                </div>
+
+                {/* Right: title + description */}
+                <div className="flex-1 pt-0.5 pb-4">
+                  <div className="flex items-center gap-2.5">
+                    <span
+                      className="text-[10px] font-mono font-bold uppercase tracking-wider"
+                      style={{ color: step.color }}
+                    >
+                      Step {i + 1}
+                    </span>
+                    <h3 className="text-sm font-semibold text-white">{step.title}</h3>
+                    {isParallel && (
+                      <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-[#c9a84c]/10 text-[#c9a84c] border border-[#c9a84c]/20 font-mono font-medium uppercase tracking-wide">
+                        parallel
+                      </span>
                     )}
                   </div>
-                );
-              })}
-              <div className="mt-4 p-3 rounded-lg bg-[#C9A227]/5 border border-[#C9A227]/10">
-                <p className="text-[11px] text-[#C9A227]">
-                  Steps 3-5 run in parallel on Sonnet for speed (~8s). Steps 7-8 run all variations in parallel. Total pipeline: ~20 seconds.
-                </p>
-              </div>
-            </div>
-          ) : (
-            /* Prompt Editor */
-            <div className="flex h-full">
-              {/* Prompt list sidebar */}
-              <div className="w-[200px] border-r border-border-default overflow-y-auto py-2">
-                {loading ? (
-                  <div className="flex items-center justify-center py-8">
-                    <Loader2 className="w-4 h-4 animate-spin text-text-faint" />
-                  </div>
-                ) : (
-                  promptTypes.map(pt => {
-                    const Icon = STEP_ICONS[pt.icon] || Sparkles;
-                    const isActive = selectedPrompt === pt.key;
-                    const isCustom = !!custom[pt.key];
-                    return (
-                      <button
-                        key={pt.key}
-                        onClick={() => selectPrompt(pt.key)}
-                        className={`w-full flex items-center gap-2 px-3 py-2 text-left transition-colors cursor-pointer ${
-                          isActive ? 'bg-bg-elevated' : 'hover:bg-bg-hover'
-                        }`}
-                      >
-                        <Icon className="w-3.5 h-3.5 flex-shrink-0" style={{ color: isActive ? '#C9A227' : '#555' }} />
-                        <div className="flex-1 min-w-0">
-                          <div className="text-[11px] font-medium truncate" style={{ color: isActive ? '#C9A227' : '#ccc' }}>{pt.label}</div>
-                        </div>
-                        {isCustom && <div className="w-1.5 h-1.5 rounded-full bg-[#F59E0B] flex-shrink-0" title="Customized" />}
-                        {isActive && <ChevronRight className="w-3 h-3 text-[#C9A227] flex-shrink-0" />}
-                      </button>
-                    );
-                  })
-                )}
-                <div className="px-3 pt-3 mt-2 border-t border-border-default">
-                  <button
-                    onClick={handleResetAll}
-                    disabled={saving || !Object.keys(custom).length}
-                    className="w-full flex items-center justify-center gap-1.5 py-1.5 text-[10px] font-medium text-red-400 bg-red-500/10 rounded border border-red-500/20 hover:bg-red-500/20 transition-colors cursor-pointer disabled:opacity-30"
-                  >
-                    <RotateCcw className="w-3 h-3" />
-                    Reset All to Default
-                  </button>
+                  <p className="text-[12px] text-zinc-500 mt-1 leading-relaxed">
+                    {step.desc}
+                  </p>
                 </div>
               </div>
 
-              {/* Editor panel */}
-              <div className="flex-1 overflow-y-auto p-4 space-y-4">
-                {selectedPrompt && currentType ? (
-                  <>
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <h3 className="text-sm font-bold text-text-primary">{currentType.label}</h3>
-                        <p className="text-[11px] text-text-faint mt-0.5">{currentType.description}</p>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        {isCustomized && (
-                          <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-amber-500/15 text-amber-400 font-medium">customized</span>
-                        )}
-                        <button
-                          onClick={handleResetOne}
-                          className="flex items-center gap-1 px-2 py-1 text-[10px] text-text-muted bg-bg-elevated rounded border border-border-default hover:bg-bg-hover transition-colors cursor-pointer"
-                        >
-                          <RotateCcw className="w-3 h-3" />
-                          Reset
-                        </button>
-                      </div>
+              {/* Connector line */}
+              {i < PIPELINE_STEPS.length - 1 && (
+                <div className="flex items-center gap-4 -mt-1 mb-1">
+                  <div className="w-10 flex justify-center">
+                    <div className="flex flex-col items-center">
+                      <div className="w-px h-4 bg-white/[0.06]" />
+                      <ArrowDown className="w-3 h-3 text-white/[0.12]" />
                     </div>
-
-                    {/* System prompt */}
-                    <div>
-                      <div className="flex items-center justify-between mb-1">
-                        <label className="text-[10px] uppercase tracking-wider font-semibold text-text-faint">System Prompt</label>
-                        <span className="text-[10px] text-text-faint font-mono">{editSystem.length} chars</span>
-                      </div>
-                      <textarea
-                        value={editSystem}
-                        onChange={(e) => handleSystemChange(e.target.value)}
-                        rows={4}
-                        className="w-full bg-bg-elevated border border-border-default rounded-lg p-3 text-xs text-text-primary font-mono resize-y focus:outline-none focus:border-accent/50 transition-colors"
-                        placeholder="System prompt..."
-                      />
-                    </div>
-
-                    {/* User prompt */}
-                    <div>
-                      <div className="flex items-center justify-between mb-1">
-                        <label className="text-[10px] uppercase tracking-wider font-semibold text-text-faint">User Prompt Template</label>
-                        <span className="text-[10px] text-text-faint font-mono">{editUser.length} chars</span>
-                      </div>
-                      <textarea
-                        value={editUser}
-                        onChange={(e) => handleUserChange(e.target.value)}
-                        rows={12}
-                        className="w-full bg-bg-elevated border border-border-default rounded-lg p-3 text-xs text-text-primary font-mono resize-y focus:outline-none focus:border-accent/50 transition-colors"
-                        placeholder="User prompt template... (use {{variable}} for dynamic values)"
-                      />
-                      <p className="text-[10px] text-text-faint mt-1">
-                        Note: User prompts contain dynamic template variables (product context, script, analysis) that are injected at runtime.
-                      </p>
-                    </div>
-
-                    {/* Save button */}
-                    <div className="flex items-center gap-3 pt-2">
-                      <button
-                        onClick={handleSave}
-                        disabled={!hasChanges || saving}
-                        className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
-                        style={{
-                          background: saved ? '#C9A227' : hasChanges ? 'linear-gradient(135deg, #C9A227, #B8922A)' : '#1a1a1a',
-                          color: saved ? '#000' : hasChanges ? '#000' : '#555',
-                        }}
-                      >
-                        {saving ? (
-                          <Loader2 className="w-4 h-4 animate-spin" />
-                        ) : saved ? (
-                          <Check className="w-4 h-4" />
-                        ) : (
-                          <Save className="w-4 h-4" />
-                        )}
-                        {saved ? 'Saved' : 'Save Prompt'}
-                      </button>
-                      {hasChanges && !saved && (
-                        <span className="text-[11px] text-amber-400">Unsaved changes</span>
-                      )}
-                    </div>
-                  </>
-                ) : (
-                  <div className="flex items-center justify-center h-full text-text-faint text-sm">
-                    Select a prompt from the sidebar
                   </div>
-                )}
-              </div>
+                  <div className="flex-1" />
+                </div>
+              )}
             </div>
+          );
+        })}
+      </div>
+
+      {/* Info box */}
+      <div className="max-w-xl mx-auto mt-6 p-3.5 rounded-lg bg-[#c9a84c]/5 border border-[#c9a84c]/10">
+        <p className="text-[11px] text-[#c9a84c] leading-relaxed">
+          Steps 3-5 run in parallel on Sonnet for speed (~8s). Steps 7-8 run all variations in parallel.
+          Total pipeline: ~20 seconds per generation.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Tab 2: Prompt Editor
+// ---------------------------------------------------------------------------
+
+function PromptEditor({
+  sidebarItems,
+  selectedPrompt,
+  custom,
+  currentMeta,
+  isCustomized,
+  editSystem,
+  editUser,
+  loading,
+  saving,
+  saved,
+  hasChanges,
+  onSelect,
+  onSystemChange,
+  onUserChange,
+  onSave,
+  onResetOne,
+  onResetAll,
+}) {
+  return (
+    <div className="flex h-full">
+      {/* ── Left sidebar: prompt type list ──────────────────────────── */}
+      <div className="w-[210px] border-r border-white/[0.06] flex flex-col shrink-0 overflow-hidden">
+        <div className="flex-1 overflow-y-auto py-2">
+          {loading ? (
+            <div className="flex items-center justify-center py-12">
+              <Loader2 className="w-4 h-4 animate-spin text-zinc-600" />
+            </div>
+          ) : (
+            sidebarItems.map((item) => {
+              const Icon = item.icon;
+              const isActive = selectedPrompt === item.key;
+              const isCustom = !!custom[item.key];
+              return (
+                <button
+                  key={item.key}
+                  onClick={() => onSelect(item.key)}
+                  className={`w-full flex items-center gap-2.5 px-4 py-2.5 text-left transition-all cursor-pointer ${
+                    isActive
+                      ? 'bg-white/[0.04] border-r-2 border-[#c9a84c]'
+                      : 'hover:bg-white/[0.02] border-r-2 border-transparent'
+                  }`}
+                >
+                  <Icon
+                    className="w-3.5 h-3.5 shrink-0"
+                    style={{ color: isActive ? item.color : '#555' }}
+                  />
+                  <span
+                    className={`text-[11px] font-medium truncate ${
+                      isActive ? 'text-white' : 'text-zinc-400'
+                    }`}
+                  >
+                    {item.label}
+                  </span>
+                  {isCustom && (
+                    <div
+                      className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0 ml-auto"
+                      title="Customized"
+                    />
+                  )}
+                </button>
+              );
+            })
           )}
         </div>
+
+        {/* Reset all button */}
+        <div className="px-3 py-3 border-t border-white/[0.06]">
+          <button
+            onClick={onResetAll}
+            disabled={saving || !Object.keys(custom).length}
+            className="w-full flex items-center justify-center gap-1.5 py-2 text-[10px] font-mono font-medium uppercase tracking-wide
+                       text-red-400 bg-red-500/5 rounded-lg border border-red-500/15
+                       hover:bg-red-500/10 hover:border-red-500/25 transition-colors cursor-pointer
+                       disabled:opacity-30 disabled:cursor-not-allowed"
+          >
+            <RotateCcw className="w-3 h-3" />
+            Reset All to Default
+          </button>
+        </div>
+      </div>
+
+      {/* ── Right panel: editor ─────────────────────────────────────── */}
+      <div className="flex-1 overflow-y-auto p-5 space-y-5">
+        {selectedPrompt && currentMeta ? (
+          <>
+            {/* Prompt header */}
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-sm font-semibold text-white">
+                  {currentMeta.label || selectedPrompt}
+                </h3>
+                {currentMeta.description && (
+                  <p className="text-[11px] text-zinc-500 mt-0.5">{currentMeta.description}</p>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                {isCustomized && (
+                  <span className="text-[9px] px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20 font-mono uppercase tracking-wide">
+                    customized
+                  </span>
+                )}
+                <button
+                  onClick={onResetOne}
+                  className="flex items-center gap-1 px-2.5 py-1.5 text-[10px] font-mono uppercase tracking-wide
+                             text-zinc-400 bg-white/[0.03] rounded-lg border border-white/[0.06]
+                             hover:bg-white/[0.06] hover:text-zinc-200 transition-colors cursor-pointer"
+                >
+                  <RotateCcw className="w-3 h-3" />
+                  Reset
+                </button>
+              </div>
+            </div>
+
+            {/* System prompt textarea */}
+            <div>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="font-mono text-[10px] text-[#c9a84c] uppercase tracking-[0.15em] font-semibold">
+                  System Prompt
+                </label>
+                <span className="text-[10px] text-zinc-600 font-mono">
+                  {editSystem.length.toLocaleString()} chars
+                </span>
+              </div>
+              <textarea
+                value={editSystem}
+                onChange={(e) => onSystemChange(e.target.value)}
+                rows={5}
+                className="w-full bg-white/[0.02] border border-white/[0.06] rounded-lg p-3 text-xs text-white font-mono
+                           resize-y focus:outline-none focus:ring-1 focus:ring-[#c9a84c]/30 focus:border-[#c9a84c]/20
+                           placeholder-white/20 transition-colors leading-relaxed"
+                placeholder="System prompt..."
+              />
+            </div>
+
+            {/* User prompt textarea */}
+            <div>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="font-mono text-[10px] text-[#c9a84c] uppercase tracking-[0.15em] font-semibold">
+                  User Prompt Template
+                </label>
+                <span className="text-[10px] text-zinc-600 font-mono">
+                  {editUser.length.toLocaleString()} chars
+                </span>
+              </div>
+              <textarea
+                value={editUser}
+                onChange={(e) => onUserChange(e.target.value)}
+                rows={14}
+                className="w-full bg-white/[0.02] border border-white/[0.06] rounded-lg p-3 text-xs text-white font-mono
+                           resize-y focus:outline-none focus:ring-1 focus:ring-[#c9a84c]/30 focus:border-[#c9a84c]/20
+                           placeholder-white/20 transition-colors leading-relaxed"
+                placeholder="User prompt template... (use {{variable}} for dynamic values)"
+              />
+              <p className="text-[10px] text-zinc-600 mt-1.5 leading-relaxed">
+                Dynamic template variables (product context, script, analysis) are injected at runtime.
+                Use <code className="text-zinc-500">{'{{variable}}'}</code> syntax for placeholders.
+              </p>
+            </div>
+
+            {/* Save button row */}
+            <div className="flex items-center gap-3 pt-2 border-t border-white/[0.04]">
+              <button
+                onClick={onSave}
+                disabled={!hasChanges || saving}
+                className={`flex items-center gap-2 px-5 py-2.5 rounded-lg text-xs font-mono font-semibold uppercase tracking-wide transition-all cursor-pointer
+                  disabled:opacity-30 disabled:cursor-not-allowed ${
+                    saved
+                      ? 'bg-emerald-500 text-white'
+                      : hasChanges
+                        ? 'bg-[#c9a84c] hover:bg-[#d4b55a] text-[#111113]'
+                        : 'bg-white/[0.04] text-zinc-500 border border-white/[0.06]'
+                  }`}
+              >
+                {saving ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : saved ? (
+                  <Check className="w-3.5 h-3.5" />
+                ) : (
+                  <Save className="w-3.5 h-3.5" />
+                )}
+                {saved ? 'Saved' : 'Save Prompt'}
+              </button>
+              {hasChanges && !saved && (
+                <span className="text-[11px] text-amber-400 font-mono">Unsaved changes</span>
+              )}
+            </div>
+          </>
+        ) : loading ? (
+          <div className="flex flex-col items-center justify-center h-full gap-3">
+            <Loader2 className="w-5 h-5 animate-spin text-zinc-600" />
+            <p className="text-xs text-zinc-600 font-mono">Loading prompts...</p>
+          </div>
+        ) : (
+          <div className="flex flex-col items-center justify-center h-full gap-3">
+            <ChevronRight className="w-5 h-5 text-zinc-700" />
+            <p className="text-xs text-zinc-600 font-mono">Select a prompt from the sidebar</p>
+          </div>
+        )}
       </div>
     </div>
   );

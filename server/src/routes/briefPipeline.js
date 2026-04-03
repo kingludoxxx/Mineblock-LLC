@@ -1208,9 +1208,9 @@ function buildProductContextForBrief(p) {
 
 // ── Claude Prompts ────────────────────────────────────────────────────
 
-function buildScriptParserPrompt(rawScript, taskName) {
-  const system = `You are a script parser for video ad briefs. Extract the structured components from the raw script text below.`;
-  const user = `RAW SCRIPT:
+async function buildScriptParserPrompt(rawScript, taskName) {
+  let system = `You are a script parser for video ad briefs. Extract the structured components from the raw script text below.`;
+  let user = `RAW SCRIPT:
 ${rawScript}
 
 TASK NAME: ${taskName}
@@ -1242,11 +1242,20 @@ RULES:
 - Preserve the exact wording — do NOT paraphrase or rewrite
 - If the script has multiple sections (e.g. "Body:", "CTA:"), respect those boundaries`;
 
+  // Check for custom prompt overrides
+  try {
+    const custom = await getCustomPrompts();
+    if (custom?.scriptParser) {
+      if (custom.scriptParser.system) system = custom.scriptParser.system;
+      if (custom.scriptParser.user) user = custom.scriptParser.user;
+    }
+  } catch {}
+
   return { system, user };
 }
 
 // ── 3-Agent Deep Analysis (replaces old single win analysis) ─────────
-function buildDeepAnalysisPrompts(winner, parsedScript, productContext) {
+async function buildDeepAnalysisPrompts(winner, parsedScript, productContext) {
   const hooksFormatted = (parsedScript.hooks || [])
     .map(h => `${h.id}: ${h.text}`)
     .join('\n');
@@ -1416,6 +1425,23 @@ ${scriptText}
 - Keep each array item to ONE SHORT sentence (under 20 words). Be concise — no long explanations in list items.
 - If the product profile has compliance restrictions, flag any original claims that are borderline.`
   };
+
+  // Check for custom prompt overrides
+  try {
+    const custom = await getCustomPrompts();
+    if (custom?.scriptDna) {
+      if (custom.scriptDna.system) dnaPrompt.system = custom.scriptDna.system;
+      if (custom.scriptDna.user) dnaPrompt.user = custom.scriptDna.user;
+    }
+    if (custom?.psychology) {
+      if (custom.psychology.system) psychologyPrompt.system = custom.psychology.system;
+      if (custom.psychology.user) psychologyPrompt.user = custom.psychology.user;
+    }
+    if (custom?.iterationRules) {
+      if (custom.iterationRules.system) rulesPrompt.system = custom.iterationRules.system;
+      if (custom.iterationRules.user) rulesPrompt.user = custom.iterationRules.user;
+    }
+  } catch {}
 
   return { dnaPrompt, psychologyPrompt, rulesPrompt };
 }
@@ -1805,7 +1831,7 @@ Return ONLY valid JSON, no markdown fences, no explanation:
 // VARIANT GENERATOR — For generating creative variations (non-clone mode)
 // ---------------------------------------------------------------------------
 
-function buildBriefGeneratorPrompt(parsedScript, deepAnalysis, direction, config, productContext) {
+async function buildBriefGeneratorPrompt(parsedScript, deepAnalysis, direction, config, productContext) {
   const originalHooks = (parsedScript.hooks || [])
     .map(h => `${h.id}: ${h.text}`)
     .join('\n');
@@ -1853,13 +1879,13 @@ function buildBriefGeneratorPrompt(parsedScript, deepAnalysis, direction, config
   }
   const analysisContext = analysisLines.length ? analysisLines.join('\n\n') : '';
 
-  const system = `You are a senior direct-response copywriter specialized in Facebook and TikTok ad iteration.
+  let system = `You are a senior direct-response copywriter specialized in Facebook and TikTok ad iteration.
 
 You understand that the goal is NOT to create new ads, but to generate variations of a proven winner while preserving its psychological mechanism, persuasive structure, and conversion logic.
 
 You write like a human performance marketer — not like an AI, not like a brand copywriter.`;
 
-  const user = `# OBJECTIVE
+  let user = `# OBJECTIVE
 
 Generate a high-quality iteration of a winning ad script.
 
@@ -1983,10 +2009,19 @@ Return ONLY valid JSON:
   "emotional_arc": "hook_emotion → middle_emotion → close_emotion"
 }`;
 
+  // Check for custom prompt overrides
+  try {
+    const custom = await getCustomPrompts();
+    if (custom?.generator) {
+      if (custom.generator.system) system = custom.generator.system;
+      if (custom.generator.user) user = custom.generator.user;
+    }
+  } catch {}
+
   return { system, user };
 }
 
-function buildBriefScorerPrompt(winner, parsedScript, generatedBrief, directionName, deepAnalysis, productContext) {
+async function buildBriefScorerPrompt(winner, parsedScript, generatedBrief, directionName, deepAnalysis, productContext) {
   const originalHooks = (parsedScript.hooks || [])
     .map(h => `${h.id}: ${h.text}`)
     .join('\n');
@@ -2004,9 +2039,9 @@ ITERATION RULES TO EVALUATE AGAINST:
 - Tone boundary: ${rules.tone_boundaries?.current_register || 'N/A'} (acceptable range: ${rules.tone_boundaries?.acceptable_range || 'N/A'})
 - Compliance: ${rules.compliance_notes || 'None'}` : '';
 
-  const system = `You are a performance media buyer who has spent $50M+ on paid social. You evaluate ad scripts purely on their likelihood to convert cold traffic. You are ruthlessly honest — most scripts are mediocre.`;
+  let system = `You are a performance media buyer who has spent $50M+ on paid social. You evaluate ad scripts purely on their likelihood to convert cold traffic. You are ruthlessly honest — most scripts are mediocre.`;
 
-  const user = `PRODUCT CONTEXT:
+  let user = `PRODUCT CONTEXT:
 ${productContext}
 
 ORIGINAL WINNING SCRIPT (baseline):
@@ -2079,18 +2114,27 @@ Return ONLY valid JSON:
   "suggested_improvement": "optional one-sentence fix if verdict is MAYBE"
 }`;
 
+  // Check for custom prompt overrides
+  try {
+    const custom = await getCustomPrompts();
+    if (custom?.scorer) {
+      if (custom.scorer.system) system = custom.scorer.system;
+      if (custom.scorer.user) user = custom.scorer.user;
+    }
+  } catch {}
+
   return { system, user };
 }
 
 // ── Hook-Body Blend Validation Agent ─────────────────────────────────
-function buildBlendValidationPrompt(generatedBrief) {
+async function buildBlendValidationPrompt(generatedBrief) {
   const hooks = (generatedBrief.hooks || []).map(h => h.text).filter(Boolean);
   const body = generatedBrief.body || '';
   const bodyFirstLine = body.split('\n').find(l => l.trim().length > 10) || body.slice(0, 200);
 
-  const system = `You are a continuity editor for direct response ad scripts. Your ONLY job is to check if hooks flow naturally into the body.`;
+  let system = `You are a continuity editor for direct response ad scripts. Your ONLY job is to check if hooks flow naturally into the body.`;
 
-  const user = `Read each hook below, then immediately read the body's opening. Judge if they sound like one continuous script written by the same person.
+  let user = `Read each hook below, then immediately read the body's opening. Judge if they sound like one continuous script written by the same person.
 
 ${hooks.map((h, i) => `HOOK ${i + 1}: "${h}"
 → BODY STARTS: "${bodyFirstLine}"`).join('\n\n')}
@@ -2112,6 +2156,15 @@ Return ONLY valid JSON:
 }
 
 A brief PASSES if overall_blend >= 6.5.`;
+
+  // Check for custom prompt overrides
+  try {
+    const custom = await getCustomPrompts();
+    if (custom?.blendValidator) {
+      if (custom.blendValidator.system) system = custom.blendValidator.system;
+      if (custom.blendValidator.user) user = custom.blendValidator.user;
+    }
+  } catch {}
 
   return { system, user };
 }
@@ -2657,7 +2710,7 @@ router.post('/generate/:id', authenticate, async (req, res) => {
     let parsedScript = winner.parsed_script;
     if (typeof parsedScript === 'string') { try { parsedScript = JSON.parse(parsedScript); } catch { parsedScript = null; } }
     if (!parsedScript) {
-      const { system, user } = buildScriptParserPrompt(winner.raw_script, winner.ad_name || winner.creative_id);
+      const { system, user } = await buildScriptParserPrompt(winner.raw_script, winner.ad_name || winner.creative_id);
       parsedScript = await callClaude(system, user, 2000);
       if (!parsedScript || (!parsedScript.hooks?.length && !parsedScript.body?.trim())) {
         throw new Error('Claude failed to parse the script into a valid structure (missing hooks/body).');
@@ -2691,7 +2744,7 @@ router.post('/generate/:id', authenticate, async (req, res) => {
       console.log(`[BriefPipeline] Using cached deep analysis for ${winner.creative_id}`);
     } else {
       if (cachedAnalysis) console.log(`[BriefPipeline] Stale analysis cache for ${winner.creative_id} — re-analyzing with 3-agent pipeline`);
-      const { dnaPrompt, psychologyPrompt, rulesPrompt } = buildDeepAnalysisPrompts(winner, parsedScript, productContext);
+      const { dnaPrompt, psychologyPrompt, rulesPrompt } = await buildDeepAnalysisPrompts(winner, parsedScript, productContext);
 
       // Run all 3 agents in parallel
       const [scriptDna, psychology, iterationRules] = await Promise.all([
@@ -2745,7 +2798,7 @@ router.post('/generate/:id', authenticate, async (req, res) => {
     // Generate all variations in parallel — each direction is naturally different
     const generationResults = await Promise.all(directions.map(async (direction) => {
       try {
-        const { system: genSystem, user: genUser } = buildBriefGeneratorPrompt(parsedScript, winAnalysis, direction, config, productContext);
+        const { system: genSystem, user: genUser } = await buildBriefGeneratorPrompt(parsedScript, winAnalysis, direction, config, productContext);
         let enhancedUser = genUser;
         if (styleRef) {
           enhancedUser += `\n\n# STYLE REFERENCE (proven scripts for this product — match this voice/tone)\n${styleRef}`;
@@ -2763,8 +2816,8 @@ router.post('/generate/:id', authenticate, async (req, res) => {
         if (!generated.body) generated.body = '';
 
         // Step 8: Blend validation + Scoring IN PARALLEL (both read generated, don't depend on each other)
-        const { system: blendSystem, user: blendUser } = buildBlendValidationPrompt(generated);
-        const { system: scoreSystem, user: scoreUser } = buildBriefScorerPrompt(winner, parsedScript, generated, direction.name, winAnalysis, productContext);
+        const { system: blendSystem, user: blendUser } = await buildBlendValidationPrompt(generated);
+        const { system: scoreSystem, user: scoreUser } = await buildBriefScorerPrompt(winner, parsedScript, generated, direction.name, winAnalysis, productContext);
 
         let blendResult = null;
         let scores = { novelty: { score: 5 }, aggression: { score: 5 }, coherence: { score: 5 }, hook_body_blend: { score: 5 }, conversion_potential: { score: 5 } };
@@ -2942,7 +2995,7 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
 
     // Step 4: Parse script
     console.log(`[BriefPipeline] Parsing manual script`);
-    const { system: parseSystem, user: parseUser } = buildScriptParserPrompt(rawScript, creativeId);
+    const { system: parseSystem, user: parseUser } = await buildScriptParserPrompt(rawScript, creativeId);
     let parsedScript = await callClaude(parseSystem, parseUser, 2000);
     if (!parsedScript || (!parsedScript.hooks?.length && !parsedScript.body?.trim())) {
       parsedScript = { hooks: [], body: rawScript, cta: '', format_notes: '' };
@@ -2953,7 +3006,7 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
     const productProfile = await fetchProductProfile(productCode || 'MR');
     const productContext = buildProductContextForBrief(productProfile);
 
-    const { dnaPrompt, psychologyPrompt, rulesPrompt } = buildDeepAnalysisPrompts(winner, parsedScript, productContext);
+    const { dnaPrompt, psychologyPrompt, rulesPrompt } = await buildDeepAnalysisPrompts(winner, parsedScript, productContext);
     const [scriptDna, psychology, iterationRules] = await Promise.all([
       callClaude(dnaPrompt.system, dnaPrompt.user, 4096),
       callClaude(psychologyPrompt.system, psychologyPrompt.user, 4096),
@@ -2997,8 +3050,8 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
           }
 
           // Score + blend in parallel
-          const { system: blendSystem, user: blendUser } = buildBlendValidationPrompt(generated);
-          const { system: scoreSystem, user: scoreUser } = buildBriefScorerPrompt(winner, parsedScript, generated, '1:1 Clone', winAnalysis, productContext);
+          const { system: blendSystem, user: blendUser } = await buildBlendValidationPrompt(generated);
+          const { system: scoreSystem, user: scoreUser } = await buildBriefScorerPrompt(winner, parsedScript, generated, '1:1 Clone', winAnalysis, productContext);
 
           let blendResult = null;
           let scores = { novelty: { score: 3 }, aggression: { score: 5 }, coherence: { score: 5 }, hook_body_blend: { score: 5 }, conversion_potential: { score: 5 } };
@@ -3065,7 +3118,7 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
 
       generationResults = await Promise.all(directions.map(async (direction) => {
         try {
-          const { system: genSystem, user: genUser } = buildBriefGeneratorPrompt(parsedScript, winAnalysis, direction, config, productContext);
+          const { system: genSystem, user: genUser } = await buildBriefGeneratorPrompt(parsedScript, winAnalysis, direction, config, productContext);
           let enhancedUser = genUser;
           if (styleRef) enhancedUser += `\n\n# STYLE REFERENCE\n${styleRef}`;
           enhancedUser += `\n\n# VARIATION IDENTITY\nThis is variation ${direction.id} of ${directions.length}. Be COMPLETELY UNIQUE.`;
@@ -3076,8 +3129,8 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
           if (!generated.body) generated.body = '';
 
           // Score + blend in parallel
-          const { system: blendSystem, user: blendUser } = buildBlendValidationPrompt(generated);
-          const { system: scoreSystem, user: scoreUser } = buildBriefScorerPrompt(winner, parsedScript, generated, direction.name, winAnalysis, productContext);
+          const { system: blendSystem, user: blendUser } = await buildBlendValidationPrompt(generated);
+          const { system: scoreSystem, user: scoreUser } = await buildBriefScorerPrompt(winner, parsedScript, generated, direction.name, winAnalysis, productContext);
 
           let blendResult = null;
           let scores = { novelty: { score: 5 }, aggression: { score: 5 }, coherence: { score: 5 }, hook_body_blend: { score: 5 }, conversion_potential: { score: 5 } };
