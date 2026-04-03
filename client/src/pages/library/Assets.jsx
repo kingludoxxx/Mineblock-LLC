@@ -3,7 +3,7 @@ import {
   Package, Plus, Pencil, Trash2, X, Image,
   Target, ChevronRight, ChevronDown, Loader2,
   Sparkles, Upload, ArrowLeft, Link, Globe, Zap,
-  AlertTriangle, MessageSquare, Tag, Check,
+  AlertTriangle, MessageSquare, Tag, Check, Star,
 } from 'lucide-react';
 import api from '../../services/api';
 
@@ -329,6 +329,7 @@ function ProductDetailView({ product, onBack, onFieldSave, onAiFill, onProductCh
   const [imageUrlInput, setImageUrlInput] = useState('');
   const [saving, setSaving] = useState(false);
   const [savedFlash, setSavedFlash] = useState(false);
+  const [benefitInput, setBenefitInput] = useState('');
   const fileInputRef = useRef(null);
   // Use ref to get latest product for image operations (avoids stale closure)
   const productRef = useRef(product);
@@ -546,6 +547,61 @@ function ProductDetailView({ product, onBack, onFieldSave, onAiFill, onProductCh
           </div>
         </CollapsibleSection>
 
+        {/* Key Benefits */}
+        <CollapsibleSection
+          icon={Star}
+          title="Key Benefits"
+          subtitle="Product benefits the AI weaves into hooks, body copy, and CTAs"
+        >
+          <div className="space-y-2">
+            {(Array.isArray(product.benefits) ? product.benefits : []).map((b, i) => (
+              <div key={i} className="flex items-center gap-2 bg-[#0a0a0a] border border-white/[0.06] rounded-lg px-3 py-2.5">
+                <Star className="w-3.5 h-3.5 text-amber-400/60 shrink-0" />
+                <span className="flex-1 text-sm text-slate-200">{typeof b === 'object' ? (b.text || b.name || JSON.stringify(b)) : b}</span>
+                <button
+                  onClick={() => {
+                    const updated = (product.benefits || []).filter((_, idx) => idx !== i);
+                    onProductChange({ ...product, benefits: updated });
+                    onFieldSave('benefits', updated);
+                  }}
+                  className="w-5 h-5 rounded flex items-center justify-center text-slate-600 hover:text-red-400 transition-colors cursor-pointer"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
+            ))}
+            <div className="flex items-center gap-2">
+              <input
+                value={benefitInput}
+                onChange={(e) => setBenefitInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && benefitInput.trim()) {
+                    const updated = [...(product.benefits || []), benefitInput.trim()];
+                    onProductChange({ ...product, benefits: updated });
+                    onFieldSave('benefits', updated);
+                    setBenefitInput('');
+                  }
+                }}
+                placeholder="Add a benefit... (press Enter)"
+                className="flex-1 bg-[#0a0a0a] border border-white/[0.06] rounded-lg px-4 py-3 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-white/[0.15] transition-colors"
+              />
+              <button
+                onClick={() => {
+                  if (!benefitInput.trim()) return;
+                  const updated = [...(product.benefits || []), benefitInput.trim()];
+                  onProductChange({ ...product, benefits: updated });
+                  onFieldSave('benefits', updated);
+                  setBenefitInput('');
+                }}
+                disabled={!benefitInput.trim()}
+                className="text-xs text-emerald-400 hover:text-emerald-300 disabled:text-slate-600 disabled:cursor-not-allowed px-4 py-3 rounded-lg border border-white/[0.06] hover:border-emerald-500/30 transition-colors cursor-pointer"
+              >
+                Add
+              </button>
+            </div>
+          </div>
+        </CollapsibleSection>
+
         {/* Target Audience & Avatar */}
         <CollapsibleSection
           icon={Target}
@@ -578,6 +634,32 @@ function ProductDetailView({ product, onBack, onFieldSave, onAiFill, onProductCh
             placeholder="List the top objections and how your product or copy addresses each..."
             rows={4}
           />
+          <AutoSaveField
+            label="Target Demographics"
+            value={product.target_demographics}
+            onChange={(v) => updateField('target_demographics', v)}
+            onSave={(v) => saveFieldDirect('target_demographics', v)}
+            placeholder="e.g. Men 25-45, USA/UK, middle income, health-conscious, active on social media..."
+            rows={3}
+          />
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <AutoSaveField
+              label="Customer Frustration"
+              value={product.customer_frustration}
+              onChange={(v) => updateField('customer_frustration', v)}
+              onSave={(v) => saveFieldDirect('customer_frustration', v)}
+              placeholder="What have they tried that didn't work? Why are they fed up?"
+              rows={3}
+            />
+            <AutoSaveField
+              label="Customer Dream Outcome"
+              value={product.customer_dream}
+              onChange={(v) => updateField('customer_dream', v)}
+              onSave={(v) => saveFieldDirect('customer_dream', v)}
+              placeholder="What does their ideal result look like? How do they feel after?"
+              rows={3}
+            />
+          </div>
         </CollapsibleSection>
 
         {/* Brand Voice & Copy Style */}
