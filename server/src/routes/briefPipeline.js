@@ -1144,6 +1144,270 @@ Return ONLY valid JSON:
   return { system, user };
 }
 
+// ---------------------------------------------------------------------------
+// 1:1 SCRIPT CLONE — Dedicated prompt for cloning competitor scripts
+// ---------------------------------------------------------------------------
+
+function buildScriptClonePrompt(parsedScript, deepAnalysis, productContext) {
+  const originalHooks = (parsedScript.hooks || [])
+    .map(h => `${h.id}: ${h.text}`)
+    .join('\n');
+
+  const { scriptDna, psychology, iterationRules } = deepAnalysis || {};
+
+  // Build the section-by-section breakdown from DNA
+  let sectionFlow = '';
+  if (scriptDna?.structural_skeleton?.section_by_section?.length) {
+    sectionFlow = scriptDna.structural_skeleton.section_by_section
+      .map((s, i) => `  ${i + 1}. ${s}`)
+      .join('\n');
+  }
+
+  let rhetoricalDevices = '';
+  if (scriptDna?.structural_skeleton?.rhetorical_devices?.length) {
+    rhetoricalDevices = scriptDna.structural_skeleton.rhetorical_devices.join(', ');
+  }
+
+  let hookFramework = scriptDna?.structural_skeleton?.hook_framework || '';
+  let pacingRhythm = scriptDna?.structural_skeleton?.pacing_rhythm || '';
+  let signaturePhrases = '';
+  if (scriptDna?.structural_skeleton?.signature_phrases?.length) {
+    signaturePhrases = scriptDna.structural_skeleton.signature_phrases.join(' | ');
+  }
+
+  // Emotional arc
+  let emotionalArc = '';
+  if (psychology?.emotional_arc) {
+    const ea = psychology.emotional_arc;
+    emotionalArc = `${ea.at_hook || '?'} → ${ea.after_problem || '?'} → ${ea.during_explanation || '?'} → ${ea.at_proof || '?'} → ${ea.before_cta || '?'} → ${ea.final_state || '?'}`;
+  }
+
+  // Audience info
+  let audienceContext = '';
+  if (psychology?.audience) {
+    const aud = psychology.audience;
+    audienceContext = [
+      aud.who_is_this_for ? `Who: ${aud.who_is_this_for}` : '',
+      aud.existing_beliefs ? `Beliefs: ${aud.existing_beliefs}` : '',
+      aud.awareness_stage ? `Awareness: ${aud.awareness_stage}` : '',
+      aud.skepticism_level ? `Skepticism: ${aud.skepticism_level}` : '',
+    ].filter(Boolean).join('\n');
+  }
+
+  const system = `You are a world-class direct-response copywriter who specializes in script adaptation.
+
+Your job is NOT to write new ads. Your job is to CLONE a competitor's proven ad script and adapt it for a different product — preserving every structural and psychological element that makes the original convert.
+
+You think like a performance creative strategist: you understand that winning ads work because of their STRUCTURE, PACING, EMOTIONAL FLOW, and FRAMEWORK — not because of the specific product they sell. A winning format can be transplanted to any product if the adaptation is done with surgical precision.
+
+HOW YOU WRITE:
+- You write like a real human media buyer talks — raw, direct, conversational
+- You NEVER sound like ChatGPT or a marketing agency. No filler phrases, no corporate jargon, no "imagine a world where", no "in today's fast-paced world"
+- You match the voice and energy of the original script exactly
+- Short punchy sentences when the original uses them. Long flowing paragraphs when the original uses those
+- You use the same level of aggression, the same register, the same "feel" as the original
+- If the original sounds like a guy on TikTok ranting, your clone sounds like a guy on TikTok ranting
+- If the original sounds like a calm authority figure, your clone sounds like a calm authority figure
+- You NEVER add disclaimers, hedging language, or soften the copy unless the original does the same`;
+
+  const user = `# YOUR MISSION
+
+You are cloning a competitor's winning ad script for a DIFFERENT product. The original script sells a competitor's product. Your job is to create an adapted version that sells OUR product while keeping EVERYTHING that makes the original script convert.
+
+Think of this like a movie remake: same plot structure, same emotional beats, same pacing, same twist — but with a different cast and setting.
+
+# WHAT "1:1 CLONE" MEANS
+
+A 1:1 clone is NOT:
+- A summary of the original
+- An "inspired by" rewrite
+- A generic ad using similar themes
+- A script that "captures the spirit" of the original
+
+A 1:1 clone IS:
+- The SAME number of sections in the SAME order
+- The SAME rhetorical devices at the SAME structural points
+- The SAME emotional beats hitting at the SAME moments
+- The SAME pacing and rhythm (short/long sentence patterns match)
+- The SAME hook framework (if they apologize, you apologize; if they confess, you confess; if they challenge, you challenge)
+- The SAME word count (±10% tolerance)
+- Every sentence in the original maps to a sentence in the clone that serves the IDENTICAL PURPOSE
+
+The ONLY things that change:
+- Product name, features, and specific claims → swapped to OUR product
+- Competitor-specific details → replaced with equivalent details for our product
+- Exact phrasing → rephrased to avoid plagiarism (but same point, same energy, same purpose)
+
+# OUR PRODUCT — USE THIS CONTEXT TO ADAPT ALL PRODUCT REFERENCES
+${productContext}
+
+# ═══════════════════════════════════════════════════════════
+# ORIGINAL COMPETITOR SCRIPT (THIS IS WHAT YOU ARE CLONING)
+# ═══════════════════════════════════════════════════════════
+
+## HOOKS (from the original):
+${originalHooks}
+
+## BODY (from the original):
+${parsedScript.body || '(no body parsed)'}
+
+## CTA (from the original):
+${parsedScript.cta || '(no CTA parsed)'}
+
+## FORMAT NOTES:
+${parsedScript.format_notes || 'N/A'}
+
+# ═══════════════════════════════════════════════════════════
+# DEEP ANALYSIS OF THE ORIGINAL (from 3 specialist agents)
+# ═══════════════════════════════════════════════════════════
+
+## SCRIPT DNA
+- Core Angle: ${scriptDna?.core_angle || 'N/A'}
+- Primary Emotion: ${scriptDna?.primary_emotion || 'N/A'}
+- Secondary Emotions: ${Array.isArray(scriptDna?.secondary_emotions) ? scriptDna.secondary_emotions.join(', ') : scriptDna?.secondary_emotions || 'N/A'}
+- Belief Shift: ${scriptDna?.belief_shift || 'N/A'}
+- Problem: ${scriptDna?.problem || 'N/A'}
+- Solution: ${scriptDna?.solution || 'N/A'}
+- Mechanism: ${scriptDna?.mechanism || 'N/A'}
+- Proof Type: ${scriptDna?.proof_type || 'N/A'}
+- Awareness Level: ${scriptDna?.audience_awareness_level || 'N/A'}
+- Why It Works: ${scriptDna?.why_it_works || 'N/A'}
+- What Would Break It: ${scriptDna?.what_would_break_it || 'N/A'}
+
+## STRUCTURAL SKELETON — YOUR CLONE MUST MATCH THIS EXACTLY
+- Hook Framework: ${hookFramework || 'N/A'}
+- Rhetorical Devices: ${rhetoricalDevices || 'N/A'}
+- Pacing/Rhythm: ${pacingRhythm || 'N/A'}
+- Signature Patterns (use EQUIVALENT patterns for our product): ${signaturePhrases || 'N/A'}
+
+Section-by-Section Flow (YOUR CLONE MUST FOLLOW THIS EXACT SEQUENCE):
+${sectionFlow || '  (no section breakdown available — mirror the original body paragraph by paragraph)'}
+
+## EMOTIONAL ARC — YOUR CLONE MUST HIT THESE SAME BEATS
+${emotionalArc || 'Mirror the emotional flow of the original'}
+
+## AUDIENCE PROFILE
+${audienceContext || 'Same audience as the original — adapt product references only'}
+
+## HOOK ANALYSIS
+${psychology?.hook_analysis?.length ? psychology.hook_analysis.map(h => `- "${h.exact_text || h.text || ''}": ${h.type || ''} — ${h.why_it_works || ''}`).join('\n') : 'N/A'}
+
+# ═══════════════════════════════════════════════════════════
+# CLONE EXECUTION RULES
+# ═══════════════════════════════════════════════════════════
+
+## RULE 1: PARAGRAPH-BY-PARAGRAPH MAPPING
+- Read the original body. Count the paragraphs/sections.
+- Your clone MUST have the same number of paragraphs/sections.
+- For each paragraph in the original, write a corresponding paragraph that:
+  → Makes the SAME point
+  → Uses the SAME rhetorical device (if any)
+  → Hits the SAME emotional note
+  → Is roughly the SAME length (±15% words)
+  → Sits in the SAME position in the script
+
+## RULE 2: HOOK CLONING
+- Generate exactly 3 hooks.
+- All 3 hooks MUST use the SAME FRAMEWORK as the original hooks.
+- If original hooks are confession/apology → your hooks are confession/apology about OUR product
+- If original hooks are shocking stat → your hooks are shocking stat about OUR product
+- If original hooks are contrarian claim → your hooks are contrarian claim about OUR product
+- H1: Closest energy match to the original's strongest hook. Tightest clone.
+- H2: Same framework, slightly different angle of entry. Still a clone.
+- H3: Same framework, different emotional texture. Still recognizably the same format.
+- Every hook MUST read naturally into the body. Hook + first body paragraph = seamless flow.
+
+## RULE 3: PRODUCT SWAP PROTOCOL
+- Every mention of the competitor's product → replace with our product name and details
+- Every competitor benefit claim → find the EQUIVALENT benefit from our product profile and swap
+- Every competitor-specific proof point → replace with equivalent proof from our product
+- Every competitor price/offer → replace with our price/offer
+- If the original mentions a specific ingredient/feature → find our closest equivalent
+- If no equivalent exists, use the closest relevant feature that serves the same persuasive purpose
+- NEVER leave competitor references in the final script
+- NEVER invent claims not supported by the product profile
+
+## RULE 4: TONE LOCK
+- Read the original script out loud in your mind. Note the energy.
+- Is it angry? Excited? Calm? Conspiratorial? Friendly? Aggressive?
+- Your clone MUST match that exact energy.
+- If the original uses slang → use slang
+- If the original uses data → use data
+- If the original is raw and emotional → be raw and emotional
+- If the original is measured and authoritative → be measured and authoritative
+- NEVER default to "marketing copy" voice. NEVER.
+
+## RULE 5: LENGTH CONTROL
+- Count the words in the original body.
+- Your clone body must be within ±10% of that word count.
+- If original is 400 words, your clone is 360-440 words.
+- This is a HARD CONSTRAINT. Do not write a 200-word clone of a 500-word script.
+
+## RULE 6: ANTI-AI DETECTION
+- No sentences starting with "Imagine...", "Picture this...", "In a world where...", "What if I told you..."
+- No filler transitions: "But here's the thing", "Now here's where it gets interesting", "And that's not all"
+- No listicle formatting unless the original uses it
+- No over-explaining. If the original makes a bold claim and moves on, you make a bold claim and move on.
+- Use contractions: "don't", "can't", "won't", "it's", "that's", "here's"
+- Use sentence fragments where the original does
+- Vary sentence length naturally — mix 4-word punches with 20-word flowing sentences
+- Include verbal tics and natural speech patterns: "Look,", "Listen,", "I mean,", "Honestly,", "The truth is,", "Here's the deal"
+- Write like you're talking to ONE person, not an audience
+
+## RULE 7: CTA CLONING
+- Match the CTA structure of the original
+- If the original CTA is urgent → your CTA is urgent
+- If the original CTA includes a specific offer → include our equivalent offer
+- If the original CTA is soft/curiosity-based → keep yours soft/curiosity-based
+- Swap product/link references to ours
+
+# ═══════════════════════════════════════════════════════════
+# OUTPUT FORMAT
+# ═══════════════════════════════════════════════════════════
+
+Return ONLY valid JSON, no markdown fences, no explanation:
+{
+  "hooks": [
+    {
+      "id": "H1",
+      "text": "the hook text — closest clone of the original's strongest hook",
+      "framework_used": "confession/pain/contrarian/etc — must match original",
+      "maps_to_original": "which original hook this clones"
+    },
+    {
+      "id": "H2",
+      "text": "second hook — same framework, different entry angle",
+      "framework_used": "same framework as H1",
+      "maps_to_original": "which original hook this clones"
+    },
+    {
+      "id": "H3",
+      "text": "third hook — same framework, different emotional texture",
+      "framework_used": "same framework as H1",
+      "maps_to_original": "which original hook this clones"
+    }
+  ],
+  "body": "the full cloned body script. Must have same number of paragraphs as original. Each paragraph maps 1:1 to the original. Use natural paragraph breaks (double newlines). Do NOT use markdown formatting.",
+  "cta": "the cloned call-to-action",
+  "clone_fidelity": {
+    "original_word_count": 0,
+    "clone_word_count": 0,
+    "original_sections": 0,
+    "clone_sections": 0,
+    "framework_match": "what framework was preserved",
+    "product_swaps_made": "brief list of what product references were changed"
+  },
+  "key_adaptations": "2-3 sentences explaining what product-specific changes were made and why",
+  "emotional_arc": "hook_emotion → middle_emotion → close_emotion (must match original arc)"
+}`;
+
+  return { system, user };
+}
+
+// ---------------------------------------------------------------------------
+// VARIANT GENERATOR — For generating creative variations (non-clone mode)
+// ---------------------------------------------------------------------------
+
 function buildBriefGeneratorPrompt(parsedScript, deepAnalysis, direction, config, productContext) {
   const originalHooks = (parsedScript.hooks || [])
     .map(h => `${h.id}: ${h.text}`)
@@ -2308,80 +2572,147 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
       [creativeId, scriptHash, JSON.stringify(winAnalysis)]
     );
 
-    // Step 6: Build directions
+    // Step 6: Build directions + generate
     const safeDirections = iterationRules?.safe_iteration_directions || [];
-    const config = { mode: mode === 'clone' ? 'hook_only' : 'hook_body', aggressiveness: 'medium', num_variations: numVariations, fixed_elements: [] };
-    const directions = [];
-    for (let i = 0; i < numVariations; i++) {
-      const dirText = safeDirections[i] || `Variation ${i + 1}: Fresh creative approach`;
-      directions.push({
-        id: i + 1,
-        name: `Direction ${i + 1}`,
-        description: dirText,
-        what_changes: dirText,
-        what_stays: (iterationRules?.must_stay_fixed || []).slice(0, 3).join('; ') || 'Core angle and mechanism',
-        hook_direction: `Variation ${i + 1} of ${numVariations}`,
-        body_direction: mode === 'clone' ? 'Keep body nearly identical — only change product references' : dirText,
-        emotional_shift: psychology?.emotional_arc
-          ? `${psychology.emotional_arc?.at_hook || '?'} → ${psychology.emotional_arc?.final_state || '?'}`
-          : 'Maintain original arc',
-      });
-    }
-
-    // Step 7: Generate in parallel
-    const provenScripts = productProfile?.scripts;
-    const styleRef = Array.isArray(provenScripts) && provenScripts.length
-      ? provenScripts.slice(0, 2).map((s, i) => `STYLE REF ${i + 1}: ${typeof s === 'string' ? s.slice(0, 300) : (s.text || s.body || JSON.stringify(s)).slice(0, 300)}`).join('\n\n')
-      : '';
+    const isCloneMode = mode === 'clone';
 
     let nextBriefNum = await getNextBriefNumber();
+    let generationResults;
 
-    const generationResults = await Promise.all(directions.map(async (direction) => {
-      try {
-        const { system: genSystem, user: genUser } = buildBriefGeneratorPrompt(parsedScript, winAnalysis, direction, config, productContext);
-        let enhancedUser = genUser;
-        if (styleRef) enhancedUser += `\n\n# STYLE REFERENCE\n${styleRef}`;
-        enhancedUser += `\n\n# VARIATION IDENTITY\nThis is variation ${direction.id} of ${directions.length}. Be COMPLETELY UNIQUE.`;
+    if (isCloneMode) {
+      // ═══════════════════════════════════════════════════
+      // CLONE MODE — Single 1:1 clone with dedicated prompt
+      // ═══════════════════════════════════════════════════
+      console.log(`[BriefPipeline] Clone mode — generating 1:1 script clone`);
+      const { system: cloneSystem, user: cloneUser } = buildScriptClonePrompt(parsedScript, winAnalysis, productContext);
 
-        const generated = await callClaude(genSystem, enhancedUser, 3000);
-        if (!generated || (!generated.hooks && !generated.body)) throw new Error('Invalid response');
-        if (!Array.isArray(generated.hooks)) generated.hooks = [];
-        if (!generated.body) generated.body = '';
-
-        // Score + blend in parallel
-        const { system: blendSystem, user: blendUser } = buildBlendValidationPrompt(generated);
-        const { system: scoreSystem, user: scoreUser } = buildBriefScorerPrompt(winner, parsedScript, generated, direction.name, winAnalysis, productContext);
-
-        let blendResult = null;
-        let scores = { novelty: { score: 5 }, aggression: { score: 5 }, coherence: { score: 5 }, hook_body_blend: { score: 5 }, conversion_potential: { score: 5 } };
+      generationResults = [await (async () => {
         try {
-          const [br, sc] = await Promise.all([
-            callClaude(blendSystem, blendUser, 1000, { fast: true }),
-            callClaude(scoreSystem, scoreUser, 1500),
-          ]);
-          blendResult = br;
-          if (sc) scores = sc;
-        } catch {}
+          const generated = await callClaude(cloneSystem, cloneUser, 4096);
+          if (!generated || (!generated.hooks && !generated.body)) throw new Error('Invalid clone response');
+          if (!Array.isArray(generated.hooks)) generated.hooks = [];
+          if (!generated.body) generated.body = '';
 
-        if (blendResult?.overall_blend != null) {
-          scores.hook_body_blend = scores.hook_body_blend || {};
-          scores.hook_body_blend.blend_validation = blendResult;
+          // Normalize clone output to match standard format
+          if (generated.clone_fidelity) {
+            generated.key_changes_from_original = generated.key_adaptations || generated.key_changes_from_original || '';
+          }
+
+          // Score + blend in parallel
+          const { system: blendSystem, user: blendUser } = buildBlendValidationPrompt(generated);
+          const { system: scoreSystem, user: scoreUser } = buildBriefScorerPrompt(winner, parsedScript, generated, '1:1 Clone', winAnalysis, productContext);
+
+          let blendResult = null;
+          let scores = { novelty: { score: 3 }, aggression: { score: 5 }, coherence: { score: 5 }, hook_body_blend: { score: 5 }, conversion_potential: { score: 5 } };
+          try {
+            const [br, sc] = await Promise.all([
+              callClaude(blendSystem, blendUser, 1000, { fast: true }),
+              callClaude(scoreSystem, scoreUser, 1500),
+            ]);
+            blendResult = br;
+            if (sc) scores = sc;
+          } catch {}
+
+          if (blendResult?.overall_blend != null) {
+            scores.hook_body_blend = scores.hook_body_blend || {};
+            scores.hook_body_blend.blend_validation = blendResult;
+          }
+
+          const overall = scores.overall ?? (
+            ((scores.novelty?.score ?? 3) * 0.05) +
+            ((scores.aggression?.score ?? 5) * 0.15) +
+            ((scores.coherence?.score ?? 5) * 0.30) +
+            ((scores.hook_body_blend?.score ?? 5) * 0.20) +
+            ((scores.conversion_potential?.score ?? 5) * 0.30)
+          );
+
+          return {
+            generated,
+            scores,
+            overall,
+            direction: { id: 1, name: '1:1 Clone', description: 'Structural clone with product swap' },
+            success: true,
+          };
+        } catch (err) {
+          console.error(`[BriefPipeline] clone generation failed:`, err.message);
+          return { direction: { id: 1, name: '1:1 Clone' }, success: false };
         }
+      })()];
 
-        const overall = scores.overall ?? (
-          ((scores.novelty?.score ?? 5) * 0.15) +
-          ((scores.aggression?.score ?? 5) * 0.15) +
-          ((scores.coherence?.score ?? 5) * 0.25) +
-          ((scores.hook_body_blend?.score ?? 5) * 0.15) +
-          ((scores.conversion_potential?.score ?? 5) * 0.30)
-        );
-
-        return { generated, scores, overall, direction, success: true };
-      } catch (err) {
-        console.error(`[BriefPipeline] generate-from-script direction #${direction.id}:`, err.message);
-        return { direction, success: false };
+    } else {
+      // ═══════════════════════════════════════════════════
+      // VARIANT MODE — Multiple creative variations
+      // ═══════════════════════════════════════════════════
+      const config = { mode: 'hook_body', aggressiveness: 'medium', num_variations: numVariations, fixed_elements: [] };
+      const directions = [];
+      for (let i = 0; i < numVariations; i++) {
+        const dirText = safeDirections[i] || `Variation ${i + 1}: Fresh creative approach`;
+        directions.push({
+          id: i + 1,
+          name: `Direction ${i + 1}`,
+          description: dirText,
+          what_changes: dirText,
+          what_stays: (iterationRules?.must_stay_fixed || []).slice(0, 3).join('; ') || 'Core angle and mechanism',
+          hook_direction: `Variation ${i + 1} of ${numVariations}`,
+          body_direction: dirText,
+          emotional_shift: psychology?.emotional_arc
+            ? `${psychology.emotional_arc?.at_hook || '?'} → ${psychology.emotional_arc?.final_state || '?'}`
+            : 'Maintain original arc',
+        });
       }
-    }));
+
+      const provenScripts = productProfile?.scripts;
+      const styleRef = Array.isArray(provenScripts) && provenScripts.length
+        ? provenScripts.slice(0, 2).map((s, i) => `STYLE REF ${i + 1}: ${typeof s === 'string' ? s.slice(0, 300) : (s.text || s.body || JSON.stringify(s)).slice(0, 300)}`).join('\n\n')
+        : '';
+
+      generationResults = await Promise.all(directions.map(async (direction) => {
+        try {
+          const { system: genSystem, user: genUser } = buildBriefGeneratorPrompt(parsedScript, winAnalysis, direction, config, productContext);
+          let enhancedUser = genUser;
+          if (styleRef) enhancedUser += `\n\n# STYLE REFERENCE\n${styleRef}`;
+          enhancedUser += `\n\n# VARIATION IDENTITY\nThis is variation ${direction.id} of ${directions.length}. Be COMPLETELY UNIQUE.`;
+
+          const generated = await callClaude(genSystem, enhancedUser, 3000);
+          if (!generated || (!generated.hooks && !generated.body)) throw new Error('Invalid response');
+          if (!Array.isArray(generated.hooks)) generated.hooks = [];
+          if (!generated.body) generated.body = '';
+
+          // Score + blend in parallel
+          const { system: blendSystem, user: blendUser } = buildBlendValidationPrompt(generated);
+          const { system: scoreSystem, user: scoreUser } = buildBriefScorerPrompt(winner, parsedScript, generated, direction.name, winAnalysis, productContext);
+
+          let blendResult = null;
+          let scores = { novelty: { score: 5 }, aggression: { score: 5 }, coherence: { score: 5 }, hook_body_blend: { score: 5 }, conversion_potential: { score: 5 } };
+          try {
+            const [br, sc] = await Promise.all([
+              callClaude(blendSystem, blendUser, 1000, { fast: true }),
+              callClaude(scoreSystem, scoreUser, 1500),
+            ]);
+            blendResult = br;
+            if (sc) scores = sc;
+          } catch {}
+
+          if (blendResult?.overall_blend != null) {
+            scores.hook_body_blend = scores.hook_body_blend || {};
+            scores.hook_body_blend.blend_validation = blendResult;
+          }
+
+          const overall = scores.overall ?? (
+            ((scores.novelty?.score ?? 5) * 0.15) +
+            ((scores.aggression?.score ?? 5) * 0.15) +
+            ((scores.coherence?.score ?? 5) * 0.25) +
+            ((scores.hook_body_blend?.score ?? 5) * 0.15) +
+            ((scores.conversion_potential?.score ?? 5) * 0.30)
+          );
+
+          return { generated, scores, overall, direction, success: true };
+        } catch (err) {
+          console.error(`[BriefPipeline] generate-from-script direction #${direction.id}:`, err.message);
+          return { direction, success: false };
+        }
+      }));
+    }
 
     // Save results
     const generatedBriefs = [];
