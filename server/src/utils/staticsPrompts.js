@@ -246,111 +246,54 @@ export function buildNanoBananaPrompt(claudeResult, swapPairs, product, logoCoun
   const nb = customOverrides?.nanoBanana || {};
   const {
     layout, brand_elements, visual_elements, adapted_visual_direction,
-    people_count, product_count, adapted_audience, character_adaptation, visual_adaptations
+    adapted_text, people_count, product_count, adapted_audience, character_adaptation, visual_adaptations
   } = claudeResult;
 
-  const swapSection = swapPairs.map((pair, i) =>
-    `  ${i + 1}. "${pair.original}" → "${pair.adapted}" [${pair.field}]`
-  ).join('\n');
-
-  // People rules
   const pCount = visual_elements?.people_count ?? people_count ?? 0;
   const pCount2 = visual_elements?.product_count ?? product_count ?? 1;
-  let characterRules = pCount === 0
-    ? 'PEOPLE: There are NO people in the reference ad. Do NOT add any human faces or bodies.'
-    : `PEOPLE: The reference has EXACTLY ${pCount} person(s). Your output must have EXACTLY ${pCount} person(s). Use DIFFERENT person(s) of same gender/age range. ${adapted_audience || ''} ${character_adaptation || ''}`;
-
-  // Layout rules
-  const layoutSection = layout ? `
-LAYOUT STRUCTURE (REPLICATE EXACTLY):
-- Structure: ${layout.structure || 'match reference exactly'}
-- Background: ${layout.background || 'same as reference'}
-- Sections: ${(layout.sections || []).map(s => `${s.position}: ${s.content}`).join(' | ')}
-${layout.has_divider ? '- Keep the vertical/horizontal divider line' : ''}
-${layout.has_rounded_corners ? '- Keep rounded corners on sections' : ''}
-- CRITICAL: Maintain the EXACT same spatial layout, proportions, and section placement as the reference` : '';
-
-  // Visual adaptation rules
   const visualDir = adapted_visual_direction || {};
-  const illustrationSection = visualDir.illustration_changes
-    ? `\nILLUSTRATION CHANGES:\n- ${visualDir.illustration_changes}`
-    : '';
-  const comparisonSection = visualDir.comparison_adaptation
-    ? `\nCOMPARISON ADAPTATION:\n- ${visualDir.comparison_adaptation}`
-    : '';
 
-  // Angle-specific visual adaptations from Claude analysis
-  const legacyVisuals = (visual_adaptations || []).map((v, i) =>
-    `  ${i + 1}. ${v.position}: "${v.original_visual}" → "${v.adapted_visual}"${v.is_angle_specific ? ' [MUST CHANGE]' : ' [optional]'}`
-  ).join('\n');
+  // Build the FINAL TEXT description — tell the AI what to write, not what to find/replace
+  const finalTextLines = [];
+  if (adapted_text.brand_name) finalTextLines.push(`Brand name: "${adapted_text.brand_name}"`);
+  if (adapted_text.product_descriptor) finalTextLines.push(`Product descriptor: "${adapted_text.product_descriptor}"`);
+  if (adapted_text.headline) finalTextLines.push(`Headline: "${adapted_text.headline}"`);
+  if (adapted_text.subheadline) finalTextLines.push(`Subheadline: "${adapted_text.subheadline}"`);
+  if (adapted_text.body) finalTextLines.push(`Body: "${adapted_text.body}"`);
+  if (adapted_text.cta) finalTextLines.push(`CTA: "${adapted_text.cta}"`);
+  for (const field of ['badges', 'bullets', 'stats', 'comparison_labels', 'ingredient_labels', 'timeline_labels', 'other_text']) {
+    const arr = adapted_text[field] || [];
+    if (arr.length > 0) finalTextLines.push(`${field}: ${arr.map(t => `"${t}"`).join(', ')}`);
+  }
+  if (adapted_text.disclaimer) finalTextLines.push(`Disclaimer: "${adapted_text.disclaimer}"`);
 
-  const logoNote = logoCount > 0
-    ? `\nBRAND LOGO: The brand logo is provided in the images (before the reference ad). Use this EXACT logo where the reference ad has the competitor's logo. Do NOT create or invent any logo — use the provided one pixel-for-pixel.`
-    : '';
+  // Competitor brand info for elimination
+  const origBrand = claudeResult.original_text?.brand_name || brand_elements?.brand_name || '';
+  const origDescriptor = claudeResult.original_text?.product_descriptor || '';
 
-  return `Generate a new ad creative that is a PIXEL-PERFECT STYLE COPY of the reference ad (LAST image), with only the product and text swapped. The first image(s) show the product from multiple angles — reproduce the product EXACTLY as shown in those photos.${logoNote}
+  return `Recreate the reference ad (LAST image) with these changes. The first image(s) show the replacement product — copy the product EXACTLY from those photos.
 
-CRITICAL STYLE REPLICATION: Your output must look like it came from the SAME designer who made the reference ad. Match EVERY visual detail: same background color/gradient, same font style/weight/size, same text positioning, same product placement, same number of product instances, same spacing, same border style, same shadow effects. A viewer should think both ads are from the same campaign.
-${layoutSection}
+STYLE: Pixel-perfect copy of the reference ad's design. Same layout, columns, background, fonts, colors, spacing, shadows, borders. It should look like the same designer made both.
+${layout ? `\nLAYOUT: ${layout.structure || 'match reference'}. Background: ${layout.background || 'same'}. ${(layout.sections || []).map(s => `${s.position}: ${s.content}`).join('. ')}.${layout.has_divider ? ' Keep divider line.' : ''}` : ''}
 
-${nb.productRules || `PRODUCT REPLACEMENT:
-- Remove ALL competitor branding, logos, product imagery — zero trace remaining
-- Replace with the product shown in the first images (${product.name}). Multiple angles may be provided — use them to reproduce the product with perfect accuracy.
-- Show exactly ${pCount2} product(s) in the output
-- Product placement: ${visualDir.product_placement || 'same position as reference product'}
-- CRITICAL: The product is a MINI BITCOIN MINER — a compact electronic device with a color display screen showing mining hashrate data. It is NOT a USB stick, flash drive, or thumb drive. Reproduce it EXACTLY as shown in the product photos.
-- NEVER place ANY logo, brand name, watermark, text overlay, label, or ANY text ON TOP OF the product image, the product packaging, or the product screen. The product device and its packaging must appear EXACTLY as shown in the product photos — completely clean, untouched, with ZERO added text or graphics. The screen shows mining statistics ONLY.
-- Do NOT write "${product.name}" or any other text ON the product body, ON the product box, or ON the product screen. The product name may ONLY appear as standalone text in the ad layout (headlines, labels) — NEVER overlaid on the product image itself.
-- Do NOT invent or generate any logo. If no brand logo image is provided, do NOT create one.
-- Match realistic lighting, shadows, and perspective to the reference style`}
+PRODUCT: Replace all competitor product imagery with the ${product.name} shown in the first photos. Show ${pCount2} product(s) in ${visualDir.product_placement || 'same position as reference'}. The product is a mini bitcoin miner (compact device with color screen showing hashrate). Reproduce it exactly from the photos — do NOT add any text, logo, or overlay on the product or its screen.${logoCount > 0 ? ' Use the provided brand logo (before the reference) where the competitor logo was.' : ''}
 
-COMPETITOR BRAND ELIMINATION:
-${(() => {
-    const brandSwap = swapPairs.find(p => p.field.startsWith('brand_name'));
-    const descSwap = swapPairs.find(p => p.field === 'product_descriptor');
-    let s = '';
-    if (brandSwap) s += `- The competitor brand "${brandSwap.original}" must be replaced with "${brandSwap.adapted}" EVERYWHERE it appears — headers, footers, labels, watermarks, product text, ALL instances.\n`;
-    if (descSwap) s += `- The competitor product descriptor "${descSwap.original}" must be replaced with "${descSwap.adapted}" EVERYWHERE.\n`;
-    s += `- If ANY text from the competitor's brand or niche remains visible in your output, that is a CRITICAL FAILURE. Scan every text element.`;
-    return s;
-  })()}
+FINAL TEXT (render these EXACTLY in the same positions/styles as the reference text):
+${finalTextLines.join('\n')}
 
-TEXT REPLACEMENTS (${swapPairs.length} swaps — apply ALL):
-${swapSection || '  (No text changes)'}
+${origBrand ? `IMPORTANT: The competitor brand "${origBrand}" must NOT appear anywhere.` : ''}${origDescriptor ? ` "${origDescriptor}" must NOT appear anywhere.` : ''} Zero leftover competitor text.
 
-${nb.textRules || `TEXT RENDERING RULES:
-- Font style, weight, size, color, and position must EXACTLY match reference for each text element
-- Do NOT add extra text blocks. Do NOT remove text that isn't in the swap list.
-- NEVER ADD elements that don't exist in the reference — no discount badges, guarantee badges, price tags, trust seals, or promotional callouts unless they exist in the reference image
-- The output must have the EXACT SAME number of text blocks, badges, and visual elements as the reference — no more, no less
-- Text must be sharp, legible, and correctly spelled — NO blurry, warped, or AI-looking text
-- Headlines must be rendered in BOLD, high-contrast, professional typography — as crisp as a real paid ad
-- CRITICAL: Every letter must be pixel-perfect and readable. Distorted text = failure.
-- SPELLING: The product name is "${product.name}" — spell it EXACTLY as written, letter by letter: ${product.name.split('').join('-')}. Double-check every letter.`}
-${illustrationSection}
-${comparisonSection}
+${pCount === 0 ? 'No people in reference — do not add any.' : `Keep exactly ${pCount} person(s), same gender/age range.${adapted_audience ? ' ' + adapted_audience : ''}`}
+${visualDir.illustration_changes ? `Illustrations: ${visualDir.illustration_changes}` : ''}
+${visualDir.comparison_adaptation ? `Comparison: ${visualDir.comparison_adaptation}` : ''}
+${visualDir.background_changes ? `Background: ${visualDir.background_changes}` : ''}
 
-${characterRules}
-
-VISUAL ADAPTATIONS:
-${legacyVisuals || '  (Match reference style — keep backgrounds, icons, decorative elements as-is)'}
-${visualDir.background_changes ? `- Background: ${visualDir.background_changes}` : '- Keep exact same background color/gradient/texture'}
-
-${nb.absoluteRules || `ABSOLUTE RULES:
-1. EXACT same layout structure as reference — same columns, same sections, same proportions, same product arrangement. If the reference shows 3 products in a row, show 3 miners in a row at the same size and position. NEVER rearrange the product layout.
-2. ZERO competitor branding remaining (logos, names, product images)
-3. Every text swap must be applied — check all ${swapPairs.length} replacements
-4. No extra faces beyond ${pCount} — do NOT add people if reference has none
-5. NEVER ADD visual elements that don't exist in the reference — no extra badges, banners, discount tags, guarantee seals, price callouts, or promotional elements. If the reference has 3 text blocks, the output has 3 text blocks. NOTHING MORE.
-6. Comparison labels, timeline labels, feature labels ALL get swapped per the list above
-7. The product is a MINI BITCOIN MINER — NEVER render it as a USB stick. Copy the device from the product photos exactly.
-8. Hands: exactly 5 fingers, realistic proportions
-9. Match reference style, color palette, mood, and visual quality exactly
-10. Brand logo: ${logoCount > 0 ? 'Use the PROVIDED logo image (not invented text). Place it where the competitor logo was — NEVER on top of the product itself.' : `Use "${product.name}" as plain text in same position as competitor logo text — NEVER as a graphic overlay on the product itself.`}
-11. PRICES MUST MATCH the text swap list EXACTLY — do not invent or modify any price, discount percentage, or dollar amount
-12. Product photos take highest priority — reproduce the device with pixel-perfect fidelity
-13. NEVER place ANY logo, emblem, badge, watermark, or brand graphic ON the product body, packaging, or screen. The product must look EXACTLY as shown in the product photos — untouched and clean. Do NOT write "${product.name}" on the device or its box. Brand text goes ONLY in the ad layout (headlines, labels, corners) — NEVER on the device itself.
-14. ZERO leftover competitor text: Every word must be from the swap list. If you see any word from the original competitor's niche (insoles, serum, hair, supplement, etc.) in your output, it is WRONG — replace it.`}`;
+RULES:
+- Same number of text blocks as reference — no additions, no removals
+- Text must be sharp, legible, correctly spelled. Product name: "${product.name}"
+- No text/logo/badge ON the product device or screen
+- No invented elements (no extra badges, banners, price tags not in reference)
+- Prices must match the text above exactly — do not invent amounts`;
 }
 
 export function buildSwapPairs(originalText, adaptedText, claudeResult = null) {
