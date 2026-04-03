@@ -285,7 +285,7 @@ STYLE: Pixel-perfect copy of the reference ad's design. Same layout, columns, ba
 ${layout ? `\nLAYOUT: ${layout.structure || 'match reference'}. Background: ${layout.background || 'same'}. ${(layout.sections || []).map(s => `${s.position}: ${s.content}`).join('. ')}.${layout.has_divider ? ' Keep divider line.' : ''}` : ''}
 
 PRODUCT: Replace all competitor product imagery with the ${product.name} shown in the first photos. Show ${pCount2} product(s) in ${visualDir.product_placement || 'same position as reference'}. The product is a mini bitcoin miner (compact device with color screen showing hashrate). Reproduce it exactly from the photos — do NOT add any text, logo, or overlay on the product or its screen.
-${logoCount > 0 ? `\nBRAND LOGO: A brand logo image is provided (the image(s) between the product photos and the reference ad). Where the reference ad shows the competitor's logo or brand name text, place this PROVIDED logo image instead. Do NOT write the brand name as plain text — use the actual logo image. The logo must appear exactly as provided, not recreated or redrawn.` : `\nBRAND: Where the reference has a competitor logo, write "${product.name}" as clean text in the same style/position. Do not invent or generate any logo graphic.`}`
+${logoCount > 0 ? `\nBRAND LOGO: A brand logo image is provided (the image(s) between the product photos and the reference ad). Where the reference ad shows the competitor's logo or brand name text, place this PROVIDED logo image instead. Do NOT write the brand name as plain text — use the actual logo image. The logo must appear exactly as provided, not recreated or redrawn. Do NOT generate, invent, or add ANY other logo, icon, emblem, mascot, or symbol anywhere in the image.` : `\nBRAND: Where the reference has a competitor logo or icon, replace it with PLAIN TEXT "${product.name}" only — no icon, no symbol, no emblem, no mascot, no graphic of any kind next to it. NEVER generate, invent, or create ANY logo, icon, or brand graphic. The brand appears as TEXT ONLY.`}`
 
 FINAL TEXT — render ONLY these text elements, nothing more. Each line maps 1:1 to a text element in the reference. If a field is not listed, it does NOT exist — do NOT invent it:
 ${finalTextLines.join('\n')}
@@ -304,7 +304,8 @@ RULES:
 3. No text/logo/badge ON the product device or screen
 4. NEVER add elements not in the reference (no extra badges, stats, feature lists, descriptions, price tags)
 5. Prices must match the text above exactly — do not invent amounts
-6. Match the reference's visual density — if the reference is clean/minimal, the output must be equally clean/minimal`;
+6. Match the reference's visual density — if the reference is clean/minimal, the output must be equally clean/minimal
+7. NEVER invent or generate ANY logo, icon, emblem, mascot, seal, or brand graphic${logoCount > 0 ? ' — use ONLY the provided logo image' : ''}. No shield icons, no animal icons, no abstract symbols. Brand identity is TEXT ONLY${logoCount > 0 ? ' plus the provided logo' : ''}.`;
 }
 
 export function buildSwapPairs(originalText, adaptedText, claudeResult = null) {
