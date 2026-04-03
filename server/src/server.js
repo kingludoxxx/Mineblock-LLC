@@ -135,12 +135,11 @@ const start = async () => {
   // Graceful shutdown
   const shutdown = async (signal) => {
     logger.info(`${signal} received — shutting down gracefully`);
-    server.close(() => {
+    server.close(async () => {
       logger.info('HTTP server closed');
-      pool.end().then(() => {
-        logger.info('DB pool drained');
-        process.exit(0);
-      });
+      try { await pool.end(); logger.info('pg Pool drained'); } catch (e) { logger.error('pg Pool drain error:', e.message); }
+      try { if (redis && typeof redis.quit === 'function') { await redis.quit(); logger.info('Redis disconnected'); } } catch (e) { logger.error('Redis disconnect error:', e.message); }
+      process.exit(0);
     });
     // Force exit after 10s if graceful shutdown hangs
     setTimeout(() => { logger.warn('Forced shutdown after timeout'); process.exit(1); }, 10000).unref();

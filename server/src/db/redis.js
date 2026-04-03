@@ -37,7 +37,7 @@ const SESSION_TTL = 300; // 5 minutes
  */
 export async function getSession(key) {
   try {
-    const raw = await redis.get(`sess:${key}`);
+    const raw = await redis.get(`session:${key}`);
     return raw ? JSON.parse(raw) : null;
   } catch (err) {
     logger.error(`getSession error: ${err.message}`);
@@ -53,7 +53,7 @@ export async function getSession(key) {
  */
 export async function setSession(key, data, ttl = SESSION_TTL) {
   try {
-    await redis.set(`sess:${key}`, JSON.stringify(data), 'EX', ttl);
+    await redis.set(`session:${key}`, JSON.stringify(data), 'EX', ttl);
   } catch (err) {
     logger.error(`setSession error: ${err.message}`);
   }
@@ -65,7 +65,7 @@ export async function setSession(key, data, ttl = SESSION_TTL) {
  */
 export async function deleteSession(key) {
   try {
-    await redis.del(`sess:${key}`);
+    await redis.del(`session:${key}`);
   } catch (err) {
     logger.error(`deleteSession error: ${err.message}`);
   }

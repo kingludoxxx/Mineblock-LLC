@@ -77,7 +77,7 @@ export default function VerifyEmail() {
             <h2 className="text-white font-medium mb-2">Email verified</h2>
             <p className="text-white/50 text-sm mb-6">{message}</p>
             <Link
-              to="/dashboard"
+              to="/app/dashboard"
               className="inline-block bg-accent hover:bg-accent-hover text-white rounded-md px-6 py-2 text-sm font-medium transition"
             >
               Continue to Dashboard

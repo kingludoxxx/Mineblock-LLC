@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import ProductSelector from '../../components/ProductSelector';
+import api from '../../services/api';
 import {
   Search,
   Zap,
@@ -22,13 +23,6 @@ import {
 } from 'lucide-react';
 
 const API = '/api/v1/iteration-king';
-
-// Session storage removed — each visit starts fresh
-
-function authHeaders() {
-  const t = localStorage.getItem('accessToken');
-  return { 'Content-Type': 'application/json', ...(t ? { Authorization: `Bearer ${t}` } : {}) };
-}
 
 // SSE stream consumer: reads items as they arrive and calls onItem for each
 async function consumeSSEStream(url, body, { onItem, onError, onDone, signal }) {
@@ -373,8 +367,7 @@ export default function IterationKing() {
     searchTimer.current = setTimeout(async () => {
       setSearchLoading(true);
       try {
-        const res = await fetch(`${API}/search?q=${encodeURIComponent(q)}`, { headers: authHeaders() });
-        const data = await res.json();
+        const { data } = await api.get(`/iteration-king/search?q=${encodeURIComponent(q)}`);
         if (data.success) setSearchResults(data.results);
       } catch {} finally { setSearchLoading(false); }
     }, 400);
@@ -395,16 +388,14 @@ export default function IterationKing() {
     setHooks([]); setSelectedHookIdxs(new Set()); setFinalScript(''); setMoveSuccess(false); setError(null); setAnalysis(null);
     setBriefLoading(true);
     try {
-      const res = await fetch(`${API}/brief/${briefSummary.id}`, { headers: authHeaders() });
-      const data = await res.json();
+      const { data } = await api.get(`/iteration-king/brief/${briefSummary.id}`);
       if (data.success) {
         const cleanScript = cleanBriefScript(data.brief.description || '');
         setSelectedBrief(data.brief); setOriginalScript(cleanScript);
         if (cleanScript.length > 10) {
           setAnalysisLoading(true);
           try {
-            const a = await fetch(`${API}/analyze`, { method: 'POST', headers: authHeaders(), body: JSON.stringify({ script: cleanScript, productProfile: selectedProduct }) });
-            const ad = await a.json();
+            const { data: ad } = await api.post('/iteration-king/analyze', { script: cleanScript, productProfile: selectedProduct });
             if (ad.success) setAnalysis(ad.analysis);
           } catch {} finally { setAnalysisLoading(false); }
         }

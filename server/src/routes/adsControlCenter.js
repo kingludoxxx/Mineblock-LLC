@@ -587,7 +587,7 @@ async function evaluateRules() {
           if (!metaAd) {
             logEntry.execution_status = 'error';
             logEntry.execution_error = 'Ad not found in Meta';
-          } else if (!metaAd.adsetId || !metaAd.adsetBudget) {
+          } else if (!metaAd.adsetId || metaAd.adsetBudget == null) {
             logEntry.execution_status = 'error';
             logEntry.execution_error = 'Adset or budget not found';
           } else {

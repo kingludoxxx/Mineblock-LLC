@@ -15,8 +15,7 @@ import Card from '../../components/ui/Card';
 import Button from '../../components/ui/Button';
 import Select from '../../components/ui/Select';
 import Input from '../../components/ui/Input';
-
-const API_BASE = '/api/v1/brief-agent';
+import api from '../../services/api';
 
 const INITIAL_FORM = {
   angle: '',
@@ -47,7 +46,7 @@ export default function BriefAgent() {
   // Fetch editor queue counts
   const fetchEditorCounts = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/editor-queue`).then((r) => r.json());
+      const { data: res } = await api.get('/brief-agent/editor-queue');
       if (res.success) setEditorCounts(res.counts);
     } catch { /* silent */ }
   }, []);
@@ -56,9 +55,9 @@ export default function BriefAgent() {
   const fetchData = useCallback(async () => {
     setOptionsLoading(true);
     try {
-      const [optRes, briefRes] = await Promise.all([
-        fetch(`${API_BASE}/field-options`).then((r) => r.json()),
-        fetch(`${API_BASE}/next-brief-number`).then((r) => r.json()),
+      const [{ data: optRes }, { data: briefRes }] = await Promise.all([
+        api.get('/brief-agent/field-options'),
+        api.get('/brief-agent/next-brief-number'),
       ]);
       if (optRes.success) setOptions(optRes.options);
       if (briefRes.success) setNextBrief(briefRes.nextBriefNumber);
@@ -85,7 +84,7 @@ export default function BriefAgent() {
     if (!cleanId || isNaN(cleanId)) return;
     setParentLookup({ loading: true, task: null });
     try {
-      const res = await fetch(`${API_BASE}/lookup/${briefId}?product=${product}`).then((r) => r.json());
+      const { data: res } = await api.get(`/brief-agent/lookup/${briefId}?product=${product}`);
       if (res.success && res.found) {
         setParentLookup({ loading: false, task: res.task });
         if (res.task.frameLink) {
@@ -137,12 +136,7 @@ export default function BriefAgent() {
     setResult(null);
 
     try {
-      const res = await fetch(`${API_BASE}/create`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(form),
-      });
-      const data = await res.json();
+      const { data } = await api.post('/brief-agent/create', form);
 
       if (data.success) {
         setResult(data.task);

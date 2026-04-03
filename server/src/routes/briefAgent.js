@@ -1,6 +1,8 @@
 import express from 'express';
+import { authenticate } from '../middleware/auth.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 const CLICKUP_TOKEN = process.env.CLICKUP_API_TOKEN || '';
 const VIDEO_ADS_LIST_ID = '901518716584';

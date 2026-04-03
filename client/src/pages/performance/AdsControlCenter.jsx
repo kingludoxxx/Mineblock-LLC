@@ -903,7 +903,7 @@ export default function AdsControlCenter() {
   const [promising, setPromising] = useState([]);
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState({ rules: true, activity: true, promising: true });
-  const [date, setDate] = useState(todayStr);
+  const [date, setDate] = useState(todayStr());
   const [showModal, setShowModal] = useState(false);
   const [editingRule, setEditingRule] = useState(null);
   const [evaluating, setEvaluating] = useState(false);
