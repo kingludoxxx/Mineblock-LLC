@@ -202,11 +202,11 @@ router.post('/generate', authenticate, async (req, res) => {
     // ── Step B: Call Claude to analyze the reference ad ─────────────────
     const claudeBody = {
       model: 'claude-sonnet-4-20250514',
-      max_tokens: 3000,
+      max_tokens: 4096,
       messages: [{
         role: 'user',
         content: [
-          { type: 'text', text: buildClaudePrompt(product, angle) },
+          { type: 'text', text: buildClaudePrompt(product, angle, customPrompts) },
           { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } },
         ],
       }],
@@ -314,7 +314,7 @@ router.post('/generate', authenticate, async (req, res) => {
     logoUrls.forEach((u, i) => console.log(`  [${extraProductUrls.length+1+i}] logo: ${u?.slice(0, 120)}`));
     console.log(`  [LAST] reference: ${finalReferenceUrl?.slice(0, 120)}`);
 
-    const nbPrompt = buildNanoBananaPrompt(claudeResult, swapPairs, product, logoUrls.length);
+    const nbPrompt = buildNanoBananaPrompt(claudeResult, swapPairs, product, logoUrls.length, customPrompts);
 
     // Send: product images, then logos, then reference ad (last)
     const imageUrls = [finalProductUrl, ...extraProductUrls, ...logoUrls, finalReferenceUrl];
