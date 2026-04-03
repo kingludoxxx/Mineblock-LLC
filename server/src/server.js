@@ -128,9 +128,34 @@ const start = async () => {
   }
 
   // 5. Start HTTP server
-  app.listen(env.PORT, () => {
+  const server = app.listen(env.PORT, () => {
     logger.info(`Server running on port ${env.PORT} in ${env.NODE_ENV} mode`);
   });
+
+  // Graceful shutdown
+  const shutdown = async (signal) => {
+    logger.info(`${signal} received — shutting down gracefully`);
+    server.close(() => {
+      logger.info('HTTP server closed');
+      pool.end().then(() => {
+        logger.info('DB pool drained');
+        process.exit(0);
+      });
+    });
+    // Force exit after 10s if graceful shutdown hangs
+    setTimeout(() => { logger.warn('Forced shutdown after timeout'); process.exit(1); }, 10000).unref();
+  };
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 };
+
+// Global error handlers — prevent silent crashes
+process.on('unhandledRejection', (reason) => {
+  logger.error('Unhandled promise rejection:', reason);
+});
+process.on('uncaughtException', (err) => {
+  logger.error('Uncaught exception:', err);
+  process.exit(1);
+});
 
 start();

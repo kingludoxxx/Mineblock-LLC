@@ -13,7 +13,7 @@ const pool = new Pool({
 
 pool.on('error', (err) => {
   console.error('Unexpected error on idle database client', err);
-  process.exit(1);
+  // Don't crash on transient connection errors — let the pool recover
 });
 
 export const query = (text, params) => pool.query(text, params);

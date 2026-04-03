@@ -9,7 +9,7 @@ import logger from '../utils/logger.js';
 // ---------------------------------------------------------------------------
 let redisClient = null;
 try {
-  const redis = await import('../../db/redis.js');
+  const redis = await import('../db/redis.js');
   redisClient = redis.default || redis.client || null;
 } catch {
   logger.warn('Redis module not available — auth middleware will skip session cache');
