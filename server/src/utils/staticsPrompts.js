@@ -94,9 +94,11 @@ Identify every visual element:
 
 ━━━ LAYER 5: COPY ADAPTATION — FORMULA PRESERVATION ━━━
 
-THIS IS THE MOST IMPORTANT STEP. You must adapt every text element for the product above while PRESERVING THE EXACT COPYWRITING FORMULA.
+THIS IS THE MOST IMPORTANT STEP. You must adapt EVERY SINGLE text element for the product above while PRESERVING THE EXACT COPYWRITING FORMULA.
 
 ⚠️ STRICT REFERENCE FIDELITY: You may ONLY adapt text that is ACTUALLY VISIBLE in the reference image. Do NOT add new text elements, badges, discount callouts, guarantee text, or promotional copy that doesn't exist in the reference. The adapted_text arrays must have the EXACT SAME number of items as original_text arrays — no additions.
+
+⚠️ ZERO LEFTOVER TEXT: After adaptation, ZERO words from the original competitor's product/brand/niche must remain. Every single piece of text must be fully adapted to the bitcoin mining product. If the reference says "Comfort Insoles", "Hair Regrowth", "Weight Loss Serum", etc. — those words must be 100% replaced. Finding ANY competitor niche word in the output = FAILURE. Double-check every text field for leftover words from the reference product's niche.
 
 ${co.formulaPreservation || `⚠️ FORMULA PRESERVATION RULES (CRITICAL):
 The adapted text must follow the EXACT SAME sentence structure, opening words, and approximate character count as the original. You are copying the PROVEN FORMULA, just swapping the subject matter.
@@ -289,8 +291,9 @@ ${nb.productRules || `PRODUCT REPLACEMENT:
 - Show exactly ${pCount2} product(s) in the output
 - Product placement: ${visualDir.product_placement || 'same position as reference product'}
 - CRITICAL: The product is a MINI BITCOIN MINER — a compact electronic device with a color display screen showing mining hashrate data. It is NOT a USB stick, flash drive, or thumb drive. Reproduce it EXACTLY as shown in the product photos.
-- NEVER place ANY logo, brand name, watermark, text overlay, or label ON TOP OF the product image. The product must appear EXACTLY as photographed — clean, with no added graphics on the device body or screen. The screen shows mining statistics ONLY.
-- Do NOT invent or generate any logo. If no brand logo image is provided, do NOT create one. Only use "${product.name}" as plain text where the competitor's logo text was — NEVER as a graphic overlay on the product itself.
+- NEVER place ANY logo, brand name, watermark, text overlay, label, or ANY text ON TOP OF the product image, the product packaging, or the product screen. The product device and its packaging must appear EXACTLY as shown in the product photos — completely clean, untouched, with ZERO added text or graphics. The screen shows mining statistics ONLY.
+- Do NOT write "${product.name}" or any other text ON the product body, ON the product box, or ON the product screen. The product name may ONLY appear as standalone text in the ad layout (headlines, labels) — NEVER overlaid on the product image itself.
+- Do NOT invent or generate any logo. If no brand logo image is provided, do NOT create one.
 - Match realistic lighting, shadows, and perspective to the reference style`}
 
 TEXT REPLACEMENTS (${swapPairs.length} swaps — apply ALL):
@@ -327,7 +330,8 @@ ${nb.absoluteRules || `ABSOLUTE RULES:
 10. Brand logo: ${logoCount > 0 ? 'Use the PROVIDED logo image (not invented text). Place it where the competitor logo was — NEVER on top of the product itself.' : `Use "${product.name}" as plain text in same position as competitor logo text — NEVER as a graphic overlay on the product itself.`}
 11. PRICES MUST MATCH the text swap list EXACTLY — do not invent or modify any price, discount percentage, or dollar amount
 12. Product photos take highest priority — reproduce the device with pixel-perfect fidelity
-13. NEVER place ANY logo, emblem, badge, watermark, or brand graphic ON the product body or screen. The product must look EXACTLY as shown in the product photos — untouched and clean. Logos go ONLY where the competitor's logo was in the reference layout (headers, footers, corners) — NEVER on the device.`}`;
+13. NEVER place ANY logo, emblem, badge, watermark, or brand graphic ON the product body, packaging, or screen. The product must look EXACTLY as shown in the product photos — untouched and clean. Do NOT write "${product.name}" on the device or its box. Brand text goes ONLY in the ad layout (headlines, labels, corners) — NEVER on the device itself.
+14. ZERO leftover competitor text: Every word must be from the swap list. If you see any word from the original competitor's niche (insoles, serum, hair, supplement, etc.) in your output, it is WRONG — replace it.`}`;
 }
 
 export function buildSwapPairs(originalText, adaptedText) {
