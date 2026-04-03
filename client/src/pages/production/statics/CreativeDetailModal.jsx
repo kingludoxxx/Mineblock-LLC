@@ -89,6 +89,7 @@ function ReferenceLightbox({ url, name, onClose }) {
 
 export function CreativeDetailModal({
   creative,
+  variant,
   isOpen,
   onClose,
   onApprove,
@@ -104,8 +105,11 @@ export function CreativeDetailModal({
   const [aiAdjusting, setAiAdjusting] = useState(false);
   const [aiError, setAiError] = useState(null);
   const [refLightbox, setRefLightbox] = useState(false);
+  const [activeRatio, setActiveRatio] = useState('primary');
 
   if (!isOpen || !creative) return null;
+
+  const activeCreative = activeRatio === '9:16' && variant ? variant : creative;
 
   // Parse adapted_text — may be a JSON string from the DB
   let adaptedText = creative.adapted_text || creative.swap_pairs || {};
@@ -143,15 +147,54 @@ export function CreativeDetailModal({
         {/* ----------------------------------------------------------------- */}
         {/* Left panel — image preview (70%) */}
         {/* ----------------------------------------------------------------- */}
-        <div className="w-[70%] flex items-center justify-center p-10 overflow-hidden">
+        <div className="w-[70%] flex flex-col items-center justify-center p-10 overflow-hidden">
+          {/* Ratio tabs — show when variant exists or is generating */}
+          {!creative.parent_creative_id && (variant || creative.aspect_ratio !== '9:16') && (
+            <div className="flex items-center gap-1 mb-4 bg-white/[0.04] rounded-lg p-1 border border-white/[0.06]">
+              <button
+                type="button"
+                onClick={() => setActiveRatio('primary')}
+                className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors cursor-pointer ${
+                  activeRatio === 'primary'
+                    ? 'bg-white/[0.1] text-white'
+                    : 'text-slate-500 hover:text-slate-300'
+                }`}
+              >
+                {creative.aspect_ratio || '4:5'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveRatio('9:16')}
+                disabled={!variant}
+                className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors flex items-center gap-1.5 ${
+                  activeRatio === '9:16'
+                    ? 'bg-white/[0.1] text-white cursor-pointer'
+                    : variant
+                      ? 'text-slate-500 hover:text-slate-300 cursor-pointer'
+                      : 'text-slate-700 cursor-not-allowed'
+                }`}
+              >
+                9:16
+                {variant?.status === 'generating' && <Loader2 className="w-3 h-3 animate-spin text-violet-400" />}
+                {variant?.image_url && <Check className="w-3 h-3 text-emerald-400" />}
+                {!variant && <span className="text-[9px] text-slate-600">—</span>}
+              </button>
+            </div>
+          )}
+
           {/* Image + reference wrapper */}
           <div className="relative max-w-[520px] w-full">
-            {creative.image_url ? (
+            {activeCreative.image_url ? (
               <img
-                src={creative.image_url}
-                alt={creative.product_name || 'Creative'}
+                src={activeCreative.image_url}
+                alt={activeCreative.product_name || 'Creative'}
                 className="w-full rounded-lg object-contain shadow-2xl"
               />
+            ) : activeCreative.status === 'generating' ? (
+              <div className="flex flex-col items-center justify-center aspect-[4/5] gap-3 text-slate-600">
+                <Loader2 className="w-10 h-10 animate-spin text-violet-400" />
+                <span className="text-sm text-violet-300">Generating 9:16 version…</span>
+              </div>
             ) : (
               <div className="flex flex-col items-center justify-center aspect-[4/5] gap-3 text-slate-600">
                 <Image className="w-16 h-16" />

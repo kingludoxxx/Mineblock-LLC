@@ -1907,6 +1907,8 @@ export default function StaticsGeneration() {
                     try {
                       await api.patch(`/statics-generation/creatives/${id}/status`, { status: newStatus });
                       setCreatives(prev => prev.map(c => c.id === id ? { ...c, status: newStatus } : c));
+                      // Refresh after approval to pick up auto-generated 9:16 variant
+                      if (newStatus === 'approved') setTimeout(() => fetchCreatives(), 3000);
                     } catch (err) {
                       console.error('[Pipeline] Status change failed:', err.message);
                     }
@@ -2348,6 +2350,7 @@ export default function StaticsGeneration() {
         <CreativeDetailModal
           key={detailModal?.id}
           creative={detailModal}
+          variant={creatives.find(c => c.parent_creative_id === detailModal.id && c.aspect_ratio === '9:16')}
           isOpen={true}
           onClose={() => setDetailModal(null)}
           onApprove={async (id) => {
@@ -2355,6 +2358,8 @@ export default function StaticsGeneration() {
               await api.patch(`/statics-generation/creatives/${id}/status`, { status: 'approved' });
               setCreatives(prev => prev.map(c => c.id === id ? { ...c, status: 'approved' } : c));
               setDetailModal(null);
+              // Refresh after a delay to pick up the auto-generated 9:16 variant
+              setTimeout(() => fetchCreatives(), 3000);
             } catch { /* silently fail */ }
           }}
           onReject={async (id) => {

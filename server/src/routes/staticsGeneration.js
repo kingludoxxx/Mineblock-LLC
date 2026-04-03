@@ -665,6 +665,22 @@ router.patch('/creatives/:id/status', authenticate, async (req, res) => {
     );
     if (rows.length === 0) return res.status(404).json({ success: false, error: { message: 'Creative not found' } });
     const creative = rows[0];
+
+    // Auto-generate 9:16 variant when a non-9:16 creative is approved
+    if (status === 'approved' && creative.aspect_ratio !== '9:16' && !creative.parent_creative_id) {
+      // Check if a 9:16 variant already exists
+      const existingVariant = await pgQuery(
+        "SELECT id FROM spy_creatives WHERE parent_creative_id = $1 AND aspect_ratio = '9:16'",
+        [creative.id]
+      );
+      if (existingVariant.length === 0) {
+        console.log(`[staticsGeneration] Auto-generating 9:16 variant for approved creative ${creative.id}`);
+        generateVariant(creative, '9:16').catch(err =>
+          console.error('[staticsGeneration] Auto 9:16 variant error:', err.message)
+        );
+      }
+    }
+
     res.json({ success: true, data: creative });
   } catch (err) {
     console.error('[staticsGeneration] /creatives/:id/status error:', err);
