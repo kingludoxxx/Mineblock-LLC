@@ -945,4 +945,130 @@ router.post('/creatives/:id/download', authenticate, async (req, res) => {
   }
 });
 
+// ── Statics Prompt Settings ──────────────────────────────────────────
+
+const STATICS_PROMPT_TYPES = [
+  { key: 'claudeAnalysis', label: 'Claude Analysis Prompt', description: 'Analyzes reference ad image and adapts copy for the target product' },
+  { key: 'nanoBanana', label: 'Image Generation Prompt', description: 'Instructions sent to NanoBanana API for image generation' },
+];
+
+let staticsPromptsCache = { data: null, timestamp: 0 };
+const STATICS_CACHE_TTL = 5 * 60 * 1000;
+
+async function getCustomStaticsPrompts() {
+  if (staticsPromptsCache.data && Date.now() - staticsPromptsCache.timestamp < STATICS_CACHE_TTL) {
+    return staticsPromptsCache.data;
+  }
+  try {
+    const rows = await pgQuery(`SELECT value FROM system_settings WHERE key = 'statics_prompts'`);
+    const data = rows.length ? (typeof rows[0].value === 'string' ? JSON.parse(rows[0].value) : rows[0].value) : null;
+    staticsPromptsCache = { data, timestamp: Date.now() };
+    return data;
+  } catch { return null; }
+}
+
+function getDefaultStaticsPrompts() {
+  return {
+    claudeAnalysis: {
+      headlineRules: `The headline is the most important element. Write AGGRESSIVE, high-converting headlines that create urgency and desire. The headline must:
+- Make a BOLD, specific money-related claim (e.g. "This $59 Device Mines $127/Month in Bitcoin While You Sleep", "People Are Making $3,800/Month With This Tiny Miner")
+- Use concrete dollar amounts, timeframes, or multipliers — vague claims like "works at home" are BANNED
+- Create FOMO, urgency, or disbelief (e.g. "Wall Street Doesn't Want You to Know About This", "Banks HATE This $59 Device")
+- Sound like a native ad / advertorial headline, NOT like a product description
+- Be punchy, provocative, and scroll-stopping — if it sounds like it could be a boring product tagline, REWRITE IT
+- NEVER use generic/weak phrases like "works at home", "easy to use", "quick mining", "get started today"
+- Match the approximate CHARACTER COUNT of the original headline (not word count — character count matters for layout fit)`,
+      headlineExamples: `HEADLINE STYLE EXAMPLES (use these as inspiration, do NOT copy verbatim):
+- "I Bought a $59 Bitcoin Miner as a Joke — It's Paid for Itself 4x"
+- "Tiny Device Mines $4.20/Day in Bitcoin — No Experience Needed"
+- "Crypto Millionaires Started With This Exact Device"
+- "Your Electricity Bill Hides a $127/Month Bitcoin Goldmine"
+- "This Pocket-Sized Miner Made $847 Last Month on Autopilot"
+- "Forget Savings Accounts — This Mines Real Bitcoin 24/7"`,
+      pricingRules: `MANDATORY PRICING RULES (VIOLATION = FAILURE):
+- The product base price is $59.99 for 1 unit
+- Bundle prices: 2 units = $55 each ($109.99), 3+1 free = $45 each ($179.99), 6+2 free = $40 each ($320)
+- Maximum discount allowed: 58% — NEVER exceed this
+- The ONLY discount code is MINER10 (extra 10% off)
+- NEVER write "$35", "$29", "$25" or any price not listed above
+- If the reference ad has a price, replace it with the CORRECT price from this list
+- When in doubt, use "Up to 40% OFF" or "Starting at $59.99" — do NOT invent prices`,
+      productIdentity: `PRODUCT IDENTITY NOTE: The product is a MINI BITCOIN MINER — a small, compact electronic device with a color display screen showing mining hashrate data. NEVER describe it as a "USB stick", "flash drive", "thumb drive", or anything USB-related. It is NOT a USB device. When describing product placement, refer to it as "mini bitcoin miner" or "compact mining device with display screen". IMPORTANT: The product's screen displays mining statistics (hashrate numbers like 995.4 KH/s) — do NOT put logos, brand names, or text overlays on the device screen. The screen content must match exactly what is shown in the product images.`,
+      bannedPhrases: `works at home, easy to use, quick mining, get started today`,
+    },
+    nanoBanana: {
+      productRules: `PRODUCT REPLACEMENT:
+- Remove ALL competitor branding, logos, product imagery
+- CRITICAL: The product is a MINI BITCOIN MINER with a display screen — NOT a USB stick. Reproduce it EXACTLY as shown. NEVER render it as a USB stick, flash drive, or thumb drive. Do NOT add logos or brand names onto the device screen — the screen shows mining hashrate data only.
+- Realistic lighting, shadows, and perspective matching the reference style`,
+      textRules: `TEXT RULES:
+- Font style, weight, size, color, and position must EXACTLY match reference for each text element
+- Do NOT add extra text blocks. Do NOT remove text that isn't in the swap list.
+- Text must be sharp, legible, and correctly spelled — NO blurry, warped, or AI-looking text
+- Headlines must be rendered in BOLD, high-contrast, professional typography — as crisp as a real paid ad
+- CRITICAL: Every letter must be pixel-perfect and readable. If text looks "AI-generated" or distorted, the output is a failure.`,
+      absoluteRules: `ABSOLUTE RULES:
+1. EXACT same layout structure as reference — same columns, same sections, same proportions
+2. ZERO competitor branding remaining (logos, names, product images)
+3. Every text swap must be applied
+4. No extra text beyond the specified swaps
+5. Comparison labels, timeline labels, ingredient labels ALL get swapped
+6. The product is a MINI BITCOIN MINER — NEVER show a USB-looking product. Copy the device from image 1 exactly.
+7. Hands: exactly 5 fingers, realistic proportions
+8. Match reference style, color palette, mood, and visual quality
+9. PRICES MUST MATCH the text swap list EXACTLY — do not invent or modify any price, discount percentage, or dollar amount`,
+    }
+  };
+}
+
+// GET /settings/prompts
+router.get('/settings/prompts', authenticate, async (_req, res) => {
+  try {
+    const custom = await getCustomStaticsPrompts();
+    const defaults = getDefaultStaticsPrompts();
+    res.json({
+      success: true,
+      promptTypes: STATICS_PROMPT_TYPES,
+      defaults,
+      custom: custom || {},
+      hasCustom: !!custom,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// PUT /settings/prompts
+router.put('/settings/prompts', authenticate, async (req, res) => {
+  try {
+    const { prompts } = req.body;
+    if (!prompts || typeof prompts !== 'object') {
+      return res.status(400).json({ success: false, error: { message: 'prompts object is required' } });
+    }
+    await pgQuery(
+      `INSERT INTO system_settings (key, value, description)
+       VALUES ('statics_prompts', $1, 'Custom prompts for Static Ads generation')
+       ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()`,
+      [JSON.stringify(prompts)]
+    );
+    staticsPromptsCache = { data: prompts, timestamp: Date.now() };
+    res.json({ success: true, message: 'Prompts saved' });
+  } catch (err) {
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// POST /settings/prompts/reset
+router.post('/settings/prompts/reset', authenticate, async (_req, res) => {
+  try {
+    await pgQuery(`DELETE FROM system_settings WHERE key = 'statics_prompts'`);
+    staticsPromptsCache = { data: null, timestamp: 0 };
+    res.json({ success: true, message: 'Prompts reset to defaults' });
+  } catch (err) {
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+export { getCustomStaticsPrompts, getDefaultStaticsPrompts };
+
 export default router;

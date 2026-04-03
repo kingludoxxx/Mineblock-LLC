@@ -29,6 +29,7 @@ import {
   Send,
   BookOpen,
   Filter,
+  Settings,
 } from 'lucide-react';
 import api from '../../services/api';
 import ProductSelector from '../../components/ProductSelector';
@@ -38,6 +39,7 @@ import { TemplateSelectModal } from './statics/TemplateSelectModal';
 import { CreativeDetailModal } from './statics/CreativeDetailModal';
 import { ConfigSidebar } from './statics/ConfigSidebar';
 import { AddReferenceModal } from './statics/AddReferenceModal';
+import { StaticsSettingsModal } from './statics/StaticsSettingsModal';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -640,6 +642,7 @@ export default function StaticsGeneration() {
   const [detailModal, setDetailModal] = useState(null);
   const [templateModal, setTemplateModal] = useState(false);
   const [addRefModal, setAddRefModal] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [selectedCategory, setSelectedCategory] = useState(null);
 
   // =========================================================================
@@ -1134,6 +1137,16 @@ export default function StaticsGeneration() {
             );
           })}
         </nav>
+
+        {/* Settings button */}
+        <button
+          type="button"
+          onClick={() => setSettingsOpen(true)}
+          className="p-2 rounded-lg text-slate-400 hover:text-white hover:bg-white/[0.06] transition-colors cursor-pointer"
+          title="Prompt & Logic Settings"
+        >
+          <Settings className="w-5 h-5" />
+        </button>
 
         {/* Add Reference button */}
         <button
@@ -1879,6 +1892,8 @@ export default function StaticsGeneration() {
           ))}
         </div>
       )}
+
+      <StaticsSettingsModal isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </div>
   );
 }
