@@ -43,6 +43,8 @@ import { CreativeDetailModal } from './statics/CreativeDetailModal';
 import { ConfigSidebar } from './statics/ConfigSidebar';
 import { AddReferenceModal } from './statics/AddReferenceModal';
 import { StaticsSettingsModal } from './statics/StaticsSettingsModal';
+import LaunchTemplateEditor from './briefs/LaunchTemplateEditor';
+import AdCopySetsManager from './briefs/AdCopySetsManager';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -856,6 +858,9 @@ export default function StaticsGeneration() {
   const [templateModal, setTemplateModal] = useState(false);
   const [addRefModal, setAddRefModal] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [templateEditorOpen, setTemplateEditorOpen] = useState(false);
+  const [editingTemplate, setEditingTemplate] = useState(null);
+  const [copySetsOpen, setCopySetsOpen] = useState(false);
   const [selectedCategory, setSelectedCategory] = useState(null);
 
   // =========================================================================
@@ -1914,6 +1919,8 @@ export default function StaticsGeneration() {
                     }
                   }}
                   onCardClick={(creative) => setDetailModal(creative)}
+                  onOpenTemplates={() => setTemplateEditorOpen(true)}
+                  onOpenCopySets={() => setCopySetsOpen(true)}
                 />
 
                 {/* ---- 9:16 Variant Tracker ---- */}
@@ -2448,6 +2455,20 @@ export default function StaticsGeneration() {
       )}
 
       <StaticsSettingsModal isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
+
+      {templateEditorOpen && (
+        <LaunchTemplateEditor
+          template={editingTemplate}
+          onClose={() => { setTemplateEditorOpen(false); setEditingTemplate(null); }}
+          onSaved={() => { setTemplateEditorOpen(false); setEditingTemplate(null); }}
+        />
+      )}
+
+      {copySetsOpen && (
+        <AdCopySetsManager
+          onClose={() => setCopySetsOpen(false)}
+        />
+      )}
     </div>
   );
 }
