@@ -1238,85 +1238,110 @@ export default function StaticsGeneration() {
           profile: Object.keys(profile).length > 0 ? profile : undefined,
         };
 
-        // Process each reference sequentially (each gets its own generation)
+        // Process references with overlapped execution:
+        // While polling reference N's tasks, fire off reference N+1's generate call.
+        // This overlaps the slow polling step with the fast Claude+NanoBanana submission.
         let totalCreatives = 0;
         const allErrors = [];
 
-        for (let refIdx = 0; refIdx < item.references.length; refIdx++) {
-          const currentRef = item.references[refIdx];
-          const refUrl = currentRef?.image_url || currentRef?.thumbnail || currentRef?.url || '';
+        const pollTask = async (task) => {
+          const maxPolls = 60;
+          for (let i = 0; i < maxPolls; i++) {
+            const delay = i < 10 ? 2000 : 4000;
+            await new Promise(r => setTimeout(r, delay));
+            const statusRes = await api.get(`/statics-generation/status/${task.taskId}`);
+            const statusData = statusRes.data?.data || statusRes.data;
+            if (statusData?.resultImageUrl) {
+              return { ratio: task.ratio, imageUrl: statusData.resultImageUrl, taskId: task.taskId };
+            }
+            if (statusData?.status === 'failed' || statusData?.error) {
+              throw new Error(`Failed for ${task.ratio}: ${statusData?.error || 'Unknown'}`);
+            }
+          }
+          throw new Error(`Timed out for ${task.ratio}`);
+        };
 
+        // Overlap: fire ref N+1's generate while ref N is still polling.
+        // Each iteration awaits only the fast generate call (Step 1),
+        // then lets polling (Step 2) run in the background.
+        const refPromises = [];
+
+        for (let refIdx = 0; refIdx < item.references.length; refIdx++) {
           updateStatus(item.id, { progress: `${refIdx + 1}/${item.references.length}` });
 
-          try {
-            // Step 1: Submit to server
-            const response = await api.post('/statics-generation/generate', {
-              reference_image_url: refUrl,
-              product: productPayload,
-              angle: item.customAngle || item.angle || undefined,
-              ratio: item.aspectRatio,
-            });
+          // Start this reference's full pipeline (generate + poll).
+          // The generate call resolves quickly; polling takes 30-60s.
+          // We split so the next iteration can start its generate call
+          // as soon as THIS generate call completes.
+          const refPromise = (async (idx) => {
+            const currentRef = item.references[idx];
+            const refUrl = currentRef?.image_url || currentRef?.thumbnail || currentRef?.url || '';
 
-            const genResult = response.data?.data || response.data;
-            const tasks = genResult.tasks || (genResult.taskId ? [{ taskId: genResult.taskId, ratio: item.aspectRatio }] : []);
-
-            if (tasks.length === 0) continue;
-
-            // Step 2: Poll tasks (fast polls first, then back off)
-            const pollTask = async (task) => {
-              const maxPolls = 60;
-              for (let i = 0; i < maxPolls; i++) {
-                const delay = i < 10 ? 2000 : 4000;
-                await new Promise(r => setTimeout(r, delay));
-                const statusRes = await api.get(`/statics-generation/status/${task.taskId}`);
-                const statusData = statusRes.data?.data || statusRes.data;
-                if (statusData?.resultImageUrl) {
-                  return { ratio: task.ratio, imageUrl: statusData.resultImageUrl, taskId: task.taskId };
-                }
-                if (statusData?.status === 'failed' || statusData?.error) {
-                  throw new Error(`Failed for ${task.ratio}: ${statusData?.error || 'Unknown'}`);
-                }
-              }
-              throw new Error(`Timed out for ${task.ratio}`);
-            };
-
-            const taskResults = await Promise.allSettled(tasks.map(pollTask));
-            const completedTasks = taskResults.filter(r => r.status === 'fulfilled').map(r => r.value);
-            const failedTasks = taskResults.filter(r => r.status === 'rejected').map(r => r.reason?.message);
-
-            if (failedTasks.length > 0) allErrors.push(...failedTasks);
-            if (completedTasks.length === 0) continue;
-
-            // Step 3: Save creatives
-            const groupId = crypto.randomUUID();
-            const resolvedRefUrl = currentRef?.image_url || currentRef?.thumbnail || currentRef?.url || refUrl;
-
-            const savedCreatives = await Promise.all(completedTasks.map(async (task) => {
-              const saveRes = await api.post('/statics-generation/creatives', {
-                product_id: item.productId || null,
-                product_name: item.productName,
-                image_url: task.imageUrl,
-                angle: item.angle || null,
-                aspect_ratio: task.ratio,
-                group_id: groupId,
-                generation_task_id: task.taskId,
-                adapted_text: genResult.adaptedText || genResult.claudeAnalysis?.adapted_text,
-                swap_pairs: genResult.swapPairs,
-                claude_analysis: genResult.claudeAnalysis,
-                reference_thumbnail: resolvedRefUrl,
-                reference_name: currentRef?.name || 'Reference',
-                source_label: currentRef?.source_label || currentRef?.name || null,
-                pipeline: 'standard',
+            try {
+              // Step 1: Submit to server (fast)
+              const response = await api.post('/statics-generation/generate', {
+                reference_image_url: refUrl,
+                product: productPayload,
+                angle: item.customAngle || item.angle || undefined,
+                ratio: item.aspectRatio,
               });
-              return saveRes.data?.data || saveRes.data;
-            }));
 
-            setCreatives(prev => [...savedCreatives, ...prev]);
-            totalCreatives += completedTasks.length;
-          } catch (refErr) {
-            allErrors.push(`Ref ${refIdx + 1}: ${refErr.response?.data?.error || refErr.message}`);
-          }
+              const genResult = response.data?.data || response.data;
+              const tasks = genResult.tasks || (genResult.taskId ? [{ taskId: genResult.taskId, ratio: item.aspectRatio }] : []);
+
+              // Signal that generate is done — next ref can start
+              return { genDone: true, pollPromise: (async () => {
+                if (tasks.length === 0) return;
+
+                // Step 2: Poll tasks (slow)
+                const taskResults = await Promise.allSettled(tasks.map(pollTask));
+                const completedTasks = taskResults.filter(r => r.status === 'fulfilled').map(r => r.value);
+                const failedTasks = taskResults.filter(r => r.status === 'rejected').map(r => r.reason?.message);
+
+                if (failedTasks.length > 0) allErrors.push(...failedTasks);
+                if (completedTasks.length === 0) return;
+
+                // Step 3: Save creatives
+                const groupId = crypto.randomUUID();
+                const resolvedRefUrl = currentRef?.image_url || currentRef?.thumbnail || currentRef?.url || refUrl;
+
+                const savedCreatives = await Promise.all(completedTasks.map(async (task) => {
+                  const saveRes = await api.post('/statics-generation/creatives', {
+                    product_id: item.productId || null,
+                    product_name: item.productName,
+                    image_url: task.imageUrl,
+                    angle: item.angle || null,
+                    aspect_ratio: task.ratio,
+                    group_id: groupId,
+                    generation_task_id: task.taskId,
+                    adapted_text: genResult.adaptedText || genResult.claudeAnalysis?.adapted_text,
+                    swap_pairs: genResult.swapPairs,
+                    claude_analysis: genResult.claudeAnalysis,
+                    reference_thumbnail: resolvedRefUrl,
+                    reference_name: currentRef?.name || 'Reference',
+                    source_label: currentRef?.source_label || currentRef?.name || null,
+                    pipeline: 'standard',
+                  });
+                  return saveRes.data?.data || saveRes.data;
+                }));
+
+                setCreatives(prev => [...savedCreatives, ...prev]);
+                totalCreatives += completedTasks.length;
+              })() };
+            } catch (refErr) {
+              allErrors.push(`Ref ${idx + 1}: ${refErr.response?.data?.error || refErr.message}`);
+              return { genDone: true, pollPromise: Promise.resolve() };
+            }
+          })(refIdx);
+
+          // Wait for this ref's generate (Step 1) to finish before starting the next.
+          // But do NOT wait for its polling (Step 2) — that runs in the background.
+          const result = await refPromise;
+          refPromises.push(result.pollPromise);
         }
+
+        // Wait for all polling + saving to complete
+        await Promise.allSettled(refPromises);
 
         if (totalCreatives === 0 && allErrors.length > 0) {
           throw new Error(allErrors.join('; '));

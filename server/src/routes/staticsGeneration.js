@@ -189,19 +189,29 @@ router.post('/generate', authenticate, async (req, res) => {
       }],
     };
 
-    const claudeRes = await fetch(CLAUDE_API_URL, {
-      method: 'POST',
-      headers: {
-        'x-api-key': ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(claudeBody),
-    });
+    const RETRY_DELAYS = [0, 8000, 20000, 45000];
+    const RETRYABLE_STATUSES = [429, 503, 529];
+    let claudeRes;
+    for (let attempt = 0; attempt <= RETRY_DELAYS.length; attempt++) {
+      claudeRes = await fetch(CLAUDE_API_URL, {
+        method: 'POST',
+        headers: {
+          'x-api-key': ANTHROPIC_API_KEY,
+          'anthropic-version': '2023-06-01',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(claudeBody),
+      });
 
-    if (!claudeRes.ok) {
-      const errText = await claudeRes.text();
-      throw new Error(`Claude API error ${claudeRes.status}: ${errText}`);
+      if (claudeRes.ok) break;
+
+      if (!RETRYABLE_STATUSES.includes(claudeRes.status) || attempt === RETRY_DELAYS.length) {
+        const errText = await claudeRes.text();
+        throw new Error(`Claude API error ${claudeRes.status}: ${errText}`);
+      }
+
+      console.log(`Claude API returned ${claudeRes.status}, retrying (attempt ${attempt + 1}/${RETRY_DELAYS.length}) after ${RETRY_DELAYS[attempt] / 1000}s...`);
+      if (RETRY_DELAYS[attempt] > 0) await sleep(RETRY_DELAYS[attempt]);
     }
 
     const claudeData = await claudeRes.json();
@@ -475,7 +485,7 @@ router.get('/creatives', authenticate, async (req, res) => {
 
 async function generateVariant(parent, newAspectRatio) {
   try {
-    console.log(`[staticsGeneration] Generating ${newAspectRatio} variant for creative ${parent.id}, ref_thumb=${String(parent.reference_thumbnail).slice(0, 80)}, image_url=${String(parent.image_url).slice(0, 80)}`);
+    console.log(`[staticsGeneration] Resizing ${parent.id} to ${newAspectRatio} variant`);
 
     // 0. Clean up any previous variants for this aspect ratio
     await pgQuery(
@@ -483,7 +493,7 @@ async function generateVariant(parent, newAspectRatio) {
       [parent.id, newAspectRatio]
     );
 
-    // 1. Create placeholder creative
+    // 1. Create placeholder child creative
     let child;
     const childRows = await pgQuery(
       `INSERT INTO spy_creatives
@@ -512,87 +522,47 @@ async function generateVariant(parent, newAspectRatio) {
     }
     child = childRows[0];
 
-    // 2. Get ALL product images from product_profiles for better fidelity
-    let productImageUrl = null;
-    let allProductImgUrls = [];
-    if (parent.product_id) {
-      const productRows = await pgQuery('SELECT product_images FROM product_profiles WHERE id = $1', [parent.product_id]);
-      if (productRows.length > 0) {
-        const imgs = productRows[0].product_images;
-        if (Array.isArray(imgs) && imgs.length > 0) {
-          productImageUrl = imgs[0];
-          allProductImgUrls = imgs.slice(0, 5); // up to 5 product angles
-        }
-      }
-    }
-    // Fallback: use the parent's generated image as the product reference
-    if (!productImageUrl) productImageUrl = parent.image_url;
-
-    // 3. Get reference image URL — prefer original reference, fall back to parent image
-    const referenceUrl = parent.reference_thumbnail || parent.image_url;
-    // For old creatives, use the parent's generated image as both reference and product if needed
-    if (!productImageUrl) productImageUrl = parent.image_url;
-    if (!referenceUrl || !productImageUrl) {
-      console.warn(`[staticsGeneration] Variant missing images: ref=${!!referenceUrl}, product=${!!productImageUrl}`);
-      await pgQuery("UPDATE spy_creatives SET status = 'rejected', review_notes = 'Missing reference or product image for variant' WHERE id = $1", [child.id]);
+    // 2. Resolve parent image URL to an absolute HTTP URL
+    if (!parent.image_url) {
+      await pgQuery("UPDATE spy_creatives SET status = 'rejected', review_notes = 'Parent creative has no generated image to resize' WHERE id = $1", [child.id]);
       return;
     }
 
-    // 4. Build prompt from parent's claude_analysis (full context) or fall back to swap_pairs
-    const swapPairs = (typeof parent.swap_pairs === 'string' ? JSON.parse(parent.swap_pairs) : parent.swap_pairs) || [];
-    const claudeAnalysis = (typeof parent.claude_analysis === 'string' ? JSON.parse(parent.claude_analysis) : parent.claude_analysis) || {};
-    const adaptedText = (typeof parent.adapted_text === 'string' ? JSON.parse(parent.adapted_text) : parent.adapted_text) || {};
-    const product = { name: parent.product_name };
-    // Use full claude_analysis if available (has layout, visual_elements, etc.), otherwise minimal
-    const claudeResult = Object.keys(claudeAnalysis).length > 0
-      ? { ...claudeAnalysis, adapted_text: adaptedText }
-      : { adapted_text: adaptedText };
-    const nbPrompt = buildNanoBananaPrompt(claudeResult, swapPairs, product, 0);
-
-    // 5. Resolve all image URLs to absolute HTTP URLs (NanoBanana can't handle base64 or relative paths)
     const VARIANT_SERVER_URL = process.env.RENDER_EXTERNAL_URL || `http://localhost:${process.env.PORT || 3000}`;
-
-    async function resolveUrl(url, label) {
-      if (!url) return null;
-      if (url.startsWith('/')) return `${VARIANT_SERVER_URL}${url}`;
-      if (url.startsWith('data:image')) {
-        const m = url.match(/^data:(image\/[^;]+);base64,(.+)$/);
-        if (!m) return null;
+    let parentImageUrl = parent.image_url;
+    if (parentImageUrl.startsWith('/')) {
+      parentImageUrl = `${VARIANT_SERVER_URL}${parentImageUrl}`;
+    } else if (parentImageUrl.startsWith('data:image')) {
+      const m = parentImageUrl.match(/^data:(image\/[^;]+);base64,(.+)$/);
+      if (m) {
         const buf = Buffer.from(m[2], 'base64');
         if (isR2Configured()) {
           const ext = m[1].includes('png') ? 'png' : 'jpg';
-          const key = `statics-${label}/${crypto.randomUUID()}.${ext}`;
-          return await uploadBuffer(buf, key, m[1]);
+          const key = `statics-variant-resize/${crypto.randomUUID()}.${ext}`;
+          parentImageUrl = await uploadBuffer(buf, key, m[1]);
+        } else {
+          const id = storeTempImage(buf, m[1]);
+          parentImageUrl = `${VARIANT_SERVER_URL}/api/v1/statics-generation/tmp-img/${id}`;
         }
-        const id = storeTempImage(buf, m[1]);
-        return `${VARIANT_SERVER_URL}/api/v1/statics-generation/tmp-img/${id}`;
+      } else {
+        await pgQuery("UPDATE spy_creatives SET status = 'rejected', review_notes = 'Could not resolve parent image URL for resize' WHERE id = $1", [child.id]);
+        return;
       }
-      return url;
     }
 
-    const resolvedRefUrl = await resolveUrl(referenceUrl, 'variant-ref');
-    const resolvedProductUrl = await resolveUrl(productImageUrl, 'variant-prod');
-    const resolvedProductImgs = [];
-    for (let i = 0; i < allProductImgUrls.length; i++) {
-      const u = await resolveUrl(allProductImgUrls[i], `variant-prod-${i}`);
-      if (u) resolvedProductImgs.push(u);
-    }
-
-    // Submit to NanoBanana — with retry on 500 errors
-    const variantImageUrls = resolvedProductImgs.length > 0
-      ? [...resolvedProductImgs, resolvedRefUrl]
-      : [resolvedProductUrl, resolvedRefUrl].filter(Boolean);
-
-    console.log(`[staticsGeneration] Variant ${parent.id} → ${newAspectRatio}: sending ${variantImageUrls.length} image URLs to NanoBanana`, variantImageUrls.map(u => String(u).slice(0, 120)));
+    // 3. Send resize request to NanoBanana
+    const resizePrompt = `Seamlessly resize this ad image to ${newAspectRatio} aspect ratio. Keep ALL content identical — same text, same product, same layout, same colors, same style. Extend or adjust the background naturally to fill the new format.`;
 
     const nbPayload = {
-      prompt: nbPrompt,
+      prompt: resizePrompt,
       model: 'nano-banana-2',
-      imageUrls: variantImageUrls,
+      imageUrls: [parentImageUrl],
       aspectRatio: newAspectRatio,
       resolution: '1K',
       outputFormat: 'png',
     };
+
+    console.log(`[staticsGeneration] Resize ${parent.id} → ${newAspectRatio}: sending parent image to NanoBanana`, String(parentImageUrl).slice(0, 120));
 
     let taskId = null;
     for (let attempt = 1; attempt <= 3; attempt++) {
@@ -607,43 +577,43 @@ async function generateVariant(parent, newAspectRatio) {
 
       if (!nbRes.ok) {
         const errText = await nbRes.text();
-        console.warn(`[staticsGeneration] Variant NanoBanana attempt ${attempt}/3 HTTP error: ${nbRes.status}`);
+        console.warn(`[staticsGeneration] Variant resize attempt ${attempt}/3 HTTP error: ${nbRes.status}`);
         if (attempt < 3) { await sleep(10000 * attempt); continue; }
-        throw new Error(`NanoBanana submit error ${nbRes.status}: ${errText}`);
+        throw new Error(`NanoBanana resize error ${nbRes.status}: ${errText}`);
       }
 
       const nbData = await nbRes.json();
       taskId = nbData.taskId || nbData.data?.taskId;
       if (taskId) break;
 
-      console.warn(`[staticsGeneration] Variant NanoBanana attempt ${attempt}/3 no taskId:`, JSON.stringify(nbData).slice(0, 300));
+      console.warn(`[staticsGeneration] Variant resize attempt ${attempt}/3 no taskId:`, JSON.stringify(nbData).slice(0, 300));
       if (nbData.code === 500 && attempt < 3) {
         await sleep(10000 * attempt);
         continue;
       }
       if (!taskId) {
-        console.error('[staticsGeneration] Variant NanoBanana response:', JSON.stringify(nbData).slice(0, 500));
-        throw new Error('No taskId returned from NanoBanana after 3 attempts');
+        console.error('[staticsGeneration] Variant resize response:', JSON.stringify(nbData).slice(0, 500));
+        throw new Error('No taskId returned from NanoBanana resize after 3 attempts');
       }
     }
 
-    // 6. Poll for completion
+    // 4. Poll for completion
     const imageUrl = await pollNanoBanana(taskId);
 
-    // 7. Update child creative with result
+    // 5. Update child creative with result
     await pgQuery(
       "UPDATE spy_creatives SET image_url = $1, generation_task_id = $2, status = 'review', updated_at = NOW() WHERE id = $3",
       [imageUrl, taskId, child.id]
     );
 
-    console.log(`[staticsGeneration] Variant ${child.id} (${newAspectRatio}) generated successfully`);
+    console.log(`[staticsGeneration] Variant ${child.id} (${newAspectRatio}) resized successfully`);
   } catch (err) {
-    console.error(`[staticsGeneration] Variant generation failed:`, err.message);
+    console.error(`[staticsGeneration] Variant resize failed:`, err.message);
     // Try to mark as rejected if we have a child ID
     try {
       await pgQuery(
         "UPDATE spy_creatives SET status = 'rejected', review_notes = $1, updated_at = NOW() WHERE parent_creative_id = $2 AND status = 'generating'",
-        [`Variant generation failed: ${err.message}`, parent.id]
+        [`Variant resize failed: ${err.message}`, parent.id]
       );
     } catch { /* best effort */ }
   }
