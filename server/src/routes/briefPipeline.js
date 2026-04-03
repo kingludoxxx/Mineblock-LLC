@@ -2,6 +2,14 @@ import { Router } from 'express';
 import { authenticate } from '../middleware/auth.js';
 import { pgQuery } from '../db/pg.js';
 import crypto from 'crypto';
+import { execSync } from 'child_process';
+import { existsSync } from 'fs';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+const YTDLP_PATH = join(__dirname, '..', '..', '..', 'bin', 'yt-dlp');
 
 const router = Router();
 
@@ -574,14 +582,63 @@ async function transcribeWithGemini(mediaUrl) {
 }
 
 // ── Smart URL extraction: handles FB Ad Library, Atria, direct video, HTML pages ──
+// ── Extract video URL from any page using yt-dlp ────────────────────
+async function extractVideoUrlWithYtdlp(pageUrl) {
+  if (!existsSync(YTDLP_PATH)) {
+    console.warn('[BriefPipeline] yt-dlp not available at', YTDLP_PATH);
+    return null;
+  }
+
+  try {
+    console.log(`[BriefPipeline] Using yt-dlp to extract video from: ${pageUrl.slice(0, 100)}`);
+    // --get-url returns just the direct video URL, no download
+    // --no-warnings suppresses non-critical warnings
+    // -f "best[ext=mp4]/best" prefers mp4
+    const result = execSync(
+      `"${YTDLP_PATH}" --get-url --no-warnings -f "best[ext=mp4]/best" "${pageUrl}"`,
+      { timeout: 30000, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }
+    ).trim();
+
+    if (result && result.startsWith('http')) {
+      console.log(`[BriefPipeline] yt-dlp extracted video URL: ${result.slice(0, 100)}...`);
+      return result;
+    }
+    return null;
+  } catch (err) {
+    console.warn(`[BriefPipeline] yt-dlp failed:`, err.message?.slice(0, 200));
+    return null;
+  }
+}
+
 async function extractScriptFromUrl(url) {
-  // Strategy 1: Facebook Ad Library URL → extract ad ID → Meta Graph API → get video → Gemini transcribe
+  // Strategy 1: Facebook Ad Library URL → yt-dlp extract video → Gemini transcribe
   const fbAdMatch = url.match(/facebook\.com\/ads\/library\/?\?.*id=(\d+)/i)
     || url.match(/fb\.com\/ads\/library\/?\?.*id=(\d+)/i);
   if (fbAdMatch) {
     const adId = fbAdMatch[1];
     console.log(`[BriefPipeline] Facebook Ad Library detected, ad ID: ${adId}`);
-    return await extractFromMetaAdId(adId);
+
+    // Try yt-dlp first (most reliable for Facebook)
+    const videoUrl = await extractVideoUrlWithYtdlp(url);
+    if (videoUrl) {
+      return await transcribeWithGemini(videoUrl);
+    }
+
+    // Fallback to Meta API
+    try {
+      return await extractFromMetaAdId(adId);
+    } catch (apiErr) {
+      throw new Error(`Could not extract video from Facebook Ad Library. yt-dlp: ${existsSync(YTDLP_PATH) ? 'failed' : 'not installed'}. Meta API: ${apiErr.message}. Try right-clicking the video → "Copy video address" and paste the direct .mp4 link.`);
+    }
+  }
+
+  // Strategy 1b: Any Facebook video URL → yt-dlp
+  const isFacebookUrl = /facebook\.com|fb\.com|fb\.watch/i.test(url);
+  if (isFacebookUrl) {
+    const videoUrl = await extractVideoUrlWithYtdlp(url);
+    if (videoUrl) {
+      return await transcribeWithGemini(videoUrl);
+    }
   }
 
   // Strategy 2: Atria URL → fetch Atria page (has server-rendered content) → fallback to Meta API
@@ -705,6 +762,13 @@ async function extractScriptFromUrl(url) {
   if (videoUrl) {
     console.log(`[BriefPipeline] Found video URL in HTML: ${videoUrl.slice(0, 80)}...`);
     return await transcribeWithGemini(videoUrl);
+  }
+
+  // Strategy 7: Last resort — try yt-dlp on the original URL (works for many video platforms)
+  console.log(`[BriefPipeline] Trying yt-dlp as last resort for: ${url.slice(0, 80)}`);
+  const ytdlpVideoUrl = await extractVideoUrlWithYtdlp(url);
+  if (ytdlpVideoUrl) {
+    return await transcribeWithGemini(ytdlpVideoUrl);
   }
 
   throw new Error('Could not extract ad content from this URL. For video ads: right-click the video → "Copy video address" and paste the direct .mp4 link. Or use "Paste Text" to paste the script manually.');
