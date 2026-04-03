@@ -130,7 +130,31 @@ Examples of WRONG adaptation (breaks the formula):
 - "Customized Hair Care Serum" → "Bitcoin Mining Device" ❌ (generic category, not compelling)
 - "Customized Hair Care Serum" → "$127/Month Profit Engine" ✅ (specific, benefit-driven)
 
-GOLDEN RULE: Every adapted text element must be something a Facebook scroller would STOP for. If it sounds like a Wikipedia description ("Solo Mining Solution", "Bitcoin Mining Device"), rewrite it as a BENEFIT ("Passive Income Machine", "$127/Month on Autopilot", "24/7 Profit Generator").`}
+GOLDEN RULE: Every adapted text element must sound like a REAL human copywriter wrote it for a REAL paid ad. If it sounds like ChatGPT wrote it, rewrite it.
+
+⚠️ BANNED AI-SOUNDING PHRASES — NEVER use any of these:
+"printing money", "cha-ching", "profit-bound", "profit machine", "cash machine", "money machine", "game-changer", "revolutionary", "cutting-edge", "next-level", "unlock", "unleash", "supercharge", "turbocharge", "skyrocket", "effortless", "seamlessly", "no-brainer", "in the comfort of your home", "set it and forget it", "passive income stream", "financial freedom", "be your own boss", "works while you sleep", "easy money", "get rich", "life-changing", "groundbreaking"
+
+✅ GOOD COPY sounds like a real person talking about a real product:
+- "Mines Bitcoin 24/7 — even while you sleep"
+- "144 block attempts every single day"
+- "Uses less power than a phone charger"
+- "Runs silent on your desk or nightstand"
+- "One-time $59.99 — no subscriptions, no fees"
+- "Real solo mining, real blockchain verification"
+- "$300K+ Bitcoin block reward potential"
+- "Plug in, connect WiFi, start mining in 60 seconds"
+- "1 watt power draw — pennies per year"
+
+❌ BAD COPY sounds like AI spam:
+- "Like printing money daily" ❌ (cringe cliché)
+- "Instant cha-ching profits" ❌ (fake, scammy)
+- "Stay profit-bound all day" ❌ (not a real phrase)
+- "Unleash your mining potential" ❌ (generic AI)
+- "Revolutionary passive income" ❌ (meaningless hype)
+- "Your 24/7 profit machine" ❌ (overused, scammy)
+
+COPY QUALITY TEST: Read each adapted line out loud. Would a REAL direct-response copywriter write this for a Facebook ad? Would YOU click on it? If it sounds like something from a spam email, rewrite it with SPECIFIC, CONCRETE details about the actual product.`}
 
 ⚠️ CROSS-NICHE ADAPTATION:
 ${co.crossNicheAdaptation || `The reference ad may be from ANY niche (supplements, skincare, fitness, finance, etc.). Your job is to:
