@@ -125,18 +125,19 @@ function RatioPill({ label, status }) {
 
 function CreativeCard({ creative, column, onStatusChange, onCardClick, variantStatus, isSelected, onToggleSelect }) {
   const [wasDragged, setWasDragged] = useState(false);
+  const isDraggable = !column.noDropZone; // Don't allow dragging from generating column
 
   return (
     <div
-      draggable
-      onDragStart={(e) => {
+      draggable={isDraggable}
+      onDragStart={isDraggable ? (e) => {
         setWasDragged(true);
         e.dataTransfer.setData('text/plain', JSON.stringify({ id: creative.id, status: creative.status }));
         e.dataTransfer.effectAllowed = 'move';
-      }}
-      onDragEnd={() => setTimeout(() => setWasDragged(false), 100)}
+      } : undefined}
+      onDragEnd={isDraggable ? () => setTimeout(() => setWasDragged(false), 100) : undefined}
       onClick={() => { if (!wasDragged) onCardClick?.(creative); }}
-      className="animated-border-gradient rounded-xl cursor-grab active:cursor-grabbing"
+      className={`animated-border-gradient rounded-xl ${isDraggable ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'}`}
     >
       <div className="glass-card border border-white/[0.05] rounded-xl overflow-hidden group hover:border-white/[0.1] transition-all shadow-[inset_0_1px_0_0_rgba(255,255,255,0.03)] relative z-10">
         {/* Thumbnail */}

@@ -165,6 +165,25 @@ async function pollNanoBanana(taskId) {
   throw new Error('NanoBanana generation timed out after 5 minutes');
 }
 
+/**
+ * Ensure a URL is HTTP-accessible for NanoBanana (converts data-URIs and relative paths).
+ */
+async function ensureHttpUrlGlobal(url, label = 'img') {
+  if (!url) return url;
+  if (url.startsWith('/')) return `${SERVER_URL}${url}`;
+  if (!url.startsWith('data:image')) return url;
+  const m = url.match(/^data:(image\/[^;]+);base64,(.+)$/);
+  if (!m) return url;
+  const buf = Buffer.from(m[2], 'base64');
+  if (isR2Configured()) {
+    const ext = m[1].includes('png') ? 'png' : 'jpg';
+    const key = `statics-${label}/${crypto.randomUUID()}.${ext}`;
+    return await uploadBuffer(buf, key, m[1]);
+  }
+  const id = storeTempImage(buf, m[1]);
+  return `${SERVER_URL}/api/v1/statics-generation/tmp-img/${id}`;
+}
+
 // ── POST /generate ─────────────────────────────────────────────────────
 
 router.post('/generate', authenticate, async (req, res) => {
@@ -937,6 +956,9 @@ Return ONLY a JSON object with:
         if (!jsonMatch) throw new Error('Could not parse JSON from Claude response');
         const adjustResult = JSON.parse(jsonMatch[0]);
 
+        // Ensure image URL is HTTP-accessible for NanoBanana
+        const httpImageUrl = await ensureHttpUrlGlobal(creative.image_url, 'adjust-ref');
+
         // Submit to NanoBanana
         const nbRes = await fetch(`${NB_BASE}/generate-2`, {
           method: 'POST',
@@ -944,7 +966,7 @@ Return ONLY a JSON object with:
           body: JSON.stringify({
             prompt: adjustResult.adjusted_prompt,
             model: 'nano-banana-2',
-            imageUrls: [creative.image_url],
+            imageUrls: [httpImageUrl],
             aspectRatio: creative.aspect_ratio || '4:5',
             resolution: '1K',
             outputFormat: 'png',

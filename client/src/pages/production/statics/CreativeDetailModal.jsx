@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import {
   X,
   Download,
@@ -100,6 +100,7 @@ export function CreativeDetailModal({
   onAiAdjust,
   onStatusChange,
   onCreateVariant,
+  onRefresh,
 }) {
   const [aiInstruction, setAiInstruction] = useState('');
   const [debugOpen, setDebugOpen] = useState(false);
@@ -107,6 +108,13 @@ export function CreativeDetailModal({
   const [aiError, setAiError] = useState(null);
   const [refLightbox, setRefLightbox] = useState(false);
   const [activeRatio, setActiveRatio] = useState('primary');
+
+  // Abort polling when modal closes
+  const abortRef = useRef(false);
+  useEffect(() => {
+    abortRef.current = false;
+    return () => { abortRef.current = true; };
+  }, [isOpen]);
 
   if (!isOpen || !creative) return null;
 
@@ -139,17 +147,17 @@ export function CreativeDetailModal({
       const originalImageUrl = creative.image_url;
       let found = false;
       for (let i = 0; i < 40; i++) {
+        if (abortRef.current) break; // Stop polling if modal was closed
         await new Promise(r => setTimeout(r, 5000));
+        if (abortRef.current) break;
         setAiPollProgress(`Checking for update... (${i + 1})`);
         try {
           const { data } = await api.get(`/statics-generation/creatives/${creative.id}`);
           const updated = data?.data || data;
           if (updated?.image_url && updated.image_url !== originalImageUrl) {
-            // Image was updated — refresh the creative in parent
-            creative.image_url = updated.image_url;
-            creative.generation_prompt = updated.generation_prompt;
-            creative.review_notes = updated.review_notes;
             found = true;
+            // Refresh parent state instead of mutating props
+            onRefresh?.();
             break;
           }
           if (updated?.review_notes && updated.review_notes.startsWith('AI adjustment failed')) {
@@ -160,6 +168,7 @@ export function CreativeDetailModal({
           // Network error during poll — continue trying
         }
       }
+      if (abortRef.current) return; // Don't update state if unmounted
       if (found) {
         setAiSuccess(true);
         setAiInstruction('');
@@ -167,11 +176,14 @@ export function CreativeDetailModal({
         setAiError('Adjustment timed out. The image may still update — try refreshing.');
       }
     } catch (err) {
+      if (abortRef.current) return;
       setAiError(err.message || 'AI adjustment failed. Please try again.');
     } finally {
-      setAiAdjusting(false);
-      setAiPolling(false);
-      setAiPollProgress('');
+      if (!abortRef.current) {
+        setAiAdjusting(false);
+        setAiPolling(false);
+        setAiPollProgress('');
+      }
     }
   };
 
@@ -398,7 +410,7 @@ export function CreativeDetailModal({
                 </p>
               )}
               {aiSuccess && (
-                <p className="text-xs text-emerald-400 mt-1">✓ Image updated successfully! Close and reopen to see the new version.</p>
+                <p className="text-xs text-emerald-400 mt-1">✓ Image updated successfully! Close this modal to see the new version in the pipeline.</p>
               )}
               {aiError && (
                 <p className="text-xs text-red-400 mt-1">{aiError}</p>

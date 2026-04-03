@@ -1567,14 +1567,22 @@ export default function StaticsGeneration() {
   }, [activeTab, activePipeline]);
 
   // Auto-refresh pipeline when items are generating (variants or standalone)
+  // Use refs to avoid infinite re-render: fetchCreatives updates creatives, which
+  // would re-trigger this effect if creatives were in the dependency array.
+  const hasGeneratingRef = useRef(false);
   useEffect(() => {
-    const hasGenerating = creatives.some(c => c.status === 'generating');
-    const hasQueueActive = queue.some(q => q.status === 'generating' || q.status === 'queued');
-    if ((!hasGenerating && !hasQueueActive) || activeTab !== 'pipeline') return;
-    // Refresh every 8s when actively generating for faster feedback
-    const interval = setInterval(() => fetchCreatives(), 8000);
+    hasGeneratingRef.current = creatives.some(c => c.status === 'generating')
+      || queue.some(q => q.status === 'generating' || q.status === 'queued');
+  }, [creatives, queue]);
+
+  useEffect(() => {
+    if (activeTab !== 'pipeline') return;
+    // Check every 8s — only actually fetch if something is generating
+    const interval = setInterval(() => {
+      if (hasGeneratingRef.current) fetchCreatives();
+    }, 8000);
     return () => clearInterval(interval);
-  }, [creatives, activeTab, queue]);
+  }, [activeTab]);
 
   // --- Render helpers ---
 
@@ -2391,10 +2399,10 @@ export default function StaticsGeneration() {
             const creative = creatives.find(c => c.id === id);
             if (creative?.image_url) window.open(creative.image_url, '_blank');
           }}
+          onRefresh={fetchCreatives}
           onAiAdjust={async (id, instruction) => {
             await api.post(`/statics-generation/creatives/${id}/ai-adjust`, { instruction });
-            // Don't close modal or clear image — just show feedback and let user close manually
-            // The image will update in the background (~1-2 min)
+            // Polling in the modal will detect the update and call onRefresh
           }}
           onCreateVariant={async (id) => {
             try {
