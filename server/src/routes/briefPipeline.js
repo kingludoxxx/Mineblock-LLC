@@ -558,12 +558,72 @@ async function extractScriptFromUrl(url) {
     return await extractFromMetaAdId(adId);
   }
 
-  // Strategy 2: Atria URL → extract Meta ad ID → Meta Graph API
-  const atriaMatch = url.match(/tryatria\.com\/ad\/m(\d+)/i);
+  // Strategy 2: Atria URL → fetch Atria page (has server-rendered content) → fallback to Meta API
+  const atriaMatch = url.match(/tryatria\.com\/ad\//i);
   if (atriaMatch) {
-    const adId = atriaMatch[1];
-    console.log(`[BriefPipeline] Atria ad detected, Meta ad ID: ${adId}`);
-    return await extractFromMetaAdId(adId);
+    console.log(`[BriefPipeline] Atria ad detected: ${url}`);
+    try {
+      // Atria pages often have ad text in the HTML — try fetching directly first
+      const atriaRes = await fetch(url, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept': 'text/html,application/xhtml+xml',
+        },
+        redirect: 'follow',
+        signal: AbortSignal.timeout(15000),
+      });
+      const atriaHtml = await atriaRes.text();
+      console.log(`[BriefPipeline] Atria page HTML: ${atriaHtml.length} chars`);
+
+      // Try extracting ad text from Atria page HTML
+      if (atriaHtml.length > 500) {
+        // Look for video URLs first (Atria often embeds the ad video)
+        const videoPatterns = [
+          /(?:src|data-src|poster|content|url)\s*[=:]\s*["']?(https?:\/\/[^"'\s>]+\.(?:mp4|webm|mov)(?:\?[^"'\s>]*)?)/gi,
+          /"(?:video_url|videoUrl|video_src|source|src|url|mp4)"\s*:\s*"(https?:\/\/[^"]+\.(?:mp4|webm|mov)[^"]*)"/gi,
+          /"(https?:\\\/\\\/[^"]*?\.mp4[^"]*)"/gi,
+        ];
+        let videoUrl = null;
+        for (const pattern of videoPatterns) {
+          const match = pattern.exec(atriaHtml);
+          if (match?.[1]) {
+            videoUrl = match[1].replace(/\\\//g, '/').replace(/&amp;/g, '&');
+            break;
+          }
+        }
+        if (videoUrl) {
+          console.log(`[BriefPipeline] Found video in Atria page, transcribing: ${videoUrl.slice(0, 100)}`);
+          return await transcribeWithGemini(videoUrl);
+        }
+
+        // Try extracting text content via Claude
+        const extracted = await callClaude(
+          'You are a text extraction tool for ad pages. Extract any ad copy, ad script, voiceover text, or sales copy from this HTML.',
+          `Extract the main ad copy or script text from this Atria ad page. Return ONLY the ad text as plain text, no commentary. If you find a video transcript or ad copy, return it. If there is no readable ad text, respond with exactly "NO_CONTENT_FOUND".\n\nHTML (first 20000 chars):\n${atriaHtml.slice(0, 20000)}`,
+          2000,
+          { rawText: true },
+        );
+        if (extracted && extracted !== 'NO_CONTENT_FOUND' && extracted.length >= 50) {
+          console.log(`[BriefPipeline] Extracted ${extracted.length} chars from Atria page`);
+          return extracted;
+        }
+      }
+
+      // Fallback: try Meta API with extracted ad ID
+      const metaIdMatch = url.match(/\/m(\d+)/i) || url.match(/(\d{10,})/);
+      if (metaIdMatch) {
+        console.log(`[BriefPipeline] Atria page had no content, trying Meta API with ID: ${metaIdMatch[1]}`);
+        return await extractFromMetaAdId(metaIdMatch[1]);
+      }
+    } catch (err) {
+      console.warn(`[BriefPipeline] Atria extraction failed:`, err.message);
+      // Try Meta API as last resort
+      const metaIdMatch = url.match(/\/m(\d+)/i) || url.match(/(\d{10,})/);
+      if (metaIdMatch) {
+        return await extractFromMetaAdId(metaIdMatch[1]);
+      }
+    }
+    throw new Error('Could not extract ad content from Atria. Try pasting the ad text manually.');
   }
 
   // Strategy 3: Direct media URL
