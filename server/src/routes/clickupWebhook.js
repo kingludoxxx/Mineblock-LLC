@@ -270,13 +270,33 @@ async function handleTaskCreated(taskId) {
       logger.info(`[ClickUp Webhook] Auto-assigned brief number B${String(briefNumber).padStart(4, '0')} to task ${taskId}`);
     }
 
-    const namingConv = generateNamingConvention(task, listId, briefNumber);
-
-    // Update task name and naming convention custom field
-    await updateTask(taskId, { name: namingConv });
-    await setCustomField(taskId, FIELD_IDS.namingConvention, namingConv);
-
-    logger.info(`[ClickUp Webhook] Auto-named task ${taskId} → "${namingConv}"`);
+    // Check if product relationship is set yet
+    let product = getFieldValue(task, FIELD_IDS.productVideo);
+    if (!product) {
+      // Product not set yet — wait longer and re-fetch
+      logger.info(`[ClickUp Webhook] Product not set for ${taskId}, waiting 15s more...`);
+      await new Promise((r) => setTimeout(r, 15000));
+      const refreshed = await getTask(taskId);
+      product = getFieldValue(refreshed, FIELD_IDS.productVideo);
+      if (product) {
+        // Use refreshed task for naming
+        const namingConv = generateNamingConvention(refreshed, listId, briefNumber);
+        await updateTask(taskId, { name: namingConv });
+        await setCustomField(taskId, FIELD_IDS.namingConvention, namingConv);
+        logger.info(`[ClickUp Webhook] Auto-named task ${taskId} → "${namingConv}" (after retry)`);
+      } else {
+        // Still no product — name with NA, will be fixed when product field changes
+        const namingConv = generateNamingConvention(task, listId, briefNumber);
+        await updateTask(taskId, { name: namingConv });
+        await setCustomField(taskId, FIELD_IDS.namingConvention, namingConv);
+        logger.warn(`[ClickUp Webhook] Named task ${taskId} with NA product (not set after 25s): "${namingConv}"`);
+      }
+    } else {
+      const namingConv = generateNamingConvention(task, listId, briefNumber);
+      await updateTask(taskId, { name: namingConv });
+      await setCustomField(taskId, FIELD_IDS.namingConvention, namingConv);
+      logger.info(`[ClickUp Webhook] Auto-named task ${taskId} → "${namingConv}"`);
+    }
   } else if (isYtDuplicate) {
     logger.info(`[ClickUp Webhook] Skipping auto-naming for YT duplicate task ${taskId}`);
   } else {
