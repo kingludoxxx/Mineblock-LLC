@@ -22,15 +22,7 @@ import PipelineSettingsModal from './briefs/PipelineSettingsModal';
 // Column definitions
 // ---------------------------------------------------------------------------
 
-const COLUMNS = [
-  {
-    key: 'detected',
-    label: 'Winning Ads',
-    icon: Trophy,
-    badgeBg: 'bg-amber-500/20',
-    badgeText: 'text-amber-300',
-    headerBorder: 'border-amber-500/40',
-  },
+const PIPELINE_COLUMNS = [
   {
     key: 'generated',
     label: 'Generated',
@@ -350,123 +342,139 @@ export default function BriefPipeline() {
         </div>
       </div>
 
-      {/* Kanban columns */}
-      <div className="flex-1 overflow-x-auto px-6 py-4" style={{ minHeight: 'calc(100vh - 120px)' }}>
-        <div className="flex gap-4 h-full">
-          {/* Script Generator — dedicated first column */}
-          <div className="flex flex-col min-w-[260px] max-w-[320px] flex-1">
-            <div className="flex items-center gap-2 px-3 py-2.5 border-b-2 mb-3" style={{ borderColor: 'rgba(198, 168, 92, 0.4)' }}>
+      {/* Main layout: Left sidebar (Script Generator + Winning Ads) | Right pipeline columns */}
+      <div className="flex-1 flex overflow-hidden" style={{ minHeight: 'calc(100vh - 120px)' }}>
+        {/* Left sidebar — Script Generator + Winning Ads stacked */}
+        <div className="w-[300px] shrink-0 border-r border-white/[0.06] flex flex-col overflow-y-auto px-4 py-4 custom-scrollbar">
+          {/* Script Generator */}
+          <div className="mb-4">
+            <div className="flex items-center gap-2 px-1 py-2 border-b-2 mb-3" style={{ borderColor: 'rgba(198, 168, 92, 0.4)' }}>
               <Sparkles className="w-4 h-4" style={{ color: '#C6A85C' }} />
               <span className="text-sm font-semibold" style={{ color: '#C6A85C' }}>Script Generator</span>
             </div>
-            <div className="flex-1 overflow-y-auto pr-1 pb-4 custom-scrollbar">
-              <ScriptGeneratorPanel
-                onGenerated={handleGenerateFromScript}
-                generating={scriptGenerating}
-                generatingStep={scriptGenStep}
-              />
-            </div>
+            <ScriptGeneratorPanel
+              onGenerated={handleGenerateFromScript}
+              generating={scriptGenerating}
+              generatingStep={scriptGenStep}
+            />
           </div>
 
-          {COLUMNS.map((col) => {
-            const items = buckets[col.key];
-            const Icon = col.icon;
-
-            return (
-              <div key={col.key} className="flex flex-col min-w-[260px] max-w-[320px] flex-1">
-                {/* Column header */}
-                <div className={`flex items-center gap-2 px-3 py-2.5 border-b-2 ${col.headerBorder} mb-3`}>
-                  <Icon className="w-4 h-4 text-gray-400" />
-                  <span className="text-sm font-semibold text-gray-200">{col.label}</span>
-                  <span className={`ml-auto px-2 py-0.5 rounded-full text-[11px] font-medium ${col.badgeBg} ${col.badgeText}`}>
-                    {items.length}
-                  </span>
+          {/* Winning Ads — below the generator */}
+          <div className="flex-1">
+            <div className="flex items-center gap-2 px-1 py-2 border-b-2 border-amber-500/40 mb-3">
+              <Trophy className="w-4 h-4 text-amber-400" />
+              <span className="text-sm font-semibold text-gray-200">Winning Ads</span>
+              <span className="ml-auto px-2 py-0.5 rounded-full text-[11px] font-medium bg-amber-500/20 text-amber-300">
+                {buckets.detected.length}
+              </span>
+            </div>
+            <div className="space-y-3 pb-4">
+              {buckets.detected.length === 0 ? (
+                <div className="flex items-center justify-center h-24">
+                  <p className="text-xs text-gray-600">No winners detected</p>
                 </div>
+              ) : (
+                buckets.detected.map((item) => (
+                  <WinnerCard
+                    key={item.id}
+                    winner={item}
+                    onSelect={() => handleViewWinner(item)}
+                  />
+                ))
+              )}
+            </div>
+          </div>
+        </div>
 
-                {/* Card list */}
-                <div className="flex-1 overflow-y-auto pr-1 space-y-3 pb-4 custom-scrollbar">
-                  {items.length === 0 ? (
-                    <div className="flex items-center justify-center h-32">
-                      <p className="text-xs text-gray-600">No items</p>
-                    </div>
-                  ) : (
-                    items.map((item) => {
-                      // Column 1: Winning Ads (detected)
-                      if (col.key === 'detected') {
-                        return (
-                          <WinnerCard
-                            key={item.id}
-                            winner={item}
-                            onSelect={() => handleViewWinner(item)}
-                          />
-                        );
-                      }
+        {/* Right — Pipeline columns (Generated | Approved | Pushed) */}
+        <div className="flex-1 overflow-x-auto px-4 py-4">
+          <div className="flex gap-4 h-full">
+            {PIPELINE_COLUMNS.map((col) => {
+              const items = buckets[col.key];
+              const Icon = col.icon;
 
-                      // Column 2: Generated
-                      if (col.key === 'generated') {
-                        return (
-                          <GeneratedBriefCard
-                            key={item.id}
-                            brief={item}
-                            onClick={() => setDetailModal(item)}
-                            showActions="generated"
-                            onApprove={() => handleApprove(item.id)}
-                            onReject={() => handleReject(item.id)}
-                          />
-                        );
-                      }
+              return (
+                <div key={col.key} className="flex flex-col min-w-[260px] max-w-[360px] flex-1">
+                  {/* Column header */}
+                  <div className={`flex items-center gap-2 px-3 py-2.5 border-b-2 ${col.headerBorder} mb-3`}>
+                    <Icon className="w-4 h-4 text-gray-400" />
+                    <span className="text-sm font-semibold text-gray-200">{col.label}</span>
+                    <span className={`ml-auto px-2 py-0.5 rounded-full text-[11px] font-medium ${col.badgeBg} ${col.badgeText}`}>
+                      {items.length}
+                    </span>
+                  </div>
 
-                      // Column 4: Approved
-                      if (col.key === 'approved') {
-                        return (
-                          <GeneratedBriefCard
-                            key={item.id}
-                            brief={item}
-                            onClick={() => setDetailModal(item)}
-                            showActions="approved"
-                            onPush={() => handlePush(item.id)}
-                          />
-                        );
-                      }
+                  {/* Card list */}
+                  <div className="flex-1 overflow-y-auto pr-1 space-y-3 pb-4 custom-scrollbar">
+                    {items.length === 0 ? (
+                      <div className="flex items-center justify-center h-32">
+                        <p className="text-xs text-gray-600">No items</p>
+                      </div>
+                    ) : (
+                      items.map((item) => {
+                        if (col.key === 'generated') {
+                          return (
+                            <GeneratedBriefCard
+                              key={item.id}
+                              brief={item}
+                              onClick={() => setDetailModal(item)}
+                              showActions="generated"
+                              onApprove={() => handleApprove(item.id)}
+                              onReject={() => handleReject(item.id)}
+                            />
+                          );
+                        }
 
-                      // Column 5: Pushed
-                      if (col.key === 'pushed') {
-                        return (
-                          <div
-                            key={item.id}
-                            className="bg-[#0a0a0a] border border-white/[0.06] rounded-lg p-3 space-y-2
-                                       hover:border-white/[0.12] hover:shadow-lg hover:shadow-black/20 transition-all duration-150"
-                          >
-                            <p className="text-sm font-medium text-gray-100 truncate">
-                              {item.naming_convention || 'Brief'}
-                            </p>
-                            {item.clickup_task_url && (
-                              <a
-                                href={item.clickup_task_url}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="flex items-center gap-1 text-[11px] text-cyan-400 hover:text-cyan-300 transition-colors"
-                              >
-                                <ExternalLink className="w-3 h-3" />
-                                ClickUp Task
-                              </a>
-                            )}
-                            {item.pushed_at && (
-                              <p className="text-[10px] text-gray-500">
-                                Pushed {new Date(item.pushed_at).toLocaleDateString()}
+                        if (col.key === 'approved') {
+                          return (
+                            <GeneratedBriefCard
+                              key={item.id}
+                              brief={item}
+                              onClick={() => setDetailModal(item)}
+                              showActions="approved"
+                              onPush={() => handlePush(item.id)}
+                            />
+                          );
+                        }
+
+                        if (col.key === 'pushed') {
+                          return (
+                            <div
+                              key={item.id}
+                              className="bg-[#0a0a0a] border border-white/[0.06] rounded-lg p-3 space-y-2
+                                         hover:border-white/[0.12] hover:shadow-lg hover:shadow-black/20 transition-all duration-150"
+                            >
+                              <p className="text-sm font-medium text-gray-100 truncate">
+                                {item.naming_convention || 'Brief'}
                               </p>
-                            )}
-                          </div>
-                        );
-                      }
+                              {item.clickup_task_url && (
+                                <a
+                                  href={item.clickup_task_url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="flex items-center gap-1 text-[11px] text-cyan-400 hover:text-cyan-300 transition-colors"
+                                >
+                                  <ExternalLink className="w-3 h-3" />
+                                  ClickUp Task
+                                </a>
+                              )}
+                              {item.pushed_at && (
+                                <p className="text-[10px] text-gray-500">
+                                  Pushed {new Date(item.pushed_at).toLocaleDateString()}
+                                </p>
+                              )}
+                            </div>
+                          );
+                        }
 
-                      return null;
-                    })
-                  )}
+                        return null;
+                      })
+                    )}
+                  </div>
                 </div>
-              </div>
-            );
-          })}
+              );
+            })}
+          </div>
         </div>
       </div>
 
