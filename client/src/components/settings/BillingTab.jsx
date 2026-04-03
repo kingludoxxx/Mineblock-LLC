@@ -40,7 +40,7 @@ export default function BillingTab() {
         <div className="bg-[#111] rounded-xl border border-white/[0.06] p-6">
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-sm font-semibold text-white">Current Plan</h3>
-            <span className="px-2.5 py-1 text-xs font-medium bg-blue-500/20 text-blue-400 rounded-full">
+            <span className="px-2.5 py-1 text-xs font-medium bg-accent-muted text-accent-text rounded-full">
               {plan.name}
             </span>
           </div>
@@ -57,7 +57,7 @@ export default function BillingTab() {
             ))}
           </ul>
           <div className="flex gap-3">
-            <button className="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors cursor-pointer flex items-center justify-center gap-1.5">
+            <button className="flex-1 px-4 py-2 bg-accent hover:bg-accent-hover text-white text-sm font-medium rounded-lg transition-colors cursor-pointer flex items-center justify-center gap-1.5">
               <ArrowUpRight className="w-4 h-4" />
               Upgrade
             </button>
@@ -106,7 +106,7 @@ export default function BillingTab() {
                     <div className="w-full h-2 bg-white/[0.06] rounded-full overflow-hidden">
                       <div
                         className={`h-full rounded-full transition-all ${
-                          pct > 80 ? 'bg-orange-500' : 'bg-blue-500'
+                          pct > 80 ? 'bg-orange-500' : 'bg-accent'
                         }`}
                         style={{ width: `${pct}%` }}
                       />

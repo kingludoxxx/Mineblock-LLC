@@ -277,7 +277,7 @@ export default function IntegrationsTab() {
               </button>
               <button
                 onClick={() => setConfigModal(null)}
-                className="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors cursor-pointer"
+                className="flex-1 px-4 py-2 bg-accent hover:bg-accent-hover text-white text-sm font-medium rounded-lg transition-colors cursor-pointer"
               >
                 Save
               </button>

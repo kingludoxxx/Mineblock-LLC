@@ -52,7 +52,7 @@ export default function WorkspaceTab() {
 
   const roleColors = {
     owner: 'bg-purple-500/20 text-purple-400',
-    admin: 'bg-blue-500/20 text-blue-400',
+    admin: 'bg-accent-muted text-accent-text',
     member: 'bg-white/[0.06] text-white/60',
     viewer: 'bg-white/[0.04] text-white/40',
   };
@@ -105,7 +105,7 @@ export default function WorkspaceTab() {
           <button
             onClick={handleSave}
             disabled={saving}
-            className="inline-flex items-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg
+            className="inline-flex items-center gap-2 px-5 py-2.5 bg-accent hover:bg-accent-hover text-white text-sm font-medium rounded-lg
               transition-colors disabled:opacity-50 cursor-pointer"
           >
             {saving ? (
@@ -146,7 +146,7 @@ export default function WorkspaceTab() {
           <button
             onClick={handleInvite}
             disabled={!invite.email}
-            className="inline-flex items-center justify-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg
+            className="inline-flex items-center justify-center gap-2 px-5 py-2.5 bg-accent hover:bg-accent-hover text-white text-sm font-medium rounded-lg
               transition-colors disabled:opacity-50 cursor-pointer whitespace-nowrap"
           >
             <UserPlus className="w-4 h-4" />

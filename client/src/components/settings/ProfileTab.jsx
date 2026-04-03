@@ -120,7 +120,7 @@ export default function ProfileTab() {
         <button
           onClick={handleSave}
           disabled={saving}
-          className="inline-flex items-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg
+          className="inline-flex items-center gap-2 px-5 py-2.5 bg-accent hover:bg-accent-hover text-white text-sm font-medium rounded-lg
             transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
         >
           {saving ? (

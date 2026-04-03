@@ -84,7 +84,7 @@ export default function ResetPassword() {
           </p>
           <Link
             to="/forgot-password"
-            className="text-blue-400 hover:text-blue-300 text-sm transition"
+            className="text-accent-text hover:text-accent text-sm transition"
           >
             Request new link
           </Link>
@@ -117,7 +117,7 @@ export default function ResetPassword() {
             </p>
             <Link
               to="/login"
-              className="text-blue-400 hover:text-blue-300 text-sm transition"
+              className="text-accent-text hover:text-accent text-sm transition"
             >
               Go to sign in
             </Link>
@@ -146,7 +146,7 @@ export default function ResetPassword() {
                     onChange={handleChange}
                     required
                     placeholder="••••••••"
-                    className="bg-white/[0.04] border border-white/[0.08] rounded-md pl-10 pr-10 py-2 text-white text-sm w-full placeholder:text-white/25 focus:outline-none focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/25 transition"
+                    className="bg-white/[0.04] border border-white/[0.08] rounded-md pl-10 pr-10 py-2 text-white text-sm w-full placeholder:text-white/25 focus:outline-none focus:border-accent/50 focus:ring-1 focus:ring-accent/25 transition"
                   />
                   <button
                     type="button"
@@ -197,7 +197,7 @@ export default function ResetPassword() {
                     onChange={handleChange}
                     required
                     placeholder="••••••••"
-                    className="bg-white/[0.04] border border-white/[0.08] rounded-md pl-10 pr-10 py-2 text-white text-sm w-full placeholder:text-white/25 focus:outline-none focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/25 transition"
+                    className="bg-white/[0.04] border border-white/[0.08] rounded-md pl-10 pr-10 py-2 text-white text-sm w-full placeholder:text-white/25 focus:outline-none focus:border-accent/50 focus:ring-1 focus:ring-accent/25 transition"
                   />
                   <button
                     type="button"
@@ -217,7 +217,7 @@ export default function ResetPassword() {
               <button
                 type="submit"
                 disabled={loading}
-                className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-md px-4 py-2 w-full text-sm font-medium transition flex items-center justify-center gap-2"
+                className="bg-accent hover:bg-accent-hover disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-md px-4 py-2 w-full text-sm font-medium transition flex items-center justify-center gap-2"
               >
                 {loading ? (
                   <>
@@ -233,7 +233,7 @@ export default function ResetPassword() {
             <div className="text-center mt-6">
               <Link
                 to="/login"
-                className="inline-flex items-center gap-2 text-blue-400 hover:text-blue-300 text-sm transition"
+                className="inline-flex items-center gap-2 text-accent-text hover:text-accent text-sm transition"
               >
                 <ArrowLeft className="w-4 h-4" />
                 Back to sign in

@@ -31,7 +31,7 @@ const cardStyle = 'bg-[#111] border border-white/[0.06] rounded-xl p-5';
 const btnBase =
   'px-3 py-2 text-sm rounded-lg border transition-colors focus:outline-none cursor-pointer';
 
-const btnActive = 'bg-blue-600 border-blue-500 text-white';
+const btnActive = 'bg-accent border-accent text-white';
 
 const MONTHS = [
   'January', 'February', 'March', 'April', 'May', 'June',
@@ -260,7 +260,7 @@ export default function SupplierCostSheet() {
     return (
       <div className="min-h-screen bg-[#0a0a0a] flex items-center justify-center">
         <div className="flex flex-col items-center gap-3">
-          <RefreshCw size={24} className="text-blue-500 animate-spin" />
+          <RefreshCw size={24} className="text-accent animate-spin" />
           <span className="text-[#888] text-sm">Loading supplier cost sheet...</span>
         </div>
       </div>
@@ -289,8 +289,8 @@ export default function SupplierCostSheet() {
         {/* ── Header Bar ──────────────────────────────────────────────────── */}
         <div className="flex flex-wrap items-center gap-3">
           <div className="flex items-center gap-2 mr-auto">
-            <div className="w-9 h-9 bg-blue-500/10 rounded-lg flex items-center justify-center">
-              <FileText size={18} className="text-blue-400" />
+            <div className="w-9 h-9 bg-accent-muted rounded-lg flex items-center justify-center">
+              <FileText size={18} className="text-accent-text" />
             </div>
             <h1 className="text-xl font-semibold text-white">Supplier Cost Sheet</h1>
           </div>
@@ -309,7 +309,7 @@ export default function SupplierCostSheet() {
                 key={p.key}
                 onClick={() => setPeriod(p.key)}
                 className={`px-3 py-1.5 text-xs rounded-md font-medium transition-colors cursor-pointer ${
-                  period === p.key ? 'bg-blue-600 text-white' : 'text-[#888] hover:text-white'
+                  period === p.key ? 'bg-accent text-white' : 'text-[#888] hover:text-white'
                 }`}
               >
                 {p.label}
@@ -353,8 +353,8 @@ export default function SupplierCostSheet() {
         {/* ── Grand Total Card ────────────────────────────────────────────── */}
         <div className={`${cardStyle} !p-6`}>
           <div className="flex items-center gap-2 mb-4">
-            <div className="w-8 h-8 rounded-lg flex items-center justify-center bg-blue-500/10">
-              <DollarSign size={16} className="text-blue-400" />
+            <div className="w-8 h-8 rounded-lg flex items-center justify-center bg-accent-muted">
+              <DollarSign size={16} className="text-accent-text" />
             </div>
             <span className="text-[#888] text-sm">Total Owed to Supplier</span>
           </div>
@@ -373,7 +373,7 @@ export default function SupplierCostSheet() {
               <span className="text-white font-mono font-medium">{fmtMoney(totalShipping)}</span>
             </div>
             <div className="flex items-center gap-2">
-              <ShoppingCart size={14} className="text-blue-400" />
+              <ShoppingCart size={14} className="text-accent-text" />
               <span className="text-[#888]">Orders:</span>
               <span className="text-white font-mono font-medium">{fmtInt(totalOrders)}</span>
             </div>
@@ -413,17 +413,17 @@ export default function SupplierCostSheet() {
 
                 {/* ── Grand Total Row ──────────────────────────────────────── */}
                 {dayGroups.length > 0 && (
-                  <tr className="bg-blue-500/10 border-t-2 border-blue-500/30">
-                    <td colSpan={6} className="px-4 py-4 text-blue-400 font-bold text-sm">
+                  <tr className="bg-accent-muted border-t-2 border-accent/30">
+                    <td colSpan={6} className="px-4 py-4 text-accent-text font-bold text-sm">
                       Grand Total: {fmtInt(totalOrders)} orders
                     </td>
-                    <td className="text-right px-4 py-4 text-blue-400 font-bold font-mono text-sm">
+                    <td className="text-right px-4 py-4 text-accent-text font-bold font-mono text-sm">
                       {fmtMoney(totalCogs)}
                     </td>
-                    <td className="text-right px-4 py-4 text-blue-400 font-bold font-mono text-sm">
+                    <td className="text-right px-4 py-4 text-accent-text font-bold font-mono text-sm">
                       {fmtMoney(totalShipping)}
                     </td>
-                    <td className="text-right px-4 py-4 text-blue-300 font-bold font-mono text-sm">
+                    <td className="text-right px-4 py-4 text-accent-text font-bold font-mono text-sm">
                       {fmtMoney(grandTotal)}
                     </td>
                   </tr>

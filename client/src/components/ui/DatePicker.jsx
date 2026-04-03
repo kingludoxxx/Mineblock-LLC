@@ -120,7 +120,7 @@ function DayGrid({ viewYear, viewMonth, selected, today, period, pendingDate, on
             <div
               key={wi}
               className={`grid grid-cols-7 rounded-lg transition-colors ${
-                isSelectedWeek ? 'bg-blue-600/15' : ''
+                isSelectedWeek ? 'bg-accent/15' : ''
               }`}
             >
               {week.map((cell, ci) => {
@@ -132,7 +132,7 @@ function DayGrid({ viewYear, viewMonth, selected, today, period, pendingDate, on
                   'relative w-full aspect-square flex items-center justify-center text-xs rounded-full cursor-pointer transition-all duration-150 select-none';
 
                 if (isSelected) {
-                  cellClass += ' bg-blue-600 text-white font-semibold';
+                  cellClass += ' bg-accent text-white font-semibold';
                 } else if (cell.outside) {
                   cellClass += ' text-[#555] hover:bg-white/[0.06]';
                 } else {
@@ -140,7 +140,7 @@ function DayGrid({ viewYear, viewMonth, selected, today, period, pendingDate, on
                 }
 
                 if (isToday && !isSelected) {
-                  cellClass += ' ring-1 ring-blue-500/50';
+                  cellClass += ' ring-1 ring-accent/50';
                 }
 
                 return (
@@ -178,9 +178,9 @@ function MonthGrid({ viewYear, selected, today, onSelect }) {
             'py-3 rounded-lg text-sm font-medium cursor-pointer transition-all duration-150 select-none text-center';
 
           if (isSelected) {
-            cls += ' bg-blue-600 text-white';
+            cls += ' bg-accent text-white';
           } else if (isCurrentMonth) {
-            cls += ' text-white ring-1 ring-blue-500/50 hover:bg-white/[0.06]';
+            cls += ' text-white ring-1 ring-accent/50 hover:bg-white/[0.06]';
           } else {
             cls += ' text-[#ccc] hover:bg-white/[0.06]';
           }
@@ -408,14 +408,14 @@ export default function DatePicker({ value, onChange, period = 'daily' }) {
                   onClick={() => handlePresetSelect(p.key)}
                   className={`w-full text-left px-4 py-2 text-sm cursor-pointer transition-colors ${
                     activePreset === p.key
-                      ? 'text-blue-400 font-medium bg-blue-500/10'
+                      ? 'text-accent-text font-medium bg-accent-muted'
                       : 'text-white/70 hover:bg-white/[0.04] hover:text-white'
                   }`}
                 >
                   <span className="flex items-center justify-between">
                     {p.label}
                     {activePreset === p.key && (
-                      <svg className="w-4 h-4 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                      <svg className="w-4 h-4 text-accent-text" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
                         <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
                       </svg>
                     )}
@@ -436,7 +436,7 @@ export default function DatePicker({ value, onChange, period = 'daily' }) {
               >
                 <ChevronLeft size={16} className="text-[#888]" />
               </button>
-              <span className="text-sm font-semibold text-blue-500 select-none">
+              <span className="text-sm font-semibold text-accent select-none">
                 {headerTitle}
               </span>
               <button
@@ -494,7 +494,7 @@ export default function DatePicker({ value, onChange, period = 'daily' }) {
               <button
                 type="button"
                 onClick={handleApply}
-                className="px-4 py-1.5 text-xs font-medium text-white bg-blue-600 hover:bg-blue-700
+                className="px-4 py-1.5 text-xs font-medium text-white bg-accent hover:bg-accent-hover
                            rounded-md transition-colors cursor-pointer"
               >
                 Apply

@@ -57,8 +57,8 @@ export default function VerifyEmail() {
 
         {status === 'loading' && (
           <>
-            <div className="w-12 h-12 rounded-full bg-blue-500/10 border border-blue-500/20 flex items-center justify-center mx-auto mb-4">
-              <span className="w-6 h-6 border-2 border-blue-400/30 border-t-blue-400 rounded-full animate-spin" />
+            <div className="w-12 h-12 rounded-full bg-accent-muted border border-accent/20 flex items-center justify-center mx-auto mb-4">
+              <span className="w-6 h-6 border-2 border-accent/30 border-t-accent rounded-full animate-spin" />
             </div>
             <h2 className="text-white font-medium mb-2">
               Verifying your email
@@ -78,7 +78,7 @@ export default function VerifyEmail() {
             <p className="text-white/50 text-sm mb-6">{message}</p>
             <Link
               to="/dashboard"
-              className="inline-block bg-blue-600 hover:bg-blue-700 text-white rounded-md px-6 py-2 text-sm font-medium transition"
+              className="inline-block bg-accent hover:bg-accent-hover text-white rounded-md px-6 py-2 text-sm font-medium transition"
             >
               Continue to Dashboard
             </Link>
@@ -96,7 +96,7 @@ export default function VerifyEmail() {
             <p className="text-white/50 text-sm mb-6">{message}</p>
             <Link
               to="/login"
-              className="text-blue-400 hover:text-blue-300 text-sm transition"
+              className="text-accent-text hover:text-accent text-sm transition"
             >
               Go to sign in
             </Link>

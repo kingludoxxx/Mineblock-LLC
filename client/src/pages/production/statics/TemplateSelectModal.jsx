@@ -175,14 +175,14 @@ export function TemplateSelectModal({ isOpen, onClose, onSelect, templates = [] 
                   onClick={() => setActiveCategory(cat.key)}
                   className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-sm transition-colors cursor-pointer ${
                     isActive
-                      ? 'bg-blue-500/15 text-blue-300'
+                      ? 'bg-accent/15 text-accent-text'
                       : 'text-slate-400 hover:text-white hover:bg-white/[0.04]'
                   }`}
                 >
                   <span className={isActive ? 'font-medium' : ''}>{cat.label}</span>
                   <span
                     className={`text-xs tabular-nums ${
-                      isActive ? 'text-blue-400' : 'text-slate-600'
+                      isActive ? 'text-accent-text' : 'text-slate-600'
                     }`}
                   >
                     {count}
@@ -203,7 +203,7 @@ export function TemplateSelectModal({ isOpen, onClose, onSelect, templates = [] 
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
                   placeholder="Search templates..."
-                  className="w-full bg-white/[0.04] border border-white/[0.08] rounded-lg pl-9 pr-3 py-2 text-sm text-white placeholder-slate-600 focus:border-blue-500/50 focus:outline-none transition-colors"
+                  className="w-full bg-white/[0.04] border border-white/[0.08] rounded-lg pl-9 pr-3 py-2 text-sm text-white placeholder-slate-600 focus:border-accent/50 focus:outline-none transition-colors"
                 />
               </div>
             </div>
@@ -222,7 +222,7 @@ export function TemplateSelectModal({ isOpen, onClose, onSelect, templates = [] 
                       <button
                         key={template.id || template.name}
                         onClick={() => handleSelect(template)}
-                        className="group relative rounded-xl overflow-hidden border border-white/[0.06] bg-white/[0.02] hover:border-blue-500/40 hover:bg-white/[0.04] transition-all cursor-pointer focus:outline-none focus:ring-1 focus:ring-blue-500/50"
+                        className="group relative rounded-xl overflow-hidden border border-white/[0.06] bg-white/[0.02] hover:border-accent/40 hover:bg-white/[0.04] transition-all cursor-pointer focus:outline-none focus:ring-1 focus:ring-accent/50"
                       >
                         <div className="aspect-[4/5] w-full bg-white/[0.03]">
                           {template.image_url || template.thumbnail_url ? (

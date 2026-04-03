@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Plus, Edit2, Trash2, X, GripVertical, ArrowDown, Route, Globe, CreditCard, TrendingUp, CheckCircle } from 'lucide-react';
 
 const STEP_TYPES = [
-  { value: 'landing', label: 'Landing Page', icon: Globe, color: 'text-blue-400' },
+  { value: 'landing', label: 'Landing Page', icon: Globe, color: 'text-accent-text' },
   { value: 'checkout', label: 'Checkout', icon: CreditCard, color: 'text-emerald-400' },
   { value: 'upsell', label: 'Upsell', icon: TrendingUp, color: 'text-yellow-400' },
   { value: 'thankyou', label: 'Thank You', icon: CheckCircle, color: 'text-purple-400' },

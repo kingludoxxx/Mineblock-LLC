@@ -17,7 +17,7 @@ const channels = [
     revenue: 128450,
     roas: 4.2,
     pct: 34,
-    color: 'bg-blue-500',
+    color: 'bg-accent',
   },
   {
     name: 'Paid Search',
@@ -92,7 +92,7 @@ export default function Attribution() {
             onClick={() => setCompare(!compare)}
             className={`text-sm px-3 py-2 rounded-lg border transition-colors cursor-pointer ${
               compare
-                ? 'border-blue-500 bg-blue-600/20 text-blue-400'
+                ? 'border-accent bg-accent-muted text-accent-text'
                 : 'border-white/[0.06] bg-[#111] text-slate-400'
             }`}
           >

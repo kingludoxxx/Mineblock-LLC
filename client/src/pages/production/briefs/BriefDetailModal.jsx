@@ -23,7 +23,7 @@ import api from '../../../services/api';
 const SCORE_CONFIG = {
   novelty:    { label: 'Novelty',    icon: Zap,    color: 'bg-purple-500/20 text-purple-300 border-purple-500/30' },
   aggression: { label: 'Aggression', icon: Target, color: 'bg-red-500/20 text-red-300 border-red-500/30' },
-  coherence:  { label: 'Coherence',  icon: Brain,  color: 'bg-blue-500/20 text-blue-300 border-blue-500/30' },
+  coherence:  { label: 'Coherence',  icon: Brain,  color: 'bg-accent/20 text-accent-text border-accent/30' },
   overall:    { label: 'Overall',    icon: Shield, color: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' },
 };
 

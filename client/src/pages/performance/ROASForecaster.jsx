@@ -99,7 +99,7 @@ export default function ROASForecaster() {
 
             <button
               onClick={calculate}
-              className="w-full flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white font-medium py-3 rounded-lg transition-colors cursor-pointer"
+              className="w-full flex items-center justify-center gap-2 bg-accent hover:bg-accent-hover text-white font-medium py-3 rounded-lg transition-colors cursor-pointer"
             >
               <Calculator className="w-4 h-4" />
               Calculate Forecast
@@ -121,10 +121,10 @@ export default function ROASForecaster() {
                 </div>
                 <div className="bg-[#111] border border-white/[0.06] rounded-xl p-5">
                   <div className="flex items-center gap-2 mb-3">
-                    <TrendingUp className="w-4 h-4 text-blue-400" />
+                    <TrendingUp className="w-4 h-4 text-accent-text" />
                     <span className="text-sm text-slate-400">Projected ROAS</span>
                   </div>
-                  <p className="text-2xl font-bold text-blue-400">{forecast.roas.toFixed(1)}x</p>
+                  <p className="text-2xl font-bold text-accent-text">{forecast.roas.toFixed(1)}x</p>
                 </div>
               </div>
 
@@ -182,7 +182,7 @@ export default function ROASForecaster() {
                     >
                       <td className="px-5 py-3 text-sm text-white font-medium">{b.channel}</td>
                       <td className="px-5 py-3 text-sm text-emerald-400">{b.avgRoas}x</td>
-                      <td className="px-5 py-3 text-sm text-blue-400">{b.topRoas}x</td>
+                      <td className="px-5 py-3 text-sm text-accent-text">{b.topRoas}x</td>
                       <td className="px-5 py-3 text-sm text-slate-400">{b.industryAvg}x</td>
                     </tr>
                   ))}

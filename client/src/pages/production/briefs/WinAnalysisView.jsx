@@ -16,7 +16,7 @@ import {
 const EMOTION_COLORS = {
   fear:      { bg: 'bg-red-500/20',     text: 'text-red-300',     bar: 'from-red-500 to-red-400' },
   greed:     { bg: 'bg-emerald-500/20',  text: 'text-emerald-300', bar: 'from-emerald-500 to-emerald-400' },
-  curiosity: { bg: 'bg-blue-500/20',     text: 'text-blue-300',    bar: 'from-blue-500 to-blue-400' },
+  curiosity: { bg: 'bg-accent/20',     text: 'text-accent-text',    bar: 'from-accent to-accent-hover' },
   fomo:      { bg: 'bg-orange-500/20',   text: 'text-orange-300',  bar: 'from-orange-500 to-orange-400' },
   desire:    { bg: 'bg-pink-500/20',     text: 'text-pink-300',    bar: 'from-pink-500 to-pink-400' },
   anger:     { bg: 'bg-rose-500/20',     text: 'text-rose-300',    bar: 'from-rose-500 to-rose-400' },
@@ -56,7 +56,7 @@ const Pill = ({ color, children }) => {
   );
 };
 
-const StrengthBar = ({ value, max = 10, gradient = 'from-blue-500 to-cyan-400' }) => (
+const StrengthBar = ({ value, max = 10, gradient = 'from-accent to-accent-hover' }) => (
   <div className="flex items-center gap-2 w-full">
     <div className="flex-1 h-1.5 rounded-full bg-bg-elevated overflow-hidden">
       <div

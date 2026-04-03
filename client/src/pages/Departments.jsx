@@ -49,8 +49,8 @@ export default function Departments() {
             >
               <div className="flex items-start justify-between mb-4">
                 <div className="flex items-center gap-3">
-                  <div className="p-2 bg-blue-600/20 rounded-lg">
-                    <Building2 className="w-5 h-5 text-blue-400" />
+                  <div className="p-2 bg-accent-muted rounded-lg">
+                    <Building2 className="w-5 h-5 text-accent-text" />
                   </div>
                   <div>
                     <h3 className="text-white font-medium">{dept.name}</h3>
@@ -73,7 +73,7 @@ export default function Departments() {
                   <button
                     onClick={() => toggleDepartment(dept.id, dept.is_active)}
                     className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors cursor-pointer
-                      ${dept.is_active ? 'bg-blue-600' : 'bg-slate-600'}`}
+                      ${dept.is_active ? 'bg-accent' : 'bg-slate-600'}`}
                   >
                     <span
                       className={`inline-block h-4 w-4 rounded-full bg-white transition-transform

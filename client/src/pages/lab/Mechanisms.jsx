@@ -63,7 +63,7 @@ export default function Mechanisms() {
           <div key={item.id} className="bg-[#111] border border-white/[0.06] rounded-lg p-5">
             <div className="flex items-start justify-between mb-3">
               <div className="flex items-center gap-3">
-                <div className="p-2 rounded-lg bg-blue-500/20"><Cog className="w-5 h-5 text-blue-400" /></div>
+                <div className="p-2 rounded-lg bg-accent-muted"><Cog className="w-5 h-5 text-accent-text" /></div>
                 <h3 className="font-semibold text-white">{item.name}</h3>
               </div>
               <div className="flex gap-1">
@@ -73,11 +73,11 @@ export default function Mechanisms() {
             </div>
             <p className="text-sm text-slate-400 mb-4 leading-relaxed">{item.description}</p>
             <div>
-              <h4 className="text-xs font-medium text-blue-400 mb-1.5">Proof Points</h4>
+              <h4 className="text-xs font-medium text-accent-text mb-1.5">Proof Points</h4>
               <ul className="space-y-1">
                 {item.proofPoints.map((p, i) => (
                   <li key={i} className="text-xs text-slate-400 flex items-start gap-1.5">
-                    <span className="text-blue-400/60 mt-0.5">*</span> {p}
+                    <span className="text-accent/60 mt-0.5">*</span> {p}
                   </li>
                 ))}
               </ul>

@@ -45,7 +45,7 @@ const cardStyle = 'bg-[#111] border border-white/[0.06] rounded-xl p-5';
 const btnBase =
   'px-3 py-2 text-sm rounded-lg border transition-colors focus:outline-none cursor-pointer';
 
-const btnActive = 'bg-blue-600 border-blue-500 text-white';
+const btnActive = 'bg-accent border-accent text-white';
 
 // ── Metric Card ──────────────────────────────────────────────────────────────
 
@@ -57,8 +57,8 @@ function MetricCard({ icon: Icon, label, value, subtitle, change, changeLabel, a
   return (
     <div className={cardStyle}>
       <div className="flex items-center gap-2 mb-3">
-        <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${accentColor || 'bg-blue-500/10'}`}>
-          <Icon size={16} className={accentColor ? accentColor.replace('bg-', 'text-').replace('/10', '') : 'text-blue-400'} />
+        <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${accentColor || 'bg-accent-muted'}`}>
+          <Icon size={16} className={accentColor ? accentColor.replace('bg-', 'text-').replace('/10', '') : 'text-accent-text'} />
         </div>
         <span className="text-[#888] text-sm">{label}</span>
       </div>
@@ -246,7 +246,7 @@ export default function KpiDashboard() {
     return (
       <div className="min-h-screen bg-[#0a0a0a] flex items-center justify-center">
         <div className="flex flex-col items-center gap-3">
-          <RefreshCw size={24} className="text-blue-500 animate-spin" />
+          <RefreshCw size={24} className="text-accent animate-spin" />
           <span className="text-[#888] text-sm">Loading KPI data...</span>
         </div>
       </div>
@@ -275,8 +275,8 @@ export default function KpiDashboard() {
         {/* ── Header Bar ──────────────────────────────────────────────────── */}
         <div className="flex flex-wrap items-center gap-3">
           <div className="flex items-center gap-2 mr-auto">
-            <div className="w-9 h-9 bg-blue-500/10 rounded-lg flex items-center justify-center">
-              <BarChart3 size={18} className="text-blue-400" />
+            <div className="w-9 h-9 bg-accent-muted rounded-lg flex items-center justify-center">
+              <BarChart3 size={18} className="text-accent-text" />
             </div>
             <h1 className="text-xl font-semibold text-white">KPI Dashboard</h1>
           </div>
@@ -288,7 +288,7 @@ export default function KpiDashboard() {
                 key={p}
                 onClick={() => setPeriod(p)}
                 className={`px-3 py-1.5 text-xs rounded-md font-medium transition-colors cursor-pointer ${
-                  period === p ? 'bg-blue-600 text-white' : 'text-[#888] hover:text-white'
+                  period === p ? 'bg-accent text-white' : 'text-[#888] hover:text-white'
                 }`}
               >
                 {p.charAt(0).toUpperCase() + p.slice(1)}
@@ -339,7 +339,7 @@ export default function KpiDashboard() {
             subtitle={metrics.unitsSold ? `${fmtInt(metrics.unitsSold)} units sold` : undefined}
             change={metrics.ordersChange}
             changeLabel
-            accentColor="bg-blue-500/10"
+            accentColor="bg-accent-muted"
           />
           <MetricCard
             icon={BarChart3}
@@ -396,7 +396,7 @@ export default function KpiDashboard() {
         {trends.length > 0 && (
           <div className={cardStyle}>
             <div className="flex items-center gap-2 mb-4">
-              <BarChart3 size={16} className="text-blue-400" />
+              <BarChart3 size={16} className="text-accent-text" />
               <h2 className="text-sm font-medium text-white">Profit Trend (Last 30 Days)</h2>
             </div>
             <div className="h-[320px]">
@@ -404,8 +404,8 @@ export default function KpiDashboard() {
                 <ComposedChart data={trends} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
                   <defs>
                     <linearGradient id="gRevenue" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#2563eb" stopOpacity={0.2} />
-                      <stop offset="95%" stopColor="#2563eb" stopOpacity={0} />
+                      <stop offset="5%" stopColor="#C9A227" stopOpacity={0.2} />
+                      <stop offset="95%" stopColor="#C9A227" stopOpacity={0} />
                     </linearGradient>
                     <linearGradient id="gProfit" x1="0" y1="0" x2="0" y2="1">
                       <stop offset="5%" stopColor="#16a34a" stopOpacity={0.2} />
@@ -439,7 +439,7 @@ export default function KpiDashboard() {
                   <Area
                     type="monotone"
                     dataKey="revenue"
-                    stroke="#2563eb"
+                    stroke="#C9A227"
                     strokeWidth={2}
                     fill="url(#gRevenue)"
                     name="Revenue"
@@ -470,7 +470,7 @@ export default function KpiDashboard() {
         {sortedSkus.length > 0 && (
           <div className={cardStyle}>
             <div className="flex items-center gap-2 mb-4">
-              <Package size={16} className="text-blue-400" />
+              <Package size={16} className="text-accent-text" />
               <h2 className="text-sm font-medium text-white">SKU Breakdown</h2>
               <span className="text-xs text-[#555] ml-auto">{sortedSkus.length} products</span>
             </div>

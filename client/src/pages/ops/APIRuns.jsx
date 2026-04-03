@@ -40,7 +40,7 @@ const statusColor = (s) => {
 };
 
 const methodColor = (m) => {
-  const map = { GET: 'text-blue-400', POST: 'text-emerald-400', PUT: 'text-yellow-400', DELETE: 'text-red-400', PATCH: 'text-purple-400' };
+  const map = { GET: 'text-accent-text', POST: 'text-emerald-400', PUT: 'text-yellow-400', DELETE: 'text-red-400', PATCH: 'text-purple-400' };
   return map[m] || 'text-slate-400';
 };
 

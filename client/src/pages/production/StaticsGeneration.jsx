@@ -79,11 +79,11 @@ const ADVERTORIAL_STATUSES = ['draft', 'copy_review', 'copy_approved', 'images_p
 const STATUS_COLORS = {
   review: { bg: 'bg-amber-500/10', text: 'text-amber-300', border: 'border-amber-500/20' },
   approved: { bg: 'bg-emerald-500/10', text: 'text-emerald-300', border: 'border-emerald-500/20' },
-  queued: { bg: 'bg-blue-500/10', text: 'text-blue-300', border: 'border-blue-500/20' },
-  launched: { bg: 'bg-blue-500/10', text: 'text-blue-300', border: 'border-blue-500/20' },
+  queued: { bg: 'bg-accent-muted', text: 'text-accent-text', border: 'border-accent/20' },
+  launched: { bg: 'bg-accent-muted', text: 'text-accent-text', border: 'border-accent/20' },
   draft: { bg: 'bg-slate-500/10', text: 'text-slate-300', border: 'border-slate-500/20' },
   copy_review: { bg: 'bg-amber-500/10', text: 'text-amber-300', border: 'border-amber-500/20' },
-  images_pending: { bg: 'bg-blue-500/10', text: 'text-blue-300', border: 'border-blue-500/20' },
+  images_pending: { bg: 'bg-accent-muted', text: 'text-accent-text', border: 'border-accent/20' },
   images_review: { bg: 'bg-cyan-500/10', text: 'text-cyan-300', border: 'border-cyan-500/20' },
   ready: { bg: 'bg-emerald-500/10', text: 'text-emerald-300', border: 'border-emerald-500/20' },
   copy_approved: { bg: 'bg-emerald-500/10', text: 'text-emerald-300', border: 'border-emerald-500/20' },
@@ -91,9 +91,9 @@ const STATUS_COLORS = {
 };
 
 const VARIANT_TYPE_COLORS = {
-  direct_adapt: { bg: 'bg-blue-500/10', text: 'text-blue-300', border: 'border-blue-500/20', label: 'Direct Adapt' },
+  direct_adapt: { bg: 'bg-accent-muted', text: 'text-accent-text', border: 'border-accent/20', label: 'Direct Adapt' },
   pain_pivot: { bg: 'bg-orange-500/10', text: 'text-orange-300', border: 'border-orange-500/20', label: 'Pain Pivot' },
-  creative_swing: { bg: 'bg-blue-500/10', text: 'text-blue-300', border: 'border-blue-500/20', label: 'Creative Swing' },
+  creative_swing: { bg: 'bg-accent-muted', text: 'text-accent-text', border: 'border-accent/20', label: 'Creative Swing' },
 };
 
 const TOP_TABS = [
@@ -163,7 +163,7 @@ function UploadZone({ preview, onFile, onUrlChange, urlValue, onClear, label, co
           compact ? 'py-4' : 'py-8'
         } ${
           dragging
-            ? 'border-blue-500/60 bg-blue-500/5'
+            ? 'border-accent/50 bg-accent/5'
             : 'border-white/[0.1] hover:border-white/[0.2] bg-transparent'
         }`}
       >
@@ -185,7 +185,7 @@ function UploadZone({ preview, onFile, onUrlChange, urlValue, onClear, label, co
           value={urlValue || ''}
           onChange={(e) => onUrlChange(e.target.value)}
           placeholder="Or paste image URL..."
-          className="w-full bg-[#0a0a0a] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white placeholder-slate-600 focus:border-blue-500/50 focus:outline-none"
+          className="w-full bg-[#0a0a0a] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white placeholder-slate-600 focus:border-accent/50 focus:outline-none"
         />
       )}
     </div>
@@ -203,7 +203,7 @@ function StepperIndicator({ step, currentStep, label }) {
           isCompleted
             ? 'bg-emerald-600 text-white'
             : isActive
-              ? 'bg-blue-600 text-white'
+              ? 'bg-accent text-white'
               : 'bg-white/[0.04] text-slate-600 border border-white/[0.06]'
         }`}
       >
@@ -214,7 +214,7 @@ function StepperIndicator({ step, currentStep, label }) {
       >
         {label}
       </span>
-      {isActive && <Loader2 className="w-4 h-4 text-blue-400 animate-spin ml-auto" />}
+      {isActive && <Loader2 className="w-4 h-4 text-accent-text animate-spin ml-auto" />}
     </div>
   );
 }
@@ -357,7 +357,7 @@ function AdvertorialCopyCard({ copy, onStatusChange, onGenerateImages, generatin
           {copy.cta && (
             <div>
               <span className="text-xs text-slate-400 mb-1 block">CTA</span>
-              <span className="inline-block px-3 py-1.5 text-sm rounded-lg bg-blue-600 text-white">
+              <span className="inline-block px-3 py-1.5 text-sm rounded-lg bg-accent text-white">
                 {copy.cta}
               </span>
             </div>
@@ -412,8 +412,8 @@ function AdvertorialCopyCard({ copy, onStatusChange, onGenerateImages, generatin
             disabled={generatingImages}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs transition-colors cursor-pointer ${
               generatingImages
-                ? 'bg-blue-500/10 border border-blue-500/20 text-blue-400/50 cursor-not-allowed'
-                : 'bg-blue-500/10 border border-blue-500/20 text-blue-300 hover:bg-blue-500/20'
+                ? 'bg-accent-muted border border-accent/20 text-accent-text/50 cursor-not-allowed'
+                : 'bg-accent-muted border border-accent/20 text-accent-text hover:bg-accent/20'
             }`}
           >
             {generatingImages ? (
@@ -438,7 +438,7 @@ function AdvertorialCopyCard({ copy, onStatusChange, onGenerateImages, generatin
           <button
             type="button"
             onClick={() => onStatusChange(copy.id, 'launched')}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-500/10 border border-blue-500/20 text-xs text-blue-300 hover:bg-blue-500/20 transition-colors cursor-pointer"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent-muted border border-accent/20 text-xs text-accent-text hover:bg-accent/20 transition-colors cursor-pointer"
           >
             <Rocket className="w-3 h-3" />
             Mark Launched
@@ -497,7 +497,7 @@ function GeneratedView({ creatives, loading, onRefresh, onCreativeClick }) {
                 onClick={() => setStatusFilter(s)}
                 className={`px-3 py-1.5 text-xs rounded-lg border transition-colors cursor-pointer ${
                   statusFilter === s
-                    ? 'bg-blue-600 border-blue-500 text-white'
+                    ? 'bg-accent border-accent text-white'
                     : 'bg-transparent border-white/[0.06] text-slate-400 hover:text-white hover:border-white/[0.12]'
                 }`}
               >
@@ -527,7 +527,7 @@ function GeneratedView({ creatives, loading, onRefresh, onCreativeClick }) {
 
       {loading && (
         <div className="flex items-center justify-center min-h-[200px]">
-          <Loader2 className="w-6 h-6 text-blue-400 animate-spin" />
+          <Loader2 className="w-6 h-6 text-accent-text animate-spin" />
         </div>
       )}
 
@@ -1430,7 +1430,7 @@ export default function StaticsGeneration() {
 
                       <div>
                         <label className={labelClasses}>
-                          Product Name <span className="text-blue-400">*</span>
+                          Product Name <span className="text-accent-text">*</span>
                         </label>
                         <input
                           type="text"
@@ -1465,7 +1465,7 @@ export default function StaticsGeneration() {
 
                       <div>
                         <label className={labelClasses}>
-                          Product Photo <span className="text-blue-400">*</span>
+                          Product Photo <span className="text-accent-text">*</span>
                         </label>
                         <UploadZone
                           preview={productPreview}
@@ -1626,7 +1626,7 @@ export default function StaticsGeneration() {
                             </span>
                           )}
                           {counts.generating > 0 && (
-                            <span className="text-[10px] bg-blue-500/15 text-blue-400 px-1.5 py-0.5 rounded-full flex items-center gap-1">
+                            <span className="text-[10px] bg-accent/15 text-accent-text px-1.5 py-0.5 rounded-full flex items-center gap-1">
                               <Loader2 className="w-2.5 h-2.5 animate-spin" />{counts.generating}
                             </span>
                           )}
@@ -1644,14 +1644,14 @@ export default function StaticsGeneration() {
                         {tracked.map(({ parent, variant, status }) => (
                           <div key={parent.id} className="flex items-center gap-2 text-[11px]">
                             <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                              status === 'generating' ? 'bg-blue-400 animate-pulse'
+                              status === 'generating' ? 'bg-accent animate-pulse'
                               : status === 'done' ? 'bg-emerald-400'
                               : status === 'failed' ? 'bg-red-400'
                               : 'bg-gray-600'
                             }`} />
                             <span className="text-gray-400 truncate flex-1">{parent.product_name || 'Untitled'} — {parent.angle || 'No angle'}</span>
                             <span className={
-                              status === 'generating' ? 'text-blue-400'
+                              status === 'generating' ? 'text-accent-text'
                               : status === 'done' ? 'text-emerald-400'
                               : status === 'failed' ? 'text-red-400'
                               : 'text-gray-600'
@@ -1670,7 +1670,7 @@ export default function StaticsGeneration() {
                                     fetchCreatives();
                                   } catch {}
                                 }}
-                                className="text-[10px] text-blue-400 hover:text-blue-300 cursor-pointer shrink-0"
+                                className="text-[10px] text-accent-text hover:text-accent cursor-pointer shrink-0"
                               >
                                 {status === 'failed' ? 'Retry' : 'Create'}
                               </button>
@@ -1717,7 +1717,7 @@ export default function StaticsGeneration() {
                     </div>
                     <div className="mt-6 h-1.5 rounded-full bg-white/[0.04] overflow-hidden">
                       <div
-                        className="h-full bg-blue-600 rounded-full transition-all duration-1000 ease-out"
+                        className="h-full bg-accent rounded-full transition-all duration-1000 ease-out"
                         style={{
                           width:
                             generationStep === 1
@@ -1772,7 +1772,7 @@ export default function StaticsGeneration() {
                   {!advSelectedProductId && (
                     <div className="pt-1">
                       <label className={labelClasses}>
-                        Product Name <span className="text-blue-400">*</span>
+                        Product Name <span className="text-accent-text">*</span>
                       </label>
                       <input
                         type="text"
@@ -1817,7 +1817,7 @@ export default function StaticsGeneration() {
                 <div className="bg-[#111] border border-white/[0.06] rounded-lg p-5 space-y-3">
                   <div className="flex items-center justify-between">
                     <label className={labelClasses + ' mb-0'}>
-                      Source Copy <span className="text-blue-400">*</span>
+                      Source Copy <span className="text-accent-text">*</span>
                     </label>
                     <span className={`text-[10px] ${advSourceCopy.length >= 100 ? 'text-emerald-400' : 'text-slate-600'}`}>
                       {advSourceCopy.split(/\s+/).filter(Boolean).length} words
@@ -1844,8 +1844,8 @@ export default function StaticsGeneration() {
                   disabled={!canGenerateAdv}
                   className={`w-full flex items-center justify-center gap-2 px-4 py-3 rounded-lg text-sm font-medium transition-colors cursor-pointer ${
                     canGenerateAdv
-                      ? 'bg-blue-600 hover:bg-blue-700 text-white'
-                      : 'bg-blue-600/30 text-white/40 cursor-not-allowed'
+                      ? 'bg-accent hover:bg-accent-hover text-white'
+                      : 'bg-accent/30 text-white/40 cursor-not-allowed'
                   }`}
                 >
                   {advGenerating ? (
@@ -1904,7 +1904,7 @@ export default function StaticsGeneration() {
                 {advGenerating && (
                   <div className="bg-[#111] border border-white/[0.06] rounded-lg p-8">
                     <div className="flex items-center gap-3">
-                      <Loader2 className="w-5 h-5 text-blue-400 animate-spin" />
+                      <Loader2 className="w-5 h-5 text-accent-text animate-spin" />
                       <div>
                         <h3 className="text-sm font-medium text-white">Generating copy variants...</h3>
                         <p className="text-xs text-slate-400 mt-1">
@@ -1913,7 +1913,7 @@ export default function StaticsGeneration() {
                       </div>
                     </div>
                     <div className="mt-6 h-1.5 rounded-full bg-white/[0.04] overflow-hidden">
-                      <div className="h-full bg-blue-600 rounded-full animate-pulse" style={{ width: '60%' }} />
+                      <div className="h-full bg-accent rounded-full animate-pulse" style={{ width: '60%' }} />
                     </div>
                   </div>
                 )}
@@ -2105,7 +2105,7 @@ export default function StaticsGeneration() {
               key={toast.id}
               className={`pointer-events-auto flex items-center gap-3 px-4 py-3 rounded-xl shadow-2xl border backdrop-blur-sm ${
                 toast.type === 'generating'
-                  ? 'bg-blue-950/90 border-blue-500/30 text-blue-200'
+                  ? 'bg-amber-950/90 border-accent/30 text-accent-text'
                   : toast.type === 'success'
                     ? 'bg-emerald-950/90 border-emerald-500/30 text-emerald-200'
                     : toast.type === 'error'
@@ -2113,7 +2113,7 @@ export default function StaticsGeneration() {
                       : 'bg-[#111]/90 border-white/10 text-slate-200'
               }`}
             >
-              {toast.type === 'generating' && <Loader2 className="w-4 h-4 animate-spin text-blue-400 shrink-0" />}
+              {toast.type === 'generating' && <Loader2 className="w-4 h-4 animate-spin text-accent-text shrink-0" />}
               {toast.type === 'success' && <Check className="w-4 h-4 text-emerald-400 shrink-0" />}
               {toast.type === 'error' && <AlertCircle className="w-4 h-4 text-red-400 shrink-0" />}
               <span className="text-sm font-medium">{toast.message}</span>

@@ -44,7 +44,7 @@ const incidents = [
     date: '2026-03-13',
     title: 'API Gateway elevated latency',
     status: 'Monitoring',
-    statusColor: 'text-blue-400',
+    statusColor: 'text-accent-text',
     updates: [
       { time: '09:45 AM', text: 'Latency has improved after scaling up API gateway pods. Continuing to monitor.' },
       { time: '09:20 AM', text: 'API response times spiked to 500ms+ due to increased traffic. Scaling horizontally.' },

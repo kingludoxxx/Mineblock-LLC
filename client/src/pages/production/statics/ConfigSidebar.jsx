@@ -109,7 +109,7 @@ export function ConfigSidebar({
                 onClick={() => onAngleChange(angle === a ? null : a)}
                 className={`px-2.5 py-1 rounded-full text-xs font-medium transition-colors cursor-pointer ${
                   angle === a
-                    ? 'bg-blue-600 text-white'
+                    ? 'bg-accent text-white'
                     : 'bg-white/[0.04] text-slate-400 border border-white/[0.06] hover:border-white/[0.12] hover:text-white'
                 }`}
               >
@@ -122,7 +122,7 @@ export function ConfigSidebar({
             value={customAngle || ''}
             onChange={(e) => onCustomAngleChange(e.target.value)}
             placeholder="Custom angle... (or leave blank for AI to decide)"
-            className="w-full bg-[#111] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white placeholder-slate-600 focus:border-blue-500/50 focus:outline-none"
+            className="w-full bg-[#111] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white placeholder-slate-600 focus:border-accent/50 focus:outline-none"
           />
         </div>
 
@@ -150,7 +150,7 @@ export function ConfigSidebar({
             onClick={() => fileInputRef.current?.click()}
             className={`mt-3 flex flex-col items-center justify-center gap-2 border border-dashed rounded-lg py-5 cursor-pointer transition-colors ${
               dragging
-                ? 'border-blue-500/60 bg-blue-500/5'
+                ? 'border-accent/50 bg-accent/5'
                 : 'border-white/[0.1] hover:border-white/[0.2] bg-transparent'
             }`}
           >
@@ -175,7 +175,7 @@ export function ConfigSidebar({
                 <button
                   type="button"
                   onClick={onOpenLibrary}
-                  className="text-blue-400 hover:text-blue-300 underline cursor-pointer"
+                  className="text-accent-text hover:text-accent underline cursor-pointer"
                 >
                   Browse Library
                 </button>

@@ -21,8 +21,8 @@ const STATUS_COLORS = {
   review:   { bg: 'bg-amber-500/10',   text: 'text-amber-300',   border: 'border-amber-500/20' },
   approved: { bg: 'bg-emerald-500/10',  text: 'text-emerald-300', border: 'border-emerald-500/20' },
   rejected: { bg: 'bg-red-500/10',      text: 'text-red-300',     border: 'border-red-500/20' },
-  queued:   { bg: 'bg-blue-500/10',     text: 'text-blue-300',    border: 'border-blue-500/20' },
-  launched: { bg: 'bg-blue-500/10',     text: 'text-blue-300',    border: 'border-blue-500/20' },
+  queued:   { bg: 'bg-accent-muted',     text: 'text-accent-text',    border: 'border-accent/20' },
+  launched: { bg: 'bg-accent-muted',     text: 'text-accent-text',    border: 'border-accent/20' },
   draft:    { bg: 'bg-slate-500/10',    text: 'text-slate-300',   border: 'border-slate-500/20' },
 };
 
@@ -296,13 +296,13 @@ export function CreativeDetailModal({
                 onChange={(e) => setAiInstruction(e.target.value)}
                 placeholder="Describe what to change... e.g. 'make the background darker blue' or 'add more energy to the model'"
                 rows={3}
-                className="w-full bg-[#0a0a0a] border border-white/[0.08] rounded-lg px-3 py-2.5 text-sm text-white placeholder-slate-600 focus:border-blue-500/50 focus:outline-none resize-none"
+                className="w-full bg-[#0a0a0a] border border-white/[0.08] rounded-lg px-3 py-2.5 text-sm text-white placeholder-slate-600 focus:border-accent/50 focus:outline-none resize-none"
               />
               <button
                 type="button"
                 onClick={handleAiSubmit}
                 disabled={!aiInstruction.trim() || aiAdjusting}
-                className="mt-2 w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-blue-600/20 border border-blue-500/30 text-sm text-blue-300 hover:bg-blue-600/30 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                className="mt-2 w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-accent-muted border border-accent/30 text-sm text-accent-text hover:bg-accent/20 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 {aiAdjusting ? (
                   <><Loader2 className="w-4 h-4 animate-spin" /> Generating...</>

@@ -267,7 +267,7 @@ export default function Dashboard() {
       {!loading && current && current.revenue !== undefined && (
         <div className="rounded-2xl border border-white/[0.06] bg-white/[0.02] p-5">
           <div className="flex items-center gap-2 mb-4">
-            <div className="w-1.5 h-1.5 rounded-full bg-blue-500" />
+            <div className="w-1.5 h-1.5 rounded-full bg-accent" />
             <span className="text-sm font-medium text-white/60">Daily Breakdown</span>
             <span className="text-xs text-white/30 ml-auto">{date}</span>
           </div>

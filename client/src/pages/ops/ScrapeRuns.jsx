@@ -22,7 +22,7 @@ const initialJobs = [
 
 const statusConfig = {
   Queued: { color: 'bg-slate-600/20 text-slate-400 border-slate-600/30', icon: Clock },
-  Running: { color: 'bg-blue-600/20 text-blue-400 border-blue-600/30', icon: Loader2 },
+  Running: { color: 'bg-accent-muted text-accent-text border-accent/30', icon: Loader2 },
   Completed: { color: 'bg-emerald-600/20 text-emerald-400 border-emerald-600/30', icon: CheckCircle2 },
   Failed: { color: 'bg-red-600/20 text-red-400 border-red-600/30', icon: XCircle },
 };
@@ -78,7 +78,7 @@ export default function ScrapeRuns() {
           )}
           <button
             onClick={() => setShowNew(!showNew)}
-            className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors cursor-pointer"
+            className="flex items-center gap-2 bg-accent hover:bg-accent-hover text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors cursor-pointer"
           >
             <Play className="w-4 h-4" />
             New Scrape Run

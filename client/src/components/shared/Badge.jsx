@@ -1,5 +1,5 @@
 const colorMap = {
-  blue: 'bg-blue-600/20 text-blue-400 border-blue-600/30',
+  blue: 'bg-accent-muted text-accent-text border-accent/30',
   green: 'bg-emerald-600/20 text-emerald-400 border-emerald-600/30',
   red: 'bg-red-600/20 text-red-400 border-red-600/30',
   yellow: 'bg-yellow-600/20 text-yellow-400 border-yellow-600/30',

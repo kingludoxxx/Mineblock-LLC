@@ -291,9 +291,9 @@ export default function CreativeIntelligence() {
           <div className="relative">
             <button
               onClick={() => setEditorDropdownOpen(!editorDropdownOpen)}
-              className="flex items-center gap-2 px-4 py-2 rounded-lg bg-[#111] border border-white/[0.08] hover:border-blue-500/40 text-white text-sm transition-all cursor-pointer whitespace-nowrap"
+              className="flex items-center gap-2 px-4 py-2 rounded-lg bg-[#111] border border-white/[0.08] hover:border-accent/40 text-white text-sm transition-all cursor-pointer whitespace-nowrap"
             >
-              <Filter className="w-4 h-4 text-blue-400" />
+              <Filter className="w-4 h-4 text-accent-text" />
               <span>
                 {selectedEditors.length === 0
                   ? 'All Editors'
@@ -321,13 +321,13 @@ export default function CreativeIntelligence() {
                       onClick={() => toggleEditor(editor)}
                       className={`w-full text-left px-4 py-2 text-sm transition-colors cursor-pointer flex items-center justify-between
                         ${selectedEditors.includes(editor)
-                          ? 'bg-blue-500/15 text-blue-400 font-medium'
+                          ? 'bg-accent/15 text-accent-text font-medium'
                           : 'text-gray-400 hover:bg-white/[0.04] hover:text-white'
                         }`}
                     >
                       <span>{editor}</span>
                       {selectedEditors.includes(editor) && (
-                        <span className="text-blue-400">✓</span>
+                        <span className="text-accent-text">✓</span>
                       )}
                     </button>
                   ))}
@@ -376,7 +376,7 @@ export default function CreativeIntelligence() {
 
         <div className={cardStyle}>
           <div className="flex items-center gap-2 mb-3">
-            <Video className="w-4 h-4 text-blue-400" />
+            <Video className="w-4 h-4 text-accent-text" />
             <span className="text-gray-400 text-xs uppercase tracking-wider">Video Winners</span>
           </div>
           <p className="text-2xl font-bold text-white">{s.videoWinners ?? 0}</p>

@@ -84,7 +84,7 @@ const tickets = [
 ];
 
 const statusConfig = {
-  Open: { color: 'bg-blue-600/20 text-blue-400 border-blue-600/30', icon: Circle },
+  Open: { color: 'bg-accent-muted text-accent-text border-accent/30', icon: Circle },
   'In Progress': { color: 'bg-yellow-600/20 text-yellow-400 border-yellow-600/30', icon: Loader2 },
   Resolved: { color: 'bg-emerald-600/20 text-emerald-400 border-emerald-600/30', icon: CheckCircle2 },
   Closed: { color: 'bg-slate-600/20 text-slate-400 border-slate-600/30', icon: CheckCircle2 },
@@ -161,10 +161,10 @@ export default function AdminSupport() {
           <textarea
             rows={3}
             placeholder="Type your reply..."
-            className="w-full bg-[#0a0a0a] border border-white/[0.06] rounded-lg px-4 py-3 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-blue-500/50 resize-none"
+            className="w-full bg-[#0a0a0a] border border-white/[0.06] rounded-lg px-4 py-3 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-accent/50 resize-none"
           />
           <div className="flex justify-end mt-3">
-            <button className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors cursor-pointer">
+            <button className="flex items-center gap-2 bg-accent hover:bg-accent-hover text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors cursor-pointer">
               <Send className="w-4 h-4" /> Send Reply
             </button>
           </div>

@@ -92,11 +92,11 @@ function CalendarMonth({ year, month, rangeStart, rangeEnd, hoverDate, onDayClic
     let cellClass = 'w-8 h-8 flex items-center justify-center text-xs rounded-md cursor-pointer transition-all duration-150 ';
 
     if (isStart || isEnd) {
-      cellClass += 'bg-blue-500 text-white font-semibold ';
+      cellClass += 'bg-accent text-white font-semibold ';
     } else if (inRange) {
-      cellClass += 'bg-blue-500/20 text-blue-300 ';
+      cellClass += 'bg-accent/20 text-accent-text ';
     } else if (isToday) {
-      cellClass += 'text-blue-400 font-semibold hover:bg-white/10 ';
+      cellClass += 'text-accent-text font-semibold hover:bg-white/10 ';
     } else {
       cellClass += 'text-gray-300 hover:bg-white/10 ';
     }
@@ -232,9 +232,9 @@ export default function DateRangePicker({ startDate, endDate, onChange }) {
           }
           setOpen(!open);
         }}
-        className="flex items-center gap-2 px-4 py-2 rounded-lg bg-[#111] border border-white/[0.08] hover:border-blue-500/40 text-white text-sm transition-all cursor-pointer whitespace-nowrap"
+        className="flex items-center gap-2 px-4 py-2 rounded-lg bg-[#111] border border-white/[0.08] hover:border-accent/40 text-white text-sm transition-all cursor-pointer whitespace-nowrap"
       >
-        <Calendar className="w-4 h-4 text-blue-400" />
+        <Calendar className="w-4 h-4 text-accent-text" />
         <span>{triggerLabel}</span>
         <ChevronDown className={`w-3.5 h-3.5 text-gray-400 transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
@@ -250,13 +250,13 @@ export default function DateRangePicker({ startDate, endDate, onChange }) {
                 onClick={() => handlePresetClick(preset)}
                 className={`w-full text-left px-4 py-2 text-sm transition-colors cursor-pointer
                   ${activePreset === preset.label
-                    ? 'bg-blue-500/15 text-blue-400 font-medium'
+                    ? 'bg-accent/15 text-accent-text font-medium'
                     : 'text-gray-400 hover:bg-white/[0.04] hover:text-white'
                   }`}
               >
                 {preset.label}
                 {activePreset === preset.label && (
-                  <span className="float-right text-blue-400">✓</span>
+                  <span className="float-right text-accent-text">✓</span>
                 )}
               </button>
             ))}
@@ -305,7 +305,7 @@ export default function DateRangePicker({ startDate, endDate, onChange }) {
               </button>
               <button
                 onClick={handleApply}
-                className="px-4 py-1.5 rounded-lg text-sm bg-blue-500 hover:bg-blue-600 text-white font-medium transition-colors cursor-pointer"
+                className="px-4 py-1.5 rounded-lg text-sm bg-accent hover:bg-accent-hover text-white font-medium transition-colors cursor-pointer"
               >
                 Apply
               </button>

@@ -63,7 +63,7 @@ export default function ChangePasswordModal({ isOpen, onClose }) {
             value={currentPassword}
             onChange={(e) => setCurrentPassword(e.target.value)}
             className="w-full px-4 py-2.5 bg-slate-900 border border-slate-600 rounded-lg
-              text-white focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+              text-white focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent"
           />
         </div>
         <div>
@@ -73,7 +73,7 @@ export default function ChangePasswordModal({ isOpen, onClose }) {
             value={newPassword}
             onChange={(e) => setNewPassword(e.target.value)}
             className="w-full px-4 py-2.5 bg-slate-900 border border-slate-600 rounded-lg
-              text-white focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+              text-white focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent"
           />
         </div>
         <div>
@@ -83,7 +83,7 @@ export default function ChangePasswordModal({ isOpen, onClose }) {
             value={confirmPassword}
             onChange={(e) => setConfirmPassword(e.target.value)}
             className="w-full px-4 py-2.5 bg-slate-900 border border-slate-600 rounded-lg
-              text-white focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+              text-white focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent"
           />
         </div>
       </div>

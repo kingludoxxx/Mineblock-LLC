@@ -114,7 +114,7 @@ export default function Signup() {
                   onChange={handleChange}
                   required
                   placeholder="John"
-                  className="bg-white/[0.04] border border-white/[0.08] rounded-md pl-10 pr-3 py-2 text-white text-sm w-full placeholder:text-white/25 focus:outline-none focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/25 transition"
+                  className="bg-white/[0.04] border border-white/[0.08] rounded-md pl-10 pr-3 py-2 text-white text-sm w-full placeholder:text-white/25 focus:outline-none focus:border-accent/50 focus:ring-1 focus:ring-accent/25 transition"
                 />
               </div>
             </div>
@@ -129,7 +129,7 @@ export default function Signup() {
                 onChange={handleChange}
                 required
                 placeholder="Doe"
-                className="bg-white/[0.04] border border-white/[0.08] rounded-md px-3 py-2 text-white text-sm w-full placeholder:text-white/25 focus:outline-none focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/25 transition"
+                className="bg-white/[0.04] border border-white/[0.08] rounded-md px-3 py-2 text-white text-sm w-full placeholder:text-white/25 focus:outline-none focus:border-accent/50 focus:ring-1 focus:ring-accent/25 transition"
               />
             </div>
           </div>
@@ -146,7 +146,7 @@ export default function Signup() {
                 onChange={handleChange}
                 required
                 placeholder="you@example.com"
-                className="bg-white/[0.04] border border-white/[0.08] rounded-md pl-10 pr-3 py-2 text-white text-sm w-full placeholder:text-white/25 focus:outline-none focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/25 transition"
+                className="bg-white/[0.04] border border-white/[0.08] rounded-md pl-10 pr-3 py-2 text-white text-sm w-full placeholder:text-white/25 focus:outline-none focus:border-accent/50 focus:ring-1 focus:ring-accent/25 transition"
               />
             </div>
           </div>
@@ -165,7 +165,7 @@ export default function Signup() {
                 onChange={handleChange}
                 required
                 placeholder="••••••••"
-                className="bg-white/[0.04] border border-white/[0.08] rounded-md pl-10 pr-10 py-2 text-white text-sm w-full placeholder:text-white/25 focus:outline-none focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/25 transition"
+                className="bg-white/[0.04] border border-white/[0.08] rounded-md pl-10 pr-10 py-2 text-white text-sm w-full placeholder:text-white/25 focus:outline-none focus:border-accent/50 focus:ring-1 focus:ring-accent/25 transition"
               />
               <button
                 type="button"
@@ -214,7 +214,7 @@ export default function Signup() {
                 onChange={handleChange}
                 required
                 placeholder="••••••••"
-                className="bg-white/[0.04] border border-white/[0.08] rounded-md pl-10 pr-10 py-2 text-white text-sm w-full placeholder:text-white/25 focus:outline-none focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/25 transition"
+                className="bg-white/[0.04] border border-white/[0.08] rounded-md pl-10 pr-10 py-2 text-white text-sm w-full placeholder:text-white/25 focus:outline-none focus:border-accent/50 focus:ring-1 focus:ring-accent/25 transition"
               />
               <button
                 type="button"
@@ -236,15 +236,15 @@ export default function Signup() {
               type="checkbox"
               checked={agreedToTerms}
               onChange={(e) => setAgreedToTerms(e.target.checked)}
-              className="mt-0.5 rounded border-white/20 bg-white/[0.04] text-blue-600 focus:ring-blue-500/25"
+              className="mt-0.5 rounded border-white/20 bg-white/[0.04] text-accent focus:ring-accent/25"
             />
             <span className="text-white/50 text-sm">
               I agree to the{' '}
-              <a href="/terms" className="text-blue-400 hover:text-blue-300 transition">
+              <a href="/terms" className="text-accent-text hover:text-accent transition">
                 Terms of Service
               </a>{' '}
               and{' '}
-              <a href="/privacy" className="text-blue-400 hover:text-blue-300 transition">
+              <a href="/privacy" className="text-accent-text hover:text-accent transition">
                 Privacy Policy
               </a>
             </span>
@@ -254,7 +254,7 @@ export default function Signup() {
           <button
             type="submit"
             disabled={loading}
-            className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-md px-4 py-2 w-full text-sm font-medium transition flex items-center justify-center gap-2"
+            className="bg-accent hover:bg-accent-hover disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-md px-4 py-2 w-full text-sm font-medium transition flex items-center justify-center gap-2"
           >
             {loading ? (
               <>
@@ -272,7 +272,7 @@ export default function Signup() {
           Already have an account?{' '}
           <Link
             to="/login"
-            className="text-blue-400 hover:text-blue-300 transition"
+            className="text-accent-text hover:text-accent transition"
           >
             Sign in
           </Link>

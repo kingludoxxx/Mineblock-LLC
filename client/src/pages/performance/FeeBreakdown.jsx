@@ -43,7 +43,7 @@ const btnBase =
   'px-3 py-2 text-sm rounded-lg border transition-colors focus:outline-none cursor-pointer';
 
 const FEE_COLORS = {
-  processing: '#3b82f6',
+  processing: '#E8D5A3',
   whop: '#a855f7',
   lasso: '#f97316',
   other: '#6b7280',
@@ -93,7 +93,7 @@ function SummaryCard({ icon: Icon, label, amount, pctOfVolume, badge, accentColo
       <div className="text-xs text-[#888]">{fmtPct(pctOfVolume)} of payment volume</div>
       {badge && (
         <div className="mt-2">
-          <span className="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-blue-500/15 text-blue-400">
+          <span className="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-accent/15 text-accent-text">
             Effective rate: {fmtPct(badge)}
           </span>
         </div>
@@ -141,7 +141,7 @@ export default function FeeBreakdown() {
     return (
       <div className="min-h-screen bg-[#0a0a0a] flex items-center justify-center">
         <div className="flex flex-col items-center gap-3">
-          <RefreshCw size={24} className="text-blue-500 animate-spin" />
+          <RefreshCw size={24} className="text-accent animate-spin" />
           <span className="text-[#888] text-sm">Loading fee data...</span>
         </div>
       </div>
@@ -157,7 +157,7 @@ export default function FeeBreakdown() {
           <AlertTriangle size={32} className="text-red-500 mx-auto mb-3" />
           <div className="text-white font-medium mb-2">Failed to load fee data</div>
           <div className="text-[#888] text-sm mb-4">{error}</div>
-          <button onClick={fetchFees} className={`${btnBase} bg-blue-600 border-blue-500 text-white`}>
+          <button onClick={fetchFees} className={`${btnBase} bg-accent border-accent text-white`}>
             Retry
           </button>
         </div>
@@ -219,7 +219,7 @@ export default function FeeBreakdown() {
                 key={p}
                 onClick={() => setPeriod(p)}
                 className={`px-3 py-1.5 text-xs rounded-md font-medium transition-colors cursor-pointer ${
-                  period === p ? 'bg-blue-600 text-white' : 'text-[#888] hover:text-white'
+                  period === p ? 'bg-accent text-white' : 'text-[#888] hover:text-white'
                 }`}
               >
                 {p.charAt(0).toUpperCase() + p.slice(1)}
@@ -260,7 +260,7 @@ export default function FeeBreakdown() {
             label="Processing Fees"
             amount={summary.processingFees}
             pctOfVolume={pctOf(summary.processingFees)}
-            accentColor="bg-blue-500/10"
+            accentColor="bg-accent-muted"
           />
           <SummaryCard
             icon={Layers}
@@ -328,7 +328,7 @@ export default function FeeBreakdown() {
         {dailyBreakdown.length > 0 && (
           <div className={cardStyle}>
             <div className="flex items-center gap-2 mb-4">
-              <DollarSign size={16} className="text-blue-400" />
+              <DollarSign size={16} className="text-accent-text" />
               <h2 className="text-sm font-medium text-white">Daily Fee Trend</h2>
             </div>
             <div className="h-[300px]">
@@ -429,7 +429,7 @@ export default function FeeBreakdown() {
         {recentPayments.length > 0 && (
           <div className={cardStyle}>
             <div className="flex items-center gap-2 mb-4">
-              <CreditCard size={16} className="text-blue-400" />
+              <CreditCard size={16} className="text-accent-text" />
               <h2 className="text-sm font-medium text-white">Recent Payments</h2>
               <span className="text-xs text-[#555] ml-auto">{recentPayments.length} payments</span>
             </div>

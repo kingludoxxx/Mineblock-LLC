@@ -51,8 +51,8 @@ export default function CostsTab() {
       {/* Monthly Overview */}
       <div className="bg-[#111] rounded-xl border border-white/[0.06] p-6">
         <div className="flex items-center gap-3 mb-2">
-          <div className="w-10 h-10 rounded-lg bg-blue-500/10 flex items-center justify-center">
-            <DollarSign className="w-5 h-5 text-blue-400" />
+          <div className="w-10 h-10 rounded-lg bg-accent-muted flex items-center justify-center">
+            <DollarSign className="w-5 h-5 text-accent-text" />
           </div>
           <div>
             <p className="text-xs text-white/40">Monthly Total (March 2026)</p>
@@ -155,7 +155,7 @@ export default function CostsTab() {
                 <button
                   onClick={() => toggleAlert(alert.id)}
                   className={`relative w-9 h-5 rounded-full transition-colors cursor-pointer ${
-                    alert.enabled ? 'bg-blue-600' : 'bg-white/[0.1]'
+                    alert.enabled ? 'bg-accent' : 'bg-white/[0.1]'
                   }`}
                 >
                   <div
@@ -200,7 +200,7 @@ export default function CostsTab() {
           <button
             onClick={addAlert}
             disabled={!newAlert.name || !newAlert.threshold}
-            className="inline-flex items-center gap-1.5 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg
+            className="inline-flex items-center gap-1.5 px-4 py-2 bg-accent hover:bg-accent-hover text-white text-sm font-medium rounded-lg
               transition-colors disabled:opacity-50 cursor-pointer"
           >
             <Plus className="w-4 h-4" />

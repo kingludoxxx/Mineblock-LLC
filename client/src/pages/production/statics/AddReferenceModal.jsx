@@ -98,7 +98,7 @@ function UploadTab({ files, setFiles }) {
         onClick={() => inputRef.current?.click()}
         className={`flex flex-col items-center justify-center gap-3 py-12 rounded-xl border-2 border-dashed cursor-pointer transition-colors ${
           dragOver
-            ? 'border-blue-500/50 bg-blue-500/[0.05]'
+            ? 'border-accent/50 bg-accent/[0.05]'
             : 'border-white/[0.12] hover:border-white/[0.2] bg-white/[0.02]'
         }`}
       >
@@ -235,7 +235,7 @@ function ProgressItem({ item }) {
         <span className="text-[11px] text-slate-500">Pending</span>
       )}
       {item.status === 'analyzing' && (
-        <Loader2 className="w-3.5 h-3.5 text-blue-400 animate-spin shrink-0" />
+        <Loader2 className="w-3.5 h-3.5 text-accent-text animate-spin shrink-0" />
       )}
       {item.status === 'done' && (
         <span className="inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">

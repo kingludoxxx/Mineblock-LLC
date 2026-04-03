@@ -119,9 +119,9 @@ const timeWindowLabels = {
 const actionColors = {
   pause_ad: { bg: 'bg-red-500/10', text: 'text-red-400', border: 'border-red-500/30' },
   resume_ad: { bg: 'bg-green-500/10', text: 'text-green-400', border: 'border-green-500/30' },
-  increase_budget_pct: { bg: 'bg-blue-500/10', text: 'text-blue-400', border: 'border-blue-500/30' },
+  increase_budget_pct: { bg: 'bg-accent-muted', text: 'text-accent-text', border: 'border-accent/30' },
   decrease_budget_pct: { bg: 'bg-orange-500/10', text: 'text-orange-400', border: 'border-orange-500/30' },
-  increase_budget_fixed: { bg: 'bg-blue-500/10', text: 'text-blue-400', border: 'border-blue-500/30' },
+  increase_budget_fixed: { bg: 'bg-accent-muted', text: 'text-accent-text', border: 'border-accent/30' },
   decrease_budget_fixed: { bg: 'bg-orange-500/10', text: 'text-orange-400', border: 'border-orange-500/30' },
   send_alert: { bg: 'bg-amber-500/10', text: 'text-amber-400', border: 'border-amber-500/30' },
   flag_promising: { bg: 'bg-emerald-500/10', text: 'text-emerald-400', border: 'border-emerald-500/30' },
@@ -129,7 +129,7 @@ const actionColors = {
 
 const ruleTypeBadge = {
   kill: { bg: 'bg-red-500/15', text: 'text-red-400', label: 'Kill' },
-  scale: { bg: 'bg-blue-500/15', text: 'text-blue-400', label: 'Scale' },
+  scale: { bg: 'bg-accent/15', text: 'text-accent-text', label: 'Scale' },
   alert: { bg: 'bg-amber-500/15', text: 'text-amber-400', label: 'Alert' },
   protect: { bg: 'bg-emerald-500/15', text: 'text-emerald-400', label: 'Protect' },
 };
@@ -145,9 +145,9 @@ const statusBadges = {
 const feedBorderColors = {
   pause_ad: 'border-l-red-500',
   resume_ad: 'border-l-green-500',
-  increase_budget_pct: 'border-l-blue-500',
+  increase_budget_pct: 'border-l-accent',
   decrease_budget_pct: 'border-l-orange-500',
-  increase_budget_fixed: 'border-l-blue-500',
+  increase_budget_fixed: 'border-l-accent',
   decrease_budget_fixed: 'border-l-orange-500',
   send_alert: 'border-l-amber-500',
   flag_promising: 'border-l-emerald-500',
@@ -208,7 +208,7 @@ function Toggle({ checked, onChange, disabled }) {
 
 function StatCard({ icon: Icon, label, value, accent = 'blue', loading }) {
   const accents = {
-    blue: 'text-blue-400 bg-blue-500/10',
+    blue: 'text-accent-text bg-accent-muted',
     green: 'text-green-400 bg-green-500/10',
     red: 'text-red-400 bg-red-500/10',
     amber: 'text-amber-400 bg-amber-500/10',
@@ -377,7 +377,7 @@ function ActivityEntry({ entry }) {
 function PromisingAdCard({ ad }) {
   const suggestionColors = {
     monitor: 'bg-cyan-500/10 text-cyan-400',
-    scale: 'bg-blue-500/10 text-blue-400',
+    scale: 'bg-accent-muted text-accent-text',
     increase_budget: 'bg-green-500/10 text-green-400',
   };
   const suggestionColor = suggestionColors[ad.suggested_action] || suggestionColors.monitor;
@@ -746,7 +746,7 @@ function RuleModal({ show, onClose, editingRule, onSave }) {
             </div>
             <button
               onClick={addCondition}
-              className="mt-2 text-xs text-blue-400 hover:text-blue-300 cursor-pointer flex items-center gap-1 transition-colors"
+              className="mt-2 text-xs text-accent-text hover:text-accent-text cursor-pointer flex items-center gap-1 transition-colors"
             >
               <Plus size={12} /> Add Condition
             </button>
@@ -884,7 +884,7 @@ function RuleModal({ show, onClose, editingRule, onSave }) {
           <button
             onClick={handleSave}
             disabled={saving || !form.name.trim()}
-            className="px-4 py-2 text-sm rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-medium transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2"
+            className="px-4 py-2 text-sm rounded-lg bg-accent hover:bg-accent-hover text-white font-medium transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2"
           >
             {saving && <RefreshCw size={13} className="animate-spin" />}
             {editingRule ? 'Update Rule' : 'Create Rule'}
@@ -1102,8 +1102,8 @@ export default function AdsControlCenter() {
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
           <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-blue-500/10 flex items-center justify-center">
-              <Zap size={16} className="text-blue-400" />
+            <div className="w-8 h-8 rounded-lg bg-accent-muted flex items-center justify-center">
+              <Zap size={16} className="text-accent-text" />
             </div>
             <h1 className="text-xl font-bold text-white">Ads Control Center</h1>
           </div>
@@ -1126,7 +1126,7 @@ export default function AdsControlCenter() {
           <button
             onClick={handleEvaluate}
             disabled={evaluating}
-            className="px-3.5 py-2 text-sm rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-medium transition-colors cursor-pointer disabled:opacity-50 flex items-center gap-2"
+            className="px-3.5 py-2 text-sm rounded-lg bg-accent hover:bg-accent-hover text-white font-medium transition-colors cursor-pointer disabled:opacity-50 flex items-center gap-2"
           >
             <RefreshCw size={14} className={evaluating ? 'animate-spin' : ''} />
             Evaluate Now
@@ -1225,7 +1225,7 @@ export default function AdsControlCenter() {
             <p className="text-xs text-white/15 mb-4">Create your first automation rule to get started</p>
             <button
               onClick={openCreate}
-              className="px-4 py-2 text-xs rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-medium transition-colors cursor-pointer inline-flex items-center gap-1.5"
+              className="px-4 py-2 text-xs rounded-lg bg-accent hover:bg-accent-hover text-white font-medium transition-colors cursor-pointer inline-flex items-center gap-1.5"
             >
               <Plus size={13} /> New Rule
             </button>
@@ -1277,7 +1277,7 @@ export default function AdsControlCenter() {
                 onClick={() => setActivityFilter(tab.key)}
                 className={`px-2.5 py-1 text-[11px] rounded-md transition-colors cursor-pointer whitespace-nowrap ${
                   activityFilter === tab.key
-                    ? 'bg-blue-600/20 text-blue-400 border border-blue-500/30'
+                    ? 'bg-accent/20 text-accent-text border border-accent/30'
                     : 'text-white/30 hover:text-white/50 border border-transparent hover:bg-white/[0.03]'
                 }`}
               >

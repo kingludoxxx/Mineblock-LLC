@@ -4,8 +4,8 @@ export default function StatCard({ icon: Icon, label, value, trend }) {
   return (
     <div className="bg-slate-800 rounded-xl p-6 border border-slate-700">
       <div className="flex items-center justify-between mb-4">
-        <div className="p-2 bg-blue-600/20 rounded-lg">
-          {Icon && <Icon className="w-5 h-5 text-blue-400" />}
+        <div className="p-2 bg-accent-muted rounded-lg">
+          {Icon && <Icon className="w-5 h-5 text-accent-text" />}
         </div>
         {trend !== undefined && (
           <div

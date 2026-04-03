@@ -79,7 +79,7 @@ export default function Offers() {
               </ul>
             </div>
             <div className="mb-3 flex items-start gap-2">
-              <Shield className="w-3.5 h-3.5 text-blue-400 mt-0.5 shrink-0" />
+              <Shield className="w-3.5 h-3.5 text-accent-text mt-0.5 shrink-0" />
               <p className="text-xs text-slate-400">{item.guarantee}</p>
             </div>
             <div className="flex items-start gap-2">

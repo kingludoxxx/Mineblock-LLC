@@ -67,7 +67,7 @@ const STATUS_BADGE = {
   review: { bg: 'bg-amber-500/80', text: 'text-white', label: 'To Review' },
   approved: { bg: 'bg-emerald-500/80', text: 'text-white', label: 'Approved' },
   ready: { bg: 'bg-purple-500/80', text: 'text-white', label: 'Ready' },
-  launched: { bg: 'bg-blue-500/80', text: 'text-white', label: 'Launched' },
+  launched: { bg: 'bg-accent/80', text: 'text-white', label: 'Launched' },
 };
 
 // ---------------------------------------------------------------------------
@@ -101,8 +101,8 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, variantSt
         <div className="absolute inset-0 flex flex-col items-center justify-center text-gray-700 gap-1.5">
           {creative.status === 'generating' ? (
             <>
-              <Loader2 className="w-5 h-5 animate-spin text-blue-400" />
-              <span className="text-[9px] text-blue-400/70">Generating…</span>
+              <Loader2 className="w-5 h-5 animate-spin text-accent-text" />
+              <span className="text-[9px] text-accent-text/70">Generating…</span>
             </>
           ) : (
             <Eye className="w-5 h-5" />
@@ -128,7 +128,7 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, variantSt
         </span>
         {/* Variant indicator */}
         {creative.parent_creative_id && (
-          <span className="absolute top-1.5 left-1.5 text-[8px] font-medium bg-blue-500/20 text-blue-300 px-1.5 py-0.5 rounded-full">
+          <span className="absolute top-1.5 left-1.5 text-[8px] font-medium bg-accent/20 text-accent-text px-1.5 py-0.5 rounded-full">
             Variant
           </span>
         )}
@@ -148,7 +148,7 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, variantSt
           {/* 9:16 variant status — compact inline */}
           {!creative.parent_creative_id && variantStatus && (
             <span className={`flex items-center gap-1 text-[9px] ${
-              variantStatus === 'generating' ? 'text-blue-400'
+              variantStatus === 'generating' ? 'text-accent-text'
                 : variantStatus === 'done' ? 'text-emerald-400'
                 : variantStatus === 'failed' ? 'text-red-400'
                 : 'text-gray-500'
@@ -226,7 +226,7 @@ function PipelineColumn({ column, items, onStatusChange, onCardClick, allCreativ
       </div>
 
       {/* Scrollable card list */}
-      <div className={`flex-1 overflow-y-auto pr-1 space-y-2 pb-4 custom-scrollbar transition-colors rounded-lg ${dragOver ? 'bg-white/[0.03] ring-1 ring-blue-500/30' : ''}`}>
+      <div className={`flex-1 overflow-y-auto pr-1 space-y-2 pb-4 custom-scrollbar transition-colors rounded-lg ${dragOver ? 'bg-white/[0.03] ring-1 ring-accent/30' : ''}`}>
         {items.length === 0 && column.placeholder ? (
           <div className="flex items-center justify-center h-32 border border-dashed border-gray-700/50 rounded-lg">
             <p className="text-xs text-gray-500 italic">{column.placeholder}</p>

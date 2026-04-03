@@ -117,7 +117,7 @@ export default function SecurityTab() {
         <button
           onClick={handleUpdatePassword}
           disabled={updating || !passwords.current || !passwords.newPass || !passwords.confirm}
-          className="inline-flex items-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg
+          className="inline-flex items-center gap-2 px-5 py-2.5 bg-accent hover:bg-accent-hover text-white text-sm font-medium rounded-lg
             transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
         >
           {updating ? (
@@ -140,7 +140,7 @@ export default function SecurityTab() {
           <button
             onClick={() => setTwoFactor(!twoFactor)}
             className={`relative w-11 h-6 rounded-full transition-colors cursor-pointer ${
-              twoFactor ? 'bg-blue-600' : 'bg-white/[0.1]'
+              twoFactor ? 'bg-accent' : 'bg-white/[0.1]'
             }`}
           >
             <div

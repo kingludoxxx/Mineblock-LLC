@@ -126,7 +126,7 @@ export default function Images() {
               </div>
             </div>
             <button onClick={handleGenerate} disabled={!canGenerate || generating}
-              className={`w-full py-3 rounded-lg font-semibold text-sm flex items-center justify-center gap-2 transition-all cursor-pointer ${canGenerate && !generating ? 'bg-gradient-to-r from-cyan-600 to-blue-600 text-white hover:from-cyan-500 hover:to-blue-500 shadow-lg shadow-cyan-500/25' : 'bg-slate-800 text-slate-500 cursor-not-allowed'}`}>
+              className={`w-full py-3 rounded-lg font-semibold text-sm flex items-center justify-center gap-2 transition-all cursor-pointer ${canGenerate && !generating ? 'bg-gradient-to-r bg-accent text-bg-main hover:bg-accent-hover shadow-lg shadow-accent/25' : 'bg-slate-800 text-slate-500 cursor-not-allowed'}`}>
               {generating ? <><RefreshCw className="w-4 h-4 animate-spin" /> Generating...</> : <><Sparkles className="w-4 h-4" /> Generate Images</>}
             </button>
           </div>

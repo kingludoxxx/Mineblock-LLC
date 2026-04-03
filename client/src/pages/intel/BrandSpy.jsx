@@ -3,7 +3,7 @@ import { Search, Radar, Globe, BarChart3, ExternalLink, UserPlus, UserCheck } fr
 import { brands } from '../../utils/mockData';
 
 const platformColors = {
-  facebook: 'bg-blue-600',
+  facebook: 'bg-accent',
   instagram: 'bg-gradient-to-br from-purple-600 to-pink-500',
   google: 'bg-emerald-600',
   youtube: 'bg-red-600',

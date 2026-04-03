@@ -11,7 +11,7 @@ import {
 
 const queueStats = [
   { label: 'Pending', value: 23, color: 'text-yellow-400' },
-  { label: 'Processing', value: 8, color: 'text-blue-400' },
+  { label: 'Processing', value: 8, color: 'text-accent-text' },
   { label: 'Completed', value: 1482, color: 'text-emerald-400' },
   { label: 'Failed', value: 12, color: 'text-red-400' },
 ];
@@ -57,7 +57,7 @@ export default function OpsDashboard() {
         {/* Queue Stats */}
         <div className="bg-[#111] border border-white/[0.06] rounded-xl p-5">
           <div className="flex items-center gap-2 mb-5">
-            <Layers className="w-5 h-5 text-blue-400" />
+            <Layers className="w-5 h-5 text-accent-text" />
             <h2 className="text-lg font-semibold text-white">Queue Stats</h2>
           </div>
           <div className="grid grid-cols-2 gap-4">

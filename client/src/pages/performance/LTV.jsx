@@ -29,7 +29,7 @@ export default function LTV() {
 
   const metricCards = [
     { label: 'Average LTV', value: fmt(m.avg), icon: DollarSign, color: 'text-emerald-400' },
-    { label: '30-Day LTV', value: fmt(m.d30), icon: Calendar, color: 'text-blue-400' },
+    { label: '30-Day LTV', value: fmt(m.d30), icon: Calendar, color: 'text-accent-text' },
     { label: '60-Day LTV', value: fmt(m.d60), icon: TrendingUp, color: 'text-purple-400' },
     { label: '90-Day LTV', value: fmt(m.d90), icon: Users, color: 'text-yellow-400' },
   ];

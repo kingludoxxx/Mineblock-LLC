@@ -183,7 +183,7 @@ function ReferenceLightbox({ template, onClose, onSelect }) {
               onSelect(template);
               onClose();
             }}
-            className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-medium bg-blue-600 text-white hover:bg-blue-500 transition-colors cursor-pointer"
+            className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-medium bg-accent text-white hover:bg-accent-hover transition-colors cursor-pointer"
           >
             <Check className="w-3.5 h-3.5" />
             Use as Reference
@@ -262,7 +262,7 @@ export function LibraryView({
               onClick={() => setSelectMode((p) => !p)}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
                 selectMode
-                  ? 'bg-blue-600 text-white'
+                  ? 'bg-accent text-white'
                   : 'bg-white/[0.05] text-slate-400 hover:text-white hover:bg-white/[0.08]'
               }`}
             >
@@ -277,7 +277,7 @@ export function LibraryView({
 
             <button
               onClick={onAddReference}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-blue-600 text-white hover:bg-blue-500 transition-colors cursor-pointer"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-accent text-white hover:bg-accent-hover transition-colors cursor-pointer"
             >
               <Plus className="w-3.5 h-3.5" />
               Add Reference

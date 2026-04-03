@@ -46,7 +46,9 @@ export default function PipelineSettingsModal({ open, onClose }) {
       if (data.promptTypes?.length && !selectedPrompt) {
         selectPrompt(data.promptTypes[0].key, data.custom, data.defaults);
       }
-    } catch {} finally {
+    } catch (err) {
+      console.error('Failed to load prompts:', err);
+    } finally {
       setLoading(false);
     }
   };
@@ -73,7 +75,9 @@ export default function PipelineSettingsModal({ open, onClose }) {
       setHasChanges(false);
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
-    } catch {} finally {
+    } catch (err) {
+      console.error('Failed to save prompts:', err);
+    } finally {
       setSaving(false);
     }
   };
@@ -98,7 +102,9 @@ export default function PipelineSettingsModal({ open, onClose }) {
       setHasChanges(false);
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
-    } catch {} finally {
+    } catch (err) {
+      console.error('Failed to reset prompts:', err);
+    } finally {
       setSaving(false);
     }
   };

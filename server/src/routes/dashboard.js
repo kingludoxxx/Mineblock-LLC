@@ -9,9 +9,9 @@ router.get('/stats', async (req, res, next) => {
   try {
     const [usersResult, departmentsResult, sessionsResult, auditResult] = await Promise.all([
       query('SELECT COUNT(*) AS count FROM users'),
-      query("SELECT COUNT(*) AS count FROM departments WHERE active = true"),
+      query("SELECT COUNT(*) AS count FROM departments WHERE is_active = true"),
       query("SELECT COUNT(*) AS count FROM sessions WHERE expires_at > NOW()"),
-      query('SELECT id, action, actor, created_at FROM audit_events ORDER BY created_at DESC LIMIT 10'),
+      query('SELECT id, action, user_id, created_at FROM audit_logs ORDER BY created_at DESC LIMIT 10'),
     ]);
 
     res.json({

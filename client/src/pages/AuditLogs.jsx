@@ -72,7 +72,7 @@ export default function AuditLogs() {
               setPage(1);
             }}
             className="bg-slate-900 border border-slate-600 rounded-lg px-3 py-1.5 text-sm text-white
-              focus:outline-none focus:border-blue-500 cursor-pointer"
+              focus:outline-none focus:border-accent/50 cursor-pointer"
           >
             <option value="">All Actions</option>
             <option value="CREATE">Create</option>

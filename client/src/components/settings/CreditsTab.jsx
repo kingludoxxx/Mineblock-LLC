@@ -44,7 +44,7 @@ export default function CreditsTab() {
                 cy="64"
                 r={radius}
                 fill="none"
-                stroke="#3b82f6"
+                stroke="var(--color-accent)"
                 strokeWidth="8"
                 strokeLinecap="round"
                 strokeDasharray={circumference}
@@ -121,12 +121,12 @@ export default function CreditsTab() {
           {topUpTiers.map((tier) => (
             <div
               key={tier.credits}
-              className={`relative bg-[#111] rounded-xl border p-5 transition-colors cursor-pointer hover:border-blue-500/50 ${
-                tier.popular ? 'border-blue-500/40' : 'border-white/[0.06]'
+              className={`relative bg-[#111] rounded-xl border p-5 transition-colors cursor-pointer hover:border-accent/40 ${
+                tier.popular ? 'border-accent/20' : 'border-white/[0.06]'
               }`}
             >
               {tier.popular && (
-                <span className="absolute -top-2.5 left-1/2 -translate-x-1/2 px-2.5 py-0.5 text-[10px] font-semibold bg-blue-600 text-white rounded-full">
+                <span className="absolute -top-2.5 left-1/2 -translate-x-1/2 px-2.5 py-0.5 text-[10px] font-semibold bg-accent text-white rounded-full">
                   Most Popular
                 </span>
               )}
@@ -138,7 +138,7 @@ export default function CreditsTab() {
               <p className="text-xs text-white/40 mb-4">{tier.perCredit} per credit</p>
               <button className={`w-full py-2 text-sm font-medium rounded-lg transition-colors cursor-pointer ${
                 tier.popular
-                  ? 'bg-blue-600 hover:bg-blue-700 text-white'
+                  ? 'bg-accent hover:bg-accent-hover text-white'
                   : 'bg-white/[0.04] hover:bg-white/[0.08] text-white/60 border border-white/[0.08]'
               }`}>
                 Purchase

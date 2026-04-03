@@ -141,9 +141,9 @@ const LEADERBOARD_CONFIG = [
     metricKey: 'cpa',
     metricLabel: 'CPA',
     format: fmtMoney,
-    accent: 'text-blue-400',
-    accentBg: 'bg-blue-500/10',
-    accentBorder: 'border-blue-500/20',
+    accent: 'text-accent-text',
+    accentBg: 'bg-accent-muted',
+    accentBorder: 'border-accent/20',
     icon: Zap,
   },
 ];
@@ -758,9 +758,9 @@ export default function CreativeAnalysis() {
       const isVideo = (val || '').toLowerCase() === 'video';
       return (
         <div className="flex items-center gap-2.5">
-          <div className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${isVideo ? 'bg-blue-500/15' : 'bg-cyan-500/15'}`}>
+          <div className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${isVideo ? 'bg-accent/15' : 'bg-cyan-500/15'}`}>
             {isVideo ? (
-              <Video className="w-4 h-4 text-blue-400" />
+              <Video className="w-4 h-4 text-accent-text" />
             ) : (
               <Image className="w-4 h-4 text-cyan-400" />
             )}
@@ -1100,7 +1100,7 @@ export default function CreativeAnalysis() {
                 >
                   {/* Visual header */}
                   <div
-                    className={`h-64 flex items-center justify-center relative cursor-pointer group ${creative.thumbnail_url ? 'bg-black' : isVideo ? 'bg-gradient-to-br from-blue-900/40 to-purple-900/30' : 'bg-gradient-to-br from-cyan-900/30 to-emerald-900/20'}`}
+                    className={`h-64 flex items-center justify-center relative cursor-pointer group ${creative.thumbnail_url ? 'bg-black' : isVideo ? 'bg-gradient-to-br from-amber-900/40 to-purple-900/30' : 'bg-gradient-to-br from-cyan-900/30 to-emerald-900/20'}`}
                     onClick={() => openDetailPanel(creative)}
                   >
                     {creative.thumbnail_url ? (
@@ -1115,7 +1115,7 @@ export default function CreativeAnalysis() {
                         )}
                       </>
                     ) : isVideo ? (
-                      <Video className="w-10 h-10 text-blue-400/40" />
+                      <Video className="w-10 h-10 text-accent-text/40" />
                     ) : (
                       <Image className="w-10 h-10 text-cyan-400/40" />
                     )}
@@ -1123,7 +1123,7 @@ export default function CreativeAnalysis() {
                       style={{ background: '#10b981', color: '#000' }}>
                       NEW
                     </div>
-                    <span className={`absolute bottom-2 left-2 text-[10px] font-bold px-1.5 py-0.5 rounded ${isVideo ? 'bg-blue-500 text-white' : 'bg-cyan-500 text-white'}`}>
+                    <span className={`absolute bottom-2 left-2 text-[10px] font-bold px-1.5 py-0.5 rounded ${isVideo ? 'bg-accent text-white' : 'bg-cyan-500 text-white'}`}>
                       {creative.type || '?'}
                     </span>
                     {creative.is_winner && (
@@ -1191,7 +1191,7 @@ export default function CreativeAnalysis() {
                   <button key={key} onClick={() => setCreativeSort(key)}
                     className={`px-3 py-1 rounded-lg text-xs font-medium transition-all cursor-pointer ${
                       creativeSort === key
-                        ? 'bg-blue-600/20 text-blue-400 border border-blue-500/30'
+                        ? 'bg-accent-muted text-accent-text border border-accent/30'
                         : 'text-white/40 hover:text-white/60 border border-transparent'
                     }`}>
                     {labels[key]}
@@ -1212,7 +1212,7 @@ export default function CreativeAnalysis() {
                 >
                   {/* Visual header */}
                   <div
-                    className={`h-64 flex items-center justify-center relative cursor-pointer group ${creative.thumbnail_url ? 'bg-black' : isVideo ? 'bg-gradient-to-br from-blue-900/40 to-purple-900/30' : 'bg-gradient-to-br from-cyan-900/30 to-emerald-900/20'}`}
+                    className={`h-64 flex items-center justify-center relative cursor-pointer group ${creative.thumbnail_url ? 'bg-black' : isVideo ? 'bg-gradient-to-br from-amber-900/40 to-purple-900/30' : 'bg-gradient-to-br from-cyan-900/30 to-emerald-900/20'}`}
                     onClick={() => openDetailPanel(creative)}
                   >
                     {creative.thumbnail_url ? (
@@ -1227,7 +1227,7 @@ export default function CreativeAnalysis() {
                         )}
                       </>
                     ) : isVideo ? (
-                      <Video className="w-10 h-10 text-blue-400/40" />
+                      <Video className="w-10 h-10 text-accent-text/40" />
                     ) : (
                       <Image className="w-10 h-10 text-cyan-400/40" />
                     )}
@@ -1237,7 +1237,7 @@ export default function CreativeAnalysis() {
                         NEW
                       </div>
                     )}
-                    <span className={`absolute bottom-2 left-2 text-[10px] font-bold px-1.5 py-0.5 rounded ${isVideo ? 'bg-blue-500 text-white' : 'bg-cyan-500 text-white'}`}>
+                    <span className={`absolute bottom-2 left-2 text-[10px] font-bold px-1.5 py-0.5 rounded ${isVideo ? 'bg-accent text-white' : 'bg-cyan-500 text-white'}`}>
                       {creative.type || '?'}
                     </span>
                     {creative.is_winner && (
@@ -1351,7 +1351,7 @@ export default function CreativeAnalysis() {
               {/* Format Breakdown */}
               <div className={cardStyle}>
                 <div className="flex items-center gap-2 mb-4">
-                  <BarChart3 className="w-4 h-4 text-blue-400" />
+                  <BarChart3 className="w-4 h-4 text-accent-text" />
                   <h3 className="text-white font-semibold text-sm">Performance by Format</h3>
                 </div>
                 {formatStats.length > 0 ? (
@@ -1366,7 +1366,7 @@ export default function CreativeAnalysis() {
                       />
                       <Bar dataKey="roas" radius={[0, 4, 4, 0]}>
                         {formatStats.map((entry, i) => (
-                          <Cell key={i} fill={entry.roas >= 1.5 ? '#3b82f6' : entry.roas >= 1.0 ? '#eab308' : '#ef4444'} fillOpacity={0.7} />
+                          <Cell key={i} fill={entry.roas >= 1.5 ? '#E8D5A3' : entry.roas >= 1.0 ? '#eab308' : '#ef4444'} fillOpacity={0.7} />
                         ))}
                       </Bar>
                     </RBarChart>
@@ -1381,7 +1381,7 @@ export default function CreativeAnalysis() {
                         <span className="text-gray-400">{f.format} <span className="text-gray-600">({f.count})</span></span>
                         <div className="flex gap-3">
                           <span className="text-gray-500">{fmtMoney(f.spend)}</span>
-                          <span className={f.roas >= 1.5 ? 'text-blue-400' : f.roas >= 1.0 ? 'text-yellow-400' : 'text-red-400'}>{fmtRoas(f.roas)}</span>
+                          <span className={f.roas >= 1.5 ? 'text-accent-text' : f.roas >= 1.0 ? 'text-yellow-400' : 'text-red-400'}>{fmtRoas(f.roas)}</span>
                         </div>
                       </div>
                     ))}
@@ -1407,7 +1407,7 @@ export default function CreativeAnalysis() {
                       <div className="flex items-center gap-1.5 mb-2">
                         <span className={`text-[10px] font-bold uppercase px-1.5 py-0.5 rounded ${
                           (star.type || '').toLowerCase() === 'video'
-                            ? 'bg-blue-500/20 text-blue-400'
+                            ? 'bg-accent/20 text-accent-text'
                             : 'bg-cyan-500/20 text-cyan-400'
                         }`}>
                           {star.type || '?'}
@@ -1580,8 +1580,8 @@ export default function CreativeAnalysis() {
                             onClick={(e) => { e.stopPropagation(); openDetailPanel(row); }}
                             className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors cursor-pointer ${
                               detailPanel && (detailPanel._creativeId || detailPanel.creative_id) === cid
-                                ? 'bg-blue-500 text-white'
-                                : 'bg-blue-500/10 text-blue-400 hover:bg-blue-500/20'
+                                ? 'bg-accent text-white'
+                                : 'bg-accent-muted text-accent-text hover:bg-accent/20'
                             }`}
                             title="View creative details"
                           >
@@ -1775,12 +1775,12 @@ export default function CreativeAnalysis() {
               <div className="flex items-start gap-4 p-6 pb-4">
                 {/* Thumbnail */}
                 <div className={`w-20 h-20 rounded-xl overflow-hidden shrink-0 flex items-center justify-center ${
-                  creative.thumbnail_url ? 'bg-black' : isVideo ? 'bg-gradient-to-br from-blue-900/40 to-purple-900/30' : 'bg-gradient-to-br from-cyan-900/30 to-emerald-900/20'
+                  creative.thumbnail_url ? 'bg-black' : isVideo ? 'bg-gradient-to-br from-amber-900/40 to-purple-900/30' : 'bg-gradient-to-br from-cyan-900/30 to-emerald-900/20'
                 }`}>
                   {creative.thumbnail_url ? (
                     <img src={creative.thumbnail_url} alt="" className="w-full h-full object-cover" onError={(e) => { e.target.style.display = 'none'; }} />
                   ) : isVideo ? (
-                    <Video className="w-8 h-8 text-blue-400/40" />
+                    <Video className="w-8 h-8 text-accent-text/40" />
                   ) : (
                     <Image className="w-8 h-8 text-cyan-400/40" />
                   )}
@@ -1790,7 +1790,7 @@ export default function CreativeAnalysis() {
                   <p className="text-gray-500 text-xs mt-0.5">{cid}</p>
                   <div className="flex items-center gap-2 mt-2">
                     <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
-                      isVideo ? 'bg-blue-500/20 text-blue-400' : 'bg-cyan-500/20 text-cyan-400'
+                      isVideo ? 'bg-accent/20 text-accent-text' : 'bg-cyan-500/20 text-cyan-400'
                     }`}>{creative.type || 'N/A'}</span>
                     {creative.is_winner && (
                       <span className="px-2 py-0.5 rounded bg-yellow-500/20 text-yellow-400 text-[10px] font-bold uppercase">Winner</span>
@@ -1876,15 +1876,15 @@ export default function CreativeAnalysis() {
 
                   {detailLoading ? (
                     <div className="flex items-center justify-center h-48">
-                      <RefreshCw className="w-5 h-5 text-blue-400 animate-spin" />
+                      <RefreshCw className="w-5 h-5 text-accent-text animate-spin" />
                     </div>
                   ) : chartPoints.length > 0 ? (
                     <ResponsiveContainer width="100%" height={220}>
                       <ComposedChart data={chartPoints} margin={{ top: 5, right: 10, bottom: 5, left: 0 }}>
                         <defs>
                           <linearGradient id="detailSpendGrad" x1="0" y1="0" x2="0" y2="1">
-                            <stop offset="0%" stopColor="#3b82f6" stopOpacity={0.3} />
-                            <stop offset="100%" stopColor="#3b82f6" stopOpacity={0.02} />
+                            <stop offset="0%" stopColor="#E8D5A3" stopOpacity={0.3} />
+                            <stop offset="100%" stopColor="#E8D5A3" stopOpacity={0.02} />
                           </linearGradient>
                         </defs>
                         <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
@@ -1899,7 +1899,7 @@ export default function CreativeAnalysis() {
                           }}
                         />
                         <Legend wrapperStyle={{ fontSize: 11, color: '#9ca3af' }} />
-                        <Area type="monotone" dataKey="spend" name="Spend" yAxisId="left" fill="url(#detailSpendGrad)" stroke="#3b82f6" strokeWidth={2} />
+                        <Area type="monotone" dataKey="spend" name="Spend" yAxisId="left" fill="url(#detailSpendGrad)" stroke="#E8D5A3" strokeWidth={2} />
                         <Line type="monotone" dataKey="roas" name="ROAS" yAxisId="right" stroke="#10b981" strokeWidth={2} dot={false} />
                       </ComposedChart>
                     </ResponsiveContainer>
@@ -1922,7 +1922,7 @@ export default function CreativeAnalysis() {
                         <span className="text-white font-medium">{fmtInt(clicks)}</span>
                       </div>
                       <div className="w-full bg-white/[0.06] rounded-full h-2">
-                        <div className="bg-blue-500 h-2 rounded-full" style={{ width: '100%' }} />
+                        <div className="bg-accent h-2 rounded-full" style={{ width: '100%' }} />
                       </div>
                     </div>
                     <ChevronRight className="w-4 h-4 text-gray-600 shrink-0" />
