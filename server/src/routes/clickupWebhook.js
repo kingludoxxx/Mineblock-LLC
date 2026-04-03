@@ -17,7 +17,7 @@ const FRAMEIO_API = 'https://api.frame.io/v2';
 // List IDs
 const MEDIA_BUYING_LIST = '901518769621';
 const VIDEO_ADS_LIST = '901518716584';
-const SYNC_LISTS = [MEDIA_BUYING_LIST, VIDEO_ADS_LIST];
+const SYNC_LISTS = [VIDEO_ADS_LIST];
 const NAMING_LISTS = [VIDEO_ADS_LIST];
 
 // Statuses to sync
@@ -500,9 +500,8 @@ async function handleStatusSync(taskId, historyItems) {
 
   if (!SYNC_LISTS.includes(taskListId)) return;
 
-  // When a VA task hits "ready to launch", auto-create Media Buying + YT counterparts
+  // When a VA task hits "ready to launch", auto-create YT counterpart
   if (newStatus === 'ready to launch') {
-    await ensureMediaBuyingTask(task, taskListId);
     await ensureYoutubeTask(task, taskListId);
   }
 
@@ -557,68 +556,7 @@ async function handleStatusSync(taskId, historyItems) {
   }
 }
 
-// ── Periodic status reconciliation ──────────────────────────────────────
-// Webhooks are unreliable on Render free tier (server sleeps, misses events).
-// Every 30 minutes, scan Media Buying "launched" tasks and ensure linked
-// Video Ads tasks are also "launched".
-
-async function reconcileStatuses() {
-  try {
-    let page = 0, hasMore = true, synced = 0;
-
-    while (hasMore) {
-      const data = await clickupFetch(
-        `/list/${MEDIA_BUYING_LIST}/task?page=${page}&limit=100&statuses[]=launched`
-      );
-      const tasks = data.tasks || [];
-
-      for (const task of tasks) {
-        const linked = task.linked_tasks || [];
-        for (const link of linked) {
-          try {
-            const lt = await getTask(link.task_id);
-            const ltList = lt.list?.id;
-            if (!SYNC_LISTS.includes(ltList)) continue;
-            const ltStatus = lt.status?.status?.toLowerCase();
-            if (ltStatus === 'launched') continue;
-
-            await updateTaskStatus(link.task_id, 'launched');
-            synced++;
-            logger.info(`[StatusReconcile] Synced "${lt.name}" (${ltList}) → launched`);
-
-            // Also sync to DB
-            const dbResult = await pgQuery(
-              `UPDATE spy_creatives SET status = 'launched', updated_at = NOW()
-               WHERE generation_task_id = $1 AND status != 'launched'
-               RETURNING id`,
-              [link.task_id]
-            ).catch(() => []);
-            if (dbResult.length > 0) {
-              logger.info(`[StatusReconcile] Updated ${dbResult.length} spy_creatives for task ${link.task_id}`);
-            }
-          } catch (err) {
-            // Skip individual task errors, continue reconciling
-          }
-        }
-      }
-
-      hasMore = tasks.length === 100;
-      page++;
-    }
-
-    if (synced > 0) {
-      logger.info(`[StatusReconcile] Reconciled ${synced} task(s)`);
-    }
-  } catch (err) {
-    logger.error(`[StatusReconcile] Error: ${err.message}`);
-  }
-}
-
-// Run reconciliation every 30 minutes (backup for missed webhooks)
-setTimeout(() => {
-  reconcileStatuses(); // Run once on startup (after 60s delay)
-  setInterval(() => reconcileStatuses(), 30 * 60 * 1000);
-}, 60_000);
+// Media Buying reconciliation removed — Video Ads is now the single source of truth
 
 // POST /api/v1/clickup-webhook — receives ClickUp webhook events
 router.post('/', async (req, res) => {
