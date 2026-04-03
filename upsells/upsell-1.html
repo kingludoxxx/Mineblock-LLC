@@ -1,0 +1,612 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MineBlock — Customize Your Order</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@700;800&family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Manrope', sans-serif;
+      background: #ffffff;
+      color: #0a0a0a;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .page-wrapper {
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 40px 20px 60px;
+    }
+
+    /* ── Progress Stepper ── */
+    .stepper {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0;
+      margin-bottom: 32px;
+    }
+
+    .step {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      white-space: nowrap;
+    }
+
+    .step-circle {
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: 'Manrope', sans-serif;
+      font-weight: 700;
+      font-size: 14px;
+      flex-shrink: 0;
+    }
+
+    .step-label {
+      font-family: 'Manrope', sans-serif;
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    .step--completed .step-circle {
+      background: #287af8;
+      color: #fff;
+    }
+    .step--completed .step-label {
+      color: #287af8;
+      font-weight: 700;
+    }
+
+    .step--active .step-circle {
+      background: linear-gradient(135deg, #287af8, #0f26a6);
+      color: #fff;
+    }
+    .step--active .step-label {
+      color: #0a0a0a;
+      font-weight: 700;
+    }
+
+    .step--inactive .step-circle {
+      background: #e6e8ed;
+      color: #8a8f9c;
+    }
+    .step--inactive .step-label {
+      color: #8a8f9c;
+    }
+
+    .step-line {
+      width: 48px;
+      height: 2px;
+      background: #e6e8ed;
+      margin: 0 12px;
+      flex-shrink: 0;
+    }
+
+    .step-line--completed {
+      background: #287af8;
+    }
+
+    /* ── Warning Banner ── */
+    .warning-banner {
+      background: #fceeed;
+      border-radius: 8px;
+      padding: 14px 20px;
+      text-align: center;
+      margin-bottom: 28px;
+      color: #c0392b;
+      font-size: 14px;
+      font-weight: 500;
+      line-height: 1.5;
+    }
+    .warning-banner strong {
+      font-weight: 700;
+    }
+
+    /* ── Grey Pill Badge ── */
+    .option-badge {
+      display: flex;
+      justify-content: center;
+      margin-bottom: 24px;
+    }
+    .option-badge span {
+      background: #e6e8ed;
+      color: #3a3f4b;
+      font-size: 14px;
+      font-weight: 600;
+      padding: 8px 20px;
+      border-radius: 100px;
+    }
+
+    /* ── Main Heading ── */
+    .main-heading {
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      font-weight: 800;
+      font-size: 38px;
+      line-height: 1.2;
+      text-align: center;
+      color: #0a0a0a;
+      margin-bottom: 32px;
+    }
+    .main-heading .underline {
+      text-decoration: underline;
+      text-decoration-thickness: 2px;
+      text-underline-offset: 4px;
+    }
+
+    /* ── Video Placeholder ── */
+    .video-placeholder {
+      width: 100%;
+      max-width: 760px;
+      aspect-ratio: 760 / 427;
+      background: #e6e8ed;
+      border-radius: 12px;
+      margin: 0 auto 40px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      position: relative;
+    }
+    .play-btn {
+      width: 72px;
+      height: 72px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, #287af8, #0f26a6);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 4px 20px rgba(40, 122, 248, 0.35);
+    }
+    .play-btn::after {
+      content: '';
+      display: block;
+      width: 0;
+      height: 0;
+      border-style: solid;
+      border-width: 12px 0 12px 22px;
+      border-color: transparent transparent transparent #ffffff;
+      margin-left: 4px;
+    }
+
+    /* ── Section Heading ── */
+    .section-heading {
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      font-weight: 800;
+      font-size: 36px;
+      text-align: center;
+      margin-bottom: 8px;
+      color: #0a0a0a;
+    }
+    .section-heading .gradient-text {
+      background: linear-gradient(135deg, #287af8, #0f26a6);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    /* ── Subtitle ── */
+    .section-subtitle {
+      text-align: center;
+      font-size: 16px;
+      color: #3a3f4b;
+      margin-bottom: 32px;
+      line-height: 1.5;
+    }
+
+    /* ── Pricing Cards ── */
+    .cards-row {
+      display: flex;
+      gap: 20px;
+      justify-content: center;
+      margin-bottom: 32px;
+    }
+
+    .card {
+      width: 320px;
+      background: #f8f8fa;
+      border: 1px solid #e6e8ed;
+      border-radius: 16px;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+      position: relative;
+      overflow: visible;
+    }
+
+    .card--featured {
+      border: 1.875px solid #287af8;
+      background: linear-gradient(180deg, rgba(40, 122, 248, 0.08) 0%, #f8f8fa 40%);
+    }
+
+    .card-popular-badge {
+      position: absolute;
+      top: -14px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: linear-gradient(135deg, #287af8, #0f26a6);
+      color: #fff;
+      font-family: 'Manrope', sans-serif;
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      padding: 6px 18px;
+      border-radius: 100px;
+      white-space: nowrap;
+    }
+
+    .card-image {
+      width: 100%;
+      height: 180px;
+      background: #e0e2e8;
+      border-radius: 10px;
+      margin-bottom: 16px;
+    }
+
+    .card--featured .card-image {
+      margin-top: 8px;
+    }
+
+    .card-title {
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      font-weight: 700;
+      font-size: 22px;
+      color: #0a0a0a;
+      margin-bottom: 4px;
+    }
+
+    .card-subtitle {
+      font-size: 14px;
+      color: #3a3f4b;
+      margin-bottom: 16px;
+    }
+
+    .checklist {
+      list-style: none;
+      width: 100%;
+      margin-bottom: 20px;
+    }
+    .checklist li {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 14px;
+      color: #3a3f4b;
+      margin-bottom: 8px;
+    }
+    .checklist li:last-child { margin-bottom: 0; }
+
+    .check-icon {
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      background: rgba(39, 174, 96, 0.15);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      color: #27ae60;
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .card-price {
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      font-weight: 800;
+      font-size: 36px;
+      color: #0a0a0a;
+      margin-bottom: 2px;
+    }
+    .card-price .each {
+      font-size: 18px;
+      font-weight: 700;
+    }
+
+    .card-total {
+      font-size: 14px;
+      color: #3a3f4b;
+      margin-bottom: 10px;
+    }
+
+    .save-badge {
+      display: inline-block;
+      background: rgba(40, 122, 248, 0.15);
+      color: #287af8;
+      font-size: 13px;
+      font-weight: 700;
+      padding: 4px 14px;
+      border-radius: 100px;
+      margin-bottom: 16px;
+    }
+
+    .card-cta {
+      display: block;
+      width: 100%;
+      padding: 14px;
+      background: linear-gradient(135deg, #287af8, #0f26a6);
+      color: #fff;
+      font-family: 'Manrope', sans-serif;
+      font-size: 14px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      border: none;
+      border-radius: 10px;
+      cursor: pointer;
+      margin-bottom: 12px;
+      transition: opacity 0.2s;
+    }
+    .card-cta:hover { opacity: 0.9; }
+
+    .card-guarantee {
+      font-size: 12px;
+      color: #27ae60;
+      font-weight: 600;
+    }
+
+    /* ── Decline Button ── */
+    .decline-btn {
+      display: block;
+      margin: 0 auto 48px;
+      padding: 14px 32px;
+      background: #d9534f;
+      color: #fff;
+      font-family: 'Manrope', sans-serif;
+      font-size: 15px;
+      font-weight: 600;
+      border: none;
+      border-radius: 100px;
+      cursor: pointer;
+      transition: opacity 0.2s;
+    }
+    .decline-btn:hover { opacity: 0.9; }
+
+    /* ── Trust Badges ── */
+    .trust-badges {
+      display: flex;
+      justify-content: center;
+      gap: 32px;
+      margin-bottom: 48px;
+      flex-wrap: wrap;
+    }
+    .trust-badge {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 14px;
+      font-weight: 600;
+      color: #3a3f4b;
+    }
+    .trust-badge-icon {
+      width: 40px;
+      height: 40px;
+      border-radius: 10px;
+      background: linear-gradient(135deg, rgba(40, 122, 248, 0.12), rgba(15, 38, 166, 0.08));
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+    }
+
+    /* ── Footer ── */
+    .site-footer {
+      border-top: 1px solid #e6e8ed;
+      padding-top: 32px;
+      text-align: center;
+    }
+    .footer-logo {
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      font-weight: 800;
+      font-size: 22px;
+      color: #0a0a0a;
+      margin-bottom: 16px;
+    }
+    .footer-links {
+      display: flex;
+      justify-content: center;
+      gap: 24px;
+      margin-bottom: 12px;
+      flex-wrap: wrap;
+    }
+    .footer-links a {
+      font-size: 13px;
+      color: #8a8f9c;
+      text-decoration: none;
+      font-weight: 500;
+    }
+    .footer-links a:hover { color: #3a3f4b; }
+
+    .footer-copyright {
+      font-size: 13px;
+      color: #8a8f9c;
+      margin-bottom: 12px;
+    }
+    .footer-disclaimer {
+      font-size: 11px;
+      color: #8a8f9c;
+      line-height: 1.6;
+      max-width: 600px;
+      margin: 0 auto;
+    }
+
+    /* ── Responsive ── */
+    @media (max-width: 980px) {
+      .cards-row {
+        flex-direction: column;
+        align-items: center;
+      }
+      .card {
+        width: 100%;
+        max-width: 400px;
+      }
+    }
+
+    @media (max-width: 600px) {
+      .main-heading { font-size: 26px; }
+      .section-heading { font-size: 26px; }
+      .card-price { font-size: 28px; }
+      .stepper { gap: 0; flex-wrap: wrap; justify-content: center; }
+      .step-label { font-size: 12px; }
+      .step-line { width: 24px; margin: 0 6px; }
+      .trust-badges { gap: 16px; }
+      .page-wrapper { padding: 24px 16px 40px; }
+    }
+  </style>
+</head>
+<body>
+
+<div class="page-wrapper">
+
+  <!-- Progress Stepper -->
+  <div class="stepper">
+    <div class="step step--completed">
+      <div class="step-circle">&#10003;</div>
+      <span class="step-label">Order Approved</span>
+    </div>
+    <div class="step-line step-line--completed"></div>
+    <div class="step step--active">
+      <div class="step-circle">2</div>
+      <span class="step-label">Customize Order</span>
+    </div>
+    <div class="step-line"></div>
+    <div class="step step--inactive">
+      <div class="step-circle">3</div>
+      <span class="step-label">Final Confirmation</span>
+    </div>
+  </div>
+
+  <!-- Warning Banner -->
+  <div class="warning-banner">
+    <strong>Do not hit your back button</strong> as you might accidentally place a double order.
+  </div>
+
+  <!-- Option Badge -->
+  <div class="option-badge">
+    <span>Option 1 of 3 to Customize Your Order</span>
+  </div>
+
+  <!-- Main Heading -->
+  <h1 class="main-heading">
+    As a New Customer You've Been Qualified For This <span class="underline">Special One-Time Offer</span>
+  </h1>
+
+  <!-- Video Placeholder -->
+  <div class="video-placeholder">
+    <div class="play-btn"></div>
+  </div>
+
+  <!-- Section Heading -->
+  <h2 class="section-heading">Choose Your <span class="gradient-text">Bundle</span></h2>
+  <p class="section-subtitle">Note: Any miners chosen below will be in addition to the order you just placed.</p>
+
+  <!-- Pricing Cards -->
+  <div class="cards-row">
+
+    <!-- 5x Miners Bundle -->
+    <div class="card">
+      <div class="card-image"></div>
+      <h3 class="card-title">5x Miners Bundle</h3>
+      <p class="card-subtitle">5 Mining Units</p>
+      <ul class="checklist">
+        <li><span class="check-icon">&#10003;</span> 720 Daily Attempts</li>
+        <li><span class="check-icon">&#10003;</span> Free Shipping</li>
+        <li><span class="check-icon">&#10003;</span> 90 Day Guarantee</li>
+      </ul>
+      <div class="card-price">$29.80 <span class="each">each</span></div>
+      <p class="card-total">Total: $149</p>
+      <span class="save-badge">SAVE 50%</span>
+      <button class="card-cta">Add to My Order</button>
+      <span class="card-guarantee">&#10003; 90 Day Money Back Guarantee</span>
+    </div>
+
+    <!-- 15x Miners Bundle (Featured) -->
+    <div class="card card--featured">
+      <span class="card-popular-badge">Most Popular</span>
+      <div class="card-image"></div>
+      <h3 class="card-title">15x Miners Bundle</h3>
+      <p class="card-subtitle">15 Mining Units</p>
+      <ul class="checklist">
+        <li><span class="check-icon">&#10003;</span> 2160 Daily Attempts</li>
+        <li><span class="check-icon">&#10003;</span> Free Shipping</li>
+        <li><span class="check-icon">&#10003;</span> 90 Day Guarantee</li>
+      </ul>
+      <div class="card-price">$23.27 <span class="each">each</span></div>
+      <p class="card-total">Total: $349</p>
+      <span class="save-badge">SAVE 62%</span>
+      <button class="card-cta">Add to My Order</button>
+      <span class="card-guarantee">&#10003; 90 Day Money Back Guarantee</span>
+    </div>
+
+    <!-- 8x Miners Bundle -->
+    <div class="card">
+      <div class="card-image"></div>
+      <h3 class="card-title">8x Miners Bundle</h3>
+      <p class="card-subtitle">8 Mining Units</p>
+      <ul class="checklist">
+        <li><span class="check-icon">&#10003;</span> 1152 Daily Attempts</li>
+        <li><span class="check-icon">&#10003;</span> Free Shipping</li>
+        <li><span class="check-icon">&#10003;</span> 90 Day Guarantee</li>
+      </ul>
+      <div class="card-price">$28.63 <span class="each">each</span></div>
+      <p class="card-total">Total: $229</p>
+      <span class="save-badge">SAVE 54%</span>
+      <button class="card-cta">Add to My Order</button>
+      <span class="card-guarantee">&#10003; 90 Day Money Back Guarantee</span>
+    </div>
+
+  </div>
+
+  <!-- Decline Button -->
+  <button class="decline-btn">No Thank You, I'm Happy With My Existing Order</button>
+
+  <!-- Trust Badges -->
+  <div class="trust-badges">
+    <div class="trust-badge">
+      <div class="trust-badge-icon">&#128274;</div>
+      <span>Secure Checkout</span>
+    </div>
+    <div class="trust-badge">
+      <div class="trust-badge-icon">&#128666;</div>
+      <span>Free Shipping</span>
+    </div>
+    <div class="trust-badge">
+      <div class="trust-badge-icon">&#10003;</div>
+      <span>90 Day Guarantee</span>
+    </div>
+    <div class="trust-badge">
+      <div class="trust-badge-icon">&#9889;</div>
+      <span>Fast Delivery</span>
+    </div>
+  </div>
+
+  <!-- Footer -->
+  <footer class="site-footer">
+    <div class="footer-logo">MineBlock</div>
+    <div class="footer-links">
+      <a href="#">Privacy Policy</a>
+      <a href="#">Terms of Service</a>
+      <a href="#">Return Policy</a>
+      <a href="#">Contact</a>
+    </div>
+    <p class="footer-copyright">&copy; 2026 MineBlock LLC. All rights reserved.</p>
+    <p class="footer-disclaimer">
+      This site is not a part of the Facebook website or Facebook Inc. Additionally, this site is not endorsed by Facebook in any way. Facebook is a trademark of Facebook, Inc. Results may vary. Mining results depend on many factors including network difficulty and hardware performance.
+    </p>
+  </footer>
+
+</div>
+
+</body>
+</html>

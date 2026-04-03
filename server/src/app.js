@@ -84,6 +84,10 @@ app.use('/api/v1/brief-pipeline', briefPipelineRouter);
 // Mount department modules
 app.use('/api/v1/departments/modules', departmentRegistry.getRouter());
 
+// Serve upsell pages as static files
+const upsellsPath = path.resolve(__dirname, '../../upsells');
+app.use('/upsells', express.static(upsellsPath));
+
 // Serve static files from client build in production
 const clientDistPath = path.resolve(__dirname, '../../client/dist');
 app.use(express.static(clientDistPath));
