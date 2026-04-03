@@ -995,6 +995,23 @@ function getDefaultStaticsPrompts() {
 - When in doubt, use "Up to 40% OFF" or "Starting at $59.99" — do NOT invent prices`,
       productIdentity: `PRODUCT IDENTITY NOTE: The product is a MINI BITCOIN MINER — a small, compact electronic device with a color display screen showing mining hashrate data. NEVER describe it as a "USB stick", "flash drive", "thumb drive", or anything USB-related. It is NOT a USB device. When describing product placement, refer to it as "mini bitcoin miner" or "compact mining device with display screen". IMPORTANT: The product's screen displays mining statistics (hashrate numbers like 995.4 KH/s) — do NOT put logos, brand names, or text overlays on the device screen. The screen content must match exactly what is shown in the product images.`,
       bannedPhrases: `works at home, easy to use, quick mining, get started today`,
+      formulaPreservation: `FORMULA PRESERVATION (CRITICAL):
+The adapted text must follow the EXACT SAME sentence structure, opening words, and approximate character count as the original. You are copying the PROVEN FORMULA, just swapping the subject matter.
+
+Correct: "Bye Bye, Beer Belly" → "Bye Bye, Power Bills" (keeps "Bye Bye,")
+Correct: "Kill The Bloated Belly" → "Kill The Middleman" (keeps "Kill The")
+Correct: "3 Years of Back Pain Gone in 7 Days" → "3 Years of Missing Gains Gone in 7 Days"
+Wrong: "Bye Bye, Beer Belly" → "Mine Bitcoin From Home" ❌ (completely different structure)
+Generic labels like "SPECIAL DEAL", "FREE SHIPPING" → keep EXACTLY as-is`,
+      crossNicheAdaptation: `CROSS-NICHE VISUAL MAPPING:
+Reference ads may come from any niche. Map visuals to bitcoin mining context:
+- Supplement bottles → Miner Forge Pro device(s)
+- Skincare before/after → Mining earnings progression or device setup
+- Fitness transformations → Passive income growth charts
+- Food/ingredient callouts → Device feature callouts (hashrate, low power, silent)
+- Body part close-ups → Device screen showing mining stats
+- Kitchen/bathroom scenes → Desk/home office/nightstand scenes
+- Medical/doctor imagery → Tech expert/crypto analyst imagery`,
     },
     nanoBanana: {
       productRules: `PRODUCT REPLACEMENT:
