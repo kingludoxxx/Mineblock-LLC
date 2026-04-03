@@ -126,7 +126,18 @@ function parseRow(row) {
 router.get('/', async (req, res) => {
   try {
     await ensureTable();
-    const rows = await pgQuery('SELECT * FROM product_profiles ORDER BY updated_at DESC');
+    // Only select lightweight columns for the list view — skip product_images, logos, fonts, scripts
+    // which can be megabytes of data (2.7MB+). Detail view (GET /:id) returns everything.
+    const rows = await pgQuery(`
+      SELECT id, name, short_name, product_code, category, price, description, big_promise, mechanism,
+             differentiator, customer_avatar, voice, competitive_edge, guarantee, benefits, angles,
+             target_demographics, customer_frustration, customer_dream, pain_points, common_objections,
+             winning_angles, custom_angles_text, max_discount, discount_codes, bundle_variants,
+             offer_details, compliance_restrictions, brand_colors, offers,
+             product_images->0 AS first_image,
+             created_at, updated_at
+      FROM product_profiles ORDER BY updated_at DESC
+    `);
     return res.json({ success: true, data: rows.map(parseRow) });
   } catch (err) {
     console.error('GET /product-profiles error:', err);

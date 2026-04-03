@@ -180,6 +180,8 @@ function QuickInfoBox({ box, initialValue, onSave, onChange }) {
 function ProductCard({ product, onClick, onDelete }) {
   const images = Array.isArray(product.product_images) ? product.product_images : [];
   const validImages = images.filter((v) => v);
+  // List endpoint returns first_image instead of full product_images array (for performance)
+  const firstImg = validImages[0] || (product.first_image ? (typeof product.first_image === 'string' ? product.first_image.replace(/^"|"$/g, '') : product.first_image) : null);
   const imgCount = validImages.length;
 
   return (
@@ -188,9 +190,9 @@ function ProductCard({ product, onClick, onDelete }) {
       className="bg-[#111] border border-white/[0.06] rounded-lg overflow-hidden flex flex-col justify-between hover:border-white/[0.12] transition-colors group cursor-pointer"
     >
       {/* Hero image */}
-      {validImages[0] ? (
+      {firstImg ? (
         <div className="relative overflow-hidden bg-[#0a0a0a]" style={{ height: 140 }}>
-          <img src={validImages[0]} alt="" className="w-full h-full object-cover" onError={(e) => { e.target.parentElement.style.display = 'none'; }} />
+          <img src={firstImg} alt="" className="w-full h-full object-cover" onError={(e) => { e.target.parentElement.style.display = 'none'; }} />
           {imgCount > 1 && (
             <span className="absolute bottom-2 right-2 bg-black/60 text-white/80 text-[10px] font-medium px-1.5 py-0.5 rounded backdrop-blur-sm">
               +{imgCount - 1}
