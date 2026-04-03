@@ -339,7 +339,7 @@ router.post('/generate', authenticate, async (req, res) => {
     res.json({
       success: true,
       data: {
-        taskId: taskId1 || taskId2,  // backward compat
+        taskId: tasks[0]?.taskId,  // backward compat
         tasks,
         claudeAnalysis: claudeResult,
         adaptedText: claudeResult.adapted_text || claudeResult.adaptedText,
