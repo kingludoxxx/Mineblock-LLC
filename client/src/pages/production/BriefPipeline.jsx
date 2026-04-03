@@ -2,13 +2,16 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   RefreshCw,
   Loader2,
-  Eye,
-  CheckCircle2,
   Sparkles,
   Trophy,
   Rocket,
+  CheckCircle2,
   ExternalLink,
-  Settings,
+  Settings2,
+  ChevronRight,
+  MessageSquare,
+  Play,
+  MoreHorizontal,
 } from 'lucide-react';
 import api from '../../services/api';
 import WinnerCard from './briefs/WinnerCard';
@@ -27,31 +30,24 @@ const PIPELINE_COLUMNS = [
     key: 'generated',
     label: 'Generated',
     icon: Sparkles,
-    badgeBg: 'bg-purple-500/15',
-    badgeText: 'text-purple-400/80',
-    headerBorder: 'border-purple-500/30',
+    colorClass: 'text-[#d4b55a] drop-shadow-[0_0_6px_rgba(201,168,76,0.5)]',
+    badgeClass: 'bg-[#c9a84c]/10 text-[#d4b55a] border-[#c9a84c]/25',
   },
   {
     key: 'approved',
     label: 'Approved',
     icon: CheckCircle2,
-    badgeBg: 'bg-emerald-500/15',
-    badgeText: 'text-emerald-400/80',
-    headerBorder: 'border-emerald-500/30',
+    colorClass: 'text-emerald-400 drop-shadow-[0_0_6px_rgba(16,185,129,0.5)]',
+    badgeClass: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/25',
   },
   {
     key: 'pushed',
     label: 'Pushed',
     icon: Rocket,
-    badgeBg: 'bg-cyan-500/15',
-    badgeText: 'text-cyan-400/80',
-    headerBorder: 'border-cyan-500/30',
+    colorClass: 'text-white drop-shadow-[0_0_6px_rgba(255,255,255,0.3)]',
+    badgeClass: 'bg-white/[0.06] text-white border-white/[0.1]',
   },
 ];
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // BriefPipeline (main page)
@@ -118,12 +114,10 @@ export default function BriefPipeline() {
   // ---------------------------------------------------------------------------
 
   const handleViewWinner = useCallback(async (winner) => {
-    // Fetch full winner detail (includes script from ClickUp)
     try {
       const { data } = await api.get(`/brief-pipeline/winners/${winner.id}`);
       setWinnerDetail(data.winner || data);
     } catch (err) {
-      // Fallback to the data we already have
       setWinnerDetail(winner);
     }
   }, []);
@@ -263,10 +257,8 @@ export default function BriefPipeline() {
   const buckets = useMemo(() => {
     const map = { detected: [], generated: [], approved: [], pushed: [] };
 
-    // All winners go to detected
     for (const w of winners) map.detected.push(w);
 
-    // Generated briefs go into generated, approved, or pushed
     for (const b of generated) {
       if (b.status === 'pushed') {
         map.pushed.push(b);
@@ -287,206 +279,242 @@ export default function BriefPipeline() {
   const isLoading = loadingWinners || loadingGenerated;
 
   return (
-    <div className="flex flex-col min-h-screen bg-bg-main">
-      {/* Header */}
-      <div className="flex items-center justify-between px-6 py-4 border-b border-border-subtle">
-        <h1 className="text-lg font-semibold text-text-primary">Brief Pipeline</h1>
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={handleDetect}
-            disabled={detecting}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-accent-text
-                       bg-accent/10 border border-accent/20 rounded-md
-                       hover:bg-accent/20 transition-colors disabled:opacity-40 cursor-pointer"
-          >
-            {detecting ? (
-              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-            ) : (
-              <Eye className="w-3.5 h-3.5" />
-            )}
-            Detect Winners
-          </button>
-          <button
-            type="button"
-            onClick={refreshAll}
-            disabled={isLoading}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-text-muted
-                       bg-bg-elevated border border-border-default rounded-md
-                       hover:bg-bg-hover hover:text-text-primary transition-colors disabled:opacity-40 cursor-pointer"
-          >
-            {isLoading ? (
-              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-            ) : (
-              <RefreshCw className="w-3.5 h-3.5" />
-            )}
-            Refresh
-          </button>
-          <button
-            type="button"
-            onClick={() => setSettingsOpen(true)}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-text-muted
-                       bg-bg-elevated border border-border-default rounded-md
-                       hover:bg-bg-hover hover:text-text-primary transition-colors cursor-pointer"
-          >
-            <Settings className="w-3.5 h-3.5" />
-          </button>
-        </div>
-      </div>
+    <div className="flex flex-col min-h-screen bg-[#111113] text-zinc-100 overflow-hidden relative">
+      {/* Dot pattern background */}
+      <div className="absolute inset-0 bg-dot-pattern pointer-events-none z-0 opacity-50" />
 
-      {/* Main layout: Left sidebar (Script Generator + Winning Ads) | Right pipeline columns */}
-      <div className="flex-1 flex overflow-hidden" style={{ minHeight: 'calc(100vh - 120px)' }}>
-        {/* Left sidebar — Script Generator + Winning Ads stacked */}
-        <div className="w-[300px] shrink-0 border-r border-border-subtle flex flex-col overflow-y-auto px-4 py-4 custom-scrollbar">
-          {/* Script Generator */}
-          <div className="mb-4">
-            <div className="flex items-center gap-2 px-1 py-2 border-b-2 border-accent/40 mb-3">
-              <Sparkles className="w-4 h-4 text-accent" />
-              <span className="text-sm font-semibold text-accent">Script Generator</span>
+      {/* Subtle radial glow */}
+      <div
+        className="absolute inset-0 pointer-events-none z-0"
+        style={{
+          background: 'radial-gradient(ellipse 80% 50% at 50% -20%, rgba(201, 168, 76, 0.04) 0%, transparent 50%), radial-gradient(ellipse 60% 40% at 80% 100%, rgba(255, 255, 255, 0.02) 0%, transparent 50%)',
+        }}
+      />
+
+      <div className="relative z-10 flex flex-col h-screen w-full">
+        {/* Top nav breadcrumb */}
+        <header className="h-14 bg-[#111113]/90 backdrop-blur-md flex items-center justify-between px-4 shrink-0 relative">
+          <div className="absolute bottom-0 left-0 right-0 h-[1px] bg-gradient-to-r from-transparent via-[#c9a84c]/15 to-transparent" />
+          <div className="absolute bottom-0 left-0 right-0 h-[1px] bg-white/[0.04]" />
+
+          <div className="flex items-center gap-2 text-xs font-mono tracking-wide">
+            <span className="text-zinc-500 hover:text-zinc-300 cursor-pointer transition-colors">APP</span>
+            <ChevronRight className="w-3.5 h-3.5 text-zinc-700" />
+            <span className="text-zinc-500 hover:text-zinc-300 cursor-pointer transition-colors">PRODUCTION</span>
+            <ChevronRight className="w-3.5 h-3.5 text-zinc-700" />
+            <span className="text-[#e8d5a3] font-medium text-glow-gold">BRIEF_PIPELINE</span>
+          </div>
+        </header>
+
+        {/* Page header */}
+        <div className="h-16 border-b border-white/[0.04] bg-transparent flex items-center justify-between px-6 shrink-0 relative">
+          <div className="absolute bottom-0 left-0 right-0 h-[1px] bg-gradient-to-r from-[#c9a84c]/10 via-transparent to-transparent" />
+
+          <div className="flex items-center gap-3">
+            <div className="relative flex items-center justify-center w-3 h-3">
+              <div className="absolute w-full h-full bg-[#c9a84c] rounded-full opacity-30" style={{ animation: 'pulse-glow 2s ease-in-out infinite' }} />
+              <div className="w-1.5 h-1.5 bg-[#d4b55a] rounded-full shadow-[0_0_8px_rgba(201,168,76,0.8)]" />
             </div>
-            <ScriptGeneratorPanel
-              onGenerated={handleGenerateFromScript}
-              generating={scriptGenerating}
-              generatingStep={scriptGenStep}
-            />
+            <h1 className="text-sm font-mono font-semibold text-white tracking-[0.2em] uppercase text-glow">
+              Brief Pipeline
+            </h1>
           </div>
 
-          {/* Winning Ads — below the generator */}
-          <div className="flex-1">
-            <div className="flex items-center gap-2 px-1 py-2 border-b-2 border-accent/40 mb-3">
-              <Trophy className="w-4 h-4 text-accent" />
-              <span className="text-sm font-semibold text-accent">Winning Ads</span>
-              <span className="ml-auto px-2 py-0.5 rounded-full text-[11px] font-medium bg-accent/15 text-accent-text">
-                {buckets.detected.length}
-              </span>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleDetect}
+              disabled={detecting}
+              className="inline-flex items-center justify-center gap-2 rounded-lg text-xs font-medium transition-all h-8 px-3
+                         bg-[#c9a84c]/10 text-[#d4b55a] hover:bg-[#c9a84c]/20 border border-[#c9a84c]/25 hover:border-[#c9a84c]/40
+                         shadow-[0_0_10px_rgba(201,168,76,0.08)] hover:shadow-[0_0_15px_rgba(201,168,76,0.15)]
+                         disabled:opacity-40 cursor-pointer font-mono tracking-wide uppercase"
+            >
+              {detecting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trophy className="w-3.5 h-3.5" />}
+              Detect Winners
+            </button>
+
+            <div className="h-4 w-px bg-white/[0.06] mx-1.5" />
+
+            <button
+              type="button"
+              onClick={refreshAll}
+              disabled={isLoading}
+              className="inline-flex items-center justify-center gap-2 rounded-lg text-xs font-medium transition-all h-8 px-3
+                         hover:bg-white/[0.05] hover:text-zinc-100 text-zinc-400 border border-transparent hover:border-white/[0.04]
+                         disabled:opacity-40 cursor-pointer font-mono tracking-wide uppercase"
+            >
+              {isLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+              Refresh
+            </button>
+            <button
+              type="button"
+              onClick={() => setSettingsOpen(true)}
+              className="inline-flex items-center justify-center rounded-md h-8 w-8
+                         hover:bg-white/[0.05] text-zinc-400 hover:text-white transition-all cursor-pointer"
+            >
+              <Settings2 className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+
+        {/* Main layout */}
+        <div className="flex-1 flex overflow-hidden">
+          {/* Left sidebar */}
+          <div className="w-80 shrink-0 border-r border-white/[0.04] bg-[#131315]/80 backdrop-blur-xl flex flex-col h-full overflow-y-auto relative">
+            <div className="absolute right-0 top-0 bottom-0 w-[1px] bg-gradient-to-b from-[#c9a84c]/15 via-transparent to-transparent" />
+
+            {/* Script Generator header */}
+            <div className="p-4 border-b border-white/[0.04] flex items-center gap-2 text-[#e8d5a3] font-mono text-sm tracking-wide uppercase">
+              <Sparkles className="w-4 h-4 drop-shadow-[0_0_6px_rgba(201,168,76,0.6)]" />
+              <span className="text-glow-gold">Script Generator</span>
             </div>
-            <div className="space-y-3 pb-4">
-              {buckets.detected.length === 0 ? (
-                <div className="flex items-center justify-center h-24">
-                  <p className="text-xs text-text-faint">No winners detected</p>
+
+            {/* Script Generator panel */}
+            <div className="p-4">
+              <ScriptGeneratorPanel
+                onGenerated={handleGenerateFromScript}
+                generating={scriptGenerating}
+                generatingStep={scriptGenStep}
+              />
+            </div>
+
+            {/* Winning Ads section */}
+            <div className="mt-auto border-t border-white/[0.04] bg-black/20 flex flex-col flex-1">
+              <div className="p-4 flex items-center justify-between text-[#c9a84c]/80 font-mono text-xs tracking-wide uppercase">
+                <div className="flex items-center gap-2">
+                  <Trophy className="w-3.5 h-3.5" />
+                  Winning Ads
                 </div>
-              ) : (
-                buckets.detected.map((item) => (
-                  <WinnerCard
-                    key={item.id}
-                    winner={item}
-                    onSelect={() => handleViewWinner(item)}
-                  />
-                ))
-              )}
+                <span className="bg-[#c9a84c]/10 text-[#c9a84c]/80 px-2 py-0.5 rounded border border-[#c9a84c]/15">
+                  {buckets.detected.length}
+                </span>
+              </div>
+              <div className="px-4 pb-4 space-y-3 overflow-y-auto flex-1">
+                {buckets.detected.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center text-center py-8">
+                    <div className="w-10 h-10 rounded-lg bg-white/[0.02] border border-white/[0.04] flex items-center justify-center mb-3 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.02)]">
+                      <Trophy className="w-4 h-4 text-zinc-700" />
+                    </div>
+                    <p className="text-[11px] text-zinc-600 font-mono leading-relaxed">
+                      NO WINNERS DETECTED<br />
+                      <span className="opacity-70">AWAITING AD ACCOUNT SYNC</span>
+                    </p>
+                  </div>
+                ) : (
+                  buckets.detected.map((item) => (
+                    <WinnerCard
+                      key={item.id}
+                      winner={item}
+                      onSelect={() => handleViewWinner(item)}
+                    />
+                  ))
+                )}
+              </div>
             </div>
           </div>
-        </div>
 
-        {/* Right — Pipeline columns (Generated | Approved | Pushed) */}
-        <div className="flex-1 overflow-x-auto px-4 py-4">
-          <div className="flex gap-4 h-full">
-            {PIPELINE_COLUMNS.map((col) => {
-              const items = buckets[col.key];
-              const Icon = col.icon;
+          {/* Right — Pipeline columns */}
+          <main className="flex-1 overflow-x-auto bg-transparent p-6 relative">
+            <div className="flex gap-8 h-full min-w-[900px]">
+              {PIPELINE_COLUMNS.map((col, colIdx) => {
+                const items = buckets[col.key];
+                const Icon = col.icon;
 
-              return (
-                <div key={col.key} className="flex flex-col min-w-[260px] max-w-[360px] flex-1">
-                  {/* Column header */}
-                  <div className={`flex items-center gap-2 px-3 py-2.5 border-b-2 ${col.headerBorder} mb-3`}>
-                    <Icon className="w-4 h-4 text-text-muted" />
-                    <span className="text-sm font-semibold text-text-primary">{col.label}</span>
-                    <span className={`ml-auto px-2 py-0.5 rounded-full text-[11px] font-medium ${col.badgeBg} ${col.badgeText}`}>
-                      {items.length}
-                    </span>
-                  </div>
-
-                  {/* Card list */}
-                  <div className="flex-1 overflow-y-auto pr-1 space-y-3 pb-4 custom-scrollbar">
-                    {items.length === 0 ? (
-                      <div className="flex items-center justify-center h-32">
-                        <p className="text-xs text-text-faint">No items</p>
+                return (
+                  <div key={col.key} className="flex-1 flex flex-col min-w-[300px] relative">
+                    {/* Column header */}
+                    <div className="flex items-center justify-between mb-4 pb-3 border-b border-white/[0.04] relative">
+                      <div className="absolute bottom-0 left-0 w-1/3 h-[1px] bg-gradient-to-r from-current to-transparent opacity-30" />
+                      <div className="flex items-center gap-2">
+                        <Icon className={`w-4 h-4 ${col.colorClass}`} />
+                        <h3 className="font-mono text-xs tracking-[0.15em] uppercase text-zinc-300 font-semibold">
+                          {col.label}
+                        </h3>
                       </div>
-                    ) : (
-                      items.map((item) => {
-                        if (col.key === 'generated') {
-                          return (
-                            <GeneratedBriefCard
-                              key={item.id}
-                              brief={item}
-                              onClick={() => setDetailModal(item)}
-                              showActions="generated"
-                              onApprove={() => handleApprove(item.id)}
-                              onReject={() => handleReject(item.id)}
-                            />
-                          );
-                        }
+                      <span className={`text-[10px] font-mono px-2 py-0.5 rounded border ${col.badgeClass}`}>
+                        {items.length}
+                      </span>
+                    </div>
 
-                        if (col.key === 'approved') {
-                          return (
-                            <GeneratedBriefCard
-                              key={item.id}
-                              brief={item}
-                              onClick={() => setDetailModal(item)}
-                              showActions="approved"
-                              onPush={() => handlePush(item.id)}
-                            />
-                          );
-                        }
-
-                        if (col.key === 'pushed') {
-                          return (
-                            <div
-                              key={item.id}
-                              className="bg-bg-main border border-border-default rounded-lg p-3 space-y-2
-                                         hover:border-border-strong hover:shadow-lg hover:shadow-black/20 transition-all duration-150"
-                            >
-                              <p className="text-sm font-medium text-text-primary truncate">
-                                {item.naming_convention || 'Brief'}
-                              </p>
-                              {item.clickup_task_url && (
-                                <a
-                                  href={item.clickup_task_url}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="flex items-center gap-1 text-[11px] text-accent-text hover:text-accent transition-colors"
-                                >
-                                  <ExternalLink className="w-3 h-3" />
-                                  ClickUp Task
-                                </a>
-                              )}
-                              {item.pushed_at && (
-                                <p className="text-[10px] text-text-faint">
-                                  Pushed {new Date(item.pushed_at).toLocaleDateString()}
-                                </p>
-                              )}
-                            </div>
-                          );
-                        }
-
-                        return null;
-                      })
+                    {/* Dashed connector between columns */}
+                    {colIdx < PIPELINE_COLUMNS.length - 1 && (
+                      <div className="absolute top-6 -right-5 w-4 border-t border-dashed border-white/[0.06]" />
                     )}
+
+                    {/* Card list */}
+                    <div className="flex-1 overflow-y-auto space-y-4 pr-2 pb-4">
+                      {items.length === 0 ? (
+                        <div className="flex items-center justify-center h-32">
+                          <p className="text-xs text-zinc-600 font-mono">No items</p>
+                        </div>
+                      ) : (
+                        items.map((item) => {
+                          if (col.key === 'generated') {
+                            return (
+                              <GeneratedBriefCard
+                                key={item.id}
+                                brief={item}
+                                onClick={() => setDetailModal(item)}
+                                showActions="generated"
+                                onApprove={() => handleApprove(item.id)}
+                                onReject={() => handleReject(item.id)}
+                              />
+                            );
+                          }
+
+                          if (col.key === 'approved') {
+                            return (
+                              <GeneratedBriefCard
+                                key={item.id}
+                                brief={item}
+                                onClick={() => setDetailModal(item)}
+                                showActions="approved"
+                                onPush={() => handlePush(item.id)}
+                              />
+                            );
+                          }
+
+                          if (col.key === 'pushed') {
+                            return (
+                              <GeneratedBriefCard
+                                key={item.id}
+                                brief={item}
+                                onClick={() => setDetailModal(item)}
+                                showActions="pushed"
+                              />
+                            );
+                          }
+
+                          return null;
+                        })
+                      )}
+                    </div>
                   </div>
-                </div>
-              );
-            })}
-          </div>
+                );
+              })}
+            </div>
+          </main>
         </div>
       </div>
 
       {/* Error toast */}
       {error && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-red-950/90 border border-red-500/20 rounded-lg px-4 py-3 shadow-xl flex items-center gap-3 z-50 max-w-md">
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 glass-card border border-red-500/20 rounded-lg px-4 py-3 shadow-xl flex items-center gap-3 z-50 max-w-md">
           <p className="text-xs text-red-200 flex-1">{error}</p>
-          <button type="button" onClick={() => setError(null)} className="text-red-400 hover:text-red-200 text-xs font-medium shrink-0 cursor-pointer">
+          <button type="button" onClick={() => setError(null)} className="text-red-400 hover:text-red-200 text-xs font-medium shrink-0 cursor-pointer font-mono uppercase tracking-wide">
             Dismiss
           </button>
         </div>
       )}
 
-      {/* Generating overlay indicator */}
+      {/* Generating overlay */}
       {generating && (
-        <div className="fixed bottom-6 right-6 bg-bg-card border border-border-default rounded-lg px-4 py-3 shadow-xl flex items-center gap-3 z-40">
-          <Loader2 className="w-4 h-4 animate-spin text-accent" />
+        <div className="fixed bottom-6 right-6 glass-card border border-white/[0.06] rounded-lg px-4 py-3 shadow-xl flex items-center gap-3 z-40">
+          <Loader2 className="w-4 h-4 animate-spin text-[#c9a84c]" />
           <div>
-            <p className="text-xs font-medium text-text-primary">Generating briefs...</p>
-            <p className="text-[10px] text-text-muted">{generatingStep}</p>
+            <p className="text-xs font-medium text-white font-mono">Generating briefs...</p>
+            <p className="text-[10px] text-zinc-500">{generatingStep}</p>
           </div>
         </div>
       )}

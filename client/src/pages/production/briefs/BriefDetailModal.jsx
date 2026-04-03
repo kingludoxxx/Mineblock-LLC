@@ -13,6 +13,7 @@ import {
   Loader2,
   Sparkles,
   Save,
+  Rocket,
 } from 'lucide-react';
 import api from '../../../services/api';
 
@@ -21,10 +22,10 @@ import api from '../../../services/api';
 // ---------------------------------------------------------------------------
 
 const SCORE_CONFIG = {
-  novelty:    { label: 'Novelty',    icon: Zap,    color: 'bg-purple-500/20 text-purple-300 border-purple-500/30' },
-  aggression: { label: 'Aggression', icon: Target, color: 'bg-red-500/20 text-red-300 border-red-500/30' },
-  coherence:  { label: 'Coherence',  icon: Brain,  color: 'bg-accent/20 text-accent-text border-accent/30' },
-  overall:    { label: 'Overall',    icon: Shield, color: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' },
+  novelty:    { label: 'Novelty',    icon: Zap,    color: 'bg-purple-500/10 text-purple-300 border-purple-500/20' },
+  aggression: { label: 'Aggression', icon: Target, color: 'bg-red-500/10 text-red-300 border-red-500/20' },
+  coherence:  { label: 'Coherence',  icon: Brain,  color: 'bg-[#c9a84c]/10 text-[#e8d5a3] border-[#c9a84c]/20' },
+  overall:    { label: 'Overall',    icon: Shield, color: 'bg-emerald-500/10 text-emerald-300 border-emerald-500/20' },
 };
 
 // ---------------------------------------------------------------------------
@@ -33,7 +34,7 @@ const SCORE_CONFIG = {
 
 function SectionLabel({ children }) {
   return (
-    <h4 className="text-[10px] uppercase tracking-widest text-accent-text font-semibold mb-2">
+    <h4 className="font-mono text-xs tracking-[0.15em] uppercase text-[#c9a84c] font-semibold mb-3">
       {children}
     </h4>
   );
@@ -47,26 +48,7 @@ function ScoreCard({ scoreKey, value }) {
     <div className={`flex-1 flex flex-col items-center gap-1 py-3 px-2 rounded-lg border ${config.color}`}>
       <Icon className="w-3.5 h-3.5" />
       <span className="text-lg font-bold leading-none">{value ?? '—'}</span>
-      <span className="text-[10px] opacity-70">{config.label}</span>
-    </div>
-  );
-}
-
-function HookCard({ hook, index }) {
-  const label = `H${index + 1}`;
-  return (
-    <div className="p-3 bg-bg-main border border-border-subtle rounded-lg space-y-1.5">
-      <div className="flex items-center gap-2">
-        <span className="text-[10px] font-bold uppercase tracking-wider text-accent bg-accent/10 px-2 py-0.5 rounded">
-          {label}
-        </span>
-        {hook.mechanism && (
-          <span className="text-[10px] text-text-faint bg-bg-elevated px-2 py-0.5 rounded">
-            {hook.mechanism}
-          </span>
-        )}
-      </div>
-      <p className="text-sm text-text-muted leading-relaxed">{hook.text}</p>
+      <span className="text-[10px] opacity-70 font-mono uppercase tracking-wider">{config.label}</span>
     </div>
   );
 }
@@ -94,7 +76,6 @@ export default function BriefDetailModal({
   const [enhancing, setEnhancing] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  // Initialize editable state (must be before early return to satisfy rules of hooks)
   useEffect(() => {
     if (!brief) return;
     const parsedHooks = (() => {
@@ -117,11 +98,6 @@ export default function BriefDetailModal({
     overall: brief.overall_score,
   };
   const hasScores = Object.values(scores).some((v) => v != null);
-  const hooks = (() => {
-    if (Array.isArray(brief.hooks)) return brief.hooks;
-    if (typeof brief.hooks === 'string') { try { return JSON.parse(brief.hooks); } catch { return []; } }
-    return [];
-  })();
 
   // Parse original script
   const originalHooks = (() => {
@@ -159,7 +135,6 @@ export default function BriefDetailModal({
     }
   };
 
-  // Safely parse winAnalysis if it's a JSON string
   const parsedWinAnalysis = (() => {
     if (!winAnalysis) return null;
     if (typeof winAnalysis === 'object') return winAnalysis;
@@ -169,72 +144,84 @@ export default function BriefDetailModal({
   return (
     <div className="fixed inset-0 z-50 flex justify-end">
       {/* Backdrop */}
-      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
 
       {/* Slide-over panel */}
       <div
-        className="relative w-[560px] h-full bg-bg-card border-l border-border-default flex flex-col"
+        className="relative w-[500px] h-full bg-[#111113] border-l border-white/[0.06] shadow-2xl flex flex-col"
         style={{ animation: 'slideInRight 0.25s ease-out' }}
       >
-        {/* --------------------------------------------------------------- */}
         {/* Header */}
-        {/* --------------------------------------------------------------- */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-border-default shrink-0">
-          <h2 className="text-sm font-semibold text-text-primary tracking-wide">Brief Detail</h2>
+        <div className="flex items-center justify-between p-6 border-b border-white/[0.06]">
+          <h2 className="text-lg font-semibold text-white">Brief Detail</h2>
           <button
             type="button"
             onClick={onClose}
-            className="p-1.5 rounded-lg text-text-faint hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer"
+            className="text-zinc-400 hover:text-white transition-colors cursor-pointer"
           >
-            <X className="w-4 h-4" />
+            <X className="w-5 h-5" />
           </button>
         </div>
 
-        {/* --------------------------------------------------------------- */}
         {/* Scrollable content */}
-        {/* --------------------------------------------------------------- */}
-        <div className="flex-1 overflow-y-auto px-6 py-5 space-y-6">
+        <div className="flex-1 overflow-y-auto p-6 space-y-8">
           {/* Naming convention */}
           {brief.naming_convention && (
-            <div>
+            <section>
               <SectionLabel>Naming Convention</SectionLabel>
-              <p className="text-xs font-mono text-text-muted bg-bg-main border border-border-subtle rounded-lg px-3 py-2 break-all">
-                {brief.naming_convention}
-              </p>
-            </div>
+              <div className="glass-card border border-white/[0.04] rounded-lg p-4 bg-white/[0.02]">
+                <p className="font-mono text-xs text-zinc-300 leading-relaxed">
+                  {brief.naming_convention}
+                </p>
+              </div>
+            </section>
           )}
 
-          {/* Original Script (collapsible) */}
+          {/* Scores */}
+          {hasScores && (
+            <section>
+              <SectionLabel>Scores</SectionLabel>
+              <div className="flex gap-2">
+                {Object.entries(scores).map(([key, val]) => (
+                  <ScoreCard key={key} scoreKey={key} value={val} />
+                ))}
+              </div>
+            </section>
+          )}
+
+          {/* Original Script */}
           {(originalHooks.length > 0 || originalBody) && (
-            <div>
+            <section>
               <SectionLabel>Original Script</SectionLabel>
-              <div className="p-3 bg-bg-main border border-border-subtle border-l-2 border-l-text-faint rounded-lg space-y-2 opacity-70">
+              <div className="glass-card border border-white/[0.04] rounded-lg p-5 bg-white/[0.02] space-y-4">
                 {originalHooks.map((hook, i) => (
-                  <div key={i} className="text-xs text-text-faint leading-relaxed">
-                    <span className="text-[10px] font-bold uppercase tracking-wider text-text-faint mr-1.5">H{i + 1}</span>
-                    {typeof hook === 'string' ? hook : hook.text}
+                  <div key={i}>
+                    <span className="font-mono text-xs text-zinc-500 mr-2">H{i + 1}</span>
+                    <span className={`text-sm ${i === 0 ? 'font-medium text-zinc-200' : 'text-zinc-400'} leading-relaxed`}>
+                      {typeof hook === 'string' ? hook : hook.text}
+                    </span>
                   </div>
                 ))}
                 {originalBody && (
-                  <p className="text-xs text-text-faint leading-relaxed whitespace-pre-line mt-1">{originalBody}</p>
+                  <p className="text-sm text-zinc-400 leading-relaxed whitespace-pre-line">{originalBody}</p>
                 )}
               </div>
-            </div>
+            </section>
           )}
 
           {/* Hooks (editable) */}
           {editableHooks.length > 0 && (
-            <div>
+            <section>
               <SectionLabel>Hooks</SectionLabel>
-              <div className="space-y-2">
+              <div className="space-y-3">
                 {editableHooks.map((hook, i) => (
-                  <div key={hook.id || i} className="p-3 bg-bg-main border border-border-subtle rounded-lg space-y-1.5">
-                    <div className="flex items-center gap-2">
-                      <span className="text-[10px] font-bold uppercase tracking-wider text-accent bg-accent/10 px-2 py-0.5 rounded">
+                  <div key={hook.id || i} className="glass-card border border-white/[0.04] rounded-lg p-4 bg-white/[0.02]">
+                    <div className="flex gap-2 mb-3">
+                      <span className="text-[10px] font-mono uppercase tracking-wider font-medium px-1.5 py-0.5 rounded bg-[#c9a84c]/10 text-[#e8d5a3] border border-[#c9a84c]/20">
                         H{i + 1}
                       </span>
                       {hook.mechanism && (
-                        <span className="text-[10px] text-text-faint bg-bg-elevated px-2 py-0.5 rounded">
+                        <span className="text-[10px] font-mono uppercase tracking-wider font-medium px-1.5 py-0.5 rounded bg-white/[0.04] text-zinc-400 border border-white/[0.06]">
                           {hook.mechanism}
                         </span>
                       )}
@@ -247,32 +234,29 @@ export default function BriefDetailModal({
                         setEditableHooks(updated);
                         setHasChanges(true);
                       }}
-                      className="w-full bg-transparent text-sm text-text-muted leading-relaxed resize-none focus:outline-none border-0 p-0"
+                      className="w-full bg-transparent text-sm text-zinc-300 leading-relaxed resize-none focus:outline-none border-0 p-0"
                       rows={3}
                     />
                   </div>
                 ))}
               </div>
-            </div>
+            </section>
           )}
 
           {/* Body (editable) */}
           {(editableBody || brief.body) && (
-            <div>
+            <section>
               <SectionLabel>Body</SectionLabel>
-              <div className="p-4 bg-bg-main border border-border-subtle rounded-lg">
-                <textarea
-                  value={editableBody}
-                  onChange={(e) => { setEditableBody(e.target.value); setHasChanges(true); }}
-                  className="w-full bg-transparent text-sm text-text-muted leading-relaxed resize-none focus:outline-none"
-                  rows={10}
-                />
-              </div>
-            </div>
+              <textarea
+                value={editableBody}
+                onChange={(e) => { setEditableBody(e.target.value); setHasChanges(true); }}
+                className="w-full h-32 glass-card border border-white/[0.04] rounded-lg p-4 bg-white/[0.02] text-sm text-zinc-300 leading-relaxed resize-none focus:outline-none focus:border-[#c9a84c]/50 focus:ring-1 focus:ring-[#c9a84c]/50 transition-all"
+              />
+            </section>
           )}
 
           {/* Enhance with AI */}
-          <div className="space-y-2">
+          <section className="space-y-2">
             <SectionLabel>Enhance with AI</SectionLabel>
             <div className="flex gap-2">
               <input
@@ -280,46 +264,45 @@ export default function BriefDetailModal({
                 value={enhancePrompt}
                 onChange={(e) => setEnhancePrompt(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && !enhancing && enhancePrompt.trim() && handleEnhance()}
-                placeholder="e.g. 'add a hook about scarcity' or 'make hook 1 more aggressive'"
-                className="flex-1 bg-bg-elevated border border-border-default rounded-lg px-3 py-2 text-sm text-text-muted placeholder-text-faint focus:border-accent/50 focus:outline-none"
+                placeholder="e.g. 'make hook 1 more aggressive'"
+                className="flex-1 bg-white/[0.02] border border-white/[0.05] rounded-lg px-3 py-2 text-sm text-zinc-300 placeholder:text-zinc-600 focus:outline-none focus:ring-1 focus:ring-[#c9a84c]/30 focus:border-[#c9a84c]/20 transition-all"
               />
               <button
                 type="button"
                 onClick={handleEnhance}
                 disabled={enhancing || !enhancePrompt.trim()}
-                className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-accent text-sm font-medium text-bg-main hover:bg-accent-hover transition-colors disabled:opacity-40 cursor-pointer shrink-0"
+                className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-colors disabled:opacity-40 cursor-pointer shrink-0"
+                style={{
+                  background: 'linear-gradient(135deg, #c9a84c, #d4b55a)',
+                  color: '#111113',
+                }}
               >
                 {enhancing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
                 Enhance
               </button>
             </div>
-          </div>
+          </section>
 
           {/* Win Analysis */}
           {parsedWinAnalysis && (
-            <div>
+            <section>
               <button
                 type="button"
                 onClick={() => setWinAnalysisOpen(!winAnalysisOpen)}
-                className="flex items-center gap-2 text-[10px] uppercase tracking-widest text-accent-text font-semibold hover:text-accent transition-colors cursor-pointer"
+                className="flex items-center gap-2 font-mono text-xs tracking-[0.15em] uppercase text-[#c9a84c] font-semibold hover:text-[#e8d5a3] transition-colors cursor-pointer"
               >
-                {winAnalysisOpen ? (
-                  <ChevronDown className="w-3.5 h-3.5" />
-                ) : (
-                  <ChevronRight className="w-3.5 h-3.5" />
-                )}
+                {winAnalysisOpen ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
                 Why the Original Won
               </button>
 
               {winAnalysisOpen && (
-                <div className="mt-3 p-4 bg-bg-main border border-border-subtle rounded-lg space-y-4">
-                  {/* Winning elements ranked */}
+                <div className="mt-3 glass-card border border-white/[0.04] rounded-lg p-5 bg-white/[0.02] space-y-4">
                   {parsedWinAnalysis.winning_elements_ranked?.length > 0 && (
                     <div>
-                      <span className="text-[10px] uppercase tracking-wider text-accent-text font-semibold block mb-1.5">
+                      <span className="text-[10px] font-mono uppercase tracking-[0.15em] text-[#c9a84c] font-semibold block mb-1.5">
                         Winning Elements
                       </span>
-                      <ol className="space-y-1 text-sm text-text-muted list-decimal list-inside">
+                      <ol className="space-y-1 text-sm text-zinc-400 list-decimal list-inside">
                         {parsedWinAnalysis.winning_elements_ranked.map((el, i) => (
                           <li key={i} className="leading-relaxed">{el}</li>
                         ))}
@@ -327,35 +310,32 @@ export default function BriefDetailModal({
                     </div>
                   )}
 
-                  {/* Emotional driver */}
                   {parsedWinAnalysis.emotional_driver?.primary && (
                     <div>
-                      <span className="text-[10px] uppercase tracking-wider text-accent-text font-semibold block mb-1.5">
+                      <span className="text-[10px] font-mono uppercase tracking-[0.15em] text-[#c9a84c] font-semibold block mb-1.5">
                         Emotional Driver
                       </span>
-                      <span className="inline-block px-2.5 py-1 text-xs font-medium rounded-full bg-violet-500/15 text-violet-300 border border-violet-500/25">
+                      <span className="inline-block px-2.5 py-1 text-xs font-medium rounded-full bg-violet-500/10 text-violet-300 border border-violet-500/20">
                         {parsedWinAnalysis.emotional_driver.primary}
                       </span>
                     </div>
                   )}
 
-                  {/* Enemy structure */}
                   {parsedWinAnalysis.enemy_structure?.villain && (
                     <div>
-                      <span className="text-[10px] uppercase tracking-wider text-accent-text font-semibold block mb-1.5">
+                      <span className="text-[10px] font-mono uppercase tracking-[0.15em] text-[#c9a84c] font-semibold block mb-1.5">
                         Enemy / Villain
                       </span>
-                      <p className="text-sm text-text-muted">{parsedWinAnalysis.enemy_structure.villain}</p>
+                      <p className="text-sm text-zinc-400">{parsedWinAnalysis.enemy_structure.villain}</p>
                     </div>
                   )}
 
-                  {/* Iteration opportunities */}
                   {parsedWinAnalysis.iteration_opportunities?.length > 0 && (
                     <div>
-                      <span className="text-[10px] uppercase tracking-wider text-accent-text font-semibold block mb-1.5">
+                      <span className="text-[10px] font-mono uppercase tracking-[0.15em] text-[#c9a84c] font-semibold block mb-1.5">
                         Iteration Opportunities
                       </span>
-                      <ul className="space-y-1 text-sm text-text-muted list-disc list-inside">
+                      <ul className="space-y-1 text-sm text-zinc-400 list-disc list-inside">
                         {parsedWinAnalysis.iteration_opportunities.map((opp, i) => (
                           <li key={i} className="leading-relaxed">{opp}</li>
                         ))}
@@ -364,14 +344,12 @@ export default function BriefDetailModal({
                   )}
                 </div>
               )}
-            </div>
+            </section>
           )}
         </div>
 
-        {/* --------------------------------------------------------------- */}
         {/* Action buttons — pinned to bottom */}
-        {/* --------------------------------------------------------------- */}
-        <div className="px-6 py-4 border-t border-border-default space-y-2 shrink-0">
+        <div className="p-6 border-t border-white/[0.06] bg-[#111113] space-y-3">
           {hasChanges && (
             <button
               type="button"
@@ -385,7 +363,11 @@ export default function BriefDetailModal({
                 }
               }}
               disabled={saving}
-              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-accent text-sm font-medium text-bg-main hover:bg-accent-hover transition-colors cursor-pointer disabled:opacity-40"
+              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors cursor-pointer disabled:opacity-40"
+              style={{
+                background: 'linear-gradient(135deg, #c9a84c, #d4b55a)',
+                color: '#111113',
+              }}
             >
               {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
               Save Changes
@@ -397,7 +379,10 @@ export default function BriefDetailModal({
               <button
                 type="button"
                 onClick={() => onApprove?.(brief.id)}
-                className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-emerald-600 text-sm font-medium text-white hover:bg-emerald-500 transition-colors cursor-pointer"
+                className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg
+                           bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 border border-emerald-500/20 hover:border-emerald-500/40
+                           shadow-[0_0_15px_rgba(16,185,129,0.1)] hover:shadow-[0_0_20px_rgba(16,185,129,0.2)]
+                           text-sm font-medium transition-all cursor-pointer"
               >
                 <Check className="w-4 h-4" />
                 Approve
@@ -405,7 +390,9 @@ export default function BriefDetailModal({
               <button
                 type="button"
                 onClick={() => onReject?.(brief.id)}
-                className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-red-500/15 border border-red-500/25 text-sm text-red-300 hover:bg-red-500/25 transition-colors cursor-pointer"
+                className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg
+                           bg-red-500/5 text-red-400/80 hover:bg-red-500/10 border border-red-500/10 hover:border-red-500/20
+                           text-sm font-medium transition-all cursor-pointer"
               >
                 <ThumbsDown className="w-4 h-4" />
                 Reject
@@ -417,9 +404,11 @@ export default function BriefDetailModal({
             <button
               type="button"
               onClick={() => onPush?.(brief.id)}
-              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-emerald-600 text-sm font-medium text-white hover:bg-emerald-500 transition-colors cursor-pointer"
+              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg
+                         bg-white/[0.05] text-white hover:bg-white/[0.08] border border-white/[0.08] hover:border-white/[0.15]
+                         text-sm font-mono font-semibold uppercase tracking-wide transition-all cursor-pointer"
             >
-              <ExternalLink className="w-4 h-4" />
+              <Rocket className="w-4 h-4" />
               Push to ClickUp
             </button>
           )}
@@ -429,7 +418,8 @@ export default function BriefDetailModal({
               href={brief.clickup_task_url}
               target="_blank"
               rel="noopener noreferrer"
-              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-bg-elevated border border-border-default text-sm text-text-muted hover:bg-bg-hover transition-colors"
+              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg
+                         bg-white/[0.03] border border-white/[0.06] text-sm text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.06] transition-all"
             >
               <ExternalLink className="w-4 h-4" />
               View in ClickUp

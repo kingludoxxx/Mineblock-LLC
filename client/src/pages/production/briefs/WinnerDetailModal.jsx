@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { X, Play, Film, Loader2, Sparkles } from 'lucide-react';
+import { X, Play, Film, Loader2, Sparkles, Check } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -7,7 +7,7 @@ import { X, Play, Film, Loader2, Sparkles } from 'lucide-react';
 
 function SectionLabel({ children }) {
   return (
-    <h4 className="text-[10px] uppercase tracking-widest text-accent-text font-semibold mb-2">
+    <h4 className="font-mono text-xs tracking-[0.15em] uppercase text-[#c9a84c] font-semibold mb-3">
       {children}
     </h4>
   );
@@ -15,9 +15,9 @@ function SectionLabel({ children }) {
 
 function MetricCell({ label, value }) {
   return (
-    <div className="flex flex-col items-center gap-0.5 py-3 px-2 rounded-lg bg-bg-elevated border border-border-subtle">
-      <span className="text-lg font-bold text-text-primary leading-none">{value ?? '—'}</span>
-      <span className="text-[10px] text-text-faint uppercase tracking-wider">{label}</span>
+    <div className="flex flex-col items-center gap-0.5 py-3 px-2 rounded-lg bg-white/[0.02] border border-white/[0.04]">
+      <span className="text-lg font-bold text-white leading-none font-mono">{value ?? '—'}</span>
+      <span className="text-[10px] text-zinc-600 uppercase tracking-wider font-mono">{label}</span>
     </div>
   );
 }
@@ -25,9 +25,9 @@ function MetricCell({ label, value }) {
 function InfoPill({ label, value }) {
   if (value == null || value === '') return null;
   return (
-    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-full bg-bg-elevated border border-border-default text-text-muted">
-      <span className="text-text-faint">{label}:</span>
-      <span className="font-medium">{value}</span>
+    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs rounded bg-white/[0.03] border border-white/[0.06] text-zinc-400 font-mono">
+      <span className="text-zinc-600">{label}:</span>
+      <span className="font-medium text-zinc-300">{value}</span>
     </span>
   );
 }
@@ -35,18 +35,18 @@ function InfoPill({ label, value }) {
 function HookCard({ hook, index }) {
   const label = `H${index + 1}`;
   return (
-    <div className="p-3 bg-bg-main border border-border-subtle rounded-lg space-y-1.5">
+    <div className="glass-card border border-white/[0.04] rounded-lg p-4 bg-white/[0.02] space-y-2">
       <div className="flex items-center gap-2">
-        <span className="text-[10px] font-bold uppercase tracking-wider text-accent bg-accent/10 px-2 py-0.5 rounded">
+        <span className="text-[10px] font-mono font-medium uppercase tracking-wider text-[#e8d5a3] bg-[#c9a84c]/10 px-1.5 py-0.5 rounded border border-[#c9a84c]/20">
           {label}
         </span>
         {hook.mechanism && (
-          <span className="text-[10px] text-text-faint bg-bg-elevated px-2 py-0.5 rounded">
+          <span className="text-[10px] font-mono uppercase tracking-wider text-zinc-500 bg-white/[0.04] px-1.5 py-0.5 rounded border border-white/[0.06]">
             {hook.mechanism}
           </span>
         )}
       </div>
-      <p className="text-sm text-text-muted leading-relaxed">{hook.text}</p>
+      <p className="text-sm text-zinc-300 leading-relaxed">{hook.text}</p>
     </div>
   );
 }
@@ -108,7 +108,7 @@ function parseScript(parsed, raw) {
 }
 
 // ---------------------------------------------------------------------------
-// VideoPreview — plays video or shows clickable thumbnail
+// VideoPreview
 // ---------------------------------------------------------------------------
 
 function VideoPreview({ videoUrl, thumbnailUrl }) {
@@ -119,12 +119,11 @@ function VideoPreview({ videoUrl, thumbnailUrl }) {
   const showFallback = !thumbnailUrl || thumbError;
 
   if (!videoUrl || videoError) {
-    // Thumbnail-only mode
     if (showFallback) return (
       <div>
         <SectionLabel>Preview</SectionLabel>
-        <div className="w-full aspect-video rounded-lg border border-border-subtle bg-bg-main flex items-center justify-center">
-          <Film className="w-12 h-12 text-text-faint" />
+        <div className="w-full aspect-video rounded-lg border border-white/[0.04] bg-white/[0.02] flex items-center justify-center">
+          <Film className="w-12 h-12 text-zinc-700" />
         </div>
       </div>
     );
@@ -134,7 +133,7 @@ function VideoPreview({ videoUrl, thumbnailUrl }) {
         <img
           src={thumbnailUrl}
           alt="Winner thumbnail"
-          className="w-full max-w-full rounded-lg border border-border-subtle"
+          className="w-full max-w-full rounded-lg border border-white/[0.04]"
           onError={() => setThumbError(true)}
         />
       </div>
@@ -151,7 +150,7 @@ function VideoPreview({ videoUrl, thumbnailUrl }) {
           controls
           autoPlay
           onError={() => setVideoError(true)}
-          className="w-full max-w-full rounded-lg border border-border-subtle"
+          className="w-full max-w-full rounded-lg border border-white/[0.04]"
         />
       ) : (
         <div
@@ -162,12 +161,12 @@ function VideoPreview({ videoUrl, thumbnailUrl }) {
             <img
               src={thumbnailUrl}
               alt="Click to play"
-              className="w-full max-w-full rounded-lg border border-border-subtle"
+              className="w-full max-w-full rounded-lg border border-white/[0.04]"
               onError={() => setThumbError(true)}
             />
           ) : (
-            <div className="w-full aspect-video rounded-lg border border-border-subtle bg-bg-main flex items-center justify-center">
-              <Film className="w-12 h-12 text-text-faint" />
+            <div className="w-full aspect-video rounded-lg border border-white/[0.04] bg-white/[0.02] flex items-center justify-center">
+              <Film className="w-12 h-12 text-zinc-700" />
             </div>
           )}
           <div className="absolute inset-0 flex items-center justify-center">
@@ -213,10 +212,10 @@ function PillGroup({ options, value, onChange }) {
             key={val}
             type="button"
             onClick={() => onChange(val)}
-            className={`px-2.5 py-1 text-[11px] font-medium rounded-full border transition-colors cursor-pointer ${
+            className={`px-2.5 py-1 text-[11px] font-mono font-medium rounded border transition-all duration-300 cursor-pointer ${
               active
-                ? 'bg-accent-muted border-accent/40 text-accent-text'
-                : 'bg-bg-main border-border-default text-text-muted hover:bg-bg-hover'
+                ? 'bg-[#c9a84c]/10 border-[#c9a84c]/30 text-[#e8d5a3] shadow-[0_0_8px_rgba(201,168,76,0.1)]'
+                : 'bg-white/[0.02] border-white/[0.05] text-zinc-500 hover:border-white/[0.1] hover:text-zinc-300'
             }`}
           >
             {label}
@@ -247,35 +246,37 @@ export default function WinnerDetailModal({ winner, isOpen, onClose, onGenerate,
   return (
     <div className="fixed inset-0 z-50 flex justify-end">
       {/* Backdrop */}
-      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
 
       {/* Slide-over panel */}
       <div
-        className="relative w-[560px] h-full bg-bg-card border-l border-border-default flex flex-col"
+        className="relative w-[560px] h-full bg-[#111113] border-l border-white/[0.06] shadow-2xl flex flex-col"
         style={{ animation: 'slideInRight 0.25s ease-out' }}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-border-default shrink-0">
-          <h2 className="text-sm font-semibold text-text-primary tracking-wide">Winner Detail</h2>
+        <div className="flex items-center justify-between p-6 border-b border-white/[0.06]">
+          <h2 className="text-lg font-semibold text-white">Winner Detail</h2>
           <button
             type="button"
             onClick={onClose}
-            className="p-1.5 rounded-lg text-text-faint hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer"
+            className="text-zinc-400 hover:text-white transition-colors cursor-pointer"
           >
-            <X className="w-4 h-4" />
+            <X className="w-5 h-5" />
           </button>
         </div>
 
         {/* Scrollable content */}
-        <div className="flex-1 overflow-y-auto px-6 py-5 space-y-6">
+        <div className="flex-1 overflow-y-auto p-6 space-y-8">
           {/* Ad name / naming convention */}
           {winner.ad_name && (
-            <div>
+            <section>
               <SectionLabel>Ad Name</SectionLabel>
-              <p className="text-xs font-mono text-text-muted bg-bg-main border border-border-subtle rounded-lg px-3 py-2 break-all">
-                {winner.ad_name}
-              </p>
-            </div>
+              <div className="glass-card border border-white/[0.04] rounded-lg p-4 bg-white/[0.02]">
+                <p className="font-mono text-xs text-zinc-300 leading-relaxed break-all">
+                  {winner.ad_name}
+                </p>
+              </div>
+            </section>
           )}
 
           {/* Video / Thumbnail preview */}
@@ -287,7 +288,7 @@ export default function WinnerDetailModal({ winner, isOpen, onClose, onGenerate,
           )}
 
           {/* Metrics grid */}
-          <div>
+          <section>
             <SectionLabel>Metrics</SectionLabel>
             <div className="grid grid-cols-4 gap-2">
               <MetricCell label="ROAS" value={fmtRoas(winner.roas)} />
@@ -299,10 +300,10 @@ export default function WinnerDetailModal({ winner, isOpen, onClose, onGenerate,
               <MetricCell label="Impressions" value={fmtNumber(winner.impressions)} />
               <MetricCell label="Clicks" value={fmtNumber(winner.clicks)} />
             </div>
-          </div>
+          </section>
 
           {/* Info pills */}
-          <div>
+          <section>
             <SectionLabel>Details</SectionLabel>
             <div className="flex flex-wrap gap-2">
               <InfoPill label="Angle" value={winner.angle} />
@@ -314,16 +315,16 @@ export default function WinnerDetailModal({ winner, isOpen, onClose, onGenerate,
               <InfoPill label="Winner" value={winner.winner_reason} />
               <InfoPill label="Readiness" value={winner.iteration_readiness} />
             </div>
-          </div>
+          </section>
 
           {/* Iterations */}
           {(winner.existing_iterations != null || iterationCodes.length > 0) && (
-            <div>
+            <section>
               <SectionLabel>Iterations</SectionLabel>
-              <div className="p-3 bg-bg-main border border-border-subtle rounded-lg space-y-2">
+              <div className="glass-card border border-white/[0.04] rounded-lg p-4 bg-white/[0.02] space-y-2">
                 {winner.existing_iterations != null && (
-                  <p className="text-sm text-text-muted">
-                    <span className="text-text-faint">Existing iterations:</span>{' '}
+                  <p className="text-sm text-zinc-400 font-mono">
+                    <span className="text-zinc-600">Existing:</span>{' '}
                     <span className="font-semibold text-white">{winner.existing_iterations}</span>
                   </p>
                 )}
@@ -332,7 +333,7 @@ export default function WinnerDetailModal({ winner, isOpen, onClose, onGenerate,
                     {iterationCodes.map((code, i) => (
                       <span
                         key={i}
-                        className="px-2 py-0.5 text-[11px] font-mono rounded bg-bg-elevated border border-border-default text-text-muted"
+                        className="px-2 py-0.5 text-[11px] font-mono rounded bg-white/[0.04] border border-white/[0.06] text-zinc-400"
                       >
                         {code}
                       </span>
@@ -340,60 +341,60 @@ export default function WinnerDetailModal({ winner, isOpen, onClose, onGenerate,
                   </div>
                 )}
               </div>
-            </div>
+            </section>
           )}
 
           {/* Script */}
           {script && (
-            <div>
+            <section>
               <SectionLabel>Script</SectionLabel>
               {script.type === 'parsed' ? (
                 <div className="space-y-3">
                   {script.hooks.length > 0 && (
-                    <div className="space-y-2">
+                    <div className="space-y-3">
                       {script.hooks.map((hook, i) => (
                         <HookCard key={i} hook={typeof hook === 'string' ? { text: hook } : hook} index={i} />
                       ))}
                     </div>
                   )}
                   {script.body && (
-                    <div className="max-h-80 overflow-y-auto p-4 bg-bg-main border border-border-subtle rounded-lg">
-                      <p className="text-sm text-text-muted leading-relaxed whitespace-pre-line">
+                    <div className="max-h-80 overflow-y-auto glass-card border border-white/[0.04] rounded-lg p-4 bg-white/[0.02]">
+                      <p className="text-sm text-zinc-300 leading-relaxed whitespace-pre-line">
                         {script.body}
                       </p>
                     </div>
                   )}
                 </div>
               ) : (
-                <div className="max-h-80 overflow-y-auto p-4 bg-bg-main border border-border-subtle rounded-lg">
-                  <pre className="text-sm text-text-muted leading-relaxed whitespace-pre-wrap font-mono">
+                <div className="max-h-80 overflow-y-auto glass-card border border-white/[0.04] rounded-lg p-4 bg-white/[0.02]">
+                  <pre className="text-sm text-zinc-400 leading-relaxed whitespace-pre-wrap font-mono">
                     {script.content}
                   </pre>
                 </div>
               )}
-            </div>
+            </section>
           )}
 
           {/* Iteration config */}
-          <div className="space-y-3">
+          <section className="space-y-4">
             <SectionLabel>Iteration Config</SectionLabel>
             <div className="space-y-2">
-              <span className="text-[11px] text-text-faint">Mode</span>
+              <span className="text-[10px] font-mono text-zinc-500 uppercase tracking-[0.15em]">Mode</span>
               <PillGroup options={ITER_MODES} value={iterMode} onChange={setIterMode} />
             </div>
             <div className="space-y-2">
-              <span className="text-[11px] text-text-faint">Aggressiveness</span>
+              <span className="text-[10px] font-mono text-zinc-500 uppercase tracking-[0.15em]">Aggressiveness</span>
               <PillGroup options={AGGRESSIVENESS} value={aggressiveness} onChange={setAggressiveness} />
             </div>
             <div className="space-y-2">
-              <span className="text-[11px] text-text-faint">Variations</span>
+              <span className="text-[10px] font-mono text-zinc-500 uppercase tracking-[0.15em]">Variations</span>
               <PillGroup options={VARIATION_COUNTS} value={numVariations} onChange={setNumVariations} />
             </div>
-          </div>
+          </section>
         </div>
 
         {/* Footer */}
-        <div className="px-6 py-4 border-t border-border-default shrink-0">
+        <div className="p-6 border-t border-white/[0.06] bg-[#111113]">
           <button
             type="button"
             onClick={() => onGenerate?.(winner.id, {
@@ -402,7 +403,13 @@ export default function WinnerDetailModal({ winner, isOpen, onClose, onGenerate,
               num_variations: numVariations,
             })}
             disabled={generating}
-            className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-accent text-sm font-semibold text-bg-main hover:bg-accent-hover shadow-[0_1px_12px_rgba(201,162,39,0.25)] transition-colors cursor-pointer disabled:opacity-40"
+            className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-lg text-sm font-mono font-semibold uppercase tracking-wide transition-all cursor-pointer disabled:opacity-40"
+            style={{
+              background: generating ? '#1a1710' : 'linear-gradient(135deg, #c9a84c, #d4b55a)',
+              color: generating ? '#c9a84c' : '#111113',
+              border: generating ? '1px solid rgba(201,168,76,0.2)' : 'none',
+              boxShadow: generating ? 'none' : '0 0 20px rgba(201,168,76,0.25), 0 1px 3px rgba(0,0,0,0.4), inset 0 1px 0 0 rgba(255,255,255,0.2)',
+            }}
           >
             {generating ? (
               <>
