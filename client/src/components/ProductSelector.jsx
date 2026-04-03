@@ -3,7 +3,7 @@ import { Package, ChevronDown, Check, ExternalLink, X, Loader2 } from 'lucide-re
 import { useNavigate } from 'react-router-dom';
 import api from '../services/api';
 
-export default function ProductSelector({ selectedId, onSelect, onLoad, className = '' }) {
+export default function ProductSelector({ selectedId, selectedProduct: selectedProductProp, onSelect, onLoad, className = '' }) {
   const [products, setProducts] = useState([]);
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -37,7 +37,8 @@ export default function ProductSelector({ selectedId, onSelect, onLoad, classNam
     };
   }, [open]);
 
-  const selected = products.find((p) => p.id === selectedId);
+  // Prefer the full product object (with product_images) if provided by parent
+  const selected = selectedProductProp || products.find((p) => p.id === selectedId);
 
   const handleSelect = (product) => {
     onSelect(product);
@@ -62,7 +63,7 @@ export default function ProductSelector({ selectedId, onSelect, onLoad, classNam
           {selected ? (
             <>
               {(selected.product_images?.[0] || selected.first_image) ? (
-                <img src={selected.product_images?.[0] || selected.first_image} alt="" className="w-6 h-6 rounded object-cover shrink-0" />
+                <img src={selected.product_images?.[0] || selected.first_image} alt="" className="w-6 h-6 rounded object-cover shrink-0" onError={(e) => { e.target.style.display = 'none'; }} />
               ) : (
                 <Package className="w-4 h-4 shrink-0 text-white/40" />
               )}
@@ -125,7 +126,7 @@ export default function ProductSelector({ selectedId, onSelect, onLoad, classNam
                     >
                       <div className="flex items-center gap-2.5 min-w-0">
                         {(product.product_images?.[0] || product.first_image) ? (
-                          <img src={product.product_images?.[0] || product.first_image} alt="" className="w-6 h-6 rounded object-cover shrink-0" />
+                          <img src={product.product_images?.[0] || product.first_image} alt="" className="w-6 h-6 rounded object-cover shrink-0" onError={(e) => { e.target.style.display = 'none'; }} />
                         ) : (
                           <Package className="w-4 h-4 shrink-0 text-white/20" />
                         )}

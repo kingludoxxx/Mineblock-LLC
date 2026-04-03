@@ -1622,6 +1622,7 @@ export default function StaticsGeneration() {
               <div className="w-[260px] shrink-0 space-y-4 pr-5 border-r border-border-subtle">
                 <ConfigSidebar
                   selectedProduct={selectedProductId}
+                  selectedProductObj={selectedProductObj}
                   onProductChange={(product) => handleProductSelect(product)}
                   angle={marketingAngle}
                   onAngleChange={setMarketingAngle}

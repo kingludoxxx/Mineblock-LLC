@@ -30,6 +30,7 @@ const ASPECT_RATIOS = ['1:1', '9:10', '4:5', '16:9', '2:3'];
 
 export function ConfigSidebar({
   selectedProduct,
+  selectedProductObj,
   onProductChange,
   angle,
   onAngleChange,
@@ -92,6 +93,7 @@ export function ConfigSidebar({
 
           <ProductSelector
             selectedId={selectedProduct}
+            selectedProduct={selectedProductObj}
             onSelect={(product) => onProductChange(product)}
             onLoad={onProductsLoaded}
           />
