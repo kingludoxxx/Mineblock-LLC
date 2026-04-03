@@ -503,48 +503,74 @@ async function transcribeWithGemini(mediaUrl) {
 
   console.log(`[BriefPipeline] Media downloaded: ${(buffer.length / 1024 / 1024).toFixed(1)}MB, sending to Gemini for transcription`);
 
-  // Send to Gemini for transcription
-  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`;
-
-  const geminiRes = await fetch(geminiUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      contents: [{
-        parts: [
-          {
-            inlineData: {
-              mimeType: contentType.split(';')[0],
-              data: base64Data,
-            },
+  // Send to Gemini for transcription — try multiple models with retry
+  const models = ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-flash-8b'];
+  const requestBody = {
+    contents: [{
+      parts: [
+        {
+          inlineData: {
+            mimeType: contentType.split(';')[0],
+            data: base64Data,
           },
-          {
-            text: `Transcribe ALL spoken words in this video/audio. Return ONLY the transcript as plain text — no timestamps, no speaker labels, no commentary, no formatting. Just the exact words spoken, preserving the natural flow and paragraph breaks. If there are multiple speakers, separate their lines with paragraph breaks.`,
-          },
-        ],
-      }],
-      generationConfig: {
-        maxOutputTokens: 4096,
-        temperature: 0.1,
-      },
-    }),
-    signal: AbortSignal.timeout(120000), // 2 min for transcription
-  });
+        },
+        {
+          text: `Transcribe ALL spoken words in this video/audio. Return ONLY the transcript as plain text — no timestamps, no speaker labels, no commentary, no formatting. Just the exact words spoken, preserving the natural flow and paragraph breaks. If there are multiple speakers, separate their lines with paragraph breaks.`,
+        },
+      ],
+    }],
+    generationConfig: {
+      maxOutputTokens: 4096,
+      temperature: 0.1,
+    },
+  };
 
-  if (!geminiRes.ok) {
-    const errText = await geminiRes.text();
-    throw new Error(`Gemini transcription failed: HTTP ${geminiRes.status} — ${errText.slice(0, 200)}`);
+  let lastError = null;
+  for (const model of models) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        if (attempt > 0) {
+          console.log(`[BriefPipeline] Retrying ${model} in ${10 * attempt}s...`);
+          await new Promise(r => setTimeout(r, 10000 * attempt));
+        }
+        console.log(`[BriefPipeline] Trying Gemini model: ${model} (attempt ${attempt + 1})`);
+        const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
+        const geminiRes = await fetch(geminiUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(requestBody),
+          signal: AbortSignal.timeout(120000),
+        });
+
+        if (geminiRes.status === 429) {
+          const errText = await geminiRes.text();
+          console.warn(`[BriefPipeline] ${model} rate limited (429), trying next...`);
+          lastError = `${model}: Rate limited`;
+          continue;
+        }
+
+        if (!geminiRes.ok) {
+          const errText = await geminiRes.text();
+          lastError = `${model}: HTTP ${geminiRes.status}`;
+          console.warn(`[BriefPipeline] ${model} failed: HTTP ${geminiRes.status}`);
+          continue;
+        }
+
+        const geminiData = await geminiRes.json();
+        const transcript = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || '';
+        if (transcript && transcript.length >= 20) {
+          console.log(`[BriefPipeline] Transcription complete with ${model}: ${transcript.length} chars`);
+          return transcript.trim();
+        }
+        lastError = `${model}: Empty transcript`;
+      } catch (err) {
+        lastError = `${model}: ${err.message}`;
+        console.warn(`[BriefPipeline] ${model} error:`, err.message);
+      }
+    }
   }
 
-  const geminiData = await geminiRes.json();
-  const transcript = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || '';
-
-  if (!transcript || transcript.length < 20) {
-    throw new Error('Gemini could not transcribe the media — the audio may be too short or unclear.');
-  }
-
-  console.log(`[BriefPipeline] Transcription complete: ${transcript.length} chars`);
-  return transcript.trim();
+  throw new Error(`Video transcription failed on all models. ${lastError || 'Try again in a minute or paste the script text manually.'}`);
 }
 
 // ── Smart URL extraction: handles FB Ad Library, Atria, direct video, HTML pages ──
