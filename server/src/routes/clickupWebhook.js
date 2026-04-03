@@ -256,8 +256,9 @@ async function handleTaskCreated(taskId) {
   if (!NAMING_LISTS.includes(listId)) return;
 
   const isBriefPipeline = task.description?.includes('[brief-pipeline]');
+  const isYtDuplicate = task.description?.includes('[yt-duplicate]');
 
-  if (!isBriefPipeline) {
+  if (!isBriefPipeline && !isYtDuplicate) {
     // Get brief number from field, or auto-assign next available
     let briefNumber = getFieldValue(task, FIELD_IDS.briefNumber);
     if (briefNumber != null) {
@@ -276,12 +277,15 @@ async function handleTaskCreated(taskId) {
     await setCustomField(taskId, FIELD_IDS.namingConvention, namingConv);
 
     logger.info(`[ClickUp Webhook] Auto-named task ${taskId} → "${namingConv}"`);
+  } else if (isYtDuplicate) {
+    logger.info(`[ClickUp Webhook] Skipping auto-naming for YT duplicate task ${taskId}`);
   } else {
     logger.info(`[ClickUp Webhook] Skipping auto-naming for brief-pipeline task ${taskId}`);
   }
 
   // ── Frame.io: Create folder and set link on ClickUp task ──
-  // Creates a Frame.io folder for the Video Ads task
+  // Creates a Frame.io folder for the Video Ads task (skip for YT duplicates)
+  if (isYtDuplicate) return;
   try {
     if (!FRAMEIO_TOKEN) {
       logger.warn('[ClickUp Webhook] Skipping Frame.io folder — no token configured');
@@ -329,8 +333,9 @@ async function handleCustomFieldChanged(taskId) {
 
   if (!NAMING_LISTS.includes(listId)) return;
 
-  // Skip renaming for tasks created by the Brief Pipeline (they set their own naming)
+  // Skip renaming for tasks created by the Brief Pipeline or YT duplicates
   if (task.description?.includes('[brief-pipeline]')) return;
+  if (task.description?.includes('[yt-duplicate]')) return;
 
   // Check if naming convention field already has a value (task was named before)
   const existingName = getFieldValue(task, FIELD_IDS.namingConvention);
@@ -349,6 +354,73 @@ async function handleCustomFieldChanged(taskId) {
     await updateTask(taskId, { name: namingConv });
     await setCustomField(taskId, FIELD_IDS.namingConvention, namingConv);
     logger.info(`[ClickUp Webhook] Re-named task ${taskId} → "${namingConv}"`);
+  }
+}
+
+// ── Duplicate task to "yt ready to launch" when VA task reaches "ready to launch" ──
+async function ensureYoutubeTask(task, taskListId) {
+  if (taskListId !== VIDEO_ADS_LIST) return;
+
+  // Check if a YT duplicate already exists via linked tasks
+  const linkedTasks = task.linked_tasks || [];
+  for (const link of linkedTasks) {
+    try {
+      const lt = await getTask(link.task_id);
+      if (lt.list?.id === VIDEO_ADS_LIST) {
+        const ltStatus = lt.status?.status?.toLowerCase();
+        if (ltStatus === 'yt ready to launch' || ltStatus === 'launched youtube') {
+          logger.info(`[ClickUp Webhook] Task "${task.name}" already has YT counterpart ${link.task_id}, skipping`);
+          return;
+        }
+      }
+    } catch (err) {
+      // Continue checking others
+    }
+  }
+
+  logger.info(`[ClickUp Webhook] Creating YT Ready to Launch duplicate for "${task.name}" (${task.id})`);
+
+  try {
+    // Create duplicate task in same list with "yt ready to launch" status
+    const ytTask = await clickupFetch(`/list/${VIDEO_ADS_LIST}/task`, {
+      method: 'POST',
+      body: JSON.stringify({
+        name: task.name,
+        status: 'yt ready to launch',
+        description: (task.description || '') + '\n[yt-duplicate]',
+        tags: (task.tags || []).map(t => t.name),
+        priority: task.priority?.id || null,
+        assignees: (task.assignees || []).map(a => a.id),
+      }),
+    });
+
+    // Copy custom field values from original task
+    for (const field of (task.custom_fields || [])) {
+      if (field.value == null) continue;
+      try {
+        // For drop_down fields, the value is the orderindex
+        if (field.type === 'drop_down') {
+          await setCustomField(ytTask.id, field.id, field.value);
+        } else if (field.type === 'users' && Array.isArray(field.value)) {
+          await setCustomField(ytTask.id, field.id, { add: field.value.map(u => u.id) });
+        } else if (field.type === 'list_relationship') {
+          // Skip relationship fields — can't easily copy
+        } else {
+          await setCustomField(ytTask.id, field.id, field.value);
+        }
+      } catch (fieldErr) {
+        // Some fields may fail (read-only, etc.) — continue
+      }
+    }
+
+    // Link the original and YT tasks together
+    await clickupFetch(`/task/${task.id}/link/${ytTask.id}`, {
+      method: 'POST',
+    });
+
+    logger.info(`[ClickUp Webhook] Created YT task ${ytTask.id} ("${task.name}") linked to ${task.id}`);
+  } catch (err) {
+    logger.error(`[ClickUp Webhook] Failed to create YT task for ${task.id}: ${err.message}`);
   }
 }
 
@@ -408,9 +480,10 @@ async function handleStatusSync(taskId, historyItems) {
 
   if (!SYNC_LISTS.includes(taskListId)) return;
 
-  // When a VA task hits "ready to launch", auto-create Media Buying counterpart
+  // When a VA task hits "ready to launch", auto-create Media Buying + YT counterparts
   if (newStatus === 'ready to launch') {
     await ensureMediaBuyingTask(task, taskListId);
+    await ensureYoutubeTask(task, taskListId);
   }
 
   const linkedTasks = task.linked_tasks || [];
