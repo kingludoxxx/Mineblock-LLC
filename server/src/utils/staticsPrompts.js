@@ -43,7 +43,7 @@ ${profile.offerDetails ? `- Offer Rules: ${profile.offerDetails}` : ''}
 ${profile.complianceRestrictions ? `- COMPLIANCE (NEVER claim): ${profile.complianceRestrictions}` : ''}
 ${angle ? `\n- MARKETING ANGLE FOR THIS AD: ${angle}` : ''}
 
-${co.productIdentity || `PRODUCT IDENTITY: The product is a MINI BITCOIN MINER — a small, compact electronic device with a color display screen showing mining hashrate data. It is NOT a USB stick, flash drive, or thumb drive. The screen displays mining statistics (hashrate numbers like 995.4 KH/s) — do NOT put logos, brand names, or text overlays on the device screen.`}
+${co.productIdentity || `PRODUCT IDENTITY: The product is a MINI BITCOIN MINER — a small, compact electronic device with a color display screen showing mining hashrate data. It is NOT a USB stick, flash drive, or thumb drive. The screen displays mining statistics (hashrate numbers like 995.4 KH/s) — do NOT put logos, brand names, or text overlays on the device screen. NEVER place any logo or brand graphic ON TOP OF the product — the product must appear exactly as photographed, clean and untouched.`}
 
 ═══════════════════════════════════════════════════════════════
 INSTRUCTIONS — Analyze the reference ad image in 5 layers
@@ -278,7 +278,9 @@ ${nb.productRules || `PRODUCT REPLACEMENT:
 - Replace with the product shown in the first images (${product.name}). Multiple angles may be provided — use them to reproduce the product with perfect accuracy.
 - Show exactly ${pCount2} product(s) in the output
 - Product placement: ${visualDir.product_placement || 'same position as reference product'}
-- CRITICAL: The product is a MINI BITCOIN MINER — a compact electronic device with a color display screen showing mining hashrate data. It is NOT a USB stick, flash drive, or thumb drive. Reproduce it EXACTLY as shown in the product photos. Do NOT add logos or brand names onto the device screen — the screen shows mining statistics only.
+- CRITICAL: The product is a MINI BITCOIN MINER — a compact electronic device with a color display screen showing mining hashrate data. It is NOT a USB stick, flash drive, or thumb drive. Reproduce it EXACTLY as shown in the product photos.
+- NEVER place ANY logo, brand name, watermark, text overlay, or label ON TOP OF the product image. The product must appear EXACTLY as photographed — clean, with no added graphics on the device body or screen. The screen shows mining statistics ONLY.
+- Do NOT invent or generate any logo. If no brand logo image is provided, do NOT create one. Only use "${product.name}" as plain text where the competitor's logo text was — NEVER as a graphic overlay on the product itself.
 - Match realistic lighting, shadows, and perspective to the reference style`}
 
 TEXT REPLACEMENTS (${swapPairs.length} swaps — apply ALL):
@@ -312,9 +314,10 @@ ${nb.absoluteRules || `ABSOLUTE RULES:
 7. The product is a MINI BITCOIN MINER — NEVER render it as a USB stick. Copy the device from the product photos exactly.
 8. Hands: exactly 5 fingers, realistic proportions
 9. Match reference style, color palette, mood, and visual quality exactly
-10. Brand logo: ${logoCount > 0 ? 'Use the PROVIDED logo image (not invented text). Place it where the competitor logo was.' : `Use "${product.name}" text as logo in same position as competitor logo.`}
+10. Brand logo: ${logoCount > 0 ? 'Use the PROVIDED logo image (not invented text). Place it where the competitor logo was — NEVER on top of the product itself.' : `Use "${product.name}" as plain text in same position as competitor logo text — NEVER as a graphic overlay on the product itself.`}
 11. PRICES MUST MATCH the text swap list EXACTLY — do not invent or modify any price, discount percentage, or dollar amount
-12. Product photos take highest priority — reproduce the device with pixel-perfect fidelity`}`;
+12. Product photos take highest priority — reproduce the device with pixel-perfect fidelity
+13. NEVER place ANY logo, emblem, badge, watermark, or brand graphic ON the product body or screen. The product must look EXACTLY as shown in the product photos — untouched and clean. Logos go ONLY where the competitor's logo was in the reference layout (headers, footers, corners) — NEVER on the device.`}`;
 }
 
 export function buildSwapPairs(originalText, adaptedText) {

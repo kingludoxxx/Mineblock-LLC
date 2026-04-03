@@ -1168,7 +1168,8 @@ export default function StaticsGeneration() {
     const hasQueued = queue.some(q => q.status === 'queued');
     const hasGenerating = queue.some(q => q.status === 'generating');
 
-    if (!hasQueued || hasGenerating || queueProcessing) return;
+    // Wait if: nothing queued, already generating (queue or manual), or processing flag set
+    if (!hasQueued || hasGenerating || queueProcessing || generating) return;
 
     const processNext = async () => {
       setQueueProcessing(true);
@@ -1192,15 +1193,12 @@ export default function StaticsGeneration() {
         });
       };
 
-      updateStatus(item.id, { status: 'generating' });
+      updateStatus(item.id, { status: 'generating', progress: `0/${item.references.length}` });
 
       try {
-        // Build the request using the snapshot data from the queue item
-        const refUrl = item.references[0]?.image_url || item.references[0]?.thumbnail || item.references[0]?.url || '';
-
-        let resolvedProductUrl = item.productImageUrl || '';
         const full = item.productRef;
 
+        // Build profile once (shared across all references)
         const profile = {};
         if (item.oneliner) profile.oneliner = item.oneliner;
         if (item.customerAvatar) profile.customerAvatar = item.customerAvatar;
@@ -1225,98 +1223,106 @@ export default function StaticsGeneration() {
           if (full.compliance_restrictions) profile.complianceRestrictions = full.compliance_restrictions;
         }
 
-        // Step 1: Submit to server
-        const response = await api.post('/statics-generation/generate', {
-          reference_image_url: refUrl,
-          product: {
-            name: item.productName,
-            description: item.productDescription || undefined,
-            price: item.productPrice || undefined,
-            product_image_url: resolvedProductUrl,
-            product_images: full?.product_images || [],
-            logos: full?.logos || [],
-            logo_url: full?.logo_url || undefined,
-            profile: Object.keys(profile).length > 0 ? profile : undefined,
-          },
-          angle: item.customAngle || item.angle || undefined,
-          ratio: item.aspectRatio,
-        });
+        const productPayload = {
+          name: item.productName,
+          description: item.productDescription || undefined,
+          price: item.productPrice || undefined,
+          product_image_url: item.productImageUrl || '',
+          product_images: full?.product_images || [],
+          logos: full?.logos || [],
+          logo_url: full?.logo_url || undefined,
+          profile: Object.keys(profile).length > 0 ? profile : undefined,
+        };
 
-        const genResult = response.data?.data || response.data;
-        const tasks = genResult.tasks || (genResult.taskId ? [{ taskId: genResult.taskId, ratio: item.aspectRatio }] : []);
+        // Process each reference sequentially (each gets its own generation)
+        let totalCreatives = 0;
+        const allErrors = [];
 
-        if (tasks.length === 0) {
-          updateStatus(item.id, { status: 'done', result: genResult });
-          setQueueProcessing(false);
-          return;
-        }
+        for (let refIdx = 0; refIdx < item.references.length; refIdx++) {
+          const currentRef = item.references[refIdx];
+          const refUrl = currentRef?.image_url || currentRef?.thumbnail || currentRef?.url || '';
 
-        // Step 2: Poll tasks
-        const pollTask = async (task) => {
-          const maxPolls = 60;
-          for (let i = 0; i < maxPolls; i++) {
-            await new Promise(r => setTimeout(r, 5000));
-            const statusRes = await api.get(`/statics-generation/status/${task.taskId}`);
-            const statusData = statusRes.data?.data || statusRes.data;
-            if (statusData?.resultImageUrl) {
-              return { ratio: task.ratio, imageUrl: statusData.resultImageUrl, taskId: task.taskId };
-            }
-            if (statusData?.status === 'failed' || statusData?.error) {
-              throw new Error(`Generation failed for ${task.ratio}: ${statusData?.error || 'Unknown error'}`);
-            }
+          updateStatus(item.id, { progress: `${refIdx + 1}/${item.references.length}` });
+
+          try {
+            // Step 1: Submit to server
+            const response = await api.post('/statics-generation/generate', {
+              reference_image_url: refUrl,
+              product: productPayload,
+              angle: item.customAngle || item.angle || undefined,
+              ratio: item.aspectRatio,
+            });
+
+            const genResult = response.data?.data || response.data;
+            const tasks = genResult.tasks || (genResult.taskId ? [{ taskId: genResult.taskId, ratio: item.aspectRatio }] : []);
+
+            if (tasks.length === 0) continue;
+
+            // Step 2: Poll tasks
+            const pollTask = async (task) => {
+              const maxPolls = 60;
+              for (let i = 0; i < maxPolls; i++) {
+                await new Promise(r => setTimeout(r, 5000));
+                const statusRes = await api.get(`/statics-generation/status/${task.taskId}`);
+                const statusData = statusRes.data?.data || statusRes.data;
+                if (statusData?.resultImageUrl) {
+                  return { ratio: task.ratio, imageUrl: statusData.resultImageUrl, taskId: task.taskId };
+                }
+                if (statusData?.status === 'failed' || statusData?.error) {
+                  throw new Error(`Failed for ${task.ratio}: ${statusData?.error || 'Unknown'}`);
+                }
+              }
+              throw new Error(`Timed out for ${task.ratio}`);
+            };
+
+            const taskResults = await Promise.allSettled(tasks.map(pollTask));
+            const completedTasks = taskResults.filter(r => r.status === 'fulfilled').map(r => r.value);
+            const failedTasks = taskResults.filter(r => r.status === 'rejected').map(r => r.reason?.message);
+
+            if (failedTasks.length > 0) allErrors.push(...failedTasks);
+            if (completedTasks.length === 0) continue;
+
+            // Step 3: Save creatives
+            const groupId = crypto.randomUUID();
+            const resolvedRefUrl = currentRef?.image_url || currentRef?.thumbnail || currentRef?.url || refUrl;
+
+            const savedCreatives = await Promise.all(completedTasks.map(async (task) => {
+              const saveRes = await api.post('/statics-generation/creatives', {
+                product_id: item.productId || null,
+                product_name: item.productName,
+                image_url: task.imageUrl,
+                angle: item.angle || null,
+                aspect_ratio: task.ratio,
+                group_id: groupId,
+                generation_task_id: task.taskId,
+                adapted_text: genResult.adaptedText || genResult.claudeAnalysis?.adapted_text,
+                swap_pairs: genResult.swapPairs,
+                claude_analysis: genResult.claudeAnalysis,
+                reference_thumbnail: resolvedRefUrl,
+                reference_name: currentRef?.name || 'Reference',
+                source_label: currentRef?.source_label || currentRef?.name || null,
+                pipeline: 'standard',
+              });
+              return saveRes.data?.data || saveRes.data;
+            }));
+
+            setCreatives(prev => [...savedCreatives, ...prev]);
+            totalCreatives += completedTasks.length;
+          } catch (refErr) {
+            allErrors.push(`Ref ${refIdx + 1}: ${refErr.response?.data?.error || refErr.message}`);
           }
-          throw new Error(`Generation timed out for ${task.ratio}`);
-        };
-
-        const taskResults = await Promise.allSettled(tasks.map(pollTask));
-        const completedTasks = taskResults.filter(r => r.status === 'fulfilled').map(r => r.value);
-        const failedTasks = taskResults.filter(r => r.status === 'rejected').map(r => r.reason?.message || 'Unknown error');
-
-        if (completedTasks.length === 0) {
-          throw new Error(failedTasks.join('; ') || 'All generation tasks failed');
         }
 
-        // Step 3: Save creatives
-        const groupId = crypto.randomUUID();
-        const currentRef = item.references[0];
-        const resolvedRefUrl = currentRef?.image_url || currentRef?.thumbnail || currentRef?.url || refUrl;
+        if (totalCreatives === 0 && allErrors.length > 0) {
+          throw new Error(allErrors.join('; '));
+        }
 
-        const savedCreatives = await Promise.all(completedTasks.map(async (task) => {
-          const saveRes = await api.post('/statics-generation/creatives', {
-            product_id: item.productId || null,
-            product_name: item.productName,
-            image_url: task.imageUrl,
-            angle: item.angle || null,
-            aspect_ratio: task.ratio,
-            group_id: groupId,
-            generation_task_id: task.taskId,
-            adapted_text: genResult.adaptedText || genResult.claudeAnalysis?.adapted_text,
-            swap_pairs: genResult.swapPairs,
-            claude_analysis: genResult.claudeAnalysis,
-            reference_thumbnail: resolvedRefUrl,
-            reference_name: currentRef?.name || 'Reference',
-            source_label: currentRef?.source_label || currentRef?.name || null,
-            pipeline: 'standard',
-          });
-          return saveRes.data?.data || saveRes.data;
-        }));
+        updateStatus(item.id, { status: 'done', result: { creativeCount: totalCreatives } });
 
-        setCreatives(prev => [...savedCreatives, ...prev]);
-
-        const finalResult = {
-          results: completedTasks,
-          claudeAnalysis: genResult.claudeAnalysis,
-          adaptedText: genResult.adaptedText,
-          swapPairs: genResult.swapPairs,
-          creativeCount: completedTasks.length,
-        };
-
-        updateStatus(item.id, { status: 'done', result: finalResult });
-
-        if (failedTasks.length > 0) {
-          addToast(`Queue: ${completedTasks.length} done, ${failedTasks.length} ratio(s) failed`, 'warning', 6000);
+        if (allErrors.length > 0) {
+          addToast(`Queue: ${totalCreatives} creatives done, ${allErrors.length} error(s)`, 'warning', 6000);
         } else {
-          addToast(`Queue: ${completedTasks.length} creative${completedTasks.length > 1 ? 's' : ''} generated`, 'success', 4000);
+          addToast(`Queue: ${totalCreatives} creative${totalCreatives !== 1 ? 's' : ''} generated from ${item.references.length} ref${item.references.length !== 1 ? 's' : ''}`, 'success', 4000);
         }
       } catch (err) {
         const message = err.response?.data?.error || err.response?.data?.message || err.message || 'An unexpected error occurred';
@@ -1328,7 +1334,7 @@ export default function StaticsGeneration() {
     };
 
     processNext();
-  }, [queue, queueProcessing]);
+  }, [queue, queueProcessing, generating]);
 
   // Fetch creatives for pipeline
   const fetchCreatives = async () => {
@@ -1849,7 +1855,7 @@ export default function StaticsGeneration() {
                             : 'text-red-400'
                           }`}>
                             {item.status === 'queued' ? 'Queued'
-                              : item.status === 'generating' ? 'Generating'
+                              : item.status === 'generating' ? `Generating${item.progress ? ` ${item.progress}` : ''}`
                               : item.status === 'done' ? 'Done'
                               : 'Error'}
                           </span>
