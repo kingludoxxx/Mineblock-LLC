@@ -342,6 +342,7 @@ export default function Dashboard() {
   const current = data?.current || {};
   const previous = data?.previous || {};
   const sparklines = data?.sparklines || [];
+  const chartData = data?.chartData || [];
 
   const getChange = (key) => {
     const cur = current[key];
@@ -420,8 +421,8 @@ export default function Dashboard() {
         </div>
 
         {/* Revenue Overview Chart */}
-        {!loading && sparklines.length > 0 && (
-          <RevenueChart sparklines={sparklines} />
+        {!loading && chartData.length > 0 && (
+          <RevenueChart sparklines={chartData} />
         )}
 
         {/* Daily Breakdown */}

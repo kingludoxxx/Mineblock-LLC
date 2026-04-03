@@ -1224,10 +1224,10 @@ router.get('/home-dashboard', authenticate, async (req, res) => {
     await ensureTables();
     const dateStr = req.query.date || new Date().toISOString().slice(0, 10);
 
-    // 8-day window: selected date + 7 previous days
+    // 30-day window for chart + 7-day sparklines
     const endDate = dateStr;
     const sd = new Date(dateStr + 'T00:00:00Z');
-    sd.setUTCDate(sd.getUTCDate() - 7);
+    sd.setUTCDate(sd.getUTCDate() - 30);
     const startDate = sd.toISOString().slice(0, 10);
 
     // Parallel: snapshots, fees, Meta spend cache, TripleWhale fallback
@@ -1289,9 +1289,9 @@ router.get('/home-dashboard', authenticate, async (req, res) => {
       return { date: d, revenue, adSpend, roas, orders, aov, costs, cogs, shipping, fees, profit, netMargin, conversionRate };
     }
 
-    // Build sparklines for all 8 days (fill gaps with zeros)
+    // Build daily metrics for all 31 days (fill gaps with zeros)
     const allDays = [];
-    for (let i = 0; i <= 7; i++) {
+    for (let i = 0; i <= 30; i++) {
       const dt = new Date(startDate + 'T00:00:00Z');
       dt.setUTCDate(dt.getUTCDate() + i);
       allDays.push(dt.toISOString().slice(0, 10));
@@ -1307,12 +1307,15 @@ router.get('/home-dashboard', authenticate, async (req, res) => {
     const prevDateStr = prevDate.toISOString().slice(0, 10);
     const previous = dailyMetrics.find(m => m.date === prevDateStr) || null;
 
-    // Sparklines = last 7 entries (excluding today for a clean trailing view)
-    const sparklines = dailyMetrics.slice(0, 7);
+    // Sparklines = last 7 entries before selected date (for KPI card mini-charts)
+    const sparklines = dailyMetrics.slice(-8, -1);
+
+    // Chart data = full 30 days (for Revenue Overview chart)
+    const chartData = dailyMetrics.slice(0, 30);
 
     res.json({
       success: true,
-      data: { current, previous, sparklines },
+      data: { current, previous, sparklines, chartData },
     });
   } catch (err) {
     console.error('[KPI] home-dashboard error:', err);
