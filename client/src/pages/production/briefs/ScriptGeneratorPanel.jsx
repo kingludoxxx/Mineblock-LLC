@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { FileText, Link, Wand2, Loader2, Sparkles } from 'lucide-react';
+import { FileText, Link, Video, Wand2, Loader2, Sparkles, AlertTriangle } from 'lucide-react';
 import ProductSelector from '../../../components/ProductSelector';
 
 const ANGLES = ['Pain Point', 'Social Proof', 'Before/After', 'Curiosity Hook', 'Direct Offer', 'Authority'];
@@ -64,7 +64,7 @@ export default function ScriptGeneratorPanel({ onGenerated, generating, generati
           <button
             type="button"
             onClick={() => setInputMode('text')}
-            className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-md text-[11px] font-medium transition-colors cursor-pointer ${
+            className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-md text-[10px] font-medium transition-colors cursor-pointer ${
               inputMode === 'text' ? 'bg-[#C6A85C]/15 text-[#C6A85C]' : 'text-gray-500 hover:text-gray-300'
             }`}
           >
@@ -74,12 +74,12 @@ export default function ScriptGeneratorPanel({ onGenerated, generating, generati
           <button
             type="button"
             onClick={() => setInputMode('url')}
-            className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-md text-[11px] font-medium transition-colors cursor-pointer ${
+            className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-md text-[10px] font-medium transition-colors cursor-pointer ${
               inputMode === 'url' ? 'bg-[#C6A85C]/15 text-[#C6A85C]' : 'text-gray-500 hover:text-gray-300'
             }`}
           >
-            <Link className="w-3 h-3" />
-            URL
+            <Video className="w-3 h-3" />
+            Video URL
           </button>
         </div>
 
@@ -108,9 +108,17 @@ export default function ScriptGeneratorPanel({ onGenerated, generating, generati
             type="url"
             value={scriptUrl}
             onChange={(e) => setScriptUrl(e.target.value)}
-            placeholder="https://example.com/ad-page"
+            placeholder="https://video-url.com/ad.mp4"
             className="w-full bg-[#111] border border-white/[0.06] rounded-lg p-2.5 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-[#C6A85C]/30 transition-colors"
           />
+          <div className="mt-1.5 p-2 rounded-lg bg-[#C6A85C]/5 border border-[#C6A85C]/10">
+            <p className="text-[10px] text-[#C6A85C]/80 leading-relaxed">
+              <strong>Paste a direct video URL</strong> (.mp4, .webm, .mov) — the AI will transcribe the ad script automatically.
+            </p>
+            <p className="text-[10px] text-gray-500 mt-1 leading-relaxed">
+              For Atria or FB Ad Library ads: right-click the video → "Copy video address" and paste here. Or use "Paste Text" to paste the script manually.
+            </p>
+          </div>
         )}
       </div>
 

@@ -623,7 +623,7 @@ async function extractScriptFromUrl(url) {
         return await extractFromMetaAdId(metaIdMatch[1]);
       }
     }
-    throw new Error('Could not extract ad content from Atria. Try pasting the ad text manually.');
+    throw new Error('Atria pages require a browser to load. Right-click the video on the Atria page → "Copy video address" and paste the direct video URL, or paste the ad script text manually.');
   }
 
   // Strategy 3: Direct media URL
@@ -681,7 +681,7 @@ async function extractScriptFromUrl(url) {
     return await transcribeWithGemini(videoUrl);
   }
 
-  throw new Error('Could not extract text or find a video on this page. Try pasting the ad text manually.');
+  throw new Error('Could not extract ad content from this URL. For video ads: right-click the video → "Copy video address" and paste the direct .mp4 link. Or use "Paste Text" to paste the script manually.');
 }
 
 // ── Extract video/text from Meta ad ID → transcribe if needed ────────
@@ -829,7 +829,7 @@ async function extractFromMetaAdId(adId) {
     errors.push(`Direct FB page: ${err.message}`);
   }
 
-  throw new Error(`Could not extract ad ${adId}. Tried: ${errors.join(' | ')}. Try pasting the ad text manually.`);
+  throw new Error(`Could not extract ad ${adId}. Right-click the video → "Copy video address" and paste the direct .mp4 link, or paste the script text manually.`);
 }
 
 // ── Fetch product profile from DB ────────────────────────────────────
