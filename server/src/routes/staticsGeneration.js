@@ -262,11 +262,12 @@ router.post('/generate', authenticate, async (req, res) => {
     let finalReferenceUrl = isUrl ? reference_image_url : await ensureHttpUrl(reference_image_url, 'refs');
     let finalProductUrl = await ensureHttpUrl(product.product_image_url, 'products');
 
-    // Gather ALL product images (up to 5) for better product fidelity
-    const allProductImages = product.product_images || [];
+    // Gather product images — use client-selected images if provided, otherwise pick from profile
+    // Cap at 2 extras to avoid confusing Gemini with too many angles
+    const selectedImages = product.selected_product_images || product.product_images || [];
     const extraProductUrls = [];
-    for (let i = 0; i < Math.min(allProductImages.length, 4); i++) {
-      const img = allProductImages[i];
+    for (let i = 0; i < Math.min(selectedImages.length, 2); i++) {
+      const img = selectedImages[i];
       if (img && img !== product.product_image_url) {
         const url = await ensureHttpUrl(img, `products-${i}`);
         if (url) extraProductUrls.push(url);

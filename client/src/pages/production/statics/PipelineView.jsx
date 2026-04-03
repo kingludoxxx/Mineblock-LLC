@@ -280,10 +280,13 @@ function PipelineColumn({ column, items, onStatusChange, onCardClick, allCreativ
 
 export function PipelineView({ creatives = [], onStatusChange, onCardClick, onRefresh, loading }) {
   // Bucket creatives into columns by status
+  // Variants (9:16 children) are shown as pills on their parent card, not as separate cards
   const buckets = useMemo(() => {
     const map = { review: [], approved: [], ready: [], launched: [] };
     for (const c of creatives) {
       if (c.status === 'rejected') continue; // filter out rejected
+      if (c.parent_creative_id) continue;    // variants shown on parent card, not separately
+      if (c.status === 'generating') continue; // still generating, not ready for pipeline
       const status = c.status === 'queued' ? 'ready' : c.status;
       const key = status in map ? status : 'review';
       map[key].push(c);
