@@ -104,23 +104,13 @@ export default function ScriptGeneratorPanel({ onGenerated, generating, generati
             )}
           </div>
         ) : (
-          <>
             <input
               type="url"
               value={scriptUrl}
               onChange={(e) => setScriptUrl(e.target.value)}
-              placeholder="https://video-url.com/ad.mp4"
+              placeholder="FB Ad Library or direct video URL (.mp4, .webm)"
               className="w-full bg-[#111] border border-white/[0.06] rounded-lg p-2.5 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-[#C6A85C]/30 transition-colors"
             />
-            <div className="mt-1.5 p-2 rounded-lg bg-[#C6A85C]/5 border border-[#C6A85C]/10">
-              <p className="text-[10px] text-[#C6A85C]/80 leading-relaxed">
-                <strong>Paste a direct video URL</strong> (.mp4, .webm, .mov) — the AI will transcribe the ad script automatically.
-              </p>
-              <p className="text-[10px] text-gray-500 mt-1 leading-relaxed">
-                For Atria or FB Ad Library ads: right-click the video → "Copy video address" and paste here. Or use "Paste Text" to paste the script manually.
-              </p>
-            </div>
-          </>
         )}
       </div>
 

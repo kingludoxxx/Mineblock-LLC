@@ -589,25 +589,37 @@ async function extractVideoUrlWithYtdlp(pageUrl) {
     return null;
   }
 
-  try {
-    console.log(`[BriefPipeline] Using yt-dlp to extract video from: ${pageUrl.slice(0, 100)}`);
-    // --get-url returns just the direct video URL, no download
-    // --no-warnings suppresses non-critical warnings
-    // -f "best[ext=mp4]/best" prefers mp4
-    const result = execSync(
-      `"${YTDLP_PATH}" --get-url --no-warnings -f "best[ext=mp4]/best" "${pageUrl}"`,
-      { timeout: 30000, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }
-    ).trim();
+  // Try multiple extraction strategies with yt-dlp
+  const strategies = [
+    // Strategy 1: Standard extraction with mp4 preference
+    `"${YTDLP_PATH}" --get-url --no-warnings -f "best[ext=mp4]/best" "${pageUrl}"`,
+    // Strategy 2: Any format (some FB ads only have dash formats)
+    `"${YTDLP_PATH}" --get-url --no-warnings -f "best" "${pageUrl}"`,
+    // Strategy 3: Force generic extractor as fallback
+    `"${YTDLP_PATH}" --get-url --no-warnings --force-generic-extractor "${pageUrl}"`,
+  ];
 
-    if (result && result.startsWith('http')) {
-      console.log(`[BriefPipeline] yt-dlp extracted video URL: ${result.slice(0, 100)}...`);
-      return result;
+  for (let i = 0; i < strategies.length; i++) {
+    try {
+      console.log(`[BriefPipeline] yt-dlp strategy ${i + 1} for: ${pageUrl.slice(0, 100)}`);
+      const result = execSync(strategies[i], {
+        timeout: 45000,
+        encoding: 'utf8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+      }).trim();
+
+      // yt-dlp may return multiple URLs (video + audio); take the first valid one
+      const firstUrl = result.split('\n').find(line => line.startsWith('http'));
+      if (firstUrl) {
+        console.log(`[BriefPipeline] yt-dlp extracted video URL (strategy ${i + 1}): ${firstUrl.slice(0, 120)}...`);
+        return firstUrl;
+      }
+    } catch (err) {
+      console.warn(`[BriefPipeline] yt-dlp strategy ${i + 1} failed:`, err.message?.slice(0, 200));
     }
-    return null;
-  } catch (err) {
-    console.warn(`[BriefPipeline] yt-dlp failed:`, err.message?.slice(0, 200));
-    return null;
   }
+
+  return null;
 }
 
 async function extractScriptFromUrl(url) {
@@ -628,7 +640,8 @@ async function extractScriptFromUrl(url) {
     try {
       return await extractFromMetaAdId(adId);
     } catch (apiErr) {
-      throw new Error(`Could not extract video from Facebook Ad Library. yt-dlp: ${existsSync(YTDLP_PATH) ? 'failed' : 'not installed'}. Meta API: ${apiErr.message}. Try right-clicking the video → "Copy video address" and paste the direct .mp4 link.`);
+      console.error(`[BriefPipeline] All extraction strategies failed for FB ad ${adId}. yt-dlp: ${existsSync(YTDLP_PATH) ? 'installed but failed' : 'NOT INSTALLED'}. Meta API: ${apiErr.message}`);
+      throw new Error(`Could not extract video from Facebook Ad Library (ad ${adId}). yt-dlp: ${existsSync(YTDLP_PATH) ? 'failed' : 'not installed on server'}. Try right-clicking the video → "Copy video address" and paste the direct .mp4 link.`);
     }
   }
 
