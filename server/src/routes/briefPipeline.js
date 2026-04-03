@@ -6,6 +6,11 @@ import { execSync } from 'child_process';
 import { existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import {
+  getAdAccounts, getPages, getPixels, getCampaigns, getAdSets,
+  getCustomAudiences, createAdSet, createFlexibleAdCreative, createAd,
+  uploadAdImage, uploadAdVideo, isMetaAdsConfigured, getAllAdAccountIds
+} from '../services/metaAdsApi.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -3237,15 +3242,27 @@ router.patch('/generated/:id', authenticate, async (req, res) => {
       if (!newStatus) return res.json({ success: true, brief: rows[0] });
     }
 
-    if (!['approved', 'rejected'].includes(newStatus)) {
-      return res.status(400).json({ success: false, error: { message: 'Status must be "approved" or "rejected"' } });
+    const validStatuses = ['approved', 'rejected', 'ready_to_launch', 'launched', 'launch_failed', 'generated', 'pushed'];
+    if (!validStatuses.includes(newStatus)) {
+      return res.status(400).json({ success: false, error: { message: `Status must be one of: ${validStatuses.join(', ')}` } });
     }
 
-    // Only allow transitions from 'generated' status
-    const extra = newStatus === 'approved' ? ', approved_at = NOW()' : '';
+    // Allow specific transitions
+    const allowedFrom = {
+      approved: ['generated'],
+      rejected: ['generated'],
+      ready_to_launch: ['approved'],
+      launched: ['ready_to_launch', 'launching'],
+      launch_failed: ['ready_to_launch', 'launching'],
+      pushed: ['approved'],
+      generated: ['approved', 'rejected'], // allow un-approve
+    };
+    const fromStatuses = allowedFrom[newStatus] || [];
+    const extra = newStatus === 'approved' ? ', approved_at = NOW()' : newStatus === 'launched' ? ', launched_at = NOW()' : '';
+    const placeholders = fromStatuses.map((_, i) => `$${i + 3}`).join(',');
     const rows = await pgQuery(
-      `UPDATE brief_pipeline_generated SET status = $1${extra} WHERE id = $2 AND status = 'generated' RETURNING *`,
-      [newStatus, req.params.id]
+      `UPDATE brief_pipeline_generated SET status = $1${extra} WHERE id = $2 AND status IN (${placeholders}) RETURNING *`,
+      [newStatus, req.params.id, ...fromStatuses]
     );
 
     if (!rows.length) {
@@ -4047,6 +4064,580 @@ router.post('/settings/prompts/reset', authenticate, async (_req, res) => {
     res.status(500).json({ success: false, error: { message: err.message } });
   }
 });
+
+// ═══════════════════════════════════════════════════════════════════════
+// LAUNCH TEMPLATES & COPY SETS
+// ═══════════════════════════════════════════════════════════════════════
+
+let launchTablesReady = false;
+async function ensureLaunchTables() {
+  if (launchTablesReady) return;
+  await pgQuery(`
+    CREATE TABLE IF NOT EXISTS launch_templates (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      name TEXT NOT NULL,
+      ad_account_id TEXT NOT NULL,
+      ad_account_name TEXT,
+      page_mode TEXT DEFAULT 'single',
+      page_ids JSONB DEFAULT '[]',
+      pixel_id TEXT,
+      pixel_name TEXT,
+      campaign_id TEXT,
+      campaign_name TEXT,
+      adset_name_pattern TEXT DEFAULT '{date} - {angle} - Batch {batch}',
+      ad_name_pattern TEXT DEFAULT '{date} - {angle} {num}',
+      conversion_location TEXT DEFAULT 'WEBSITE',
+      conversion_event TEXT DEFAULT 'PURCHASE',
+      daily_budget NUMERIC(10,2) DEFAULT 150,
+      performance_goal TEXT DEFAULT 'OFFSITE_CONVERSIONS',
+      optimization_goal TEXT DEFAULT 'OFFSITE_CONVERSIONS',
+      bid_strategy TEXT DEFAULT 'LOWEST_COST_WITHOUT_CAP',
+      target_roas NUMERIC(6,2),
+      attribution_window TEXT DEFAULT '7d_click',
+      include_audiences JSONB DEFAULT '[]',
+      exclude_audiences JSONB DEFAULT '[]',
+      countries JSONB DEFAULT '["US"]',
+      age_min INTEGER DEFAULT 18,
+      age_max INTEGER DEFAULT 65,
+      gender TEXT DEFAULT 'all',
+      ad_format TEXT DEFAULT 'FLEXIBLE',
+      utm_parameters TEXT DEFAULT 'tw_source={{site_source_name}}&tw_adid={{ad.id}}',
+      translation_languages JSONB DEFAULT '[]',
+      product_id INTEGER,
+      is_default BOOLEAN DEFAULT false,
+      created_by UUID,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+  await pgQuery(`
+    CREATE TABLE IF NOT EXISTS brief_copy_sets (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      product_id INTEGER,
+      angle TEXT NOT NULL,
+      primary_texts JSONB DEFAULT '[]',
+      headlines JSONB DEFAULT '[]',
+      descriptions JSONB DEFAULT '[]',
+      cta_button TEXT DEFAULT 'SHOP_NOW',
+      landing_page_url TEXT,
+      utm_parameters TEXT DEFAULT 'tw_source={{site_source_name}}&tw_adid={{ad.id}}',
+      created_by UUID,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+  await pgQuery(`
+    CREATE TABLE IF NOT EXISTS brief_launches (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      brief_id UUID,
+      template_id UUID,
+      copy_set_id UUID,
+      ad_account_id TEXT,
+      meta_campaign_id TEXT,
+      meta_adset_id TEXT,
+      meta_ad_id TEXT,
+      meta_creative_id TEXT,
+      ad_name TEXT,
+      adset_name TEXT,
+      page_id TEXT,
+      page_name TEXT,
+      batch_number INTEGER,
+      status TEXT DEFAULT 'pending',
+      error_message TEXT,
+      launched_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+  // Add launch columns to generated table
+  await pgQuery(`ALTER TABLE brief_pipeline_generated ADD COLUMN IF NOT EXISTS launched_at TIMESTAMPTZ`).catch(() => {});
+  await pgQuery(`ALTER TABLE brief_pipeline_generated ADD COLUMN IF NOT EXISTS launch_error TEXT`).catch(() => {});
+  await pgQuery(`ALTER TABLE brief_pipeline_generated ADD COLUMN IF NOT EXISTS meta_ad_ids JSONB DEFAULT '[]'`).catch(() => {});
+  launchTablesReady = true;
+}
+
+// ── Meta API Proxy Endpoints ───────────────────────────────────────────
+
+router.get('/meta/accounts', authenticate, async (_req, res) => {
+  try {
+    if (!isMetaAdsConfigured()) return res.json({ success: true, data: [] });
+    const accounts = await getAdAccounts();
+    res.json({ success: true, data: accounts });
+  } catch (err) {
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+router.get('/meta/pages/:accountId', authenticate, async (req, res) => {
+  try {
+    const pages = await getPages(req.params.accountId);
+    res.json({ success: true, data: pages });
+  } catch (err) {
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+router.get('/meta/pixels/:accountId', authenticate, async (req, res) => {
+  try {
+    const pixels = await getPixels(req.params.accountId);
+    res.json({ success: true, data: pixels });
+  } catch (err) {
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+router.get('/meta/campaigns/:accountId', authenticate, async (req, res) => {
+  try {
+    const campaigns = await getCampaigns(req.params.accountId);
+    res.json({ success: true, data: campaigns });
+  } catch (err) {
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+router.get('/meta/adsets/:campaignId', authenticate, async (req, res) => {
+  try {
+    const adsets = await getAdSets(req.params.campaignId);
+    res.json({ success: true, data: adsets });
+  } catch (err) {
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+router.get('/meta/audiences/:accountId', authenticate, async (req, res) => {
+  try {
+    const audiences = await getCustomAudiences(req.params.accountId);
+    res.json({ success: true, data: audiences });
+  } catch (err) {
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// Sync all Meta data for an ad account at once (used by template editor)
+router.get('/meta/sync/:accountId', authenticate, async (req, res) => {
+  try {
+    const accountId = req.params.accountId;
+    const [pages, pixels, campaigns, audiences] = await Promise.all([
+      getPages(accountId).catch(() => []),
+      getPixels(accountId).catch(() => []),
+      getCampaigns(accountId).catch(() => []),
+      getCustomAudiences(accountId).catch(() => []),
+    ]);
+    res.json({ success: true, data: { pages, pixels, campaigns, audiences } });
+  } catch (err) {
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// ── Launch Template CRUD ───────────────────────────────────────────────
+
+router.get('/launch-templates', authenticate, async (req, res) => {
+  try {
+    await ensureLaunchTables();
+    const { product_id } = req.query;
+    let query = 'SELECT * FROM launch_templates';
+    const params = [];
+    if (product_id) {
+      query += ' WHERE product_id = $1';
+      params.push(product_id);
+    }
+    query += ' ORDER BY is_default DESC, updated_at DESC';
+    const rows = await pgQuery(query, params);
+    res.json({ success: true, data: rows });
+  } catch (err) {
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+router.get('/launch-templates/:id', authenticate, async (req, res) => {
+  try {
+    await ensureLaunchTables();
+    const rows = await pgQuery('SELECT * FROM launch_templates WHERE id = $1', [req.params.id]);
+    if (!rows.length) return res.status(404).json({ success: false, error: { message: 'Template not found' } });
+    res.json({ success: true, data: rows[0] });
+  } catch (err) {
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+router.post('/launch-templates', authenticate, async (req, res) => {
+  try {
+    await ensureLaunchTables();
+    const t = req.body;
+    const rows = await pgQuery(
+      `INSERT INTO launch_templates (
+        name, ad_account_id, ad_account_name, page_mode, page_ids,
+        pixel_id, pixel_name, campaign_id, campaign_name,
+        adset_name_pattern, ad_name_pattern,
+        conversion_location, conversion_event,
+        daily_budget, performance_goal, optimization_goal, bid_strategy, target_roas,
+        attribution_window, include_audiences, exclude_audiences,
+        countries, age_min, age_max, gender, ad_format, utm_parameters,
+        translation_languages, product_id, is_default, created_by
+      ) VALUES (
+        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31
+      ) RETURNING *`,
+      [
+        t.name, t.ad_account_id, t.ad_account_name, t.page_mode || 'single',
+        JSON.stringify(t.page_ids || []),
+        t.pixel_id, t.pixel_name, t.campaign_id, t.campaign_name,
+        t.adset_name_pattern || '{date} - {angle} - Batch {batch}',
+        t.ad_name_pattern || '{date} - {angle} {num}',
+        t.conversion_location || 'WEBSITE', t.conversion_event || 'PURCHASE',
+        t.daily_budget || 150, t.performance_goal || 'OFFSITE_CONVERSIONS',
+        t.optimization_goal || 'OFFSITE_CONVERSIONS',
+        t.bid_strategy || 'LOWEST_COST_WITHOUT_CAP', t.target_roas || null,
+        t.attribution_window || '7d_click',
+        JSON.stringify(t.include_audiences || []), JSON.stringify(t.exclude_audiences || []),
+        JSON.stringify(t.countries || ['US']), t.age_min || 18, t.age_max || 65,
+        t.gender || 'all', t.ad_format || 'FLEXIBLE', t.utm_parameters || '',
+        JSON.stringify(t.translation_languages || []),
+        t.product_id || null, t.is_default || false, req.user?.id || null
+      ]
+    );
+    res.json({ success: true, data: rows[0] });
+  } catch (err) {
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+router.put('/launch-templates/:id', authenticate, async (req, res) => {
+  try {
+    await ensureLaunchTables();
+    const t = req.body;
+    const rows = await pgQuery(
+      `UPDATE launch_templates SET
+        name=$1, ad_account_id=$2, ad_account_name=$3, page_mode=$4, page_ids=$5,
+        pixel_id=$6, pixel_name=$7, campaign_id=$8, campaign_name=$9,
+        adset_name_pattern=$10, ad_name_pattern=$11,
+        conversion_location=$12, conversion_event=$13,
+        daily_budget=$14, performance_goal=$15, optimization_goal=$16, bid_strategy=$17, target_roas=$18,
+        attribution_window=$19, include_audiences=$20, exclude_audiences=$21,
+        countries=$22, age_min=$23, age_max=$24, gender=$25, ad_format=$26, utm_parameters=$27,
+        translation_languages=$28, product_id=$29, is_default=$30, updated_at=NOW()
+      WHERE id=$31 RETURNING *`,
+      [
+        t.name, t.ad_account_id, t.ad_account_name, t.page_mode || 'single',
+        JSON.stringify(t.page_ids || []),
+        t.pixel_id, t.pixel_name, t.campaign_id, t.campaign_name,
+        t.adset_name_pattern, t.ad_name_pattern,
+        t.conversion_location, t.conversion_event,
+        t.daily_budget, t.performance_goal, t.optimization_goal,
+        t.bid_strategy, t.target_roas || null,
+        t.attribution_window,
+        JSON.stringify(t.include_audiences || []), JSON.stringify(t.exclude_audiences || []),
+        JSON.stringify(t.countries || ['US']), t.age_min, t.age_max,
+        t.gender, t.ad_format, t.utm_parameters,
+        JSON.stringify(t.translation_languages || []),
+        t.product_id || null, t.is_default || false, req.params.id
+      ]
+    );
+    if (!rows.length) return res.status(404).json({ success: false, error: { message: 'Template not found' } });
+    res.json({ success: true, data: rows[0] });
+  } catch (err) {
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+router.delete('/launch-templates/:id', authenticate, async (req, res) => {
+  try {
+    const rows = await pgQuery('DELETE FROM launch_templates WHERE id = $1 RETURNING id', [req.params.id]);
+    if (!rows.length) return res.status(404).json({ success: false, error: { message: 'Template not found' } });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// ── Copy Sets CRUD ─────────────────────────────────────────────────────
+
+router.get('/copy-sets', authenticate, async (req, res) => {
+  try {
+    await ensureLaunchTables();
+    const { product_id } = req.query;
+    let query = 'SELECT * FROM brief_copy_sets';
+    const params = [];
+    if (product_id) {
+      query += ' WHERE product_id = $1';
+      params.push(product_id);
+    }
+    query += ' ORDER BY angle ASC';
+    const rows = await pgQuery(query, params);
+    res.json({ success: true, data: rows });
+  } catch (err) {
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+router.post('/copy-sets', authenticate, async (req, res) => {
+  try {
+    await ensureLaunchTables();
+    const c = req.body;
+    const rows = await pgQuery(
+      `INSERT INTO brief_copy_sets (product_id, angle, primary_texts, headlines, descriptions, cta_button, landing_page_url, utm_parameters, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+      [
+        c.product_id, c.angle,
+        JSON.stringify(c.primary_texts || []),
+        JSON.stringify(c.headlines || []),
+        JSON.stringify(c.descriptions || []),
+        c.cta_button || 'SHOP_NOW',
+        c.landing_page_url || '',
+        c.utm_parameters || 'tw_source={{site_source_name}}&tw_adid={{ad.id}}',
+        req.user?.id || null
+      ]
+    );
+    res.json({ success: true, data: rows[0] });
+  } catch (err) {
+    if (err.message.includes('idx_copy_sets_product_angle')) {
+      return res.status(409).json({ success: false, error: { message: `A copy set for angle "${req.body.angle}" already exists` } });
+    }
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+router.put('/copy-sets/:id', authenticate, async (req, res) => {
+  try {
+    const c = req.body;
+    const rows = await pgQuery(
+      `UPDATE brief_copy_sets SET angle=$1, primary_texts=$2, headlines=$3, descriptions=$4, cta_button=$5, landing_page_url=$6, utm_parameters=$7, updated_at=NOW()
+       WHERE id=$8 RETURNING *`,
+      [
+        c.angle,
+        JSON.stringify(c.primary_texts || []),
+        JSON.stringify(c.headlines || []),
+        JSON.stringify(c.descriptions || []),
+        c.cta_button || 'SHOP_NOW',
+        c.landing_page_url || '',
+        c.utm_parameters || '',
+        req.params.id
+      ]
+    );
+    if (!rows.length) return res.status(404).json({ success: false, error: { message: 'Copy set not found' } });
+    res.json({ success: true, data: rows[0] });
+  } catch (err) {
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+router.delete('/copy-sets/:id', authenticate, async (req, res) => {
+  try {
+    const rows = await pgQuery('DELETE FROM brief_copy_sets WHERE id = $1 RETURNING id', [req.params.id]);
+    if (!rows.length) return res.status(404).json({ success: false, error: { message: 'Copy set not found' } });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// ── Launch Briefs to Meta ──────────────────────────────────────────────
+
+function buildLaunchName(pattern, vars) {
+  let result = pattern;
+  for (const [key, val] of Object.entries(vars)) {
+    result = result.replace(new RegExp(`\\{${key}\\}`, 'g'), val || '');
+  }
+  return result.trim();
+}
+
+router.post('/launch', authenticate, async (req, res) => {
+  try {
+    await ensureLaunchTables();
+    if (!isMetaAdsConfigured()) {
+      return res.status(400).json({ success: false, error: { message: 'Meta Ads API not configured' } });
+    }
+
+    const { brief_ids, template_id, copy_set_id } = req.body;
+    if (!brief_ids?.length || !template_id) {
+      return res.status(400).json({ success: false, error: { message: 'brief_ids and template_id are required' } });
+    }
+
+    // Load template
+    const templates = await pgQuery('SELECT * FROM launch_templates WHERE id = $1', [template_id]);
+    if (!templates.length) return res.status(404).json({ success: false, error: { message: 'Template not found' } });
+    const template = templates[0];
+
+    // Load copy set if provided
+    let copySet = null;
+    if (copy_set_id) {
+      const cs = await pgQuery('SELECT * FROM brief_copy_sets WHERE id = $1', [copy_set_id]);
+      if (cs.length) copySet = cs[0];
+    }
+
+    // Load briefs
+    const briefs = await pgQuery(
+      `SELECT * FROM brief_pipeline_generated WHERE id = ANY($1) AND status IN ('approved', 'ready_to_launch')`,
+      [brief_ids]
+    );
+    if (!briefs.length) {
+      return res.status(400).json({ success: false, error: { message: 'No launchable briefs found' } });
+    }
+
+    // Mark briefs as launching
+    await pgQuery(
+      `UPDATE brief_pipeline_generated SET status = 'launching' WHERE id = ANY($1)`,
+      [brief_ids]
+    );
+
+    const dateStr = new Date().toLocaleDateString('en-US', { month: '2-digit', day: '2-digit' }).replace('/', '');
+    const batchNum = Math.floor(Date.now() / 1000) % 10000;
+    const results = [];
+
+    // Round-robin page selection
+    const selectedPages = (template.page_ids || []).filter(p => p.selected !== false);
+    let pageIdx = 0;
+
+    // Determine if we need to create an ad set
+    let adsetId = null;
+    if (template.campaign_id) {
+      // Create a new ad set for this batch
+      const adsetName = buildLaunchName(template.adset_name_pattern, {
+        date: dateStr,
+        angle: briefs[0]?.angle || 'General',
+        batch: batchNum,
+        product: briefs[0]?.product_code || '',
+      });
+
+      try {
+        adsetId = await createAdSet(template.ad_account_id, {
+          name: adsetName,
+          campaignId: template.campaign_id,
+          dailyBudget: template.daily_budget,
+          optimizationGoal: template.optimization_goal,
+          bidStrategy: template.bid_strategy,
+          targetRoas: template.target_roas,
+          pixelId: template.pixel_id,
+          conversionEvent: template.conversion_event,
+          conversionLocation: template.conversion_location,
+          targeting: {
+            countries: template.countries || ['US'],
+            age_min: template.age_min,
+            age_max: template.age_max,
+            gender: template.gender,
+            include_audiences: template.include_audiences || [],
+            exclude_audiences: template.exclude_audiences || [],
+          },
+          attributionWindow: template.attribution_window,
+          pageId: selectedPages[0]?.id,
+          status: 'PAUSED',
+        });
+      } catch (err) {
+        // If ad set creation fails, mark all briefs as failed
+        await pgQuery(
+          `UPDATE brief_pipeline_generated SET status = 'launch_failed', launch_error = $1 WHERE id = ANY($2)`,
+          [`Ad set creation failed: ${err.message}`, brief_ids]
+        );
+        return res.status(500).json({ success: false, error: { message: `Ad set creation failed: ${err.message}` } });
+      }
+    }
+
+    // Launch each brief as an ad
+    for (let i = 0; i < briefs.length; i++) {
+      const brief = briefs[i];
+      const launchId = crypto.randomUUID();
+
+      // Pick page (round-robin)
+      const page = selectedPages.length ? selectedPages[pageIdx % selectedPages.length] : null;
+      pageIdx++;
+
+      const adName = buildLaunchName(template.ad_name_pattern, {
+        date: dateStr,
+        angle: brief.angle || 'General',
+        num: i + 1,
+        batch: batchNum,
+        product: brief.product_code || '',
+      });
+
+      try {
+        await pgQuery(
+          `INSERT INTO brief_launches (id, brief_id, template_id, copy_set_id, ad_account_id, meta_campaign_id, meta_adset_id, ad_name, adset_name, page_id, page_name, batch_number, status)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'uploading')`,
+          [launchId, brief.id, template_id, copy_set_id || null, template.ad_account_id, template.campaign_id, adsetId, adName, '', page?.id, page?.name, batchNum]
+        );
+
+        // Determine ad copy
+        const primaryTexts = copySet?.primary_texts?.length
+          ? copySet.primary_texts
+          : [brief.body || brief.hooks?.[0]?.text || 'Check this out'];
+        const headlines = copySet?.headlines?.length
+          ? copySet.headlines
+          : (brief.hooks || []).map(h => h.text).slice(0, 3);
+        const descriptions = copySet?.descriptions?.length
+          ? copySet.descriptions
+          : [''];
+        const cta = copySet?.cta_button || 'SHOP_NOW';
+        const link = copySet?.landing_page_url || template.utm_parameters || '';
+
+        // Create ad creative
+        const creativeId = await createFlexibleAdCreative(template.ad_account_id, {
+          name: adName,
+          primaryTexts,
+          headlines: headlines.length ? headlines : ['Shop Now'],
+          descriptions,
+          cta,
+          link: link || 'https://mineblock.com',
+          pageId: page?.id || selectedPages[0]?.id,
+          utmParameters: template.utm_parameters,
+        });
+
+        // Create the ad
+        const metaAdId = await createAd(template.ad_account_id, {
+          name: adName,
+          adsetId,
+          creativeId,
+          status: 'PAUSED',
+        });
+
+        // Update records
+        await pgQuery(
+          `UPDATE brief_launches SET status='launched', meta_ad_id=$1, meta_creative_id=$2, launched_at=NOW() WHERE id=$3`,
+          [metaAdId, creativeId, launchId]
+        );
+        await pgQuery(
+          `UPDATE brief_pipeline_generated SET status='launched', launched_at=NOW(),
+           meta_ad_ids = COALESCE(meta_ad_ids, '[]'::jsonb) || $1::jsonb
+           WHERE id=$2`,
+          [JSON.stringify([metaAdId]), brief.id]
+        );
+
+        results.push({ brief_id: brief.id, status: 'launched', meta_ad_id: metaAdId, ad_name: adName });
+      } catch (err) {
+        await pgQuery(`UPDATE brief_launches SET status='failed', error_message=$1 WHERE id=$2`, [err.message, launchId]);
+        await pgQuery(`UPDATE brief_pipeline_generated SET status='launch_failed', launch_error=$1 WHERE id=$2`, [err.message, brief.id]);
+        results.push({ brief_id: brief.id, status: 'failed', error: err.message });
+      }
+    }
+
+    res.json({ success: true, data: { results, adset_id: adsetId } });
+  } catch (err) {
+    console.error('[BriefPipeline] Launch error:', err);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// GET /launch-history — launch history for briefs
+router.get('/launch-history', authenticate, async (req, res) => {
+  try {
+    await ensureLaunchTables();
+    const { brief_id } = req.query;
+    let query = `SELECT bl.*, bg.angle, bg.body, bg.hooks, lt.name as template_name
+                 FROM brief_launches bl
+                 LEFT JOIN brief_pipeline_generated bg ON bg.id = bl.brief_id
+                 LEFT JOIN launch_templates lt ON lt.id = bl.template_id`;
+    const params = [];
+    if (brief_id) {
+      query += ' WHERE bl.brief_id = $1';
+      params.push(brief_id);
+    }
+    query += ' ORDER BY bl.created_at DESC LIMIT 100';
+    const rows = await pgQuery(query, params);
+    res.json({ success: true, data: rows });
+  } catch (err) {
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// PATCH /generated/:id — update status (extended for launch statuses)
+// Already exists above, but we add ready_to_launch support
 
 // ── Admin: Reset all winners back to detected ────────────────────────
 router.post('/admin/reset-winners', authenticate, async (_req, res) => {

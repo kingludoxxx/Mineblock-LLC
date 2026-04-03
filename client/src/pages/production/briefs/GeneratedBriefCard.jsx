@@ -1,10 +1,10 @@
-import { CheckCircle2, RefreshCw, Rocket, ExternalLink, MoreHorizontal, MessageSquare, Play } from 'lucide-react';
+import { CheckCircle2, RefreshCw, Rocket, ExternalLink, MoreHorizontal, MessageSquare, Play, Send, Zap, AlertTriangle, Check } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
 // GeneratedBriefCard — glass-card style matching Magic Patterns design
 // ---------------------------------------------------------------------------
 
-function GeneratedBriefCard({ brief, onApprove, onReject, onPush, onClick, showActions = 'generated' }) {
+function GeneratedBriefCard({ brief, onApprove, onReject, onPush, onMoveToReady, onClick, showActions = 'generated', launchFailed, launchError, onSelectForLaunch, isSelectedForLaunch, metaAdIds }) {
   const hooks = (() => {
     if (Array.isArray(brief.hooks)) return brief.hooks;
     if (typeof brief.hooks === 'string') { try { return JSON.parse(brief.hooks); } catch { return []; } }
@@ -39,7 +39,11 @@ function GeneratedBriefCard({ brief, onApprove, onReject, onPush, onClick, showA
                   ? 'bg-[#c9a84c]/10 text-[#e8d5a3] border-[#c9a84c]/20'
                   : showActions === 'approved'
                     ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
-                    : 'bg-white/[0.06] text-white border-white/[0.08]'
+                    : showActions === 'ready_to_launch'
+                      ? 'bg-blue-500/10 text-blue-400 border-blue-500/20'
+                      : showActions === 'launched'
+                        ? 'bg-violet-500/10 text-violet-400 border-violet-500/20'
+                        : 'bg-white/[0.06] text-white border-white/[0.08]'
               }`}>
                 {angleLabel}
               </span>
@@ -111,13 +115,40 @@ function GeneratedBriefCard({ brief, onApprove, onReject, onPush, onClick, showA
                 </>
               )}
               {showActions === 'approved' && (
+                <>
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); onPush?.(brief); }}
+                    className="px-2.5 py-1 rounded-md bg-white/[0.05] text-white text-[10px] font-mono font-semibold hover:bg-white/[0.08] border border-white/[0.08] hover:border-white/[0.15] transition-all duration-200 flex items-center gap-1.5 uppercase tracking-wide cursor-pointer"
+                  >
+                    <Rocket className="w-3 h-3" /> Push
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); onMoveToReady?.(brief); }}
+                    className="px-2.5 py-1 rounded-md bg-blue-500/10 text-blue-400 text-[10px] font-mono font-semibold hover:bg-blue-500/20 border border-blue-500/20 hover:border-blue-500/30 transition-all duration-200 flex items-center gap-1.5 uppercase tracking-wide cursor-pointer"
+                  >
+                    <Send className="w-3 h-3" /> Launch
+                  </button>
+                </>
+              )}
+              {showActions === 'ready_to_launch' && (
                 <button
                   type="button"
-                  onClick={(e) => { e.stopPropagation(); onPush?.(brief); }}
-                  className="px-2.5 py-1 rounded-md bg-white/[0.05] text-white text-[10px] font-mono font-semibold hover:bg-white/[0.08] border border-white/[0.08] hover:border-white/[0.15] transition-all duration-200 flex items-center gap-1.5 uppercase tracking-wide cursor-pointer"
+                  onClick={(e) => { e.stopPropagation(); onSelectForLaunch?.(); }}
+                  className={`w-7 h-7 rounded-md border flex items-center justify-center transition-all duration-200 cursor-pointer ${
+                    isSelectedForLaunch
+                      ? 'bg-blue-500 border-blue-400 text-white'
+                      : 'bg-white/[0.03] border-white/[0.05] text-zinc-400 hover:text-blue-400 hover:bg-blue-500/10 hover:border-blue-500/25'
+                  }`}
                 >
-                  <Rocket className="w-3 h-3" /> Push
+                  <Check className="w-3 h-3" />
                 </button>
+              )}
+              {showActions === 'launched' && metaAdIds?.length > 0 && (
+                <span className="text-[10px] font-mono text-violet-400">
+                  {metaAdIds.length} ad{metaAdIds.length > 1 ? 's' : ''}
+                </span>
               )}
             </div>
           )}
@@ -127,6 +158,21 @@ function GeneratedBriefCard({ brief, onApprove, onReject, onPush, onClick, showA
         {showActions === 'pushed' && brief.pushed_at && (
           <p className="text-[10px] text-zinc-600 font-mono">
             Pushed {new Date(brief.pushed_at).toLocaleDateString()}
+          </p>
+        )}
+
+        {/* Launch failure indicator */}
+        {launchFailed && (
+          <div className="flex items-center gap-1.5 mt-1 px-2 py-1 rounded bg-red-500/10 border border-red-500/20">
+            <AlertTriangle className="w-3 h-3 text-red-400 shrink-0" />
+            <p className="text-[10px] text-red-300 font-mono truncate">{launchError || 'Launch failed'}</p>
+          </div>
+        )}
+
+        {/* Launched date */}
+        {showActions === 'launched' && brief.launched_at && (
+          <p className="text-[10px] text-zinc-600 font-mono">
+            Launched {new Date(brief.launched_at).toLocaleDateString()}
           </p>
         )}
       </div>

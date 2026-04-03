@@ -12,6 +12,10 @@ import {
   MessageSquare,
   Play,
   MoreHorizontal,
+  Send,
+  Zap,
+  FileText,
+  Package,
 } from 'lucide-react';
 import api from '../../services/api';
 import WinnerCard from './briefs/WinnerCard';
@@ -20,6 +24,8 @@ import GeneratedBriefCard from './briefs/GeneratedBriefCard';
 import BriefDetailModal from './briefs/BriefDetailModal';
 import WinnerDetailModal from './briefs/WinnerDetailModal';
 import PipelineSettingsModal from './briefs/PipelineSettingsModal';
+import LaunchTemplateEditor from './briefs/LaunchTemplateEditor';
+import AdCopySetsManager from './briefs/AdCopySetsManager';
 
 // ---------------------------------------------------------------------------
 // Column definitions
@@ -47,6 +53,20 @@ const PIPELINE_COLUMNS = [
     colorClass: 'text-white drop-shadow-[0_0_6px_rgba(255,255,255,0.3)]',
     badgeClass: 'bg-white/[0.06] text-white border-white/[0.1]',
   },
+  {
+    key: 'ready_to_launch',
+    label: 'Ready to Launch',
+    icon: Send,
+    colorClass: 'text-blue-400 drop-shadow-[0_0_6px_rgba(96,165,250,0.5)]',
+    badgeClass: 'bg-blue-500/10 text-blue-400 border-blue-500/25',
+  },
+  {
+    key: 'launched',
+    label: 'Launched',
+    icon: Zap,
+    colorClass: 'text-violet-400 drop-shadow-[0_0_6px_rgba(167,139,250,0.5)]',
+    badgeClass: 'bg-violet-500/10 text-violet-400 border-violet-500/25',
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -71,6 +91,13 @@ export default function BriefPipeline() {
   const [winnerDetail, setWinnerDetail] = useState(null);
   const [error, setError] = useState(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [templateEditorOpen, setTemplateEditorOpen] = useState(false);
+  const [editingTemplate, setEditingTemplate] = useState(null);
+  const [copySetsOpen, setCopySetsOpen] = useState(false);
+  const [launchTemplates, setLaunchTemplates] = useState([]);
+  const [launching, setLaunching] = useState(false);
+  const [selectedForLaunch, setSelectedForLaunch] = useState([]);
+  const [launchModalOpen, setLaunchModalOpen] = useState(false);
 
   // ---------------------------------------------------------------------------
   // Data fetching
@@ -100,10 +127,20 @@ export default function BriefPipeline() {
     }
   }, []);
 
+  const fetchLaunchTemplates = useCallback(async () => {
+    try {
+      const { data } = await api.get('/brief-pipeline/launch-templates');
+      setLaunchTemplates(data.data || data || []);
+    } catch (err) {
+      console.error('Failed to fetch launch templates:', err);
+    }
+  }, []);
+
   const refreshAll = useCallback(() => {
     fetchWinners();
     fetchGenerated();
-  }, [fetchWinners, fetchGenerated]);
+    fetchLaunchTemplates();
+  }, [fetchWinners, fetchGenerated, fetchLaunchTemplates]);
 
   useEffect(() => {
     refreshAll();
@@ -250,17 +287,57 @@ export default function BriefPipeline() {
     }
   }, [fetchGenerated]);
 
+  const handleMoveToReady = useCallback(async (briefId) => {
+    try {
+      await api.patch(`/brief-pipeline/generated/${briefId}`, { status: 'ready_to_launch' });
+      await fetchGenerated();
+    } catch (err) {
+      console.error('Move to ready failed:', err);
+      setError('Failed to move brief to Ready to Launch.');
+    }
+  }, [fetchGenerated]);
+
+  const handleLaunch = useCallback(async (briefIds, templateId, copySetId) => {
+    setLaunching(true);
+    try {
+      const { data } = await api.post('/brief-pipeline/launch', {
+        brief_ids: briefIds,
+        template_id: templateId,
+        copy_set_id: copySetId || null,
+      });
+      await fetchGenerated();
+      setLaunchModalOpen(false);
+      setSelectedForLaunch([]);
+      const launched = (data.data?.results || []).filter(r => r.status === 'launched').length;
+      const failed = (data.data?.results || []).filter(r => r.status === 'failed').length;
+      if (failed > 0) {
+        setError(`Launched ${launched} ads, ${failed} failed. Check launch history for details.`);
+      }
+    } catch (err) {
+      console.error('Launch failed:', err);
+      setError(err.response?.data?.error?.message || 'Launch failed.');
+    } finally {
+      setLaunching(false);
+    }
+  }, [fetchGenerated]);
+
   // ---------------------------------------------------------------------------
   // Bucket items into columns
   // ---------------------------------------------------------------------------
 
   const buckets = useMemo(() => {
-    const map = { detected: [], generated: [], approved: [], pushed: [] };
+    const map = { detected: [], generated: [], approved: [], pushed: [], ready_to_launch: [], launched: [] };
 
     for (const w of winners) map.detected.push(w);
 
     for (const b of generated) {
-      if (b.status === 'pushed') {
+      if (b.status === 'launched') {
+        map.launched.push(b);
+      } else if (b.status === 'ready_to_launch' || b.status === 'launching') {
+        map.ready_to_launch.push(b);
+      } else if (b.status === 'launch_failed') {
+        map.ready_to_launch.push(b); // show failed ones back in ready column
+      } else if (b.status === 'pushed') {
         map.pushed.push(b);
       } else if (b.status === 'approved') {
         map.approved.push(b);
@@ -332,6 +409,28 @@ export default function BriefPipeline() {
             >
               {detecting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trophy className="w-3.5 h-3.5" />}
               Detect Winners
+            </button>
+
+            <button
+              type="button"
+              onClick={() => { setEditingTemplate(null); setTemplateEditorOpen(true); }}
+              className="inline-flex items-center justify-center gap-2 rounded-lg text-xs font-medium transition-all h-8 px-3
+                         hover:bg-white/[0.05] text-zinc-400 hover:text-zinc-100 border border-transparent hover:border-white/[0.04]
+                         cursor-pointer font-mono tracking-wide uppercase"
+            >
+              <FileText className="w-3.5 h-3.5" />
+              Templates
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setCopySetsOpen(true)}
+              className="inline-flex items-center justify-center gap-2 rounded-lg text-xs font-medium transition-all h-8 px-3
+                         hover:bg-white/[0.05] text-zinc-400 hover:text-zinc-100 border border-transparent hover:border-white/[0.04]
+                         cursor-pointer font-mono tracking-wide uppercase"
+            >
+              <Package className="w-3.5 h-3.5" />
+              Copy Sets
             </button>
 
             <div className="h-4 w-px bg-white/[0.06] mx-1.5" />
@@ -416,7 +515,31 @@ export default function BriefPipeline() {
 
           {/* Right — Pipeline columns */}
           <main className="flex-1 overflow-x-auto bg-transparent p-6 relative">
-            <div className="flex gap-8 h-full min-w-[900px]">
+            {/* Launch action bar */}
+            {selectedForLaunch.length > 0 && (
+              <div className="mb-4 glass-card border border-blue-500/20 rounded-lg px-4 py-3 flex items-center justify-between animate-[fadeIn_0.2s_ease-out]">
+                <span className="text-xs font-mono text-blue-300">
+                  {selectedForLaunch.length} brief{selectedForLaunch.length > 1 ? 's' : ''} selected for launch
+                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setSelectedForLaunch([])}
+                    className="text-xs text-zinc-400 hover:text-white px-2 py-1 cursor-pointer"
+                  >
+                    Clear
+                  </button>
+                  <button
+                    onClick={() => setLaunchModalOpen(true)}
+                    disabled={launching}
+                    className="inline-flex items-center gap-1.5 bg-blue-500 hover:bg-blue-600 text-white text-xs font-medium px-3 py-1.5 rounded-md cursor-pointer disabled:opacity-50"
+                  >
+                    {launching ? <Loader2 className="w-3 h-3 animate-spin" /> : <Zap className="w-3 h-3" />}
+                    Launch to Meta
+                  </button>
+                </div>
+              </div>
+            )}
+            <div className="flex gap-8 h-full min-w-[1500px]">
               {PIPELINE_COLUMNS.map((col, colIdx) => {
                 const items = buckets[col.key];
                 const Icon = col.icon;
@@ -471,6 +594,7 @@ export default function BriefPipeline() {
                                 onClick={() => setDetailModal(item)}
                                 showActions="approved"
                                 onPush={() => handlePush(item.id)}
+                                onMoveToReady={() => handleMoveToReady(item.id)}
                               />
                             );
                           }
@@ -482,6 +606,39 @@ export default function BriefPipeline() {
                                 brief={item}
                                 onClick={() => setDetailModal(item)}
                                 showActions="pushed"
+                              />
+                            );
+                          }
+
+                          if (col.key === 'ready_to_launch') {
+                            return (
+                              <GeneratedBriefCard
+                                key={item.id}
+                                brief={item}
+                                onClick={() => setDetailModal(item)}
+                                showActions="ready_to_launch"
+                                launchFailed={item.status === 'launch_failed'}
+                                launchError={item.launch_error}
+                                onSelectForLaunch={() => {
+                                  setSelectedForLaunch(prev =>
+                                    prev.includes(item.id)
+                                      ? prev.filter(id => id !== item.id)
+                                      : [...prev, item.id]
+                                  );
+                                }}
+                                isSelectedForLaunch={selectedForLaunch.includes(item.id)}
+                              />
+                            );
+                          }
+
+                          if (col.key === 'launched') {
+                            return (
+                              <GeneratedBriefCard
+                                key={item.id}
+                                brief={item}
+                                onClick={() => setDetailModal(item)}
+                                showActions="launched"
+                                metaAdIds={item.meta_ad_ids}
                               />
                             );
                           }
@@ -562,6 +719,77 @@ export default function BriefPipeline() {
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
       />
+
+      {/* Launch Template Editor */}
+      <LaunchTemplateEditor
+        open={templateEditorOpen}
+        onClose={() => { setTemplateEditorOpen(false); setEditingTemplate(null); }}
+        template={editingTemplate}
+        onSaved={() => { fetchLaunchTemplates(); setTemplateEditorOpen(false); setEditingTemplate(null); }}
+      />
+
+      {/* Ad Copy Sets Manager */}
+      <AdCopySetsManager
+        open={copySetsOpen}
+        onClose={() => setCopySetsOpen(false)}
+        productId={null}
+        productName="All Products"
+      />
+
+      {/* Launch Confirmation Modal */}
+      {launchModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={() => !launching && setLaunchModalOpen(false)}>
+          <div className="glass-card border border-white/[0.08] rounded-xl p-6 max-w-md w-full mx-4 shadow-2xl" onClick={e => e.stopPropagation()}>
+            <h3 className="text-sm font-mono font-semibold text-white uppercase tracking-wide mb-4 flex items-center gap-2">
+              <Zap className="w-4 h-4 text-blue-400" />
+              Launch {selectedForLaunch.length} Brief{selectedForLaunch.length > 1 ? 's' : ''} to Meta
+            </h3>
+
+            <div className="space-y-3 mb-6">
+              <div>
+                <label className="font-mono text-[10px] text-[#c9a84c] uppercase tracking-[0.15em] block mb-1.5">
+                  Launch Template
+                </label>
+                <select
+                  id="launch-template-select"
+                  className="w-full bg-white/[0.03] border border-white/[0.06] rounded-lg px-3 py-2 text-sm text-white focus:ring-1 focus:ring-[#c9a84c]/30 focus:border-[#c9a84c]/20"
+                  defaultValue=""
+                >
+                  <option value="" disabled>Select a template...</option>
+                  {launchTemplates.map(t => (
+                    <option key={t.id} value={t.id}>{t.name} — {t.ad_account_name || t.ad_account_id}</option>
+                  ))}
+                </select>
+                {launchTemplates.length === 0 && (
+                  <p className="text-[10px] text-zinc-500 mt-1">No templates yet. Create one first.</p>
+                )}
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3 justify-end">
+              <button
+                onClick={() => { setLaunchModalOpen(false); }}
+                disabled={launching}
+                className="text-xs text-zinc-400 hover:text-white px-3 py-2 cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  const sel = document.getElementById('launch-template-select');
+                  if (!sel?.value) { setError('Please select a launch template'); return; }
+                  handleLaunch(selectedForLaunch, sel.value);
+                }}
+                disabled={launching || launchTemplates.length === 0}
+                className="inline-flex items-center gap-1.5 bg-blue-500 hover:bg-blue-600 text-white text-xs font-semibold px-4 py-2 rounded-lg cursor-pointer disabled:opacity-50"
+              >
+                {launching ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
+                {launching ? 'Launching...' : 'Confirm Launch'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
