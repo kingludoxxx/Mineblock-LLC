@@ -993,6 +993,7 @@ export default function StaticsGeneration() {
         if (full.discount_codes) profile.discountCodes = full.discount_codes;
         if (full.bundle_variants) profile.bundleVariants = full.bundle_variants;
         if (full.compliance_restrictions) profile.complianceRestrictions = full.compliance_restrictions;
+        if (full.notes) profile.notes = full.notes;
       }
 
       // Step 1: Submit to server (Claude analysis + NanoBanana submit — returns fast)
@@ -1223,6 +1224,7 @@ export default function StaticsGeneration() {
           if (full.discount_codes) profile.discountCodes = full.discount_codes;
           if (full.bundle_variants) profile.bundleVariants = full.bundle_variants;
           if (full.compliance_restrictions) profile.complianceRestrictions = full.compliance_restrictions;
+          if (full.notes) profile.notes = full.notes;
         }
 
         const productPayload = {

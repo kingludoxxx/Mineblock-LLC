@@ -82,6 +82,7 @@ async function ensureTable() {
       ALTER TABLE product_profiles ADD COLUMN IF NOT EXISTS max_discount TEXT;
       ALTER TABLE product_profiles ADD COLUMN IF NOT EXISTS discount_codes TEXT;
       ALTER TABLE product_profiles ADD COLUMN IF NOT EXISTS bundle_variants TEXT;
+      ALTER TABLE product_profiles ADD COLUMN IF NOT EXISTS notes TEXT;
     EXCEPTION WHEN OTHERS THEN NULL;
     END $$;
   `);
@@ -102,7 +103,7 @@ const UPDATABLE_FIELDS = [
   'short_name', 'product_type', 'product_group', 'unit_details', 'product_url',
   'pain_points', 'common_objections', 'winning_angles', 'custom_angles_text',
   'compliance_restrictions', 'competitive_edge', 'offer_details',
-  'max_discount', 'discount_codes', 'bundle_variants',
+  'max_discount', 'discount_codes', 'bundle_variants', 'notes',
 ];
 
 const JSONB_FIELDS = new Set([
