@@ -512,7 +512,8 @@ async function transcribeWithGemini(mediaUrl) {
   console.log(`[BriefPipeline] Media downloaded: ${sizeMB.toFixed(1)}MB (${contentType})`);
 
   const transcriptionPrompt = `Transcribe ALL spoken words in this video/audio. Return ONLY the transcript as plain text — no timestamps, no speaker labels, no commentary, no formatting. Just the exact words spoken, preserving the natural flow and paragraph breaks. If there are multiple speakers, separate their lines with paragraph breaks.`;
-  const models = ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-flash-8b'];
+  // Use current Gemini models — 1.5 models are deprecated (404)
+  const models = ['gemini-2.0-flash', 'gemini-2.0-flash-lite'];
 
   // For files > 15MB, use Gemini File API (upload first, then reference)
   // Inline base64 for large files causes 429 rate limits on free tier
@@ -530,8 +531,12 @@ async function transcribeWithGemini(mediaUrl) {
       const result = await callGeminiWithRetry(models, requestBody);
       if (result) return result;
     }
-    // If File API failed, fall through to inline (smaller chance of success but try anyway)
-    console.warn(`[BriefPipeline] File API failed, falling back to inline for ${sizeMB.toFixed(1)}MB file`);
+    // If File API + Gemini failed, try Claude before inline fallback
+    if (sizeMB < 25) {
+      const claudeResult = await transcribeWithClaude(buffer, contentType.split(';')[0]);
+      if (claudeResult) return claudeResult;
+    }
+    console.warn(`[BriefPipeline] File API + Claude failed, falling back to inline for ${sizeMB.toFixed(1)}MB file`);
   }
 
   // Inline base64 approach (works well for files < 15MB)
@@ -546,6 +551,12 @@ async function transcribeWithGemini(mediaUrl) {
 
   const result = await callGeminiWithRetry(models, requestBody);
   if (result) return result;
+
+  // Ultimate fallback: try Claude for transcription (works with audio/video < 25MB)
+  if (sizeMB < 25) {
+    const claudeResult = await transcribeWithClaude(buffer, contentType.split(';')[0]);
+    if (claudeResult) return claudeResult;
+  }
 
   throw new Error('Video transcription failed on all models. Try again in a minute or paste the script text manually.');
 }
@@ -634,8 +645,10 @@ async function callGeminiWithRetry(models, requestBody) {
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         if (attempt > 0) {
-          console.log(`[BriefPipeline] Retrying ${model} in ${10 * attempt}s...`);
-          await new Promise(r => setTimeout(r, 10000 * attempt));
+          // Longer backoff on retry — 30s for rate limits
+          const backoff = lastError?.includes('Rate limited') ? 30000 : 10000;
+          console.log(`[BriefPipeline] Retrying ${model} in ${backoff / 1000}s...`);
+          await new Promise(r => setTimeout(r, backoff));
         }
         console.log(`[BriefPipeline] Trying Gemini model: ${model} (attempt ${attempt + 1})`);
         const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
@@ -647,9 +660,15 @@ async function callGeminiWithRetry(models, requestBody) {
         });
 
         if (geminiRes.status === 429) {
-          console.warn(`[BriefPipeline] ${model} rate limited (429), trying next...`);
+          console.warn(`[BriefPipeline] ${model} rate limited (429), trying next model...`);
           lastError = `${model}: Rate limited`;
-          continue;
+          break; // Skip retries on same model, move to next model
+        }
+
+        if (geminiRes.status === 404) {
+          console.warn(`[BriefPipeline] ${model} not found (404), skipping...`);
+          lastError = `${model}: Model not found`;
+          break; // Skip retries, model doesn't exist
         }
 
         if (!geminiRes.ok) {
@@ -673,6 +692,59 @@ async function callGeminiWithRetry(models, requestBody) {
     }
   }
   return null;
+}
+
+// Fallback: transcribe audio/video using Claude (Anthropic) API
+async function transcribeWithClaude(buffer, mimeType) {
+  if (!ANTHROPIC_API_KEY) return null;
+  try {
+    console.log(`[BriefPipeline] Falling back to Claude for transcription (${(buffer.length / 1024 / 1024).toFixed(1)}MB)`);
+    const base64Data = buffer.toString('base64');
+    // Claude supports audio/video in content blocks
+    const isAudio = mimeType.startsWith('audio/');
+    const res = await fetch(CLAUDE_API_URL, {
+      method: 'POST',
+      headers: {
+        'x-api-key': ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 4096,
+        messages: [{
+          role: 'user',
+          content: [
+            {
+              type: isAudio ? 'document' : 'image',
+              source: { type: 'base64', media_type: mimeType, data: base64Data },
+              ...(isAudio ? {} : {}),
+            },
+            {
+              type: 'text',
+              text: 'Transcribe ALL spoken words in this media. Return ONLY the transcript as plain text — no timestamps, no speaker labels, no commentary. Just the exact words spoken.',
+            },
+          ],
+        }],
+      }),
+      signal: AbortSignal.timeout(120000),
+    });
+
+    if (!res.ok) {
+      console.warn(`[BriefPipeline] Claude transcription failed: HTTP ${res.status}`);
+      return null;
+    }
+    const data = await res.json();
+    const text = data.content?.[0]?.text || '';
+    if (text && text.length >= 20) {
+      console.log(`[BriefPipeline] Claude transcription complete: ${text.length} chars`);
+      return text.trim();
+    }
+    return null;
+  } catch (err) {
+    console.warn(`[BriefPipeline] Claude transcription error:`, err.message);
+    return null;
+  }
 }
 
 // ── Smart URL extraction: handles FB Ad Library, Atria, direct video, HTML pages ──
