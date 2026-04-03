@@ -261,22 +261,6 @@ export function ConfigSidebar({
         )}
       </div>
 
-      {/* Product loaded footer */}
-      {selectedProductObj && (
-        <div className="mt-auto border-t border-white/[0.04] p-4 bg-black/20">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-semibold text-emerald-500 uppercase tracking-wider font-mono">
-              Product Loaded
-            </span>
-          </div>
-          <h4 className="text-sm font-medium text-white mb-1">{selectedProductObj.name}</h4>
-          {selectedProductObj.oneliner && (
-            <p className="text-xs text-zinc-500 leading-relaxed line-clamp-2">
-              {selectedProductObj.oneliner}
-            </p>
-          )}
-        </div>
-      )}
     </aside>
   );
 }

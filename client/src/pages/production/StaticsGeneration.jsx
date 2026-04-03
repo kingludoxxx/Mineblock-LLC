@@ -1817,44 +1817,6 @@ export default function StaticsGeneration() {
                 )}
 
                 {/* Selected product summary */}
-                {selectedProductId && (
-                  <div className="bg-[#111] border border-emerald-500/20 rounded-lg p-4 space-y-2">
-                    <div className="flex items-center justify-between">
-                      <h3 className="text-sm font-medium text-emerald-400">Product Loaded</h3>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setSelectedProductId(null);
-                          setSelectedProductObj(null);
-                          selectedProductRef.current = null;
-                          setProductName('');
-                          setProductDescription('');
-                          setProductPrice('');
-                          setProductImageUrl('');
-                          setProductPreview('');
-                          setOneliner('');
-                          setCustomerAvatar('');
-                          setCustomerFrustration('');
-                          setCustomerDream('');
-                          setBigPromise('');
-                          setMechanism('');
-                          setDifferentiator('');
-                          setVoice('');
-                          setGuarantee('');
-                          setMarketingAngle('');
-                        }}
-                        className="text-[10px] text-slate-500 hover:text-white transition-colors cursor-pointer"
-                      >
-                        Clear
-                      </button>
-                    </div>
-                    <p className="text-white text-sm font-medium">{productName}</p>
-                    {productDescription && <p className="text-xs text-slate-400 line-clamp-2">{productDescription}</p>}
-                    {productPreview && (
-                      <img src={productPreview} alt="" className="w-16 h-16 rounded-md object-cover border border-white/[0.06] mt-1" />
-                    )}
-                  </div>
-                )}
               </div>
 
               {/* Right: Pipeline content (fills remaining) */}
