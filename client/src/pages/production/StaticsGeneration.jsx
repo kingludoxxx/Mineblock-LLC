@@ -31,6 +31,8 @@ import {
   Filter,
   Settings,
   Brain,
+  Trash2,
+  ListPlus,
 } from 'lucide-react';
 import api from '../../services/api';
 import ProductSelector from '../../components/ProductSelector';
@@ -835,6 +837,11 @@ export default function StaticsGeneration() {
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
 
+  // Queue state
+  const [queue, setQueue] = useState([]);
+  const [queueProcessing, setQueueProcessing] = useState(false);
+  const queueRef = useRef([]);
+
   // Creative review state (Standard pipeline)
   const [creatives, setCreatives] = useState([]);
   const [creativesLoading, setCreativesLoading] = useState(false);
@@ -1104,6 +1111,224 @@ export default function StaticsGeneration() {
     setError(null);
     setGenerationStep(0);
   };
+
+  // =========================================================================
+  // QUEUE HANDLERS
+  // =========================================================================
+
+  const handleAddToQueue = () => {
+    if (!selectedProductId || references.length === 0) return;
+
+    const item = {
+      id: crypto.randomUUID(),
+      references: references.map(r => ({ ...r })),
+      angle: marketingAngle,
+      customAngle: customAngle,
+      productId: selectedProductId,
+      productName: productName,
+      productRef: selectedProductRef.current ? { ...selectedProductRef.current } : null,
+      productDescription,
+      productPrice,
+      productImageUrl,
+      aspectRatio,
+      // Profile fields snapshot
+      oneliner, customerAvatar, customerFrustration, customerDream,
+      bigPromise, mechanism, differentiator, voice, guarantee,
+      status: 'queued',
+      result: null,
+      error: null,
+      createdAt: Date.now(),
+    };
+
+    setQueue(prev => {
+      const next = [...prev, item];
+      queueRef.current = next;
+      return next;
+    });
+
+    const pendingCount = queue.filter(q => q.status === 'queued').length + 1;
+    addToast(`Added to queue (${pendingCount} item${pendingCount > 1 ? 's' : ''} pending)`, 'info');
+  };
+
+  const handleRemoveFromQueue = (id) => {
+    setQueue(prev => {
+      const next = prev.filter(q => q.id !== id);
+      queueRef.current = next;
+      return next;
+    });
+  };
+
+  const handleClearQueue = () => {
+    setQueue([]);
+    queueRef.current = [];
+  };
+
+  // Queue processor — runs queued items sequentially
+  useEffect(() => {
+    const hasQueued = queue.some(q => q.status === 'queued');
+    const hasGenerating = queue.some(q => q.status === 'generating');
+
+    if (!hasQueued || hasGenerating || queueProcessing) return;
+
+    const processNext = async () => {
+      setQueueProcessing(true);
+
+      // Find first queued item
+      const currentQueue = queueRef.current;
+      const itemIndex = currentQueue.findIndex(q => q.status === 'queued');
+      if (itemIndex === -1) {
+        setQueueProcessing(false);
+        return;
+      }
+
+      const item = currentQueue[itemIndex];
+
+      // Mark as generating
+      const updateStatus = (id, updates) => {
+        setQueue(prev => {
+          const next = prev.map(q => q.id === id ? { ...q, ...updates } : q);
+          queueRef.current = next;
+          return next;
+        });
+      };
+
+      updateStatus(item.id, { status: 'generating' });
+
+      try {
+        // Build the request using the snapshot data from the queue item
+        const refUrl = item.references[0]?.image_url || item.references[0]?.thumbnail || item.references[0]?.url || '';
+
+        let resolvedProductUrl = item.productImageUrl || '';
+        const full = item.productRef;
+
+        const profile = {};
+        if (item.oneliner) profile.oneliner = item.oneliner;
+        if (item.customerAvatar) profile.customerAvatar = item.customerAvatar;
+        if (item.customerFrustration) profile.customerFrustration = item.customerFrustration;
+        if (item.customerDream) profile.customerDream = item.customerDream;
+        if (item.bigPromise) profile.bigPromise = item.bigPromise;
+        if (item.mechanism) profile.mechanism = item.mechanism;
+        if (item.differentiator) profile.differentiator = item.differentiator;
+        if (item.voice) profile.voice = item.voice;
+        if (item.guarantee) profile.guarantee = item.guarantee;
+        if (full) {
+          if (full.benefits) profile.benefits = full.benefits;
+          if (full.pain_points) profile.painPoints = full.pain_points;
+          if (full.common_objections) profile.commonObjections = full.common_objections;
+          if (full.winning_angles) profile.winningAngles = full.winning_angles;
+          if (full.custom_angles_text) profile.customAngles = full.custom_angles_text;
+          if (full.competitive_edge) profile.competitiveEdge = full.competitive_edge;
+          if (full.offer_details) profile.offerDetails = full.offer_details;
+          if (full.max_discount) profile.maxDiscount = full.max_discount;
+          if (full.discount_codes) profile.discountCodes = full.discount_codes;
+          if (full.bundle_variants) profile.bundleVariants = full.bundle_variants;
+          if (full.compliance_restrictions) profile.complianceRestrictions = full.compliance_restrictions;
+        }
+
+        // Step 1: Submit to server
+        const response = await api.post('/statics-generation/generate', {
+          reference_image_url: refUrl,
+          product: {
+            name: item.productName,
+            description: item.productDescription || undefined,
+            price: item.productPrice || undefined,
+            product_image_url: resolvedProductUrl,
+            product_images: full?.product_images || [],
+            logos: full?.logos || [],
+            logo_url: full?.logo_url || undefined,
+            profile: Object.keys(profile).length > 0 ? profile : undefined,
+          },
+          angle: item.customAngle || item.angle || undefined,
+          ratio: item.aspectRatio,
+        });
+
+        const genResult = response.data?.data || response.data;
+        const tasks = genResult.tasks || (genResult.taskId ? [{ taskId: genResult.taskId, ratio: item.aspectRatio }] : []);
+
+        if (tasks.length === 0) {
+          updateStatus(item.id, { status: 'done', result: genResult });
+          setQueueProcessing(false);
+          return;
+        }
+
+        // Step 2: Poll tasks
+        const pollTask = async (task) => {
+          const maxPolls = 60;
+          for (let i = 0; i < maxPolls; i++) {
+            await new Promise(r => setTimeout(r, 5000));
+            const statusRes = await api.get(`/statics-generation/status/${task.taskId}`);
+            const statusData = statusRes.data?.data || statusRes.data;
+            if (statusData?.resultImageUrl) {
+              return { ratio: task.ratio, imageUrl: statusData.resultImageUrl, taskId: task.taskId };
+            }
+            if (statusData?.status === 'failed' || statusData?.error) {
+              throw new Error(`Generation failed for ${task.ratio}: ${statusData?.error || 'Unknown error'}`);
+            }
+          }
+          throw new Error(`Generation timed out for ${task.ratio}`);
+        };
+
+        const taskResults = await Promise.allSettled(tasks.map(pollTask));
+        const completedTasks = taskResults.filter(r => r.status === 'fulfilled').map(r => r.value);
+        const failedTasks = taskResults.filter(r => r.status === 'rejected').map(r => r.reason?.message || 'Unknown error');
+
+        if (completedTasks.length === 0) {
+          throw new Error(failedTasks.join('; ') || 'All generation tasks failed');
+        }
+
+        // Step 3: Save creatives
+        const groupId = crypto.randomUUID();
+        const currentRef = item.references[0];
+        const resolvedRefUrl = currentRef?.image_url || currentRef?.thumbnail || currentRef?.url || refUrl;
+
+        const savedCreatives = await Promise.all(completedTasks.map(async (task) => {
+          const saveRes = await api.post('/statics-generation/creatives', {
+            product_id: item.productId || null,
+            product_name: item.productName,
+            image_url: task.imageUrl,
+            angle: item.angle || null,
+            aspect_ratio: task.ratio,
+            group_id: groupId,
+            generation_task_id: task.taskId,
+            adapted_text: genResult.adaptedText || genResult.claudeAnalysis?.adapted_text,
+            swap_pairs: genResult.swapPairs,
+            claude_analysis: genResult.claudeAnalysis,
+            reference_thumbnail: resolvedRefUrl,
+            reference_name: currentRef?.name || 'Reference',
+            source_label: currentRef?.source_label || currentRef?.name || null,
+            pipeline: 'standard',
+          });
+          return saveRes.data?.data || saveRes.data;
+        }));
+
+        setCreatives(prev => [...savedCreatives, ...prev]);
+
+        const finalResult = {
+          results: completedTasks,
+          claudeAnalysis: genResult.claudeAnalysis,
+          adaptedText: genResult.adaptedText,
+          swapPairs: genResult.swapPairs,
+          creativeCount: completedTasks.length,
+        };
+
+        updateStatus(item.id, { status: 'done', result: finalResult });
+
+        if (failedTasks.length > 0) {
+          addToast(`Queue: ${completedTasks.length} done, ${failedTasks.length} ratio(s) failed`, 'warning', 6000);
+        } else {
+          addToast(`Queue: ${completedTasks.length} creative${completedTasks.length > 1 ? 's' : ''} generated`, 'success', 4000);
+        }
+      } catch (err) {
+        const message = err.response?.data?.error || err.response?.data?.message || err.message || 'An unexpected error occurred';
+        updateStatus(item.id, { status: 'error', error: message });
+        addToast(`Queue item failed: ${message}`, 'error', 6000);
+      } finally {
+        setQueueProcessing(false);
+      }
+    };
+
+    processNext();
+  }, [queue, queueProcessing]);
 
   // Fetch creatives for pipeline
   const fetchCreatives = async () => {
@@ -1410,6 +1635,7 @@ export default function StaticsGeneration() {
                   }}
                   onRemoveReference={(id) => setReferences(prev => prev.filter(r => r.id !== id))}
                   onGenerate={handleGenerate}
+                  onAddToQueue={handleAddToQueue}
                   generating={generating}
                   onProductsLoaded={(list) => {
                     // Auto-select Miner Forge Pro if no product is selected yet
@@ -1585,6 +1811,84 @@ export default function StaticsGeneration() {
 
               {/* Right: Pipeline content (fills remaining) */}
               <div className="flex-1 min-w-0 space-y-6 pl-5">
+                {/* ---- Generation Queue Panel ---- */}
+                {queue.length > 0 && (
+                  <div className="bg-[#111] border border-white/[0.06] rounded-lg overflow-hidden">
+                    <div className="flex items-center justify-between px-4 py-2.5 border-b border-white/[0.06]">
+                      <div className="flex items-center gap-2">
+                        <ListPlus className="w-4 h-4 text-accent-text" />
+                        <span className="text-sm font-medium text-white">Generation Queue</span>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <span className="text-xs text-slate-500">{queue.length} item{queue.length !== 1 ? 's' : ''}</span>
+                        <button
+                          type="button"
+                          onClick={handleClearQueue}
+                          className="text-slate-600 hover:text-white transition-colors cursor-pointer"
+                          title="Clear queue"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                    <div className="divide-y divide-white/[0.04]">
+                      {queue.map((item) => (
+                        <div key={item.id} className="flex items-center gap-3 px-4 py-2 text-sm">
+                          {/* Status icon */}
+                          <span className="shrink-0 w-5 text-center">
+                            {item.status === 'queued' && <Clock className="w-3.5 h-3.5 text-slate-500 inline" />}
+                            {item.status === 'generating' && <Loader2 className="w-3.5 h-3.5 text-accent-text animate-spin inline" />}
+                            {item.status === 'done' && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 inline" />}
+                            {item.status === 'error' && <AlertCircle className="w-3.5 h-3.5 text-red-400 inline" />}
+                          </span>
+                          {/* Status label */}
+                          <span className={`text-xs font-medium w-[72px] shrink-0 ${
+                            item.status === 'queued' ? 'text-slate-500'
+                            : item.status === 'generating' ? 'text-accent-text'
+                            : item.status === 'done' ? 'text-emerald-400'
+                            : 'text-red-400'
+                          }`}>
+                            {item.status === 'queued' ? 'Queued'
+                              : item.status === 'generating' ? 'Generating'
+                              : item.status === 'done' ? 'Done'
+                              : 'Error'}
+                          </span>
+                          {/* Angle */}
+                          <span className="text-xs text-slate-300 truncate flex-1">
+                            {item.customAngle || item.angle || 'No angle'}
+                          </span>
+                          {/* Reference count */}
+                          <span className="text-[11px] text-slate-500 shrink-0">
+                            {item.references.length} ref{item.references.length !== 1 ? 's' : ''}
+                          </span>
+                          {/* Result info or error */}
+                          <span className="text-[11px] w-[100px] text-right truncate shrink-0">
+                            {item.status === 'done' && item.result?.creativeCount && (
+                              <span className="text-emerald-400">{item.result.creativeCount} creative{item.result.creativeCount !== 1 ? 's' : ''}</span>
+                            )}
+                            {item.status === 'error' && (
+                              <span className="text-red-400 truncate" title={item.error}>{item.error}</span>
+                            )}
+                          </span>
+                          {/* Remove button (only for queued items) */}
+                          <span className="w-6 shrink-0 flex justify-center">
+                            {item.status === 'queued' && (
+                              <button
+                                type="button"
+                                onClick={() => handleRemoveFromQueue(item.id)}
+                                className="text-slate-600 hover:text-red-400 transition-colors cursor-pointer"
+                                title="Remove from queue"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 <PipelineView
                   creatives={creatives}
                   loading={creativesLoading}

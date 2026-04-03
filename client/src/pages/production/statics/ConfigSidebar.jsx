@@ -5,6 +5,7 @@ import {
   X,
   Loader2,
   Sparkles,
+  ListPlus,
 } from 'lucide-react';
 import ProductSelector from '../../../components/ProductSelector';
 
@@ -39,6 +40,7 @@ export function ConfigSidebar({
   onUploadReference,
   onRemoveReference,
   onGenerate,
+  onAddToQueue,
   generating,
   onProductsLoaded,
 }) {
@@ -210,8 +212,8 @@ export function ConfigSidebar({
         </div>
       </div>
 
-      {/* ---- Generate button ---- */}
-      <div className="px-5 py-4 border-t border-white/[0.06] mt-6">
+      {/* ---- Generate & Queue buttons ---- */}
+      <div className="px-5 py-4 border-t border-white/[0.06] mt-6 space-y-2">
         <button
           type="button"
           onClick={onGenerate}
@@ -234,6 +236,21 @@ export function ConfigSidebar({
             </>
           )}
         </button>
+        {onAddToQueue && (
+          <button
+            type="button"
+            onClick={onAddToQueue}
+            disabled={!canGenerate}
+            className={`w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors cursor-pointer ${
+              canGenerate
+                ? 'bg-transparent border border-accent/40 text-accent-text hover:border-accent hover:bg-accent/10'
+                : 'bg-transparent border border-white/[0.06] text-slate-600 cursor-not-allowed'
+            }`}
+          >
+            <ListPlus className="w-4 h-4" />
+            Add to Queue
+          </button>
+        )}
       </div>
     </aside>
   );

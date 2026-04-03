@@ -134,7 +134,7 @@ router.get('/', async (req, res) => {
              target_demographics, customer_frustration, customer_dream, pain_points, common_objections,
              winning_angles, custom_angles_text, max_discount, discount_codes, bundle_variants,
              offer_details, compliance_restrictions, brand_colors, offers,
-             product_images->0 AS first_image,
+             product_images->>0 AS first_image,
              created_at, updated_at
       FROM product_profiles ORDER BY updated_at DESC
     `);
