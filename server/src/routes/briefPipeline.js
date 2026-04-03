@@ -695,6 +695,28 @@ async function callGeminiWithRetry(models, requestBody) {
 
 // ── Smart URL extraction: handles FB Ad Library, Atria, direct video, HTML pages ──
 // ── Extract video URL from any page using yt-dlp ────────────────────
+// Extract video metadata (title, description, ad copy) using yt-dlp — no API needed
+async function extractMetadataWithYtdlp(pageUrl) {
+  if (!existsSync(YTDLP_PATH)) return null;
+  try {
+    console.log(`[BriefPipeline] Extracting metadata with yt-dlp: ${pageUrl.slice(0, 100)}`);
+    const result = execSync(
+      `"${YTDLP_PATH}" -j --no-warnings --skip-download "${pageUrl}"`,
+      { timeout: 45000, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }
+    ).trim();
+    const data = JSON.parse(result);
+    return {
+      title: data.title || '',
+      description: data.description || '',
+      uploader: data.uploader || '',
+      duration: data.duration || 0,
+    };
+  } catch (err) {
+    console.warn('[BriefPipeline] yt-dlp metadata extraction failed:', err.message?.slice(0, 150));
+    return null;
+  }
+}
+
 async function extractVideoUrlWithYtdlp(pageUrl, { audioOnly = false } = {}) {
   if (!existsSync(YTDLP_PATH)) {
     console.warn('[BriefPipeline] yt-dlp not available at', YTDLP_PATH);
@@ -744,30 +766,73 @@ async function extractScriptFromUrl(url) {
     const adId = fbAdMatch[1];
     console.log(`[BriefPipeline] Facebook Ad Library detected, ad ID: ${adId}`);
 
-    // Try yt-dlp: audio-only first (small file, fast Gemini transcription), then full video
+    // Step 1: Extract metadata (title, description, ad copy) — instant, no API calls
+    const metadata = await extractMetadataWithYtdlp(url);
+    if (metadata) {
+      const adCopy = [metadata.title, metadata.description].filter(Boolean).join('\n\n').trim();
+      if (adCopy.length > 50) {
+        console.log(`[BriefPipeline] Got ad copy from metadata (${adCopy.length} chars), using as script reference`);
+        // For short ad copy + long video, append note that there's likely more spoken content
+        if (metadata.duration > 30 && adCopy.length < 300) {
+          console.log(`[BriefPipeline] Ad copy is short (${adCopy.length} chars) for ${metadata.duration}s video — will also try audio transcription`);
+        } else {
+          return adCopy;
+        }
+      }
+    }
+
+    // Step 2: Try audio transcription with yt-dlp + Gemini (audio-only = small file)
     const audioUrl = await extractVideoUrlWithYtdlp(url, { audioOnly: true });
     if (audioUrl) {
       try {
-        return await transcribeWithGemini(audioUrl);
+        const transcript = await transcribeWithGemini(audioUrl);
+        // If we also have metadata, combine them for richer context
+        if (metadata?.description && metadata.description.length > 30) {
+          return `[AD COPY]\n${metadata.title || ''}\n${metadata.description}\n\n[VOICEOVER TRANSCRIPT]\n${transcript}`;
+        }
+        return transcript;
       } catch (audioErr) {
-        console.warn(`[BriefPipeline] Audio transcription failed, trying full video:`, audioErr.message);
+        console.warn(`[BriefPipeline] Audio transcription failed:`, audioErr.message);
+        // If we have metadata ad copy, use that as fallback
+        if (metadata) {
+          const adCopy = [metadata.title, metadata.description].filter(Boolean).join('\n\n').trim();
+          if (adCopy.length > 50) {
+            console.log(`[BriefPipeline] Using metadata ad copy as fallback (${adCopy.length} chars)`);
+            return adCopy;
+          }
+        }
       }
     }
+
+    // Step 3: Try full video transcription
     const videoUrl = await extractVideoUrlWithYtdlp(url);
     if (videoUrl) {
       try {
         return await transcribeWithGemini(videoUrl);
       } catch (videoErr) {
         console.warn(`[BriefPipeline] Video transcription failed:`, videoErr.message);
+        // If we have ANY metadata, use it rather than failing completely
+        if (metadata) {
+          const adCopy = [metadata.title, metadata.description].filter(Boolean).join('\n\n').trim();
+          if (adCopy.length > 20) {
+            console.log(`[BriefPipeline] Using metadata as last resort (${adCopy.length} chars)`);
+            return adCopy;
+          }
+        }
       }
     }
 
-    // Fallback to Meta API
+    // Step 4: Fallback to Meta API
     try {
       return await extractFromMetaAdId(adId);
     } catch (apiErr) {
-      console.error(`[BriefPipeline] All extraction strategies failed for FB ad ${adId}. yt-dlp: ${existsSync(YTDLP_PATH) ? 'installed but failed' : 'NOT INSTALLED'}. Meta API: ${apiErr.message}`);
-      throw new Error(`Could not extract video from Facebook Ad Library (ad ${adId}). yt-dlp: ${existsSync(YTDLP_PATH) ? 'failed' : 'not installed on server'}. Try right-clicking the video → "Copy video address" and paste the direct .mp4 link.`);
+      // If we have metadata from step 1, use it rather than completely failing
+      if (metadata) {
+        const adCopy = [metadata.title, metadata.description].filter(Boolean).join('\n\n').trim();
+        if (adCopy.length > 20) return adCopy;
+      }
+      console.error(`[BriefPipeline] All extraction failed for FB ad ${adId}. yt-dlp: ${existsSync(YTDLP_PATH) ? 'installed' : 'NOT INSTALLED'}`);
+      throw new Error(`Could not extract ad ${adId}. Try right-clicking the video → "Copy video address" and paste the direct .mp4 link.`);
     }
   }
 
