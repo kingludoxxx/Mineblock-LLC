@@ -143,39 +143,21 @@
       text-underline-offset: 4px;
     }
 
-    /* ── Video Placeholder ── */
-    .video-placeholder {
-      width: 100%;
+    /* ── Video ── */
+    .vsl-section {
       max-width: 760px;
-      aspect-ratio: 760 / 427;
-      background: #e6e8ed;
-      border-radius: 12px;
       margin: 0 auto 40px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      cursor: pointer;
+      padding: 0 20px;
+    }
+    .vsl-container {
+      border-radius: 16px;
+      overflow: hidden;
+      aspect-ratio: 16 / 9;
       position: relative;
+      background: #000;
     }
-    .play-btn {
-      width: 72px;
-      height: 72px;
-      border-radius: 50%;
-      background: linear-gradient(135deg, #287af8, #0f26a6);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      box-shadow: 0 4px 20px rgba(40, 122, 248, 0.35);
-    }
-    .play-btn::after {
-      content: '';
-      display: block;
-      width: 0;
-      height: 0;
-      border-style: solid;
-      border-width: 12px 0 12px 22px;
-      border-color: transparent transparent transparent #ffffff;
-      margin-left: 4px;
+    .vsl-container iframe {
+      position: absolute; top: 0; left: 0; width: 100%; height: 100%; border: 0;
     }
 
     /* ── Section Heading ── */
@@ -250,9 +232,9 @@
     .card-image {
       width: 100%;
       height: 180px;
-      background: #e0e2e8;
       border-radius: 10px;
       margin-bottom: 16px;
+      object-fit: contain;
     }
 
     .card--featured .card-image {
@@ -502,9 +484,12 @@
     As a New Customer You've Been Qualified For This <span class="underline">Special One-Time Offer</span>
   </h1>
 
-  <!-- Video Placeholder -->
-  <div class="video-placeholder">
-    <div class="play-btn"></div>
+  <!-- Video — UPDATE the Vimeo ID once the upsell 1 video is ready -->
+  <div class="vsl-section">
+    <div class="vsl-container">
+      <iframe src="https://player.vimeo.com/video/REPLACE_WITH_VIMEO_ID?title=0&byline=0&portrait=0"
+              allow="autoplay; fullscreen; picture-in-picture" allowfullscreen></iframe>
+    </div>
   </div>
 
   <!-- Section Heading -->
@@ -516,7 +501,7 @@
 
     <!-- 5x Miners Bundle -->
     <div class="card">
-      <div class="card-image"></div>
+      <img class="card-image" src="images/bundle-5.png" alt="5x Miners Bundle">
       <h3 class="card-title">5x Miners Bundle</h3>
       <p class="card-subtitle">5 Mining Units</p>
       <ul class="checklist">
@@ -534,7 +519,7 @@
     <!-- 15x Miners Bundle (Featured) -->
     <div class="card card--featured">
       <span class="card-popular-badge">Most Popular</span>
-      <div class="card-image"></div>
+      <img class="card-image" src="images/bundle-15.png" alt="15x Miners Bundle">
       <h3 class="card-title">15x Miners Bundle</h3>
       <p class="card-subtitle">15 Mining Units</p>
       <ul class="checklist">
@@ -551,7 +536,7 @@
 
     <!-- 8x Miners Bundle -->
     <div class="card">
-      <div class="card-image"></div>
+      <img class="card-image" src="images/bundle-8.png" alt="8x Miners Bundle">
       <h3 class="card-title">8x Miners Bundle</h3>
       <p class="card-subtitle">8 Mining Units</p>
       <ul class="checklist">
@@ -593,7 +578,7 @@
 
   <!-- Footer -->
   <footer class="site-footer">
-    <div class="footer-logo">MineBlock</div>
+    <img class="footer-logo" src="images/logo.avif" alt="MineBlock" style="height: 44px; width: auto;">
     <div class="footer-links">
       <a href="#">Privacy Policy</a>
       <a href="#">Terms of Service</a>
