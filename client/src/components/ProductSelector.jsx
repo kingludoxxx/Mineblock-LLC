@@ -3,6 +3,12 @@ import { Package, ChevronDown, Check, ExternalLink, X, Loader2 } from 'lucide-re
 import { useNavigate } from 'react-router-dom';
 import api from '../services/api';
 
+function ProductThumb({ src }) {
+  const [failed, setFailed] = useState(false);
+  if (!src || failed) return <Package className="w-4 h-4 shrink-0 text-white/40" />;
+  return <img src={src} alt="" className="w-6 h-6 rounded object-cover shrink-0" onError={() => setFailed(true)} />;
+}
+
 export default function ProductSelector({ selectedId, selectedProduct: selectedProductProp, onSelect, onLoad, className = '' }) {
   const [products, setProducts] = useState([]);
   const [open, setOpen] = useState(false);
@@ -62,11 +68,7 @@ export default function ProductSelector({ selectedId, selectedProduct: selectedP
         <div className="flex items-center gap-2.5 min-w-0">
           {selected ? (
             <>
-              {(selected.product_images?.[0] || selected.first_image) ? (
-                <img src={selected.product_images?.[0] || selected.first_image} alt="" className="w-6 h-6 rounded object-cover shrink-0" onError={(e) => { e.target.style.display = 'none'; }} />
-              ) : (
-                <Package className="w-4 h-4 shrink-0 text-white/40" />
-              )}
+              <ProductThumb src={selected.product_images?.[0] || selected.first_image} />
               <span className="truncate">{selected.name}</span>
             </>
           ) : (
@@ -125,11 +127,7 @@ export default function ProductSelector({ selectedId, selectedProduct: selectedP
                       }`}
                     >
                       <div className="flex items-center gap-2.5 min-w-0">
-                        {(product.product_images?.[0] || product.first_image) ? (
-                          <img src={product.product_images?.[0] || product.first_image} alt="" className="w-6 h-6 rounded object-cover shrink-0" onError={(e) => { e.target.style.display = 'none'; }} />
-                        ) : (
-                          <Package className="w-4 h-4 shrink-0 text-white/20" />
-                        )}
+                        <ProductThumb src={product.product_images?.[0] || product.first_image} />
                         <span className="text-white/90 truncate">{product.name}</span>
                       </div>
                       {isSelected && (
