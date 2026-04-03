@@ -285,11 +285,18 @@ router.post('/generate', authenticate, async (req, res) => {
 
     console.log(`[staticsGeneration] Logo data: logo_url=${product.logo_url ? 'yes' : 'no'}, logos=${(product.logos || []).length}, resolved logoUrls=${logoUrls.length}`);
     console.log(`[staticsGeneration] Product images: main=${finalProductUrl ? 'yes' : 'no'}, extra=${extraProductUrls.length}`);
+    console.log(`[staticsGeneration] Image URLs sent to NanoBanana:`);
+    console.log(`  [0] main product: ${finalProductUrl?.slice(0, 120)}`);
+    extraProductUrls.forEach((u, i) => console.log(`  [${i+1}] extra product: ${u?.slice(0, 120)}`));
+    logoUrls.forEach((u, i) => console.log(`  [${extraProductUrls.length+1+i}] logo: ${u?.slice(0, 120)}`));
+    console.log(`  [LAST] reference: ${finalReferenceUrl?.slice(0, 120)}`);
 
     const nbPrompt = buildNanoBananaPrompt(claudeResult, swapPairs, product, logoUrls.length);
 
     // Send: product images, then logos, then reference ad (last)
     const imageUrls = [finalProductUrl, ...extraProductUrls, ...logoUrls, finalReferenceUrl];
+    console.log(`[staticsGeneration] NanoBanana prompt:\n${nbPrompt}`);
+    console.log(`[staticsGeneration] Total images: ${imageUrls.length} (${extraProductUrls.length} extra product, ${logoUrls.length} logos)`);
 
     // Determine which ratios to generate — use client-requested ratio, default to both
     const requestedRatio = req.body.ratio;
