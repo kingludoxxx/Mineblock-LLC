@@ -262,9 +262,9 @@ router.post('/generate', authenticate, async (req, res) => {
     let finalReferenceUrl = isUrl ? reference_image_url : await ensureHttpUrl(reference_image_url, 'refs');
     let finalProductUrl = await ensureHttpUrl(product.product_image_url, 'products');
 
-    // Gather product images — use client-selected images if provided, otherwise pick from profile
-    // Cap at 2 extras to avoid confusing Gemini with too many angles
-    const selectedImages = product.selected_product_images || product.product_images || [];
+    // Only send extra product images if client explicitly selects them
+    // By default, send ONLY the main product image for maximum fidelity
+    const selectedImages = product.selected_product_images || [];
     const extraProductUrls = [];
     for (let i = 0; i < Math.min(selectedImages.length, 2); i++) {
       const img = selectedImages[i];
@@ -322,7 +322,7 @@ router.post('/generate', authenticate, async (req, res) => {
           model: 'nano-banana-2',
           imageUrls: imageUrls,
           aspectRatio: r,
-          resolution: '1K',
+          resolution: '2K',
           outputFormat: 'png',
         });
         const res = await fetch(`${NB_BASE}/generate-2`, {
