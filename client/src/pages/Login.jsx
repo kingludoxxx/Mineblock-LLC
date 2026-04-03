@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Mail, Lock, Eye, EyeOff } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
+import DottedSurface from '../components/DottedSurface';
 
 export default function Login() {
   const navigate = useNavigate();
@@ -34,8 +35,9 @@ export default function Login() {
   };
 
   return (
-    <div className="min-h-screen bg-bg-main flex items-center justify-center px-4">
-      <div className="bg-bg-card border border-border-default rounded-xl p-8 w-full max-w-md">
+    <div className="min-h-screen bg-[#111113] flex items-center justify-center px-4 relative overflow-hidden">
+      <DottedSurface />
+      <div className="relative z-10 glass-card border border-white/[0.06] rounded-xl p-8 w-full max-w-md shadow-2xl">
         {/* Brand */}
         <div className="text-center mb-8">
           <img src="/logo-white.png" alt="Mineblock" className="h-6 w-auto mx-auto mb-4" />
