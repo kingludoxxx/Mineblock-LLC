@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import {
   X, ArrowLeft, RefreshCw, Loader2, Check, ChevronDown, Plus,
   Users, Target, DollarSign, BarChart3, Tag, Languages, Layout,
-  Link2, Eye, Save, Megaphone,
+  Link2, Eye, Save, Megaphone, Globe,
 } from 'lucide-react';
 import api from '../../../services/api';
 
@@ -70,6 +70,7 @@ const DEFAULT_FORM = {
   gender: 'All',
   adFormat: 'Single Video',
   utmParams: 'utm_source=facebook&utm_medium=paid&utm_campaign={{campaign.name}}&utm_content={{ad.name}}',
+  landingPageUrl: '',
   translationLanguages: [],
 };
 
@@ -208,6 +209,7 @@ export default function LaunchTemplateEditor({ open, onClose, template, onSaved 
         gender: template.gender ? template.gender.charAt(0).toUpperCase() + template.gender.slice(1) : 'All',
         adFormat: template.ad_format === 'FLEXIBLE' ? 'Flexible Ads' : (template.ad_format || 'Flexible Ads').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
         utmParams: template.utm_parameters || DEFAULT_FORM.utmParams,
+        landingPageUrl: template.landing_page_url || '',
         translationLanguages: template.translation_languages || [],
       });
     } else {
@@ -321,6 +323,7 @@ export default function LaunchTemplateEditor({ open, onClose, template, onSaved 
         gender: form.gender.toLowerCase(),
         ad_format: form.adFormat === 'Flexible Ads' ? 'FLEXIBLE' : form.adFormat.toUpperCase().replace(/ /g, '_'),
         utm_parameters: form.utmParams,
+        landing_page_url: form.landingPageUrl || null,
         translation_languages: form.translationLanguages,
         product_id: null,
       };
@@ -646,15 +649,34 @@ export default function LaunchTemplateEditor({ open, onClose, template, onSaved 
 
           {/* 10. Audience */}
           <Card>
-            <SectionLabel icon={Users}>Audience</SectionLabel>
+            <div className="flex items-center justify-between mb-3">
+              <SectionLabel icon={Users}>Audience</SectionLabel>
+              {form.accountId && (
+                <button
+                  type="button"
+                  onClick={() => syncAccount(form.accountId)}
+                  disabled={syncing}
+                  className="flex items-center gap-1.5 text-[10px] text-[#c9a84c]/70 hover:text-[#c9a84c] transition cursor-pointer disabled:opacity-50"
+                >
+                  <RefreshCw className={`w-3 h-3 ${syncing ? 'animate-spin' : ''}`} />
+                  {syncing ? 'Syncing...' : 'Reload Audiences'}
+                </button>
+              )}
+            </div>
             <div className="space-y-4">
               {/* Include */}
               <div>
                 <FieldLabel>Include Audiences</FieldLabel>
-                {audiences.length === 0 ? (
-                  <p className="text-xs text-zinc-600">Sync an account to load audiences</p>
+                {!form.accountId ? (
+                  <p className="text-xs text-zinc-600">Select an ad account first</p>
+                ) : syncing ? (
+                  <div className="flex items-center gap-2 text-xs text-zinc-500 py-2">
+                    <Loader2 className="w-3 h-3 animate-spin" /> Loading audiences...
+                  </div>
+                ) : audiences.length === 0 ? (
+                  <p className="text-xs text-zinc-600">No custom audiences found in this account</p>
                 ) : (
-                  <div className="space-y-1 max-h-32 overflow-y-auto">
+                  <div className="space-y-1 max-h-40 overflow-y-auto">
                     {audiences.map((aud) => (
                       <label
                         key={aud.id}
@@ -666,7 +688,8 @@ export default function LaunchTemplateEditor({ open, onClose, template, onSaved 
                           onChange={() => toggleArrayItem('includeAudiences', aud.id)}
                           className="accent-[#c9a84c]"
                         />
-                        <span className="text-sm text-white truncate">{aud.name}</span>
+                        <span className="text-sm text-white truncate flex-1">{aud.name}</span>
+                        {aud.size > 0 && <span className="text-[10px] text-zinc-600 shrink-0">{aud.size?.toLocaleString()}</span>}
                       </label>
                     ))}
                   </div>
@@ -676,10 +699,16 @@ export default function LaunchTemplateEditor({ open, onClose, template, onSaved 
               {/* Exclude */}
               <div>
                 <FieldLabel>Exclude Audiences</FieldLabel>
-                {audiences.length === 0 ? (
-                  <p className="text-xs text-zinc-600">Sync an account to load audiences</p>
+                {!form.accountId ? (
+                  <p className="text-xs text-zinc-600">Select an ad account first</p>
+                ) : syncing ? (
+                  <div className="flex items-center gap-2 text-xs text-zinc-500 py-2">
+                    <Loader2 className="w-3 h-3 animate-spin" /> Loading audiences...
+                  </div>
+                ) : audiences.length === 0 ? (
+                  <p className="text-xs text-zinc-600">No custom audiences found in this account</p>
                 ) : (
-                  <div className="space-y-1 max-h-32 overflow-y-auto">
+                  <div className="space-y-1 max-h-40 overflow-y-auto">
                     {audiences.map((aud) => (
                       <label
                         key={aud.id}
@@ -691,7 +720,8 @@ export default function LaunchTemplateEditor({ open, onClose, template, onSaved 
                           onChange={() => toggleArrayItem('excludeAudiences', aud.id)}
                           className="accent-[#c9a84c]"
                         />
-                        <span className="text-sm text-white truncate">{aud.name}</span>
+                        <span className="text-sm text-white truncate flex-1">{aud.name}</span>
+                        {aud.size > 0 && <span className="text-[10px] text-zinc-600 shrink-0">{aud.size?.toLocaleString()}</span>}
                       </label>
                     ))}
                   </div>
@@ -792,7 +822,20 @@ export default function LaunchTemplateEditor({ open, onClose, template, onSaved 
             </Select>
           </Card>
 
-          {/* 12. UTM Parameters */}
+          {/* 12. Landing Page URL */}
+          <Card>
+            <SectionLabel icon={Globe}>Landing Page URL</SectionLabel>
+            <Input
+              value={form.landingPageUrl}
+              onChange={set('landingPageUrl')}
+              placeholder="https://mineblock.co/pages/list-v1"
+            />
+            <p className="mt-1.5 text-[11px] text-zinc-600">
+              Default destination URL for ads. Can be overridden per copy set.
+            </p>
+          </Card>
+
+          {/* 13. UTM Parameters */}
           <Card>
             <SectionLabel icon={Link2}>UTM Parameters</SectionLabel>
             <Input

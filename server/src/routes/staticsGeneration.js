@@ -1422,7 +1422,7 @@ router.post('/launch', authenticate, async (req, res) => {
           : safeArr(genCopy.descriptions).length ? safeArr(genCopy.descriptions)
           : [''];
         const cta = copySet?.cta_button || genCopy.cta || 'SHOP_NOW';
-        const link = copySet?.landing_page_url || 'https://mineblock.com';
+        const link = copySet?.landing_page_url || template.landing_page_url || 'https://mineblock.com';
 
         // Create ad creative
         const metaCreativeId = await createFlexibleAdCreative(template.ad_account_id, {

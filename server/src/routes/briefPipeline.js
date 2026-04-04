@@ -4162,6 +4162,7 @@ async function _initLaunchTables() {
       gender TEXT DEFAULT 'all',
       ad_format TEXT DEFAULT 'FLEXIBLE',
       utm_parameters TEXT DEFAULT 'tw_source={{site_source_name}}&tw_adid={{ad.id}}',
+      landing_page_url TEXT,
       translation_languages JSONB DEFAULT '[]',
       product_id INTEGER,
       is_default BOOLEAN DEFAULT false,
@@ -4170,6 +4171,8 @@ async function _initLaunchTables() {
       updated_at TIMESTAMPTZ DEFAULT NOW()
     )
   `);
+  // Migration for existing tables
+  await pgQuery(`ALTER TABLE launch_templates ADD COLUMN IF NOT EXISTS landing_page_url TEXT`).catch(() => {});
   await pgQuery(`
     CREATE TABLE IF NOT EXISTS brief_copy_sets (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -4277,11 +4280,12 @@ router.get('/meta/sync/:accountId', authenticate, async (req, res) => {
   try {
     const accountId = req.params.accountId;
     const [pages, pixels, campaigns, audiences] = await Promise.all([
-      getPages(accountId).catch(() => []),
-      getPixels(accountId).catch(() => []),
-      getCampaigns(accountId).catch(() => []),
-      getCustomAudiences(accountId).catch(() => []),
+      getPages(accountId).catch(e => { console.error('Sync pages error:', e.message); return []; }),
+      getPixels(accountId).catch(e => { console.error('Sync pixels error:', e.message); return []; }),
+      getCampaigns(accountId).catch(e => { console.error('Sync campaigns error:', e.message); return []; }),
+      getCustomAudiences(accountId).catch(e => { console.error('Sync audiences error:', e.message); return []; }),
     ]);
+    console.log(`Sync ${accountId}: ${pages.length} pages, ${pixels.length} pixels, ${campaigns.length} campaigns, ${audiences.length} audiences`);
     res.json({ success: true, data: { pages, pixels, campaigns, audiences } });
   } catch (err) {
     res.status(500).json({ success: false, error: { message: err.message } });
@@ -4332,9 +4336,9 @@ router.post('/launch-templates', authenticate, async (req, res) => {
         daily_budget, performance_goal, optimization_goal, bid_strategy, target_roas,
         attribution_window, include_audiences, exclude_audiences,
         countries, age_min, age_max, gender, ad_format, utm_parameters,
-        translation_languages, product_id, is_default, created_by
+        landing_page_url, translation_languages, product_id, is_default, created_by
       ) VALUES (
-        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31
+        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32
       ) RETURNING *`,
       [
         t.name, t.ad_account_id, t.ad_account_name, t.page_mode || 'single',
@@ -4350,6 +4354,7 @@ router.post('/launch-templates', authenticate, async (req, res) => {
         JSON.stringify(t.include_audiences || []), JSON.stringify(t.exclude_audiences || []),
         JSON.stringify(t.countries || ['US']), t.age_min || 18, t.age_max || 65,
         t.gender || 'all', t.ad_format || 'FLEXIBLE', t.utm_parameters || '',
+        t.landing_page_url || null,
         JSON.stringify(t.translation_languages || []),
         t.product_id || null, t.is_default || false, req.user?.id || null
       ]
@@ -4373,8 +4378,8 @@ router.put('/launch-templates/:id', authenticate, async (req, res) => {
         daily_budget=$14, performance_goal=$15, optimization_goal=$16, bid_strategy=$17, target_roas=$18,
         attribution_window=$19, include_audiences=$20, exclude_audiences=$21,
         countries=$22, age_min=$23, age_max=$24, gender=$25, ad_format=$26, utm_parameters=$27,
-        translation_languages=$28, product_id=$29, is_default=$30, updated_at=NOW()
-      WHERE id=$31 RETURNING *`,
+        landing_page_url=$28, translation_languages=$29, product_id=$30, is_default=$31, updated_at=NOW()
+      WHERE id=$32 RETURNING *`,
       [
         t.name, t.ad_account_id, t.ad_account_name, t.page_mode || 'single',
         JSON.stringify(t.page_ids || []),
@@ -4387,6 +4392,7 @@ router.put('/launch-templates/:id', authenticate, async (req, res) => {
         JSON.stringify(t.include_audiences || []), JSON.stringify(t.exclude_audiences || []),
         JSON.stringify(t.countries || ['US']), t.age_min, t.age_max,
         t.gender, t.ad_format, t.utm_parameters,
+        t.landing_page_url || null,
         JSON.stringify(t.translation_languages || []),
         t.product_id || null, t.is_default || false, req.params.id
       ]
