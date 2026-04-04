@@ -213,15 +213,15 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, onRegener
             {!creative.parent_creative_id && (
               <div className="flex items-center gap-2.5">
                 <span className="inline-flex items-center gap-1 text-[11px] text-zinc-400 font-mono">
-                  <span className={`w-[6px] h-[6px] rounded-full ${creative.image_url ? 'bg-amber-400' : 'bg-zinc-600'}`} />
+                  <span className={`w-[6px] h-[6px] rounded-full ${creative.image_url ? 'bg-yellow-400' : 'bg-zinc-600'}`} />
                   {creative.aspect_ratio || '4:5'}
                 </span>
                 <span className="inline-flex items-center gap-1 text-[11px] text-zinc-400 font-mono">
                   <span className={`w-[6px] h-[6px] rounded-full ${
-                    variantStatus === 'done' ? 'bg-amber-400'
-                    : variantStatus === 'generating' ? 'bg-amber-400 animate-pulse'
+                    variantStatus === 'done' ? 'bg-yellow-400'
+                    : variantStatus === 'generating' ? 'bg-yellow-400 animate-pulse'
                     : variantStatus === 'failed' ? 'bg-red-400'
-                    : 'bg-amber-400/40'
+                    : 'bg-yellow-400'
                   }`} />
                   9:16
                 </span>
