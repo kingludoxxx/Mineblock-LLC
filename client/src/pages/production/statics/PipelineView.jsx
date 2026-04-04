@@ -290,7 +290,7 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, onRegener
                   e.stopPropagation();
                   onRegenerate?.(creative);
                 }}
-                className="p-1.5 rounded-lg border border-white/[0.08] text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.04] transition-colors cursor-pointer"
+                className="p-1.5 rounded-lg border border-[#c9a84c]/25 text-[#c9a84c]/70 hover:text-[#d4b55a] hover:bg-[#c9a84c]/10 transition-colors cursor-pointer"
                 title="Regenerate"
               >
                 <RefreshCw className="w-3.5 h-3.5" />
