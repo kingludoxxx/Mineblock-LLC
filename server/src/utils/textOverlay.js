@@ -169,7 +169,7 @@ function escapeXml(str) {
  * @param {Array} textElements - array of { x, y, lines, fontSize, fontWeight, fontFamily, color, alignment }
  * @returns {string} SVG markup
  */
-function buildTextSvg(width, height, textElements) {
+function buildTextSvg(width, height, textElements, bgColor = null) {
   let svgContent = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">`;
 
   for (const el of textElements) {
@@ -188,6 +188,22 @@ function buildTextSvg(width, height, textElements) {
     const lineHeight = el.fontSize * 1.2;
     const blockHalfHeight = (totalLines * lineHeight) / 2;
     const startY = el.y - blockHalfHeight + el.fontSize * 0.5;
+
+    // Paint an opaque background rectangle behind each text element to cover
+    // any garbled text that NanoBanana may have rendered despite "no text" instruction.
+    if (bgColor) {
+      const maxLineChars = Math.max(...el.lines.map(l => l.length));
+      const estimatedWidth = Math.min(maxLineChars * el.fontSize * 0.55 + el.fontSize * 2, width * 0.95);
+      const blockHeight = totalLines * lineHeight + el.fontSize * 0.6;
+      const rectX = el.alignment === 'left'
+        ? Math.round(width * 0.04)
+        : el.alignment === 'right'
+          ? Math.round(width * 0.96 - estimatedWidth)
+          : Math.round(x - estimatedWidth / 2);
+      const rectY = Math.round(startY - el.fontSize * 0.4);
+
+      svgContent += `<rect x="${rectX}" y="${rectY}" width="${Math.round(estimatedWidth)}" height="${Math.round(blockHeight)}" fill="${bgColor}" rx="4" ry="4"/>`;
+    }
 
     svgContent += `<text x="${x}" y="${startY}" font-family="${escapeXml(el.fontFamily)}" font-size="${el.fontSize}" font-weight="${el.fontWeight}" fill="${el.color}" text-anchor="${anchor}" dominant-baseline="auto" stroke="${strokeColor}" stroke-width="${strokeWidth}" paint-order="stroke">`;
 
@@ -351,9 +367,26 @@ export async function overlayText(imageBuffer, swapPairs, layoutMap, options = {
     return imageBuffer;
   }
 
-  // Step 4: Build SVG and render to PNG
-  const svgString = buildTextSvg(width, height, svgElements);
-  console.log(`${LOG_PREFIX} SVG generated: ${svgString.length} chars, ${svgElements.length} text element(s)`);
+  // Step 4: Sample dominant background color for erasing NanoBanana's garbled text
+  let bgColor = null;
+  try {
+    const { dominant } = await sharp(imageBuffer).stats();
+    if (dominant) {
+      const r = Math.round(dominant.r);
+      const g = Math.round(dominant.g);
+      const b = Math.round(dominant.b);
+      bgColor = `rgb(${r},${g},${b})`;
+      console.log(`${LOG_PREFIX} Sampled dominant bg color: ${bgColor}`);
+    }
+  } catch (e) {
+    // Fallback: use tone-based estimate
+    bgColor = backgroundTone === 'light' ? '#F0F0F0' : backgroundTone === 'dark' ? '#1A1A1A' : '#333333';
+    console.log(`${LOG_PREFIX} Could not sample bg color, using fallback: ${bgColor}`);
+  }
+
+  // Step 5: Build SVG and render to PNG
+  const svgString = buildTextSvg(width, height, svgElements, bgColor);
+  console.log(`${LOG_PREFIX} SVG generated: ${svgString.length} chars, ${svgElements.length} text element(s), bg erase: ${bgColor || 'none'}`);
 
   let textPng;
   try {
@@ -369,7 +402,7 @@ export async function overlayText(imageBuffer, swapPairs, layoutMap, options = {
 
   console.log(`${LOG_PREFIX} Text layer rendered: ${textPng.length} bytes`);
 
-  // Step 5: Composite text layer onto base image
+  // Step 6: Composite text layer onto base image
   const composited = await sharp(imageBuffer)
     .composite([{
       input: textPng,
