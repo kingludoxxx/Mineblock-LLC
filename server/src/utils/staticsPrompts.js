@@ -267,7 +267,14 @@ COPY QUALITY SELF-CHECK (run this mentally before returning):
 6. Count check: same number of headlines, bullets, badges, stats as original. Don't add or remove elements. Leave fields empty ("") if no corresponding text exists.
 7. GRAMMAR & SPELLING CHECK: Read every adapted text element. Fix any grammar or spelling errors. "atemps" → "attempts". "Gaurantee" → "Guarantee". Every word must be spelled correctly.
 8. BENEFIT CHECK: Re-read every bullet/stat. Does it state a spec or a benefit? "144 attempts daily" is a SPEC → rewrite as "144 daily chances to win $300K+". "1 watt" is a SPEC → rewrite as "$1/month to run". If any text reads like a product spec sheet, you FAILED — rewrite it.
-9. CHARACTER COUNT CHECK: Compare each adapted text element's length against its original. If your adapted text is more than 30% longer than the original, SHORTEN IT. The text must fit in the same visual space. A 20-char original should not become a 40-char adaptation.
+9. ⚠️ CHARACTER COUNT CHECK (CRITICAL FOR IMAGE GENERATION — THIS IS THE #1 CAUSE OF BAD OUTPUT):
+   For EVERY adapted text element, count the characters and compare to the original:
+   - If original is 25 chars, adapted MUST be 20-30 chars (NOT 50+ chars)
+   - If original is 40 chars, adapted MUST be 35-45 chars (NOT 70+ chars)
+   - NEVER exceed the original length by more than 20%. The image generator CANNOT render long text — it will truncate, misspell, or garble text that is too long.
+   - SHORT text renders PERFECTLY. Long text renders BADLY. When in doubt, make it SHORTER.
+   - A 3-word bullet like "No more bloating" should become "144 daily Bitcoin shots" (3-4 words) — NOT "144 real shots at a $300K Bitcoin block. Every single day." (too long!)
+   - REWRITE any adapted text that exceeds the original character count by more than 20%
 10. BRAND NAME CHECK: Does any adapted text still contain the COMPETITOR's brand name? If yes, replace it with the product name from PRODUCT CONTEXT. Zero competitor branding in adapted text.
 
 ---
@@ -433,15 +440,36 @@ export function buildNanoBananaPrompt(claudeResult, swapPairs, product, logoCoun
     ? `\nVisual changes: ${mustChangeVisuals.map(v => `${v.position}: replace "${v.original_visual}" with "${v.adapted_visual}"`).join('; ')}`
     : '';
 
-  return `MANDATORY TEXT CHANGES — apply these EXACT text swaps:
-${swapSection || '(No text changes)'}
-Every swap above MUST appear in the output. Copy each adapted string CHARACTER FOR CHARACTER. Do NOT keep the original text. Do NOT add any text not listed above. Unchanged text stays exactly as-is.
+  // Truncate swap pairs that are too long — NanoBanana garbles long text
+  const truncatedPairs = swapPairs.map(pair => {
+    const origLen = (pair.original || '').length;
+    let adapted = pair.adapted || '';
+    // If adapted is much longer than original, truncate with warning
+    if (adapted.length > origLen * 1.3 && origLen > 0 && origLen < 80) {
+      adapted = adapted.slice(0, Math.max(origLen + 5, 20));
+      // Clean up truncation — don't end mid-word
+      const lastSpace = adapted.lastIndexOf(' ');
+      if (lastSpace > adapted.length * 0.6) adapted = adapted.slice(0, lastSpace);
+    }
+    return { ...pair, adapted };
+  });
+
+  const swapSectionFinal = truncatedPairs.map((pair, i) =>
+    `  ${i + 1}. [${pair.field || 'text'}] "${pair.original}" → "${pair.adapted}"`
+  ).join('\n');
+
+  return `BRAND NAME: "${product.name}" — spell this EXACTLY. Every letter matters.
+
+MANDATORY TEXT CHANGES — apply these EXACT text swaps:
+${swapSectionFinal || '(No text changes)'}
+Copy each adapted string EXACTLY as written above — letter by letter, character by character. Do NOT keep any original text. Do NOT rephrase or rewrite the adapted text. Do NOT add any text not listed above. Text not in this list stays exactly as-is.
 
 Edit the reference ad (LAST image):
 - Replace the product with ${product.name} from image 1. Show it ${claudeResult.product_orientation || 'front-facing'}, exactly as photographed.${productRulesSection}
 - Keep the EXACT same layout, background, colors, fonts, and positions.${logoInstruction}${visualLine}
 - ${characterRules}
-- Spelling must be PERFECT — verify every word letter by letter.
-- Do NOT add extra text, badges, watermarks, or elements not in the reference.
+- TEXT SPELLING: Every word must be spelled correctly. Double-check "${product.name}" especially — it must appear exactly as written, not "MinerBlorge" or "MineBlock" or any variation.
+- Do NOT add extra text, badges, watermarks, coins, decorations, or ANY visual elements not in the reference.
+- Do NOT add the product to scenes where the reference has no product shown — only swap if the reference already shows a product.
 - Background must EXACTLY match the reference (same color, gradient, texture).${co.absoluteRules ? `\n${co.absoluteRules}` : ''}`;
 }

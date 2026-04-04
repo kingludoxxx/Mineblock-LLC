@@ -1496,7 +1496,7 @@ Reference ads may come from any niche. Map visuals to bitcoin mining context:
       absoluteRules: `ABSOLUTE RULES:
 1. EXACT same layout structure as reference — same columns, same sections, same proportions
 2. ZERO competitor branding remaining (logos, names, product images)
-3. Every text swap must be applied
+3. Every text swap must be applied — copy the adapted text EXACTLY, letter by letter
 4. TEXT FIDELITY: Render ONLY the text listed in the swap pairs. Do NOT add headlines, subheadlines, badges, banners, watermarks, or ANY text not in the swap list. If the swap list has 5 pairs, output must have EXACTLY 5 changed text elements — no more, no fewer
 5. ALL TEXT NOT IN THE SWAP LIST must remain EXACTLY as it appears in the reference — letter-for-letter, same font, same position. Do NOT modify, rephrase, or misspell any unchanged text
 6. Comparison labels, timeline labels, ingredient labels ALL get swapped
@@ -1504,7 +1504,9 @@ Reference ads may come from any niche. Map visuals to bitcoin mining context:
 8. Hands: exactly 5 fingers, realistic proportions
 9. Match reference style, color palette, mood, and visual quality
 10. PRICES MUST MATCH the text swap list EXACTLY — do not invent or modify any price, discount percentage, or dollar amount
-11. BACKGROUND FIDELITY: The background must be a PIXEL-PERFECT match to the reference — same color, same gradient direction, same texture, same pattern. Do NOT simplify, flatten, or recolor the background. If the reference has a textured/patterned background, reproduce that exact texture/pattern`,
+11. BACKGROUND FIDELITY: The background must be a PIXEL-PERFECT match to the reference — same color, same gradient direction, same texture, same pattern. Do NOT simplify, flatten, or recolor the background. If the reference has a textured/patterned background, reproduce that exact texture/pattern
+12. Do NOT add decorative elements (coins, sparkles, stars, glow effects) that are not in the reference
+13. STAR RATINGS: If the reference shows star icons (★), reproduce the EXACT same number of stars. 5 stars stays 5 stars.`,
     }
   };
 }
