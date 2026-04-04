@@ -1143,6 +1143,7 @@ export default function StaticsGeneration() {
         err.message ||
         'An unexpected error occurred';
       setError(message);
+      addToast(`Generation failed: ${message}`, 'error', 10000);
       setGenerationStep(0);
     } finally {
       removeDirectGen();
