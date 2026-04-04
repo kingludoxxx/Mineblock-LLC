@@ -1177,14 +1177,20 @@ async function fetchProductProfile(productCode) {
       `SELECT * FROM product_profiles WHERE LOWER(short_name) = LOWER($1) OR LOWER(product_code) = LOWER($1) OR LOWER(name) ILIKE '%' || LOWER($1) || '%' ORDER BY updated_at DESC LIMIT 1`,
       [productCode || 'MR']
     );
-    if (!rows.length) return null;
+    if (!rows.length) {
+      console.warn(`[BriefPipeline] No product profile found for code: ${productCode || 'MR'}`);
+      return null;
+    }
     const p = rows[0];
     // Parse JSONB fields
     for (const f of ['product_images', 'logos', 'fonts', 'brand_colors', 'benefits', 'angles', 'scripts', 'offers']) {
       if (p[f] && typeof p[f] === 'string') try { p[f] = JSON.parse(p[f]); } catch {}
     }
     return p;
-  } catch { return null; }
+  } catch (err) {
+    console.error(`[BriefPipeline] fetchProductProfile error for ${productCode}:`, err.message);
+    return null;
+  }
 }
 
 function buildProductContextForBrief(p) {
@@ -1618,27 +1624,37 @@ async function buildScriptClonePrompt(parsedScript, deepAnalysis, productContext
     ].filter(Boolean).join('\n');
   }
 
-  const system = `You are a world-class direct-response copywriter who specializes in script adaptation.
+  const system = `You are an expert direct-response copywriter and creative strategist specializing in Facebook UGC-style video ad scripts. You adapt proven script structures from high-converting reference ads into new product categories while preserving the exact beat sequence of the original.
 
-Your job is NOT to write new ads. Your job is to CLONE a competitor's proven ad script and adapt it for a different product — preserving every structural and psychological element that makes the original convert.
+Your job is NOT to write new ads. Your job is to CLONE a proven ad script and adapt it for a different product. Preserve every structural and psychological element that makes the original convert.
 
-You think like a performance creative strategist: you understand that winning ads work because of their STRUCTURE, PACING, EMOTIONAL FLOW, and FRAMEWORK — not because of the specific product they sell. A winning format can be transplanted to any product if the adaptation is done with surgical precision.
+You think like a performance creative strategist: winning ads work because of their STRUCTURE, PACING, EMOTIONAL FLOW, and FRAMEWORK. Not because of the specific product they sell. A winning format can be transplanted to any product if the adaptation is done with surgical precision.
 
-HOW YOU WRITE:
-- You write like a real human media buyer talks — raw, direct, conversational
+WRITING RULES:
+- You write like a real human speaking to camera. Warm, conversational, honest tone.
 - You NEVER sound like ChatGPT or a marketing agency. No filler phrases, no corporate jargon, no "imagine a world where", no "in today's fast-paced world"
 - You match the voice and energy of the original script exactly
 - Short punchy sentences when the original uses them. Long flowing paragraphs when the original uses those
 - You use the same level of aggression, the same register, the same "feel" as the original
-- If the original sounds like a guy on TikTok ranting, your clone sounds like a guy on TikTok ranting
-- If the original sounds like a calm authority figure, your clone sounds like a calm authority figure
-- You NEVER add disclaimers, hedging language, or soften the copy unless the original does the same`;
+- You NEVER add disclaimers, hedging language, or soften the copy unless the original does the same
+
+FORMATTING RULES:
+- Never use em dashes (—) or hyphens (-) inside any copy. Use periods, line breaks, or rewrite sentence structure instead.
+- All pricing in USD
+- Never directly promise the viewer will win or earn money
+- Use distanced framing for all performance claims (e.g. "someone in the mining community", "results seen in the community")
+- Never attribute wins to a named customer or client of the product
+- Never invent product claims not supported by the product profile
+- No discount codes in the script unless the product profile includes one
+- End cleanly at the product URL with no additional copy after it`;
 
   const user = `# YOUR MISSION
 
-You are cloning a competitor's winning ad script for a DIFFERENT product. The original script sells a competitor's product. Your job is to create an adapted version that sells OUR product while keeping EVERYTHING that makes the original script convert.
+Adapt the following reference script into a new Facebook UGC-style video ad script for our product. Preserve the exact beat structure of the reference script beat by beat. Do not summarize or compress beats. Every beat in the reference must appear in the output in the same order.
 
-Think of this like a movie remake: same plot structure, same emotional beats, same pacing, same twist — but with a different cast and setting.
+Replace the reference product's narrative, mechanism, and proof points with those of our product. Keep the tone conversational, warm, and direct. Write as if a real person is speaking to camera.
+
+When analyzing the reference script, extract only its emotional and structural logic. Ignore any category-specific framing, product type, or industry context. The goal is to transplant the persuasion architecture, not the subject matter. Always find the emotional function of each beat first, then express it through our product.
 
 # WHAT "1:1 CLONE" MEANS
 
@@ -1646,16 +1662,15 @@ A 1:1 clone is NOT:
 - A summary of the original
 - An "inspired by" rewrite
 - A generic ad using similar themes
-- A script that "captures the spirit" of the original
 
 A 1:1 clone IS:
 - The SAME number of sections in the SAME order
 - The SAME rhetorical devices at the SAME structural points
 - The SAME emotional beats hitting at the SAME moments
-- The SAME pacing and rhythm (short/long sentence patterns match)
-- The SAME hook framework (if they apologize, you apologize; if they confess, you confess; if they challenge, you challenge)
+- The SAME pacing and rhythm
+- The SAME hook framework
 - The SAME word count (±10% tolerance)
-- Every sentence in the original maps to a sentence in the clone that serves the IDENTICAL PURPOSE
+- Every sentence maps to a sentence in the clone that serves the IDENTICAL PURPOSE
 
 The ONLY things that change:
 - Product name, features, and specific claims → swapped to OUR product
@@ -1666,7 +1681,7 @@ The ONLY things that change:
 ${productContext}
 
 # ═══════════════════════════════════════════════════════════
-# ORIGINAL COMPETITOR SCRIPT (THIS IS WHAT YOU ARE CLONING)
+# ORIGINAL REFERENCE SCRIPT (THIS IS WHAT YOU ARE CLONING)
 # ═══════════════════════════════════════════════════════════
 
 ## HOOKS (from the original):
@@ -1690,8 +1705,8 @@ ${parsedScript.format_notes || 'N/A'}
 - Primary Emotion: ${scriptDna?.primary_emotion || 'N/A'}
 - Secondary Emotions: ${Array.isArray(scriptDna?.secondary_emotions) ? scriptDna.secondary_emotions.join(', ') : scriptDna?.secondary_emotions || 'N/A'}
 - Belief Shift: ${scriptDna?.belief_shift || 'N/A'}
-- Problem: ${scriptDna?.problem || 'N/A'}
-- Solution: ${scriptDna?.solution || 'N/A'}
+- Problem: ${scriptDna?.problem_presented || scriptDna?.problem || 'N/A'}
+- Solution: ${scriptDna?.solution_presented || scriptDna?.solution || 'N/A'}
 - Mechanism: ${scriptDna?.mechanism || 'N/A'}
 - Proof Type: ${scriptDna?.proof_type || 'N/A'}
 - Awareness Level: ${scriptDna?.audience_awareness_level || 'N/A'}
@@ -1714,46 +1729,62 @@ ${emotionalArc || 'Mirror the emotional flow of the original'}
 ${audienceContext || 'Same audience as the original — adapt product references only'}
 
 ## HOOK ANALYSIS
-${psychology?.hook_analysis?.length ? psychology.hook_analysis.map(h => `- "${h.exact_text || h.text || ''}": ${h.type || ''} — ${h.why_it_works || ''}`).join('\n') : 'N/A'}
+${psychology?.hooks?.length ? psychology.hooks.map(h => `- "${h.text || ''}": ${h.hook_type || ''} — ${h.why_it_works || ''}`).join('\n') : (psychology?.hook_analysis?.length ? psychology.hook_analysis.map(h => `- "${h.exact_text || h.text || ''}": ${h.type || ''} — ${h.why_it_works || ''}`).join('\n') : 'N/A')}
+
+# ═══════════════════════════════════════════════════════════
+# BEAT STRUCTURE PRESERVATION (MOST CRITICAL INSTRUCTION)
+# ═══════════════════════════════════════════════════════════
+
+Before writing the script, silently read the full reference script and identify each distinct beat. Number them internally. For each beat, identify its emotional function first. Ask: what is this beat doing for the viewer? Is it creating tension, relieving tension, building credibility, lowering resistance, or driving action?
+
+Then express that same emotional function through our product. Do not merge beats. Do not skip beats. Do not add beats that are not present in the reference. The output must have the same number of beats as the reference in the same sequence.
+
+If a beat from the reference has no direct equivalent for our product, do not invent a claim. Find the closest truthful emotional equivalent and note the substitution in the beat mapping.
 
 # ═══════════════════════════════════════════════════════════
 # CLONE EXECUTION RULES
 # ═══════════════════════════════════════════════════════════
 
-## RULE 1: PARAGRAPH-BY-PARAGRAPH MAPPING
-- Read the original body. Count the paragraphs/sections.
-- Your clone MUST have the same number of paragraphs/sections.
-- For each paragraph in the original, write a corresponding paragraph that:
-  → Makes the SAME point
+## RULE 1: BEAT-BY-BEAT BODY MAPPING
+- Read the original body. Count every distinct beat/paragraph/section.
+- Your clone MUST have the same number of beats in the same order.
+- For each beat in the original, write a corresponding beat that:
+  → Serves the SAME emotional function
   → Uses the SAME rhetorical device (if any)
   → Hits the SAME emotional note
   → Is roughly the SAME length (±15% words)
   → Sits in the SAME position in the script
 
-## RULE 2: HOOK CLONING
+## RULE 2: HOOK CLONING WITH PERSPECTIVE LOCK
 - Generate exactly 3 hooks.
 - All 3 hooks MUST use the SAME FRAMEWORK as the original hooks.
 - If original hooks are confession/apology → your hooks are confession/apology about OUR product
 - If original hooks are shocking stat → your hooks are shocking stat about OUR product
-- If original hooks are contrarian claim → your hooks are contrarian claim about OUR product
 - H1: Closest energy match to the original's strongest hook. Tightest clone.
-- H2: Same framework, slightly different angle of entry. Still a clone.
-- H3: Same framework, different emotional texture. Still recognizably the same format.
-- Every hook MUST read naturally into the body. Hook + first body paragraph = seamless flow.
+- H2: Same framework, slightly different angle of entry.
+- H3: Same framework, different emotional texture.
+
+PERSPECTIVE LOCK: Read the body script. Identify who is being spoken to and who is being spoken about. Every hook must use the exact same perspective, pronouns, and speaker frame as the first sentence of the body. If the body says "he'll have" and "he just plugs it in", the hook must speak to a second person about a third person. Never write a first-person hook if the body is in second person. Never write a self-buyer hook if the body is a gift-buyer script.
+
+TENSION MATCH: The hook must create a tension, curiosity, or emotion that the first sentence of the body directly resolves. Read the first sentence of the body. Ask: what question or feeling does this sentence satisfy? Write the hook to create exactly that question or feeling.
+
+ZERO BRIDGE NEEDED: After the hook plays, the first sentence of the body must be the natural next thing to say. There must be no gap, no gear shift, no tonal mismatch. Test each hook by reading it aloud followed immediately by the first sentence of the body. If it feels like two separate ads stitched together, rewrite it.
+
+ANGLE VARIETY: Each hook must use a meaningfully different angle. Do not write two hooks using the same angle. Surface-level rewords of the same idea are not acceptable.
+
+SCROLL STOP: The first two to four words of every hook must create an immediate reason to stop scrolling. Use a number, a direct address, a surprising claim, or a specific relatable scenario. Never open with a filler word, a generic greeting, or a weak setup.
 
 ## RULE 3: PRODUCT SWAP PROTOCOL
 - Every mention of the competitor's product → replace with our product name and details
 - Every competitor benefit claim → find the EQUIVALENT benefit from our product profile and swap
 - Every competitor-specific proof point → replace with equivalent proof from our product
 - Every competitor price/offer → replace with our price/offer
-- If the original mentions a specific ingredient/feature → find our closest equivalent
 - If no equivalent exists, use the closest relevant feature that serves the same persuasive purpose
 - NEVER leave competitor references in the final script
 - NEVER invent claims not supported by the product profile
 
 ## RULE 4: TONE LOCK
 - Read the original script out loud in your mind. Note the energy.
-- Is it angry? Excited? Calm? Conspiratorial? Friendly? Aggressive?
 - Your clone MUST match that exact energy.
 - If the original uses slang → use slang
 - If the original uses data → use data
@@ -1764,7 +1795,6 @@ ${psychology?.hook_analysis?.length ? psychology.hook_analysis.map(h => `- "${h.
 ## RULE 5: LENGTH CONTROL
 - Count the words in the original body.
 - Your clone body must be within ±10% of that word count.
-- If original is 400 words, your clone is 360-440 words.
 - This is a HARD CONSTRAINT. Do not write a 200-word clone of a 500-word script.
 
 ## RULE 6: ANTI-AI DETECTION
@@ -1774,16 +1804,20 @@ ${psychology?.hook_analysis?.length ? psychology.hook_analysis.map(h => `- "${h.
 - No over-explaining. If the original makes a bold claim and moves on, you make a bold claim and move on.
 - Use contractions: "don't", "can't", "won't", "it's", "that's", "here's"
 - Use sentence fragments where the original does
-- Vary sentence length naturally — mix 4-word punches with 20-word flowing sentences
-- Include verbal tics and natural speech patterns: "Look,", "Listen,", "I mean,", "Honestly,", "The truth is,", "Here's the deal"
+- Never use em dashes (—) or hyphens (-) inside any copy
 - Write like you're talking to ONE person, not an audience
 
 ## RULE 7: CTA CLONING
 - Match the CTA structure of the original
-- If the original CTA is urgent → your CTA is urgent
-- If the original CTA includes a specific offer → include our equivalent offer
-- If the original CTA is soft/curiosity-based → keep yours soft/curiosity-based
 - Swap product/link references to ours
+- End cleanly at the product URL with no additional copy after it
+
+## RULE 8: COMPLIANCE
+- Never directly promise the viewer will win or earn money
+- Use distanced framing for all performance claims
+- Never attribute wins to a named customer or client of the product
+- All pricing in USD
+- Never invent product claims not present in the product profile
 
 # ═══════════════════════════════════════════════════════════
 # OUTPUT FORMAT
@@ -1794,25 +1828,33 @@ Return ONLY valid JSON, no markdown fences, no explanation:
   "hooks": [
     {
       "id": "H1",
-      "text": "the hook text — closest clone of the original's strongest hook",
-      "framework_used": "confession/pain/contrarian/etc — must match original",
-      "maps_to_original": "which original hook this clones"
+      "text": "the hook text. Closest clone of the original's strongest hook.",
+      "framework_used": "confession/pain/contrarian/etc. Must match original.",
+      "maps_to_original": "which original hook this clones",
+      "scroll_stop_reason": "why the first words stop the scroll",
+      "perspective_check": "confirms pronoun/speaker frame matches body opener"
     },
     {
       "id": "H2",
-      "text": "second hook — same framework, different entry angle",
+      "text": "second hook. Same framework, different entry angle.",
       "framework_used": "same framework as H1",
-      "maps_to_original": "which original hook this clones"
+      "maps_to_original": "which original hook this clones",
+      "scroll_stop_reason": "why the first words stop the scroll",
+      "perspective_check": "confirms pronoun/speaker frame matches body opener"
     },
     {
       "id": "H3",
-      "text": "third hook — same framework, different emotional texture",
+      "text": "third hook. Same framework, different emotional texture.",
       "framework_used": "same framework as H1",
-      "maps_to_original": "which original hook this clones"
+      "maps_to_original": "which original hook this clones",
+      "scroll_stop_reason": "why the first words stop the scroll",
+      "perspective_check": "confirms pronoun/speaker frame matches body opener"
     }
   ],
-  "body": "the full cloned body script. Must have same number of paragraphs as original. Each paragraph maps 1:1 to the original. Use natural paragraph breaks (double newlines). Do NOT use markdown formatting.",
+  "body": "the full cloned body script. Must have same number of beats as original. Each beat maps 1:1. Use natural paragraph breaks (double newlines). No markdown formatting. No em dashes or hyphens.",
   "cta": "the cloned call-to-action",
+  "word_count": 0,
+  "estimated_seconds": 0,
   "clone_fidelity": {
     "original_word_count": 0,
     "clone_word_count": 0,
@@ -1821,6 +1863,9 @@ Return ONLY valid JSON, no markdown fences, no explanation:
     "framework_match": "what framework was preserved",
     "product_swaps_made": "brief list of what product references were changed"
   },
+  "beat_mapping": [
+    {"beat": 1, "original": "what the original beat was", "clone": "what your clone beat is", "emotional_function": "what this beat does for the viewer", "substitution_note": "if any substitution was made and why, or null"}
+  ],
   "key_adaptations": "2-3 sentences explaining what product-specific changes were made and why",
   "emotional_arc": "hook_emotion → middle_emotion → close_emotion (must match original arc)"
 }`;
@@ -2740,7 +2785,11 @@ router.post('/generate/:id', authenticate, async (req, res) => {
     // Step 5: Fetch product profile from library
     console.log(`[BriefPipeline] Step 5a: Fetching product profile for ${winner.product_code || 'MR'}`);
     const productProfile = await fetchProductProfile(winner.product_code || 'MR');
+    if (!productProfile) {
+      console.warn(`[BriefPipeline] WARNING: No product profile found for ${winner.product_code || 'MR'} — generation will proceed with limited context`);
+    }
     const productContext = buildProductContextForBrief(productProfile);
+    console.log(`[BriefPipeline] Product context: ${productContext === 'No product profile available.' ? 'EMPTY (no profile)' : `${productContext.split('\n').length} fields loaded`}`);
 
     // Step 5b: Deep 3-agent analysis (check cache first)
     console.log(`[BriefPipeline] Step 5b: Running deep analysis for ${winner.creative_id}`);
@@ -2931,6 +2980,14 @@ router.post('/generate/:id', authenticate, async (req, res) => {
       }
     }
 
+    if (!generatedBriefs.length) {
+      await pgQuery(`UPDATE brief_pipeline_winners SET status = 'detected' WHERE id = $1`, [winner.id]);
+      return res.status(500).json({
+        success: false,
+        error: { message: 'All brief generations failed. Check server logs for details.' },
+      });
+    }
+
     // Assign ranks based on overall score
     generatedBriefs.sort((a, b) => (b.overall_score || 0) - (a.overall_score || 0));
     for (let i = 0; i < generatedBriefs.length; i++) {
@@ -3020,7 +3077,11 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
 
     // Step 5: Product + Deep analysis
     const productProfile = await fetchProductProfile(productCode || 'MR');
+    if (!productProfile) {
+      console.warn(`[BriefPipeline] WARNING: No product profile found for ${productCode || 'MR'} — generation will proceed with limited context`);
+    }
     const productContext = buildProductContextForBrief(productProfile);
+    console.log(`[BriefPipeline] Product context: ${productContext === 'No product profile available.' ? 'EMPTY (no profile)' : `${productContext.split('\n').length} fields loaded`}`);
 
     const { dnaPrompt, psychologyPrompt, rulesPrompt } = await buildDeepAnalysisPrompts(winner, parsedScript, productContext);
     const [scriptDna, psychology, iterationRules] = await Promise.all([
@@ -3071,6 +3132,7 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
 
           let blendResult = null;
           let scores = { novelty: { score: 3 }, aggression: { score: 5 }, coherence: { score: 5 }, hook_body_blend: { score: 5 }, conversion_potential: { score: 5 } };
+          let scoringFailed = false;
           try {
             const [br, sc] = await Promise.all([
               callClaude(blendSystem, blendUser, 1000, { fast: true }),
@@ -3078,11 +3140,20 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
             ]);
             blendResult = br;
             if (sc) scores = sc;
-          } catch {}
+          } catch (evalErr) {
+            console.warn(`[BriefPipeline] Clone scoring/blend failed:`, evalErr.message);
+            scoringFailed = true;
+          }
 
           if (blendResult?.overall_blend != null) {
             scores.hook_body_blend = scores.hook_body_blend || {};
             scores.hook_body_blend.blend_validation = blendResult;
+          }
+
+          // Flag if scores are fallback defaults
+          if (scoringFailed) {
+            scores._scoring_failed = true;
+            scores.verdict = scores.verdict || 'MAYBE';
           }
 
           const overall = scores.overall ?? (
@@ -3157,7 +3228,10 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
             ]);
             blendResult = br;
             if (sc) scores = sc;
-          } catch {}
+          } catch (evalErr) {
+            console.warn(`[BriefPipeline] generate-from-script scoring error for direction #${direction.id}:`, evalErr.message);
+            scores._scoring_failed = true;
+          }
 
           if (blendResult?.overall_blend != null) {
             scores.hook_body_blend = scores.hook_body_blend || {};
@@ -3220,8 +3294,17 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
         ], { timeout: 10000 });
         generatedBriefs.push({ ...inserted[0], scores, direction });
       } catch (dbErr) {
-        console.error(`[BriefPipeline] DB error:`, dbErr.message);
+        console.error(`[BriefPipeline] DB insert error for direction #${direction.id}:`, dbErr.message);
       }
+    }
+
+    if (!generatedBriefs.length) {
+      // All DB inserts failed or all generations failed
+      await pgQuery(`UPDATE brief_pipeline_winners SET status = 'detected' WHERE id = $1`, [winner.id]);
+      return res.status(500).json({
+        success: false,
+        error: { message: 'All brief generations failed. Check server logs for details.' },
+      });
     }
 
     // Rank
@@ -3371,71 +3454,82 @@ router.post('/generated/:id/enhance', authenticate, async (req, res) => {
       return res.status(400).json({ success: false, error: { message: 'Instruction is required' } });
     }
 
-    // Verify brief exists
+    // Verify brief exists and get product context
     const rows = await pgQuery(`SELECT * FROM brief_pipeline_generated WHERE id = $1`, [req.params.id]);
     if (!rows.length) return res.status(404).json({ success: false, error: { message: 'Brief not found' } });
 
+    const brief = rows[0];
+
+    // Fetch product profile for context
+    let productContextStr = '';
+    try {
+      const productProfile = await fetchProductProfile(brief.product_code || 'MR');
+      if (productProfile) {
+        productContextStr = buildProductContextForBrief(productProfile);
+      }
+    } catch (profileErr) {
+      console.warn('[BriefPipeline] Could not fetch product profile for enhance:', profileErr.message);
+    }
+
     const hooksFormatted = (currentHooks || []).map((h, i) => `Hook ${i+1}: ${h.text}${h.mechanism ? ` [${h.mechanism}]` : ''}`).join('\n');
 
-    const response = await fetch(CLAUDE_API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: CLAUDE_MODEL,
-        max_tokens: 3000,
-        messages: [{
-          role: 'user',
-          content: `You are an elite direct response copywriter editing an existing ad brief.
+    const enhanceSystem = `You are an expert direct-response copywriter and creative strategist specializing in Facebook UGC-style video ad scripts. You make precise, surgical edits to existing scripts and hooks without touching anything outside the scope of the edit request. You never use em dashes or hyphens inside any copy. You use periods, line breaks, or rewrite sentence structure instead.${productContextStr ? ' You have access to the product brief and compliance rules. Never invent claims not present in the product profile.' : ''}`;
 
-CURRENT BRIEF:
+    const enhanceUser = `You are enhancing an existing piece of ad copy. Your job is to make only the change requested. Do not rewrite, improve, or touch anything outside the scope of the edit instruction.
+
+Read the full existing copy first. Understand its structure, tone, perspective, avatar, and emotional flow before making any change. Then apply only the edit requested.
+
+${productContextStr ? `PRODUCT CONTEXT:\n${productContextStr}\n\n` : ''}EXISTING COPY:
 --- Hooks ---
 ${hooksFormatted}
 
 --- Body ---
 ${currentBody || '(no body)'}
 
-USER INSTRUCTION: ${instruction}
+---
 
-Apply the instruction and return the COMPLETE updated brief as JSON (no markdown, no code fences, just raw JSON):
+EDIT INSTRUCTION: ${instruction}
+
+---
+
+EDIT RULES:
+
+1. SCOPE LOCK: Only change what the edit instruction targets. If the instruction says change hook 1, only hook 1 changes. If it says change a specific phrase, only that phrase changes. Everything else must remain word for word identical.
+
+2. CONTINUITY: The edited element must match the tone, register, perspective, pronouns, and emotional flow of the surrounding copy. Read the line before and the line after the edit target. The new version must feel like it was always there.
+
+3. PERSPECTIVE LOCK: Maintain the exact same speaker frame and pronoun structure as the existing copy. If the existing copy speaks to a gift buyer about a third person, the edit must do the same. Never shift perspective during an edit.
+
+4. COMPLIANCE: Never directly promise the viewer will win or earn money. Never use em dashes or hyphens. All pricing in USD. Never invent product claims not present in the product profile.
+
+5. HOOK SPECIFIC RULES: If the edit target is a hook, the new version must still pass: perspective matches the body opener, tension created by the hook is resolved by the first line of the body, no bridge line is needed between hook and body. If any check fails, rewrite before outputting.
+
+6. VARIANT LOGIC: If the edit instruction asks for a new variant or alternative rather than a replacement, include both the original and the new variant in the output.
+
+7. SELF CHECK: Before outputting, read the full copy with the edit applied from start to finish. Confirm it reads as one seamless piece. Confirm no rules were broken.
+
+Return ONLY valid JSON, no markdown fences:
 {
   "hooks": [
     { "id": "H1", "text": "...", "mechanism": "..." },
-    { "id": "H2", "text": "...", "mechanism": "..." }
+    { "id": "H2", "text": "...", "mechanism": "..." },
+    { "id": "H3", "text": "...", "mechanism": "..." }
   ],
-  "body": "the complete updated body text"
-}
+  "body": "the complete body text with edit applied",
+  "edit_summary": "one sentence describing what was changed and why it fits"
+}`;
 
-RULES:
-- Apply ONLY what the user asked for
-- Keep everything else unchanged
-- If asked to add a hook, add it as the next number
-- If asked to change a specific hook, change ONLY that hook
-- Return ALL hooks and the full body, not just changes
-- Preserve the ad's tone and style`
-        }],
-      }),
-    });
+    const enhanced = await callClaude(enhanceSystem, enhanceUser, 3000);
 
-    const data = await response.json();
-    const text = data.content?.[0]?.text || '';
-
-    // Parse JSON from response
-    let enhanced;
-    try {
-      const jsonMatch = text.match(/\{[\s\S]*\}/);
-      enhanced = jsonMatch ? JSON.parse(jsonMatch[0]) : JSON.parse(text);
-    } catch (parseErr) {
-      return res.status(500).json({ success: false, error: { message: 'Failed to parse AI response' } });
+    if (!enhanced || (!enhanced.hooks && !enhanced.body)) {
+      return res.status(500).json({ success: false, error: { message: 'AI returned invalid response structure' } });
     }
 
     res.json({
       success: true,
       hooks: enhanced.hooks || currentHooks,
       body: enhanced.body || currentBody,
+      edit_summary: enhanced.edit_summary || null,
     });
   } catch (err) {
     console.error('[BriefPipeline] POST /generated/:id/enhance error:', err.message);
