@@ -187,6 +187,8 @@ THEN apply these rules:
 - Use the SAME copywriting formula/structure as the original (same sentence patterns, same rhythm, same number of elements)
 - But make it SPECIFIC to this product — use real product details, real benefits, real numbers
 - ⚠️ CRITICAL LENGTH RULE: Each adapted text MUST be the SAME length (±20%) as the original. An AI image generator will render your text — if you write longer text, it WILL be misspelled and garbled. SHORT = PERFECT RENDERING. LONG = GARBLED MESS. If original is "Adaptogenic mushroom blend" (26 chars), adapted must be ~26 chars like "144 daily Bitcoin attempts" (25 chars), NOT "144 real shots at a $300K Bitcoin block. Every single day." (59 chars — WAY too long, will be garbled).
+- ⚠️ COMPLETE THOUGHTS ONLY: Every adapted text MUST be a COMPLETE sentence or phrase. NEVER write a fragment that trails off. If the original is short (e.g. "Bloating" = 8 chars), write a complete short phrase (e.g. "Pool fees" = 9 chars), NOT an unfinished sentence like "Splitting fees with" (trails off mid-thought). Short originals need short, punchy, COMPLETE adapted text.
+- ⚠️ ZERO REFERENCE PRODUCT TEXT: Your adapted text must contain ZERO words from the reference product's category. If the reference is about hair growth, words like "shedding", "hair", "regrowth", "follicle" must NEVER appear in adapted_text. If the reference is about supplements, words like "mushroom", "adaptogenic", "blend" must NEVER appear. Replace ALL of them with ${product.name}-relevant terms.
 - If the original says "3 Years of Back Pain Gone in 7 Days" → yours should be equally specific and bold with THIS product's claims
 - NEVER write vague platitudes like "Transform Your Experience" or "Unlock Your Potential" or "The Future of [X]"
 - NEVER use these AI-sounding phrases: "game-changer", "revolutionary", "cutting-edge", "seamless", "elevate", "unlock", "transform your", "discover the", "experience the"
@@ -277,6 +279,8 @@ COPY QUALITY SELF-CHECK (run this mentally before returning):
    - A 3-word bullet like "No more bloating" should become "144 daily Bitcoin shots" (3-4 words) — NOT "144 real shots at a $300K Bitcoin block. Every single day." (too long!)
    - REWRITE any adapted text that exceeds the original character count by more than 20%
 10. BRAND NAME CHECK: Does any adapted text still contain the COMPETITOR's brand name? If yes, replace it with the product name from PRODUCT CONTEXT. Zero competitor branding in adapted text.
+11. COMPLETE THOUGHT CHECK: Read each adapted text. Does it end mid-sentence? "Crypto feels too" is INCOMPLETE. "Crypto is complex" is COMPLETE. "Splitting fees with" is INCOMPLETE. "No pool fees" is COMPLETE. EVERY adapted text must be a complete thought that makes sense on its own.
+12. REFERENCE CATEGORY CHECK: Does any adapted text contain words from the REFERENCE product's category (e.g. "hair", "gut", "mushroom", "belly", "shedding")? If yes, replace with words about YOUR product. Zero reference category terms in adapted text.
 
 ---
 
@@ -483,9 +487,29 @@ export function buildNanoBananaPrompt(claudeResult, swapPairs, product, logoCoun
     return 9;
   };
 
+  // Filter out near-identical swaps — if original ≈ adapted, let NanoBanana keep the original
+  // This reduces noise and lets the model focus on real changes
+  const meaningfulPairs = swapPairs.filter(pair => {
+    const o = (pair.original || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    const a = (pair.adapted || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (o === a) return false; // identical after normalizing
+    // Skip if only minor punctuation/casing difference
+    if (o.length > 5 && a.length > 5) {
+      let matches = 0;
+      const shorter = Math.min(o.length, a.length);
+      for (let i = 0; i < shorter; i++) { if (o[i] === a[i]) matches++; }
+      if (matches / shorter > 0.85) {
+        console.log(`[buildNanoBananaPrompt] Skipping near-identical swap [${pair.field}]: "${pair.original}" ≈ "${pair.adapted}"`);
+        return false;
+      }
+    }
+    return true;
+  });
+
   // Sort by priority, limit to MAX_SWAP_PAIRS to avoid overwhelming the model
-  const MAX_SWAP_PAIRS = 10;
-  const sortedPairs = [...swapPairs].sort((a, b) => getFieldPriority(a.field) - getFieldPriority(b.field));
+  // Key insight: 5 swaps = 9/10 quality, 10+ swaps = 3/10 quality
+  const MAX_SWAP_PAIRS = 7;
+  const sortedPairs = [...meaningfulPairs].sort((a, b) => getFieldPriority(a.field) - getFieldPriority(b.field));
   const limitedPairs = sortedPairs.slice(0, MAX_SWAP_PAIRS);
   if (sortedPairs.length > MAX_SWAP_PAIRS) {
     console.log(`[buildNanoBananaPrompt] ⚠️ Limited swap pairs from ${sortedPairs.length} to ${MAX_SWAP_PAIRS} (dropped low-priority pairs)`);
