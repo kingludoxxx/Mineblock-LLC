@@ -207,20 +207,18 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, onRegener
         {/* Info */}
         <div className="p-3 space-y-2.5">
           {/* Angle badge + ratio dots row */}
-          <div className="flex items-center gap-2 border-b border-white/[0.05] pb-2.5">
-            {creative.angle && (
-              <span className="inline-flex items-center text-[11px] font-medium px-2.5 py-1 rounded-md bg-white/[0.04] text-zinc-300 border border-white/[0.08]">
-                {creative.angle}
-              </span>
-            )}
+          <div className="flex items-center justify-between pb-2.5 border-b border-white/[0.06]">
+            <span className="inline-flex items-center text-[11px] font-medium px-2.5 py-1 rounded-md bg-white/[0.05] text-zinc-300 border border-white/[0.08] truncate max-w-[55%]">
+              {creative.angle || 'Uncategorized'}
+            </span>
             {!creative.parent_creative_id && (
-              <div className="flex items-center gap-2.5 ml-auto">
-                <span className="inline-flex items-center gap-1 text-[11px] text-zinc-400 font-mono">
-                  <span className={`w-1.5 h-1.5 rounded-full ${creative.image_url ? 'bg-emerald-400' : 'bg-amber-400'}`} />
+              <div className="flex items-center gap-3">
+                <span className="inline-flex items-center gap-1.5 text-[11px] text-zinc-400 font-mono tracking-wide">
+                  <span className={`w-2 h-2 rounded-full ${creative.image_url ? 'bg-emerald-400' : 'bg-amber-400'}`} />
                   {creative.aspect_ratio || '4:5'}
                 </span>
-                <span className="inline-flex items-center gap-1 text-[11px] text-zinc-400 font-mono">
-                  <span className={`w-1.5 h-1.5 rounded-full ${
+                <span className="inline-flex items-center gap-1.5 text-[11px] text-zinc-400 font-mono tracking-wide">
+                  <span className={`w-2 h-2 rounded-full ${
                     variantStatus === 'done' ? 'bg-emerald-400'
                     : variantStatus === 'generating' ? 'bg-amber-400 animate-pulse'
                     : variantStatus === 'failed' ? 'bg-red-400'
@@ -230,26 +228,18 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, onRegener
                 </span>
               </div>
             )}
-            {(() => {
-              const metaIds = Array.isArray(creative.meta_ad_ids) ? creative.meta_ad_ids : (typeof creative.meta_ad_ids === 'string' ? (() => { try { return JSON.parse(creative.meta_ad_ids); } catch { return []; } })() : []);
-              return metaIds.length > 0 ? (
-                <span className="text-[9px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/20 font-medium ml-auto">
-                  {metaIds.length} ad{metaIds.length > 1 ? 's' : ''}
-                </span>
-              ) : null;
-            })()}
           </div>
 
-          {/* Action buttons — single row */}
+          {/* Action buttons — single row, evenly spaced */}
           {column.actionLabel ? (
-            <div className="flex items-center gap-1.5">
+            <div className="flex items-center gap-2">
               <button
                 type="button"
                 onClick={(e) => {
                   e.stopPropagation();
                   onStatusChange?.(creative.id, column.nextStatus);
                 }}
-                className={`flex-1 inline-flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-[11px] font-semibold border transition-colors cursor-pointer
+                className={`flex-1 inline-flex items-center justify-center gap-1.5 h-9 rounded-lg text-[11px] font-semibold border transition-colors cursor-pointer
                   ${column.color === 'green'
                     ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/25 hover:bg-emerald-500/20'
                     : column.color === 'cyan'
@@ -257,7 +247,7 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, onRegener
                       : 'bg-white/[0.03] text-zinc-300 border-white/[0.08] hover:bg-white/[0.06]'
                   }`}
               >
-                <Check className="w-3 h-3" />
+                <Check className="w-3.5 h-3.5" />
                 {column.actionLabel}
               </button>
               {column.key === 'review' && (
@@ -267,10 +257,10 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, onRegener
                     e.stopPropagation();
                     onStatusChange?.(creative.id, 'rejected');
                   }}
-                  className="p-1.5 rounded-lg border border-red-500/25 text-red-400/70 hover:text-red-400 hover:bg-red-500/10 transition-colors cursor-pointer"
+                  className="h-9 w-9 flex items-center justify-center rounded-lg border border-red-500/25 text-red-400/70 hover:text-red-400 hover:bg-red-500/10 transition-colors cursor-pointer shrink-0"
                   title="Reject"
                 >
-                  <X className="w-3.5 h-3.5" />
+                  <X className="w-4 h-4" />
                 </button>
               )}
               <button
@@ -279,10 +269,10 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, onRegener
                   e.stopPropagation();
                   onCardClick?.(creative);
                 }}
-                className="p-1.5 rounded-lg border border-white/[0.08] text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.04] transition-colors cursor-pointer"
+                className="h-9 w-9 flex items-center justify-center rounded-lg border border-white/[0.08] text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.05] transition-colors cursor-pointer shrink-0"
                 title="Preview"
               >
-                <Maximize2 className="w-3.5 h-3.5" />
+                <Maximize2 className="w-4 h-4" />
               </button>
               <button
                 type="button"
@@ -290,10 +280,10 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, onRegener
                   e.stopPropagation();
                   onRegenerate?.(creative);
                 }}
-                className="p-1.5 rounded-lg border border-[#c9a84c]/25 text-[#c9a84c]/70 hover:text-[#d4b55a] hover:bg-[#c9a84c]/10 transition-colors cursor-pointer"
+                className="h-9 w-9 flex items-center justify-center rounded-lg border border-[#c9a84c]/25 text-[#c9a84c]/70 hover:text-[#d4b55a] hover:bg-[#c9a84c]/10 transition-colors cursor-pointer shrink-0"
                 title="Regenerate"
               >
-                <RefreshCw className="w-3.5 h-3.5" />
+                <RefreshCw className="w-4 h-4" />
               </button>
               <button
                 type="button"
@@ -301,10 +291,10 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, onRegener
                   e.stopPropagation();
                   onCardClick?.(creative);
                 }}
-                className="p-1.5 rounded-lg border border-white/[0.08] text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.04] transition-colors cursor-pointer"
+                className="h-9 w-9 flex items-center justify-center rounded-lg border border-white/[0.08] text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.05] transition-colors cursor-pointer shrink-0"
                 title="Settings"
               >
-                <Settings className="w-3.5 h-3.5" />
+                <Settings className="w-4 h-4" />
               </button>
             </div>
           ) : null}
