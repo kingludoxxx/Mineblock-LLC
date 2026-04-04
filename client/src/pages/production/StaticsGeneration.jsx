@@ -805,6 +805,7 @@ export default function StaticsGeneration() {
   const [productImageUrl, setProductImageUrl] = useState('');
   const [productFile, setProductFile] = useState(null);
   const [productPreview, setProductPreview] = useState('');
+  const [selectedProductImages, setSelectedProductImages] = useState([]); // extra images selected for generation
   const [marketingAngle, setMarketingAngle] = useState('');
   const [customAngle, setCustomAngle] = useState('');
   const [aspectRatio, setAspectRatio] = useState('4:5');
@@ -1042,6 +1043,7 @@ export default function StaticsGeneration() {
           description: productDescription || undefined,
           price: productPrice || undefined,
           product_image_url: resolvedProductUrl,
+          selected_product_images: selectedProductImages.length > 0 ? selectedProductImages : undefined,
           product_images: selectedProductRef.current?.product_images || [],
           logos: selectedProductRef.current?.logos || [],
           logo_url: selectedProductRef.current?.logo_url || undefined,
@@ -1868,6 +1870,47 @@ export default function StaticsGeneration() {
                           label="Product photo"
                           compact
                         />
+                        {/* Product image gallery — pick which images to send */}
+                        {selectedProductRef.current?.product_images?.length > 1 && (
+                          <div className="mt-2">
+                            <p className="text-xs text-zinc-500 mb-1.5">Click to set as main · Shift+click to add extra images</p>
+                            <div className="flex gap-1.5 flex-wrap">
+                              {selectedProductRef.current.product_images.map((img, i) => {
+                                const isMain = img === productImageUrl;
+                                const isExtra = selectedProductImages.includes(img);
+                                return (
+                                  <button
+                                    key={i}
+                                    type="button"
+                                    onClick={(e) => {
+                                      if (e.shiftKey) {
+                                        // Toggle extra image selection
+                                        setSelectedProductImages(prev =>
+                                          prev.includes(img) ? prev.filter(x => x !== img) : [...prev, img].slice(0, 3)
+                                        );
+                                      } else {
+                                        // Set as main product image
+                                        setProductImageUrl(img);
+                                        setProductPreview(img);
+                                        setProductFile(null);
+                                      }
+                                    }}
+                                    className={`relative w-12 h-12 rounded border-2 overflow-hidden transition-all ${
+                                      isMain ? 'border-orange-500 ring-1 ring-orange-500/50' :
+                                      isExtra ? 'border-blue-500 ring-1 ring-blue-500/50' :
+                                      'border-white/10 hover:border-white/30'
+                                    }`}
+                                    title={isMain ? 'Main product image' : isExtra ? 'Extra image (shift+click to remove)' : 'Click to set as main · Shift+click to add'}
+                                  >
+                                    <img src={img} alt="" className="w-full h-full object-cover" />
+                                    {isMain && <div className="absolute inset-0 bg-orange-500/20 flex items-center justify-center"><span className="text-[8px] font-bold text-orange-300">MAIN</span></div>}
+                                    {isExtra && !isMain && <div className="absolute inset-0 bg-blue-500/20 flex items-center justify-center"><span className="text-[8px] font-bold text-blue-300">+</span></div>}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
                       </div>
                     </div>
 

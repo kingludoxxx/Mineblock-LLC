@@ -422,13 +422,20 @@ router.post('/generate', authenticate, async (req, res) => {
       }
     }
 
-    // Resolve logo URLs for brand accuracy
+    // Only send logos if Claude detected a competitor logo in the reference
+    // This prevents NanoBanana from randomly placing logos when the template has no logo spot
     const logoUrls = [];
-    const allLogos = product.logos || [];
-    if (product.logo_url) allLogos.unshift(product.logo_url);
-    for (let i = 0; i < Math.min(allLogos.length, 2); i++) {
-      const url = await ensureHttpUrl(allLogos[i], `logos-${i}`);
-      if (url) logoUrls.push(url);
+    const hasCompetitorLogo = claudeResult.has_competitor_logo === true;
+    if (hasCompetitorLogo) {
+      const allLogos = product.logos || [];
+      if (product.logo_url) allLogos.unshift(product.logo_url);
+      for (let i = 0; i < Math.min(allLogos.length, 2); i++) {
+        const url = await ensureHttpUrl(allLogos[i], `logos-${i}`);
+        if (url) logoUrls.push(url);
+      }
+      console.log(`[staticsGeneration] Competitor logo detected — sending ${logoUrls.length} brand logo(s)`);
+    } else {
+      console.log(`[staticsGeneration] No competitor logo in reference — skipping logo injection`);
     }
 
     console.log(`[staticsGeneration] Logo data: logo_url=${product.logo_url ? 'yes' : 'no'}, logos=${(product.logos || []).length}, resolved logoUrls=${logoUrls.length}`);
@@ -1286,13 +1293,17 @@ function getDefaultStaticsPrompts() {
 - When in doubt, use "Up to 40% OFF" or "Starting at $59.99" — do NOT invent prices`,
       productIdentity: `PRODUCT IDENTITY NOTE: The product is a MINI BITCOIN MINER — a small, compact electronic device with a color display screen showing mining hashrate data. NEVER describe it as a "USB stick", "flash drive", "thumb drive", or anything USB-related. It is NOT a USB device. When describing product placement, refer to it as "mini bitcoin miner" or "compact mining device with display screen". IMPORTANT: The product's screen displays mining statistics (hashrate numbers like 995.4 KH/s) — do NOT put logos, brand names, or text overlays on the device screen. The screen content must match exactly what is shown in the product images.`,
       bannedPhrases: `works at home, easy to use, quick mining, get started today`,
-      formulaPreservation: `FORMULA PRESERVATION (CRITICAL):
-The adapted text must follow the EXACT SAME sentence structure, opening words, and approximate character count as the original. You are copying the PROVEN FORMULA, just swapping the subject matter.
+      formulaPreservation: `FORMULA PRESERVATION:
+Follow the SAME sentence rhythm, approximate character count, and rhetorical pattern as the original — but fill it with THIS product's real data.
 
+STRUCTURE EXAMPLES (keep the pattern, swap the content):
 Correct: "Bye Bye, Beer Belly" → "Bye Bye, Power Bills" (keeps "Bye Bye,")
 Correct: "Kill The Bloated Belly" → "Kill The Middleman" (keeps "Kill The")
 Correct: "3 Years of Back Pain Gone in 7 Days" → "3 Years of Missing Gains Gone in 7 Days"
 Wrong: "Bye Bye, Beer Belly" → "Mine Bitcoin From Home" ❌ (completely different structure)
+
+CRITICAL — PRODUCT DATA OVERRIDES GENERIC TEXT:
+If the reference uses generic filler like "Real Mining for 12+ Hours Daily" — DO NOT keep it. Replace with the product's ACTUAL claims from the product context. For MinerForge Pro, use real product data like: "Attempts a Block 144 Times Daily", "$59.99 Solo Bitcoin Miner", "995.4 KH/s Hashrate". The product context fields are GROUND TRUTH — always prefer specific product data over generic reference text.
 Generic labels like "SPECIAL DEAL", "FREE SHIPPING" → keep EXACTLY as-is`,
       crossNicheAdaptation: `CROSS-NICHE VISUAL MAPPING:
 Reference ads may come from any niche. Map visuals to bitcoin mining context:
