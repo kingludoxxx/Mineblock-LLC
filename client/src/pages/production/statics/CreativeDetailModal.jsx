@@ -120,6 +120,14 @@ export function CreativeDetailModal({
     return () => { abortRef.current = true; };
   }, [isOpen]);
 
+  // Close on Escape key
+  useEffect(() => {
+    if (!isOpen) return;
+    const handler = (e) => { if (e.key === 'Escape') onClose?.(); };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [isOpen, onClose]);
+
   if (!isOpen || !creative) return null;
 
   const activeCreative = activeRatio === '9:16' && variant ? variant : creative;
@@ -401,11 +409,16 @@ export function CreativeDetailModal({
               >
                 {launchHistoryOpen ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
                 Launch History
-                {(creative.meta_ad_ids?.length > 0 || (typeof creative.meta_ad_ids === 'string' && JSON.parse(creative.meta_ad_ids || '[]').length > 0)) && (
-                  <span className="ml-1 px-1.5 py-0.5 rounded-full bg-cyan-500/10 text-cyan-400 text-[9px] border border-cyan-500/20">
-                    {Array.isArray(creative.meta_ad_ids) ? creative.meta_ad_ids.length : JSON.parse(creative.meta_ad_ids || '[]').length}
-                  </span>
-                )}
+                {(() => {
+                  let ids = [];
+                  if (Array.isArray(creative.meta_ad_ids)) ids = creative.meta_ad_ids;
+                  else if (typeof creative.meta_ad_ids === 'string') { try { const p = JSON.parse(creative.meta_ad_ids); ids = Array.isArray(p) ? p : []; } catch { /* ignore */ } }
+                  return ids.length > 0 ? (
+                    <span className="ml-1 px-1.5 py-0.5 rounded-full bg-cyan-500/10 text-cyan-400 text-[9px] border border-cyan-500/20">
+                      {ids.length}
+                    </span>
+                  ) : null;
+                })()}
               </button>
               {launchHistoryOpen && (
                 <div className="mt-3 p-3 bg-[#0a0a0a] border border-white/[0.06] rounded-lg space-y-2 text-xs text-slate-400 max-h-48 overflow-y-auto">
