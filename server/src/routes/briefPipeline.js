@@ -2994,16 +2994,13 @@ router.post('/generate/:id', authenticate, async (req, res) => {
       });
     }
 
-    // Assign ranks based on overall score
+    // Assign ranks based on overall score (parallel updates)
     generatedBriefs.sort((a, b) => (b.overall_score || 0) - (a.overall_score || 0));
-    for (let i = 0; i < generatedBriefs.length; i++) {
+    await Promise.all(generatedBriefs.map((brief, i) => {
       const rank = i + 1;
-      generatedBriefs[i].rank = rank;
-      await pgQuery(
-        `UPDATE brief_pipeline_generated SET rank = $1 WHERE id = $2`,
-        [rank, generatedBriefs[i].id]
-      );
-    }
+      brief.rank = rank;
+      return pgQuery(`UPDATE brief_pipeline_generated SET rank = $1 WHERE id = $2`, [rank, brief.id]);
+    }));
 
     // Reset winner status back to detected so it stays in Winning Ads column
     await pgQuery(
@@ -3075,14 +3072,18 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
     // Step 4: Parse script
     console.log(`[BriefPipeline] Parsing manual script`);
     const { system: parseSystem, user: parseUser } = await buildScriptParserPrompt(rawScript, creativeId);
-    let parsedScript = await callClaude(parseSystem, parseUser, 2000, { fast: true });
+    // Parse script + fetch product in parallel (they're independent)
+    const [parsedScriptRaw, productProfile] = await Promise.all([
+      callClaude(parseSystem, parseUser, 2000, { fast: true }),
+      fetchProductProfile(productCode || 'MR'),
+    ]);
+    let parsedScript = parsedScriptRaw;
     if (!parsedScript || (!parsedScript.hooks?.length && !parsedScript.body?.trim())) {
       parsedScript = { hooks: [], body: rawScript, cta: '', format_notes: '' };
     }
-    await pgQuery(`UPDATE brief_pipeline_winners SET parsed_script = $1 WHERE id = $2`, [JSON.stringify(parsedScript), winner.id]);
+    pgQuery(`UPDATE brief_pipeline_winners SET parsed_script = $1 WHERE id = $2`, [JSON.stringify(parsedScript), winner.id]).catch(() => {});
 
-    // Step 5: Product + Deep analysis
-    const productProfile = await fetchProductProfile(productCode || 'MR');
+    // Step 5: Deep analysis
     if (!productProfile) {
       console.warn(`[BriefPipeline] WARNING: No product profile found for ${productCode || 'MR'} — generation will proceed with limited context`);
     }
@@ -3313,12 +3314,12 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
       });
     }
 
-    // Rank
+    // Rank (parallel updates)
     generatedBriefs.sort((a, b) => (b.overall_score || 0) - (a.overall_score || 0));
-    for (let i = 0; i < generatedBriefs.length; i++) {
-      generatedBriefs[i].rank = i + 1;
-      await pgQuery(`UPDATE brief_pipeline_generated SET rank = $1 WHERE id = $2`, [i + 1, generatedBriefs[i].id]);
-    }
+    await Promise.all(generatedBriefs.map((brief, i) => {
+      brief.rank = i + 1;
+      return pgQuery(`UPDATE brief_pipeline_generated SET rank = $1 WHERE id = $2`, [i + 1, brief.id]);
+    }));
 
     // Mark virtual winner as detected (keeps it in the winning ads column)
     await pgQuery(`UPDATE brief_pipeline_winners SET status = 'detected' WHERE id = $1`, [winner.id]);
