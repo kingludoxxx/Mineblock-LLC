@@ -831,7 +831,7 @@ async function extractScriptFromUrl(url) {
           const adCopy = [metadata.title, metadata.description].filter(Boolean).join('\n\n').trim();
           if (adCopy.length > 50) {
             console.log(`[BriefPipeline] Using metadata ad copy as fallback (${adCopy.length} chars)`);
-            return adCopy;
+            return `[AD COPY FROM METADATA — audio transcription was not available]\n${adCopy}`;
           }
         }
       }
@@ -849,7 +849,7 @@ async function extractScriptFromUrl(url) {
           const adCopy = [metadata.title, metadata.description].filter(Boolean).join('\n\n').trim();
           if (adCopy.length > 20) {
             console.log(`[BriefPipeline] Using metadata as last resort (${adCopy.length} chars)`);
-            return adCopy;
+            return `[AD COPY FROM METADATA — video transcription failed]\n${adCopy}`;
           }
         }
       }
@@ -862,7 +862,7 @@ async function extractScriptFromUrl(url) {
       // If we have metadata from step 1, use it rather than completely failing
       if (metadata) {
         const adCopy = [metadata.title, metadata.description].filter(Boolean).join('\n\n').trim();
-        if (adCopy.length > 20) return adCopy;
+        if (adCopy.length > 20) return `[AD COPY FROM METADATA — all extraction methods failed]\n${adCopy}`;
       }
       console.error(`[BriefPipeline] All extraction failed for FB ad ${adId}. yt-dlp: ${existsSync(YTDLP_PATH) ? 'installed' : 'NOT INSTALLED'}, META_ACCESS_TOKEN: ${META_ACCESS_TOKEN ? 'set' : 'NOT SET'}`);
       throw new Error(`Could not extract ad ${adId}. This is a video ad that requires transcription. Try: (1) Right-click the video → "Copy video address" and paste the direct .mp4 link, or (2) Use "Paste Text" to paste the script manually.`);
@@ -1192,6 +1192,7 @@ function buildProductContextForBrief(p) {
     p.name             && `Product: ${p.name}`,
     p.description      && `Description: ${p.description}`,
     p.price            && `Price: ${p.price}`,
+    p.product_url      && `Product URL: ${p.product_url}`,
     p.big_promise      && `Big Promise: ${p.big_promise}`,
     p.mechanism        && `Unique Mechanism: ${p.mechanism}`,
     p.benefits?.length && `Key Benefits: ${Array.isArray(p.benefits) ? p.benefits.map(b => b.text || b.name || b).join(', ') : p.benefits}`,
@@ -1210,6 +1211,7 @@ function buildProductContextForBrief(p) {
     p.offer_details    && `Offer Details: ${p.offer_details}`,
     p.discount_codes   && `Discount Codes: ${p.discount_codes}`,
     p.bundle_variants  && `Bundle Variants: ${p.bundle_variants}`,
+    p.offers?.length   && `Active Offers: ${Array.isArray(p.offers) ? p.offers.map(o => o.name || o.title || o.text || JSON.stringify(o)).join('; ') : p.offers}`,
     p.compliance_restrictions && `COMPLIANCE — Never claim: ${p.compliance_restrictions}`,
   ].filter(Boolean);
   return lines.join('\n');
@@ -1218,7 +1220,10 @@ function buildProductContextForBrief(p) {
 // ── Claude Prompts ────────────────────────────────────────────────────
 
 async function buildScriptParserPrompt(rawScript, taskName) {
-  let system = `You are a script parser for video ad briefs. Extract the structured components from the raw script text below.`;
+  // If the raw input is very short or looks like metadata (product name, price), skip hook extraction
+  const isMetadataLike = rawScript.length < 150 || /^[A-Z][\w\s]+[-–]\s*(Only\s*)?\$[\d.]+/i.test(rawScript.trim());
+
+  let system = `You are a script parser for video ad briefs. Extract the structured components from the raw script text below.${isMetadataLike ? ' NOTE: The input appears to be brief ad copy or metadata, NOT a full script. Put the entire text in the body field. Do NOT invent or fabricate hooks that are not explicitly present.' : ''}`;
   let user = `RAW SCRIPT:
 ${rawScript}
 
@@ -1771,6 +1776,8 @@ ANGLE VARIETY: Each hook must use a meaningfully different angle. Do not write t
 
 SCROLL STOP: The first two to four words of every hook must create an immediate reason to stop scrolling. Use a number, a direct address, a surprising claim, or a specific relatable scenario. Never open with a filler word, a generic greeting, or a weak setup.
 
+PRODUCT SPECIFICITY: Every hook MUST reference at least one concrete product detail from the PRODUCT CONTEXT — the product name, a specific price point, the unique mechanism, a key benefit, or the discount code. A hook that could apply to any product is a failed hook. Hooks like "This product changed everything" or "You need to see this" are BANNED. Be as specific as the original hooks are about THEIR product, but about OUR product.
+
 ## RULE 3: PRODUCT SWAP PROTOCOL
 - Every mention of the competitor's product → replace with our product name and details
 - Every competitor benefit claim → find the EQUIVALENT benefit from our product profile and swap
@@ -1940,7 +1947,7 @@ You generate variations of proven winners while preserving their psychological m
 ABSOLUTE RULES FOR YOUR WRITING STYLE:
 - Write like you're talking to ONE person, not an audience
 - Every sentence must earn its place — cut anything that doesn't create desire, urgency, or curiosity
-- Be SPECIFIC: "Save $47/month" not "save money". "Lost 23lbs in 6 weeks" not "achieve your goals"
+- Be SPECIFIC: "Save $47/month" not "save money". "Lost 23lbs in 6 weeks" not "achieve your goals". Always use the actual product name, price, mechanism, and benefits from the product context — NEVER write generic copy that could apply to any product
 - NEVER use these AI-sounding words/phrases: "game-changer", "revolutionary", "cutting-edge", "seamless", "elevate", "unlock", "transform your", "discover the", "experience the", "take your X to the next level", "say goodbye to", "the future of"
 - If it sounds like a LinkedIn post or a corporate press release, REWRITE IT
 - Match the raw energy of the original — if the original is aggressive and bold, be equally aggressive and bold`;
@@ -2010,6 +2017,7 @@ ${direction.description}
 - Each hook must BLEND PERFECTLY with the body — reading hook + body must feel like one continuous script
 - Do NOT reuse exact phrases from original hooks
 - The hook framework is NON-NEGOTIABLE. If the original says "I apologize because I lied", your hooks must also be about apologizing/confessing/admitting something — NOT about lottery comparisons, NOT about product features, NOT about warnings.
+- HOOKS MUST BE PRODUCT-SPECIFIC: Reference specific product details (name, price points, unique mechanism, key benefits) from the PRODUCT CONTEXT above. A hook like "This changed everything" is BANNED — it must be specific like referencing the actual product, its price, a specific benefit, or a concrete claim. Generic hooks fail. Specific hooks convert.
 
 ## Body Generation — SECTION-BY-SECTION REPHRASING (NOT rewriting)
 - Go through the original body paragraph by paragraph, section by section
@@ -2816,11 +2824,11 @@ router.post('/generate/:id', authenticate, async (req, res) => {
       if (cachedAnalysis) console.log(`[BriefPipeline] Stale analysis cache for ${winner.creative_id} — re-analyzing with 3-agent pipeline`);
       const { dnaPrompt, psychologyPrompt, rulesPrompt } = await buildDeepAnalysisPrompts(winner, parsedScript, productContext);
 
-      // Run all 3 agents in parallel
+      // Run all 3 agents in parallel (iteration rules uses Haiku for speed — simpler output)
       const [scriptDna, psychology, iterationRules] = await Promise.all([
-        callClaude(dnaPrompt.system, dnaPrompt.user, 4096),
-        callClaude(psychologyPrompt.system, psychologyPrompt.user, 4096),
-        callClaude(rulesPrompt.system, rulesPrompt.user, 4096),
+        callClaude(dnaPrompt.system, dnaPrompt.user, 2500),
+        callClaude(psychologyPrompt.system, psychologyPrompt.user, 2500),
+        callClaude(rulesPrompt.system, rulesPrompt.user, 2000, { fast: true }),
       ]);
 
       winAnalysis = { scriptDna, psychology, iterationRules };
@@ -2885,31 +2893,16 @@ router.post('/generate/:id', authenticate, async (req, res) => {
         if (!Array.isArray(generated.hooks)) generated.hooks = [];
         if (!generated.body) generated.body = '';
 
-        // Step 8: Blend validation + Scoring IN PARALLEL (both read generated, don't depend on each other)
-        const { system: blendSystem, user: blendUser } = await buildBlendValidationPrompt(generated);
+        // Step 8: Score only (blend validation removed for speed — saves 1 API call per variant)
         const { system: scoreSystem, user: scoreUser } = await buildBriefScorerPrompt(winner, parsedScript, generated, direction.name, winAnalysis, productContext);
 
-        let blendResult = null;
         let scores = { novelty: { score: 5 }, aggression: { score: 5 }, coherence: { score: 5 }, hook_body_blend: { score: 5 }, conversion_potential: { score: 5 } };
         try {
-          const [br, sc] = await Promise.all([
-            callClaude(blendSystem, blendUser, 1000, { fast: true }),  // Haiku for blend check
-            callClaude(scoreSystem, scoreUser, 1500, { fast: true }),     // Haiku for scoring (speed)
-          ]);
-          blendResult = br;
+          const sc = await callClaude(scoreSystem, scoreUser, 1500, { fast: true });
           if (sc) scores = sc;
         } catch (evalErr) {
-          console.warn(`[BriefPipeline] Scoring/blend error for direction #${direction.id}:`, evalErr.message);
+          console.warn(`[BriefPipeline] Scoring error for direction #${direction.id}:`, evalErr.message);
           scores._scoring_failed = true;
-        }
-
-        // Incorporate blend validation into scores
-        if (blendResult?.overall_blend != null) {
-          scores.hook_body_blend = scores.hook_body_blend || {};
-          scores.hook_body_blend.blend_validation = blendResult;
-          if (blendResult.overall_blend < 6.5) {
-            scores.hook_body_blend.score = Math.min(scores.hook_body_blend?.score ?? 5, Math.round(blendResult.overall_blend));
-          }
         }
 
         const overall = scores.overall ?? (
@@ -3092,9 +3085,9 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
 
     const { dnaPrompt, psychologyPrompt, rulesPrompt } = await buildDeepAnalysisPrompts(winner, parsedScript, productContext);
     const [scriptDna, psychology, iterationRules] = await Promise.all([
-      callClaude(dnaPrompt.system, dnaPrompt.user, 4096),
-      callClaude(psychologyPrompt.system, psychologyPrompt.user, 4096),
-      callClaude(rulesPrompt.system, rulesPrompt.user, 4096),
+      callClaude(dnaPrompt.system, dnaPrompt.user, 2500),
+      callClaude(psychologyPrompt.system, psychologyPrompt.user, 2500),
+      callClaude(rulesPrompt.system, rulesPrompt.user, 2000, { fast: true }),
     ]);
     const winAnalysis = { scriptDna, psychology, iterationRules };
 
@@ -3133,32 +3126,15 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
             generated.key_changes_from_original = generated.key_adaptations || generated.key_changes_from_original || '';
           }
 
-          // Score + blend in parallel
-          const { system: blendSystem, user: blendUser } = await buildBlendValidationPrompt(generated);
+          // Score only (blend validation removed for speed)
           const { system: scoreSystem, user: scoreUser } = await buildBriefScorerPrompt(winner, parsedScript, generated, '1:1 Clone', winAnalysis, productContext);
 
-          let blendResult = null;
           let scores = { novelty: { score: 3 }, aggression: { score: 5 }, coherence: { score: 5 }, hook_body_blend: { score: 5 }, conversion_potential: { score: 5 } };
-          let scoringFailed = false;
           try {
-            const [br, sc] = await Promise.all([
-              callClaude(blendSystem, blendUser, 1000, { fast: true }),
-              callClaude(scoreSystem, scoreUser, 1500, { fast: true }),
-            ]);
-            blendResult = br;
+            const sc = await callClaude(scoreSystem, scoreUser, 1500, { fast: true });
             if (sc) scores = sc;
           } catch (evalErr) {
-            console.warn(`[BriefPipeline] Clone scoring/blend failed:`, evalErr.message);
-            scoringFailed = true;
-          }
-
-          if (blendResult?.overall_blend != null) {
-            scores.hook_body_blend = scores.hook_body_blend || {};
-            scores.hook_body_blend.blend_validation = blendResult;
-          }
-
-          // Flag if scores are fallback defaults
-          if (scoringFailed) {
+            console.warn(`[BriefPipeline] Clone scoring failed:`, evalErr.message);
             scores._scoring_failed = true;
             scores.verdict = scores.verdict || 'MAYBE';
           }
@@ -3222,27 +3198,16 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
           if (!Array.isArray(generated.hooks)) generated.hooks = [];
           if (!generated.body) generated.body = '';
 
-          // Score + blend in parallel
-          const { system: blendSystem, user: blendUser } = await buildBlendValidationPrompt(generated);
+          // Score only (blend validation removed for speed)
           const { system: scoreSystem, user: scoreUser } = await buildBriefScorerPrompt(winner, parsedScript, generated, direction.name, winAnalysis, productContext);
 
-          let blendResult = null;
           let scores = { novelty: { score: 5 }, aggression: { score: 5 }, coherence: { score: 5 }, hook_body_blend: { score: 5 }, conversion_potential: { score: 5 } };
           try {
-            const [br, sc] = await Promise.all([
-              callClaude(blendSystem, blendUser, 1000, { fast: true }),
-              callClaude(scoreSystem, scoreUser, 1500, { fast: true }),
-            ]);
-            blendResult = br;
+            const sc = await callClaude(scoreSystem, scoreUser, 1500, { fast: true });
             if (sc) scores = sc;
           } catch (evalErr) {
             console.warn(`[BriefPipeline] generate-from-script scoring error for direction #${direction.id}:`, evalErr.message);
             scores._scoring_failed = true;
-          }
-
-          if (blendResult?.overall_blend != null) {
-            scores.hook_body_blend = scores.hook_body_blend || {};
-            scores.hook_body_blend.blend_validation = blendResult;
           }
 
           const overall = scores.overall ?? (
@@ -3447,6 +3412,25 @@ router.patch('/generated/:id', authenticate, async (req, res) => {
     res.json({ success: true, brief: rows[0] });
   } catch (err) {
     console.error('[BriefPipeline] PATCH /generated/:id error:', err.message);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// DELETE /generated/:id — permanently delete a generated brief
+router.delete('/generated/:id', authenticate, async (req, res) => {
+  if (!validateUuid(req, res)) return;
+  try {
+    await ensureTables();
+    const rows = await pgQuery(
+      `DELETE FROM brief_pipeline_generated WHERE id = $1 RETURNING id`,
+      [req.params.id]
+    );
+    if (!rows.length) {
+      return res.status(404).json({ success: false, error: { message: 'Brief not found' } });
+    }
+    res.json({ success: true });
+  } catch (err) {
+    console.error('[BriefPipeline] DELETE /generated/:id error:', err.message);
     res.status(500).json({ success: false, error: { message: err.message } });
   }
 });

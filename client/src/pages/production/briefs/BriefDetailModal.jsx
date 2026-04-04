@@ -66,6 +66,7 @@ export default function BriefDetailModal({
   onPush,
   onSave,
   originalScript,
+  originalRawScript,
   winAnalysis,
 }) {
   const [winAnalysisOpen, setWinAnalysisOpen] = useState(false);
@@ -189,21 +190,27 @@ export default function BriefDetailModal({
             </section>
           )}
 
-          {/* Original Script */}
-          {(originalHooks.length > 0 || originalBody) && (
+          {/* Original Script — show raw transcript if available, otherwise parsed hooks/body */}
+          {(originalRawScript || originalHooks.length > 0 || originalBody) && (
             <section>
               <SectionLabel>Original Script</SectionLabel>
               <div className="glass-card border border-white/[0.04] rounded-lg p-5 bg-white/[0.02] space-y-4">
-                {originalHooks.map((hook, i) => (
-                  <div key={i}>
-                    <span className="font-mono text-xs text-zinc-500 mr-2">H{i + 1}</span>
-                    <span className={`text-sm ${i === 0 ? 'font-medium text-zinc-200' : 'text-zinc-400'} leading-relaxed`}>
-                      {typeof hook === 'string' ? hook : hook.text}
-                    </span>
-                  </div>
-                ))}
-                {originalBody && (
-                  <p className="text-sm text-zinc-400 leading-relaxed whitespace-pre-line">{originalBody}</p>
+                {originalRawScript ? (
+                  <p className="text-sm text-zinc-300 leading-relaxed whitespace-pre-line">{originalRawScript}</p>
+                ) : (
+                  <>
+                    {originalHooks.map((hook, i) => (
+                      <div key={i}>
+                        <span className="font-mono text-xs text-zinc-500 mr-2">H{i + 1}</span>
+                        <span className={`text-sm ${i === 0 ? 'font-medium text-zinc-200' : 'text-zinc-400'} leading-relaxed`}>
+                          {typeof hook === 'string' ? hook : hook.text}
+                        </span>
+                      </div>
+                    ))}
+                    {originalBody && (
+                      <p className="text-sm text-zinc-400 leading-relaxed whitespace-pre-line">{originalBody}</p>
+                    )}
+                  </>
                 )}
               </div>
             </section>

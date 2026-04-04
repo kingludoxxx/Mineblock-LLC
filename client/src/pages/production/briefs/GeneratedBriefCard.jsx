@@ -1,10 +1,10 @@
-import { CheckCircle2, RefreshCw, Rocket, ExternalLink, MoreHorizontal, MessageSquare, Play, Send, Zap, AlertTriangle, Check } from 'lucide-react';
+import { CheckCircle2, RefreshCw, Rocket, ExternalLink, MoreHorizontal, MessageSquare, Play, Send, Zap, AlertTriangle, Check, Trash2 } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
 // GeneratedBriefCard — glass-card style matching Magic Patterns design
 // ---------------------------------------------------------------------------
 
-function GeneratedBriefCard({ brief, onApprove, onReject, onPush, onMoveToReady, onClick, showActions = 'generated', launchFailed, launchError, onSelectForLaunch, isSelectedForLaunch, metaAdIds }) {
+function GeneratedBriefCard({ brief, onApprove, onReject, onPush, onMoveToReady, onDelete, onClick, showActions = 'generated', launchFailed, launchError, onSelectForLaunch, isSelectedForLaunch, metaAdIds }) {
   const hooks = (() => {
     if (Array.isArray(brief.hooks)) return brief.hooks;
     if (typeof brief.hooks === 'string') { try { return JSON.parse(brief.hooks); } catch { return []; } }
@@ -54,9 +54,21 @@ function GeneratedBriefCard({ brief, onApprove, onReject, onPush, onMoveToReady,
               </span>
             )}
           </div>
-          <button className="text-zinc-600 hover:text-zinc-300 opacity-0 group-hover:opacity-100 transition-opacity">
-            <MoreHorizontal className="w-4 h-4" />
-          </button>
+          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+            {onDelete && (
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); onDelete(brief); }}
+                className="text-zinc-600 hover:text-red-400 transition-colors cursor-pointer"
+                title="Delete brief"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            )}
+            <button className="text-zinc-600 hover:text-zinc-300 transition-colors">
+              <MoreHorizontal className="w-4 h-4" />
+            </button>
+          </div>
         </div>
 
         {/* Title / Hook preview */}

@@ -224,6 +224,16 @@ export default function BriefPipeline() {
     }
   }, [fetchGenerated]);
 
+  const handleDelete = useCallback(async (briefId) => {
+    try {
+      await api.delete(`/brief-pipeline/generated/${briefId}`);
+      await fetchGenerated();
+    } catch (err) {
+      console.error('Delete failed:', err);
+      setError('Failed to delete brief.');
+    }
+  }, [fetchGenerated]);
+
   const handleSaveBrief = useCallback(async (briefId, updates) => {
     try {
       await api.patch(`/brief-pipeline/generated/${briefId}`, updates);
@@ -582,6 +592,7 @@ export default function BriefPipeline() {
                                 showActions="generated"
                                 onApprove={() => handleApprove(item.id)}
                                 onReject={() => handleReject(item.id)}
+                                onDelete={() => handleDelete(item.id)}
                               />
                             );
                           }
@@ -595,6 +606,7 @@ export default function BriefPipeline() {
                                 showActions="approved"
                                 onPush={() => handlePush(item.id)}
                                 onMoveToReady={() => handleMoveToReady(item.id)}
+                                onDelete={() => handleDelete(item.id)}
                               />
                             );
                           }
@@ -606,6 +618,7 @@ export default function BriefPipeline() {
                                 brief={item}
                                 onClick={() => setDetailModal(item)}
                                 showActions="pushed"
+                                onDelete={() => handleDelete(item.id)}
                               />
                             );
                           }
@@ -627,6 +640,7 @@ export default function BriefPipeline() {
                                   );
                                 }}
                                 isSelectedForLaunch={selectedForLaunch.includes(item.id)}
+                                onDelete={() => handleDelete(item.id)}
                               />
                             );
                           }
@@ -639,6 +653,7 @@ export default function BriefPipeline() {
                                 onClick={() => setDetailModal(item)}
                                 showActions="launched"
                                 metaAdIds={item.meta_ad_ids}
+                                onDelete={() => handleDelete(item.id)}
                               />
                             );
                           }
@@ -699,6 +714,7 @@ export default function BriefPipeline() {
           winAnalysis={detailModal.win_analysis}
           onSave={handleSaveBrief}
           originalScript={detailModal?.original_script}
+          originalRawScript={detailModal?.original_raw_script}
           onApprove={() => {
             handleApprove(detailModal.id);
             setDetailModal(null);
