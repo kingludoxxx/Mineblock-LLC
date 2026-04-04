@@ -571,20 +571,6 @@ export default function AdCopySetsManager({ open, onClose, productId, productNam
                     </div>
                   </div>
 
-                  {/* CTA / URL / UTM */}
-                  <div className="flex items-center gap-4 text-[11px] text-white/25">
-                    {cs.cta_button && (
-                      <span className="flex items-center gap-1">
-                        <ChevronRight className="w-3 h-3" /> {cs.cta_button.replace(/_/g, ' ')}
-                      </span>
-                    )}
-                    {cs.landing_page_url && (
-                      <span className="truncate max-w-[200px]">{cs.landing_page_url}</span>
-                    )}
-                    {cs.utm_parameters && (
-                      <span className="truncate max-w-[180px] font-mono">{cs.utm_parameters}</span>
-                    )}
-                  </div>
                 </div>
 
                 {/* Actions */}
