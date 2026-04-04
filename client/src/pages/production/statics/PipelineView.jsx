@@ -230,16 +230,16 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, onRegener
             )}
           </div>
 
-          {/* Action buttons — single row, evenly spaced */}
+          {/* Action buttons — single row */}
           {column.actionLabel ? (
-            <div className="flex items-center gap-2">
+            <div className="flex items-stretch gap-1.5">
               <button
                 type="button"
                 onClick={(e) => {
                   e.stopPropagation();
                   onStatusChange?.(creative.id, column.nextStatus);
                 }}
-                className={`flex-1 inline-flex items-center justify-center gap-1.5 h-9 rounded-lg text-[11px] font-semibold border transition-colors cursor-pointer
+                className={`flex-1 min-w-0 inline-flex items-center justify-center gap-1 h-8 rounded-lg text-[11px] font-semibold border transition-colors cursor-pointer
                   ${column.color === 'green'
                     ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/25 hover:bg-emerald-500/20'
                     : column.color === 'cyan'
@@ -247,8 +247,8 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, onRegener
                       : 'bg-white/[0.03] text-zinc-300 border-white/[0.08] hover:bg-white/[0.06]'
                   }`}
               >
-                <Check className="w-3.5 h-3.5" />
-                {column.actionLabel}
+                <Check className="w-3 h-3 shrink-0" />
+                <span className="truncate">{column.actionLabel}</span>
               </button>
               {column.key === 'review' && (
                 <button
@@ -257,10 +257,10 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, onRegener
                     e.stopPropagation();
                     onStatusChange?.(creative.id, 'rejected');
                   }}
-                  className="h-9 w-9 flex items-center justify-center rounded-lg border border-red-500/25 text-red-400/70 hover:text-red-400 hover:bg-red-500/10 transition-colors cursor-pointer shrink-0"
+                  className="h-8 w-8 flex items-center justify-center rounded-lg border border-red-500/25 text-red-400/70 hover:text-red-400 hover:bg-red-500/10 transition-colors cursor-pointer shrink-0"
                   title="Reject"
                 >
-                  <X className="w-4 h-4" />
+                  <X className="w-3.5 h-3.5" />
                 </button>
               )}
               <button
@@ -269,10 +269,10 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, onRegener
                   e.stopPropagation();
                   onCardClick?.(creative);
                 }}
-                className="h-9 w-9 flex items-center justify-center rounded-lg border border-white/[0.08] text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.05] transition-colors cursor-pointer shrink-0"
+                className="h-8 w-8 flex items-center justify-center rounded-lg border border-white/[0.08] text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.05] transition-colors cursor-pointer shrink-0"
                 title="Preview"
               >
-                <Maximize2 className="w-4 h-4" />
+                <Maximize2 className="w-3.5 h-3.5" />
               </button>
               <button
                 type="button"
@@ -280,10 +280,10 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, onRegener
                   e.stopPropagation();
                   onRegenerate?.(creative);
                 }}
-                className="h-9 w-9 flex items-center justify-center rounded-lg border border-[#c9a84c]/25 text-[#c9a84c]/70 hover:text-[#d4b55a] hover:bg-[#c9a84c]/10 transition-colors cursor-pointer shrink-0"
+                className="h-8 w-8 flex items-center justify-center rounded-lg border border-[#c9a84c]/25 text-[#c9a84c]/70 hover:text-[#d4b55a] hover:bg-[#c9a84c]/10 transition-colors cursor-pointer shrink-0"
                 title="Regenerate"
               >
-                <RefreshCw className="w-4 h-4" />
+                <RefreshCw className="w-3.5 h-3.5" />
               </button>
               <button
                 type="button"
@@ -291,10 +291,10 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, onRegener
                   e.stopPropagation();
                   onCardClick?.(creative);
                 }}
-                className="h-9 w-9 flex items-center justify-center rounded-lg border border-white/[0.08] text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.05] transition-colors cursor-pointer shrink-0"
+                className="h-8 w-8 flex items-center justify-center rounded-lg border border-white/[0.08] text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.05] transition-colors cursor-pointer shrink-0"
                 title="Settings"
               >
-                <Settings className="w-4 h-4" />
+                <Settings className="w-3.5 h-3.5" />
               </button>
             </div>
           ) : null}
