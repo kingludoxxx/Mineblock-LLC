@@ -477,6 +477,13 @@ router.get('/status/:taskId', authenticate, async (req, res) => {
       },
     });
   } catch (err) {
+    // Transient network errors (ECONNRESET, timeout, etc.) — return pending so client keeps polling
+    const isTransient = err.cause?.code === 'ECONNRESET' || err.message === 'terminated' || err.message?.includes('fetch failed');
+    if (isTransient) {
+      console.warn('[staticsGeneration] /status transient error (returning pending):', err.message);
+      res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
+      return res.json({ success: true, data: { taskId: req.params.taskId, status: 'pending', successFlag: false, resultImageUrl: null, error: null } });
+    }
     console.error('[staticsGeneration] /status error:', err);
     return res.status(500).json({ success: false, error: err.message });
   }
