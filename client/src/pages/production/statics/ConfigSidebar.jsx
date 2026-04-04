@@ -8,6 +8,7 @@ import {
   ListPlus,
 } from 'lucide-react';
 import ProductSelector from '../../../components/ProductSelector';
+import { AresAgent } from './AresAgent';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -43,6 +44,7 @@ export function ConfigSidebar({
   onGenerate,
   onAddToQueue,
   generating,
+  generationStep,
   onProductsLoaded,
 }) {
   const fileInputRef = useRef(null);
@@ -208,6 +210,13 @@ export function ConfigSidebar({
           )}
         </div>
       </div>
+
+      {/* ---- Ares AI Agent indicator ---- */}
+      {generating && (
+        <div className="px-5 pt-4">
+          <AresAgent active={generating} step={generationStep} />
+        </div>
+      )}
 
       {/* ---- Generate & Queue buttons ---- */}
       <div className="px-5 py-4 border-t border-white/[0.04] mt-6 space-y-3">

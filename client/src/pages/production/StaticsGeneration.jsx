@@ -1807,6 +1807,7 @@ export default function StaticsGeneration() {
                   onGenerate={handleGenerate}
                   onAddToQueue={handleAddToQueue}
                   generating={generating}
+                  generationStep={generationStep}
                   onProductsLoaded={(list) => {
                     // Auto-select Miner Forge Pro if no product is selected yet
                     if (!selectedProductRef.current && list.length > 0) {

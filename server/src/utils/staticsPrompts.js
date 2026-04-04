@@ -186,6 +186,20 @@ CRITICAL RULES FOR ADAPTED COPY:
 - Headlines should punch you in the gut — short, specific, emotionally loaded
 - If the original ad is aggressive, be EQUALLY aggressive. If it makes bold claims, make equally bold claims using THIS product's real benefits
 
+BENEFIT-FOCUSED WRITING (CRITICAL — READ THIS):
+Every bullet, feature callout, and body text must be written as a CUSTOMER BENEFIT, not a technical spec.
+The customer does not care about specs. They care about what the product DOES FOR THEM.
+- WRONG: "1 watt power draw" (this is a spec sheet, not an ad)
+- RIGHT: "Only $1/month to run" (this is a benefit the customer cares about)
+- WRONG: "144 attempts daily" (technical jargon)
+- RIGHT: "144 chances to win $300K every single day" (exciting outcome)
+- WRONG: "Solo mining technology" (feature)
+- RIGHT: "Keep 100% of your rewards — no pool fees" (benefit)
+- WRONG: "SHA-256 algorithm" (nobody cares)
+- RIGHT: "Real Bitcoin, not some shitcoin" (speaks to desire)
+
+RULE: For EVERY adapted text element, ask yourself: "Would a normal person scrolling Facebook at 11pm care about this?" If the answer is no, rewrite it as a benefit they WOULD care about. Use the product context to find the real benefits — price savings, outcome, emotional payoff, social proof.
+
 PRODUCT CONTEXT:
 ${contextLines}${brandSection}${productIdentity}${pricingRules}
 ${layoutMap ? `
@@ -246,6 +260,12 @@ Set has_competitor_logo to FALSE if:
 - You are unsure — when in doubt, return FALSE
 This field controls whether brand logos are injected into the generated ad. A false positive will cause unwanted logos to appear.
 
+LOGO BACKGROUND TONE (logo_background_tone):
+Look at the area of the ad where the competitor logo sits (or where a logo would naturally go — typically top corner or bottom).
+- Set to "dark" if that area has a dark/black background (our WHITE logo should be used)
+- Set to "light" if that area has a light/white background (our BLACK logo should be used)
+- Set to "mixed" if unclear or gradient (default to our dark logo)
+
 ---
 
 Return ONLY valid JSON (no markdown, no code fences):
@@ -273,6 +293,7 @@ Return ONLY valid JSON (no markdown, no code fences):
   "people_count": 0,
   "product_count": 0,
   "has_competitor_logo": false,
+  "logo_background_tone": "dark|light|mixed",
   "adapted_audience": "description of target demographic for people in ad",
   "character_adaptation": "how to adapt people shown (age, gender, style)",
   "visual_adaptations": [
@@ -316,7 +337,7 @@ export function buildSwapPairs(originalText, adaptedText) {
 // STEP 3: NanoBanana (Gemini) — Image Generation Prompt
 // ─────────────────────────────────────────────────────────────────────────────
 
-export function buildNanoBananaPrompt(claudeResult, swapPairs, product, logoCount = 0, customOverrides = null, layoutMap = null) {
+export function buildNanoBananaPrompt(claudeResult, swapPairs, product, logoCount = 0, customOverrides = null, layoutMap = null, logoBackgroundTone = null) {
   const {
     people_count, product_count, adapted_audience,
     character_adaptation, visual_adaptations
@@ -384,7 +405,7 @@ export function buildNanoBananaPrompt(claudeResult, swapPairs, product, logoCoun
   return `Replicate the reference ad (LAST image) exactly, with only the product and text swapped.
 
 The first image(s) show the replacement product — reproduce it EXACTLY as photographed. Multiple angles may be provided.
-${logoCount > 0 ? '\nA brand logo is provided between the product photos and the reference ad. Use this EXACT logo where the competitor logo appears. Copy the logo PIXEL-FOR-PIXEL from the provided logo image — do NOT redraw, stylize, or approximate it. The logo must be an exact reproduction.' : ''}
+${logoCount > 0 ? `\nA brand logo is provided between the product photos and the reference ad. Use this EXACT logo where the competitor logo appears. Copy the logo PIXEL-FOR-PIXEL from the provided logo image — do NOT redraw, stylize, or approximate it. The logo must be an exact reproduction.${logoBackgroundTone === 'dark' ? '\nIMPORTANT: The logo area has a DARK background — use the WHITE/light version of the logo for maximum contrast and visibility.' : logoBackgroundTone === 'light' ? '\nIMPORTANT: The logo area has a LIGHT background — use the BLACK/dark version of the logo for maximum contrast and visibility.' : ''}` : ''}
 
 1. REPLICATE the reference ad's layout, composition, background color/gradient, font styles, text positions, spacing, shadows, borders — match the reference style exactly.
 

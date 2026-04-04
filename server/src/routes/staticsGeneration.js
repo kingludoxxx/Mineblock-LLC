@@ -451,7 +451,8 @@ router.post('/generate', authenticate, async (req, res) => {
     logoUrls.forEach((u, i) => console.log(`  [${extraProductUrls.length+1+i}] logo: ${u?.slice(0, 120)}`));
     console.log(`  [LAST] reference: ${finalReferenceUrl?.slice(0, 120)}`);
 
-    const nbPrompt = buildNanoBananaPrompt(claudeResult, swapPairs, product, logoUrls.length, customPrompts, layoutMap);
+    const logoBackgroundTone = claudeResult.logo_background_tone || null;
+    const nbPrompt = buildNanoBananaPrompt(claudeResult, swapPairs, product, logoUrls.length, customPrompts, layoutMap, logoBackgroundTone);
 
     // Send: product images, then logos, then reference ad (last)
     const imageUrls = [finalProductUrl, ...extraProductUrls, ...logoUrls, finalReferenceUrl];
