@@ -5,7 +5,7 @@ import crypto from 'crypto';
 const ANTHROPIC_API_KEY  = process.env.ANTHROPIC_API_KEY || '';
 const NANOBANANA_API_KEY = process.env.NANOBANANA_API_KEY || '';
 
-const NB_BASE        = 'https://api.nanobananaapi.ai/api/v1/nanobanana';
+const NB_BASE        = 'https://api.kie.ai/api/v1/jobs';
 const CLAUDE_API_URL = 'https://api.anthropic.com/v1/messages';
 const DEFAULT_MAX_POLLS     = 60;
 const DEFAULT_POLL_INTERVAL = 5000;
@@ -131,19 +131,20 @@ export function buildNanoBananaPrompt(claudeResult, swapPairs, product) {
  * @returns {string} taskId
  */
 export async function submitToNanoBanana(prompt, imageUrls, ratio = '4:5', resolution = '1K') {
-  const nbRes = await fetch(`${NB_BASE}/generate-2`, {
+  const nbRes = await fetch(`${NB_BASE}/createTask`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${NANOBANANA_API_KEY}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      prompt,
-      model: 'nano-banana-2',
-      imageUrls,
-      aspectRatio: ratio,
-      resolution,
-      outputFormat: 'png',
+      model: 'google/nano-banana-edit',
+      input: {
+        prompt,
+        image_urls: imageUrls,
+        image_size: ratio,
+        output_format: 'png',
+      },
     }),
   });
 
@@ -153,8 +154,8 @@ export async function submitToNanoBanana(prompt, imageUrls, ratio = '4:5', resol
   }
 
   const nbData = await nbRes.json();
-  const taskId = nbData.taskId || nbData.data?.taskId;
-  if (!taskId) throw new Error('No taskId returned from NanoBanana');
+  const taskId = nbData.data?.taskId || nbData.taskId;
+  if (!taskId) throw new Error(`No taskId returned from NanoBanana: ${JSON.stringify(nbData)}`);
   return taskId;
 }
 
@@ -169,24 +170,32 @@ export async function pollNanoBanana(taskId, maxPolls = DEFAULT_MAX_POLLS, pollI
   for (let i = 0; i < maxPolls; i++) {
     await sleep(pollInterval);
 
-    const res = await fetch(`${NB_BASE}/record-info?taskId=${taskId}`, {
+    const res = await fetch(`${NB_BASE}/recordInfo?taskId=${taskId}`, {
       headers: { Authorization: `Bearer ${NANOBANANA_API_KEY}` },
     });
 
     if (!res.ok) throw new Error(`NanoBanana status check failed: ${res.status}`);
 
     const data = await res.json();
-    const flag = Number(data.successFlag ?? data.data?.successFlag);
+    const record = data.data || data;
+    const state = record.state;
 
-    if (flag === 1) {
-      const imageUrl = data.resultImageUrl || data.data?.resultImageUrl;
-      if (!imageUrl) throw new Error('NanoBanana completed but no resultImageUrl found');
+    if (state === 'success') {
+      // Kie.ai returns resultJson as a JSON string with resultUrls array
+      let imageUrl;
+      try {
+        const resultObj = typeof record.resultJson === 'string' ? JSON.parse(record.resultJson) : record.resultJson;
+        imageUrl = resultObj?.resultUrls?.[0];
+      } catch {}
+      // Fallback to old format fields
+      if (!imageUrl) imageUrl = record.resultImageUrl || data.resultImageUrl;
+      if (!imageUrl) throw new Error('NanoBanana completed but no result image URL found');
       return imageUrl;
     }
-    if (flag >= 2) {
-      throw new Error(`NanoBanana generation failed (successFlag=${flag})`);
+    if (state === 'fail') {
+      throw new Error(`NanoBanana generation failed: ${record.failMsg || 'Unknown error'}`);
     }
-    // flag === 0 -> still pending
+    // state === 'waiting' | 'queuing' | 'generating' -> still pending
   }
 
   throw new Error('NanoBanana generation timed out after polling');

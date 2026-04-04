@@ -39,7 +39,7 @@ router.get('/tmp-img/:id', (req, res) => {
 const ANTHROPIC_API_KEY   = process.env.ANTHROPIC_API_KEY || '';
 const NANOBANANA_API_KEY  = process.env.NANOBANANA_API_KEY || '';
 
-const NB_BASE        = 'https://api.nanobananaapi.ai/api/v1/nanobanana';
+const NB_BASE        = 'https://api.kie.ai/api/v1/jobs';
 const CLAUDE_API_URL = 'https://api.anthropic.com/v1/messages';
 const MAX_POLLS      = 60;
 const POLL_INTERVAL  = 5000;
@@ -134,20 +134,28 @@ async function pollNanoBanana(taskId) {
   for (let i = 0; i < MAX_POLLS; i++) {
     await sleep(POLL_INTERVAL);
 
-    const res = await fetch(`${NB_BASE}/record-info?taskId=${taskId}`, {
+    const res = await fetch(`${NB_BASE}/recordInfo?taskId=${taskId}`, {
       headers: { Authorization: `Bearer ${NANOBANANA_API_KEY}` },
     });
 
     if (!res.ok) throw new Error(`NanoBanana status check failed: ${res.status}`);
 
     const data = await res.json();
-    const flag = Number(data.successFlag ?? data.data?.successFlag);
+    const record = data.data || data;
+    const state = record.state;
 
     // Log every poll response for debugging
-    console.log(`[staticsGeneration] Poll ${i+1}/${MAX_POLLS} — flag=${flag}, keys=${Object.keys(data)}, data.keys=${data.data ? Object.keys(data.data) : 'N/A'}`);
+    console.log(`[staticsGeneration] Poll ${i+1}/${MAX_POLLS} — state=${state}, keys=${Object.keys(data)}, record.keys=${Object.keys(record)}`);
 
-    if (flag === 1) {
-      const imageUrl = extractNanoBananaImageUrl(data);
+    if (state === 'success') {
+      // Kie.ai returns resultJson as a JSON string with resultUrls array
+      let imageUrl;
+      try {
+        const resultObj = typeof record.resultJson === 'string' ? JSON.parse(record.resultJson) : record.resultJson;
+        imageUrl = resultObj?.resultUrls?.[0];
+      } catch {}
+      // Fallback to old format
+      if (!imageUrl) imageUrl = extractNanoBananaImageUrl(data);
       if (!imageUrl) {
         console.error('[staticsGeneration] NanoBanana success but no image URL extracted.');
         console.error('[staticsGeneration] Full response (3000 chars):', JSON.stringify(data).slice(0, 3000));
@@ -155,11 +163,11 @@ async function pollNanoBanana(taskId) {
       }
       return imageUrl;
     }
-    if (flag >= 2) {
+    if (state === 'fail') {
       console.error('[staticsGeneration] NanoBanana failed. Full response:', JSON.stringify(data).slice(0, 2000));
-      throw new Error(`NanoBanana generation failed (successFlag=${flag})`);
+      throw new Error(`NanoBanana generation failed: ${record.failMsg || 'Unknown error'}`);
     }
-    // flag === 0 or NaN → still pending, keep polling
+    // state === 'waiting' | 'queuing' | 'generating' → still pending, keep polling
   }
 
   throw new Error('NanoBanana generation timed out after 5 minutes');
@@ -349,17 +357,18 @@ router.post('/generate', authenticate, async (req, res) => {
     const nbResponses = await Promise.all(
       ratiosToGenerate.map(async (r) => {
         const body = JSON.stringify({
-          prompt: nbPrompt,
-          model: 'nano-banana-2',
-          imageUrls: imageUrls,
-          aspectRatio: r,
-          resolution: '2K',
-          outputFormat: 'png',
+          model: 'google/nano-banana-edit',
+          input: {
+            prompt: nbPrompt,
+            image_urls: imageUrls,
+            image_size: r,
+            output_format: 'png',
+          },
         });
 
         let data = null;
         for (let attempt = 1; attempt <= NB_RETRY_ATTEMPTS; attempt++) {
-          const res = await fetch(`${NB_BASE}/generate-2`, {
+          const res = await fetch(`${NB_BASE}/createTask`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${NANOBANANA_API_KEY}` },
             body,
@@ -419,7 +428,7 @@ router.get('/status/:taskId', authenticate, async (req, res) => {
     const { taskId } = req.params;
     if (!taskId) return res.status(400).json({ success: false, error: 'taskId is required' });
 
-    const nbRes = await fetch(`${NB_BASE}/record-info?taskId=${taskId}`, {
+    const nbRes = await fetch(`${NB_BASE}/recordInfo?taskId=${taskId}`, {
       headers: { Authorization: `Bearer ${NANOBANANA_API_KEY}` },
     });
 
@@ -429,21 +438,30 @@ router.get('/status/:taskId', authenticate, async (req, res) => {
     }
 
     const data = await nbRes.json();
-    const flag = Number(data.successFlag ?? data.data?.successFlag);
+    const record = data.data || data;
+    const state = record.state;
 
     let status;
     let errorDetail = null;
-    if (flag === 0 || isNaN(flag)) status = 'pending';
-    else if (flag === 1)           status = 'completed';
-    else {
+    if (state === 'success')  status = 'completed';
+    else if (state === 'fail') {
       status = 'failed';
-      // Extract actual error detail from NanoBanana response
-      errorDetail = data.error || data.data?.error || data.data?.message || data.message
-        || `NanoBanana generation failed (code ${flag})`;
-      console.error('[staticsGeneration] NanoBanana failed for task', taskId, '— flag:', flag, '— error:', errorDetail);
+      errorDetail = record.failMsg || data.error || data.data?.error
+        || `NanoBanana generation failed`;
+      console.error('[staticsGeneration] NanoBanana failed for task', taskId, '— state:', state, '— error:', errorDetail);
+    } else {
+      // waiting, queuing, generating
+      status = 'pending';
     }
 
-    const resultImageUrl = status === 'completed' ? extractNanoBananaImageUrl(data) : null;
+    let resultImageUrl = null;
+    if (status === 'completed') {
+      try {
+        const resultObj = typeof record.resultJson === 'string' ? JSON.parse(record.resultJson) : record.resultJson;
+        resultImageUrl = resultObj?.resultUrls?.[0];
+      } catch {}
+      if (!resultImageUrl) resultImageUrl = extractNanoBananaImageUrl(data);
+    }
 
     // Prevent browser caching so polling always gets fresh data
     res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
@@ -620,19 +638,20 @@ async function generateVariant(parent, newAspectRatio) {
     const resizePrompt = `Seamlessly resize this ad image to ${newAspectRatio} aspect ratio. Keep ALL content identical — same text, same product, same layout, same colors, same style. Extend or adjust the background naturally to fill the new format.`;
 
     const nbPayload = {
-      prompt: resizePrompt,
-      model: 'nano-banana-2',
-      imageUrls: [parentImageUrl],
-      aspectRatio: newAspectRatio,
-      resolution: '1K',
-      outputFormat: 'png',
+      model: 'google/nano-banana-edit',
+      input: {
+        prompt: resizePrompt,
+        image_urls: [parentImageUrl],
+        image_size: newAspectRatio,
+        output_format: 'png',
+      },
     };
 
     console.log(`[staticsGeneration] Resize ${parent.id} → ${newAspectRatio}: sending parent image to NanoBanana`, String(parentImageUrl).slice(0, 120));
 
     let taskId = null;
     for (let attempt = 1; attempt <= 3; attempt++) {
-      const nbRes = await fetch(`${NB_BASE}/generate-2`, {
+      const nbRes = await fetch(`${NB_BASE}/createTask`, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${NANOBANANA_API_KEY}`,
@@ -987,16 +1006,17 @@ Return ONLY a JSON object with:
         const httpImageUrl = await ensureHttpUrlGlobal(creative.image_url, 'adjust-ref');
 
         // Submit to NanoBanana
-        const nbRes = await fetch(`${NB_BASE}/generate-2`, {
+        const nbRes = await fetch(`${NB_BASE}/createTask`, {
           method: 'POST',
           headers: { Authorization: `Bearer ${NANOBANANA_API_KEY}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            prompt: adjustResult.adjusted_prompt,
-            model: 'nano-banana-2',
-            imageUrls: [httpImageUrl],
-            aspectRatio: creative.aspect_ratio || '4:5',
-            resolution: '1K',
-            outputFormat: 'png',
+            model: 'google/nano-banana-edit',
+            input: {
+              prompt: adjustResult.adjusted_prompt,
+              image_urls: [httpImageUrl],
+              image_size: creative.aspect_ratio || '4:5',
+              output_format: 'png',
+            },
           }),
         });
 
