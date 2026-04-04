@@ -1202,6 +1202,12 @@ export default function StaticsGeneration() {
       return next;
     });
 
+    // Clear references after adding to queue so next template selection starts fresh
+    setReferences([]);
+    setReferenceImageUrl('');
+    setReferencePreview('');
+    setReferenceFile(null);
+
     const pendingCount = queue.filter(q => q.status === 'queued').length + 1;
     addToast(`Added to queue (${pendingCount} item${pendingCount > 1 ? 's' : ''} pending)`, 'info');
   };
@@ -2250,7 +2256,9 @@ export default function StaticsGeneration() {
                                     try {
                                       await api.post(`/statics-generation/creatives/${parent.id}/create-variant`, { aspect_ratio: '9:16' });
                                       fetchCreatives();
-                                    } catch {}
+                                    } catch (err) {
+                                      console.warn('[StaticsGeneration] create-variant failed:', err.message);
+                                    }
                                   }}
                                   className="text-[10px] text-accent-text/50 hover:text-accent cursor-pointer shrink-0"
                                 >
@@ -2555,21 +2563,21 @@ export default function StaticsGeneration() {
               setDetailModal(null);
               // Refresh after a delay to pick up the auto-generated 9:16 variant
               setTimeout(() => fetchCreatives(), 3000);
-            } catch { /* silently fail */ }
+            } catch (err) { console.warn('[StaticsGeneration] approve failed:', err.message); }
           }}
           onReject={async (id) => {
             try {
               await api.patch(`/statics-generation/creatives/${id}/status`, { status: 'rejected' });
               setCreatives(prev => prev.filter(c => c.id !== id));
               setDetailModal(null);
-            } catch { /* silently fail */ }
+            } catch (err) { console.warn('[StaticsGeneration] reject failed:', err.message); }
           }}
           onDelete={async (id) => {
             try {
               await api.delete(`/statics-generation/creatives/${id}`);
               setCreatives(prev => prev.filter(c => c.id !== id));
               setDetailModal(null);
-            } catch { /* silently fail */ }
+            } catch (err) { console.warn('[StaticsGeneration] delete failed:', err.message); }
           }}
           onDownload={(id) => {
             const creative = creatives.find(c => c.id === id);
@@ -2595,7 +2603,7 @@ export default function StaticsGeneration() {
               await api.patch(`/statics-generation/creatives/${id}/status`, { status });
               setCreatives(prev => prev.map(c => c.id === id ? { ...c, status } : c));
               setDetailModal(null);
-            } catch { /* silently fail */ }
+            } catch (err) { console.warn('[StaticsGeneration] statusChange failed:', err.message); }
           }}
         />
       )}

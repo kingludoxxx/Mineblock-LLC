@@ -394,7 +394,7 @@ router.post('/:id/analyze-layout', authenticate, async (req, res) => {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-sonnet-4-6',
         max_tokens: 3000,
         system,
         messages: [
@@ -405,7 +405,6 @@ router.post('/:id/analyze-layout', authenticate, async (req, res) => {
               { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } },
             ],
           },
-          { role: 'assistant', content: '{' },
         ],
       }),
     });
@@ -419,8 +418,7 @@ router.post('/:id/analyze-layout', authenticate, async (req, res) => {
     const rawText = data.content?.[0]?.text;
     if (!rawText) throw new Error('Empty response from Claude');
 
-    const fullJson = '{' + rawText;
-    const jsonMatch = fullJson.match(/\{[\s\S]*\}/);
+    const jsonMatch = rawText.match(/\{[\s\S]*\}/);
     if (!jsonMatch) throw new Error('No JSON in layout analysis response');
 
     let layoutMap;
@@ -484,7 +482,7 @@ router.post('/bulk-analyze-layout', authenticate, async (req, res) => {
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
-            model: 'claude-sonnet-4-20250514',
+            model: 'claude-sonnet-4-6',
             max_tokens: 3000,
             system,
             messages: [
@@ -495,7 +493,6 @@ router.post('/bulk-analyze-layout', authenticate, async (req, res) => {
                   { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } },
                 ],
               },
-              { role: 'assistant', content: '{' },
             ],
           }),
         });
@@ -503,8 +500,7 @@ router.post('/bulk-analyze-layout', authenticate, async (req, res) => {
         if (!claudeRes.ok) throw new Error(`Claude error ${claudeRes.status}`);
         const data = await claudeRes.json();
         const rawText = data.content?.[0]?.text;
-        const fullJson = '{' + (rawText || '');
-        const jsonMatch = fullJson.match(/\{[\s\S]*\}/);
+        const jsonMatch = (rawText || '').match(/\{[\s\S]*\}/);
         if (!jsonMatch) throw new Error('No JSON');
 
         let layoutMap;

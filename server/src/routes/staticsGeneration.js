@@ -207,7 +207,7 @@ async function analyzeAndCacheLayout(templateId, imageUrl) {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-sonnet-4-6',
         max_tokens: 3000,
         system,
         messages: [
@@ -218,7 +218,6 @@ async function analyzeAndCacheLayout(templateId, imageUrl) {
               { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } },
             ],
           },
-          { role: 'assistant', content: '{' },
         ],
       }),
     });
@@ -232,8 +231,7 @@ async function analyzeAndCacheLayout(templateId, imageUrl) {
     const rawText = data.content?.[0]?.text;
     if (!rawText) throw new Error('Empty response from Claude layout analysis');
 
-    const fullJson = '{' + rawText;
-    const jsonMatch = fullJson.match(/\{[\s\S]*\}/);
+    const jsonMatch = rawText.match(/\{[\s\S]*\}/);
     if (!jsonMatch) throw new Error('No JSON in layout analysis response');
 
     let layoutMap;
@@ -310,7 +308,7 @@ router.post('/generate', authenticate, async (req, res) => {
 
     // ── Step B: Call Claude to analyze the reference ad ─────────────────
     const claudeBody = {
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-sonnet-4-6',
       max_tokens: 4096,
       messages: [
         {
@@ -320,8 +318,6 @@ router.post('/generate', authenticate, async (req, res) => {
             { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } },
           ],
         },
-        // Prefill assistant response with '{' to force valid JSON output
-        { role: 'assistant', content: '{' },
       ],
     };
 
@@ -354,11 +350,8 @@ router.post('/generate', authenticate, async (req, res) => {
     const rawText = claudeData.content?.[0]?.text;
     if (!rawText) throw new Error('Empty response from Claude');
 
-    // The assistant response was prefilled with '{', so prepend it back
-    const fullJson = '{' + rawText;
-
-    // Extract JSON block (may have trailing text after the closing brace)
-    const jsonMatch = fullJson.match(/\{[\s\S]*\}/);
+    // Extract JSON block from full response (no assistant prefill)
+    const jsonMatch = rawText.match(/\{[\s\S]*\}/);
     if (!jsonMatch) throw new Error('Could not parse JSON from Claude response');
 
     let claudeResult;
@@ -368,8 +361,7 @@ router.post('/generate', authenticate, async (req, res) => {
       // Try to fix common issues: trailing commas, truncated responses
       let fixable = jsonMatch[0]
         .replace(/,\s*([}\]])/g, '$1')  // remove trailing commas
-        .replace(/\n/g, '\\n')          // escape raw newlines
-        .replace(/\\n/g, '\\n');
+        .replace(/\n/g, '\\n');         // escape raw newlines
       const opens = (fixable.match(/\{/g) || []).length;
       const closes = (fixable.match(/\}/g) || []).length;
       for (let i = 0; i < opens - closes; i++) fixable += '}';
@@ -424,8 +416,21 @@ router.post('/generate', authenticate, async (req, res) => {
 
     // Only send logos if Claude detected a competitor logo in the reference
     // This prevents NanoBanana from randomly placing logos when the template has no logo spot
+    // Extra safeguard: also check visual_adaptations for logo-related entries
     const logoUrls = [];
-    const hasCompetitorLogo = claudeResult.has_competitor_logo === true;
+    let hasCompetitorLogo = claudeResult.has_competitor_logo === true;
+
+    // Validate logo detection — if Claude says there's a logo, check if visual_adaptations mention one
+    if (hasCompetitorLogo) {
+      const visualAdapts = claudeResult.visual_adaptations || [];
+      const hasLogoInVisuals = visualAdapts.some(v =>
+        /\blogo\b/i.test(v.original_visual || '') || /\blogo\b/i.test(v.adapted_visual || '') || /\blogo\b/i.test(v.position || '')
+      );
+      if (!hasLogoInVisuals) {
+        console.warn(`[staticsGeneration] ⚠️ Claude detected has_competitor_logo=true but no logo mentioned in visual_adaptations. Overriding to false to prevent unwanted logos.`);
+        hasCompetitorLogo = false;
+      }
+    }
     if (hasCompetitorLogo) {
       const allLogos = product.logos || [];
       if (product.logo_url) allLogos.unshift(product.logo_url);
@@ -1141,7 +1146,7 @@ Return ONLY a JSON object with:
         });
 
         const claudeBody = {
-          model: 'claude-sonnet-4-20250514',
+          model: 'claude-sonnet-4-6',
           max_tokens: 2000,
           messages: [{
             role: 'user',

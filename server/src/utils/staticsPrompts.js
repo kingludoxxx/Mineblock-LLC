@@ -237,6 +237,17 @@ For each visual element, note:
 
 ---
 
+LOGO DETECTION (has_competitor_logo) — BE VERY STRICT:
+Set has_competitor_logo to TRUE **only** if the reference image contains a clearly visible, distinct company/brand LOGO GRAPHIC (an icon, emblem, wordmark, or symbol that is a designed logo element separate from the ad copy text).
+Set has_competitor_logo to FALSE if:
+- The brand name only appears as part of the headline/body text (e.g. "RYZE" in "RYZE Mushroom Coffee" headline)
+- There is a product label/packaging with a brand name but no separate standalone logo
+- There is no distinct logo graphic visible anywhere in the ad
+- You are unsure — when in doubt, return FALSE
+This field controls whether brand logos are injected into the generated ad. A false positive will cause unwanted logos to appear.
+
+---
+
 Return ONLY valid JSON (no markdown, no code fences):
 {
   "original_text": {
