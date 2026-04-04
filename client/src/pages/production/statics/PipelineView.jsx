@@ -14,7 +14,6 @@ import {
   ChevronDown,
   AlertTriangle,
   Lock,
-  Maximize2,
   Settings,
   Tag,
 } from 'lucide-react';
@@ -263,17 +262,6 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, onRegener
                   <X className="w-4 h-4" />
                 </button>
               )}
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onCardClick?.(creative);
-                }}
-                className="h-10 w-10 flex items-center justify-center rounded-xl bg-white/[0.04] border border-white/[0.1] text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.08] transition-colors cursor-pointer shrink-0"
-                title="Preview"
-              >
-                <Maximize2 className="w-4 h-4" />
-              </button>
               <button
                 type="button"
                 onClick={(e) => {
