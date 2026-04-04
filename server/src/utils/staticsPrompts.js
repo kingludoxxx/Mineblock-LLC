@@ -470,8 +470,29 @@ export function buildNanoBananaPrompt(claudeResult, swapPairs, product, logoCoun
     ? `\nVisual changes: ${mustChangeVisuals.map(v => `${v.position}: replace "${v.original_visual}" with "${v.adapted_visual}"`).join('; ')}`
     : '';
 
+  // Prioritize swap pairs — NanoBanana handles fewer swaps more accurately
+  // Priority: headline > subheadline > brand/other_text > badges > bullets > stats > body > disclaimer
+  const FIELD_PRIORITY = { headline: 1, subheadline: 2, cta: 3 };
+  const getFieldPriority = (field) => {
+    if (FIELD_PRIORITY[field]) return FIELD_PRIORITY[field];
+    if (field?.startsWith('other_text')) return 4; // brand names etc
+    if (field?.startsWith('badges')) return 5;
+    if (field?.startsWith('bullets')) return 6;
+    if (field?.startsWith('stats')) return 7;
+    if (field === 'body') return 8;
+    return 9;
+  };
+
+  // Sort by priority, limit to MAX_SWAP_PAIRS to avoid overwhelming the model
+  const MAX_SWAP_PAIRS = 10;
+  const sortedPairs = [...swapPairs].sort((a, b) => getFieldPriority(a.field) - getFieldPriority(b.field));
+  const limitedPairs = sortedPairs.slice(0, MAX_SWAP_PAIRS);
+  if (sortedPairs.length > MAX_SWAP_PAIRS) {
+    console.log(`[buildNanoBananaPrompt] ⚠️ Limited swap pairs from ${sortedPairs.length} to ${MAX_SWAP_PAIRS} (dropped low-priority pairs)`);
+  }
+
   // Truncate swap pairs that are too long — NanoBanana garbles long text
-  const truncatedPairs = swapPairs.map(pair => {
+  const truncatedPairs = limitedPairs.map(pair => {
     const origLen = (pair.original || '').length;
     let adapted = pair.adapted || '';
     // If adapted is much longer than original, truncate with warning
@@ -485,21 +506,19 @@ export function buildNanoBananaPrompt(claudeResult, swapPairs, product, logoCoun
   });
 
   const swapSectionFinal = truncatedPairs.map((pair, i) =>
-    `  ${i + 1}. [${pair.field || 'text'}] "${pair.original}" → "${pair.adapted}"`
+    `  ${i + 1}. "${pair.original}" → "${pair.adapted}"`
   ).join('\n');
 
-  return `BRAND NAME: "${product.name}" — spell this EXACTLY. Every letter matters.
+  return `Edit the reference ad (LAST image). Replace the product with "${product.name}" (image 1).
 
-MANDATORY TEXT CHANGES — apply these EXACT text swaps:
+TEXT SWAPS — change these words EXACTLY:
 ${swapSectionFinal || '(No text changes)'}
-Copy each adapted string EXACTLY as written above — letter by letter, character by character. Do NOT keep any original text. Do NOT rephrase or rewrite the adapted text. Do NOT add any text not listed above. Text not in this list stays exactly as-is.
 
-Edit the reference ad (LAST image):
-- Replace the product with ${product.name} from image 1. Show it ${claudeResult.product_orientation || 'front-facing'}, exactly as photographed.${productRulesSection}
-- Keep the EXACT same layout, background, colors, fonts, and positions.${logoInstruction}${visualLine}
+RULES:
+- Spell "${product.name}" exactly: ${product.name.split('').join('-')}. NOT "MineBlock" or "MinerBlorge".
+- Keep EXACT same layout, background, colors, fonts, positions.
+- Show product ${claudeResult.product_orientation || 'front-facing'}, as in image 1.${productRulesSection}${logoInstruction}${visualLine}
 - ${characterRules}
-- TEXT SPELLING: Every word must be spelled correctly. Double-check "${product.name}" especially — it must appear exactly as written, not "MinerBlorge" or "MineBlock" or any variation.
-- Do NOT add extra text, badges, watermarks, coins, decorations, or ANY visual elements not in the reference.
-- Do NOT add the product to scenes where the reference has no product shown — only swap if the reference already shows a product.
-- Background must EXACTLY match the reference (same color, gradient, texture).${co.absoluteRules ? `\n${co.absoluteRules}` : ''}`;
+- Do NOT add extra elements (coins, sparkles, badges) not in the reference.
+- Background must match reference exactly.${co.absoluteRules ? `\n${co.absoluteRules}` : ''}`;
 }
