@@ -2124,40 +2124,24 @@ export default function StaticsGeneration() {
                       // Fetch product data from library
                       const prodRes = await api.get(`/product-library/products/${creative.product_id}`);
                       const prod = prodRes.data?.data || prodRes.data;
-                      // Queue a regeneration
+                      // Add to queue with status 'queued' so the queue processor handles
+                      // polling and saving — same as ADD TO QUEUE
                       const queueId = `regen-${creative.id}-${Date.now()}`;
-                      setQueue(prev => [...prev, {
-                        id: queueId,
-                        productName: creative.product_name || prod.name || 'Untitled',
-                        angle: creative.angle,
-                        references: [{ image_url: creative.reference_thumbnail }],
-                        status: 'generating',
-                        progress: 'Regenerating…',
-                      }]);
-                      const response = await api.post('/statics-generation/generate', {
-                        reference_image_url: creative.reference_thumbnail,
-                        product: {
-                          name: prod.name || creative.product_name,
-                          description: prod.description || undefined,
-                          price: prod.price || undefined,
-                          product_image_url: prod.main_image_url || prod.product_images?.[0] || undefined,
-                          product_images: prod.product_images || [],
-                          logos: prod.logos || [],
-                          logo_url: prod.logo_url || undefined,
-                          brand_colors: prod.brand_colors || undefined,
-                          fonts: prod.fonts || undefined,
-                          profile: prod.offers ? { offers: prod.offers, discountCodes: prod.discount_codes, maxDiscount: prod.max_discount } : undefined,
-                        },
-                        angle: creative.angle || undefined,
-                        ratio: creative.aspect_ratio || '4:5',
+                      setQueue(prev => {
+                        const next = [...prev, {
+                          id: queueId,
+                          productId: creative.product_id,
+                          productName: creative.product_name || prod.name || 'Untitled',
+                          productImageUrl: prod.main_image_url || prod.product_images?.[0] || '',
+                          productRef: prod,
+                          angle: creative.angle || null,
+                          aspectRatio: creative.aspect_ratio || '4:5',
+                          references: [{ image_url: creative.reference_thumbnail, name: 'Regenerate' }],
+                          status: 'queued',
+                        }];
+                        queueRef.current = next;
+                        return next;
                       });
-                      const genResult = response.data?.data || response.data;
-                      // Poll for result like normal generation
-                      if (genResult.tasks?.length || genResult.taskId) {
-                        setQueue(prev => prev.map(q => q.id === queueId ? { ...q, progress: 'Waiting for result…' } : q));
-                      }
-                      // Refresh creatives after a delay to pick up the new one
-                      setTimeout(() => { fetchCreatives(); setQueue(prev => prev.filter(q => q.id !== queueId)); }, 15000);
                     } catch (err) {
                       console.error('[Pipeline] Regenerate failed:', err.message);
                     }
