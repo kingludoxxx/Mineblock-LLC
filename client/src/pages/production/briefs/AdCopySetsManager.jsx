@@ -49,8 +49,16 @@ function truncate(str, len = 60) {
   return str.length > len ? str.slice(0, len) + '…' : str;
 }
 
+function ensureArray(val) {
+  if (Array.isArray(val)) return val;
+  if (typeof val === 'string') {
+    try { const p = JSON.parse(val); return Array.isArray(p) ? p : []; } catch { return []; }
+  }
+  return [];
+}
+
 function countLabel(arr) {
-  const filtered = (arr || []).filter((s) => s && s.trim());
+  const filtered = ensureArray(arr).filter((s) => s && s.trim());
   return filtered.length;
 }
 
@@ -59,14 +67,19 @@ function countLabel(arr) {
 // ---------------------------------------------------------------------------
 
 function EditCopySetModal({ copySet, onSave, onClose, saving }) {
-  const [form, setForm] = useState(() => ({
-    primary_texts: copySet.primary_texts?.length ? [...copySet.primary_texts] : [''],
-    headlines: copySet.headlines?.length ? [...copySet.headlines] : [''],
-    descriptions: copySet.descriptions?.length ? [...copySet.descriptions] : [''],
-    cta_button: copySet.cta_button || 'SHOP_NOW',
-    landing_page_url: copySet.landing_page_url || '',
-    utm_parameters: copySet.utm_parameters || '',
-  }));
+  const [form, setForm] = useState(() => {
+    const pt = ensureArray(copySet.primary_texts);
+    const hl = ensureArray(copySet.headlines);
+    const desc = ensureArray(copySet.descriptions);
+    return {
+      primary_texts: pt.length ? [...pt] : [''],
+      headlines: hl.length ? [...hl] : [''],
+      descriptions: desc.length ? [...desc] : [''],
+      cta_button: copySet.cta_button || 'SHOP_NOW',
+      landing_page_url: copySet.landing_page_url || '',
+      utm_parameters: copySet.utm_parameters || '',
+    };
+  });
 
   const updateList = (key, idx, value) => {
     setForm((prev) => {
@@ -542,19 +555,19 @@ export default function AdCopySetsManager({ open, onClose, productId, productNam
                       <span className="font-mono text-[10px] text-[#c9a84c] uppercase tracking-[0.15em] block mb-0.5">
                         Body Copy
                       </span>
-                      <p className="truncate">{truncate(cs.primary_texts?.[0], 50)}</p>
+                      <p className="truncate">{truncate(ensureArray(cs.primary_texts)[0], 50)}</p>
                     </div>
                     <div className="min-w-0">
                       <span className="font-mono text-[10px] text-[#c9a84c] uppercase tracking-[0.15em] block mb-0.5">
                         Headline
                       </span>
-                      <p className="truncate">{truncate(cs.headlines?.[0], 40)}</p>
+                      <p className="truncate">{truncate(ensureArray(cs.headlines)[0], 40)}</p>
                     </div>
                     <div className="min-w-0">
                       <span className="font-mono text-[10px] text-[#c9a84c] uppercase tracking-[0.15em] block mb-0.5">
                         Description
                       </span>
-                      <p className="truncate">{truncate(cs.descriptions?.[0], 40)}</p>
+                      <p className="truncate">{truncate(ensureArray(cs.descriptions)[0], 40)}</p>
                     </div>
                   </div>
 
