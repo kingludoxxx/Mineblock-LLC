@@ -201,8 +201,17 @@ router.post('/generate', authenticate, async (req, res) => {
     if (!reference_image_url) return res.status(400).json({ success: false, error: 'reference_image_url is required' });
     if (!product)             return res.status(400).json({ success: false, error: 'product is required' });
 
+    // Log product context for debugging copy quality
+    const profileFields = product.profile ? Object.keys(product.profile).filter(k => product.profile[k]) : [];
+    console.log(`[staticsGeneration] Product: "${product.name}" | Price: ${product.price || 'N/A'} | Profile fields: [${profileFields.join(', ')}] (${profileFields.length} fields)`);
+    if (profileFields.length === 0) {
+      console.warn(`[staticsGeneration] ⚠️ No product profile fields sent! Copy will lack product context.`);
+    }
+
     // ── Load custom prompt overrides (fall back to defaults if none saved) ──
     const customPrompts = await getCustomStaticsPrompts() || getDefaultStaticsPrompts();
+    const hasCustomOverrides = !!(customPrompts?.claudeAnalysis?.headlineRules || customPrompts?.claudeAnalysis?.productIdentity || customPrompts?.claudeAnalysis?.bannedPhrases);
+    console.log(`[staticsGeneration] Custom prompt overrides: ${hasCustomOverrides ? 'YES (custom prompts from DB)' : 'NO (using defaults)'}`);
 
     // ── Step A: Resolve reference image to base64 ──────────────────────
     const { base64, mediaType, isUrl } = await resolveImage(reference_image_url);
@@ -211,13 +220,17 @@ router.post('/generate', authenticate, async (req, res) => {
     const claudeBody = {
       model: 'claude-sonnet-4-20250514',
       max_tokens: 4096,
-      messages: [{
-        role: 'user',
-        content: [
-          { type: 'text', text: buildClaudePrompt(product, angle, customPrompts) },
-          { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } },
-        ],
-      }],
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: buildClaudePrompt(product, angle, customPrompts) },
+            { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } },
+          ],
+        },
+        // Prefill assistant response with '{' to force valid JSON output
+        { role: 'assistant', content: '{' },
+      ],
     };
 
     const RETRY_DELAYS = [0, 8000, 20000, 45000];
@@ -249,15 +262,27 @@ router.post('/generate', authenticate, async (req, res) => {
     const rawText = claudeData.content?.[0]?.text;
     if (!rawText) throw new Error('Empty response from Claude');
 
-    // Extract JSON block (may be wrapped in markdown fences or surrounding text)
-    const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+    // The assistant response was prefilled with '{', so prepend it back
+    const fullJson = '{' + rawText;
+
+    // Extract JSON block (may have trailing text after the closing brace)
+    const jsonMatch = fullJson.match(/\{[\s\S]*\}/);
     if (!jsonMatch) throw new Error('Could not parse JSON from Claude response');
 
     let claudeResult;
     try {
       claudeResult = JSON.parse(jsonMatch[0]);
     } catch (parseErr) {
-      throw new Error(`Failed to parse Claude JSON: ${parseErr.message}`);
+      // Try to fix common issues: trailing commas, truncated responses
+      let fixable = jsonMatch[0]
+        .replace(/,\s*([}\]])/g, '$1')  // remove trailing commas
+        .replace(/\n/g, '\\n')          // escape raw newlines
+        .replace(/\\n/g, '\\n');
+      const opens = (fixable.match(/\{/g) || []).length;
+      const closes = (fixable.match(/\}/g) || []).length;
+      for (let i = 0; i < opens - closes; i++) fixable += '}';
+      try { claudeResult = JSON.parse(fixable); } catch {}
+      if (!claudeResult) throw new Error(`Failed to parse Claude JSON: ${parseErr.message}`);
     }
 
     // ── Step C: Build swap pairs ───────────────────────────────────────

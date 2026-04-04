@@ -265,12 +265,19 @@ function getCurrentWeekLabel() {
  * Call Claude API and return parsed JSON from the response.
  */
 async function callClaude(systemPrompt, userPrompt, maxTokens = 3000, { fast = false, rawText = false } = {}) {
+  // For JSON responses, prefill assistant with '{' to force structured output
+  const useJsonPrefill = !rawText;
+  const messages = [
+    { role: 'user', content: userPrompt },
+  ];
+  if (useJsonPrefill) {
+    messages.push({ role: 'assistant', content: '{' });
+  }
+
   const body = {
     model: fast ? 'claude-haiku-4-5-20251001' : CLAUDE_MODEL,
     max_tokens: maxTokens,
-    messages: [
-      { role: 'user', content: userPrompt },
-    ],
+    messages,
     system: systemPrompt,
   };
 
@@ -295,8 +302,11 @@ async function callClaude(systemPrompt, userPrompt, maxTokens = 3000, { fast = f
   // Raw text mode — return plain text without JSON parsing
   if (rawText) return text.trim();
 
+  // Prepend the prefilled '{' back to reconstruct the full JSON
+  const fullJson = '{' + text;
+
   // Strip markdown fences if present, then parse JSON
-  let cleaned = text.trim();
+  let cleaned = fullJson.trim();
   const fenceMatch = cleaned.match(/```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/);
   if (fenceMatch) cleaned = fenceMatch[1].trim();
 
@@ -1879,11 +1889,17 @@ async function buildBriefGeneratorPrompt(parsedScript, deepAnalysis, direction, 
   }
   const analysisContext = analysisLines.length ? analysisLines.join('\n\n') : '';
 
-  let system = `You are a senior direct-response copywriter specialized in Facebook and TikTok ad iteration.
+  let system = `You are a senior direct-response copywriter who has spent $10M+ on Facebook and TikTok ads. You write ad copy that converts cold traffic — punchy, specific, emotionally loaded.
 
-You understand that the goal is NOT to create new ads, but to generate variations of a proven winner while preserving its psychological mechanism, persuasive structure, and conversion logic.
+You generate variations of proven winners while preserving their psychological mechanism and conversion logic.
 
-You write like a human performance marketer — not like an AI, not like a brand copywriter.`;
+ABSOLUTE RULES FOR YOUR WRITING STYLE:
+- Write like you're talking to ONE person, not an audience
+- Every sentence must earn its place — cut anything that doesn't create desire, urgency, or curiosity
+- Be SPECIFIC: "Save $47/month" not "save money". "Lost 23lbs in 6 weeks" not "achieve your goals"
+- NEVER use these AI-sounding words/phrases: "game-changer", "revolutionary", "cutting-edge", "seamless", "elevate", "unlock", "transform your", "discover the", "experience the", "take your X to the next level", "say goodbye to", "the future of"
+- If it sounds like a LinkedIn post or a corporate press release, REWRITE IT
+- Match the raw energy of the original — if the original is aggressive and bold, be equally aggressive and bold`;
 
   let user = `# OBJECTIVE
 
