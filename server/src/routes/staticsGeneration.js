@@ -767,7 +767,7 @@ router.get('/creatives/pipeline', authenticate, async (req, res) => {
     await ensureCreativesTable();
     const { product_id } = req.query;
 
-    let query = 'SELECT id, product_id, product_name, image_url, thumbnail_url, source_label, angle, archetype, aspect_ratio, status, reference_thumbnail, reference_name, parent_creative_id, pipeline, created_at FROM spy_creatives WHERE pipeline = $1';
+    let query = 'SELECT id, product_id, product_name, image_url, thumbnail_url, source_label, angle, archetype, aspect_ratio, status, reference_thumbnail, reference_name, parent_creative_id, pipeline, copy_set_id, meta_ad_ids, meta_image_hash, generated_copy, created_at FROM spy_creatives WHERE pipeline = $1';
     const params = ['standard'];
     if (product_id) {
       query += ' AND product_id = $2';
