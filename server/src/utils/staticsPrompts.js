@@ -417,97 +417,31 @@ export function buildNanoBananaPrompt(claudeResult, swapPairs, product, logoCoun
     ? `\n${co.productRules}`
     : '';
 
-  // Use custom text rules if available
-  const textRulesSection = co.textRules
-    ? `\n\n${co.textRules}`
+  // (Custom text rules and brand identity now folded into the condensed prompt below)
+
+  // ── Build a SHORT, focused prompt — image gen models need brevity ──
+  // Text swaps go FIRST because they're the most critical instruction.
+  // Everything else is secondary. Long prompts cause the model to ignore key instructions.
+
+  const logoInstruction = logoCount > 0
+    ? `\nReplace any competitor logo with the provided brand logo (image ${logoCount > 1 ? 'images 2-' + (1 + logoCount) : 'image 2'}).${logoBackgroundTone === 'dark' ? ' Use the WHITE logo version (dark background).' : logoBackgroundTone === 'light' ? ' Use the BLACK logo version (light background).' : ''}`
     : '';
 
-  // Brand identity section for color/font matching
-  const brandIdentityLines = [];
-  if (product.brand_colors && Object.keys(product.brand_colors).length > 0) {
-    brandIdentityLines.push(`Brand Colors: ${JSON.stringify(product.brand_colors)} — use these exact colors for any branded elements (backgrounds, accents, text highlights, badges)`);
-  }
-  if (product.fonts && product.fonts.length > 0) {
-    brandIdentityLines.push(`Brand Fonts: ${product.fonts.join(', ')} — use these fonts for the adapted text where possible`);
-  }
-  const brandIdentitySection = brandIdentityLines.length > 0
-    ? `\n6. BRAND IDENTITY:\n${brandIdentityLines.map(l => `  - ${l}`).join('\n')}\n`
+  // Only include the MUST CHANGE visual adaptations (skip keep-as-is ones)
+  const mustChangeVisuals = (visual_adaptations || []).filter(v => v.is_angle_specific);
+  const visualLine = mustChangeVisuals.length > 0
+    ? `\nVisual changes: ${mustChangeVisuals.map(v => `${v.position}: replace "${v.original_visual}" with "${v.adapted_visual}"`).join('; ')}`
     : '';
 
-  // Use custom absolute rules, or the defaults
-  const absoluteRulesSection = co.absoluteRules || `ABSOLUTE RULES:
-- Product integrity is highest priority — pixel-perfect fidelity to product photos
-- Zero extra faces beyond reference count
-- TEXT FIDELITY: Render ONLY the text listed in the swap pairs above. Do NOT add headlines, subheadlines, badges, banners, watermarks, or ANY text not explicitly in the swap list. If the swap list has 5 pairs, the output must have EXACTLY 5 changed text elements — no more, no fewer
-- No duplicate objects
-- Layout labels (Day 0, Day 45, Before, After, etc.) stay exactly as-is
-- No trace of competitor product or brand remaining
-- BACKGROUND FIDELITY: The background must be a PIXEL-PERFECT match to the reference — same color, same gradient direction, same texture, same pattern. Do NOT simplify, flatten, or recolor the background
-- Hands must have 5 fingers, realistic anatomy
-- Do NOT place any text, logo, or overlay on the product itself
-- Do NOT invent or generate any logo, icon, emblem, or symbol${logoCount > 0 ? ' beyond the provided logo' : ''}`;
+  return `MANDATORY TEXT CHANGES — apply these EXACT text swaps:
+${swapSection || '(No text changes)'}
+Every swap above MUST appear in the output. Copy each adapted string CHARACTER FOR CHARACTER. Do NOT keep the original text. Do NOT add any text not listed above. Unchanged text stays exactly as-is.
 
-  // ── Build section 3 (TEXT) based on skipTextRendering flag ──
-  let textSection;
-  let adjustedAbsoluteRules = absoluteRulesSection;
-
-  if (skipTextRendering) {
-    textSection = `3. TEXT: Do NOT render any text at all. Leave ALL text areas empty — show only the background color/gradient/pattern behind where text would go. The text will be added programmatically after generation. This means: no headlines, no subheadlines, no badges, no CTAs, no stats, no body text. Only product imagery, backgrounds, and decorative elements.`;
-
-    // Replace text-related absolute rules when skipping text rendering
-    adjustedAbsoluteRules = `ABSOLUTE RULES:
-- Product integrity is highest priority — pixel-perfect fidelity to product photos
-- Zero extra faces beyond reference count
-- Do NOT render any text whatsoever — all text areas must be clean background only
-- No duplicate objects
-- No trace of competitor product or brand remaining
-- BACKGROUND FIDELITY: The background must be a PIXEL-PERFECT match to the reference — same color, same gradient direction, same texture, same pattern. Do NOT simplify, flatten, or recolor the background
-- Hands must have 5 fingers, realistic anatomy
-- Do NOT place any text, logo, or overlay on the product itself
-- Do NOT invent or generate any logo, icon, emblem, or symbol${logoCount > 0 ? ' beyond the provided logo' : ''}`;
-  } else {
-    textSection = `3. SWAP TEXT — only these specific pairs, matching original font style, weight, size, and color:
-${swapSection || '  (No text changes)'}
-CRITICAL TEXT RENDERING RULES:
-- Every letter must be sharp, legible, and CORRECTLY SPELLED — zero tolerance for typos
-- Render text as clean, professional typography — NOT blurry, warped, or distorted
-- SPELL CHECK: Before rendering each text element, verify the spelling LETTER BY LETTER against the swap pair above. Do NOT approximate or guess — copy the EXACT string character-for-character
-- Common AI text rendering mistakes to NEVER make: "ATTEMTS"→"ATTEMPTS", "GAURANTEE"→"GUARANTEE", "RECIEVE"→"RECEIVE", "CHANECS"→"CHANCES", "EVEYR"→"EVERY", "BITCONI"→"BITCOIN"
-- Do NOT truncate or shorten numbers: if the text says "144" render "144" not "14". If it says "$300K" render "$300K" not "$300"
-- Do NOT merge or split words: "every day" is two words, "forever" is one word
-- TEXT ALIGNMENT: Match the EXACT alignment and centering of each text element from the reference. If the reference text is centered, your text MUST be centered. If left-aligned, keep left-aligned. Horizontally center text within its container/zone — do NOT shift text left or right from where it appears in the reference
-- TEXT SPACING: Maintain the same vertical spacing between text elements as the reference. Do NOT compress or expand the gaps between lines, headlines, bullets, or stat blocks
-- Text must look like it was set by a professional graphic designer, not generated by AI
-- If you cannot render a word correctly, use a SHORTER simpler synonym rather than a misspelled version
-- UNCHANGED TEXT: All text in the reference that is NOT listed in the swap pairs above must remain EXACTLY as-is — same words, same spelling, same font, same position. Do NOT modify, rephrase, translate, or misspell any text that isn't being swapped${textRulesSection}`;
-  }
-
-  return `Replicate the reference ad (LAST image) exactly, with only the product and text swapped.
-
-The first image(s) show the replacement product — reproduce it EXACTLY as photographed. Multiple angles may be provided.
-${logoCount > 0 ? `\nA brand logo is provided between the product photos and the reference ad. Use this EXACT logo where the competitor logo appears. Copy the logo PIXEL-FOR-PIXEL from the provided logo image — do NOT redraw, stylize, or approximate it. The logo must be an exact reproduction.${logoBackgroundTone === 'dark' ? '\nIMPORTANT: The logo area has a DARK background — use the WHITE/light version of the logo for maximum contrast and visibility.' : logoBackgroundTone === 'light' ? '\nIMPORTANT: The logo area has a LIGHT background — use the BLACK/dark version of the logo for maximum contrast and visibility.' : ''}` : ''}
-
-1. REPLICATE the reference ad's layout, composition, background color/gradient, font styles, text positions, spacing, shadows, borders — match the reference style exactly.
-
-2. REPLACE the competitor's product with ${product.name} from the product photos. Show exactly ${pCount2} product(s) in the same position(s), matching shape, colors, and label exactly as photographed. Show the product in a ${claudeResult.product_orientation || 'front-facing'} orientation to match the reference layout — pick the product photo angle that best matches this orientation.${pCount2 > 1 ? `\n  If the reference shows ${pCount2} products but only 1 product photo is provided, show ${pCount2} copies of the same product at slightly different angles or positions to fill the same layout zones.` : ''}${productRulesSection}
-
-${textSection}
-
-4. ${characterRules}
-
-5. VISUAL ADAPTATIONS:
-${visualSection || '  (Keep all visuals as-is)'}
-${brandIdentitySection}
-${layoutMap ? `
-7. LAYOUT STRUCTURE (follow this precisely — positions are non-negotiable):
-  Archetype: ${layoutMap.archetype || 'standard'}
-  Canvas: ${layoutMap.canvas?.orientation || 'unknown'} ${layoutMap.canvas?.aspect_ratio || ''}
-  Background: ${layoutMap.background?.type || 'solid'} (${layoutMap.background?.tone || 'dark'})${layoutMap.background?.zones ? ` — ${layoutMap.background.zones}` : ''}
-  Product Zone: ${layoutMap.product_zone?.position || 'center'} (~${layoutMap.product_zone?.size_pct || '30%'} of canvas)
-${(layoutMap.text_elements || []).map(t => `  ${(t.role || 'unknown').toUpperCase()} (H${t.hierarchy || '?'}): ${t.position || 'unknown'} — ${t.alignment || 'center'}-aligned — ${t.size || 'unknown'} — ~${t.char_count_approx || '?'} chars — ${t.visual_treatment || 'plain'}`).join('\n')}
-  Composition: ${layoutMap.composition_notes || 'standard layout'}
-  RULE: Every text element must be placed in its EXACT position as described above. Do not move, merge, or reorder any element.
-  RULE: Text alignment (centered, left, right) must EXACTLY match the reference. If the reference centers text in a zone, your output must center text in that same zone.
-` : ''}
-${adjustedAbsoluteRules}`;
+Edit the reference ad (LAST image):
+- Replace the product with ${product.name} from image 1. Show it ${claudeResult.product_orientation || 'front-facing'}, exactly as photographed.${productRulesSection}
+- Keep the EXACT same layout, background, colors, fonts, and positions.${logoInstruction}${visualLine}
+- ${characterRules}
+- Spelling must be PERFECT — verify every word letter by letter.
+- Do NOT add extra text, badges, watermarks, or elements not in the reference.
+- Background must EXACTLY match the reference (same color, gradient, texture).${co.absoluteRules ? `\n${co.absoluteRules}` : ''}`;
 }
