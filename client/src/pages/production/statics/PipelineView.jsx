@@ -11,12 +11,17 @@ import {
   Zap,
   Send,
   X,
+  ChevronDown,
+  AlertTriangle,
+  Lock,
 } from 'lucide-react';
 import api from '../../../services/api';
 
 // ---------------------------------------------------------------------------
-// Column definitions
+// Constants
 // ---------------------------------------------------------------------------
+
+const ADSET_SIZE = 6; // 6 creatives = 1 complete ad set
 
 const COLUMNS = [
   {
@@ -69,8 +74,8 @@ const COLUMNS = [
     badgeText: 'text-cyan-400',
     badgeBorder: 'border-cyan-500/25',
     placeholder: 'Drag approved cards here',
-    actionLabel: 'Launch',
-    nextStatus: 'launched',
+    actionLabel: null,
+    nextStatus: null,
   },
   {
     key: 'launched',
@@ -81,22 +86,34 @@ const COLUMNS = [
     badgeBg: 'bg-emerald-500/10',
     badgeText: 'text-emerald-500',
     badgeBorder: 'border-emerald-500/25',
-    placeholder: 'Drag here to mark launched',
+    placeholder: 'Launched ads appear here',
     actionLabel: null,
     nextStatus: null,
   },
 ];
 
-const STATUS_BADGE = {
-  generating: { bg: 'bg-violet-500/80', text: 'text-white', label: 'Generating' },
-  review: { bg: 'bg-amber-500/80', text: 'text-white', label: 'To Review' },
-  approved: { bg: 'bg-emerald-500/80', text: 'text-white', label: 'Approved' },
-  ready: { bg: 'bg-purple-500/80', text: 'text-white', label: 'Ready' },
-  launched: { bg: 'bg-accent/80', text: 'text-white', label: 'Launched' },
-};
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function groupByAngle(creatives) {
+  const groups = {};
+  for (const c of creatives) {
+    const angle = c.angle || 'Uncategorized';
+    if (!groups[angle]) groups[angle] = [];
+    groups[angle].push(c);
+  }
+  // Sort: complete (>=ADSET_SIZE) first, then by count desc
+  return Object.entries(groups).sort(([, a], [, b]) => {
+    const aReady = a.length >= ADSET_SIZE;
+    const bReady = b.length >= ADSET_SIZE;
+    if (aReady !== bReady) return bReady - aReady;
+    return b.length - a.length;
+  });
+}
 
 // ---------------------------------------------------------------------------
-// Creative card
+// Creative card (compact version for ad set groups)
 // ---------------------------------------------------------------------------
 
 function RatioPill({ label, status }) {
@@ -123,9 +140,9 @@ function RatioPill({ label, status }) {
   return null;
 }
 
-function CreativeCard({ creative, column, onStatusChange, onCardClick, variantStatus, isSelected, onToggleSelect }) {
+function CreativeCard({ creative, column, onStatusChange, onCardClick, variantStatus }) {
   const [wasDragged, setWasDragged] = useState(false);
-  const isDraggable = !column.noDropZone; // Don't allow dragging from generating column
+  const isDraggable = !column.noDropZone;
 
   return (
     <div
@@ -152,7 +169,6 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, variantSt
               <Eye className="w-5 h-5" />
             )}
           </div>
-          {/* Show generated image, or reference thumbnail for generating items */}
           {creative.status === 'generating' && creative.reference_thumbnail ? (
             <img
               src={creative.reference_thumbnail}
@@ -168,19 +184,16 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, variantSt
               onError={(e) => { e.target.style.display = 'none'; }}
             />
           ) : null}
-          {/* Hover overlay */}
           <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
             <span className="text-[10px] font-medium text-white bg-white/[0.15] backdrop-blur-sm px-2.5 py-1 rounded-full">
               View Full
             </span>
           </div>
-          {/* Variant indicator */}
           {creative.parent_creative_id && (
             <span className="absolute top-2 left-2 text-[9px] font-mono bg-[#c9a84c]/20 text-[#e8d5a3] px-1.5 py-0.5 rounded border border-[#c9a84c]/30 backdrop-blur-md">
               Variant
             </span>
           )}
-          {/* Ratio pills — top right */}
           {!creative.parent_creative_id && (
             <div className="absolute top-2 right-2 flex items-center gap-1">
               <RatioPill label={creative.aspect_ratio || '4:5'} status="done" />
@@ -205,7 +218,7 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, variantSt
                 <span className="text-[10px] text-zinc-500">{creative.angle}</span>
               )}
               {(() => {
-                const metaIds = Array.isArray(creative.meta_ad_ids) ? creative.meta_ad_ids : (typeof creative.meta_ad_ids === 'string' ? JSON.parse(creative.meta_ad_ids || '[]') : []);
+                const metaIds = Array.isArray(creative.meta_ad_ids) ? creative.meta_ad_ids : (typeof creative.meta_ad_ids === 'string' ? (() => { try { return JSON.parse(creative.meta_ad_ids); } catch { return []; } })() : []);
                 return metaIds.length > 0 ? (
                   <span className="text-[9px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/20 font-medium">
                     {metaIds.length} ad{metaIds.length > 1 ? 's' : ''}
@@ -215,30 +228,14 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, variantSt
             </div>
           </div>
 
-          {/* Copy set indicator for Ready to Launch */}
           {creative.copy_set_id && (
             <span className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 inline-block">
               Copy Set Linked
             </span>
           )}
 
-          {/* Select checkbox for Ready to Launch */}
-          {onToggleSelect && (
-            <button
-              type="button"
-              onClick={(e) => { e.stopPropagation(); onToggleSelect(creative.id); }}
-              className={`w-full py-1.5 rounded-md text-xs font-medium border transition-colors cursor-pointer flex items-center justify-center gap-1.5
-                ${isSelected
-                  ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30'
-                  : 'bg-white/[0.03] text-zinc-400 border-white/[0.05] hover:bg-white/[0.06]'
-                }`}
-            >
-              <Check className={`w-3 h-3 ${isSelected ? 'opacity-100' : 'opacity-30'}`} />
-              {isSelected ? 'Selected' : 'Select for Launch'}
-            </button>
-          )}
-          {/* Action button */}
-          {column.actionLabel && !onToggleSelect ? (
+          {/* Action button (only for review/approved columns) */}
+          {column.actionLabel ? (
             <div className="flex items-center gap-1.5">
               <button
                 type="button"
@@ -278,7 +275,140 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, variantSt
 }
 
 // ---------------------------------------------------------------------------
-// Pipeline column
+// Compact creative thumbnail for ad set groups
+// ---------------------------------------------------------------------------
+
+function AdSetThumb({ creative, onCardClick }) {
+  return (
+    <div
+      onClick={() => onCardClick?.(creative)}
+      className="relative aspect-square w-full rounded-lg overflow-hidden bg-black/40 cursor-pointer group"
+    >
+      {creative.image_url ? (
+        <img
+          src={creative.image_url}
+          alt=""
+          className="absolute inset-0 w-full h-full object-cover opacity-90 group-hover:opacity-100 transition-opacity"
+          onError={(e) => { e.target.style.display = 'none'; }}
+        />
+      ) : (
+        <div className="absolute inset-0 flex items-center justify-center">
+          <Eye className="w-4 h-4 text-zinc-700" />
+        </div>
+      )}
+      <div className="absolute inset-0 bg-black/30 opacity-0 group-hover:opacity-100 transition-opacity" />
+      {/* Ratio pills at bottom */}
+      <div className="absolute bottom-1 left-1 right-1 flex items-center gap-0.5 justify-center">
+        <span className="text-[7px] font-medium px-1 py-0.5 rounded bg-black/60 text-zinc-300 backdrop-blur-sm">
+          {creative.aspect_ratio || '4:5'}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+// Empty slot placeholder for incomplete ad sets
+function EmptySlot() {
+  return (
+    <div className="relative aspect-square w-full rounded-lg border border-dashed border-white/[0.08] bg-white/[0.01] flex items-center justify-center">
+      <span className="text-zinc-700 text-lg">+</span>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Ad Set Group Card (for Ready to Launch column)
+// ---------------------------------------------------------------------------
+
+function AdSetGroupCard({ angle, creatives, isComplete, onLaunch, onCardClick }) {
+  const count = creatives.length;
+
+  return (
+    <div className={`rounded-xl border-2 transition-colors overflow-hidden ${
+      isComplete
+        ? 'border-emerald-500/30 bg-emerald-500/[0.02]'
+        : 'border-red-500/20 bg-red-500/[0.02]'
+    }`}>
+      {/* Header */}
+      <div className="flex items-center justify-between px-4 py-3">
+        <div className="flex items-center gap-2.5 min-w-0">
+          {isComplete ? (
+            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+          ) : (
+            <AlertTriangle className="w-4 h-4 text-red-400 shrink-0" />
+          )}
+          <h4 className="text-sm font-semibold text-white truncate">
+            {angle}
+          </h4>
+          <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${
+            isComplete
+              ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+              : 'bg-red-500/10 text-red-400 border border-red-500/20'
+          }`}>
+            {count}/{ADSET_SIZE}
+          </span>
+        </div>
+        {isComplete ? (
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onLaunch(angle, creatives); }}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-transparent border border-white/[0.08] rounded-lg hover:border-emerald-500/30 hover:text-emerald-300 transition-colors cursor-pointer"
+          >
+            <Rocket className="w-3 h-3" />
+            Launch
+          </button>
+        ) : (
+          <span className="text-[11px] text-red-400/70 font-medium">
+            Need {ADSET_SIZE - count} more
+          </span>
+        )}
+      </div>
+
+      {/* Creative grid */}
+      <div className="px-4 pb-4">
+        <div className="grid grid-cols-6 gap-2">
+          {creatives.slice(0, ADSET_SIZE).map((c) => (
+            <AdSetThumb key={c.id} creative={c} onCardClick={onCardClick} />
+          ))}
+          {/* Empty slots for incomplete sets */}
+          {count < ADSET_SIZE && Array.from({ length: ADSET_SIZE - count }).map((_, i) => (
+            <EmptySlot key={`empty-${i}`} />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Launched group card
+// ---------------------------------------------------------------------------
+
+function LaunchedGroupCard({ angle, creatives, onCardClick }) {
+  return (
+    <div className="rounded-xl border border-emerald-500/15 bg-emerald-500/[0.02] overflow-hidden">
+      <div className="flex items-center justify-between px-4 py-3">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
+          <h4 className="text-sm font-semibold text-white truncate">{angle}</h4>
+          <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-500 border border-emerald-500/20">
+            {creatives.length} ads
+          </span>
+        </div>
+      </div>
+      <div className="px-4 pb-4">
+        <div className="grid grid-cols-6 gap-2">
+          {creatives.map((c) => (
+            <AdSetThumb key={c.id} creative={c} onCardClick={onCardClick} />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Queue card (generating column)
 // ---------------------------------------------------------------------------
 
 function QueueCard({ item, onRemove }) {
@@ -289,7 +419,6 @@ function QueueCard({ item, onRemove }) {
   return (
     <div className="animated-border-gradient rounded-xl">
       <div className="glass-card border border-white/[0.05] rounded-xl overflow-hidden relative z-10">
-        {/* Reference thumbnail */}
         <div className="relative aspect-[4/3] w-full overflow-hidden bg-black/40">
           <div className="absolute inset-0 flex flex-col items-center justify-center text-zinc-700 gap-1.5">
             {isGenerating ? (
@@ -312,7 +441,6 @@ function QueueCard({ item, onRemove }) {
               onError={(e) => { e.target.style.display = 'none'; }}
             />
           )}
-          {/* Status badge */}
           <span className={`absolute top-2 left-2 text-[9px] font-mono px-1.5 py-0.5 rounded border backdrop-blur-md ${
             isGenerating
               ? 'bg-violet-500/20 text-violet-300 border-violet-500/30'
@@ -320,15 +448,12 @@ function QueueCard({ item, onRemove }) {
           }`}>
             {isGenerating ? 'Generating' : 'Queued'}
           </span>
-          {/* Reference count */}
           {item.references?.length > 1 && (
             <span className="absolute top-2 right-2 text-[9px] font-mono bg-black/50 text-zinc-300 px-1.5 py-0.5 rounded border border-white/[0.1] backdrop-blur-md">
               {item.references.length} refs
             </span>
           )}
         </div>
-
-        {/* Info */}
         <div className="p-3 space-y-2">
           <div>
             <h4 className="text-xs font-medium text-zinc-200 mb-0.5 truncate">
@@ -353,7 +478,11 @@ function QueueCard({ item, onRemove }) {
   );
 }
 
-function PipelineColumn({ column, items, onStatusChange, onCardClick, allCreatives, selectedForLaunch, onToggleSelect, queueItems, onRemoveFromQueue }) {
+// ---------------------------------------------------------------------------
+// Standard pipeline column (generating, review, approved)
+// ---------------------------------------------------------------------------
+
+function PipelineColumn({ column, items, onStatusChange, onCardClick, allCreatives, queueItems, onRemoveFromQueue }) {
   const Icon = column.icon;
   const [dragOver, setDragOver] = useState(false);
 
@@ -392,7 +521,6 @@ function PipelineColumn({ column, items, onStatusChange, onCardClick, allCreativ
 
       {/* Scrollable card list */}
       <div className={`flex-1 overflow-y-auto pr-2 space-y-4 pb-4 custom-scrollbar transition-colors rounded-lg ${dragOver ? 'bg-white/[0.03] ring-1 ring-[#c9a84c]/30' : ''}`}>
-        {/* Queue cards (only in generating column) */}
         {queueItems?.map((qItem) => (
           <QueueCard key={qItem.id} item={qItem} onRemove={onRemoveFromQueue} />
         ))}
@@ -406,7 +534,6 @@ function PipelineColumn({ column, items, onStatusChange, onCardClick, allCreativ
           </div>
         ) : (
           items.map((creative) => {
-            // Compute 9:16 variant status for parent cards
             let vStatus = null;
             if (!creative.parent_creative_id && allCreatives) {
               const variant = allCreatives.find(c => c.parent_creative_id === creative.id && c.aspect_ratio === '9:16');
@@ -424,11 +551,147 @@ function PipelineColumn({ column, items, onStatusChange, onCardClick, allCreativ
                 onStatusChange={onStatusChange}
                 onCardClick={onCardClick}
                 variantStatus={vStatus}
-                isSelected={selectedForLaunch?.includes(creative.id)}
-                onToggleSelect={column.key === 'ready' ? onToggleSelect : undefined}
               />
             );
           })
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Ready to Launch column (grouped by angle)
+// ---------------------------------------------------------------------------
+
+function ReadyToLaunchColumn({ column, items, onCardClick, onLaunchGroup, onBulkLaunch, launchTemplates, selectedTemplateId, onSelectTemplate, onStatusChange }) {
+  const Icon = column.icon;
+  const [dragOver, setDragOver] = useState(false);
+
+  const angleGroups = useMemo(() => groupByAngle(items), [items]);
+  const completeGroups = useMemo(() => angleGroups.filter(([, cs]) => cs.length >= ADSET_SIZE), [angleGroups]);
+  const readyAdSets = completeGroups.length;
+
+  return (
+    <div
+      className="flex flex-col min-w-[340px] max-w-[480px] flex-[1.8] relative"
+      onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+      onDragLeave={() => setDragOver(false)}
+      onDrop={(e) => {
+        e.preventDefault();
+        setDragOver(false);
+        try {
+          const data = JSON.parse(e.dataTransfer.getData('text/plain'));
+          if (data.id && data.status !== 'ready') {
+            onStatusChange?.(data.id, 'ready');
+          }
+        } catch { /* ignore */ }
+      }}
+    >
+      {/* Column header */}
+      <div className="flex items-center justify-between mb-3 pb-3 border-b border-white/[0.04] relative">
+        <div className="absolute bottom-0 left-0 w-1/3 h-[1px] bg-gradient-to-r from-cyan-400/30 to-transparent" />
+        <div className="flex items-center gap-2">
+          <Icon className={`w-4 h-4 ${column.iconClass}`} />
+          <h3 className="font-mono text-xs tracking-[0.15em] uppercase text-zinc-300 font-semibold">
+            {column.label}
+          </h3>
+          <span className={`text-[10px] font-mono px-2 py-0.5 rounded border ${column.badgeBg} ${column.badgeText} ${column.badgeBorder}`}>
+            {items.length}
+          </span>
+        </div>
+        <span className="text-[11px] font-medium text-cyan-400">
+          {readyAdSets} ad set{readyAdSets !== 1 ? 's' : ''} ready
+        </span>
+      </div>
+
+      {/* Template selector + Bulk launch */}
+      <div className="flex items-center gap-2 mb-4">
+        <div className="relative flex-1">
+          <select
+            value={selectedTemplateId}
+            onChange={(e) => onSelectTemplate(e.target.value)}
+            className="w-full bg-white/[0.03] border border-white/[0.06] rounded-lg px-3 py-2 text-xs text-white appearance-none cursor-pointer focus:ring-1 focus:ring-cyan-500/30 focus:border-cyan-500/20 pr-8"
+          >
+            <option value="">Select template...</option>
+            {launchTemplates.map(t => (
+              <option key={t.id} value={t.id}>
+                {t.name} — ${Number(t.daily_budget || 0).toFixed(0)}/day
+              </option>
+            ))}
+          </select>
+          <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-zinc-500 pointer-events-none" />
+        </div>
+        {selectedTemplateId && (
+          <Lock className="w-3.5 h-3.5 text-zinc-600 shrink-0" title="Linked to template" />
+        )}
+        {readyAdSets > 0 && selectedTemplateId && (
+          <button
+            type="button"
+            onClick={() => onBulkLaunch(completeGroups)}
+            className="inline-flex items-center gap-1.5 bg-emerald-500 hover:bg-emerald-600 text-white text-xs font-semibold px-3.5 py-2 rounded-lg cursor-pointer shrink-0 transition-colors"
+          >
+            <Rocket className="w-3.5 h-3.5" />
+            Bulk Launch ({readyAdSets})
+          </button>
+        )}
+      </div>
+
+      {/* Grouped ad sets */}
+      <div className={`flex-1 overflow-y-auto pr-2 space-y-4 pb-4 custom-scrollbar transition-colors rounded-lg ${dragOver ? 'bg-white/[0.03] ring-1 ring-cyan-500/30' : ''}`}>
+        {angleGroups.length === 0 ? (
+          <div className="h-32 border border-dashed border-white/[0.08] rounded-xl flex items-center justify-center text-sm text-zinc-600 italic bg-white/[0.01]">
+            {column.placeholder}
+          </div>
+        ) : (
+          angleGroups.map(([angle, cs]) => (
+            <AdSetGroupCard
+              key={angle}
+              angle={angle}
+              creatives={cs}
+              isComplete={cs.length >= ADSET_SIZE}
+              onLaunch={onLaunchGroup}
+              onCardClick={onCardClick}
+            />
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Launched column (grouped by angle)
+// ---------------------------------------------------------------------------
+
+function LaunchedColumn({ column, items, onCardClick }) {
+  const Icon = column.icon;
+  const angleGroups = useMemo(() => groupByAngle(items), [items]);
+
+  return (
+    <div className="flex flex-col min-w-[340px] max-w-[480px] flex-[1.8] relative">
+      <div className="flex items-center justify-between mb-4 pb-3 border-b border-white/[0.04] relative">
+        <div className="absolute bottom-0 left-0 w-1/3 h-[1px] bg-gradient-to-r from-emerald-500/30 to-transparent" />
+        <div className="flex items-center gap-2">
+          <Icon className={`w-4 h-4 ${column.iconClass}`} />
+          <h3 className="font-mono text-xs tracking-[0.15em] uppercase text-zinc-300 font-semibold">
+            {column.label}
+          </h3>
+          <span className={`text-[10px] font-mono px-2 py-0.5 rounded border ${column.badgeBg} ${column.badgeText} ${column.badgeBorder}`}>
+            {items.length}
+          </span>
+        </div>
+      </div>
+
+      <div className="flex-1 overflow-y-auto pr-2 space-y-4 pb-4 custom-scrollbar">
+        {angleGroups.length === 0 ? (
+          <div className="h-32 border border-dashed border-white/[0.08] rounded-xl flex items-center justify-center text-sm text-zinc-600 italic bg-white/[0.01]">
+            {column.placeholder}
+          </div>
+        ) : (
+          angleGroups.map(([angle, cs]) => (
+            <LaunchedGroupCard key={angle} angle={angle} creatives={cs} onCardClick={onCardClick} />
+          ))
         )}
       </div>
     </div>
@@ -441,7 +704,6 @@ function PipelineColumn({ column, items, onStatusChange, onCardClick, allCreativ
 
 export function PipelineView({ creatives = [], onStatusChange, onCardClick, onRefresh, loading, onOpenTemplates, onOpenCopySets, queue = [], onRemoveFromQueue }) {
   // Bucket creatives into columns by status
-  // Variants (9:16 children) are shown as pills on their parent card, not as separate cards
   const buckets = useMemo(() => {
     const map = { generating: [], review: [], approved: [], ready: [], launched: [] };
     for (const c of creatives) {
@@ -460,19 +722,28 @@ export function PipelineView({ creatives = [], onStatusChange, onCardClick, onRe
   }, [creatives]);
 
   // Launch state
-  const [selectedForLaunch, setSelectedForLaunch] = useState([]);
-  const [launchModalOpen, setLaunchModalOpen] = useState(false);
   const [launchTemplates, setLaunchTemplates] = useState([]);
   const [copySets, setCopySets] = useState([]);
+  const [selectedTemplateId, setSelectedTemplateId] = useState('');
   const [launching, setLaunching] = useState(false);
   const [launchError, setLaunchError] = useState(null);
-  const [selectedTemplateId, setSelectedTemplateId] = useState('');
+  const [launchModalOpen, setLaunchModalOpen] = useState(false);
+  const [pendingLaunch, setPendingLaunch] = useState(null); // { angle, creativeIds, isBulk, groups }
   const [selectedCopySetId, setSelectedCopySetId] = useState('');
 
   // Fetch launch templates & copy sets
   const fetchLaunchData = useCallback(() => {
     api.get('/brief-pipeline/launch-templates')
-      .then(({ data }) => setLaunchTemplates(data.data || []))
+      .then(({ data }) => {
+        const templates = data.data || [];
+        setLaunchTemplates(templates);
+        // Auto-select default template
+        if (!selectedTemplateId && templates.length) {
+          const def = templates.find(t => t.is_default);
+          if (def) setSelectedTemplateId(def.id);
+          else if (templates.length === 1) setSelectedTemplateId(templates[0].id);
+        }
+      })
       .catch(() => {});
     api.get('/brief-pipeline/copy-sets')
       .then(({ data }) => setCopySets(data.data || []))
@@ -481,58 +752,48 @@ export function PipelineView({ creatives = [], onStatusChange, onCardClick, onRe
 
   useEffect(() => { fetchLaunchData(); }, [fetchLaunchData]);
 
-  // Refresh templates/copy-sets when launch modal opens
-  useEffect(() => {
-    if (launchModalOpen) fetchLaunchData();
-  }, [launchModalOpen, fetchLaunchData]);
-
-  // Auto-select copy set and default template when launch modal opens
-  useEffect(() => {
-    if (!launchModalOpen || !selectedForLaunch.length) return;
-    // Auto-select copy set by matching first selected creative's angle or copy_set_id
-    const firstSelected = creatives.find(c => c.id === selectedForLaunch[0]);
-    if (firstSelected && copySets.length && !selectedCopySetId) {
-      // Prefer linked copy_set_id, then match by angle
-      if (firstSelected.copy_set_id) {
-        setSelectedCopySetId(firstSelected.copy_set_id);
-      } else if (firstSelected.angle) {
-        const match = copySets.find(cs => cs.angle?.toLowerCase() === firstSelected.angle?.toLowerCase());
-        if (match) setSelectedCopySetId(match.id);
-      }
+  // Handle launching a single ad set group
+  const handleLaunchGroup = (angle, groupCreatives) => {
+    if (!selectedTemplateId) {
+      setLaunchError('Select a launch template first');
+      return;
     }
-    // Auto-select default template
-    if (!selectedTemplateId && launchTemplates.length) {
-      const def = launchTemplates.find(t => t.is_default);
-      if (def) setSelectedTemplateId(def.id);
-      else if (launchTemplates.length === 1) setSelectedTemplateId(launchTemplates[0].id);
-    }
-  }, [launchModalOpen, copySets, launchTemplates, selectedForLaunch, creatives]);
-
-  // Prune stale selections when creatives change
-  useEffect(() => {
-    const readyIds = new Set(buckets.ready.map(c => c.id));
-    setSelectedForLaunch(prev => {
-      const pruned = prev.filter(id => readyIds.has(id));
-      return pruned.length !== prev.length ? pruned : prev;
+    // Auto-match copy set by angle
+    const match = copySets.find(cs => cs.angle?.toLowerCase() === angle.toLowerCase());
+    setSelectedCopySetId(match?.id || '');
+    setPendingLaunch({
+      angle,
+      creativeIds: groupCreatives.map(c => c.id),
+      isBulk: false,
     });
-  }, [creatives]);
-
-  const toggleSelectForLaunch = (id) => {
-    setSelectedForLaunch(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+    setLaunchModalOpen(true);
   };
 
-  const selectAllReady = () => {
-    const readyIds = buckets.ready.map(c => c.id);
-    setSelectedForLaunch(readyIds);
+  // Handle bulk launch of all complete groups
+  const handleBulkLaunch = (completeGroups) => {
+    if (!selectedTemplateId) {
+      setLaunchError('Select a launch template first');
+      return;
+    }
+    const allIds = completeGroups.flatMap(([, cs]) => cs.map(c => c.id));
+    const angles = completeGroups.map(([angle]) => angle);
+    setPendingLaunch({
+      angle: angles.join(', '),
+      creativeIds: allIds,
+      isBulk: true,
+      groupCount: completeGroups.length,
+    });
+    setLaunchModalOpen(true);
   };
 
-  const handleLaunch = async () => {
-    if (!selectedTemplateId) return;
+  // Execute launch
+  const executeLaunch = async () => {
+    if (!pendingLaunch || !selectedTemplateId) return;
     setLaunching(true);
     setLaunchError(null);
     try {
       const { data } = await api.post('/statics-generation/launch', {
-        creative_ids: selectedForLaunch,
+        creative_ids: pendingLaunch.creativeIds,
         template_id: selectedTemplateId,
         copy_set_id: selectedCopySetId || undefined,
       });
@@ -540,11 +801,9 @@ export function PipelineView({ creatives = [], onStatusChange, onCardClick, onRe
       const failed = (data.data?.results || []).filter(r => r.status === 'failed');
       if (failed.length) {
         setLaunchError(`${launchedIds.length} launched, ${failed.length} failed: ${failed[0]?.error || ''}`);
-        // Keep failed IDs selected for retry
-        setSelectedForLaunch(prev => prev.filter(id => !launchedIds.includes(id)));
       } else {
-        setSelectedForLaunch([]);
         setLaunchModalOpen(false);
+        setPendingLaunch(null);
       }
       onRefresh?.();
     } catch (err) {
@@ -554,18 +813,15 @@ export function PipelineView({ creatives = [], onStatusChange, onCardClick, onRe
     }
   };
 
-  // Custom status change handler — intercept "launched" to use Meta launch flow
+  // Status change handler — pass through to parent for non-launch actions
   const handleStatusChange = (id, newStatus) => {
-    if (newStatus === 'launched') {
-      // Instead of directly changing status, add to launch selection
-      if (!selectedForLaunch.includes(id)) {
-        setSelectedForLaunch(prev => [...prev, id]);
-      }
-      setLaunchModalOpen(true);
-      return;
-    }
     onStatusChange?.(id, newStatus);
   };
+
+  // Standard columns (generating, review, approved)
+  const standardColumns = COLUMNS.filter(c => !['ready', 'launched'].includes(c.key));
+  const readyColumn = COLUMNS.find(c => c.key === 'ready');
+  const launchedColumn = COLUMNS.find(c => c.key === 'launched');
 
   return (
     <div className="flex flex-col h-full">
@@ -608,29 +864,6 @@ export function PipelineView({ creatives = [], onStatusChange, onCardClick, onRe
         </div>
       </div>
 
-      {/* Launch selection bar */}
-      {selectedForLaunch.length > 0 && (
-        <div className="mb-4 glass-card border border-cyan-500/20 rounded-lg px-4 py-3 flex items-center justify-between animate-[fadeIn_0.2s_ease-out]">
-          <span className="text-xs font-mono text-cyan-300">
-            {selectedForLaunch.length} creative{selectedForLaunch.length > 1 ? 's' : ''} selected for launch
-          </span>
-          <div className="flex items-center gap-2">
-            {buckets.ready.length > selectedForLaunch.length && (
-              <button onClick={selectAllReady} className="text-xs text-cyan-400 hover:text-cyan-300 px-2 py-1 cursor-pointer">Select All ({buckets.ready.length})</button>
-            )}
-            <button onClick={() => setSelectedForLaunch([])} className="text-xs text-zinc-400 hover:text-white px-2 py-1 cursor-pointer">Clear</button>
-            <button
-              onClick={() => setLaunchModalOpen(true)}
-              disabled={launching}
-              className="inline-flex items-center gap-1.5 bg-cyan-500 hover:bg-cyan-600 text-white text-xs font-medium px-3 py-1.5 rounded-md cursor-pointer disabled:opacity-50"
-            >
-              {launching ? <Loader2 className="w-3 h-3 animate-spin" /> : <Zap className="w-3 h-3" />}
-              Launch to Meta
-            </button>
-          </div>
-        </div>
-      )}
-
       {/* Error toast */}
       {launchError && (
         <div className="mb-4 glass-card border border-red-500/20 rounded-lg px-4 py-2 flex items-center justify-between">
@@ -641,7 +874,8 @@ export function PipelineView({ creatives = [], onStatusChange, onCardClick, onRe
 
       {/* Columns */}
       <div className="flex gap-6 flex-1 min-h-0 overflow-x-auto">
-        {COLUMNS.map((col) => (
+        {/* Standard columns: generating, review, approved */}
+        {standardColumns.map((col) => (
           <PipelineColumn
             key={col.key}
             column={col}
@@ -649,44 +883,63 @@ export function PipelineView({ creatives = [], onStatusChange, onCardClick, onRe
             onStatusChange={handleStatusChange}
             onCardClick={onCardClick}
             allCreatives={creatives}
-            selectedForLaunch={selectedForLaunch}
-            onToggleSelect={toggleSelectForLaunch}
             queueItems={col.key === 'generating' ? queue.filter(q => q.status === 'queued' || q.status === 'generating') : undefined}
             onRemoveFromQueue={onRemoveFromQueue}
           />
         ))}
+
+        {/* Ready to Launch column — grouped by angle */}
+        <ReadyToLaunchColumn
+          column={readyColumn}
+          items={buckets.ready}
+          onCardClick={onCardClick}
+          onLaunchGroup={handleLaunchGroup}
+          onBulkLaunch={handleBulkLaunch}
+          launchTemplates={launchTemplates}
+          selectedTemplateId={selectedTemplateId}
+          onSelectTemplate={setSelectedTemplateId}
+          onStatusChange={handleStatusChange}
+        />
+
+        {/* Launched column — grouped by angle */}
+        <LaunchedColumn
+          column={launchedColumn}
+          items={buckets.launched}
+          onCardClick={onCardClick}
+        />
       </div>
 
       {/* Launch confirmation modal */}
-      {launchModalOpen && (
+      {launchModalOpen && pendingLaunch && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={() => !launching && setLaunchModalOpen(false)}>
           <div className="glass-card border border-white/[0.08] rounded-xl p-6 max-w-md w-full mx-4 shadow-2xl" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-sm font-mono font-semibold text-white uppercase tracking-wide flex items-center gap-2">
-                <Zap className="w-4 h-4 text-cyan-400" />
-                Launch {selectedForLaunch.length} Creative{selectedForLaunch.length > 1 ? 's' : ''} to Meta
+                <Rocket className="w-4 h-4 text-emerald-400" />
+                {pendingLaunch.isBulk
+                  ? `Bulk Launch ${pendingLaunch.groupCount} Ad Set${pendingLaunch.groupCount > 1 ? 's' : ''}`
+                  : `Launch "${pendingLaunch.angle}" Ad Set`
+                }
               </h3>
-              <button onClick={() => setLaunchModalOpen(false)} className="text-zinc-500 hover:text-white cursor-pointer"><X className="w-4 h-4" /></button>
+              <button onClick={() => { setLaunchModalOpen(false); setPendingLaunch(null); }} className="text-zinc-500 hover:text-white cursor-pointer">
+                <X className="w-4 h-4" />
+              </button>
             </div>
 
             <div className="space-y-3 mb-6">
-              <div>
-                <label className="font-mono text-[10px] text-[#c9a84c] uppercase tracking-[0.15em] block mb-1.5">Launch Template</label>
-                <select
-                  value={selectedTemplateId}
-                  onChange={(e) => setSelectedTemplateId(e.target.value)}
-                  className="w-full bg-white/[0.03] border border-white/[0.06] rounded-lg px-3 py-2 text-sm text-white focus:ring-1 focus:ring-[#c9a84c]/30 focus:border-[#c9a84c]/20"
-                >
-                  <option value="" disabled>Select a template...</option>
-                  {launchTemplates.map(t => (
-                    <option key={t.id} value={t.id}>{t.name} — {t.ad_account_name || t.ad_account_id}</option>
-                  ))}
-                </select>
-                {launchTemplates.length === 0 && (
-                  <p className="text-[10px] text-zinc-500 mt-1">No templates yet. Create one in Templates.</p>
-                )}
+              {/* Template info */}
+              <div className="glass-card border border-white/[0.05] rounded-lg px-3 py-2">
+                <span className="font-mono text-[10px] text-[#c9a84c] uppercase tracking-[0.15em] block mb-1">Template</span>
+                <p className="text-sm text-white">{launchTemplates.find(t => t.id === selectedTemplateId)?.name || 'None'}</p>
               </div>
 
+              {/* Creative count */}
+              <div className="glass-card border border-white/[0.05] rounded-lg px-3 py-2">
+                <span className="font-mono text-[10px] text-[#c9a84c] uppercase tracking-[0.15em] block mb-1">Creatives</span>
+                <p className="text-sm text-white">{pendingLaunch.creativeIds.length} images → {pendingLaunch.angle}</p>
+              </div>
+
+              {/* Copy set selector */}
               <div>
                 <label className="font-mono text-[10px] text-[#c9a84c] uppercase tracking-[0.15em] block mb-1.5">Copy Set (optional)</label>
                 <select
@@ -696,18 +949,24 @@ export function PipelineView({ creatives = [], onStatusChange, onCardClick, onRe
                 >
                   <option value="">None (use defaults)</option>
                   {copySets.map(cs => (
-                    <option key={cs.id} value={cs.id}>{cs.angle} — {(cs.primary_texts?.length || 0)} texts</option>
+                    <option key={cs.id} value={cs.id}>{cs.angle}</option>
                   ))}
                 </select>
               </div>
+
+              {launchError && (
+                <div className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
+                  {launchError}
+                </div>
+              )}
             </div>
 
             <div className="flex items-center gap-3 justify-end">
-              <button onClick={() => setLaunchModalOpen(false)} disabled={launching} className="text-xs text-zinc-400 hover:text-white px-3 py-2 cursor-pointer">Cancel</button>
+              <button onClick={() => { setLaunchModalOpen(false); setPendingLaunch(null); }} disabled={launching} className="text-xs text-zinc-400 hover:text-white px-3 py-2 cursor-pointer">Cancel</button>
               <button
-                onClick={handleLaunch}
+                onClick={executeLaunch}
                 disabled={launching || !selectedTemplateId}
-                className="inline-flex items-center gap-1.5 bg-cyan-500 hover:bg-cyan-600 text-white text-xs font-semibold px-4 py-2 rounded-lg cursor-pointer disabled:opacity-50"
+                className="inline-flex items-center gap-1.5 bg-emerald-500 hover:bg-emerald-600 text-white text-xs font-semibold px-4 py-2 rounded-lg cursor-pointer disabled:opacity-50"
               >
                 {launching ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
                 {launching ? 'Launching...' : 'Confirm Launch'}
