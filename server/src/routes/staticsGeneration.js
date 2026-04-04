@@ -471,7 +471,7 @@ router.get('/status/:taskId', authenticate, async (req, res) => {
       data: {
         taskId,
         status,
-        successFlag: flag,
+        successFlag: state === 'success',
         resultImageUrl,
         error: errorDetail,
       },
