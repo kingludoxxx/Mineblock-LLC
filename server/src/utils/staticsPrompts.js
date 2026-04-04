@@ -289,14 +289,20 @@ This tells the image generator which product photo angle to use.${crossNicheSect
 
 ---
 
-LOGO DETECTION (has_competitor_logo) — BE VERY STRICT:
-Set has_competitor_logo to TRUE **only** if the reference image contains a clearly visible, distinct company/brand LOGO GRAPHIC (an icon, emblem, wordmark, or symbol that is a designed logo element separate from the ad copy text).
-Set has_competitor_logo to FALSE if:
-- The brand name only appears as part of the headline/body text (e.g. "RYZE" in "RYZE Mushroom Coffee" headline)
-- There is a product label/packaging with a brand name but no separate standalone logo
-- There is no distinct logo graphic visible anywhere in the ad
-- You are unsure — when in doubt, return FALSE
-This field controls whether brand logos are injected into the generated ad. A false positive will cause unwanted logos to appear.
+LOGO DETECTION (has_competitor_logo):
+Set has_competitor_logo to TRUE if the reference image contains ANY of these:
+- A company/brand LOGO GRAPHIC (icon, emblem, wordmark, or symbol)
+- A brand name displayed as a standalone design element (not part of body text) — e.g. "RYZE" in a styled header, a brand watermark, a branded badge
+- A product label/packaging that prominently shows a competitor brand name or logo
+- ANY visual branding element that should be replaced with our brand
+
+Set has_competitor_logo to FALSE ONLY if:
+- There is genuinely no brand identity visible anywhere in the ad
+- The only brand reference is within the headline/body copy text (which will be swapped via text pairs)
+
+When in doubt, set to TRUE — it is better to send our logo and let the image generator decide whether to use it, than to miss a competitor logo that stays in the final ad.
+
+IMPORTANT: If you detect a logo, you MUST also include it in visual_adaptations with position describing where the logo sits and adapted_visual set to "replace with provided brand logo".
 
 LOGO BACKGROUND TONE (logo_background_tone):
 Look at the area of the ad where the competitor logo sits (or where a logo would naturally go — typically top corner or bottom).

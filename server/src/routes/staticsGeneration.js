@@ -453,15 +453,14 @@ router.post('/generate', authenticate, async (req, res) => {
     const logoUrls = [];
     let hasCompetitorLogo = claudeResult.has_competitor_logo === true;
 
-    // Validate logo detection — if Claude says there's a logo, check if visual_adaptations mention one
+    // Log logo detection details
     if (hasCompetitorLogo) {
       const visualAdapts = claudeResult.visual_adaptations || [];
       const hasLogoInVisuals = visualAdapts.some(v =>
         /\blogo\b/i.test(v.original_visual || '') || /\blogo\b/i.test(v.adapted_visual || '') || /\blogo\b/i.test(v.position || '')
       );
       if (!hasLogoInVisuals) {
-        console.warn(`[staticsGeneration] ⚠️ Claude detected has_competitor_logo=true but no logo mentioned in visual_adaptations. Overriding to false to prevent unwanted logos.`);
-        hasCompetitorLogo = false;
+        console.warn(`[staticsGeneration] ⚠️ Claude detected has_competitor_logo=true but no logo in visual_adaptations — sending logo anyway (prompt now instructs Claude to include it)`);
       }
     }
     if (hasCompetitorLogo) {
