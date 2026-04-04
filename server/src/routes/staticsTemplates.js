@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import { pgQuery } from '../db/pg.js';
 import { authenticate } from '../middleware/auth.js';
+import { buildLayoutAnalysisPrompt } from '../utils/staticsPrompts.js';
+import { resolveImage } from '../utils/imageHelpers.js';
 
 const router = Router();
 
@@ -360,6 +362,169 @@ router.post('/ai-scan', authenticate, async (req, res) => {
     res.json({ success: true, data: { total: ids.length, processed: results.length, results } });
   } catch (err) {
     console.error('[staticsTemplates] POST /ai-scan error:', err);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// ── POST /:id/analyze-layout — Run layout analysis and cache ───────────
+
+router.post('/:id/analyze-layout', authenticate, async (req, res) => {
+  try {
+    await ensureTable();
+    const rows = await pgQuery('SELECT * FROM statics_templates WHERE id = $1', [req.params.id]);
+    if (rows.length === 0) return res.status(404).json({ success: false, error: { message: 'Template not found' } });
+
+    const template = rows[0];
+    const meta = typeof template.metadata === 'string' ? JSON.parse(template.metadata) : (template.metadata || {});
+
+    // Return cached unless force=true
+    if (meta.layout_map && req.query.force !== 'true') {
+      return res.json({ success: true, data: meta.layout_map, cached: true });
+    }
+
+    // Analyze
+    const { base64, mediaType } = await resolveImage(template.image_url);
+    const { system, user } = buildLayoutAnalysisPrompt();
+
+    const claudeRes = await fetch(CLAUDE_API_URL, {
+      method: 'POST',
+      headers: {
+        'x-api-key': ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 3000,
+        system,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: user },
+              { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } },
+            ],
+          },
+          { role: 'assistant', content: '{' },
+        ],
+      }),
+    });
+
+    if (!claudeRes.ok) {
+      const errText = await claudeRes.text();
+      throw new Error(`Claude API error ${claudeRes.status}: ${errText.slice(0, 300)}`);
+    }
+
+    const data = await claudeRes.json();
+    const rawText = data.content?.[0]?.text;
+    if (!rawText) throw new Error('Empty response from Claude');
+
+    const fullJson = '{' + rawText;
+    const jsonMatch = fullJson.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) throw new Error('No JSON in layout analysis response');
+
+    let layoutMap;
+    try {
+      layoutMap = JSON.parse(jsonMatch[0]);
+    } catch (e) {
+      let fixable = jsonMatch[0].replace(/,\s*([}\]])/g, '$1');
+      layoutMap = JSON.parse(fixable);
+    }
+
+    // Cache in metadata
+    await pgQuery(
+      `UPDATE statics_templates
+       SET metadata = jsonb_set(COALESCE(metadata, '{}'), '{layout_map}', $1::jsonb),
+           updated_at = NOW()
+       WHERE id = $2`,
+      [JSON.stringify(layoutMap), req.params.id]
+    );
+
+    console.log(`[staticsTemplates] Layout analyzed for ${req.params.id}: archetype=${layoutMap.archetype}`);
+    res.json({ success: true, data: layoutMap, cached: false });
+  } catch (err) {
+    console.error('[staticsTemplates] POST /:id/analyze-layout error:', err);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// ── POST /bulk-analyze-layout — Bulk layout analysis ───────────────────
+
+router.post('/bulk-analyze-layout', authenticate, async (req, res) => {
+  try {
+    await ensureTable();
+    const { ids } = req.body;
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ success: false, error: { message: 'ids array is required' } });
+    }
+
+    const placeholders = ids.map((_, i) => `$${i + 1}`).join(', ');
+    const templates = await pgQuery(
+      `SELECT * FROM statics_templates WHERE id IN (${placeholders})`,
+      ids
+    );
+
+    const results = [];
+    for (const template of templates) {
+      try {
+        const meta = typeof template.metadata === 'string' ? JSON.parse(template.metadata) : (template.metadata || {});
+        if (meta.layout_map) {
+          results.push({ id: template.id, status: 'cached', archetype: meta.layout_map.archetype });
+          continue;
+        }
+
+        const { base64, mediaType } = await resolveImage(template.image_url);
+        const { system, user } = buildLayoutAnalysisPrompt();
+
+        const claudeRes = await fetch(CLAUDE_API_URL, {
+          method: 'POST',
+          headers: {
+            'x-api-key': ANTHROPIC_API_KEY,
+            'anthropic-version': '2023-06-01',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model: 'claude-sonnet-4-20250514',
+            max_tokens: 3000,
+            system,
+            messages: [
+              {
+                role: 'user',
+                content: [
+                  { type: 'text', text: user },
+                  { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } },
+                ],
+              },
+              { role: 'assistant', content: '{' },
+            ],
+          }),
+        });
+
+        if (!claudeRes.ok) throw new Error(`Claude error ${claudeRes.status}`);
+        const data = await claudeRes.json();
+        const rawText = data.content?.[0]?.text;
+        const fullJson = '{' + (rawText || '');
+        const jsonMatch = fullJson.match(/\{[\s\S]*\}/);
+        if (!jsonMatch) throw new Error('No JSON');
+
+        let layoutMap;
+        try { layoutMap = JSON.parse(jsonMatch[0]); }
+        catch { layoutMap = JSON.parse(jsonMatch[0].replace(/,\s*([}\]])/g, '$1')); }
+
+        await pgQuery(
+          `UPDATE statics_templates SET metadata = jsonb_set(COALESCE(metadata, '{}'), '{layout_map}', $1::jsonb), updated_at = NOW() WHERE id = $2`,
+          [JSON.stringify(layoutMap), template.id]
+        );
+
+        results.push({ id: template.id, status: 'analyzed', archetype: layoutMap.archetype });
+      } catch (err) {
+        results.push({ id: template.id, status: 'error', error: err.message });
+      }
+    }
+
+    res.json({ success: true, data: { total: ids.length, results } });
+  } catch (err) {
+    console.error('[staticsTemplates] POST /bulk-analyze-layout error:', err);
     res.status(500).json({ success: false, error: { message: err.message } });
   }
 });

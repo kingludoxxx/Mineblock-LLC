@@ -1,8 +1,9 @@
 import { Router } from 'express';
-import { buildClaudePrompt, buildNanoBananaPrompt, buildSwapPairs } from '../utils/staticsPrompts.js';
+import { buildClaudePrompt, buildNanoBananaPrompt, buildSwapPairs, buildLayoutAnalysisPrompt } from '../utils/staticsPrompts.js';
 import { pgQuery } from '../db/pg.js';
 import { authenticate } from '../middleware/auth.js';
 import { uploadBuffer, isR2Configured } from '../services/r2.js';
+import { detectMime as detectMimeShared, resolveImage as resolveImageShared } from '../utils/imageHelpers.js';
 import crypto from 'crypto';
 import {
   isMetaAdsConfigured, createAdSet, createFlexibleAdCreative, createAd,
@@ -192,11 +193,81 @@ async function ensureHttpUrlGlobal(url, label = 'img') {
   return `${SERVER_URL}/api/v1/statics-generation/tmp-img/${id}`;
 }
 
+// ── Layout Analysis — runs once per template, cached in DB ────────────
+
+async function analyzeAndCacheLayout(templateId, imageUrl) {
+  try {
+    const { base64, mediaType } = await resolveImage(imageUrl);
+    const { system, user } = buildLayoutAnalysisPrompt();
+
+    const res = await fetch(CLAUDE_API_URL, {
+      method: 'POST',
+      headers: {
+        'x-api-key': ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 3000,
+        system,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: user },
+              { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } },
+            ],
+          },
+          { role: 'assistant', content: '{' },
+        ],
+      }),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`Claude layout analysis error ${res.status}: ${errText.slice(0, 300)}`);
+    }
+
+    const data = await res.json();
+    const rawText = data.content?.[0]?.text;
+    if (!rawText) throw new Error('Empty response from Claude layout analysis');
+
+    const fullJson = '{' + rawText;
+    const jsonMatch = fullJson.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) throw new Error('No JSON in layout analysis response');
+
+    let layoutMap;
+    try {
+      layoutMap = JSON.parse(jsonMatch[0]);
+    } catch (e) {
+      // Try fixing trailing commas
+      let fixable = jsonMatch[0].replace(/,\s*([}\]])/g, '$1');
+      layoutMap = JSON.parse(fixable);
+    }
+
+    // Cache in DB
+    await pgQuery(
+      `UPDATE statics_templates
+       SET metadata = jsonb_set(COALESCE(metadata, '{}'), '{layout_map}', $1::jsonb),
+           updated_at = NOW()
+       WHERE id = $2`,
+      [JSON.stringify(layoutMap), templateId]
+    );
+
+    console.log(`[staticsGeneration] ✅ Layout map analyzed and cached for template ${templateId} (archetype: ${layoutMap.archetype})`);
+    return layoutMap;
+  } catch (err) {
+    console.error(`[staticsGeneration] Layout analysis failed for template ${templateId}:`, err.message);
+    return null;
+  }
+}
+
 // ── POST /generate ─────────────────────────────────────────────────────
 
 router.post('/generate', authenticate, async (req, res) => {
   try {
-    const { reference_image_url, product, angle, ratio } = req.body;
+    const { reference_image_url, product, angle, ratio, template_id } = req.body;
 
     if (!reference_image_url) return res.status(400).json({ success: false, error: 'reference_image_url is required' });
     if (!product)             return res.status(400).json({ success: false, error: 'product is required' });
@@ -213,6 +284,28 @@ router.post('/generate', authenticate, async (req, res) => {
     const hasCustomOverrides = !!(customPrompts?.claudeAnalysis?.headlineRules || customPrompts?.claudeAnalysis?.productIdentity || customPrompts?.claudeAnalysis?.bannedPhrases);
     console.log(`[staticsGeneration] Custom prompt overrides: ${hasCustomOverrides ? 'YES (custom prompts from DB)' : 'NO (using defaults)'}`);
 
+    // ── Load cached layout map if template-based ──────────────────────
+    let layoutMap = null;
+    if (template_id) {
+      try {
+        const rows = await pgQuery(
+          `SELECT metadata FROM statics_templates WHERE id = $1`,
+          [template_id]
+        );
+        const meta = rows[0]?.metadata;
+        layoutMap = (typeof meta === 'string' ? JSON.parse(meta) : meta)?.layout_map || null;
+        if (layoutMap) {
+          console.log(`[staticsGeneration] ✅ Using cached layout map for template ${template_id} (archetype: ${layoutMap.archetype})`);
+        } else {
+          console.log(`[staticsGeneration] Template ${template_id} has no layout map — running layout analysis first`);
+          // Auto-analyze the template on first use
+          layoutMap = await analyzeAndCacheLayout(template_id, reference_image_url);
+        }
+      } catch (err) {
+        console.warn(`[staticsGeneration] Layout map fetch/analysis failed for ${template_id}:`, err.message);
+      }
+    }
+
     // ── Step A: Resolve reference image to base64 ──────────────────────
     const { base64, mediaType, isUrl } = await resolveImage(reference_image_url);
 
@@ -224,7 +317,7 @@ router.post('/generate', authenticate, async (req, res) => {
         {
           role: 'user',
           content: [
-            { type: 'text', text: buildClaudePrompt(product, angle, customPrompts) },
+            { type: 'text', text: buildClaudePrompt(product, angle, customPrompts, layoutMap) },
             { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } },
           ],
         },
@@ -347,7 +440,7 @@ router.post('/generate', authenticate, async (req, res) => {
     logoUrls.forEach((u, i) => console.log(`  [${extraProductUrls.length+1+i}] logo: ${u?.slice(0, 120)}`));
     console.log(`  [LAST] reference: ${finalReferenceUrl?.slice(0, 120)}`);
 
-    const nbPrompt = buildNanoBananaPrompt(claudeResult, swapPairs, product, logoUrls.length, customPrompts);
+    const nbPrompt = buildNanoBananaPrompt(claudeResult, swapPairs, product, logoUrls.length, customPrompts, layoutMap);
 
     // Send: product images, then logos, then reference ad (last)
     const imageUrls = [finalProductUrl, ...extraProductUrls, ...logoUrls, finalReferenceUrl];

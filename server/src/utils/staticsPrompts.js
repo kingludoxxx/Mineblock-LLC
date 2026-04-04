@@ -4,10 +4,68 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ─────────────────────────────────────────────────────────────────────────────
+// STEP 0: Layout Analysis — Structural Map (cached per template)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function buildLayoutAnalysisPrompt() {
+  return {
+    system: `You are an expert visual layout analyst specializing in direct-response static ad templates. Your only job is to produce a precise, neutral, and complete structural map of any ad template image. You describe only structure, position, hierarchy, and element relationships. You never describe copy content, brand colors, logos, or product type. You never make creative suggestions. You never interpret intent. You observe and document only. Your output will be used as a structural blueprint by a separate creative agent.`,
+
+    user: `Analyze the reference template image and produce a complete structural layout map as JSON.
+
+For each element, use precise positional language (top third, bottom quarter, left edge, centered, overlaid, flush right), size language (largest element, approximately one third of canvas width, small), and relational language (sits directly below, aligned with left edge of product visual).
+
+Never use color names from the reference image. Never describe what the copy says. Never describe the product shown. Describe only WHERE things are and HOW they relate to each other.
+
+Return ONLY valid JSON (no markdown, no code fences):
+{
+  "archetype": "short_snake_case_layout_name",
+  "canvas": {
+    "orientation": "portrait|landscape|square",
+    "aspect_ratio": "1:1|9:16|4:5|16:9"
+  },
+  "background": {
+    "type": "solid|gradient|textured|photographic|split",
+    "tone": "dark|light|mixed",
+    "zones": "description of any secondary background panels and their positions"
+  },
+  "text_elements": [
+    {
+      "role": "headline|subheadline|body|cta|badge|stat_label|stat_value|guarantee|disclaimer|other",
+      "hierarchy": 1,
+      "position": "where on canvas",
+      "size": "relative size description",
+      "lines": 1,
+      "char_count_approx": 25,
+      "visual_treatment": "plain|filled_shape|highlighted|outlined|stacked",
+      "container": "description of any containing shape"
+    }
+  ],
+  "product_zone": {
+    "position": "where on canvas",
+    "size_pct": "approximate percentage of canvas",
+    "presentation": "angle, overlap with other elements",
+    "count": 1
+  },
+  "visual_elements": [
+    {
+      "type": "person|arrow|line|border|icon|badge_shape|decorative",
+      "position": "where on canvas",
+      "size": "relative size",
+      "connects": "what it connects to, if applicable"
+    }
+  ],
+  "composition_notes": "one sentence describing the overall spatial rhythm and reading flow",
+  "hierarchy_summary": ["H1: headline position", "H2: subheadline position", "STAT: stat positions", "BADGE: badge position", "CTA: cta position"]
+}`
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // STEP 1: Claude Vision — Copy Extraction + Rewriting
 // ─────────────────────────────────────────────────────────────────────────────
 
-export function buildClaudePrompt(product, angle, customOverrides = null) {
+export function buildClaudePrompt(product, angle, customOverrides = null, layoutMap = null) {
   const profile = product.profile || {};
   const co = customOverrides?.claudeAnalysis || {};
 
@@ -123,7 +181,18 @@ CRITICAL RULES FOR ADAPTED COPY:
 
 PRODUCT CONTEXT:
 ${contextLines}${brandSection}${productIdentity}${pricingRules}
+${layoutMap ? `
+---
 
+PRE-ANALYZED LAYOUT MAP (this template's structure has been analyzed — use it):
+${JSON.stringify(layoutMap, null, 2)}
+
+USE THIS LAYOUT MAP TO:
+- Match your adapted text LENGTH to each element's char_count_approx — if a headline position fits ~25 chars, write ~25 chars
+- Understand the spatial hierarchy — H1 gets the most impactful copy, badges get short punchy text
+- If the layout has stat positions, write stat-worthy numbers/claims for those positions
+- Respect the template's rhythm: if it has 2 short badges, write 2 short badges — not 5
+` : ''}
 ---
 
 TEXT EXTRACTION RULES:
@@ -228,7 +297,7 @@ export function buildSwapPairs(originalText, adaptedText) {
 // STEP 3: NanoBanana (Gemini) — Image Generation Prompt
 // ─────────────────────────────────────────────────────────────────────────────
 
-export function buildNanoBananaPrompt(claudeResult, swapPairs, product, logoCount = 0, customOverrides = null) {
+export function buildNanoBananaPrompt(claudeResult, swapPairs, product, logoCount = 0, customOverrides = null, layoutMap = null) {
   const {
     people_count, product_count, adapted_audience,
     character_adaptation, visual_adaptations
@@ -311,5 +380,14 @@ CRITICAL TEXT RENDERING: Every letter must be sharp, legible, and CORRECTLY SPEL
 5. VISUAL ADAPTATIONS:
 ${visualSection || '  (Keep all visuals as-is)'}
 ${brandIdentitySection}
+${layoutMap ? `${brandIdentitySection ? '' : '\n'}7. LAYOUT STRUCTURE (follow this precisely — positions are non-negotiable):
+  Archetype: ${layoutMap.archetype || 'standard'}
+  Canvas: ${layoutMap.canvas?.orientation || 'unknown'} ${layoutMap.canvas?.aspect_ratio || ''}
+  Background: ${layoutMap.background?.type || 'solid'} (${layoutMap.background?.tone || 'dark'})${layoutMap.background?.zones ? ` — ${layoutMap.background.zones}` : ''}
+  Product Zone: ${layoutMap.product_zone?.position || 'center'} (~${layoutMap.product_zone?.size_pct || '30%'} of canvas)
+${(layoutMap.text_elements || []).map(t => `  ${t.role.toUpperCase()} (H${t.hierarchy}): ${t.position} — ${t.size} — ~${t.char_count_approx || '?'} chars — ${t.visual_treatment || 'plain'}`).join('\n')}
+  Composition: ${layoutMap.composition_notes || 'standard layout'}
+  RULE: Every text element must be placed in its EXACT position as described above. Do not move, merge, or reorder any element.
+` : ''}
 ${absoluteRulesSection}`;
 }

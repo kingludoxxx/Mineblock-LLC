@@ -1030,8 +1030,13 @@ export default function StaticsGeneration() {
 
       // Step 1: Submit to server (Claude analysis + NanoBanana submit — returns fast)
       setGenerationStep(1);
+      // Detect template ID (UUID from library vs numeric timestamp from upload)
+      const refTemplateId = references[0]?.id;
+      const isTemplateUUID = typeof refTemplateId === 'string' && refTemplateId.includes('-');
+
       const response = await api.post('/statics-generation/generate', {
         reference_image_url: resolvedReferenceUrl,
+        template_id: isTemplateUUID ? refTemplateId : undefined,
         product: {
           name: productName,
           description: productDescription || undefined,
@@ -1344,8 +1349,13 @@ export default function StaticsGeneration() {
 
             try {
               // Step 1: Submit to server (fast)
+              // Pass template_id if the reference is from the template library (UUID)
+              const refId = currentRef?.id;
+              const isRefTemplate = typeof refId === 'string' && refId.includes('-');
+
               const response = await api.post('/statics-generation/generate', {
                 reference_image_url: refUrl,
+                template_id: isRefTemplate ? refId : undefined,
                 product: productPayload,
                 angle: item.customAngle || item.angle || undefined,
                 ratio: item.aspectRatio,
