@@ -399,7 +399,50 @@ function ProductDetailView({ product, onBack, onFieldSave, onAiFill, onProductCh
       reader.readAsDataURL(file);
     });
 
-  /* Image handlers — use productRef to avoid stale closure */
+  /* ── Debounced save for array fields (product_images, logos) ─────
+     Rapid deletes / uploads all mutate productRef synchronously,
+     then a single debounced PUT fires after 400ms of inactivity.
+     This prevents race conditions where stale API responses overwrite
+     newer local state. */
+  const imageSaveTimer = useRef(null);
+  const logoSaveTimer = useRef(null);
+
+  const debouncedSaveImages = (updated) => {
+    if (imageSaveTimer.current) clearTimeout(imageSaveTimer.current);
+    imageSaveTimer.current = setTimeout(async () => {
+      try {
+        await onFieldSave('product_images', updated);
+      } catch (err) {
+        alert(`Failed to save images: ${err?.response?.data?.error?.message || err?.message || 'Unknown error'}. Try fewer images at once.`);
+      }
+    }, 400);
+  };
+
+  const debouncedSaveLogos = (updated) => {
+    if (logoSaveTimer.current) clearTimeout(logoSaveTimer.current);
+    logoSaveTimer.current = setTimeout(async () => {
+      try {
+        await onFieldSave('logos', updated);
+      } catch (err) {
+        alert(`Failed to save logos: ${err?.response?.data?.error?.message || err?.message || 'Unknown error'}.`);
+      }
+    }, 400);
+  };
+
+  // Cleanup timers on unmount
+  useEffect(() => () => {
+    if (imageSaveTimer.current) clearTimeout(imageSaveTimer.current);
+    if (logoSaveTimer.current) clearTimeout(logoSaveTimer.current);
+  }, []);
+
+  /* Helper: update productRef + state synchronously for an array field */
+  const updateArrayField = (field, updated, debouncer) => {
+    productRef.current = { ...productRef.current, [field]: updated };
+    onProductChange(productRef.current);
+    debouncer(updated);
+  };
+
+  /* Image handlers — update ref synchronously to prevent stale reads on rapid clicks */
   const handleImageUpload = async (files) => {
     const imageFiles = Array.from(files).filter((f) => f.type.startsWith('image/'));
     if (imageFiles.length === 0) return;
@@ -409,28 +452,21 @@ function ProductDetailView({ product, onBack, onFieldSave, onAiFill, onProductCh
 
     const current = Array.isArray(productRef.current.product_images) ? productRef.current.product_images : [];
     const updated = [...current.filter((img) => img), ...results];
-    onProductChange({ ...productRef.current, product_images: updated });
-    try {
-      await onFieldSave('product_images', updated);
-    } catch (err) {
-      alert(`Failed to save images: ${err?.response?.data?.error?.message || err?.message || 'Unknown error'}. Try fewer images at once.`);
-    }
+    updateArrayField('product_images', updated, debouncedSaveImages);
   };
 
   const addImageUrl = () => {
     if (!imageUrlInput.trim()) return;
     const current = Array.isArray(productRef.current.product_images) ? productRef.current.product_images : [];
     const updated = [...current.filter((img) => img), imageUrlInput.trim()];
-    onProductChange({ ...productRef.current, product_images: updated });
-    onFieldSave('product_images', updated);
+    updateArrayField('product_images', updated, debouncedSaveImages);
     setImageUrlInput('');
   };
 
   const removeImage = (i) => {
     const current = Array.isArray(productRef.current.product_images) ? productRef.current.product_images : [];
     const updated = current.filter((_, idx) => idx !== i);
-    onProductChange({ ...productRef.current, product_images: updated });
-    onFieldSave('product_images', updated);
+    updateArrayField('product_images', updated, debouncedSaveImages);
   };
 
   /* Logo handlers */
@@ -440,28 +476,21 @@ function ProductDetailView({ product, onBack, onFieldSave, onAiFill, onProductCh
     const results = await Promise.all(imageFiles.map(compressImage));
     const current = Array.isArray(productRef.current.logos) ? productRef.current.logos : [];
     const updated = [...current.filter((l) => l), ...results];
-    onProductChange({ ...productRef.current, logos: updated });
-    try {
-      await onFieldSave('logos', updated);
-    } catch (err) {
-      alert(`Failed to save logos: ${err?.response?.data?.error?.message || err?.message || 'Unknown error'}.`);
-    }
+    updateArrayField('logos', updated, debouncedSaveLogos);
   };
 
   const addLogoUrl = () => {
     if (!logoUrlInput.trim()) return;
     const current = Array.isArray(productRef.current.logos) ? productRef.current.logos : [];
     const updated = [...current.filter((l) => l), logoUrlInput.trim()];
-    onProductChange({ ...productRef.current, logos: updated });
-    onFieldSave('logos', updated);
+    updateArrayField('logos', updated, debouncedSaveLogos);
     setLogoUrlInput('');
   };
 
   const removeLogo = (i) => {
     const current = Array.isArray(productRef.current.logos) ? productRef.current.logos : [];
     const updated = current.filter((_, idx) => idx !== i);
-    onProductChange({ ...productRef.current, logos: updated });
-    onFieldSave('logos', updated);
+    updateArrayField('logos', updated, debouncedSaveLogos);
   };
 
   const firstImage = (Array.isArray(product.product_images) ? product.product_images : []).find(
@@ -1037,10 +1066,16 @@ export default function Assets() {
 
   // Save field — value passed directly from AutoSaveField's ref (never stale)
   // Pass key='__all__' and value=fullProductObject to save everything at once
+  // For array fields (product_images, logos), we keep the local value as source of truth
+  // to avoid stale API responses overwriting rapid local edits.
+  const saveVersionRef = useRef(0);
   const handleFieldSave = async (key, value) => {
     if (!selectedProduct?.id) return;
+    const version = ++saveVersionRef.current;
     const payload = key === '__all__' ? value : { [key]: value };
     const { data } = await api.put(`/product-profiles/${selectedProduct.id}`, payload);
+    // If another save happened while this one was in flight, skip state update
+    if (version !== saveVersionRef.current) return;
     const updated = normalizeProduct(data?.data || data);
     if (updated?.id) {
       setSelectedProduct(prev => ({ ...prev, ...updated }));
