@@ -836,6 +836,7 @@ export default function StaticsGeneration() {
   // Generation state
   const [generating, setGenerating] = useState(false);
   const [generationStep, setGenerationStep] = useState(0);
+  const [variantsExpanded, setVariantsExpanded] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
 
@@ -2069,8 +2070,13 @@ export default function StaticsGeneration() {
                   const counts = { generating: 0, done: 0, failed: 0, none: 0 };
                   tracked.forEach(t => counts[t.status]++);
                   return (
-                    <div className="bg-[#0d0d0d] border border-white/[0.06] rounded-lg p-3 mt-2">
-                      <div className="flex items-center gap-2 mb-2.5">
+                    <div className="bg-[#0d0d0d] border border-white/[0.06] rounded-lg mt-2 overflow-hidden">
+                      <button
+                        type="button"
+                        onClick={() => setVariantsExpanded(prev => !prev)}
+                        className="w-full flex items-center gap-2 p-3 cursor-pointer hover:bg-white/[0.02] transition-colors"
+                      >
+                        <ChevronRight className={`w-3 h-3 text-gray-500 transition-transform ${variantsExpanded ? 'rotate-90' : ''}`} />
                         <span className="text-xs font-medium text-gray-300">9:16 Variants</span>
                         <div className="flex items-center gap-1.5 ml-auto">
                           {counts.done > 0 && (
@@ -2092,8 +2098,8 @@ export default function StaticsGeneration() {
                             <span className="text-[10px] bg-gray-500/15 text-gray-500 px-1.5 py-0.5 rounded-full">{counts.none} pending</span>
                           )}
                         </div>
-                      </div>
-                      <div className="space-y-1">
+                      </button>
+                      {variantsExpanded && <div className="space-y-1 px-3 pb-3">
                         {tracked.map(({ parent, variant, status }) => (
                           <div key={parent.id} className="flex items-center gap-2 text-[11px]">
                             <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${
@@ -2130,7 +2136,7 @@ export default function StaticsGeneration() {
                             )}
                           </div>
                         ))}
-                      </div>
+                      </div>}
                     </div>
                   );
                 })()}
