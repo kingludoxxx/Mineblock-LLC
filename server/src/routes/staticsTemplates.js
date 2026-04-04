@@ -40,6 +40,22 @@ async function ensureTable() {
 // ── Helpers ─────────────────────────────────────────────────────────────
 
 async function categorizeImage(imageUrl) {
+  // Always resolve to base64 — Claude API can't fetch many external URLs (Shopify CDN, etc.)
+  let imageContent;
+  if (imageUrl.startsWith('data:')) {
+    const mediaType = imageUrl.match(/data:([^;]+)/)?.[1] || 'image/png';
+    const data = imageUrl.split(',')[1];
+    imageContent = { type: 'image', source: { type: 'base64', media_type: mediaType, data } };
+  } else {
+    try {
+      const resolved = await resolveImage(imageUrl);
+      imageContent = { type: 'image', source: { type: 'base64', media_type: resolved.mediaType, data: resolved.base64 } };
+    } catch (fetchErr) {
+      console.warn('[staticsTemplates] Could not download image, trying URL mode:', fetchErr.message);
+      imageContent = { type: 'image', source: { type: 'url', url: imageUrl } };
+    }
+  }
+
   const res = await fetch(CLAUDE_API_URL, {
     method: 'POST',
     headers: {
@@ -63,9 +79,7 @@ Return a JSON object with:
 - "tags": an array of 3-5 descriptive tags (e.g. ["before-after", "product-comparison", "dark-theme"])
 Return ONLY valid JSON, no markdown fences.`,
           },
-          imageUrl.startsWith('data:')
-            ? { type: 'image', source: { type: 'base64', media_type: imageUrl.match(/data:([^;]+)/)?.[1] || 'image/png', data: imageUrl.split(',')[1] } }
-            : { type: 'image', source: { type: 'url', url: imageUrl } },
+          imageContent,
         ],
       }],
     }),

@@ -864,8 +864,8 @@ async function extractScriptFromUrl(url) {
         const adCopy = [metadata.title, metadata.description].filter(Boolean).join('\n\n').trim();
         if (adCopy.length > 20) return adCopy;
       }
-      console.error(`[BriefPipeline] All extraction failed for FB ad ${adId}. yt-dlp: ${existsSync(YTDLP_PATH) ? 'installed' : 'NOT INSTALLED'}`);
-      throw new Error(`Could not extract ad ${adId}. Try right-clicking the video → "Copy video address" and paste the direct .mp4 link.`);
+      console.error(`[BriefPipeline] All extraction failed for FB ad ${adId}. yt-dlp: ${existsSync(YTDLP_PATH) ? 'installed' : 'NOT INSTALLED'}, META_ACCESS_TOKEN: ${META_ACCESS_TOKEN ? 'set' : 'NOT SET'}`);
+      throw new Error(`Could not extract ad ${adId}. This is a video ad that requires transcription. Try: (1) Right-click the video → "Copy video address" and paste the direct .mp4 link, or (2) Use "Paste Text" to paste the script manually.`);
     }
   }
 
@@ -2777,7 +2777,7 @@ router.post('/generate/:id', authenticate, async (req, res) => {
     if (typeof parsedScript === 'string') { try { parsedScript = JSON.parse(parsedScript); } catch { parsedScript = null; } }
     if (!parsedScript) {
       const { system, user } = await buildScriptParserPrompt(winner.raw_script, winner.ad_name || winner.creative_id);
-      parsedScript = await callClaude(system, user, 2000);
+      parsedScript = await callClaude(system, user, 2000, { fast: true });
       if (!parsedScript || (!parsedScript.hooks?.length && !parsedScript.body?.trim())) {
         throw new Error('Claude failed to parse the script into a valid structure (missing hooks/body).');
       }
@@ -2894,7 +2894,7 @@ router.post('/generate/:id', authenticate, async (req, res) => {
         try {
           const [br, sc] = await Promise.all([
             callClaude(blendSystem, blendUser, 1000, { fast: true }),  // Haiku for blend check
-            callClaude(scoreSystem, scoreUser, 1500),                  // Sonnet for scoring
+            callClaude(scoreSystem, scoreUser, 1500, { fast: true }),     // Haiku for scoring (speed)
           ]);
           blendResult = br;
           if (sc) scores = sc;
@@ -3075,7 +3075,7 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
     // Step 4: Parse script
     console.log(`[BriefPipeline] Parsing manual script`);
     const { system: parseSystem, user: parseUser } = await buildScriptParserPrompt(rawScript, creativeId);
-    let parsedScript = await callClaude(parseSystem, parseUser, 2000);
+    let parsedScript = await callClaude(parseSystem, parseUser, 2000, { fast: true });
     if (!parsedScript || (!parsedScript.hooks?.length && !parsedScript.body?.trim())) {
       parsedScript = { hooks: [], body: rawScript, cta: '', format_notes: '' };
     }
@@ -3142,7 +3142,7 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
           try {
             const [br, sc] = await Promise.all([
               callClaude(blendSystem, blendUser, 1000, { fast: true }),
-              callClaude(scoreSystem, scoreUser, 1500),
+              callClaude(scoreSystem, scoreUser, 1500, { fast: true }),
             ]);
             blendResult = br;
             if (sc) scores = sc;
@@ -3230,7 +3230,7 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
           try {
             const [br, sc] = await Promise.all([
               callClaude(blendSystem, blendUser, 1000, { fast: true }),
-              callClaude(scoreSystem, scoreUser, 1500),
+              callClaude(scoreSystem, scoreUser, 1500, { fast: true }),
             ]);
             blendResult = br;
             if (sc) scores = sc;
