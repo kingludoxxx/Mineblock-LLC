@@ -3,7 +3,6 @@ import { buildClaudePrompt, buildNanoBananaPrompt, buildSwapPairs, buildLayoutAn
 import { pgQuery } from '../db/pg.js';
 import { authenticate } from '../middleware/auth.js';
 import { uploadBuffer, isR2Configured } from '../services/r2.js';
-import { detectMime as detectMimeShared, resolveImage as resolveImageShared } from '../utils/imageHelpers.js';
 import crypto from 'crypto';
 import {
   isMetaAdsConfigured, createAdSet, createFlexibleAdCreative, createAd,

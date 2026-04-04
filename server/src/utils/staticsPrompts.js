@@ -380,12 +380,13 @@ CRITICAL TEXT RENDERING: Every letter must be sharp, legible, and CORRECTLY SPEL
 5. VISUAL ADAPTATIONS:
 ${visualSection || '  (Keep all visuals as-is)'}
 ${brandIdentitySection}
-${layoutMap ? `${brandIdentitySection ? '' : '\n'}7. LAYOUT STRUCTURE (follow this precisely — positions are non-negotiable):
+${layoutMap ? `
+7. LAYOUT STRUCTURE (follow this precisely — positions are non-negotiable):
   Archetype: ${layoutMap.archetype || 'standard'}
   Canvas: ${layoutMap.canvas?.orientation || 'unknown'} ${layoutMap.canvas?.aspect_ratio || ''}
   Background: ${layoutMap.background?.type || 'solid'} (${layoutMap.background?.tone || 'dark'})${layoutMap.background?.zones ? ` — ${layoutMap.background.zones}` : ''}
   Product Zone: ${layoutMap.product_zone?.position || 'center'} (~${layoutMap.product_zone?.size_pct || '30%'} of canvas)
-${(layoutMap.text_elements || []).map(t => `  ${t.role.toUpperCase()} (H${t.hierarchy}): ${t.position} — ${t.size} — ~${t.char_count_approx || '?'} chars — ${t.visual_treatment || 'plain'}`).join('\n')}
+${(layoutMap.text_elements || []).map(t => `  ${(t.role || 'unknown').toUpperCase()} (H${t.hierarchy || '?'}): ${t.position || 'unknown'} — ${t.size || 'unknown'} — ~${t.char_count_approx || '?'} chars — ${t.visual_treatment || 'plain'}`).join('\n')}
   Composition: ${layoutMap.composition_notes || 'standard layout'}
   RULE: Every text element must be placed in its EXACT position as described above. Do not move, merge, or reorder any element.
 ` : ''}
