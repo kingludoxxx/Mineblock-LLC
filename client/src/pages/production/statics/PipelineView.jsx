@@ -197,12 +197,6 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, onRegener
               Variant
             </span>
           )}
-          {!creative.parent_creative_id && (
-            <div className="absolute top-2 right-2 flex items-center gap-1">
-              <RatioPill label={creative.aspect_ratio || '4:5'} status="done" />
-              <RatioPill label="9:16" status={variantStatus || null} />
-            </div>
-          )}
           {creative.parent_creative_id && (
             <span className="absolute top-2 right-2 text-[9px] font-mono bg-black/50 text-zinc-300 px-1.5 py-0.5 rounded border border-white/[0.1] backdrop-blur-md">
               9:16
@@ -212,106 +206,106 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, onRegener
 
         {/* Info */}
         <div className="p-3 space-y-2.5">
-          <div>
-            <h4 className="text-xs font-medium text-zinc-200 mb-1.5 truncate">
-              {creative.product_name || 'Untitled'}
-            </h4>
-            <div className="flex items-center gap-1.5 flex-wrap">
-              {creative.angle && (
-                <span className="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full bg-[#c9a84c]/10 text-[#d4b55a] border border-[#c9a84c]/25">
-                  <Tag className="w-2.5 h-2.5" />
-                  {creative.angle}
+          {/* Angle badge + ratio dots row */}
+          <div className="flex items-center gap-2 border-b border-white/[0.05] pb-2.5">
+            {creative.angle && (
+              <span className="inline-flex items-center text-[11px] font-medium px-2.5 py-1 rounded-md bg-white/[0.04] text-zinc-300 border border-white/[0.08]">
+                {creative.angle}
+              </span>
+            )}
+            {!creative.parent_creative_id && (
+              <div className="flex items-center gap-2.5 ml-auto">
+                <span className="inline-flex items-center gap-1 text-[11px] text-zinc-400 font-mono">
+                  <span className={`w-1.5 h-1.5 rounded-full ${creative.image_url ? 'bg-emerald-400' : 'bg-amber-400'}`} />
+                  {creative.aspect_ratio || '4:5'}
                 </span>
-              )}
-              {(() => {
-                const metaIds = Array.isArray(creative.meta_ad_ids) ? creative.meta_ad_ids : (typeof creative.meta_ad_ids === 'string' ? (() => { try { return JSON.parse(creative.meta_ad_ids); } catch { return []; } })() : []);
-                return metaIds.length > 0 ? (
-                  <span className="text-[9px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/20 font-medium">
-                    {metaIds.length} ad{metaIds.length > 1 ? 's' : ''}
-                  </span>
-                ) : null;
-              })()}
-            </div>
+                <span className="inline-flex items-center gap-1 text-[11px] text-zinc-400 font-mono">
+                  <span className={`w-1.5 h-1.5 rounded-full ${
+                    variantStatus === 'done' ? 'bg-emerald-400'
+                    : variantStatus === 'generating' ? 'bg-amber-400 animate-pulse'
+                    : variantStatus === 'failed' ? 'bg-red-400'
+                    : 'bg-zinc-600'
+                  }`} />
+                  9:16
+                </span>
+              </div>
+            )}
+            {(() => {
+              const metaIds = Array.isArray(creative.meta_ad_ids) ? creative.meta_ad_ids : (typeof creative.meta_ad_ids === 'string' ? (() => { try { return JSON.parse(creative.meta_ad_ids); } catch { return []; } })() : []);
+              return metaIds.length > 0 ? (
+                <span className="text-[9px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/20 font-medium ml-auto">
+                  {metaIds.length} ad{metaIds.length > 1 ? 's' : ''}
+                </span>
+              ) : null;
+            })()}
           </div>
 
-          {creative.copy_set_id && (
-            <span className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 inline-block">
-              Copy Set Linked
-            </span>
-          )}
-
-          {/* Action buttons */}
+          {/* Action buttons — single row */}
           {column.actionLabel ? (
-            <div className="space-y-2">
-              <div className="flex items-center gap-1.5">
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onStatusChange?.(creative.id, column.nextStatus);
+                }}
+                className={`flex-1 inline-flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-[11px] font-semibold border transition-colors cursor-pointer
+                  ${column.color === 'green'
+                    ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/25 hover:bg-emerald-500/20'
+                    : column.color === 'cyan'
+                      ? 'bg-cyan-500/10 text-cyan-400 border-cyan-500/25 hover:bg-cyan-500/20'
+                      : 'bg-white/[0.03] text-zinc-300 border-white/[0.08] hover:bg-white/[0.06]'
+                  }`}
+              >
+                <Check className="w-3 h-3" />
+                {column.actionLabel}
+              </button>
+              {column.key === 'review' && (
                 <button
                   type="button"
                   onClick={(e) => {
                     e.stopPropagation();
-                    onStatusChange?.(creative.id, column.nextStatus);
+                    onStatusChange?.(creative.id, 'rejected');
                   }}
-                  className={`flex-1 py-1.5 rounded-md text-xs font-medium border transition-colors cursor-pointer
-                    ${column.color === 'green'
-                      ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20 hover:bg-emerald-500/20'
-                      : column.color === 'cyan'
-                        ? 'bg-cyan-500/10 text-cyan-400 border-cyan-500/20 hover:bg-cyan-500/20'
-                        : 'bg-white/[0.03] text-zinc-300 border-white/[0.05] hover:bg-white/[0.06]'
-                    }`}
+                  className="p-1.5 rounded-lg border border-red-500/25 text-red-400/70 hover:text-red-400 hover:bg-red-500/10 transition-colors cursor-pointer"
+                  title="Reject"
                 >
-                  {column.actionLabel}
+                  <X className="w-3.5 h-3.5" />
                 </button>
-                {column.key === 'review' && (
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onStatusChange?.(creative.id, 'rejected');
-                    }}
-                    className="p-1.5 rounded-md border border-red-500/20 text-red-400/70 hover:text-red-400 hover:bg-red-500/10 transition-colors cursor-pointer"
-                    title="Reject"
-                  >
-                    <X className="w-3.5 h-3.5" />
-                  </button>
-                )}
-              </div>
-              {/* Quick action row */}
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-1">
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onCardClick?.(creative);
-                    }}
-                    className="p-1 rounded border border-white/[0.06] text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.04] transition-colors cursor-pointer"
-                    title="Preview full size"
-                  >
-                    <Maximize2 className="w-3 h-3" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onRegenerate?.(creative);
-                    }}
-                    className="p-1 rounded border border-white/[0.06] text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.04] transition-colors cursor-pointer"
-                    title="Regenerate"
-                  >
-                    <RefreshCw className="w-3 h-3" />
-                  </button>
-                </div>
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onCardClick?.(creative);
-                  }}
-                  className="p-1 rounded border border-white/[0.06] text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.04] transition-colors cursor-pointer"
-                  title="Details"
-                >
-                  <Settings className="w-3 h-3" />
-                </button>
-              </div>
+              )}
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onCardClick?.(creative);
+                }}
+                className="p-1.5 rounded-lg border border-white/[0.08] text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.04] transition-colors cursor-pointer"
+                title="Preview"
+              >
+                <Maximize2 className="w-3.5 h-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onRegenerate?.(creative);
+                }}
+                className="p-1.5 rounded-lg border border-white/[0.08] text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.04] transition-colors cursor-pointer"
+                title="Regenerate"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onCardClick?.(creative);
+                }}
+                className="p-1.5 rounded-lg border border-white/[0.08] text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.04] transition-colors cursor-pointer"
+                title="Settings"
+              >
+                <Settings className="w-3.5 h-3.5" />
+              </button>
             </div>
           ) : null}
         </div>
