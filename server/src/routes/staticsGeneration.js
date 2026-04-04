@@ -1325,8 +1325,11 @@ router.post('/launch', authenticate, async (req, res) => {
     const batchNum = Math.floor(Date.now() / 1000) % 10000;
     const results = [];
 
+    // Helper to safely parse JSONB arrays that may come back as strings
+    const safeJsonArr = (v) => { if (Array.isArray(v)) return v; if (typeof v === 'string') { try { const p = JSON.parse(v); return Array.isArray(p) ? p : []; } catch { return []; } } return []; };
+
     // Round-robin page selection
-    const selectedPages = (template.page_ids || []).filter(p => p.selected !== false);
+    const selectedPages = safeJsonArr(template.page_ids).filter(p => p.selected !== false);
 
     // Create ad set for this batch
     let adsetId = null;
@@ -1350,12 +1353,12 @@ router.post('/launch', authenticate, async (req, res) => {
         conversionEvent: template.conversion_event,
         conversionLocation: template.conversion_location,
         targeting: {
-          countries: template.countries || ['US'],
+          countries: safeJsonArr(template.countries).length ? safeJsonArr(template.countries) : ['US'],
           age_min: template.age_min,
           age_max: template.age_max,
           gender: template.gender,
-          include_audiences: template.include_audiences || [],
-          exclude_audiences: template.exclude_audiences || [],
+          include_audiences: safeJsonArr(template.include_audiences),
+          exclude_audiences: safeJsonArr(template.exclude_audiences),
         },
         attributionWindow: template.attribution_window,
         pageId: selectedPages[0]?.id,
@@ -1399,19 +1402,24 @@ router.post('/launch', authenticate, async (req, res) => {
         }
 
         // Determine ad copy: copy set > generated_copy > fallbacks
-        const genCopy = typeof creative.generated_copy === 'string'
-          ? JSON.parse(creative.generated_copy || '{}') : (creative.generated_copy || {});
-        const primaryTexts = copySet?.primary_texts?.length
-          ? copySet.primary_texts
-          : genCopy.primary_texts?.length ? genCopy.primary_texts
+        // Helper to safely parse JSONB that may be a string
+        const safeArr = (v) => { if (Array.isArray(v)) return v; if (typeof v === 'string') { try { const p = JSON.parse(v); return Array.isArray(p) ? p : []; } catch { return []; } } return []; };
+        const safeObj = (v) => { if (v && typeof v === 'object' && !Array.isArray(v)) return v; if (typeof v === 'string') { try { const p = JSON.parse(v); return (p && typeof p === 'object') ? p : {}; } catch { return {}; } } return {}; };
+        const genCopy = safeObj(creative.generated_copy);
+        const csPrimaryTexts = safeArr(copySet?.primary_texts);
+        const csHeadlines = safeArr(copySet?.headlines);
+        const csDescriptions = safeArr(copySet?.descriptions);
+        const primaryTexts = csPrimaryTexts.length
+          ? csPrimaryTexts
+          : safeArr(genCopy.primary_texts).length ? safeArr(genCopy.primary_texts)
           : [creative.source_label || 'Check this out'];
-        const headlines = copySet?.headlines?.length
-          ? copySet.headlines
-          : genCopy.headlines?.length ? genCopy.headlines
+        const headlines = csHeadlines.length
+          ? csHeadlines
+          : safeArr(genCopy.headlines).length ? safeArr(genCopy.headlines)
           : [creative.angle || 'Shop Now'];
-        const descriptions = copySet?.descriptions?.length
-          ? copySet.descriptions
-          : genCopy.descriptions?.length ? genCopy.descriptions
+        const descriptions = csDescriptions.length
+          ? csDescriptions
+          : safeArr(genCopy.descriptions).length ? safeArr(genCopy.descriptions)
           : [''];
         const cta = copySet?.cta_button || genCopy.cta || 'SHOP_NOW';
         const link = copySet?.landing_page_url || 'https://mineblock.com';
@@ -1447,7 +1455,7 @@ router.post('/launch', authenticate, async (req, res) => {
           ad_name: adName,
           launched_at: new Date().toISOString(),
         };
-        const existingMeta = Array.isArray(creative.meta_ad_ids) ? creative.meta_ad_ids : [];
+        const existingMeta = safeArr(creative.meta_ad_ids);
         existingMeta.push(metaEntry);
 
         // Update creative with launch tracking

@@ -737,12 +737,14 @@ export function PipelineView({ creatives = [], onStatusChange, onCardClick, onRe
       .then(({ data }) => {
         const templates = data.data || [];
         setLaunchTemplates(templates);
-        // Auto-select default template
-        if (!selectedTemplateId && templates.length) {
+        // Auto-select default template if none selected
+        setSelectedTemplateId(prev => {
+          if (prev) return prev;
           const def = templates.find(t => t.is_default);
-          if (def) setSelectedTemplateId(def.id);
-          else if (templates.length === 1) setSelectedTemplateId(templates[0].id);
-        }
+          if (def) return def.id;
+          if (templates.length === 1) return templates[0].id;
+          return prev;
+        });
       })
       .catch(() => {});
     api.get('/brief-pipeline/copy-sets')
