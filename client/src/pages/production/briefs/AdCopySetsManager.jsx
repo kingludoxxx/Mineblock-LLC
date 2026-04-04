@@ -140,8 +140,8 @@ function EditCopySetModal({ copySet, onSave, onClose, saving }) {
               {form.primary_texts.map((text, i) => (
                 <div key={i} className="flex gap-2">
                   <textarea
-                    rows={2}
-                    className={inputClass + ' flex-1 resize-none'}
+                    rows={4}
+                    className={inputClass + ' flex-1'}
                     value={text}
                     onChange={(e) => updateList('primary_texts', i, e.target.value)}
                     placeholder={`Primary text ${i + 1}...`}
