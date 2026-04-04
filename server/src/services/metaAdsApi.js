@@ -236,14 +236,20 @@ export async function getAdSets(campaignId) {
  */
 export async function getCustomAudiences(adAccountId) {
   const res = await fetch(
-    `${META_GRAPH_URL}/${adAccountId}/customaudiences?fields=id,name,approximate_count,subtype&limit=200&access_token=${META_ACCESS_TOKEN}`
+    `${META_GRAPH_URL}/${adAccountId}/customaudiences?fields=id,name,approximate_count_lower_bound,approximate_count_upper_bound,subtype&limit=200&access_token=${META_ACCESS_TOKEN}`
   );
   if (!res.ok) {
     const err = await res.text();
     throw new Error(`Meta audiences error ${res.status}: ${err.slice(0, 300)}`);
   }
   const data = await res.json();
-  return (data.data || []).map(a => ({ id: a.id, name: a.name, size: a.approximate_count, subtype: a.subtype }));
+  return (data.data || []).map(a => ({
+    id: a.id,
+    name: a.name,
+    size: a.approximate_count_lower_bound || 0,
+    sizeUpper: a.approximate_count_upper_bound || 0,
+    subtype: a.subtype,
+  }));
 }
 
 /**
