@@ -186,6 +186,7 @@ THEN apply these rules:
 - Write like you're texting your friend about a product you genuinely love — NOT like a marketing department
 - Use the SAME copywriting formula/structure as the original (same sentence patterns, same rhythm, same number of elements)
 - But make it SPECIFIC to this product — use real product details, real benefits, real numbers
+- ⚠️ CRITICAL LENGTH RULE: Each adapted text MUST be the SAME length (±20%) as the original. An AI image generator will render your text — if you write longer text, it WILL be misspelled and garbled. SHORT = PERFECT RENDERING. LONG = GARBLED MESS. If original is "Adaptogenic mushroom blend" (26 chars), adapted must be ~26 chars like "144 daily Bitcoin attempts" (25 chars), NOT "144 real shots at a $300K Bitcoin block. Every single day." (59 chars — WAY too long, will be garbled).
 - If the original says "3 Years of Back Pain Gone in 7 Days" → yours should be equally specific and bold with THIS product's claims
 - NEVER write vague platitudes like "Transform Your Experience" or "Unlock Your Potential" or "The Future of [X]"
 - NEVER use these AI-sounding phrases: "game-changer", "revolutionary", "cutting-edge", "seamless", "elevate", "unlock", "transform your", "discover the", "experience the"
@@ -379,6 +380,35 @@ export function buildSwapPairs(originalText, adaptedText) {
     for (let i = 0; i < Math.min(origArr.length, adaptedArr.length); i++) {
       if (origArr[i] && adaptedArr[i] && origArr[i].trim() !== adaptedArr[i].trim())
         pairs.push({ original: origArr[i].trim(), adapted: adaptedArr[i].trim(), field: `${field}[${i}]` });
+    }
+  }
+
+  // ── Length enforcement: truncate adapted text that's too long ──
+  // NanoBanana garbles/misspells text that exceeds the original length significantly
+  for (const pair of pairs) {
+    const origLen = pair.original.length;
+    const adaptedLen = pair.adapted.length;
+    const maxLen = Math.max(origLen * 1.3, 20); // allow 30% overshoot or minimum 20 chars
+
+    if (adaptedLen > maxLen && origLen > 5) {
+      let trimmed = pair.adapted.slice(0, Math.round(maxLen));
+      // Don't cut mid-word — find last natural break point
+      const breakPoints = ['. ', '! ', '? ', ', ', ' — ', ' - ', ' '];
+      let bestBreak = -1;
+      for (const bp of breakPoints) {
+        const idx = trimmed.lastIndexOf(bp);
+        if (idx > trimmed.length * 0.4) { bestBreak = idx + (bp === ' ' ? 0 : bp.length - 1); break; }
+      }
+      if (bestBreak > 0) {
+        trimmed = trimmed.slice(0, bestBreak).trim();
+      } else {
+        const lastSpace = trimmed.lastIndexOf(' ');
+        if (lastSpace > trimmed.length * 0.5) trimmed = trimmed.slice(0, lastSpace);
+      }
+      // Remove trailing punctuation that looks weird
+      trimmed = trimmed.replace(/[,;:\-—]+$/, '').trim();
+      pair.adapted = trimmed;
+      console.log(`[buildSwapPairs] ⚠️ Truncated [${pair.field}]: ${adaptedLen}→${pair.adapted.length} chars (orig was ${origLen}): "${pair.adapted}"`);
     }
   }
 
