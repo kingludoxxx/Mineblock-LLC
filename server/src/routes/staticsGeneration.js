@@ -1274,14 +1274,22 @@ async function getCustomStaticsPrompts() {
 function getDefaultStaticsPrompts() {
   return {
     claudeAnalysis: {
-      headlineRules: `The headline is the most important element. Write AGGRESSIVE, high-converting headlines that create urgency and desire. The headline must:
-- Make a BOLD, specific money-related claim (e.g. "This $59 Device Mines $127/Month in Bitcoin While You Sleep", "People Are Making $3,800/Month With This Tiny Miner")
-- Use concrete dollar amounts, timeframes, or multipliers — vague claims like "works at home" are BANNED
-- Create FOMO, urgency, or disbelief (e.g. "Wall Street Doesn't Want You to Know About This", "Banks HATE This $59 Device")
-- Sound like a native ad / advertorial headline, NOT like a product description
-- Be punchy, provocative, and scroll-stopping — if it sounds like it could be a boring product tagline, REWRITE IT
+      headlineRules: `HEADLINE ADAPTATION — TONE-MATCHING IS PRIORITY #1:
+Before writing ANY headline, ANALYZE the reference ad's communication style:
+- Is it aggressive/clickbait? ("Banks HATE this", "Doctors don't want you to know") → match that aggressive energy
+- Is it a calm sale/promo? ("Spring Sale Ends Today", "Save 40%") → keep it calm and promotional, just swap the product details
+- Is it testimonial/story? ("I lost 30 lbs in 2 months") → keep the personal story format
+- Is it curiosity-driven? ("The secret to...") → keep the curiosity hook structure
+- Is it urgency/scarcity? ("Only 50 left", "Ends tonight") → keep the urgency format
+
+YOUR HEADLINE MUST MATCH THE REFERENCE'S TONE AND STRUCTURE. Do NOT turn a calm promo headline into aggressive clickbait. Do NOT turn an aggressive headline into a boring sale.
+
+After matching tone, apply these product-specific rules:
+- Use concrete numbers and specifics from product context — never vague platitudes
 - NEVER use generic/weak phrases like "works at home", "easy to use", "quick mining", "get started today"
-- Match the approximate CHARACTER COUNT of the original headline (not word count — character count matters for layout fit)`,
+- NEVER use AI-sounding phrases: "game-changer", "revolutionary", "cutting-edge", "seamless"
+- Match the approximate CHARACTER COUNT of the original headline (character count matters for layout fit)
+- When the tone calls for bold claims, use real product data: "$59.99 device", "144 daily attempts", "$1/month to run"`,
       headlineExamples: `HEADLINE STYLE EXAMPLES (use these as inspiration, do NOT copy verbatim):
 - "I Bought a $59 Bitcoin Miner as a Joke — It's Paid for Itself 4x"
 - "Tiny Device Mines $4.20/Day in Bitcoin — No Experience Needed"
@@ -1343,12 +1351,14 @@ Reference ads may come from any niche. Map visuals to bitcoin mining context:
 1. EXACT same layout structure as reference — same columns, same sections, same proportions
 2. ZERO competitor branding remaining (logos, names, product images)
 3. Every text swap must be applied
-4. No extra text beyond the specified swaps
-5. Comparison labels, timeline labels, ingredient labels ALL get swapped
-6. The product is a MINI BITCOIN MINER — NEVER show a USB-looking product. Copy the device from image 1 exactly.
-7. Hands: exactly 5 fingers, realistic proportions
-8. Match reference style, color palette, mood, and visual quality
-9. PRICES MUST MATCH the text swap list EXACTLY — do not invent or modify any price, discount percentage, or dollar amount`,
+4. TEXT FIDELITY: Render ONLY the text listed in the swap pairs. Do NOT add headlines, subheadlines, badges, banners, watermarks, or ANY text not in the swap list. If the swap list has 5 pairs, output must have EXACTLY 5 changed text elements — no more, no fewer
+5. ALL TEXT NOT IN THE SWAP LIST must remain EXACTLY as it appears in the reference — letter-for-letter, same font, same position. Do NOT modify, rephrase, or misspell any unchanged text
+6. Comparison labels, timeline labels, ingredient labels ALL get swapped
+7. The product is a MINI BITCOIN MINER — NEVER show a USB-looking product. Copy the device from image 1 exactly.
+8. Hands: exactly 5 fingers, realistic proportions
+9. Match reference style, color palette, mood, and visual quality
+10. PRICES MUST MATCH the text swap list EXACTLY — do not invent or modify any price, discount percentage, or dollar amount
+11. BACKGROUND FIDELITY: The background must be a PIXEL-PERFECT match to the reference — same color, same gradient direction, same texture, same pattern. Do NOT simplify, flatten, or recolor the background. If the reference has a textured/patterned background, reproduce that exact texture/pattern`,
     }
   };
 }

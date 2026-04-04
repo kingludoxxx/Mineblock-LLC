@@ -178,15 +178,18 @@ YOUR JOB:
 4. Identify visual elements that need to change
 
 CRITICAL RULES FOR ADAPTED COPY:
+
+STEP ZERO — ANALYZE THE REFERENCE'S COMMUNICATION STYLE BEFORE WRITING ANYTHING:
+Look at the reference ad and identify its tone: aggressive/clickbait, calm/promotional, testimonial/story, curiosity-driven, urgency/scarcity, educational, or comparison. Your adapted copy MUST match this exact tone. Do NOT change the emotional register — a calm sale ad stays calm, an aggressive ad stays aggressive.
+
+THEN apply these rules:
 - Write like you're texting your friend about a product you genuinely love — NOT like a marketing department
-- Every headline must create an IMMEDIATE emotional reaction: curiosity, fear of missing out, disbelief, or desire
 - Use the SAME copywriting formula/structure as the original (same sentence patterns, same rhythm, same number of elements)
 - But make it SPECIFIC to this product — use real product details, real benefits, real numbers
 - If the original says "3 Years of Back Pain Gone in 7 Days" → yours should be equally specific and bold with THIS product's claims
 - NEVER write vague platitudes like "Transform Your Experience" or "Unlock Your Potential" or "The Future of [X]"
 - NEVER use these AI-sounding phrases: "game-changer", "revolutionary", "cutting-edge", "seamless", "elevate", "unlock", "transform your", "discover the", "experience the"
-- Headlines should punch you in the gut — short, specific, emotionally loaded
-- If the original ad is aggressive, be EQUALLY aggressive. If it makes bold claims, make equally bold claims using THIS product's real benefits
+- Match the original's energy level EXACTLY — if it's screaming, scream. If it's whispering, whisper.
 
 BENEFIT-FOCUSED WRITING (CRITICAL — READ THIS):
 Every bullet, feature callout, and body text must be written as a CUSTOMER BENEFIT, not a technical spec.
@@ -207,8 +210,13 @@ ${contextLines}${brandSection}${productIdentity}${pricingRules}
 ${layoutMap ? `
 ---
 
-PRE-ANALYZED LAYOUT MAP (this template's structure has been analyzed — use it):
-${JSON.stringify(layoutMap, null, 2)}
+PRE-ANALYZED LAYOUT MAP (use this to guide text length and placement):
+  Archetype: ${layoutMap.archetype || 'standard'}
+  Canvas: ${layoutMap.canvas?.orientation || 'unknown'} ${layoutMap.canvas?.aspect_ratio || ''}
+  Background: ${layoutMap.background?.type || 'solid'} (${layoutMap.background?.tone || 'dark'})
+  Product Zone: ${layoutMap.product_zone?.position || 'center'} (~${layoutMap.product_zone?.size_pct || '30%'} of canvas, ${layoutMap.product_zone?.presentation || 'standard'})
+  Text Elements:
+${(layoutMap.text_elements || []).map(t => `    ${(t.role || 'text').toUpperCase()} (H${t.hierarchy || '?'}): ${t.position || 'unknown'} — ${t.alignment || 'center'}-aligned — ~${t.char_count_approx || '?'} chars — ${t.visual_treatment || 'plain'}${t.container ? ` [${t.container}]` : ''}`).join('\n')}
 
 USE THIS LAYOUT MAP TO:
 - Match your adapted text LENGTH to each element's char_count_approx — if a headline position fits ~25 chars, write ~25 chars
@@ -225,6 +233,16 @@ TEXT EXTRACTION RULES:
 - Prices extracted exactly and adapted with real product price
 - Multi-line headlines kept as one string with natural line breaks
 - Generic labels like "SPECIAL DEAL", "THIS WEEK ONLY", "FREE SHIPPING" stay exactly as-is — BUT discount codes (e.g. "Use code XYZ") are NOT generic labels and MUST be replaced with the product's actual discount code
+
+BRAND NAME REPLACEMENT:
+- If the reference ad contains a competitor brand name in ANY text element (headline, body, badges, etc.), you MUST replace it with the Product Name from PRODUCT CONTEXT
+- This includes brand names in headlines like "RYZE Mushroom Coffee" → "${product.name}", badges like "Powered by XYZ" → "Powered by ${product.name}", etc.
+- The competitor brand name must appear ZERO times in adapted_text
+
+SEASONAL & DATE-SPECIFIC TEXT:
+- If the reference contains month names ("March Sale", "Summer Deal"), replace with a generic urgency phrase ("Flash Sale", "Limited Time") or the current season — do NOT keep a stale month reference
+- If the reference contains specific dates or year references ("2024 Edition", "Dec 25th"), update or generalize them
+- Holiday-specific text ("Christmas Special", "Black Friday") should be replaced with generic urgency unless the product context specifies a current promotion
 
 DISCOUNT CODE & OFFER REPLACEMENT:
 - If the reference ad contains a discount code (e.g. "Use code SPRING10", "Code: ABC", "Enter PROMO20 at checkout"), extract it AND replace it in adapted_text with the Discount Codes from PRODUCT CONTEXT above
@@ -249,6 +267,8 @@ COPY QUALITY SELF-CHECK (run this mentally before returning):
 6. Count check: same number of headlines, bullets, badges, stats as original. Don't add or remove elements. Leave fields empty ("") if no corresponding text exists.
 7. GRAMMAR & SPELLING CHECK: Read every adapted text element. Fix any grammar or spelling errors. "atemps" → "attempts". "Gaurantee" → "Guarantee". Every word must be spelled correctly.
 8. BENEFIT CHECK: Re-read every bullet/stat. Does it state a spec or a benefit? "144 attempts daily" is a SPEC → rewrite as "144 daily chances to win $300K+". "1 watt" is a SPEC → rewrite as "$1/month to run". If any text reads like a product spec sheet, you FAILED — rewrite it.
+9. CHARACTER COUNT CHECK: Compare each adapted text element's length against its original. If your adapted text is more than 30% longer than the original, SHORTEN IT. The text must fit in the same visual space. A 20-char original should not become a 40-char adaptation.
+10. BRAND NAME CHECK: Does any adapted text still contain the COMPETITOR's brand name? If yes, replace it with the product name from PRODUCT CONTEXT. Zero competitor branding in adapted text.
 
 ---
 
@@ -366,9 +386,9 @@ export function buildNanoBananaPrompt(claudeResult, swapPairs, product, logoCoun
   const pCount = people_count ?? 0;
   const pCount2 = product_count ?? 1;
 
-  // Text swap pairs
+  // Text swap pairs — include field name so NanoBanana knows which element to target
   const swapSection = swapPairs.map((pair, i) =>
-    `  ${i + 1}. "${pair.original}" → "${pair.adapted}"`
+    `  ${i + 1}. [${pair.field || 'text'}] "${pair.original}" → "${pair.adapted}"`
   ).join('\n');
 
   // Character/demographic rules
@@ -416,7 +436,7 @@ export function buildNanoBananaPrompt(claudeResult, swapPairs, product, logoCoun
 - No duplicate objects
 - Layout labels (Day 0, Day 45, Before, After, etc.) stay exactly as-is
 - No trace of competitor product or brand remaining
-- Exact same background color/gradient/texture
+- BACKGROUND FIDELITY: The background must be a PIXEL-PERFECT match to the reference — same color, same gradient direction, same texture, same pattern. Do NOT simplify, flatten, or recolor the background
 - Hands must have 5 fingers, realistic anatomy
 - Do NOT place any text, logo, or overlay on the product itself
 - Do NOT invent or generate any logo, icon, emblem, or symbol${logoCount > 0 ? ' beyond the provided logo' : ''}`;
@@ -428,7 +448,7 @@ ${logoCount > 0 ? `\nA brand logo is provided between the product photos and the
 
 1. REPLICATE the reference ad's layout, composition, background color/gradient, font styles, text positions, spacing, shadows, borders — match the reference style exactly.
 
-2. REPLACE the competitor's product with ${product.name} from the product photos. Show exactly ${pCount2} product(s) in the same position, matching shape, colors, and label exactly as photographed. Show the product in a ${claudeResult.product_orientation || 'front-facing'} orientation to match the reference layout — pick the product photo angle that best matches this orientation.${productRulesSection}
+2. REPLACE the competitor's product with ${product.name} from the product photos. Show exactly ${pCount2} product(s) in the same position(s), matching shape, colors, and label exactly as photographed. Show the product in a ${claudeResult.product_orientation || 'front-facing'} orientation to match the reference layout — pick the product photo angle that best matches this orientation.${pCount2 > 1 ? `\n  If the reference shows ${pCount2} products but only 1 product photo is provided, show ${pCount2} copies of the same product at slightly different angles or positions to fill the same layout zones.` : ''}${productRulesSection}
 
 3. SWAP TEXT — only these specific pairs, matching original font style, weight, size, and color:
 ${swapSection || '  (No text changes)'}
@@ -442,7 +462,8 @@ CRITICAL TEXT RENDERING RULES:
 - TEXT ALIGNMENT: Match the EXACT alignment and centering of each text element from the reference. If the reference text is centered, your text MUST be centered. If left-aligned, keep left-aligned. Horizontally center text within its container/zone — do NOT shift text left or right from where it appears in the reference
 - TEXT SPACING: Maintain the same vertical spacing between text elements as the reference. Do NOT compress or expand the gaps between lines, headlines, bullets, or stat blocks
 - Text must look like it was set by a professional graphic designer, not generated by AI
-- If you cannot render a word correctly, use a SHORTER simpler synonym rather than a misspelled version${textRulesSection}
+- If you cannot render a word correctly, use a SHORTER simpler synonym rather than a misspelled version
+- UNCHANGED TEXT: All text in the reference that is NOT listed in the swap pairs above must remain EXACTLY as-is — same words, same spelling, same font, same position. Do NOT modify, rephrase, translate, or misspell any text that isn't being swapped${textRulesSection}
 
 4. ${characterRules}
 
