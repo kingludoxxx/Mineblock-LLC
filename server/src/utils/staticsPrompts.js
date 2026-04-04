@@ -155,7 +155,7 @@ If the reference ad contains GENERIC claims or filler statements (e.g. "Real Min
 - The product context fields are GROUND TRUTH — but always REWRITE them as customer-facing benefits, never paste technical specs raw
 
 ELEMENT COUNT: The adapted text count must EXACTLY MATCH the original count — same number of headlines, bullets, badges, stats. Do not add or remove elements. Leave fields empty ("") if no corresponding text exists.
-- Generic labels like "SPECIAL DEAL", "FREE SHIPPING" stay exactly as-is`;
+- Generic labels like "SPECIAL DEAL", "FREE SHIPPING" stay exactly as-is — BUT discount codes (e.g. "Use code XYZ") MUST be replaced with the product's actual code`;
 
   // Cross-niche visual mapping
   const crossNicheSection = co.crossNicheAdaptation
@@ -224,7 +224,13 @@ TEXT EXTRACTION RULES:
 - Progress/timeline labels ("Day 0", "Day 45", "Before", "After") stay as-is — do NOT extract or swap them
 - Prices extracted exactly and adapted with real product price
 - Multi-line headlines kept as one string with natural line breaks
-- Generic labels like "SPECIAL DEAL", "THIS WEEK ONLY", "FREE SHIPPING" stay exactly as-is
+- Generic labels like "SPECIAL DEAL", "THIS WEEK ONLY", "FREE SHIPPING" stay exactly as-is — BUT discount codes (e.g. "Use code XYZ") are NOT generic labels and MUST be replaced with the product's actual discount code
+
+DISCOUNT CODE & OFFER REPLACEMENT:
+- If the reference ad contains a discount code (e.g. "Use code SPRING10", "Code: ABC", "Enter PROMO20 at checkout"), extract it AND replace it in adapted_text with the Discount Codes from PRODUCT CONTEXT above
+- If the reference ad has discount percentages (e.g. "Save 40%"), replace with the Max Discount from PRODUCT CONTEXT if available
+- If product has NO discount codes listed in PRODUCT CONTEXT, keep the original discount code text as-is (do not remove it)
+- Discount codes are NEVER "generic labels" — they are product-specific and MUST always be swapped
 
 ---${headlineRules}${headlineExamples}${bannedPhrases}
 
@@ -251,7 +257,15 @@ For each visual element, note:
 - What it shows in original (e.g. "3 belly transformation photos in grid")
 - What it SHOULD show for new product
 - Where in layout
-- Generic (keep) or angle-specific (must change)${crossNicheSection}${visualAdaptationRules}
+- Generic (keep) or angle-specific (must change)
+
+PRODUCT ORIENTATION: Look at how the product is shown in the reference image. Describe its angle/orientation in the "product_orientation" field:
+- "front-facing" = product shown straight-on, symmetrical
+- "angled-left" = product rotated showing left side
+- "angled-right" = product rotated showing right side
+- "top-down" = product shown from above
+- "tilted" = product at a dramatic angle
+This tells the image generator which product photo angle to use.${crossNicheSection}${visualAdaptationRules}
 
 ---
 
@@ -296,6 +310,7 @@ Return ONLY valid JSON (no markdown, no code fences):
   },
   "people_count": 0,
   "product_count": 0,
+  "product_orientation": "front-facing|angled-left|angled-right|top-down|tilted",
   "has_competitor_logo": false,
   "logo_background_tone": "dark|light|mixed",
   "adapted_audience": "description of target demographic for people in ad",
@@ -397,7 +412,7 @@ export function buildNanoBananaPrompt(claudeResult, swapPairs, product, logoCoun
   const absoluteRulesSection = co.absoluteRules || `ABSOLUTE RULES:
 - Product integrity is highest priority — pixel-perfect fidelity to product photos
 - Zero extra faces beyond reference count
-- Zero extra text elements beyond swap count — do NOT add text that isn't in the swap list
+- TEXT FIDELITY: Render ONLY the text listed in the swap pairs above. Do NOT add headlines, subheadlines, badges, banners, watermarks, or ANY text not explicitly in the swap list. If the swap list has 5 pairs, the output must have EXACTLY 5 changed text elements — no more, no fewer
 - No duplicate objects
 - Layout labels (Day 0, Day 45, Before, After, etc.) stay exactly as-is
 - No trace of competitor product or brand remaining
@@ -413,7 +428,7 @@ ${logoCount > 0 ? `\nA brand logo is provided between the product photos and the
 
 1. REPLICATE the reference ad's layout, composition, background color/gradient, font styles, text positions, spacing, shadows, borders — match the reference style exactly.
 
-2. REPLACE the competitor's product with ${product.name} from the product photos. Show exactly ${pCount2} product(s) in the same position, matching shape, colors, and label exactly as photographed.${productRulesSection}
+2. REPLACE the competitor's product with ${product.name} from the product photos. Show exactly ${pCount2} product(s) in the same position, matching shape, colors, and label exactly as photographed. Show the product in a ${claudeResult.product_orientation || 'front-facing'} orientation to match the reference layout — pick the product photo angle that best matches this orientation.${productRulesSection}
 
 3. SWAP TEXT — only these specific pairs, matching original font style, weight, size, and color:
 ${swapSection || '  (No text changes)'}

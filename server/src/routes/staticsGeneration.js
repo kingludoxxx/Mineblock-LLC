@@ -1293,7 +1293,7 @@ function getDefaultStaticsPrompts() {
 - The product base price is $59.99 for 1 unit
 - Bundle prices: 2 units = $55 each ($109.99), 3+1 free = $45 each ($179.99), 6+2 free = $40 each ($320)
 - Maximum discount allowed: 58% — NEVER exceed this
-- The ONLY discount code is MINER10 (extra 10% off)
+- The ONLY valid discount code is MINER10 (extra 10% off). If the reference ad shows ANY other discount code (e.g. "SPRING10", "PROMO20", "SAVE15"), you MUST replace it with "MINER10"
 - NEVER write "$35", "$29", "$25" or any price not listed above
 - If the reference ad has a price, replace it with the CORRECT price from this list
 - When in doubt, use "Up to 40% OFF" or "Starting at $59.99" — do NOT invent prices`,
@@ -1310,7 +1310,7 @@ Wrong: "Bye Bye, Beer Belly" → "Mine Bitcoin From Home" ❌ (completely differ
 
 CRITICAL — PRODUCT DATA OVERRIDES GENERIC TEXT:
 If the reference uses generic filler like "Real Mining for 12+ Hours Daily" — DO NOT keep it. Replace with the product's ACTUAL claims rewritten as CUSTOMER BENEFITS. For MinerForge Pro: "144 Daily Chances to Win $300K+", "Starting at Just $59.99", "Only $1/Month to Run". NEVER paste raw technical specs — always frame data as benefits the customer cares about.
-Generic labels like "SPECIAL DEAL", "FREE SHIPPING" → keep EXACTLY as-is`,
+Generic labels like "SPECIAL DEAL", "FREE SHIPPING" → keep EXACTLY as-is — BUT discount codes MUST be replaced with "MINER10"`,
       crossNicheAdaptation: `CROSS-NICHE VISUAL MAPPING:
 Reference ads may come from any niche. Map visuals to bitcoin mining context:
 - Supplement bottles → Miner Forge Pro device(s)
