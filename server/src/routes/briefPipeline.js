@@ -265,14 +265,9 @@ function getCurrentWeekLabel() {
  * Call Claude API and return parsed JSON from the response.
  */
 async function callClaude(systemPrompt, userPrompt, maxTokens = 3000, { fast = false, rawText = false } = {}) {
-  // For JSON responses, prefill assistant with '{' to force structured output
-  const useJsonPrefill = !rawText;
   const messages = [
     { role: 'user', content: userPrompt },
   ];
-  if (useJsonPrefill) {
-    messages.push({ role: 'assistant', content: '{' });
-  }
 
   const body = {
     model: fast ? 'claude-haiku-4-5-20251001' : CLAUDE_MODEL,
@@ -302,11 +297,8 @@ async function callClaude(systemPrompt, userPrompt, maxTokens = 3000, { fast = f
   // Raw text mode — return plain text without JSON parsing
   if (rawText) return text.trim();
 
-  // Prepend the prefilled '{' back to reconstruct the full JSON
-  const fullJson = '{' + text;
-
-  // Strip markdown fences if present, then parse JSON
-  let cleaned = fullJson.trim();
+  // Strip markdown fences if present, then extract JSON
+  let cleaned = text.trim();
   const fenceMatch = cleaned.match(/```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/);
   if (fenceMatch) cleaned = fenceMatch[1].trim();
 
@@ -319,13 +311,14 @@ async function callClaude(systemPrompt, userPrompt, maxTokens = 3000, { fast = f
   } catch (parseErr) {
     // Try to fix common issues: trailing commas, truncated responses
     let fixable = jsonMatch[0]
-      .replace(/,\s*([}\]])/g, '$1')  // remove trailing commas
-      .replace(/\n/g, '\\n')          // escape raw newlines in strings
-      .replace(/\\n/g, '\\n');        // keep escaped ones
+      .replace(/,\s*([}\]])/g, '$1');  // remove trailing commas
     // If still truncated, try to close open braces
     const opens = (fixable.match(/\{/g) || []).length;
     const closes = (fixable.match(/\}/g) || []).length;
     for (let i = 0; i < opens - closes; i++) fixable += '}';
+    const openBrackets = (fixable.match(/\[/g) || []).length;
+    const closeBrackets = (fixable.match(/\]/g) || []).length;
+    for (let i = 0; i < openBrackets - closeBrackets; i++) fixable += ']';
     try { return JSON.parse(fixable); } catch {}
     throw new Error(`Failed to parse Claude JSON: ${parseErr.message}\nRaw: ${jsonMatch[0].slice(0, 300)}`);
   }
