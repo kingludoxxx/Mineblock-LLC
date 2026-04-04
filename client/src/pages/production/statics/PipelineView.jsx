@@ -145,21 +145,29 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, variantSt
           <div className="absolute inset-0 flex flex-col items-center justify-center text-zinc-700 gap-1.5">
             {creative.status === 'generating' ? (
               <>
-                <Loader2 className="w-5 h-5 animate-spin text-[#c9a84c]" />
-                <span className="text-[9px] text-[#c9a84c]/70">Generating…</span>
+                <Loader2 className="w-5 h-5 animate-spin text-violet-400" />
+                <span className="text-[9px] text-violet-300/70">Generating…</span>
               </>
             ) : (
               <Eye className="w-5 h-5" />
             )}
           </div>
-          {creative.image_url && creative.status !== 'generating' && (
+          {/* Show generated image, or reference thumbnail for generating items */}
+          {creative.status === 'generating' && creative.reference_thumbnail ? (
+            <img
+              src={creative.reference_thumbnail}
+              alt=""
+              className="absolute inset-0 w-full h-full object-cover opacity-40"
+              onError={(e) => { e.target.style.display = 'none'; }}
+            />
+          ) : creative.image_url && creative.status !== 'generating' ? (
             <img
               src={creative.image_url}
               alt=""
               className="absolute inset-0 w-full h-full object-cover opacity-90 group-hover:opacity-100 transition-opacity group-hover:scale-105 duration-500"
               onError={(e) => { e.target.style.display = 'none'; }}
             />
-          )}
+          ) : null}
           {/* Hover overlay */}
           <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
             <span className="text-[10px] font-medium text-white bg-white/[0.15] backdrop-blur-sm px-2.5 py-1 rounded-full">
