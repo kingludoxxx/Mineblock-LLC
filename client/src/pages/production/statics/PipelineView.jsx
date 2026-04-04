@@ -24,7 +24,7 @@ const COLUMNS = [
     label: 'Generating',
     icon: Loader2,
     color: 'violet',
-    iconClass: 'text-violet-400 drop-shadow-[0_0_6px_rgba(139,92,246,0.5)] animate-spin',
+    iconClass: 'text-violet-400 drop-shadow-[0_0_6px_rgba(139,92,246,0.5)]',
     badgeBg: 'bg-violet-500/10',
     badgeText: 'text-violet-400',
     badgeBorder: 'border-violet-500/25',
@@ -258,7 +258,7 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, variantSt
 
 function QueueCard({ item, onRemove }) {
   const refImage = item.references?.[0];
-  const refThumb = refImage?.thumbnail || refImage?.image_url || refImage?.url || null;
+  const refThumb = refImage?.image_url || refImage?.url || refImage?.thumbnail || null;
   const isGenerating = item.status === 'generating';
 
   return (
@@ -355,7 +355,7 @@ function PipelineColumn({ column, items, onStatusChange, onCardClick, allCreativ
       <div className="flex items-center justify-between mb-4 pb-3 border-b border-white/[0.04] relative">
         <div className="absolute bottom-0 left-0 w-1/3 h-[1px] bg-gradient-to-r from-current to-transparent opacity-30" />
         <div className="flex items-center gap-2">
-          <Icon className={`w-4 h-4 ${column.iconClass}`} />
+          <Icon className={`w-4 h-4 ${column.iconClass}${column.key === 'generating' && (items.length > 0 || queueItems?.length > 0) ? ' animate-spin' : ''}`} />
           <h3 className="font-mono text-xs tracking-[0.15em] uppercase text-zinc-300 font-semibold">
             {column.label}
           </h3>

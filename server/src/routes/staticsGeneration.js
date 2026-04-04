@@ -193,8 +193,8 @@ router.post('/generate', authenticate, async (req, res) => {
     if (!reference_image_url) return res.status(400).json({ success: false, error: 'reference_image_url is required' });
     if (!product)             return res.status(400).json({ success: false, error: 'product is required' });
 
-    // ── Load custom prompt overrides ──────────────────────────────────
-    const customPrompts = await getCustomStaticsPrompts();
+    // ── Load custom prompt overrides (fall back to defaults if none saved) ──
+    const customPrompts = await getCustomStaticsPrompts() || getDefaultStaticsPrompts();
 
     // ── Step A: Resolve reference image to base64 ──────────────────────
     const { base64, mediaType, isUrl } = await resolveImage(reference_image_url);
@@ -330,13 +330,21 @@ router.post('/generate', authenticate, async (req, res) => {
     console.log(`[staticsGeneration] Generating ${ratiosToGenerate.length} ratio(s): ${ratiosToGenerate.join(', ')}`);
 
     const parseNbResponse = async (res, label) => {
+      const rawBody = await res.text().catch(() => '');
       if (!res.ok) {
-        const text = await res.text().catch(() => '');
-        console.error(`[staticsGeneration] NanoBanana ${label} failed (${res.status}): ${text.slice(0, 200)}`);
+        console.error(`[staticsGeneration] NanoBanana ${label} failed (HTTP ${res.status}). Full response body:\n${rawBody.slice(0, 3000)}`);
         return null;
       }
-      return res.json().catch(err => { console.error(`[staticsGeneration] NanoBanana ${label} JSON parse error:`, err.message); return null; });
+      try {
+        return JSON.parse(rawBody);
+      } catch (err) {
+        console.error(`[staticsGeneration] NanoBanana ${label} JSON parse error: ${err.message}. Full response body:\n${rawBody.slice(0, 3000)}`);
+        return null;
+      }
     };
+
+    const NB_RETRY_ATTEMPTS = 3;
+    const NB_RETRY_DELAY = 2000;
 
     const nbResponses = await Promise.all(
       ratiosToGenerate.map(async (r) => {
@@ -348,21 +356,40 @@ router.post('/generate', authenticate, async (req, res) => {
           resolution: '2K',
           outputFormat: 'png',
         });
-        const res = await fetch(`${NB_BASE}/generate-2`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${NANOBANANA_API_KEY}` },
-          body,
-        });
-        const data = await parseNbResponse(res, r);
-        const taskId = data?.data?.taskId || data?.taskId;
-        return taskId ? { taskId, ratio: r } : null;
+
+        let data = null;
+        for (let attempt = 1; attempt <= NB_RETRY_ATTEMPTS; attempt++) {
+          const res = await fetch(`${NB_BASE}/generate-2`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${NANOBANANA_API_KEY}` },
+            body,
+          });
+          data = await parseNbResponse(res, `${r} attempt ${attempt}/${NB_RETRY_ATTEMPTS}`);
+          const taskId = data?.data?.taskId || data?.taskId;
+
+          if (taskId) {
+            return { taskId, ratio: r };
+          }
+
+          console.warn(`[staticsGeneration] NanoBanana ${r} attempt ${attempt}/${NB_RETRY_ATTEMPTS} returned no taskId. Parsed data: ${JSON.stringify(data).slice(0, 1000)}`);
+
+          if (attempt < NB_RETRY_ATTEMPTS) {
+            const delay = NB_RETRY_DELAY * attempt;
+            console.log(`[staticsGeneration] Retrying NanoBanana ${r} in ${delay / 1000}s...`);
+            await sleep(delay);
+          }
+        }
+
+        console.error(`[staticsGeneration] NanoBanana ${r} failed after ${NB_RETRY_ATTEMPTS} attempts. Last response: ${JSON.stringify(data).slice(0, 2000)}`);
+        return null;
       })
     );
 
     const tasks = nbResponses.filter(Boolean);
 
     if (tasks.length === 0) {
-      return res.status(500).json({ success: false, error: 'NanoBanana failed to return any task IDs' });
+      console.error(`[staticsGeneration] All NanoBanana generate-2 calls failed. nbResponses: ${JSON.stringify(nbResponses)}`);
+      return res.status(500).json({ success: false, error: 'NanoBanana failed to return any task IDs after retries' });
     }
 
     // ── Step E: Return immediately — client polls /status/:taskId ──────

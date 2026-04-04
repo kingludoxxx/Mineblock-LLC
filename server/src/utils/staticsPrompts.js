@@ -256,6 +256,18 @@ export function buildNanoBananaPrompt(claudeResult, swapPairs, product, logoCoun
     ? `\n\n${co.textRules}`
     : '';
 
+  // Brand identity section for color/font matching
+  const brandIdentityLines = [];
+  if (product.brand_colors && Object.keys(product.brand_colors).length > 0) {
+    brandIdentityLines.push(`Brand Colors: ${JSON.stringify(product.brand_colors)} — use these exact colors for any branded elements (backgrounds, accents, text highlights, badges)`);
+  }
+  if (product.fonts && product.fonts.length > 0) {
+    brandIdentityLines.push(`Brand Fonts: ${product.fonts.join(', ')} — use these fonts for the adapted text where possible`);
+  }
+  const brandIdentitySection = brandIdentityLines.length > 0
+    ? `\n6. BRAND IDENTITY:\n${brandIdentityLines.map(l => `  - ${l}`).join('\n')}\n`
+    : '';
+
   // Use custom absolute rules, or the defaults
   const absoluteRulesSection = co.absoluteRules || `ABSOLUTE RULES:
 - Product integrity is highest priority — pixel-perfect fidelity to product photos
@@ -286,6 +298,6 @@ CRITICAL TEXT RENDERING: Every letter must be sharp, legible, and CORRECTLY SPEL
 
 5. VISUAL ADAPTATIONS:
 ${visualSection || '  (Keep all visuals as-is)'}
-
+${brandIdentitySection}
 ${absoluteRulesSection}`;
 }

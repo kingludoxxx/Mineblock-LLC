@@ -842,6 +842,7 @@ export default function StaticsGeneration() {
   // Queue state
   const [queue, setQueue] = useState([]);
   const [queueProcessing, setQueueProcessing] = useState(false);
+  const queueProcessingRef = useRef(false);
   const queueRef = useRef([]);
 
   // Creative review state (Standard pipeline)
@@ -961,6 +962,31 @@ export default function StaticsGeneration() {
     setResult(null);
     setError(null);
 
+    // Add a temporary item to the queue so it shows in the Generating column
+    const directGenId = `direct-${crypto.randomUUID()}`;
+    const directGenItem = {
+      id: directGenId,
+      references: references.map(r => ({ ...r })),
+      angle: customAngle || marketingAngle,
+      productName,
+      status: 'generating',
+      progress: 'Analyzing…',
+      createdAt: Date.now(),
+    };
+    setQueue(prev => {
+      const next = [...prev, directGenItem];
+      queueRef.current = next;
+      return next;
+    });
+
+    const removeDirectGen = () => {
+      setQueue(prev => {
+        const next = prev.filter(q => q.id !== directGenId);
+        queueRef.current = next;
+        return next;
+      });
+    };
+
     try {
       let resolvedReferenceUrl = referenceImageUrl;
       if (referenceFile) {
@@ -1013,6 +1039,8 @@ export default function StaticsGeneration() {
           product_images: selectedProductRef.current?.product_images || [],
           logos: selectedProductRef.current?.logos || [],
           logo_url: selectedProductRef.current?.logo_url || undefined,
+          brand_colors: selectedProductRef.current?.brand_colors || undefined,
+          fonts: selectedProductRef.current?.fonts || undefined,
           profile: Object.keys(profile).length > 0 ? profile : undefined,
         },
         angle: customAngle || marketingAngle || undefined,
@@ -1023,11 +1051,18 @@ export default function StaticsGeneration() {
       const tasks = genResult.tasks || (genResult.taskId ? [{ taskId: genResult.taskId, ratio: aspectRatio }] : []);
 
       if (tasks.length === 0) {
-        // No tasks means generation was skipped (e.g. no NanoBanana call)
+        removeDirectGen();
         setResult(genResult);
         setGenerationStep(0);
         return;
       }
+
+      // Update queue card progress
+      setQueue(prev => {
+        const next = prev.map(q => q.id === directGenId ? { ...q, progress: `Generating ${tasks.length} ratio(s)…` } : q);
+        queueRef.current = next;
+        return next;
+      });
 
       // Step 2: Poll ALL tasks in parallel
       setGenerationStep(2);
@@ -1110,7 +1145,11 @@ export default function StaticsGeneration() {
       setError(message);
       setGenerationStep(0);
     } finally {
+      removeDirectGen();
       setGenerating(false);
+      // Catch-up fetch after direct generation to pick up server-side changes
+      // (e.g. auto-generated 9:16 variants). Delay lets the server finish processing.
+      setTimeout(() => fetchCreatives(true), 3000);
     }
   };
 
@@ -1167,8 +1206,20 @@ export default function StaticsGeneration() {
   };
 
   const handleClearQueue = () => {
-    setQueue([]);
-    queueRef.current = [];
+    // Only clear done/errored items; keep active (queued, generating) and direct-gen temp items
+    setQueue(prev => {
+      const next = prev.filter(q => q.id.startsWith('direct-') || q.status === 'queued' || q.status === 'generating');
+      queueRef.current = next;
+      return next;
+    });
+  };
+
+  const handleRetryQueueItem = (id) => {
+    setQueue(prev => {
+      const next = prev.map(q => q.id === id ? { ...q, status: 'queued', error: null, result: null } : q);
+      queueRef.current = next;
+      return next;
+    });
   };
 
   // Queue processor — runs queued items sequentially
@@ -1176,16 +1227,20 @@ export default function StaticsGeneration() {
     const hasQueued = queue.some(q => q.status === 'queued');
     const hasGenerating = queue.some(q => q.status === 'generating');
 
-    // Wait if: nothing queued, already generating (queue or manual), or processing flag set
-    if (!hasQueued || hasGenerating || queueProcessing || generating) return;
+    // Wait if: nothing queued, already generating (queue or manual), or processing flag set.
+    // Use ref as primary guard to prevent race condition where React hasn't yet
+    // batched the setQueueProcessing(true) state update from a prior invocation.
+    if (!hasQueued || hasGenerating || queueProcessingRef.current || queueProcessing || generating) return;
 
     const processNext = async () => {
+      queueProcessingRef.current = true;
       setQueueProcessing(true);
 
       // Find first queued item
       const currentQueue = queueRef.current;
       const itemIndex = currentQueue.findIndex(q => q.status === 'queued');
       if (itemIndex === -1) {
+        queueProcessingRef.current = false;
         setQueueProcessing(false);
         return;
       }
@@ -1240,6 +1295,8 @@ export default function StaticsGeneration() {
           product_images: full?.product_images || [],
           logos: full?.logos || [],
           logo_url: full?.logo_url || undefined,
+          brand_colors: full?.brand_colors || undefined,
+          fonts: full?.fonts || undefined,
           profile: Object.keys(profile).length > 0 ? profile : undefined,
         };
 
@@ -1353,10 +1410,14 @@ export default function StaticsGeneration() {
           throw new Error(allErrors.join('; '));
         }
 
-        updateStatus(item.id, { status: 'done', result: { creativeCount: totalCreatives } });
+        updateStatus(item.id, {
+          status: allErrors.length > 0 ? 'partial' : 'done',
+          result: { creativeCount: totalCreatives },
+          error: allErrors.length > 0 ? allErrors.join('; ') : null,
+        });
 
         if (allErrors.length > 0) {
-          addToast(`Queue: ${totalCreatives} creatives done, ${allErrors.length} error(s)`, 'warning', 6000);
+          addToast(`Queue: ${totalCreatives} creatives done, ${allErrors.length} error(s): ${allErrors.join('; ')}`, 'warning', 6000);
         } else {
           addToast(`Queue: ${totalCreatives} creative${totalCreatives !== 1 ? 's' : ''} generated from ${item.references.length} ref${item.references.length !== 1 ? 's' : ''}`, 'success', 4000);
         }
@@ -1365,7 +1426,10 @@ export default function StaticsGeneration() {
         updateStatus(item.id, { status: 'error', error: message });
         addToast(`Queue item failed: ${message}`, 'error', 6000);
       } finally {
+        queueProcessingRef.current = false;
         setQueueProcessing(false);
+        // Catch-up fetch after queue item to pick up server-side 9:16 variants
+        setTimeout(() => fetchCreatives(true), 3000);
       }
     };
 
@@ -1373,8 +1437,10 @@ export default function StaticsGeneration() {
   }, [queue, queueProcessing, generating]);
 
   // Fetch creatives for pipeline
-  const fetchCreatives = async () => {
-    setCreativesLoading(true);
+  // `silent` skips the loading spinner — used by auto-refresh so the UI
+  // doesn't flash a spinner every 8 seconds while items are generating.
+  const fetchCreatives = async (silent = false) => {
+    if (!silent) setCreativesLoading(true);
     try {
       const res = await api.get('/statics-generation/creatives/pipeline');
       const pipeline = res.data?.data || {};
@@ -1391,7 +1457,7 @@ export default function StaticsGeneration() {
     } catch {
       // silently fail
     } finally {
-      setCreativesLoading(false);
+      if (!silent) setCreativesLoading(false);
     }
   };
 
@@ -1570,16 +1636,30 @@ export default function StaticsGeneration() {
   // Use refs to avoid infinite re-render: fetchCreatives updates creatives, which
   // would re-trigger this effect if creatives were in the dependency array.
   const hasGeneratingRef = useRef(false);
+  const prevHasGeneratingRef = useRef(false);
   useEffect(() => {
+    const wasGenerating = hasGeneratingRef.current;
+    // Only poll while something is actively generating (not merely queued).
+    // Queue items that are 'queued' haven't started yet, so no DB creatives
+    // to pick up — polling them just wastes requests.
     hasGeneratingRef.current = creatives.some(c => c.status === 'generating')
-      || queue.some(q => q.status === 'generating' || q.status === 'queued');
-  }, [creatives, queue]);
+      || queue.some(q => q.status === 'generating');
+    prevHasGeneratingRef.current = wasGenerating;
+
+    // Catch-up fetch: when generating just finished (was true, now false),
+    // do one final silent fetch to pick up any server-side changes like
+    // auto-generated 9:16 variants that the optimistic update missed.
+    if (wasGenerating && !hasGeneratingRef.current && activeTab === 'pipeline') {
+      setTimeout(() => fetchCreatives(true), 2000);
+    }
+  }, [creatives, queue, activeTab]);
 
   useEffect(() => {
     if (activeTab !== 'pipeline') return;
-    // Check every 8s — only actually fetch if something is generating
+    // Check every 8s — only actually fetch if something is generating.
+    // Uses silent mode so the refresh button doesn't flash a spinner.
     const interval = setInterval(() => {
-      if (hasGeneratingRef.current) fetchCreatives();
+      if (hasGeneratingRef.current) fetchCreatives(true);
     }, 8000);
     return () => clearInterval(interval);
   }, [activeTab]);
@@ -1591,6 +1671,11 @@ export default function StaticsGeneration() {
   const labelClasses = 'text-xs text-text-muted mb-1.5 block';
 
   const ratios = ['4:5', '9:16', '1:1'];
+
+  // Real queue items (excludes temporary direct-gen placeholders)
+  const realQueueItems = queue.filter(q => !q.id.startsWith('direct-'));
+  const activeQueueCount = realQueueItems.filter(q => q.status === 'queued' || q.status === 'generating').length;
+  const clearableQueueCount = realQueueItems.filter(q => q.status === 'done' || q.status === 'error' || q.status === 'partial').length;
 
   // -----------------------------------------------------------------------
   // RENDER
@@ -1839,7 +1924,7 @@ export default function StaticsGeneration() {
               {/* Right: Pipeline content (fills remaining) */}
               <div className="flex-1 min-w-0 space-y-6 pl-5">
                 {/* ---- Generation Queue Panel ---- */}
-                {queue.length > 0 && (
+                {realQueueItems.length > 0 && (
                   <div className="bg-[#111] border border-white/[0.06] rounded-lg overflow-hidden">
                     <div className="flex items-center justify-between px-4 py-2.5 border-b border-white/[0.06]">
                       <div className="flex items-center gap-2">
@@ -1847,25 +1932,32 @@ export default function StaticsGeneration() {
                         <span className="text-sm font-medium text-white">Generation Queue</span>
                       </div>
                       <div className="flex items-center gap-3">
-                        <span className="text-xs text-slate-500">{queue.length} item{queue.length !== 1 ? 's' : ''}</span>
-                        <button
-                          type="button"
-                          onClick={handleClearQueue}
-                          className="text-slate-600 hover:text-white transition-colors cursor-pointer"
-                          title="Clear queue"
-                        >
-                          <X className="w-3.5 h-3.5" />
-                        </button>
+                        <span className="text-xs text-slate-500">
+                          {activeQueueCount > 0
+                            ? `${activeQueueCount} active`
+                            : `${clearableQueueCount} finished`}
+                        </span>
+                        {clearableQueueCount > 0 && (
+                          <button
+                            type="button"
+                            onClick={handleClearQueue}
+                            className="text-[10px] text-slate-600 hover:text-white transition-colors cursor-pointer"
+                            title="Clear done & errored items"
+                          >
+                            Clear
+                          </button>
+                        )}
                       </div>
                     </div>
                     <div className="divide-y divide-white/[0.04]">
-                      {queue.map((item) => (
-                        <div key={item.id} className="flex items-center gap-3 px-4 py-2 text-sm">
+                      {realQueueItems.map((item) => (
+                        <div key={item.id} className={`flex gap-3 px-4 py-2 text-sm ${item.status === 'error' || item.status === 'partial' ? 'items-start' : 'items-center'}`}>
                           {/* Status icon */}
                           <span className="shrink-0 w-5 text-center">
                             {item.status === 'queued' && <Clock className="w-3.5 h-3.5 text-slate-500 inline" />}
                             {item.status === 'generating' && <Loader2 className="w-3.5 h-3.5 text-accent-text animate-spin inline" />}
                             {item.status === 'done' && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 inline" />}
+                            {item.status === 'partial' && <AlertCircle className="w-3.5 h-3.5 text-amber-400 inline" />}
                             {item.status === 'error' && <AlertCircle className="w-3.5 h-3.5 text-red-400 inline" />}
                           </span>
                           {/* Status label */}
@@ -1873,11 +1965,13 @@ export default function StaticsGeneration() {
                             item.status === 'queued' ? 'text-slate-500'
                             : item.status === 'generating' ? 'text-accent-text'
                             : item.status === 'done' ? 'text-emerald-400'
+                            : item.status === 'partial' ? 'text-amber-400'
                             : 'text-red-400'
                           }`}>
                             {item.status === 'queued' ? 'Queued'
                               : item.status === 'generating' ? `Generating${item.progress ? ` ${item.progress}` : ''}`
                               : item.status === 'done' ? 'Done'
+                              : item.status === 'partial' ? 'Partial'
                               : 'Error'}
                           </span>
                           {/* Angle */}
@@ -1889,24 +1983,45 @@ export default function StaticsGeneration() {
                             {item.references.length} ref{item.references.length !== 1 ? 's' : ''}
                           </span>
                           {/* Result info or error */}
-                          <span className={`text-[11px] text-right shrink-0 ${item.status === 'error' ? 'flex-1 min-w-[150px]' : 'w-[100px] truncate'}`}>
-                            {item.status === 'done' && item.result?.creativeCount && (
-                              <span className="text-emerald-400">{item.result.creativeCount} creative{item.result.creativeCount !== 1 ? 's' : ''}</span>
-                            )}
-                            {item.status === 'error' && (
-                              <span className="text-red-400" title={item.error}>{item.error}</span>
+                          {item.status === 'error' ? (
+                            <span className="text-[11px] text-red-400 flex-1 min-w-0 break-words whitespace-normal text-right leading-snug" title={item.error}>
+                              {item.error}
+                            </span>
+                          ) : item.status === 'partial' ? (
+                            <span className="text-[11px] flex-1 min-w-0 text-right leading-snug">
+                              <span className="text-emerald-400">{item.result?.creativeCount || 0} creative{(item.result?.creativeCount || 0) !== 1 ? 's' : ''}</span>
+                              {item.error && <span className="text-amber-400 block break-words whitespace-normal" title={item.error}>{item.error}</span>}
+                            </span>
+                          ) : (
+                            <span className="text-[11px] text-right shrink-0 w-[100px] truncate">
+                              {item.status === 'done' && item.result?.creativeCount && (
+                                <span className="text-emerald-400">{item.result.creativeCount} creative{item.result.creativeCount !== 1 ? 's' : ''}</span>
+                              )}
+                            </span>
+                          )}
+                          {/* Retry button (error or partial) */}
+                          <span className="w-6 shrink-0 flex justify-center">
+                            {(item.status === 'error' || item.status === 'partial') && (
+                              <button
+                                type="button"
+                                onClick={() => handleRetryQueueItem(item.id)}
+                                className="text-slate-600 hover:text-amber-400 transition-colors cursor-pointer"
+                                title="Retry"
+                              >
+                                <RotateCcw className="w-3.5 h-3.5" />
+                              </button>
                             )}
                           </span>
-                          {/* Remove button (only for queued items) */}
+                          {/* Remove / dismiss button (queued, error, done) */}
                           <span className="w-6 shrink-0 flex justify-center">
-                            {item.status === 'queued' && (
+                            {(item.status === 'queued' || item.status === 'error' || item.status === 'done' || item.status === 'partial') && (
                               <button
                                 type="button"
                                 onClick={() => handleRemoveFromQueue(item.id)}
                                 className="text-slate-600 hover:text-red-400 transition-colors cursor-pointer"
-                                title="Remove from queue"
+                                title={item.status === 'queued' ? 'Remove from queue' : 'Dismiss'}
                               >
-                                <Trash2 className="w-3.5 h-3.5" />
+                                {item.status === 'queued' ? <Trash2 className="w-3.5 h-3.5" /> : <X className="w-3.5 h-3.5" />}
                               </button>
                             )}
                           </span>

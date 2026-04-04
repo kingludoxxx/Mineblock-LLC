@@ -2,27 +2,19 @@
   "version": "0.0.1",
   "configurations": [
     {
+      "name": "Frontend (Vite Dev)",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["/Users/ludo/Mineblock-LLC/client/node_modules/vite/bin/vite.js", "--host", "--port", "5173"],
+      "cwd": "/Users/ludo/Mineblock-LLC/client",
+      "port": 5173,
+      "env": {"PATH": "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin"}
+    },
+    {
       "name": "Backend (Express API)",
       "runtimeExecutable": "/usr/local/bin/node",
-      "runtimeArgs": ["--watch", "server/src/server.js"],
-      "port": 3000,
-      "autoPort": false,
-      "env": { "PATH": "/usr/local/bin:/usr/bin:/bin" }
-    },
-    {
-      "name": "Frontend (Vite Dev)",
-      "runtimeExecutable": "/usr/local/bin/node",
-      "runtimeArgs": ["node_modules/.bin/vite", "--host"],
-      "port": 5173,
-      "autoPort": false,
-      "cwd": "/Users/ludo/Mineblock-LLC/client",
-      "env": { "PATH": "/usr/local/bin:/usr/bin:/bin" }
-    },
-    {
-      "name": "Upsell Preview",
-      "runtimeExecutable": "python3",
-      "runtimeArgs": ["-m", "http.server", "8080", "--directory", "upsells"],
-      "port": 8080
+      "runtimeArgs": ["--watch", "/Users/ludo/Mineblock-LLC/server/src/server.js"],
+      "cwd": "/Users/ludo/Mineblock-LLC",
+      "port": 3000
     }
   ]
 }
