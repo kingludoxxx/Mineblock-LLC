@@ -1309,7 +1309,7 @@ Correct: "3 Years of Back Pain Gone in 7 Days" → "3 Years of Missing Gains Gon
 Wrong: "Bye Bye, Beer Belly" → "Mine Bitcoin From Home" ❌ (completely different structure)
 
 CRITICAL — PRODUCT DATA OVERRIDES GENERIC TEXT:
-If the reference uses generic filler like "Real Mining for 12+ Hours Daily" — DO NOT keep it. Replace with the product's ACTUAL claims from the product context. For MinerForge Pro, use real product data like: "Attempts a Block 144 Times Daily", "$59.99 Solo Bitcoin Miner", "995.4 KH/s Hashrate". The product context fields are GROUND TRUTH — always prefer specific product data over generic reference text.
+If the reference uses generic filler like "Real Mining for 12+ Hours Daily" — DO NOT keep it. Replace with the product's ACTUAL claims rewritten as CUSTOMER BENEFITS. For MinerForge Pro: "144 Daily Chances to Win $300K+", "Starting at Just $59.99", "Only $1/Month to Run". NEVER paste raw technical specs — always frame data as benefits the customer cares about.
 Generic labels like "SPECIAL DEAL", "FREE SHIPPING" → keep EXACTLY as-is`,
       crossNicheAdaptation: `CROSS-NICHE VISUAL MAPPING:
 Reference ads may come from any niche. Map visuals to bitcoin mining context:

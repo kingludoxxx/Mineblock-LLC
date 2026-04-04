@@ -70,6 +70,7 @@ export function buildClaudePrompt(product, angle, customOverrides = null, layout
   const co = customOverrides?.claudeAnalysis || {};
 
   // Build product context from all available profile fields
+  // NOTE: These are raw product data points. The prompt instructs Claude to translate them into customer-facing benefits.
   const contextLines = [
     `Product Name: ${product.name}`,
     `Description: ${product.description || 'N/A'}`,
@@ -147,10 +148,10 @@ STRUCTURE EXAMPLES (keep the pattern, swap the content):
 
 CRITICAL — PRODUCT DATA OVERRIDES GENERIC TEXT:
 If the reference ad contains GENERIC claims or filler statements (e.g. "Real Mining for 12+ Hours Daily", "Authentic Performance", "True Results"), you MUST replace them with SPECIFIC claims from the PRODUCT CONTEXT above. Use the mechanism, benefits, big promise, and notes fields — they contain the real product data.
-- If mechanism says "attempts a block 144 times daily" → use THAT exact claim, not a generic paraphrase
-- If benefits list specific numbers or features → use THOSE exact numbers
+- If mechanism says "attempts a block 144 times daily" → rewrite as a CUSTOMER BENEFIT: "144 daily chances to win $300K+"
+- If benefits list technical features → rewrite as benefits: "1 watt power draw" becomes "Only $1/month to run"
 - NEVER keep a generic reference phrase when the product context has a specific replacement
-- The product context fields are GROUND TRUTH — they are more important than preserving the reference text verbatim
+- The product context fields are GROUND TRUTH — but always REWRITE them as customer-facing benefits, never paste technical specs raw
 
 ELEMENT COUNT: The adapted text count must EXACTLY MATCH the original count — same number of headlines, bullets, badges, stats. Do not add or remove elements. Leave fields empty ("") if no corresponding text exists.
 - Generic labels like "SPECIAL DEAL", "FREE SHIPPING" stay exactly as-is`;
