@@ -14,6 +14,9 @@ import {
   ChevronDown,
   AlertTriangle,
   Lock,
+  Maximize2,
+  Settings,
+  Tag,
 } from 'lucide-react';
 import api from '../../../services/api';
 
@@ -140,7 +143,7 @@ function RatioPill({ label, status }) {
   return null;
 }
 
-function CreativeCard({ creative, column, onStatusChange, onCardClick, variantStatus }) {
+function CreativeCard({ creative, column, onStatusChange, onCardClick, onRegenerate, variantStatus }) {
   const [wasDragged, setWasDragged] = useState(false);
   const isDraggable = !column.noDropZone;
 
@@ -208,14 +211,17 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, variantSt
         </div>
 
         {/* Info */}
-        <div className="p-3 space-y-3">
+        <div className="p-3 space-y-2.5">
           <div>
-            <h4 className="text-xs font-medium text-zinc-200 mb-1 truncate">
+            <h4 className="text-xs font-medium text-zinc-200 mb-1.5 truncate">
               {creative.product_name || 'Untitled'}
             </h4>
-            <div className="flex items-center gap-1.5">
+            <div className="flex items-center gap-1.5 flex-wrap">
               {creative.angle && (
-                <span className="text-[10px] text-zinc-500">{creative.angle}</span>
+                <span className="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full bg-[#c9a84c]/10 text-[#d4b55a] border border-[#c9a84c]/25">
+                  <Tag className="w-2.5 h-2.5" />
+                  {creative.angle}
+                </span>
               )}
               {(() => {
                 const metaIds = Array.isArray(creative.meta_ad_ids) ? creative.meta_ad_ids : (typeof creative.meta_ad_ids === 'string' ? (() => { try { return JSON.parse(creative.meta_ad_ids); } catch { return []; } })() : []);
@@ -234,38 +240,78 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, variantSt
             </span>
           )}
 
-          {/* Action button (only for review/approved columns) */}
+          {/* Action buttons */}
           {column.actionLabel ? (
-            <div className="flex items-center gap-1.5">
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onStatusChange?.(creative.id, column.nextStatus);
-                }}
-                className={`flex-1 py-1.5 rounded-md text-xs font-medium border transition-colors cursor-pointer
-                  ${column.color === 'green'
-                    ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20 hover:bg-emerald-500/20'
-                    : column.color === 'cyan'
-                      ? 'bg-cyan-500/10 text-cyan-400 border-cyan-500/20 hover:bg-cyan-500/20'
-                      : 'bg-white/[0.03] text-zinc-300 border-white/[0.05] hover:bg-white/[0.06]'
-                  }`}
-              >
-                {column.actionLabel}
-              </button>
-              {column.key === 'review' && (
+            <div className="space-y-2">
+              <div className="flex items-center gap-1.5">
                 <button
                   type="button"
                   onClick={(e) => {
                     e.stopPropagation();
-                    onStatusChange?.(creative.id, 'rejected');
+                    onStatusChange?.(creative.id, column.nextStatus);
                   }}
-                  className="p-1.5 rounded-md border border-red-500/20 text-red-400/70 hover:text-red-400 hover:bg-red-500/10 transition-colors cursor-pointer"
-                  title="Reject"
+                  className={`flex-1 py-1.5 rounded-md text-xs font-medium border transition-colors cursor-pointer
+                    ${column.color === 'green'
+                      ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20 hover:bg-emerald-500/20'
+                      : column.color === 'cyan'
+                        ? 'bg-cyan-500/10 text-cyan-400 border-cyan-500/20 hover:bg-cyan-500/20'
+                        : 'bg-white/[0.03] text-zinc-300 border-white/[0.05] hover:bg-white/[0.06]'
+                    }`}
                 >
-                  <X className="w-3.5 h-3.5" />
+                  {column.actionLabel}
                 </button>
-              )}
+                {column.key === 'review' && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onStatusChange?.(creative.id, 'rejected');
+                    }}
+                    className="p-1.5 rounded-md border border-red-500/20 text-red-400/70 hover:text-red-400 hover:bg-red-500/10 transition-colors cursor-pointer"
+                    title="Reject"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+              {/* Quick action row */}
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onCardClick?.(creative);
+                    }}
+                    className="p-1 rounded border border-white/[0.06] text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.04] transition-colors cursor-pointer"
+                    title="Preview full size"
+                  >
+                    <Maximize2 className="w-3 h-3" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onRegenerate?.(creative);
+                    }}
+                    className="p-1 rounded border border-white/[0.06] text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.04] transition-colors cursor-pointer"
+                    title="Regenerate"
+                  >
+                    <RefreshCw className="w-3 h-3" />
+                  </button>
+                </div>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onCardClick?.(creative);
+                  }}
+                  className="p-1 rounded border border-white/[0.06] text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.04] transition-colors cursor-pointer"
+                  title="Details"
+                >
+                  <Settings className="w-3 h-3" />
+                </button>
+              </div>
             </div>
           ) : null}
         </div>
@@ -482,7 +528,7 @@ function QueueCard({ item, onRemove }) {
 // Standard pipeline column (generating, review, approved)
 // ---------------------------------------------------------------------------
 
-function PipelineColumn({ column, items, onStatusChange, onCardClick, allCreatives, queueItems, onRemoveFromQueue }) {
+function PipelineColumn({ column, items, onStatusChange, onCardClick, onRegenerate, allCreatives, queueItems, onRemoveFromQueue }) {
   const Icon = column.icon;
   const [dragOver, setDragOver] = useState(false);
 
@@ -550,6 +596,7 @@ function PipelineColumn({ column, items, onStatusChange, onCardClick, allCreativ
                 column={column}
                 onStatusChange={onStatusChange}
                 onCardClick={onCardClick}
+                onRegenerate={onRegenerate}
                 variantStatus={vStatus}
               />
             );
@@ -702,7 +749,7 @@ function LaunchedColumn({ column, items, onCardClick }) {
 // Main PipelineView component
 // ---------------------------------------------------------------------------
 
-export function PipelineView({ creatives = [], onStatusChange, onCardClick, onRefresh, loading, onOpenTemplates, onOpenCopySets, queue = [], onRemoveFromQueue }) {
+export function PipelineView({ creatives = [], onStatusChange, onCardClick, onRegenerate, onRefresh, loading, onOpenTemplates, onOpenCopySets, queue = [], onRemoveFromQueue }) {
   // Bucket creatives into columns by status
   const buckets = useMemo(() => {
     const map = { generating: [], review: [], approved: [], ready: [], launched: [] };
@@ -884,6 +931,7 @@ export function PipelineView({ creatives = [], onStatusChange, onCardClick, onRe
             items={buckets[col.key]}
             onStatusChange={handleStatusChange}
             onCardClick={onCardClick}
+            onRegenerate={onRegenerate}
             allCreatives={creatives}
             queueItems={col.key === 'generating' ? queue.filter(q => q.status === 'queued' || q.status === 'generating') : undefined}
             onRemoveFromQueue={onRemoveFromQueue}
