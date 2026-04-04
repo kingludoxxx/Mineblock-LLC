@@ -538,6 +538,18 @@ async function ensureCreativesTable() {
   await pgQuery(`CREATE INDEX IF NOT EXISTS idx_spy_creatives_product_id ON spy_creatives(product_id)`).catch(() => {});
   await pgQuery(`CREATE INDEX IF NOT EXISTS idx_spy_creatives_created ON spy_creatives(created_at DESC)`).catch(() => {});
   await pgQuery(`CREATE INDEX IF NOT EXISTS idx_spy_creatives_parent_id ON spy_creatives(parent_creative_id)`).catch(() => {});
+  await pgQuery('ALTER TABLE spy_creatives ADD COLUMN IF NOT EXISTS copy_set_id UUID').catch(() => {});
+  await pgQuery('ALTER TABLE spy_creatives ADD COLUMN IF NOT EXISTS meta_ad_ids JSONB DEFAULT \'[]\'').catch(() => {});
+  await pgQuery('ALTER TABLE spy_creatives ADD COLUMN IF NOT EXISTS meta_image_hash TEXT').catch(() => {});
+  await pgQuery('ALTER TABLE spy_creatives ADD COLUMN IF NOT EXISTS generated_copy JSONB').catch(() => {});
+  await pgQuery(`CREATE TABLE IF NOT EXISTS statics_launches (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    creative_id UUID REFERENCES spy_creatives(id) ON DELETE CASCADE,
+    template_id UUID, copy_set_id UUID, ad_account_id TEXT,
+    meta_campaign_id TEXT, meta_adset_id TEXT, meta_ad_id TEXT, meta_creative_id TEXT, meta_image_hash TEXT,
+    ad_name TEXT, adset_name TEXT, page_id TEXT, page_name TEXT, batch_number INTEGER,
+    status TEXT DEFAULT 'pending', error_message TEXT, launched_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT NOW()
+  )`).catch(() => {});
 
   // Fix existing relative reference_thumbnail paths (one-time migration)
   const baseUrl = process.env.RENDER_EXTERNAL_URL;
@@ -556,7 +568,7 @@ router.get('/creatives', authenticate, async (req, res) => {
   try {
     await ensureCreativesTable();
     const { product_id, status, pipeline = 'standard' } = req.query;
-    let query = "SELECT id, product_id, product_name, image_url, thumbnail_url, source_label, angle, archetype, aspect_ratio, status, reference_thumbnail, reference_name, parent_creative_id, pipeline, created_at FROM spy_creatives WHERE pipeline = $1";
+    let query = "SELECT id, product_id, product_name, image_url, thumbnail_url, source_label, angle, archetype, aspect_ratio, status, reference_thumbnail, reference_name, parent_creative_id, pipeline, copy_set_id, meta_ad_ids, meta_image_hash, generated_copy, created_at FROM spy_creatives WHERE pipeline = $1";
     const params = [pipeline];
     let idx = 2;
 
@@ -869,13 +881,35 @@ router.post('/creatives', authenticate, async (req, res) => {
       resolvedRefThumb = `${base}${resolvedRefThumb}`;
     }
 
+    // Extract launch-friendly copy from Claude's adapted_text
+    let generatedCopy = null;
+    if (adapted_text) {
+      const at = typeof adapted_text === 'string' ? JSON.parse(adapted_text) : adapted_text;
+      generatedCopy = {
+        primary_texts: [at.body || at.headline || ''].filter(Boolean),
+        headlines: [at.headline || at.subheadline || ''].filter(Boolean),
+        descriptions: [at.subheadline || at.cta || ''].filter(Boolean),
+        cta: at.cta || '',
+      };
+    }
+
+    // Auto-match copy set by product_id + angle
+    let matchedCopySetId = null;
+    if (product_id && angle) {
+      const csRows = await pgQuery(
+        'SELECT id FROM brief_copy_sets WHERE product_id = $1 AND LOWER(angle) = LOWER($2) LIMIT 1',
+        [product_id, angle]
+      ).catch(() => []);
+      if (csRows.length) matchedCopySetId = csRows[0].id;
+    }
+
     const rows = await pgQuery(
       `INSERT INTO spy_creatives
         (product_id, product_name, angle, aspect_ratio, image_url,
          reference_image_id, source_label, reference_name, reference_thumbnail,
          adapted_text, claude_analysis, swap_pairs, generation_prompt,
-         generation_task_id, pipeline, status, group_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+         generation_task_id, pipeline, status, group_id, generated_copy, copy_set_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
        RETURNING *`,
       [
         product_id || null,
@@ -895,6 +929,8 @@ router.post('/creatives', authenticate, async (req, res) => {
         pipeline || 'standard',
         status,
         group_id || null,
+        generatedCopy ? JSON.stringify(generatedCopy) : null,
+        matchedCopySetId,
       ]
     );
     res.json({ success: true, data: rows[0] });
@@ -1349,28 +1385,39 @@ router.post('/launch', authenticate, async (req, res) => {
       });
 
       try {
-        // Upload image to Meta
+        // Upload image to Meta (reuse cached hash if available)
         let imageHashes = [];
+        let imageHash = creative.meta_image_hash || null;
         if (creative.image_url) {
-          const { hash } = await uploadAdImageFromUrl(template.ad_account_id, creative.image_url);
-          imageHashes = [hash];
+          if (imageHash) {
+            imageHashes = [imageHash];
+          } else {
+            const uploadResult = await uploadAdImageFromUrl(template.ad_account_id, creative.image_url);
+            imageHash = uploadResult.hash;
+            imageHashes = [imageHash];
+          }
         }
 
-        // Determine ad copy
+        // Determine ad copy: copy set > generated_copy > fallbacks
+        const genCopy = typeof creative.generated_copy === 'string'
+          ? JSON.parse(creative.generated_copy || '{}') : (creative.generated_copy || {});
         const primaryTexts = copySet?.primary_texts?.length
           ? copySet.primary_texts
+          : genCopy.primary_texts?.length ? genCopy.primary_texts
           : [creative.source_label || 'Check this out'];
         const headlines = copySet?.headlines?.length
           ? copySet.headlines
+          : genCopy.headlines?.length ? genCopy.headlines
           : [creative.angle || 'Shop Now'];
         const descriptions = copySet?.descriptions?.length
           ? copySet.descriptions
+          : genCopy.descriptions?.length ? genCopy.descriptions
           : [''];
-        const cta = copySet?.cta_button || 'SHOP_NOW';
+        const cta = copySet?.cta_button || genCopy.cta || 'SHOP_NOW';
         const link = copySet?.landing_page_url || 'https://mineblock.com';
 
         // Create ad creative
-        const creativeId = await createFlexibleAdCreative(template.ad_account_id, {
+        const metaCreativeId = await createFlexibleAdCreative(template.ad_account_id, {
           name: adName,
           imageHashes,
           primaryTexts,
@@ -1386,18 +1433,45 @@ router.post('/launch', authenticate, async (req, res) => {
         const metaAdId = await createAd(template.ad_account_id, {
           name: adName,
           adsetId,
-          creativeId,
+          creativeId: metaCreativeId,
           status: 'PAUSED',
         });
 
-        // Update creative status
+        // Build meta_ad_ids entry
+        const metaEntry = {
+          ad_id: metaAdId,
+          creative_id: metaCreativeId,
+          adset_id: adsetId,
+          campaign_id: template.campaign_id,
+          page_id: page?.id || selectedPages[0]?.id,
+          ad_name: adName,
+          launched_at: new Date().toISOString(),
+        };
+        const existingMeta = Array.isArray(creative.meta_ad_ids) ? creative.meta_ad_ids : [];
+        existingMeta.push(metaEntry);
+
+        // Update creative with launch tracking
         await pgQuery(
-          `UPDATE spy_creatives SET status = 'launched', updated_at = NOW() WHERE id = $1`,
-          [creative.id]
+          `UPDATE spy_creatives SET status = 'launched', meta_ad_ids = $1, meta_image_hash = $2, updated_at = NOW() WHERE id = $3`,
+          [JSON.stringify(existingMeta), imageHash, creative.id]
         );
+
+        // Create audit log entry
+        await pgQuery(
+          `INSERT INTO statics_launches (creative_id, template_id, copy_set_id, ad_account_id, meta_campaign_id, meta_adset_id, meta_ad_id, meta_creative_id, meta_image_hash, ad_name, adset_name, page_id, page_name, batch_number, status, launched_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'launched',NOW())`,
+          [creative.id, template_id, copy_set_id || null, template.ad_account_id, template.campaign_id, adsetId, metaAdId, metaCreativeId, imageHash, adName, adsetName, page?.id || null, page?.name || null, batchNum]
+        ).catch(err => console.warn('[staticsGeneration] Failed to log launch:', err.message));
 
         results.push({ creative_id: creative.id, status: 'launched', meta_ad_id: metaAdId, ad_name: adName });
       } catch (err) {
+        // Log failed launch attempt
+        await pgQuery(
+          `INSERT INTO statics_launches (creative_id, template_id, copy_set_id, ad_account_id, batch_number, status, error_message)
+           VALUES ($1,$2,$3,$4,$5,'failed',$6)`,
+          [creative.id, template_id, copy_set_id || null, template.ad_account_id, batchNum, err.message]
+        ).catch(() => {});
+
         await pgQuery(
           `UPDATE spy_creatives SET status = 'ready', review_notes = $1, updated_at = NOW() WHERE id = $2`,
           [`Launch failed: ${err.message}`, creative.id]
@@ -1416,6 +1490,33 @@ router.post('/launch', authenticate, async (req, res) => {
         [req.body.creative_ids]
       ).catch(() => {});
     }
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// ── GET /creatives/:id/launch-history — Launch audit log for a creative ──
+router.get('/creatives/:id/launch-history', authenticate, async (req, res) => {
+  try {
+    const rows = await pgQuery(
+      `SELECT * FROM statics_launches WHERE creative_id = $1 ORDER BY created_at DESC`,
+      [req.params.id]
+    ).catch(() => []);
+    res.json({ success: true, data: rows });
+  } catch (err) {
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// ── POST /creatives/:id/link-copy-set — Link a copy set to a creative ──
+router.post('/creatives/:id/link-copy-set', authenticate, async (req, res) => {
+  try {
+    const { copy_set_id } = req.body;
+    await pgQuery(
+      'UPDATE spy_creatives SET copy_set_id = $1, updated_at = NOW() WHERE id = $2',
+      [copy_set_id || null, req.params.id]
+    );
+    res.json({ success: true });
+  } catch (err) {
     res.status(500).json({ success: false, error: { message: err.message } });
   }
 });

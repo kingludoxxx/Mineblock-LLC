@@ -200,10 +200,27 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, variantSt
             <h4 className="text-xs font-medium text-zinc-200 mb-1 truncate">
               {creative.product_name || 'Untitled'}
             </h4>
-            {creative.angle && (
-              <span className="text-[10px] text-zinc-500">{creative.angle}</span>
-            )}
+            <div className="flex items-center gap-1.5">
+              {creative.angle && (
+                <span className="text-[10px] text-zinc-500">{creative.angle}</span>
+              )}
+              {(() => {
+                const metaIds = Array.isArray(creative.meta_ad_ids) ? creative.meta_ad_ids : (typeof creative.meta_ad_ids === 'string' ? JSON.parse(creative.meta_ad_ids || '[]') : []);
+                return metaIds.length > 0 ? (
+                  <span className="text-[9px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/20 font-medium">
+                    {metaIds.length} ad{metaIds.length > 1 ? 's' : ''}
+                  </span>
+                ) : null;
+              })()}
+            </div>
           </div>
+
+          {/* Copy set indicator for Ready to Launch */}
+          {creative.copy_set_id && (
+            <span className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 inline-block">
+              Copy Set Linked
+            </span>
+          )}
 
           {/* Select checkbox for Ready to Launch */}
           {onToggleSelect && (
@@ -468,6 +485,28 @@ export function PipelineView({ creatives = [], onStatusChange, onCardClick, onRe
   useEffect(() => {
     if (launchModalOpen) fetchLaunchData();
   }, [launchModalOpen, fetchLaunchData]);
+
+  // Auto-select copy set and default template when launch modal opens
+  useEffect(() => {
+    if (!launchModalOpen || !selectedForLaunch.length) return;
+    // Auto-select copy set by matching first selected creative's angle or copy_set_id
+    const firstSelected = creatives.find(c => c.id === selectedForLaunch[0]);
+    if (firstSelected && copySets.length && !selectedCopySetId) {
+      // Prefer linked copy_set_id, then match by angle
+      if (firstSelected.copy_set_id) {
+        setSelectedCopySetId(firstSelected.copy_set_id);
+      } else if (firstSelected.angle) {
+        const match = copySets.find(cs => cs.angle?.toLowerCase() === firstSelected.angle?.toLowerCase());
+        if (match) setSelectedCopySetId(match.id);
+      }
+    }
+    // Auto-select default template
+    if (!selectedTemplateId && launchTemplates.length) {
+      const def = launchTemplates.find(t => t.is_default);
+      if (def) setSelectedTemplateId(def.id);
+      else if (launchTemplates.length === 1) setSelectedTemplateId(launchTemplates[0].id);
+    }
+  }, [launchModalOpen, copySets, launchTemplates, selectedForLaunch, creatives]);
 
   // Prune stale selections when creatives change
   useEffect(() => {

@@ -11,6 +11,8 @@ import {
   Sparkles,
   Image,
   Loader2,
+  Rocket,
+  ExternalLink,
 } from 'lucide-react';
 import api from '../../../services/api';
 
@@ -104,6 +106,8 @@ export function CreativeDetailModal({
 }) {
   const [aiInstruction, setAiInstruction] = useState('');
   const [debugOpen, setDebugOpen] = useState(false);
+  const [launchHistoryOpen, setLaunchHistoryOpen] = useState(false);
+  const [launchHistory, setLaunchHistory] = useState([]);
   const [aiAdjusting, setAiAdjusting] = useState(false);
   const [aiError, setAiError] = useState(null);
   const [refLightbox, setRefLightbox] = useState(false);
@@ -377,6 +381,56 @@ export function CreativeDetailModal({
                   {!creative.claude_analysis && !creative.generation_prompt && (
                     <span className="text-slate-600 italic">No debug metadata available.</span>
                   )}
+                </div>
+              )}
+            </div>
+
+            {/* Launch History — collapsible */}
+            <div>
+              <button
+                type="button"
+                onClick={() => {
+                  setLaunchHistoryOpen(!launchHistoryOpen);
+                  if (!launchHistoryOpen && launchHistory.length === 0) {
+                    api.get(`/statics-generation/creatives/${creative.id}/launch-history`)
+                      .then(r => setLaunchHistory(r.data?.data || []))
+                      .catch(() => {});
+                  }
+                }}
+                className="flex items-center gap-2 text-[10px] uppercase tracking-widest text-slate-500 font-semibold hover:text-slate-300 transition-colors cursor-pointer"
+              >
+                {launchHistoryOpen ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+                Launch History
+                {(creative.meta_ad_ids?.length > 0 || (typeof creative.meta_ad_ids === 'string' && JSON.parse(creative.meta_ad_ids || '[]').length > 0)) && (
+                  <span className="ml-1 px-1.5 py-0.5 rounded-full bg-cyan-500/10 text-cyan-400 text-[9px] border border-cyan-500/20">
+                    {Array.isArray(creative.meta_ad_ids) ? creative.meta_ad_ids.length : JSON.parse(creative.meta_ad_ids || '[]').length}
+                  </span>
+                )}
+              </button>
+              {launchHistoryOpen && (
+                <div className="mt-3 p-3 bg-[#0a0a0a] border border-white/[0.06] rounded-lg space-y-2 text-xs text-slate-400 max-h-48 overflow-y-auto">
+                  {launchHistory.length === 0 ? (
+                    <span className="text-slate-600 italic">No launches yet.</span>
+                  ) : launchHistory.map((l) => (
+                    <div key={l.id} className="flex items-start justify-between gap-2 border-b border-white/[0.04] pb-2 last:border-0">
+                      <div className="min-w-0">
+                        <p className="text-slate-300 font-medium truncate">{l.ad_name || 'Unknown'}</p>
+                        <p className="text-slate-500 text-[10px]">
+                          {l.adset_name} · {l.page_name || 'N/A'}
+                        </p>
+                        <p className="text-slate-600 text-[10px]">
+                          {l.launched_at ? new Date(l.launched_at).toLocaleDateString() : new Date(l.created_at).toLocaleDateString()}
+                        </p>
+                      </div>
+                      <span className={`shrink-0 px-1.5 py-0.5 rounded text-[9px] font-medium ${
+                        l.status === 'launched' ? 'bg-emerald-500/10 text-emerald-400' :
+                        l.status === 'failed' ? 'bg-red-500/10 text-red-400' :
+                        'bg-amber-500/10 text-amber-400'
+                      }`}>
+                        {l.status}
+                      </span>
+                    </div>
+                  ))}
                 </div>
               )}
             </div>
