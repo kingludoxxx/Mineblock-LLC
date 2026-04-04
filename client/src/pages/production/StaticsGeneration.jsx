@@ -1111,7 +1111,7 @@ export default function StaticsGeneration() {
       // Step 3: Save all creatives with shared group
       setGenerationStep(3);
       const groupId = crypto.randomUUID();
-      const currentRef = references[0];
+      const currentRef = references[references.length - 1] || references[0];
       const resolvedRefUrl = currentRef?.image_url || currentRef?.thumbnail || currentRef?.url || resolvedReferenceUrl;
 
       const savedCreatives = await Promise.all(completedTasks.map(async (task) => {
@@ -1156,6 +1156,11 @@ export default function StaticsGeneration() {
     } finally {
       removeDirectGen();
       setGenerating(false);
+      // Clear references so next template selection starts fresh
+      setReferences([]);
+      setReferenceImageUrl('');
+      setReferencePreview('');
+      setReferenceFile(null);
       // Catch-up fetch after direct generation to pick up server-side changes
       // (e.g. auto-generated 9:16 variants). Delay lets the server finish processing.
       setTimeout(() => fetchCreatives(true), 3000);
@@ -2501,7 +2506,7 @@ export default function StaticsGeneration() {
           templates={templates}
           onSelectTemplate={(template) => {
             handleTemplateSelect(template);
-            setReferences(prev => [...prev, { id: template.id || Date.now(), image_url: template.image_url, name: template.name }]);
+            setReferences([{ id: template.id || Date.now(), image_url: template.image_url, name: template.name }]);
             setActiveTab('pipeline');
           }}
           onAddReference={() => setAddRefModal(true)}
@@ -2544,7 +2549,7 @@ export default function StaticsGeneration() {
           templates={templates}
           onSelect={(template) => {
             handleTemplateSelect(template);
-            setReferences(prev => [...prev, { id: template.id || Date.now(), image_url: template.image_url, name: template.name }]);
+            setReferences([{ id: template.id || Date.now(), image_url: template.image_url, name: template.name }]);
           }}
           onClose={() => setTemplateModal(false)}
         />
