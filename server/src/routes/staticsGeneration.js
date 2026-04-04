@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { buildClaudePrompt, buildNanoBananaPrompt, buildSwapPairs, buildLayoutAnalysisPrompt } from '../utils/staticsPrompts.js';
+import { overlayText } from '../utils/textOverlay.js';
 import { pgQuery } from '../db/pg.js';
 import { authenticate } from '../middleware/auth.js';
 import { uploadBuffer, isR2Configured } from '../services/r2.js';
@@ -11,6 +12,20 @@ import {
 
 const router = Router();
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+// ── Text overlay context store (per taskId, for post-generation text compositing) ──
+const textOverlayContexts = new Map();
+const TEXT_OVERLAY_CTX_TTL = 15 * 60 * 1000; // 15 minutes
+const MAX_TEXT_OVERLAY_CTXS = 200;
+
+function storeTextOverlayContext(taskId, context) {
+  if (textOverlayContexts.size >= MAX_TEXT_OVERLAY_CTXS) {
+    const oldest = textOverlayContexts.keys().next().value;
+    textOverlayContexts.delete(oldest);
+  }
+  textOverlayContexts.set(taskId, context);
+  setTimeout(() => textOverlayContexts.delete(taskId), TEXT_OVERLAY_CTX_TTL);
+}
 
 // ── Temporary image store (serves base64 as HTTP URLs for NanoBanana) ──
 const tempImages = new Map();
@@ -402,6 +417,24 @@ router.post('/generate', authenticate, async (req, res) => {
     let finalReferenceUrl = isUrl ? reference_image_url : await ensureHttpUrl(reference_image_url, 'refs');
     let finalProductUrl = await ensureHttpUrl(product.product_image_url, 'products');
 
+    // Smart product image selection based on reference orientation
+    const allProductImages = product.product_images || [];
+    const userSelectedImages = product.selected_product_images || [];
+    if (allProductImages.length > 1 && userSelectedImages.length === 0 && claudeResult.product_orientation) {
+      try {
+        const { selectBestProductImage } = await import('../utils/productImageSelector.js');
+        const selection = await selectBestProductImage(allProductImages, claudeResult.product_orientation);
+        if (selection.index > 0 && selection.selectedUrl !== product.product_image_url) {
+          console.log(`[imageSelector] Auto-selected image ${selection.index + 1}/${allProductImages.length} for ${claudeResult.product_orientation} orientation — ${selection.reason}`);
+          finalProductUrl = await ensureHttpUrl(selection.selectedUrl, 'products-autoselect');
+        } else {
+          console.log(`[imageSelector] Kept default image (index 0) — ${selection.reason || 'best match'}`);
+        }
+      } catch (selErr) {
+        console.warn(`[imageSelector] Auto-selection failed, using default: ${selErr.message}`);
+      }
+    }
+
     // Only send extra product images if client explicitly selects them
     // By default, send ONLY the main product image for maximum fidelity
     const selectedImages = product.selected_product_images || [];
@@ -452,7 +485,9 @@ router.post('/generate', authenticate, async (req, res) => {
     console.log(`  [LAST] reference: ${finalReferenceUrl?.slice(0, 120)}`);
 
     const logoBackgroundTone = claudeResult.logo_background_tone || null;
-    const nbPrompt = buildNanoBananaPrompt(claudeResult, swapPairs, product, logoUrls.length, customPrompts, layoutMap, logoBackgroundTone);
+    const skipTextRendering = true; // Text will be overlaid programmatically after NanoBanana generation
+    const nbPrompt = buildNanoBananaPrompt(claudeResult, swapPairs, product, logoUrls.length, customPrompts, layoutMap, logoBackgroundTone, skipTextRendering);
+    console.log(`[staticsGeneration] skipTextRendering=${skipTextRendering} — text will be composited via textOverlay after generation`);
 
     // Send: product images, then logos, then reference ad (last)
     const imageUrls = [finalProductUrl, ...extraProductUrls, ...logoUrls, finalReferenceUrl];
@@ -531,6 +566,21 @@ router.post('/generate', authenticate, async (req, res) => {
       return res.status(500).json({ success: false, error: 'NanoBanana failed to return any task IDs after retries' });
     }
 
+    // ── Store text overlay context per task for the /status endpoint ──
+    if (skipTextRendering) {
+      const overlayCtx = {
+        swapPairs,
+        layoutMap,
+        fonts: product.fonts || [],
+        backgroundTone: layoutMap?.background?.tone || 'dark',
+        applied: false,
+      };
+      for (const task of tasks) {
+        storeTextOverlayContext(task.taskId, { ...overlayCtx });
+        console.log(`[staticsGeneration] Stored text overlay context for task ${task.taskId} (${swapPairs.length} swap pairs)`);
+      }
+    }
+
     // ── Step E: Return immediately — client polls /status/:taskId ──────
     console.log(`[staticsGeneration] NanoBanana tasks submitted: ${tasks.map(t => `${t.ratio}=${t.taskId}`).join(', ')}`);
     res.json({
@@ -591,6 +641,49 @@ router.get('/status/:taskId', authenticate, async (req, res) => {
         resultImageUrl = resultObj?.resultUrls?.[0];
       } catch {}
       if (!resultImageUrl) resultImageUrl = extractNanoBananaImageUrl(data);
+
+      // ── Text Overlay: composite programmatic text onto the text-free image ──
+      const overlayCtx = textOverlayContexts.get(taskId);
+      if (overlayCtx && !overlayCtx.applied && resultImageUrl) {
+        try {
+          console.log(`[textOverlay] Downloading generated image for text overlay: ${resultImageUrl.slice(0, 120)}`);
+          const imgRes = await fetch(resultImageUrl);
+          if (!imgRes.ok) throw new Error(`Failed to download image: HTTP ${imgRes.status}`);
+          const imageBuffer = Buffer.from(await imgRes.arrayBuffer());
+          console.log(`[textOverlay] Downloaded ${imageBuffer.length} bytes, applying text overlay...`);
+
+          const compositedBuffer = await overlayText(
+            imageBuffer,
+            overlayCtx.swapPairs,
+            overlayCtx.layoutMap,
+            { fonts: overlayCtx.fonts, backgroundTone: overlayCtx.backgroundTone }
+          );
+
+          // Store composited image and replace URL
+          const STATUS_SERVER_URL = process.env.RENDER_EXTERNAL_URL || `http://localhost:${process.env.PORT || 3000}`;
+          if (isR2Configured()) {
+            const r2Key = `statics-composited/${crypto.randomUUID()}.png`;
+            const r2Url = await uploadBuffer(compositedBuffer, r2Key, 'image/png');
+            resultImageUrl = r2Url;
+            console.log(`[textOverlay] Composited image uploaded to R2: ${r2Url}`);
+          } else {
+            const tmpId = storeTempImage(compositedBuffer, 'image/png');
+            resultImageUrl = `${STATUS_SERVER_URL}/api/v1/statics-generation/tmp-img/${tmpId}`;
+            console.log(`[textOverlay] Composited image stored as temp: ${resultImageUrl}`);
+          }
+
+          overlayCtx.applied = true;
+          overlayCtx.compositedUrl = resultImageUrl;
+          console.log(`[textOverlay] Text overlay applied successfully for task ${taskId}`);
+        } catch (overlayErr) {
+          console.error(`[textOverlay] Text overlay failed for task ${taskId}:`, overlayErr.message);
+          console.warn(`[textOverlay] Falling back to raw NanoBanana image (text may be AI-rendered or missing)`);
+          // resultImageUrl stays as the raw NanoBanana URL — fallback behavior
+        }
+      } else if (overlayCtx?.applied && overlayCtx?.compositedUrl) {
+        // Already applied on a previous poll — return the cached composited URL
+        resultImageUrl = overlayCtx.compositedUrl;
+      }
     }
 
     // Prevent browser caching so polling always gets fresh data
@@ -1063,7 +1156,61 @@ router.post('/creatives', authenticate, async (req, res) => {
         matchedCopySetId,
       ]
     );
-    res.json({ success: true, data: rows[0] });
+    const savedCreative = rows[0];
+
+    // ── Post-save validation (non-blocking) ──────────────────────────
+    const validationEnabled = true;
+    const finalReferenceUrl = resolvedRefThumb || reference_thumbnail;
+    const parsedSwapPairs = swap_pairs
+      ? (typeof swap_pairs === 'string' ? JSON.parse(swap_pairs) : swap_pairs)
+      : [];
+
+    if (validationEnabled && image_url && finalReferenceUrl && Array.isArray(parsedSwapPairs)) {
+      // Fire-and-forget: validate in background so response is not delayed
+      (async () => {
+        try {
+          const { resolveImage: resolveImg } = await import('../utils/imageHelpers.js');
+          const { validateGeneration } = await import('../utils/generationValidator.js');
+
+          const genImage = await resolveImg(image_url);
+          const refImage = await resolveImg(finalReferenceUrl);
+
+          const validation = await validateGeneration(
+            genImage.base64, refImage.base64, parsedSwapPairs,
+            { generatedMediaType: genImage.mediaType, referenceMediaType: refImage.mediaType }
+          );
+
+          console.log(`[validation] Creative ${savedCreative.id} — Score: layout=${validation.scores.layout_match} text=${validation.scores.text_correctness} product=${validation.scores.product_fidelity} bg=${validation.scores.background_fidelity} brand=${validation.scores.competitor_branding} overall=${validation.scores.overall_quality} → ${validation.passed ? 'PASS' : 'FAIL'}`);
+
+          if (validation.issues.length > 0) {
+            console.log(`[validation] Issues: ${JSON.stringify(validation.issues)}`);
+          }
+
+          // Store validation results in claude_analysis JSONB
+          await pgQuery(
+            `UPDATE spy_creatives
+             SET claude_analysis = jsonb_set(
+               COALESCE(claude_analysis, '{}'),
+               '{validation}',
+               $1::jsonb
+             ),
+             updated_at = NOW()
+             WHERE id = $2`,
+            [JSON.stringify({
+              passed: validation.passed,
+              score: validation.score,
+              scores: validation.scores,
+              issues: validation.issues,
+              validated_at: new Date().toISOString(),
+            }), savedCreative.id]
+          );
+        } catch (valErr) {
+          console.warn(`[validation] Validation failed for creative ${savedCreative.id}, skipping: ${valErr.message}`);
+        }
+      })();
+    }
+
+    res.json({ success: true, data: savedCreative });
   } catch (err) {
     console.error('[staticsGeneration] POST /creatives error:', err);
     res.status(500).json({ success: false, error: { message: err.message } });
