@@ -256,7 +256,79 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, variantSt
 // Pipeline column
 // ---------------------------------------------------------------------------
 
-function PipelineColumn({ column, items, onStatusChange, onCardClick, allCreatives, selectedForLaunch, onToggleSelect }) {
+function QueueCard({ item, onRemove }) {
+  const refImage = item.references?.[0];
+  const refThumb = refImage?.thumbnail || refImage?.image_url || refImage?.url || null;
+  const isGenerating = item.status === 'generating';
+
+  return (
+    <div className="animated-border-gradient rounded-xl">
+      <div className="glass-card border border-white/[0.05] rounded-xl overflow-hidden relative z-10">
+        {/* Reference thumbnail */}
+        <div className="relative aspect-[4/3] w-full overflow-hidden bg-black/40">
+          <div className="absolute inset-0 flex flex-col items-center justify-center text-zinc-700 gap-1.5">
+            {isGenerating ? (
+              <>
+                <Loader2 className="w-5 h-5 animate-spin text-violet-400" />
+                <span className="text-[9px] text-violet-300/70">{item.progress || 'Generating…'}</span>
+              </>
+            ) : (
+              <>
+                <Package className="w-5 h-5 text-zinc-600" />
+                <span className="text-[9px] text-zinc-500">Queued</span>
+              </>
+            )}
+          </div>
+          {refThumb && (
+            <img
+              src={refThumb}
+              alt=""
+              className={`absolute inset-0 w-full h-full object-cover transition-opacity ${isGenerating ? 'opacity-40' : 'opacity-60'}`}
+              onError={(e) => { e.target.style.display = 'none'; }}
+            />
+          )}
+          {/* Status badge */}
+          <span className={`absolute top-2 left-2 text-[9px] font-mono px-1.5 py-0.5 rounded border backdrop-blur-md ${
+            isGenerating
+              ? 'bg-violet-500/20 text-violet-300 border-violet-500/30'
+              : 'bg-zinc-500/20 text-zinc-400 border-zinc-500/30'
+          }`}>
+            {isGenerating ? 'Generating' : 'Queued'}
+          </span>
+          {/* Reference count */}
+          {item.references?.length > 1 && (
+            <span className="absolute top-2 right-2 text-[9px] font-mono bg-black/50 text-zinc-300 px-1.5 py-0.5 rounded border border-white/[0.1] backdrop-blur-md">
+              {item.references.length} refs
+            </span>
+          )}
+        </div>
+
+        {/* Info */}
+        <div className="p-3 space-y-2">
+          <div>
+            <h4 className="text-xs font-medium text-zinc-200 mb-0.5 truncate">
+              {item.productName || 'Untitled'}
+            </h4>
+            {item.angle && (
+              <span className="text-[10px] text-zinc-500 line-clamp-1">{item.angle}</span>
+            )}
+          </div>
+          {!isGenerating && onRemove && (
+            <button
+              type="button"
+              onClick={() => onRemove(item.id)}
+              className="w-full py-1 rounded-md text-[10px] font-medium border border-red-500/20 text-red-400/70 hover:text-red-400 hover:bg-red-500/10 transition-colors cursor-pointer"
+            >
+              Cancel
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PipelineColumn({ column, items, onStatusChange, onCardClick, allCreatives, selectedForLaunch, onToggleSelect, queueItems, onRemoveFromQueue }) {
   const Icon = column.icon;
   const [dragOver, setDragOver] = useState(false);
 
@@ -289,17 +361,21 @@ function PipelineColumn({ column, items, onStatusChange, onCardClick, allCreativ
           </h3>
         </div>
         <span className={`text-[10px] font-mono px-2 py-0.5 rounded border ${column.badgeBg} ${column.badgeText} ${column.badgeBorder}`}>
-          {items.length}
+          {items.length + (queueItems?.length || 0)}
         </span>
       </div>
 
       {/* Scrollable card list */}
       <div className={`flex-1 overflow-y-auto pr-2 space-y-4 pb-4 custom-scrollbar transition-colors rounded-lg ${dragOver ? 'bg-white/[0.03] ring-1 ring-[#c9a84c]/30' : ''}`}>
-        {items.length === 0 && column.placeholder ? (
+        {/* Queue cards (only in generating column) */}
+        {queueItems?.map((qItem) => (
+          <QueueCard key={qItem.id} item={qItem} onRemove={onRemoveFromQueue} />
+        ))}
+        {items.length === 0 && !queueItems?.length && column.placeholder ? (
           <div className="h-32 border border-dashed border-white/[0.08] rounded-xl flex items-center justify-center text-sm text-zinc-600 italic bg-white/[0.01]">
             {column.placeholder}
           </div>
-        ) : items.length === 0 ? (
+        ) : items.length === 0 && !queueItems?.length ? (
           <div className="flex items-center justify-center h-32">
             <p className="text-xs text-zinc-600">No creatives</p>
           </div>
@@ -338,7 +414,7 @@ function PipelineColumn({ column, items, onStatusChange, onCardClick, allCreativ
 // Main PipelineView component
 // ---------------------------------------------------------------------------
 
-export function PipelineView({ creatives = [], onStatusChange, onCardClick, onRefresh, loading, onOpenTemplates, onOpenCopySets }) {
+export function PipelineView({ creatives = [], onStatusChange, onCardClick, onRefresh, loading, onOpenTemplates, onOpenCopySets, queue = [], onRemoveFromQueue }) {
   // Bucket creatives into columns by status
   // Variants (9:16 children) are shown as pills on their parent card, not as separate cards
   const buckets = useMemo(() => {
@@ -528,6 +604,8 @@ export function PipelineView({ creatives = [], onStatusChange, onCardClick, onRe
             allCreatives={creatives}
             selectedForLaunch={selectedForLaunch}
             onToggleSelect={toggleSelectForLaunch}
+            queueItems={col.key === 'generating' ? queue.filter(q => q.status === 'queued' || q.status === 'generating') : undefined}
+            onRemoveFromQueue={onRemoveFromQueue}
           />
         ))}
       </div>
