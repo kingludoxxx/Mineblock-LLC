@@ -506,13 +506,19 @@ export function buildNanoBananaPrompt(claudeResult, swapPairs, product, logoCoun
     return true;
   });
 
-  // Sort by priority, limit to MAX_SWAP_PAIRS to avoid overwhelming the model
-  // Key insight: 5 swaps = 9/10 quality, 10+ swaps = 3/10 quality
-  const MAX_SWAP_PAIRS = 7;
+  // Dynamic swap limit based on complexity:
+  // - Simple layouts (≤7 meaningful swaps): use all swaps, best quality
+  // - Complex layouts (8+ swaps): keep ALL swaps to prevent reference text bleed-through
+  //   Dropping swaps from complex layouts causes the reference product's text to remain visible
+  const isComplexLayout = meaningfulPairs.length > 7;
+  const MAX_SWAP_PAIRS = isComplexLayout ? 12 : 7; // complex = keep more, simple = keep tight
   const sortedPairs = [...meaningfulPairs].sort((a, b) => getFieldPriority(a.field) - getFieldPriority(b.field));
   const limitedPairs = sortedPairs.slice(0, MAX_SWAP_PAIRS);
   if (sortedPairs.length > MAX_SWAP_PAIRS) {
     console.log(`[buildNanoBananaPrompt] ⚠️ Limited swap pairs from ${sortedPairs.length} to ${MAX_SWAP_PAIRS} (dropped low-priority pairs)`);
+  }
+  if (isComplexLayout) {
+    console.log(`[buildNanoBananaPrompt] Complex layout detected (${meaningfulPairs.length} swaps) — using extended limit of ${MAX_SWAP_PAIRS}`);
   }
 
   // Truncate swap pairs that are too long — NanoBanana garbles long text
@@ -533,6 +539,11 @@ export function buildNanoBananaPrompt(claudeResult, swapPairs, product, logoCoun
     `  ${i + 1}. "${pair.original}" → "${pair.adapted}"`
   ).join('\n');
 
+  // For complex layouts, add a strong warning about reference product text
+  const complexWarning = isComplexLayout
+    ? `\n⚠️ CRITICAL: The reference ad is for a COMPLETELY DIFFERENT product. ALL text in your output must be about "${product.name}". If you see text about the reference product's category (hair, supplements, skincare, etc.), you MUST replace it with the swap text above. ZERO words from the original product should remain.`
+    : '';
+
   return `Edit the reference ad (LAST image). Replace the product with "${product.name}" (image 1).
 
 TEXT SWAPS — change these words EXACTLY:
@@ -544,5 +555,5 @@ RULES:
 - Show product ${claudeResult.product_orientation || 'front-facing'}, as in image 1.${productRulesSection}${logoInstruction}${visualLine}
 - ${characterRules}
 - Do NOT add extra elements (coins, sparkles, badges) not in the reference.
-- Background must match reference exactly.${co.absoluteRules ? `\n${co.absoluteRules}` : ''}`;
+- Background must match reference exactly.${complexWarning}${co.absoluteRules ? `\n${co.absoluteRules}` : ''}`;
 }
