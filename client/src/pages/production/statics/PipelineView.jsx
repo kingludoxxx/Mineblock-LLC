@@ -214,22 +214,37 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, variantSt
           )}
           {/* Action button */}
           {column.actionLabel && !onToggleSelect ? (
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                onStatusChange?.(creative.id, column.nextStatus);
-              }}
-              className={`w-full py-1.5 rounded-md text-xs font-medium border transition-colors cursor-pointer
-                ${column.color === 'green'
-                  ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20 hover:bg-emerald-500/20'
-                  : column.color === 'cyan'
-                    ? 'bg-cyan-500/10 text-cyan-400 border-cyan-500/20 hover:bg-cyan-500/20'
-                    : 'bg-white/[0.03] text-zinc-300 border-white/[0.05] hover:bg-white/[0.06]'
-                }`}
-            >
-              {column.actionLabel}
-            </button>
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onStatusChange?.(creative.id, column.nextStatus);
+                }}
+                className={`flex-1 py-1.5 rounded-md text-xs font-medium border transition-colors cursor-pointer
+                  ${column.color === 'green'
+                    ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20 hover:bg-emerald-500/20'
+                    : column.color === 'cyan'
+                      ? 'bg-cyan-500/10 text-cyan-400 border-cyan-500/20 hover:bg-cyan-500/20'
+                      : 'bg-white/[0.03] text-zinc-300 border-white/[0.05] hover:bg-white/[0.06]'
+                  }`}
+              >
+                {column.actionLabel}
+              </button>
+              {column.key === 'review' && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onStatusChange?.(creative.id, 'rejected');
+                  }}
+                  className="p-1.5 rounded-md border border-red-500/20 text-red-400/70 hover:text-red-400 hover:bg-red-500/10 transition-colors cursor-pointer"
+                  title="Reject"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
           ) : null}
         </div>
       </div>
