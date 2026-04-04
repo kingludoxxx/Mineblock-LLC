@@ -485,7 +485,7 @@ router.post('/generate', authenticate, async (req, res) => {
     console.log(`  [LAST] reference: ${finalReferenceUrl?.slice(0, 120)}`);
 
     const logoBackgroundTone = claudeResult.logo_background_tone || null;
-    const skipTextRendering = true; // Text will be overlaid programmatically after NanoBanana generation
+    const skipTextRendering = false; // Disabled: NanoBanana ignores skip-text instruction and renders text anyway, causing double-text. Re-enable when switching to a model that supports text-free generation (e.g. fal.ai inpainting).
     const nbPrompt = buildNanoBananaPrompt(claudeResult, swapPairs, product, logoUrls.length, customPrompts, layoutMap, logoBackgroundTone, skipTextRendering);
     console.log(`[staticsGeneration] skipTextRendering=${skipTextRendering} — text will be composited via textOverlay after generation`);
 
