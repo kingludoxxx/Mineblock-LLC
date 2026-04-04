@@ -1258,7 +1258,9 @@ RULES:
       if (custom.scriptParser.system) system = custom.scriptParser.system;
       if (custom.scriptParser.user) user = custom.scriptParser.user;
     }
-  } catch {}
+  } catch (customErr) {
+    console.warn('[BriefPipeline] Custom prompt load error:', customErr.message);
+  }
 
   return { system, user };
 }
@@ -1450,7 +1452,9 @@ ${scriptText}
       if (custom.iterationRules.system) rulesPrompt.system = custom.iterationRules.system;
       if (custom.iterationRules.user) rulesPrompt.user = custom.iterationRules.user;
     }
-  } catch {}
+  } catch (customErr) {
+    console.warn('[BriefPipeline] Custom prompt load error (deep analysis):', customErr.message);
+  }
 
   return { dnaPrompt, psychologyPrompt, rulesPrompt };
 }
@@ -1870,7 +1874,9 @@ Return ONLY valid JSON, no markdown fences, no explanation:
       if (custom.scriptClone.system) return { system: custom.scriptClone.system, user };
       if (custom.scriptClone.user) return { system, user: custom.scriptClone.user };
     }
-  } catch {}
+  } catch (customErr) {
+    console.warn('[BriefPipeline] Custom prompt load error:', customErr.message);
+  }
 
   return { system, user };
 }
@@ -2070,7 +2076,9 @@ Return ONLY valid JSON:
       if (custom.generator.system) system = custom.generator.system;
       if (custom.generator.user) user = custom.generator.user;
     }
-  } catch {}
+  } catch (customErr) {
+    console.warn('[BriefPipeline] Custom prompt load error:', customErr.message);
+  }
 
   return { system, user };
 }
@@ -2175,7 +2183,9 @@ Return ONLY valid JSON:
       if (custom.scorer.system) system = custom.scorer.system;
       if (custom.scorer.user) user = custom.scorer.user;
     }
-  } catch {}
+  } catch (customErr) {
+    console.warn('[BriefPipeline] Custom prompt load error:', customErr.message);
+  }
 
   return { system, user };
 }
@@ -2218,7 +2228,9 @@ A brief PASSES if overall_blend >= 6.5.`;
       if (custom.blendValidator.system) system = custom.blendValidator.system;
       if (custom.blendValidator.user) user = custom.blendValidator.user;
     }
-  } catch {}
+  } catch (customErr) {
+    console.warn('[BriefPipeline] Custom prompt load error:', customErr.message);
+  }
 
   return { system, user };
 }
@@ -2888,6 +2900,7 @@ router.post('/generate/:id', authenticate, async (req, res) => {
           if (sc) scores = sc;
         } catch (evalErr) {
           console.warn(`[BriefPipeline] Scoring/blend error for direction #${direction.id}:`, evalErr.message);
+          scores._scoring_failed = true;
         }
 
         // Incorporate blend validation into scores
