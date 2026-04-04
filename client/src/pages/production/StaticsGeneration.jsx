@@ -2054,93 +2054,6 @@ export default function StaticsGeneration() {
                   onOpenCopySets={() => setCopySetsOpen(true)}
                 />
 
-                {/* ---- 9:16 Variant Tracker ---- */}
-                {(() => {
-                  const parentCreatives = creatives.filter(c => !c.parent_creative_id && c.aspect_ratio !== '9:16');
-                  if (parentCreatives.length === 0) return null;
-                  const variants = creatives.filter(c => c.parent_creative_id && c.aspect_ratio === '9:16');
-                  const tracked = parentCreatives.map(p => {
-                    const v = variants.find(v => v.parent_creative_id === p.id);
-                    if (!v) return { parent: p, variant: null, status: 'none' };
-                    const status = v.status === 'generating' ? 'generating'
-                      : v.status === 'rejected' ? 'failed'
-                      : v.image_url ? 'done' : 'generating';
-                    return { parent: p, variant: v, status };
-                  });
-                  const counts = { generating: 0, done: 0, failed: 0, none: 0 };
-                  tracked.forEach(t => counts[t.status]++);
-                  return (
-                    <div className="bg-[#0d0d0d] border border-white/[0.06] rounded-lg mt-2 overflow-hidden">
-                      <button
-                        type="button"
-                        onClick={() => setVariantsExpanded(prev => !prev)}
-                        className="w-full flex items-center gap-2 p-3 cursor-pointer hover:bg-white/[0.02] transition-colors"
-                      >
-                        <ChevronRight className={`w-3 h-3 text-gray-500 transition-transform ${variantsExpanded ? 'rotate-90' : ''}`} />
-                        <span className="text-xs font-medium text-gray-300">9:16 Variants</span>
-                        <div className="flex items-center gap-1.5 ml-auto">
-                          {counts.done > 0 && (
-                            <span className="text-[10px] bg-emerald-500/15 text-emerald-400 px-1.5 py-0.5 rounded-full flex items-center gap-1">
-                              <Check className="w-2.5 h-2.5" />{counts.done}
-                            </span>
-                          )}
-                          {counts.generating > 0 && (
-                            <span className="text-[10px] bg-accent/15 text-accent-text px-1.5 py-0.5 rounded-full flex items-center gap-1">
-                              <Loader2 className="w-2.5 h-2.5 animate-spin" />{counts.generating}
-                            </span>
-                          )}
-                          {counts.failed > 0 && (
-                            <span className="text-[10px] bg-red-500/15 text-red-400 px-1.5 py-0.5 rounded-full flex items-center gap-1">
-                              <AlertCircle className="w-2.5 h-2.5" />{counts.failed}
-                            </span>
-                          )}
-                          {counts.none > 0 && (
-                            <span className="text-[10px] bg-gray-500/15 text-gray-500 px-1.5 py-0.5 rounded-full">{counts.none} pending</span>
-                          )}
-                        </div>
-                      </button>
-                      {variantsExpanded && <div className="space-y-1 px-3 pb-3">
-                        {tracked.map(({ parent, variant, status }) => (
-                          <div key={parent.id} className="flex items-center gap-2 text-[11px]">
-                            <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                              status === 'generating' ? 'bg-accent animate-pulse'
-                              : status === 'done' ? 'bg-emerald-400'
-                              : status === 'failed' ? 'bg-red-400'
-                              : 'bg-gray-600'
-                            }`} />
-                            <span className="text-gray-400 truncate flex-1">{parent.product_name || 'Untitled'} — {parent.angle || 'No angle'}</span>
-                            <span className={
-                              status === 'generating' ? 'text-accent-text'
-                              : status === 'done' ? 'text-emerald-400'
-                              : status === 'failed' ? 'text-red-400'
-                              : 'text-gray-600'
-                            }>
-                              {status === 'generating' ? 'Generating...'
-                                : status === 'done' ? 'Ready'
-                                : status === 'failed' ? 'Failed'
-                                : '—'}
-                            </span>
-                            {(status === 'failed' || status === 'none') && (
-                              <button
-                                type="button"
-                                onClick={async () => {
-                                  try {
-                                    await api.post(`/statics-generation/creatives/${parent.id}/create-variant`, { aspect_ratio: '9:16' });
-                                    fetchCreatives();
-                                  } catch {}
-                                }}
-                                className="text-[10px] text-accent-text hover:text-accent cursor-pointer shrink-0"
-                              >
-                                {status === 'failed' ? 'Retry' : 'Create'}
-                              </button>
-                            )}
-                          </div>
-                        ))}
-                      </div>}
-                    </div>
-                  );
-                })()}
-
                 {/* ---- Error State ---- */}
                 {error && !generating && (
                   <div className="bg-red-500/5 border border-red-500/20 rounded-lg p-6">
@@ -2212,6 +2125,92 @@ export default function StaticsGeneration() {
                 )}
 
                 {/* Saved References removed — references show in sidebar */}
+
+                {/* ---- 9:16 Variant Tracker (bottom, collapsed) ---- */}
+                {(() => {
+                  const parentCreatives = creatives.filter(c => !c.parent_creative_id && c.aspect_ratio !== '9:16');
+                  if (parentCreatives.length === 0) return null;
+                  const variants = creatives.filter(c => c.parent_creative_id && c.aspect_ratio === '9:16');
+                  const tracked = parentCreatives.map(p => {
+                    const v = variants.find(v => v.parent_creative_id === p.id);
+                    if (!v) return { parent: p, variant: null, status: 'none' };
+                    const status = v.status === 'generating' ? 'generating'
+                      : v.status === 'rejected' ? 'failed'
+                      : v.image_url ? 'done' : 'generating';
+                    return { parent: p, variant: v, status };
+                  });
+                  const counts = { generating: 0, done: 0, failed: 0, none: 0 };
+                  tracked.forEach(t => counts[t.status]++);
+                  return (
+                    <div className="mt-6 border-t border-white/[0.04] pt-4">
+                      <button
+                        type="button"
+                        onClick={() => setVariantsExpanded(prev => !prev)}
+                        className="w-full flex items-center gap-2 py-1.5 cursor-pointer hover:opacity-80 transition-opacity"
+                      >
+                        <ChevronRight className={`w-3 h-3 text-zinc-600 transition-transform ${variantsExpanded ? 'rotate-90' : ''}`} />
+                        <span className="text-[11px] text-zinc-600">9:16 Variants</span>
+                        <div className="flex items-center gap-1.5 ml-auto">
+                          {counts.done > 0 && (
+                            <span className="text-[10px] bg-emerald-500/10 text-emerald-500/60 px-1.5 py-0.5 rounded-full flex items-center gap-1">
+                              <Check className="w-2.5 h-2.5" />{counts.done}
+                            </span>
+                          )}
+                          {counts.generating > 0 && (
+                            <span className="text-[10px] bg-accent/10 text-accent-text/60 px-1.5 py-0.5 rounded-full flex items-center gap-1">
+                              <Loader2 className="w-2.5 h-2.5 animate-spin" />{counts.generating}
+                            </span>
+                          )}
+                          {counts.failed > 0 && (
+                            <span className="text-[10px] bg-red-500/10 text-red-400/60 px-1.5 py-0.5 rounded-full flex items-center gap-1">
+                              <AlertCircle className="w-2.5 h-2.5" />{counts.failed}
+                            </span>
+                          )}
+                        </div>
+                      </button>
+                      {variantsExpanded && (
+                        <div className="space-y-1 mt-2 pl-5">
+                          {tracked.map(({ parent, variant, status }) => (
+                            <div key={parent.id} className="flex items-center gap-2 text-[11px]">
+                              <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                                status === 'generating' ? 'bg-accent animate-pulse'
+                                : status === 'done' ? 'bg-emerald-400'
+                                : status === 'failed' ? 'bg-red-400'
+                                : 'bg-gray-600'
+                              }`} />
+                              <span className="text-gray-500 truncate flex-1">{parent.product_name || 'Untitled'} — {parent.angle || 'No angle'}</span>
+                              <span className={
+                                status === 'generating' ? 'text-accent-text/60'
+                                : status === 'done' ? 'text-emerald-400/60'
+                                : status === 'failed' ? 'text-red-400/60'
+                                : 'text-gray-600'
+                              }>
+                                {status === 'generating' ? 'Generating...'
+                                  : status === 'done' ? 'Ready'
+                                  : status === 'failed' ? 'Failed'
+                                  : '—'}
+                              </span>
+                              {(status === 'failed' || status === 'none') && (
+                                <button
+                                  type="button"
+                                  onClick={async () => {
+                                    try {
+                                      await api.post(`/statics-generation/creatives/${parent.id}/create-variant`, { aspect_ratio: '9:16' });
+                                      fetchCreatives();
+                                    } catch {}
+                                  }}
+                                  className="text-[10px] text-accent-text/50 hover:text-accent cursor-pointer shrink-0"
+                                >
+                                  {status === 'failed' ? 'Retry' : 'Create'}
+                                </button>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
             </div>
           )}
