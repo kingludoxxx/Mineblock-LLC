@@ -80,6 +80,21 @@ const MAX_TEMP_IMAGES = 200;
   }
 })();
 
+// Periodic cleanup: delete image_store entries older than 7 days (runs every 6 hours)
+setInterval(async () => {
+  try {
+    const result = await pgQuery(
+      "DELETE FROM image_store WHERE created_at < NOW() - INTERVAL '7 days' RETURNING id",
+      [], { timeout: 30000 }
+    );
+    if (result.length > 0) {
+      console.log(`[imageStore] Cleaned up ${result.length} expired images (>7 days old)`);
+    }
+  } catch (err) {
+    console.warn('[imageStore] Cleanup failed:', err.message);
+  }
+}, 6 * 60 * 60 * 1000); // Every 6 hours
+
 /**
  * Store image persistently in PostgreSQL + in-memory cache.
  * Returns the UUID used as the image key.
