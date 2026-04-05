@@ -42,28 +42,87 @@ function storeGeminiResult(taskId, result) {
   setTimeout(() => geminiResults.delete(taskId), GEMINI_RESULT_TTL);
 }
 
-// ── Temporary image store (serves base64 as HTTP URLs for NanoBanana) ──
+// ── Persistent image store (DB-backed, in-memory cache for speed) ──
 const tempImages = new Map();
-const TEMP_IMAGE_TTL = 10 * 60 * 1000; // 10 minutes
-const MAX_TEMP_IMAGES = 100;
+const TEMP_IMAGE_TTL = 30 * 60 * 1000; // 30 minutes in-memory cache
+const MAX_TEMP_IMAGES = 200;
 
-function storeTempImage(buf, contentType) {
+// Auto-create image_store table on first load (idempotent)
+(async () => {
+  try {
+    await pgQuery(`
+      CREATE TABLE IF NOT EXISTS image_store (
+        id TEXT PRIMARY KEY,
+        data BYTEA NOT NULL,
+        content_type TEXT NOT NULL DEFAULT 'image/png',
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `, [], { timeout: 15000 });
+    await pgQuery(
+      'CREATE INDEX IF NOT EXISTS idx_image_store_created ON image_store(created_at)',
+      [], { timeout: 10000 }
+    );
+    console.log('[imageStore] image_store table ready');
+  } catch (err) {
+    console.warn('[imageStore] Could not ensure image_store table:', err.message);
+  }
+})();
+
+/**
+ * Store image persistently in PostgreSQL + in-memory cache.
+ * Returns the UUID used as the image key.
+ */
+async function storeTempImage(buf, contentType) {
   if (tempImages.size >= MAX_TEMP_IMAGES) {
     const oldest = tempImages.keys().next().value;
     tempImages.delete(oldest);
   }
   const id = crypto.randomUUID();
+  // Cache in memory for fast serving
   tempImages.set(id, { buf, contentType });
   setTimeout(() => tempImages.delete(id), TEMP_IMAGE_TTL);
+  // Persist to DB so images survive server restarts
+  try {
+    await pgQuery(
+      'INSERT INTO image_store (id, data, content_type) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING',
+      [id, buf, contentType],
+      { timeout: 15000 }
+    );
+  } catch (err) {
+    console.warn('[storeTempImage] DB persist failed, image is memory-only:', err.message);
+  }
   return id;
 }
 
-router.get('/tmp-img/:id', (req, res) => {
+router.get('/tmp-img/:id', async (req, res) => {
+  // 1. Check in-memory cache first (fast path)
   const entry = tempImages.get(req.params.id);
-  if (!entry) return res.status(404).send('Expired or not found');
-  res.set('Content-Type', entry.contentType);
-  res.set('Cache-Control', 'no-store');
-  res.send(entry.buf);
+  if (entry) {
+    res.set('Content-Type', entry.contentType);
+    res.set('Cache-Control', 'public, max-age=86400');
+    return res.send(entry.buf);
+  }
+  // 2. Fall back to persistent DB store
+  try {
+    const rows = await pgQuery(
+      'SELECT data, content_type FROM image_store WHERE id = $1',
+      [req.params.id],
+      { timeout: 10000 }
+    );
+    if (rows.length > 0) {
+      const { data, content_type } = rows[0];
+      const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
+      // Re-populate memory cache
+      tempImages.set(req.params.id, { buf, contentType: content_type });
+      setTimeout(() => tempImages.delete(req.params.id), TEMP_IMAGE_TTL);
+      res.set('Content-Type', content_type);
+      res.set('Cache-Control', 'public, max-age=86400');
+      return res.send(buf);
+    }
+  } catch (err) {
+    console.warn('[tmp-img] DB lookup failed:', err.message);
+  }
+  return res.status(404).send('Expired or not found');
 });
 
 const ANTHROPIC_API_KEY   = process.env.ANTHROPIC_API_KEY || '';
@@ -218,7 +277,7 @@ async function ensureHttpUrlGlobal(url, label = 'img') {
     const key = `statics-${label}/${crypto.randomUUID()}.${ext}`;
     return await uploadBuffer(buf, key, m[1]);
   }
-  const id = storeTempImage(buf, m[1]);
+  const id = await storeTempImage(buf, m[1]);
   return `${SERVER_URL}/api/v1/statics-generation/tmp-img/${id}`;
 }
 
@@ -422,8 +481,8 @@ router.post('/generate', authenticate, async (req, res) => {
         console.log(`[staticsGeneration] Uploaded ${label} to R2: ${url}`);
         return url;
       }
-      // Fallback: self-host as temp image
-      const id = storeTempImage(buf, m[1]);
+      // Fallback: self-host as persistent DB image
+      const id = await storeTempImage(buf, m[1]);
       const url = `${SERVER_URL}/api/v1/statics-generation/tmp-img/${id}`;
       console.log(`[staticsGeneration] Stored ${label} as temp image: ${url}`);
       return url;
@@ -566,7 +625,7 @@ router.post('/generate', authenticate, async (req, res) => {
               resultImageUrl = await uploadBuffer(result.buffer, r2Key, result.mimeType);
               console.log(`[staticsGeneration] Gemini result uploaded to R2: ${resultImageUrl}`);
             } else {
-              const tmpId = storeTempImage(result.buffer, result.mimeType);
+              const tmpId = await storeTempImage(result.buffer, result.mimeType);
               const srvUrl = process.env.RENDER_EXTERNAL_URL || `http://localhost:${process.env.PORT || 3000}`;
               resultImageUrl = `${srvUrl}/api/v1/statics-generation/tmp-img/${tmpId}`;
             }
@@ -801,7 +860,7 @@ router.get('/status/:taskId', authenticate, async (req, res) => {
             resultImageUrl = r2Url;
             console.log(`[textOverlay] Composited image uploaded to R2: ${r2Url}`);
           } else {
-            const tmpId = storeTempImage(compositedBuffer, 'image/png');
+            const tmpId = await storeTempImage(compositedBuffer, 'image/png');
             resultImageUrl = `${STATUS_SERVER_URL}/api/v1/statics-generation/tmp-img/${tmpId}`;
             console.log(`[textOverlay] Composited image stored as temp: ${resultImageUrl}`);
           }
@@ -1001,7 +1060,7 @@ async function generateVariant(parent, newAspectRatio) {
           const key = `statics-variant-resize/${crypto.randomUUID()}.${ext}`;
           parentImageUrl = await uploadBuffer(buf, key, m[1]);
         } else {
-          const id = storeTempImage(buf, m[1]);
+          const id = await storeTempImage(buf, m[1]);
           parentImageUrl = `${VARIANT_SERVER_URL}/api/v1/statics-generation/tmp-img/${id}`;
         }
       } else {
