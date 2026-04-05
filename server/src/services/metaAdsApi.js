@@ -279,8 +279,8 @@ export async function createAdSet(adAccountId, params) {
     status,
     targeting: {
       geo_locations: targeting.countries ? { countries: targeting.countries } : { countries: ['US'] },
-      age_min: targeting.age_min ?? 18,
-      age_max: targeting.age_max ?? 65,
+      age_min: Math.max(18, Math.min(65, parseInt(targeting.age_min) || 18)),
+      age_max: Math.max(18, Math.min(65, parseInt(targeting.age_max) || 65)),
       ...(targeting.gender && targeting.gender !== 'all' ? { genders: [targeting.gender === 'male' ? 1 : 2] } : {}),
       ...(targeting.include_audiences?.length ? { custom_audiences: targeting.include_audiences.map(a => ({ id: a.id || a })) } : {}),
       ...(targeting.exclude_audiences?.length ? { excluded_custom_audiences: targeting.exclude_audiences.map(a => ({ id: a.id || a })) } : {}),
