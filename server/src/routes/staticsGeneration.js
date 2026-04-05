@@ -1259,10 +1259,12 @@ router.get('/creatives/:id', authenticate, async (req, res) => {
   }
 });
 
-// DELETE /creatives/:id — Delete creative
+// DELETE /creatives/:id — Delete creative (cascades to child variants)
 router.delete('/creatives/:id', authenticate, async (req, res) => {
   try {
     await ensureCreativesTable();
+    // Delete child variants first to avoid orphans
+    await pgQuery('DELETE FROM spy_creatives WHERE parent_creative_id = $1', [req.params.id]);
     const rows = await pgQuery('DELETE FROM spy_creatives WHERE id = $1 RETURNING id', [req.params.id]);
     if (rows.length === 0) return res.status(404).json({ success: false, error: { message: 'Creative not found' } });
     res.json({ success: true });
@@ -1537,30 +1539,46 @@ Return ONLY a JSON object with:
         if (!jsonMatch) throw new Error('Could not parse JSON from Claude response');
         const adjustResult = JSON.parse(jsonMatch[0]);
 
-        // Ensure image URL is HTTP-accessible for NanoBanana
-        const httpImageUrl = await ensureHttpUrlGlobal(creative.image_url, 'adjust-ref');
-
-        // Submit to NanoBanana
-        const nbRes = await fetch(`${NB_BASE}/createTask`, {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${NANOBANANA_API_KEY}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            model: 'google/nano-banana-edit',
-            input: {
-              prompt: adjustResult.adjusted_prompt,
-              image_urls: [httpImageUrl],
-              image_size: creative.aspect_ratio || '4:5',
-              output_format: 'png',
-            },
-          }),
-        });
-
-        if (!nbRes.ok) throw new Error(`NanoBanana error ${nbRes.status}: ${await nbRes.text()}`);
-        const nbData = await nbRes.json();
-        const taskId = nbData.taskId || nbData.data?.taskId;
-        if (!taskId) throw new Error('No taskId from NanoBanana');
-
-        const newImageUrl = await pollNanoBanana(taskId);
+        // Use Gemini for adjustment (same provider as main generation)
+        let newImageUrl;
+        if (isGeminiConfigured()) {
+          // Fetch current image as base64 for Gemini
+          const { base64, mediaType } = await resolveImage(creative.image_url);
+          const inputImages = [{ base64, mimeType: mediaType }];
+          const ratio = creative.aspect_ratio || '4:5';
+          console.log(`[ai-adjust] Using Gemini for adjustment, ratio: ${ratio}`);
+          const result = await editImage(adjustResult.adjusted_prompt, inputImages, ratio);
+          // Store result
+          if (isR2Configured()) {
+            const r2Key = `statics-adjust/${crypto.randomUUID()}.png`;
+            newImageUrl = await uploadBuffer(result.buffer, r2Key, result.mimeType);
+          } else {
+            const id = await storeTempImage(result.buffer, result.mimeType);
+            const srvUrl = process.env.RENDER_EXTERNAL_URL || `http://localhost:${process.env.PORT || 3000}`;
+            newImageUrl = `${srvUrl}/api/v1/statics-generation/tmp-img/${id}`;
+          }
+        } else {
+          // Fallback to NanoBanana
+          const httpImageUrl = await ensureHttpUrlGlobal(creative.image_url, 'adjust-ref');
+          const nbRes = await fetch(`${NB_BASE}/createTask`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${NANOBANANA_API_KEY}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              model: 'google/nano-banana-edit',
+              input: {
+                prompt: adjustResult.adjusted_prompt,
+                image_urls: [httpImageUrl],
+                image_size: creative.aspect_ratio || '4:5',
+                output_format: 'png',
+              },
+            }),
+          });
+          if (!nbRes.ok) throw new Error(`NanoBanana error ${nbRes.status}: ${await nbRes.text()}`);
+          const nbData = await nbRes.json();
+          const taskId = nbData.taskId || nbData.data?.taskId;
+          if (!taskId) throw new Error('No taskId from NanoBanana');
+          newImageUrl = await pollNanoBanana(taskId);
+        }
 
         await pgQuery(
           `UPDATE spy_creatives SET image_url = $1, generation_prompt = $2, review_notes = NULL, updated_at = NOW() WHERE id = $3`,

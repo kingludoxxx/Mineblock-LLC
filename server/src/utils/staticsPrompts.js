@@ -303,9 +303,9 @@ COPY QUALITY SELF-CHECK (run this mentally before returning):
    - SHORT text renders PERFECTLY. Long text renders BADLY. When in doubt, make it SHORTER.
    - A 3-word bullet like "No more bloating" should become "144 daily Bitcoin shots" (3-4 words) — NOT "144 real shots at a $300K Bitcoin block. Every single day." (too long!)
    - REWRITE any adapted text that exceeds the original character count by more than 20%
-10. BRAND NAME CHECK: Does any adapted text still contain the COMPETITOR's brand name? If yes, replace it with the product name from PRODUCT CONTEXT. Zero competitor branding in adapted text.
-11. COMPLETE THOUGHT CHECK: Read each adapted text. Does it end mid-sentence? "Crypto feels too" is INCOMPLETE. "Crypto is complex" is COMPLETE. "Splitting fees with" is INCOMPLETE. "No pool fees" is COMPLETE. EVERY adapted text must be a complete thought that makes sense on its own.
-12. REFERENCE CATEGORY CHECK: Does any adapted text contain words from the REFERENCE product's category (e.g. "hair", "gut", "mushroom", "belly", "shedding")? If yes, replace with words about YOUR product. Zero reference category terms in adapted text.
+11. BRAND NAME CHECK: Does any adapted text still contain the COMPETITOR's brand name? If yes, replace it with the product name from PRODUCT CONTEXT. Zero competitor branding in adapted text.
+12. COMPLETE THOUGHT CHECK: Read each adapted text. Does it end mid-sentence? "Crypto feels too" is INCOMPLETE. "Crypto is complex" is COMPLETE. "Splitting fees with" is INCOMPLETE. "No pool fees" is COMPLETE. EVERY adapted text must be a complete thought that makes sense on its own.
+13. REFERENCE CATEGORY CHECK: Does any adapted text contain words from the REFERENCE product's category (e.g. "hair", "gut", "mushroom", "belly", "shedding")? If yes, replace with words about YOUR product. Zero reference category terms in adapted text.
 
 ---
 
