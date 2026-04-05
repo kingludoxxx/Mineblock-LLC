@@ -115,12 +115,22 @@ export function CreativeDetailModal({
   const [aiPolling, setAiPolling] = useState(false);
   const [aiPollProgress, setAiPollProgress] = useState('');
 
-  // Abort polling when modal closes
+  // Reset state when creative changes or modal opens/closes
   const abortRef = useRef(false);
   useEffect(() => {
     abortRef.current = false;
+    setAiInstruction('');
+    setAiError(null);
+    setAiSuccess(false);
+    setAiPolling(false);
+    setAiPollProgress('');
+    setAiAdjusting(false);
+    setDebugOpen(false);
+    setLaunchHistoryOpen(false);
+    setActiveRatio('primary');
+    setRefLightbox(false);
     return () => { abortRef.current = true; };
-  }, [isOpen]);
+  }, [isOpen, creative?.id]);
 
   // Close on Escape key
   useEffect(() => {
