@@ -308,6 +308,7 @@ export async function createAdSet(adAccountId, params) {
     body.attribution_spec = [{ event_type: 'CLICK_THROUGH', window_days: 1 }];
   }
 
+  console.log('[createAdSet] targeting payload:', JSON.stringify(body.targeting));
   const res = await fetch(`${META_GRAPH_URL}/${adAccountId}/adsets`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -317,6 +318,7 @@ export async function createAdSet(adAccountId, params) {
 
   if (!res.ok) {
     const err = await res.text();
+    console.error('[createAdSet] Meta error:', err.slice(0, 1000));
     throw new Error(`Meta adset create error ${res.status}: ${err.slice(0, 500)}`);
   }
 

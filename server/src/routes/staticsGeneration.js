@@ -1938,7 +1938,17 @@ router.post('/launch', authenticate, async (req, res) => {
         conversionEvent: template.conversion_event,
         conversionLocation: template.conversion_location,
         targeting: {
-          countries: safeArr(template.countries).length ? safeArr(template.countries) : ['US'],
+          countries: (() => {
+            const raw = safeArr(template.countries);
+            // Normalize: extract plain 2-letter country codes from strings or objects
+            const codes = raw.map(c => {
+              if (typeof c === 'string') return c.trim().toUpperCase();
+              if (c && typeof c === 'object') return (c.code || c.id || c.value || '').toString().trim().toUpperCase();
+              return '';
+            }).filter(c => /^[A-Z]{2}$/.test(c));
+            console.log('[launch] raw countries from template:', JSON.stringify(template.countries), '→ parsed:', JSON.stringify(raw), '→ normalized:', JSON.stringify(codes));
+            return codes.length ? codes : ['US'];
+          })(),
           age_min: template.age_min,
           age_max: template.age_max,
           gender: template.gender,

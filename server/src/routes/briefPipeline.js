@@ -4428,6 +4428,12 @@ router.post('/launch-templates', authenticate, async (req, res) => {
   try {
     await ensureLaunchTables();
     const t = req.body;
+    // Helper: ensure value is a proper JS array (not a string) for JSONB columns
+    const ensureArr = (v, fallback = []) => {
+      if (Array.isArray(v)) return v;
+      if (typeof v === 'string') { try { let p = JSON.parse(v); if (typeof p === 'string') p = JSON.parse(p); return Array.isArray(p) ? p : fallback; } catch { return fallback; } }
+      return fallback;
+    };
     const rows = await pgQuery(
       `INSERT INTO launch_templates (
         name, ad_account_id, ad_account_name, page_mode, page_ids,
@@ -4443,7 +4449,7 @@ router.post('/launch-templates', authenticate, async (req, res) => {
       ) RETURNING *`,
       [
         t.name, t.ad_account_id, t.ad_account_name, t.page_mode || 'single',
-        JSON.stringify(t.page_ids || []),
+        JSON.stringify(ensureArr(t.page_ids)),
         t.pixel_id, t.pixel_name, t.campaign_id, t.campaign_name,
         t.adset_name_pattern || '{date} - {angle} - Batch {batch}',
         t.ad_name_pattern || '{date} - {angle} {num}',
@@ -4452,11 +4458,11 @@ router.post('/launch-templates', authenticate, async (req, res) => {
         t.optimization_goal || 'OFFSITE_CONVERSIONS',
         t.bid_strategy || 'LOWEST_COST_WITHOUT_CAP', t.target_roas || null,
         t.attribution_window || '7d_click',
-        JSON.stringify(t.include_audiences || []), JSON.stringify(t.exclude_audiences || []),
-        JSON.stringify(t.countries || ['US']), t.age_min || 18, t.age_max || 65,
+        JSON.stringify(ensureArr(t.include_audiences)), JSON.stringify(ensureArr(t.exclude_audiences)),
+        JSON.stringify(ensureArr(t.countries, ['US'])), t.age_min || 18, t.age_max || 65,
         t.gender || 'all', t.ad_format || 'FLEXIBLE', t.utm_parameters || '',
         t.landing_page_url || null,
-        JSON.stringify(t.translation_languages || []),
+        JSON.stringify(ensureArr(t.translation_languages)),
         t.product_id || null, t.is_default || false, req.user?.id || null
       ]
     );
@@ -4470,6 +4476,11 @@ router.put('/launch-templates/:id', authenticate, async (req, res) => {
   try {
     await ensureLaunchTables();
     const t = req.body;
+    const ensureArr = (v, fallback = []) => {
+      if (Array.isArray(v)) return v;
+      if (typeof v === 'string') { try { let p = JSON.parse(v); if (typeof p === 'string') p = JSON.parse(p); return Array.isArray(p) ? p : fallback; } catch { return fallback; } }
+      return fallback;
+    };
     const rows = await pgQuery(
       `UPDATE launch_templates SET
         name=$1, ad_account_id=$2, ad_account_name=$3, page_mode=$4, page_ids=$5,
@@ -4483,18 +4494,18 @@ router.put('/launch-templates/:id', authenticate, async (req, res) => {
       WHERE id=$32 RETURNING *`,
       [
         t.name, t.ad_account_id, t.ad_account_name, t.page_mode || 'single',
-        JSON.stringify(t.page_ids || []),
+        JSON.stringify(ensureArr(t.page_ids)),
         t.pixel_id, t.pixel_name, t.campaign_id, t.campaign_name,
         t.adset_name_pattern, t.ad_name_pattern,
         t.conversion_location, t.conversion_event,
         t.daily_budget, t.performance_goal, t.optimization_goal,
         t.bid_strategy, t.target_roas || null,
         t.attribution_window,
-        JSON.stringify(t.include_audiences || []), JSON.stringify(t.exclude_audiences || []),
-        JSON.stringify(t.countries || ['US']), t.age_min, t.age_max,
+        JSON.stringify(ensureArr(t.include_audiences)), JSON.stringify(ensureArr(t.exclude_audiences)),
+        JSON.stringify(ensureArr(t.countries, ['US'])), t.age_min, t.age_max,
         t.gender, t.ad_format, t.utm_parameters,
         t.landing_page_url || null,
-        JSON.stringify(t.translation_languages || []),
+        JSON.stringify(ensureArr(t.translation_languages)),
         t.product_id || null, t.is_default || false, req.params.id
       ]
     );
