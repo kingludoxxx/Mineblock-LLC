@@ -1851,7 +1851,7 @@ function buildLaunchName(pattern, vars) {
   let result = pattern;
   for (const [key, val] of Object.entries(vars)) {
     // Escape $ in replacement value to prevent regex substitution codes
-    const safeVal = (val || '').replace(/\$/g, '$$$$');
+    const safeVal = String(val ?? '').replace(/\$/g, '$$$$');
     result = result.replace(new RegExp(`\\{${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\}`, 'g'), safeVal);
   }
   return result.trim();
