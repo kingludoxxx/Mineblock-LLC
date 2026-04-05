@@ -610,7 +610,8 @@ router.post('/generate', authenticate, async (req, res) => {
     const nbPrompt = buildNanoBananaPrompt(claudeResult, swapPairs, product, logoUrls.length, customPrompts, layoutMap, logoBackgroundTone, skipTextRendering, templateData);
 
     // Send: product images, then logos, then reference ad (last)
-    const imageUrls = [finalProductUrl, ...extraProductUrls, ...logoUrls, finalReferenceUrl];
+    // Filter out null/undefined entries — NanoBanana requires all URLs to be valid strings
+    const imageUrls = [finalProductUrl, ...extraProductUrls, ...logoUrls, finalReferenceUrl].filter(Boolean);
     console.log(`[staticsGeneration] Prompt:\n${nbPrompt}`);
     console.log(`[staticsGeneration] Total images: ${imageUrls.length} (${extraProductUrls.length} extra product, ${logoUrls.length} logos)`);
 
