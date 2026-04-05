@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react';
-import { Plus, ScanSearch, MousePointerSquareDashed, EyeOff, AlertCircle, X, Check, Trash2, Zap } from 'lucide-react';
+import { ScanSearch, MousePointerSquareDashed, EyeOff, AlertCircle, X, Check, Trash2, Zap } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
 // Categories
@@ -406,13 +406,7 @@ export function LibraryView({
               </button>
             )}
 
-            <button
-              onClick={onAddReference}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-accent text-white hover:bg-accent-hover transition-colors cursor-pointer"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              Add Reference
-            </button>
+            {/* Add Reference button removed — templates are pre-loaded in library */}
           </div>
         </div>
 
