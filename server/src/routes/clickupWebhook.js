@@ -303,47 +303,8 @@ async function handleTaskCreated(taskId) {
     logger.info(`[ClickUp Webhook] Skipping auto-naming for brief-pipeline task ${taskId}`);
   }
 
-  // ── Frame.io: Create folder and set link on ClickUp task ──
-  // Creates a Frame.io folder for the Video Ads task (skip for YT duplicates)
-  if (isYtDuplicate) return;
-  try {
-    if (!FRAMEIO_TOKEN) {
-      logger.warn('[ClickUp Webhook] Skipping Frame.io folder — no token configured');
-      return;
-    }
-
-    // Check if frame link already exists (don't overwrite)
-    const existingFrameLink = task.custom_fields?.find(
-      (f) => f.id === 'd90f9f25-d7a0-4eb4-9ded-aca0b4519a3b'
-    )?.value;
-    if (existingFrameLink) {
-      logger.info(`[ClickUp Webhook] Frame link already set for ${taskId}, skipping`);
-      return;
-    }
-
-    const rootFolderId = await getProjectRootFolder();
-    if (!rootFolderId) {
-      logger.error('[ClickUp Webhook] Could not get Frame.io project root folder');
-      return;
-    }
-
-    // Use the full task name as folder name (e.g. "MR - B0139 - IT - B0067 - ...")
-    const folderName = task.name || taskId;
-
-    const result = await createFrameFolder(rootFolderId, folderName);
-    if (!result) {
-      logger.error(`[ClickUp Webhook] Failed to create Frame.io folder for ${taskId}`);
-      return;
-    }
-
-    // Set the Ads Frame Link custom field on the ClickUp task
-    await setCustomField(taskId, 'd90f9f25-d7a0-4eb4-9ded-aca0b4519a3b', result.folderUrl);
-
-    logger.info(`[ClickUp Webhook] Created Frame.io folder "${folderName}" → ${result.folderUrl} and set on task ${taskId}`);
-  } catch (frameErr) {
-    // Don't fail the whole webhook if Frame.io fails
-    logger.error(`[ClickUp Webhook] Frame.io error for task ${taskId}: ${frameErr.message}`);
-  }
+  // Frame.io folder creation is now handled on status change to "editing"
+  // (see handleEditingStatusChange below)
 }
 
 // Handle custom field changes — regenerate naming convention
@@ -488,16 +449,84 @@ async function ensureMediaBuyingTask(task, taskListId) {
   }
 }
 
+// ── Frame.io: Create folder when task moves to "editing" ──────────────
+async function handleEditingStatusChange(taskId, task) {
+  if (!FRAMEIO_TOKEN) {
+    logger.warn('[ClickUp Webhook] Skipping Frame.io folder — no token configured');
+    return;
+  }
+
+  // Skip YT duplicates
+  if (task.description?.includes('[yt-duplicate]')) return;
+
+  // Only for Video Ads list
+  if (!NAMING_LISTS.includes(task.list?.id)) return;
+
+  // Check if frame link already exists AND points to a folder named after this task
+  // (not inherited from a parent/reference)
+  const existingFrameLink = task.custom_fields?.find(
+    (f) => f.id === 'd90f9f25-d7a0-4eb4-9ded-aca0b4519a3b'
+  )?.value;
+
+  if (existingFrameLink) {
+    // Verify the existing link is actually for THIS task, not the parent reference
+    // Extract asset ID from the URL and check if the folder name matches the task name
+    try {
+      const assetIdMatch = existingFrameLink.match(/\/([a-f0-9-]{36})$/);
+      if (assetIdMatch) {
+        const assetId = assetIdMatch[1];
+        const asset = await frameioFetch(`/assets/${assetId}`);
+        if (asset?.name === task.name) {
+          logger.info(`[ClickUp Webhook] Frame.io folder already exists for ${taskId} with correct name, skipping`);
+          return;
+        }
+        logger.info(`[ClickUp Webhook] Frame.io link exists but folder name "${asset?.name}" doesn't match task "${task.name}" — creating new folder`);
+      }
+    } catch (err) {
+      logger.warn(`[ClickUp Webhook] Could not verify existing Frame.io link for ${taskId}: ${err.message}`);
+    }
+  }
+
+  try {
+    const rootFolderId = await getProjectRootFolder();
+    if (!rootFolderId) {
+      logger.error('[ClickUp Webhook] Could not get Frame.io project root folder');
+      return;
+    }
+
+    // Use the full task name as folder name
+    const folderName = task.name || taskId;
+
+    const result = await createFrameFolder(rootFolderId, folderName);
+    if (!result) {
+      logger.error(`[ClickUp Webhook] Failed to create Frame.io folder for ${taskId}`);
+      return;
+    }
+
+    // Set the Ads Frame Link custom field on the ClickUp task
+    await setCustomField(taskId, 'd90f9f25-d7a0-4eb4-9ded-aca0b4519a3b', result.folderUrl);
+
+    logger.info(`[ClickUp Webhook] Created Frame.io folder "${folderName}" → ${result.folderUrl} for task ${taskId} (on editing)`);
+  } catch (frameErr) {
+    logger.error(`[ClickUp Webhook] Frame.io error for task ${taskId}: ${frameErr.message}`);
+  }
+}
+
 // Handle status sync between linked tasks
 async function handleStatusSync(taskId, historyItems) {
   const statusChange = historyItems?.find((h) => h.field === 'status');
   if (!statusChange) return;
 
   const newStatus = statusChange.after?.status?.toLowerCase();
-  if (!newStatus || !SYNC_STATUSES.includes(newStatus)) return;
+  if (!newStatus) return;
 
   const task = await getTask(taskId);
   const taskListId = task.list?.id;
+
+  // When a task moves to "editing", create Frame.io folder
+  if (newStatus === 'editing') {
+    await handleEditingStatusChange(taskId, task);
+  }
 
   if (!SYNC_LISTS.includes(taskListId)) return;
 
@@ -505,6 +534,8 @@ async function handleStatusSync(taskId, historyItems) {
   if (newStatus === 'ready to launch') {
     await ensureYoutubeTask(task, taskListId);
   }
+
+  if (!SYNC_STATUSES.includes(newStatus)) return;
 
   const linkedTasks = task.linked_tasks || [];
   if (linkedTasks.length === 0) return;
@@ -669,6 +700,81 @@ router.post('/register', async (req, res) => {
     res.json({ success: true, webhook: result });
   } catch (err) {
     logger.error(`[ClickUp Webhook] Failed to register webhook: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/v1/clickup-webhook/frame-diagnose — check Frame.io token and project access
+router.get('/frame-diagnose', async (req, res) => {
+  const results = { token_set: !!FRAMEIO_TOKEN, project_id: FRAMEIO_PROJECT_ID };
+
+  if (!FRAMEIO_TOKEN) {
+    return res.json({ ...results, error: 'FRAMEIO_TOKEN not set' });
+  }
+
+  try {
+    // Try to get the user/account info first
+    const me = await frameioFetch('/me');
+    results.user = { id: me?.id, email: me?.email, name: me?.name };
+    results.account_id = me?.account_id;
+
+    // Try listing teams
+    try {
+      const accounts = await frameioFetch('/accounts');
+      results.accounts = Array.isArray(accounts) ? accounts.map(a => ({ id: a.id, name: a.name })) : accounts;
+    } catch (e) {
+      results.accounts_error = e.message;
+    }
+
+    // Try accessing the project directly
+    try {
+      const project = await frameioFetch(`/projects/${FRAMEIO_PROJECT_ID}`);
+      results.project = { id: project?.id, name: project?.name, root_asset_id: project?.root_asset_id };
+    } catch (e) {
+      results.project_error = e.message;
+
+      // If project fails, try listing projects from the account
+      if (me?.account_id) {
+        try {
+          const teams = await frameioFetch(`/accounts/${me.account_id}/teams`);
+          results.teams = Array.isArray(teams) ? teams.map(t => ({ id: t.id, name: t.name })) : [];
+          // Try to find projects
+          for (const team of (Array.isArray(teams) ? teams.slice(0, 3) : [])) {
+            try {
+              const projects = await frameioFetch(`/teams/${team.id}/projects`);
+              results[`team_${team.name}_projects`] = Array.isArray(projects) ? projects.map(p => ({ id: p.id, name: p.name })) : [];
+            } catch { /* skip */ }
+          }
+        } catch (te) {
+          results.teams_error = te.message;
+        }
+      }
+    }
+
+    res.json(results);
+  } catch (err) {
+    results.error = err.message;
+    res.status(500).json(results);
+  }
+});
+
+// GET /api/v1/clickup-webhook/fix-frame/:taskId — create Frame.io folder for a task and set the link
+router.get('/fix-frame/:taskId', async (req, res) => {
+  const { taskId } = req.params;
+  try {
+    if (!FRAMEIO_TOKEN) {
+      return res.status(400).json({ error: 'FRAMEIO_TOKEN not set' });
+    }
+
+    const task = await getTask(taskId);
+    await handleEditingStatusChange(taskId, task);
+
+    // Re-fetch to get the updated link
+    const updated = await getTask(taskId);
+    const frameLink = updated.custom_fields?.find(f => f.id === 'd90f9f25-d7a0-4eb4-9ded-aca0b4519a3b')?.value;
+    res.json({ success: true, taskId, taskName: task.name, frameLink });
+  } catch (err) {
+    logger.error(`[ClickUp Webhook] Fix frame failed for ${taskId}: ${err.message}`);
     res.status(500).json({ error: err.message });
   }
 });
