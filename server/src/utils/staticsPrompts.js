@@ -255,7 +255,7 @@ TEXT EXTRACTION RULES:
 - Only extract text ACTUALLY VISIBLE in the image — do NOT hallucinate text
 - Extract ALL text: brand name, headline, subheadline, body, CTA buttons, review counts, star ratings, price badges, discount %, feature callouts, comparison labels, fine print
 - ⚠️ LANGUAGE RULE: ALL adapted_text MUST be in ENGLISH regardless of the reference ad's language. If the reference is in Spanish, French, German, Portuguese, or ANY non-English language, you MUST translate the meaning and rewrite the adapted text in English. The output ad is ALWAYS in English. NEVER keep non-English text in adapted_text.
-- Progress/timeline labels ("Day 0", "Day 45", "Before", "After") stay as-is — do NOT extract or swap them
+- Progress/timeline labels ("Before", "After") stay as-is — BUT timeline DURATION labels ("Day 45", "3-4 mo.", "6 months", "Week 2") MUST be extracted and adapted to match the new product's realistic timeline. If the reference shows "3-6 months" but the product works in weeks, change to "4-8 weeks". Always use realistic timeframes from PRODUCT CONTEXT.
 - Prices extracted exactly and adapted with real product price
 - Multi-line headlines kept as one string with natural line breaks
 - Generic labels like "SPECIAL DEAL", "THIS WEEK ONLY", "FREE SHIPPING" stay exactly as-is — BUT discount codes (e.g. "Use code XYZ") are NOT generic labels and MUST be replaced with the product's actual discount code
@@ -312,9 +312,16 @@ COPY QUALITY SELF-CHECK (run this mentally before returning):
 VISUAL ANALYSIS:
 For each visual element, note:
 - What it shows in original (e.g. "3 belly transformation photos in grid")
-- What it SHOULD show for new product
+- The CONCEPT/NARRATIVE behind it (e.g. "progressive improvement over time", "side-by-side comparison showing superiority", "ingredient callouts with arrows")
+- What it SHOULD show for new product — adapt the CONCEPT, not just the literal image. Example: eggplants getting bigger = "progressive body improvement" → for an estrogen blocker, show chest fat reducing over time. The visual metaphor must match the NEW product's story.
 - Where in layout
 - Generic (keep) or angle-specific (must change)
+
+SPECIAL AD PATTERNS — detect and handle these:
+1. COMPARISON ADS (multi-column): If the reference shows 2-3 products side by side with stats/specs in columns, extract ALL comparison data. In adapted_text, replace with product-relevant comparison categories (e.g. protein stats → ingredient quality comparisons). Use "stats" and "comparison_labels" arrays.
+2. PROGRESSION/TIMELINE ADS: If the reference shows before/after progression with timeline markers, adapt BOTH the visual metaphor AND the timeline units to match the new product. Put timeline labels in "stats" array.
+3. INGREDIENT CALLOUT ADS: If the reference shows ingredient names with arrows pointing to a product, extract ALL ingredient names. Replace with the new product's REAL ingredients from PRODUCT CONTEXT. Put them in "bullets" array.
+4. FEATURE BUBBLE ADS: If the reference has feature callout bubbles/icons around a product, extract the feature text AND describe each icon. Adapt both text and icon descriptions for the new product. Put them in "badges" array.
 
 PRODUCT ORIENTATION: Look at how the product is shown in the reference image. Describe its angle/orientation in the "product_orientation" field:
 - "front-facing" = product shown straight-on, symmetrical
@@ -383,7 +390,8 @@ Return ONLY valid JSON (no markdown, no code fences):
   "visual_adaptations": [
     {
       "original_visual": "what the image shows in the reference",
-      "adapted_visual": "what it should show for this product",
+      "visual_concept": "the narrative purpose (e.g. 'progressive improvement', 'ingredient breakdown', 'before/after comparison')",
+      "adapted_visual": "what it should show for this product — adapt the CONCEPT to match the new product's story",
       "position": "where in the layout",
       "is_angle_specific": true
     }
@@ -530,7 +538,10 @@ ${templateData.deep_analysis.adaptation_instructions?.common_failure_modes?.leng
   // Only include the MUST CHANGE visual adaptations (skip keep-as-is ones)
   const mustChangeVisuals = (visual_adaptations || []).filter(v => v.is_angle_specific);
   const visualLine = mustChangeVisuals.length > 0
-    ? `\nVisual changes: ${mustChangeVisuals.map(v => `${v.position}: replace "${v.original_visual}" with "${v.adapted_visual}"`).join('; ')}`
+    ? `\nVisual changes: ${mustChangeVisuals.map(v => {
+        const concept = v.visual_concept ? ` (concept: ${v.visual_concept})` : '';
+        return `${v.position}: replace "${v.original_visual}" with "${v.adapted_visual}"${concept}`;
+      }).join('; ')}`
     : '';
 
   // Prioritize swap pairs — NanoBanana handles fewer swaps more accurately
@@ -634,5 +645,6 @@ ${swapSectionFinal || '(No text changes)'}${bannedWords}
 
 LAYOUT RULES:
 - Keep EXACT same layout, background, colors, fonts, positions.${visualLine}
-- Spell every word correctly with proper spacing between words.${co.absoluteRules ? `\n${co.absoluteRules}` : ''}`;
+- Spell every word correctly with proper spacing between words.
+- PRODUCT LABEL: The product image (FIRST image) already has its real label/packaging. Copy it EXACTLY as provided — do NOT modify, redesign, or add text to the product packaging.${co.absoluteRules ? `\n${co.absoluteRules}` : ''}`;
 }
