@@ -289,6 +289,7 @@ export async function createAdSet(adAccountId, params) {
       ...(targeting.include_audiences?.length ? { custom_audiences: targeting.include_audiences.map(a => ({ id: a.id || a })) } : {}),
       ...(targeting.exclude_audiences?.length ? { excluded_custom_audiences: targeting.exclude_audiences.map(a => ({ id: a.id || a })) } : {}),
     },
+    is_dynamic_creative: true,
     destination_type: conversionLocation || 'WEBSITE',
     ...(pixelId ? {
       promoted_object: {
