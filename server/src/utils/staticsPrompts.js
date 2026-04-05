@@ -347,6 +347,8 @@ Return ONLY valid JSON (no markdown, no code fences):
     "stats": [],
     "other_text": []
   },
+  "reference_product_category": "the category/niche of the REFERENCE ad product (e.g. 'hearing aids', 'hair supplements', 'skincare', 'coffee')",
+  "reference_product_keywords": ["list", "of", "category-specific", "words", "from", "reference", "that", "must", "NOT", "appear", "in", "output"],
   "people_count": 0,
   "product_count": 0,
   "product_orientation": "front-facing|angled-left|angled-right|top-down|tilted",
@@ -556,10 +558,19 @@ export function buildNanoBananaPrompt(claudeResult, swapPairs, product, logoCoun
     ? `\n⚠️ CRITICAL: The reference ad is for a COMPLETELY DIFFERENT product. ALL text in your output must be about "${product.name}". If you see text about the reference product's category (hair, supplements, skincare, etc.), you MUST replace it with the swap text above. ZERO words from the original product should remain.`
     : '';
 
+  // Build banned text section from Claude's reference analysis
+  const refCategory = claudeResult.reference_product_category || '';
+  const refKeywords = claudeResult.reference_product_keywords || [];
+  const bannedTextSection = refCategory || refKeywords.length > 0
+    ? `\n\n⛔ BANNED TEXT — the reference ad is about "${refCategory}". These words must NEVER appear in your output: ${refKeywords.length > 0 ? refKeywords.map(w => `"${w}"`).join(', ') : refCategory}. If you see ANY of these words in the reference image, replace them with the swap text above or remove them. ZERO reference product text in the output.`
+    : '';
+
   return `Edit the reference ad (LAST image). Replace the product with "${product.name}" (image 1).
 
-TEXT SWAPS — change these words EXACTLY:
+TEXT SWAPS — replace ALL text in the reference with these EXACT words:
 ${swapSectionFinal || '(No text changes)'}
+
+⚠️ CRITICAL: You MUST replace EVERY piece of text in the reference image. The reference ad is for a COMPLETELY DIFFERENT product${refCategory ? ` ("${refCategory}")` : ''}. Your output must contain ZERO words from the reference product. If ANY text in your output still mentions the reference product, you have FAILED. Read every word in the reference, find its replacement in the swap list above, and render ONLY the replacement text.${bannedTextSection}
 
 RULES:
 - Spell "${product.name}" exactly: ${product.name.split('').join('-')}. NOT "MineBlock" or "MinerBlorge".
@@ -567,5 +578,6 @@ RULES:
 - Show product ${claudeResult.product_orientation || 'front-facing'}, as in image 1.${productRulesSection}${logoInstruction}${visualLine}
 - ${characterRules}
 - Do NOT add extra elements (coins, sparkles, badges) not in the reference.
-- Background must match reference exactly.${complexWarning}${co.absoluteRules ? `\n${co.absoluteRules}` : ''}`;
+- Background must match reference exactly.
+- ANY text not listed in the swap list that refers to the reference product MUST be removed or replaced with "${product.name}" text.${complexWarning}${co.absoluteRules ? `\n${co.absoluteRules}` : ''}`;
 }
