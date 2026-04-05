@@ -281,10 +281,12 @@ export async function createAdSet(adAccountId, params) {
       ...(targeting.exclude_audiences?.length ? { excluded_custom_audiences: targeting.exclude_audiences.map(a => ({ id: a.id || a })) } : {}),
     },
     destination_type: conversionLocation || 'WEBSITE',
-    promoted_object: {
-      pixel_id: pixelId,
-      custom_event_type: conversionEvent,
-    },
+    ...(pixelId ? {
+      promoted_object: {
+        pixel_id: pixelId,
+        ...(conversionEvent ? { custom_event_type: conversionEvent } : {}),
+      },
+    } : {}),
   };
 
   if (dailyBudget) body.daily_budget = Math.round(dailyBudget * 100); // cents
@@ -368,19 +370,19 @@ export async function createFlexibleAdCreative(adAccountId, params) {
         // Feed / in-stream placements → 4:5 image
         customization_spec: {
           publisher_platforms: ['facebook', 'instagram'],
-          facebook_positions: ['feed', 'marketplace', 'video_feeds', 'search', 'right_hand_column'],
-          instagram_positions: ['stream', 'explore', 'explore_home', 'profile_feed'],
+          facebook_positions: ['feed', 'marketplace', 'search', 'right_hand_column'],
+          instagram_positions: ['stream', 'explore', 'profile_feed'],
         },
-        image_hash: feedHash,
+        images: [{ hash: feedHash }],
       },
       {
         // Stories / Reels placements → 9:16 image
         customization_spec: {
           publisher_platforms: ['facebook', 'instagram'],
-          facebook_positions: ['story', 'facebook_reels'],
+          facebook_positions: ['story', 'reels'],
           instagram_positions: ['story', 'reels'],
         },
-        image_hash: verticalImageHash,
+        images: [{ hash: verticalImageHash }],
       },
     ];
   }

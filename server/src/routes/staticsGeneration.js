@@ -1903,11 +1903,12 @@ router.post('/launch', authenticate, async (req, res) => {
     const batchNum = Math.floor(Date.now() / 1000) % 10000;
     const results = [];
 
-    // Helper to safely parse JSONB arrays that may come back as strings
-    const safeJsonArr = (v) => { if (Array.isArray(v)) return v; if (typeof v === 'string') { try { const p = JSON.parse(v); return Array.isArray(p) ? p : []; } catch { return []; } } return []; };
+    // Helpers to safely parse JSONB that may come back as strings
+    const safeArr = (v) => { if (Array.isArray(v)) return v; if (typeof v === 'string') { try { const p = JSON.parse(v); return Array.isArray(p) ? p : []; } catch { return []; } } return []; };
+    const safeObj = (v) => { if (v && typeof v === 'object' && !Array.isArray(v)) return v; if (typeof v === 'string') { try { const p = JSON.parse(v); return (p && typeof p === 'object') ? p : {}; } catch { return {}; } } return {}; };
 
     // Round-robin page selection
-    const selectedPages = safeJsonArr(template.page_ids).filter(p => p.selected !== false);
+    const selectedPages = safeArr(template.page_ids).filter(p => p.selected !== false);
 
     // Create ad set for this batch
     let adsetId = null;
@@ -2004,9 +2005,6 @@ router.post('/launch', authenticate, async (req, res) => {
         }
 
         // Determine ad copy: copy set > generated_copy > fallbacks
-        // Helper to safely parse JSONB that may be a string
-        const safeArr = (v) => { if (Array.isArray(v)) return v; if (typeof v === 'string') { try { const p = JSON.parse(v); return Array.isArray(p) ? p : []; } catch { return []; } } return []; };
-        const safeObj = (v) => { if (v && typeof v === 'object' && !Array.isArray(v)) return v; if (typeof v === 'string') { try { const p = JSON.parse(v); return (p && typeof p === 'object') ? p : {}; } catch { return {}; } } return {}; };
         const genCopy = safeObj(creative.generated_copy);
         const csPrimaryTexts = safeArr(copySet?.primary_texts);
         const csHeadlines = safeArr(copySet?.headlines);

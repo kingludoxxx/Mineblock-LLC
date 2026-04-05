@@ -863,7 +863,7 @@ export function PipelineView({ creatives = [], onStatusChange, onAngleChange, on
 
   // Execute launch
   const executeLaunch = async () => {
-    if (!pendingLaunch || !selectedTemplateId) return;
+    if (!pendingLaunch || !selectedTemplateId || !selectedCopySetId) return;
     setLaunching(true);
     setLaunchError(null);
     try {
@@ -1036,7 +1036,7 @@ export function PipelineView({ creatives = [], onStatusChange, onAngleChange, on
               <button onClick={() => { setLaunchModalOpen(false); setPendingLaunch(null); }} disabled={launching} className="text-xs text-zinc-400 hover:text-white px-3 py-2 cursor-pointer">Cancel</button>
               <button
                 onClick={executeLaunch}
-                disabled={launching || !selectedTemplateId}
+                disabled={launching || !selectedTemplateId || !selectedCopySetId}
                 className="inline-flex items-center gap-1.5 bg-emerald-500 hover:bg-emerald-600 text-white text-xs font-semibold px-4 py-2 rounded-lg cursor-pointer disabled:opacity-50"
               >
                 {launching ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
