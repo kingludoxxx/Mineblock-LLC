@@ -516,9 +516,15 @@ ${templateData.deep_analysis.adaptation_instructions?.common_failure_modes?.leng
   // Text swaps go FIRST because they're the most critical instruction.
   // Everything else is secondary. Long prompts cause the model to ignore key instructions.
 
-  const logoImageRef = logoCount > 1 ? `images 2-${1 + logoCount}` : 'image 2';
+  // Calculate correct logo image indices based on how many extra product images precede them
+  // Image order: [0] main product, [1..N] extra products, [N+1..M] logos, [LAST] reference
+  const extraProductCount = (claudeResult._extraProductCount || 0);
+  const logoStartIdx = 1 + extraProductCount; // 0-indexed: main product is 0
+  const logoImageRef = logoCount > 1
+    ? `images ${logoStartIdx + 1}-${logoStartIdx + logoCount}` // +1 for human-readable 1-indexed
+    : `image ${logoStartIdx + 1}`;
   const logoInstruction = logoCount > 0
-    ? `\n🔴 LOGO RULE: Replace any competitor logo with the EXACT logo provided (${logoImageRef}). COPY the logo EXACTLY as it appears in ${logoImageRef} — same shape, same proportions, same text styling. Do NOT redesign, redraw, or generate your own version of the logo. PASTE the provided logo image directly. If your output logo looks different from ${logoImageRef} in ANY way, you have FAILED.${logoBackgroundTone === 'dark' ? ' Use the WHITE logo version (dark background).' : logoBackgroundTone === 'light' ? ' Use the BLACK logo version (light background).' : ''}`
+    ? `\n🔴 LOGO RULE: Replace any competitor logo with the EXACT logo from ${logoImageRef}. The logo in ${logoImageRef} shows the REAL brand logo — reproduce it PIXEL-PERFECTLY in the output. Match every letter, every shape, every proportion EXACTLY as shown in ${logoImageRef}. Do NOT redesign, redraw, stylize, or generate your own interpretation of the logo. The logo text, icon, and layout must be IDENTICAL to ${logoImageRef}. If your output logo has different text, different shapes, or different proportions than ${logoImageRef}, you have FAILED.${logoBackgroundTone === 'dark' ? ' Use the WHITE logo version (dark background).' : logoBackgroundTone === 'light' ? ' Use the BLACK logo version (light background).' : ''}`
     : '';
 
   // Only include the MUST CHANGE visual adaptations (skip keep-as-is ones)
@@ -627,5 +633,9 @@ RULES:
 - ${characterRules}
 - Do NOT add extra elements (coins, sparkles, badges, product images) not in the reference.
 - Background must match reference exactly.
-- ANY text not listed in the swap list that refers to the reference product MUST be removed or replaced with "${product.name}" text.${hasProductInReference ? '' : '\n- This is a TEXT-ONLY ad. Do NOT insert any product image, device photo, or visual element that is not in the reference.'}${complexWarning}${co.absoluteRules ? `\n${co.absoluteRules}` : ''}${templateIntelligence}`;
+- ANY text not listed in the swap list that refers to the reference product MUST be removed or replaced with "${product.name}" text.${hasProductInReference ? '' : '\n- This is a TEXT-ONLY ad. Do NOT insert any product image, device photo, or visual element that is not in the reference.'}
+
+🔴 ZERO INVENTED TEXT: Your output must contain ONLY the text from the swap list above. Do NOT invent, create, or add ANY text that is not in the swap list. Do NOT add product names, model names, version names (like "Pro", "Ultra", "Max", "Plus"), taglines, slogans, or any other text. If the reference has 5 text elements and the swap list has 5 pairs, the output must have EXACTLY 5 text elements — no more, no fewer. Adding "${product.name}" as extra text where the reference had NO text is a FAILURE.
+
+🔴 ELEMENT COUNT RULE: Count the number of distinct text elements, logos, badges, and images in the reference. Your output must have the EXACT SAME count of each. Do NOT add extra logos, extra text blocks, extra badges, or extra images.${complexWarning}${co.absoluteRules ? `\n${co.absoluteRules}` : ''}${templateIntelligence}`;
 }

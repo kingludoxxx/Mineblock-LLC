@@ -278,8 +278,9 @@ async function pollNanoBanana(taskId) {
  * Ensure a URL is HTTP-accessible for NanoBanana (converts data-URIs and relative paths).
  */
 async function ensureHttpUrlGlobal(url, label = 'img') {
+  const GLOBAL_SERVER_URL = process.env.RENDER_EXTERNAL_URL || `http://localhost:${process.env.PORT || 3000}`;
   if (!url) return url;
-  if (url.startsWith('/')) return `${SERVER_URL}${url}`;
+  if (url.startsWith('/')) return `${GLOBAL_SERVER_URL}${url}`;
   if (!url.startsWith('data:image')) return url;
   const m = url.match(/^data:(image\/[^;]+);base64,(.+)$/);
   if (!m) return url;
@@ -290,7 +291,7 @@ async function ensureHttpUrlGlobal(url, label = 'img') {
     return await uploadBuffer(buf, key, m[1]);
   }
   const id = await storeTempImage(buf, m[1]);
-  return `${SERVER_URL}/api/v1/statics-generation/tmp-img/${id}`;
+  return `${GLOBAL_SERVER_URL}/api/v1/statics-generation/tmp-img/${id}`;
 }
 
 // ── Layout Analysis — runs once per template, cached in DB ────────────
@@ -578,6 +579,8 @@ router.post('/generate', authenticate, async (req, res) => {
 
     const logoBackgroundTone = claudeResult.logo_background_tone || null;
     const skipTextRendering = false;
+    // Pass extra product count so prompt builder can calculate correct logo image indices
+    claudeResult._extraProductCount = extraProductUrls.length;
     const nbPrompt = buildNanoBananaPrompt(claudeResult, swapPairs, product, logoUrls.length, customPrompts, layoutMap, logoBackgroundTone, skipTextRendering, templateData);
 
     // Send: product images, then logos, then reference ad (last)
