@@ -29,6 +29,7 @@ const CATEGORIES = {
   'Benefits-Features': 'Benefits & Features',
   'Lifestyle-Brand': 'Lifestyle & Brand',
   'UGC-Reviews': 'UGC & Reviews',
+  'Testimonial': 'Social Proof & Testimonials',
 };
 
 function main() {
