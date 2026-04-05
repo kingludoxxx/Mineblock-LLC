@@ -341,7 +341,6 @@ export async function createFlexibleAdCreative(adAccountId, params) {
   } = params;
 
   const cleanUTM = utmParameters?.replace(/^[?&]+/, '');
-  const finalLink = cleanUTM ? `${link}${link.includes('?') ? '&' : '?'}${cleanUTM}` : link;
 
   // Use standard (non-dynamic) creative with object_story_spec + link_data
   // This allows multiple ads per adset without is_dynamic_creative
@@ -351,18 +350,22 @@ export async function createFlexibleAdCreative(adAccountId, params) {
     object_story_spec: {
       page_id: pageId,
       link_data: {
-        link: finalLink,
+        link,
         message: primaryTexts[0] || '',
         image_hash: imageHashes[0] || '',
         name: headlines[0] || '',
         description: descriptions[0] || '',
         call_to_action: {
           type: cta,
-          value: { link: finalLink },
+          value: { link },
         },
       },
     },
+    // url_tags appends tracking params to all links — supports Meta dynamic macros like {{ad.id}}
+    ...(cleanUTM ? { url_tags: cleanUTM } : {}),
   };
+
+  console.log(`[createFlexibleAdCreative] link: ${link}, url_tags: ${cleanUTM || 'none'}`);
 
   const res = await fetch(`${META_GRAPH_URL}/${adAccountId}/adcreatives`, {
     method: 'POST',
