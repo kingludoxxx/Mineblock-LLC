@@ -676,19 +676,44 @@ ${templateData.deep_analysis.adaptation_instructions?.common_failure_modes?.leng
     ? `\nBANNED WORDS (from reference product): ${refKeywords.map(w => `"${w}"`).join(', ')}. NEVER use these.`
     : (refCategory ? `\nBANNED: Any text about "${refCategory}" from the reference.` : '');
 
-  // ── PRODUCT CONTEXT for image generator (critical for correct rendering) ──
-  // Keep this SHORT — Gemini needs prompts under ~3000 chars
+  // ── FULL PRODUCT CONTEXT for image generator ──
+  // All product library data so Gemini knows the product, offers, audience, and voice
   const profile = product.profile || {};
   const productContextLines = [
+    // Identity
     product.name && `Product: ${product.name}`,
-    product.price && `Price: ${product.price}`,
+    product.description && `What it is: ${product.description.slice(0, 150)}`,
+    profile.oneliner && `One-liner: ${profile.oneliner.slice(0, 100)}`,
+    profile.productType && `Type: ${profile.productType}`,
+    // Pricing & Offers
+    product.price && `Base price: ${product.price}`,
+    profile.bundleVariants && `Bundle deals:\n${profile.bundleVariants}`,
     profile.discountCodes && `Discount code: ${profile.discountCodes}`,
     profile.maxDiscount && `Max discount: ${profile.maxDiscount}`,
-    profile.guarantee && `Guarantee: ${profile.guarantee}`,
-    profile.voice && `Tone: ${profile.voice.slice(0, 80)}`,
+    profile.offerDetails && `Offer rules: ${profile.offerDetails.slice(0, 150)}`,
+    profile.guarantee && `Guarantee: ${profile.guarantee.slice(0, 100)}`,
+    // Audience & Voice
+    profile.customerAvatar && `Target customer: ${profile.customerAvatar.slice(0, 120)}`,
+    profile.targetDemographics && `Demographics: ${profile.targetDemographics.slice(0, 100)}`,
+    profile.voice && `Brand voice: ${profile.voice.slice(0, 120)}`,
+    // Product Intelligence
+    profile.bigPromise && `Big promise: ${profile.bigPromise.slice(0, 120)}`,
+    profile.mechanism && `How it works: ${profile.mechanism.slice(0, 120)}`,
+    profile.differentiator && `Differentiator: ${profile.differentiator.slice(0, 100)}`,
+    profile.competitiveEdge && `Competitive edge: ${profile.competitiveEdge.slice(0, 100)}`,
+    Array.isArray(profile.benefits) && profile.benefits.length > 0
+      && `Key benefits: ${profile.benefits.map(b => typeof b === 'object' ? (b.text || b.name || b) : b).slice(0, 5).join(', ')}`,
+    // Pain Points & Objections
+    profile.painPoints && `Customer pain: ${profile.painPoints.slice(0, 100)}`,
+    profile.customerFrustration && `Frustration: ${profile.customerFrustration.slice(0, 100)}`,
+    profile.customerDream && `Dream outcome: ${profile.customerDream.slice(0, 100)}`,
+    profile.commonObjections && `Objections: ${profile.commonObjections.slice(0, 120)}`,
+    // Compliance
+    profile.complianceRestrictions && `🚫 NEVER claim: ${profile.complianceRestrictions.slice(0, 100)}`,
+    profile.notes && `Notes: ${profile.notes.slice(0, 120)}`,
   ].filter(Boolean);
   const productContext = productContextLines.length > 0
-    ? `\n\nPRODUCT TRUTH (use for ANY text you generate):\n${productContextLines.map(l => `- ${l}`).join('\n')}`
+    ? `\n\nPRODUCT INTELLIGENCE (use this data for ANY text you generate — NEVER invent facts):\n${productContextLines.map(l => `- ${l}`).join('\n')}`
     : '';
 
   // Brand colors for visual consistency
