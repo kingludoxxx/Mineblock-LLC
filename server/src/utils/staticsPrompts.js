@@ -566,10 +566,17 @@ export function buildNanoBananaPrompt(claudeResult, swapPairs, product, logoCoun
     ? `\n\n⛔ BANNED TEXT — the reference ad is about "${refCategory}". These words must NEVER appear in your output: ${refKeywords.length > 0 ? refKeywords.map(w => `"${w}"`).join(', ') : refCategory}. If you see ANY of these words in the reference image, replace them with the swap text above or remove them. ZERO reference product text in the output.`
     : '';
 
-  return `Edit the reference ad (LAST image). Replace the product with "${product.name}" (FIRST image).
+  // Determine if the reference ad contains a product image or is text-only
+  const hasProductInReference = (product_count ?? 1) > 0;
+
+  const productImageRule = hasProductInReference
+    ? `Replace the product with "${product.name}" (FIRST image).
 
 🔴 PRODUCT IMAGE RULE (MOST IMPORTANT):
-The FIRST image is a PHOTO of the real product. You MUST copy this EXACT product into the output — same shape, same colors, same screen, same details. Do NOT generate, imagine, or interpret what the product looks like. Do NOT create your own version. PASTE the product from the FIRST image into the ad layout. The product in your output must look IDENTICAL to the FIRST image — as if you cut it out and placed it in. If your output product looks different from the FIRST image in ANY way (wrong shape, wrong screen, wrong details), you have FAILED.
+The FIRST image is a PHOTO of the real product. You MUST copy this EXACT product into the output — same shape, same colors, same screen, same details. Do NOT generate, imagine, or interpret what the product looks like. Do NOT create your own version. PASTE the product from the FIRST image into the ad layout. The product in your output must look IDENTICAL to the FIRST image — as if you cut it out and placed it in. If your output product looks different from the FIRST image in ANY way (wrong shape, wrong screen, wrong details), you have FAILED.`
+    : `The reference ad has NO product image — it is a text-only or letter-style ad. Do NOT add any product photo, device image, or product graphic. Keep the layout TEXT-ONLY, exactly like the reference. The FIRST image is provided for context only — do NOT insert it into the output.`;
+
+  return `Edit the reference ad (LAST image). ${hasProductInReference ? productImageRule : productImageRule}
 
 TEXT SWAPS — replace ALL text in the reference with these EXACT words:
 ${swapSectionFinal || '(No text changes)'}
@@ -578,10 +585,9 @@ ${swapSectionFinal || '(No text changes)'}
 
 RULES:
 - Spell "${product.name}" exactly: ${product.name.split('').join('-')}. NOT "MineBlock" or "MinerBlorge".
-- Keep EXACT same layout, background, colors, fonts, positions.
-- Product orientation: ${claudeResult.product_orientation || 'front-facing'}, matching the FIRST image.${productRulesSection}${logoInstruction}${visualLine}
+- Keep EXACT same layout, background, colors, fonts, positions.${hasProductInReference ? `\n- Product orientation: ${claudeResult.product_orientation || 'front-facing'}, matching the FIRST image.${productRulesSection}` : ''}${logoInstruction}${visualLine}
 - ${characterRules}
-- Do NOT add extra elements (coins, sparkles, badges) not in the reference.
+- Do NOT add extra elements (coins, sparkles, badges, product images) not in the reference.
 - Background must match reference exactly.
-- ANY text not listed in the swap list that refers to the reference product MUST be removed or replaced with "${product.name}" text.${complexWarning}${co.absoluteRules ? `\n${co.absoluteRules}` : ''}`;
+- ANY text not listed in the swap list that refers to the reference product MUST be removed or replaced with "${product.name}" text.${hasProductInReference ? '' : '\n- This is a TEXT-ONLY ad. Do NOT insert any product image, device photo, or visual element that is not in the reference.'}${complexWarning}${co.absoluteRules ? `\n${co.absoluteRules}` : ''}`;
 }
