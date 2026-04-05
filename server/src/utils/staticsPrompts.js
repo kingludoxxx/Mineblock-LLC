@@ -344,7 +344,7 @@ Set has_competitor_logo to FALSE ONLY if:
 - There is genuinely no brand identity visible anywhere in the ad
 - The only brand reference is within the headline/body copy text (which will be swapped via text pairs)
 
-When in doubt, set to TRUE — it is better to send our logo and let the image generator decide whether to use it, than to miss a competitor logo that stays in the final ad.
+When in doubt, set to FALSE. Only set TRUE if you see an ACTUAL VISUAL LOGO GRAPHIC (icon, emblem, wordmark with custom styling). Brand names that appear as regular text in headlines/body do NOT count as logos — those are handled by text swaps. Setting TRUE incorrectly causes our logo to be injected where it shouldn't be.
 
 IMPORTANT: If you detect a logo, you MUST also include it in visual_adaptations with position describing where the logo sits and adapted_visual set to "replace with provided brand logo".
 
@@ -615,13 +615,15 @@ ${templateData.deep_analysis.adaptation_instructions?.common_failure_modes?.leng
 
   // Determine if the reference ad contains a product image or is text-only
   const hasProductInReference = (product_count ?? 1) > 0;
+  // Check if product images were actually sent (staticsGeneration sets this)
+  const productImagesSent = claudeResult._refHasProduct !== false;
 
   // ── Build concise prompt — under 500 words for best Gemini compliance ──
   // Order: most-violated rules FIRST, data second, minor rules last
 
-  const productRule = hasProductInReference
+  const productRule = (hasProductInReference && productImagesSent)
     ? `Copy the EXACT product from FIRST image — same shape, colors, screen, details. Do NOT generate your own version.`
-    : `This is a TEXT-ONLY ad. Do NOT add any product photo or device image. FIRST image is context only.`;
+    : `This is a TEXT-ONLY ad. Do NOT add any product photo, device image, or physical object. The output must contain ONLY text and profile elements — ZERO product images.`;
 
   const logoRule = logoCount > 0
     ? `\n🔴 LOGO: Copy the EXACT logo from ${logoImageRef} pixel-perfectly — same text, shapes, proportions. Do NOT redesign it.${logoBackgroundTone === 'dark' ? ' Use WHITE version (dark bg).' : logoBackgroundTone === 'light' ? ' Use BLACK version (light bg).' : ''}`

@@ -570,14 +570,16 @@ router.post('/generate', authenticate, async (req, res) => {
     const logoUrls = [];
     let hasCompetitorLogo = claudeResult.has_competitor_logo === true;
 
-    // Log logo detection details
+    // STRICT logo validation: only send logo if Claude ALSO included a logo visual_adaptation
+    // This prevents false positives where Claude detects brand text (not a visual logo)
     if (hasCompetitorLogo) {
       const visualAdapts = claudeResult.visual_adaptations || [];
       const hasLogoInVisuals = visualAdapts.some(v =>
         /\blogo\b/i.test(v.original_visual || '') || /\blogo\b/i.test(v.adapted_visual || '') || /\blogo\b/i.test(v.position || '')
       );
       if (!hasLogoInVisuals) {
-        console.warn(`[staticsGeneration] ⚠️ Claude detected has_competitor_logo=true but no logo in visual_adaptations — sending logo anyway (prompt now instructs Claude to include it)`);
+        console.warn(`[staticsGeneration] ⚠️ Claude detected has_competitor_logo=true but no logo in visual_adaptations — OVERRIDING to false (no logo entry = no visual logo to replace)`);
+        hasCompetitorLogo = false;
       }
     }
     if (hasCompetitorLogo) {
@@ -606,12 +608,21 @@ router.post('/generate', authenticate, async (req, res) => {
     const logoBackgroundTone = claudeResult.logo_background_tone || null;
     const skipTextRendering = false;
     // Pass extra product count so prompt builder can calculate correct logo image indices
-    claudeResult._extraProductCount = extraProductUrls.length;
+    claudeResult._extraProductCount = refHasProduct ? extraProductUrls.length : 0;
+    claudeResult._refHasProduct = refHasProduct;
     const nbPrompt = buildNanoBananaPrompt(claudeResult, swapPairs, product, logoUrls.length, customPrompts, layoutMap, logoBackgroundTone, skipTextRendering, templateData);
 
-    // Send: product images, then logos, then reference ad (last)
+    // If reference has NO product (product_count === 0), don't send product images
+    // Otherwise Gemini/NanoBanana will inject a product where none should exist
+    const refHasProduct = (claudeResult.product_count ?? 1) > 0;
+    if (!refHasProduct) {
+      console.log(`[staticsGeneration] Reference has product_count=0 — NOT sending product images (text-only/testimonial template)`);
+    }
+
+    // Send: product images (only if ref has product), then logos, then reference ad (last)
     // Filter out null/undefined entries — NanoBanana requires all URLs to be valid strings
-    const imageUrls = [finalProductUrl, ...extraProductUrls, ...logoUrls, finalReferenceUrl].filter(Boolean);
+    const productImages = refHasProduct ? [finalProductUrl, ...extraProductUrls] : [];
+    const imageUrls = [...productImages, ...logoUrls, finalReferenceUrl].filter(Boolean);
     console.log(`[staticsGeneration] Prompt:\n${nbPrompt}`);
     console.log(`[staticsGeneration] Total images: ${imageUrls.length} (${extraProductUrls.length} extra product, ${logoUrls.length} logos)`);
 

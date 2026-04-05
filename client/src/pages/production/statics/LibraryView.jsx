@@ -174,6 +174,7 @@ function TemplateCard({ template, onView, onAnalyze, onDelete }) {
 
 function ReferenceLightbox({ template, onClose, onSelect }) {
   if (!template) return null;
+  const da = template.deep_analysis;
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm"
@@ -191,18 +192,103 @@ function ReferenceLightbox({ template, onClose, onSelect }) {
           <X className="w-4 h-4" />
         </button>
 
-        {/* Image */}
-        {template.image_url ? (
-          <img
-            src={template.image_url}
-            alt={template.name || 'Reference Ad'}
-            className="max-w-full max-h-[75vh] rounded-xl object-contain shadow-2xl"
-          />
-        ) : (
-          <div className="w-80 h-96 rounded-xl bg-[#1a1a1a] flex items-center justify-center text-slate-600">
-            <AlertCircle className="w-12 h-12" />
-          </div>
-        )}
+        <div className="flex gap-4 items-start">
+          {/* Image */}
+          {template.image_url ? (
+            <img
+              src={template.image_url}
+              alt={template.name || 'Reference Ad'}
+              className="max-w-full max-h-[75vh] rounded-xl object-contain shadow-2xl"
+              style={{ maxWidth: da ? '50vw' : '80vw' }}
+            />
+          ) : (
+            <div className="w-80 h-96 rounded-xl bg-[#1a1a1a] flex items-center justify-center text-slate-600">
+              <AlertCircle className="w-12 h-12" />
+            </div>
+          )}
+
+          {/* AI Analysis Panel */}
+          {da && (
+            <div className="w-72 max-h-[75vh] overflow-y-auto bg-[#141414] rounded-xl border border-white/[0.06] p-4 text-xs text-slate-300 space-y-3">
+              <div className="flex items-center gap-2 text-purple-400 font-semibold text-sm">
+                <Zap className="w-4 h-4" />
+                AI Analysis
+              </div>
+
+              {da.template_type && (
+                <div>
+                  <span className="text-slate-500 uppercase text-[10px] tracking-wider">Type</span>
+                  <p className="text-white mt-0.5">{da.template_type}</p>
+                </div>
+              )}
+
+              {da.emotional_tone && (
+                <div>
+                  <span className="text-slate-500 uppercase text-[10px] tracking-wider">Tone</span>
+                  <p className="text-white mt-0.5">{da.emotional_tone}</p>
+                </div>
+              )}
+
+              {da.layout?.grid_structure && (
+                <div>
+                  <span className="text-slate-500 uppercase text-[10px] tracking-wider">Layout</span>
+                  <p className="text-white mt-0.5">{da.layout.grid_structure} ({da.layout.orientation})</p>
+                </div>
+              )}
+
+              {da.typography?.headline?.text_content && (
+                <div>
+                  <span className="text-slate-500 uppercase text-[10px] tracking-wider">Headline</span>
+                  <p className="text-white mt-0.5 italic">"{da.typography.headline.text_content}"</p>
+                </div>
+              )}
+
+              {da.product_analysis && (
+                <div>
+                  <span className="text-slate-500 uppercase text-[10px] tracking-wider">Product</span>
+                  <p className="text-white mt-0.5">
+                    {da.product_analysis.product_visible ? `${da.product_analysis.product_count || 1} product(s)` : 'No product'}
+                    {da.product_analysis.product_orientation && ` - ${da.product_analysis.product_orientation}`}
+                  </p>
+                </div>
+              )}
+
+              {da.color_palette && (
+                <div>
+                  <span className="text-slate-500 uppercase text-[10px] tracking-wider">Colors</span>
+                  <div className="flex items-center gap-1 mt-1">
+                    {[da.color_palette.dominant, da.color_palette.accent, da.color_palette.text_primary].filter(Boolean).map((c, i) => (
+                      <div key={i} className="w-5 h-5 rounded border border-white/10" style={{ backgroundColor: c }} title={c} />
+                    ))}
+                    <span className="text-slate-500 ml-1">{da.color_palette.overall_mood}</span>
+                  </div>
+                </div>
+              )}
+
+              {da.adaptation_instructions?.product_replacement_difficulty && (
+                <div>
+                  <span className="text-slate-500 uppercase text-[10px] tracking-wider">Adaptation Difficulty</span>
+                  <p className={`mt-0.5 font-medium ${da.adaptation_instructions.product_replacement_difficulty === 'easy' ? 'text-green-400' : da.adaptation_instructions.product_replacement_difficulty === 'hard' ? 'text-red-400' : 'text-yellow-400'}`}>
+                    {da.adaptation_instructions.product_replacement_difficulty}
+                  </p>
+                </div>
+              )}
+
+              {da.ad_effectiveness_notes && (
+                <div>
+                  <span className="text-slate-500 uppercase text-[10px] tracking-wider">Notes</span>
+                  <p className="text-slate-400 mt-0.5">{da.ad_effectiveness_notes}</p>
+                </div>
+              )}
+
+              {template.analyzed_at && (
+                <p className="text-slate-600 text-[10px] pt-2 border-t border-white/[0.06]">
+                  Analyzed {new Date(template.analyzed_at).toLocaleDateString()}
+                </p>
+              )}
+            </div>
+          )}
+        </div>
 
         {/* Footer */}
         <div className="mt-4 flex items-center gap-3">
