@@ -611,7 +611,7 @@ function PipelineColumn({ column, items, onStatusChange, onCardClick, onRegenera
 // Ready to Launch column (grouped by angle)
 // ---------------------------------------------------------------------------
 
-function ReadyToLaunchColumn({ column, items, onCardClick, onLaunchGroup, onBulkLaunch, launchTemplates, selectedTemplateId, onSelectTemplate, onStatusChange, onAngleChange }) {
+function ReadyToLaunchColumn({ column, items, onCardClick, onLaunchGroup, onBulkLaunch, launchTemplates, selectedTemplateId, onSelectTemplate, copySets, selectedCopySetId, onSelectCopySet, onStatusChange, onAngleChange }) {
   const Icon = column.icon;
   const [dragOver, setDragOver] = useState(false);
 
@@ -652,36 +652,56 @@ function ReadyToLaunchColumn({ column, items, onCardClick, onLaunchGroup, onBulk
         </span>
       </div>
 
-      {/* Template selector + Bulk launch */}
-      <div className="flex items-center gap-2 mb-4">
-        <div className="relative flex-1">
-          <select
-            value={selectedTemplateId}
-            onChange={(e) => onSelectTemplate(e.target.value)}
-            className="w-full bg-white/[0.03] border border-white/[0.06] rounded-lg px-3 py-2 text-xs text-white appearance-none cursor-pointer focus:ring-1 focus:ring-cyan-500/30 focus:border-cyan-500/20 pr-8"
-          >
-            <option value="">Select template...</option>
-            {launchTemplates.map(t => (
-              <option key={t.id} value={t.id}>
-                {t.name} — ${Number(t.daily_budget || 0).toFixed(0)}/day
-              </option>
-            ))}
-          </select>
-          <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-zinc-500 pointer-events-none" />
+      {/* Template + Copy selectors + Bulk launch */}
+      <div className="space-y-2 mb-4">
+        {/* Row 1: Template selector */}
+        <div className="flex items-center gap-2">
+          <div className="relative flex-1">
+            <select
+              value={selectedTemplateId}
+              onChange={(e) => onSelectTemplate(e.target.value)}
+              className="w-full bg-white/[0.03] border border-white/[0.06] rounded-lg px-3 py-2 text-xs text-white appearance-none cursor-pointer focus:ring-1 focus:ring-cyan-500/30 focus:border-cyan-500/20 pr-8"
+            >
+              <option value="">Select template...</option>
+              {launchTemplates.map(t => (
+                <option key={t.id} value={t.id}>
+                  {t.name} — ${Number(t.daily_budget || 0).toFixed(0)}/day
+                </option>
+              ))}
+            </select>
+            <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-zinc-500 pointer-events-none" />
+          </div>
+          {selectedTemplateId && (
+            <Lock className="w-3.5 h-3.5 text-zinc-600 shrink-0" title="Linked to template" />
+          )}
         </div>
-        {selectedTemplateId && (
-          <Lock className="w-3.5 h-3.5 text-zinc-600 shrink-0" title="Linked to template" />
-        )}
-        {readyAdSets > 0 && selectedTemplateId && (
-          <button
-            type="button"
-            onClick={() => onBulkLaunch(completeGroups)}
-            className="inline-flex items-center gap-1.5 bg-emerald-500 hover:bg-emerald-600 text-white text-xs font-semibold px-3.5 py-2 rounded-lg cursor-pointer shrink-0 transition-colors"
-          >
-            <Rocket className="w-3.5 h-3.5" />
-            Bulk Launch ({readyAdSets})
-          </button>
-        )}
+
+        {/* Row 2: Copy set selector + Bulk launch */}
+        <div className="flex items-center gap-2">
+          <div className="relative flex-1">
+            <select
+              value={selectedCopySetId}
+              onChange={(e) => onSelectCopySet(e.target.value)}
+              className="w-full bg-white/[0.03] border border-white/[0.06] rounded-lg px-3 py-2 text-xs text-white appearance-none cursor-pointer focus:ring-1 focus:ring-[#c9a84c]/30 focus:border-[#c9a84c]/20 pr-8"
+            >
+              <option value="">Select copy...</option>
+              {copySets.map(cs => (
+                <option key={cs.id} value={cs.id}>{cs.angle}</option>
+              ))}
+            </select>
+            <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-zinc-500 pointer-events-none" />
+          </div>
+          {readyAdSets > 0 && selectedTemplateId && selectedCopySetId && (
+            <button
+              type="button"
+              onClick={() => onBulkLaunch(completeGroups)}
+              className="inline-flex items-center gap-1.5 bg-emerald-500 hover:bg-emerald-600 text-white text-xs font-semibold px-3.5 py-2 rounded-lg cursor-pointer shrink-0 transition-colors"
+            >
+              <Rocket className="w-3.5 h-3.5" />
+              Bulk Launch ({readyAdSets})
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Grouped ad sets */}
@@ -808,9 +828,10 @@ export function PipelineView({ creatives = [], onStatusChange, onAngleChange, on
       setLaunchError('Select a launch template first');
       return;
     }
-    // Auto-match copy set by angle
-    const match = copySets.find(cs => cs.angle?.toLowerCase() === angle.toLowerCase());
-    setSelectedCopySetId(match?.id || '');
+    if (!selectedCopySetId) {
+      setLaunchError('Select a copy set first');
+      return;
+    }
     setPendingLaunch({
       angle,
       creativeIds: groupCreatives.map(c => c.id),
@@ -823,6 +844,10 @@ export function PipelineView({ creatives = [], onStatusChange, onAngleChange, on
   const handleBulkLaunch = (completeGroups) => {
     if (!selectedTemplateId) {
       setLaunchError('Select a launch template first');
+      return;
+    }
+    if (!selectedCopySetId) {
+      setLaunchError('Select a copy set first');
       return;
     }
     const allIds = completeGroups.flatMap(([, cs]) => cs.map(c => c.id));
@@ -949,6 +974,9 @@ export function PipelineView({ creatives = [], onStatusChange, onAngleChange, on
           launchTemplates={launchTemplates}
           selectedTemplateId={selectedTemplateId}
           onSelectTemplate={setSelectedTemplateId}
+          copySets={copySets}
+          selectedCopySetId={selectedCopySetId}
+          onSelectCopySet={setSelectedCopySetId}
           onStatusChange={handleStatusChange}
           onAngleChange={onAngleChange}
         />
@@ -991,19 +1019,10 @@ export function PipelineView({ creatives = [], onStatusChange, onAngleChange, on
                 <p className="text-sm text-white">{pendingLaunch.creativeIds.length} images → {pendingLaunch.angle}</p>
               </div>
 
-              {/* Copy set selector */}
-              <div>
-                <label className="font-mono text-[10px] text-[#c9a84c] uppercase tracking-[0.15em] block mb-1.5">Copy Set (optional)</label>
-                <select
-                  value={selectedCopySetId}
-                  onChange={(e) => setSelectedCopySetId(e.target.value)}
-                  className="w-full bg-white/[0.03] border border-white/[0.06] rounded-lg px-3 py-2 text-sm text-white focus:ring-1 focus:ring-[#c9a84c]/30 focus:border-[#c9a84c]/20"
-                >
-                  <option value="">None (use defaults)</option>
-                  {copySets.map(cs => (
-                    <option key={cs.id} value={cs.id}>{cs.angle}</option>
-                  ))}
-                </select>
+              {/* Copy set info */}
+              <div className="glass-card border border-white/[0.05] rounded-lg px-3 py-2">
+                <span className="font-mono text-[10px] text-[#c9a84c] uppercase tracking-[0.15em] block mb-1">Copy</span>
+                <p className="text-sm text-white">{copySets.find(cs => cs.id === selectedCopySetId)?.angle || 'None selected'}</p>
               </div>
 
               {launchError && (
