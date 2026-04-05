@@ -152,6 +152,24 @@ router.get('/tmp-img/:id', async (req, res) => {
   return res.status(404).send('Expired or not found');
 });
 
+// ── Reset launched creatives back to ready ──
+router.post('/reset-launched', authenticate, async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 2;
+    const result = await pgQuery(
+      `UPDATE spy_creatives SET status = 'ready', review_notes = 'Reset to re-launch', updated_at = NOW()
+       WHERE id IN (
+         SELECT id FROM spy_creatives WHERE status = 'launched' ORDER BY updated_at DESC LIMIT $1
+       )
+       RETURNING id, angle`,
+      [limit]
+    );
+    res.json({ success: true, reset_count: result.length, creatives: result.map(r => ({ id: r.id, angle: r.angle })) });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // ── Meta App Diagnostic & Live Mode Toggle ──
 router.get('/meta-app-diagnose', authenticate, async (req, res) => {
   try {
