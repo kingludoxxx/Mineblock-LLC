@@ -536,11 +536,13 @@ ${templateData.deep_analysis.adaptation_instructions?.common_failure_modes?.leng
   // Logo instruction now built inline in the final prompt below
 
   // Only include the MUST CHANGE visual adaptations (skip keep-as-is ones)
+  // Truncate descriptions to keep prompt under 3000 chars total
   const mustChangeVisuals = (visual_adaptations || []).filter(v => v.is_angle_specific);
   const visualLine = mustChangeVisuals.length > 0
-    ? `\nVisual changes: ${mustChangeVisuals.map(v => {
-        const concept = v.visual_concept ? ` (concept: ${v.visual_concept})` : '';
-        return `${v.position}: replace "${v.original_visual}" with "${v.adapted_visual}"${concept}`;
+    ? `\nVisual changes: ${mustChangeVisuals.slice(0, 3).map(v => {
+        const orig = (v.original_visual || '').slice(0, 40);
+        const adapted = (v.adapted_visual || '').slice(0, 50);
+        return `${v.position}: "${orig}" → "${adapted}"`;
       }).join('; ')}`
     : '';
 
@@ -650,4 +652,3 @@ LAYOUT RULES:
 - Spell every word correctly with proper spacing between words.
 - PRODUCT LABEL: The product image (FIRST image) already has its real label/packaging. Copy it EXACTLY as provided — do NOT modify, redesign, or add text to the product packaging.${co.absoluteRules ? `\n${co.absoluteRules}` : ''}`;
 }
-// Deploy trigger 1775398294
