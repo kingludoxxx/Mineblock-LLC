@@ -16,6 +16,7 @@ import {
   Lock,
   Settings,
   Tag,
+  RotateCcw,
 } from 'lucide-react';
 import api from '../../../services/api';
 
@@ -430,24 +431,43 @@ function AdSetGroupCard({ angle, creatives, isComplete, onLaunch, onCardClick, o
 // Launched group card
 // ---------------------------------------------------------------------------
 
-function LaunchedGroupCard({ angle, creatives, onCardClick }) {
+function LaunchedGroupCard({ angle, creatives, onCardClick, onReset }) {
   return (
-    <div className="rounded-xl border border-emerald-500/15 bg-emerald-500/[0.02] overflow-hidden">
-      <div className="flex items-center justify-between px-4 py-3">
-        <div className="flex items-center gap-2.5 min-w-0">
-          <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
-          <h4 className="text-sm font-semibold text-white truncate">{angle}</h4>
-          <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-500 border border-emerald-500/20">
-            {creatives.length} ads
-          </span>
-        </div>
+    <div className="mb-3">
+      <div className="flex items-center justify-between mb-1.5">
+        <h4 className="text-[11px] font-semibold text-zinc-300 truncate">{angle}</h4>
+        {onReset && (
+          <button
+            type="button"
+            onClick={() => onReset(creatives)}
+            className="text-zinc-600 hover:text-zinc-400 transition-colors cursor-pointer"
+            title="Reset to ready"
+          >
+            <RotateCcw className="w-3 h-3" />
+          </button>
+        )}
       </div>
-      <div className="px-4 pb-4">
-        <div className="grid grid-cols-6 gap-2">
-          {creatives.map((c) => (
-            <AdSetThumb key={c.id} creative={c} onCardClick={onCardClick} />
-          ))}
-        </div>
+      <div className="grid grid-cols-3 gap-1">
+        {creatives.map((c) => (
+          <div
+            key={c.id}
+            onClick={() => onCardClick?.(c)}
+            className="relative aspect-square rounded overflow-hidden bg-black/40 cursor-pointer group"
+          >
+            {c.image_url ? (
+              <img
+                src={c.image_url}
+                alt=""
+                className="absolute inset-0 w-full h-full object-cover opacity-85 group-hover:opacity-100 transition-opacity"
+                onError={(e) => { e.target.style.display = 'none'; }}
+              />
+            ) : (
+              <div className="absolute inset-0 flex items-center justify-center">
+                <Eye className="w-3 h-3 text-zinc-700" />
+              </div>
+            )}
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -732,33 +752,37 @@ function ReadyToLaunchColumn({ column, items, onCardClick, onLaunchGroup, onBulk
 // Launched column (grouped by angle)
 // ---------------------------------------------------------------------------
 
-function LaunchedColumn({ column, items, onCardClick }) {
+function LaunchedColumn({ column, items, onCardClick, onStatusChange }) {
   const Icon = column.icon;
   const angleGroups = useMemo(() => groupByAngle(items), [items]);
 
+  const handleReset = (creatives) => {
+    for (const c of creatives) {
+      onStatusChange?.(c.id, 'ready');
+    }
+  };
+
   return (
-    <div className="flex flex-col min-w-[340px] max-w-[480px] flex-[1.8] relative">
-      <div className="flex items-center justify-between mb-4 pb-3 border-b border-white/[0.04] relative">
+    <div className="flex flex-col w-[180px] min-w-[160px] max-w-[200px] shrink-0 relative border-l border-white/[0.04] pl-3">
+      <div className="flex items-center gap-1.5 mb-3 pb-2 border-b border-white/[0.04] relative">
         <div className="absolute bottom-0 left-0 w-1/3 h-[1px] bg-gradient-to-r from-emerald-500/30 to-transparent" />
-        <div className="flex items-center gap-2">
-          <Icon className={`w-4 h-4 ${column.iconClass}`} />
-          <h3 className="font-mono text-xs tracking-[0.15em] uppercase text-zinc-300 font-semibold">
-            {column.label}
-          </h3>
-          <span className={`text-[10px] font-mono px-2 py-0.5 rounded border ${column.badgeBg} ${column.badgeText} ${column.badgeBorder}`}>
-            {items.length}
-          </span>
-        </div>
+        <Icon className={`w-3.5 h-3.5 ${column.iconClass}`} />
+        <h3 className="font-mono text-[10px] tracking-[0.12em] uppercase text-zinc-300 font-semibold">
+          {column.label}
+        </h3>
+        <span className={`text-[9px] font-mono px-1.5 py-0.5 rounded border ${column.badgeBg} ${column.badgeText} ${column.badgeBorder}`}>
+          {items.length}
+        </span>
       </div>
 
-      <div className="flex-1 overflow-y-auto pr-2 space-y-4 pb-4 custom-scrollbar">
+      <div className="flex-1 overflow-y-auto pr-1 pb-4 custom-scrollbar">
         {angleGroups.length === 0 ? (
-          <div className="h-32 border border-dashed border-white/[0.08] rounded-xl flex items-center justify-center text-sm text-zinc-600 italic bg-white/[0.01]">
+          <div className="h-20 border border-dashed border-white/[0.08] rounded-lg flex items-center justify-center text-[10px] text-zinc-600 italic bg-white/[0.01]">
             {column.placeholder}
           </div>
         ) : (
           angleGroups.map(([angle, cs]) => (
-            <LaunchedGroupCard key={angle} angle={angle} creatives={cs} onCardClick={onCardClick} />
+            <LaunchedGroupCard key={angle} angle={angle} creatives={cs} onCardClick={onCardClick} onReset={handleReset} />
           ))
         )}
       </div>
@@ -986,6 +1010,7 @@ export function PipelineView({ creatives = [], onStatusChange, onAngleChange, on
           column={launchedColumn}
           items={buckets.launched}
           onCardClick={onCardClick}
+          onStatusChange={onStatusChange}
         />
       </div>
 
