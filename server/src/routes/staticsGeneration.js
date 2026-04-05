@@ -1486,27 +1486,30 @@ router.post('/creatives/:id/ai-adjust', authenticate, async (req, res) => {
 
         claudeContent.push({
           type: 'text',
-          text: `You are an AI creative director. A user wants to adjust an existing ad creative. The image above is the CURRENT creative that needs modification.
+          text: `You are an AI creative director. Look at this ad image and apply the user's edit instruction.
 
-Original creative analysis:
-${existingAnalysis}
+User's edit instruction: "${instruction}"
 
-Original generation prompt:
-${creative.generation_prompt || 'N/A'}
+Your job is to write a SHORT, DIRECT image editing prompt for Gemini (an image generation AI). The prompt should tell Gemini to edit this specific image.
 
-User's adjustment instruction: "${instruction}"
+RULES:
+- Write the prompt as a DIRECT EDIT COMMAND, not a description
+- Be SPECIFIC about what to change and what to keep
+- Keep the prompt SHORT (under 200 words) — Gemini works better with concise prompts
+- Reference the EXISTING image: "In this image, change X to Y" or "Edit this image: remove X" or "Modify this ad: replace the text 'OLD' with 'NEW'"
+- For TEXT changes: list the exact old text → new text swaps
+- For VISUAL changes: describe exactly what should change
+- Everything NOT mentioned stays the same
 
-IMPORTANT: Look at the image carefully. The user wants you to recreate this EXACT image but with ONLY the change described above. Everything else must remain identical — same layout, same colors (unless the change involves colors), same text, same product placement, same composition.
+EXAMPLES of good adjusted prompts:
+- "Edit this ad image: change the headline text from 'FREE GIFTS' to remove it entirely. Keep everything else identical."
+- "Modify this image: change the names 'James & Sara' to 'James & Sarah'. Keep all other text, layout, colors, product exactly the same."
+- "Edit this ad: make the headline text 30% larger. Keep the same font color, background, product, and all other elements identical."
 
-Generate an updated image generation prompt that:
-1. Describes the current image in full detail (layout, colors, text, product, composition)
-2. Applies ONLY the user's requested change
-3. Keeps everything else exactly the same
-
-Return ONLY a JSON object with:
+Return ONLY a JSON object:
 {
-  "adjusted_prompt": "the full updated generation prompt that recreates the image with only the requested change",
-  "changes_summary": "brief description of what changed"
+  "adjusted_prompt": "the direct edit command for Gemini",
+  "changes_summary": "brief 1-line description of what changed"
 }`,
         });
 

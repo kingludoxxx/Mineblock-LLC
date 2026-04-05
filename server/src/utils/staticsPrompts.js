@@ -641,5 +641,7 @@ RULES:
 
 🔴 ZERO INVENTED TEXT: Your output must contain ONLY the text from the swap list above. Do NOT invent, create, or add ANY text that is not in the swap list. Do NOT add product names, model names, version names (like "Pro", "Ultra", "Max", "Plus"), taglines, slogans, or any other text. If the reference has 5 text elements and the swap list has 5 pairs, the output must have EXACTLY 5 text elements — no more, no fewer. Adding "${product.name}" as extra text where the reference had NO text is a FAILURE.
 
-🔴 ELEMENT COUNT RULE: Count the number of distinct text elements, logos, badges, and images in the reference. Your output must have the EXACT SAME count of each. Do NOT add extra logos, extra text blocks, extra badges, or extra images.${complexWarning}${co.absoluteRules ? `\n${co.absoluteRules}` : ''}${templateIntelligence}`;
+🔴 ELEMENT COUNT RULE: Count the number of distinct text elements, logos, badges, and images in the reference. Your output must have the EXACT SAME count of each. Do NOT add extra logos, extra text blocks, extra badges, or extra images.
+
+🔴 TEXT RENDERING QUALITY: Every word must be spelled correctly with proper spacing. Common mistakes to AVOID: missing spaces between words (e.g. "havenever" should be "have never"), missing letters, garbled text. If a text element is longer than 40 characters, SHORTEN it to avoid rendering errors. Short text = perfect rendering. Long text = garbled mess.${complexWarning}${co.absoluteRules ? `\n${co.absoluteRules}` : ''}${templateIntelligence}`;
 }
