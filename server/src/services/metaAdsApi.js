@@ -373,7 +373,10 @@ export async function createFlexibleAdCreative(adAccountId, params) {
     },
     degrees_of_freedom_spec: {
       creative_features_spec: {
-        standard_enhancements: { enroll_status: 'OPT_OUT' },
+        image_uncropping:       { enroll_status: 'OPT_OUT' },
+        text_optimizations:     { enroll_status: 'OPT_OUT' },
+        profile_card:           { enroll_status: 'OPT_OUT' },
+        image_brightness_and_contrast: { enroll_status: 'OPT_OUT' },
       },
     },
   };
