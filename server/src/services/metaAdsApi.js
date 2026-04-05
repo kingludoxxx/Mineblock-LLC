@@ -4,6 +4,8 @@
 const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN || '';
 const META_AD_ACCOUNT_IDS = (process.env.META_AD_ACCOUNT_IDS || '').split(',').filter(Boolean);
 const META_GRAPH_URL = 'https://graph.facebook.com/v21.0';
+const META_API_TIMEOUT = 45000;  // 45s timeout for all Meta API calls
+const META_UPLOAD_TIMEOUT = 60000; // 60s for image uploads (larger payloads)
 
 /**
  * Upload an ad image to a Meta ad account
@@ -20,6 +22,7 @@ export async function uploadAdImage(adAccountId, imageBuffer) {
   const res = await fetch(`${META_GRAPH_URL}/${adAccountId}/adimages`, {
     method: 'POST',
     body: formData,
+    signal: AbortSignal.timeout(META_UPLOAD_TIMEOUT),
   });
 
   if (!res.ok) {
@@ -56,6 +59,7 @@ export async function createAdCreative(adAccountId, params) {
   const res = await fetch(`${META_GRAPH_URL}/${adAccountId}/adcreatives`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
+    signal: AbortSignal.timeout(META_API_TIMEOUT),
     body: JSON.stringify({
       access_token: META_ACCESS_TOKEN,
       name,
@@ -87,6 +91,7 @@ export async function createAd(adAccountId, params) {
   const res = await fetch(`${META_GRAPH_URL}/${adAccountId}/ads`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
+    signal: AbortSignal.timeout(META_API_TIMEOUT),
     body: JSON.stringify({
       access_token: META_ACCESS_TOKEN,
       name,
@@ -302,6 +307,7 @@ export async function createAdSet(adAccountId, params) {
   const res = await fetch(`${META_GRAPH_URL}/${adAccountId}/adsets`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
+    signal: AbortSignal.timeout(META_API_TIMEOUT),
     body: JSON.stringify(body),
   });
 
@@ -390,6 +396,7 @@ export async function createFlexibleAdCreative(adAccountId, params) {
   const res = await fetch(`${META_GRAPH_URL}/${adAccountId}/adcreatives`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
+    signal: AbortSignal.timeout(META_API_TIMEOUT),
     body: JSON.stringify(body),
   });
 
@@ -409,7 +416,7 @@ export async function createFlexibleAdCreative(adAccountId, params) {
  * Upload image from URL to Meta ad account
  */
 export async function uploadAdImageFromUrl(adAccountId, imageUrl) {
-  const imgRes = await fetch(imageUrl);
+  const imgRes = await fetch(imageUrl, { signal: AbortSignal.timeout(META_UPLOAD_TIMEOUT) });
   if (!imgRes.ok) throw new Error(`Failed to fetch image from ${imageUrl}: ${imgRes.status}`);
   const buffer = Buffer.from(await imgRes.arrayBuffer());
   return uploadAdImage(adAccountId, buffer);
@@ -439,6 +446,7 @@ export async function uploadAdVideo(adAccountId, videoUrl, title) {
   const res = await fetch(`${META_GRAPH_URL}/${adAccountId}/advideos`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
+    signal: AbortSignal.timeout(META_UPLOAD_TIMEOUT),
     body: JSON.stringify({
       access_token: META_ACCESS_TOKEN,
       file_url: videoUrl,

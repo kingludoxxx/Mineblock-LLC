@@ -1907,8 +1907,12 @@ router.post('/launch', authenticate, async (req, res) => {
     const safeArr = (v) => { if (Array.isArray(v)) return v; if (typeof v === 'string') { try { const p = JSON.parse(v); return Array.isArray(p) ? p : []; } catch { return []; } } return []; };
     const safeObj = (v) => { if (v && typeof v === 'object' && !Array.isArray(v)) return v; if (typeof v === 'string') { try { const p = JSON.parse(v); return (p && typeof p === 'object') ? p : {}; } catch { return {}; } } return {}; };
 
-    // Round-robin page selection
+    // Round-robin page selection — at least one page required
     const selectedPages = safeArr(template.page_ids).filter(p => p.selected !== false);
+    if (!selectedPages.length || !selectedPages[0]?.id) {
+      await pgQuery(`UPDATE spy_creatives SET status = 'ready' WHERE id = ANY($1)`, [creative_ids]);
+      return res.status(400).json({ success: false, error: { message: 'No Facebook pages configured in launch template. Edit the template and select at least one page.' } });
+    }
 
     // Create ad set for this batch
     let adsetId = null;
@@ -1967,6 +1971,11 @@ router.post('/launch', authenticate, async (req, res) => {
       });
 
       try {
+        // Validate creative has an image
+        if (!creative.image_url && !creative.meta_image_hash) {
+          throw new Error(`Creative ${creative.id} has no image — cannot launch without an image`);
+        }
+
         // Upload 4:5 image to Meta (reuse cached hash if available)
         let imageHashes = [];
         let imageHash = creative.meta_image_hash || null;
@@ -1975,6 +1984,7 @@ router.post('/launch', authenticate, async (req, res) => {
             imageHashes = [imageHash];
           } else {
             const uploadResult = await uploadAdImageFromUrl(template.ad_account_id, creative.image_url);
+            if (!uploadResult?.hash) throw new Error('Image upload returned no hash');
             imageHash = uploadResult.hash;
             imageHashes = [imageHash];
           }
@@ -1983,7 +1993,7 @@ router.post('/launch', authenticate, async (req, res) => {
         // Find and upload the 9:16 variant for stories/reels placements
         let verticalImageHash = null;
         const variants = await pgQuery(
-          "SELECT id, image_url, meta_image_hash FROM spy_creatives WHERE parent_creative_id = $1 AND aspect_ratio = '9:16' AND status IN ('approved', 'ready') LIMIT 1",
+          "SELECT id, image_url, meta_image_hash FROM spy_creatives WHERE parent_creative_id = $1 AND aspect_ratio = '9:16' AND status IN ('approved', 'ready') ORDER BY created_at DESC LIMIT 1",
           [creative.id]
         );
         if (variants.length && variants[0].image_url) {
