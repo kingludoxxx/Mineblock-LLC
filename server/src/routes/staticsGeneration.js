@@ -9,7 +9,7 @@ import crypto from 'crypto';
 import { analyzeTemplate } from '../utils/templateAnalysis.js';
 import {
   isMetaAdsConfigured, createAdSet, createFlexibleAdCreative, createAd,
-  uploadAdImageFromUrl
+  uploadAdImageFromUrl, diagnoseMetaApp, switchAppToLiveMode
 } from '../services/metaAdsApi.js';
 
 const router = Router();
@@ -150,6 +150,25 @@ router.get('/tmp-img/:id', async (req, res) => {
     console.warn('[tmp-img] DB lookup failed:', err.message);
   }
   return res.status(404).send('Expired or not found');
+});
+
+// ── Meta App Diagnostic & Live Mode Toggle ──
+router.get('/meta-app-diagnose', authenticate, async (req, res) => {
+  try {
+    const info = await diagnoseMetaApp();
+    res.json({ success: true, data: info });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.post('/meta-app-go-live', authenticate, async (req, res) => {
+  try {
+    const result = await switchAppToLiveMode();
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 const ANTHROPIC_API_KEY   = process.env.ANTHROPIC_API_KEY || '';

@@ -2,6 +2,7 @@
 // Wraps the Meta Marketing API for launching ads (image upload, creative, ad).
 
 const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN || '';
+const META_APP_SECRET = process.env.META_APP_SECRET || '';
 const META_AD_ACCOUNT_IDS = (process.env.META_AD_ACCOUNT_IDS || '').split(',').filter(Boolean);
 const META_GRAPH_URL = 'https://graph.facebook.com/v21.0';
 const META_API_TIMEOUT = 45000;  // 45s timeout for all Meta API calls
@@ -475,4 +476,57 @@ export async function uploadAdVideo(adAccountId, videoUrl, title) {
 
   const data = await res.json();
   return data.id;
+}
+
+/**
+ * Diagnose Meta app status — checks token validity, app info, and mode
+ */
+export async function diagnoseMetaApp() {
+  const results = {};
+
+  // 1. Debug token
+  const debugRes = await fetch(`${META_GRAPH_URL}/debug_token?input_token=${META_ACCESS_TOKEN}&access_token=${META_ACCESS_TOKEN}`);
+  results.token = await debugRes.json();
+
+  // 2. Try to get app info
+  const appId = results.token?.data?.app_id;
+  if (appId) {
+    const appRes = await fetch(`${META_GRAPH_URL}/${appId}?fields=name,category,link&access_token=${META_ACCESS_TOKEN}`);
+    results.app = await appRes.json();
+    results.app_id = appId;
+  }
+
+  // 3. Check if app secret is configured
+  results.has_app_secret = !!META_APP_SECRET;
+
+  return results;
+}
+
+/**
+ * Switch Meta app to Live mode using app access token (requires META_APP_SECRET env var)
+ */
+export async function switchAppToLiveMode() {
+  const appId = '1642697096931645'; // Mineblock API app ID from debug_token
+
+  if (!META_APP_SECRET) {
+    throw new Error('META_APP_SECRET env var not set — cannot create app access token. Set it on Render, then retry.');
+  }
+
+  const appToken = `${appId}|${META_APP_SECRET}`;
+
+  const res = await fetch(`${META_GRAPH_URL}/${appId}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      access_token: appToken,
+      live_mode: true,
+    }),
+  });
+
+  const data = await res.json();
+  if (!res.ok || data.error) {
+    throw new Error(`Failed to switch to live mode: ${JSON.stringify(data.error || data)}`);
+  }
+
+  return { success: true, response: data };
 }
