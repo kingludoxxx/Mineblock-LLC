@@ -605,19 +605,19 @@ router.post('/generate', authenticate, async (req, res) => {
     logoUrls.forEach((u, i) => console.log(`  [${extraProductUrls.length+1+i}] logo: ${u?.slice(0, 120)}`));
     console.log(`  [LAST] reference: ${finalReferenceUrl?.slice(0, 120)}`);
 
-    const logoBackgroundTone = claudeResult.logo_background_tone || null;
-    const skipTextRendering = false;
-    // Pass extra product count so prompt builder can calculate correct logo image indices
-    claudeResult._extraProductCount = refHasProduct ? extraProductUrls.length : 0;
-    claudeResult._refHasProduct = refHasProduct;
-    const nbPrompt = buildNanoBananaPrompt(claudeResult, swapPairs, product, logoUrls.length, customPrompts, layoutMap, logoBackgroundTone, skipTextRendering, templateData);
-
     // If reference has NO product (product_count === 0), don't send product images
     // Otherwise Gemini/NanoBanana will inject a product where none should exist
     const refHasProduct = (claudeResult.product_count ?? 1) > 0;
     if (!refHasProduct) {
       console.log(`[staticsGeneration] Reference has product_count=0 — NOT sending product images (text-only/testimonial template)`);
     }
+
+    const logoBackgroundTone = claudeResult.logo_background_tone || null;
+    const skipTextRendering = false;
+    // Pass extra product count so prompt builder can calculate correct logo image indices
+    claudeResult._extraProductCount = refHasProduct ? extraProductUrls.length : 0;
+    claudeResult._refHasProduct = refHasProduct;
+    const nbPrompt = buildNanoBananaPrompt(claudeResult, swapPairs, product, logoUrls.length, customPrompts, layoutMap, logoBackgroundTone, skipTextRendering, templateData);
 
     // Send: product images (only if ref has product), then logos, then reference ad (last)
     // Filter out null/undefined entries — NanoBanana requires all URLs to be valid strings
