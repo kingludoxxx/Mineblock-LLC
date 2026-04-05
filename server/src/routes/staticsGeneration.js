@@ -1645,7 +1645,7 @@ After matching tone, apply these product-specific rules:
 - NEVER write "$35", "$29", "$25" or any price not listed above
 - If the reference ad has a price, replace it with the CORRECT price from this list
 - When in doubt, use "Up to 40% OFF" or "Starting at $59.99" — do NOT invent prices`,
-      productIdentity: `PRODUCT IDENTITY NOTE: The product is a MINI BITCOIN MINER — a small, compact electronic device with a color display screen showing mining hashrate data. NEVER describe it as a "USB stick", "flash drive", "thumb drive", or anything USB-related. It is NOT a USB device. When describing product placement, refer to it as "mini bitcoin miner" or "compact mining device with display screen". IMPORTANT: The product's screen displays mining statistics (hashrate numbers like 995.4 KH/s) — do NOT put logos, brand names, or text overlays on the device screen. The screen content must match exactly what is shown in the product images.`,
+      productIdentity: `PRODUCT IDENTITY NOTE: The product is a MINI BITCOIN MINER — a small, compact electronic device with a color display screen. NEVER describe it as a "USB stick", "flash drive", "thumb drive", or anything USB-related. When describing product placement, refer to it as "mini bitcoin miner" or "compact mining device". CRITICAL FOR IMAGE GENERATION: The image generator must COPY the product EXACTLY from the provided product photo — same physical shape, same screen content, same proportions. It must NOT generate its own interpretation of what a "bitcoin miner" looks like. The product photo is the ONLY source of truth for the product's appearance.`,
       bannedPhrases: `works at home, easy to use, quick mining, get started today`,
       formulaPreservation: `FORMULA PRESERVATION:
 Follow the SAME sentence rhythm, approximate character count, and rhetorical pattern as the original — but fill it with THIS product's real data.
@@ -1679,7 +1679,8 @@ Reference ads may come from any niche. Map visuals to bitcoin mining context:
     nanoBanana: {
       productRules: `PRODUCT REPLACEMENT:
 - Remove ALL competitor branding, logos, product imagery
-- CRITICAL: The product is a MINI BITCOIN MINER with a display screen — NOT a USB stick. Reproduce it EXACTLY as shown. NEVER render it as a USB stick, flash drive, or thumb drive. Do NOT add logos or brand names onto the device screen — the screen shows mining hashrate data only.
+- COPY the product from the FIRST image EXACTLY — same physical shape, same screen content, same proportions, same colors. Do NOT redesign, reimagine, or generate your own version of the product. Treat the FIRST image as a cutout photo to paste in.
+- Do NOT add logos or brand names onto the device screen — the screen must match what is shown in the FIRST image
 - Realistic lighting, shadows, and perspective matching the reference style`,
       textRules: `TEXT RULES:
 - Font style, weight, size, color, and position must EXACTLY match reference for each text element
@@ -1694,7 +1695,7 @@ Reference ads may come from any niche. Map visuals to bitcoin mining context:
 4. TEXT FIDELITY: Render ONLY the text listed in the swap pairs. Do NOT add headlines, subheadlines, badges, banners, watermarks, or ANY text not in the swap list. If the swap list has 5 pairs, output must have EXACTLY 5 changed text elements — no more, no fewer
 5. ALL TEXT NOT IN THE SWAP LIST must remain EXACTLY as it appears in the reference — letter-for-letter, same font, same position. Do NOT modify, rephrase, or misspell any unchanged text
 6. Comparison labels, timeline labels, ingredient labels ALL get swapped
-7. The product is a MINI BITCOIN MINER — NEVER show a USB-looking product. Copy the device from image 1 exactly.
+7. PRODUCT FIDELITY: The product in your output must be IDENTICAL to the FIRST image. Copy its exact shape, screen, colors, and proportions. Do NOT generate your own version — PASTE the product from the FIRST image.
 8. Hands: exactly 5 fingers, realistic proportions
 9. Match reference style, color palette, mood, and visual quality
 10. PRICES MUST MATCH the text swap list EXACTLY — do not invent or modify any price, discount percentage, or dollar amount

@@ -565,17 +565,20 @@ export function buildNanoBananaPrompt(claudeResult, swapPairs, product, logoCoun
     ? `\n\n⛔ BANNED TEXT — the reference ad is about "${refCategory}". These words must NEVER appear in your output: ${refKeywords.length > 0 ? refKeywords.map(w => `"${w}"`).join(', ') : refCategory}. If you see ANY of these words in the reference image, replace them with the swap text above or remove them. ZERO reference product text in the output.`
     : '';
 
-  return `Edit the reference ad (LAST image). Replace the product with "${product.name}" (image 1).
+  return `Edit the reference ad (LAST image). Replace the product with "${product.name}" (FIRST image).
+
+🔴 PRODUCT IMAGE RULE (MOST IMPORTANT):
+The FIRST image is a PHOTO of the real product. You MUST copy this EXACT product into the output — same shape, same colors, same screen, same details. Do NOT generate, imagine, or interpret what the product looks like. Do NOT create your own version. PASTE the product from the FIRST image into the ad layout. The product in your output must look IDENTICAL to the FIRST image — as if you cut it out and placed it in. If your output product looks different from the FIRST image in ANY way (wrong shape, wrong screen, wrong details), you have FAILED.
 
 TEXT SWAPS — replace ALL text in the reference with these EXACT words:
 ${swapSectionFinal || '(No text changes)'}
 
-⚠️ CRITICAL: You MUST replace EVERY piece of text in the reference image. The reference ad is for a COMPLETELY DIFFERENT product${refCategory ? ` ("${refCategory}")` : ''}. Your output must contain ZERO words from the reference product. If ANY text in your output still mentions the reference product, you have FAILED. Read every word in the reference, find its replacement in the swap list above, and render ONLY the replacement text.${bannedTextSection}
+⚠️ TEXT RULE: You MUST replace EVERY piece of text in the reference image. The reference ad is for a COMPLETELY DIFFERENT product${refCategory ? ` ("${refCategory}")` : ''}. Your output must contain ZERO words from the reference product. If ANY text in your output still mentions the reference product, you have FAILED.${bannedTextSection}
 
 RULES:
 - Spell "${product.name}" exactly: ${product.name.split('').join('-')}. NOT "MineBlock" or "MinerBlorge".
 - Keep EXACT same layout, background, colors, fonts, positions.
-- Show product ${claudeResult.product_orientation || 'front-facing'}, as in image 1.${productRulesSection}${logoInstruction}${visualLine}
+- Product orientation: ${claudeResult.product_orientation || 'front-facing'}, matching the FIRST image.${productRulesSection}${logoInstruction}${visualLine}
 - ${characterRules}
 - Do NOT add extra elements (coins, sparkles, badges) not in the reference.
 - Background must match reference exactly.
