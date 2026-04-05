@@ -21,27 +21,22 @@ export function AresAgent({ active, step = 0 }) {
   const [visible, setVisible] = useState(false);
   const [dots, setDots] = useState('');
 
-  // Fade in/out
+  // Fade in on mount
   useEffect(() => {
-    if (active) {
-      const t = setTimeout(() => setVisible(true), 50);
-      return () => clearTimeout(t);
-    }
-    setVisible(false);
-  }, [active]);
+    const t = setTimeout(() => setVisible(true), 50);
+    return () => clearTimeout(t);
+  }, []);
 
   // Animated dots
   useEffect(() => {
-    if (!active) return;
     const iv = setInterval(() => {
       setDots(prev => (prev.length >= 3 ? '' : prev + '.'));
-    }, 500);
+    }, active ? 500 : 1500);
     return () => clearInterval(iv);
   }, [active]);
 
-  // Canvas orb animation — exact Magic Patterns implementation
+  // Canvas orb animation — always running (dimmer when idle)
   useEffect(() => {
-    if (!active) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
@@ -59,7 +54,7 @@ export function AresAgent({ active, step = 0 }) {
     const orbR = 16;
 
     const draw = () => {
-      tRef.current += 0.006;
+      tRef.current += active ? 0.006 : 0.002; // Slower pulse when idle
       const t = tRef.current;
       ctx.clearRect(0, 0, W, H);
 
@@ -189,9 +184,9 @@ export function AresAgent({ active, step = 0 }) {
     };
   }, [active]);
 
-  if (!active) return null;
-
-  const statusText = STEP_MESSAGES[step] || STEP_MESSAGES[1];
+  const statusText = active
+    ? (STEP_MESSAGES[step] || STEP_MESSAGES[1])
+    : 'Standing by';
 
   return (
     <div
@@ -254,14 +249,14 @@ export function AresAgent({ active, step = 0 }) {
                 {statusText}
               </p>
 
-              {/* Active indicator */}
+              {/* Status indicator */}
               <div className="flex items-center gap-1 mt-1">
                 <div
-                  className="w-1 h-1 rounded-full bg-emerald-500"
-                  style={{ boxShadow: '0 0 4px rgba(16,185,129,0.6)' }}
+                  className={`w-1 h-1 rounded-full ${active ? 'bg-emerald-500' : 'bg-zinc-600'}`}
+                  style={active ? { boxShadow: '0 0 4px rgba(16,185,129,0.6)' } : {}}
                 />
-                <span className="font-mono text-[8px] uppercase tracking-wider text-zinc-400">
-                  Active{dots}
+                <span className={`font-mono text-[8px] uppercase tracking-wider ${active ? 'text-zinc-400' : 'text-zinc-600'}`}>
+                  {active ? `Active${dots}` : 'Ready'}
                 </span>
               </div>
             </div>

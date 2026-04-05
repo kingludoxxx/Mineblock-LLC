@@ -211,15 +211,13 @@ export function ConfigSidebar({
         </div>
       </div>
 
-      {/* ---- Ares AI Agent indicator ---- */}
-      {generating && (
-        <div className="px-5 pt-4">
-          <AresAgent active={generating} step={generationStep} />
-        </div>
-      )}
+      {/* ---- Ares AI Agent indicator (always visible) ---- */}
+      <div className="px-5 pt-4">
+        <AresAgent active={generating} step={generationStep} />
+      </div>
 
       {/* ---- Generate & Queue buttons ---- */}
-      <div className="px-5 py-4 border-t border-white/[0.04] mt-6 space-y-3">
+      <div className="px-5 py-3 border-t border-white/[0.04] mt-3 space-y-3">
         <button
           type="button"
           onClick={onGenerate}
