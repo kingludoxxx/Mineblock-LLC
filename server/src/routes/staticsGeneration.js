@@ -348,7 +348,9 @@ async function analyzeAndCacheLayout(templateId, imageUrl) {
     // Cache in DB
     await pgQuery(
       `UPDATE statics_templates
-       SET metadata = jsonb_set(COALESCE(metadata, '{}'), '{layout_map}', $1::jsonb),
+       SET metadata = jsonb_set(
+               CASE WHEN metadata IS NULL OR jsonb_typeof(metadata) != 'object' THEN '{}'::jsonb ELSE metadata END,
+               '{layout_map}', $1::jsonb),
            updated_at = NOW()
        WHERE id = $2`,
       [JSON.stringify(layoutMap), templateId]
@@ -1404,10 +1406,15 @@ router.post('/creatives', authenticate, async (req, res) => {
           }
 
           // Store validation results in claude_analysis JSONB
+          // Use CASE to handle scalar/null claude_analysis values safely
           await pgQuery(
             `UPDATE spy_creatives
              SET claude_analysis = jsonb_set(
-               COALESCE(claude_analysis, '{}'),
+               CASE
+                 WHEN claude_analysis IS NULL OR jsonb_typeof(claude_analysis) != 'object'
+                 THEN '{}'::jsonb
+                 ELSE claude_analysis
+               END,
                '{validation}',
                $1::jsonb
              ),
