@@ -9,7 +9,8 @@ const CLICKUP_TOKEN = process.env.CLICKUP_API_TOKEN || '';
 const CLICKUP_API = 'https://api.clickup.com/api/v2';
 const TEAM_ID = '90152075024';
 
-// Frame.io config
+// Frame.io config (folder creation handled by Make.com scenario)
+// These are kept for diagnostic/manual fix endpoints only
 const FRAMEIO_TOKEN = process.env.FRAMEIO_TOKEN || '';
 const FRAMEIO_PROJECT_ID = '19c0ce1f-f357-4da8-ba1f-bd7eb201e660';
 const FRAMEIO_API = 'https://api.frame.io/v2';
@@ -449,68 +450,8 @@ async function ensureMediaBuyingTask(task, taskListId) {
   }
 }
 
-// ── Frame.io: Create folder when task moves to "editing" ──────────────
-async function handleEditingStatusChange(taskId, task) {
-  if (!FRAMEIO_TOKEN) {
-    logger.warn('[ClickUp Webhook] Skipping Frame.io folder — no token configured');
-    return;
-  }
-
-  // Skip YT duplicates
-  if (task.description?.includes('[yt-duplicate]')) return;
-
-  // Only for Video Ads list
-  if (!NAMING_LISTS.includes(task.list?.id)) return;
-
-  // Check if frame link already exists AND points to a folder named after this task
-  // (not inherited from a parent/reference)
-  const existingFrameLink = task.custom_fields?.find(
-    (f) => f.id === 'd90f9f25-d7a0-4eb4-9ded-aca0b4519a3b'
-  )?.value;
-
-  if (existingFrameLink) {
-    // Verify the existing link is actually for THIS task, not the parent reference
-    // Extract asset ID from the URL and check if the folder name matches the task name
-    try {
-      const assetIdMatch = existingFrameLink.match(/\/([a-f0-9-]{36})$/);
-      if (assetIdMatch) {
-        const assetId = assetIdMatch[1];
-        const asset = await frameioFetch(`/assets/${assetId}`);
-        if (asset?.name === task.name) {
-          logger.info(`[ClickUp Webhook] Frame.io folder already exists for ${taskId} with correct name, skipping`);
-          return;
-        }
-        logger.info(`[ClickUp Webhook] Frame.io link exists but folder name "${asset?.name}" doesn't match task "${task.name}" — creating new folder`);
-      }
-    } catch (err) {
-      logger.warn(`[ClickUp Webhook] Could not verify existing Frame.io link for ${taskId}: ${err.message}`);
-    }
-  }
-
-  try {
-    const rootFolderId = await getProjectRootFolder();
-    if (!rootFolderId) {
-      logger.error('[ClickUp Webhook] Could not get Frame.io project root folder');
-      return;
-    }
-
-    // Use the full task name as folder name
-    const folderName = task.name || taskId;
-
-    const result = await createFrameFolder(rootFolderId, folderName);
-    if (!result) {
-      logger.error(`[ClickUp Webhook] Failed to create Frame.io folder for ${taskId}`);
-      return;
-    }
-
-    // Set the Ads Frame Link custom field on the ClickUp task
-    await setCustomField(taskId, 'd90f9f25-d7a0-4eb4-9ded-aca0b4519a3b', result.folderUrl);
-
-    logger.info(`[ClickUp Webhook] Created Frame.io folder "${folderName}" → ${result.folderUrl} for task ${taskId} (on editing)`);
-  } catch (frameErr) {
-    logger.error(`[ClickUp Webhook] Frame.io error for task ${taskId}: ${frameErr.message}`);
-  }
-}
+// NOTE: Frame.io folder creation on "editing" status is handled by Make.com scenario
+// Our webhook only handles naming, status sync, YT duplication, and Media Buying tasks
 
 // Handle status sync between linked tasks
 async function handleStatusSync(taskId, historyItems) {
@@ -522,11 +463,6 @@ async function handleStatusSync(taskId, historyItems) {
 
   const task = await getTask(taskId);
   const taskListId = task.list?.id;
-
-  // When a task moves to "editing", create Frame.io folder
-  if (newStatus === 'editing') {
-    await handleEditingStatusChange(taskId, task);
-  }
 
   if (!SYNC_LISTS.includes(taskListId)) return;
 
@@ -774,25 +710,7 @@ router.get('/frame-diagnose', async (req, res) => {
   }
 });
 
-// GET /api/v1/clickup-webhook/fix-frame/:taskId — create Frame.io folder for a task and set the link
-router.get('/fix-frame/:taskId', async (req, res) => {
-  const { taskId } = req.params;
-  try {
-    if (!FRAMEIO_TOKEN) {
-      return res.status(400).json({ error: 'FRAMEIO_TOKEN not set' });
-    }
-
-    const task = await getTask(taskId);
-    await handleEditingStatusChange(taskId, task);
-
-    // Re-fetch to get the updated link
-    const updated = await getTask(taskId);
-    const frameLink = updated.custom_fields?.find(f => f.id === 'd90f9f25-d7a0-4eb4-9ded-aca0b4519a3b')?.value;
-    res.json({ success: true, taskId, taskName: task.name, frameLink });
-  } catch (err) {
-    logger.error(`[ClickUp Webhook] Fix frame failed for ${taskId}: ${err.message}`);
-    res.status(500).json({ error: err.message });
-  }
-});
+// Frame.io folder creation is handled by Make.com scenario
+// Use /frame-diagnose to check Frame.io API access if needed
 
 export default router;
