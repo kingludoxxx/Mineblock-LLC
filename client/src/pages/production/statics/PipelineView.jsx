@@ -1001,7 +1001,7 @@ export function PipelineView({ creatives = [], onStatusChange, onAngleChange, on
                   : `Launch "${pendingLaunch.angle}" Ad Set`
                 }
               </h3>
-              <button onClick={() => { setLaunchModalOpen(false); setPendingLaunch(null); }} className="text-zinc-500 hover:text-white cursor-pointer">
+              <button onClick={() => { if (!launching) { setLaunchModalOpen(false); setPendingLaunch(null); } }} disabled={launching} className="text-zinc-500 hover:text-white cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed">
                 <X className="w-4 h-4" />
               </button>
             </div>

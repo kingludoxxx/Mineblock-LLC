@@ -1850,7 +1850,9 @@ router.post('/settings/prompts/reset', authenticate, async (_req, res) => {
 function buildLaunchName(pattern, vars) {
   let result = pattern;
   for (const [key, val] of Object.entries(vars)) {
-    result = result.replace(new RegExp(`\\{${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\}`, 'g'), val || '');
+    // Escape $ in replacement value to prevent regex substitution codes
+    const safeVal = (val || '').replace(/\$/g, '$$$$');
+    result = result.replace(new RegExp(`\\{${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\}`, 'g'), safeVal);
   }
   return result.trim();
 }
@@ -1936,12 +1938,12 @@ router.post('/launch', authenticate, async (req, res) => {
         conversionEvent: template.conversion_event,
         conversionLocation: template.conversion_location,
         targeting: {
-          countries: safeJsonArr(template.countries).length ? safeJsonArr(template.countries) : ['US'],
+          countries: safeArr(template.countries).length ? safeArr(template.countries) : ['US'],
           age_min: template.age_min,
           age_max: template.age_max,
           gender: template.gender,
-          include_audiences: safeJsonArr(template.include_audiences),
-          exclude_audiences: safeJsonArr(template.exclude_audiences),
+          include_audiences: safeArr(template.include_audiences),
+          exclude_audiences: safeArr(template.exclude_audiences),
         },
         attributionWindow: template.attribution_window,
         pageId: selectedPages[0]?.id,
@@ -2106,6 +2108,12 @@ router.post('/launch', authenticate, async (req, res) => {
         results.push({ creative_id: creative.id, status: 'failed', error: err.message });
       }
     }
+
+    // Reset any creatives still stuck in 'launching' (not reached by loop or skipped)
+    await pgQuery(
+      `UPDATE spy_creatives SET status = 'ready', review_notes = 'Launch interrupted — retryable' WHERE id = ANY($1) AND status = 'launching'`,
+      [creative_ids]
+    ).catch(() => {});
 
     res.json({ success: true, data: { results, adset_id: adsetId, adset_name: adsetName } });
   } catch (err) {

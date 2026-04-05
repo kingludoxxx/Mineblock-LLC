@@ -294,7 +294,11 @@ export async function createAdSet(adAccountId, params) {
     } : {}),
   };
 
-  if (dailyBudget) body.daily_budget = Math.round(dailyBudget * 100); // cents
+  if (dailyBudget) {
+    const budgetNum = typeof dailyBudget === 'string' ? parseFloat(dailyBudget) : dailyBudget;
+    if (isNaN(budgetNum) || budgetNum <= 0) throw new Error(`Invalid daily_budget: ${dailyBudget}`);
+    body.daily_budget = Math.round(budgetNum * 100); // cents
+  }
   if (targetRoas && bidStrategy === 'LOWEST_COST_WITH_MIN_ROAS') {
     body.bid_constraints = { roas_average_floor: Math.round(targetRoas * 10000) };
   }
@@ -330,7 +334,8 @@ export async function createFlexibleAdCreative(adAccountId, params) {
     verticalImageHash, // 9:16 image hash for stories/reels placements
   } = params;
 
-  const finalLink = utmParameters ? `${link}${link.includes('?') ? '&' : '?'}${utmParameters}` : link;
+  const cleanUTM = utmParameters?.replace(/^[?&]+/, '');
+  const finalLink = cleanUTM ? `${link}${link.includes('?') ? '&' : '?'}${cleanUTM}` : link;
 
   const assetFeedSpec = {
     bodies: primaryTexts.map(t => ({ text: t })),
