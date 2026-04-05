@@ -1990,114 +1990,6 @@ export default function StaticsGeneration() {
 
               {/* Right: Pipeline content (fills remaining) */}
               <div className="flex-1 min-w-0 space-y-6 pl-5">
-                {/* ---- Generation Queue Panel ---- */}
-                {realQueueItems.length > 0 && (
-                  <div className="bg-[#111] border border-white/[0.06] rounded-lg overflow-hidden">
-                    <div className="flex items-center justify-between px-4 py-2.5 border-b border-white/[0.06]">
-                      <div className="flex items-center gap-2">
-                        <ListPlus className="w-4 h-4 text-accent-text" />
-                        <span className="text-sm font-medium text-white">Generation Queue</span>
-                      </div>
-                      <div className="flex items-center gap-3">
-                        <span className="text-xs text-slate-500">
-                          {activeQueueCount > 0
-                            ? `${activeQueueCount} active`
-                            : `${clearableQueueCount} finished`}
-                        </span>
-                        {clearableQueueCount > 0 && (
-                          <button
-                            type="button"
-                            onClick={handleClearQueue}
-                            className="text-[10px] text-slate-600 hover:text-white transition-colors cursor-pointer"
-                            title="Clear done & errored items"
-                          >
-                            Clear
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                    <div className="divide-y divide-white/[0.04]">
-                      {realQueueItems.map((item) => (
-                        <div key={item.id} className={`flex gap-3 px-4 py-2 text-sm ${item.status === 'error' || item.status === 'partial' ? 'items-start' : 'items-center'}`}>
-                          {/* Status icon */}
-                          <span className="shrink-0 w-5 text-center">
-                            {item.status === 'queued' && <Clock className="w-3.5 h-3.5 text-slate-500 inline" />}
-                            {item.status === 'generating' && <Loader2 className="w-3.5 h-3.5 text-accent-text animate-spin inline" />}
-                            {item.status === 'done' && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 inline" />}
-                            {item.status === 'partial' && <AlertCircle className="w-3.5 h-3.5 text-amber-400 inline" />}
-                            {item.status === 'error' && <AlertCircle className="w-3.5 h-3.5 text-red-400 inline" />}
-                          </span>
-                          {/* Status label */}
-                          <span className={`text-xs font-medium w-[72px] shrink-0 ${
-                            item.status === 'queued' ? 'text-slate-500'
-                            : item.status === 'generating' ? 'text-accent-text'
-                            : item.status === 'done' ? 'text-emerald-400'
-                            : item.status === 'partial' ? 'text-amber-400'
-                            : 'text-red-400'
-                          }`}>
-                            {item.status === 'queued' ? 'Queued'
-                              : item.status === 'generating' ? `Generating${item.progress ? ` ${item.progress}` : ''}`
-                              : item.status === 'done' ? 'Done'
-                              : item.status === 'partial' ? 'Partial'
-                              : 'Error'}
-                          </span>
-                          {/* Angle */}
-                          <span className="text-xs text-slate-300 truncate flex-1">
-                            {item.customAngle || item.angle || 'No angle'}
-                          </span>
-                          {/* Reference count */}
-                          <span className="text-[11px] text-slate-500 shrink-0">
-                            {item.references.length} ref{item.references.length !== 1 ? 's' : ''}
-                          </span>
-                          {/* Result info or error */}
-                          {item.status === 'error' ? (
-                            <span className="text-[11px] text-red-400 flex-1 min-w-0 break-words whitespace-normal text-right leading-snug" title={item.error}>
-                              {item.error}
-                            </span>
-                          ) : item.status === 'partial' ? (
-                            <span className="text-[11px] flex-1 min-w-0 text-right leading-snug">
-                              <span className="text-emerald-400">{item.result?.creativeCount || 0} creative{(item.result?.creativeCount || 0) !== 1 ? 's' : ''}</span>
-                              {item.error && <span className="text-amber-400 block break-words whitespace-normal" title={item.error}>{item.error}</span>}
-                            </span>
-                          ) : (
-                            <span className="text-[11px] text-right shrink-0 w-[100px] truncate">
-                              {item.status === 'done' && item.result?.creativeCount && (
-                                <span className="text-emerald-400">{item.result.creativeCount} creative{item.result.creativeCount !== 1 ? 's' : ''}</span>
-                              )}
-                            </span>
-                          )}
-                          {/* Retry button (error or partial) */}
-                          <span className="w-6 shrink-0 flex justify-center">
-                            {(item.status === 'error' || item.status === 'partial') && (
-                              <button
-                                type="button"
-                                onClick={() => handleRetryQueueItem(item.id)}
-                                className="text-slate-600 hover:text-amber-400 transition-colors cursor-pointer"
-                                title="Retry"
-                              >
-                                <RotateCcw className="w-3.5 h-3.5" />
-                              </button>
-                            )}
-                          </span>
-                          {/* Remove / dismiss button (queued, error, done) */}
-                          <span className="w-6 shrink-0 flex justify-center">
-                            {(item.status === 'queued' || item.status === 'error' || item.status === 'done' || item.status === 'partial') && (
-                              <button
-                                type="button"
-                                onClick={() => handleRemoveFromQueue(item.id)}
-                                className="text-slate-600 hover:text-red-400 transition-colors cursor-pointer"
-                                title={item.status === 'queued' ? 'Remove from queue' : 'Dismiss'}
-                              >
-                                {item.status === 'queued' ? <Trash2 className="w-3.5 h-3.5" /> : <X className="w-3.5 h-3.5" />}
-                              </button>
-                            )}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
                 <PipelineView
                   creatives={creatives}
                   loading={creativesLoading}
@@ -2149,6 +2041,107 @@ export default function StaticsGeneration() {
                   onOpenTemplates={() => setTemplateEditorOpen(true)}
                   onOpenCopySets={() => setCopySetsOpen(true)}
                 />
+
+                {/* ---- Generation Queue Panel (below pipeline) ---- */}
+                {realQueueItems.length > 0 && (
+                  <div className="bg-[#111] border border-white/[0.06] rounded-lg overflow-hidden">
+                    <div className="flex items-center justify-between px-4 py-2.5 border-b border-white/[0.06]">
+                      <div className="flex items-center gap-2">
+                        <ListPlus className="w-4 h-4 text-accent-text" />
+                        <span className="text-sm font-medium text-white">Generation Queue</span>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <span className="text-xs text-slate-500">
+                          {activeQueueCount > 0
+                            ? `${activeQueueCount} active`
+                            : `${clearableQueueCount} finished`}
+                        </span>
+                        {clearableQueueCount > 0 && (
+                          <button
+                            type="button"
+                            onClick={handleClearQueue}
+                            className="text-[10px] text-slate-600 hover:text-white transition-colors cursor-pointer"
+                            title="Clear done & errored items"
+                          >
+                            Clear
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    <div className="divide-y divide-white/[0.04]">
+                      {realQueueItems.map((item) => (
+                        <div key={item.id} className={`flex gap-3 px-4 py-2 text-sm ${item.status === 'error' || item.status === 'partial' ? 'items-start' : 'items-center'}`}>
+                          <span className="shrink-0 w-5 text-center">
+                            {item.status === 'queued' && <Clock className="w-3.5 h-3.5 text-slate-500 inline" />}
+                            {item.status === 'generating' && <Loader2 className="w-3.5 h-3.5 text-accent-text animate-spin inline" />}
+                            {item.status === 'done' && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 inline" />}
+                            {item.status === 'partial' && <AlertCircle className="w-3.5 h-3.5 text-amber-400 inline" />}
+                            {item.status === 'error' && <AlertCircle className="w-3.5 h-3.5 text-red-400 inline" />}
+                          </span>
+                          <span className={`text-xs font-medium w-[72px] shrink-0 ${
+                            item.status === 'queued' ? 'text-slate-500'
+                            : item.status === 'generating' ? 'text-accent-text'
+                            : item.status === 'done' ? 'text-emerald-400'
+                            : item.status === 'partial' ? 'text-amber-400'
+                            : 'text-red-400'
+                          }`}>
+                            {item.status === 'queued' ? 'Queued'
+                              : item.status === 'generating' ? `Generating${item.progress ? ` ${item.progress}` : ''}`
+                              : item.status === 'done' ? 'Done'
+                              : item.status === 'partial' ? 'Partial'
+                              : 'Error'}
+                          </span>
+                          <span className="text-xs text-slate-300 truncate flex-1">
+                            {item.customAngle || item.angle || 'No angle'}
+                          </span>
+                          <span className="text-[11px] text-slate-500 shrink-0">
+                            {item.references.length} ref{item.references.length !== 1 ? 's' : ''}
+                          </span>
+                          {item.status === 'error' ? (
+                            <span className="text-[11px] text-red-400 flex-1 min-w-0 break-words whitespace-normal text-right leading-snug" title={item.error}>
+                              {item.error}
+                            </span>
+                          ) : item.status === 'partial' ? (
+                            <span className="text-[11px] flex-1 min-w-0 text-right leading-snug">
+                              <span className="text-emerald-400">{item.result?.creativeCount || 0} creative{(item.result?.creativeCount || 0) !== 1 ? 's' : ''}</span>
+                              {item.error && <span className="text-amber-400 block break-words whitespace-normal" title={item.error}>{item.error}</span>}
+                            </span>
+                          ) : (
+                            <span className="text-[11px] text-right shrink-0 w-[100px] truncate">
+                              {item.status === 'done' && item.result?.creativeCount && (
+                                <span className="text-emerald-400">{item.result.creativeCount} creative{item.result.creativeCount !== 1 ? 's' : ''}</span>
+                              )}
+                            </span>
+                          )}
+                          <span className="w-6 shrink-0 flex justify-center">
+                            {(item.status === 'error' || item.status === 'partial') && (
+                              <button
+                                type="button"
+                                onClick={() => handleRetryQueueItem(item.id)}
+                                className="text-slate-600 hover:text-amber-400 transition-colors cursor-pointer"
+                                title="Retry"
+                              >
+                                <RotateCcw className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </span>
+                          <span className="w-6 shrink-0 flex justify-center">
+                            {(item.status === 'queued' || item.status === 'error' || item.status === 'done' || item.status === 'partial') && (
+                              <button
+                                type="button"
+                                onClick={() => handleRemoveFromQueue(item.id)}
+                                className="text-slate-600 hover:text-red-400 transition-colors cursor-pointer"
+                                title={item.status === 'queued' ? 'Remove from queue' : 'Dismiss'}
+                              >
+                                {item.status === 'queued' ? <Trash2 className="w-3.5 h-3.5" /> : <X className="w-3.5 h-3.5" />}
+                              </button>
+                            )}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
 
                 {/* ---- Error State ---- */}
                 {error && !generating && (

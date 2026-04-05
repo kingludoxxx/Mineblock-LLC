@@ -478,8 +478,9 @@ export function buildNanoBananaPrompt(claudeResult, swapPairs, product, logoCoun
   // Text swaps go FIRST because they're the most critical instruction.
   // Everything else is secondary. Long prompts cause the model to ignore key instructions.
 
+  const logoImageRef = logoCount > 1 ? `images 2-${1 + logoCount}` : 'image 2';
   const logoInstruction = logoCount > 0
-    ? `\nReplace any competitor logo with the provided brand logo (image ${logoCount > 1 ? 'images 2-' + (1 + logoCount) : 'image 2'}).${logoBackgroundTone === 'dark' ? ' Use the WHITE logo version (dark background).' : logoBackgroundTone === 'light' ? ' Use the BLACK logo version (light background).' : ''}`
+    ? `\n🔴 LOGO RULE: Replace any competitor logo with the EXACT logo provided (${logoImageRef}). COPY the logo EXACTLY as it appears in ${logoImageRef} — same shape, same proportions, same text styling. Do NOT redesign, redraw, or generate your own version of the logo. PASTE the provided logo image directly. If your output logo looks different from ${logoImageRef} in ANY way, you have FAILED.${logoBackgroundTone === 'dark' ? ' Use the WHITE logo version (dark background).' : logoBackgroundTone === 'light' ? ' Use the BLACK logo version (light background).' : ''}`
     : '';
 
   // Only include the MUST CHANGE visual adaptations (skip keep-as-is ones)
