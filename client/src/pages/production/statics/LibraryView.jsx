@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react';
-import { Plus, ScanSearch, MousePointerSquareDashed, EyeOff, AlertCircle, X, Check } from 'lucide-react';
+import { Plus, ScanSearch, MousePointerSquareDashed, EyeOff, AlertCircle, X, Check, Trash2, Zap } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
 // Categories
@@ -99,14 +99,16 @@ function Sidebar({ templates, selectedCategory, onCategoryChange }) {
 // Template Card
 // ---------------------------------------------------------------------------
 
-function TemplateCard({ template, onView }) {
+function TemplateCard({ template, onView, onAnalyze, onDelete }) {
   return (
-    <button
-      onClick={() => onView(template)}
+    <div
       className="group flex flex-col rounded-xl border border-white/[0.06] bg-white/[0.02] overflow-hidden transition-all hover:border-white/[0.12] hover:bg-white/[0.04] cursor-pointer text-left"
     >
       {/* Thumbnail */}
-      <div className="relative aspect-[4/5] w-full overflow-hidden bg-black/30">
+      <button
+        onClick={() => onView(template)}
+        className="relative aspect-[4/5] w-full overflow-hidden bg-black/30 cursor-pointer"
+      >
         {template.image_url ? (
           <img
             src={template.image_url}
@@ -118,21 +120,51 @@ function TemplateCard({ template, onView }) {
             <AlertCircle className="w-8 h-8" />
           </div>
         )}
+        {/* Analysis indicator */}
+        {template.deep_analysis && (
+          <div className="absolute top-2 right-2 w-2 h-2 rounded-full bg-green-500" title="Analyzed" />
+        )}
         {/* Hover overlay */}
         <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
           <span className="text-xs font-medium text-white bg-white/[0.15] backdrop-blur-sm px-3 py-1.5 rounded-full">
             View Reference
           </span>
         </div>
-      </div>
+      </button>
 
-      {/* Label */}
-      <div className="px-3 py-2.5">
-        <p className="text-xs text-slate-400 truncate">
+      {/* Label + actions */}
+      <div className="px-3 py-2.5 flex items-center justify-between gap-1">
+        <p className="text-xs text-slate-400 truncate flex-1">
           Reference Ad{template.category ? ` \u00b7 ${template.category}` : ''}
         </p>
+        <div className="flex items-center gap-0.5 shrink-0">
+          {onAnalyze && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onAnalyze(template);
+              }}
+              className="p-1.5 text-gray-500 hover:text-purple-400 hover:bg-purple-900/20 rounded transition-colors cursor-pointer"
+              title="Analyze template"
+            >
+              <Zap className="w-3.5 h-3.5" />
+            </button>
+          )}
+          {onDelete && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onDelete(template);
+              }}
+              className="p-1.5 text-gray-500 hover:text-red-400 hover:bg-red-900/20 rounded transition-colors cursor-pointer"
+              title="Delete template"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
       </div>
-    </button>
+    </div>
   );
 }
 
@@ -204,6 +236,9 @@ export function LibraryView({
   onAddReference,
   selectedCategory,
   onCategoryChange,
+  onAnalyzeTemplate,
+  onAnalyzeAll,
+  onDeleteTemplate,
 }) {
   const [selectMode, setSelectMode] = useState(false);
   const [viewingTemplate, setViewingTemplate] = useState(null);
@@ -275,6 +310,16 @@ export function LibraryView({
               AI Scan &amp; Sort
             </button>
 
+            {onAnalyzeAll && (
+              <button
+                onClick={onAnalyzeAll}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-purple-600 hover:bg-purple-500 text-white transition-colors cursor-pointer"
+              >
+                <Zap className="w-3.5 h-3.5" />
+                Analyze All
+              </button>
+            )}
+
             <button
               onClick={onAddReference}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-accent text-white hover:bg-accent-hover transition-colors cursor-pointer"
@@ -298,6 +343,8 @@ export function LibraryView({
                   key={tpl.id}
                   template={tpl}
                   onView={setViewingTemplate}
+                  onAnalyze={onAnalyzeTemplate}
+                  onDelete={onDeleteTemplate}
                 />
               ))}
             </div>

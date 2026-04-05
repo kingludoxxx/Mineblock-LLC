@@ -66,7 +66,7 @@ Return ONLY valid JSON (no markdown, no code fences):
 // STEP 1: Claude Vision — Copy Extraction + Rewriting
 // ─────────────────────────────────────────────────────────────────────────────
 
-export function buildClaudePrompt(product, angle, customOverrides = null, layoutMap = null) {
+export function buildClaudePrompt(product, angle, customOverrides = null, layoutMap = null, templateData = null) {
   const profile = product.profile || {};
   const co = customOverrides?.claudeAnalysis || {};
 
@@ -167,6 +167,28 @@ ELEMENT COUNT: The adapted text count must EXACTLY MATCH the original count — 
     ? `\n\n${co.visualAdaptation}`
     : '';
 
+  // If template has deep analysis, include it
+  const deepAnalysisSection = templateData?.deep_analysis ? `
+
+---
+
+PRE-ANALYZED TEMPLATE INTELLIGENCE:
+This template has been pre-analyzed. Use this intelligence to produce better results:
+
+Layout: ${JSON.stringify(templateData.deep_analysis.layout, null, 2)}
+Typography: ${JSON.stringify(templateData.deep_analysis.typography, null, 2)}
+Product Analysis: ${JSON.stringify(templateData.deep_analysis.product_analysis, null, 2)}
+Color Palette: ${JSON.stringify(templateData.deep_analysis.color_palette, null, 2)}
+Design Elements: ${JSON.stringify(templateData.deep_analysis.design_elements, null, 2)}
+Adaptation Instructions: ${JSON.stringify(templateData.deep_analysis.adaptation_instructions, null, 2)}
+
+IMPORTANT: Follow the adaptation_instructions closely. Pay special attention to:
+- critical_elements_to_preserve: These MUST remain unchanged
+- common_failure_modes: Actively AVOID these issues
+- product_replacement_notes: Follow these for product placement
+- text_replacement_strategy: Use "${templateData.deep_analysis.adaptation_instructions?.text_replacement_strategy || 'direct-swap'}" approach
+` : '';
+
   return `You are a $50K/month media buyer who writes ad copy that actually converts cold traffic. You've spent millions on Facebook ads. You know exactly what makes someone stop scrolling and click.
 
 You are analyzing a reference ad image and rewriting its copy for a different product.
@@ -226,7 +248,7 @@ USE THIS LAYOUT MAP TO:
 - Understand the spatial hierarchy — H1 gets the most impactful copy, badges get short punchy text
 - If the layout has stat positions, write stat-worthy numbers/claims for those positions
 - Respect the template's rhythm: if it has 2 short badges, write 2 short badges — not 5
-` : ''}
+` : ''}${deepAnalysisSection}
 ---
 
 TEXT EXTRACTION RULES:
@@ -437,12 +459,28 @@ export function buildSwapPairs(originalText, adaptedText) {
 // STEP 3: NanoBanana (Gemini) — Image Generation Prompt
 // ─────────────────────────────────────────────────────────────────────────────
 
-export function buildNanoBananaPrompt(claudeResult, swapPairs, product, logoCount = 0, customOverrides = null, layoutMap = null, logoBackgroundTone = null, skipTextRendering = false) {
+export function buildNanoBananaPrompt(claudeResult, swapPairs, product, logoCount = 0, customOverrides = null, layoutMap = null, logoBackgroundTone = null, skipTextRendering = false, templateData = null) {
   const {
     people_count, product_count, adapted_audience,
     character_adaptation, visual_adaptations
   } = claudeResult;
   const co = customOverrides?.nanoBanana || {};
+
+  // Template visual intelligence from deep analysis
+  const templateIntelligence = templateData?.deep_analysis ? `
+
+TEMPLATE VISUAL INTELLIGENCE (from pre-analysis):
+- Background: ${templateData.deep_analysis.background?.type || 'unknown'} (${templateData.deep_analysis.background?.primary_color || 'unknown'})
+- Layout: ${templateData.deep_analysis.layout?.grid_structure || 'unknown'}
+- Product Zone: ${templateData.deep_analysis.layout?.safe_zones?.product_zone?.position || 'center'} (${templateData.deep_analysis.layout?.safe_zones?.product_zone?.size_percent || 40}% of image)
+- Logo Zone: ${templateData.deep_analysis.layout?.safe_zones?.logo_zone?.position || 'top-left'}
+- Color Mood: ${templateData.deep_analysis.color_palette?.overall_mood || 'neutral'}
+- Shadow Effects: ${templateData.deep_analysis.design_elements?.shadow_effects || 'none'}
+- Product Replacement Difficulty: ${templateData.deep_analysis.adaptation_instructions?.product_replacement_difficulty || 'medium'}
+${templateData.deep_analysis.adaptation_instructions?.common_failure_modes?.length > 0
+  ? `\nKNOWN FAILURE MODES TO AVOID:\n${templateData.deep_analysis.adaptation_instructions.common_failure_modes.map(f => `- ${f}`).join('\n')}`
+  : ''}
+` : '';
 
   const pCount = people_count ?? 0;
   const pCount2 = product_count ?? 1;
@@ -589,5 +627,5 @@ RULES:
 - ${characterRules}
 - Do NOT add extra elements (coins, sparkles, badges, product images) not in the reference.
 - Background must match reference exactly.
-- ANY text not listed in the swap list that refers to the reference product MUST be removed or replaced with "${product.name}" text.${hasProductInReference ? '' : '\n- This is a TEXT-ONLY ad. Do NOT insert any product image, device photo, or visual element that is not in the reference.'}${complexWarning}${co.absoluteRules ? `\n${co.absoluteRules}` : ''}`;
+- ANY text not listed in the swap list that refers to the reference product MUST be removed or replaced with "${product.name}" text.${hasProductInReference ? '' : '\n- This is a TEXT-ONLY ad. Do NOT insert any product image, device photo, or visual element that is not in the reference.'}${complexWarning}${co.absoluteRules ? `\n${co.absoluteRules}` : ''}${templateIntelligence}`;
 }

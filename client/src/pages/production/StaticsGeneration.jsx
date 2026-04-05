@@ -43,6 +43,7 @@ import { CreativeDetailModal } from './statics/CreativeDetailModal';
 import { ConfigSidebar } from './statics/ConfigSidebar';
 import { AddReferenceModal } from './statics/AddReferenceModal';
 import { StaticsSettingsModal } from './statics/StaticsSettingsModal';
+import TemplateAnalysisModal from './statics/TemplateAnalysisModal';
 import LaunchTemplateEditor from './briefs/LaunchTemplateEditor';
 import AdCopySetsManager from './briefs/AdCopySetsManager';
 
@@ -864,6 +865,7 @@ export default function StaticsGeneration() {
   const [templateEditorOpen, setTemplateEditorOpen] = useState(false);
   const [editingTemplate, setEditingTemplate] = useState(null);
   const [copySetsOpen, setCopySetsOpen] = useState(false);
+  const [analysisModalTemplate, setAnalysisModalTemplate] = useState(null);
   const [selectedCategory, setSelectedCategory] = useState(null);
 
   // =========================================================================
@@ -2536,6 +2538,28 @@ export default function StaticsGeneration() {
           onAddReference={() => setAddRefModal(true)}
           selectedCategory={selectedCategory}
           onCategoryChange={setSelectedCategory}
+          onAnalyzeTemplate={(template) => setAnalysisModalTemplate(template)}
+          onAnalyzeAll={async () => {
+            try {
+              const res = await api.post('/statics-generation/templates/analyze-all');
+              if (res.data?.success) {
+                console.log(res.data.message);
+              }
+            } catch (err) {
+              console.error('Analyze all failed:', err);
+            }
+          }}
+          onDeleteTemplate={async (template) => {
+            if (!window.confirm('Delete this template?')) return;
+            try {
+              const res = await api.delete(`/statics-generation/templates/${template.id}`);
+              if (res.data?.success) {
+                setTemplates(prev => prev.filter(t => t.id !== template.id));
+              }
+            } catch (err) {
+              console.error('Delete failed:', err);
+            }
+          }}
         />
       )}
 
@@ -2699,6 +2723,12 @@ export default function StaticsGeneration() {
           productName={productName}
         />
       )}
+
+      <TemplateAnalysisModal
+        isOpen={!!analysisModalTemplate}
+        onClose={() => setAnalysisModalTemplate(null)}
+        template={analysisModalTemplate}
+      />
     </div>
   );
 }

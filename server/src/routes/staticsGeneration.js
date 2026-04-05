@@ -6,6 +6,7 @@ import { authenticate } from '../middleware/auth.js';
 import { uploadBuffer, isR2Configured } from '../services/r2.js';
 import { editImage, isGeminiConfigured, GEMINI_EDIT_MODEL } from '../services/geminiImageGen.js';
 import crypto from 'crypto';
+import { analyzeTemplate } from '../utils/templateAnalysis.js';
 import {
   isMetaAdsConfigured, createAdSet, createFlexibleAdCreative, createAd,
   uploadAdImageFromUrl
@@ -65,6 +66,17 @@ const MAX_TEMP_IMAGES = 200;
     console.log('[imageStore] image_store table ready');
   } catch (err) {
     console.warn('[imageStore] Could not ensure image_store table:', err.message);
+  }
+})();
+
+// Auto-add deep_analysis columns to statics_templates on boot (idempotent)
+(async () => {
+  try {
+    await pgQuery(`ALTER TABLE statics_templates ADD COLUMN IF NOT EXISTS deep_analysis JSONB`, []);
+    await pgQuery(`ALTER TABLE statics_templates ADD COLUMN IF NOT EXISTS analyzed_at TIMESTAMPTZ`, []);
+    console.log('[boot] statics_templates deep_analysis columns ensured');
+  } catch (err) {
+    console.warn('[boot] Could not add deep_analysis columns:', err.message);
   }
 })();
 
@@ -370,16 +382,23 @@ router.post('/generate', authenticate, async (req, res) => {
     const hasCustomOverrides = !!(customPrompts?.claudeAnalysis?.headlineRules || customPrompts?.claudeAnalysis?.productIdentity || customPrompts?.claudeAnalysis?.bannedPhrases);
     console.log(`[staticsGeneration] Custom prompt overrides: ${hasCustomOverrides ? 'YES (custom prompts from DB)' : 'NO (using defaults)'}`);
 
-    // ── Load cached layout map if template-based ──────────────────────
+    // ── Load cached layout map + deep analysis if template-based ──────
     let layoutMap = null;
+    let templateData = null;
     if (template_id) {
       try {
         const rows = await pgQuery(
-          `SELECT metadata FROM statics_templates WHERE id = $1`,
+          `SELECT metadata, deep_analysis FROM statics_templates WHERE id = $1`,
           [template_id]
         );
         const meta = rows[0]?.metadata;
         layoutMap = (typeof meta === 'string' ? JSON.parse(meta) : meta)?.layout_map || null;
+        const rawDeep = rows[0]?.deep_analysis;
+        const deepAnalysis = typeof rawDeep === 'string' ? JSON.parse(rawDeep) : rawDeep;
+        if (deepAnalysis) {
+          templateData = { deep_analysis: deepAnalysis };
+          console.log(`[staticsGeneration] ✅ Template ${template_id} has deep_analysis — injecting into prompts`);
+        }
         if (layoutMap) {
           console.log(`[staticsGeneration] ✅ Using cached layout map for template ${template_id} (archetype: ${layoutMap.archetype})`);
         } else {
@@ -403,7 +422,7 @@ router.post('/generate', authenticate, async (req, res) => {
         {
           role: 'user',
           content: [
-            { type: 'text', text: buildClaudePrompt(product, angle, customPrompts, layoutMap) },
+            { type: 'text', text: buildClaudePrompt(product, angle, customPrompts, layoutMap, templateData) },
             { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } },
           ],
         },
@@ -559,7 +578,7 @@ router.post('/generate', authenticate, async (req, res) => {
 
     const logoBackgroundTone = claudeResult.logo_background_tone || null;
     const skipTextRendering = false;
-    const nbPrompt = buildNanoBananaPrompt(claudeResult, swapPairs, product, logoUrls.length, customPrompts, layoutMap, logoBackgroundTone, skipTextRendering);
+    const nbPrompt = buildNanoBananaPrompt(claudeResult, swapPairs, product, logoUrls.length, customPrompts, layoutMap, logoBackgroundTone, skipTextRendering, templateData);
 
     // Send: product images, then logos, then reference ad (last)
     const imageUrls = [finalProductUrl, ...extraProductUrls, ...logoUrls, finalReferenceUrl];
@@ -2011,6 +2030,100 @@ router.post('/creatives/:id/link-copy-set', authenticate, async (req, res) => {
       [copy_set_id || null, req.params.id]
     );
     res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// ── Template Intelligence — deep analysis endpoints ──────────────────
+
+// POST /statics/templates/:id/analyze — Analyze a single template
+router.post('/templates/:id/analyze', authenticate, async (req, res) => {
+  try {
+    const rows = await pgQuery('SELECT * FROM statics_templates WHERE id = $1', [req.params.id]);
+    if (rows.length === 0) return res.status(404).json({ success: false, error: { message: 'Template not found' } });
+    const template = rows[0];
+    const result = await analyzeTemplate(template);
+    await pgQuery(
+      'UPDATE statics_templates SET deep_analysis = $1, analyzed_at = NOW() WHERE id = $2',
+      [JSON.stringify(result), req.params.id]
+    );
+    res.json({ success: true, analysis: result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// POST /statics/templates/analyze-all — Queue analysis for all stale/unanalyzed templates
+router.post('/templates/analyze-all', authenticate, async (req, res) => {
+  try {
+    const rows = await pgQuery(
+      `SELECT * FROM statics_templates WHERE deep_analysis IS NULL OR analyzed_at < NOW() - INTERVAL '30 days'`,
+      []
+    );
+    if (rows.length === 0) return res.json({ success: true, queued: 0, message: 'All templates are up to date' });
+    const count = rows.length;
+    // Process in background — batches of 3 concurrently
+    (async () => {
+      for (let i = 0; i < rows.length; i += 3) {
+        const batch = rows.slice(i, i + 3);
+        const results = await Promise.allSettled(
+          batch.map(async (template) => {
+            try {
+              const analysis = await analyzeTemplate(template);
+              await pgQuery(
+                'UPDATE statics_templates SET deep_analysis = $1, analyzed_at = NOW() WHERE id = $2',
+                [JSON.stringify(analysis), template.id]
+              );
+            } catch (err) {
+              console.error(`[analyze-all] Failed for template ${template.id}:`, err.message);
+            }
+          })
+        );
+        const failed = results.filter(r => r.status === 'rejected').length;
+        if (failed) console.warn(`[analyze-all] Batch had ${failed} rejections`);
+      }
+      console.log(`[analyze-all] Completed analysis for ${count} templates`);
+    })();
+    res.json({ success: true, queued: count, message: `Analysis started for ${count} templates` });
+  } catch (err) {
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// GET /statics/templates/:id/analysis — Get analysis for a template
+router.get('/templates/:id/analysis', authenticate, async (req, res) => {
+  try {
+    const rows = await pgQuery(
+      'SELECT deep_analysis, analyzed_at FROM statics_templates WHERE id = $1',
+      [req.params.id]
+    );
+    if (rows.length === 0) return res.status(404).json({ success: false, error: { message: 'Template not found' } });
+    res.json({ success: true, deep_analysis: rows[0].deep_analysis, analyzed_at: rows[0].analyzed_at });
+  } catch (err) {
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// DELETE /statics/templates/:id — Delete a template and its associated images
+router.delete('/templates/:id', authenticate, async (req, res) => {
+  try {
+    const rows = await pgQuery('SELECT * FROM statics_templates WHERE id = $1', [req.params.id]);
+    if (rows.length === 0) return res.status(404).json({ success: false, error: { message: 'Template not found' } });
+    const template = rows[0];
+    // Clean up associated images from image_store if applicable
+    if (template.image_url && template.image_url.includes('tmp-img')) {
+      const match = template.image_url.match(/tmp-img\/([a-f0-9-]+)/i);
+      if (match) {
+        try {
+          await pgQuery('DELETE FROM image_store WHERE id = $1', [match[1]]);
+        } catch (imgErr) {
+          console.warn(`[templates/:id delete] Could not clean up image ${match[1]}:`, imgErr.message);
+        }
+      }
+    }
+    await pgQuery('DELETE FROM statics_templates WHERE id = $1', [req.params.id]);
+    res.json({ success: true, message: 'Template deleted' });
   } catch (err) {
     res.status(500).json({ success: false, error: { message: err.message } });
   }
