@@ -268,9 +268,10 @@ COPY QUALITY SELF-CHECK (run this mentally before returning):
 4. Does it use any word a normal person wouldn't say in conversation? ("Elevate", "Transform", "Revolutionize", "Seamless") → REMOVE IT
 5. Is the energy level matching the original? If the original is screaming, yours should be screaming too.
 6. Count check: same number of headlines, bullets, badges, stats as original. Don't add or remove elements. Leave fields empty ("") if no corresponding text exists.
-7. GRAMMAR & SPELLING CHECK: Read every adapted text element. Fix any grammar or spelling errors. "atemps" → "attempts". "Gaurantee" → "Guarantee". Every word must be spelled correctly.
-8. BENEFIT CHECK: Re-read every bullet/stat. Does it state a spec or a benefit? "144 attempts daily" is a SPEC → rewrite as "144 daily chances to win $300K+". "1 watt" is a SPEC → rewrite as "$1/month to run". If any text reads like a product spec sheet, you FAILED — rewrite it.
-9. ⚠️ CHARACTER COUNT CHECK (CRITICAL FOR IMAGE GENERATION — THIS IS THE #1 CAUSE OF BAD OUTPUT):
+7. ⚠️ REFERENCE BLEED CHECK (CRITICAL): Re-read EVERY adapted_text. Does ANY text mention the REFERENCE product's industry, features, or terminology instead of the NEW product's? If the reference is a hair supplement and you see "hair regrowth", "DHT", "shedding", "follicle" in your adapted text, you FAILED — that is reference bleed-through. EVERY single text element must be about the NEW product, not the reference. Replace ALL reference-specific language with equivalent claims from PRODUCT CONTEXT.
+8. GRAMMAR & SPELLING CHECK: Read every adapted text element. Fix any grammar or spelling errors. "atemps" → "attempts". "Gaurantee" → "Guarantee". Every word must be spelled correctly.
+9. BENEFIT CHECK: Re-read every bullet/stat. Does it state a spec or a benefit? "144 attempts daily" is a SPEC → rewrite as "144 daily chances to win $300K+". "1 watt" is a SPEC → rewrite as "$1/month to run". If any text reads like a product spec sheet, you FAILED — rewrite it.
+10. ⚠️ CHARACTER COUNT CHECK (CRITICAL FOR IMAGE GENERATION — THIS IS THE #1 CAUSE OF BAD OUTPUT):
    For EVERY adapted text element, count the characters and compare to the original:
    - If original is 25 chars, adapted MUST be 20-30 chars (NOT 50+ chars)
    - If original is 40 chars, adapted MUST be 35-45 chars (NOT 70+ chars)
