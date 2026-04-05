@@ -663,8 +663,12 @@ router.post('/generate', authenticate, async (req, res) => {
         const inputImages = [];
         for (const url of imageUrls) {
           if (url) {
-            const img = await fetchImageAsBase64(url);
-            if (img) inputImages.push(img);
+            try {
+              const img = await fetchImageAsBase64(url);
+              if (img) inputImages.push(img);
+            } catch (imgErr) {
+              console.warn(`[staticsGeneration] ⚠️ Failed to fetch image (skipping): ${url.slice(0, 100)} — ${imgErr.message}`);
+            }
           }
         }
         console.log(`[staticsGeneration] Gemini: ${inputImages.length} images loaded as base64`);
@@ -1712,55 +1716,56 @@ YOUR HEADLINE MUST MATCH THE REFERENCE'S TONE AND STRUCTURE. Do NOT turn a calm 
 
 After matching tone, apply these product-specific rules:
 - Use concrete numbers and specifics from product context — never vague platitudes
-- NEVER use generic/weak phrases like "works at home", "easy to use", "quick mining", "get started today"
+- NEVER use generic/weak phrases like "works at home", "easy to use", "get started today"
 - NEVER use AI-sounding phrases: "game-changer", "revolutionary", "cutting-edge", "seamless"
 - Match the approximate CHARACTER COUNT of the original headline (character count matters for layout fit)
-- When the tone calls for bold claims, use real product data: "$59.99 device", "144 daily attempts", "$1/month to run"`,
-      headlineExamples: `HEADLINE STYLE EXAMPLES (use these as inspiration, do NOT copy verbatim):
-- "I Bought a $59 Bitcoin Miner as a Joke — It's Paid for Itself 4x"
-- "Tiny Device Mines $4.20/Day in Bitcoin — No Experience Needed"
-- "Crypto Millionaires Started With This Exact Device"
-- "Your Electricity Bill Hides a $127/Month Bitcoin Goldmine"
-- "This Pocket-Sized Miner Made $847 Last Month on Autopilot"
-- "Forget Savings Accounts — This Mines Real Bitcoin 24/7"`,
+- When the tone calls for bold claims, use real product data from PRODUCT CONTEXT (price, daily output, running cost, etc.)`,
+      headlineExamples: `HEADLINE STYLE EXAMPLES (use these as inspiration, adapt to YOUR product — do NOT copy verbatim):
+- "I Bought a [product price] [product] as a Joke — It's Paid for Itself 4x"
+- "Tiny Device [key benefit] — No Experience Needed"
+- "[Success story demographic] Started With This Exact [product type]"
+- "Your [common expense] Hides a [realistic monthly return] Goldmine"
+- "This [product form factor] [key result metric] Last Month on Autopilot"
+- "Forget [traditional alternative] — This [key product action] 24/7"
+NOTE: Fill in brackets using ONLY real data from PRODUCT CONTEXT above. Never invent numbers.`,
       pricingRules: `MANDATORY PRICING RULES (VIOLATION = FAILURE):
-- The product base price is $59.99 for 1 unit
-- Bundle prices: 2 units = $55 each ($109.99), 3+1 free = $45 each ($179.99), 6+2 free = $40 each ($320)
-- Maximum discount allowed: 58% — NEVER exceed this
-- The ONLY valid discount code is MINER10 (extra 10% off). If the reference ad shows ANY other discount code (e.g. "SPRING10", "PROMO20", "SAVE15"), you MUST replace it with "MINER10"
-- NEVER write "$35", "$29", "$25" or any price not listed above
-- If the reference ad has a price, replace it with the CORRECT price from this list
-- When in doubt, use "Up to 40% OFF" or "Starting at $59.99" — do NOT invent prices`,
-      productIdentity: `PRODUCT IDENTITY NOTE: The product is a MINI BITCOIN MINER — a small, compact electronic device with a color display screen. NEVER describe it as a "USB stick", "flash drive", "thumb drive", or anything USB-related. When describing product placement, refer to it as "mini bitcoin miner" or "compact mining device". CRITICAL FOR IMAGE GENERATION: The image generator must COPY the product EXACTLY from the provided product photo — same physical shape, same screen content, same proportions. It must NOT generate its own interpretation of what a "bitcoin miner" looks like. The product photo is the ONLY source of truth for the product's appearance.`,
-      bannedPhrases: `works at home, easy to use, quick mining, get started today`,
+- Use the EXACT base price from PRODUCT CONTEXT above — do NOT invent or round prices
+- Use the EXACT bundle/tier pricing from PRODUCT CONTEXT above (if bundles exist)
+- Use the EXACT maximum discount percentage from PRODUCT CONTEXT above — NEVER exceed it
+- Use the EXACT discount code from PRODUCT CONTEXT above. If the reference ad shows ANY other discount code, you MUST replace it with the code from PRODUCT CONTEXT
+- NEVER write any price that is not explicitly listed in PRODUCT CONTEXT
+- If the reference ad has a price, replace it with the CORRECT price from PRODUCT CONTEXT
+- When in doubt, use the starting price or primary discount percentage from PRODUCT CONTEXT — do NOT invent prices`,
+      productIdentity: `PRODUCT IDENTITY NOTE: Use the product name and description from PRODUCT CONTEXT above. NEVER describe the product using terms that contradict the product photos or PRODUCT CONTEXT. When describing product placement, use the product name exactly as given in PRODUCT CONTEXT. CRITICAL FOR IMAGE GENERATION: The image generator must COPY the product EXACTLY from the provided product photo — same physical shape, same screen content, same proportions. It must NOT generate its own interpretation of what the product looks like. The product photo is the ONLY source of truth for the product's appearance.`,
+      bannedPhrases: `works at home, easy to use, get started today`,
       formulaPreservation: `FORMULA PRESERVATION:
 Follow the SAME sentence rhythm, approximate character count, and rhetorical pattern as the original — but fill it with THIS product's real data.
 
 STRUCTURE EXAMPLES (keep the pattern, swap the content):
-Correct: "Bye Bye, Beer Belly" → "Bye Bye, Power Bills" (keeps "Bye Bye,")
-Correct: "Kill The Bloated Belly" → "Kill The Middleman" (keeps "Kill The")
-Correct: "3 Years of Back Pain Gone in 7 Days" → "3 Years of Missing Gains Gone in 7 Days"
-Wrong: "Bye Bye, Beer Belly" → "Mine Bitcoin From Home" ❌ (completely different structure)
+Correct: "Bye Bye, Beer Belly" → "Bye Bye, [your product's pain point it solves]" (keeps "Bye Bye,")
+Correct: "Kill The Bloated Belly" → "Kill The [obstacle your product removes]" (keeps "Kill The")
+Correct: "3 Years of Back Pain Gone in 7 Days" → "3 Years of [customer problem] Gone in [timeframe]"
+Wrong: "Bye Bye, Beer Belly" → "[Generic product pitch]" (completely different structure)
 
 CRITICAL — PRODUCT DATA OVERRIDES GENERIC TEXT:
-If the reference uses generic filler like "Real Mining for 12+ Hours Daily" — DO NOT keep it. Replace with the product's ACTUAL claims rewritten as CUSTOMER BENEFITS. For MinerForge Pro: "144 Daily Chances to Win $300K+", "Starting at Just $59.99", "Only $1/Month to Run". NEVER paste raw technical specs — always frame data as benefits the customer cares about.
-Generic labels like "SPECIAL DEAL", "FREE SHIPPING" → keep EXACTLY as-is — BUT discount codes MUST be replaced with "MINER10"`,
+If the reference uses generic filler — DO NOT keep it. Replace with the product's ACTUAL claims from PRODUCT CONTEXT rewritten as CUSTOMER BENEFITS. NEVER paste raw technical specs — always frame data as benefits the customer cares about.
+Generic labels like "SPECIAL DEAL", "FREE SHIPPING" → keep EXACTLY as-is — BUT discount codes MUST be replaced with the discount code from PRODUCT CONTEXT`,
       crossNicheAdaptation: `CROSS-NICHE VISUAL MAPPING:
-Reference ads may come from any niche. Map visuals to bitcoin mining context:
-- Supplement bottles → Miner Forge Pro device(s)
-- Skincare before/after → Mining earnings progression or device setup
-- Fitness transformations → Passive income growth charts
-- Food/ingredient callouts → Device feature callouts (hashrate, low power, silent)
-- Body part close-ups → Device screen showing mining stats
-- Kitchen/bathroom scenes → Desk/home office/nightstand scenes
-- Medical/doctor imagery → Tech expert/crypto analyst imagery`,
-      visualAdaptation: `For each visual element, specify what it should become for the bitcoin mining product:
-- Supplement bottles → Miner Forge Pro device(s)
-- Skincare before/after → Mining earnings screenshots or device setup progression
-- Fitness transformations → Passive income growth charts
-- Food/ingredient callouts → Device feature callouts (hashrate, low power, silent operation)
-- Body part close-ups → Device screen close-ups showing mining stats
-- Kitchen/bathroom scenes → Desk/home office/nightstand scenes`,
+Reference ads may come from any niche. Map visuals to YOUR product's context using PRODUCT CONTEXT above:
+- Competitor product shots → Your product from the provided product photo
+- Before/after comparisons → Product results progression or setup sequence
+- Transformation imagery → Key metric improvement charts (use real data from PRODUCT CONTEXT)
+- Ingredient/feature callouts → Your product's key feature callouts (from PRODUCT CONTEXT)
+- Detail close-ups → Product detail close-ups showing key differentiating features
+- Lifestyle/setting scenes → Scenes appropriate to where/how your product is used
+- Authority/expert imagery → Relevant industry expert or authority imagery`,
+      visualAdaptation: `For each visual element, specify what it should become for YOUR product (using PRODUCT CONTEXT above):
+- Competitor product shots → Your product from the provided product photo
+- Before/after comparisons → Product results or setup progression relevant to your product
+- Transformation imagery → Key metric improvement charts using real product data
+- Feature/ingredient callouts → Your product's actual feature callouts from PRODUCT CONTEXT
+- Detail close-ups → Your product's distinguishing physical features
+- Lifestyle/setting scenes → Scenes matching where/how your product is typically used`,
     },
     nanoBanana: {
       productRules: `PRODUCT REPLACEMENT:

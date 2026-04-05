@@ -71,13 +71,33 @@ export function buildClaudePrompt(product, angle, customOverrides = null, layout
   const co = customOverrides?.claudeAnalysis || {};
 
   // Build product context from all available profile fields
-  // NOTE: These are raw product data points. The prompt instructs Claude to translate them into customer-facing benefits.
+  // Split into MANDATORY RULES (pricing/offers) and CONTEXT (background info)
+  // This ensures Claude uses real product data instead of inventing prices/offers
+
+  // ── MANDATORY PRODUCT RULES (these override EVERYTHING in the reference) ──
+  const mandatoryRules = [
+    product.price && `PRICE: The ONLY valid price is ${product.price}. If the reference shows ANY price, replace it with ${product.price}.`,
+    profile.discountCodes && `DISCOUNT CODE: The ONLY valid discount code is ${profile.discountCodes}. If the reference shows ANY discount code (e.g. "SPRING10", "PROMO20", "CODE: XYZ"), you MUST replace it with this code. NEVER invent a discount code.`,
+    profile.maxDiscount && `MAX DISCOUNT: ${profile.maxDiscount}. If the reference shows a discount percentage, use this value. NEVER invent a discount percentage.`,
+    profile.bundleVariants && `BUNDLE PRICING (use these EXACT numbers):\n${profile.bundleVariants}`,
+    profile.offerDetails && `OFFER RULES: ${profile.offerDetails}`,
+    profile.guarantee && `GUARANTEE: ${profile.guarantee}`,
+    profile.complianceRestrictions && `🚫 COMPLIANCE (NEVER claim these): ${profile.complianceRestrictions}`,
+  ].filter(Boolean).map(l => `⚠️ ${l}`).join('\n');
+
+  // ── PRODUCT CONTEXT (background intelligence for writing better copy) ──
   const contextLines = [
     `Product Name: ${product.name}`,
+    profile.shortName && `Short Name: ${profile.shortName}`,
     `Description: ${product.description || 'N/A'}`,
     `Price: ${product.price || 'N/A'}`,
+    profile.tagline && `Tagline: ${profile.tagline}`,
     profile.oneliner && `One-liner: ${profile.oneliner}`,
-    profile.customerAvatar && `Target Customer: ${profile.customerAvatar}`,
+    profile.category && `Product Category: ${profile.category}`,
+    profile.productType && `Product Type: ${profile.productType}`,
+    profile.unitDetails && `Unit Details: ${profile.unitDetails}`,
+    profile.targetDemographics && `Target Demographics: ${profile.targetDemographics}`,
+    profile.customerAvatar && `Target Customer Avatar: ${profile.customerAvatar}`,
     profile.customerFrustration && `Customer Frustration: ${profile.customerFrustration}`,
     profile.customerDream && `Customer Dream Outcome: ${profile.customerDream}`,
     profile.bigPromise && `Big Promise: ${profile.bigPromise}`,
@@ -86,16 +106,14 @@ export function buildClaudePrompt(product, angle, customOverrides = null, layout
       && `Key Benefits: ${profile.benefits.map(b => typeof b === 'object' ? (b.text || b.name || b) : b).join(', ')}`,
     profile.differentiator && `Differentiator: ${profile.differentiator}`,
     profile.voice && `Brand Voice/Tone: ${profile.voice}`,
-    profile.guarantee && `Guarantee: ${profile.guarantee}`,
     profile.painPoints && `Pain Points: ${profile.painPoints}`,
-    profile.commonObjections && `Common Objections: ${profile.commonObjections}`,
-    profile.winningAngles && `Winning Angles: ${profile.winningAngles}`,
+    profile.commonObjections && `Common Objections & How to Handle: ${profile.commonObjections}`,
+    profile.winningAngles && `Winning Ad Angles: ${profile.winningAngles}`,
+    profile.customAngles && `Custom Angles to Test: ${profile.customAngles}`,
     profile.competitiveEdge && `Competitive Edge: ${profile.competitiveEdge}`,
-    profile.maxDiscount && `Max Discount: ${profile.maxDiscount}`,
-    profile.discountCodes && `Discount Codes: ${profile.discountCodes}`,
-    profile.bundleVariants && `Bundle Variants: ${profile.bundleVariants}`,
-    profile.offerDetails && `Offer Rules: ${profile.offerDetails}`,
-    profile.complianceRestrictions && `COMPLIANCE (never claim): ${profile.complianceRestrictions}`,
+    profile.productUrl && `Product URL: ${profile.productUrl}`,
+    Array.isArray(profile.offers) && profile.offers.length > 0
+      && `Structured Offers: ${JSON.stringify(profile.offers)}`,
     profile.notes && `IMPORTANT NOTES: ${profile.notes}`,
     angle && `MARKETING ANGLE FOR THIS AD: ${angle}`,
   ].filter(Boolean).map(l => `- ${l}`).join('\n');
@@ -232,6 +250,14 @@ RULE: For EVERY adapted text element, ask yourself: "Would a normal person scrol
 
 PRODUCT CONTEXT:
 ${contextLines}${brandSection}${productIdentity}${pricingRules}
+${mandatoryRules ? `
+---
+
+🔴 MANDATORY PRODUCT RULES (THESE OVERRIDE THE REFERENCE — NEVER INVENT YOUR OWN):
+${mandatoryRules}
+
+ANY price, discount code, discount percentage, bundle pricing, or offer in your adapted text MUST come from the rules above. If the reference ad shows "$29.99" but our price is "$59.99", you write "$59.99". If the reference says "Use code SPRING10" but our code is "MINER10", you write "MINER10". NEVER invent prices or codes. If the reference has pricing/offers but no matching data exists above, keep the reference structure but use the EXACT numbers from above.
+` : ''}
 ${layoutMap ? `
 ---
 
@@ -306,6 +332,17 @@ COPY QUALITY SELF-CHECK (run this mentally before returning):
 11. BRAND NAME CHECK: Does any adapted text still contain the COMPETITOR's brand name? If yes, replace it with the product name from PRODUCT CONTEXT. Zero competitor branding in adapted text.
 12. COMPLETE THOUGHT CHECK: Read each adapted text. Does it end mid-sentence? "Crypto feels too" is INCOMPLETE. "Crypto is complex" is COMPLETE. "Splitting fees with" is INCOMPLETE. "No pool fees" is COMPLETE. EVERY adapted text must be a complete thought that makes sense on its own.
 13. REFERENCE CATEGORY CHECK: Does any adapted text contain words from the REFERENCE product's category (e.g. "hair", "gut", "mushroom", "belly", "shedding")? If yes, replace with words about YOUR product. Zero reference category terms in adapted text.
+
+---
+
+BRAND VOICE ENFORCEMENT:
+${profile.voice ? `Your adapted copy MUST be written in this exact voice and tone: "${profile.voice}". This overrides the reference ad's tone. If the reference is formal but the brand voice says "conversational like a text message", write conversationally. The brand voice is LAW — match it exactly.` : 'Match the reference ad\'s tone and communication style.'}
+
+TARGET AUDIENCE ENFORCEMENT:
+${profile.customerAvatar ? `Every headline, bullet, and body text must speak DIRECTLY to this person: "${profile.customerAvatar}". Use language, references, and emotional triggers that resonate with THIS specific audience. If the reference targets "young women" but your target is "${profile.customerAvatar}", adapt the messaging style accordingly.` : ''}
+${profile.targetDemographics ? `Demographics: ${profile.targetDemographics}` : ''}
+${profile.customerFrustration ? `Their #1 frustration: "${profile.customerFrustration}" — your copy should address this pain.` : ''}
+${profile.customerDream ? `Their dream outcome: "${profile.customerDream}" — your copy should paint this picture.` : ''}
 
 ---
 
@@ -440,7 +477,7 @@ export function buildSwapPairs(originalText, adaptedText) {
     const adaptedLen = pair.adapted.length;
     const maxLen = Math.max(origLen * 1.3, 20); // allow 30% overshoot or minimum 20 chars
 
-    if (adaptedLen > maxLen && origLen > 5) {
+    if (adaptedLen > maxLen && origLen > 2) {
       let trimmed = pair.adapted.slice(0, Math.round(maxLen));
       // Don't cut mid-word — find last natural break point
       const breakPoints = ['. ', '! ', '? ', ', ', ' — ', ' - ', ' '];
@@ -548,15 +585,15 @@ ${templateData.deep_analysis.adaptation_instructions?.common_failure_modes?.leng
 
   // Prioritize swap pairs — NanoBanana handles fewer swaps more accurately
   // Priority: headline > subheadline > brand/other_text > badges > bullets > stats > body > disclaimer
-  const FIELD_PRIORITY = { headline: 1, subheadline: 2, cta: 3 };
+  const FIELD_PRIORITY = { headline: 1, subheadline: 2, cta: 3, stats: 3 };
   const getFieldPriority = (field) => {
     if (FIELD_PRIORITY[field]) return FIELD_PRIORITY[field];
     if (field?.startsWith('other_text')) return 4; // brand names etc
     if (field?.startsWith('badges')) return 5;
     if (field?.startsWith('bullets')) return 6;
-    if (field?.startsWith('stats')) return 7;
-    if (field === 'body') return 8;
-    return 9;
+    if (field?.startsWith('stats')) return 3; // price/stat corrections are critical
+    if (field === 'body') return 7;
+    return 8;
   };
 
   // Filter out near-identical swaps — if original ≈ adapted, let NanoBanana keep the original
@@ -565,6 +602,9 @@ ${templateData.deep_analysis.adaptation_instructions?.common_failure_modes?.leng
     const o = (pair.original || '').toLowerCase().replace(/[^a-z0-9]/g, '');
     const a = (pair.adapted || '').toLowerCase().replace(/[^a-z0-9]/g, '');
     if (o === a) return false; // identical after normalizing
+    // Never filter swaps containing numbers/currency — these are critical price/stat corrections
+    const hasNumbers = /[\d$€£%]/.test(pair.original) || /[\d$€£%]/.test(pair.adapted);
+    if (hasNumbers) return true; // always keep price/stat swaps
     // Skip if only minor punctuation/casing difference
     if (o.length > 5 && a.length > 5) {
       let matches = 0;

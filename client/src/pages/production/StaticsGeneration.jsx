@@ -894,9 +894,19 @@ export default function StaticsGeneration() {
       return;
     }
     // Fetch full product profile for rich data (benefits, pain_points, etc.)
-    try {
-      const res = await api.get(`/product-profiles/${product.id}`);
-      const fullProduct = res.data.data || res.data;
+    let fullProduct = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const res = await api.get(`/product-profiles/${product.id}`);
+        fullProduct = res.data.data || res.data;
+        break;
+      } catch (err) {
+        console.error(`Failed to fetch full product profile (attempt ${attempt + 1}):`, err);
+        if (attempt === 0) await new Promise(r => setTimeout(r, 1000)); // wait 1s before retry
+      }
+    }
+
+    if (fullProduct) {
       setSelectedProductId(fullProduct.id);
       setSelectedProductObj(fullProduct);
       selectedProductRef.current = fullProduct;
@@ -919,9 +929,9 @@ export default function StaticsGeneration() {
       if (fullProduct.angles?.length > 0) {
         setMarketingAngle(fullProduct.angles[0].name || '');
       }
-    } catch (err) {
-      console.error('Failed to fetch full product profile:', err);
-      // Fallback to the partial product
+    } else {
+      // Fallback to partial product — warn user
+      console.error('❌ Could not fetch full product profile after 2 attempts — using partial data');
       setSelectedProductId(product.id);
       setSelectedProductObj(product);
       selectedProductRef.current = product;
@@ -1014,7 +1024,7 @@ export default function StaticsGeneration() {
       if (differentiator) profile.differentiator = differentiator;
       if (voice) profile.voice = voice;
       if (guarantee) profile.guarantee = guarantee;
-      // Pass all new product profile fields from library
+      // Pass ALL product profile fields from library — every field matters for ad quality
       const full = selectedProductRef.current;
       if (full) {
         if (full.benefits) profile.benefits = full.benefits;
@@ -1029,6 +1039,15 @@ export default function StaticsGeneration() {
         if (full.bundle_variants) profile.bundleVariants = full.bundle_variants;
         if (full.compliance_restrictions) profile.complianceRestrictions = full.compliance_restrictions;
         if (full.notes) profile.notes = full.notes;
+        // Previously missing fields from product library
+        if (full.target_demographics) profile.targetDemographics = full.target_demographics;
+        if (full.tagline) profile.tagline = full.tagline;
+        if (full.category) profile.category = full.category;
+        if (full.product_type) profile.productType = full.product_type;
+        if (full.product_url) profile.productUrl = full.product_url;
+        if (full.unit_details) profile.unitDetails = full.unit_details;
+        if (full.short_name) profile.shortName = full.short_name;
+        if (full.offers && full.offers.length > 0) profile.offers = full.offers;
       }
 
       // Step 1: Submit to server (Claude analysis + NanoBanana submit — returns fast)
@@ -1307,6 +1326,15 @@ export default function StaticsGeneration() {
           if (full.bundle_variants) profile.bundleVariants = full.bundle_variants;
           if (full.compliance_restrictions) profile.complianceRestrictions = full.compliance_restrictions;
           if (full.notes) profile.notes = full.notes;
+          // Previously missing fields from product library
+          if (full.target_demographics) profile.targetDemographics = full.target_demographics;
+          if (full.tagline) profile.tagline = full.tagline;
+          if (full.category) profile.category = full.category;
+          if (full.product_type) profile.productType = full.product_type;
+          if (full.product_url) profile.productUrl = full.product_url;
+          if (full.unit_details) profile.unitDetails = full.unit_details;
+          if (full.short_name) profile.shortName = full.short_name;
+          if (full.offers && full.offers.length > 0) profile.offers = full.offers;
         }
 
         const productPayload = {
