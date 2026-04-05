@@ -14,14 +14,13 @@ const META_UPLOAD_TIMEOUT = 60000; // 60s for image uploads (larger payloads)
  * @returns {{ hash: string, url: string }}
  */
 export async function uploadAdImage(adAccountId, imageBuffer) {
-  // Ensure we have a proper Uint8Array for Blob (Node.js Buffer can misbehave with Blob)
-  const bytes = new Uint8Array(imageBuffer.buffer, imageBuffer.byteOffset, imageBuffer.byteLength);
-  console.log(`[uploadAdImage] buffer size: ${imageBuffer.length}, uint8 size: ${bytes.length}`);
+  console.log(`[uploadAdImage] buffer size: ${imageBuffer.length}`);
+  // Meta's /adimages endpoint expects 'bytes' as base64-encoded image data
+  const base64 = Buffer.from(imageBuffer).toString('base64');
+  console.log(`[uploadAdImage] base64 length: ${base64.length}`);
   const formData = new FormData();
   formData.append('access_token', META_ACCESS_TOKEN);
-  const blob = new Blob([bytes], { type: 'image/jpeg' });
-  console.log(`[uploadAdImage] blob size: ${blob.size}`);
-  formData.append('bytes', blob, 'creative.jpg');
+  formData.append('bytes', base64);
 
   const res = await fetch(`${META_GRAPH_URL}/${adAccountId}/adimages`, {
     method: 'POST',
