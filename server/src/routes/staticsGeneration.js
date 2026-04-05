@@ -564,35 +564,14 @@ router.post('/generate', authenticate, async (req, res) => {
       }
     }
 
-    // Only send logos if Claude detected a competitor logo in the reference
-    // This prevents NanoBanana from randomly placing logos when the template has no logo spot
-    // Extra safeguard: also check visual_adaptations for logo-related entries
+    // ── LOGO INJECTION DISABLED ──
+    // Never send logos to the image generator. Logo injection causes more problems
+    // than it solves — Gemini places logos incorrectly, resizes them, or adds them
+    // where they don't belong. If a logo is needed, it can be added manually in
+    // post-production. This eliminates the recurring "random logo" issue permanently.
     const logoUrls = [];
-    let hasCompetitorLogo = claudeResult.has_competitor_logo === true;
-
-    // STRICT logo validation: only send logo if Claude ALSO included a logo visual_adaptation
-    // This prevents false positives where Claude detects brand text (not a visual logo)
-    if (hasCompetitorLogo) {
-      const visualAdapts = claudeResult.visual_adaptations || [];
-      const hasLogoInVisuals = visualAdapts.some(v =>
-        /\blogo\b/i.test(v.original_visual || '') || /\blogo\b/i.test(v.adapted_visual || '') || /\blogo\b/i.test(v.position || '')
-      );
-      if (!hasLogoInVisuals) {
-        console.warn(`[staticsGeneration] ⚠️ Claude detected has_competitor_logo=true but no logo in visual_adaptations — OVERRIDING to false (no logo entry = no visual logo to replace)`);
-        hasCompetitorLogo = false;
-      }
-    }
-    if (hasCompetitorLogo) {
-      const allLogos = product.logos || [];
-      if (product.logo_url) allLogos.unshift(product.logo_url);
-      for (let i = 0; i < Math.min(allLogos.length, 2); i++) {
-        const url = await ensureHttpUrl(allLogos[i], `logos-${i}`);
-        if (url) logoUrls.push(url);
-      }
-      console.log(`[staticsGeneration] Competitor logo detected — sending ${logoUrls.length} brand logo(s)`);
-    } else {
-      console.log(`[staticsGeneration] No competitor logo in reference — skipping logo injection`);
-    }
+    const hasCompetitorLogo = false;
+    console.log(`[staticsGeneration] Logo injection DISABLED — logos are never sent to image generator`);
 
     console.log(`[staticsGeneration] Logo data: logo_url=${product.logo_url ? 'yes' : 'no'}, logos=${(product.logos || []).length}, resolved logoUrls=${logoUrls.length}`);
     if (!finalProductUrl) {
@@ -1987,7 +1966,7 @@ router.post('/launch', authenticate, async (req, res) => {
       });
 
       try {
-        // Upload image to Meta (reuse cached hash if available)
+        // Upload 4:5 image to Meta (reuse cached hash if available)
         let imageHashes = [];
         let imageHash = creative.meta_image_hash || null;
         if (creative.image_url) {
@@ -1998,6 +1977,30 @@ router.post('/launch', authenticate, async (req, res) => {
             imageHash = uploadResult.hash;
             imageHashes = [imageHash];
           }
+        }
+
+        // Find and upload the 9:16 variant for stories/reels placements
+        let verticalImageHash = null;
+        const variants = await pgQuery(
+          "SELECT id, image_url, meta_image_hash FROM spy_creatives WHERE parent_creative_id = $1 AND aspect_ratio = '9:16' AND status IN ('approved', 'ready') LIMIT 1",
+          [creative.id]
+        );
+        if (variants.length && variants[0].image_url) {
+          if (variants[0].meta_image_hash) {
+            verticalImageHash = variants[0].meta_image_hash;
+          } else {
+            try {
+              const vUpload = await uploadAdImageFromUrl(template.ad_account_id, variants[0].image_url);
+              verticalImageHash = vUpload.hash;
+              // Cache the hash for future launches
+              await pgQuery('UPDATE spy_creatives SET meta_image_hash = $1, updated_at = NOW() WHERE id = $2', [vUpload.hash, variants[0].id]).catch(() => {});
+            } catch (vErr) {
+              console.warn(`[staticsGeneration] ⚠️ Failed to upload 9:16 variant (continuing with 4:5 only): ${vErr.message}`);
+            }
+          }
+          console.log(`[staticsGeneration] 9:16 variant found for creative ${creative.id} — hash: ${verticalImageHash ? 'yes' : 'no'}`);
+        } else {
+          console.log(`[staticsGeneration] No 9:16 variant for creative ${creative.id} — using 4:5 for all placements`);
         }
 
         // Determine ad copy: copy set > generated_copy > fallbacks
@@ -2023,7 +2026,7 @@ router.post('/launch', authenticate, async (req, res) => {
         const cta = copySet?.cta_button || genCopy.cta || 'SHOP_NOW';
         const link = copySet?.landing_page_url || template.landing_page_url || 'https://mineblock.com';
 
-        // Create ad creative
+        // Create ad creative with placement-specific images
         const metaCreativeId = await createFlexibleAdCreative(template.ad_account_id, {
           name: adName,
           imageHashes,
@@ -2034,6 +2037,7 @@ router.post('/launch', authenticate, async (req, res) => {
           link,
           pageId: page?.id || selectedPages[0]?.id,
           utmParameters: template.utm_parameters,
+          verticalImageHash, // 9:16 for stories/reels, null if no variant exists
         });
 
         // Create the ad
@@ -2069,6 +2073,14 @@ router.post('/launch', authenticate, async (req, res) => {
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'launched',NOW())`,
           [creative.id, template_id, copy_set_id || null, template.ad_account_id, template.campaign_id, adsetId, metaAdId, metaCreativeId, imageHash, adName, adsetName, page?.id || null, page?.name || null, batchNum]
         ).catch(err => console.warn('[staticsGeneration] Failed to log launch:', err.message));
+
+        // Also mark the 9:16 variant as launched if it was included
+        if (variants.length && verticalImageHash) {
+          await pgQuery(
+            "UPDATE spy_creatives SET status = 'launched', updated_at = NOW() WHERE id = $1",
+            [variants[0].id]
+          ).catch(() => {});
+        }
 
         results.push({ creative_id: creative.id, status: 'launched', meta_ad_id: metaAdId, ad_name: adName });
       } catch (err) {

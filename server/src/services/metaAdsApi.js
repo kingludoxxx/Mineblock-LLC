@@ -318,7 +318,8 @@ export async function createAdSet(adAccountId, params) {
 export async function createFlexibleAdCreative(adAccountId, params) {
   const {
     name, imageHashes = [], videoId, primaryTexts = [], headlines = [],
-    descriptions = [], cta = 'SHOP_NOW', link, pageId, utmParameters
+    descriptions = [], cta = 'SHOP_NOW', link, pageId, utmParameters,
+    verticalImageHash, // 9:16 image hash for stories/reels placements
   } = params;
 
   const finalLink = utmParameters ? `${link}${link.includes('?') ? '&' : '?'}${utmParameters}` : link;
@@ -334,6 +335,10 @@ export async function createFlexibleAdCreative(adAccountId, params) {
 
   if (imageHashes.length) {
     assetFeedSpec.images = imageHashes.map(hash => ({ hash }));
+    // If we have a vertical variant, add it to the images array too
+    if (verticalImageHash && !imageHashes.includes(verticalImageHash)) {
+      assetFeedSpec.images.push({ hash: verticalImageHash });
+    }
   }
   if (videoId) {
     assetFeedSpec.videos = [{ video_id: videoId }];
@@ -353,6 +358,32 @@ export async function createFlexibleAdCreative(adAccountId, params) {
       },
     },
   };
+
+  // If we have both a 4:5 (square/feed) and 9:16 (stories/reels) image,
+  // use asset_customization_rules to assign the right image per placement
+  if (verticalImageHash && imageHashes.length && imageHashes[0] !== verticalImageHash) {
+    const feedHash = imageHashes[0]; // 4:5 for feed/square
+    body.asset_feed_spec.asset_customization_rules = [
+      {
+        // Feed / in-stream placements → 4:5 image
+        customization_spec: {
+          publisher_platforms: ['facebook', 'instagram'],
+          facebook_positions: ['feed', 'marketplace', 'video_feeds', 'search', 'right_hand_column'],
+          instagram_positions: ['stream', 'explore', 'explore_home', 'profile_feed'],
+        },
+        image_hash: feedHash,
+      },
+      {
+        // Stories / Reels placements → 9:16 image
+        customization_spec: {
+          publisher_platforms: ['facebook', 'instagram'],
+          facebook_positions: ['story', 'facebook_reels'],
+          instagram_positions: ['story', 'reels'],
+        },
+        image_hash: verticalImageHash,
+      },
+    ];
+  }
 
   const res = await fetch(`${META_GRAPH_URL}/${adAccountId}/adcreatives`, {
     method: 'POST',
