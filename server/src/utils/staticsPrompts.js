@@ -525,9 +525,7 @@ ${templateData.deep_analysis.adaptation_instructions?.common_failure_modes?.leng
   const logoImageRef = logoCount > 1
     ? `images ${logoStartIdx + 1}-${logoStartIdx + logoCount}` // +1 for human-readable 1-indexed
     : `image ${logoStartIdx + 1}`;
-  const logoInstruction = logoCount > 0
-    ? `\n🔴 LOGO RULE: Replace any competitor logo with the EXACT logo from ${logoImageRef}. The logo in ${logoImageRef} shows the REAL brand logo — reproduce it PIXEL-PERFECTLY in the output. Match every letter, every shape, every proportion EXACTLY as shown in ${logoImageRef}. Do NOT redesign, redraw, stylize, or generate your own interpretation of the logo. The logo text, icon, and layout must be IDENTICAL to ${logoImageRef}. If your output logo has different text, different shapes, or different proportions than ${logoImageRef}, you have FAILED.${logoBackgroundTone === 'dark' ? ' Use the WHITE logo version (dark background).' : logoBackgroundTone === 'light' ? ' Use the BLACK logo version (light background).' : ''}`
-    : '';
+  // Logo instruction now built inline in the final prompt below
 
   // Only include the MUST CHANGE visual adaptations (skip keep-as-is ones)
   const mustChangeVisuals = (visual_adaptations || []).filter(v => v.is_angle_specific);
@@ -600,48 +598,41 @@ ${templateData.deep_analysis.adaptation_instructions?.common_failure_modes?.leng
     `  ${i + 1}. "${pair.original}" → "${pair.adapted}"`
   ).join('\n');
 
-  // For complex layouts, add a strong warning about reference product text
-  const complexWarning = isComplexLayout
-    ? `\n⚠️ CRITICAL: The reference ad is for a COMPLETELY DIFFERENT product. ALL text in your output must be about "${product.name}". If you see text about the reference product's category (hair, supplements, skincare, etc.), you MUST replace it with the swap text above. ZERO words from the original product should remain.`
-    : '';
-
-  // Build banned text section from Claude's reference analysis
+  // Banned text — reference product category and keywords
   const refCategory = claudeResult.reference_product_category || '';
   const refKeywords = claudeResult.reference_product_keywords || [];
-  const bannedTextSection = refCategory || refKeywords.length > 0
-    ? `\n\n⛔ BANNED TEXT — the reference ad is about "${refCategory}". These words must NEVER appear in your output: ${refKeywords.length > 0 ? refKeywords.map(w => `"${w}"`).join(', ') : refCategory}. If you see ANY of these words in the reference image, replace them with the swap text above or remove them. ZERO reference product text in the output.`
-    : '';
 
   // Determine if the reference ad contains a product image or is text-only
   const hasProductInReference = (product_count ?? 1) > 0;
 
-  const productImageRule = hasProductInReference
-    ? `Replace the product with "${product.name}" (FIRST image).
+  // ── Build concise prompt — under 500 words for best Gemini compliance ──
+  // Order: most-violated rules FIRST, data second, minor rules last
 
-🔴 PRODUCT IMAGE RULE (MOST IMPORTANT):
-The FIRST image is a PHOTO of the real product. You MUST copy this EXACT product into the output — same shape, same colors, same screen, same details. Do NOT generate, imagine, or interpret what the product looks like. Do NOT create your own version. PASTE the product from the FIRST image into the ad layout. The product in your output must look IDENTICAL to the FIRST image — as if you cut it out and placed it in. If your output product looks different from the FIRST image in ANY way (wrong shape, wrong screen, wrong details), you have FAILED.`
-    : `The reference ad has NO product image — it is a text-only or letter-style ad. Do NOT add any product photo, device image, or product graphic. Keep the layout TEXT-ONLY, exactly like the reference. The FIRST image is provided for context only — do NOT insert it into the output.`;
+  const productRule = hasProductInReference
+    ? `Copy the EXACT product from FIRST image — same shape, colors, screen, details. Do NOT generate your own version.`
+    : `This is a TEXT-ONLY ad. Do NOT add any product photo or device image. FIRST image is context only.`;
 
-  return `Edit the reference ad (LAST image). ${hasProductInReference ? productImageRule : productImageRule}
+  const logoRule = logoCount > 0
+    ? `\n🔴 LOGO: Copy the EXACT logo from ${logoImageRef} pixel-perfectly — same text, shapes, proportions. Do NOT redesign it.${logoBackgroundTone === 'dark' ? ' Use WHITE version (dark bg).' : logoBackgroundTone === 'light' ? ' Use BLACK version (light bg).' : ''}`
+    : '';
 
-TEXT SWAPS — replace ALL text in the reference with these EXACT words:
-${swapSectionFinal || '(No text changes)'}
+  // Banned words — keep very short
+  const bannedWords = refKeywords.length > 0
+    ? `\nBANNED WORDS (from reference product): ${refKeywords.map(w => `"${w}"`).join(', ')}. NEVER use these.`
+    : (refCategory ? `\nBANNED: Any text about "${refCategory}" from the reference.` : '');
 
-⚠️ TEXT RULE: You MUST replace EVERY piece of text in the reference image. The reference ad is for a COMPLETELY DIFFERENT product${refCategory ? ` ("${refCategory}")` : ''}. Your output must contain ZERO words from the reference product. If ANY text in your output still mentions the reference product, you have FAILED.
+  return `Edit the reference ad (LAST image).${templateIntelligence}
 
-🔴 LANGUAGE RULE: ALL text in the output MUST be in ENGLISH. If the reference ad is in Spanish, French, German, or ANY non-English language, render the swap text above (which is already in English). NEVER reproduce non-English text from the reference. Every word in the output must be English.${bannedTextSection}
+🔴 STRICT RULES (most important):
+1. ELEMENT COUNT: Output must have the EXACT same number of text elements, logos, badges, and images as the reference. Do NOT add or remove any.${logoRule}
+2. PRODUCT: ${productRule}${hasProductInReference ? ` Orientation: ${claudeResult.product_orientation || 'front-facing'}.${productRulesSection}` : ''}
+3. ALL text must be in ENGLISH. Replace every piece of reference text with the swaps below.
+4. ${characterRules}
 
-RULES:
-- Spell "${product.name}" exactly: ${product.name.split('').join('-')}. NOT "MineBlock" or "MinerBlorge".
-- Keep EXACT same layout, background, colors, fonts, positions.${hasProductInReference ? `\n- Product orientation: ${claudeResult.product_orientation || 'front-facing'}, matching the FIRST image.${productRulesSection}` : ''}${logoInstruction}${visualLine}
-- ${characterRules}
-- Do NOT add extra elements (coins, sparkles, badges, product images) not in the reference.
-- Background must match reference exactly.
-- ANY text not listed in the swap list that refers to the reference product MUST be removed or replaced with "${product.name}" text.${hasProductInReference ? '' : '\n- This is a TEXT-ONLY ad. Do NOT insert any product image, device photo, or visual element that is not in the reference.'}
+TEXT SWAPS — replace ALL text with these EXACT words:
+${swapSectionFinal || '(No text changes)'}${bannedWords}
 
-🔴 ZERO INVENTED TEXT: Your output must contain ONLY the text from the swap list above. Do NOT invent, create, or add ANY text that is not in the swap list. Do NOT add product names, model names, version names (like "Pro", "Ultra", "Max", "Plus"), taglines, slogans, or any other text. If the reference has 5 text elements and the swap list has 5 pairs, the output must have EXACTLY 5 text elements — no more, no fewer. Adding "${product.name}" as extra text where the reference had NO text is a FAILURE.
-
-🔴 ELEMENT COUNT RULE: Count the number of distinct text elements, logos, badges, and images in the reference. Your output must have the EXACT SAME count of each. Do NOT add extra logos, extra text blocks, extra badges, or extra images.
-
-🔴 TEXT RENDERING QUALITY: Every word must be spelled correctly with proper spacing. Common mistakes to AVOID: missing spaces between words (e.g. "havenever" should be "have never"), missing letters, garbled text. If a text element is longer than 40 characters, SHORTEN it to avoid rendering errors. Short text = perfect rendering. Long text = garbled mess.${complexWarning}${co.absoluteRules ? `\n${co.absoluteRules}` : ''}${templateIntelligence}`;
+LAYOUT RULES:
+- Keep EXACT same layout, background, colors, fonts, positions.${visualLine}
+- Spell every word correctly with proper spacing between words.${co.absoluteRules ? `\n${co.absoluteRules}` : ''}`;
 }
