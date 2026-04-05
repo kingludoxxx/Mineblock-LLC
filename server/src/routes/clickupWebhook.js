@@ -357,23 +357,24 @@ async function handleCustomFieldChanged(taskId) {
   if (task.description?.includes('[brief-pipeline]')) return;
   if (task.description?.includes('[yt-duplicate]')) return;
 
-  // Check if naming convention field already has a value (task was named before)
-  const existingName = getFieldValue(task, FIELD_IDS.namingConvention);
-  if (!existingName) return; // Only regenerate if it was previously generated
-
+  // Get or assign brief number
   let briefNumber = getFieldValue(task, FIELD_IDS.briefNumber);
   if (briefNumber != null) {
     briefNumber = Math.round(briefNumber);
   } else {
-    return; // Can't regenerate without a brief number
+    // No brief number yet — assign one
+    briefNumber = await getNextBriefNumber();
+    await setCustomField(taskId, FIELD_IDS.briefNumber, briefNumber);
+    logger.info(`[ClickUp Webhook] Auto-assigned brief number B${String(briefNumber).padStart(4, '0')} to task ${taskId} (on field change)`);
   }
 
+  const existingName = getFieldValue(task, FIELD_IDS.namingConvention);
   const namingConv = generateNamingConvention(task, listId, briefNumber);
 
   if (namingConv !== existingName) {
     await updateTask(taskId, { name: namingConv });
     await setCustomField(taskId, FIELD_IDS.namingConvention, namingConv);
-    logger.info(`[ClickUp Webhook] Re-named task ${taskId} → "${namingConv}"`);
+    logger.info(`[ClickUp Webhook] ${existingName ? 'Re-named' : 'Named'} task ${taskId} → "${namingConv}"`);
   }
 }
 
@@ -581,6 +582,94 @@ router.post('/', async (req, res) => {
     }
   } catch (err) {
     logger.error(`[ClickUp Webhook] Error processing webhook: ${err.message}`);
+  }
+});
+
+// GET /api/v1/clickup-webhook/fix-naming/:taskId — manually trigger naming for a missed task
+router.get('/fix-naming/:taskId', async (req, res) => {
+  const { taskId } = req.params;
+  try {
+    const task = await getTask(taskId);
+    const listId = task.list?.id;
+
+    if (!NAMING_LISTS.includes(listId)) {
+      return res.status(400).json({ error: `Task ${taskId} is not in a naming-enabled list (list: ${listId})` });
+    }
+
+    // Skip brief-pipeline and yt-duplicate tasks
+    if (task.description?.includes('[brief-pipeline]')) {
+      return res.status(400).json({ error: 'Task is from brief pipeline — naming is handled there' });
+    }
+    if (task.description?.includes('[yt-duplicate]')) {
+      return res.status(400).json({ error: 'Task is a YT duplicate — naming skipped' });
+    }
+
+    // Get or assign brief number
+    let briefNumber = getFieldValue(task, FIELD_IDS.briefNumber);
+    if (briefNumber != null) {
+      briefNumber = Math.round(briefNumber);
+    } else {
+      briefNumber = await getNextBriefNumber();
+      await setCustomField(taskId, FIELD_IDS.briefNumber, briefNumber);
+    }
+
+    const namingConv = generateNamingConvention(task, listId, briefNumber);
+    await updateTask(taskId, { name: namingConv });
+    await setCustomField(taskId, FIELD_IDS.namingConvention, namingConv);
+
+    // Also set creation week if empty
+    const existingWeek = getFieldValue(task, FIELD_IDS.creationWeek);
+    if (!existingWeek) {
+      await setCustomField(taskId, FIELD_IDS.creationWeek, getWeekLabel());
+    }
+
+    logger.info(`[ClickUp Webhook] Manually fixed naming for task ${taskId} → "${namingConv}"`);
+    res.json({ success: true, taskId, namingConvention: namingConv, briefNumber });
+  } catch (err) {
+    logger.error(`[ClickUp Webhook] Fix naming failed for ${taskId}: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/v1/clickup-webhook/status — check webhook health and list active webhooks
+router.get('/status', async (req, res) => {
+  try {
+    const webhooks = await clickupFetch(`/team/${TEAM_ID}/webhook`);
+    res.json({
+      active_webhooks: webhooks.webhooks?.length || 0,
+      webhooks: webhooks.webhooks?.map(w => ({
+        id: w.id,
+        endpoint: w.endpoint,
+        events: w.events,
+        health: w.health,
+        status: w.status,
+      })),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/v1/clickup-webhook/register — register a new webhook for the team
+router.post('/register', async (req, res) => {
+  const endpoint = req.body.endpoint;
+  if (!endpoint) {
+    return res.status(400).json({ error: 'endpoint is required' });
+  }
+  try {
+    const result = await clickupFetch(`/team/${TEAM_ID}/webhook`, {
+      method: 'POST',
+      body: JSON.stringify({
+        endpoint,
+        events: ['taskCreated', 'taskUpdated', 'taskStatusUpdated'],
+        space_id: null, // Team-wide
+      }),
+    });
+    logger.info(`[ClickUp Webhook] Registered new webhook: ${result.id} → ${endpoint}`);
+    res.json({ success: true, webhook: result });
+  } catch (err) {
+    logger.error(`[ClickUp Webhook] Failed to register webhook: ${err.message}`);
+    res.status(500).json({ error: err.message });
   }
 });
 
