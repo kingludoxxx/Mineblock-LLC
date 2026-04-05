@@ -254,6 +254,7 @@ USE THIS LAYOUT MAP TO:
 TEXT EXTRACTION RULES:
 - Only extract text ACTUALLY VISIBLE in the image — do NOT hallucinate text
 - Extract ALL text: brand name, headline, subheadline, body, CTA buttons, review counts, star ratings, price badges, discount %, feature callouts, comparison labels, fine print
+- ⚠️ LANGUAGE RULE: ALL adapted_text MUST be in ENGLISH regardless of the reference ad's language. If the reference is in Spanish, French, German, Portuguese, or ANY non-English language, you MUST translate the meaning and rewrite the adapted text in English. The output ad is ALWAYS in English. NEVER keep non-English text in adapted_text.
 - Progress/timeline labels ("Day 0", "Day 45", "Before", "After") stay as-is — do NOT extract or swap them
 - Prices extracted exactly and adapted with real product price
 - Multi-line headlines kept as one string with natural line breaks
@@ -292,6 +293,7 @@ COPY QUALITY SELF-CHECK (run this mentally before returning):
 6. Count check: same number of headlines, bullets, badges, stats as original. Don't add or remove elements. Leave fields empty ("") if no corresponding text exists.
 7. ⚠️ REFERENCE BLEED CHECK (CRITICAL): Re-read EVERY adapted_text. Does ANY text mention the REFERENCE product's industry, features, or terminology instead of the NEW product's? If the reference is a hair supplement and you see "hair regrowth", "DHT", "shedding", "follicle" in your adapted text, you FAILED — that is reference bleed-through. EVERY single text element must be about the NEW product, not the reference. Replace ALL reference-specific language with equivalent claims from PRODUCT CONTEXT.
 8. GRAMMAR & SPELLING CHECK: Read every adapted text element. Fix any grammar or spelling errors. "atemps" → "attempts". "Gaurantee" → "Guarantee". Every word must be spelled correctly.
+   8b. LANGUAGE CHECK: Is every adapted_text in ENGLISH? If the reference was in Spanish, French, or any other language, ALL adapted text MUST be translated to English. ZERO non-English words allowed in adapted_text.
 9. BENEFIT CHECK: Re-read every bullet/stat. Does it state a spec or a benefit? "144 attempts daily" is a SPEC → rewrite as "144 daily chances to win $300K+". "1 watt" is a SPEC → rewrite as "$1/month to run". If any text reads like a product spec sheet, you FAILED — rewrite it.
 10. ⚠️ CHARACTER COUNT CHECK (CRITICAL FOR IMAGE GENERATION — THIS IS THE #1 CAUSE OF BAD OUTPUT):
    For EVERY adapted text element, count the characters and compare to the original:
@@ -625,7 +627,9 @@ The FIRST image is a PHOTO of the real product. You MUST copy this EXACT product
 TEXT SWAPS — replace ALL text in the reference with these EXACT words:
 ${swapSectionFinal || '(No text changes)'}
 
-⚠️ TEXT RULE: You MUST replace EVERY piece of text in the reference image. The reference ad is for a COMPLETELY DIFFERENT product${refCategory ? ` ("${refCategory}")` : ''}. Your output must contain ZERO words from the reference product. If ANY text in your output still mentions the reference product, you have FAILED.${bannedTextSection}
+⚠️ TEXT RULE: You MUST replace EVERY piece of text in the reference image. The reference ad is for a COMPLETELY DIFFERENT product${refCategory ? ` ("${refCategory}")` : ''}. Your output must contain ZERO words from the reference product. If ANY text in your output still mentions the reference product, you have FAILED.
+
+🔴 LANGUAGE RULE: ALL text in the output MUST be in ENGLISH. If the reference ad is in Spanish, French, German, or ANY non-English language, render the swap text above (which is already in English). NEVER reproduce non-English text from the reference. Every word in the output must be English.${bannedTextSection}
 
 RULES:
 - Spell "${product.name}" exactly: ${product.name.split('').join('-')}. NOT "MineBlock" or "MinerBlorge".
