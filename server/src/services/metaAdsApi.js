@@ -289,7 +289,6 @@ export async function createAdSet(adAccountId, params) {
       ...(targeting.include_audiences?.length ? { custom_audiences: targeting.include_audiences.map(a => ({ id: a.id || a })) } : {}),
       ...(targeting.exclude_audiences?.length ? { excluded_custom_audiences: targeting.exclude_audiences.map(a => ({ id: a.id || a })) } : {}),
     },
-    is_dynamic_creative: true,
     destination_type: conversionLocation || 'WEBSITE',
     ...(pixelId ? {
       promoted_object: {
@@ -338,72 +337,32 @@ export async function createFlexibleAdCreative(adAccountId, params) {
   const {
     name, imageHashes = [], videoId, primaryTexts = [], headlines = [],
     descriptions = [], cta = 'SHOP_NOW', link, pageId, utmParameters,
-    verticalImageHash, // 9:16 image hash for stories/reels placements
+    verticalImageHash, // kept for future use
   } = params;
 
   const cleanUTM = utmParameters?.replace(/^[?&]+/, '');
   const finalLink = cleanUTM ? `${link}${link.includes('?') ? '&' : '?'}${cleanUTM}` : link;
 
-  const assetFeedSpec = {
-    bodies: primaryTexts.map(t => ({ text: t })),
-    titles: headlines.map(h => ({ text: h })),
-    descriptions: descriptions.length ? descriptions.map(d => ({ text: d })) : [{ text: '' }],
-    call_to_action_types: [cta],
-    link_urls: [{ website_url: finalLink }],
-    ad_formats: ['SINGLE_IMAGE'],
-  };
-
-  if (imageHashes.length) {
-    assetFeedSpec.images = imageHashes.map(hash => ({ hash }));
-    // If we have a vertical variant, add it to the images array too
-    if (verticalImageHash && !imageHashes.includes(verticalImageHash)) {
-      assetFeedSpec.images.push({ hash: verticalImageHash });
-    }
-  }
-  if (videoId) {
-    assetFeedSpec.videos = [{ video_id: videoId }];
-    assetFeedSpec.ad_formats = ['SINGLE_VIDEO'];
-  }
-
+  // Use standard (non-dynamic) creative with object_story_spec + link_data
+  // This allows multiple ads per adset without is_dynamic_creative
   const body = {
     access_token: META_ACCESS_TOKEN,
     name,
-    asset_feed_spec: assetFeedSpec,
     object_story_spec: {
       page_id: pageId,
-    },
-    degrees_of_freedom_spec: {
-      creative_features_spec: {
-        STANDARD_ENHANCEMENTS_CATALOG: { enroll_status: 'OPT_OUT' },
+      link_data: {
+        link: finalLink,
+        message: primaryTexts[0] || '',
+        image_hash: imageHashes[0] || '',
+        name: headlines[0] || '',
+        description: descriptions[0] || '',
+        call_to_action: {
+          type: cta,
+          value: { link: finalLink },
+        },
       },
     },
   };
-
-  // If we have both a 4:5 (square/feed) and 9:16 (stories/reels) image,
-  // use asset_customization_rules to assign the right image per placement
-  if (verticalImageHash && imageHashes.length && imageHashes[0] !== verticalImageHash) {
-    const feedHash = imageHashes[0]; // 4:5 for feed/square
-    body.asset_feed_spec.asset_customization_rules = [
-      {
-        // Feed / in-stream placements → 4:5 image
-        customization_spec: {
-          publisher_platforms: ['facebook', 'instagram'],
-          facebook_positions: ['feed', 'marketplace', 'search', 'right_hand_column'],
-          instagram_positions: ['stream', 'explore', 'profile_feed'],
-        },
-        images: [{ hash: feedHash }],
-      },
-      {
-        // Stories / Reels placements → 9:16 image
-        customization_spec: {
-          publisher_platforms: ['facebook', 'instagram'],
-          facebook_positions: ['story', 'reels'],
-          instagram_positions: ['story', 'reels'],
-        },
-        images: [{ hash: verticalImageHash }],
-      },
-    ];
-  }
 
   const res = await fetch(`${META_GRAPH_URL}/${adAccountId}/adcreatives`, {
     method: 'POST',
@@ -414,7 +373,7 @@ export async function createFlexibleAdCreative(adAccountId, params) {
 
   if (!res.ok) {
     const err = await res.text();
-    throw new Error(`Meta flexible creative error ${res.status}: ${err.slice(0, 500)}`);
+    throw new Error(`Meta ads create error ${res.status}: ${err.slice(0, 500)}`);
   }
 
   const data = await res.json();

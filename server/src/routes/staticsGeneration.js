@@ -1935,7 +1935,7 @@ router.post('/launch', authenticate, async (req, res) => {
       return res.status(400).json({ success: false, error: { message: 'No Facebook pages configured in launch template. Edit the template and select at least one page.' } });
     }
 
-    // Create ad set for this batch
+    // Create a single adset for the batch — standard (non-dynamic) creative allows multiple ads per adset
     let adsetId = null;
     let adsetName = '';
     adsetName = buildLaunchName(template.adset_name_pattern || '{date} - Batch {batch}', {
@@ -1946,6 +1946,17 @@ router.post('/launch', authenticate, async (req, res) => {
     });
 
     try {
+      const normalizedCountries = (() => {
+        const raw = safeArr(template.countries);
+        const codes = raw.map(c => {
+          if (typeof c === 'string') return c.trim().toUpperCase();
+          if (c && typeof c === 'object') return (c.code || c.id || c.value || '').toString().trim().toUpperCase();
+          return '';
+        }).filter(c => /^[A-Z]{2}$/.test(c));
+        console.log('[launch] raw countries from template:', JSON.stringify(template.countries), '→ parsed:', JSON.stringify(raw), '→ normalized:', JSON.stringify(codes));
+        return codes.length ? codes : ['US'];
+      })();
+
       adsetId = await createAdSet(template.ad_account_id, {
         name: adsetName,
         campaignId: template.campaign_id,
@@ -1957,17 +1968,7 @@ router.post('/launch', authenticate, async (req, res) => {
         conversionEvent: template.conversion_event,
         conversionLocation: template.conversion_location,
         targeting: {
-          countries: (() => {
-            const raw = safeArr(template.countries);
-            // Normalize: extract plain 2-letter country codes from strings or objects
-            const codes = raw.map(c => {
-              if (typeof c === 'string') return c.trim().toUpperCase();
-              if (c && typeof c === 'object') return (c.code || c.id || c.value || '').toString().trim().toUpperCase();
-              return '';
-            }).filter(c => /^[A-Z]{2}$/.test(c));
-            console.log('[launch] raw countries from template:', JSON.stringify(template.countries), '→ parsed:', JSON.stringify(raw), '→ normalized:', JSON.stringify(codes));
-            return codes.length ? codes : ['US'];
-          })(),
+          countries: normalizedCountries,
           age_min: template.age_min,
           age_max: template.age_max,
           gender: template.gender,
@@ -2065,7 +2066,7 @@ router.post('/launch', authenticate, async (req, res) => {
         const cta = copySet?.cta_button || genCopy.cta || 'SHOP_NOW';
         const link = copySet?.landing_page_url || template.landing_page_url || 'https://mineblock.com';
 
-        // Create ad creative with placement-specific images
+        // Create standard ad creative (non-dynamic, multiple ads per adset)
         const metaCreativeId = await createFlexibleAdCreative(template.ad_account_id, {
           name: adName,
           imageHashes,
