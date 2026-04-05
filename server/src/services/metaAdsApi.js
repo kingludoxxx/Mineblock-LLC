@@ -14,10 +14,14 @@ const META_UPLOAD_TIMEOUT = 60000; // 60s for image uploads (larger payloads)
  * @returns {{ hash: string, url: string }}
  */
 export async function uploadAdImage(adAccountId, imageBuffer) {
+  // Ensure we have a proper Uint8Array for Blob (Node.js Buffer can misbehave with Blob)
+  const bytes = new Uint8Array(imageBuffer.buffer, imageBuffer.byteOffset, imageBuffer.byteLength);
+  console.log(`[uploadAdImage] buffer size: ${imageBuffer.length}, uint8 size: ${bytes.length}`);
   const formData = new FormData();
   formData.append('access_token', META_ACCESS_TOKEN);
-  const blob = new Blob([imageBuffer], { type: 'image/png' });
-  formData.append('bytes', blob, 'creative.png');
+  const blob = new Blob([bytes], { type: 'image/jpeg' });
+  console.log(`[uploadAdImage] blob size: ${blob.size}`);
+  formData.append('bytes', blob, 'creative.jpg');
 
   const res = await fetch(`${META_GRAPH_URL}/${adAccountId}/adimages`, {
     method: 'POST',
@@ -423,9 +427,13 @@ export async function createFlexibleAdCreative(adAccountId, params) {
  * Upload image from URL to Meta ad account
  */
 export async function uploadAdImageFromUrl(adAccountId, imageUrl) {
+  console.log(`[uploadAdImageFromUrl] fetching: ${imageUrl.slice(0, 120)}`);
   const imgRes = await fetch(imageUrl, { signal: AbortSignal.timeout(META_UPLOAD_TIMEOUT) });
   if (!imgRes.ok) throw new Error(`Failed to fetch image from ${imageUrl}: ${imgRes.status}`);
-  const buffer = Buffer.from(await imgRes.arrayBuffer());
+  const arrayBuf = await imgRes.arrayBuffer();
+  const buffer = Buffer.from(arrayBuf);
+  console.log(`[uploadAdImageFromUrl] fetched ${buffer.length} bytes, content-type: ${imgRes.headers.get('content-type')}`);
+  if (buffer.length < 1000) throw new Error(`Image too small (${buffer.length} bytes) — likely expired or corrupt: ${imageUrl.slice(0, 120)}`);
   return uploadAdImage(adAccountId, buffer);
 }
 
