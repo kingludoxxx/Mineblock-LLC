@@ -676,6 +676,26 @@ ${templateData.deep_analysis.adaptation_instructions?.common_failure_modes?.leng
     ? `\nBANNED WORDS (from reference product): ${refKeywords.map(w => `"${w}"`).join(', ')}. NEVER use these.`
     : (refCategory ? `\nBANNED: Any text about "${refCategory}" from the reference.` : '');
 
+  // ── PRODUCT CONTEXT for image generator (critical for correct rendering) ──
+  // Keep this SHORT — Gemini needs prompts under ~3000 chars
+  const profile = product.profile || {};
+  const productContextLines = [
+    product.name && `Product: ${product.name}`,
+    product.price && `Price: ${product.price}`,
+    profile.discountCodes && `Discount code: ${profile.discountCodes}`,
+    profile.maxDiscount && `Max discount: ${profile.maxDiscount}`,
+    profile.guarantee && `Guarantee: ${profile.guarantee}`,
+    profile.voice && `Tone: ${profile.voice.slice(0, 80)}`,
+  ].filter(Boolean);
+  const productContext = productContextLines.length > 0
+    ? `\n\nPRODUCT TRUTH (use for ANY text you generate):\n${productContextLines.map(l => `- ${l}`).join('\n')}`
+    : '';
+
+  // Brand colors for visual consistency
+  const brandColorHint = (product.brand_colors && Object.keys(product.brand_colors).length > 0)
+    ? `\n- Brand colors: ${Object.values(product.brand_colors).filter(Boolean).slice(0, 3).join(', ')} — use these for accent elements.`
+    : '';
+
   return `Edit the reference ad (LAST image).${templateIntelligence}
 
 🔴 STRICT RULES (most important):
@@ -690,5 +710,5 @@ ${swapSectionFinal || '(No text changes)'}${bannedWords}
 LAYOUT RULES:
 - Keep EXACT same layout, background, colors, fonts, positions.${visualLine}
 - Spell every word correctly with proper spacing between words.
-- PRODUCT LABEL: The product image (FIRST image) already has its real label/packaging. Copy it EXACTLY as provided — do NOT modify, redesign, or add text to the product packaging.${co.absoluteRules ? `\n${co.absoluteRules}` : ''}`;
+- PRODUCT LABEL: The product image (FIRST image) already has its real label/packaging. Copy it EXACTLY as provided — do NOT modify, redesign, or add text to the product packaging.${brandColorHint}${productContext}${co.absoluteRules ? `\n${co.absoluteRules}` : ''}`;
 }
