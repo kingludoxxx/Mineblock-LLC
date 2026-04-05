@@ -718,37 +718,53 @@ router.get('/frame-diagnose', async (req, res) => {
     results.user = { id: me?.id, email: me?.email, name: me?.name };
     results.account_id = me?.account_id;
 
-    // Try listing teams
-    try {
-      const accounts = await frameioFetch('/accounts');
-      results.accounts = Array.isArray(accounts) ? accounts.map(a => ({ id: a.id, name: a.name })) : accounts;
-    } catch (e) {
-      results.accounts_error = e.message;
-    }
-
     // Try accessing the project directly
     try {
       const project = await frameioFetch(`/projects/${FRAMEIO_PROJECT_ID}`);
       results.project = { id: project?.id, name: project?.name, root_asset_id: project?.root_asset_id };
     } catch (e) {
       results.project_error = e.message;
+    }
 
-      // If project fails, try listing projects from the account
-      if (me?.account_id) {
-        try {
-          const teams = await frameioFetch(`/accounts/${me.account_id}/teams`);
-          results.teams = Array.isArray(teams) ? teams.map(t => ({ id: t.id, name: t.name })) : [];
-          // Try to find projects
-          for (const team of (Array.isArray(teams) ? teams.slice(0, 3) : [])) {
-            try {
-              const projects = await frameioFetch(`/teams/${team.id}/projects`);
-              results[`team_${team.name}_projects`] = Array.isArray(projects) ? projects.map(p => ({ id: p.id, name: p.name })) : [];
-            } catch { /* skip */ }
-          }
-        } catch (te) {
-          results.teams_error = te.message;
-        }
+    // Try to find all projects through the user's teams
+    // v2 API: /me → account_id → /accounts/{id}/teams → /teams/{id}/projects
+    try {
+      // Method 1: Direct team membership
+      const teams = me?.teams || [];
+      if (teams.length > 0) {
+        results.teams_from_me = teams.map(t => ({ id: t.id, name: t.name }));
       }
+    } catch { /* skip */ }
+
+    // Method 2: List all assets at the project root (in case the project ID is actually an asset/folder ID)
+    try {
+      const asset = await frameioFetch(`/assets/${FRAMEIO_PROJECT_ID}`);
+      results.as_asset = { id: asset?.id, name: asset?.name, type: asset?.type, project_id: asset?.project_id };
+    } catch (e) {
+      results.as_asset_error = e.message;
+    }
+
+    // Method 3: Try listing the user's projects directly
+    try {
+      const searchRes = await fetch(`https://api.frame.io/v2/search/library?account_id=${me?.account_id}&type=project&page_size=20`, {
+        headers: { Authorization: `Bearer ${FRAMEIO_TOKEN}` },
+      });
+      if (searchRes.ok) {
+        const searchData = await searchRes.json();
+        results.library_projects = (searchData || []).map(p => ({ id: p.id, name: p.name, root_asset_id: p.root_asset_id }));
+      } else {
+        results.library_search_error = `${searchRes.status}: ${await searchRes.text().then(t => t.slice(0, 200))}`;
+      }
+    } catch (e) {
+      results.library_search_error = e.message;
+    }
+
+    // Method 4: Try the v2 /me endpoint which may include project refs
+    try {
+      const meTeams = await frameioFetch('/me/teams');
+      results.me_teams = Array.isArray(meTeams) ? meTeams.map(t => ({ id: t.id, name: t.name })) : meTeams;
+    } catch (e) {
+      results.me_teams_error = e.message;
     }
 
     res.json(results);
