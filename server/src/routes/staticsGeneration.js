@@ -4,6 +4,7 @@ import { overlayText } from '../utils/textOverlay.js';
 import { pgQuery } from '../db/pg.js';
 import { authenticate } from '../middleware/auth.js';
 import { uploadBuffer, isR2Configured } from '../services/r2.js';
+import { editImage, isGeminiConfigured, GEMINI_EDIT_MODEL } from '../services/geminiImageGen.js';
 import crypto from 'crypto';
 import {
   isMetaAdsConfigured, createAdSet, createFlexibleAdCreative, createAd,
@@ -25,6 +26,20 @@ function storeTextOverlayContext(taskId, context) {
   }
   textOverlayContexts.set(taskId, context);
   setTimeout(() => textOverlayContexts.delete(taskId), TEXT_OVERLAY_CTX_TTL);
+}
+
+// ── Gemini completed results store (sync generation, client still polls /status) ──
+const geminiResults = new Map();
+const GEMINI_RESULT_TTL = 15 * 60 * 1000; // 15 minutes
+const MAX_GEMINI_RESULTS = 200;
+
+function storeGeminiResult(taskId, result) {
+  if (geminiResults.size >= MAX_GEMINI_RESULTS) {
+    const oldest = geminiResults.keys().next().value;
+    geminiResults.delete(oldest);
+  }
+  geminiResults.set(taskId, result);
+  setTimeout(() => geminiResults.delete(taskId), GEMINI_RESULT_TTL);
 }
 
 // ── Temporary image store (serves base64 as HTTP URLs for NanoBanana) ──
@@ -484,22 +499,120 @@ router.post('/generate', authenticate, async (req, res) => {
     console.log(`  [LAST] reference: ${finalReferenceUrl?.slice(0, 120)}`);
 
     const logoBackgroundTone = claudeResult.logo_background_tone || null;
-    const skipTextRendering = false; // Disabled: NanoBanana ignores skip-text instruction entirely and renders original reference text, causing double-text when overlay is applied. The model cannot be told to skip text.
+    const skipTextRendering = false;
     const nbPrompt = buildNanoBananaPrompt(claudeResult, swapPairs, product, logoUrls.length, customPrompts, layoutMap, logoBackgroundTone, skipTextRendering);
-    console.log(`[staticsGeneration] skipTextRendering=${skipTextRendering} — text will be composited via textOverlay after generation`);
 
     // Send: product images, then logos, then reference ad (last)
     const imageUrls = [finalProductUrl, ...extraProductUrls, ...logoUrls, finalReferenceUrl];
-    console.log(`[staticsGeneration] NanoBanana prompt:\n${nbPrompt}`);
+    console.log(`[staticsGeneration] Prompt:\n${nbPrompt}`);
     console.log(`[staticsGeneration] Total images: ${imageUrls.length} (${extraProductUrls.length} extra product, ${logoUrls.length} logos)`);
 
-    // Determine which ratios to generate — use client-requested ratio, default to both
+    // Determine which ratios to generate
     const requestedRatio = req.body.ratio;
     const ratiosToGenerate = requestedRatio && requestedRatio !== 'all'
       ? [requestedRatio]
       : ['1:1', '9:16'];
 
-    console.log(`[staticsGeneration] Generating ${ratiosToGenerate.length} ratio(s): ${ratiosToGenerate.join(', ')}`);
+    // Determine provider: default to gemini, fallback to nanobanana
+    const provider = req.body.provider || (isGeminiConfigured() ? 'gemini' : 'nanobanana');
+    console.log(`[staticsGeneration] Provider: ${provider}, Generating ${ratiosToGenerate.length} ratio(s): ${ratiosToGenerate.join(', ')}`);
+
+    // ── GEMINI PATH: Direct image editing via Gemini 3.1 Flash ──
+    if (provider === 'gemini' && isGeminiConfigured()) {
+      // Fetch all input images as base64 for Gemini inline_data
+      async function fetchImageAsBase64(url) {
+        if (!url) return null;
+        if (url.startsWith('data:image')) {
+          const m = url.match(/^data:(image\/[^;]+);base64,(.+)$/);
+          return m ? { base64: m[2], mimeType: m[1] } : null;
+        }
+        // Handle self-hosted temp images
+        let fetchUrl = url;
+        if (url.startsWith('/')) {
+          const base = process.env.RENDER_EXTERNAL_URL || `http://localhost:${process.env.PORT || 3000}`;
+          fetchUrl = `${base}${url}`;
+        }
+        const r = await fetch(fetchUrl);
+        if (!r.ok) throw new Error(`Failed to fetch image: ${r.status} ${fetchUrl.slice(0, 100)}`);
+        const buf = Buffer.from(await r.arrayBuffer());
+        const mime = detectMime(buf);
+        return { base64: buf.toString('base64'), mimeType: mime };
+      }
+
+      try {
+        // Build input images array: product, extras, logos, reference (same order as NanoBanana)
+        const inputImages = [];
+        for (const url of imageUrls) {
+          if (url) {
+            const img = await fetchImageAsBase64(url);
+            if (img) inputImages.push(img);
+          }
+        }
+        console.log(`[staticsGeneration] Gemini: ${inputImages.length} images loaded as base64`);
+
+        // Generate for each ratio
+        const tasks = [];
+        for (const r of ratiosToGenerate) {
+          // Map ratio format: Gemini uses "ASPECT_RATIO" format
+          const geminiRatio = r; // Gemini accepts "4:5", "1:1", "9:16" etc.
+          try {
+            console.log(`[staticsGeneration] Gemini: generating ${r}...`);
+            const result = await editImage(nbPrompt, inputImages, geminiRatio);
+
+            // Upload to R2 or store as temp
+            let resultImageUrl;
+            if (isR2Configured()) {
+              const r2Key = `statics-gemini/${crypto.randomUUID()}.png`;
+              resultImageUrl = await uploadBuffer(result.buffer, r2Key, result.mimeType);
+              console.log(`[staticsGeneration] Gemini result uploaded to R2: ${resultImageUrl}`);
+            } else {
+              const tmpId = storeTempImage(result.buffer, result.mimeType);
+              const srvUrl = process.env.RENDER_EXTERNAL_URL || `http://localhost:${process.env.PORT || 3000}`;
+              resultImageUrl = `${srvUrl}/api/v1/statics-generation/tmp-img/${tmpId}`;
+            }
+
+            // Create a fake taskId and store completed result for /status polling
+            const taskId = `gemini-${crypto.randomUUID()}`;
+            storeGeminiResult(taskId, {
+              status: 'completed',
+              resultImageUrl,
+              provider: 'gemini',
+              model: GEMINI_EDIT_MODEL,
+            });
+            tasks.push({ taskId, ratio: r });
+            console.log(`[staticsGeneration] Gemini ${r} complete: ${taskId}`);
+          } catch (geminiErr) {
+            console.error(`[staticsGeneration] Gemini ${r} failed: ${geminiErr.message}`);
+            // Don't add to tasks — will fall through
+          }
+        }
+
+        if (tasks.length > 0) {
+          console.log(`[staticsGeneration] Gemini tasks completed: ${tasks.map(t => `${t.ratio}=${t.taskId}`).join(', ')}`);
+          return res.json({
+            success: true,
+            data: {
+              taskId: tasks[0]?.taskId,
+              tasks,
+              provider: 'gemini',
+              model: GEMINI_EDIT_MODEL,
+              claudeAnalysis: claudeResult,
+              adaptedText: claudeResult.adapted_text || claudeResult.adaptedText,
+              swapPairs,
+              originalText: claudeResult.original_text || claudeResult.originalText,
+            },
+          });
+        }
+
+        // If Gemini failed for all ratios, fall through to NanoBanana
+        console.warn(`[staticsGeneration] Gemini failed for all ratios, falling back to NanoBanana`);
+      } catch (geminiErr) {
+        console.error(`[staticsGeneration] Gemini path failed, falling back to NanoBanana: ${geminiErr.message}`);
+      }
+    }
+
+    // ── NANOBANANA PATH: Async task submission ──
+    console.log(`[staticsGeneration] Using NanoBanana provider`);
 
     const parseNbResponse = async (res, label) => {
       const rawBody = await res.text().catch(() => '');
@@ -561,8 +674,8 @@ router.post('/generate', authenticate, async (req, res) => {
     const tasks = nbResponses.filter(Boolean);
 
     if (tasks.length === 0) {
-      console.error(`[staticsGeneration] All NanoBanana generate-2 calls failed. nbResponses: ${JSON.stringify(nbResponses)}`);
-      return res.status(500).json({ success: false, error: 'NanoBanana failed to return any task IDs after retries' });
+      console.error(`[staticsGeneration] All NanoBanana calls failed. nbResponses: ${JSON.stringify(nbResponses)}`);
+      return res.status(500).json({ success: false, error: 'Image generation failed after retries' });
     }
 
     // ── Store text overlay context per task for the /status endpoint ──
@@ -585,8 +698,10 @@ router.post('/generate', authenticate, async (req, res) => {
     res.json({
       success: true,
       data: {
-        taskId: tasks[0]?.taskId,  // backward compat
+        taskId: tasks[0]?.taskId,
         tasks,
+        provider: 'nanobanana',
+        model: 'google/nano-banana-edit',
         claudeAnalysis: claudeResult,
         adaptedText: claudeResult.adapted_text || claudeResult.adaptedText,
         swapPairs,
@@ -607,6 +722,26 @@ router.get('/status/:taskId', authenticate, async (req, res) => {
     const { taskId } = req.params;
     if (!taskId) return res.status(400).json({ success: false, error: 'taskId is required' });
 
+    // ── Gemini results: already completed, stored in memory ──
+    const geminiResult = geminiResults.get(taskId);
+    if (geminiResult) {
+      res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
+      res.set('Pragma', 'no-cache');
+      return res.json({
+        success: true,
+        data: {
+          taskId,
+          status: geminiResult.status,
+          successFlag: geminiResult.status === 'completed',
+          resultImageUrl: geminiResult.resultImageUrl,
+          provider: geminiResult.provider,
+          model: geminiResult.model,
+          error: geminiResult.error || null,
+        },
+      });
+    }
+
+    // ── NanoBanana results: poll kie.ai ──
     const nbRes = await fetch(`${NB_BASE}/recordInfo?taskId=${taskId}`, {
       headers: { Authorization: `Bearer ${NANOBANANA_API_KEY}` },
     });
