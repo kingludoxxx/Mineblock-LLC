@@ -528,8 +528,14 @@ router.post('/generate', authenticate, async (req, res) => {
     let finalReferenceUrl = isUrl ? reference_image_url : await ensureHttpUrl(reference_image_url, 'refs');
     let finalProductUrl = await ensureHttpUrl(product.product_image_url, 'products');
 
-    // Smart product image selection based on reference orientation
+    // Fallback: if no main product image, try product_images array
     const allProductImages = product.product_images || [];
+    if (!finalProductUrl && allProductImages.length > 0) {
+      console.log(`[staticsGeneration] ⚠️ No product_image_url — falling back to product_images[0]`);
+      finalProductUrl = await ensureHttpUrl(allProductImages[0], 'products-fallback');
+    }
+
+    // Smart product image selection based on reference orientation
     const userSelectedImages = product.selected_product_images || [];
     if (allProductImages.length > 1 && userSelectedImages.length === 0 && claudeResult.product_orientation) {
       try {
@@ -587,6 +593,9 @@ router.post('/generate', authenticate, async (req, res) => {
     }
 
     console.log(`[staticsGeneration] Logo data: logo_url=${product.logo_url ? 'yes' : 'no'}, logos=${(product.logos || []).length}, resolved logoUrls=${logoUrls.length}`);
+    if (!finalProductUrl) {
+      console.warn(`[staticsGeneration] ⚠️ WARNING: No product image available! Gemini will hallucinate the product. Check product_image_url and product_images for "${product.name}".`);
+    }
     console.log(`[staticsGeneration] Product images: main=${finalProductUrl ? 'yes' : 'no'}, extra=${extraProductUrls.length}`);
     console.log(`[staticsGeneration] Image URLs sent to NanoBanana:`);
     console.log(`  [0] main product: ${finalProductUrl?.slice(0, 120)}`);
