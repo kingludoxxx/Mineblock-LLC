@@ -252,11 +252,11 @@ export function AresAgent({ active, step = 0 }) {
               {/* Status indicator */}
               <div className="flex items-center gap-1 mt-1">
                 <div
-                  className={`w-1 h-1 rounded-full ${active ? 'bg-emerald-500' : 'bg-zinc-600'}`}
-                  style={active ? { boxShadow: '0 0 4px rgba(16,185,129,0.6)' } : {}}
+                  className="w-1 h-1 rounded-full bg-emerald-500"
+                  style={{ boxShadow: '0 0 4px rgba(16,185,129,0.6)' }}
                 />
-                <span className={`font-mono text-[8px] uppercase tracking-wider ${active ? 'text-zinc-400' : 'text-zinc-600'}`}>
-                  {active ? `Active${dots}` : 'Ready'}
+                <span className="font-mono text-[8px] uppercase tracking-wider text-zinc-400">
+                  {active ? `Active${dots}` : `Ready${dots}`}
                 </span>
               </div>
             </div>
