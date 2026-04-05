@@ -3,7 +3,7 @@ const GEMINI_MODEL = 'gemini-2.0-flash-preview-image-generation';
 const GEMINI_EDIT_MODEL = 'gemini-3.1-flash-image-preview';
 const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 const GEMINI_EDIT_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_EDIT_MODEL}:generateContent`;
-const MAX_CONCURRENT = 3;
+const MAX_CONCURRENT = 2;
 
 let activeRequests = 0;
 const queue = [];
@@ -113,38 +113,58 @@ async function editImage(prompt, inputImages, aspectRatio = '4:5') {
 
     console.log(`[geminiImageGen] Sending edit request to ${GEMINI_EDIT_MODEL} with ${inputImages.length} images, prompt length ${prompt.length}`);
 
-    const res = await fetch(`${GEMINI_EDIT_URL}?key=${GEMINI_API_KEY}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(120000), // 2 min timeout for image editing
-    });
+    // Retry with exponential backoff for 429 rate limit errors
+    const MAX_RETRIES = 3;
+    let lastError;
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      const res = await fetch(`${GEMINI_EDIT_URL}?key=${GEMINI_API_KEY}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(180000), // 3 min timeout for image editing
+      });
 
-    if (!res.ok) {
-      const errText = await res.text();
-      throw new Error(`Gemini Edit API error ${res.status}: ${errText.slice(0, 500)}`);
-    }
-
-    const data = await res.json();
-    const candidate = data.candidates?.[0]?.content?.parts || [];
-    const imagePart = candidate.find(p => p.inlineData || p.inline_data);
-
-    if (!imagePart) {
-      // Check for text-only response (model refused or couldn't edit)
-      const textPart = candidate.find(p => p.text);
-      if (textPart) {
-        throw new Error(`Gemini returned text instead of image: ${textPart.text.slice(0, 200)}`);
+      if (res.status === 429 && attempt < MAX_RETRIES) {
+        const wait = Math.pow(2, attempt + 1) * 5000; // 10s, 20s, 40s
+        console.warn(`[geminiImageGen] Rate limited (429), retrying in ${wait / 1000}s (attempt ${attempt + 1}/${MAX_RETRIES})`);
+        await new Promise(r => setTimeout(r, wait));
+        continue;
       }
-      throw new Error('Gemini returned no image data');
+
+      if (!res.ok) {
+        const errText = await res.text();
+        lastError = new Error(`Gemini Edit API error ${res.status}: ${errText.slice(0, 500)}`);
+        if (res.status >= 500 && attempt < MAX_RETRIES) {
+          const wait = Math.pow(2, attempt + 1) * 3000;
+          console.warn(`[geminiImageGen] Server error (${res.status}), retrying in ${wait / 1000}s`);
+          await new Promise(r => setTimeout(r, wait));
+          continue;
+        }
+        throw lastError;
+      }
+
+      const data = await res.json();
+      const candidate = data.candidates?.[0]?.content?.parts || [];
+      const imagePart = candidate.find(p => p.inlineData || p.inline_data);
+
+      if (!imagePart) {
+        const textPart = candidate.find(p => p.text);
+        if (textPart) {
+          throw new Error(`Gemini returned text instead of image: ${textPart.text.slice(0, 200)}`);
+        }
+        throw new Error('Gemini returned no image data');
+      }
+
+      const inlineData = imagePart.inlineData || imagePart.inline_data;
+      console.log(`[geminiImageGen] Edit successful, received image (${inlineData.mimeType})`);
+
+      return {
+        buffer: Buffer.from(inlineData.data, 'base64'),
+        mimeType: inlineData.mimeType || 'image/png',
+      };
     }
 
-    const inlineData = imagePart.inlineData || imagePart.inline_data;
-    console.log(`[geminiImageGen] Edit successful, received image (${inlineData.mimeType})`);
-
-    return {
-      buffer: Buffer.from(inlineData.data, 'base64'),
-      mimeType: inlineData.mimeType || 'image/png',
-    };
+    throw lastError || new Error('Gemini edit failed after retries');
   } finally {
     activeRequests--;
     if (queue.length > 0) {
