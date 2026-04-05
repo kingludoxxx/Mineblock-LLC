@@ -1241,6 +1241,27 @@ router.patch('/creatives/:id/status', authenticate, async (req, res) => {
   }
 });
 
+// PATCH /creatives/:id/angle — Update creative angle (for drag-and-drop between angle groups)
+router.patch('/creatives/:id/angle', authenticate, async (req, res) => {
+  try {
+    await ensureCreativesTable();
+    const { angle } = req.body;
+    if (angle === undefined) {
+      return res.status(400).json({ success: false, error: { message: 'angle is required' } });
+    }
+    const newAngle = angle || null; // empty string → null (will show as "Uncategorized")
+    const rows = await pgQuery(
+      'UPDATE spy_creatives SET angle = $1, updated_at = NOW() WHERE id = $2 RETURNING *',
+      [newAngle, req.params.id]
+    );
+    if (rows.length === 0) return res.status(404).json({ success: false, error: { message: 'Creative not found' } });
+    res.json({ success: true, data: rows[0] });
+  } catch (err) {
+    console.error('[staticsGeneration] /creatives/:id/angle error:', err);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
 // GET /creatives/pipeline — Creatives grouped by status for pipeline view
 router.get('/creatives/pipeline', authenticate, async (req, res) => {
   try {

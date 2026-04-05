@@ -151,7 +151,7 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, onRegener
       draggable={isDraggable}
       onDragStart={isDraggable ? (e) => {
         setWasDragged(true);
-        e.dataTransfer.setData('text/plain', JSON.stringify({ id: creative.id, status: creative.status }));
+        e.dataTransfer.setData('text/plain', JSON.stringify({ id: creative.id, status: creative.status, angle: creative.angle || 'Uncategorized', type: 'angle-move' }));
         e.dataTransfer.effectAllowed = 'move';
       } : undefined}
       onDragEnd={isDraggable ? () => setTimeout(() => setWasDragged(false), 100) : undefined}
@@ -293,8 +293,18 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, onRegener
 function AdSetThumb({ creative, onCardClick }) {
   return (
     <div
+      draggable
+      onDragStart={(e) => {
+        e.dataTransfer.setData('text/plain', JSON.stringify({
+          id: creative.id,
+          status: creative.status,
+          angle: creative.angle || 'Uncategorized',
+          type: 'angle-move',
+        }));
+        e.dataTransfer.effectAllowed = 'move';
+      }}
       onClick={() => onCardClick?.(creative)}
-      className="relative aspect-square w-full rounded-lg overflow-hidden bg-black/40 cursor-pointer group"
+      className="relative aspect-square w-full rounded-lg overflow-hidden bg-black/40 cursor-grab active:cursor-grabbing group"
     >
       {creative.image_url ? (
         <img
@@ -332,15 +342,39 @@ function EmptySlot() {
 // Ad Set Group Card (for Ready to Launch column)
 // ---------------------------------------------------------------------------
 
-function AdSetGroupCard({ angle, creatives, isComplete, onLaunch, onCardClick }) {
+function AdSetGroupCard({ angle, creatives, isComplete, onLaunch, onCardClick, onAngleChange }) {
   const count = creatives.length;
+  const [dragOver, setDragOver] = useState(false);
 
   return (
-    <div className={`rounded-xl border-2 transition-colors overflow-hidden ${
-      isComplete
-        ? 'border-emerald-500/30 bg-emerald-500/[0.02]'
-        : 'border-red-500/20 bg-red-500/[0.02]'
-    }`}>
+    <div
+      onDragOver={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setDragOver(true);
+      }}
+      onDragLeave={(e) => {
+        e.stopPropagation();
+        setDragOver(false);
+      }}
+      onDrop={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setDragOver(false);
+        try {
+          const data = JSON.parse(e.dataTransfer.getData('text/plain'));
+          if (data.id && data.type === 'angle-move' && data.angle !== angle) {
+            onAngleChange?.(data.id, angle === 'Uncategorized' ? '' : angle);
+          }
+        } catch { /* ignore */ }
+      }}
+      className={`rounded-xl border-2 transition-colors overflow-hidden ${
+        dragOver
+          ? 'border-[#c9a84c]/50 bg-[#c9a84c]/[0.05] ring-1 ring-[#c9a84c]/30'
+          : isComplete
+            ? 'border-emerald-500/30 bg-emerald-500/[0.02]'
+            : 'border-red-500/20 bg-red-500/[0.02]'
+      }`}>
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3">
         <div className="flex items-center gap-2.5 min-w-0">
@@ -577,7 +611,7 @@ function PipelineColumn({ column, items, onStatusChange, onCardClick, onRegenera
 // Ready to Launch column (grouped by angle)
 // ---------------------------------------------------------------------------
 
-function ReadyToLaunchColumn({ column, items, onCardClick, onLaunchGroup, onBulkLaunch, launchTemplates, selectedTemplateId, onSelectTemplate, onStatusChange }) {
+function ReadyToLaunchColumn({ column, items, onCardClick, onLaunchGroup, onBulkLaunch, launchTemplates, selectedTemplateId, onSelectTemplate, onStatusChange, onAngleChange }) {
   const Icon = column.icon;
   const [dragOver, setDragOver] = useState(false);
 
@@ -665,6 +699,7 @@ function ReadyToLaunchColumn({ column, items, onCardClick, onLaunchGroup, onBulk
               isComplete={cs.length >= ADSET_SIZE}
               onLaunch={onLaunchGroup}
               onCardClick={onCardClick}
+              onAngleChange={onAngleChange}
             />
           ))
         )}
@@ -715,7 +750,7 @@ function LaunchedColumn({ column, items, onCardClick }) {
 // Main PipelineView component
 // ---------------------------------------------------------------------------
 
-export function PipelineView({ creatives = [], onStatusChange, onCardClick, onRegenerate, onRefresh, loading, onOpenTemplates, onOpenCopySets, queue = [], onRemoveFromQueue }) {
+export function PipelineView({ creatives = [], onStatusChange, onAngleChange, onCardClick, onRegenerate, onRefresh, loading, onOpenTemplates, onOpenCopySets, queue = [], onRemoveFromQueue }) {
   // Bucket creatives into columns by status
   const buckets = useMemo(() => {
     const map = { generating: [], review: [], approved: [], ready: [], launched: [] };
@@ -915,6 +950,7 @@ export function PipelineView({ creatives = [], onStatusChange, onCardClick, onRe
           selectedTemplateId={selectedTemplateId}
           onSelectTemplate={setSelectedTemplateId}
           onStatusChange={handleStatusChange}
+          onAngleChange={onAngleChange}
         />
 
         {/* Launched column — grouped by angle */}

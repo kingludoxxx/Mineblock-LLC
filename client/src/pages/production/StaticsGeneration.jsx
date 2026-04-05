@@ -2036,6 +2036,14 @@ export default function StaticsGeneration() {
                       console.error('[Pipeline] Status change failed:', err.message);
                     }
                   }}
+                  onAngleChange={async (id, newAngle) => {
+                    try {
+                      await api.patch(`/statics-generation/creatives/${id}/angle`, { angle: newAngle });
+                      setCreatives(prev => prev.map(c => c.id === id ? { ...c, angle: newAngle || null } : c));
+                    } catch (err) {
+                      console.error('[Pipeline] Angle change failed:', err.message);
+                    }
+                  }}
                   onCardClick={(creative) => setDetailModal(creative)}
                   onRegenerate={async (creative) => {
                     if (!creative.reference_thumbnail || !creative.product_id) {
