@@ -11,7 +11,7 @@ export async function analyzeTemplate(template) {
   // Build the full URL if it's a relative path
   let fullImageUrl = imageUrl;
   if (imageUrl.startsWith('/')) {
-    fullImageUrl = `${process.env.BASE_URL || 'https://mineblock-server.onrender.com'}${imageUrl}`;
+    fullImageUrl = `${process.env.RENDER_EXTERNAL_URL || 'https://mineblock-dashboard.onrender.com'}${imageUrl}`;
   }
 
   // Fetch the image and convert to base64

@@ -101,7 +101,6 @@ export function CreativeDetailModal({
   onDownload,
   onAiAdjust,
   onStatusChange,
-  onCreateVariant,
   onRefresh,
 }) {
   const [aiInstruction, setAiInstruction] = useState('');
@@ -112,6 +111,9 @@ export function CreativeDetailModal({
   const [aiError, setAiError] = useState(null);
   const [refLightbox, setRefLightbox] = useState(false);
   const [activeRatio, setActiveRatio] = useState('primary');
+  const [aiSuccess, setAiSuccess] = useState(false);
+  const [aiPolling, setAiPolling] = useState(false);
+  const [aiPollProgress, setAiPollProgress] = useState('');
 
   // Abort polling when modal closes
   const abortRef = useRef(false);
@@ -139,10 +141,6 @@ export function CreativeDetailModal({
   }
   // If it's an array (swap_pairs), skip — only show object entries
   if (Array.isArray(adaptedText)) adaptedText = {};
-
-  const [aiSuccess, setAiSuccess] = useState(false);
-  const [aiPolling, setAiPolling] = useState(false);
-  const [aiPollProgress, setAiPollProgress] = useState('');
 
   const handleAiSubmit = async () => {
     if (!aiInstruction.trim() || aiAdjusting) return;
