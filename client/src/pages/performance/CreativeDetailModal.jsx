@@ -329,6 +329,9 @@ export default function CreativeDetailModal({ creative, onClose }) {
       {/* Modal */}
       <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto py-6 px-4">
         <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="creative-detail-title"
           className="w-full max-w-6xl bg-[#0d0d0f] border border-white/[0.08] rounded-2xl shadow-2xl overflow-hidden"
           onClick={(e) => e.stopPropagation()}
           style={{ animation: 'modalFadeIn 0.2s ease-out' }}
@@ -336,7 +339,7 @@ export default function CreativeDetailModal({ creative, onClose }) {
           {/* Header */}
           <div className="flex items-center justify-between px-6 py-4 border-b border-white/[0.06]">
             <div className="flex items-center gap-3 min-w-0">
-              <p className="text-white font-semibold text-sm truncate" title={adName}>{adName}</p>
+              <p id="creative-detail-title" className="text-white font-semibold text-sm truncate" title={adName}>{adName}</p>
               <span className="text-gray-500 text-xs font-mono flex-shrink-0">{cid}</span>
               <div className="flex items-center gap-1.5 flex-shrink-0">
                 <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
@@ -361,6 +364,7 @@ export default function CreativeDetailModal({ creative, onClose }) {
               )}
               <button
                 onClick={onClose}
+                aria-label="Close"
                 className="w-8 h-8 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] flex items-center justify-center text-gray-400 hover:text-white transition cursor-pointer"
               >
                 <X className="w-4 h-4" />
