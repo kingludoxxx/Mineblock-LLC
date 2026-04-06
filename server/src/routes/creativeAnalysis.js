@@ -2082,7 +2082,7 @@ async function fetchMetaInsights(metaAdId) {
   try {
     const fields = [
       'impressions', 'reach', 'clicks', 'ctr', 'cpc', 'cpm', 'frequency', 'spend',
-      'actions', 'video_avg_time_watched',
+      'actions', 'video_avg_time_watched_actions',
       'video_p25_watched_actions', 'video_p50_watched_actions',
       'video_p75_watched_actions', 'video_p95_watched_actions',
       'video_p100_watched_actions', 'video_30_sec_watched_actions',
@@ -2144,7 +2144,8 @@ async function fetchMetaInsights(metaAdId) {
     const videoViews = getVideoAction(d.video_play_actions);
     const video3s = getAction('video_view');
     const video30s = getVideoAction(d.video_30_sec_watched_actions);
-    const videoAvgTime = parseFloat(d.video_avg_time_watched || '0');
+    const videoAvgTimeArr = Array.isArray(d.video_avg_time_watched_actions) ? d.video_avg_time_watched_actions : [];
+    const videoAvgTime = parseFloat(videoAvgTimeArr[0]?.value || '0');
     const videoP25 = getVideoAction(d.video_p25_watched_actions);
     const videoP50 = getVideoAction(d.video_p50_watched_actions);
     const videoP75 = getVideoAction(d.video_p75_watched_actions);
