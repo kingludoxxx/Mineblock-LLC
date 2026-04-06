@@ -1296,10 +1296,15 @@ If the script has text labeled as "hooks" but some are actually body-length para
 - If only 1-2 of 4 labeled "hooks" are real hooks, put only the real ones in hooks array
 
 WORD COUNT ENFORCEMENT:
-- Count the words in each candidate hook. If it exceeds 25 words, it is almost certainly body text. Move it to the body.
-- A hook with multiple sentences joined by periods that together exceed 25 words is body text, not a hook.
-- Even if the mechanism appears to be "statistic" or "data point", if it is a multi-sentence comparison or explanation over 25 words, it goes in the body.
+- Count the words in each candidate hook. If it is 20 words or more, it is almost certainly body text. Move it to the body. The ideal hook is under 15 words.
+- A hook with multiple sentences joined by periods that together reach 20+ words is body text, not a hook.
+- Even if the mechanism appears to be "statistic" or "data point", if it is a multi-sentence comparison or explanation of 20+ words, it goes in the body.
 - Maximum hooks in the array: 3. If the script has more than 3 labeled hooks, keep only the top 1-3 strongest scroll-stoppers (shortest, punchiest, most surprising). Move the rest to body.
+
+TONE CHECK (applies even if word count passes):
+- If the text reads like a factual statement, explanation, or narrative setup rather than a pattern interrupt, it is body text regardless of word count.
+- Example body text that FAILS tone check: "The average American family spends $37 per month on lottery tickets" — this is an explanatory fact, not a scroll-stopper.
+- Example hook that PASSES tone check: "Your bank is robbing you blind." — this is a provocative pattern interrupt.
 
 STATISTIC / DATA POINT RULE:
 - A statistic or data comparison spanning 2 or more sentences is ALWAYS body text, never a hook — even if it is labeled as a hook.
