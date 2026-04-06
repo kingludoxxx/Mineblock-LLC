@@ -1369,38 +1369,70 @@ export default function CreativeAnalysis() {
                   <h3 className="text-white font-semibold text-sm">Rising Stars</h3>
                   <span className="text-gray-500 text-xs ml-1">Profitable creatives not yet scaled (spend $50–$500, ROAS {'>'}1.0x)</span>
                 </div>
-                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3">
-                  {risingStars.map((star) => (
-                    <div
-                      key={star._creativeId}
-                      className="bg-white/[0.03] border border-orange-500/10 rounded-lg p-3 hover:border-orange-500/30 transition-colors min-w-0 overflow-hidden"
-                    >
-                      <div className="flex items-center gap-1.5 mb-2">
-                        <span className={`text-[10px] font-bold uppercase px-1.5 py-0.5 rounded ${
-                          (star.type || '').toLowerCase() === 'video'
-                            ? 'bg-accent/20 text-accent-text'
-                            : 'bg-cyan-500/20 text-cyan-400'
-                        }`}>
-                          {star.type || '?'}
-                        </span>
-                        {star.angle && <span className="text-gray-500 text-[10px]">{star.angle}</span>}
+                <div className="flex gap-3 overflow-x-auto pb-2">
+                  {risingStars.map((star) => {
+                    const isStarVideo = (star.type || '').toLowerCase() === 'video';
+                    const starAngleColor = getTagColor(star.angle);
+                    const starFormatColor = getTagColor(star.format);
+                    return (
+                      <div
+                        key={star.creative_id}
+                        className="shrink-0 w-[280px] bg-gradient-to-br from-white/[0.04] to-white/[0.01] backdrop-blur-xl border border-orange-500/10 rounded-xl overflow-hidden hover:border-orange-500/30 transition-colors"
+                      >
+                        {/* Visual header */}
+                        <div className="relative">
+                          <div className="aspect-[3/4] rounded-xl overflow-hidden relative">
+                            <VideoCardHeader creative={star} isVideo={isStarVideo} onClick={() => openDetailPanel(star)} />
+                            <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent pointer-events-none" />
+                          </div>
+                          <span className={`absolute bottom-2 left-2 z-10 text-[10px] font-bold px-1.5 py-0.5 rounded ${isStarVideo ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 backdrop-blur-md' : 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 backdrop-blur-md'}`}>
+                            {star.type || '?'}
+                          </span>
+                        </div>
+                        {/* Info */}
+                        <div className="p-3">
+                          <p className="text-white text-xs font-medium truncate mb-2" title={star.ad_name}>
+                            {star.ad_name}
+                          </p>
+                          <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
+                            <div className="flex justify-between">
+                              <span className="text-gray-500">Spend</span>
+                              <span className="text-white font-medium">{fmtMoney(star.spend)}</span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-gray-500">ROAS</span>
+                              <span className={star.roas >= 1.5 ? 'text-emerald-400 font-semibold' : 'text-orange-400 font-semibold'}>{fmtRoas(star.roas)}</span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-gray-500">Purchases</span>
+                              <span className="text-white font-medium">{star.purchases ?? star.total_purchases ?? 0}</span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-gray-500">CPA</span>
+                              <span className="text-gray-300">{fmtMoney(star.cpa)}</span>
+                            </div>
+                          </div>
+                          {/* Scale progress bar */}
+                          <div className="mt-2 w-full bg-white/[0.04] rounded-full h-1">
+                            <div
+                              className="bg-orange-500/60 h-1 rounded-full"
+                              style={{ width: `${Math.min(100, ((star.spend || 0) / 500) * 100)}%` }}
+                            />
+                          </div>
+                          <p className="text-gray-600 text-[10px] mt-1 text-right">{Math.round(((star.spend || 0) / 500) * 100)}% to scale threshold</p>
+                          {/* Tags */}
+                          <div className="flex flex-wrap gap-1 mt-2">
+                            {star.format && starFormatColor && (
+                              <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-mono uppercase ${starFormatColor.bg} ${starFormatColor.text} ${starFormatColor.border || ''}`}>{star.format}</span>
+                            )}
+                            {star.angle && starAngleColor && (
+                              <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-mono uppercase ${starAngleColor.bg} ${starAngleColor.text} ${starAngleColor.border || ''}`}>{star.angle}</span>
+                            )}
+                          </div>
+                        </div>
                       </div>
-                      <p className="text-white text-xs font-medium truncate mb-2" title={star.ad_name}>
-                        {star.ad_name}
-                      </p>
-                      <div className="flex items-center justify-between text-xs">
-                        <span className="text-gray-500">{fmtMoney(star.spend)}</span>
-                        <span className="text-orange-400 font-semibold">{fmtRoas(star.roas)}</span>
-                      </div>
-                      <div className="mt-1.5 w-full bg-white/[0.04] rounded-full h-1">
-                        <div
-                          className="bg-orange-500/60 h-1 rounded-full"
-                          style={{ width: `${Math.min(100, ((star.spend || 0) / 500) * 100)}%` }}
-                        />
-                      </div>
-                      <p className="text-gray-600 text-[10px] mt-1 text-right">{Math.round(((star.spend || 0) / 500) * 100)}% to scale threshold</p>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             )}
