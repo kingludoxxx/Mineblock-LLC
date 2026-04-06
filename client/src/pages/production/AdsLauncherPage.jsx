@@ -1,9 +1,9 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   Rocket, Upload, Link2, Video, Trash2, Check, X, Loader2,
-  ChevronDown, Play, Pause, AlertCircle, RefreshCw, Plus,
+  ChevronDown, AlertCircle, RefreshCw,
   FileVideo, Film, Target, Megaphone, Copy, Settings, Eye,
-  CheckCircle2, XCircle, Clock, ArrowRight, Search, Filter,
+  CheckCircle2, XCircle, Clock, ArrowRight,
 } from 'lucide-react';
 import api from '../../services/api';
 
@@ -278,7 +278,8 @@ function AdCopyEditor({ adCopy, onChange }) {
 
 // ── Launch Results Panel ─────────────────────────────────────────────────
 
-function LaunchResults({ results, adsets }) {
+function LaunchResults({ results: rawResults, adsets }) {
+  const results = rawResults || [];
   const launched = results.filter(r => r.status === 'launched');
   const failed = results.filter(r => r.status === 'failed');
 
@@ -385,6 +386,7 @@ export default function AdsLauncherPage() {
   const [uploadProgress, setUploadProgress] = useState({});
   const fileInputRef = useRef(null);
   const [dragOver, setDragOver] = useState(false);
+  const launchingRef = useRef(false);
 
   // Template state
   const [templates, setTemplates] = useState([]);
@@ -552,6 +554,7 @@ export default function AdsLauncherPage() {
     }
 
     setUploading(false);
+    if (fileInputRef.current) fileInputRef.current.value = '';
     setTimeout(() => setUploadProgress({}), 3000);
   };
 
@@ -583,7 +586,8 @@ export default function AdsLauncherPage() {
   // ── Launch ──────────────────────────────────────────────────────────────
 
   const handleLaunch = async () => {
-    if (!selectedIds.size || !selectedTemplateId) return;
+    if (!selectedIds.size || !selectedTemplateId || launchingRef.current) return;
+    launchingRef.current = true;
     setLaunching(true);
     setLaunchError('');
     setLaunchResults(null);
@@ -596,11 +600,12 @@ export default function AdsLauncherPage() {
       });
       setLaunchResults(data.data);
       // Refresh videos to get updated statuses
-      loadVideos();
+      await loadVideos();
     } catch (err) {
       setLaunchError(err.response?.data?.error?.message || err.message || 'Launch failed');
     } finally {
       setLaunching(false);
+      launchingRef.current = false;
     }
   };
 

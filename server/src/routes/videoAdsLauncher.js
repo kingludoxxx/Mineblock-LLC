@@ -614,7 +614,7 @@ async function launchVideoToAdset({ video, template, adsetId, adsetName, page, a
       [metaAdId, metaCreativeId, metaVideoId, template.campaign_id, adsetId, adName, adsetName, page?.id, page?.name, launchId]
     );
 
-    return { video_id: video.id, status: 'launched', meta_ad_id: metaAdId, ad_name: adName, adset_id: adsetId, adset_name: adsetName };
+    return { video_id: video.id, status: 'launched', meta_ad_id: metaAdId, meta_video_id: metaVideoId, ad_name: adName, adset_id: adsetId, adset_name: adsetName };
   } catch (err) {
     console.error(`[VideoAdsLauncher] Launch failed for video ${video.id} -> adset ${adsetId}:`, err.message);
     await pgQuery(
@@ -723,12 +723,18 @@ router.post('/launch', authenticate, async (req, res) => {
     }
 
     // Launch videos into each adset
+    // Use a mutable map to cache meta_video_id across adsets (prevents redundant uploads)
+    const metaVideoCache = new Map();
+    videos.forEach(v => { if (v.meta_video_id) metaVideoCache.set(v.id, v.meta_video_id); });
+
     const allResults = [];
     let pageIdx = 0;
 
     for (const adset of adsets) {
       for (let i = 0; i < videos.length; i++) {
         const video = videos[i];
+        // Patch in cached meta_video_id so second adset skips re-upload
+        const videoWithCache = { ...video, meta_video_id: metaVideoCache.get(video.id) || video.meta_video_id };
         const page = selectedPages[pageIdx % selectedPages.length];
         pageIdx++;
 
@@ -741,7 +747,7 @@ router.post('/launch', authenticate, async (req, res) => {
         }) + (adsets.length > 1 ? ` [AS${adsets.indexOf(adset) + 1}]` : '');
 
         const result = await launchVideoToAdset({
-          video,
+          video: videoWithCache,
           template,
           adsetId: adset.id,
           adsetName: adset.name,
@@ -751,6 +757,10 @@ router.post('/launch', authenticate, async (req, res) => {
           batchNum,
           templateId: template_id,
         });
+
+        // Cache the meta_video_id from this launch for next adset
+        if (result.meta_video_id) metaVideoCache.set(video.id, result.meta_video_id);
+
         allResults.push(result);
       }
     }
@@ -768,6 +778,12 @@ router.post('/launch', authenticate, async (req, res) => {
     if (purelyFailed.length) {
       await pgQuery(`UPDATE video_ads SET status = 'failed', updated_at = NOW() WHERE id = ANY($1)`, [purelyFailed]);
     }
+    // Safety: reset any that are still 'launching' (shouldn't happen, but prevents stuck state)
+    const processedIds = [...new Set([...launchedVideoIds, ...purelyFailed])];
+    const stillLaunching = launchableIds.filter(id => !processedIds.includes(id));
+    if (stillLaunching.length) {
+      await pgQuery(`UPDATE video_ads SET status = 'ready', updated_at = NOW() WHERE id = ANY($1)`, [stillLaunching]);
+    }
 
     const allLaunched = allResults.every(r => r.status === 'launched');
     res.json({
@@ -776,11 +792,23 @@ router.post('/launch', authenticate, async (req, res) => {
         results: allResults,
         adsets: adsets.map(a => ({ id: a.id, name: a.name })),
         adset_count: adsets.length,
+        failed_adsets: numAdsets - adsets.length,
         batch_status: allLaunched ? 'launched' : allResults.some(r => r.status === 'launched') ? 'partial' : 'failed',
       }
     });
   } catch (err) {
     console.error('[VideoAdsLauncher] POST /launch error:', err);
+    // CRITICAL: reset any videos stuck in 'launching' from this batch
+    if (video_ids?.length) {
+      try {
+        await pgQuery(
+          `UPDATE video_ads SET status = 'ready', updated_at = NOW() WHERE id = ANY($1) AND status = 'launching'`,
+          [video_ids]
+        );
+      } catch (resetErr) {
+        console.error('[VideoAdsLauncher] Failed to reset stuck videos:', resetErr.message);
+      }
+    }
     res.status(500).json({ success: false, error: { message: err.message } });
   }
 });
@@ -799,7 +827,7 @@ router.get('/launches', authenticate, async (req, res) => {
     if (status) { query += ` AND vl.status = $${idx++}`; params.push(status); }
 
     query += ` ORDER BY vl.created_at DESC LIMIT $${idx}`;
-    params.push(parseInt(lim) || 50);
+    params.push(Math.min(parseInt(lim) || 50, 500));
 
     const rows = await pgQuery(query, params);
     res.json({ success: true, data: rows });
