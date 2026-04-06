@@ -1335,6 +1335,9 @@ router.get('/lifetime', authenticate, async (req, res) => {
         last_seen: weeks[weeks.length - 1] || null,
         weeks_active: weeksWithSpend,
         is_winner: lifetimeSpend >= 500 && lifetimeRoas >= 1.80,
+        thumbnail_url: topRow.thumbnail_url || null,
+        video_url: topRow.video_url || null,
+        meta_ad_id: topRow.meta_ad_id || null,
         weekly_breakdown: weeklyBreakdown,
       },
     });
