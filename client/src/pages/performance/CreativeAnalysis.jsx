@@ -609,7 +609,7 @@ export default function CreativeAnalysis() {
 
   // ── Analytics: Angle/Format Breakdown, Rising Stars, Heatmap ──
 
-  const [analyticsOpen, setAnalyticsOpen] = useState(false);
+  const [analyticsOpen, setAnalyticsOpen] = useState(true);
 
   const angleStats = useMemo(() => {
     const map = {};
@@ -1296,7 +1296,7 @@ export default function CreativeAnalysis() {
                       />
                       <Bar dataKey="roas" radius={[0, 4, 4, 0]}>
                         {angleStats.map((entry, i) => (
-                          <Cell key={i} fill={entry.roas >= 1.5 ? '#d4b55a' : entry.roas >= 1.0 ? '#a08535' : '#715e25'} fillOpacity={0.7} />
+                          <Cell key={i} fill={entry.roas >= 1.8 ? '#34d399' : '#ef4444'} fillOpacity={0.7} />
                         ))}
                       </Bar>
                     </RBarChart>
@@ -1311,7 +1311,7 @@ export default function CreativeAnalysis() {
                         <span className="text-gray-400">{a.angle} <span className="text-gray-600">({a.count})</span></span>
                         <div className="flex gap-3">
                           <span className="text-gray-500">{fmtMoney(a.spend)}</span>
-                          <span className={a.roas >= 1.5 ? 'text-emerald-400' : a.roas >= 1.0 ? 'text-[#c9a84c]' : 'text-red-400'}>{fmtRoas(a.roas)}</span>
+                          <span className={a.roas >= 1.8 ? 'text-emerald-400' : 'text-red-400'}>{fmtRoas(a.roas)}</span>
                         </div>
                       </div>
                     ))}
@@ -1337,7 +1337,7 @@ export default function CreativeAnalysis() {
                       />
                       <Bar dataKey="roas" radius={[0, 4, 4, 0]}>
                         {formatStats.map((entry, i) => (
-                          <Cell key={i} fill={entry.roas >= 1.5 ? '#d4b55a' : entry.roas >= 1.0 ? '#a08535' : '#715e25'} fillOpacity={0.7} />
+                          <Cell key={i} fill={entry.roas >= 1.8 ? '#34d399' : '#ef4444'} fillOpacity={0.7} />
                         ))}
                       </Bar>
                     </RBarChart>
@@ -1352,7 +1352,7 @@ export default function CreativeAnalysis() {
                         <span className="text-gray-400">{f.format} <span className="text-gray-600">({f.count})</span></span>
                         <div className="flex gap-3">
                           <span className="text-gray-500">{fmtMoney(f.spend)}</span>
-                          <span className={f.roas >= 1.5 ? 'text-[#d4b55a]' : f.roas >= 1.0 ? 'text-[#c9a84c]' : 'text-red-400'}>{fmtRoas(f.roas)}</span>
+                          <span className={f.roas >= 1.8 ? 'text-emerald-400' : 'text-red-400'}>{fmtRoas(f.roas)}</span>
                         </div>
                       </div>
                     ))}

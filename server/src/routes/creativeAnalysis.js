@@ -21,7 +21,11 @@ let twKnownPurCol = null;
 
 // Server-side cache for /data-by-date results (avoids repeated TW API calls)
 const dataByDateCache = new Map(); // key: "startDate|endDate" → { data, timestamp }
-const DATA_CACHE_TTL = 3 * 60 * 1000; // 3 minutes
+const DATA_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+// Server-side cache for /creative-daily results
+const creativeDailyCache = new Map(); // key: "creative_id|startDate|endDate" → { data, timestamp }
+const CREATIVE_DAILY_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
 // ── Known Values (for cross-validation) ─────────────────────────────
 // These sets prevent fields from leaking into the wrong slot when segment counts vary.
@@ -848,8 +852,12 @@ async function syncMetaThumbnails() {
 
   for (const ad of metaAds) {
     if (!ad.name) continue;
-    // Prefer image_url (full res for image ads) over thumbnail_url (720px for video ads)
-    const thumbnailUrl = ad.creative?.image_url || ad.creative?.thumbnail_url || null;
+    // For video ads, use thumbnail_url (video frame preview); image_url is the page profile pic
+    // For image ads, prefer image_url (full res) over thumbnail_url
+    const isVideoAd = !!ad.creative?.video_id;
+    const thumbnailUrl = isVideoAd
+      ? (ad.creative?.thumbnail_url || ad.creative?.image_url || null)
+      : (ad.creative?.image_url || ad.creative?.thumbnail_url || null);
     if (!thumbnailUrl) continue;
 
     if (dbAdNames.has(ad.name)) {
@@ -1687,7 +1695,7 @@ router.post('/sync', authenticate, async (req, res) => {
     const result = await syncData({ periodWeek: week.toUpperCase(), startDate, endDate });
 
     // Clear data cache so next request gets fresh data
-    dataByDateCache.clear();
+    dataByDateCache.clear(); creativeDailyCache.clear();
 
     res.json({
       success: true,
@@ -1806,7 +1814,7 @@ async function autoSync() {
     const range = weekToDateRange(week);
     if (range) {
       const result = await syncData({ periodWeek: week, startDate: range.startDate, endDate: range.endDate });
-      dataByDateCache.clear(); // Invalidate cached responses after sync
+      dataByDateCache.clear(); creativeDailyCache.clear(); // Invalidate cached responses after sync
       console.log(`[Creative Analysis] Auto-sync ${week}: synced=${result.synced}, skipped=${result.skipped}`);
     }
   } catch (err) {
@@ -1919,6 +1927,13 @@ router.get('/creative-daily', authenticate, async (req, res) => {
 
     if (!TW_API_KEY) {
       return res.status(500).json({ success: false, error: { message: 'Triple Whale API key not configured' } });
+    }
+
+    // Check server-side cache
+    const dailyCacheKey = `${creative_id}|${startDate}|${endDate}`;
+    const cachedDaily = creativeDailyCache.get(dailyCacheKey);
+    if (cachedDaily && (Date.now() - cachedDaily.timestamp < CREATIVE_DAILY_CACHE_TTL)) {
+      return res.json({ success: true, data: cachedDaily.data });
     }
 
     // Revenue & purchase column discovery (same pattern as fetchTripleWhaleAds)
@@ -2066,25 +2081,31 @@ router.get('/creative-daily', authenticate, async (req, res) => {
     const aggSpend = Math.round(totalSpend * 100) / 100;
     const aggRevenue = Math.round(totalRevenue * 100) / 100;
 
-    res.json({
-      success: true,
-      data: {
-        creative_id: cid,
-        daily,
-        totals: {
-          total_spend: aggSpend,
-          total_revenue: aggRevenue,
-          total_purchases: totalPurchases,
-          total_impressions: totalImpressions,
-          total_clicks: totalClicks,
-          roas: aggSpend > 0 ? Math.round((aggRevenue / aggSpend) * 100) / 100 : 0,
-          cpa: totalPurchases > 0 ? Math.round((aggSpend / totalPurchases) * 100) / 100 : 0,
-          ctr: totalImpressions > 0 ? Math.round(((totalClicks / totalImpressions) * 100) * 100) / 100 : 0,
-          cpm: totalImpressions > 0 ? Math.round((aggSpend / totalImpressions * 1000) * 100) / 100 : 0,
-        },
-        dateRange: { startDate, endDate },
+    const responseData = {
+      creative_id: cid,
+      daily,
+      totals: {
+        total_spend: aggSpend,
+        total_revenue: aggRevenue,
+        total_purchases: totalPurchases,
+        total_impressions: totalImpressions,
+        total_clicks: totalClicks,
+        roas: aggSpend > 0 ? Math.round((aggRevenue / aggSpend) * 100) / 100 : 0,
+        cpa: totalPurchases > 0 ? Math.round((aggSpend / totalPurchases) * 100) / 100 : 0,
+        ctr: totalImpressions > 0 ? Math.round(((totalClicks / totalImpressions) * 100) * 100) / 100 : 0,
+        cpm: totalImpressions > 0 ? Math.round((aggSpend / totalImpressions * 1000) * 100) / 100 : 0,
       },
-    });
+      dateRange: { startDate, endDate },
+    };
+
+    // Cache for subsequent requests
+    creativeDailyCache.set(dailyCacheKey, { data: responseData, timestamp: Date.now() });
+    if (creativeDailyCache.size > 100) {
+      const oldest = [...creativeDailyCache.entries()].sort((a, b) => a[1].timestamp - b[1].timestamp)[0];
+      if (oldest) creativeDailyCache.delete(oldest[0]);
+    }
+
+    res.json({ success: true, data: responseData });
   } catch (err) {
     console.error('[Creative Analysis] /creative-daily error:', err);
     res.status(500).json({ success: false, error: { message: 'Internal server error' } });
