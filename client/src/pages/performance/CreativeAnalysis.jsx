@@ -47,6 +47,17 @@ function VideoCardHeader({ creative, isVideo, onClick }) {
 
   const hasVideo = isVideo && creative.video_url && !videoError;
 
+  // Cleanup: pause and release video on unmount to prevent memory leaks
+  useEffect(() => {
+    return () => {
+      if (videoRef.current) {
+        videoRef.current.pause();
+        videoRef.current.removeAttribute('src');
+        videoRef.current.load();
+      }
+    };
+  }, []);
+
   const handleMouseEnter = () => {
     if (!hasVideo || !videoRef.current) return;
     videoRef.current.play().then(() => setPlaying(true)).catch(() => {});
@@ -80,7 +91,7 @@ function VideoCardHeader({ creative, isVideo, onClick }) {
             ref={videoRef}
             src={creative.video_url}
             poster={creative.thumbnail_url || undefined}
-            muted
+            muted={muted}
             playsInline
             loop
             preload="none"
@@ -108,7 +119,7 @@ function VideoCardHeader({ creative, isVideo, onClick }) {
       ) : creative.thumbnail_url ? (
         <>
           <img src={creative.thumbnail_url} alt="" className="w-full h-full object-cover" onError={(e) => { e.target.src = ''; e.target.className = 'hidden'; }} />
-          {creative.video_url && (
+          {creative.video_url && !videoError && (
             <div className="absolute inset-0 flex items-center justify-center bg-black/20 opacity-0 group-hover:opacity-100 transition-opacity">
               <div className="w-10 h-10 rounded-full bg-white/90 flex items-center justify-center">
                 <Play className="w-5 h-5 text-black ml-0.5" />

@@ -1113,9 +1113,14 @@ async function extractFromMetaAdId(adId) {
           return fullText;
         }
         if (creative.video_id) {
-          const vidRes = await fetch(`${META_GRAPH_URL}/${creative.video_id}?fields=source&access_token=${META_ACCESS_TOKEN}`);
+          // Use advideos endpoint (ad account scope) — /{video_id}?fields=source fails with Marketing API tokens
+          const vidRes = await fetch(
+            `${META_GRAPH_URL}/${accountId}/advideos?filtering=[{"field":"id","operator":"EQUAL","value":"${creative.video_id}"}]&fields=source&limit=1&access_token=${META_ACCESS_TOKEN}`,
+            { signal: AbortSignal.timeout(10000) }
+          );
           const vidData = await vidRes.json();
-          if (vidData.source) return await transcribeWithGemini(vidData.source);
+          const videoSource = vidData.data?.[0]?.source;
+          if (videoSource) return await transcribeWithGemini(videoSource);
         }
       }
     } catch (err) {
@@ -2496,9 +2501,13 @@ async function refreshMetaThumbnail(creativeId) {
         const videoId = ad.creative?.video_id;
         if (videoId) {
           try {
-            const vidResp = await fetch(`${META_GRAPH_URL}/${videoId}?fields=source&access_token=${META_ACCESS_TOKEN}`);
+            // Use advideos endpoint (ad account scope) — /{video_id}?fields=source fails with Marketing API tokens
+            const vidResp = await fetch(
+              `${META_GRAPH_URL}/${accountId}/advideos?filtering=[{"field":"id","operator":"EQUAL","value":"${videoId}"}]&fields=source&limit=1&access_token=${META_ACCESS_TOKEN}`,
+              { signal: AbortSignal.timeout(10000) }
+            );
             const vidData = await vidResp.json();
-            if (vidData.source) videoUrl = vidData.source;
+            if (vidData.data?.[0]?.source) videoUrl = vidData.data[0].source;
           } catch (_) { /* ignore */ }
         }
 

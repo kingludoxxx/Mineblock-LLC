@@ -2310,13 +2310,18 @@ router.get('/meta-lookup/:creativeId', authenticate, async (req, res) => {
       return res.status(400).json({ success: false, error: { message: 'Invalid creative ID format' } });
     }
 
-    // Check DB first
+    // Check DB first — return cached data if meta_ad_id exists AND video_url is populated (or it's not a video)
     const existing = await pgQuery(
-      `SELECT DISTINCT meta_ad_id, thumbnail_url, video_url FROM creative_analysis WHERE creative_id = $1 AND meta_ad_id IS NOT NULL LIMIT 1`,
+      `SELECT meta_ad_id, thumbnail_url, video_url, type, synced_at
+       FROM creative_analysis WHERE creative_id = $1 AND meta_ad_id IS NOT NULL
+       ORDER BY video_url DESC NULLS LAST LIMIT 1`,
       [creativeId]
     );
-    if (existing.length && existing[0].meta_ad_id) {
-      return res.json({ success: true, data: existing[0] });
+    const cached = existing.length ? existing[0] : null;
+    const isVideoCached = cached && (cached.type || '').toLowerCase() === 'video';
+    const needsFreshUrl = isVideoCached && !cached.video_url;
+    if (cached && cached.meta_ad_id && !needsFreshUrl) {
+      return res.json({ success: true, data: cached });
     }
 
     // Search Meta API

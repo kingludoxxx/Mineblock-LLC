@@ -192,13 +192,13 @@ export default function CreativeDetailModal({ creative, onClose }) {
     if (!creative) return;
     setMetaAdId(creative.meta_ad_id || null);
     setVideoUrl(creative.video_url || null);
-    setThumbnailUrl(creative.thumbnail_url || null);
+    setThumbnailUrl(creative?.thumbnail_url || null);
     setMetaInsights(null);
     setTwData(null);
     setChartRange('last_30');
     setVideoFailed(false);
     twCacheRef.current = {};
-  }, [creative]);
+  }, [cid]);
 
   // ── Fetch Meta data on mount / creative change ──────────────────────
 
@@ -235,7 +235,7 @@ export default function CreativeDetailModal({ creative, onClose }) {
     };
     resolveAndFetchMeta();
     return () => { cancelled = true; };
-  }, [creative]);
+  }, [cid]);
 
   // ── Refetch TW daily on range change (with client-side cache) ───────
 
@@ -335,9 +335,9 @@ export default function CreativeDetailModal({ creative, onClose }) {
     : null;
 
   // Distribution signals
-  const likeRate = mi.impressions > 0 ? ((mi.total_reactions / mi.impressions) * 100).toFixed(2) : '0.00';
-  const commentRate = mi.impressions > 0 ? ((mi.comments / mi.impressions) * 100).toFixed(2) : '0.00';
-  const shareRate = mi.impressions > 0 ? ((mi.shares / mi.impressions) * 100).toFixed(2) : '0.00';
+  const likeRate = mi.impressions > 0 ? ((Number(mi.total_reactions || 0) / mi.impressions) * 100).toFixed(2) : '0.00';
+  const commentRate = mi.impressions > 0 ? ((Number(mi.comments || 0) / mi.impressions) * 100).toFixed(2) : '0.00';
+  const shareRate = mi.impressions > 0 ? ((Number(mi.shares || 0) / mi.impressions) * 100).toFixed(2) : '0.00';
   const metaCtr = mi.ctr ? Number(mi.ctr).toFixed(2) : '0.00';
 
   return (
@@ -403,6 +403,7 @@ export default function CreativeDetailModal({ creative, onClose }) {
                     src={videoUrl || creative.video_url}
                     poster={thumbnailUrl || creative.thumbnail_url || undefined}
                     controls
+                    playsInline
                     className="w-full rounded-xl"
                     style={{ maxHeight: 'min(420px, 50vh)' }}
                     preload="metadata"
