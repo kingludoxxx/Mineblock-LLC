@@ -306,6 +306,26 @@ router.delete('/videos', authenticate, async (req, res) => {
   }
 });
 
+// POST /videos/retry — Reset failed/launched videos to uploadable state
+router.post('/videos/retry', authenticate, async (req, res) => {
+  try {
+    await ensureTables();
+    const { ids } = req.body;
+    if (!Array.isArray(ids) || !ids.length) {
+      return res.status(400).json({ success: false, error: { message: 'ids array is required' } });
+    }
+    const rows = await pgQuery(
+      `UPDATE video_ads SET status = 'uploaded', updated_at = NOW()
+       WHERE id = ANY($1) AND status IN ('failed', 'launched')
+       RETURNING id, status`,
+      [ids]
+    );
+    res.json({ success: true, data: { reset: rows.length } });
+  } catch (err) {
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
 // ── Upload video file (multipart) ────────────────────────────────────────
 
 router.post('/upload', authenticate, async (req, res) => {
@@ -564,21 +584,25 @@ async function launchVideoToAdset({ video, template, adsetId, adsetName, page, a
     const link = globalCopy.landing_page_url || template.landing_page_url || 'https://mineblock.com';
 
     // Create ad creative with video
+    const videoData = {
+      video_id: metaVideoId,
+      message: primaryText,
+      title: headline,
+      link_description: description,
+      call_to_action: {
+        type: cta,
+        value: { link },
+      },
+    };
+    // Meta requires a thumbnail (image_url) for video ads with CTA links
+    if (video.thumbnail_url) videoData.image_url = video.thumbnail_url;
+
     const creativeBody = {
       access_token: process.env.META_ACCESS_TOKEN,
       name: adName,
       object_story_spec: {
         page_id: page?.id,
-        video_data: {
-          video_id: metaVideoId,
-          message: primaryText,
-          title: headline,
-          link_description: description,
-          call_to_action: {
-            type: cta,
-            value: { link },
-          },
-        },
+        video_data: videoData,
       },
     };
 

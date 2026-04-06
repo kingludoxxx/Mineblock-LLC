@@ -409,9 +409,17 @@ export async function waitForVideoReady(videoId, maxWaitMs = 120000) {
     const res = await fetch(`${META_GRAPH_URL}/${videoId}?fields=status&access_token=${META_ACCESS_TOKEN}`);
     if (!res.ok) throw new Error(`Video status check failed: ${res.status}`);
     const data = await res.json();
+
+    // Meta returns status in different formats depending on API version:
+    // v21.0+: { status: { video_status: "ready" } }
+    // older:  { status: { processing_phase: { status: "complete" } } }
+    const videoStatus = data.status?.video_status;
     const phase = data.status?.processing_phase?.status;
-    if (phase === 'complete') return true;
-    if (phase === 'error') throw new Error('Video processing failed on Meta');
+
+    if (videoStatus === 'ready' || phase === 'complete') return true;
+    if (videoStatus === 'error' || phase === 'error') {
+      throw new Error(`Video processing failed on Meta (status: ${videoStatus || phase})`);
+    }
     await new Promise(r => setTimeout(r, 3000));
   }
   throw new Error('Video processing timed out');

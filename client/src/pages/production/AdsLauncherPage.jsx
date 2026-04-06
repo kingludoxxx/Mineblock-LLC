@@ -93,7 +93,7 @@ function GoldButton({ children, onClick, disabled, loading, className = '', vari
 
 // ── Video Card ───────────────────────────────────────────────────────────
 
-function VideoCard({ video, selected, onToggle, onRemove }) {
+function VideoCard({ video, selected, onToggle, onRemove, onRetry }) {
   return (
     <div
       className={`relative group rounded-xl border transition-all overflow-hidden cursor-pointer ${
@@ -141,15 +141,26 @@ function VideoCard({ video, selected, onToggle, onRemove }) {
         )}
       </div>
 
-      {/* Remove button */}
-      {onRemove && (
-        <button
-          onClick={(e) => { e.stopPropagation(); onRemove(video.id); }}
-          className="absolute top-2 right-2 w-6 h-6 rounded-md bg-red-500/20 border border-red-500/30 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
-        >
-          <Trash2 className="w-3 h-3 text-red-400" />
-        </button>
-      )}
+      {/* Action buttons */}
+      <div className="absolute top-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+        {onRetry && ['failed', 'launched'].includes(video.status) && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onRetry(video.id); }}
+            className="w-6 h-6 rounded-md bg-amber-500/20 border border-amber-500/30 flex items-center justify-center cursor-pointer"
+            title="Reset to re-launch"
+          >
+            <RefreshCw className="w-3 h-3 text-amber-400" />
+          </button>
+        )}
+        {onRemove && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onRemove(video.id); }}
+            className="w-6 h-6 rounded-md bg-red-500/20 border border-red-500/30 flex items-center justify-center cursor-pointer"
+          >
+            <Trash2 className="w-3 h-3 text-red-400" />
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -577,6 +588,17 @@ export default function AdsLauncherPage() {
   const onDragEnter = (e) => { e.preventDefault(); dragCounter.current++; setDragOver(true); };
   const onDragLeave = (e) => { e.preventDefault(); dragCounter.current--; if (dragCounter.current <= 0) { dragCounter.current = 0; setDragOver(false); } };
 
+  // ── Retry failed video ──────────────────────────────────────────────────
+
+  const retryVideo = async (id) => {
+    try {
+      await api.post('/video-ads-launcher/videos/retry', { ids: [id] });
+      setVideos(prev => prev.map(v => v.id === id ? { ...v, status: 'uploaded' } : v));
+    } catch (err) {
+      console.error('Failed to retry video:', err);
+    }
+  };
+
   // ── Remove video ────────────────────────────────────────────────────────
 
   const removeVideo = async (id) => {
@@ -794,6 +816,7 @@ export default function AdsLauncherPage() {
                     selected={selectedIds.has(v.id)}
                     onToggle={() => toggleSelect(v.id)}
                     onRemove={removeVideo}
+                    onRetry={retryVideo}
                   />
                 ))}
               </div>
