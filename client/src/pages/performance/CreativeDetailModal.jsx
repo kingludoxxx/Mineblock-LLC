@@ -1,9 +1,8 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
-  X, ExternalLink, Video, Image, RefreshCw, Play, Eye,
-  ThumbsUp, Heart, Frown, Laugh, AlertTriangle,
-  ChevronRight, Users, MousePointerClick, MessageCircle, Share2,
-  TrendingUp, DollarSign, ShoppingCart, Target, BarChart3,
+  X, ExternalLink, Video, RefreshCw, Play, Eye,
+  ThumbsUp, AlertTriangle, ChevronRight,
+  TrendingUp, ShoppingCart, Target, BarChart3,
 } from 'lucide-react';
 import {
   ResponsiveContainer, ComposedChart, AreaChart, Area,
