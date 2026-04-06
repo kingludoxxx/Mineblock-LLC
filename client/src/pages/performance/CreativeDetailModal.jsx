@@ -91,7 +91,7 @@ function RetentionChart({ insights, impressions: totalImpressions }) {
       <SectionHeader icon={Eye} color="text-purple-400">Audience Retention</SectionHeader>
 
       {/* Stats row */}
-      <div className="grid grid-cols-4 gap-2 mb-4">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4">
         <MetricCard label="Views" value={fmtInt(views3s)} small />
         <MetricCard label="Hook Rate" value={`${hookRate}%`} highlight={parseFloat(hookRate) > 30 ? 'text-emerald-400' : 'text-amber-400'} small />
         <MetricCard label="Hold Rate" value={`${holdRate}%`} highlight={parseFloat(holdRate) > 10 ? 'text-emerald-400' : 'text-amber-400'} small />
@@ -340,7 +340,7 @@ export default function CreativeDetailModal({ creative, onClose }) {
           <div className="flex items-center justify-between px-6 py-4 border-b border-white/[0.06]">
             <div className="flex items-center gap-3 min-w-0">
               <p id="creative-detail-title" className="text-white font-semibold text-sm truncate" title={adName}>{adName}</p>
-              <span className="text-gray-500 text-xs font-mono flex-shrink-0">{cid}</span>
+              <span className="text-gray-500 text-xs font-mono flex-shrink-0 hidden sm:inline">{cid}</span>
               <div className="flex items-center gap-1.5 flex-shrink-0">
                 <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
                   isVideo ? 'bg-purple-500/20 text-purple-400' : 'bg-cyan-500/20 text-cyan-400'
@@ -375,7 +375,7 @@ export default function CreativeDetailModal({ creative, onClose }) {
           {/* Body: Two columns */}
           <div className="flex flex-col lg:flex-row">
             {/* Left: Video + Engagement Summary */}
-            <div className="lg:w-[42%] p-6 border-b lg:border-b-0 lg:border-r border-white/[0.06]">
+            <div className="lg:w-[42%] p-4 sm:p-6 border-b lg:border-b-0 lg:border-r border-white/[0.06]">
               {/* Video Player */}
               <div className="relative rounded-xl overflow-hidden bg-black mb-5">
                 {(videoUrl || creative.video_url) && !videoFailed ? (
@@ -385,7 +385,7 @@ export default function CreativeDetailModal({ creative, onClose }) {
                     poster={thumbnailUrl || creative.thumbnail_url || undefined}
                     controls
                     className="w-full rounded-xl"
-                    style={{ maxHeight: '420px' }}
+                    style={{ maxHeight: 'min(420px, 50vh)' }}
                     preload="metadata"
                     onError={() => setVideoFailed(true)}
                   />
@@ -395,7 +395,7 @@ export default function CreativeDetailModal({ creative, onClose }) {
                       src={thumbnailUrl || creative.thumbnail_url}
                       alt=""
                       className="w-full rounded-xl object-contain"
-                      style={{ maxHeight: '420px' }}
+                      style={{ maxHeight: 'min(420px, 50vh)' }}
                     />
                     {videoFailed && (
                       <div className="absolute bottom-2 left-2 right-2 bg-black/70 rounded-lg px-3 py-1.5 flex items-center gap-2 text-xs text-amber-400">
@@ -445,7 +445,7 @@ export default function CreativeDetailModal({ creative, onClose }) {
                   </div>
 
                   {/* Engagement totals */}
-                  <div className="grid grid-cols-4 gap-2">
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                     <MetricCard label="Reactions" value={fmtInt(mi.total_reactions)} small />
                     <MetricCard label="Clicks" value={fmtInt(mi.post_clicks || mi.clicks)} small />
                     <MetricCard label="Comments" value={fmtInt(mi.comments)} small />
@@ -458,7 +458,7 @@ export default function CreativeDetailModal({ creative, onClose }) {
               {metaInsights && (
                 <div className="bg-white/[0.03] border border-white/[0.06] rounded-xl p-4">
                   <SectionHeader icon={BarChart3} color="text-cyan-400">Distribution Signals</SectionHeader>
-                  <div className="grid grid-cols-4 gap-2">
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                     <MetricCard label="Like Rate" value={`${likeRate}%`} small />
                     <MetricCard label="Comment Rate" value={`${commentRate}%`} small />
                     <MetricCard label="Share Rate" value={`${shareRate}%`} small />
@@ -486,7 +486,7 @@ export default function CreativeDetailModal({ creative, onClose }) {
             </div>
 
             {/* Right: Metrics + Charts */}
-            <div className="lg:w-[58%] p-6 space-y-5">
+            <div className="lg:w-[58%] p-4 sm:p-6 space-y-5">
               {/* Top highlight: CPA, Revenue, ROAS */}
               <div className="grid grid-cols-3 gap-3">
                 <div className="bg-white/[0.04] border border-white/[0.06] rounded-xl p-4 text-center">
@@ -513,13 +513,13 @@ export default function CreativeDetailModal({ creative, onClose }) {
               {/* Meta Ad Delivery */}
               <div className="bg-white/[0.03] border border-white/[0.06] rounded-xl p-4">
                 <SectionHeader icon={Target} color="text-blue-400">Meta Ad Delivery</SectionHeader>
-                <div className="grid grid-cols-4 gap-2 mb-2">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-2">
                   <MetricCard label="Impressions" value={fmtInt(mi.impressions || impressions)} small />
                   <MetricCard label="Reach" value={fmtInt(mi.reach || impressions)} small />
                   <MetricCard label="Clicks" value={fmtInt(mi.clicks || clicks)} small />
                   <MetricCard label="CTR" value={fmtPct(mi.ctr || ctr)} small />
                 </div>
-                <div className="grid grid-cols-4 gap-2">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                   <MetricCard label="CPC" value={fmtMoney(mi.cpc || (spend > 0 && clicks > 0 ? spend / clicks : 0))} small />
                   <MetricCard label="CPM" value={fmtMoney(mi.cpm || cpm)} small />
                   <MetricCard label="Frequency" value={mi.frequency ? Number(mi.frequency).toFixed(2) : '—'} small />
@@ -534,9 +534,9 @@ export default function CreativeDetailModal({ creative, onClose }) {
 
               {/* ROAS & Spend Chart */}
               <div className="bg-white/[0.03] border border-white/[0.06] rounded-xl p-4">
-                <div className="flex items-center justify-between mb-4">
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-4">
                   <SectionHeader icon={TrendingUp} color="text-emerald-400">Spend & ROAS Over Time</SectionHeader>
-                  <div className="flex items-center gap-1">
+                  <div className="flex items-center gap-1 flex-shrink-0">
                     {RANGES.map(r => (
                       <button
                         key={r.key}
