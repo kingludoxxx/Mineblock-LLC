@@ -339,10 +339,34 @@ async function callClaude(systemPrompt, userPrompt, maxTokens = 3000, { fast = f
   try {
     return JSON.parse(raw);
   } catch (parseErr) {
-    // Try to fix common issues: trailing commas, truncated responses
-    let fixable = raw
-      .replace(/,\s*([}\]])/g, '$1');  // remove trailing commas
-    // If still truncated, try to close open braces
+    // Aggressive repair: the response may be truncated mid-value even though
+    // regex found matching braces (inner `}` matched as outer)
+    let fixable = raw;
+
+    // Step 1: Remove trailing commas
+    fixable = fixable.replace(/,\s*([}\]])/g, '$1');
+
+    // Step 2: If parse fails at a specific position, try truncating there and repairing
+    const posMatch = parseErr.message.match(/position (\d+)/);
+    if (posMatch) {
+      const cutPos = parseInt(posMatch[1]);
+      let truncated = fixable.slice(0, cutPos);
+      // Close dangling string
+      const quotes = truncated.match(/(?<!\\)"/g) || [];
+      if (quotes.length % 2 !== 0) truncated += '"';
+      // Remove trailing incomplete key or value
+      truncated = truncated.replace(/,\s*"[^"]*"\s*$/, '');
+      truncated = truncated.replace(/,\s*"[^"]*"\s*:\s*$/, '');
+      truncated = truncated.replace(/,\s*$/, '');
+      // Close open brackets and braces
+      const ob = (truncated.match(/\[/g) || []).length - (truncated.match(/\]/g) || []).length;
+      for (let i = 0; i < ob; i++) truncated += ']';
+      const oc = (truncated.match(/\{/g) || []).length - (truncated.match(/\}/g) || []).length;
+      for (let i = 0; i < oc; i++) truncated += '}';
+      try { return JSON.parse(truncated); } catch {}
+    }
+
+    // Step 3: Standard repair — close open braces/brackets
     const opens = (fixable.match(/\{/g) || []).length;
     const closes = (fixable.match(/\}/g) || []).length;
     for (let i = 0; i < opens - closes; i++) fixable += '}';
@@ -2961,7 +2985,7 @@ router.post('/generate/:id', authenticate, async (req, res) => {
       const [scriptDna, psychology, iterationRules] = await Promise.all([
         callClaude(dnaPrompt.system, dnaPrompt.user, 2500),
         callClaude(psychologyPrompt.system, psychologyPrompt.user, 2500),
-        callClaude(rulesPrompt.system, rulesPrompt.user, 2000, { fast: true }),
+        callClaude(rulesPrompt.system, rulesPrompt.user, 4000, { fast: true }),
       ]);
 
       winAnalysis = { scriptDna, psychology, iterationRules };
@@ -3220,7 +3244,7 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
     const [scriptDna, psychology, iterationRules] = await Promise.all([
       callClaude(dnaPrompt.system, dnaPrompt.user, 2500),
       callClaude(psychologyPrompt.system, psychologyPrompt.user, 2500),
-      callClaude(rulesPrompt.system, rulesPrompt.user, 2000, { fast: true }),
+      callClaude(rulesPrompt.system, rulesPrompt.user, 4000, { fast: true }),
     ]);
     const winAnalysis = { scriptDna, psychology, iterationRules };
 
