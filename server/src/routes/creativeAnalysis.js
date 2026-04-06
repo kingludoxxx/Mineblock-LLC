@@ -846,6 +846,7 @@ async function syncMetaThumbnails() {
   const adIdsWithVideo = updates.filter(u => u.video_id);
   const videoSourceUrls = new Map();
 
+  let failedVideoIds = 0;
   for (let i = 0; i < adIdsWithVideo.length; i += 10) {
     const batch = adIdsWithVideo.slice(i, i + 10);
     const promises = batch.map(async (upd) => {
@@ -855,8 +856,16 @@ async function syncMetaThumbnails() {
         const data = await resp.json();
         if (data.source) {
           videoSourceUrls.set(upd.meta_ad_id, data.source);
+        } else {
+          failedVideoIds++;
+          if (failedVideoIds <= 3) {
+            console.warn(`[Meta Sync] Video source EMPTY for video_id=${upd.video_id}, response:`, JSON.stringify(data).slice(0, 500));
+          }
         }
-      } catch (err) { console.warn('[Creative] Video source fetch error:', err.message); }
+      } catch (err) {
+        failedVideoIds++;
+        if (failedVideoIds <= 3) console.warn('[Creative] Video source fetch error:', err.message, 'video_id:', upd.video_id);
+      }
     });
     await Promise.all(promises);
   }
