@@ -159,6 +159,17 @@ export default function CreativeDetailModal({ creative, onClose }) {
   const [thumbnailUrl, setThumbnailUrl] = useState(creative?.thumbnail_url || null);
   const videoRef = useRef(null);
 
+  // ── Sync state when creative prop changes (defensive) ───────────────
+  useEffect(() => {
+    if (!creative) return;
+    setMetaAdId(creative.meta_ad_id || null);
+    setVideoUrl(creative.video_url || null);
+    setThumbnailUrl(creative.thumbnail_url || null);
+    setMetaInsights(null);
+    setTwData(null);
+    setChartRange('last_30');
+  }, [creative]);
+
   if (!creative) return null;
 
   const cid = creative._creativeId || creative.creative_id;
@@ -180,71 +191,64 @@ export default function CreativeDetailModal({ creative, onClose }) {
     }
   };
 
-  // ── Fetch all data on mount ─────────────────────────────────────────
+  // ── Fetch Meta data on mount / creative change ──────────────────────
 
   useEffect(() => {
     if (!creative) return;
+    let cancelled = false;
 
-    // 1. Fetch TW daily data
-    const fetchTwDaily = async () => {
-      setTwLoading(true);
-      try {
-        const { startDate, endDate } = rangeToDate(chartRange);
-        const { data } = await api.get('/creative-analysis/creative-daily', {
-          params: { creative_id: cid, startDate, endDate },
-        });
-        setTwData(data.data || null);
-      } catch { setTwData(null); }
-      finally { setTwLoading(false); }
-    };
-    fetchTwDaily();
-
-    // 2. Resolve meta_ad_id if missing
     const resolveAndFetchMeta = async () => {
       let adId = creative.meta_ad_id;
 
       if (!adId) {
         try {
           const { data } = await api.get(`/creative-analysis/meta-lookup/${cid}`);
+          if (cancelled) return;
           if (data.data?.meta_ad_id) {
             adId = data.data.meta_ad_id;
             setMetaAdId(adId);
-            if (data.data.video_url && !videoUrl) setVideoUrl(data.data.video_url);
-            if (data.data.thumbnail_url && !thumbnailUrl) setThumbnailUrl(data.data.thumbnail_url);
+            if (data.data.video_url) setVideoUrl(data.data.video_url);
+            if (data.data.thumbnail_url) setThumbnailUrl(data.data.thumbnail_url);
           }
-        } catch {}
+        } catch { if (cancelled) return; }
       }
 
-      if (adId) {
-        // Fetch Meta insights
+      if (adId && !cancelled) {
         setMetaLoading(true);
         try {
           const { data } = await api.get(`/creative-analysis/meta-insights/${adId}`);
-          setMetaInsights(data.data || null);
-        } catch { setMetaInsights(null); }
-        finally { setMetaLoading(false); }
+          if (!cancelled) setMetaInsights(data.data || null);
+        } catch { if (!cancelled) setMetaInsights(null); }
+        finally { if (!cancelled) setMetaLoading(false); }
       }
     };
     resolveAndFetchMeta();
+    return () => { cancelled = true; };
   }, [creative]);
 
   // ── Refetch TW daily on range change ────────────────────────────────
 
   useEffect(() => {
     if (!cid) return;
+    const controller = new AbortController();
     const fetchDaily = async () => {
       setTwLoading(true);
       try {
         const { startDate, endDate } = rangeToDate(chartRange);
         const { data } = await api.get('/creative-analysis/creative-daily', {
           params: { creative_id: cid, startDate, endDate },
+          signal: controller.signal,
         });
-        setTwData(data.data || null);
-      } catch { setTwData(null); }
-      finally { setTwLoading(false); }
+        if (!controller.signal.aborted) setTwData(data.data || null);
+      } catch (err) {
+        if (!controller.signal.aborted) setTwData(null);
+      } finally {
+        if (!controller.signal.aborted) setTwLoading(false);
+      }
     };
     fetchDaily();
-  }, [chartRange]);
+    return () => controller.abort();
+  }, [chartRange, cid]);
 
   // ── Close on Escape ─────────────────────────────────────────────────
 
@@ -253,6 +257,14 @@ export default function CreativeDetailModal({ creative, onClose }) {
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);
   }, [onClose]);
+
+  // ── Lock body scroll while modal is open ───────────────────────────
+
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = prev; };
+  }, []);
 
   // ── Derived values ──────────────────────────────────────────────────
 
