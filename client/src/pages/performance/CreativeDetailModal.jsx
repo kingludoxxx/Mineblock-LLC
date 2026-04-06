@@ -417,6 +417,7 @@ export default function CreativeDetailModal({ creative, onClose }) {
                       // On playback error, try fetching a fresh URL from Meta (URLs expire)
                       if (videoRetryRef.current < 1 && isVideo) {
                         videoRetryRef.current++;
+                        setVideoUrl(null); // Clear URL immediately to prevent re-render firing another onError
                         setVideoRefreshing(true);
                         try {
                           const { data } = await api.get(`/creative-analysis/meta-lookup/${cid}?force_video=1`);
@@ -428,7 +429,7 @@ export default function CreativeDetailModal({ creative, onClose }) {
                         } catch {}
                         setVideoRefreshing(false);
                         setVideoFailed(true);
-                      } else {
+                      } else if (!videoRefreshing) {
                         setVideoFailed(true);
                       }
                     }}

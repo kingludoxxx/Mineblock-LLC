@@ -118,7 +118,7 @@ function VideoCardHeader({ creative, isVideo, onClick }) {
         </>
       ) : creative.thumbnail_url ? (
         <>
-          <img src={creative.thumbnail_url} alt="" className="w-full h-full object-cover" onError={(e) => { e.target.src = ''; e.target.className = 'hidden'; }} />
+          <img src={creative.thumbnail_url} alt="" className="w-full h-full object-cover" onError={(e) => { e.target.onerror = null; e.target.className = 'hidden'; }} />
           {creative.video_url && !videoError && (
             <div className="absolute inset-0 flex items-center justify-center bg-black/20 opacity-0 group-hover:opacity-100 transition-opacity">
               <div className="w-10 h-10 rounded-full bg-white/90 flex items-center justify-center">
@@ -1194,7 +1194,7 @@ export default function CreativeAnalysis() {
               const formatColor = getTagColor(creative.format);
               return (
                 <div
-                  key={creative._creativeId}
+                  key={creative.creative_id}
                   className="shrink-0 w-[280px] bg-gradient-to-br from-white/[0.04] to-white/[0.01] backdrop-blur-xl border border-white/[0.08] rounded-xl overflow-hidden hover:border-white/[0.15] transition-colors"
                 >
                   {/* Visual header */}
