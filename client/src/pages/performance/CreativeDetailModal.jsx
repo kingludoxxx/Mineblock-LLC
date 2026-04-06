@@ -208,8 +208,10 @@ export default function CreativeDetailModal({ creative, onClose }) {
 
     const resolveAndFetchMeta = async () => {
       let adId = creative.meta_ad_id;
+      const needsVideoLookup = isVideo && !creative.video_url;
 
-      if (!adId) {
+      // Lookup if no meta_ad_id OR if video creative is missing video_url
+      if (!adId || needsVideoLookup) {
         try {
           const { data } = await api.get(`/creative-analysis/meta-lookup/${cid}`);
           if (cancelled) return;

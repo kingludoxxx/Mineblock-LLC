@@ -770,7 +770,8 @@ async function syncMetaThumbnails() {
     `SELECT DISTINCT ad_name, creative_id FROM creative_analysis
      WHERE ad_name IS NOT NULL
        AND (thumbnail_url IS NULL OR thumbnail_url = ''
-            OR (video_url IS NOT NULL AND video_url NOT LIKE '%.mp4%')
+            OR (LOWER(type) = 'video' AND (video_url IS NULL OR video_url = ''))
+            OR synced_at IS NULL
             OR synced_at < NOW() - INTERVAL '12 hours')`
   );
   const dbAdNames = new Set(dbRows.map(r => r.ad_name));
@@ -2349,9 +2350,9 @@ router.get('/meta-lookup/:creativeId', authenticate, async (req, res) => {
         } catch (e) { console.warn('[Meta Lookup] Video source fetch error:', e.message); }
       }
 
-      // Update DB
+      // Update DB — always overwrite video_url since Meta URLs expire
       await pgQuery(
-        `UPDATE creative_analysis SET meta_ad_id = $1, thumbnail_url = COALESCE(thumbnail_url, $2), video_url = COALESCE(video_url, $3) WHERE creative_id = $4`,
+        `UPDATE creative_analysis SET meta_ad_id = $1, thumbnail_url = COALESCE($2, thumbnail_url), video_url = COALESCE($3, video_url) WHERE creative_id = $4`,
         [metaAdId, thumbnailUrl, videoUrl, creativeId]
       );
 
