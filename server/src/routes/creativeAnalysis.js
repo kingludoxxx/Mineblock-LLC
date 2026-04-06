@@ -2195,14 +2195,18 @@ router.get('/meta-insights/:adId', authenticate, async (req, res) => {
     if (!META_ACCESS_TOKEN) {
       return res.status(503).json({ success: false, error: { message: 'Meta API not configured' } });
     }
-    const insights = await fetchMetaInsights(req.params.adId);
+    const adId = req.params.adId;
+    if (!/^\d+$/.test(adId)) {
+      return res.status(400).json({ success: false, error: { message: 'Invalid ad ID format' } });
+    }
+    const insights = await fetchMetaInsights(adId);
     if (!insights) {
       return res.status(404).json({ success: false, error: { message: 'Could not fetch Meta insights for this ad' } });
     }
     res.json({ success: true, data: insights });
   } catch (err) {
     console.error('[Creative Analysis] /meta-insights error:', err);
-    res.status(500).json({ success: false, error: { message: err.message } });
+    res.status(500).json({ success: false, error: { message: 'Internal server error' } });
   }
 });
 
@@ -2218,6 +2222,9 @@ router.get('/meta-insights/:adId/daily', authenticate, async (req, res) => {
 
     const { startDate, endDate } = req.query;
     const adId = req.params.adId;
+    if (!/^\d+$/.test(adId)) {
+      return res.status(400).json({ success: false, error: { message: 'Invalid ad ID format' } });
+    }
 
     // Validate date format to prevent URL injection
     const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
@@ -2260,7 +2267,7 @@ router.get('/meta-insights/:adId/daily', authenticate, async (req, res) => {
     res.json({ success: true, data: daily });
   } catch (err) {
     console.error('[Creative Analysis] /meta-insights/:adId/daily error:', err);
-    res.status(500).json({ success: false, error: { message: err.message } });
+    res.status(500).json({ success: false, error: { message: 'Internal server error' } });
   }
 });
 
@@ -2271,6 +2278,9 @@ router.get('/meta-insights/:adId/daily', authenticate, async (req, res) => {
 router.get('/meta-lookup/:creativeId', authenticate, async (req, res) => {
   try {
     const { creativeId } = req.params;
+    if (!/^[A-Za-z0-9_-]+$/.test(creativeId)) {
+      return res.status(400).json({ success: false, error: { message: 'Invalid creative ID format' } });
+    }
 
     // Check DB first
     const existing = await pgQuery(
@@ -2330,7 +2340,7 @@ router.get('/meta-lookup/:creativeId', authenticate, async (req, res) => {
     return res.json({ success: true, data: null, message: 'No matching Meta ad found' });
   } catch (err) {
     console.error('[Creative Analysis] /meta-lookup error:', err);
-    res.status(500).json({ success: false, error: { message: err.message } });
+    res.status(500).json({ success: false, error: { message: 'Internal server error' } });
   }
 });
 
