@@ -842,38 +842,38 @@ async function syncMetaThumbnails() {
     }
   }
 
-  // 4. For video ads, fetch the PERMANENT video source URL (not the expiring preview iframe)
+  // 4. For video ads, fetch video source URLs in BULK via advideos endpoint
+  //    The /{video_id}?fields=source approach fails — Marketing API tokens lack
+  //    permission on the raw Video node. But /{ad_account}/advideos works.
   const adIdsWithVideo = updates.filter(u => u.video_id);
-  const videoSourceUrls = new Map();
+  const videoSourceUrls = new Map(); // video_id -> source URL
 
-  let failedVideoIds = 0;
-  for (let i = 0; i < adIdsWithVideo.length; i += 10) {
-    const batch = adIdsWithVideo.slice(i, i + 10);
-    const promises = batch.map(async (upd) => {
-      try {
-        // Fetch the actual video source URL from the video object — this is permanent
-        const resp = await fetch(`${META_GRAPH_URL}/${upd.video_id}?fields=source&access_token=${META_ACCESS_TOKEN}`);
+  for (const accountId of META_AD_ACCOUNT_IDS) {
+    try {
+      let url = `${META_GRAPH_URL}/${accountId}/advideos?fields=id,source&limit=100&access_token=${META_ACCESS_TOKEN}`;
+      let pageCount = 0;
+      while (url && pageCount < 20) {
+        const resp = await fetch(url);
         const data = await resp.json();
-        if (data.source) {
-          videoSourceUrls.set(upd.meta_ad_id, data.source);
-        } else {
-          failedVideoIds++;
-          if (failedVideoIds <= 3) {
-            console.warn(`[Meta Sync] Video source EMPTY for video_id=${upd.video_id}, response:`, JSON.stringify(data).slice(0, 500));
-          }
+        if (data.error) {
+          console.warn(`[Meta Sync] advideos error for ${accountId}:`, data.error.message);
+          break;
         }
-      } catch (err) {
-        failedVideoIds++;
-        if (failedVideoIds <= 3) console.warn('[Creative] Video source fetch error:', err.message, 'video_id:', upd.video_id);
+        for (const v of (data.data || [])) {
+          if (v.source) videoSourceUrls.set(v.id, v.source);
+        }
+        url = data.paging?.next || null;
+        pageCount++;
       }
-    });
-    await Promise.all(promises);
+    } catch (err) {
+      console.warn(`[Meta Sync] advideos fetch error for ${accountId}:`, err.message);
+    }
   }
-  console.log(`[Meta Sync] Fetched ${videoSourceUrls.size} permanent video URLs for ${adIdsWithVideo.length} video ads`);
+  console.log(`[Meta Sync] Fetched ${videoSourceUrls.size} video source URLs via advideos for ${adIdsWithVideo.length} video ads`);
 
   // 5. Update DB rows
   for (const upd of updates) {
-    const videoUrl = videoSourceUrls.get(upd.meta_ad_id) || null;
+    const videoUrl = videoSourceUrls.get(upd.video_id) || null;
     const finalThumb = upd.thumbnail_url;
 
     try {
@@ -2332,29 +2332,33 @@ router.get('/meta-lookup/:creativeId', authenticate, async (req, res) => {
         if (!apiRes.ok) return null;
         const json = await apiRes.json();
         const ads = json.data || [];
-        return ads.length ? ads[0] : null;
+        return ads.length ? { ad: ads[0], accountId } : null;
       })
     );
 
     // Use the first successful match
-    const ad = searchResults
+    const match = searchResults
       .filter(r => r.status === 'fulfilled' && r.value)
       .map(r => r.value)[0];
 
-    if (ad) {
+    if (match) {
+      const { ad, accountId: matchedAccountId } = match;
       const metaAdId = ad.id;
       const thumbnailUrl = ad.creative?.thumbnail_url || null;
 
-      // Get video source if video_id exists
+      // Get video source if video_id exists — use advideos endpoint (ad account scope)
+      // because /{video_id}?fields=source fails with Marketing API tokens
       let videoUrl = null;
       if (ad.creative?.video_id) {
         try {
-          const vidRes = await fetch(`${META_GRAPH_URL}/${ad.creative.video_id}?fields=source&access_token=${META_ACCESS_TOKEN}`, {
-            signal: AbortSignal.timeout(10000),
-          });
+          const vidRes = await fetch(
+            `${META_GRAPH_URL}/${matchedAccountId}/advideos?filtering=[{"field":"id","operator":"EQUAL","value":"${ad.creative.video_id}"}]&fields=source&limit=1&access_token=${META_ACCESS_TOKEN}`,
+            { signal: AbortSignal.timeout(10000) }
+          );
           if (vidRes.ok) {
             const vidData = await vidRes.json();
-            videoUrl = vidData.source || null;
+            const vid = vidData.data?.[0];
+            videoUrl = vid?.source || null;
           }
         } catch (e) { console.warn('[Meta Lookup] Video source fetch error:', e.message); }
       }
