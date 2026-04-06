@@ -1293,7 +1293,13 @@ A HOOK is NOT:
 If the script has text labeled as "hooks" but some are actually body-length paragraphs or explanatory text, classify them correctly:
 - TRUE hooks → hooks array
 - Mislabeled hooks (actually body/comparison/explanation text) → prepend to body text
-- If only 1-2 of 4 labeled "hooks" are real hooks, put only the real ones in hooks array`;
+- If only 1-2 of 4 labeled "hooks" are real hooks, put only the real ones in hooks array
+
+WORD COUNT ENFORCEMENT:
+- Count the words in each candidate hook. If it exceeds 25 words, it is almost certainly body text. Move it to the body.
+- A hook with multiple sentences joined by periods that together exceed 25 words is body text, not a hook.
+- Even if the mechanism appears to be "statistic" or "data point", if it is a multi-sentence comparison or explanation over 25 words, it goes in the body.
+- Maximum hooks in the array: 3. If the script has more than 3 labeled hooks, keep only the top 1-3 strongest scroll-stoppers (shortest, punchiest, most surprising). Move the rest to body.`;
 
   // Check for custom prompt overrides
   try {
