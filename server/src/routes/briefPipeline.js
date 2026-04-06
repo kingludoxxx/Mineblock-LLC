@@ -1287,7 +1287,7 @@ A HOOK is NOT:
 - An explanation, comparison, or data point (that's body text)
 - A sentence that builds on a previous hook (that's continuation/body)
 - Multiple sentences that form a logical argument (that's a body paragraph)
-- Social proof setup text like "A lot of people are doing X" (that's body)
+- Social proof setup text — ANY sentence following the pattern "[Number] people did X" or "Over X people have Y" is social proof, NOT a hook, even if it is short. Examples: "47,000 Americans started mining from home" = body. "Over 100,000 units sold" = body. "Last month 12,000 people joined" = body. Social proof establishes credibility — it does not interrupt scrolling.
 - A comparison like "X gives you Y, but this gives you Z" (that's a body contrast point)
 
 If the script has text labeled as "hooks" but some are actually body-length paragraphs or explanatory text, classify them correctly:
