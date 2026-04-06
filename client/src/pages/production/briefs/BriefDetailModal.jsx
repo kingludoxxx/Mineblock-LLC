@@ -221,9 +221,12 @@ export default function BriefDetailModal({
             <section>
               <SectionLabel>Hooks</SectionLabel>
               <div className="space-y-3">
-                {editableHooks.map((hook, i) => (
-                  <div key={hook.id || i} className="glass-card border border-white/[0.04] rounded-lg p-4 bg-white/[0.02]">
-                    <div className="flex gap-2 mb-3">
+                {editableHooks.map((hook, i) => {
+                  const wordCount = (hook.text || '').trim().split(/\s+/).filter(Boolean).length;
+                  const isLong = wordCount > 25;
+                  return (
+                  <div key={hook.id || i} className={`glass-card border rounded-lg p-4 bg-white/[0.02] ${isLong ? 'border-amber-500/30' : 'border-white/[0.04]'}`}>
+                    <div className="flex gap-2 mb-3 items-center">
                       <span className="text-[10px] font-mono uppercase tracking-wider font-medium px-1.5 py-0.5 rounded bg-[#c9a84c]/10 text-[#e8d5a3] border border-[#c9a84c]/20">
                         H{i + 1}
                       </span>
@@ -232,6 +235,9 @@ export default function BriefDetailModal({
                           {hook.mechanism}
                         </span>
                       )}
+                      <span className={`ml-auto text-[10px] font-mono ${isLong ? 'text-amber-400' : 'text-zinc-600'}`}>
+                        {wordCount}w{isLong ? ' ⚠' : ''}
+                      </span>
                     </div>
                     <textarea
                       value={hook.text || ''}
@@ -245,7 +251,8 @@ export default function BriefDetailModal({
                       rows={3}
                     />
                   </div>
-                ))}
+                  );
+                })}
               </div>
             </section>
           )}
@@ -304,7 +311,83 @@ export default function BriefDetailModal({
 
               {winAnalysisOpen && (
                 <div className="mt-3 glass-card border border-white/[0.04] rounded-lg p-5 bg-white/[0.02] space-y-4">
-                  {parsedWinAnalysis.winning_elements_ranked?.length > 0 && (
+                  {/* New 3-agent analysis format */}
+                  {parsedWinAnalysis.scriptDna && (
+                    <div>
+                      <span className="text-[10px] font-mono uppercase tracking-[0.15em] text-[#c9a84c] font-semibold block mb-2">
+                        Script DNA
+                      </span>
+                      <div className="space-y-1.5 text-sm text-zinc-400">
+                        {parsedWinAnalysis.scriptDna.core_angle && <p><span className="text-zinc-500 font-mono text-xs">Angle:</span> {parsedWinAnalysis.scriptDna.core_angle}</p>}
+                        {parsedWinAnalysis.scriptDna.mechanism && <p><span className="text-zinc-500 font-mono text-xs">Mechanism:</span> {parsedWinAnalysis.scriptDna.mechanism}</p>}
+                        {parsedWinAnalysis.scriptDna.belief_shift && <p><span className="text-zinc-500 font-mono text-xs">Belief Shift:</span> {parsedWinAnalysis.scriptDna.belief_shift}</p>}
+                        {parsedWinAnalysis.scriptDna.why_it_works && <p><span className="text-zinc-500 font-mono text-xs">Why It Works:</span> {parsedWinAnalysis.scriptDna.why_it_works}</p>}
+                        {parsedWinAnalysis.scriptDna.what_would_break_it && <p><span className="text-zinc-500 font-mono text-xs">Would Break It:</span> {parsedWinAnalysis.scriptDna.what_would_break_it}</p>}
+                      </div>
+                    </div>
+                  )}
+
+                  {parsedWinAnalysis.psychology?.emotional_arc && (
+                    <div>
+                      <span className="text-[10px] font-mono uppercase tracking-[0.15em] text-[#c9a84c] font-semibold block mb-2">
+                        Emotional Arc
+                      </span>
+                      <div className="flex flex-wrap gap-1 text-xs">
+                        {Object.entries(parsedWinAnalysis.psychology.emotional_arc).map(([key, val]) => (
+                          <span key={key} className="px-2 py-1 rounded bg-violet-500/10 text-violet-300 border border-violet-500/20">
+                            {val}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {parsedWinAnalysis.psychology?.hooks?.length > 0 && (
+                    <div>
+                      <span className="text-[10px] font-mono uppercase tracking-[0.15em] text-[#c9a84c] font-semibold block mb-2">
+                        Hook Analysis
+                      </span>
+                      <div className="space-y-2 text-sm text-zinc-400">
+                        {parsedWinAnalysis.psychology.hooks.map((h, i) => (
+                          <div key={i} className="flex items-start gap-2">
+                            <span className="text-[10px] font-mono bg-white/[0.04] px-1.5 py-0.5 rounded text-zinc-500 shrink-0 mt-0.5">{h.hook_type || h.type}</span>
+                            <span className="text-xs">{h.why_it_works}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {parsedWinAnalysis.iterationRules && (
+                    <div>
+                      <span className="text-[10px] font-mono uppercase tracking-[0.15em] text-[#c9a84c] font-semibold block mb-2">
+                        Iteration Rules
+                      </span>
+                      <div className="space-y-2 text-xs text-zinc-400">
+                        {parsedWinAnalysis.iterationRules.must_stay_fixed?.length > 0 && (
+                          <div>
+                            <span className="text-emerald-400 font-mono">FIXED:</span>{' '}
+                            {parsedWinAnalysis.iterationRules.must_stay_fixed.join(' · ')}
+                          </div>
+                        )}
+                        {parsedWinAnalysis.iterationRules.safe_iteration_directions?.length > 0 && (
+                          <div>
+                            <span className="text-blue-400 font-mono">SAFE DIRS:</span>{' '}
+                            {parsedWinAnalysis.iterationRules.safe_iteration_directions.join(' · ')}
+                          </div>
+                        )}
+                        {parsedWinAnalysis.iterationRules.high_risk_changes?.length > 0 && (
+                          <div>
+                            <span className="text-red-400 font-mono">HIGH RISK:</span>{' '}
+                            {parsedWinAnalysis.iterationRules.high_risk_changes.join(' · ')}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Legacy format fallback */}
+                  {!parsedWinAnalysis.scriptDna && parsedWinAnalysis.winning_elements_ranked?.length > 0 && (
                     <div>
                       <span className="text-[10px] font-mono uppercase tracking-[0.15em] text-[#c9a84c] font-semibold block mb-1.5">
                         Winning Elements
@@ -317,7 +400,7 @@ export default function BriefDetailModal({
                     </div>
                   )}
 
-                  {parsedWinAnalysis.emotional_driver?.primary && (
+                  {!parsedWinAnalysis.scriptDna && parsedWinAnalysis.emotional_driver?.primary && (
                     <div>
                       <span className="text-[10px] font-mono uppercase tracking-[0.15em] text-[#c9a84c] font-semibold block mb-1.5">
                         Emotional Driver
@@ -325,28 +408,6 @@ export default function BriefDetailModal({
                       <span className="inline-block px-2.5 py-1 text-xs font-medium rounded-full bg-violet-500/10 text-violet-300 border border-violet-500/20">
                         {parsedWinAnalysis.emotional_driver.primary}
                       </span>
-                    </div>
-                  )}
-
-                  {parsedWinAnalysis.enemy_structure?.villain && (
-                    <div>
-                      <span className="text-[10px] font-mono uppercase tracking-[0.15em] text-[#c9a84c] font-semibold block mb-1.5">
-                        Enemy / Villain
-                      </span>
-                      <p className="text-sm text-zinc-400">{parsedWinAnalysis.enemy_structure.villain}</p>
-                    </div>
-                  )}
-
-                  {parsedWinAnalysis.iteration_opportunities?.length > 0 && (
-                    <div>
-                      <span className="text-[10px] font-mono uppercase tracking-[0.15em] text-[#c9a84c] font-semibold block mb-1.5">
-                        Iteration Opportunities
-                      </span>
-                      <ul className="space-y-1 text-sm text-zinc-400 list-disc list-inside">
-                        {parsedWinAnalysis.iteration_opportunities.map((opp, i) => (
-                          <li key={i} className="leading-relaxed">{opp}</li>
-                        ))}
-                      </ul>
                     </div>
                   )}
                 </div>
