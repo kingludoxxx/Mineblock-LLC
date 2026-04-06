@@ -422,7 +422,14 @@ export default function AdsLauncherPage() {
     setLoadingVideos(true);
     try {
       const { data } = await api.get('/video-ads-launcher/videos');
-      setVideos(data.data || []);
+      const fresh = data.data || [];
+      setVideos(fresh);
+      // Prune stale selectedIds that no longer exist in the video list
+      const freshIds = new Set(fresh.map(v => v.id));
+      setSelectedIds(prev => {
+        const pruned = new Set([...prev].filter(id => freshIds.has(id)));
+        return pruned.size === prev.size ? prev : pruned;
+      });
     } catch (err) {
       console.error('Failed to load videos:', err);
     } finally {
@@ -558,14 +565,17 @@ export default function AdsLauncherPage() {
     setTimeout(() => setUploadProgress({}), 3000);
   };
 
+  const dragCounter = useRef(0);
   const onDrop = (e) => {
     e.preventDefault();
+    dragCounter.current = 0;
     setDragOver(false);
     handleFiles(e.dataTransfer.files);
   };
 
-  const onDragOver = (e) => { e.preventDefault(); setDragOver(true); };
-  const onDragLeave = () => setDragOver(false);
+  const onDragOver = (e) => { e.preventDefault(); };
+  const onDragEnter = (e) => { e.preventDefault(); dragCounter.current++; setDragOver(true); };
+  const onDragLeave = (e) => { e.preventDefault(); dragCounter.current--; if (dragCounter.current <= 0) { dragCounter.current = 0; setDragOver(false); } };
 
   // ── Remove video ────────────────────────────────────────────────────────
 
@@ -586,14 +596,14 @@ export default function AdsLauncherPage() {
   // ── Launch ──────────────────────────────────────────────────────────────
 
   const handleLaunch = async () => {
-    if (!selectedIds.size || !selectedTemplateId || launchingRef.current) return;
+    if (!launchableSelected.length || !selectedTemplateId || launchingRef.current) return;
     launchingRef.current = true;
     setLaunching(true);
     setLaunchError('');
     setLaunchResults(null);
     try {
       const { data } = await api.post('/video-ads-launcher/launch', {
-        video_ids: Array.from(selectedIds),
+        video_ids: launchableSelected.map(v => v.id),
         template_id: selectedTemplateId,
         ad_copy: adCopy,
         adset_count: adsetCount,
@@ -613,7 +623,8 @@ export default function AdsLauncherPage() {
 
   const launchableVideos = videos.filter(v => ['uploaded', 'ready', 'approved'].includes(v.status));
   const selectedVideos = videos.filter(v => selectedIds.has(v.id));
-  const canLaunch = selectedIds.size > 0 && selectedTemplateId && !launching;
+  const launchableSelected = selectedVideos.filter(v => ['uploaded', 'ready', 'approved'].includes(v.status) && v.video_url);
+  const canLaunch = launchableSelected.length > 0 && selectedTemplateId && !launching;
   const selectedTemplate = templates.find(t => t.id === selectedTemplateId);
 
   // ── Render ──────────────────────────────────────────────────────────────
@@ -708,6 +719,7 @@ export default function AdsLauncherPage() {
             <div
               onDrop={onDrop}
               onDragOver={onDragOver}
+              onDragEnter={onDragEnter}
               onDragLeave={onDragLeave}
               onClick={() => fileInputRef.current?.click()}
               className={`relative border-2 border-dashed rounded-xl p-8 text-center transition-all cursor-pointer ${
@@ -1024,7 +1036,23 @@ export default function AdsLauncherPage() {
 
           {/* Launch results */}
           {launchResults && (
-            <LaunchResults results={launchResults.results} adsets={launchResults.adsets} />
+            <>
+              <LaunchResults results={launchResults.results} adsets={launchResults.adsets} />
+              <GoldButton
+                variant="secondary"
+                onClick={() => {
+                  setLaunchResults(null);
+                  setLaunchError('');
+                  setSelectedIds(new Set());
+                  setAdsetCount(1);
+                  setActiveTab('import');
+                }}
+                className="w-full"
+              >
+                <RefreshCw className="w-4 h-4" />
+                Launch Another Batch
+              </GoldButton>
+            </>
           )}
         </div>
       )}
