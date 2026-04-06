@@ -38,6 +38,7 @@ import {
   Music,
   Sparkles,
   FileText,
+  Rocket,
   // Performance icons
   Target,
   Activity,
@@ -66,6 +67,7 @@ const navGroups = [
 { to: '/app/iteration-king', icon: Crown, label: 'Iteration King' },
 { to: '/app/statics-generation', icon: Layers, label: 'Statics Generation' },
       { to: '/app/brief-pipeline', icon: FileText, label: 'Brief Pipeline' },
+      { to: '/app/ads-launcher', icon: Rocket, label: 'Ads Launcher' },
     ],
   },
   {
