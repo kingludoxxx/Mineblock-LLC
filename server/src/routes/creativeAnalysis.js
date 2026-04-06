@@ -913,9 +913,17 @@ async function syncMetaThumbnails() {
   }
   console.log(`[Meta Sync] Fetched ${videoSourceUrls.size} video source URLs via advideos for ${adIdsWithVideo.length} video ads`);
 
+  // Debug: log sample video_ids to check matching
+  const sampleAdVideoIds = adIdsWithVideo.slice(0, 5).map(u => u.video_id);
+  const sampleMapKeys = [...videoSourceUrls.keys()].slice(0, 5);
+  console.log(`[Meta Sync] DEBUG sample ad video_ids: ${JSON.stringify(sampleAdVideoIds)}`);
+  console.log(`[Meta Sync] DEBUG sample advideos keys: ${JSON.stringify(sampleMapKeys)}`);
+  let videoMatchCount = 0;
+
   // 5. Update DB rows
   for (const upd of updates) {
     const videoUrl = videoSourceUrls.get(upd.video_id) || null;
+    if (upd.video_id && videoUrl) videoMatchCount++;
     const finalThumb = upd.thumbnail_url;
 
     try {
@@ -931,7 +939,7 @@ async function syncMetaThumbnails() {
     }
   }
 
-  console.log(`[Meta Sync] Matched and updated ${matched} creatives with thumbnails/videos`);
+  console.log(`[Meta Sync] Matched and updated ${matched} creatives with thumbnails/videos (${videoMatchCount} got video URLs)`);
   return { matched, total: metaAds.length };
 }
 
@@ -2432,6 +2440,7 @@ router.get('/meta-lookup/:creativeId', authenticate, async (req, res) => {
         if (adRes.ok) {
           const adData = await adRes.json();
           const videoId = adData.creative?.video_id;
+          console.log(`[Meta Lookup] ad ${cached.meta_ad_id} -> video_id: ${videoId}, creative keys: ${JSON.stringify(Object.keys(adData.creative || {}))}`);
           if (videoId) {
             // Try each account to fetch fresh source URL
             for (const accountId of META_AD_ACCOUNT_IDS) {
@@ -2442,6 +2451,7 @@ router.get('/meta-lookup/:creativeId', authenticate, async (req, res) => {
                 );
                 if (vidRes.ok) {
                   const vidData = await vidRes.json();
+                  console.log(`[Meta Lookup] advideos response for ${videoId} from ${accountId}: ${JSON.stringify(vidData).substring(0, 200)}`);
                   const freshUrl = vidData.data?.[0]?.source;
                   if (freshUrl) {
                     // Update DB with fresh URL
