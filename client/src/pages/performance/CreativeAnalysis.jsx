@@ -435,7 +435,7 @@ export default function CreativeAnalysis() {
       const toIdx = next.indexOf(targetKey);
       next.splice(fromIdx, 1);
       next.splice(toIdx, 0, dragCol);
-      localStorage.setItem(COLUMN_ORDER_KEY, JSON.stringify(next));
+      try { localStorage.setItem(COLUMN_ORDER_KEY, JSON.stringify(next)); } catch {}
       return next;
     });
     setDragCol(null);
@@ -609,7 +609,7 @@ export default function CreativeAnalysis() {
 
   // ── Analytics: Angle/Format Breakdown, Rising Stars, Heatmap ──
 
-  const [analyticsOpen, setAnalyticsOpen] = useState(true);
+  const [analyticsOpen, setAnalyticsOpen] = useState(false);
 
   const angleStats = useMemo(() => {
     const map = {};

@@ -180,6 +180,8 @@ export default function CreativeDetailModal({ creative, onClose }) {
   const [videoUrl, setVideoUrl] = useState(creative?.video_url || null);
   const [thumbnailUrl, setThumbnailUrl] = useState(creative?.thumbnail_url || null);
   const [videoFailed, setVideoFailed] = useState(false);
+  const [videoRefreshing, setVideoRefreshing] = useState(false);
+  const videoRetryRef = useRef(0); // track retry count to prevent infinite loops
   const videoRef = useRef(null);
 
   // ── Derived values (before effects, after hooks) ─────────────────────
@@ -190,6 +192,8 @@ export default function CreativeDetailModal({ creative, onClose }) {
   // ── Sync state when creative prop changes (defensive) ───────────────
   useEffect(() => {
     if (!creative) return;
+    // Pause any currently playing video before switching
+    if (videoRef.current) videoRef.current.pause();
     setMetaAdId(creative.meta_ad_id || null);
     setVideoUrl(creative.video_url || null);
     setThumbnailUrl(creative?.thumbnail_url || null);
@@ -197,6 +201,8 @@ export default function CreativeDetailModal({ creative, onClose }) {
     setTwData(null);
     setChartRange('last_30');
     setVideoFailed(false);
+    setVideoRefreshing(false);
+    videoRetryRef.current = 0;
     twCacheRef.current = {};
   }, [cid]);
 
@@ -208,10 +214,9 @@ export default function CreativeDetailModal({ creative, onClose }) {
 
     const resolveAndFetchMeta = async () => {
       let adId = creative.meta_ad_id;
-      const needsVideoLookup = isVideo && !creative.video_url;
 
-      // Lookup if no meta_ad_id OR if video creative is missing video_url
-      if (!adId || needsVideoLookup) {
+      // Always lookup for video creatives (Meta CDN URLs expire) or if no meta_ad_id
+      if (!adId || isVideo) {
         try {
           const { data } = await api.get(`/creative-analysis/meta-lookup/${cid}`);
           if (cancelled) return;
@@ -399,6 +404,7 @@ export default function CreativeDetailModal({ creative, onClose }) {
               <div className="relative rounded-xl overflow-hidden bg-black mb-5">
                 {(videoUrl || creative.video_url) && !videoFailed ? (
                   <video
+                    key={videoUrl || creative.video_url}
                     ref={videoRef}
                     src={videoUrl || creative.video_url}
                     poster={thumbnailUrl || creative.thumbnail_url || undefined}
@@ -407,7 +413,25 @@ export default function CreativeDetailModal({ creative, onClose }) {
                     className="w-full rounded-xl"
                     style={{ maxHeight: 'min(420px, 50vh)' }}
                     preload="metadata"
-                    onError={() => setVideoFailed(true)}
+                    onError={async () => {
+                      // On playback error, try fetching a fresh URL from Meta (URLs expire)
+                      if (videoRetryRef.current < 1 && isVideo) {
+                        videoRetryRef.current++;
+                        setVideoRefreshing(true);
+                        try {
+                          const { data } = await api.get(`/creative-analysis/meta-lookup/${cid}?force_video=1`);
+                          if (data.data?.video_url) {
+                            setVideoUrl(data.data.video_url);
+                            setVideoRefreshing(false);
+                            return; // Video element will re-mount via key change
+                          }
+                        } catch {}
+                        setVideoRefreshing(false);
+                        setVideoFailed(true);
+                      } else {
+                        setVideoFailed(true);
+                      }
+                    }}
                   />
                 ) : (thumbnailUrl || creative.thumbnail_url) ? (
                   <div className="relative">
@@ -423,6 +447,11 @@ export default function CreativeDetailModal({ creative, onClose }) {
                         Video preview expired — showing thumbnail instead
                       </div>
                     )}
+                  </div>
+                ) : videoRefreshing ? (
+                  <div className="w-full h-64 rounded-xl bg-gradient-to-br from-purple-900/30 to-indigo-900/20 flex flex-col items-center justify-center gap-2">
+                    <RefreshCw className="w-8 h-8 text-purple-400/50 animate-spin" />
+                    <p className="text-gray-500 text-xs">Refreshing video URL...</p>
                   </div>
                 ) : (
                   <div className="w-full h-64 rounded-xl bg-gradient-to-br from-purple-900/30 to-indigo-900/20 flex flex-col items-center justify-center gap-2">
@@ -517,8 +546,8 @@ export default function CreativeDetailModal({ creative, onClose }) {
                   <p className="text-gray-500 text-[10px] uppercase tracking-wider mb-1">Revenue</p>
                   <p className="text-white font-bold text-xl">{fmtMoney(revenue)}</p>
                 </div>
-                <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-xl p-4 text-center">
-                  <p className="text-emerald-500 text-[10px] uppercase tracking-wider mb-1">ROAS</p>
+                <div className={`${roas >= 1 ? 'bg-emerald-500/10 border border-emerald-500/20' : 'bg-red-500/10 border border-red-500/20'} rounded-xl p-4 text-center`}>
+                  <p className={`${roas >= 1 ? 'text-emerald-500' : 'text-red-500'} text-[10px] uppercase tracking-wider mb-1`}>ROAS</p>
                   <p className={`font-bold text-xl ${roas >= 1 ? 'text-emerald-400' : 'text-red-400'}`}>{fmtRoas(roas)}</p>
                 </div>
               </div>
@@ -546,6 +575,18 @@ export default function CreativeDetailModal({ creative, onClose }) {
                   <MetricCard label="Meta Spend" value={fmtMoney(mi.meta_spend || spend)} small />
                 </div>
               </div>
+
+              {/* New Customer Metrics */}
+              {purchases > 0 && (
+                <div className="bg-white/[0.03] border border-white/[0.06] rounded-xl p-4">
+                  <SectionHeader icon={ShoppingCart} color="text-green-400">New Customer Metrics</SectionHeader>
+                  <div className="grid grid-cols-3 gap-2">
+                    <MetricCard label="NC Purchases" value={fmtInt(purchases)} small />
+                    <MetricCard label="NC CPA" value={fmtMoney(cpa)} small />
+                    <MetricCard label="Visitors" value={fmtInt(clicks)} small />
+                  </div>
+                </div>
+              )}
 
               {/* Audience Retention (video only) */}
               {isVideo && metaInsights && (

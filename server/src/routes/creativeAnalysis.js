@@ -19,6 +19,10 @@ let tableReady = false; // cache ensureTable so it only runs once
 let twKnownRevCol = null; // cache discovered TW column names across requests
 let twKnownPurCol = null;
 
+// Server-side cache for /data-by-date results (avoids repeated TW API calls)
+const dataByDateCache = new Map(); // key: "startDate|endDate" → { data, timestamp }
+const DATA_CACHE_TTL = 3 * 60 * 1000; // 3 minutes
+
 // ── Known Values (for cross-validation) ─────────────────────────────
 // These sets prevent fields from leaking into the wrong slot when segment counts vary.
 // All stored lowercase for case-insensitive matching via knownHas() helper.
@@ -414,6 +418,32 @@ async function fetchTripleWhaleAds(startDate, endDate) {
     return { ok: true, rows };
   }
 
+  // Try cached column combo first (skip discovery on repeat calls)
+  if (twKnownRevCol) {
+    const revRef = twKnownRevCol.includes(' ') ? `\`${twKnownRevCol}\`` : twKnownRevCol;
+    const purPart = twKnownPurCol
+      ? `, SUM(${twKnownPurCol.includes(' ') ? `\`${twKnownPurCol}\`` : twKnownPurCol}) as total_purchases`
+      : '';
+    const cachedSql = `
+      SELECT ad_name, SUM(spend) as total_spend, SUM(${revRef}) as total_revenue${purPart},
+             SUM(impressions) as total_impressions, SUM(clicks) as total_clicks
+      FROM pixel_joined_tvf
+      WHERE event_date BETWEEN @startDate AND @endDate
+      GROUP BY ad_name
+      HAVING SUM(spend) > 0.01
+      ORDER BY SUM(spend) DESC
+      LIMIT 2000
+    `;
+    const cachedResult = await twQuery(cachedSql);
+    if (cachedResult.ok) {
+      console.log(`[Creative Analysis] TW query OK (cached cols) — revenue="${twKnownRevCol}", purchases="${twKnownPurCol || 'none'}", rows=${cachedResult.rows.length}`);
+      return cachedResult.rows;
+    }
+    // Cached combo failed — clear cache and fall through to discovery
+    twKnownRevCol = null;
+    twKnownPurCol = null;
+  }
+
   // Step 1: Find the working revenue column (no purchase column, isolates the variable)
   let workingRevenueCol = null;
   for (const revenueCol of revenueColumns) {
@@ -452,6 +482,8 @@ async function fetchTripleWhaleAds(startDate, endDate) {
         if (pResult.fatal) return [];
         if (pResult.ok) {
           console.log(`[Creative Analysis] TW query OK — revenue="${revenueCol}", purchases="${purchaseCol}", rows=${pResult.rows.length}`);
+          twKnownRevCol = revenueCol;
+          twKnownPurCol = purchaseCol;
           if (pResult.rows.length >= 2000) {
             console.warn('[Creative Analysis] WARNING: TW query hit 2000 row limit — some ads may be missing');
           }
@@ -462,6 +494,8 @@ async function fetchTripleWhaleAds(startDate, endDate) {
       // No purchase column worked — return the revenue-only result
       console.warn('[Creative Analysis] WARNING: No purchase column available. Purchases will be 0.');
       console.log(`[Creative Analysis] TW query OK (no purchases) — revenue="${revenueCol}", rows=${revenueOnlyRows.length}`);
+      twKnownRevCol = revenueCol;
+      twKnownPurCol = null;
       if (revenueOnlyRows.length >= 2000) {
         console.warn('[Creative Analysis] WARNING: TW query hit 2000 row limit — some ads may be missing');
       }
@@ -1060,6 +1094,13 @@ router.get('/data-by-date', authenticate, async (req, res) => {
       });
     }
 
+    // Check server-side cache to avoid repeated TW API calls
+    const cacheKey = `${startDate}|${endDate}`;
+    const cachedResult = dataByDateCache.get(cacheKey);
+    if (cachedResult && (Date.now() - cachedResult.timestamp < DATA_CACHE_TTL)) {
+      return res.json({ success: true, data: cachedResult.data });
+    }
+
     const twAds = await fetchTripleWhaleAds(startDate, endDate);
 
     // Parse and aggregate by (creative_id, hook_id) — same pattern as syncData
@@ -1209,14 +1250,21 @@ router.get('/data-by-date', authenticate, async (req, res) => {
 
     creatives.sort((a, b) => b.total_spend - a.total_spend);
 
-    res.json({
-      success: true,
-      data: {
-        creatives,
-        dateRange: { startDate, endDate },
-        meta: { total_ads: twAds.length, parsed: twAds.length - skipped, skipped },
-      },
-    });
+    const responseData = {
+      creatives,
+      dateRange: { startDate, endDate },
+      meta: { total_ads: twAds.length, parsed: twAds.length - skipped, skipped },
+    };
+
+    // Cache the result for subsequent requests
+    dataByDateCache.set(cacheKey, { data: responseData, timestamp: Date.now() });
+    // Evict old entries to prevent memory growth
+    if (dataByDateCache.size > 50) {
+      const oldest = [...dataByDateCache.entries()].sort((a, b) => a[1].timestamp - b[1].timestamp)[0];
+      if (oldest) dataByDateCache.delete(oldest[0]);
+    }
+
+    res.json({ success: true, data: responseData });
   } catch (err) {
     console.error('[Creative Analysis] /data-by-date error:', err);
     res.status(500).json({ success: false, error: { message: 'Internal server error' } });
@@ -1377,7 +1425,8 @@ router.get('/active', authenticate, async (req, res) => {
            SUM(spend) as lifetime_spend, SUM(revenue) as lifetime_revenue,
            SUM(purchases) as lifetime_purchases,
            COUNT(DISTINCT CASE WHEN spend > 0 THEN week END) as weeks_active,
-           MIN(week) as first_seen, MAX(week) as last_seen
+           (ARRAY_AGG(week ORDER BY SPLIT_PART(week,'_',2)::int, REPLACE(SPLIT_PART(week,'_',1),'WK','')::int))[1] as first_seen,
+           (ARRAY_AGG(week ORDER BY SPLIT_PART(week,'_',2)::int DESC, REPLACE(SPLIT_PART(week,'_',1),'WK','')::int DESC))[1] as last_seen
          FROM creative_analysis
          WHERE creative_id IN (SELECT DISTINCT creative_id FROM creative_analysis WHERE week = $1 AND spend > 0)
          GROUP BY creative_id`,
@@ -1637,6 +1686,9 @@ router.post('/sync', authenticate, async (req, res) => {
 
     const result = await syncData({ periodWeek: week.toUpperCase(), startDate, endDate });
 
+    // Clear data cache so next request gets fresh data
+    dataByDateCache.clear();
+
     res.json({
       success: true,
       data: {
@@ -1754,6 +1806,7 @@ async function autoSync() {
     const range = weekToDateRange(week);
     if (range) {
       const result = await syncData({ periodWeek: week, startDate: range.startDate, endDate: range.endDate });
+      dataByDateCache.clear(); // Invalidate cached responses after sync
       console.log(`[Creative Analysis] Auto-sync ${week}: synced=${result.synced}, skipped=${result.skipped}`);
     }
   } catch (err) {
@@ -2313,7 +2366,9 @@ router.get('/meta-lookup/:creativeId', authenticate, async (req, res) => {
       return res.status(400).json({ success: false, error: { message: 'Invalid creative ID format' } });
     }
 
-    // Check DB first — return cached data if meta_ad_id exists AND video_url is populated (or it's not a video)
+    const forceVideo = req.query.force_video === '1';
+
+    // Check DB first — return cached data if meta_ad_id exists
     const existing = await pgQuery(
       `SELECT meta_ad_id, thumbnail_url, video_url, type, synced_at
        FROM creative_analysis WHERE creative_id = $1 AND meta_ad_id IS NOT NULL
@@ -2322,14 +2377,71 @@ router.get('/meta-lookup/:creativeId', authenticate, async (req, res) => {
     );
     const cached = existing.length ? existing[0] : null;
     const isVideoCached = cached && (cached.type || '').toLowerCase() === 'video';
-    const needsFreshUrl = isVideoCached && !cached.video_url;
+
+    // Video URLs expire (Meta CDN signed URLs) — re-fetch if:
+    //   - video_url is null, OR
+    //   - force_video requested (frontend retry after playback error), OR
+    //   - synced_at is older than 2 hours
+    const VIDEO_URL_TTL = 2 * 60 * 60 * 1000; // 2 hours
+    const urlIsStale = cached?.synced_at && (Date.now() - new Date(cached.synced_at).getTime() > VIDEO_URL_TTL);
+    const needsFreshUrl = isVideoCached && (!cached.video_url || forceVideo || urlIsStale);
+
+    // Fast path: have meta_ad_id, just need a fresh video URL
+    if (cached && cached.meta_ad_id && needsFreshUrl && META_ACCESS_TOKEN && META_AD_ACCOUNT_IDS.length) {
+      try {
+        // Get video_id from the ad object (Marketing API token works for ad objects)
+        const adRes = await fetch(
+          `${META_GRAPH_URL}/${cached.meta_ad_id}?fields=creative{video_id,thumbnail_url}&access_token=${META_ACCESS_TOKEN}`,
+          { signal: AbortSignal.timeout(10000) }
+        );
+        if (adRes.ok) {
+          const adData = await adRes.json();
+          const videoId = adData.creative?.video_id;
+          if (videoId) {
+            // Try each account to fetch fresh source URL
+            for (const accountId of META_AD_ACCOUNT_IDS) {
+              try {
+                const vidRes = await fetch(
+                  `${META_GRAPH_URL}/${accountId}/advideos?filtering=[{"field":"id","operator":"EQUAL","value":"${videoId}"}]&fields=source&limit=1&access_token=${META_ACCESS_TOKEN}`,
+                  { signal: AbortSignal.timeout(10000) }
+                );
+                if (vidRes.ok) {
+                  const vidData = await vidRes.json();
+                  const freshUrl = vidData.data?.[0]?.source;
+                  if (freshUrl) {
+                    // Update DB with fresh URL
+                    await pgQuery(
+                      `UPDATE creative_analysis SET video_url = $1, synced_at = NOW() WHERE creative_id = $2`,
+                      [freshUrl, creativeId]
+                    );
+                    return res.json({
+                      success: true,
+                      data: {
+                        meta_ad_id: cached.meta_ad_id,
+                        thumbnail_url: adData.creative?.thumbnail_url || cached.thumbnail_url,
+                        video_url: freshUrl,
+                      },
+                    });
+                  }
+                }
+              } catch (e) { console.warn(`[Meta Lookup] advideos refresh failed for account:`, e.message); }
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('[Meta Lookup] Fast video refresh failed:', e.message);
+      }
+      // Fast refresh failed — return cached data with stale URL (better than nothing)
+      return res.json({ success: true, data: cached });
+    }
+
     if (cached && cached.meta_ad_id && !needsFreshUrl) {
       return res.json({ success: true, data: cached });
     }
 
     // Search Meta API
     if (!META_ACCESS_TOKEN || !META_AD_ACCOUNT_IDS.length) {
-      return res.json({ success: true, data: null, message: 'No Meta API configured or ad not linked' });
+      return res.json({ success: true, data: cached || null, message: 'No Meta API configured or ad not linked' });
     }
 
     // Search all ad accounts in parallel for faster lookup
@@ -2373,14 +2485,14 @@ router.get('/meta-lookup/:creativeId', authenticate, async (req, res) => {
 
       // Update DB — always overwrite video_url since Meta URLs expire
       await pgQuery(
-        `UPDATE creative_analysis SET meta_ad_id = $1, thumbnail_url = COALESCE($2, thumbnail_url), video_url = COALESCE($3, video_url) WHERE creative_id = $4`,
+        `UPDATE creative_analysis SET meta_ad_id = $1, thumbnail_url = COALESCE($2, thumbnail_url), video_url = $3, synced_at = NOW() WHERE creative_id = $4`,
         [metaAdId, thumbnailUrl, videoUrl, creativeId]
       );
 
       return res.json({ success: true, data: { meta_ad_id: metaAdId, thumbnail_url: thumbnailUrl, video_url: videoUrl } });
     }
 
-    return res.json({ success: true, data: null, message: 'No matching Meta ad found' });
+    return res.json({ success: true, data: cached || null, message: 'No matching Meta ad found' });
   } catch (err) {
     console.error('[Creative Analysis] /meta-lookup error:', err);
     res.status(500).json({ success: false, error: { message: 'Internal server error' } });
