@@ -307,6 +307,73 @@ export default function BriefPipeline() {
     }
   }, [fetchGenerated]);
 
+  // ---------------------------------------------------------------------------
+  // Drag & Drop
+  // ---------------------------------------------------------------------------
+
+  // Valid forward transitions (column key → allowed target columns)
+  const VALID_TRANSITIONS = {
+    generated:       ['approved', 'pushed', 'ready_to_launch'],
+    approved:        ['generated', 'pushed', 'ready_to_launch'],
+    pushed:          ['ready_to_launch'],
+    ready_to_launch: ['approved', 'pushed'],
+    launched:        [],
+  };
+
+  const [dragOverCol, setDragOverCol] = useState(null);
+
+  const handleDragStart = useCallback((e, brief, fromCol) => {
+    e.dataTransfer.setData('text/plain', JSON.stringify({ briefId: brief.id, fromCol }));
+    e.dataTransfer.effectAllowed = 'move';
+  }, []);
+
+  const handleDragOver = useCallback((e, colKey) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    setDragOverCol(colKey);
+  }, []);
+
+  const handleDragLeave = useCallback((e) => {
+    // Only clear if leaving the column (not entering a child)
+    if (!e.currentTarget.contains(e.relatedTarget)) {
+      setDragOverCol(null);
+    }
+  }, []);
+
+  const handleDrop = useCallback(async (e, targetCol) => {
+    e.preventDefault();
+    setDragOverCol(null);
+    try {
+      const { briefId, fromCol } = JSON.parse(e.dataTransfer.getData('text/plain'));
+      if (fromCol === targetCol) return;
+      const allowed = VALID_TRANSITIONS[fromCol] || [];
+      if (!allowed.includes(targetCol)) {
+        setError(`Cannot move from "${fromCol}" to "${targetCol}".`);
+        return;
+      }
+      // Map column key to actual status value
+      const statusMap = {
+        generated: 'generated',
+        approved: 'approved',
+        pushed: 'pushed',
+        ready_to_launch: 'ready_to_launch',
+      };
+      const newStatus = statusMap[targetCol];
+      if (!newStatus) return;
+
+      // Special: moving to 'pushed' triggers push to ClickUp
+      if (targetCol === 'pushed') {
+        await api.post(`/brief-pipeline/generated/${briefId}/push`);
+      } else {
+        await api.patch(`/brief-pipeline/generated/${briefId}`, { status: newStatus });
+      }
+      await fetchGenerated();
+    } catch (err) {
+      console.error('Drop failed:', err);
+      setError('Failed to move brief. ' + (err.response?.data?.error?.message || err.message || ''));
+    }
+  }, [fetchGenerated]);
+
   const handleLaunch = useCallback(async (briefIds, templateId, copySetId) => {
     setLaunching(true);
     try {
@@ -553,9 +620,17 @@ export default function BriefPipeline() {
               {PIPELINE_COLUMNS.map((col, colIdx) => {
                 const items = buckets[col.key];
                 const Icon = col.icon;
+                const isDropTarget = dragOverCol === col.key;
+                const isDroppable = col.key !== 'launched';
 
                 return (
-                  <div key={col.key} className="flex-1 flex flex-col min-w-[300px] relative">
+                  <div
+                    key={col.key}
+                    className={`flex-1 flex flex-col min-w-[300px] relative rounded-lg transition-colors ${isDropTarget ? 'bg-white/[0.03] ring-1 ring-[#c9a84c]/30' : ''}`}
+                    onDragOver={isDroppable ? (e) => handleDragOver(e, col.key) : undefined}
+                    onDragLeave={isDroppable ? handleDragLeave : undefined}
+                    onDrop={isDroppable ? (e) => handleDrop(e, col.key) : undefined}
+                  >
                     {/* Column header */}
                     <div className="flex items-center justify-between mb-4 pb-3 border-b border-white/[0.04] relative">
                       <div className="absolute bottom-0 left-0 w-1/3 h-[1px] bg-gradient-to-r from-current to-transparent opacity-30" />
@@ -583,10 +658,21 @@ export default function BriefPipeline() {
                         </div>
                       ) : (
                         items.map((item) => {
+                          const isDraggable = col.key !== 'launched';
+                          const cardWrapper = (children) => isDraggable ? (
+                            <div
+                              key={item.id}
+                              draggable
+                              onDragStart={(e) => handleDragStart(e, item, col.key)}
+                              className="cursor-grab active:cursor-grabbing"
+                            >
+                              {children}
+                            </div>
+                          ) : <div key={item.id}>{children}</div>;
+
                           if (col.key === 'generated') {
-                            return (
+                            return cardWrapper(
                               <GeneratedBriefCard
-                                key={item.id}
                                 brief={item}
                                 onClick={() => setDetailModal(item)}
                                 showActions="generated"
@@ -598,9 +684,8 @@ export default function BriefPipeline() {
                           }
 
                           if (col.key === 'approved') {
-                            return (
+                            return cardWrapper(
                               <GeneratedBriefCard
-                                key={item.id}
                                 brief={item}
                                 onClick={() => setDetailModal(item)}
                                 showActions="approved"
@@ -612,9 +697,8 @@ export default function BriefPipeline() {
                           }
 
                           if (col.key === 'pushed') {
-                            return (
+                            return cardWrapper(
                               <GeneratedBriefCard
-                                key={item.id}
                                 brief={item}
                                 onClick={() => setDetailModal(item)}
                                 showActions="pushed"
@@ -624,9 +708,8 @@ export default function BriefPipeline() {
                           }
 
                           if (col.key === 'ready_to_launch') {
-                            return (
+                            return cardWrapper(
                               <GeneratedBriefCard
-                                key={item.id}
                                 brief={item}
                                 onClick={() => setDetailModal(item)}
                                 showActions="ready_to_launch"
@@ -646,9 +729,8 @@ export default function BriefPipeline() {
                           }
 
                           if (col.key === 'launched') {
-                            return (
+                            return cardWrapper(
                               <GeneratedBriefCard
-                                key={item.id}
                                 brief={item}
                                 onClick={() => setDetailModal(item)}
                                 showActions="launched"

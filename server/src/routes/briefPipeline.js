@@ -1189,30 +1189,50 @@ async function fetchProductProfile(productCode) {
 function buildProductContextForBrief(p) {
   if (!p) return 'No product profile available.';
   const lines = [
+    // ── Core Identity ──
     p.name             && `Product: ${p.name}`,
+    p.product_code     && `Product Code: ${p.product_code}`,
+    p.short_name       && `Short Name: ${p.short_name}`,
     p.description      && `Description: ${p.description}`,
+    p.oneliner         && `One-Liner: ${p.oneliner}`,
+    p.tagline          && `Tagline: ${p.tagline}`,
+    p.product_type     && `Product Type: ${p.product_type}`,
+    p.product_group    && `Product Group: ${p.product_group}`,
+    p.category         && `Category: ${p.category}`,
+    // ── Pricing & Offer ──
     p.price            && `Price: ${p.price}`,
     p.product_url      && `Product URL: ${p.product_url}`,
+    p.unit_details     && `Unit Details: ${p.unit_details}`,
+    p.offer_details    && `Offer Details: ${p.offer_details}`,
+    p.max_discount     && `Max Discount: ${p.max_discount}`,
+    p.discount_codes   && `Discount Codes: ${p.discount_codes}`,
+    p.bundle_variants  && `Bundle Variants: ${p.bundle_variants}`,
+    p.offers?.length   && `Active Offers: ${Array.isArray(p.offers) ? p.offers.map(o => o.name || o.title || o.text || JSON.stringify(o)).join('; ') : p.offers}`,
+    p.guarantee        && `Guarantee: ${p.guarantee}`,
+    // ── Persuasion Engine ──
     p.big_promise      && `Big Promise: ${p.big_promise}`,
     p.mechanism        && `Unique Mechanism: ${p.mechanism}`,
-    p.benefits?.length && `Key Benefits: ${Array.isArray(p.benefits) ? p.benefits.map(b => b.text || b.name || b).join(', ') : p.benefits}`,
     p.differentiator   && `Differentiator: ${p.differentiator}`,
-    p.guarantee        && `Guarantee: ${p.guarantee}`,
+    p.competitive_edge && `Competitive Edge: ${p.competitive_edge}`,
+    p.benefits?.length && `Key Benefits: ${Array.isArray(p.benefits) ? p.benefits.map(b => b.text || b.name || b).join(', ') : p.benefits}`,
+    // ── Audience ──
     p.customer_avatar  && `Target Customer: ${p.customer_avatar}`,
     p.customer_frustration && `Customer Frustration: ${p.customer_frustration}`,
     p.customer_dream   && `Customer Dream Outcome: ${p.customer_dream}`,
     p.target_demographics && `Target Demographics: ${p.target_demographics}`,
-    p.voice            && `Brand Voice/Tone: ${p.voice}`,
-    p.winning_angles   && `Winning Angles: ${p.winning_angles}`,
-    p.angles?.length   && `Proven Angles: ${Array.isArray(p.angles) ? p.angles.map(a => a.name || a).join(', ') : p.angles}`,
     p.pain_points      && `Pain Points: ${p.pain_points}`,
     p.common_objections && `Common Objections: ${p.common_objections}`,
-    p.competitive_edge && `Competitive Edge: ${p.competitive_edge}`,
-    p.offer_details    && `Offer Details: ${p.offer_details}`,
-    p.discount_codes   && `Discount Codes: ${p.discount_codes}`,
-    p.bundle_variants  && `Bundle Variants: ${p.bundle_variants}`,
-    p.offers?.length   && `Active Offers: ${Array.isArray(p.offers) ? p.offers.map(o => o.name || o.title || o.text || JSON.stringify(o)).join('; ') : p.offers}`,
+    // ── Brand & Voice ──
+    p.voice            && `Brand Voice/Tone: ${p.voice}`,
+    // ── Angles & Strategy ──
+    p.winning_angles   && `Winning Angles: ${p.winning_angles}`,
+    p.custom_angles_text && `Custom Angles: ${p.custom_angles_text}`,
+    p.angles?.length   && `Proven Angles: ${Array.isArray(p.angles) ? p.angles.map(a => a.name || a).join(', ') : p.angles}`,
+    // ── Proven Scripts (for style reference) ──
+    p.scripts?.length  && `Proven Scripts: ${Array.isArray(p.scripts) ? p.scripts.slice(0, 3).map((s, i) => `[${i + 1}] ${(typeof s === 'string' ? s : (s.text || s.body || JSON.stringify(s))).slice(0, 200)}`).join('\n') : p.scripts}`,
+    // ── Compliance ──
     p.compliance_restrictions && `COMPLIANCE — Never claim: ${p.compliance_restrictions}`,
+    p.notes            && `Notes: ${p.notes}`,
   ].filter(Boolean);
   return lines.join('\n');
 }
@@ -1254,7 +1274,26 @@ RULES:
 - If hooks aren't explicitly labeled, the first 1-3 sentences before the body are hooks
 - The body is everything after the hooks until the CTA
 - Preserve the exact wording — do NOT paraphrase or rewrite
-- If the script has multiple sections (e.g. "Body:", "CTA:"), respect those boundaries`;
+- If the script has multiple sections (e.g. "Body:", "CTA:"), respect those boundaries
+
+HOOK vs BODY TEXT — CRITICAL DISTINCTION:
+A HOOK is the first thing a viewer sees/hears that makes them STOP SCROLLING. It must be:
+- A pattern interrupt: surprising, jarring, curiosity-inducing, or emotionally charged
+- Short and punchy: typically 1-2 sentences MAX (under 25 words ideal, never more than 40)
+- Self-contained: makes sense on its own without needing the body for context
+- A scroll-stopper: the FIRST FEW WORDS must create an immediate reason to keep watching
+
+A HOOK is NOT:
+- An explanation, comparison, or data point (that's body text)
+- A sentence that builds on a previous hook (that's continuation/body)
+- Multiple sentences that form a logical argument (that's a body paragraph)
+- Social proof setup text like "A lot of people are doing X" (that's body)
+- A comparison like "X gives you Y, but this gives you Z" (that's a body contrast point)
+
+If the script has text labeled as "hooks" but some are actually body-length paragraphs or explanatory text, classify them correctly:
+- TRUE hooks → hooks array
+- Mislabeled hooks (actually body/comparison/explanation text) → prepend to body text
+- If only 1-2 of 4 labeled "hooks" are real hooks, put only the real ones in hooks array`;
 
   // Check for custom prompt overrides
   try {
@@ -1778,6 +1817,14 @@ SCROLL STOP: The first two to four words of every hook must create an immediate 
 
 PRODUCT SPECIFICITY: Every hook MUST reference at least one concrete product detail from the PRODUCT CONTEXT — the product name, a specific price point, the unique mechanism, a key benefit, or the discount code. A hook that could apply to any product is a failed hook. Hooks like "This product changed everything" or "You need to see this" are BANNED. Be as specific as the original hooks are about THEIR product, but about OUR product.
 
+HOOK QUALITY GATE — MANDATORY CHECK:
+Every hook MUST pass ALL of these checks before output:
+1. LENGTH: Under 25 words ideal, hard limit 40 words. If longer, it is body text — rewrite it shorter.
+2. SCROLL-STOP: The first 4-5 words must create an immediate reason to stop scrolling.
+3. STANDALONE: Must make sense WITHOUT reading the body. If it only works as part of a paragraph, it is body text.
+4. NOT-BODY: A comparison ("X gives you Y, but this gives Z"), explanation, data point, or social proof statement is BODY TEXT, not a hook. Move it to the body.
+5. PATTERN INTERRUPT: Must interrupt the viewer's mental pattern — surprise, confusion, emotion, direct address, or bold claim.
+
 ## RULE 3: PRODUCT SWAP PROTOCOL
 - Every mention of the competitor's product → replace with our product name and details
 - Every competitor benefit claim → find the EQUIVALENT benefit from our product profile and swap
@@ -2019,6 +2066,18 @@ ${direction.description}
 - The hook framework is NON-NEGOTIABLE. If the original says "I apologize because I lied", your hooks must also be about apologizing/confessing/admitting something — NOT about lottery comparisons, NOT about product features, NOT about warnings.
 - HOOKS MUST BE PRODUCT-SPECIFIC: Reference specific product details (name, price points, unique mechanism, key benefits) from the PRODUCT CONTEXT above. A hook like "This changed everything" is BANNED — it must be specific like referencing the actual product, its price, a specific benefit, or a concrete claim. Generic hooks fail. Specific hooks convert.
 
+## HOOK QUALITY GATE — MANDATORY CHECK BEFORE OUTPUT
+Every hook MUST pass ALL of these checks. If a hook fails any check, REWRITE it before outputting:
+
+1. LENGTH CHECK: Each hook must be under 25 words (hard limit: 40 words). If longer, it is body text, not a hook. Split it or rewrite it.
+2. SCROLL-STOP CHECK: Read ONLY the first 4-5 words of the hook. Do they create an immediate reason to stop scrolling? If the first words are generic ("So here's the thing", "A lot of people", "This product will"), REWRITE with a stronger opener.
+3. STANDALONE CHECK: Does the hook make sense WITHOUT reading the body? If someone reads ONLY this hook and nothing else, does it create curiosity, shock, or desire? If it only makes sense as part of a longer paragraph, it is body text.
+4. NOT-BODY CHECK: Is this hook actually a comparison, explanation, data point, or social proof statement? If yes, it belongs in the body, not as a hook. Examples of FAILED hooks:
+   - "Lottery tickets give him one shot and disappear forever. This gives him 144 shots at $300,000." ← This is a COMPARISON, not a hook
+   - "A lot of husbands are quietly getting this instead of lottery tickets this year." ← This is SOCIAL PROOF BODY TEXT, not a hook
+   - "Instead of throwing money away on tickets that expire in a week, he'll have a device..." ← This is EXPLANATION, not a hook
+5. PATTERN INTERRUPT CHECK: Would this stop someone mid-scroll on Facebook/TikTok? The hook must interrupt the viewer's mental pattern — surprise, confusion, emotion, direct address, or a bold claim.
+
 ## Body Generation — SECTION-BY-SECTION REPHRASING (NOT rewriting)
 - Go through the original body paragraph by paragraph, section by section
 - For EACH section of the original, write the EQUIVALENT section in your iteration
@@ -2158,6 +2217,7 @@ Score this brief on 5 dimensions (1-10 scale):
    - 1 = jarring disconnect, different voice/topic
    - 5 = acceptable transition
    - 10 = perfectly seamless, sounds like one person talking
+   ALSO CHECK: Is each hook actually a HOOK (scroll-stopper, pattern interrupt, under 25 words) or is it secretly body text (comparison, explanation, data point, social proof)? If any hook is actually body text, cap this score at 4 and flag it in one_line_feedback.
 
 5. CONVERSION POTENTIAL (1-10): Will this actually convert cold traffic?
    - 1 = waste of ad spend
@@ -3113,10 +3173,15 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
       // ═══════════════════════════════════════════════════
       console.log(`[BriefPipeline] Clone mode — generating 1:1 script clone`);
       const { system: cloneSystem, user: cloneUser } = await buildScriptClonePrompt(parsedScript, winAnalysis, productContext);
+      // Inject angle constraint for clone mode
+      let enhancedCloneUser = cloneUser;
+      if (angle && angle !== 'NA') {
+        enhancedCloneUser += `\n\n# AD ANGLE\nThe selected ad angle is: "${angle}". While cloning the structure 1:1, ensure the adapted script aligns with this angle where applicable.`;
+      }
 
       generationResults = [await (async () => {
         try {
-          const generated = await callClaude(cloneSystem, cloneUser, 4096);
+          const generated = await callClaude(cloneSystem, enhancedCloneUser, 4096);
           if (!generated || (!generated.hooks && !generated.body)) throw new Error('Invalid clone response');
           if (!Array.isArray(generated.hooks)) generated.hooks = [];
           if (!generated.body) generated.body = '';
@@ -3191,6 +3256,10 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
           const { system: genSystem, user: genUser } = await buildBriefGeneratorPrompt(parsedScript, winAnalysis, direction, config, productContext);
           let enhancedUser = genUser;
           if (styleRef) enhancedUser += `\n\n# STYLE REFERENCE\n${styleRef}`;
+          // Inject the selected ad angle as a strategic constraint
+          if (angle && angle !== 'NA') {
+            enhancedUser += `\n\n# AD ANGLE CONSTRAINT\nThe user has selected the ad angle: "${angle}". Your script MUST be strategically aligned with this angle. Every hook and body section should reinforce this angle. Do NOT drift into a different angle or generic positioning. The angle "${angle}" should be the lens through which the entire script operates.`;
+          }
           enhancedUser += `\n\n# VARIATION IDENTITY\nThis is variation ${direction.id} of ${directions.length}. Be COMPLETELY UNIQUE.`;
 
           const generated = await callClaude(genSystem, enhancedUser, 3000);

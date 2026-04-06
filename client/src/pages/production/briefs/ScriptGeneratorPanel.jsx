@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { FileText, Video, Wand2, Loader2, Sparkles, ChevronDown } from 'lucide-react';
 import ProductSelector from '../../../components/ProductSelector';
 
-const ANGLES = ['Pain Point', 'Social Proof', 'Before/After', 'Curiosity Hook', 'Direct Offer', 'Authority'];
+const DEFAULT_ANGLES = ['Against competition', 'Lottery', 'BTC Made easy', 'Hidden opportunity', 'Scarcity', 'Breaking news', 'Pain Point', 'Social Proof', 'Before/After', 'Curiosity Hook', 'Direct Offer', 'Authority'];
 
 export default function ScriptGeneratorPanel({ onGenerated, generating, generatingStep }) {
   const [inputMode, setInputMode] = useState('text');
@@ -145,7 +145,7 @@ export default function ScriptGeneratorPanel({ onGenerated, generating, generati
             </label>
           </div>
           <div className="flex flex-wrap gap-2">
-            {ANGLES.map((a) => (
+            {DEFAULT_ANGLES.map((a) => (
               <button
                 key={a}
                 type="button"
