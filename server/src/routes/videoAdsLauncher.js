@@ -45,9 +45,12 @@ function buildLaunchName(pattern, vars = {}) {
 
 // ── Ensure tables ────────────────────────────────────────────────────────
 
-let tablesReady = false;
+let tablesPromise = null;
 async function ensureTables() {
-  if (tablesReady) return;
+  if (!tablesPromise) tablesPromise = _createTables().catch(err => { tablesPromise = null; throw err; });
+  return tablesPromise;
+}
+async function _createTables() {
   await pgQuery(`
     CREATE TABLE IF NOT EXISTS video_ads (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -96,7 +99,6 @@ async function ensureTables() {
       created_at TIMESTAMPTZ DEFAULT NOW()
     )
   `);
-  tablesReady = true;
 }
 
 // ── Meta endpoints (reuse from brief pipeline pattern) ───────────────────
@@ -265,26 +267,40 @@ router.patch('/videos/:id', authenticate, async (req, res) => {
   }
 });
 
-// DELETE /videos/:id — Remove video ad
+// DELETE /videos/:id — Remove video ad (blocks if launching)
 router.delete('/videos/:id', authenticate, async (req, res) => {
   try {
     await ensureTables();
-    const rows = await pgQuery('DELETE FROM video_ads WHERE id = $1 RETURNING id', [req.params.id]);
-    if (!rows.length) return res.status(404).json({ success: false, error: { message: 'Video not found' } });
+    const rows = await pgQuery(
+      `DELETE FROM video_ads WHERE id = $1 AND status NOT IN ('launching') RETURNING id`,
+      [req.params.id]
+    );
+    if (!rows.length) {
+      // Check if it exists but is launching
+      const existing = await pgQuery('SELECT status FROM video_ads WHERE id = $1', [req.params.id]);
+      if (existing.length && existing[0].status === 'launching') {
+        return res.status(409).json({ success: false, error: { message: 'Cannot delete a video that is currently launching' } });
+      }
+      return res.status(404).json({ success: false, error: { message: 'Video not found' } });
+    }
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ success: false, error: { message: err.message } });
   }
 });
 
-// DELETE /videos — Bulk delete
+// DELETE /videos — Bulk delete (skips launching videos)
 router.delete('/videos', authenticate, async (req, res) => {
   try {
     await ensureTables();
     const { ids } = req.body;
     if (!Array.isArray(ids) || !ids.length) return res.status(400).json({ success: false, error: { message: 'ids array is required' } });
-    await pgQuery('DELETE FROM video_ads WHERE id = ANY($1)', [ids]);
-    res.json({ success: true });
+    const deleted = await pgQuery(
+      `DELETE FROM video_ads WHERE id = ANY($1) AND status NOT IN ('launching') RETURNING id`,
+      [ids]
+    );
+    const skipped = ids.length - deleted.length;
+    res.json({ success: true, data: { deleted: deleted.length, skipped } });
   } catch (err) {
     res.status(500).json({ success: false, error: { message: err.message } });
   }
@@ -341,8 +357,14 @@ router.post('/import-frame', authenticate, async (req, res) => {
     // https://app.frame.io/reviews/{reviewLinkId}
     let assetId = null;
 
-    // Try to extract from URL path segments
-    const urlObj = new URL(frame_url);
+    // Validate URL before parsing
+    let urlObj;
+    try {
+      urlObj = new URL(frame_url);
+    } catch {
+      return res.status(400).json({ success: false, error: { message: 'Invalid URL format. Please provide a valid Frame.io URL.' } });
+    }
+
     const segments = urlObj.pathname.split('/').filter(Boolean);
 
     // Check for review links — these use a special API
@@ -391,6 +413,8 @@ router.post('/import-frame', authenticate, async (req, res) => {
       } catch (reviewErr) {
         console.warn('[VideoAdsLauncher] Review link fetch failed:', reviewErr.message);
       }
+      // Review/presentation links must NOT fall through to asset path
+      return res.status(400).json({ success: false, error: { message: 'Could not retrieve videos from Frame.io review/presentation link. Check that the link is valid and the Frame.io token has access.' } });
     }
 
     // For direct asset/folder URLs — try to get the last segment as asset ID
@@ -418,19 +442,35 @@ router.post('/import-frame', authenticate, async (req, res) => {
 
     const asset = await assetRes.json();
 
-    // If it's a folder, list children and filter videos
+    // If it's a folder, list children and filter videos (with pagination)
     if (asset.type === 'folder' || asset.type === 'version_stack') {
-      const childrenRes = await fetch(`https://api.frame.io/v2/assets/${assetId}/children?type=file&page_size=100`, {
-        headers: { Authorization: `Bearer ${FRAME_TOKEN}` },
-        signal: AbortSignal.timeout(15000),
-      });
+      let allChildren = [];
+      let page = 1;
+      const PAGE_SIZE = 100;
+      const MAX_PAGES = 10; // Safety limit: 1000 assets max
 
-      if (!childrenRes.ok) {
-        return res.status(500).json({ success: false, error: { message: 'Failed to list Frame.io folder contents' } });
+      while (page <= MAX_PAGES) {
+        const childrenRes = await fetch(`https://api.frame.io/v2/assets/${assetId}/children?type=file&page_size=${PAGE_SIZE}&page=${page}`, {
+          headers: { Authorization: `Bearer ${FRAME_TOKEN}` },
+          signal: AbortSignal.timeout(15000),
+        });
+
+        if (!childrenRes.ok) {
+          if (page === 1) {
+            return res.status(500).json({ success: false, error: { message: 'Failed to list Frame.io folder contents' } });
+          }
+          break; // Got some pages, stop on error
+        }
+
+        const children = await childrenRes.json();
+        const items = Array.isArray(children) ? children : [];
+        allChildren = allChildren.concat(items);
+
+        if (items.length < PAGE_SIZE) break; // Last page
+        page++;
       }
 
-      const children = await childrenRes.json();
-      const videoChildren = (Array.isArray(children) ? children : []).filter(
+      const videoChildren = allChildren.filter(
         c => c.filetype?.startsWith('video/') || /\.(mp4|mov|webm|avi|mkv)$/i.test(c.name || '')
       );
 
@@ -471,7 +511,121 @@ router.post('/import-frame', authenticate, async (req, res) => {
   }
 });
 
-// ── Launch video ads to Meta ─────────────────────────────────────────────
+// ── Helper: normalize countries from template ──────────────────────────
+
+function normalizeCountries(template) {
+  const raw = safeArr(template.countries);
+  const codes = raw.map(c => {
+    if (typeof c === 'string') return c.trim().toUpperCase();
+    if (c && typeof c === 'object') return (c.code || c.id || c.value || '').toString().trim().toUpperCase();
+    return '';
+  }).filter(c => /^[A-Z]{2}$/.test(c));
+  return codes.length ? codes : ['US'];
+}
+
+// ── Helper: upload video to Meta + create creative + create ad ─────────
+
+async function launchVideoToAdset({ video, template, adsetId, adsetName, page, adName, adCopy, batchNum, templateId }) {
+  const launchId = crypto.randomUUID();
+
+  // Create launch record
+  await pgQuery(
+    `INSERT INTO video_ad_launches (id, video_ad_id, template_id, ad_account_id, batch_number, status)
+     VALUES ($1,$2,$3,$4,$5,'uploading')`,
+    [launchId, video.id, templateId, template.ad_account_id, batchNum]
+  );
+
+  try {
+    // Upload video to Meta (if not already uploaded)
+    let metaVideoId = video.meta_video_id;
+    if (!metaVideoId) {
+      if (!video.video_url) throw new Error(`Video ${video.id} has no video_url — cannot upload to Meta`);
+      metaVideoId = await uploadAdVideo(template.ad_account_id, video.video_url, video.original_name || video.filename);
+
+      // Cache meta_video_id immediately (before wait) to prevent orphaned re-uploads on timeout
+      await pgQuery('UPDATE video_ads SET meta_video_id = $1, meta_video_status = $2, updated_at = NOW() WHERE id = $3',
+        [metaVideoId, 'processing', video.id]);
+
+      // Wait for video to finish processing
+      await waitForVideoReady(metaVideoId, 120000);
+
+      // Mark as ready
+      await pgQuery('UPDATE video_ads SET meta_video_status = $1, updated_at = NOW() WHERE id = $2',
+        ['ready', video.id]);
+    }
+
+    // Determine ad copy
+    const videoCopy = safeObj(video.ad_copy);
+    const globalCopy = safeObj(adCopy);
+    const primaryText = globalCopy.primary_text || videoCopy.primary_text || '';
+    const headline = globalCopy.headline || videoCopy.headline || 'Shop Now';
+    const description = globalCopy.description || videoCopy.description || '';
+    const cta = globalCopy.cta || videoCopy.cta || 'SHOP_NOW';
+    const link = globalCopy.landing_page_url || template.landing_page_url || 'https://mineblock.com';
+
+    // Create ad creative with video
+    const creativeBody = {
+      access_token: process.env.META_ACCESS_TOKEN,
+      name: adName,
+      object_story_spec: {
+        page_id: page?.id,
+        video_data: {
+          video_id: metaVideoId,
+          message: primaryText,
+          title: headline,
+          link_description: description,
+          call_to_action: {
+            type: cta,
+            value: { link },
+          },
+        },
+      },
+    };
+
+    const cleanUTM = template.utm_parameters?.replace(/^[?&]+/, '');
+    if (cleanUTM) creativeBody.url_tags = cleanUTM;
+
+    const creativeRes = await fetch(`https://graph.facebook.com/v21.0/${template.ad_account_id}/adcreatives`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: AbortSignal.timeout(45000),
+      body: JSON.stringify(creativeBody),
+    });
+
+    if (!creativeRes.ok) {
+      const errText = await creativeRes.text();
+      throw new Error(`Meta creative error ${creativeRes.status}: ${errText.slice(0, 300)}`);
+    }
+
+    const creativeData = await creativeRes.json();
+    const metaCreativeId = creativeData.id;
+
+    // Create ad
+    const metaAdId = await createAd(template.ad_account_id, {
+      name: adName,
+      adsetId,
+      creativeId: metaCreativeId,
+      status: 'PAUSED',
+    });
+
+    // Update launch record
+    await pgQuery(
+      `UPDATE video_ad_launches SET status = 'launched', meta_ad_id = $1, meta_creative_id = $2, meta_video_id = $3, meta_campaign_id = $4, meta_adset_id = $5, ad_name = $6, adset_name = $7, page_id = $8, page_name = $9, launched_at = NOW() WHERE id = $10`,
+      [metaAdId, metaCreativeId, metaVideoId, template.campaign_id, adsetId, adName, adsetName, page?.id, page?.name, launchId]
+    );
+
+    return { video_id: video.id, status: 'launched', meta_ad_id: metaAdId, ad_name: adName, adset_id: adsetId, adset_name: adsetName };
+  } catch (err) {
+    console.error(`[VideoAdsLauncher] Launch failed for video ${video.id} -> adset ${adsetId}:`, err.message);
+    await pgQuery(
+      `UPDATE video_ad_launches SET status = 'failed', error_message = $1 WHERE id = $2`,
+      [err.message, launchId]
+    );
+    return { video_id: video.id, status: 'failed', error: err.message, adset_id: adsetId, adset_name: adsetName };
+  }
+}
+
+// ── Launch video ads to Meta (supports multi-adset) ─────────────────────
 
 router.post('/launch', authenticate, async (req, res) => {
   try {
@@ -480,7 +634,9 @@ router.post('/launch', authenticate, async (req, res) => {
       return res.status(400).json({ success: false, error: { message: 'Meta Ads API not configured. Set META_ACCESS_TOKEN and META_AD_ACCOUNT_IDS.' } });
     }
 
-    const { video_ids, template_id, ad_copy } = req.body;
+    const { video_ids, template_id, ad_copy, adset_count } = req.body;
+    const numAdsets = Math.max(1, Math.min(parseInt(adset_count) || 1, 20)); // 1-20 adsets
+
     if (!video_ids?.length || !template_id) {
       return res.status(400).json({ success: false, error: { message: 'video_ids and template_id are required' } });
     }
@@ -494,17 +650,19 @@ router.post('/launch', authenticate, async (req, res) => {
       return res.status(400).json({ success: false, error: { message: 'Template has no campaign configured' } });
     }
 
-    // Load videos
+    // Load and lock videos atomically — prevents double-launch
     const videos = await pgQuery(
-      `SELECT * FROM video_ads WHERE id = ANY($1) AND status IN ('uploaded', 'ready', 'approved')`,
+      `UPDATE video_ads SET status = 'launching', updated_at = NOW()
+       WHERE id = ANY($1) AND status IN ('uploaded', 'ready', 'approved')
+       AND (video_url IS NOT NULL AND video_url != '' OR meta_video_id IS NOT NULL)
+       RETURNING *`,
       [video_ids]
     );
     if (!videos.length) {
-      return res.status(400).json({ success: false, error: { message: 'No launchable videos found (must be uploaded, ready, or approved)' } });
+      return res.status(400).json({ success: false, error: { message: 'No launchable videos found. Videos must be uploaded/ready/approved and have a video URL or existing Meta video ID.' } });
     }
 
-    // Mark as launching
-    await pgQuery(`UPDATE video_ads SET status = 'launching' WHERE id = ANY($1)`, [video_ids]);
+    const launchableIds = videos.map(v => v.id);
 
     const dateStr = new Date().toLocaleDateString('en-US', { month: '2-digit', day: '2-digit' }).replace('/', '');
     const batchNum = Math.floor(Date.now() / 1000) % 10000;
@@ -512,177 +670,113 @@ router.post('/launch', authenticate, async (req, res) => {
     // Page selection
     const selectedPages = safeArr(template.page_ids).filter(p => p.selected !== false);
     if (!selectedPages.length || !selectedPages[0]?.id) {
-      await pgQuery(`UPDATE video_ads SET status = 'ready' WHERE id = ANY($1)`, [video_ids]);
+      await pgQuery(`UPDATE video_ads SET status = 'ready', updated_at = NOW() WHERE id = ANY($1)`, [launchableIds]);
       return res.status(400).json({ success: false, error: { message: 'No Facebook pages configured in launch template' } });
     }
 
-    // Create adset
-    let adsetId = null;
-    const adsetName = buildLaunchName(template.adset_name_pattern || '{date} - Video Batch {batch}', {
-      date: dateStr,
-      angle: videos[0]?.angle || 'General',
-      batch: batchNum,
-      product: '',
-    });
+    const normalizedCountries = normalizeCountries(template);
 
-    try {
-      const normalizedCountries = (() => {
-        const raw = safeArr(template.countries);
-        const codes = raw.map(c => {
-          if (typeof c === 'string') return c.trim().toUpperCase();
-          if (c && typeof c === 'object') return (c.code || c.id || c.value || '').toString().trim().toUpperCase();
-          return '';
-        }).filter(c => /^[A-Z]{2}$/.test(c));
-        return codes.length ? codes : ['US'];
-      })();
-
-      adsetId = await createAdSet(template.ad_account_id, {
-        name: adsetName,
-        campaignId: template.campaign_id,
-        dailyBudget: template.daily_budget,
-        optimizationGoal: template.optimization_goal,
-        bidStrategy: template.bid_strategy,
-        targetRoas: template.target_roas,
-        pixelId: template.pixel_id,
-        conversionEvent: template.conversion_event,
-        conversionLocation: template.conversion_location,
-        targeting: {
-          countries: normalizedCountries,
-          age_min: template.age_min,
-          age_max: template.age_max,
-          gender: template.gender,
-          include_audiences: safeArr(template.include_audiences),
-          exclude_audiences: safeArr(template.exclude_audiences),
-        },
-        attributionWindow: template.attribution_window,
-        pageId: selectedPages[0]?.id,
-        status: 'PAUSED',
-      });
-    } catch (err) {
-      await pgQuery(`UPDATE video_ads SET status = 'ready' WHERE id = ANY($1)`, [video_ids]);
-      return res.status(500).json({ success: false, error: { message: `Ad set creation failed: ${err.message}` } });
-    }
-
-    const results = [];
-    let pageIdx = 0;
-
-    for (let i = 0; i < videos.length; i++) {
-      const video = videos[i];
-      const page = selectedPages[pageIdx % selectedPages.length];
-      pageIdx++;
-
-      const adName = buildLaunchName(template.ad_name_pattern || '{date} - Video {num}', {
+    // Create all adsets
+    const adsets = [];
+    for (let a = 0; a < numAdsets; a++) {
+      const adsetName = buildLaunchName(template.adset_name_pattern || '{date} - Video Batch {batch}', {
         date: dateStr,
-        angle: video.angle || 'General',
-        num: i + 1,
+        angle: videos[0]?.angle || 'General',
         batch: batchNum,
         product: '',
-      });
+        num: numAdsets > 1 ? `${a + 1}` : '01',
+      }) + (numAdsets > 1 ? ` #${a + 1}` : '');
 
-      const launchId = crypto.randomUUID();
       try {
-        // Create launch record
-        await pgQuery(
-          `INSERT INTO video_ad_launches (id, video_ad_id, template_id, ad_account_id, batch_number, status)
-           VALUES ($1,$2,$3,$4,$5,'uploading')`,
-          [launchId, video.id, template_id, template.ad_account_id, batchNum]
-        );
-
-        // Upload video to Meta (if not already uploaded)
-        let metaVideoId = video.meta_video_id;
-        if (!metaVideoId) {
-          if (!video.video_url) throw new Error(`Video ${video.id} has no video_url — cannot upload to Meta`);
-          metaVideoId = await uploadAdVideo(template.ad_account_id, video.video_url, video.original_name || video.filename);
-
-          // Wait for video to finish processing
-          await waitForVideoReady(metaVideoId, 120000);
-
-          // Cache the Meta video ID
-          await pgQuery('UPDATE video_ads SET meta_video_id = $1, meta_video_status = $2, updated_at = NOW() WHERE id = $3',
-            [metaVideoId, 'ready', video.id]);
-        }
-
-        // Determine ad copy
-        const videoCopy = safeObj(video.ad_copy);
-        const globalCopy = safeObj(ad_copy);
-        const primaryText = globalCopy.primary_text || videoCopy.primary_text || '';
-        const headline = globalCopy.headline || videoCopy.headline || 'Shop Now';
-        const description = globalCopy.description || videoCopy.description || '';
-        const cta = globalCopy.cta || videoCopy.cta || 'SHOP_NOW';
-        const link = globalCopy.landing_page_url || template.landing_page_url || 'https://mineblock.com';
-
-        // Create ad creative with video
-        const creativeBody = {
-          access_token: process.env.META_ACCESS_TOKEN,
-          name: adName,
-          object_story_spec: {
-            page_id: page?.id || selectedPages[0]?.id,
-            video_data: {
-              video_id: metaVideoId,
-              message: primaryText,
-              title: headline,
-              link_description: description,
-              call_to_action: {
-                type: cta,
-                value: { link },
-              },
-            },
+        const adsetId = await createAdSet(template.ad_account_id, {
+          name: adsetName,
+          campaignId: template.campaign_id,
+          dailyBudget: template.daily_budget,
+          optimizationGoal: template.optimization_goal,
+          bidStrategy: template.bid_strategy,
+          targetRoas: template.target_roas,
+          pixelId: template.pixel_id,
+          conversionEvent: template.conversion_event,
+          conversionLocation: template.conversion_location,
+          targeting: {
+            countries: normalizedCountries,
+            age_min: template.age_min,
+            age_max: template.age_max,
+            gender: template.gender,
+            include_audiences: safeArr(template.include_audiences),
+            exclude_audiences: safeArr(template.exclude_audiences),
           },
-        };
-
-        const cleanUTM = template.utm_parameters?.replace(/^[?&]+/, '');
-        if (cleanUTM) creativeBody.url_tags = cleanUTM;
-
-        const creativeRes = await fetch(`https://graph.facebook.com/v21.0/${template.ad_account_id}/adcreatives`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          signal: AbortSignal.timeout(45000),
-          body: JSON.stringify(creativeBody),
-        });
-
-        if (!creativeRes.ok) {
-          const errText = await creativeRes.text();
-          throw new Error(`Meta creative error ${creativeRes.status}: ${errText.slice(0, 300)}`);
-        }
-
-        const creativeData = await creativeRes.json();
-        const metaCreativeId = creativeData.id;
-
-        // Create ad
-        const metaAdId = await createAd(template.ad_account_id, {
-          name: adName,
-          adsetId,
-          creativeId: metaCreativeId,
+          attributionWindow: template.attribution_window,
+          pageId: selectedPages[0]?.id,
           status: 'PAUSED',
         });
-
-        // Update records
-        await pgQuery(
-          `UPDATE video_ad_launches SET status = 'launched', meta_ad_id = $1, meta_creative_id = $2, meta_video_id = $3, meta_campaign_id = $4, meta_adset_id = $5, ad_name = $6, adset_name = $7, page_id = $8, page_name = $9, launched_at = NOW() WHERE id = $10`,
-          [metaAdId, metaCreativeId, metaVideoId, template.campaign_id, adsetId, adName, adsetName, page?.id, page?.name, launchId]
-        );
-        await pgQuery(`UPDATE video_ads SET status = 'launched', updated_at = NOW() WHERE id = $1`, [video.id]);
-
-        results.push({ video_id: video.id, status: 'launched', meta_ad_id: metaAdId, ad_name: adName });
+        adsets.push({ id: adsetId, name: adsetName });
       } catch (err) {
-        console.error(`[VideoAdsLauncher] Launch failed for video ${video.id}:`, err.message);
-        await pgQuery(
-          `UPDATE video_ad_launches SET status = 'failed', error_message = $1 WHERE id = $2`,
-          [err.message, launchId]
-        );
-        await pgQuery(`UPDATE video_ads SET status = 'failed', updated_at = NOW() WHERE id = $1`, [video.id]);
-        results.push({ video_id: video.id, status: 'failed', error: err.message });
+        // If first adset fails, abort everything
+        if (a === 0) {
+          await pgQuery(`UPDATE video_ads SET status = 'ready', updated_at = NOW() WHERE id = ANY($1)`, [launchableIds]);
+          return res.status(500).json({ success: false, error: { message: `Ad set creation failed: ${err.message}` } });
+        }
+        // If subsequent adset fails, continue with what we have
+        console.error(`[VideoAdsLauncher] Adset ${a + 1} creation failed:`, err.message);
       }
     }
 
-    const allLaunched = results.every(r => r.status === 'launched');
+    // Launch videos into each adset
+    const allResults = [];
+    let pageIdx = 0;
+
+    for (const adset of adsets) {
+      for (let i = 0; i < videos.length; i++) {
+        const video = videos[i];
+        const page = selectedPages[pageIdx % selectedPages.length];
+        pageIdx++;
+
+        const adName = buildLaunchName(template.ad_name_pattern || '{date} - Video {num}', {
+          date: dateStr,
+          angle: video.angle || 'General',
+          num: i + 1,
+          batch: batchNum,
+          product: '',
+        }) + (adsets.length > 1 ? ` [AS${adsets.indexOf(adset) + 1}]` : '');
+
+        const result = await launchVideoToAdset({
+          video,
+          template,
+          adsetId: adset.id,
+          adsetName: adset.name,
+          page,
+          adName,
+          adCopy: ad_copy,
+          batchNum,
+          templateId: template_id,
+        });
+        allResults.push(result);
+      }
+    }
+
+    // Update video statuses
+    const launchedVideoIds = [...new Set(allResults.filter(r => r.status === 'launched').map(r => r.video_id))];
+    const failedVideoIds = [...new Set(allResults.filter(r => r.status === 'failed').map(r => r.video_id))];
+
+    // Videos that launched in at least one adset = 'launched'
+    if (launchedVideoIds.length) {
+      await pgQuery(`UPDATE video_ads SET status = 'launched', updated_at = NOW() WHERE id = ANY($1)`, [launchedVideoIds]);
+    }
+    // Videos that failed in ALL adsets = 'failed'
+    const purelyFailed = failedVideoIds.filter(id => !launchedVideoIds.includes(id));
+    if (purelyFailed.length) {
+      await pgQuery(`UPDATE video_ads SET status = 'failed', updated_at = NOW() WHERE id = ANY($1)`, [purelyFailed]);
+    }
+
+    const allLaunched = allResults.every(r => r.status === 'launched');
     res.json({
       success: true,
       data: {
-        results,
-        adset_id: adsetId,
-        adset_name: adsetName,
-        batch_status: allLaunched ? 'launched' : results.some(r => r.status === 'launched') ? 'partial' : 'failed',
+        results: allResults,
+        adsets: adsets.map(a => ({ id: a.id, name: a.name })),
+        adset_count: adsets.length,
+        batch_status: allLaunched ? 'launched' : allResults.some(r => r.status === 'launched') ? 'partial' : 'failed',
       }
     });
   } catch (err) {

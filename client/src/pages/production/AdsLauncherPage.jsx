@@ -159,9 +159,20 @@ function VideoCard({ video, selected, onToggle, onRemove }) {
 function TemplateSelector({ templates, selectedId, onSelect, loading }) {
   const [open, setOpen] = useState(false);
   const selected = templates.find(t => t.id === selectedId);
+  const dropdownRef = useRef(null);
+
+  // Close on click outside
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target)) setOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [open]);
 
   return (
-    <div className="relative">
+    <div className="relative" ref={dropdownRef}>
       <button
         onClick={() => setOpen(!open)}
         className="w-full flex items-center justify-between px-3 py-2.5 bg-white/[0.03] border border-white/[0.06] rounded-lg text-sm text-white cursor-pointer hover:border-white/[0.12] transition"
@@ -267,9 +278,16 @@ function AdCopyEditor({ adCopy, onChange }) {
 
 // ── Launch Results Panel ─────────────────────────────────────────────────
 
-function LaunchResults({ results, adsetName }) {
+function LaunchResults({ results, adsets }) {
   const launched = results.filter(r => r.status === 'launched');
   const failed = results.filter(r => r.status === 'failed');
+
+  // Group results by adset
+  const byAdset = (adsets || []).map(as => ({
+    ...as,
+    results: results.filter(r => r.adset_id === as.id),
+  }));
+  const ungrouped = results.filter(r => !adsets?.some(a => a.id === r.adset_id));
 
   return (
     <Card>
@@ -287,29 +305,64 @@ function LaunchResults({ results, adsetName }) {
           <h3 className="text-sm font-medium text-white">
             {failed.length === 0 ? 'All ads launched successfully' : `${launched.length}/${results.length} ads launched`}
           </h3>
-          {adsetName && <p className="text-xs text-zinc-500 font-mono">Adset: {adsetName}</p>}
+          <p className="text-xs text-zinc-500 font-mono">
+            {adsets?.length > 1 ? `${adsets.length} ad sets created` : adsets?.[0]?.name ? `Adset: ${adsets[0].name}` : ''}
+          </p>
         </div>
       </div>
-      <div className="space-y-2">
-        {results.map((r, i) => (
-          <div key={i} className={`flex items-center gap-3 px-3 py-2 rounded-lg border ${
-            r.status === 'launched' ? 'border-emerald-500/20 bg-emerald-500/5' : 'border-red-500/20 bg-red-500/5'
-          }`}>
-            {r.status === 'launched' ? (
-              <CheckCircle2 className="w-4 h-4 text-emerald-400 flex-shrink-0" />
-            ) : (
-              <XCircle className="w-4 h-4 text-red-400 flex-shrink-0" />
-            )}
-            <div className="flex-1 min-w-0">
-              <p className="text-xs text-white truncate">{r.ad_name || `Video ${i + 1}`}</p>
-              {r.error && <p className="text-[10px] text-red-400 truncate">{r.error}</p>}
+
+      {byAdset.length > 1 ? (
+        <div className="space-y-4">
+          {byAdset.map((as, ai) => (
+            <div key={as.id || ai}>
+              <div className="text-[10px] font-mono text-[#c9a84c] uppercase tracking-wider mb-2">
+                Ad Set #{ai + 1}: {as.name}
+              </div>
+              <div className="space-y-1.5">
+                {as.results.map((r, i) => (
+                  <div key={i} className={`flex items-center gap-3 px-3 py-2 rounded-lg border ${
+                    r.status === 'launched' ? 'border-emerald-500/20 bg-emerald-500/5' : 'border-red-500/20 bg-red-500/5'
+                  }`}>
+                    {r.status === 'launched' ? (
+                      <CheckCircle2 className="w-4 h-4 text-emerald-400 flex-shrink-0" />
+                    ) : (
+                      <XCircle className="w-4 h-4 text-red-400 flex-shrink-0" />
+                    )}
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs text-white truncate">{r.ad_name || `Video ${i + 1}`}</p>
+                      {r.error && <p className="text-[10px] text-red-400 truncate">{r.error}</p>}
+                    </div>
+                    {r.meta_ad_id && (
+                      <span className="text-[10px] font-mono text-zinc-500">{r.meta_ad_id}</span>
+                    )}
+                  </div>
+                ))}
+              </div>
             </div>
-            {r.meta_ad_id && (
-              <span className="text-[10px] font-mono text-zinc-500">{r.meta_ad_id}</span>
-            )}
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {[...ungrouped, ...(byAdset[0]?.results || [])].map((r, i) => (
+            <div key={i} className={`flex items-center gap-3 px-3 py-2 rounded-lg border ${
+              r.status === 'launched' ? 'border-emerald-500/20 bg-emerald-500/5' : 'border-red-500/20 bg-red-500/5'
+            }`}>
+              {r.status === 'launched' ? (
+                <CheckCircle2 className="w-4 h-4 text-emerald-400 flex-shrink-0" />
+              ) : (
+                <XCircle className="w-4 h-4 text-red-400 flex-shrink-0" />
+              )}
+              <div className="flex-1 min-w-0">
+                <p className="text-xs text-white truncate">{r.ad_name || `Video ${i + 1}`}</p>
+                {r.error && <p className="text-[10px] text-red-400 truncate">{r.error}</p>}
+              </div>
+              {r.meta_ad_id && (
+                <span className="text-[10px] font-mono text-zinc-500">{r.meta_ad_id}</span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
     </Card>
   );
 }
@@ -351,6 +404,7 @@ export default function AdsLauncherPage() {
   const [launching, setLaunching] = useState(false);
   const [launchResults, setLaunchResults] = useState(null);
   const [launchError, setLaunchError] = useState('');
+  const [adsetCount, setAdsetCount] = useState(1);
 
   // Active tab
   const [activeTab, setActiveTab] = useState('import'); // 'import' | 'configure' | 'launch'
@@ -538,6 +592,7 @@ export default function AdsLauncherPage() {
         video_ids: Array.from(selectedIds),
         template_id: selectedTemplateId,
         ad_copy: adCopy,
+        adset_count: adsetCount,
       });
       setLaunchResults(data.data);
       // Refresh videos to get updated statuses
@@ -823,6 +878,47 @@ export default function AdsLauncherPage() {
               <AdCopyEditor adCopy={adCopy} onChange={setAdCopy} />
             </Card>
 
+            {/* Multi-Adset */}
+            <Card>
+              <SectionLabel icon={Megaphone}>Ad Set Duplication</SectionLabel>
+              <p className="text-xs text-zinc-500 mb-3">
+                Launch the same videos into multiple ad sets at once. Each ad set gets its own copy of every video ad.
+              </p>
+              <div className="flex items-center gap-4">
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setAdsetCount(prev => Math.max(1, prev - 1))}
+                    disabled={adsetCount <= 1}
+                    className="w-8 h-8 rounded-lg bg-white/[0.04] border border-white/[0.08] flex items-center justify-center text-zinc-300 hover:bg-white/[0.08] transition cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+                  >
+                    −
+                  </button>
+                  <div className="w-16 text-center">
+                    <span className="text-lg font-semibold text-white font-mono">{adsetCount}</span>
+                  </div>
+                  <button
+                    onClick={() => setAdsetCount(prev => Math.min(20, prev + 1))}
+                    disabled={adsetCount >= 20}
+                    className="w-8 h-8 rounded-lg bg-white/[0.04] border border-white/[0.08] flex items-center justify-center text-zinc-300 hover:bg-white/[0.08] transition cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+                  >
+                    +
+                  </button>
+                </div>
+                <div className="text-xs text-zinc-500 font-mono">
+                  {adsetCount === 1
+                    ? `${selectedIds.size} ad${selectedIds.size > 1 ? 's' : ''} → 1 ad set`
+                    : `${selectedIds.size} video${selectedIds.size > 1 ? 's' : ''} × ${adsetCount} ad sets = ${selectedIds.size * adsetCount} ads total`
+                  }
+                </div>
+              </div>
+              {adsetCount > 5 && (
+                <div className="mt-2 flex items-center gap-2 text-xs text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2">
+                  <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
+                  High ad set count. Each ad set creates {selectedIds.size} ads. Total: {selectedIds.size * adsetCount} ads.
+                </div>
+              )}
+            </Card>
+
             {/* Next step */}
             <div className="flex justify-end">
               <GoldButton
@@ -859,6 +955,14 @@ export default function AdsLauncherPage() {
               <div className="flex items-center justify-between py-2 border-b border-white/[0.05]">
                 <span className="text-xs text-zinc-400">Ad Copy</span>
                 <span className="text-sm text-white font-medium">{adCopy.primary_text ? 'Set' : 'Empty'}</span>
+              </div>
+              <div className="flex items-center justify-between py-2 border-b border-white/[0.05]">
+                <span className="text-xs text-zinc-400">Ad Sets</span>
+                <span className="text-sm text-white font-medium">{adsetCount}</span>
+              </div>
+              <div className="flex items-center justify-between py-2 border-b border-white/[0.05]">
+                <span className="text-xs text-zinc-400">Total Ads</span>
+                <span className="text-sm text-white font-medium font-mono">{selectedIds.size * adsetCount}</span>
               </div>
               <div className="flex items-center justify-between py-2">
                 <span className="text-xs text-zinc-400">Status</span>
@@ -899,8 +1003,8 @@ export default function AdsLauncherPage() {
             >
               <Rocket className="w-4 h-4" />
               {launching
-                ? `Launching ${selectedIds.size} video${selectedIds.size > 1 ? 's' : ''}...`
-                : `Launch ${selectedIds.size} Video Ad${selectedIds.size > 1 ? 's' : ''}`
+                ? `Launching ${selectedIds.size * adsetCount} ad${selectedIds.size * adsetCount > 1 ? 's' : ''}...`
+                : `Launch ${selectedIds.size * adsetCount} Ad${selectedIds.size * adsetCount > 1 ? 's' : ''}${adsetCount > 1 ? ` into ${adsetCount} Ad Sets` : ''}`
               }
             </GoldButton>
           )}
@@ -915,7 +1019,7 @@ export default function AdsLauncherPage() {
 
           {/* Launch results */}
           {launchResults && (
-            <LaunchResults results={launchResults.results} adsetName={launchResults.adset_name} />
+            <LaunchResults results={launchResults.results} adsets={launchResults.adsets} />
           )}
         </div>
       )}
