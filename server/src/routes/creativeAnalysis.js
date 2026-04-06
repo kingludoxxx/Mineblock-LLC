@@ -1999,6 +1999,330 @@ router.get('/creative-daily', authenticate, async (req, res) => {
   }
 });
 
+// ── Meta Insights Cache Table ─────────────────────────────────────
+
+async function ensureMetaInsightsTable() {
+  await pgQuery(`
+    CREATE TABLE IF NOT EXISTS creative_meta_insights (
+      id SERIAL PRIMARY KEY,
+      meta_ad_id TEXT NOT NULL UNIQUE,
+      creative_id TEXT,
+      impressions BIGINT DEFAULT 0,
+      reach BIGINT DEFAULT 0,
+      clicks BIGINT DEFAULT 0,
+      ctr NUMERIC(8,4) DEFAULT 0,
+      cpc NUMERIC(10,2) DEFAULT 0,
+      cpm NUMERIC(10,2) DEFAULT 0,
+      frequency NUMERIC(8,2) DEFAULT 0,
+      meta_spend NUMERIC(12,2) DEFAULT 0,
+      reactions_like INTEGER DEFAULT 0,
+      reactions_love INTEGER DEFAULT 0,
+      reactions_care INTEGER DEFAULT 0,
+      reactions_haha INTEGER DEFAULT 0,
+      reactions_wow INTEGER DEFAULT 0,
+      reactions_sad INTEGER DEFAULT 0,
+      reactions_angry INTEGER DEFAULT 0,
+      total_reactions INTEGER DEFAULT 0,
+      post_clicks INTEGER DEFAULT 0,
+      comments INTEGER DEFAULT 0,
+      shares INTEGER DEFAULT 0,
+      video_views INTEGER DEFAULT 0,
+      video_3s_views INTEGER DEFAULT 0,
+      video_30s_views INTEGER DEFAULT 0,
+      video_avg_time NUMERIC(10,2) DEFAULT 0,
+      video_p25 INTEGER DEFAULT 0,
+      video_p50 INTEGER DEFAULT 0,
+      video_p75 INTEGER DEFAULT 0,
+      video_p95 INTEGER DEFAULT 0,
+      video_p100 INTEGER DEFAULT 0,
+      hook_rate NUMERIC(8,4) DEFAULT 0,
+      hold_rate NUMERIC(8,4) DEFAULT 0,
+      fetched_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+}
+
+// ── Meta Insights Fetch & Cache ──────────────────────────────────
+
+const META_INSIGHTS_CACHE_TTL = 4 * 60 * 60 * 1000; // 4 hours
+
+async function fetchMetaInsights(metaAdId) {
+  if (!META_ACCESS_TOKEN || !metaAdId) return null;
+  await ensureMetaInsightsTable();
+
+  // Check cache
+  const cached = await pgQuery(
+    `SELECT * FROM creative_meta_insights WHERE meta_ad_id = $1 AND fetched_at > NOW() - INTERVAL '4 hours'`,
+    [metaAdId]
+  );
+  if (cached.length) return cached[0];
+
+  // Fetch from Meta
+  try {
+    const fields = [
+      'impressions', 'reach', 'clicks', 'ctr', 'cpc', 'cpm', 'frequency', 'spend',
+      'actions', 'video_avg_time_watched',
+      'video_p25_watched_actions', 'video_p50_watched_actions',
+      'video_p75_watched_actions', 'video_p95_watched_actions',
+      'video_p100_watched_actions', 'video_30_sec_watched_actions',
+      'video_play_actions',
+    ].join(',');
+
+    const url = `${META_GRAPH_URL}/${metaAdId}/insights?fields=${fields}&date_preset=maximum&access_token=${META_ACCESS_TOKEN}`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(30000) });
+    if (!res.ok) {
+      const errText = await res.text();
+      console.warn(`[Meta Insights] Failed for ${metaAdId}: ${res.status} ${errText.slice(0, 200)}`);
+      return null;
+    }
+
+    const json = await res.json();
+    const d = json.data?.[0] || {};
+
+    // Parse actions array
+    const actions = Array.isArray(d.actions) ? d.actions : [];
+    const getAction = (type) => {
+      const a = actions.find(a => a.action_type === type);
+      return parseInt(a?.value || '0', 10);
+    };
+
+    // Parse video watched actions (they come as arrays of objects)
+    const getVideoAction = (arr) => {
+      if (!Array.isArray(arr)) return 0;
+      return arr.reduce((sum, item) => sum + (parseInt(item?.value || '0', 10)), 0);
+    };
+
+    const impressions = parseInt(d.impressions || '0', 10);
+    const reach = parseInt(d.reach || '0', 10);
+    const clicks = parseInt(d.clicks || '0', 10);
+    const ctr = parseFloat(d.ctr || '0');
+    const cpc = parseFloat(d.cpc || '0');
+    const cpm = parseFloat(d.cpm || '0');
+    const frequency = parseFloat(d.frequency || '0');
+    const metaSpend = parseFloat(d.spend || '0');
+
+    // Engagement
+    const reactionsLike = getAction('like');
+    const reactionsLove = getAction('love');
+    const reactionsCare = getAction('care');
+    const reactionsHaha = getAction('haha');
+    const reactionsWow = getAction('wow');
+    const reactionsSad = getAction('sad');
+    const reactionsAngry = getAction('angry');
+    const postReaction = getAction('post_reaction');
+    const totalReactions = postReaction || (reactionsLike + reactionsLove + reactionsCare + reactionsHaha + reactionsWow + reactionsSad + reactionsAngry);
+    const postClicks = getAction('link_click');
+    const commentsCount = getAction('comment');
+    const sharesCount = getAction('post');
+
+    // Video metrics
+    const videoViews = getVideoAction(d.video_play_actions);
+    const video3s = getAction('video_view');
+    const video30s = getVideoAction(d.video_30_sec_watched_actions);
+    const videoAvgTime = parseFloat(d.video_avg_time_watched || '0');
+    const videoP25 = getVideoAction(d.video_p25_watched_actions);
+    const videoP50 = getVideoAction(d.video_p50_watched_actions);
+    const videoP75 = getVideoAction(d.video_p75_watched_actions);
+    const videoP95 = getVideoAction(d.video_p95_watched_actions);
+    const videoP100 = getVideoAction(d.video_p100_watched_actions);
+
+    // Computed rates
+    const hookRate = impressions > 0 ? (video3s || videoViews) / impressions : 0;
+    const holdRate = (video3s || videoViews) > 0 ? videoP100 / (video3s || videoViews) : 0;
+
+    // Upsert cache
+    const row = {
+      meta_ad_id: metaAdId,
+      impressions, reach, clicks, ctr, cpc, cpm, frequency, meta_spend: metaSpend,
+      reactions_like: reactionsLike, reactions_love: reactionsLove, reactions_care: reactionsCare,
+      reactions_haha: reactionsHaha, reactions_wow: reactionsWow, reactions_sad: reactionsSad,
+      reactions_angry: reactionsAngry, total_reactions: totalReactions,
+      post_clicks: postClicks, comments: commentsCount, shares: sharesCount,
+      video_views: videoViews, video_3s_views: video3s || videoViews, video_30s_views: video30s,
+      video_avg_time: videoAvgTime, video_p25: videoP25, video_p50: videoP50,
+      video_p75: videoP75, video_p95: videoP95, video_p100: videoP100,
+      hook_rate: hookRate, hold_rate: holdRate,
+    };
+
+    await pgQuery(`
+      INSERT INTO creative_meta_insights (
+        meta_ad_id, impressions, reach, clicks, ctr, cpc, cpm, frequency, meta_spend,
+        reactions_like, reactions_love, reactions_care, reactions_haha, reactions_wow, reactions_sad, reactions_angry,
+        total_reactions, post_clicks, comments, shares,
+        video_views, video_3s_views, video_30s_views, video_avg_time,
+        video_p25, video_p50, video_p75, video_p95, video_p100,
+        hook_rate, hold_rate, fetched_at
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,NOW())
+      ON CONFLICT (meta_ad_id) DO UPDATE SET
+        impressions=$2, reach=$3, clicks=$4, ctr=$5, cpc=$6, cpm=$7, frequency=$8, meta_spend=$9,
+        reactions_like=$10, reactions_love=$11, reactions_care=$12, reactions_haha=$13, reactions_wow=$14, reactions_sad=$15, reactions_angry=$16,
+        total_reactions=$17, post_clicks=$18, comments=$19, shares=$20,
+        video_views=$21, video_3s_views=$22, video_30s_views=$23, video_avg_time=$24,
+        video_p25=$25, video_p50=$26, video_p75=$27, video_p95=$28, video_p100=$29,
+        hook_rate=$30, hold_rate=$31, fetched_at=NOW()
+    `, [
+      metaAdId, impressions, reach, clicks, ctr, cpc, cpm, frequency, metaSpend,
+      reactionsLike, reactionsLove, reactionsCare, reactionsHaha, reactionsWow, reactionsSad, reactionsAngry,
+      totalReactions, postClicks, commentsCount, sharesCount,
+      videoViews, video3s || videoViews, video30s, videoAvgTime,
+      videoP25, videoP50, videoP75, videoP95, videoP100,
+      hookRate, holdRate,
+    ]);
+
+    return row;
+  } catch (err) {
+    console.error(`[Meta Insights] Error fetching for ${metaAdId}:`, err.message);
+    return null;
+  }
+}
+
+// ── Meta Insights Endpoints ──────────────────────────────────────
+
+/**
+ * GET /meta-insights/:adId
+ * Fetch engagement + video metrics for a specific Meta ad (cached 4hr)
+ */
+router.get('/meta-insights/:adId', authenticate, async (req, res) => {
+  try {
+    if (!META_ACCESS_TOKEN) {
+      return res.status(503).json({ success: false, error: { message: 'Meta API not configured' } });
+    }
+    const insights = await fetchMetaInsights(req.params.adId);
+    if (!insights) {
+      return res.status(404).json({ success: false, error: { message: 'Could not fetch Meta insights for this ad' } });
+    }
+    res.json({ success: true, data: insights });
+  } catch (err) {
+    console.error('[Creative Analysis] /meta-insights error:', err);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+/**
+ * GET /meta-insights/:adId/daily?startDate=&endDate=
+ * Fetch daily Meta insights for ROAS/Spend chart
+ */
+router.get('/meta-insights/:adId/daily', authenticate, async (req, res) => {
+  try {
+    if (!META_ACCESS_TOKEN) {
+      return res.status(503).json({ success: false, error: { message: 'Meta API not configured' } });
+    }
+
+    const { startDate, endDate } = req.query;
+    const adId = req.params.adId;
+
+    // Default to last 30 days
+    const end = endDate || new Date().toISOString().slice(0, 10);
+    const start = startDate || (() => { const d = new Date(); d.setDate(d.getDate() - 30); return d.toISOString().slice(0, 10); })();
+
+    const url = `${META_GRAPH_URL}/${adId}/insights?fields=spend,impressions,clicks,actions&time_increment=1&time_range={"since":"${start}","until":"${end}"}&limit=500&access_token=${META_ACCESS_TOKEN}`;
+    const apiRes = await fetch(url, { signal: AbortSignal.timeout(30000) });
+    if (!apiRes.ok) {
+      const errText = await apiRes.text();
+      return res.status(apiRes.status === 400 ? 400 : 502).json({
+        success: false, error: { message: `Meta API error: ${errText.slice(0, 200)}` }
+      });
+    }
+
+    const json = await apiRes.json();
+    const rows = json.data || [];
+
+    const daily = rows.map(d => {
+      const actions = Array.isArray(d.actions) ? d.actions : [];
+      const purchaseAction = actions.find(a =>
+        a.action_type === 'offsite_conversion.fb_pixel_purchase' ||
+        a.action_type === 'purchase' ||
+        a.action_type === 'omni_purchase'
+      );
+      const revenue = parseFloat(purchaseAction?.value || '0');
+      const spend = parseFloat(d.spend || '0');
+      return {
+        date: d.date_start,
+        spend,
+        revenue,
+        roas: spend > 0 ? Math.round((revenue / spend) * 100) / 100 : 0,
+        impressions: parseInt(d.impressions || '0', 10),
+        clicks: parseInt(d.clicks || '0', 10),
+      };
+    });
+
+    res.json({ success: true, data: daily });
+  } catch (err) {
+    console.error('[Creative Analysis] /meta-insights/:adId/daily error:', err);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+/**
+ * GET /meta-lookup/:creativeId
+ * Find meta_ad_id for a creative, searching Meta API if not cached
+ */
+router.get('/meta-lookup/:creativeId', authenticate, async (req, res) => {
+  try {
+    const { creativeId } = req.params;
+
+    // Check DB first
+    const existing = await pgQuery(
+      `SELECT DISTINCT meta_ad_id, thumbnail_url, video_url FROM creative_analysis WHERE creative_id = $1 AND meta_ad_id IS NOT NULL LIMIT 1`,
+      [creativeId]
+    );
+    if (existing.length && existing[0].meta_ad_id) {
+      return res.json({ success: true, data: existing[0] });
+    }
+
+    // Search Meta API
+    if (!META_ACCESS_TOKEN || !META_AD_ACCOUNT_IDS.length) {
+      return res.json({ success: true, data: null, message: 'No Meta API configured or ad not linked' });
+    }
+
+    for (const accountId of META_AD_ACCOUNT_IDS) {
+      try {
+        const searchUrl = `${META_GRAPH_URL}/${accountId}/ads?filtering=[{"field":"name","operator":"CONTAIN","value":"${creativeId}"}]&fields=id,name,creative{thumbnail_url,video_id}&limit=10&access_token=${META_ACCESS_TOKEN}`;
+        const apiRes = await fetch(searchUrl, { signal: AbortSignal.timeout(15000) });
+        if (!apiRes.ok) continue;
+
+        const json = await apiRes.json();
+        const ads = json.data || [];
+        if (!ads.length) continue;
+
+        // Use the first matching ad
+        const ad = ads[0];
+        const metaAdId = ad.id;
+        const thumbnailUrl = ad.creative?.thumbnail_url || null;
+
+        // Get video source if video_id exists
+        let videoUrl = null;
+        if (ad.creative?.video_id) {
+          try {
+            const vidRes = await fetch(`${META_GRAPH_URL}/${ad.creative.video_id}?fields=source&access_token=${META_ACCESS_TOKEN}`, {
+              signal: AbortSignal.timeout(10000),
+            });
+            if (vidRes.ok) {
+              const vidData = await vidRes.json();
+              videoUrl = vidData.source || null;
+            }
+          } catch {}
+        }
+
+        // Update DB
+        await pgQuery(
+          `UPDATE creative_analysis SET meta_ad_id = $1, thumbnail_url = COALESCE(thumbnail_url, $2), video_url = COALESCE(video_url, $3) WHERE creative_id = $4`,
+          [metaAdId, thumbnailUrl, videoUrl, creativeId]
+        );
+
+        return res.json({ success: true, data: { meta_ad_id: metaAdId, thumbnail_url: thumbnailUrl, video_url: videoUrl } });
+      } catch (err) {
+        console.warn(`[Meta Lookup] Error searching account ${accountId}:`, err.message);
+      }
+    }
+
+    return res.json({ success: true, data: null, message: 'No matching Meta ad found' });
+  } catch (err) {
+    console.error('[Creative Analysis] /meta-lookup error:', err);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
 // ── Exported helpers for cross-module use ──────────────────────────
 
 /**

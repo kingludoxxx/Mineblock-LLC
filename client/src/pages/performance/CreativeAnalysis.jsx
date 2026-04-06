@@ -20,8 +20,8 @@ import {
   Calendar,
   Play,
   Sparkles,
-  AlertTriangle,
 } from 'lucide-react';
+import CreativeDetailModal from './CreativeDetailModal';
 import {
   ResponsiveContainer,
   ComposedChart,
@@ -273,10 +273,6 @@ export default function CreativeAnalysis() {
 
   // ── Detail panel state ──
   const [detailPanel, setDetailPanel] = useState(null); // creative object or null
-  const [detailData, setDetailData] = useState(null);
-  const [detailLoading, setDetailLoading] = useState(false);
-  const [detailRange, setDetailRange] = useState('last_30');
-  const detailAbortRef = useRef(null);
 
   // ── Calendar widget state ──
   const [calViewYear, setCalViewYear] = useState(() => new Date().getFullYear());
@@ -519,7 +515,6 @@ export default function CreativeAnalysis() {
   // ── Analytics: Angle/Format Breakdown, Rising Stars, Heatmap ──
 
   const [analyticsOpen, setAnalyticsOpen] = useState(true);
-  const [videoModal, setVideoModal] = useState(null); // { thumbnail_url, video_url, ad_name }
 
   const angleStats = useMemo(() => {
     const map = {};
@@ -651,66 +646,13 @@ export default function CreativeAnalysis() {
 
   // ── Detail panel helpers ──
 
-  const detailRangeToDate = (range) => {
-    const today = new Date();
-    const fmt = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-    const sub = (days) => { const d = new Date(today); d.setDate(d.getDate() - days); return d; };
-    switch (range) {
-      case 'last_7': return { startDate: fmt(sub(6)), endDate: fmt(today) };
-      case 'last_14': return { startDate: fmt(sub(13)), endDate: fmt(today) };
-      case 'last_30': return { startDate: fmt(sub(29)), endDate: fmt(today) };
-      case 'lifetime': return { startDate: fmt(sub(364)), endDate: fmt(today) };
-      default: return { startDate: fmt(sub(29)), endDate: fmt(today) };
-    }
-  };
-
-  const fetchDetailData = useCallback(async (creativeId, range) => {
-    if (detailAbortRef.current) detailAbortRef.current.abort();
-    const controller = new AbortController();
-    detailAbortRef.current = controller;
-    setDetailLoading(true);
-    try {
-      const { startDate: sd, endDate: ed } = detailRangeToDate(range);
-      const res = await api.get('/creative-analysis/creative-daily', {
-        params: { creative_id: creativeId, startDate: sd, endDate: ed },
-        signal: controller.signal,
-      });
-      if (controller.signal.aborted) return;
-      setDetailData(res.data?.data || null);
-    } catch (err) {
-      if (err?.name === 'CanceledError' || controller.signal.aborted) return;
-      setDetailData(null);
-    } finally {
-      if (!controller.signal.aborted) setDetailLoading(false);
-    }
-  }, []);
-
   const openDetailPanel = (creative) => {
     setDetailPanel(creative);
-    setDetailRange('last_30');
-    fetchDetailData(creative._creativeId || creative.creative_id, 'last_30');
   };
 
   const closeDetailPanel = () => {
     setDetailPanel(null);
-    setDetailData(null);
-    if (detailAbortRef.current) detailAbortRef.current.abort();
   };
-
-  const changeDetailRange = (range) => {
-    setDetailRange(range);
-    if (detailPanel) {
-      fetchDetailData(detailPanel._creativeId || detailPanel.creative_id, range);
-    }
-  };
-
-  // Close detail panel on Escape
-  useEffect(() => {
-    if (!detailPanel) return;
-    const handleKey = (e) => { if (e.key === 'Escape') closeDetailPanel(); };
-    document.addEventListener('keydown', handleKey);
-    return () => document.removeEventListener('keydown', handleKey);
-  }, [detailPanel]);
 
   const SortIcon = ({ colKey }) => {
     if (sortConfig.key !== colKey)
@@ -1671,319 +1613,10 @@ export default function CreativeAnalysis() {
         )}
       </div>
 
-      {/* Video Player Modal */}
-      {videoModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80" onClick={() => setVideoModal(null)}>
-          <div className="relative max-w-3xl w-full mx-4" onClick={(e) => e.stopPropagation()}>
-            <button onClick={() => setVideoModal(null)} className="absolute -top-10 right-0 text-white/70 hover:text-white">
-              <X className="w-6 h-6" />
-            </button>
-            <div className="bg-[#111] rounded-xl overflow-hidden">
-              {videoModal.video_url ? (
-                  <video
-                    src={videoModal.video_url}
-                    className="w-full max-h-[80vh]"
-                    controls
-                    autoPlay
-                    onError={(e) => { e.target.style.display = 'none'; e.target.nextSibling && (e.target.nextSibling.style.display = 'flex'); }}
-                  />
-              ) : null}
-              {videoModal.thumbnail_url && !videoModal.video_url ? (
-                <img
-                  src={videoModal.thumbnail_url}
-                  alt=""
-                  className="w-full max-h-[80vh] object-contain"
-                  onError={(e) => { e.target.style.display = 'none'; e.target.nextSibling && (e.target.nextSibling.style.display = 'flex'); }}
-                />
-              ) : null}
-              <div className="hidden items-center justify-center py-16 text-gray-500 text-sm flex-col gap-2">
-                <AlertTriangle className="w-8 h-8 text-yellow-500/60" />
-                <p>Preview expired or unavailable</p>
-                <p className="text-xs text-gray-600">Meta preview URLs expire periodically. Try syncing thumbnails.</p>
-              </div>
-              {videoModal.ad_name && (
-                <div className="p-3 border-t border-white/10">
-                  <p className="text-white text-sm">{videoModal.ad_name}</p>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
+      {/* Creative Detail Modal */}
+      {detailPanel && (
+        <CreativeDetailModal creative={detailPanel} onClose={closeDetailPanel} />
       )}
-
-      {/* Creative Detail Slide-Out Panel */}
-      {detailPanel && (() => {
-        const creative = detailPanel;
-        const cid = creative._creativeId || creative.creative_id;
-        const adName = creative.ad_name || cid;
-        const isVideo = (creative.type || '').toLowerCase() === 'video';
-        const totals = detailData?.totals || {};
-        const daily = detailData?.daily || [];
-        const roas = totals.roas ?? creative.roas ?? 0;
-        const cpa = totals.cpa ?? creative.cpa ?? 0;
-        const ctr = totals.ctr ?? creative.ctr ?? 0;
-        const cpm = totals.cpm ?? creative.cpm ?? 0;
-        const spend = totals.total_spend ?? creative.spend ?? 0;
-        const revenue = totals.total_revenue ?? creative.revenue ?? 0;
-        const purchases = totals.total_purchases ?? creative.purchases ?? 0;
-        const impressions = totals.total_impressions ?? creative.impressions ?? 0;
-        const clicks = totals.total_clicks ?? creative.clicks ?? 0;
-        const funnelRate = clicks > 0 ? ((purchases / clicks) * 100).toFixed(2) : '0.00';
-
-        const DETAIL_RANGES = [
-          { key: 'last_7', label: '7D' },
-          { key: 'last_14', label: '14D' },
-          { key: 'last_30', label: '30D' },
-          { key: 'lifetime', label: 'Lifetime' },
-        ];
-
-        const chartPoints = daily.map(d => ({
-          date: new Date(d.date + 'T00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
-          spend: d.spend,
-          roas: d.spend > 0 ? Math.round((d.revenue / d.spend) * 100) / 100 : 0,
-        }));
-
-        return (
-          <>
-            {/* Backdrop */}
-            <div
-              className="fixed inset-0 z-40 bg-black/60 transition-opacity"
-              onClick={closeDetailPanel}
-            />
-            {/* Panel */}
-            <div
-              className="fixed top-0 right-0 z-50 h-full w-full max-w-lg overflow-y-auto shadow-2xl"
-              style={{
-                background: '#0c0c0c',
-                borderLeft: '1px solid rgba(255,255,255,0.08)',
-                animation: 'slideInRight 0.25s ease-out',
-              }}
-            >
-              {/* Close button */}
-              <button
-                onClick={closeDetailPanel}
-                className="absolute top-4 right-4 z-10 w-8 h-8 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] flex items-center justify-center text-gray-400 hover:text-white transition-colors cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-
-              {/* Top section: Thumbnail + Info */}
-              <div className="flex items-start gap-4 p-6 pb-4">
-                {/* Thumbnail */}
-                <div className={`w-20 h-20 rounded-xl overflow-hidden shrink-0 flex items-center justify-center ${
-                  creative.thumbnail_url ? 'bg-black' : isVideo ? 'bg-gradient-to-br from-amber-900/40 to-purple-900/30' : 'bg-gradient-to-br from-cyan-900/30 to-emerald-900/20'
-                }`}>
-                  {creative.thumbnail_url ? (
-                    <img src={creative.thumbnail_url} alt="" className="w-full h-full object-cover" onError={(e) => { e.target.style.display = 'none'; }} />
-                  ) : isVideo ? (
-                    <Video className="w-8 h-8 text-accent-text/40" />
-                  ) : (
-                    <Image className="w-8 h-8 text-cyan-400/40" />
-                  )}
-                </div>
-                <div className="min-w-0 flex-1 pt-1">
-                  <p className="text-white font-semibold text-base truncate pr-10" title={adName}>{adName}</p>
-                  <p className="text-gray-500 text-xs mt-0.5">{cid}</p>
-                  <div className="flex items-center gap-2 mt-2">
-                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
-                      isVideo ? 'bg-accent/20 text-accent-text' : 'bg-cyan-500/20 text-cyan-400'
-                    }`}>{creative.type || 'N/A'}</span>
-                    {creative.is_winner && (
-                      <span className="px-2 py-0.5 rounded bg-yellow-500/20 text-yellow-400 text-[10px] font-bold uppercase">Winner</span>
-                    )}
-                    {(creative.spend || creative.total_spend || 0) > 0 && (
-                      <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400 text-[10px] font-bold uppercase">Active</span>
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              {/* Metric Cards Grid */}
-              <div className="px-6 pb-4">
-                <div className="grid grid-cols-4 gap-2">
-                  {/* Row 1 */}
-                  <div className="bg-white/[0.04] border border-white/[0.06] rounded-lg p-3">
-                    <p className="text-gray-500 text-[10px] uppercase tracking-wider mb-1">Spend</p>
-                    <p className="text-white font-semibold text-sm">{fmtMoney(spend)}</p>
-                  </div>
-                  <div className="bg-white/[0.04] border border-white/[0.06] rounded-lg p-3">
-                    <p className="text-gray-500 text-[10px] uppercase tracking-wider mb-1">Revenue</p>
-                    <p className="text-white font-semibold text-sm">{fmtMoney(revenue)}</p>
-                  </div>
-                  <div className="bg-white/[0.04] border border-white/[0.06] rounded-lg p-3">
-                    <p className="text-gray-500 text-[10px] uppercase tracking-wider mb-1">ROAS</p>
-                    <p className={`font-semibold text-sm ${roas >= 1 ? 'text-emerald-400' : 'text-red-400'}`}>{fmtRoas(roas)}</p>
-                  </div>
-                  <div className="bg-white/[0.04] border border-white/[0.06] rounded-lg p-3">
-                    <p className="text-gray-500 text-[10px] uppercase tracking-wider mb-1">CPA</p>
-                    <p className="text-white font-semibold text-sm">{fmtMoney(cpa)}</p>
-                  </div>
-                  {/* Row 2 */}
-                  <div className="bg-white/[0.04] border border-white/[0.06] rounded-lg p-3">
-                    <p className="text-gray-500 text-[10px] uppercase tracking-wider mb-1">Impressions</p>
-                    <p className="text-white font-semibold text-sm">{fmtInt(impressions)}</p>
-                  </div>
-                  <div className="bg-white/[0.04] border border-white/[0.06] rounded-lg p-3">
-                    <p className="text-gray-500 text-[10px] uppercase tracking-wider mb-1">Clicks</p>
-                    <p className="text-white font-semibold text-sm">{fmtInt(clicks)}</p>
-                  </div>
-                  <div className="bg-white/[0.04] border border-white/[0.06] rounded-lg p-3">
-                    <p className="text-gray-500 text-[10px] uppercase tracking-wider mb-1">CTR</p>
-                    <p className="text-white font-semibold text-sm">{fmtPct(ctr)}</p>
-                  </div>
-                  <div className="bg-white/[0.04] border border-white/[0.06] rounded-lg p-3">
-                    <p className="text-gray-500 text-[10px] uppercase tracking-wider mb-1">CPM</p>
-                    <p className="text-white font-semibold text-sm">{fmtMoney(cpm)}</p>
-                  </div>
-                  {/* Row 3 */}
-                  <div className="bg-white/[0.04] border border-white/[0.06] rounded-lg p-3">
-                    <p className="text-gray-500 text-[10px] uppercase tracking-wider mb-1">Purchases</p>
-                    <p className="text-white font-semibold text-sm">{fmtInt(purchases)}</p>
-                  </div>
-                  <div className="bg-white/[0.04] border border-white/[0.06] rounded-lg p-3">
-                    <p className="text-gray-500 text-[10px] uppercase tracking-wider mb-1">Reach</p>
-                    <p className="text-white font-semibold text-sm">{fmtInt(impressions)}</p>
-                  </div>
-                  <div className="col-span-2" />
-                </div>
-              </div>
-
-              {/* Graph Section */}
-              <div className="px-6 pb-4">
-                <div className="bg-white/[0.04] border border-white/[0.06] rounded-xl p-4">
-                  <div className="flex items-center justify-between mb-4">
-                    <h4 className="text-white font-semibold text-sm uppercase tracking-wider">Ad Spend & ROAS</h4>
-                    <div className="flex items-center gap-1">
-                      {DETAIL_RANGES.map(r => (
-                        <button
-                          key={r.key}
-                          onClick={() => changeDetailRange(r.key)}
-                          className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer ${
-                            detailRange === r.key
-                              ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                              : 'text-gray-500 hover:text-gray-300 border border-transparent'
-                          }`}
-                        >
-                          {r.label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  {detailLoading ? (
-                    <div className="flex items-center justify-center h-48">
-                      <RefreshCw className="w-5 h-5 text-accent-text animate-spin" />
-                    </div>
-                  ) : chartPoints.length > 0 ? (
-                    <ResponsiveContainer width="100%" height={220}>
-                      <ComposedChart data={chartPoints} margin={{ top: 5, right: 10, bottom: 5, left: 0 }}>
-                        <defs>
-                          <linearGradient id="detailSpendGrad" x1="0" y1="0" x2="0" y2="1">
-                            <stop offset="0%" stopColor="#E8D5A3" stopOpacity={0.3} />
-                            <stop offset="100%" stopColor="#E8D5A3" stopOpacity={0.02} />
-                          </linearGradient>
-                        </defs>
-                        <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
-                        <XAxis dataKey="date" tick={{ fill: '#6b7280', fontSize: 10 }} axisLine={{ stroke: 'rgba(255,255,255,0.1)' }} tickLine={false} />
-                        <YAxis yAxisId="left" tick={{ fill: '#6b7280', fontSize: 10 }} axisLine={{ stroke: 'rgba(255,255,255,0.1)' }} tickLine={false} tickFormatter={(v) => `$${v}`} />
-                        <YAxis yAxisId="right" orientation="right" tick={{ fill: '#6b7280', fontSize: 10 }} axisLine={{ stroke: 'rgba(255,255,255,0.1)' }} tickLine={false} tickFormatter={(v) => `${v}x`} />
-                        <Tooltip
-                          contentStyle={{ background: '#1c1c1c', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, color: '#fff', fontSize: 12 }}
-                          formatter={(value, name) => {
-                            if (name === 'Spend') return [`$${Number(value || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, 'Ad Spend'];
-                            return [`${Number(value || 0).toFixed(2)}x`, 'ROAS'];
-                          }}
-                        />
-                        <Legend wrapperStyle={{ fontSize: 11, color: '#9ca3af' }} />
-                        <Area type="monotone" dataKey="spend" name="Spend" yAxisId="left" fill="url(#detailSpendGrad)" stroke="#E8D5A3" strokeWidth={2} />
-                        <Line type="monotone" dataKey="roas" name="ROAS" yAxisId="right" stroke="#10b981" strokeWidth={2} dot={false} />
-                      </ComposedChart>
-                    </ResponsiveContainer>
-                  ) : (
-                    <div className="flex items-center justify-center h-48 text-gray-500 text-sm">
-                      No daily data available for this period.
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {/* Funnel Section */}
-              <div className="px-6 pb-6">
-                <div className="bg-white/[0.04] border border-white/[0.06] rounded-xl p-4">
-                  <h4 className="text-white font-semibold text-sm uppercase tracking-wider mb-3">Funnel</h4>
-                  <div className="flex items-center gap-3">
-                    <div className="flex-1">
-                      <div className="flex items-center justify-between text-xs mb-1.5">
-                        <span className="text-gray-400">Clicks</span>
-                        <span className="text-white font-medium">{fmtInt(clicks)}</span>
-                      </div>
-                      <div className="w-full bg-white/[0.06] rounded-full h-2">
-                        <div className="bg-accent h-2 rounded-full" style={{ width: '100%' }} />
-                      </div>
-                    </div>
-                    <ChevronRight className="w-4 h-4 text-gray-600 shrink-0" />
-                    <div className="flex-1">
-                      <div className="flex items-center justify-between text-xs mb-1.5">
-                        <span className="text-gray-400">Purchases</span>
-                        <span className="text-white font-medium">{fmtInt(purchases)}</span>
-                      </div>
-                      <div className="w-full bg-white/[0.06] rounded-full h-2">
-                        <div className="bg-emerald-500 h-2 rounded-full" style={{ width: `${clicks > 0 ? Math.min(100, (purchases / clicks) * 100) : 0}%` }} />
-                      </div>
-                    </div>
-                  </div>
-                  <p className="text-center text-xs text-gray-500 mt-3">
-                    Click-to-Purchase Rate: <span className="text-emerald-400 font-medium">{funnelRate}%</span>
-                  </p>
-                </div>
-              </div>
-
-              {/* Tags / metadata */}
-              {(creative.angle || creative.format || creative.editor || creative.avatar) && (
-                <div className="px-6 pb-6">
-                  <div className="bg-white/[0.04] border border-white/[0.06] rounded-xl p-4">
-                    <h4 className="text-white font-semibold text-sm uppercase tracking-wider mb-3">Details</h4>
-                    <div className="grid grid-cols-2 gap-2 text-xs">
-                      {creative.avatar && (
-                        <div>
-                          <span className="text-gray-500">Avatar</span>
-                          <p className="text-white mt-0.5">{creative.avatar}</p>
-                        </div>
-                      )}
-                      {creative.angle && (
-                        <div>
-                          <span className="text-gray-500">Angle</span>
-                          <p className="text-white mt-0.5">{creative.angle}</p>
-                        </div>
-                      )}
-                      {creative.format && (
-                        <div>
-                          <span className="text-gray-500">Format</span>
-                          <p className="text-white mt-0.5">{creative.format}</p>
-                        </div>
-                      )}
-                      {creative.editor && (
-                        <div>
-                          <span className="text-gray-500">Editor</span>
-                          <p className="text-white mt-0.5">{creative.editor}</p>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* Keyframe animation for slide-in */}
-            <style>{`
-              @keyframes slideInRight {
-                from { transform: translateX(100%); }
-                to { transform: translateX(0); }
-              }
-            `}</style>
-          </>
-        );
-      })()}
     </div>
   );
 }
