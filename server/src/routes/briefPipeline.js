@@ -2096,6 +2096,20 @@ Every hook MUST pass ALL of these checks. If a hook fails any check, REWRITE it 
 - Write like a human speaking to one person
 - Keep rhythm natural and engaging
 
+## Formatting
+- Never use em dashes (—) or hyphens (-) inside any copy. Use periods, line breaks, or rewrite sentence structure instead.
+- All pricing in USD
+- Use contractions: "don't", "can't", "won't", "it's", "that's", "here's"
+- Use sentence fragments where the original does
+- End cleanly at the product URL with no additional copy after it
+- No markdown formatting in the body text. No bold, no italics, no headers. Just plain text with paragraph breaks.
+
+## CTA
+- If the product profile includes a discount code, include it in the CTA
+- If the product profile includes a product URL, reference it
+- Match the CTA energy and structure of the original
+- Keep the CTA short and direct
+
 # HARD CONSTRAINTS
 - Do NOT introduce new claims not supported by the product profile
 - Do NOT change product positioning
@@ -2105,6 +2119,9 @@ Every hook MUST pass ALL of these checks. If a hook fails any check, REWRITE it 
 - If iteration rules specify "must stay fixed" items, treat them as absolute constraints
 - If iteration rules specify "high-risk changes", treat them as forbidden
 - If compliance restrictions exist, respect them absolutely
+- Never directly promise the viewer will win or earn money
+- Use distanced framing for all performance claims (e.g. "someone in the mining community", "results seen in the community")
+- Never attribute wins to a named customer or client of the product
 
 Return ONLY valid JSON:
 {
