@@ -299,18 +299,48 @@ async function callClaude(systemPrompt, userPrompt, maxTokens = 3000, { fast = f
 
   // Strip markdown fences if present, then extract JSON
   let cleaned = text.trim();
-  const fenceMatch = cleaned.match(/```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/);
+
+  // Try to match fenced JSON block (with or without closing fence for truncated responses)
+  const fenceMatch = cleaned.match(/```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/) ||
+                     cleaned.match(/```(?:json)?\s*\n?([\s\S]+)$/);
   if (fenceMatch) cleaned = fenceMatch[1].trim();
 
-  const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+  // Extract JSON object — first try with closing brace, then without (truncated)
+  let jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+  let wasTruncated = false;
+  if (!jsonMatch) {
+    // Response may be truncated — grab from first { to end of string
+    jsonMatch = cleaned.match(/\{[\s\S]+$/);
+    wasTruncated = !!jsonMatch;
+  }
   if (!jsonMatch) {
     throw new Error(`Claude returned no JSON block. Response: ${cleaned.slice(0, 500)}`);
   }
+
+  let raw = jsonMatch[0];
+
+  // If truncated, close open brackets/braces before parsing
+  if (wasTruncated) {
+    // Close any dangling string (odd number of unescaped quotes = mid-string cut)
+    const quotes = raw.match(/(?<!\\)"/g) || [];
+    if (quotes.length % 2 !== 0) raw += '"';
+    // Remove trailing incomplete key (key with no colon/value) or dangling comma
+    raw = raw.replace(/,\s*"[^"]*"\s*$/, '');   // trailing orphan key like , "sugge"
+    raw = raw.replace(/,\s*$/, '');
+    // Close open brackets and braces
+    const openBrackets = (raw.match(/\[/g) || []).length;
+    const closeBrackets = (raw.match(/\]/g) || []).length;
+    for (let i = 0; i < openBrackets - closeBrackets; i++) raw += ']';
+    const opens = (raw.match(/\{/g) || []).length;
+    const closes = (raw.match(/\}/g) || []).length;
+    for (let i = 0; i < opens - closes; i++) raw += '}';
+  }
+
   try {
-    return JSON.parse(jsonMatch[0]);
+    return JSON.parse(raw);
   } catch (parseErr) {
     // Try to fix common issues: trailing commas, truncated responses
-    let fixable = jsonMatch[0]
+    let fixable = raw
       .replace(/,\s*([}\]])/g, '$1');  // remove trailing commas
     // If still truncated, try to close open braces
     const opens = (fixable.match(/\{/g) || []).length;
@@ -320,7 +350,7 @@ async function callClaude(systemPrompt, userPrompt, maxTokens = 3000, { fast = f
     const closeBrackets = (fixable.match(/\]/g) || []).length;
     for (let i = 0; i < openBrackets - closeBrackets; i++) fixable += ']';
     try { return JSON.parse(fixable); } catch {}
-    throw new Error(`Failed to parse Claude JSON: ${parseErr.message}\nRaw: ${jsonMatch[0].slice(0, 300)}`);
+    throw new Error(`Failed to parse Claude JSON: ${parseErr.message}\nRaw: ${raw.slice(0, 300)}`);
   }
 }
 
