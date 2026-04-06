@@ -2068,7 +2068,7 @@ async function fetchMetaInsights(metaAdId) {
       'video_play_actions',
     ].join(',');
 
-    const url = `${META_GRAPH_URL}/${metaAdId}/insights?fields=${fields}&date_preset=maximum&access_token=${META_ACCESS_TOKEN}`;
+    const url = `${META_GRAPH_URL}/${metaAdId}/insights?fields=${fields}&date_preset=maximum&action_breakdowns=action_reaction&access_token=${META_ACCESS_TOKEN}`;
     const res = await fetch(url, { signal: AbortSignal.timeout(30000) });
     if (!res.ok) {
       const errText = await res.text();
@@ -2101,14 +2101,18 @@ async function fetchMetaInsights(metaAdId) {
     const frequency = parseFloat(d.frequency || '0');
     const metaSpend = parseFloat(d.spend || '0');
 
-    // Engagement
-    const reactionsLike = getAction('like');
-    const reactionsLove = getAction('love');
-    const reactionsCare = getAction('care');
-    const reactionsHaha = getAction('haha');
-    const reactionsWow = getAction('wow');
-    const reactionsSad = getAction('sad');
-    const reactionsAngry = getAction('angry');
+    // Engagement — parse reaction breakdowns (action_breakdowns=action_reaction)
+    const getReaction = (reactionType) => {
+      const a = actions.find(a => a.action_type === 'post_reaction' && a.action_reaction === reactionType);
+      return parseInt(a?.value || '0', 10);
+    };
+    const reactionsLike = getReaction('like');
+    const reactionsLove = getReaction('love');
+    const reactionsCare = getReaction('care');
+    const reactionsHaha = getReaction('haha');
+    const reactionsWow = getReaction('wow');
+    const reactionsSad = getReaction('sad');
+    const reactionsAngry = getReaction('angry');
     const postReaction = getAction('post_reaction');
     const totalReactions = postReaction || (reactionsLike + reactionsLove + reactionsCare + reactionsHaha + reactionsWow + reactionsSad + reactionsAngry);
     const postClicks = getAction('link_click');

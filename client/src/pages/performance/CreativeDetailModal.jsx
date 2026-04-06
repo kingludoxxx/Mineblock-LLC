@@ -67,18 +67,20 @@ function ReactionIcon({ type, count }) {
 function RetentionChart({ insights, impressions: totalImpressions }) {
   if (!insights) return null;
 
-  const views = insights.video_3s_views || insights.video_views || 0;
-  if (!views) return null;
+  const views3s = insights.video_3s_views || insights.video_views || 0;
+  const viewsTotal = insights.video_views || insights.video_3s_views || 0;
+  if (!views3s) return null;
 
   // Build retention curve data points
+  // 3s uses impressions as denominator (hook rate), percentiles use total plays as denominator
   const data = [
     { label: '0s', pct: 100, position: 0 },
-    { label: '3s', pct: totalImpressions > 0 ? Math.round((views / totalImpressions) * 100) : 100, position: 5 },
-    { label: '25%', pct: views > 0 ? Math.round((insights.video_p25 / views) * 100) : 0, position: 25 },
-    { label: '50%', pct: views > 0 ? Math.round((insights.video_p50 / views) * 100) : 0, position: 50 },
-    { label: '75%', pct: views > 0 ? Math.round((insights.video_p75 / views) * 100) : 0, position: 75 },
-    { label: '95%', pct: views > 0 ? Math.round((insights.video_p95 / views) * 100) : 0, position: 95 },
-    { label: '100%', pct: views > 0 ? Math.round((insights.video_p100 / views) * 100) : 0, position: 100 },
+    { label: '3s', pct: totalImpressions > 0 ? Math.min(100, Math.round((views3s / totalImpressions) * 100)) : 100, position: 5 },
+    { label: '25%', pct: viewsTotal > 0 ? Math.min(100, Math.round((insights.video_p25 / viewsTotal) * 100)) : 0, position: 25 },
+    { label: '50%', pct: viewsTotal > 0 ? Math.min(100, Math.round((insights.video_p50 / viewsTotal) * 100)) : 0, position: 50 },
+    { label: '75%', pct: viewsTotal > 0 ? Math.min(100, Math.round((insights.video_p75 / viewsTotal) * 100)) : 0, position: 75 },
+    { label: '95%', pct: viewsTotal > 0 ? Math.min(100, Math.round((insights.video_p95 / viewsTotal) * 100)) : 0, position: 95 },
+    { label: '100%', pct: viewsTotal > 0 ? Math.min(100, Math.round((insights.video_p100 / viewsTotal) * 100)) : 0, position: 100 },
   ];
 
   const hookRate = insights.hook_rate ? (insights.hook_rate * 100).toFixed(1) : '0.0';
@@ -90,7 +92,7 @@ function RetentionChart({ insights, impressions: totalImpressions }) {
 
       {/* Stats row */}
       <div className="grid grid-cols-4 gap-2 mb-4">
-        <MetricCard label="Views" value={fmtInt(views)} small />
+        <MetricCard label="Views" value={fmtInt(views3s)} small />
         <MetricCard label="Hook Rate" value={`${hookRate}%`} highlight={parseFloat(hookRate) > 30 ? 'text-emerald-400' : 'text-amber-400'} small />
         <MetricCard label="Hold Rate" value={`${holdRate}%`} highlight={parseFloat(holdRate) > 10 ? 'text-emerald-400' : 'text-amber-400'} small />
         <MetricCard label="Avg Watch" value={fmtDuration(insights.video_avg_time)} small />
@@ -149,13 +151,12 @@ export default function CreativeDetailModal({ creative, onClose }) {
   const [metaInsights, setMetaInsights] = useState(null);
   const [metaLoading, setMetaLoading] = useState(false);
   const [metaAdId, setMetaAdId] = useState(creative?.meta_ad_id || null);
-  const [dailyData, setDailyData] = useState([]);
-  const [dailyLoading, setDailyLoading] = useState(false);
   const [twData, setTwData] = useState(null);
   const [twLoading, setTwLoading] = useState(false);
   const [chartRange, setChartRange] = useState('last_30');
   const [videoUrl, setVideoUrl] = useState(creative?.video_url || null);
   const [thumbnailUrl, setThumbnailUrl] = useState(creative?.thumbnail_url || null);
+  const [videoFailed, setVideoFailed] = useState(false);
   const videoRef = useRef(null);
 
   // ── Sync state when creative prop changes (defensive) ───────────────
@@ -167,6 +168,7 @@ export default function CreativeDetailModal({ creative, onClose }) {
     setMetaInsights(null);
     setTwData(null);
     setChartRange('last_30');
+    setVideoFailed(false);
   }, [creative]);
 
   if (!creative) return null;
@@ -265,6 +267,18 @@ export default function CreativeDetailModal({ creative, onClose }) {
     return () => { document.body.style.overflow = prev; };
   }, []);
 
+  // ── Pause & cleanup video on unmount ───────────────────────────────
+
+  useEffect(() => {
+    return () => {
+      if (videoRef.current) {
+        videoRef.current.pause();
+        videoRef.current.removeAttribute('src');
+        videoRef.current.load();
+      }
+    };
+  }, []);
+
   // ── Derived values ──────────────────────────────────────────────────
 
   const totals = twData?.totals || {};
@@ -360,7 +374,7 @@ export default function CreativeDetailModal({ creative, onClose }) {
             <div className="lg:w-[42%] p-6 border-b lg:border-b-0 lg:border-r border-white/[0.06]">
               {/* Video Player */}
               <div className="relative rounded-xl overflow-hidden bg-black mb-5">
-                {(videoUrl || creative.video_url) ? (
+                {(videoUrl || creative.video_url) && !videoFailed ? (
                   <video
                     ref={videoRef}
                     src={videoUrl || creative.video_url}
@@ -369,19 +383,27 @@ export default function CreativeDetailModal({ creative, onClose }) {
                     className="w-full rounded-xl"
                     style={{ maxHeight: '420px' }}
                     preload="metadata"
-                    onError={(e) => { e.target.style.display = 'none'; }}
+                    onError={() => setVideoFailed(true)}
                   />
                 ) : (thumbnailUrl || creative.thumbnail_url) ? (
-                  <img
-                    src={thumbnailUrl || creative.thumbnail_url}
-                    alt=""
-                    className="w-full rounded-xl object-contain"
-                    style={{ maxHeight: '420px' }}
-                  />
+                  <div className="relative">
+                    <img
+                      src={thumbnailUrl || creative.thumbnail_url}
+                      alt=""
+                      className="w-full rounded-xl object-contain"
+                      style={{ maxHeight: '420px' }}
+                    />
+                    {videoFailed && (
+                      <div className="absolute bottom-2 left-2 right-2 bg-black/70 rounded-lg px-3 py-1.5 flex items-center gap-2 text-xs text-amber-400">
+                        <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
+                        Video preview expired — showing thumbnail instead
+                      </div>
+                    )}
+                  </div>
                 ) : (
                   <div className="w-full h-64 rounded-xl bg-gradient-to-br from-purple-900/30 to-indigo-900/20 flex flex-col items-center justify-center gap-2">
                     <Video className="w-12 h-12 text-purple-400/30" />
-                    <p className="text-gray-600 text-xs">No preview available</p>
+                    <p className="text-gray-600 text-xs">{videoFailed ? 'Video preview expired' : 'No preview available'}</p>
                   </div>
                 )}
               </div>
