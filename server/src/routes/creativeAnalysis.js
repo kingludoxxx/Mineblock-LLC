@@ -2046,9 +2046,13 @@ async function ensureMetaInsightsTable() {
 
 const META_INSIGHTS_CACHE_TTL = 4 * 60 * 60 * 1000; // 4 hours
 
+let metaInsightsTableReady = false;
 async function fetchMetaInsights(metaAdId) {
   if (!META_ACCESS_TOKEN || !metaAdId) return null;
-  await ensureMetaInsightsTable();
+  if (!metaInsightsTableReady) {
+    try { await ensureMetaInsightsTable(); metaInsightsTableReady = true; }
+    catch (e) { console.warn('[Meta Insights] Table creation failed:', e.message); return null; }
+  }
 
   // Check cache
   const cached = await pgQuery(
@@ -2068,11 +2072,11 @@ async function fetchMetaInsights(metaAdId) {
       'video_play_actions',
     ].join(',');
 
-    const url = `${META_GRAPH_URL}/${metaAdId}/insights?fields=${fields}&date_preset=maximum&action_breakdowns=action_reaction&access_token=${META_ACCESS_TOKEN}`;
+    const url = `${META_GRAPH_URL}/${encodeURIComponent(metaAdId)}/insights?fields=${fields}&date_preset=maximum&action_breakdowns=action_reaction&access_token=${META_ACCESS_TOKEN}`;
     const res = await fetch(url, { signal: AbortSignal.timeout(30000) });
     if (!res.ok) {
       const errText = await res.text();
-      console.warn(`[Meta Insights] Failed for ${metaAdId}: ${res.status} ${errText.slice(0, 200)}`);
+      console.warn(`[Meta Insights] Failed for ${metaAdId}: ${res.status} ${errText.replace(META_ACCESS_TOKEN, '[REDACTED]').slice(0, 200)}`);
       return null;
     }
 
@@ -2215,16 +2219,19 @@ router.get('/meta-insights/:adId/daily', authenticate, async (req, res) => {
     const { startDate, endDate } = req.query;
     const adId = req.params.adId;
 
-    // Default to last 30 days
-    const end = endDate || new Date().toISOString().slice(0, 10);
-    const start = startDate || (() => { const d = new Date(); d.setDate(d.getDate() - 30); return d.toISOString().slice(0, 10); })();
+    // Validate date format to prevent URL injection
+    const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+    const end = endDate && dateRegex.test(endDate) ? endDate : new Date().toISOString().slice(0, 10);
+    const start = startDate && dateRegex.test(startDate) ? startDate : (() => { const d = new Date(); d.setDate(d.getDate() - 30); return d.toISOString().slice(0, 10); })();
 
-    const url = `${META_GRAPH_URL}/${adId}/insights?fields=spend,impressions,clicks,actions&time_increment=1&time_range={"since":"${start}","until":"${end}"}&limit=500&access_token=${META_ACCESS_TOKEN}`;
+    const url = `${META_GRAPH_URL}/${encodeURIComponent(adId)}/insights?fields=spend,impressions,clicks,actions&time_increment=1&time_range={"since":"${start}","until":"${end}"}&limit=500&access_token=${META_ACCESS_TOKEN}`;
     const apiRes = await fetch(url, { signal: AbortSignal.timeout(30000) });
     if (!apiRes.ok) {
       const errText = await apiRes.text();
+      // Sanitize error text to prevent token leakage
+      const safeErr = errText.replace(META_ACCESS_TOKEN, '[REDACTED]').slice(0, 200);
       return res.status(apiRes.status === 400 ? 400 : 502).json({
-        success: false, error: { message: `Meta API error: ${errText.slice(0, 200)}` }
+        success: false, error: { message: `Meta API error: ${safeErr}` }
       });
     }
 
@@ -2281,7 +2288,7 @@ router.get('/meta-lookup/:creativeId', authenticate, async (req, res) => {
 
     for (const accountId of META_AD_ACCOUNT_IDS) {
       try {
-        const searchUrl = `${META_GRAPH_URL}/${accountId}/ads?filtering=[{"field":"name","operator":"CONTAIN","value":"${creativeId}"}]&fields=id,name,creative{thumbnail_url,video_id}&limit=10&access_token=${META_ACCESS_TOKEN}`;
+        const searchUrl = `${META_GRAPH_URL}/${accountId}/ads?filtering=[{"field":"name","operator":"CONTAIN","value":"${encodeURIComponent(creativeId)}"}]&fields=id,name,creative{thumbnail_url,video_id}&limit=10&access_token=${META_ACCESS_TOKEN}`;
         const apiRes = await fetch(searchUrl, { signal: AbortSignal.timeout(15000) });
         if (!apiRes.ok) continue;
 
