@@ -835,7 +835,10 @@ async function syncMetaThumbnails() {
           console.warn(`[Meta Sync] Error for ${accountId}:`, data.error.message);
           break;
         }
-        if (data.data) metaAds.push(...data.data);
+        if (data.data) {
+          for (const ad of data.data) { ad._sourceAccount = accountId; }
+          metaAds.push(...data.data);
+        }
         url = data.paging?.next || null;
         pageCount++;
       }
@@ -867,6 +870,7 @@ async function syncMetaThumbnails() {
         thumbnail_url: thumbnailUrl,
         video_id: ad.creative?.video_id || null,
         meta_ad_id: ad.id,
+        account_id: ad._sourceAccount,
       });
     } else {
       // Fuzzy match: extract creative_id from Meta ad name and match to DB rows missing thumbnails
@@ -878,18 +882,26 @@ async function syncMetaThumbnails() {
             thumbnail_url: thumbnailUrl,
             video_id: ad.creative?.video_id || null,
             meta_ad_id: ad.id,
+            account_id: ad._sourceAccount,
           });
         }
       }
     }
   }
 
-  // 4. For video ads, fetch video source URLs in BULK via advideos endpoint
-  //    The /{video_id}?fields=source approach fails — Marketing API tokens lack
-  //    permission on the raw Video node. But /{ad_account}/advideos works.
+  // 4. For video ads, fetch video source URLs
+  //    Strategy: bulk-fetch advideos per account, then try direct /{video_id} as fallback
   const adIdsWithVideo = updates.filter(u => u.video_id);
   const videoSourceUrls = new Map(); // video_id -> source URL
 
+  // Group video_ids by their source account so we query the right account
+  const videoIdsByAccount = new Map(); // account_id -> Set of video_ids
+  for (const upd of adIdsWithVideo) {
+    if (!videoIdsByAccount.has(upd.account_id)) videoIdsByAccount.set(upd.account_id, new Set());
+    videoIdsByAccount.get(upd.account_id).add(upd.video_id);
+  }
+
+  // Bulk-fetch advideos from each account
   for (const accountId of META_AD_ACCOUNT_IDS) {
     try {
       let url = `${META_GRAPH_URL}/${accountId}/advideos?fields=id,source&limit=100&access_token=${META_ACCESS_TOKEN}`;
@@ -911,13 +923,35 @@ async function syncMetaThumbnails() {
       console.warn(`[Meta Sync] advideos fetch error for ${accountId}:`, err.message);
     }
   }
-  console.log(`[Meta Sync] Fetched ${videoSourceUrls.size} video source URLs via advideos for ${adIdsWithVideo.length} video ads`);
+  console.log(`[Meta Sync] Bulk advideos: ${videoSourceUrls.size} source URLs. Video ads: ${adIdsWithVideo.length}`);
 
-  // Debug: log sample video_ids to check matching
-  const sampleAdVideoIds = adIdsWithVideo.slice(0, 5).map(u => u.video_id);
-  const sampleMapKeys = [...videoSourceUrls.keys()].slice(0, 5);
-  console.log(`[Meta Sync] DEBUG sample ad video_ids: ${JSON.stringify(sampleAdVideoIds)}`);
-  console.log(`[Meta Sync] DEBUG sample advideos keys: ${JSON.stringify(sampleMapKeys)}`);
+  // Fallback: for video_ids not found in bulk, try direct /{video_id}?fields=source
+  const missingVideoIds = adIdsWithVideo
+    .filter(u => !videoSourceUrls.has(u.video_id))
+    .map(u => u.video_id);
+  const uniqueMissing = [...new Set(missingVideoIds)];
+  if (uniqueMissing.length > 0) {
+    console.log(`[Meta Sync] ${uniqueMissing.length} video_ids not found in bulk, trying direct fetch...`);
+    let directFound = 0;
+    // Limit direct fetches to avoid rate limits (max 50 at a time)
+    for (const vid of uniqueMissing.slice(0, 50)) {
+      try {
+        const resp = await fetch(
+          `${META_GRAPH_URL}/${vid}?fields=source&access_token=${META_ACCESS_TOKEN}`,
+          { signal: AbortSignal.timeout(8000) }
+        );
+        if (resp.ok) {
+          const data = await resp.json();
+          if (data.source) {
+            videoSourceUrls.set(vid, data.source);
+            directFound++;
+          }
+        }
+      } catch (e) { /* skip */ }
+    }
+    console.log(`[Meta Sync] Direct video fetch: found ${directFound}/${Math.min(uniqueMissing.length, 50)} source URLs`);
+  }
+
   let videoMatchCount = 0;
 
   // 5. Update DB rows
@@ -1232,7 +1266,7 @@ router.get('/data-by-date', authenticate, async (req, res) => {
           `SELECT DISTINCT ON (creative_id) creative_id, thumbnail_url, video_url
            FROM creative_analysis
            WHERE creative_id IN (${ph}) AND thumbnail_url IS NOT NULL
-           ORDER BY creative_id, spend DESC`,
+           ORDER BY creative_id, synced_at DESC NULLS LAST, spend DESC`,
           creativeIds
         );
         for (const r of thumbRows) thumbMap.set(r.creative_id, { thumbnail_url: r.thumbnail_url, video_url: r.video_url });
@@ -2442,35 +2476,53 @@ router.get('/meta-lookup/:creativeId', authenticate, async (req, res) => {
           const videoId = adData.creative?.video_id;
           console.log(`[Meta Lookup] ad ${cached.meta_ad_id} -> video_id: ${videoId}, creative keys: ${JSON.stringify(Object.keys(adData.creative || {}))}`);
           if (videoId) {
-            // Try each account to fetch fresh source URL
-            for (const accountId of META_AD_ACCOUNT_IDS) {
-              try {
-                const vidRes = await fetch(
-                  `${META_GRAPH_URL}/${accountId}/advideos?filtering=[{"field":"id","operator":"EQUAL","value":"${videoId}"}]&fields=source&limit=1&access_token=${META_ACCESS_TOKEN}`,
-                  { signal: AbortSignal.timeout(10000) }
-                );
-                if (vidRes.ok) {
-                  const vidData = await vidRes.json();
-                  console.log(`[Meta Lookup] advideos response for ${videoId} from ${accountId}: ${JSON.stringify(vidData).substring(0, 200)}`);
-                  const freshUrl = vidData.data?.[0]?.source;
-                  if (freshUrl) {
-                    // Update DB with fresh URL
-                    await pgQuery(
-                      `UPDATE creative_analysis SET video_url = $1, synced_at = NOW() WHERE creative_id = $2`,
-                      [freshUrl, creativeId]
-                    );
-                    return res.json({
-                      success: true,
-                      data: {
-                        meta_ad_id: cached.meta_ad_id,
-                        thumbnail_url: adData.creative?.thumbnail_url || cached.thumbnail_url,
-                        video_url: freshUrl,
-                      },
-                    });
+            let freshUrl = null;
+
+            // Strategy 1: try direct /{video_id}?fields=source
+            try {
+              const directRes = await fetch(
+                `${META_GRAPH_URL}/${videoId}?fields=source&access_token=${META_ACCESS_TOKEN}`,
+                { signal: AbortSignal.timeout(8000) }
+              );
+              if (directRes.ok) {
+                const directData = await directRes.json();
+                if (directData.source) freshUrl = directData.source;
+              }
+            } catch (e) { /* try next strategy */ }
+
+            // Strategy 2: try advideos endpoint on each account
+            if (!freshUrl) {
+              for (const accountId of META_AD_ACCOUNT_IDS) {
+                try {
+                  const vidRes = await fetch(
+                    `${META_GRAPH_URL}/${accountId}/advideos?filtering=[{"field":"id","operator":"EQUAL","value":"${videoId}"}]&fields=source&limit=1&access_token=${META_ACCESS_TOKEN}`,
+                    { signal: AbortSignal.timeout(10000) }
+                  );
+                  if (vidRes.ok) {
+                    const vidData = await vidRes.json();
+                    freshUrl = vidData.data?.[0]?.source || null;
+                    if (freshUrl) break;
                   }
-                }
-              } catch (e) { console.warn(`[Meta Lookup] advideos refresh failed for account:`, e.message); }
+                } catch (e) { /* try next account */ }
+              }
             }
+
+            if (freshUrl) {
+              console.log(`[Meta Lookup] Got fresh video URL for ${creativeId}`);
+              await pgQuery(
+                `UPDATE creative_analysis SET video_url = $1, synced_at = NOW() WHERE creative_id = $2`,
+                [freshUrl, creativeId]
+              );
+              return res.json({
+                success: true,
+                data: {
+                  meta_ad_id: cached.meta_ad_id,
+                  thumbnail_url: adData.creative?.thumbnail_url || cached.thumbnail_url,
+                  video_url: freshUrl,
+                },
+              });
+            }
+            console.warn(`[Meta Lookup] Could not resolve video source for video_id ${videoId}`);
           }
         }
       } catch (e) {
@@ -2511,21 +2563,34 @@ router.get('/meta-lookup/:creativeId', authenticate, async (req, res) => {
       const metaAdId = ad.id;
       const thumbnailUrl = ad.creative?.thumbnail_url || null;
 
-      // Get video source if video_id exists — use advideos endpoint (ad account scope)
-      // because /{video_id}?fields=source fails with Marketing API tokens
+      // Get video source if video_id exists
       let videoUrl = null;
       if (ad.creative?.video_id) {
+        const vid = ad.creative.video_id;
+        // Strategy 1: direct /{video_id}?fields=source
         try {
-          const vidRes = await fetch(
-            `${META_GRAPH_URL}/${matchedAccountId}/advideos?filtering=[{"field":"id","operator":"EQUAL","value":"${ad.creative.video_id}"}]&fields=source&limit=1&access_token=${META_ACCESS_TOKEN}`,
-            { signal: AbortSignal.timeout(10000) }
+          const directRes = await fetch(
+            `${META_GRAPH_URL}/${vid}?fields=source&access_token=${META_ACCESS_TOKEN}`,
+            { signal: AbortSignal.timeout(8000) }
           );
-          if (vidRes.ok) {
-            const vidData = await vidRes.json();
-            const vid = vidData.data?.[0];
-            videoUrl = vid?.source || null;
+          if (directRes.ok) {
+            const directData = await directRes.json();
+            if (directData.source) videoUrl = directData.source;
           }
-        } catch (e) { console.warn('[Meta Lookup] Video source fetch error:', e.message); }
+        } catch (e) { /* try next */ }
+        // Strategy 2: advideos filtered
+        if (!videoUrl) {
+          try {
+            const vidRes = await fetch(
+              `${META_GRAPH_URL}/${matchedAccountId}/advideos?filtering=[{"field":"id","operator":"EQUAL","value":"${vid}"}]&fields=source&limit=1&access_token=${META_ACCESS_TOKEN}`,
+              { signal: AbortSignal.timeout(10000) }
+            );
+            if (vidRes.ok) {
+              const vidData = await vidRes.json();
+              videoUrl = vidData.data?.[0]?.source || null;
+            }
+          } catch (e) { console.warn('[Meta Lookup] Video source fetch error:', e.message); }
+        }
       }
 
       // Update DB — always overwrite video_url since Meta URLs expire
