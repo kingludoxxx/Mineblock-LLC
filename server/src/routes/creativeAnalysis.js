@@ -1827,14 +1827,28 @@ async function backfillHistory() {
     const existing = await pgQuery('SELECT DISTINCT week FROM creative_analysis WHERE week IS NOT NULL');
     const existingSet = new Set(existing.map(r => r.week));
 
-    // Generate past 12 weeks
+    // Generate past 12 weeks using ISO 8601 week numbers (matches getCurrentWeek)
     const weeks = [];
     for (let i = 0; i < 12; i++) {
       const d = new Date();
-      d.setDate(d.getDate() - i * 7);
-      const oneJan = new Date(d.getFullYear(), 0, 1);
-      const weekNum = Math.ceil(((d - oneJan) / 86400000 + oneJan.getDay() + 1) / 7);
-      const wk = `WK${String(weekNum).padStart(2, '0')}_${d.getFullYear()}`;
+      d.setUTCDate(d.getUTCDate() - i * 7);
+      const year = d.getUTCFullYear();
+      const jan4 = new Date(Date.UTC(year, 0, 4));
+      const dayOfWeek = jan4.getUTCDay() || 7;
+      const mondayW1 = new Date(jan4);
+      mondayW1.setUTCDate(jan4.getUTCDate() - dayOfWeek + 1);
+      let weekNum = Math.floor((Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) - mondayW1.getTime()) / (7 * 24 * 60 * 60 * 1000)) + 1;
+      let wkYear = year;
+      if (weekNum < 1) {
+        // Roll back to previous year's last ISO week
+        const prevJan4 = new Date(Date.UTC(year - 1, 0, 4));
+        const prevDow = prevJan4.getUTCDay() || 7;
+        const prevMondayW1 = new Date(prevJan4);
+        prevMondayW1.setUTCDate(prevJan4.getUTCDate() - prevDow + 1);
+        weekNum = Math.floor((Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) - prevMondayW1.getTime()) / (7 * 24 * 60 * 60 * 1000)) + 1;
+        wkYear = year - 1;
+      }
+      const wk = `WK${String(weekNum).padStart(2, '0')}_${wkYear}`;
       if (!existingSet.has(wk)) weeks.push(wk);
     }
 

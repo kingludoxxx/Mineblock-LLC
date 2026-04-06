@@ -183,9 +183,11 @@ export default function CreativeDetailModal({ creative, onClose }) {
   const [videoRefreshing, setVideoRefreshing] = useState(false);
   const videoRetryRef = useRef(0); // track retry count to prevent infinite loops
   const videoRef = useRef(null);
+  const cidRef = useRef(''); // track current cid to prevent stale onError handlers
 
   // ── Derived values (before effects, after hooks) ─────────────────────
   const cid = creative?._creativeId || creative?.creative_id || '';
+  cidRef.current = cid; // keep ref in sync for async handlers
   const adName = creative?.ad_name || cid;
   const isVideo = (creative?.type || '').toLowerCase() === 'video';
 
@@ -334,9 +336,9 @@ export default function CreativeDetailModal({ creative, onClose }) {
     roas: d.spend > 0 ? Math.round((d.revenue / d.spend) * 100) / 100 : 0,
   }));
 
-  // Facebook Ads Manager URL
+  // Facebook Ad Library URL
   const fbUrl = metaAdId
-    ? `https://adsmanager.facebook.com/adsmanager/manage/ads?selected_ad_ids=${metaAdId}`
+    ? `https://www.facebook.com/ads/library/?active_status=all&ad_type=all&country=US&search_type=keyword_unordered&q=${metaAdId}`
     : null;
 
   // Distribution signals
@@ -367,7 +369,7 @@ export default function CreativeDetailModal({ creative, onClose }) {
               <span className="text-gray-500 text-xs font-mono flex-shrink-0 hidden sm:inline">{cid}</span>
               <div className="flex items-center gap-1.5 flex-shrink-0">
                 <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
-                  isVideo ? 'bg-purple-500/20 text-purple-400' : 'bg-cyan-500/20 text-cyan-400'
+                  isVideo ? 'bg-emerald-500/20 text-emerald-400' : 'bg-cyan-500/20 text-cyan-400'
                 }`}>{isVideo ? 'VIDEO' : 'IMAGE'}</span>
                 {creative.is_winner && (
                   <span className="px-2 py-0.5 rounded bg-yellow-500/20 text-yellow-400 text-[10px] font-bold uppercase">Winner</span>
@@ -383,7 +385,7 @@ export default function CreativeDetailModal({ creative, onClose }) {
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600/20 border border-blue-600/30 text-blue-400 text-xs font-medium hover:bg-blue-600/30 transition"
                 >
                   <ExternalLink className="w-3.5 h-3.5" />
-                  View on Facebook
+                  Ad Library
                 </a>
               )}
               <button
@@ -415,18 +417,21 @@ export default function CreativeDetailModal({ creative, onClose }) {
                     preload="metadata"
                     onError={async () => {
                       // On playback error, try fetching a fresh URL from Meta (URLs expire)
+                      const errorCid = cid; // capture current cid to detect stale callbacks
                       if (videoRetryRef.current < 1 && isVideo) {
                         videoRetryRef.current++;
                         setVideoUrl(null); // Clear URL immediately to prevent re-render firing another onError
                         setVideoRefreshing(true);
                         try {
-                          const { data } = await api.get(`/creative-analysis/meta-lookup/${cid}?force_video=1`);
+                          const { data } = await api.get(`/creative-analysis/meta-lookup/${errorCid}?force_video=1`);
+                          if (cidRef.current !== errorCid) return; // creative changed during fetch, discard
                           if (data.data?.video_url) {
                             setVideoUrl(data.data.video_url);
                             setVideoRefreshing(false);
                             return; // Video element will re-mount via key change
                           }
                         } catch {}
+                        if (cidRef.current !== errorCid) return; // creative changed during fetch, discard
                         setVideoRefreshing(false);
                         setVideoFailed(true);
                       } else if (!videoRefreshing) {
@@ -565,7 +570,7 @@ export default function CreativeDetailModal({ creative, onClose }) {
                 <SectionHeader icon={Target} color="text-blue-400">Meta Ad Delivery</SectionHeader>
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-2">
                   <MetricCard label="Impressions" value={fmtInt(mi.impressions || impressions)} small />
-                  <MetricCard label="Reach" value={fmtInt(mi.reach || impressions)} small />
+                  <MetricCard label="Reach" value={fmtInt(mi.reach || '—')} small />
                   <MetricCard label="Clicks" value={fmtInt(mi.clicks || clicks)} small />
                   <MetricCard label="CTR" value={fmtPct(mi.ctr || ctr)} small />
                 </div>
@@ -582,8 +587,8 @@ export default function CreativeDetailModal({ creative, onClose }) {
                 <div className="bg-white/[0.03] border border-white/[0.06] rounded-xl p-4">
                   <SectionHeader icon={ShoppingCart} color="text-green-400">New Customer Metrics</SectionHeader>
                   <div className="grid grid-cols-3 gap-2">
-                    <MetricCard label="NC Purchases" value={fmtInt(purchases)} small />
-                    <MetricCard label="NC CPA" value={fmtMoney(cpa)} small />
+                    <MetricCard label="NC Purchases" value={fmtInt(totals.nc_purchases ?? purchases)} small />
+                    <MetricCard label="NC CPA" value={fmtMoney(totals.nc_cpa ?? cpa)} small />
                     <MetricCard label="Visitors" value={fmtInt(clicks)} small />
                   </div>
                 </div>
