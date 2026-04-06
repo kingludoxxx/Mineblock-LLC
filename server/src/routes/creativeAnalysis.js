@@ -2467,61 +2467,70 @@ router.get('/meta-lookup/:creativeId', authenticate, async (req, res) => {
     if (cached && cached.meta_ad_id && needsFreshUrl && META_ACCESS_TOKEN && META_AD_ACCOUNT_IDS.length) {
       try {
         // Get video_id from the ad object (Marketing API token works for ad objects)
+        // Fetch ad creative with all useful video fields
         const adRes = await fetch(
-          `${META_GRAPH_URL}/${cached.meta_ad_id}?fields=creative{video_id,thumbnail_url}&access_token=${META_ACCESS_TOKEN}`,
+          `${META_GRAPH_URL}/${cached.meta_ad_id}?fields=creative{video_id,thumbnail_url,object_story_spec,effective_object_story_id}&access_token=${META_ACCESS_TOKEN}`,
           { signal: AbortSignal.timeout(10000) }
         );
         if (adRes.ok) {
           const adData = await adRes.json();
           const videoId = adData.creative?.video_id;
-          console.log(`[Meta Lookup] ad ${cached.meta_ad_id} -> video_id: ${videoId}, creative keys: ${JSON.stringify(Object.keys(adData.creative || {}))}`);
+          const creative = adData.creative || {};
+          console.log(`[Meta Lookup] ad ${cached.meta_ad_id} -> video_id: ${videoId}, creative keys: ${JSON.stringify(Object.keys(creative))}`);
           if (videoId) {
             let freshUrl = null;
 
-            // Strategy 1: try direct /{video_id}?fields=source,permalink_url
-            try {
-              const directRes = await fetch(
-                `${META_GRAPH_URL}/${videoId}?fields=source,permalink_url&access_token=${META_ACCESS_TOKEN}`,
-                { signal: AbortSignal.timeout(8000) }
-              );
-              if (directRes.ok) {
-                const directBody = await directRes.json();
-                if (directBody.source) freshUrl = directBody.source;
-              }
-            } catch (e) { /* try next strategy */ }
+            // Strategy 1: check object_story_spec for video_data.url or video_data.video_id
+            const videoData = creative.object_story_spec?.video_data;
+            if (videoData) {
+              console.log(`[Meta Lookup] video_data keys: ${JSON.stringify(Object.keys(videoData))}`);
+              // video_data sometimes has a direct video URL or image_url
+              if (videoData.video_url) freshUrl = videoData.video_url;
+            }
 
-            // Strategy 2: try /{ad_id}/adcreatives to get video source via the ad itself
+            // Strategy 2: try direct /{video_id}?fields=source,permalink_url
             if (!freshUrl) {
               try {
-                const previewRes = await fetch(
-                  `${META_GRAPH_URL}/${cached.meta_ad_id}?fields=creative{effective_object_story_id}&access_token=${META_ACCESS_TOKEN}`,
+                const directRes = await fetch(
+                  `${META_GRAPH_URL}/${videoId}?fields=source,permalink_url&access_token=${META_ACCESS_TOKEN}`,
                   { signal: AbortSignal.timeout(8000) }
                 );
-                if (previewRes.ok) {
-                  const previewData = await previewRes.json();
-                  const storyId = previewData.creative?.effective_object_story_id;
-                  if (storyId) {
-                    // Get the video source from the post
-                    const postRes = await fetch(
-                      `${META_GRAPH_URL}/${storyId}?fields=attachments{media{source}}&access_token=${META_ACCESS_TOKEN}`,
-                      { signal: AbortSignal.timeout(8000) }
-                    );
-                    if (postRes.ok) {
-                      const postData = await postRes.json();
-                      const mediaSource = postData.attachments?.data?.[0]?.media?.source;
-                      if (mediaSource) freshUrl = mediaSource;
-                    }
+                if (directRes.ok) {
+                  const directBody = await directRes.json();
+                  console.log(`[Meta Lookup] Direct /${videoId} keys: ${JSON.stringify(Object.keys(directBody))}`);
+                  if (directBody.source) freshUrl = directBody.source;
+                  // permalink_url can be used as Facebook embed video
+                  if (!freshUrl && directBody.permalink_url) {
+                    freshUrl = directBody.permalink_url;
+                    console.log(`[Meta Lookup] Using permalink_url as fallback: ${freshUrl}`);
                   }
                 }
               } catch (e) { /* try next strategy */ }
             }
 
-            // Strategy 3: try advideos bulk list on each account, look for matching ID
+            // Strategy 3: try effective_object_story_id to get video from post
+            if (!freshUrl) {
+              const storyId = creative.effective_object_story_id;
+              if (storyId) {
+                try {
+                  const postRes = await fetch(
+                    `${META_GRAPH_URL}/${storyId}?fields=attachments{media{source}},source&access_token=${META_ACCESS_TOKEN}`,
+                    { signal: AbortSignal.timeout(8000) }
+                  );
+                  if (postRes.ok) {
+                    const postData = await postRes.json();
+                    console.log(`[Meta Lookup] Story ${storyId} keys: ${JSON.stringify(Object.keys(postData))}`);
+                    const mediaSource = postData.attachments?.data?.[0]?.media?.source || postData.source;
+                    if (mediaSource) freshUrl = mediaSource;
+                  }
+                } catch (e) { /* try next strategy */ }
+              }
+            }
+
+            // Strategy 4: try advideos bulk list on each account
             if (!freshUrl) {
               for (const accountId of META_AD_ACCOUNT_IDS) {
                 try {
-                  // Use bulk list (no filtering since filtering by id is not supported)
-                  // and scan for the matching video_id — limit to first 500 to avoid timeout
                   let pgUrl = `${META_GRAPH_URL}/${accountId}/advideos?fields=id,source&limit=100&access_token=${META_ACCESS_TOKEN}`;
                   let pages = 0;
                   while (pgUrl && pages < 5 && !freshUrl) {
