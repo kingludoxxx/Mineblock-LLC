@@ -24,17 +24,13 @@ import {
 import CreativeDetailModal from './CreativeDetailModal';
 import {
   ResponsiveContainer,
-  ComposedChart,
   BarChart as RBarChart,
   Bar,
   Cell,
-  Area,
-  Line,
   XAxis,
   YAxis,
   CartesianGrid,
   Tooltip,
-  Legend,
 } from 'recharts';
 import api from '../../services/api';
 
@@ -267,9 +263,6 @@ export default function CreativeAnalysis() {
   const [creativeSort, setCreativeSort] = useState('spend');
   const [expandedCreatives, setExpandedCreatives] = useState(new Set());
   const [sortConfig, setSortConfig] = useState({ key: 'spend', direction: 'desc' });
-  const [chartCreative, setChartCreative] = useState(null); // creative_id showing chart
-  const [chartData, setChartData] = useState(null);
-  const [chartLoading, setChartLoading] = useState(false);
 
   // ── Detail panel state ──
   const [detailPanel, setDetailPanel] = useState(null); // creative object or null
@@ -608,40 +601,6 @@ export default function CreativeAnalysis() {
       // Default: descending for numeric, ascending for text
       return { key, direction: NUMERIC_COLS.has(key) ? 'desc' : 'asc' };
     });
-  };
-
-  const chartAbortRef = useRef(null);
-  const toggleChart = async (creativeId) => {
-    if (chartAbortRef.current) chartAbortRef.current.abort();
-    if (chartCreative === creativeId) {
-      setChartCreative(null);
-      setChartData(null);
-      return;
-    }
-    const controller = new AbortController();
-    chartAbortRef.current = controller;
-    setChartCreative(creativeId);
-    setChartLoading(true);
-    try {
-      const res = await api.get('/creative-analysis/lifetime', { params: { creative_id: creativeId }, signal: controller.signal });
-      if (controller.signal.aborted) return;
-      const lifetime = res.data?.data || {};
-      const breakdown = lifetime.weekly_breakdown || [];
-      setChartData({
-        ...lifetime,
-        chartPoints: breakdown.map((w) => ({
-          week: w.week.replace('WK', 'W').replace('_', ' '),
-          spend: w.spend,
-          roas: w.roas,
-          revenue: w.revenue,
-        })),
-      });
-    } catch (err) {
-      if (err?.name === 'CanceledError' || controller.signal.aborted) return;
-      setChartData(null);
-    } finally {
-      if (!controller.signal.aborted) setChartLoading(false);
-    }
   };
 
   // ── Detail panel helpers ──
