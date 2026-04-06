@@ -145,6 +145,28 @@ function RetentionChart({ insights, impressions: totalImpressions }) {
   );
 }
 
+// ── Date range helper (module scope) ─────────────────────────────────
+
+const rangeToDate = (range) => {
+  const fmt = (d) => d.toISOString().slice(0, 10);
+  const today = new Date();
+  const sub = (days) => { const d = new Date(); d.setDate(d.getDate() - days); return d; };
+  switch (range) {
+    case 'last_7': return { startDate: fmt(sub(6)), endDate: fmt(today) };
+    case 'last_14': return { startDate: fmt(sub(13)), endDate: fmt(today) };
+    case 'last_30': return { startDate: fmt(sub(29)), endDate: fmt(today) };
+    case 'lifetime': return { startDate: fmt(sub(364)), endDate: fmt(today) };
+    default: return { startDate: fmt(sub(29)), endDate: fmt(today) };
+  }
+};
+
+const RANGES = [
+  { key: 'last_7', label: '7D' },
+  { key: 'last_14', label: '14D' },
+  { key: 'last_30', label: '30D' },
+  { key: 'lifetime', label: 'Lifetime' },
+];
+
 // ── Main Modal ────────────────────────────────────────────────────────
 
 export default function CreativeDetailModal({ creative, onClose }) {
@@ -176,21 +198,6 @@ export default function CreativeDetailModal({ creative, onClose }) {
   const cid = creative._creativeId || creative.creative_id;
   const adName = creative.ad_name || cid;
   const isVideo = (creative.type || '').toLowerCase() === 'video';
-
-  // ── Date range helpers ──────────────────────────────────────────────
-
-  const rangeToDate = (range) => {
-    const fmt = (d) => d.toISOString().slice(0, 10);
-    const today = new Date();
-    const sub = (days) => { const d = new Date(); d.setDate(d.getDate() - days); return d; };
-    switch (range) {
-      case 'last_7': return { startDate: fmt(sub(6)), endDate: fmt(today) };
-      case 'last_14': return { startDate: fmt(sub(13)), endDate: fmt(today) };
-      case 'last_30': return { startDate: fmt(sub(29)), endDate: fmt(today) };
-      case 'lifetime': return { startDate: fmt(sub(364)), endDate: fmt(today) };
-      default: return { startDate: fmt(sub(29)), endDate: fmt(today) };
-    }
-  };
 
   // ── Fetch Meta data on mount / creative change ──────────────────────
 
@@ -302,13 +309,6 @@ export default function CreativeDetailModal({ creative, onClose }) {
     spend: d.spend,
     roas: d.spend > 0 ? Math.round((d.revenue / d.spend) * 100) / 100 : 0,
   }));
-
-  const RANGES = [
-    { key: 'last_7', label: '7D' },
-    { key: 'last_14', label: '14D' },
-    { key: 'last_30', label: '30D' },
-    { key: 'lifetime', label: 'Lifetime' },
-  ];
 
   // Facebook URL
   const fbUrl = metaAdId

@@ -2296,45 +2296,48 @@ router.get('/meta-lookup/:creativeId', authenticate, async (req, res) => {
       return res.json({ success: true, data: null, message: 'No Meta API configured or ad not linked' });
     }
 
-    for (const accountId of META_AD_ACCOUNT_IDS) {
-      try {
+    // Search all ad accounts in parallel for faster lookup
+    const searchResults = await Promise.allSettled(
+      META_AD_ACCOUNT_IDS.slice(0, 5).map(async (accountId) => {
         const searchUrl = `${META_GRAPH_URL}/${accountId}/ads?filtering=[{"field":"name","operator":"CONTAIN","value":"${encodeURIComponent(creativeId)}"}]&fields=id,name,creative{thumbnail_url,video_id}&limit=10&access_token=${META_ACCESS_TOKEN}`;
         const apiRes = await fetch(searchUrl, { signal: AbortSignal.timeout(15000) });
-        if (!apiRes.ok) continue;
-
+        if (!apiRes.ok) return null;
         const json = await apiRes.json();
         const ads = json.data || [];
-        if (!ads.length) continue;
+        return ads.length ? ads[0] : null;
+      })
+    );
 
-        // Use the first matching ad
-        const ad = ads[0];
-        const metaAdId = ad.id;
-        const thumbnailUrl = ad.creative?.thumbnail_url || null;
+    // Use the first successful match
+    const ad = searchResults
+      .filter(r => r.status === 'fulfilled' && r.value)
+      .map(r => r.value)[0];
 
-        // Get video source if video_id exists
-        let videoUrl = null;
-        if (ad.creative?.video_id) {
-          try {
-            const vidRes = await fetch(`${META_GRAPH_URL}/${ad.creative.video_id}?fields=source&access_token=${META_ACCESS_TOKEN}`, {
-              signal: AbortSignal.timeout(10000),
-            });
-            if (vidRes.ok) {
-              const vidData = await vidRes.json();
-              videoUrl = vidData.source || null;
-            }
-          } catch {}
-        }
+    if (ad) {
+      const metaAdId = ad.id;
+      const thumbnailUrl = ad.creative?.thumbnail_url || null;
 
-        // Update DB
-        await pgQuery(
-          `UPDATE creative_analysis SET meta_ad_id = $1, thumbnail_url = COALESCE(thumbnail_url, $2), video_url = COALESCE(video_url, $3) WHERE creative_id = $4`,
-          [metaAdId, thumbnailUrl, videoUrl, creativeId]
-        );
-
-        return res.json({ success: true, data: { meta_ad_id: metaAdId, thumbnail_url: thumbnailUrl, video_url: videoUrl } });
-      } catch (err) {
-        console.warn(`[Meta Lookup] Error searching account ${accountId}:`, err.message);
+      // Get video source if video_id exists
+      let videoUrl = null;
+      if (ad.creative?.video_id) {
+        try {
+          const vidRes = await fetch(`${META_GRAPH_URL}/${ad.creative.video_id}?fields=source&access_token=${META_ACCESS_TOKEN}`, {
+            signal: AbortSignal.timeout(10000),
+          });
+          if (vidRes.ok) {
+            const vidData = await vidRes.json();
+            videoUrl = vidData.source || null;
+          }
+        } catch (e) { console.warn('[Meta Lookup] Video source fetch error:', e.message); }
       }
+
+      // Update DB
+      await pgQuery(
+        `UPDATE creative_analysis SET meta_ad_id = $1, thumbnail_url = COALESCE(thumbnail_url, $2), video_url = COALESCE(video_url, $3) WHERE creative_id = $4`,
+        [metaAdId, thumbnailUrl, videoUrl, creativeId]
+      );
+
+      return res.json({ success: true, data: { meta_ad_id: metaAdId, thumbnail_url: thumbnailUrl, video_url: videoUrl } });
     }
 
     return res.json({ success: true, data: null, message: 'No matching Meta ad found' });
