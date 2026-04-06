@@ -16,6 +16,8 @@ const META_AD_ACCOUNT_IDS = (process.env.META_AD_ACCOUNT_IDS || '').split(',').f
 const META_GRAPH_URL = 'https://graph.facebook.com/v21.0';
 
 let tableReady = false; // cache ensureTable so it only runs once
+let twKnownRevCol = null; // cache discovered TW column names across requests
+let twKnownPurCol = null;
 
 // ── Known Values (for cross-validation) ─────────────────────────────
 // These sets prevent fields from leaking into the wrong slot when segment counts vary.
@@ -1863,43 +1865,11 @@ router.get('/creative-daily', authenticate, async (req, res) => {
       return { ok: true, rows };
     }
 
-    // Try to find working revenue + purchase columns with daily granularity
-    let dailyRows = [];
-    let foundRevCol = null;
-    let foundPurCol = null;
-
-    for (const revenueCol of revenueColumns) {
-      const revRef = revenueCol.includes(' ') ? `\`${revenueCol}\`` : revenueCol;
-      // Try with purchase columns
-      for (const purchaseCol of purchaseColumns) {
-        const colRef = purchaseCol.includes(' ') ? `\`${purchaseCol}\`` : purchaseCol;
-        const sql = `
-          SELECT event_date, ad_name, SUM(spend) as total_spend, SUM(${revRef}) as total_revenue,
-                 SUM(${colRef}) as total_purchases,
-                 SUM(impressions) as total_impressions, SUM(clicks) as total_clicks
-          FROM pixel_joined_tvf
-          WHERE event_date BETWEEN @startDate AND @endDate
-          GROUP BY event_date, ad_name
-          HAVING SUM(spend) > 0.01
-          ORDER BY event_date ASC
-          LIMIT 5000
-        `;
-        const result = await twQuery(sql);
-        if (result.fatal) {
-          return res.status(502).json({ success: false, error: { message: 'Triple Whale API error' } });
-        }
-        if (result.ok) {
-          dailyRows = result.rows;
-          foundRevCol = revenueCol;
-          foundPurCol = purchaseCol;
-          break;
-        }
-      }
-      if (foundRevCol) break;
-
-      // Try revenue-only (no purchases)
-      const revOnlySql = `
-        SELECT event_date, ad_name, SUM(spend) as total_spend, SUM(${revRef}) as total_revenue,
+    function buildDailySql(revCol, purCol) {
+      const revRef = revCol.includes(' ') ? `\`${revCol}\`` : revCol;
+      const purPart = purCol ? `, SUM(${purCol.includes(' ') ? `\`${purCol}\`` : purCol}) as total_purchases` : '';
+      return `
+        SELECT event_date, ad_name, SUM(spend) as total_spend, SUM(${revRef}) as total_revenue${purPart},
                SUM(impressions) as total_impressions, SUM(clicks) as total_clicks
         FROM pixel_joined_tvf
         WHERE event_date BETWEEN @startDate AND @endDate
@@ -1908,20 +1878,62 @@ router.get('/creative-daily', authenticate, async (req, res) => {
         ORDER BY event_date ASC
         LIMIT 5000
       `;
-      const revResult = await twQuery(revOnlySql);
-      if (revResult.fatal) {
-        return res.status(502).json({ success: false, error: { message: 'Triple Whale API error' } });
+    }
+
+    // Try cached column combo first (skip discovery loop on repeat calls)
+    let dailyRows = [];
+    let foundRevCol = null;
+    let foundPurCol = null;
+
+    if (twKnownRevCol) {
+      const sql = buildDailySql(twKnownRevCol, twKnownPurCol);
+      const result = await twQuery(sql);
+      if (result.ok) {
+        dailyRows = result.rows;
+        foundRevCol = twKnownRevCol;
+        foundPurCol = twKnownPurCol;
       }
-      if (revResult.ok) {
-        dailyRows = revResult.rows;
-        foundRevCol = revenueCol;
-        break;
+      // If cached combo fails, fall through to full discovery
+    }
+
+    if (!foundRevCol) {
+      for (const revenueCol of revenueColumns) {
+        for (const purchaseCol of purchaseColumns) {
+          const sql = buildDailySql(revenueCol, purchaseCol);
+          const result = await twQuery(sql);
+          if (result.fatal) {
+            return res.status(502).json({ success: false, error: { message: 'Triple Whale API error' } });
+          }
+          if (result.ok) {
+            dailyRows = result.rows;
+            foundRevCol = revenueCol;
+            foundPurCol = purchaseCol;
+            break;
+          }
+        }
+        if (foundRevCol) break;
+
+        // Try revenue-only (no purchases)
+        const sql = buildDailySql(revenueCol, null);
+        const revResult = await twQuery(sql);
+        if (revResult.fatal) {
+          return res.status(502).json({ success: false, error: { message: 'Triple Whale API error' } });
+        }
+        if (revResult.ok) {
+          dailyRows = revResult.rows;
+          foundRevCol = revenueCol;
+          break;
+        }
       }
     }
 
     if (!foundRevCol) {
       return res.status(502).json({ success: false, error: { message: 'Could not query Triple Whale (all column variants failed)' } });
     }
+
+    // Cache working columns for future requests
+    twKnownRevCol = foundRevCol;
+    twKnownPurCol = foundPurCol;
 
     // Filter rows to only those matching the creative_id
     const cid = creative_id.toUpperCase();

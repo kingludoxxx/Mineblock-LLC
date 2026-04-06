@@ -176,6 +176,7 @@ export default function CreativeDetailModal({ creative, onClose }) {
   const [twData, setTwData] = useState(null);
   const [twLoading, setTwLoading] = useState(false);
   const [chartRange, setChartRange] = useState('last_30');
+  const twCacheRef = useRef({}); // { [cid__range]: twData }
   const [videoUrl, setVideoUrl] = useState(creative?.video_url || null);
   const [thumbnailUrl, setThumbnailUrl] = useState(creative?.thumbnail_url || null);
   const [videoFailed, setVideoFailed] = useState(false);
@@ -196,6 +197,7 @@ export default function CreativeDetailModal({ creative, onClose }) {
     setTwData(null);
     setChartRange('last_30');
     setVideoFailed(false);
+    twCacheRef.current = {};
   }, [creative]);
 
   // ── Fetch Meta data on mount / creative change ──────────────────────
@@ -233,10 +235,19 @@ export default function CreativeDetailModal({ creative, onClose }) {
     return () => { cancelled = true; };
   }, [creative]);
 
-  // ── Refetch TW daily on range change ────────────────────────────────
+  // ── Refetch TW daily on range change (with client-side cache) ───────
 
   useEffect(() => {
     if (!cid) return;
+    const cacheKey = `${cid}__${chartRange}`;
+
+    // Instant cache hit — no API call needed
+    if (twCacheRef.current[cacheKey]) {
+      setTwData(twCacheRef.current[cacheKey]);
+      setTwLoading(false);
+      return;
+    }
+
     const controller = new AbortController();
     const fetchDaily = async () => {
       setTwLoading(true);
@@ -246,7 +257,11 @@ export default function CreativeDetailModal({ creative, onClose }) {
           params: { creative_id: cid, startDate, endDate },
           signal: controller.signal,
         });
-        if (!controller.signal.aborted) setTwData(data.data || null);
+        if (!controller.signal.aborted) {
+          const result = data.data || null;
+          if (result) twCacheRef.current[cacheKey] = result;
+          setTwData(result);
+        }
       } catch (err) {
         if (!controller.signal.aborted) setTwData(null);
       } finally {
@@ -312,9 +327,9 @@ export default function CreativeDetailModal({ creative, onClose }) {
     roas: d.spend > 0 ? Math.round((d.revenue / d.spend) * 100) / 100 : 0,
   }));
 
-  // Facebook URL
+  // Facebook Ads Manager URL
   const fbUrl = metaAdId
-    ? `https://www.facebook.com/ads/manager/manage/ads?selected_ad_ids=${metaAdId}`
+    ? `https://adsmanager.facebook.com/adsmanager/manage/ads?selected_ad_ids=${metaAdId}`
     : null;
 
   // Distribution signals

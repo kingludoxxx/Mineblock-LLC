@@ -19,7 +19,10 @@ import {
   ChevronLeft,
   Calendar,
   Play,
+  Pause,
   Sparkles,
+  VolumeX,
+  Volume2,
 } from 'lucide-react';
 import CreativeDetailModal from './CreativeDetailModal';
 import {
@@ -33,6 +36,94 @@ import {
   Tooltip,
 } from 'recharts';
 import api from '../../services/api';
+
+// ── Video Card Header (hover-to-play inline video) ──────────────────────────
+
+function VideoCardHeader({ creative, isVideo, onClick }) {
+  const videoRef = useRef(null);
+  const [playing, setPlaying] = useState(false);
+  const [muted, setMuted] = useState(true);
+  const [videoError, setVideoError] = useState(false);
+
+  const hasVideo = isVideo && creative.video_url && !videoError;
+
+  const handleMouseEnter = () => {
+    if (!hasVideo || !videoRef.current) return;
+    videoRef.current.play().then(() => setPlaying(true)).catch(() => {});
+  };
+
+  const handleMouseLeave = () => {
+    if (!videoRef.current) return;
+    videoRef.current.pause();
+    videoRef.current.currentTime = 0;
+    setPlaying(false);
+  };
+
+  const toggleMute = (e) => {
+    e.stopPropagation();
+    if (videoRef.current) {
+      videoRef.current.muted = !videoRef.current.muted;
+      setMuted(!muted);
+    }
+  };
+
+  return (
+    <div
+      className={`h-64 flex items-center justify-center relative cursor-pointer group ${creative.thumbnail_url ? 'bg-black' : isVideo ? 'bg-gradient-to-br from-amber-900/40 to-purple-900/30' : 'bg-gradient-to-br from-cyan-900/30 to-emerald-900/20'}`}
+      onClick={onClick}
+      onMouseEnter={handleMouseEnter}
+      onMouseLeave={handleMouseLeave}
+    >
+      {hasVideo ? (
+        <>
+          <video
+            ref={videoRef}
+            src={creative.video_url}
+            poster={creative.thumbnail_url || undefined}
+            muted
+            playsInline
+            loop
+            preload="none"
+            className="w-full h-full object-cover"
+            onError={() => setVideoError(true)}
+          />
+          {/* Play/Pause overlay */}
+          {!playing && (
+            <div className="absolute inset-0 flex items-center justify-center bg-black/20">
+              <div className="w-10 h-10 rounded-full bg-white/90 flex items-center justify-center">
+                <Play className="w-5 h-5 text-black ml-0.5" />
+              </div>
+            </div>
+          )}
+          {/* Mute toggle (visible while playing) */}
+          {playing && (
+            <button
+              onClick={toggleMute}
+              className="absolute bottom-8 right-2 z-10 w-7 h-7 rounded-full bg-black/60 flex items-center justify-center text-white hover:bg-black/80 transition cursor-pointer"
+            >
+              {muted ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
+            </button>
+          )}
+        </>
+      ) : creative.thumbnail_url ? (
+        <>
+          <img src={creative.thumbnail_url} alt="" className="w-full h-full object-cover" onError={(e) => { e.target.src = ''; e.target.className = 'hidden'; }} />
+          {creative.video_url && (
+            <div className="absolute inset-0 flex items-center justify-center bg-black/20 opacity-0 group-hover:opacity-100 transition-opacity">
+              <div className="w-10 h-10 rounded-full bg-white/90 flex items-center justify-center">
+                <Play className="w-5 h-5 text-black ml-0.5" />
+              </div>
+            </div>
+          )}
+        </>
+      ) : isVideo ? (
+        <Video className="w-10 h-10 text-accent-text/40" />
+      ) : (
+        <Image className="w-10 h-10 text-cyan-400/40" />
+      )}
+    </div>
+  );
+}
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -996,26 +1087,8 @@ export default function CreativeAnalysis() {
                   style={{ border: '1px solid #10b98166', boxShadow: '0 0 20px #10b98122' }}
                 >
                   {/* Visual header */}
-                  <div
-                    className={`h-64 flex items-center justify-center relative cursor-pointer group ${creative.thumbnail_url ? 'bg-black' : isVideo ? 'bg-gradient-to-br from-amber-900/40 to-purple-900/30' : 'bg-gradient-to-br from-cyan-900/30 to-emerald-900/20'}`}
-                    onClick={() => openDetailPanel(creative)}
-                  >
-                    {creative.thumbnail_url ? (
-                      <>
-                        <img src={creative.thumbnail_url} alt="" className="w-full h-full object-cover" onError={(e) => { e.target.src = ''; e.target.className = 'hidden'; }} />
-                        {creative.video_url && (
-                          <div className="absolute inset-0 flex items-center justify-center bg-black/20 opacity-0 group-hover:opacity-100 transition-opacity">
-                            <div className="w-10 h-10 rounded-full bg-white/90 flex items-center justify-center">
-                              <Play className="w-5 h-5 text-black ml-0.5" />
-                            </div>
-                          </div>
-                        )}
-                      </>
-                    ) : isVideo ? (
-                      <Video className="w-10 h-10 text-accent-text/40" />
-                    ) : (
-                      <Image className="w-10 h-10 text-cyan-400/40" />
-                    )}
+                  <div className="relative">
+                    <VideoCardHeader creative={creative} isVideo={isVideo} onClick={() => openDetailPanel(creative)} />
                     <div className="absolute top-2 left-2 z-10 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase"
                       style={{ background: '#10b981', color: '#000' }}>
                       NEW
@@ -1108,26 +1181,8 @@ export default function CreativeAnalysis() {
                   className="shrink-0 w-64 bg-[#111] border border-white/[0.06] rounded-xl overflow-hidden hover:border-white/[0.12] transition-colors"
                 >
                   {/* Visual header */}
-                  <div
-                    className={`h-64 flex items-center justify-center relative cursor-pointer group ${creative.thumbnail_url ? 'bg-black' : isVideo ? 'bg-gradient-to-br from-amber-900/40 to-purple-900/30' : 'bg-gradient-to-br from-cyan-900/30 to-emerald-900/20'}`}
-                    onClick={() => openDetailPanel(creative)}
-                  >
-                    {creative.thumbnail_url ? (
-                      <>
-                        <img src={creative.thumbnail_url} alt="" className="w-full h-full object-cover" onError={(e) => { e.target.src = ''; e.target.className = 'hidden'; }} />
-                        {creative.video_url && (
-                          <div className="absolute inset-0 flex items-center justify-center bg-black/20 opacity-0 group-hover:opacity-100 transition-opacity">
-                            <div className="w-10 h-10 rounded-full bg-white/90 flex items-center justify-center">
-                              <Play className="w-5 h-5 text-black ml-0.5" />
-                            </div>
-                          </div>
-                        )}
-                      </>
-                    ) : isVideo ? (
-                      <Video className="w-10 h-10 text-accent-text/40" />
-                    ) : (
-                      <Image className="w-10 h-10 text-cyan-400/40" />
-                    )}
+                  <div className="relative">
+                    <VideoCardHeader creative={creative} isVideo={isVideo} onClick={() => openDetailPanel(creative)} />
                     {creative.first_seen === currentWeekLabel && (
                       <div className="absolute top-2 left-2 z-10 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase"
                         style={{ background: '#10b981', color: '#000' }}>
