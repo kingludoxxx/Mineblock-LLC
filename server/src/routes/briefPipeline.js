@@ -1702,7 +1702,7 @@ FORMATTING RULES:
 - Never directly promise the viewer will win or earn money
 - Use distanced framing for all performance claims (e.g. "someone in the mining community", "results seen in the community")
 - Never attribute wins to a named customer or client of the product
-- Never invent product claims not supported by the product profile
+- Never invent product claims not supported by the product profile. If a beat in the reference uses a specific stat, study, or institution (e.g. "94% reduction", "Seoul National University") and the product profile has NO equivalent data, do NOT fabricate a replacement. Instead, replace that beat with a general credibility statement using real product data (e.g. units sold, community size, money-back guarantee). COMPLIANCE OVERRIDES BEAT-MAPPING — it is better to slightly weaken one beat than to invent false claims.
 - No discount codes in the script unless the product profile includes one
 - End cleanly at the product URL with no additional copy after it`;
 
