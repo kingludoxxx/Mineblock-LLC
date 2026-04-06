@@ -67,8 +67,8 @@ function ReactionIcon({ type, count }) {
 function RetentionChart({ insights, impressions: totalImpressions }) {
   if (!insights) return null;
 
-  const views3s = insights.video_3s_views || insights.video_views || 0;
-  const viewsTotal = insights.video_views || insights.video_3s_views || 0;
+  const views3s = Number(insights.video_3s_views) || Number(insights.video_views) || 0;
+  const viewsTotal = Number(insights.video_views) || Number(insights.video_3s_views) || 0;
   if (!views3s) return null;
 
   // Build retention curve data points
@@ -83,8 +83,8 @@ function RetentionChart({ insights, impressions: totalImpressions }) {
     { label: '100%', pct: viewsTotal > 0 ? Math.min(100, Math.round((insights.video_p100 / viewsTotal) * 100)) : 0, position: 100 },
   ];
 
-  const hookRate = insights.hook_rate ? (insights.hook_rate * 100).toFixed(1) : '0.0';
-  const holdRate = insights.hold_rate ? (insights.hold_rate * 100).toFixed(1) : '0.0';
+  const hookRate = insights.hook_rate ? (Number(insights.hook_rate) * 100).toFixed(1) : '0.0';
+  const holdRate = insights.hold_rate ? (Number(insights.hold_rate) * 100).toFixed(1) : '0.0';
 
   return (
     <div className="bg-white/[0.03] border border-white/[0.06] rounded-xl p-4">
@@ -181,6 +181,11 @@ export default function CreativeDetailModal({ creative, onClose }) {
   const [videoFailed, setVideoFailed] = useState(false);
   const videoRef = useRef(null);
 
+  // ── Derived values (before effects, after hooks) ─────────────────────
+  const cid = creative?._creativeId || creative?.creative_id || '';
+  const adName = creative?.ad_name || cid;
+  const isVideo = (creative?.type || '').toLowerCase() === 'video';
+
   // ── Sync state when creative prop changes (defensive) ───────────────
   useEffect(() => {
     if (!creative) return;
@@ -192,12 +197,6 @@ export default function CreativeDetailModal({ creative, onClose }) {
     setChartRange('last_30');
     setVideoFailed(false);
   }, [creative]);
-
-  if (!creative) return null;
-
-  const cid = creative._creativeId || creative.creative_id;
-  const adName = creative.ad_name || cid;
-  const isVideo = (creative.type || '').toLowerCase() === 'video';
 
   // ── Fetch Meta data on mount / creative change ──────────────────────
 
@@ -285,6 +284,9 @@ export default function CreativeDetailModal({ creative, onClose }) {
       }
     };
   }, []);
+
+  // ── Early return AFTER all hooks ────────────────────────────────────
+  if (!creative) return null;
 
   // ── Derived values ──────────────────────────────────────────────────
 
@@ -418,10 +420,10 @@ export default function CreativeDetailModal({ creative, onClose }) {
                   <SectionHeader icon={Play} color="text-blue-400">Video Insights</SectionHeader>
                   <div className="grid grid-cols-3 gap-2">
                     <MetricCard label="Views" value={fmtInt(mi.video_views || mi.video_3s_views)} small />
-                    <MetricCard label="Hook Rate" value={`${mi.hook_rate ? (mi.hook_rate * 100).toFixed(1) : '0.0'}%`} highlight={mi.hook_rate > 0.3 ? 'text-emerald-400' : 'text-amber-400'} small />
+                    <MetricCard label="Hook Rate" value={`${mi.hook_rate ? (Number(mi.hook_rate) * 100).toFixed(1) : '0.0'}%`} highlight={Number(mi.hook_rate) > 0.3 ? 'text-emerald-400' : 'text-amber-400'} small />
                     <MetricCard label="3-Second Views" value={fmtInt(mi.video_3s_views)} small />
                     <MetricCard label="Complete Views" value={fmtInt(mi.video_p100)} small />
-                    <MetricCard label="Hold Rate" value={`${mi.hold_rate ? (mi.hold_rate * 100).toFixed(1) : '0.0'}%`} highlight={mi.hold_rate > 0.1 ? 'text-emerald-400' : 'text-amber-400'} small />
+                    <MetricCard label="Hold Rate" value={`${mi.hold_rate ? (Number(mi.hold_rate) * 100).toFixed(1) : '0.0'}%`} highlight={Number(mi.hold_rate) > 0.1 ? 'text-emerald-400' : 'text-amber-400'} small />
                     <MetricCard label="Avg Watch" value={fmtDuration(mi.video_avg_time)} small />
                   </div>
                 </div>

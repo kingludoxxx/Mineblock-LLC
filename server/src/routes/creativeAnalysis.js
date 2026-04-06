@@ -2055,11 +2055,16 @@ async function fetchMetaInsights(metaAdId) {
   }
 
   // Check cache
-  const cached = await pgQuery(
-    `SELECT * FROM creative_meta_insights WHERE meta_ad_id = $1 AND fetched_at > NOW() - INTERVAL '4 hours'`,
-    [metaAdId]
-  );
-  if (cached.length) return cached[0];
+  try {
+    const cached = await pgQuery(
+      `SELECT * FROM creative_meta_insights WHERE meta_ad_id = $1 AND fetched_at > NOW() - INTERVAL '4 hours'`,
+      [metaAdId]
+    );
+    if (cached.length) return cached[0];
+  } catch (cacheErr) {
+    console.warn('[Meta Insights] Cache lookup failed:', cacheErr.message);
+    // Continue to fetch from Meta API directly
+  }
 
   // Fetch from Meta
   try {
