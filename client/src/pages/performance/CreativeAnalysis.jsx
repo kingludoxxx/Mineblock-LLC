@@ -80,7 +80,7 @@ function VideoCardHeader({ creative, isVideo, onClick }) {
 
   return (
     <div
-      className={`h-64 flex items-center justify-center relative cursor-pointer group ${creative.thumbnail_url ? 'bg-black' : isVideo ? 'bg-gradient-to-br from-amber-900/40 to-purple-900/30' : 'bg-gradient-to-br from-cyan-900/30 to-emerald-900/20'}`}
+      className={`h-full w-full flex items-center justify-center relative cursor-pointer group ${creative.thumbnail_url ? 'bg-black' : isVideo ? 'bg-gradient-to-br from-amber-900/40 to-purple-900/30' : 'bg-gradient-to-br from-cyan-900/30 to-[#c9a84c]/10'}`}
       onClick={onClick}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
@@ -206,9 +206,9 @@ const fmtPct = (n) => Number(n || 0).toFixed(2) + '%';
 
 const fmtInt = (n) => Number(n || 0).toLocaleString();
 
-const cardStyle = 'bg-[#111] border border-white/[0.06] rounded-xl p-5';
+const cardStyle = 'bg-gradient-to-br from-white/[0.04] to-white/[0.01] backdrop-blur-xl border border-white/[0.08] rounded-xl p-5';
 const selectStyle =
-  'bg-white/[0.04] border border-white/[0.08] rounded-lg text-white px-3 py-2 text-sm focus:outline-none focus:border-white/20 appearance-none cursor-pointer';
+  'bg-white/[0.03] border border-white/[0.08] rounded-lg text-white px-3 py-2 text-sm focus:outline-none focus:border-[#c9a84c]/50 appearance-none cursor-pointer';
 
 const LEADERBOARD_CONFIG = [
   {
@@ -248,16 +248,16 @@ const LEADERBOARD_CONFIG = [
 
 // Stable color assignments for tag badges
 const TAG_COLORS = [
-  { bg: 'bg-amber-500/20', text: 'text-amber-400' },
-  { bg: 'bg-purple-500/20', text: 'text-purple-400' },
-  { bg: 'bg-rose-500/20', text: 'text-rose-400' },
-  { bg: 'bg-sky-500/20', text: 'text-sky-400' },
-  { bg: 'bg-lime-500/20', text: 'text-lime-400' },
-  { bg: 'bg-orange-500/20', text: 'text-orange-400' },
-  { bg: 'bg-teal-500/20', text: 'text-teal-400' },
-  { bg: 'bg-pink-500/20', text: 'text-pink-400' },
-  { bg: 'bg-indigo-500/20', text: 'text-indigo-400' },
-  { bg: 'bg-cyan-500/20', text: 'text-cyan-400' },
+  { bg: 'bg-amber-500/10', text: 'text-amber-400', border: 'border border-amber-500/20' },
+  { bg: 'bg-purple-500/10', text: 'text-purple-400', border: 'border border-purple-500/20' },
+  { bg: 'bg-rose-500/10', text: 'text-rose-400', border: 'border border-rose-500/20' },
+  { bg: 'bg-sky-500/10', text: 'text-sky-400', border: 'border border-sky-500/20' },
+  { bg: 'bg-lime-500/10', text: 'text-lime-400', border: 'border border-lime-500/20' },
+  { bg: 'bg-orange-500/10', text: 'text-orange-400', border: 'border border-orange-500/20' },
+  { bg: 'bg-teal-500/10', text: 'text-teal-400', border: 'border border-teal-500/20' },
+  { bg: 'bg-pink-500/10', text: 'text-pink-400', border: 'border border-pink-500/20' },
+  { bg: 'bg-indigo-500/10', text: 'text-indigo-400', border: 'border border-indigo-500/20' },
+  { bg: 'bg-cyan-500/10', text: 'text-cyan-400', border: 'border border-cyan-500/20' },
 ];
 const tagColorMap = {};
 let tagColorIdx = 0;
@@ -719,9 +719,9 @@ export default function CreativeAnalysis() {
     if (sortConfig.key !== colKey)
       return <ArrowUpDown className="w-3 h-3 text-gray-600 ml-1 inline" />;
     return sortConfig.direction === 'asc' ? (
-      <ArrowUp className="w-3 h-3 text-emerald-400 ml-1 inline" />
+      <ArrowUp className="w-3 h-3 text-[#c9a84c] ml-1 inline" />
     ) : (
-      <ArrowDown className="w-3 h-3 text-emerald-400 ml-1 inline" />
+      <ArrowDown className="w-3 h-3 text-[#c9a84c] ml-1 inline" />
     );
   };
 
@@ -730,9 +730,9 @@ export default function CreativeAnalysis() {
   /** Color intensity for metric cells (Motion-style green gradient) */
   const metricCellClass = (col, val) => {
     if (col.key === 'roas') {
-      if (val >= 2.0) return 'bg-emerald-500/20 text-emerald-300 font-semibold';
-      if (val >= 1.5) return 'bg-emerald-500/10 text-emerald-400 font-medium';
-      if (val >= 1.0) return 'bg-yellow-500/10 text-yellow-300 font-medium';
+      if (val >= 2.0) return 'bg-emerald-500/20 text-emerald-400 font-semibold';
+      if (val >= 1.5) return 'bg-[#c9a84c]/10 text-[#c9a84c] font-medium';
+      if (val >= 1.0) return 'bg-[#c9a84c]/10 text-[#c9a84c] font-medium';
       return 'text-red-400';
     }
     if (col.key === 'revenue') {
@@ -773,7 +773,7 @@ export default function CreativeAnalysis() {
     if (col.tag && val) {
       const color = getTagColor(val);
       return color ? (
-        <span className={`inline-block px-2 py-0.5 rounded-full text-[11px] font-medium ${color.bg} ${color.text}`}>
+        <span className={`inline-block px-2 py-0.5 rounded-full text-[11px] font-mono uppercase font-medium ${color.bg} ${color.text} ${color.border || ''}`}>
           {val}
         </span>
       ) : val;
@@ -789,7 +789,7 @@ export default function CreativeAnalysis() {
     return (
       <div className="flex items-center justify-center min-h-[60vh]">
         <div className="flex flex-col items-center gap-3">
-          <RefreshCw className="w-6 h-6 text-gray-500 animate-spin" />
+          <RefreshCw className="w-6 h-6 text-[#c9a84c] animate-spin" />
           <p className="text-gray-500 text-sm">Loading creative analysis...</p>
         </div>
       </div>
@@ -802,7 +802,9 @@ export default function CreativeAnalysis() {
     return (
       <div className="p-6 pl-10">
         <div className="flex items-center gap-3 mb-2 mt-8">
-          <BarChart3 className="w-7 h-7 text-emerald-400" />
+          <div className="w-12 h-12 rounded-xl bg-[#c9a84c]/10 border border-[#c9a84c]/20 flex items-center justify-center">
+            <BarChart3 className="w-6 h-6 text-[#c9a84c]" />
+          </div>
           <div>
             <h1 className="text-2xl font-bold text-white">Creative Analysis</h1>
             <p className="text-gray-500 text-sm">Weekly ad performance report</p>
@@ -811,8 +813,8 @@ export default function CreativeAnalysis() {
 
         <div className="flex items-center justify-center min-h-[50vh]">
           <div className="flex flex-col items-center gap-4 max-w-md text-center">
-            <div className="w-16 h-16 rounded-full bg-emerald-500/10 flex items-center justify-center">
-              <BarChart3 className="w-8 h-8 text-emerald-400" />
+            <div className="w-16 h-16 rounded-full bg-[#c9a84c]/10 flex items-center justify-center">
+              <BarChart3 className="w-8 h-8 text-[#c9a84c]" />
             </div>
             <p className="text-white font-medium text-lg">No data yet</p>
             <p className="text-gray-500 text-sm">
@@ -831,7 +833,9 @@ export default function CreativeAnalysis() {
       {/* Header */}
       <div className="flex items-center justify-between mt-8 mb-8">
         <div className="flex items-center gap-3">
-          <BarChart3 className="w-7 h-7 text-emerald-400" />
+          <div className="w-12 h-12 rounded-xl bg-[#c9a84c]/10 border border-[#c9a84c]/20 flex items-center justify-center">
+            <BarChart3 className="w-6 h-6 text-[#c9a84c]" />
+          </div>
           <div>
             <h1 className="text-2xl font-bold text-white">Creative Analysis</h1>
             <p className="text-gray-500 text-sm">Ad performance report</p>
@@ -843,9 +847,9 @@ export default function CreativeAnalysis() {
           <div className="relative" ref={datePickerRef}>
             <button
               onClick={() => setDatePickerOpen((v) => !v)}
-              className="flex items-center gap-2 px-4 py-2 rounded-lg bg-white/[0.04] border border-white/[0.08] text-white text-sm hover:bg-white/[0.06] transition-colors cursor-pointer"
+              className="flex items-center gap-2 px-4 py-2 rounded-lg bg-white/[0.05] border border-white/[0.08] text-zinc-100 text-sm hover:bg-white/[0.08] transition-colors cursor-pointer"
             >
-              <Calendar className="w-3.5 h-3.5 text-gray-400" />
+              <Calendar className="w-3.5 h-3.5 text-zinc-400" />
               {DATE_PRESETS.find((p) => p.key === datePreset)?.label || `${startDate} – ${endDate}`}
               <ChevronDown className="w-3.5 h-3.5 text-gray-500" />
             </button>
@@ -916,7 +920,7 @@ export default function CreativeAnalysis() {
                         setCalViewMonth(ed.getMonth());
                       }}
                       className={`w-full text-left px-3 py-1.5 text-sm hover:bg-white/[0.04] transition-colors cursor-pointer ${
-                        datePreset === preset.key ? 'text-emerald-400 bg-emerald-500/10' : 'text-gray-300'
+                        datePreset === preset.key ? 'text-[#c9a84c] bg-[#c9a84c]/10' : 'text-gray-300'
                       }`}
                     >
                       {preset.label}
@@ -930,7 +934,7 @@ export default function CreativeAnalysis() {
                     <button onClick={prevMonth} className="p-1 rounded hover:bg-white/[0.06] text-gray-400 hover:text-white transition-colors cursor-pointer">
                       <ChevronLeft className="w-4 h-4" />
                     </button>
-                    <span className="text-emerald-400 font-semibold text-sm">{monthName} {calViewYear}</span>
+                    <span className="text-[#c9a84c] font-semibold text-sm">{monthName} {calViewYear}</span>
                     <button onClick={nextMonth} className="p-1 rounded hover:bg-white/[0.06] text-gray-400 hover:text-white transition-colors cursor-pointer">
                       <ChevronRight className="w-4 h-4" />
                     </button>
@@ -958,10 +962,10 @@ export default function CreativeAnalysis() {
                           disabled={fut}
                           className={`relative h-8 text-xs font-medium rounded transition-colors cursor-pointer
                             ${fut ? 'text-gray-700 cursor-not-allowed' : ''}
-                            ${start || end ? 'bg-emerald-500 text-white' : ''}
-                            ${inRange && !start && !end ? 'bg-emerald-500/20 text-emerald-300' : ''}
+                            ${start || end ? 'bg-[#c9a84c] text-[#111113]' : ''}
+                            ${inRange && !start && !end ? 'bg-[#c9a84c]/20 text-[#d4b55a]' : ''}
                             ${!inRange && !start && !end && !fut ? 'text-gray-300 hover:bg-white/[0.06]' : ''}
-                            ${tod && !start && !end ? 'ring-1 ring-emerald-500/50' : ''}
+                            ${tod && !start && !end ? 'ring-1 ring-[#c9a84c]/50' : ''}
                           `}
                         >
                           {day}
@@ -975,7 +979,7 @@ export default function CreativeAnalysis() {
                       {calSelStart && calSelEnd ? (
                         <span>{new Date(calSelStart + 'T00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} – {new Date(calSelEnd + 'T00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</span>
                       ) : calPicking === 'end' ? (
-                        <span className="text-emerald-400">Select end date</span>
+                        <span className="text-[#c9a84c]">Select end date</span>
                       ) : (
                         <span>Click a day to start</span>
                       )}
@@ -990,7 +994,7 @@ export default function CreativeAnalysis() {
                       <button
                         onClick={handleApply}
                         disabled={!calSelStart || !calSelEnd}
-                        className="px-4 py-1.5 rounded-lg bg-emerald-500 text-white text-sm font-medium hover:bg-emerald-600 transition-colors cursor-pointer disabled:opacity-40"
+                        className="px-4 py-1.5 rounded-lg bg-[#c9a84c] text-[#111113] text-sm font-medium hover:bg-[#d4b55a] transition-colors cursor-pointer disabled:opacity-40"
                       >
                         Apply
                       </button>
@@ -1006,7 +1010,7 @@ export default function CreativeAnalysis() {
           <button
             onClick={handleSync}
             disabled={syncing}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 text-sm font-medium transition-colors cursor-pointer border border-emerald-500/20"
+            className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-[#c9a84c]/10 hover:bg-[#c9a84c]/20 text-[#d4b55a] text-sm font-medium transition-colors cursor-pointer border border-[#c9a84c]/25"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${syncing ? 'animate-spin' : ''}`} />
             {syncing ? 'Syncing...' : 'Sync Data'}
@@ -1078,11 +1082,11 @@ export default function CreativeAnalysis() {
       {newWinners.length > 0 && (
         <div className="mb-8">
           <div className="flex items-center gap-2 mb-4">
-            <Sparkles className="w-4 h-4 text-emerald-400" />
+            <Sparkles className="w-4 h-4 text-[#c9a84c]" />
             <h2 className="text-sm font-semibold text-white/60 uppercase tracking-wider">
               New Winners This Period
             </h2>
-            <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+            <span className="text-xs px-2 py-0.5 rounded-full bg-[#c9a84c]/10 text-[#c9a84c] border border-[#c9a84c]/20">
               {newWinners.length} new
             </span>
           </div>
@@ -1094,21 +1098,23 @@ export default function CreativeAnalysis() {
               return (
                 <div
                   key={creative.creative_id}
-                  className="shrink-0 w-64 bg-[#111] rounded-xl overflow-hidden hover:border-white/[0.12] transition-colors"
-                  style={{ border: '1px solid #10b98166', boxShadow: '0 0 20px #10b98122' }}
+                  className="shrink-0 w-[280px] bg-gradient-to-br from-white/[0.04] to-white/[0.01] backdrop-blur-xl rounded-xl overflow-hidden border border-[#c9a84c]/30 hover:border-[#c9a84c]/50 transition-colors"
+                  style={{ boxShadow: '0 0 20px rgba(201,168,76,0.1)' }}
                 >
                   {/* Visual header */}
                   <div className="relative">
-                    <VideoCardHeader creative={creative} isVideo={isVideo} onClick={() => openDetailPanel(creative)} />
-                    <div className="absolute top-2 left-2 z-10 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase"
-                      style={{ background: '#10b981', color: '#000' }}>
+                    <div className="aspect-[3/4] rounded-xl overflow-hidden relative">
+                      <VideoCardHeader creative={creative} isVideo={isVideo} onClick={() => openDetailPanel(creative)} />
+                      <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent pointer-events-none" />
+                    </div>
+                    <div className="absolute top-2 left-2 z-10 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase bg-[#c9a84c] text-[#111113]">
                       NEW
                     </div>
-                    <span className={`absolute bottom-2 left-2 text-[10px] font-bold px-1.5 py-0.5 rounded ${isVideo ? 'bg-accent text-white' : 'bg-cyan-500 text-white'}`}>
+                    <span className={`absolute bottom-2 left-2 z-10 text-[10px] font-bold px-1.5 py-0.5 rounded ${isVideo ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 backdrop-blur-md' : 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 backdrop-blur-md'}`}>
                       {creative.type || '?'}
                     </span>
                     {creative.is_winner && (
-                      <span className="absolute top-2 right-2 text-[10px] font-bold px-1.5 py-0.5 rounded bg-yellow-500/30 text-yellow-400">Winner</span>
+                      <span className="absolute top-2 right-2 z-10 text-[10px] font-bold px-1.5 py-0.5 rounded bg-[#c9a84c] text-[#111113]">Winner</span>
                     )}
                   </div>
                   {/* Info */}
@@ -1116,14 +1122,14 @@ export default function CreativeAnalysis() {
                     <p className="text-white text-xs font-medium truncate mb-2" title={creative.ad_name || creative.creative_id}>
                       {creative.ad_name || creative.creative_id}
                     </p>
-                    <div className="space-y-1.5 text-xs">
+                    <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
                       <div className="flex justify-between">
                         <span className="text-gray-500">Spend</span>
                         <span className="text-white font-medium">{fmtMoney(creative.total_spend)}</span>
                       </div>
                       <div className="flex justify-between">
                         <span className="text-gray-500">ROAS</span>
-                        <span className={creative.roas >= 1.5 ? 'text-emerald-400 font-semibold' : creative.roas >= 1.0 ? 'text-yellow-400' : 'text-red-400'}>{fmtRoas(creative.roas)}</span>
+                        <span className={creative.roas >= 1.5 ? 'text-emerald-400 font-semibold' : creative.roas >= 1.0 ? 'text-[#c9a84c]' : 'text-red-400'}>{fmtRoas(creative.roas)}</span>
                       </div>
                       <div className="flex justify-between">
                         <span className="text-gray-500">Purchases</span>
@@ -1133,7 +1139,7 @@ export default function CreativeAnalysis() {
                         <span className="text-gray-500">CPA</span>
                         <span className="text-gray-300">{fmtMoney(creative.cpa)}</span>
                       </div>
-                      <div className="flex justify-between">
+                      <div className="flex justify-between col-span-2">
                         <span className="text-gray-500">CTR</span>
                         <span className="text-gray-300">{fmtPct(creative.ctr)}</span>
                       </div>
@@ -1146,10 +1152,10 @@ export default function CreativeAnalysis() {
                     {/* Tags */}
                     <div className="flex flex-wrap gap-1 mt-2">
                       {creative.format && formatColor && (
-                        <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${formatColor.bg} ${formatColor.text}`}>{creative.format}</span>
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-mono uppercase ${formatColor.bg} ${formatColor.text} ${formatColor.border || ''}`}>{creative.format}</span>
                       )}
                       {creative.angle && angleColor && (
-                        <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${angleColor.bg} ${angleColor.text}`}>{creative.angle}</span>
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-mono uppercase ${angleColor.bg} ${angleColor.text} ${angleColor.border || ''}`}>{creative.angle}</span>
                       )}
                     </div>
                   </div>
@@ -1170,10 +1176,10 @@ export default function CreativeAnalysis() {
                 const labels = { spend: 'Top Spend', roas: 'Best ROAS', newest: 'Newest', velocity: 'Fastest Scaling' };
                 return (
                   <button key={key} onClick={() => setCreativeSort(key)}
-                    className={`px-3 py-1 rounded-lg text-xs font-medium transition-all cursor-pointer ${
+                    className={`px-4 py-1.5 rounded-full text-xs font-medium transition-all cursor-pointer ${
                       creativeSort === key
-                        ? 'bg-accent-muted text-accent-text border border-accent/30'
-                        : 'text-white/40 hover:text-white/60 border border-transparent'
+                        ? 'bg-[#c9a84c] text-[#111113]'
+                        : 'bg-white/[0.05] text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.08]'
                     }`}>
                     {labels[key]}
                   </button>
@@ -1189,22 +1195,24 @@ export default function CreativeAnalysis() {
               return (
                 <div
                   key={creative._creativeId}
-                  className="shrink-0 w-64 bg-[#111] border border-white/[0.06] rounded-xl overflow-hidden hover:border-white/[0.12] transition-colors"
+                  className="shrink-0 w-[280px] bg-gradient-to-br from-white/[0.04] to-white/[0.01] backdrop-blur-xl border border-white/[0.08] rounded-xl overflow-hidden hover:border-white/[0.15] transition-colors"
                 >
                   {/* Visual header */}
                   <div className="relative">
-                    <VideoCardHeader creative={creative} isVideo={isVideo} onClick={() => openDetailPanel(creative)} />
+                    <div className="aspect-[3/4] rounded-xl overflow-hidden relative">
+                      <VideoCardHeader creative={creative} isVideo={isVideo} onClick={() => openDetailPanel(creative)} />
+                      <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent pointer-events-none" />
+                    </div>
                     {creative.first_seen === currentWeekLabel && (
-                      <div className="absolute top-2 left-2 z-10 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase"
-                        style={{ background: '#10b981', color: '#000' }}>
+                      <div className="absolute top-2 left-2 z-10 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase bg-[#c9a84c] text-[#111113]">
                         NEW
                       </div>
                     )}
-                    <span className={`absolute bottom-2 left-2 text-[10px] font-bold px-1.5 py-0.5 rounded ${isVideo ? 'bg-accent text-white' : 'bg-cyan-500 text-white'}`}>
+                    <span className={`absolute bottom-2 left-2 z-10 text-[10px] font-bold px-1.5 py-0.5 rounded ${isVideo ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 backdrop-blur-md' : 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 backdrop-blur-md'}`}>
                       {creative.type || '?'}
                     </span>
                     {creative.is_winner && (
-                      <span className="absolute top-2 right-2 text-[10px] font-bold px-1.5 py-0.5 rounded bg-yellow-500/30 text-yellow-400">Winner</span>
+                      <span className="absolute top-2 right-2 z-10 text-[10px] font-bold px-1.5 py-0.5 rounded bg-[#c9a84c] text-[#111113]">Winner</span>
                     )}
                   </div>
                   {/* Info */}
@@ -1212,14 +1220,14 @@ export default function CreativeAnalysis() {
                     <p className="text-white text-xs font-medium truncate mb-2" title={creative.ad_name}>
                       {creative.ad_name}
                     </p>
-                    <div className="space-y-1.5 text-xs">
+                    <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
                       <div className="flex justify-between">
                         <span className="text-gray-500">Spend</span>
                         <span className="text-white font-medium">{fmtMoney(creative.spend)}</span>
                       </div>
                       <div className="flex justify-between">
                         <span className="text-gray-500">ROAS</span>
-                        <span className={creative.roas >= 1.5 ? 'text-emerald-400 font-semibold' : creative.roas >= 1.0 ? 'text-yellow-400' : 'text-red-400'}>{fmtRoas(creative.roas)}</span>
+                        <span className={creative.roas >= 1.5 ? 'text-emerald-400 font-semibold' : creative.roas >= 1.0 ? 'text-[#c9a84c]' : 'text-red-400'}>{fmtRoas(creative.roas)}</span>
                       </div>
                       <div className="flex justify-between">
                         <span className="text-gray-500">Purchases</span>
@@ -1229,7 +1237,7 @@ export default function CreativeAnalysis() {
                         <span className="text-gray-500">CPA</span>
                         <span className="text-gray-300">{fmtMoney(creative.cpa)}</span>
                       </div>
-                      <div className="flex justify-between">
+                      <div className="flex justify-between col-span-2">
                         <span className="text-gray-500">CTR</span>
                         <span className="text-gray-300">{fmtPct(creative.ctr)}</span>
                       </div>
@@ -1242,10 +1250,10 @@ export default function CreativeAnalysis() {
                     {/* Tags */}
                     <div className="flex flex-wrap gap-1 mt-2">
                       {creative.format && formatColor && (
-                        <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${formatColor.bg} ${formatColor.text}`}>{creative.format}</span>
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-mono uppercase ${formatColor.bg} ${formatColor.text} ${formatColor.border || ''}`}>{creative.format}</span>
                       )}
                       {creative.angle && angleColor && (
-                        <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${angleColor.bg} ${angleColor.text}`}>{creative.angle}</span>
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-mono uppercase ${angleColor.bg} ${angleColor.text} ${angleColor.border || ''}`}>{creative.angle}</span>
                       )}
                     </div>
                   </div>
@@ -1260,7 +1268,7 @@ export default function CreativeAnalysis() {
       <div className="mb-8">
         <button
           onClick={() => setAnalyticsOpen((v) => !v)}
-          className="flex items-center gap-2 mb-4 text-white font-semibold text-lg hover:text-emerald-400 transition-colors cursor-pointer"
+          className="flex items-center gap-2 mb-4 text-white font-semibold text-lg hover:text-[#c9a84c] transition-colors cursor-pointer"
         >
           <ChevronDown className={`w-4 h-4 transition-transform ${analyticsOpen ? '' : '-rotate-90'}`} />
           Performance Analytics
@@ -1273,7 +1281,7 @@ export default function CreativeAnalysis() {
               {/* Angle Breakdown */}
               <div className={cardStyle}>
                 <div className="flex items-center gap-2 mb-4">
-                  <BarChart3 className="w-4 h-4 text-purple-400" />
+                  <BarChart3 className="w-4 h-4 text-[#c9a84c]" />
                   <h3 className="text-white font-semibold text-sm">Performance by Angle</h3>
                 </div>
                 {angleStats.length > 0 ? (
@@ -1288,7 +1296,7 @@ export default function CreativeAnalysis() {
                       />
                       <Bar dataKey="roas" radius={[0, 4, 4, 0]}>
                         {angleStats.map((entry, i) => (
-                          <Cell key={i} fill={entry.roas >= 1.5 ? '#10b981' : entry.roas >= 1.0 ? '#eab308' : '#ef4444'} fillOpacity={0.7} />
+                          <Cell key={i} fill={entry.roas >= 1.5 ? '#d4b55a' : entry.roas >= 1.0 ? '#a08535' : '#715e25'} fillOpacity={0.7} />
                         ))}
                       </Bar>
                     </RBarChart>
@@ -1303,7 +1311,7 @@ export default function CreativeAnalysis() {
                         <span className="text-gray-400">{a.angle} <span className="text-gray-600">({a.count})</span></span>
                         <div className="flex gap-3">
                           <span className="text-gray-500">{fmtMoney(a.spend)}</span>
-                          <span className={a.roas >= 1.5 ? 'text-emerald-400' : a.roas >= 1.0 ? 'text-yellow-400' : 'text-red-400'}>{fmtRoas(a.roas)}</span>
+                          <span className={a.roas >= 1.5 ? 'text-emerald-400' : a.roas >= 1.0 ? 'text-[#c9a84c]' : 'text-red-400'}>{fmtRoas(a.roas)}</span>
                         </div>
                       </div>
                     ))}
@@ -1314,7 +1322,7 @@ export default function CreativeAnalysis() {
               {/* Format Breakdown */}
               <div className={cardStyle}>
                 <div className="flex items-center gap-2 mb-4">
-                  <BarChart3 className="w-4 h-4 text-accent-text" />
+                  <BarChart3 className="w-4 h-4 text-[#c9a84c]" />
                   <h3 className="text-white font-semibold text-sm">Performance by Format</h3>
                 </div>
                 {formatStats.length > 0 ? (
@@ -1329,7 +1337,7 @@ export default function CreativeAnalysis() {
                       />
                       <Bar dataKey="roas" radius={[0, 4, 4, 0]}>
                         {formatStats.map((entry, i) => (
-                          <Cell key={i} fill={entry.roas >= 1.5 ? '#E8D5A3' : entry.roas >= 1.0 ? '#eab308' : '#ef4444'} fillOpacity={0.7} />
+                          <Cell key={i} fill={entry.roas >= 1.5 ? '#d4b55a' : entry.roas >= 1.0 ? '#a08535' : '#715e25'} fillOpacity={0.7} />
                         ))}
                       </Bar>
                     </RBarChart>
@@ -1344,7 +1352,7 @@ export default function CreativeAnalysis() {
                         <span className="text-gray-400">{f.format} <span className="text-gray-600">({f.count})</span></span>
                         <div className="flex gap-3">
                           <span className="text-gray-500">{fmtMoney(f.spend)}</span>
-                          <span className={f.roas >= 1.5 ? 'text-accent-text' : f.roas >= 1.0 ? 'text-yellow-400' : 'text-red-400'}>{fmtRoas(f.roas)}</span>
+                          <span className={f.roas >= 1.5 ? 'text-[#d4b55a]' : f.roas >= 1.0 ? 'text-[#c9a84c]' : 'text-red-400'}>{fmtRoas(f.roas)}</span>
                         </div>
                       </div>
                     ))}
@@ -1503,7 +1511,7 @@ export default function CreativeAnalysis() {
                       onDragOver={(e) => handleDragOver(e, col.key)}
                       onDrop={() => handleDrop(col.key)}
                       onDragEnd={handleDragEnd}
-                      className={`px-3 py-3 text-gray-400 text-xs uppercase tracking-wider font-semibold whitespace-nowrap transition-all ${
+                      className={`px-3 py-3 text-zinc-500 text-[10px] font-mono uppercase tracking-wider whitespace-nowrap transition-all ${
                         col.align === 'right'
                           ? 'text-right'
                           : col.align === 'center'
@@ -1511,7 +1519,7 @@ export default function CreativeAnalysis() {
                           : 'text-left'
                       } ${!col.noSort ? 'cursor-grab hover:text-gray-300 select-none' : ''} ${
                         dragCol === col.key ? 'opacity-40' : ''
-                      } ${dragOverCol === col.key && dragCol !== col.key ? 'border-l-2 border-emerald-400' : ''}`}
+                      } ${dragOverCol === col.key && dragCol !== col.key ? 'border-l-2 border-[#c9a84c]' : ''}`}
                       onClick={!col.noSort ? () => handleSort(col.key) : undefined}
                     >
                       <span className="inline-flex items-center gap-1">
@@ -1580,7 +1588,7 @@ export default function CreativeAnalysis() {
                                 <span className="flex items-center gap-2">
                                   {renderCellValue(row, col)}
                                   {row.is_winner && (
-                                    <span className="px-1.5 py-0.5 rounded bg-yellow-500/20 text-yellow-400 text-[10px] font-bold uppercase tracking-wide shrink-0">Winner</span>
+                                    <span className="px-1.5 py-0.5 rounded bg-[#c9a84c] text-[#111113] text-[10px] font-bold uppercase tracking-wide shrink-0">Winner</span>
                                   )}
                                 </span>
                                 {hooks.length > 0 && (
