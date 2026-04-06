@@ -2499,11 +2499,7 @@ router.get('/meta-lookup/:creativeId', authenticate, async (req, res) => {
                   const directBody = await directRes.json();
                   console.log(`[Meta Lookup] Direct /${videoId} keys: ${JSON.stringify(Object.keys(directBody))}`);
                   if (directBody.source) freshUrl = directBody.source;
-                  // permalink_url can be used as Facebook embed video
-                  if (!freshUrl && directBody.permalink_url) {
-                    freshUrl = directBody.permalink_url;
-                    console.log(`[Meta Lookup] Using permalink_url as fallback: ${freshUrl}`);
-                  }
+                  // Note: permalink_url (/reel/...) can't be used as <video> src — needs mp4
                 }
               } catch (e) { /* try next strategy */ }
             }
