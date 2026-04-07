@@ -115,6 +115,28 @@ function groupByAngle(creatives) {
   });
 }
 
+// Group launched creatives by ad set batch (not just angle)
+function groupByAdSet(creatives) {
+  const groups = {};
+  for (const c of creatives) {
+    // Use batch_number from launch_batch if available, otherwise fall back to angle
+    const batchKey = c.launch_batch?.batch_number
+      ? `batch_${c.launch_batch.batch_number}`
+      : `angle_${c.angle || 'Uncategorized'}`;
+    if (!groups[batchKey]) {
+      groups[batchKey] = {
+        label: c.launch_batch?.adset_name || c.angle || 'Uncategorized',
+        creatives: [],
+      };
+    }
+    groups[batchKey].creatives.push(c);
+  }
+  // Sort by count desc
+  return Object.entries(groups)
+    .map(([key, { label, creatives: cs }]) => [label, cs])
+    .sort(([, a], [, b]) => b.length - a.length);
+}
+
 // ---------------------------------------------------------------------------
 // Creative card (compact version for ad set groups)
 // ---------------------------------------------------------------------------
@@ -766,7 +788,7 @@ function ReadyToLaunchColumn({ column, items, onCardClick, onLaunchGroup, onBulk
 
 function LaunchedColumn({ column, items, onCardClick, onStatusChange }) {
   const Icon = column.icon;
-  const angleGroups = useMemo(() => groupByAngle(items), [items]);
+  const angleGroups = useMemo(() => groupByAdSet(items), [items]);
   const adSetCount = angleGroups.length;
 
   const handleReset = (creatives) => {

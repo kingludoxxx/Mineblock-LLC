@@ -1094,6 +1094,32 @@ router.get('/creatives', authenticate, async (req, res) => {
 
     query += ' ORDER BY created_at DESC';
     const rows = await pgQuery(query, params);
+
+    // Enrich launched creatives with batch info from statics_launches
+    const launchedIds = rows.filter(r => r.status === 'launched').map(r => r.id);
+    if (launchedIds.length > 0) {
+      try {
+        const launchRows = await pgQuery(
+          `SELECT DISTINCT ON (creative_id) creative_id, batch_number, adset_name, meta_adset_id
+           FROM statics_launches
+           WHERE creative_id = ANY($1)
+           ORDER BY creative_id, created_at DESC`,
+          [launchedIds]
+        );
+        const launchMap = {};
+        for (const lr of launchRows) {
+          launchMap[lr.creative_id] = { batch_number: lr.batch_number, adset_name: lr.adset_name, meta_adset_id: lr.meta_adset_id };
+        }
+        for (const row of rows) {
+          if (row.status === 'launched' && launchMap[row.id]) {
+            row.launch_batch = launchMap[row.id];
+          }
+        }
+      } catch (e) {
+        console.warn('[staticsGeneration] Could not enrich launch batch info:', e.message);
+      }
+    }
+
     res.json({ success: true, data: rows });
   } catch (err) {
     console.error('[staticsGeneration] /creatives error:', err);
