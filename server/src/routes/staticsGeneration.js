@@ -601,14 +601,35 @@ router.post('/generate', authenticate, async (req, res) => {
       }
     }
 
-    // ── LOGO INJECTION DISABLED ──
-    // Never send logos to the image generator. Logo injection causes more problems
-    // than it solves — Gemini places logos incorrectly, resizes them, or adds them
-    // where they don't belong. If a logo is needed, it can be added manually in
-    // post-production. This eliminates the recurring "random logo" issue permanently.
+    // ── LOGO INJECTION ──
+    // When Claude detects a competitor logo in the reference, send our brand logo(s)
+    // so Gemini can swap them. Validated against visual_adaptations to prevent false positives.
     const logoUrls = [];
-    const hasCompetitorLogo = false;
-    console.log(`[staticsGeneration] Logo injection DISABLED — logos are never sent to image generator`);
+    let hasCompetitorLogo = claudeResult.has_competitor_logo === true;
+
+    // Strict validation: only inject logo if Claude also listed it in visual_adaptations
+    if (hasCompetitorLogo) {
+      const visualAdapts = claudeResult.visual_adaptations || [];
+      const hasLogoInVisuals = visualAdapts.some(v =>
+        /\blogo\b/i.test(v.original_visual || '') || /\blogo\b/i.test(v.adapted_visual || '') || /\blogo\b/i.test(v.position || '')
+      );
+      if (!hasLogoInVisuals) {
+        console.warn(`[staticsGeneration] ⚠️ Claude detected has_competitor_logo=true but no logo in visual_adaptations — OVERRIDING to false`);
+        hasCompetitorLogo = false;
+      }
+    }
+
+    if (hasCompetitorLogo) {
+      const allLogos = [...(product.logos || [])];
+      if (product.logo_url) allLogos.unshift(product.logo_url);
+      for (let i = 0; i < Math.min(allLogos.length, 2); i++) {
+        const url = await ensureHttpUrl(allLogos[i], `logos-${i}`);
+        if (url) logoUrls.push(url);
+      }
+      console.log(`[staticsGeneration] ✅ Competitor logo detected — sending ${logoUrls.length} brand logo(s)`);
+    } else {
+      console.log(`[staticsGeneration] No competitor logo in reference — skipping logo injection`);
+    }
 
     console.log(`[staticsGeneration] Logo data: logo_url=${product.logo_url ? 'yes' : 'no'}, logos=${(product.logos || []).length}, resolved logoUrls=${logoUrls.length}`);
     if (!finalProductUrl) {

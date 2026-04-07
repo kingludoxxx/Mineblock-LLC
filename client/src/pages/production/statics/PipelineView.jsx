@@ -800,7 +800,8 @@ export function PipelineView({ creatives = [], onStatusChange, onAngleChange, on
     const map = { generating: [], review: [], approved: [], ready: [], launched: [] };
     for (const c of creatives) {
       if (c.status === 'rejected' || c.status === 'archived') continue;
-      if (c.parent_creative_id) continue;
+      // Show launched variants even if they have a parent — their parents may no longer exist
+      if (c.parent_creative_id && c.status !== 'launched') continue;
       if (c.status === 'launching') continue;
       if (c.status === 'generating') {
         map.generating.push(c);
