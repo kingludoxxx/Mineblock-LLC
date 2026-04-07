@@ -227,6 +227,7 @@ THEN apply these rules:
 - Use the SAME copywriting formula/structure as the original (same sentence patterns, same rhythm, same number of elements)
 - But make it SPECIFIC to this product — use real product details, real benefits, real numbers
 - ⚠️ CRITICAL LENGTH RULE: Each adapted text MUST be the SAME length (±20%) as the original. An AI image generator will render your text — if you write longer text, it WILL be misspelled and garbled. SHORT = PERFECT RENDERING. LONG = GARBLED MESS. If original is "Adaptogenic mushroom blend" (26 chars), adapted must be ~26 chars like "144 daily Bitcoin attempts" (25 chars), NOT "144 real shots at a $300K Bitcoin block. Every single day." (59 chars — WAY too long, will be garbled).
+- ⚠️ BRAND NAME EXCEPTION TO LENGTH RULE: When replacing a competitor brand name with the product name from PRODUCT CONTEXT, ALWAYS use the FULL product name exactly as given — even if it's longer than the original brand name. The product name is non-negotiable. Adjust the REST of the text around it to fit the length target, but NEVER shorten, abbreviate, or replace the product name with something else. Example: if original is "grüns" (5 chars) and product name is "MinerForge Pro" (14 chars), use "MinerForge Pro" — do NOT invent alternatives like "Mini Bitcoin" or abbreviate to "MFP".
 - ⚠️ COMPLETE THOUGHTS ONLY: Every adapted text MUST be a COMPLETE sentence or phrase. NEVER write a fragment that trails off. If the original is short (e.g. "Bloating" = 8 chars), write a complete short phrase (e.g. "Pool fees" = 9 chars), NOT an unfinished sentence like "Splitting fees with" (trails off mid-thought). Short originals need short, punchy, COMPLETE adapted text.
 - ⚠️ ZERO REFERENCE PRODUCT TEXT: Your adapted text must contain ZERO words from the reference product's category. If the reference is about hair growth, words like "shedding", "hair", "regrowth", "follicle" must NEVER appear in adapted_text. If the reference is about supplements, words like "mushroom", "adaptogenic", "blend" must NEVER appear. Replace ALL of them with ${product.name}-relevant terms.
 - If the original says "3 Years of Back Pain Gone in 7 Days" → yours should be equally specific and bold with THIS product's claims
@@ -286,10 +287,11 @@ TEXT EXTRACTION RULES:
 - Multi-line headlines kept as one string with natural line breaks
 - Generic labels like "SPECIAL DEAL", "THIS WEEK ONLY", "FREE SHIPPING" stay exactly as-is — BUT discount codes (e.g. "Use code XYZ") are NOT generic labels and MUST be replaced with the product's actual discount code
 
-BRAND NAME REPLACEMENT:
-- If the reference ad contains a competitor brand name in ANY text element (headline, body, badges, etc.), you MUST replace it with the Product Name from PRODUCT CONTEXT
+BRAND NAME REPLACEMENT (OVERRIDES LENGTH RULE):
+- If the reference ad contains a competitor brand name in ANY text element (headline, body, badges, etc.), you MUST replace it with "${product.name}" from PRODUCT CONTEXT
 - This includes brand names in headlines like "RYZE Mushroom Coffee" → "${product.name}", badges like "Powered by XYZ" → "Powered by ${product.name}", etc.
 - The competitor brand name must appear ZERO times in adapted_text
+- The product name "${product.name}" is SACRED — NEVER abbreviate it, shorten it, or replace it with a made-up name to meet the length constraint. Use the full name and adjust surrounding text to compensate for length
 
 SEASONAL & DATE-SPECIFIC TEXT:
 - If the reference contains month names ("March Sale", "Summer Deal"), replace with a generic urgency phrase ("Flash Sale", "Limited Time") or the current season — do NOT keep a stale month reference
@@ -329,6 +331,7 @@ COPY QUALITY SELF-CHECK (run this mentally before returning):
    - SHORT text renders PERFECTLY. Long text renders BADLY. When in doubt, make it SHORTER.
    - A 3-word bullet like "No more bloating" should become "144 daily Bitcoin shots" (3-4 words) — NOT "144 real shots at a $300K Bitcoin block. Every single day." (too long!)
    - REWRITE any adapted text that exceeds the original character count by more than 20%
+   - EXCEPTION: Brand name replacement is exempt — "${product.name}" must always be used in full even if it exceeds the length target. Shorten the surrounding words instead.
 11. BRAND NAME CHECK: Does any adapted text still contain the COMPETITOR's brand name? If yes, replace it with the product name from PRODUCT CONTEXT. Zero competitor branding in adapted text.
 12. COMPLETE THOUGHT CHECK: Read each adapted text. Does it end mid-sentence? "Crypto feels too" is INCOMPLETE. "Crypto is complex" is COMPLETE. "Splitting fees with" is INCOMPLETE. "No pool fees" is COMPLETE. EVERY adapted text must be a complete thought that makes sense on its own.
 13. REFERENCE CATEGORY CHECK: Does any adapted text contain words from the REFERENCE product's category (e.g. "hair", "gut", "mushroom", "belly", "shedding")? If yes, replace with words about YOUR product. Zero reference category terms in adapted text.
@@ -440,7 +443,7 @@ Return ONLY valid JSON (no markdown, no code fences):
 // STEP 2: Build swap pairs from Claude's original vs adapted text
 // ─────────────────────────────────────────────────────────────────────────────
 
-export function buildSwapPairs(originalText, adaptedText) {
+export function buildSwapPairs(originalText, adaptedText, productName = '') {
   const pairs = [];
 
   // Standard text fields
@@ -472,10 +475,18 @@ export function buildSwapPairs(originalText, adaptedText) {
 
   // ── Length enforcement: truncate adapted text that's too long ──
   // NanoBanana garbles/misspells text that exceeds the original length significantly
+  // EXCEPTION: Never truncate swaps that contain the product name (brand replacement)
   for (const pair of pairs) {
     const origLen = pair.original.length;
     const adaptedLen = pair.adapted.length;
     const maxLen = Math.max(origLen * 1.3, 20); // allow 30% overshoot or minimum 20 chars
+
+    // Skip truncation if the adapted text contains the product name — brand replacement is sacred
+    const containsProductName = productName && pair.adapted.toLowerCase().includes(productName.toLowerCase());
+    if (containsProductName && adaptedLen > maxLen) {
+      console.log(`[buildSwapPairs] ℹ️ Skipping truncation for brand swap [${pair.field}]: "${pair.adapted}" (contains product name "${productName}")`);
+      continue;
+    }
 
     if (adaptedLen > maxLen && origLen > 2) {
       let trimmed = pair.adapted.slice(0, Math.round(maxLen));
@@ -634,9 +645,15 @@ ${templateData.deep_analysis.adaptation_instructions?.common_failure_modes?.leng
   }
 
   // Truncate swap pairs that are too long — NanoBanana garbles long text
+  // EXCEPTION: Never truncate swaps containing the product name (brand replacement)
+  const productNameLower = (product.name || '').toLowerCase();
   const truncatedPairs = limitedPairs.map(pair => {
     const origLen = (pair.original || '').length;
     let adapted = pair.adapted || '';
+    // Skip truncation if adapted text contains the product name — brand replacement is sacred
+    if (productNameLower && adapted.toLowerCase().includes(productNameLower)) {
+      return { ...pair, adapted };
+    }
     // If adapted is much longer than original, truncate with warning
     if (adapted.length > origLen * 1.3 && origLen > 0 && origLen < 80) {
       adapted = adapted.slice(0, Math.max(origLen + 5, 20));

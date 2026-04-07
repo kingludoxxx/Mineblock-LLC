@@ -110,8 +110,8 @@ export async function analyzeWithClaude(imageBase64, mediaType, product, angle, 
  * Compare original vs adapted text fields and create swap pairs array.
  * Re-exports the logic from staticsPrompts.js for convenience.
  */
-export function buildSwapPairs(originalText, adaptedText) {
-  return _buildSwapPairs(originalText, adaptedText);
+export function buildSwapPairs(originalText, adaptedText, productName = '') {
+  return _buildSwapPairs(originalText, adaptedText, productName);
 }
 
 /**
@@ -219,7 +219,7 @@ export async function generateFullPipeline(referenceImageUrl, product, angle, ra
   const claudeResult = await analyzeWithClaude(base64, mediaType, product, angle);
 
   // Step C: Build swap pairs
-  const swapPairs = buildSwapPairs(claudeResult.original_text, claudeResult.adapted_text);
+  const swapPairs = buildSwapPairs(claudeResult.original_text, claudeResult.adapted_text, product.name);
 
   // Upload base64 images to R2 (or skip if not configured — caller's route
   // provides a temp-image fallback in that case).
