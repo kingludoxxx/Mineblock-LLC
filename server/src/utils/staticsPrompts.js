@@ -83,6 +83,7 @@ export function buildClaudePrompt(product, angle, customOverrides = null, layout
     profile.offerDetails && `OFFER RULES: ${profile.offerDetails}`,
     profile.guarantee && `GUARANTEE: ${profile.guarantee}`,
     profile.complianceRestrictions && `🚫 COMPLIANCE (NEVER claim these): ${profile.complianceRestrictions}`,
+    `⚠️ NO FABRICATED QUANTITY CLAIMS: NEVER count individual offer items and create claims like "4 FREE GIFTS", "3 FREE BONUSES", "5 FREE ITEMS". If the product context lists free shipping, warranty, etc. as separate features, they are INDIVIDUAL OFFER COMPONENTS — not "gifts" to be counted. Only use quantity claims (e.g. "X FREE gifts/bonuses") if that EXACT phrase appears verbatim in the product context. When in doubt, list benefits individually ("FREE Shipping + Lifetime Warranty") instead of fabricating a count.`,
   ].filter(Boolean).map(l => `⚠️ ${l}`).join('\n');
 
   // ── PRODUCT CONTEXT (background intelligence for writing better copy) ──
@@ -164,6 +165,7 @@ USE PRODUCT DATA AS YOUR SOURCE:
 - These are your GROUND TRUTH. Write copy from this data only.
 - ALWAYS rewrite technical specs as customer-facing benefits: "attempts a block 144 times daily" → "144 daily chances to win $300K+"
 - NEVER invent claims that aren't in the product context
+- NEVER synthesize quantity claims by counting offer items (e.g. seeing "free shipping" + "warranty" + "odds boost" does NOT mean "3 FREE GIFTS" — list them individually instead)
 
 ELEMENT COUNT: Your adapted_text must have the EXACT SAME number of elements as original_text — same number of headlines, bullets, badges, stats. Don't add or remove. Leave fields empty ("") if no corresponding text exists.
 - Generic labels like "SPECIAL DEAL", "FREE SHIPPING" can stay as-is
@@ -335,6 +337,7 @@ COPY QUALITY SELF-CHECK (run this mentally before returning):
 10. ⚠️ CHARACTER COUNT CHECK: For EVERY element, count chars and compare to original slot size. Stay within ±20%. Short text renders perfectly; long text gets garbled. When in doubt, SHORTER.
 11. COMPLETE THOUGHT CHECK: Does every text end as a complete thought? "Crypto feels too" = INCOMPLETE → "No middleman fees" = COMPLETE.
 12. PRODUCT NAME CHECK: Does "${product.name}" appear correctly? Zero competitor names in output.
+13. ⚠️ FABRICATED CLAIMS CHECK: Did you invent ANY quantity claim like "X FREE GIFTS", "X FREE BONUSES", "X ITEMS FREE"? If so, DELETE IT. You may only use such claims if the EXACT phrase appears in the product context. Individual offer features (shipping, warranty, etc.) are NOT "gifts" to be counted up.
 
 ---
 

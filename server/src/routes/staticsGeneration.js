@@ -1856,7 +1856,8 @@ Wrong: "Bye Bye, Beer Belly" → "[Generic product pitch]" (completely different
 
 CRITICAL — PRODUCT DATA OVERRIDES GENERIC TEXT:
 If the reference uses generic filler — DO NOT keep it. Replace with the product's ACTUAL claims from PRODUCT CONTEXT rewritten as CUSTOMER BENEFITS. NEVER paste raw technical specs — always frame data as benefits the customer cares about.
-Generic labels like "SPECIAL DEAL", "FREE SHIPPING" → keep EXACTLY as-is — BUT discount codes MUST be replaced with the discount code from PRODUCT CONTEXT`,
+Generic labels like "SPECIAL DEAL", "FREE SHIPPING" → keep EXACTLY as-is — BUT discount codes MUST be replaced with the discount code from PRODUCT CONTEXT
+- NEVER fabricate quantity claims like "4 FREE GIFTS" or "3 FREE BONUSES" by counting individual offer items from product context. If product context lists free shipping, warranty, etc., they are separate features — NOT "gifts" to count. Only use "X FREE GIFTS" if that exact claim exists in the product data.`,
       crossNicheAdaptation: `CROSS-NICHE VISUAL MAPPING:
 Reference ads may come from any niche. Map visuals to YOUR product's context using PRODUCT CONTEXT above:
 - Competitor product shots → Your product from the provided product photo
