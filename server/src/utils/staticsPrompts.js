@@ -211,42 +211,63 @@ YOUR JOB:
 3. Write BRAND NEW copy for the product below that fits the same SLOTS (same number of elements, similar character counts)
 4. Identify visual elements that need to change
 
-⚠️ CRITICAL — DO NOT ADAPT THE REFERENCE TEXT. WRITE FRESH COPY.
-The reference ad is for a COMPLETELY DIFFERENT product in a DIFFERENT niche. Its words, phrases, and sentences are IRRELEVANT to your product. You must:
-- IGNORE the reference ad's actual words entirely
-- Use the reference ONLY to understand the LAYOUT: how many text elements, their approximate character count, and their role (headline vs bullet vs badge etc.)
-- Write 100% original copy from the PRODUCT CONTEXT below — as if you're writing a new ad from scratch that happens to fit this visual template
+⚠️ CRITICAL — DO NOT REPHRASE THE REFERENCE TEXT. WRITE ORIGINAL COPY.
+The reference ad is for a DIFFERENT product. Its specific words and phrases are irrelevant. But its STRATEGY and STRUCTURE are valuable. Your job is to deeply understand WHAT the template is doing strategically, then write the best possible copy for YOUR product using that same strategy.
 
-WHY THIS MATTERS: If the reference says "Real mushroom shots w/o the crash" and you try to adapt that for a Bitcoin miner, you get "Real Bitcoin shots w/o the crash" — which is NONSENSE. Instead, look at the slot: headline, ~33 chars. Then write fresh: "Mine Bitcoin From Home. $1/Day." — that's real copy.
+STEP 1 — UNDERSTAND THE TEMPLATE'S STRATEGY:
+Before extracting any text, analyze the reference ad and determine:
 
-STEP 1 — ANALYZE THE REFERENCE LAYOUT:
-For each text element in the image, note:
+A) TEMPLATE TYPE — what kind of ad is this?
+- BENEFIT SHOWCASE: Lists product benefits/features with icons or bullets (e.g. "✓ No bloating ✓ More energy ✓ Better sleep")
+- OFFER/PROMO: Focuses on a deal — discount %, price, coupon code, urgency timer (e.g. "40% OFF — Code: SPRING40 — Ends Tonight")
+- CURIOSITY/HOOK: Leads with an intriguing statement or question that makes you want to learn more (e.g. "What your doctor won't tell you about...")
+- TESTIMONIAL/QUOTE: Features a customer quote or story as the main element (e.g. "\"I lost 30 lbs in 2 months\" — Sarah M.")
+- COMPARISON: Shows this product vs competitor or before/after (e.g. "Brand X: $200/mo. Us: $1/mo.")
+- LISTICLE: Numbered list of reasons/facts/steps (e.g. "5 Reasons You Need This")
+- SOCIAL PROOF: Centers on reviews, star ratings, press logos, "As Seen In" (e.g. "★★★★★ 2,400+ Reviews")
+- URGENCY/SCARCITY: Creates time pressure or limited availability (e.g. "Only 47 left — Sale ends midnight")
+- PROBLEM/SOLUTION: States a pain point then presents the product as the fix (e.g. "Tired of X? Meet Y.")
+- EDUCATIONAL: Teaches something, breaks down how it works (e.g. "How solo mining actually works")
+
+B) EMOTIONAL TONE — how does it feel?
+- Aggressive/Hype, Calm/Professional, Conversational/Friendly, Urgent/Scarce, Curious/Mysterious, Authoritative/Expert, Playful/Fun
+
+C) PERSUASION STRUCTURE — how is the argument built?
+- What's the HOOK (first thing that grabs attention)?
+- What's the PROOF (why should I believe this)?
+- What's the CTA (what should I do next)?
+
+Your new copy must use the SAME template type, emotional tone, and persuasion structure — but with completely original words written for YOUR product.
+
+STEP 2 — EXTRACT TEXT SLOTS:
+For each text element visible in the image, note:
 - Its ROLE (headline, subheadline, body, CTA, bullet, badge, stat)
 - Its approximate CHARACTER COUNT
-- Its TONE (aggressive, calm, testimonial, urgency, curiosity, educational)
-Your new copy must match these dimensions.
+- Its PURPOSE in the template's strategy (e.g. "this badge creates urgency", "this bullet proves a benefit", "this headline is the curiosity hook")
 
-STEP 2 — WRITE NEW COPY FROM PRODUCT CONTEXT:
-For each text slot identified in Step 1, write fresh copy using ONLY the PRODUCT CONTEXT below. Rules:
-- Each text element must be WITHIN ±20% of the original's character count (this is critical — an AI image generator renders the text, and longer text gets garbled/misspelled)
+STEP 3 — WRITE ORIGINAL COPY:
+For each text slot, write the best possible copy for YOUR product. You have FULL creative freedom — write whatever will convert best. The only constraints are:
+- Stay within ±20% of the original element's character count (critical — an AI image generator renders the text, longer text gets garbled/misspelled)
 - SHORT = PERFECT RENDERING. LONG = GARBLED MESS.
-- Match the reference's TONE and ENERGY LEVEL — if the original is aggressive, write aggressively. If calm, stay calm.
+- Use the SAME template strategy (if it's a benefit showcase, write benefits; if it's a curiosity hook, write a hook)
+- Use the SAME emotional tone
+- Use the product name "${product.name}" exactly as written — never abbreviate or rename it
 - Every element must be a COMPLETE thought — never a fragment that trails off
 - NEVER use AI-sounding phrases: "game-changer", "revolutionary", "cutting-edge", "seamless", "elevate", "unlock", "transform your"
-- Use the product name "${product.name}" exactly as written — never abbreviate or rename it
 
-BENEFIT-FOCUSED WRITING (CRITICAL):
-Every bullet, feature callout, and body text must be a CUSTOMER BENEFIT, not a technical spec.
+BENEFIT-FOCUSED WRITING:
+When the template calls for benefits/features, write CUSTOMER BENEFITS, not specs:
 - WRONG: "1 watt power draw" → RIGHT: "Only $1/month to run"
 - WRONG: "144 attempts daily" → RIGHT: "144 daily chances at $300K"
 - WRONG: "Solo mining technology" → RIGHT: "Keep 100% — no pool fees"
-- WRONG: "SHA-256 algorithm" → RIGHT: "Real Bitcoin, not some shitcoin"
 RULE: For EVERY text element, ask: "Would someone scrolling Facebook at 11pm care?" If no, rewrite as a benefit.
 
 SPECIFICITY RULE:
-- "Save money" is garbage. "Save $47/month" is good.
-- "Powerful device" is garbage. "316 KH/s hash rate" is good but only if paired with what it MEANS.
+- "Save money" is garbage. "$1/month to run" is good.
 - Every claim needs a number, a timeframe, or a concrete outcome.
+
+CREATIVE FREEDOM:
+You are a $50K/month media buyer. You know what converts. If you think a different hook, angle, or phrasing would perform better for this product — USE IT. The template tells you the STRUCTURE and STRATEGY. The actual words are 100% yours. Write copy that would make YOU click.
 
 PRODUCT CONTEXT:
 ${contextLines}${brandSection}${productIdentity}${pricingRules}
@@ -377,6 +398,13 @@ Look at the area of the ad where the competitor logo sits (or where a logo would
 
 Return ONLY valid JSON (no markdown, no code fences):
 {
+  "template_strategy": {
+    "type": "benefit_showcase|offer_promo|curiosity_hook|testimonial|comparison|listicle|social_proof|urgency_scarcity|problem_solution|educational",
+    "tone": "aggressive|calm|conversational|urgent|curious|authoritative|playful",
+    "hook": "one sentence describing what grabs attention first",
+    "proof": "one sentence describing how the ad builds credibility",
+    "cta_approach": "one sentence describing the call to action style"
+  },
   "original_text": {
     "headline": "",
     "subheadline": "",
