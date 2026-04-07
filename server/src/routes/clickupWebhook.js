@@ -713,4 +713,59 @@ router.get('/frame-diagnose', async (req, res) => {
 // Frame.io folder creation is handled by Make.com scenario
 // Use /frame-diagnose to check Frame.io API access if needed
 
+// Manual Frame.io folder creation for tasks missing frame links
+router.get('/create-frame-folder/:taskId', async (req, res) => {
+  const { taskId } = req.params;
+  try {
+    if (!FRAMEIO_TOKEN) {
+      return res.status(500).json({ error: 'FRAMEIO_TOKEN not set' });
+    }
+
+    // Get task info
+    const task = await getTask(taskId);
+    if (!task) return res.status(404).json({ error: 'Task not found' });
+
+    // Check if already has frame link
+    const existingLink = getFieldValue(task, 'd90f9f25-d7a0-4eb4-9ded-aca0b4519a3b');
+    if (existingLink) {
+      return res.json({ already_exists: true, frame_link: existingLink, task_name: task.name });
+    }
+
+    // Use the naming convention or task name as folder name
+    const folderName = getFieldValue(task, FIELD_IDS.namingConvention) || task.name;
+
+    // Find the root folder
+    const FRAMEIO_ROOT_FOLDER = '43c81cb1-4592-4382-89f1-a99908f95850';
+    let rootFolderId = null;
+
+    // First try the configured project
+    try {
+      const project = await frameioFetch(`/projects/${FRAMEIO_PROJECT_ID}`);
+      rootFolderId = project?.root_asset_id;
+    } catch {
+      logger.warn('[create-frame-folder] Project API not accessible, using hardcoded root folder');
+      rootFolderId = FRAMEIO_ROOT_FOLDER;
+    }
+
+    if (!rootFolderId) {
+      return res.status(500).json({ error: 'Could not find Frame.io project root folder. The configured project ID may be invalid.' });
+    }
+
+    // Create the folder
+    const result = await createFrameFolder(rootFolderId, folderName);
+    if (!result) {
+      return res.status(500).json({ error: 'Frame.io folder creation failed' });
+    }
+
+    // Set the frame link on the ClickUp task
+    await setCustomField(taskId, 'd90f9f25-d7a0-4eb4-9ded-aca0b4519a3b', result.folderUrl);
+
+    logger.info(`[create-frame-folder] Created folder for ${taskId}: ${result.folderUrl}`);
+    res.json({ success: true, frame_link: result.folderUrl, folder_id: result.folderId, task_name: task.name });
+  } catch (err) {
+    logger.error('[create-frame-folder] Error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 export default router;
