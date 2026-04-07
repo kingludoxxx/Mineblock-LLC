@@ -119,21 +119,32 @@ function groupByAngle(creatives) {
 function groupByAdSet(creatives) {
   const groups = {};
   for (const c of creatives) {
-    // Use batch_number from launch_batch if available, otherwise fall back to angle
-    const batchKey = c.launch_batch?.batch_number
-      ? `batch_${c.launch_batch.batch_number}`
-      : `angle_${c.angle || 'Uncategorized'}`;
+    // Priority: launch_batch.batch_number > meta_ad_ids[0].adset_id > angle
+    let batchKey;
+    let label;
+    if (c.launch_batch?.batch_number) {
+      batchKey = `batch_${c.launch_batch.batch_number}`;
+      label = c.angle || 'Uncategorized';
+    } else {
+      // Fallback: use adset_id from meta_ad_ids (always populated on launch)
+      const metaAds = Array.isArray(c.meta_ad_ids) ? c.meta_ad_ids : [];
+      const adsetId = metaAds[0]?.adset_id;
+      if (adsetId) {
+        batchKey = `adset_${adsetId}`;
+        label = metaAds[0]?.ad_name?.replace(/\s*-\s*\d+$/, '') || c.angle || 'Uncategorized';
+      } else {
+        batchKey = `angle_${c.angle || 'Uncategorized'}`;
+        label = c.angle || 'Uncategorized';
+      }
+    }
     if (!groups[batchKey]) {
-      groups[batchKey] = {
-        label: c.launch_batch?.adset_name || c.angle || 'Uncategorized',
-        creatives: [],
-      };
+      groups[batchKey] = { label, creatives: [] };
     }
     groups[batchKey].creatives.push(c);
   }
   // Sort by count desc
   return Object.entries(groups)
-    .map(([key, { label, creatives: cs }]) => [label, cs])
+    .map(([, { label, creatives: cs }]) => [label, cs])
     .sort(([, a], [, b]) => b.length - a.length);
 }
 
