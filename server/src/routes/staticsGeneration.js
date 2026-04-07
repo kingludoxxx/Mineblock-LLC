@@ -1355,6 +1355,29 @@ router.get('/creatives/pipeline', authenticate, async (req, res) => {
       }
     }
 
+    // Enrich launched creatives with batch info
+    const launchedIds = pipeline.launched.map(r => r.id);
+    if (launchedIds.length > 0) {
+      try {
+        const launchRows = await pgQuery(
+          `SELECT DISTINCT ON (creative_id) creative_id, batch_number, adset_name, meta_adset_id
+           FROM statics_launches
+           WHERE creative_id = ANY($1)
+           ORDER BY creative_id, created_at DESC`,
+          [launchedIds]
+        );
+        const launchMap = {};
+        for (const lr of launchRows) {
+          launchMap[lr.creative_id] = { batch_number: lr.batch_number, adset_name: lr.adset_name, meta_adset_id: lr.meta_adset_id };
+        }
+        for (const row of pipeline.launched) {
+          if (launchMap[row.id]) row.launch_batch = launchMap[row.id];
+        }
+      } catch (e) {
+        console.warn('[staticsGeneration] Could not enrich launch batch info:', e.message);
+      }
+    }
+
     res.json({
       success: true,
       data: pipeline,

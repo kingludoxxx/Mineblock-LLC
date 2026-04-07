@@ -118,33 +118,52 @@ function groupByAngle(creatives) {
 // Group launched creatives by ad set batch (not just angle)
 function groupByAdSet(creatives) {
   const groups = {};
+  const ungrouped = []; // creatives with no batch or adset info
+
   for (const c of creatives) {
-    // Priority: launch_batch.batch_number > meta_ad_ids[0].adset_id > angle
+    // Parse meta_ad_ids (could be string or array)
+    let metaAds = c.meta_ad_ids;
+    if (typeof metaAds === 'string') {
+      try { metaAds = JSON.parse(metaAds); } catch { metaAds = []; }
+    }
+    if (!Array.isArray(metaAds)) metaAds = [];
+
+    // Priority: launch_batch > meta adset_id > ungrouped
     let batchKey;
-    let label;
+    const label = c.angle || 'Uncategorized';
     if (c.launch_batch?.batch_number) {
       batchKey = `batch_${c.launch_batch.batch_number}`;
-      label = c.angle || 'Uncategorized';
+    } else if (metaAds[0]?.adset_id) {
+      batchKey = `adset_${metaAds[0].adset_id}`;
     } else {
-      // Fallback: use adset_id from meta_ad_ids (always populated on launch)
-      const metaAds = Array.isArray(c.meta_ad_ids) ? c.meta_ad_ids : [];
-      const adsetId = metaAds[0]?.adset_id;
-      if (adsetId) {
-        batchKey = `adset_${adsetId}`;
-        label = metaAds[0]?.ad_name?.replace(/\s*-\s*\d+$/, '') || c.angle || 'Uncategorized';
-      } else {
-        batchKey = `angle_${c.angle || 'Uncategorized'}`;
-        label = c.angle || 'Uncategorized';
-      }
+      ungrouped.push(c);
+      continue;
     }
     if (!groups[batchKey]) {
       groups[batchKey] = { label, creatives: [] };
     }
     groups[batchKey].creatives.push(c);
   }
-  // Sort by count desc
-  return Object.entries(groups)
-    .map(([, { label, creatives: cs }]) => [label, cs])
+
+  // Chunk ungrouped creatives into ad-set-sized groups by angle
+  if (ungrouped.length > 0) {
+    const byAngle = {};
+    for (const c of ungrouped) {
+      const a = c.angle || 'Uncategorized';
+      if (!byAngle[a]) byAngle[a] = [];
+      byAngle[a].push(c);
+    }
+    for (const [angle, cs] of Object.entries(byAngle)) {
+      for (let i = 0; i < cs.length; i += ADSET_SIZE) {
+        const chunk = cs.slice(i, i + ADSET_SIZE);
+        const key = `ungrouped_${angle}_${i}`;
+        groups[key] = { label: angle, creatives: chunk };
+      }
+    }
+  }
+
+  return Object.values(groups)
+    .map(({ label, creatives: cs }) => [label, cs])
     .sort(([, a], [, b]) => b.length - a.length);
 }
 
