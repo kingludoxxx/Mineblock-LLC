@@ -156,24 +156,18 @@ export function buildClaudePrompt(product, angle, customOverrides = null, layout
     : '';
 
   // Formula preservation (use custom if available, otherwise default)
-  const formulaSection = co.formulaPreservation || `FORMULA PRESERVATION:
-Follow the SAME sentence rhythm, approximate length, and rhetorical pattern as the original. You are copying the PROVEN FORMULA structure — but filling it with THIS product's real data.
+  const formulaSection = co.formulaPreservation || `COPY GENERATION RULES:
+You are writing FRESH copy from the PRODUCT CONTEXT. The reference ad is ONLY a visual template — ignore its words entirely.
 
-STRUCTURE EXAMPLES (keep the pattern, swap the content):
-- "Bye Bye, Beer Belly" → "Bye Bye, Power Bills" (keeps "Bye Bye,")
-- "Kill The Bloated Belly" → "Kill The Middleman" (keeps "Kill The")
-- "3 Years of Back Pain Gone in 7 Days" → "3 Years of Missing Gains Gone in 7 Days"
-- "Now just £5 a bottle" → "Now just $59.99 a unit" (keeps "Now just ... a [container]")
+USE PRODUCT DATA AS YOUR SOURCE:
+- Read every field in PRODUCT CONTEXT carefully — mechanism, benefits, big promise, customer frustration, dream outcome, pain points, competitive edge
+- These are your GROUND TRUTH. Write copy from this data only.
+- ALWAYS rewrite technical specs as customer-facing benefits: "attempts a block 144 times daily" → "144 daily chances to win $300K+"
+- NEVER invent claims that aren't in the product context
 
-CRITICAL — PRODUCT DATA OVERRIDES GENERIC TEXT:
-If the reference ad contains GENERIC claims or filler statements (e.g. "Real Mining for 12+ Hours Daily", "Authentic Performance", "True Results"), you MUST replace them with SPECIFIC claims from the PRODUCT CONTEXT above. Use the mechanism, benefits, big promise, and notes fields — they contain the real product data.
-- If mechanism says "attempts a block 144 times daily" → rewrite as a CUSTOMER BENEFIT: "144 daily chances to win $300K+"
-- If benefits list technical features → rewrite as benefits: "1 watt power draw" becomes "Only $1/month to run"
-- NEVER keep a generic reference phrase when the product context has a specific replacement
-- The product context fields are GROUND TRUTH — but always REWRITE them as customer-facing benefits, never paste technical specs raw
-
-ELEMENT COUNT: The adapted text count must EXACTLY MATCH the original count — same number of headlines, bullets, badges, stats. Do not add or remove elements. Leave fields empty ("") if no corresponding text exists.
-- Generic labels like "SPECIAL DEAL", "FREE SHIPPING" stay exactly as-is — BUT discount codes (e.g. "Use code XYZ") MUST be replaced with the product's actual code`;
+ELEMENT COUNT: Your adapted_text must have the EXACT SAME number of elements as original_text — same number of headlines, bullets, badges, stats. Don't add or remove. Leave fields empty ("") if no corresponding text exists.
+- Generic labels like "SPECIAL DEAL", "FREE SHIPPING" can stay as-is
+- Discount codes MUST use the product's actual code from PRODUCT CONTEXT`;
 
   // Cross-niche visual mapping
   const crossNicheSection = co.crossNicheAdaptation
@@ -209,45 +203,50 @@ IMPORTANT: Follow the adaptation_instructions closely. Pay special attention to:
 
   return `You are a $50K/month media buyer who writes ad copy that actually converts cold traffic. You've spent millions on Facebook ads. You know exactly what makes someone stop scrolling and click.
 
-You are analyzing a reference ad image and rewriting its copy for a different product.
+You are analyzing a reference ad image. You will extract its text layout, then write COMPLETELY NEW copy for a different product that fits the same visual slots.
 
 YOUR JOB:
-1. Extract every text element visible in the image — miss NOTHING
+1. Extract every text element visible in the image — miss NOTHING. Note each element's ROLE (headline, subheadline, bullet, badge, stat, CTA, etc.) and CHARACTER COUNT.
 2. Count people and product shots
-3. Rewrite every text element for the product below
+3. Write BRAND NEW copy for the product below that fits the same SLOTS (same number of elements, similar character counts)
 4. Identify visual elements that need to change
 
-CRITICAL RULES FOR ADAPTED COPY:
+⚠️ CRITICAL — DO NOT ADAPT THE REFERENCE TEXT. WRITE FRESH COPY.
+The reference ad is for a COMPLETELY DIFFERENT product in a DIFFERENT niche. Its words, phrases, and sentences are IRRELEVANT to your product. You must:
+- IGNORE the reference ad's actual words entirely
+- Use the reference ONLY to understand the LAYOUT: how many text elements, their approximate character count, and their role (headline vs bullet vs badge etc.)
+- Write 100% original copy from the PRODUCT CONTEXT below — as if you're writing a new ad from scratch that happens to fit this visual template
 
-STEP ZERO — ANALYZE THE REFERENCE'S COMMUNICATION STYLE BEFORE WRITING ANYTHING:
-Look at the reference ad and identify its tone: aggressive/clickbait, calm/promotional, testimonial/story, curiosity-driven, urgency/scarcity, educational, or comparison. Your adapted copy MUST match this exact tone. Do NOT change the emotional register — a calm sale ad stays calm, an aggressive ad stays aggressive.
+WHY THIS MATTERS: If the reference says "Real mushroom shots w/o the crash" and you try to adapt that for a Bitcoin miner, you get "Real Bitcoin shots w/o the crash" — which is NONSENSE. Instead, look at the slot: headline, ~33 chars. Then write fresh: "Mine Bitcoin From Home. $1/Day." — that's real copy.
 
-THEN apply these rules:
-- Write like you're texting your friend about a product you genuinely love — NOT like a marketing department
-- Use the SAME copywriting formula/structure as the original (same sentence patterns, same rhythm, same number of elements)
-- But make it SPECIFIC to this product — use real product details, real benefits, real numbers
-- ⚠️ CRITICAL LENGTH RULE: Each adapted text MUST be the SAME length (±20%) as the original. An AI image generator will render your text — if you write longer text, it WILL be misspelled and garbled. SHORT = PERFECT RENDERING. LONG = GARBLED MESS. If original is "Adaptogenic mushroom blend" (26 chars), adapted must be ~26 chars like "144 daily Bitcoin attempts" (25 chars), NOT "144 real shots at a $300K Bitcoin block. Every single day." (59 chars — WAY too long, will be garbled).
-- ⚠️ BRAND NAME EXCEPTION TO LENGTH RULE: When replacing a competitor brand name with the product name from PRODUCT CONTEXT, ALWAYS use the FULL product name exactly as given — even if it's longer than the original brand name. The product name is non-negotiable. Adjust the REST of the text around it to fit the length target, but NEVER shorten, abbreviate, or replace the product name with something else. Example: if original is "grüns" (5 chars) and product name is "MinerForge Pro" (14 chars), use "MinerForge Pro" — do NOT invent alternatives like "Mini Bitcoin" or abbreviate to "MFP".
-- ⚠️ COMPLETE THOUGHTS ONLY: Every adapted text MUST be a COMPLETE sentence or phrase. NEVER write a fragment that trails off. If the original is short (e.g. "Bloating" = 8 chars), write a complete short phrase (e.g. "Pool fees" = 9 chars), NOT an unfinished sentence like "Splitting fees with" (trails off mid-thought). Short originals need short, punchy, COMPLETE adapted text.
-- ⚠️ ZERO REFERENCE PRODUCT TEXT: Your adapted text must contain ZERO words from the reference product's category. If the reference is about hair growth, words like "shedding", "hair", "regrowth", "follicle" must NEVER appear in adapted_text. If the reference is about supplements, words like "mushroom", "adaptogenic", "blend" must NEVER appear. Replace ALL of them with ${product.name}-relevant terms.
-- If the original says "3 Years of Back Pain Gone in 7 Days" → yours should be equally specific and bold with THIS product's claims
-- NEVER write vague platitudes like "Transform Your Experience" or "Unlock Your Potential" or "The Future of [X]"
-- NEVER use these AI-sounding phrases: "game-changer", "revolutionary", "cutting-edge", "seamless", "elevate", "unlock", "transform your", "discover the", "experience the"
-- Match the original's energy level EXACTLY — if it's screaming, scream. If it's whispering, whisper.
+STEP 1 — ANALYZE THE REFERENCE LAYOUT:
+For each text element in the image, note:
+- Its ROLE (headline, subheadline, body, CTA, bullet, badge, stat)
+- Its approximate CHARACTER COUNT
+- Its TONE (aggressive, calm, testimonial, urgency, curiosity, educational)
+Your new copy must match these dimensions.
 
-BENEFIT-FOCUSED WRITING (CRITICAL — READ THIS):
-Every bullet, feature callout, and body text must be written as a CUSTOMER BENEFIT, not a technical spec.
-The customer does not care about specs. They care about what the product DOES FOR THEM.
-- WRONG: "1 watt power draw" (this is a spec sheet, not an ad)
-- RIGHT: "Only $1/month to run" (this is a benefit the customer cares about)
-- WRONG: "144 attempts daily" (technical jargon)
-- RIGHT: "144 chances to win $300K every single day" (exciting outcome)
-- WRONG: "Solo mining technology" (feature)
-- RIGHT: "Keep 100% of your rewards — no pool fees" (benefit)
-- WRONG: "SHA-256 algorithm" (nobody cares)
-- RIGHT: "Real Bitcoin, not some shitcoin" (speaks to desire)
+STEP 2 — WRITE NEW COPY FROM PRODUCT CONTEXT:
+For each text slot identified in Step 1, write fresh copy using ONLY the PRODUCT CONTEXT below. Rules:
+- Each text element must be WITHIN ±20% of the original's character count (this is critical — an AI image generator renders the text, and longer text gets garbled/misspelled)
+- SHORT = PERFECT RENDERING. LONG = GARBLED MESS.
+- Match the reference's TONE and ENERGY LEVEL — if the original is aggressive, write aggressively. If calm, stay calm.
+- Every element must be a COMPLETE thought — never a fragment that trails off
+- NEVER use AI-sounding phrases: "game-changer", "revolutionary", "cutting-edge", "seamless", "elevate", "unlock", "transform your"
+- Use the product name "${product.name}" exactly as written — never abbreviate or rename it
 
-RULE: For EVERY adapted text element, ask yourself: "Would a normal person scrolling Facebook at 11pm care about this?" If the answer is no, rewrite it as a benefit they WOULD care about. Use the product context to find the real benefits — price savings, outcome, emotional payoff, social proof.
+BENEFIT-FOCUSED WRITING (CRITICAL):
+Every bullet, feature callout, and body text must be a CUSTOMER BENEFIT, not a technical spec.
+- WRONG: "1 watt power draw" → RIGHT: "Only $1/month to run"
+- WRONG: "144 attempts daily" → RIGHT: "144 daily chances at $300K"
+- WRONG: "Solo mining technology" → RIGHT: "Keep 100% — no pool fees"
+- WRONG: "SHA-256 algorithm" → RIGHT: "Real Bitcoin, not some shitcoin"
+RULE: For EVERY text element, ask: "Would someone scrolling Facebook at 11pm care?" If no, rewrite as a benefit.
+
+SPECIFICITY RULE:
+- "Save money" is garbage. "Save $47/month" is good.
+- "Powerful device" is garbage. "316 KH/s hash rate" is good but only if paired with what it MEANS.
+- Every claim needs a number, a timeframe, or a concrete outcome.
 
 PRODUCT CONTEXT:
 ${contextLines}${brandSection}${productIdentity}${pricingRules}
@@ -281,28 +280,18 @@ USE THIS LAYOUT MAP TO:
 TEXT EXTRACTION RULES:
 - Only extract text ACTUALLY VISIBLE in the image — do NOT hallucinate text
 - Extract ALL text: brand name, headline, subheadline, body, CTA buttons, review counts, star ratings, price badges, discount %, feature callouts, comparison labels, fine print
-- ⚠️ LANGUAGE RULE: ALL adapted_text MUST be in ENGLISH regardless of the reference ad's language. If the reference is in Spanish, French, German, Portuguese, or ANY non-English language, you MUST translate the meaning and rewrite the adapted text in English. The output ad is ALWAYS in English. NEVER keep non-English text in adapted_text.
-- Progress/timeline labels ("Before", "After") stay as-is — BUT timeline DURATION labels ("Day 45", "3-4 mo.", "6 months", "Week 2") MUST be extracted and adapted to match the new product's realistic timeline. If the reference shows "3-6 months" but the product works in weeks, change to "4-8 weeks". Always use realistic timeframes from PRODUCT CONTEXT.
-- Prices extracted exactly and adapted with real product price
 - Multi-line headlines kept as one string with natural line breaks
-- Generic labels like "SPECIAL DEAL", "THIS WEEK ONLY", "FREE SHIPPING" stay exactly as-is — BUT discount codes (e.g. "Use code XYZ") are NOT generic labels and MUST be replaced with the product's actual discount code
+- Note the CHARACTER COUNT of each extracted element — your new copy must match these lengths
 
-BRAND NAME REPLACEMENT (OVERRIDES LENGTH RULE):
-- If the reference ad contains a competitor brand name in ANY text element (headline, body, badges, etc.), you MUST replace it with "${product.name}" from PRODUCT CONTEXT
-- This includes brand names in headlines like "RYZE Mushroom Coffee" → "${product.name}", badges like "Powered by XYZ" → "Powered by ${product.name}", etc.
-- The competitor brand name must appear ZERO times in adapted_text
-- The product name "${product.name}" is SACRED — NEVER abbreviate it, shorten it, or replace it with a made-up name to meet the length constraint. Use the full name and adjust surrounding text to compensate for length
-
-SEASONAL & DATE-SPECIFIC TEXT:
-- If the reference contains month names ("March Sale", "Summer Deal"), replace with a generic urgency phrase ("Flash Sale", "Limited Time") or the current season — do NOT keep a stale month reference
-- If the reference contains specific dates or year references ("2024 Edition", "Dec 25th"), update or generalize them
-- Holiday-specific text ("Christmas Special", "Black Friday") should be replaced with generic urgency unless the product context specifies a current promotion
-
-DISCOUNT CODE & OFFER REPLACEMENT:
-- If the reference ad contains a discount code (e.g. "Use code SPRING10", "Code: ABC", "Enter PROMO20 at checkout"), extract it AND replace it in adapted_text with the Discount Codes from PRODUCT CONTEXT above
-- If the reference ad has discount percentages (e.g. "Save 40%"), replace with the Max Discount from PRODUCT CONTEXT if available
-- If product has NO discount codes listed in PRODUCT CONTEXT, keep the original discount code text as-is (do not remove it)
-- Discount codes are NEVER "generic labels" — they are product-specific and MUST always be swapped
+WRITING NEW COPY (adapted_text):
+- Write 100% fresh copy from PRODUCT CONTEXT for every text slot
+- ALL text MUST be in ENGLISH regardless of the reference language
+- Replace competitor brand names with "${product.name}" — never abbreviate it
+- Generic labels ("SPECIAL DEAL", "FREE SHIPPING") can stay as-is
+- Discount codes MUST use the actual code from PRODUCT CONTEXT
+- Prices MUST use the real product price from PRODUCT CONTEXT
+- Seasonal/date text ("March Sale") → use generic urgency ("Flash Sale", "Limited Time")
+- Timeline labels → use realistic timeframes for THIS product
 
 ---${headlineRules}${headlineExamples}${bannedPhrases}
 
@@ -313,28 +302,18 @@ ${formulaSection}
 ---
 
 COPY QUALITY SELF-CHECK (run this mentally before returning):
-1. Read each adapted headline out loud. Does it sound like something a REAL person would say? If it sounds like a corporate tagline → REWRITE IT
-2. Is every claim SPECIFIC? "Save money" is garbage. "Save $47/month" is good. "Cut your power bill in half" is great.
-3. Would this make someone STOP SCROLLING on Facebook at 11pm? If not → more emotional, more specific, more urgent
-4. Does it use any word a normal person wouldn't say in conversation? ("Elevate", "Transform", "Revolutionize", "Seamless") → REMOVE IT
-5. Is the energy level matching the original? If the original is screaming, yours should be screaming too.
-6. Count check: same number of headlines, bullets, badges, stats as original. Don't add or remove elements. Leave fields empty ("") if no corresponding text exists.
-7. ⚠️ REFERENCE BLEED CHECK (CRITICAL): Re-read EVERY adapted_text. Does ANY text mention the REFERENCE product's industry, features, or terminology instead of the NEW product's? If the reference is a hair supplement and you see "hair regrowth", "DHT", "shedding", "follicle" in your adapted text, you FAILED — that is reference bleed-through. EVERY single text element must be about the NEW product, not the reference. Replace ALL reference-specific language with equivalent claims from PRODUCT CONTEXT.
-8. GRAMMAR & SPELLING CHECK: Read every adapted text element. Fix any grammar or spelling errors. "atemps" → "attempts". "Gaurantee" → "Guarantee". Every word must be spelled correctly.
-   8b. LANGUAGE CHECK: Is every adapted_text in ENGLISH? If the reference was in Spanish, French, or any other language, ALL adapted text MUST be translated to English. ZERO non-English words allowed in adapted_text.
-9. BENEFIT CHECK: Re-read every bullet/stat. Does it state a spec or a benefit? "144 attempts daily" is a SPEC → rewrite as "144 daily chances to win $300K+". "1 watt" is a SPEC → rewrite as "$1/month to run". If any text reads like a product spec sheet, you FAILED — rewrite it.
-10. ⚠️ CHARACTER COUNT CHECK (CRITICAL FOR IMAGE GENERATION — THIS IS THE #1 CAUSE OF BAD OUTPUT):
-   For EVERY adapted text element, count the characters and compare to the original:
-   - If original is 25 chars, adapted MUST be 20-30 chars (NOT 50+ chars)
-   - If original is 40 chars, adapted MUST be 35-45 chars (NOT 70+ chars)
-   - NEVER exceed the original length by more than 20%. The image generator CANNOT render long text — it will truncate, misspell, or garble text that is too long.
-   - SHORT text renders PERFECTLY. Long text renders BADLY. When in doubt, make it SHORTER.
-   - A 3-word bullet like "No more bloating" should become "144 daily Bitcoin shots" (3-4 words) — NOT "144 real shots at a $300K Bitcoin block. Every single day." (too long!)
-   - REWRITE any adapted text that exceeds the original character count by more than 20%
-   - EXCEPTION: Brand name replacement is exempt — "${product.name}" must always be used in full even if it exceeds the length target. Shorten the surrounding words instead.
-11. BRAND NAME CHECK: Does any adapted text still contain the COMPETITOR's brand name? If yes, replace it with the product name from PRODUCT CONTEXT. Zero competitor branding in adapted text.
-12. COMPLETE THOUGHT CHECK: Read each adapted text. Does it end mid-sentence? "Crypto feels too" is INCOMPLETE. "Crypto is complex" is COMPLETE. "Splitting fees with" is INCOMPLETE. "No pool fees" is COMPLETE. EVERY adapted text must be a complete thought that makes sense on its own.
-13. REFERENCE CATEGORY CHECK: Does any adapted text contain words from the REFERENCE product's category (e.g. "hair", "gut", "mushroom", "belly", "shedding")? If yes, replace with words about YOUR product. Zero reference category terms in adapted text.
+1. MAKES SENSE CHECK: Read each adapted text out loud. Does it make logical sense for THIS PRODUCT? "Real Bitcoin shots w/o the crash" = NONSENSE for a mining device. "Mine Bitcoin from home for $1/day" = MAKES SENSE. If any text sounds weird or forced, you wrote it by adapting the reference instead of writing fresh — DELETE IT and write new copy from product context.
+2. SPECIFICITY CHECK: Is every claim SPECIFIC? "Save money" is garbage. "$1/month to run" is good. Every claim needs a number, timeframe, or concrete outcome.
+3. SCROLL-STOP CHECK: Would this make someone STOP SCROLLING on Facebook at 11pm? If not → more emotional, more specific, more urgent.
+4. AI LANGUAGE CHECK: Does it use any corporate/AI words? ("Elevate", "Transform", "Revolutionize", "Seamless", "Game-changer") → REMOVE and rewrite in plain language.
+5. ENERGY CHECK: Does the energy match the reference? Aggressive original = aggressive new copy. Calm original = calm new copy.
+6. ELEMENT COUNT CHECK: Same number of headlines, bullets, badges, stats as original. Don't add or remove.
+7. ⚠️ REFERENCE CONTAMINATION CHECK (MOST CRITICAL): Re-read EVERY adapted text. Does ANY word, phrase, or sentence STRUCTURE come from the reference ad? You should have written 100% fresh copy. If you see anything that looks like a modified version of the reference text, you FAILED. Delete it and write new copy from PRODUCT CONTEXT. Common failure: keeping the reference's sentence structure and just swapping nouns. "Real [X] shots w/o the [Y]" is a COPIED STRUCTURE even if the nouns changed.
+8. SPELLING & GRAMMAR CHECK: Every word must be spelled correctly. ALL text MUST be in ENGLISH.
+9. BENEFIT CHECK: Does every bullet/stat state a benefit, not a spec? "144 attempts daily" = SPEC → "144 daily chances at $300K" = BENEFIT.
+10. ⚠️ CHARACTER COUNT CHECK: For EVERY element, count chars and compare to original slot size. Stay within ±20%. Short text renders perfectly; long text gets garbled. When in doubt, SHORTER.
+11. COMPLETE THOUGHT CHECK: Does every text end as a complete thought? "Crypto feels too" = INCOMPLETE → "No middleman fees" = COMPLETE.
+12. PRODUCT NAME CHECK: Does "${product.name}" appear correctly? Zero competitor names in output.
 
 ---
 
