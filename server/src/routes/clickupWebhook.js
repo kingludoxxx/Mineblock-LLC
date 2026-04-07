@@ -710,6 +710,16 @@ router.get('/frame-diagnose', async (req, res) => {
   }
 });
 
+// Debug: check a Frame.io asset directly
+router.get('/frame-asset/:assetId', async (req, res) => {
+  try {
+    const asset = await frameioFetch(`/assets/${req.params.assetId}`);
+    res.json({ id: asset?.id, name: asset?.name, type: asset?.type, project_id: asset?.project_id, parent_id: asset?.parent_id, item_count: asset?.item_count });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Frame.io folder creation is handled by Make.com scenario
 // Use /frame-diagnose to check Frame.io API access if needed
 
