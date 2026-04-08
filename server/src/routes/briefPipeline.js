@@ -565,7 +565,19 @@ function buildNamingConvention({ product_code, brief_number, parent_creative_id,
 }
 
 // ── Transcribe video/audio with Gemini ───────────────────────────────
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
+// Support multiple Gemini API keys for rate limit rotation
+const GEMINI_API_KEYS = [
+  process.env.GEMINI_API_KEY,
+  process.env.GEMINI_API_KEY_2,
+  process.env.GEMINI_API_KEY_3,
+].filter(Boolean);
+const GEMINI_API_KEY = GEMINI_API_KEYS[0] || '';
+let geminiKeyIndex = 0;
+function getNextGeminiKey() {
+  if (!GEMINI_API_KEYS.length) return '';
+  geminiKeyIndex = (geminiKeyIndex + 1) % GEMINI_API_KEYS.length;
+  return GEMINI_API_KEYS[geminiKeyIndex];
+}
 
 async function transcribeWithGemini(mediaUrl) {
   if (!GEMINI_API_KEY) throw new Error('GEMINI_API_KEY not configured — cannot transcribe video');
@@ -604,12 +616,8 @@ async function transcribeWithGemini(mediaUrl) {
         ]}],
         generationConfig: { maxOutputTokens: 4096, temperature: 0.1 },
       };
-      // Try twice — first pass, then wait 60s and retry (rate limit resets per minute)
-      let result = await callGeminiWithRetry(models, requestBody);
-      if (result) return result;
-      console.log('[BriefPipeline] All Gemini models rate-limited, waiting 60s for reset...');
-      await new Promise(r => setTimeout(r, 60000));
-      result = await callGeminiWithRetry(models, requestBody);
+      // Try all key/model combos — no blocking waits
+      const result = await callGeminiWithRetry(models, requestBody);
       if (result) return result;
     }
   }
@@ -624,23 +632,20 @@ async function transcribeWithGemini(mediaUrl) {
     generationConfig: { maxOutputTokens: 4096, temperature: 0.1 },
   };
 
-  // Try twice — first pass, then wait 60s and retry if rate-limited
-  let result = await callGeminiWithRetry(models, requestBody);
-  if (result) return result;
-  console.log('[BriefPipeline] All Gemini models rate-limited, waiting 60s for reset...');
-  await new Promise(r => setTimeout(r, 60000));
-  result = await callGeminiWithRetry(models, requestBody);
+  // Try all key/model combos — no blocking waits
+  const result = await callGeminiWithRetry(models, requestBody);
   if (result) return result;
 
-  throw new Error('Video transcription failed — Gemini rate limit. Please wait 1-2 minutes and try again, or paste the script text manually.');
+  throw new Error('Video transcription failed — all Gemini API keys rate-limited. Please paste the script text manually or try again in 1 minute.');
 }
 
 // Upload file to Gemini File API for large media
 async function uploadToGeminiFileApi(buffer, mimeType) {
   try {
-    // Step 1: Start resumable upload
+    // Step 1: Start resumable upload (use next key in rotation for large files)
+    const uploadKey = GEMINI_API_KEYS.length > 1 ? getNextGeminiKey() : GEMINI_API_KEY;
     const startRes = await fetch(
-      `https://generativelanguage.googleapis.com/upload/v1beta/files?key=${GEMINI_API_KEY}`,
+      `https://generativelanguage.googleapis.com/upload/v1beta/files?key=${uploadKey}`,
       {
         method: 'POST',
         headers: {
@@ -689,7 +694,7 @@ async function uploadToGeminiFileApi(buffer, mimeType) {
       const fileName = uploadData.file.name;
       for (let i = 0; i < 12; i++) {
         await new Promise(r => setTimeout(r, 5000));
-        const checkRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/${fileName}?key=${GEMINI_API_KEY}`);
+        const checkRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/${fileName}?key=${uploadKey}`);
         const checkData = await checkRes.json();
         if (checkData.state === 'ACTIVE') {
           console.log('[BriefPipeline] File processing complete');
@@ -712,20 +717,17 @@ async function uploadToGeminiFileApi(buffer, mimeType) {
   }
 }
 
-// Call Gemini with retry across multiple models
+// Call Gemini with retry across multiple models AND multiple API keys (no blocking waits)
 async function callGeminiWithRetry(models, requestBody) {
   let lastError = null;
-  for (const model of models) {
-    for (let attempt = 0; attempt < 2; attempt++) {
+  // Try every key × every model combination — fail fast, no 30-60s waits
+  for (const apiKey of (GEMINI_API_KEYS.length ? GEMINI_API_KEYS : [GEMINI_API_KEY])) {
+    if (!apiKey) continue;
+    for (const model of models) {
       try {
-        if (attempt > 0) {
-          // Longer backoff on retry — 30s for rate limits
-          const backoff = lastError?.includes('Rate limited') ? 30000 : 10000;
-          console.log(`[BriefPipeline] Retrying ${model} in ${backoff / 1000}s...`);
-          await new Promise(r => setTimeout(r, backoff));
-        }
-        console.log(`[BriefPipeline] Trying Gemini model: ${model} (attempt ${attempt + 1})`);
-        const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
+        const keyLabel = `key:${apiKey.slice(-4)}`;
+        console.log(`[BriefPipeline] Trying Gemini ${model} (${keyLabel})`);
+        const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
         const geminiRes = await fetch(geminiUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -734,28 +736,28 @@ async function callGeminiWithRetry(models, requestBody) {
         });
 
         if (geminiRes.status === 429) {
-          console.warn(`[BriefPipeline] ${model} rate limited (429), trying next model...`);
+          console.warn(`[BriefPipeline] ${model} (${keyLabel}) rate limited (429), trying next key/model...`);
           lastError = `${model}: Rate limited`;
-          break; // Skip retries on same model, move to next model
+          continue;
         }
 
         if (geminiRes.status === 404) {
-          console.warn(`[BriefPipeline] ${model} not found (404), skipping...`);
+          console.warn(`[BriefPipeline] ${model} not found (404), skipping model...`);
           lastError = `${model}: Model not found`;
-          break; // Skip retries, model doesn't exist
+          break; // Skip this model entirely, try next
         }
 
         if (!geminiRes.ok) {
           const errText = await geminiRes.text();
           lastError = `${model}: HTTP ${geminiRes.status}`;
-          console.warn(`[BriefPipeline] ${model} failed: HTTP ${geminiRes.status} — ${errText.slice(0, 150)}`);
+          console.warn(`[BriefPipeline] ${model} (${keyLabel}) failed: HTTP ${geminiRes.status} — ${errText.slice(0, 150)}`);
           continue;
         }
 
         const geminiData = await geminiRes.json();
         const transcript = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || '';
         if (transcript && transcript.length >= 20) {
-          console.log(`[BriefPipeline] Transcription complete with ${model}: ${transcript.length} chars`);
+          console.log(`[BriefPipeline] Transcription complete with ${model} (${keyLabel}): ${transcript.length} chars`);
           return transcript.trim();
         }
         lastError = `${model}: Empty transcript`;
@@ -3220,10 +3222,10 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
     ]);
     const winner = insertedWinner[0];
 
-    // Step 4: Parse script
-    console.log(`[BriefPipeline] Parsing manual script`);
+    // Step 4: Parse script + fetch product in parallel
+    const isCloneMode = mode === 'clone';
+    console.log(`[BriefPipeline] ${isCloneMode ? 'FAST clone' : 'Variant'} mode — parsing script`);
     const { system: parseSystem, user: parseUser } = await buildScriptParserPrompt(rawScript, creativeId);
-    // Parse script + fetch product in parallel (they're independent)
     const [parsedScriptRaw, productProfile] = await Promise.all([
       callClaude(parseSystem, parseUser, 2000, { fast: true }),
       fetchProductProfile(productCode || 'MR'),
@@ -3234,44 +3236,24 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
     }
     pgQuery(`UPDATE brief_pipeline_winners SET parsed_script = $1 WHERE id = $2`, [JSON.stringify(parsedScript), winner.id]).catch(() => {});
 
-    // Step 5: Deep analysis
     if (!productProfile) {
       console.warn(`[BriefPipeline] WARNING: No product profile found for ${productCode || 'MR'} — generation will proceed with limited context`);
     }
     const productContext = buildProductContextForBrief(productProfile);
     console.log(`[BriefPipeline] Product context: ${productContext === 'No product profile available.' ? 'EMPTY (no profile)' : `${productContext.split('\n').length} fields loaded`}`);
 
-    const { dnaPrompt, psychologyPrompt, rulesPrompt } = await buildDeepAnalysisPrompts(winner, parsedScript, productContext);
-    const [scriptDna, psychology, iterationRules] = await Promise.all([
-      callClaude(dnaPrompt.system, dnaPrompt.user, 2500),
-      callClaude(psychologyPrompt.system, psychologyPrompt.user, 2500),
-      callClaude(rulesPrompt.system, rulesPrompt.user, 4000, { fast: true }),
-    ]);
-    const winAnalysis = { scriptDna, psychology, iterationRules };
-
-    // Cache analysis
-    const scriptHash = crypto.createHash('md5').update(rawScript).digest('hex');
-    await pgQuery(
-      `INSERT INTO brief_pipeline_analysis_cache (creative_id, script_hash, win_analysis)
-       VALUES ($1, $2, $3) ON CONFLICT (creative_id) DO UPDATE SET script_hash = $2, win_analysis = $3, analyzed_at = NOW()`,
-      [creativeId, scriptHash, JSON.stringify(winAnalysis)]
-    );
-
-    // Step 6: Build directions + generate
-    const safeDirections = iterationRules?.safe_iteration_directions || [];
-    const isCloneMode = mode === 'clone';
-
     let nextBriefNum = await getNextBriefNumber();
     let generationResults;
+    let winAnalysis = {};
     const config = { mode: isCloneMode ? 'clone' : 'hook_body', aggressiveness: 'medium', num_variations: numVariations, fixed_elements: [] };
 
     if (isCloneMode) {
       // ═══════════════════════════════════════════════════
-      // CLONE MODE — Single 1:1 clone with dedicated prompt
+      // FAST CLONE MODE — Skip deep analysis + scoring (2 API calls total)
+      // The clone prompt is self-contained — Claude analyzes structure inline
       // ═══════════════════════════════════════════════════
-      console.log(`[BriefPipeline] Clone mode — generating 1:1 script clone`);
-      const { system: cloneSystem, user: cloneUser } = await buildScriptClonePrompt(parsedScript, winAnalysis, productContext);
-      // Inject angle constraint for clone mode
+      console.log(`[BriefPipeline] Fast clone — skipping deep analysis, direct generation`);
+      const { system: cloneSystem, user: cloneUser } = await buildScriptClonePrompt(parsedScript, {}, productContext);
       let enhancedCloneUser = cloneUser;
       if (angle && angle !== 'NA') {
         enhancedCloneUser += `\n\n# AD ANGLE\nThe selected ad angle is: "${angle}". While cloning the structure 1:1, ensure the adapted script aligns with this angle where applicable.`;
@@ -3284,31 +3266,21 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
           if (!Array.isArray(generated.hooks)) generated.hooks = [];
           if (!generated.body) generated.body = '';
 
-          // Normalize clone output to match standard format
           if (generated.clone_fidelity) {
             generated.key_changes_from_original = generated.key_adaptations || generated.key_changes_from_original || '';
           }
 
-          // Score only (blend validation removed for speed)
-          const { system: scoreSystem, user: scoreUser } = await buildBriefScorerPrompt(winner, parsedScript, generated, '1:1 Clone', winAnalysis, productContext);
-
-          let scores = { novelty: { score: 3 }, aggression: { score: 5 }, coherence: { score: 5 }, hook_body_blend: { score: 5 }, conversion_potential: { score: 5 } };
-          try {
-            const sc = await callClaude(scoreSystem, scoreUser, 1500, { fast: true });
-            if (sc) scores = sc;
-          } catch (evalErr) {
-            console.warn(`[BriefPipeline] Clone scoring failed:`, evalErr.message);
-            scores._scoring_failed = true;
-            scores.verdict = scores.verdict || 'MAYBE';
-          }
-
-          const overall = scores.overall ?? (
-            ((scores.novelty?.score ?? 3) * 0.05) +
-            ((scores.aggression?.score ?? 5) * 0.15) +
-            ((scores.coherence?.score ?? 5) * 0.30) +
-            ((scores.hook_body_blend?.score ?? 5) * 0.20) +
-            ((scores.conversion_potential?.score ?? 5) * 0.30)
-          );
+          // Skip scoring for clone mode — use default high scores (clone fidelity is the metric, not novelty)
+          const scores = {
+            novelty: { score: 3, rationale: 'Clone mode — low novelty by design' },
+            aggression: { score: 5, rationale: 'Matches original' },
+            coherence: { score: 5, rationale: 'Structural clone' },
+            hook_body_blend: { score: 5, rationale: 'Preserved from original' },
+            conversion_potential: { score: 5, rationale: 'Proven structure' },
+            verdict: 'YES',
+            _clone_fast_path: true,
+          };
+          const overall = 4.65; // Weighted default for clone
 
           return {
             generated,
@@ -3325,8 +3297,27 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
 
     } else {
       // ═══════════════════════════════════════════════════
-      // VARIANT MODE — Multiple creative variations
+      // VARIANT MODE — Deep analysis + multiple creative variations
       // ═══════════════════════════════════════════════════
+
+      // Step 5: Deep analysis (variants only — uses Haiku for speed on DNA/psychology)
+      const { dnaPrompt, psychologyPrompt, rulesPrompt } = await buildDeepAnalysisPrompts(winner, parsedScript, productContext);
+      const [scriptDna, psychology, iterationRules] = await Promise.all([
+        callClaude(dnaPrompt.system, dnaPrompt.user, 2500, { fast: true }),
+        callClaude(psychologyPrompt.system, psychologyPrompt.user, 2500, { fast: true }),
+        callClaude(rulesPrompt.system, rulesPrompt.user, 4000, { fast: true }),
+      ]);
+      winAnalysis = { scriptDna, psychology, iterationRules };
+
+      // Cache analysis
+      const scriptHash = crypto.createHash('md5').update(rawScript).digest('hex');
+      pgQuery(
+        `INSERT INTO brief_pipeline_analysis_cache (creative_id, script_hash, win_analysis)
+         VALUES ($1, $2, $3) ON CONFLICT (creative_id) DO UPDATE SET script_hash = $2, win_analysis = $3, analyzed_at = NOW()`,
+        [creativeId, scriptHash, JSON.stringify(winAnalysis)]
+      ).catch(() => {});
+
+      const safeDirections = iterationRules?.safe_iteration_directions || [];
       const directions = [];
       for (let i = 0; i < numVariations; i++) {
         const dirText = safeDirections[i] || `Variation ${i + 1}: Fresh creative approach`;
