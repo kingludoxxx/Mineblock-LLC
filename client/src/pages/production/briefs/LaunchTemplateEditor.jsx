@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import {
   X, ArrowLeft, RefreshCw, Loader2, Check, ChevronDown, Plus,
   Users, Target, DollarSign, BarChart3, Tag, Languages, Layout,
-  Link2, Eye, Save, Megaphone, Globe,
+  Link2, Eye, Save, Megaphone, Globe, Clock, Calendar,
 } from 'lucide-react';
 import api from '../../../services/api';
 
@@ -72,6 +72,9 @@ const DEFAULT_FORM = {
   utmParams: 'utm_source=facebook&utm_medium=paid&utm_campaign={{campaign.name}}&utm_content={{ad.name}}',
   landingPageUrl: '',
   translationLanguages: [],
+  scheduleEnabled: false,
+  scheduleDate: '',  // YYYY-MM-DD
+  scheduleTime: '00:00', // HH:MM (24h)
 };
 
 // ---------------------------------------------------------------------------
@@ -211,6 +214,9 @@ export default function LaunchTemplateEditor({ open, onClose, template, onSaved 
         utmParams: template.utm_parameters || DEFAULT_FORM.utmParams,
         landingPageUrl: template.landing_page_url || '',
         translationLanguages: template.translation_languages || [],
+        scheduleEnabled: template.schedule_enabled || false,
+        scheduleDate: template.schedule_date || '',
+        scheduleTime: template.schedule_time || '00:00',
       });
     } else {
       setForm({ ...DEFAULT_FORM });
@@ -325,6 +331,9 @@ export default function LaunchTemplateEditor({ open, onClose, template, onSaved 
         utm_parameters: form.utmParams,
         landing_page_url: form.landingPageUrl || null,
         translation_languages: form.translationLanguages,
+        schedule_enabled: form.scheduleEnabled,
+        schedule_date: form.scheduleDate || null,
+        schedule_time: form.scheduleTime || '00:00',
         product_id: null,
       };
       if (isEdit && template.id) {
@@ -637,7 +646,63 @@ export default function LaunchTemplateEditor({ open, onClose, template, onSaved 
             </div>
           </Card>
 
-          {/* 9. Attribution */}
+          {/* 9. Schedule */}
+          <Card>
+            <SectionLabel icon={Calendar}>Schedule</SectionLabel>
+            <div className="space-y-3">
+              <label className="flex items-center gap-3 cursor-pointer group">
+                <div
+                  onClick={() => setForm(f => ({ ...f, scheduleEnabled: !f.scheduleEnabled }))}
+                  className={`relative w-10 h-5 rounded-full transition-colors cursor-pointer ${
+                    form.scheduleEnabled ? 'bg-[#c9a84c]' : 'bg-white/[0.08]'
+                  }`}
+                >
+                  <div
+                    className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${
+                      form.scheduleEnabled ? 'translate-x-5' : 'translate-x-0.5'
+                    }`}
+                  />
+                </div>
+                <span className="text-sm text-zinc-300 group-hover:text-white transition-colors">
+                  Schedule ads for a specific date & time
+                </span>
+              </label>
+              {form.scheduleEnabled && (
+                <div className="grid grid-cols-2 gap-3 mt-2">
+                  <div>
+                    <FieldLabel>Start Date</FieldLabel>
+                    <Input
+                      type="date"
+                      value={form.scheduleDate}
+                      onChange={set('scheduleDate')}
+                      min={new Date().toISOString().split('T')[0]}
+                    />
+                  </div>
+                  <div>
+                    <FieldLabel>Start Time</FieldLabel>
+                    <Input
+                      type="time"
+                      value={form.scheduleTime}
+                      onChange={set('scheduleTime')}
+                    />
+                  </div>
+                  <div className="col-span-2">
+                    <p className="text-[11px] text-zinc-600">
+                      <Clock className="w-3 h-3 inline mr-1 -mt-0.5" />
+                      Ads will be set to ACTIVE with a scheduled start time on Meta. Time is in your ad account's timezone.
+                      {form.scheduleDate && form.scheduleTime && (
+                        <span className="block mt-1 text-[#c9a84c]/80">
+                          Scheduled: {new Date(form.scheduleDate + 'T' + form.scheduleTime).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })} at {form.scheduleTime}
+                        </span>
+                      )}
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+          </Card>
+
+          {/* 10. Attribution */}
           <Card>
             <SectionLabel icon={BarChart3}>Attribution</SectionLabel>
             <Select value={form.attribution} onChange={set('attribution')}>
@@ -893,6 +958,7 @@ export default function LaunchTemplateEditor({ open, onClose, template, onSaved 
                 ['Age', `${form.ageMin} – ${form.ageMax}`],
                 ['Gender', form.gender],
                 ['Ad Format', form.adFormat],
+                ['Schedule', form.scheduleEnabled && form.scheduleDate ? `${new Date(form.scheduleDate + 'T' + form.scheduleTime).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })} at ${form.scheduleTime}` : 'Immediate (Paused)'],
                 ['Languages', form.translationLanguages.length ? form.translationLanguages.join(', ') : 'None'],
               ].map(([label, value]) => (
                 <div key={label} className="flex items-center justify-between py-2 first:pt-0 last:pb-0">

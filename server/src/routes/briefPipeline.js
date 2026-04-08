@@ -4438,8 +4438,11 @@ async function _initLaunchTables() {
       updated_at TIMESTAMPTZ DEFAULT NOW()
     )
   `);
-  // Migration for existing tables
+  // Migrations for existing tables
   await pgQuery(`ALTER TABLE launch_templates ADD COLUMN IF NOT EXISTS landing_page_url TEXT`).catch(() => {});
+  await pgQuery(`ALTER TABLE launch_templates ADD COLUMN IF NOT EXISTS schedule_enabled BOOLEAN DEFAULT false`).catch(() => {});
+  await pgQuery(`ALTER TABLE launch_templates ADD COLUMN IF NOT EXISTS schedule_date TEXT`).catch(() => {});
+  await pgQuery(`ALTER TABLE launch_templates ADD COLUMN IF NOT EXISTS schedule_time TEXT DEFAULT '00:00'`).catch(() => {});
   await pgQuery(`
     CREATE TABLE IF NOT EXISTS brief_copy_sets (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -4609,9 +4612,10 @@ router.post('/launch-templates', authenticate, async (req, res) => {
         daily_budget, performance_goal, optimization_goal, bid_strategy, target_roas,
         attribution_window, include_audiences, exclude_audiences,
         countries, age_min, age_max, gender, ad_format, utm_parameters,
-        landing_page_url, translation_languages, product_id, is_default, created_by
+        landing_page_url, translation_languages, product_id, is_default, created_by,
+        schedule_enabled, schedule_date, schedule_time
       ) VALUES (
-        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32
+        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35
       ) RETURNING *`,
       [
         t.name, t.ad_account_id, t.ad_account_name, t.page_mode || 'single',
@@ -4629,7 +4633,8 @@ router.post('/launch-templates', authenticate, async (req, res) => {
         t.gender || 'all', t.ad_format || 'FLEXIBLE', t.utm_parameters || '',
         t.landing_page_url || null,
         JSON.stringify(ensureArr(t.translation_languages)),
-        t.product_id || null, t.is_default || false, req.user?.id || null
+        t.product_id || null, t.is_default || false, req.user?.id || null,
+        t.schedule_enabled || false, t.schedule_date || null, t.schedule_time || '00:00'
       ]
     );
     res.json({ success: true, data: rows[0] });
@@ -4656,8 +4661,9 @@ router.put('/launch-templates/:id', authenticate, async (req, res) => {
         daily_budget=$14, performance_goal=$15, optimization_goal=$16, bid_strategy=$17, target_roas=$18,
         attribution_window=$19, include_audiences=$20, exclude_audiences=$21,
         countries=$22, age_min=$23, age_max=$24, gender=$25, ad_format=$26, utm_parameters=$27,
-        landing_page_url=$28, translation_languages=$29, product_id=$30, is_default=$31, updated_at=NOW()
-      WHERE id=$32 RETURNING *`,
+        landing_page_url=$28, translation_languages=$29, product_id=$30, is_default=$31,
+        schedule_enabled=$32, schedule_date=$33, schedule_time=$34, updated_at=NOW()
+      WHERE id=$35 RETURNING *`,
       [
         t.name, t.ad_account_id, t.ad_account_name, t.page_mode || 'single',
         JSON.stringify(ensureArr(t.page_ids)),
@@ -4672,7 +4678,9 @@ router.put('/launch-templates/:id', authenticate, async (req, res) => {
         t.gender, t.ad_format, t.utm_parameters,
         t.landing_page_url || null,
         JSON.stringify(ensureArr(t.translation_languages)),
-        t.product_id || null, t.is_default || false, req.params.id
+        t.product_id || null, t.is_default || false,
+        t.schedule_enabled || false, t.schedule_date || null, t.schedule_time || '00:00',
+        req.params.id
       ]
     );
     if (!rows.length) return res.status(404).json({ success: false, error: { message: 'Template not found' } });
