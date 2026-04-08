@@ -188,7 +188,9 @@ ELEMENT COUNT: Your adapted_text must have the EXACT SAME number of elements as 
 
 PRE-ANALYZED TEMPLATE INTELLIGENCE:
 This template has been pre-analyzed. Use this intelligence to produce better results:
-
+${templateData.deep_analysis.summary ? `\nTemplate Summary: ${templateData.deep_analysis.summary}\n` : ''}
+Template Type: ${templateData.deep_analysis.template_type || 'unknown'}
+Emotional Tone: ${templateData.deep_analysis.emotional_tone || 'unknown'}
 Layout: ${JSON.stringify(templateData.deep_analysis.layout, null, 2)}
 Typography: ${JSON.stringify(templateData.deep_analysis.typography, null, 2)}
 Product Analysis: ${JSON.stringify(templateData.deep_analysis.product_analysis, null, 2)}

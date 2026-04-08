@@ -99,6 +99,9 @@ export async function analyzeTemplate(template) {
   }
 }
 
+ALSO include this additional field:
+  "summary": "A 2-3 sentence natural language paragraph describing this ad's strategy, structure, and visual approach. Example: 'The ad uses a negative hook by telling the audience not to buy the product to grab attention and pique curiosity. It features bold typography on a dark background with benefit badges at the bottom. The copywriting aims to create intrigue and suggest the product is desirable for those seeking specific results.' Write in third person, be specific about what the ad does and why it works."
+
 Be extremely precise with colors (use actual hex values from the image), positions, and text content. Every text element visible in the image must be captured exactly. This analysis will be used to generate better ad adaptations.`;
 
   try {

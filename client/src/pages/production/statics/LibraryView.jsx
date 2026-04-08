@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react';
-import { ScanSearch, MousePointerSquareDashed, EyeOff, AlertCircle, X, Check, Trash2, Zap } from 'lucide-react';
+import { ScanSearch, MousePointerSquareDashed, EyeOff, AlertCircle, X, Check, Trash2, Zap, EyeOff as HideIcon, Calendar, RefreshCw, ChevronLeft, ChevronRight } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
 // Categories
@@ -172,140 +172,211 @@ function TemplateCard({ template, onView, onAnalyze, onDelete }) {
 // Reference Lightbox
 // ---------------------------------------------------------------------------
 
-function ReferenceLightbox({ template, onClose, onSelect }) {
+function ReferenceLightbox({ template, onClose, onSelect, onAnalyze, onHide, onDelete }) {
   if (!template) return null;
   const da = template.deep_analysis;
+  const [reanalyzing, setReanalyzing] = useState(false);
+
+  const handleReanalyze = async () => {
+    if (!onAnalyze) return;
+    setReanalyzing(true);
+    try {
+      await onAnalyze(template);
+    } finally {
+      setReanalyzing(false);
+    }
+  };
+
+  // Category badge color
+  const categoryColors = {
+    'Negative Hook': 'bg-purple-600/20 text-purple-300 border-purple-500/30',
+    'Offer & Promotion': 'bg-amber-600/20 text-amber-300 border-amber-500/30',
+    'Offer/Sale': 'bg-amber-600/20 text-amber-300 border-amber-500/30',
+    'Benefits & Features': 'bg-blue-600/20 text-blue-300 border-blue-500/30',
+    'Feature/Benefit': 'bg-blue-600/20 text-blue-300 border-blue-500/30',
+    'Social Proof & Testimonials': 'bg-green-600/20 text-green-300 border-green-500/30',
+    'Testimonial': 'bg-green-600/20 text-green-300 border-green-500/30',
+    'UGC & Reviews': 'bg-green-600/20 text-green-300 border-green-500/30',
+    'Problem + Solution': 'bg-rose-600/20 text-rose-300 border-rose-500/30',
+    'Us vs Them': 'bg-orange-600/20 text-orange-300 border-orange-500/30',
+    'Bold Claim': 'bg-red-600/20 text-red-300 border-red-500/30',
+    'Before & After': 'bg-cyan-600/20 text-cyan-300 border-cyan-500/30',
+    'Lifestyle & Brand': 'bg-pink-600/20 text-pink-300 border-pink-500/30',
+    'Statistics': 'bg-indigo-600/20 text-indigo-300 border-indigo-500/30',
+  };
+  const badgeClass = categoryColors[template.category] || 'bg-zinc-600/20 text-zinc-300 border-zinc-500/30';
+
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm"
       onClick={onClose}
     >
       <div
-        className="relative flex flex-col items-center max-w-[90vw] max-h-[90vh]"
+        className="relative flex bg-[#141416] rounded-2xl border border-white/[0.06] shadow-2xl max-w-[900px] w-[90vw] max-h-[85vh] overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Close */}
-        <button
-          onClick={onClose}
-          className="absolute -top-3 -right-3 z-10 p-1.5 rounded-full bg-white/10 hover:bg-white/20 text-white transition-colors cursor-pointer"
-        >
-          <X className="w-4 h-4" />
-        </button>
-
-        <div className="flex gap-4 items-start">
-          {/* Image */}
+        {/* Left — Image */}
+        <div className="flex-shrink-0 w-[45%] bg-black/40 flex items-center justify-center p-4 relative">
           {template.image_url ? (
             <img
               src={template.image_url}
               alt={template.name || 'Reference Ad'}
-              className="max-w-full max-h-[75vh] rounded-xl object-contain shadow-2xl"
-              style={{ maxWidth: da ? '50vw' : '80vw' }}
+              className="max-w-full max-h-[75vh] rounded-lg object-contain"
             />
           ) : (
-            <div className="w-80 h-96 rounded-xl bg-[#1a1a1a] flex items-center justify-center text-slate-600">
+            <div className="w-full aspect-[4/5] rounded-lg bg-[#1a1a1a] flex items-center justify-center text-slate-600">
               <AlertCircle className="w-12 h-12" />
-            </div>
-          )}
-
-          {/* AI Analysis Panel */}
-          {da && (
-            <div className="w-72 max-h-[75vh] overflow-y-auto bg-[#141414] rounded-xl border border-white/[0.06] p-4 text-xs text-slate-300 space-y-3">
-              <div className="flex items-center gap-2 text-purple-400 font-semibold text-sm">
-                <Zap className="w-4 h-4" />
-                AI Analysis
-              </div>
-
-              {da.template_type && (
-                <div>
-                  <span className="text-slate-500 uppercase text-[10px] tracking-wider">Type</span>
-                  <p className="text-white mt-0.5">{da.template_type}</p>
-                </div>
-              )}
-
-              {da.emotional_tone && (
-                <div>
-                  <span className="text-slate-500 uppercase text-[10px] tracking-wider">Tone</span>
-                  <p className="text-white mt-0.5">{da.emotional_tone}</p>
-                </div>
-              )}
-
-              {da.layout?.grid_structure && (
-                <div>
-                  <span className="text-slate-500 uppercase text-[10px] tracking-wider">Layout</span>
-                  <p className="text-white mt-0.5">{da.layout.grid_structure} ({da.layout.orientation})</p>
-                </div>
-              )}
-
-              {da.typography?.headline?.text_content && (
-                <div>
-                  <span className="text-slate-500 uppercase text-[10px] tracking-wider">Headline</span>
-                  <p className="text-white mt-0.5 italic">"{da.typography.headline.text_content}"</p>
-                </div>
-              )}
-
-              {da.product_analysis && (
-                <div>
-                  <span className="text-slate-500 uppercase text-[10px] tracking-wider">Product</span>
-                  <p className="text-white mt-0.5">
-                    {da.product_analysis.product_visible ? `${da.product_analysis.product_count || 1} product(s)` : 'No product'}
-                    {da.product_analysis.product_orientation && ` - ${da.product_analysis.product_orientation}`}
-                  </p>
-                </div>
-              )}
-
-              {da.color_palette && (
-                <div>
-                  <span className="text-slate-500 uppercase text-[10px] tracking-wider">Colors</span>
-                  <div className="flex items-center gap-1 mt-1">
-                    {[da.color_palette.dominant, da.color_palette.accent, da.color_palette.text_primary].filter(Boolean).map((c, i) => (
-                      <div key={i} className="w-5 h-5 rounded border border-white/10" style={{ backgroundColor: c }} title={c} />
-                    ))}
-                    <span className="text-slate-500 ml-1">{da.color_palette.overall_mood}</span>
-                  </div>
-                </div>
-              )}
-
-              {da.adaptation_instructions?.product_replacement_difficulty && (
-                <div>
-                  <span className="text-slate-500 uppercase text-[10px] tracking-wider">Adaptation Difficulty</span>
-                  <p className={`mt-0.5 font-medium ${da.adaptation_instructions.product_replacement_difficulty === 'easy' ? 'text-green-400' : da.adaptation_instructions.product_replacement_difficulty === 'hard' ? 'text-red-400' : 'text-yellow-400'}`}>
-                    {da.adaptation_instructions.product_replacement_difficulty}
-                  </p>
-                </div>
-              )}
-
-              {da.ad_effectiveness_notes && (
-                <div>
-                  <span className="text-slate-500 uppercase text-[10px] tracking-wider">Notes</span>
-                  <p className="text-slate-400 mt-0.5">{da.ad_effectiveness_notes}</p>
-                </div>
-              )}
-
-              {template.analyzed_at && (
-                <p className="text-slate-600 text-[10px] pt-2 border-t border-white/[0.06]">
-                  Analyzed {new Date(template.analyzed_at).toLocaleDateString()}
-                </p>
-              )}
             </div>
           )}
         </div>
 
-        {/* Footer */}
-        <div className="mt-4 flex items-center gap-3">
-          <span className="text-sm text-slate-400">
-            {template.name || 'Reference Ad'}
-            {template.category ? ` \u00b7 ${template.category}` : ''}
-          </span>
-          <button
-            onClick={() => {
-              onSelect(template);
-              onClose();
-            }}
-            className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-medium bg-accent text-white hover:bg-accent-hover transition-colors cursor-pointer"
-          >
-            <Check className="w-3.5 h-3.5" />
-            Use as Reference
-          </button>
+        {/* Right — Details Panel */}
+        <div className="flex-1 flex flex-col min-w-0 overflow-y-auto">
+          {/* Header */}
+          <div className="flex items-start justify-between px-6 pt-5 pb-4">
+            <div className="flex-1 min-w-0 pr-4">
+              <h3 className="text-base font-semibold text-white truncate">
+                {template.name || 'Reference Ad'}
+              </h3>
+            </div>
+            <button onClick={onClose} className="p-1 text-zinc-500 hover:text-white transition-colors cursor-pointer shrink-0">
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+
+          <div className="px-6 pb-6 space-y-5 flex-1">
+            {/* Category */}
+            <div>
+              <p className="text-[11px] text-zinc-500 uppercase tracking-wider font-medium mb-2">Category</p>
+              <span className={`inline-flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-full border ${badgeClass}`}>
+                {template.category || 'Uncategorized'}
+              </span>
+            </div>
+
+            {/* Date Added */}
+            <div>
+              <p className="text-[11px] text-zinc-500 uppercase tracking-wider font-medium mb-1">Date Added</p>
+              <p className="text-sm text-zinc-300 flex items-center gap-1.5">
+                <Calendar className="w-3.5 h-3.5 text-zinc-500" />
+                {template.created_at
+                  ? new Date(template.created_at).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })
+                  : 'Unknown'}
+              </p>
+            </div>
+
+            {/* AI Analysis */}
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-[11px] text-zinc-500 uppercase tracking-wider font-medium">AI Analysis</p>
+                <button
+                  onClick={handleReanalyze}
+                  disabled={reanalyzing}
+                  className="flex items-center gap-1 text-[11px] text-purple-400 hover:text-purple-300 transition-colors cursor-pointer disabled:opacity-50"
+                >
+                  <RefreshCw className={`w-3 h-3 ${reanalyzing ? 'animate-spin' : ''}`} />
+                  {reanalyzing ? 'Analyzing...' : 'Re-analyze'}
+                </button>
+              </div>
+
+              {da ? (
+                <div className="space-y-3">
+                  {/* Summary paragraph */}
+                  <p className="text-sm text-zinc-300 leading-relaxed">
+                    {da.summary || da.ad_effectiveness_notes || 'Analysis completed — no summary available.'}
+                  </p>
+
+                  {/* Quick stats row */}
+                  <div className="flex flex-wrap gap-2 pt-1">
+                    {da.template_type && (
+                      <span className="px-2 py-0.5 text-[10px] font-medium rounded bg-white/[0.06] text-zinc-400 border border-white/[0.04]">
+                        {da.template_type}
+                      </span>
+                    )}
+                    {da.emotional_tone && (
+                      <span className="px-2 py-0.5 text-[10px] font-medium rounded bg-white/[0.06] text-zinc-400 border border-white/[0.04]">
+                        {da.emotional_tone}
+                      </span>
+                    )}
+                    {da.layout?.grid_structure && (
+                      <span className="px-2 py-0.5 text-[10px] font-medium rounded bg-white/[0.06] text-zinc-400 border border-white/[0.04]">
+                        {da.layout.grid_structure}
+                      </span>
+                    )}
+                    {da.adaptation_instructions?.product_replacement_difficulty && (
+                      <span className={`px-2 py-0.5 text-[10px] font-medium rounded border ${
+                        da.adaptation_instructions.product_replacement_difficulty === 'easy'
+                          ? 'bg-green-900/20 text-green-400 border-green-500/20'
+                          : da.adaptation_instructions.product_replacement_difficulty === 'hard'
+                            ? 'bg-red-900/20 text-red-400 border-red-500/20'
+                            : 'bg-yellow-900/20 text-yellow-400 border-yellow-500/20'
+                      }`}>
+                        {da.adaptation_instructions.product_replacement_difficulty} adaptation
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Colors */}
+                  {da.color_palette && (
+                    <div className="flex items-center gap-1.5 pt-1">
+                      {[da.color_palette.dominant, da.color_palette.accent, da.color_palette.text_primary, da.color_palette.text_secondary].filter(Boolean).map((c, i) => (
+                        <div key={i} className="w-5 h-5 rounded-md border border-white/10 shadow-sm" style={{ backgroundColor: c }} title={c} />
+                      ))}
+                      {da.color_palette.overall_mood && (
+                        <span className="text-[10px] text-zinc-500 ml-1">{da.color_palette.overall_mood}</span>
+                      )}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="py-4 text-center">
+                  <p className="text-sm text-zinc-500 mb-3">Not analyzed yet</p>
+                  <button
+                    onClick={handleReanalyze}
+                    disabled={reanalyzing}
+                    className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-medium bg-purple-600 hover:bg-purple-500 text-white rounded-lg transition-colors cursor-pointer disabled:opacity-50"
+                  >
+                    <Zap className="w-3.5 h-3.5" />
+                    {reanalyzing ? 'Analyzing...' : 'Analyze Template'}
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Footer actions */}
+          <div className="px-6 py-4 border-t border-white/[0.06] flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              {onHide && (
+                <button
+                  onClick={() => { onHide(template); onClose(); }}
+                  className="flex items-center gap-1.5 text-xs text-zinc-500 hover:text-zinc-300 transition-colors cursor-pointer"
+                >
+                  <HideIcon className="w-3.5 h-3.5" />
+                  Hide
+                </button>
+              )}
+              {onDelete && (
+                <button
+                  onClick={() => { onDelete(template); onClose(); }}
+                  className="flex items-center gap-1.5 text-xs text-red-500 hover:text-red-400 transition-colors cursor-pointer"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  Delete
+                </button>
+              )}
+            </div>
+
+            <div className="flex items-center gap-3">
+              <span className="text-[10px] text-zinc-600">ID #{template.id?.slice(-4) || '—'}</span>
+              <button
+                onClick={() => { onSelect(template); onClose(); }}
+                className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold bg-accent text-white hover:bg-accent-hover transition-colors cursor-pointer"
+              >
+                <Check className="w-3.5 h-3.5" />
+                Use as Reference
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -437,6 +508,8 @@ export function LibraryView({
         template={viewingTemplate}
         onClose={() => setViewingTemplate(null)}
         onSelect={onSelectTemplate}
+        onAnalyze={onAnalyzeTemplate}
+        onDelete={onDeleteTemplate}
       />
     </div>
   );

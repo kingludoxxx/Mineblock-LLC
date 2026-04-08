@@ -3,6 +3,7 @@ import { pgQuery } from '../db/pg.js';
 import { authenticate } from '../middleware/auth.js';
 import { buildLayoutAnalysisPrompt } from '../utils/staticsPrompts.js';
 import { resolveImage } from '../utils/imageHelpers.js';
+import { analyzeTemplate } from '../utils/templateAnalysis.js';
 
 const router = Router();
 
@@ -196,7 +197,21 @@ router.post('/', authenticate, async (req, res) => {
        RETURNING *`,
       [name, category || 'Uncategorized', image_url, JSON.stringify(tags || [])]
     );
-    res.status(201).json({ success: true, data: rows[0] });
+    const created = rows[0];
+    res.status(201).json({ success: true, data: created });
+
+    // Auto-analyze in background (don't block the response)
+    if (created?.id && created?.image_url) {
+      analyzeTemplate(created).then(async (analysis) => {
+        await pgQuery(
+          `UPDATE statics_templates SET deep_analysis = $1, analyzed_at = NOW() WHERE id = $2`,
+          [JSON.stringify(analysis), created.id]
+        );
+        console.log(`[staticsTemplates] Auto-analyzed template ${created.id}`);
+      }).catch(err => {
+        console.error(`[staticsTemplates] Auto-analyze failed for ${created.id}:`, err.message);
+      });
+    }
   } catch (err) {
     console.error('[staticsTemplates] POST / error:', err);
     res.status(500).json({ success: false, error: { message: err.message } });
