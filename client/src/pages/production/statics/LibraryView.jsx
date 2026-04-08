@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react';
-import { ScanSearch, MousePointerSquareDashed, EyeOff, AlertCircle, X, Check, Trash2, Zap, EyeOff as HideIcon, Calendar, RefreshCw, ChevronLeft, ChevronRight } from 'lucide-react';
+import { ScanSearch, MousePointerSquareDashed, EyeOff, AlertCircle, X, Check, Trash2, Zap, Calendar, RefreshCw } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
 // Categories
@@ -173,18 +173,16 @@ function TemplateCard({ template, onView, onAnalyze, onDelete }) {
 // ---------------------------------------------------------------------------
 
 function ReferenceLightbox({ template, onClose, onSelect, onAnalyze, onHide, onDelete }) {
+  const [reanalyzing, setReanalyzing] = useState(false);
+
   if (!template) return null;
   const da = template.deep_analysis;
-  const [reanalyzing, setReanalyzing] = useState(false);
 
   const handleReanalyze = async () => {
     if (!onAnalyze) return;
     setReanalyzing(true);
-    try {
-      await onAnalyze(template);
-    } finally {
-      setReanalyzing(false);
-    }
+    await onAnalyze(template);
+    setReanalyzing(false);
   };
 
   // Category badge color
@@ -203,6 +201,14 @@ function ReferenceLightbox({ template, onClose, onSelect, onAnalyze, onHide, onD
     'Before & After': 'bg-cyan-600/20 text-cyan-300 border-cyan-500/30',
     'Lifestyle & Brand': 'bg-pink-600/20 text-pink-300 border-pink-500/30',
     'Statistics': 'bg-indigo-600/20 text-indigo-300 border-indigo-500/30',
+    'AirDrop': 'bg-sky-600/20 text-sky-300 border-sky-500/30',
+    'Apple Notes': 'bg-yellow-600/20 text-yellow-300 border-yellow-500/30',
+    'Article/News': 'bg-slate-600/20 text-slate-300 border-slate-500/30',
+    'Google Search': 'bg-emerald-600/20 text-emerald-300 border-emerald-500/30',
+    'Headline': 'bg-violet-600/20 text-violet-300 border-violet-500/30',
+    'Meme': 'bg-lime-600/20 text-lime-300 border-lime-500/30',
+    'Native': 'bg-teal-600/20 text-teal-300 border-teal-500/30',
+    "What's Inside": 'bg-fuchsia-600/20 text-fuchsia-300 border-fuchsia-500/30',
   };
   const badgeClass = categoryColors[template.category] || 'bg-zinc-600/20 text-zinc-300 border-zinc-500/30';
 
@@ -351,7 +357,7 @@ function ReferenceLightbox({ template, onClose, onSelect, onAnalyze, onHide, onD
                   onClick={() => { onHide(template); onClose(); }}
                   className="flex items-center gap-1.5 text-xs text-zinc-500 hover:text-zinc-300 transition-colors cursor-pointer"
                 >
-                  <HideIcon className="w-3.5 h-3.5" />
+                  <EyeOff className="w-3.5 h-3.5" />
                   Hide
                 </button>
               )}
