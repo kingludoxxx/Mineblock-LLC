@@ -754,30 +754,47 @@ router.get('/monthly-report/:editor/:year/:month', async (req, res) => {
   try {
     const { editor, year, month } = req.params;
     const editorId = USER_IDS[editor];
-    if (!editorId) return res.status(400).json({ success: false, error: { message: `Unknown editor: ${editor}` } });
+    if (!editorId) return res.status(400).json({ success: false, error: { message: `Unknown editor: ${editor}. Available: ${Object.keys(USER_IDS).join(', ')}` } });
 
     const y = parseInt(year), m = parseInt(month);
     const monthStart = new Date(Date.UTC(y, m - 1, 1)).getTime();
     const monthEnd = new Date(Date.UTC(y, m, 1)).getTime();
 
-    // Fetch "ready to launch" + "launched" tasks created in that month
+    // Search BOTH lists (Video Ads + Media Buying) and ALL completion statuses
+    const LISTS = [VIDEO_ADS_LIST_ID, '901518769621'];
+    const STATUSES = ['ready%20to%20launch', 'launched', 'launched%20fb'];
+
     const allTasks = [];
-    for (const status of ['ready%20to%20launch', 'launched']) {
-      let page = 0, hasMore = true;
-      while (hasMore) {
-        const data = await clickupFetch(
-          `${CLICKUP_API}/list/${VIDEO_ADS_LIST_ID}/task?page=${page}&limit=100&statuses%5B%5D=${status}&include_closed=false&subtasks=true&date_created_gt=${monthStart}&date_created_lt=${monthEnd}`
-        );
-        allTasks.push(...(data.tasks || []));
-        hasMore = (data.tasks || []).length === 100;
-        page++;
+    const debug = { listsSearched: LISTS.length, statusesSearched: STATUSES.length, totalFetched: 0, editorMatches: 0 };
+
+    for (const listId of LISTS) {
+      for (const status of STATUSES) {
+        let page = 0, hasMore = true;
+        while (hasMore) {
+          const data = await clickupFetch(
+            `${CLICKUP_API}/list/${listId}/task?page=${page}&limit=100&statuses%5B%5D=${status}&include_closed=true&subtasks=true&date_created_gt=${monthStart}&date_created_lt=${monthEnd}`
+          );
+          const tasks = data.tasks || [];
+          allTasks.push(...tasks);
+          debug.totalFetched += tasks.length;
+          hasMore = tasks.length === 100;
+          page++;
+        }
       }
     }
 
-    // Filter by editor assignee
-    const editorTasks = allTasks.filter(t => (t.assignees || []).some(a => a.id === editorId));
+    // Filter by editor: check assignee ID OR editor name in task name (Muhammad/Faiz)
+    const editorNames = { Faiz: ['muhammad', 'faiz'], Antoni: ['antoni'], Uly: ['uly'], Neil: ['neil'] };
+    const nameMatches = editorNames[editor] || [editor.toLowerCase()];
 
-    // Extract B codes
+    const editorTasks = allTasks.filter(t => {
+      const byAssignee = (t.assignees || []).some(a => a.id === editorId);
+      const byName = nameMatches.some(n => (t.name || '').toLowerCase().includes(n));
+      return byAssignee || byName;
+    });
+    debug.editorMatches = editorTasks.length;
+
+    // Extract B codes (deduplicate)
     const bCodes = [];
     for (const task of editorTasks) {
       const match = task.name.match(/B\d{3,5}/);
@@ -785,7 +802,7 @@ router.get('/monthly-report/:editor/:year/:month', async (req, res) => {
     }
     bCodes.sort((a, b) => parseInt(a.slice(1)) - parseInt(b.slice(1)));
 
-    res.json({ success: true, editor, month: `${y}-${String(m).padStart(2, '0')}`, total: bCodes.length, codes: bCodes });
+    res.json({ success: true, editor, month: `${y}-${String(m).padStart(2, '0')}`, total: bCodes.length, codes: bCodes, debug });
   } catch (err) {
     console.error('[BriefAgent] monthly-report error:', err.message);
     res.status(500).json({ success: false, error: { message: err.message } });
