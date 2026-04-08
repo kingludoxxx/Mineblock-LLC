@@ -2066,7 +2066,10 @@ router.post('/launch', authenticate, async (req, res) => {
         },
         attributionWindow: template.attribution_window,
         pageId: selectedPages[0]?.id,
-        status: 'PAUSED',
+        status: template.schedule_enabled && template.schedule_date ? 'ACTIVE' : 'PAUSED',
+        startTime: template.schedule_enabled && template.schedule_date
+          ? `${template.schedule_date}T${template.schedule_time || '00:00'}:00`
+          : undefined,
       });
     } catch (err) {
       await pgQuery(
