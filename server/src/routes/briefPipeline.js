@@ -601,7 +601,8 @@ async function transcribeWithGemini(mediaUrl) {
 
   const transcriptionPrompt = `Transcribe ALL spoken words in this video/audio. Return ONLY the transcript as plain text — no timestamps, no speaker labels, no commentary, no formatting. Just the exact words spoken, preserving the natural flow and paragraph breaks. If there are multiple speakers, separate their lines with paragraph breaks.`;
   // Use current Gemini models — 1.5 models are deprecated (404)
-  const models = ['gemini-2.0-flash', 'gemini-2.0-flash-lite'];
+  // Use stable Gemini model names (bare 'gemini-2.0-flash' returns 404)
+  const models = ['gemini-2.0-flash-001', 'gemini-1.5-flash'];
   const mime = contentType.split(';')[0];
 
   // For files > 15MB, use Gemini File API (upload first, then reference)
