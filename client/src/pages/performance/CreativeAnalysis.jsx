@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef, memo } from 'react';
 import {
   BarChart3,
   Video,
@@ -39,7 +39,7 @@ import api from '../../services/api';
 
 // ── Video Card Header (hover-to-play inline video) ──────────────────────────
 
-function VideoCardHeader({ creative, isVideo, onClick }) {
+const VideoCardHeader = memo(function VideoCardHeader({ creative, isVideo, onClick }) {
   const videoRef = useRef(null);
   const [playing, setPlaying] = useState(false);
   const [muted, setMuted] = useState(true);
@@ -118,7 +118,7 @@ function VideoCardHeader({ creative, isVideo, onClick }) {
         </>
       ) : creative.thumbnail_url ? (
         <>
-          <img src={creative.thumbnail_url} alt="" className="w-full h-full object-cover" onError={(e) => { e.target.onerror = null; e.target.className = 'hidden'; }} />
+          <img src={creative.thumbnail_url} alt={creative.ad_name || 'Creative thumbnail'} loading="lazy" className="w-full h-full object-cover" onError={(e) => { e.target.onerror = null; e.target.className = 'hidden'; }} />
           {creative.video_url && !videoError && (
             <div className="absolute inset-0 flex items-center justify-center bg-black/20 opacity-0 group-hover:opacity-100 transition-opacity">
               <div className="w-10 h-10 rounded-full bg-white/90 flex items-center justify-center">
@@ -134,7 +134,7 @@ function VideoCardHeader({ creative, isVideo, onClick }) {
       )}
     </div>
   );
-}
+});
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -379,7 +379,7 @@ export default function CreativeAnalysis() {
   // Sync calendar state when picker opens
   useEffect(() => {
     if (datePickerOpen) {
-      const ed = new Date((endDate || new Date()) + (typeof endDate === 'string' ? 'T00:00' : ''));
+      const ed = typeof endDate === 'string' ? new Date(endDate + 'T00:00') : (endDate || new Date());
       setCalViewYear(ed.getFullYear());
       setCalViewMonth(ed.getMonth());
       setCalSelStart(startDate);
@@ -1285,7 +1285,7 @@ export default function CreativeAnalysis() {
                   <h3 className="text-white font-semibold text-sm">Performance by Angle</h3>
                 </div>
                 {angleStats.length > 0 ? (
-                  <ResponsiveContainer width="100%" height={Math.max(220, angleStats.length * 44)}>
+                  <ResponsiveContainer width="100%" height={Math.min(600, Math.max(220, angleStats.length * 44))}>
                     <RBarChart data={angleStats} layout="vertical" margin={{ top: 0, right: 20, bottom: 0, left: 0 }} barCategoryGap="20%" style={{ outline: 'none' }}>
                       <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" horizontal={false} vertical={true} />
                       <XAxis type="number" tick={{ fill: '#6b7280', fontSize: 10 }} axisLine={false} tickLine={false} tickFormatter={(v) => `${Number(v || 0).toFixed(1)}x`} />
@@ -1326,7 +1326,7 @@ export default function CreativeAnalysis() {
                   <h3 className="text-white font-semibold text-sm">Performance by Format</h3>
                 </div>
                 {formatStats.length > 0 ? (
-                  <ResponsiveContainer width="100%" height={Math.max(220, formatStats.length * 44)}>
+                  <ResponsiveContainer width="100%" height={Math.min(600, Math.max(220, formatStats.length * 44))}>
                     <RBarChart data={formatStats} layout="vertical" margin={{ top: 0, right: 20, bottom: 0, left: 0 }} barCategoryGap="20%" style={{ outline: 'none' }}>
                       <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" horizontal={false} vertical={true} />
                       <XAxis type="number" tick={{ fill: '#6b7280', fontSize: 10 }} axisLine={false} tickLine={false} tickFormatter={(v) => `${Number(v || 0).toFixed(1)}x`} />

@@ -21,7 +21,7 @@ let twKnownPurCol = null;
 
 // Server-side cache for /data-by-date results (avoids repeated TW API calls)
 const dataByDateCache = new Map(); // key: "startDate|endDate" → { data, timestamp }
-const DATA_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+const DATA_CACHE_TTL = 10 * 60 * 1000; // 10 minutes (TW API calls are slow, cache longer)
 
 // Server-side cache for /creative-daily results
 const creativeDailyCache = new Map(); // key: "creative_id|startDate|endDate" → { data, timestamp }
