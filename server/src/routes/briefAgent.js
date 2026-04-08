@@ -794,15 +794,19 @@ router.get('/monthly-report/:editor/:year/:month', async (req, res) => {
     });
     debug.editorMatches = editorTasks.length;
 
-    // Extract B codes (deduplicate)
-    const bCodes = [];
+    // Extract B codes with task names (deduplicate by B code)
+    const seen = new Set();
+    const tasks = [];
     for (const task of editorTasks) {
       const match = task.name.match(/B\d{3,5}/);
-      if (match && !bCodes.includes(match[0])) bCodes.push(match[0]);
+      if (match && !seen.has(match[0])) {
+        seen.add(match[0]);
+        tasks.push({ code: match[0], name: task.name, status: task.status?.status });
+      }
     }
-    bCodes.sort((a, b) => parseInt(a.slice(1)) - parseInt(b.slice(1)));
+    tasks.sort((a, b) => parseInt(a.code.slice(1)) - parseInt(b.code.slice(1)));
 
-    res.json({ success: true, editor, month: `${y}-${String(m).padStart(2, '0')}`, total: bCodes.length, codes: bCodes, debug });
+    res.json({ success: true, editor, month: `${y}-${String(m).padStart(2, '0')}`, total: tasks.length, codes: tasks.map(t => t.code), tasks, debug });
   } catch (err) {
     console.error('[BriefAgent] monthly-report error:', err.message);
     res.status(500).json({ success: false, error: { message: err.message } });
