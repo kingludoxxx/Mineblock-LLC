@@ -34,6 +34,7 @@ import {
   YAxis,
   CartesianGrid,
   Tooltip,
+  Legend,
 } from 'recharts';
 import api from '../../services/api';
 
@@ -362,6 +363,9 @@ export default function CreativeAnalysis() {
     editor: '',
   });
 
+  const [buildVelocity, setBuildVelocity] = useState([]);
+  const [buildVelocityLoading, setBuildVelocityLoading] = useState(false);
+
   const [creativeSort, setCreativeSort] = useState('spend');
   const [expandedCreatives, setExpandedCreatives] = useState(new Set());
   const [sortConfig, setSortConfig] = useState({ key: 'spend', direction: 'desc' });
@@ -528,6 +532,24 @@ export default function CreativeAnalysis() {
       if (abortRef.current) abortRef.current.abort();
     };
   }, [fetchData]);
+
+  // ── Build Velocity fetch ──
+  useEffect(() => {
+    let cancelled = false;
+    setBuildVelocityLoading(true);
+    api.get('/creative-analysis/build-velocity')
+      .then(res => {
+        if (cancelled) return;
+        setBuildVelocity(res.data?.data || []);
+      })
+      .catch(() => {
+        if (!cancelled) setBuildVelocity([]);
+      })
+      .finally(() => {
+        if (!cancelled) setBuildVelocityLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, []);
 
   // ── Filtering ──
 
@@ -1359,6 +1381,85 @@ export default function CreativeAnalysis() {
                   </div>
                 )}
               </div>
+            </div>
+
+            {/* Build Velocity — NN vs IT */}
+            <div className={cardStyle}>
+              <div className="flex items-center gap-2 mb-4">
+                <Sparkles className="w-4 h-4 text-[#c9a84c]" />
+                <h3 className="text-white font-semibold text-sm">Build Velocity</h3>
+                <span className="text-gray-500 text-xs ml-1">Net New vs Iterations per month</span>
+              </div>
+              {buildVelocityLoading ? (
+                <div className="flex items-center justify-center h-40">
+                  <RefreshCw className="w-5 h-5 text-gray-500 animate-spin" />
+                </div>
+              ) : buildVelocity.length > 0 ? (
+                <>
+                  <ResponsiveContainer width="100%" height={300}>
+                    <RBarChart data={buildVelocity} margin={{ top: 10, right: 20, bottom: 20, left: 0 }} barCategoryGap="25%">
+                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" vertical={false} />
+                      <XAxis
+                        dataKey="month"
+                        tick={{ fill: '#9ca3af', fontSize: 11 }}
+                        axisLine={false}
+                        tickLine={false}
+                        tickFormatter={(v) => {
+                          const [y, m] = v.split('-');
+                          const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+                          return `${months[parseInt(m, 10) - 1]} ${y.slice(2)}`;
+                        }}
+                      />
+                      <YAxis
+                        tick={{ fill: '#6b7280', fontSize: 10 }}
+                        axisLine={false}
+                        tickLine={false}
+                        allowDecimals={false}
+                      />
+                      <Tooltip
+                        contentStyle={{ background: '#1a1a2e', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, color: '#fff', fontSize: 12 }}
+                        formatter={(value, name) => [value, name === 'nn' ? 'Net New' : 'Iterations']}
+                        labelFormatter={(label) => {
+                          const [y, m] = label.split('-');
+                          const months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+                          return `${months[parseInt(m, 10) - 1]} ${y}`;
+                        }}
+                      />
+                      <Legend
+                        formatter={(value) => value === 'nn' ? 'Net New' : 'Iterations'}
+                        wrapperStyle={{ fontSize: 12, color: '#9ca3af' }}
+                      />
+                      <Bar dataKey="nn" fill="#c9a84c" radius={[4, 4, 0, 0]} name="nn" />
+                      <Bar dataKey="it" fill="#6366f1" radius={[4, 4, 0, 0]} name="it" />
+                    </RBarChart>
+                  </ResponsiveContainer>
+                  {/* Summary row */}
+                  <div className="flex items-center gap-6 mt-3 text-xs">
+                    <div className="flex items-center gap-2">
+                      <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: '#c9a84c' }} />
+                      <span className="text-gray-400">Total Net New:</span>
+                      <span className="text-white font-semibold">{buildVelocity.reduce((s, d) => s + d.nn, 0)}</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: '#6366f1' }} />
+                      <span className="text-gray-400">Total Iterations:</span>
+                      <span className="text-white font-semibold">{buildVelocity.reduce((s, d) => s + d.it, 0)}</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-gray-400">NN Ratio:</span>
+                      <span className="text-[#c9a84c] font-semibold">
+                        {(() => {
+                          const totalNN = buildVelocity.reduce((s, d) => s + d.nn, 0);
+                          const totalAll = buildVelocity.reduce((s, d) => s + d.total, 0);
+                          return totalAll > 0 ? `${Math.round((totalNN / totalAll) * 100)}%` : '0%';
+                        })()}
+                      </span>
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <p className="text-gray-500 text-xs">No build velocity data available</p>
+              )}
             </div>
 
             {/* Rising Stars */}

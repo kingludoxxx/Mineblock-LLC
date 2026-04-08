@@ -1724,6 +1724,105 @@ router.get('/leaderboard', authenticate, async (req, res) => {
 });
 
 /**
+ * GET /build-velocity
+ * Returns monthly counts of Net New (NN) vs Iteration (IT) creatives.
+ * Parses NN/IT from ad_name and groups by the month of first appearance.
+ */
+const buildVelocityCache = { data: null, timestamp: 0 };
+const BUILD_VELOCITY_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+router.get('/build-velocity', authenticate, async (req, res) => {
+  try {
+    await ensureTable();
+
+    // Return cached response if fresh
+    if (buildVelocityCache.data && (Date.now() - buildVelocityCache.timestamp) < BUILD_VELOCITY_CACHE_TTL) {
+      return res.json(buildVelocityCache.data);
+    }
+
+    // Get first appearance of each creative (earliest week) with an ad_name to parse NN/IT
+    const rows = await pgQuery(`
+      WITH first_week AS (
+        SELECT creative_id,
+          MIN(SPLIT_PART(week,'_',2)::int * 100 + REPLACE(SPLIT_PART(week,'_',1),'WK','')::int) as wk_key
+        FROM creative_analysis
+        WHERE week IS NOT NULL
+        GROUP BY creative_id
+      )
+      SELECT DISTINCT ON (fw.creative_id)
+        fw.creative_id, ca.ad_name, ca.week
+      FROM first_week fw
+      JOIN creative_analysis ca ON ca.creative_id = fw.creative_id
+        AND (SPLIT_PART(ca.week,'_',2)::int * 100 + REPLACE(SPLIT_PART(ca.week,'_',1),'WK','')::int) = fw.wk_key
+      ORDER BY fw.creative_id, ca.spend DESC
+    `);
+
+    // Parse NN/IT from each ad_name and group by month
+    const monthlyData = {}; // key: "YYYY-MM" → { nn: count, it: count }
+
+    for (const row of rows) {
+      // Determine NN vs IT from ad_name
+      const adName = row.ad_name || '';
+      const segments = adName.includes(' - ')
+        ? adName.split(' - ').map(s => s.trim())
+        : adName.split('_').map(s => s.trim());
+
+      const imLead = /^IM\d/i.test(segments[0] || '');
+      const markerIdx = imLead ? 1 : 2;
+      const marker = (segments[markerIdx] || '').toUpperCase();
+
+      let buildType = 'other';
+      if (marker === 'NN' || marker === 'NA') buildType = 'nn';
+      else if (marker === 'IT') buildType = 'it';
+      else {
+        // Check if any segment is NN or IT (fallback for unusual formats)
+        for (const seg of segments.slice(0, 5)) {
+          if (/^NN$/i.test(seg)) { buildType = 'nn'; break; }
+          if (/^IT$/i.test(seg)) { buildType = 'it'; break; }
+        }
+      }
+
+      // Convert week code (WK08_2026) to month
+      const weekCode = row.week || '';
+      const weekMatch = weekCode.match(/^WK(\d+)_(\d{4})$/i);
+      if (!weekMatch) continue;
+
+      const weekNum = parseInt(weekMatch[1], 10);
+      const year = parseInt(weekMatch[2], 10);
+
+      // Convert ISO week number to approximate month
+      // Week 1 starts around Jan 1, each week ~7 days
+      const jan4 = new Date(Date.UTC(year, 0, 4));
+      const dayOfWeek = jan4.getUTCDay() || 7;
+      const mondayW1 = new Date(jan4);
+      mondayW1.setUTCDate(jan4.getUTCDate() - dayOfWeek + 1);
+      const weekStart = new Date(mondayW1);
+      weekStart.setUTCDate(weekStart.getUTCDate() + (weekNum - 1) * 7);
+
+      const monthKey = `${weekStart.getUTCFullYear()}-${String(weekStart.getUTCMonth() + 1).padStart(2, '0')}`;
+
+      if (!monthlyData[monthKey]) {
+        monthlyData[monthKey] = { month: monthKey, nn: 0, it: 0, total: 0 };
+      }
+      if (buildType === 'nn') monthlyData[monthKey].nn++;
+      else if (buildType === 'it') monthlyData[monthKey].it++;
+      monthlyData[monthKey].total++;
+    }
+
+    // Sort by month and return
+    const result = Object.values(monthlyData).sort((a, b) => a.month.localeCompare(b.month));
+
+    const response = { success: true, data: result };
+    buildVelocityCache.data = response;
+    buildVelocityCache.timestamp = Date.now();
+    res.json(response);
+  } catch (err) {
+    console.error('[Creative Analysis] /build-velocity error:', err);
+    res.status(500).json({ success: false, error: { message: 'Internal server error' } });
+  }
+});
+
+/**
  * POST /sync
  * Manual sync trigger. Accepts { week } OR { week, startDate, endDate }.
  * If startDate/endDate are provided alongside week, they override the derived range.
@@ -1761,6 +1860,7 @@ router.post('/sync', authenticate, async (req, res) => {
     latestWeekCache = { week: null, timestamp: 0 }; // invalidate latest week cache
     activeCache.data = null; activeCache.timestamp = 0; // invalidate active cache
     leaderboardCache.clear(); // invalidate leaderboard cache
+    buildVelocityCache.data = null; buildVelocityCache.timestamp = 0; // invalidate build velocity cache
 
     res.json({
       success: true,
