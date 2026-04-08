@@ -300,7 +300,7 @@ router.put('/:id', authenticate, async (req, res) => {
 
     if (name !== undefined)       { sets.push(`name = $${idx++}`);       params.push(name); }
     if (category !== undefined)   { sets.push(`category = $${idx++}`);   params.push(category); }
-    if (tags !== undefined)       { sets.push(`tags = $${idx++}`);       params.push(JSON.stringify(tags)); }
+    if (tags !== undefined)       { sets.push(`tags = $${idx++}::jsonb`); params.push(JSON.stringify(Array.isArray(tags) ? tags : [])); }
     if (is_hidden !== undefined)  { sets.push(`is_hidden = $${idx++}`);  params.push(is_hidden); }
     if (sort_order !== undefined) { sets.push(`sort_order = $${idx++}`); params.push(sort_order); }
 

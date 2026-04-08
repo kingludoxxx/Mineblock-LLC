@@ -172,6 +172,15 @@ function TemplateCard({ template, onView, onAnalyze, onDelete }) {
 // Reference Lightbox (with Edit Mode)
 // ---------------------------------------------------------------------------
 
+// Parse tags — handles string (double-stringified JSON) or array
+function parseTags(raw) {
+  if (Array.isArray(raw)) return raw;
+  if (typeof raw === 'string') {
+    try { const parsed = JSON.parse(raw); return Array.isArray(parsed) ? parsed : []; } catch { return []; }
+  }
+  return [];
+}
+
 function ReferenceLightbox({ template, onClose, onSelect, onAnalyze, onHide, onDelete, onUpdate }) {
   const [reanalyzing, setReanalyzing] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -180,14 +189,25 @@ function ReferenceLightbox({ template, onClose, onSelect, onAnalyze, onHide, onD
   const [editCategory, setEditCategory] = useState('');
   const [editTags, setEditTags] = useState([]);
   const [tagInput, setTagInput] = useState('');
+  const [lastTemplateId, setLastTemplateId] = useState(null);
+
+  // Reset edit mode when switching templates
+  if (template && template.id !== lastTemplateId) {
+    setLastTemplateId(template.id);
+    if (editing) {
+      setEditing(false);
+      setTagInput('');
+    }
+  }
 
   if (!template) return null;
   const da = template.deep_analysis;
+  const templateTags = parseTags(template.tags);
 
   const startEdit = () => {
     setEditName(template.name || '');
     setEditCategory(template.category || '');
-    setEditTags(Array.isArray(template.tags) ? [...template.tags] : []);
+    setEditTags([...templateTags]);
     setTagInput('');
     setEditing(true);
   };
@@ -388,11 +408,11 @@ function ReferenceLightbox({ template, onClose, onSelect, onAnalyze, onHide, onD
             ) : (
               <>
                 {/* Tags (view mode) */}
-                {Array.isArray(template.tags) && template.tags.length > 0 && (
+                {templateTags.length > 0 && (
                   <div>
                     <p className="text-[11px] text-zinc-500 uppercase tracking-wider font-medium mb-2">Tags</p>
                     <div className="flex flex-wrap gap-1.5">
-                      {template.tags.map((tag) => (
+                      {templateTags.map((tag) => (
                         <span
                           key={tag}
                           className="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded-full bg-white/[0.06] text-zinc-400 border border-white/[0.04]"
