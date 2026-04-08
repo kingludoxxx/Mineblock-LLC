@@ -273,11 +273,26 @@ export async function createAdSet(adAccountId, params) {
     pageId, startTime
   } = params;
 
+  // Map common invalid values to correct Meta API optimization_goal enum
+  const VALID_OPTIMIZATION_GOALS = new Set([
+    'NONE', 'APP_INSTALLS', 'AD_RECALL_LIFT', 'ENGAGED_USERS', 'EVENT_RESPONSES',
+    'IMPRESSIONS', 'LEAD_GENERATION', 'QUALITY_LEAD', 'LINK_CLICKS', 'OFFSITE_CONVERSIONS',
+    'PAGE_LIKES', 'POST_ENGAGEMENT', 'QUALITY_CALL', 'REACH', 'LANDING_PAGE_VIEWS',
+    'VISIT_INSTAGRAM_PROFILE', 'ENGAGED_PAGE_VIEWS', 'VALUE', 'THRUPLAY',
+    'DERIVED_EVENTS', 'APP_INSTALLS_AND_OFFSITE_CONVERSIONS', 'CONVERSATIONS',
+    'IN_APP_VALUE', 'MESSAGING_PURCHASE_CONVERSION', 'MESSAGING_DEEP_CONVERSATION',
+  ]);
+  let resolvedOptGoal = optimizationGoal;
+  if (!VALID_OPTIMIZATION_GOALS.has(resolvedOptGoal)) {
+    console.warn(`[createAdSet] Invalid optimization_goal "${resolvedOptGoal}", falling back to OFFSITE_CONVERSIONS`);
+    resolvedOptGoal = 'OFFSITE_CONVERSIONS';
+  }
+
   const body = {
     access_token: META_ACCESS_TOKEN,
     name,
     campaign_id: campaignId,
-    optimization_goal: optimizationGoal,
+    optimization_goal: resolvedOptGoal,
     billing_event: billingEvent,
     bid_strategy: bidStrategy,
     status,

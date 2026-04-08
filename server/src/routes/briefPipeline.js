@@ -4457,6 +4457,8 @@ async function _initLaunchTables() {
   await pgQuery(`ALTER TABLE launch_templates ADD COLUMN IF NOT EXISTS schedule_enabled BOOLEAN DEFAULT false`).catch(() => {});
   await pgQuery(`ALTER TABLE launch_templates ADD COLUMN IF NOT EXISTS schedule_date TEXT`).catch(() => {});
   await pgQuery(`ALTER TABLE launch_templates ADD COLUMN IF NOT EXISTS schedule_time TEXT DEFAULT '00:00'`).catch(() => {});
+  // Fix invalid optimization_goal values (PURCHASE is a conversion event, not an optimization goal)
+  await pgQuery(`UPDATE launch_templates SET optimization_goal = 'OFFSITE_CONVERSIONS' WHERE optimization_goal = 'PURCHASE'`).catch(() => {});
   await pgQuery(`
     CREATE TABLE IF NOT EXISTS brief_copy_sets (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

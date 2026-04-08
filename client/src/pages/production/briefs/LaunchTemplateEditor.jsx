@@ -19,7 +19,7 @@ const CONVERSION_EVENTS = [
   'FIND_LOCATION', 'SCHEDULE', 'START_TRIAL', 'SUBMIT_APPLICATION',
 ];
 
-const OPTIMIZATION_GOALS = ['PURCHASE', 'VALUE', 'LANDING_PAGE_VIEWS', 'LINK_CLICKS', 'IMPRESSIONS', 'REACH'];
+const OPTIMIZATION_GOALS = ['OFFSITE_CONVERSIONS', 'VALUE', 'LANDING_PAGE_VIEWS', 'LINK_CLICKS', 'IMPRESSIONS', 'REACH'];
 
 const BID_STRATEGIES = ['LOWEST_COST', 'MINIMUM_ROAS', 'COST_CAP', 'BID_CAP'];
 
@@ -58,7 +58,7 @@ const DEFAULT_FORM = {
   conversionEvent: 'PURCHASE',
   dailyBudget: '',
   performanceGoal: 'MAXIMIZE_CONVERSIONS',
-  optimizationGoal: 'PURCHASE',
+  optimizationGoal: 'OFFSITE_CONVERSIONS',
   bidStrategy: 'LOWEST_COST',
   targetRoas: '',
   attribution: '7d_click_1d_view',
@@ -200,7 +200,7 @@ export default function LaunchTemplateEditor({ open, onClose, template, onSaved 
         conversionEvent: template.conversion_event || 'PURCHASE',
         dailyBudget: template.daily_budget ?? '',
         performanceGoal: template.performance_goal || 'MAXIMIZE_CONVERSIONS',
-        optimizationGoal: template.optimization_goal || 'PURCHASE',
+        optimizationGoal: template.optimization_goal === 'PURCHASE' ? 'OFFSITE_CONVERSIONS' : (template.optimization_goal || 'OFFSITE_CONVERSIONS'),
         bidStrategy: template.bid_strategy === 'LOWEST_COST_WITHOUT_CAP' ? 'LOWEST_COST' : template.bid_strategy === 'LOWEST_COST_WITH_MIN_ROAS' ? 'MINIMUM_ROAS' : template.bid_strategy || 'LOWEST_COST',
         targetRoas: template.target_roas ?? '',
         attribution: template.attribution_window || '7d_click_1d_view',
