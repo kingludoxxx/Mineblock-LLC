@@ -203,11 +203,13 @@ router.post('/', authenticate, async (req, res) => {
     // Auto-analyze in background (don't block the response)
     if (created?.id && created?.image_url) {
       analyzeTemplate(created).then(async (analysis) => {
-        await pgQuery(
-          `UPDATE statics_templates SET deep_analysis = $1, analyzed_at = NOW() WHERE id = $2`,
+        const updated = await pgQuery(
+          `UPDATE statics_templates SET deep_analysis = $1, analyzed_at = NOW() WHERE id = $2 RETURNING id`,
           [JSON.stringify(analysis), created.id]
         );
-        console.log(`[staticsTemplates] Auto-analyzed template ${created.id}`);
+        if (updated.length) {
+          console.log(`[staticsTemplates] Auto-analyzed template ${created.id}`);
+        }
       }).catch(err => {
         console.error(`[staticsTemplates] Auto-analyze failed for ${created.id}:`, err.message);
       });

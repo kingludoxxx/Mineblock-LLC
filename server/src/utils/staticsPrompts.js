@@ -191,12 +191,12 @@ This template has been pre-analyzed. Use this intelligence to produce better res
 ${templateData.deep_analysis.summary ? `\nTemplate Summary: ${templateData.deep_analysis.summary}\n` : ''}
 Template Type: ${templateData.deep_analysis.template_type || 'unknown'}
 Emotional Tone: ${templateData.deep_analysis.emotional_tone || 'unknown'}
-Layout: ${JSON.stringify(templateData.deep_analysis.layout, null, 2)}
-Typography: ${JSON.stringify(templateData.deep_analysis.typography, null, 2)}
-Product Analysis: ${JSON.stringify(templateData.deep_analysis.product_analysis, null, 2)}
-Color Palette: ${JSON.stringify(templateData.deep_analysis.color_palette, null, 2)}
-Design Elements: ${JSON.stringify(templateData.deep_analysis.design_elements, null, 2)}
-Adaptation Instructions: ${JSON.stringify(templateData.deep_analysis.adaptation_instructions, null, 2)}
+Layout: ${JSON.stringify(templateData.deep_analysis.layout || {}, null, 2)}
+Typography: ${JSON.stringify(templateData.deep_analysis.typography || {}, null, 2)}
+Product Analysis: ${JSON.stringify(templateData.deep_analysis.product_analysis || {}, null, 2)}
+Color Palette: ${JSON.stringify(templateData.deep_analysis.color_palette || {}, null, 2)}
+Design Elements: ${JSON.stringify(templateData.deep_analysis.design_elements || {}, null, 2)}
+Adaptation Instructions: ${JSON.stringify(templateData.deep_analysis.adaptation_instructions || {}, null, 2)}
 
 IMPORTANT: Follow the adaptation_instructions closely. Pay special attention to:
 - critical_elements_to_preserve: These MUST remain unchanged

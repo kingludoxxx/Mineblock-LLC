@@ -88,6 +88,7 @@ export async function analyzeTemplate(template) {
   },
   "emotional_tone": "urgency|trust|luxury|playful|professional|scientific|natural|bold|minimal|warm",
   "target_audience": "general|tech-savvy|health-conscious|budget-shoppers|premium-buyers|young-adults|professionals",
+  "summary": "A 2-3 sentence natural language paragraph describing this ad's strategy, structure, and visual approach. Example: 'The ad uses a negative hook by telling the audience not to buy the product to grab attention and pique curiosity. It features bold typography on a dark background with benefit badges at the bottom. The copywriting aims to create intrigue and suggest the product is desirable for those seeking specific results.' Write in third person, be specific about what the ad does and why it works.",
   "ad_effectiveness_notes": "Brief notes on what makes this ad effective or what could be improved",
   "adaptation_instructions": {
     "critical_elements_to_preserve": ["list of elements that MUST stay the same"],
@@ -98,9 +99,6 @@ export async function analyzeTemplate(template) {
     "common_failure_modes": ["list of things that typically go wrong when adapting this template"]
   }
 }
-
-ALSO include this additional field:
-  "summary": "A 2-3 sentence natural language paragraph describing this ad's strategy, structure, and visual approach. Example: 'The ad uses a negative hook by telling the audience not to buy the product to grab attention and pique curiosity. It features bold typography on a dark background with benefit badges at the bottom. The copywriting aims to create intrigue and suggest the product is desirable for those seeking specific results.' Write in third person, be specific about what the ad does and why it works."
 
 Be extremely precise with colors (use actual hex values from the image), positions, and text content. Every text element visible in the image must be captured exactly. This analysis will be used to generate better ad adaptations.`;
 
