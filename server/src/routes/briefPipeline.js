@@ -1885,6 +1885,8 @@ If a beat from the reference has no direct equivalent for our product, do not in
 - H2: Same framework, slightly different angle of entry.
 - H3: Same framework, different emotional texture.
 
+ANTI-PLAGIARISM RULE: NONE of your 3 hooks may copy any sentence or phrase from the original script verbatim. Every hook must be REPHRASED in your own words while matching the original's energy, framework, and purpose. If your H1 is identical or near-identical to the original's first line, you have FAILED this rule. Same meaning, different words. No exceptions.
+
 PERSPECTIVE LOCK: Read the body script. Identify who is being spoken to and who is being spoken about. Every hook must use the exact same perspective, pronouns, and speaker frame as the first sentence of the body. If the body says "he'll have" and "he just plugs it in", the hook must speak to a second person about a third person. Never write a first-person hook if the body is in second person. Never write a self-buyer hook if the body is a gift-buyer script.
 
 TENSION MATCH: The hook must create a tension, curiosity, or emotion that the first sentence of the body directly resolves. Read the first sentence of the body. Ask: what question or feeling does this sentence satisfy? Write the hook to create exactly that question or feeling.
@@ -1899,7 +1901,7 @@ PRODUCT SPECIFICITY: Every hook MUST reference at least one concrete product det
 
 HOOK QUALITY GATE — MANDATORY CHECK:
 Every hook MUST pass ALL of these checks before output:
-1. LENGTH: Under 25 words ideal, hard limit 40 words. If longer, it is body text — rewrite it shorter.
+1. LENGTH: Under 25 words ideal, hard ceiling 30 words. Any hook over 30 words is BODY TEXT — rewrite it shorter or split it. Count the words before outputting each hook.
 2. SCROLL-STOP: The first 4-5 words must create an immediate reason to stop scrolling.
 3. STANDALONE: Must make sense WITHOUT reading the body. If it only works as part of a paragraph, it is body text.
 4. NOT-BODY: A comparison ("X gives you Y, but this gives Z"), explanation, data point, or social proof statement is BODY TEXT, not a hook. Move it to the body.
@@ -2079,6 +2081,10 @@ ABSOLUTE RULES FOR YOUR WRITING STYLE:
 - If it sounds like a LinkedIn post or a corporate press release, REWRITE IT
 - Match the raw energy of the original — if the original is aggressive and bold, be equally aggressive and bold`;
 
+  const originalWordCount = (parsedScript.body || '').split(/\s+/).filter(Boolean).length;
+  const minWords = Math.round(originalWordCount * 0.7);
+  const maxWords = Math.round(originalWordCount * 1.3);
+
   let user = `# OBJECTIVE
 
 Generate a high-quality iteration of a winning ad script.
@@ -2089,13 +2095,14 @@ This iteration must:
 - Maintain the same emotional journey
 - Use completely new wording, phrasing, and sentence structures
 - The 3 hooks must blend PERFECTLY with the body — each hook must flow naturally into the body as if they were written together
+- MATCH THE ORIGINAL'S LENGTH: The original body is ${originalWordCount} words. Your body MUST be between ${minWords} and ${maxWords} words. This is a HARD CONSTRAINT. If the original is a 160-word short-form script, do NOT write a 500-word VSL. Match the format.
 
 The goal is to create a variation that feels fresh while behaving identically in terms of conversion.
 
 # PRODUCT CONTEXT
 ${productContext}
 
-# ORIGINAL WINNING SCRIPT
+# ORIGINAL WINNING SCRIPT (${originalWordCount} words — your output must be within ±30% of this)
 Hooks:
 ${originalHooks}
 
@@ -2191,6 +2198,8 @@ Every hook MUST pass ALL of these checks. If a hook fails any check, REWRITE it 
 - Keep the CTA short and direct
 
 # HARD CONSTRAINTS
+- WORD COUNT: Your body must be between ${minWords} and ${maxWords} words (original is ${originalWordCount}). Count before outputting. If you are over, CUT sections. If you are under, you missed beats. This is NON-NEGOTIABLE.
+- HOOK LENGTH: Every hook MUST be under 25 words. Hard ceiling 30 words. Any hook over 30 words is body text and must be rewritten shorter.
 - Do NOT introduce new claims not supported by the product profile
 - Do NOT change product positioning
 - Do NOT simplify to the point of losing persuasion
@@ -3257,7 +3266,13 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
       const { system: cloneSystem, user: cloneUser } = await buildScriptClonePrompt(parsedScript, {}, productContext);
       let enhancedCloneUser = cloneUser;
       if (angle && angle !== 'NA') {
-        enhancedCloneUser += `\n\n# AD ANGLE\nThe selected ad angle is: "${angle}". While cloning the structure 1:1, ensure the adapted script aligns with this angle where applicable.`;
+        enhancedCloneUser += `\n\n# AD ANGLE — MANDATORY
+The selected ad angle is: "${angle}". This is NOT optional.
+- At least one hook MUST explicitly reference the "${angle}" concept
+- The body MUST weave the "${angle}" angle into the narrative — the reader should feel the "${angle}" framing throughout
+- If the angle is "Lottery", the script must reference lottery-like odds, jackpot thinking, or chance-based framing
+- If the angle is "Against competition", the script must call out competitors or inferior alternatives
+- The angle should be the LENS through which the entire script operates, not a footnote`;
       }
 
       generationResults = [await (async () => {
@@ -3350,7 +3365,13 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
           if (angle && angle !== 'NA') {
             enhancedUser += `\n\n# AD ANGLE CONSTRAINT\nThe user has selected the ad angle: "${angle}". Your script MUST be strategically aligned with this angle. Every hook and body section should reinforce this angle. Do NOT drift into a different angle or generic positioning. The angle "${angle}" should be the lens through which the entire script operates.`;
           }
-          enhancedUser += `\n\n# VARIATION IDENTITY\nThis is variation ${direction.id} of ${directions.length}. Be COMPLETELY UNIQUE.`;
+          const arcOptions = [
+            'Open with a PERSONAL CONFESSION or mistake, then reveal the solution through your own experience',
+            'Open with a PROVOCATIVE CLAIM or contrarian statement that challenges what the viewer believes, then back it up',
+            'Open with a SPECIFIC SCENE — describe exactly what you saw, where you were, what someone was doing — make the viewer SEE it',
+          ];
+          const arcInstruction = arcOptions[(direction.id - 1) % arcOptions.length];
+          enhancedUser += `\n\n# VARIATION IDENTITY — MANDATORY DIFFERENTIATION\nThis is variation ${direction.id} of ${directions.length}.\n\nYour OPENING APPROACH must be: ${arcInstruction}\n\nDo NOT use the same opening structure as the other variations. Each variation must feel like a DIFFERENT PERSON telling the story from a DIFFERENT ANGLE. Same product, same core message, completely different entry point and narrative voice.`;
 
           const generated = await callClaude(genSystem, enhancedUser, 3000);
           if (!generated || (!generated.hooks && !generated.body)) throw new Error('Invalid response');
