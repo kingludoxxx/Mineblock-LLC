@@ -27,6 +27,15 @@ const DATA_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 const creativeDailyCache = new Map(); // key: "creative_id|startDate|endDate" → { data, timestamp }
 const CREATIVE_DAILY_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
+// Cache for latest week (avoids running the expensive SPLIT_PART query on every page load)
+let latestWeekCache = { week: null, timestamp: 0 };
+const LATEST_WEEK_CACHE_TTL = 60 * 1000; // 1 minute
+
+// Response caches for /active and /leaderboard (avoid re-querying DB on every page load)
+const activeCache = { data: null, timestamp: 0 };
+const leaderboardCache = new Map(); // key: week → { data, timestamp }
+const RESPONSE_CACHE_TTL = 60 * 1000; // 1 minute
+
 // ── Known Values (for cross-validation) ─────────────────────────────
 // These sets prevent fields from leaking into the wrong slot when segment counts vary.
 // All stored lowercase for case-insensitive matching via knownHas() helper.
@@ -583,6 +592,10 @@ async function ensureTable() {
         CREATE INDEX IF NOT EXISTS idx_ca_week_spend ON creative_analysis (week, spend DESC);
         CREATE INDEX IF NOT EXISTS idx_ca_creative_id ON creative_analysis (creative_id);
         CREATE INDEX IF NOT EXISTS idx_ca_ad_name ON creative_analysis (ad_name);
+        -- Composite index for lifetime metrics (creative_id + week)
+        CREATE INDEX IF NOT EXISTS idx_ca_creative_week ON creative_analysis (creative_id, week);
+        -- Index for thumbnail lookup
+        CREATE INDEX IF NOT EXISTS idx_ca_creative_synced ON creative_analysis (creative_id, synced_at DESC NULLS LAST);
       EXCEPTION WHEN OTHERS THEN
         -- Ignore migration errors (e.g. duplicate data blocking unique constraint)
         RAISE NOTICE 'Migration warning: %', SQLERRM;
@@ -593,6 +606,22 @@ async function ensureTable() {
   }
 
   tableReady = true;
+}
+
+// ── Cached Latest Week ────────────────────────────────────────────────
+
+async function getLatestWeek() {
+  const now = Date.now();
+  if (latestWeekCache.week && (now - latestWeekCache.timestamp) < LATEST_WEEK_CACHE_TTL) {
+    return latestWeekCache.week;
+  }
+  const rows = await pgQuery(
+    `SELECT week FROM (SELECT DISTINCT week FROM creative_analysis WHERE week IS NOT NULL) t
+     ORDER BY SPLIT_PART(week, '_', 2)::int DESC, REPLACE(SPLIT_PART(week, '_', 1), 'WK', '')::int DESC LIMIT 1`
+  );
+  const week = rows.length > 0 ? rows[0].week : null;
+  latestWeekCache = { week, timestamp: now };
+  return week;
 }
 
 // ── Sync Logic ──────────────────────────────────────────────────────
@@ -750,18 +779,30 @@ async function getLifetimeMetrics(creativeIds) {
 
   try {
     const placeholders = creativeIds.map((_, i) => `$${i + 1}`).join(',');
+    // Optimized: use a CTE to compute a numeric week_key (year*100+weeknum)
+    // then use MIN/MAX instead of ARRAY_AGG + SPLIT_PART + ORDER BY
     const rows = await pgQuery(
-      `SELECT
-         creative_id,
-         SUM(spend) as lifetime_spend,
-         SUM(revenue) as lifetime_revenue,
-         SUM(purchases) as lifetime_purchases,
-         COUNT(DISTINCT CASE WHEN spend > 0 THEN week END) as weeks_active,
-         (ARRAY_AGG(week ORDER BY SPLIT_PART(week,'_',2)::int, REPLACE(SPLIT_PART(week,'_',1),'WK','')::int))[1] as first_seen,
-         (ARRAY_AGG(week ORDER BY SPLIT_PART(week,'_',2)::int DESC, REPLACE(SPLIT_PART(week,'_',1),'WK','')::int DESC))[1] as last_seen
-       FROM creative_analysis
-       WHERE creative_id IN (${placeholders})
-       GROUP BY creative_id`,
+      `WITH keyed AS (
+         SELECT creative_id, week, spend,
+                revenue, purchases,
+                SPLIT_PART(week,'_',2)::int * 100 + REPLACE(SPLIT_PART(week,'_',1),'WK','')::int AS wk
+         FROM creative_analysis
+         WHERE creative_id IN (${placeholders})
+       ),
+       agg AS (
+         SELECT creative_id,
+           SUM(spend) as lifetime_spend,
+           SUM(revenue) as lifetime_revenue,
+           SUM(purchases) as lifetime_purchases,
+           COUNT(DISTINCT CASE WHEN spend > 0 THEN week END) as weeks_active,
+           MIN(wk) as min_wk,
+           MAX(wk) as max_wk
+         FROM keyed GROUP BY creative_id
+       )
+       SELECT a.*,
+         (SELECT k.week FROM keyed k WHERE k.creative_id = a.creative_id AND k.wk = a.min_wk LIMIT 1) as first_seen,
+         (SELECT k.week FROM keyed k WHERE k.creative_id = a.creative_id AND k.wk = a.max_wk LIMIT 1) as last_seen
+       FROM agg a`,
       creativeIds
     );
 
@@ -1454,35 +1495,29 @@ router.get('/active', authenticate, async (req, res) => {
   try {
     await ensureTable();
 
-    // Find the latest week (sort by year then week number for correct cross-year ordering)
-    const latestRows = await pgQuery(
-      `SELECT week FROM (SELECT DISTINCT week FROM creative_analysis WHERE week IS NOT NULL) t
-       ORDER BY SPLIT_PART(week, '_', 2)::int DESC, REPLACE(SPLIT_PART(week, '_', 1), 'WK', '')::int DESC LIMIT 1`
-    );
-    if (latestRows.length === 0) {
+    // Return cached response if fresh (avoids all DB queries on page refresh)
+    const now = Date.now();
+    if (activeCache.data && (now - activeCache.timestamp) < RESPONSE_CACHE_TTL) {
+      return res.json(activeCache.data);
+    }
+
+    // Use cached latest week to avoid expensive SPLIT_PART sort on every request
+    const latestWeek = await getLatestWeek();
+    if (!latestWeek) {
       return res.json({ success: true, data: { creatives: [], latest_week: null } });
     }
-    const latestWeek = latestRows[0].week;
 
-    // Get active creatives (spend > 0 in latest week) with hook-level detail + lifetime in one query
-    const [activeRows, lifetimeRows] = await Promise.all([
-      pgQuery(
-        `SELECT * FROM creative_analysis WHERE week = $1 AND spend > 0 ORDER BY spend DESC`,
-        [latestWeek]
-      ),
-      pgQuery(
-        `SELECT creative_id,
-           SUM(spend) as lifetime_spend, SUM(revenue) as lifetime_revenue,
-           SUM(purchases) as lifetime_purchases,
-           COUNT(DISTINCT CASE WHEN spend > 0 THEN week END) as weeks_active,
-           (ARRAY_AGG(week ORDER BY SPLIT_PART(week,'_',2)::int, REPLACE(SPLIT_PART(week,'_',1),'WK','')::int))[1] as first_seen,
-           (ARRAY_AGG(week ORDER BY SPLIT_PART(week,'_',2)::int DESC, REPLACE(SPLIT_PART(week,'_',1),'WK','')::int DESC))[1] as last_seen
-         FROM creative_analysis
-         WHERE creative_id IN (SELECT DISTINCT creative_id FROM creative_analysis WHERE week = $1 AND spend > 0)
-         GROUP BY creative_id`,
-        [latestWeek]
-      ),
-    ]);
+    // Get active creatives (spend > 0 in latest week) with hook-level detail
+    const activeRows = await pgQuery(
+      `SELECT * FROM creative_analysis WHERE week = $1 AND spend > 0 ORDER BY spend DESC`,
+      [latestWeek]
+    );
+
+    // Get lifetime metrics using the optimized helper (avoids N+1 subquery)
+    const activeCreativeIds = [...new Set(activeRows.map(r => r.creative_id))];
+    const lifetimeRows = activeCreativeIds.length > 0
+      ? await getLifetimeMetrics(activeCreativeIds).then(m => [...m.entries()].map(([k, v]) => ({ creative_id: k, ...v })))
+      : [];
 
     // Group by creative_id — use highest-spend hook's metadata (same as /data)
     const grouped = {};
@@ -1540,19 +1575,10 @@ router.get('/active', authenticate, async (req, res) => {
       }
     }
 
-    // Build lifetime map from pre-fetched data (ran in parallel with activeRows)
+    // Build lifetime map from pre-fetched data (already computed by getLifetimeMetrics)
     const lifetimeMap = new Map();
     for (const r of lifetimeRows) {
-      const ls = Math.round(Number(r.lifetime_spend) * 100) / 100;
-      const lr = Math.round(Number(r.lifetime_revenue) * 100) / 100;
-      const lRoas = ls > 0 ? Math.round((lr / ls) * 100) / 100 : 0;
-      lifetimeMap.set(r.creative_id, {
-        lifetime_spend: ls, lifetime_revenue: lr, lifetime_roas: lRoas,
-        lifetime_purchases: Number(r.lifetime_purchases),
-        first_seen: r.first_seen, last_seen: r.last_seen,
-        weeks_active: Number(r.weeks_active),
-        is_winner: ls >= 500 && lRoas >= 1.80,
-      });
+      lifetimeMap.set(r.creative_id, r);
     }
 
     const creatives = Object.values(grouped).map(c => {
@@ -1579,7 +1605,10 @@ router.get('/active', authenticate, async (req, res) => {
 
     creatives.sort((a, b) => b.total_spend - a.total_spend);
 
-    res.json({ success: true, data: { creatives, latest_week: latestWeek } });
+    const response = { success: true, data: { creatives, latest_week: latestWeek } };
+    activeCache.data = response;
+    activeCache.timestamp = Date.now();
+    res.json(response);
   } catch (err) {
     console.error('[Creative Analysis] /active error:', err);
     res.status(500).json({ success: false, error: { message: 'Internal server error' } });
@@ -1598,51 +1627,43 @@ router.get('/leaderboard', authenticate, async (req, res) => {
 
     await ensureTable();
 
-    // Allow "latest" to auto-resolve to the most recent week (avoids an extra round-trip)
-    if (!week || week.toLowerCase() === 'latest') {
-      const latestRows = await pgQuery(
-        `SELECT week FROM (SELECT DISTINCT week FROM creative_analysis WHERE week IS NOT NULL) t
-         ORDER BY SPLIT_PART(week, '_', 2)::int DESC, REPLACE(SPLIT_PART(week, '_', 1), 'WK', '')::int DESC LIMIT 1`
-      );
-      if (latestRows.length === 0) {
-        return res.json({ success: true, data: { topRoas: [], topPurchases: [], topEfficiency: [] } });
-      }
-      week = latestRows[0].week;
+    // Return cached response if fresh
+    const cacheKey = (week || 'latest').toUpperCase();
+    const cached = leaderboardCache.get(cacheKey);
+    if (cached && (Date.now() - cached.timestamp) < RESPONSE_CACHE_TTL) {
+      return res.json(cached.data);
     }
 
-    // Aggregate at creative_id level for the given week, min $200 spend
-    // Use DISTINCT ON to pick metadata from the highest-spend hook per creative
+    // Use cached latest week to avoid expensive SPLIT_PART sort
+    if (!week || week.toLowerCase() === 'latest') {
+      week = await getLatestWeek();
+      if (!week) {
+        return res.json({ success: true, data: { topRoas: [], topPurchases: [], topEfficiency: [] } });
+      }
+    }
+
+    // Aggregate at creative_id level using a single pass with window functions
+    // instead of LATERAL N+1 join (which fires a subquery per creative)
     const aggregated = await pgQuery(
-      `SELECT
-         agg.creative_id,
-         top.type,
-         top.avatar,
-         top.angle,
-         top.format,
-         top.editor,
-         top.ad_name,
-         top.thumbnail_url,
-         top.video_url,
-         agg.spend,
-         agg.revenue,
-         agg.purchases,
-         agg.impressions,
-         agg.clicks
-       FROM (
-         SELECT creative_id,
-           SUM(spend) as spend, SUM(revenue) as revenue,
-           SUM(purchases) as purchases, SUM(impressions) as impressions,
-           SUM(clicks) as clicks
+      `WITH ranked AS (
+         SELECT *,
+           ROW_NUMBER() OVER (PARTITION BY creative_id ORDER BY spend DESC) as rn,
+           SUM(spend) OVER (PARTITION BY creative_id) as total_spend,
+           SUM(revenue) OVER (PARTITION BY creative_id) as total_revenue,
+           SUM(purchases) OVER (PARTITION BY creative_id) as total_purchases,
+           SUM(impressions) OVER (PARTITION BY creative_id) as total_impressions,
+           SUM(clicks) OVER (PARTITION BY creative_id) as total_clicks
          FROM creative_analysis WHERE week = $1
-         GROUP BY creative_id HAVING SUM(spend) >= 200
-       ) agg
-       JOIN LATERAL (
-         SELECT type, avatar, angle, format, editor, ad_name, thumbnail_url, video_url
-         FROM creative_analysis
-         WHERE creative_id = agg.creative_id AND week = $1
-         ORDER BY spend DESC LIMIT 1
-       ) top ON true
-       ORDER BY agg.spend DESC`,
+       )
+       SELECT
+         creative_id,
+         type, avatar, angle, format, editor, ad_name, thumbnail_url, video_url,
+         total_spend as spend, total_revenue as revenue,
+         total_purchases as purchases, total_impressions as impressions,
+         total_clicks as clicks
+       FROM ranked
+       WHERE rn = 1 AND total_spend >= 200
+       ORDER BY total_spend DESC`,
       [week.toUpperCase()]
     );
 
@@ -1693,10 +1714,9 @@ router.get('/leaderboard', authenticate, async (req, res) => {
       .sort((a, b) => a.cpa - b.cpa)
       .slice(0, 10);
 
-    res.json({
-      success: true,
-      data: { topRoas, topPurchases, topEfficiency },
-    });
+    const response = { success: true, data: { topRoas, topPurchases, topEfficiency } };
+    leaderboardCache.set(cacheKey, { data: response, timestamp: Date.now() });
+    res.json(response);
   } catch (err) {
     console.error('[Creative Analysis] /leaderboard error:', err);
     res.status(500).json({ success: false, error: { message: 'Internal server error' } });
@@ -1738,6 +1758,9 @@ router.post('/sync', authenticate, async (req, res) => {
 
     // Clear data cache so next request gets fresh data
     dataByDateCache.clear(); creativeDailyCache.clear();
+    latestWeekCache = { week: null, timestamp: 0 }; // invalidate latest week cache
+    activeCache.data = null; activeCache.timestamp = 0; // invalidate active cache
+    leaderboardCache.clear(); // invalidate leaderboard cache
 
     res.json({
       success: true,

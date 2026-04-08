@@ -289,18 +289,53 @@ router.post('/bulk', authenticate, async (req, res) => {
 
 // ── PUT /:id — Update template ──────────────────────────────────────────
 
+const VALID_CATEGORIES = new Set([
+  '', 'AirDrop', 'Apple Notes', 'Article/News', 'Before & After', 'Benefits & Features',
+  'Bold Claim', 'Feature/Benefit', 'Google Search', 'Headline', 'Lifestyle & Brand',
+  'Meme', 'Native', 'Negative Hook', 'Offer & Promotion', 'Offer/Sale',
+  'Problem + Solution', 'Social Proof & Testimonials', 'Statistics', 'Testimonial',
+  'UGC & Reviews', 'Us vs Them', "What's Inside",
+]);
+
 router.put('/:id', authenticate, async (req, res) => {
   try {
     await ensureTable();
     const { name, category, tags, is_hidden, sort_order } = req.body;
 
+    // Validate name
+    if (name !== undefined) {
+      if (typeof name !== 'string' || !name.trim()) {
+        return res.status(400).json({ success: false, error: { message: 'Name cannot be empty' } });
+      }
+      if (name.trim().length > 255) {
+        return res.status(400).json({ success: false, error: { message: 'Name must be under 255 characters' } });
+      }
+    }
+
+    // Validate category
+    if (category !== undefined && category !== null && !VALID_CATEGORIES.has(category)) {
+      return res.status(400).json({ success: false, error: { message: 'Invalid category' } });
+    }
+
+    // Validate & sanitize tags
+    let sanitizedTags;
+    if (tags !== undefined) {
+      const arr = Array.isArray(tags) ? tags : [];
+      const seen = new Set();
+      sanitizedTags = arr
+        .filter(t => typeof t === 'string')
+        .map(t => t.trim().toLowerCase().slice(0, 50))
+        .filter(t => t && !seen.has(t) && seen.add(t))
+        .slice(0, 20); // max 20 tags
+    }
+
     const sets = [];
     const params = [];
     let idx = 1;
 
-    if (name !== undefined)       { sets.push(`name = $${idx++}`);       params.push(name); }
+    if (name !== undefined)       { sets.push(`name = $${idx++}`);       params.push(name.trim()); }
     if (category !== undefined)   { sets.push(`category = $${idx++}`);   params.push(category); }
-    if (tags !== undefined)       { sets.push(`tags = $${idx++}::jsonb`); params.push(JSON.stringify(Array.isArray(tags) ? tags : [])); }
+    if (sanitizedTags !== undefined) { sets.push(`tags = $${idx++}::jsonb`); params.push(JSON.stringify(sanitizedTags)); }
     if (is_hidden !== undefined)  { sets.push(`is_hidden = $${idx++}`);  params.push(is_hidden); }
     if (sort_order !== undefined) { sets.push(`sort_order = $${idx++}`); params.push(sort_order); }
 

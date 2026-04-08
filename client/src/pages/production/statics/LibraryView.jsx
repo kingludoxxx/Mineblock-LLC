@@ -173,12 +173,19 @@ function TemplateCard({ template, onView, onAnalyze, onDelete }) {
 // ---------------------------------------------------------------------------
 
 // Parse tags — handles string (double-stringified JSON) or array
+// Sanitizes: filters empty strings, non-strings, trims, and deduplicates
 function parseTags(raw) {
-  if (Array.isArray(raw)) return raw;
-  if (typeof raw === 'string') {
-    try { const parsed = JSON.parse(raw); return Array.isArray(parsed) ? parsed : []; } catch { return []; }
+  let arr = [];
+  if (Array.isArray(raw)) arr = raw;
+  else if (typeof raw === 'string') {
+    try { const parsed = JSON.parse(raw); arr = Array.isArray(parsed) ? parsed : []; } catch { arr = []; }
   }
-  return [];
+  // Sanitize: only strings, trimmed, non-empty, unique
+  const seen = new Set();
+  return arr
+    .filter(t => typeof t === 'string')
+    .map(t => t.trim())
+    .filter(t => t && !seen.has(t) && seen.add(t));
 }
 
 function ReferenceLightbox({ template, onClose, onSelect, onAnalyze, onHide, onDelete, onUpdate }) {
@@ -191,13 +198,11 @@ function ReferenceLightbox({ template, onClose, onSelect, onAnalyze, onHide, onD
   const [tagInput, setTagInput] = useState('');
   const [lastTemplateId, setLastTemplateId] = useState(null);
 
-  // Reset edit mode when switching templates
+  // Reset edit mode when switching templates (always reset tagInput to avoid stale data)
   if (template && template.id !== lastTemplateId) {
     setLastTemplateId(template.id);
-    if (editing) {
-      setEditing(false);
-      setTagInput('');
-    }
+    setEditing(false);
+    setTagInput('');
   }
 
   if (!template) return null;
@@ -217,26 +222,39 @@ function ReferenceLightbox({ template, onClose, onSelect, onAnalyze, onHide, onD
     setTagInput('');
   };
 
+  const [saveError, setSaveError] = useState('');
+
   const handleSave = async () => {
     if (!onUpdate) return;
+    const trimmedName = editName.trim();
+    if (!trimmedName) {
+      setSaveError('Name cannot be empty');
+      return;
+    }
+    if (trimmedName.length > 255) {
+      setSaveError('Name must be under 255 characters');
+      return;
+    }
     setSaving(true);
+    setSaveError('');
     try {
       await onUpdate(template.id, {
-        name: editName.trim() || template.name,
+        name: trimmedName,
         category: editCategory,
-        tags: editTags,
+        tags: editTags.filter(t => t.trim()),
       });
       setEditing(false);
     } catch (err) {
       console.error('Save failed:', err);
+      setSaveError('Failed to save changes. Please try again.');
     } finally {
       setSaving(false);
     }
   };
 
   const addTag = () => {
-    const tag = tagInput.trim().toLowerCase();
-    if (tag && !editTags.includes(tag)) {
+    const tag = tagInput.trim().toLowerCase().slice(0, 50); // max 50 chars per tag
+    if (tag && !editTags.includes(tag) && editTags.length < 20) { // max 20 tags
       setEditTags([...editTags, tag]);
     }
     setTagInput('');
@@ -321,7 +339,8 @@ function ReferenceLightbox({ template, onClose, onSelect, onAnalyze, onHide, onD
                 <input
                   type="text"
                   value={editName}
-                  onChange={(e) => setEditName(e.target.value)}
+                  onChange={(e) => { setEditName(e.target.value); setSaveError(''); }}
+                  maxLength={255}
                   className="w-full text-base font-semibold text-white bg-white/[0.06] border border-white/[0.12] rounded-lg px-3 py-1.5 outline-none focus:border-accent/50 transition-colors"
                   placeholder="Template name"
                   autoFocus
@@ -523,13 +542,18 @@ function ReferenceLightbox({ template, onClose, onSelect, onAnalyze, onHide, onD
             {editing ? (
               /* Edit mode footer */
               <>
-                <button
-                  onClick={cancelEdit}
-                  className="flex items-center gap-1.5 text-xs text-zinc-500 hover:text-zinc-300 transition-colors cursor-pointer"
-                >
-                  <XCircle className="w-3.5 h-3.5" />
-                  Cancel
-                </button>
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={cancelEdit}
+                    className="flex items-center gap-1.5 text-xs text-zinc-500 hover:text-zinc-300 transition-colors cursor-pointer"
+                  >
+                    <XCircle className="w-3.5 h-3.5" />
+                    Cancel
+                  </button>
+                  {saveError && (
+                    <span className="text-xs text-red-400">{saveError}</span>
+                  )}
+                </div>
                 <button
                   onClick={handleSave}
                   disabled={saving}
