@@ -598,7 +598,13 @@ export function LibraryView({
   onUpdateTemplate,
 }) {
   const [selectMode, setSelectMode] = useState(false);
-  const [viewingTemplate, setViewingTemplate] = useState(null);
+  const [viewingTemplateId, setViewingTemplateId] = useState(null);
+
+  // Derive viewingTemplate from templates array so it stays in sync after edits
+  const viewingTemplate = useMemo(
+    () => (viewingTemplateId ? templates.find(t => t.id === viewingTemplateId) || null : null),
+    [viewingTemplateId, templates],
+  );
 
   const uncategorizedCount = useMemo(
     () => templates.filter((t) => !t.category).length,
@@ -693,7 +699,7 @@ export function LibraryView({
                 <TemplateCard
                   key={tpl.id}
                   template={tpl}
-                  onView={setViewingTemplate}
+                  onView={(tpl) => setViewingTemplateId(tpl.id)}
                   onAnalyze={onAnalyzeTemplate}
                   onDelete={onDeleteTemplate}
                 />
@@ -706,7 +712,7 @@ export function LibraryView({
       {/* Lightbox */}
       <ReferenceLightbox
         template={viewingTemplate}
-        onClose={() => setViewingTemplate(null)}
+        onClose={() => setViewingTemplateId(null)}
         onSelect={onSelectTemplate}
         onAnalyze={onAnalyzeTemplate}
         onDelete={onDeleteTemplate}
