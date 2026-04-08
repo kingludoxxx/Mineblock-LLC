@@ -90,7 +90,7 @@ export async function createAdCreative(adAccountId, params) {
  * @returns {string} adId
  */
 export async function createAd(adAccountId, params) {
-  const { name, adsetId, creativeId, status = 'PAUSED' } = params;
+  const { name, adsetId, creativeId, status = 'ACTIVE' } = params;
 
   const res = await fetch(`${META_GRAPH_URL}/${adAccountId}/ads`, {
     method: 'POST',
@@ -269,7 +269,7 @@ export async function createAdSet(adAccountId, params) {
     name, campaignId, dailyBudget, optimizationGoal = 'OFFSITE_CONVERSIONS',
     billingEvent = 'IMPRESSIONS', bidStrategy = 'LOWEST_COST_WITHOUT_CAP',
     targetRoas, pixelId, conversionEvent = 'PURCHASE', conversionLocation = 'WEBSITE',
-    targeting = {}, status = 'PAUSED', attributionWindow = '7d_click',
+    targeting = {}, status = 'ACTIVE', attributionWindow = '7d_click',
     pageId, startTime
   } = params;
 

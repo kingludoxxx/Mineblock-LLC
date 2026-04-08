@@ -192,7 +192,7 @@ router.post('/batches/:id/launch', authenticate, async (req, res) => {
       return res.status(400).json({ success: false, error: { message: 'Meta Ads API not configured. Set META_ACCESS_TOKEN and META_AD_ACCOUNT_IDS.' } });
     }
 
-    const { adset_id, campaign_id, status: adStatus = 'PAUSED' } = req.body;
+    const { adset_id, campaign_id, status: adStatus = 'ACTIVE' } = req.body;
     if (!adset_id) return res.status(400).json({ success: false, error: { message: 'adset_id is required' } });
 
     const batches = await pgQuery('SELECT * FROM ad_batches WHERE id = $1', [req.params.id]);
