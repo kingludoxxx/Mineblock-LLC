@@ -270,7 +270,7 @@ export async function createAdSet(adAccountId, params) {
     billingEvent = 'IMPRESSIONS', bidStrategy = 'LOWEST_COST_WITHOUT_CAP',
     targetRoas, pixelId, conversionEvent = 'PURCHASE', conversionLocation = 'WEBSITE',
     targeting = {}, status = 'PAUSED', attributionWindow = '7d_click',
-    pageId
+    pageId, startTime
   } = params;
 
   const body = {
@@ -310,6 +310,14 @@ export async function createAdSet(adAccountId, params) {
     body.attribution_spec = [{ event_type: 'CLICK_THROUGH', window_days: 7 }];
   } else if (attributionWindow === '1d_click') {
     body.attribution_spec = [{ event_type: 'CLICK_THROUGH', window_days: 1 }];
+  }
+
+  // Schedule: if startTime is provided, set the ad set to start at that time
+  // Meta expects ISO 8601 format: "2026-04-09T00:00:00-0400"
+  if (startTime) {
+    body.start_time = startTime;
+    // When scheduling, set status to ACTIVE so Meta auto-starts at the scheduled time
+    body.status = 'ACTIVE';
   }
 
   console.log('[createAdSet] targeting payload:', JSON.stringify(body.targeting));
