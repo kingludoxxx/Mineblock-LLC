@@ -203,7 +203,7 @@ export default function LaunchTemplateEditor({ open, onClose, template, onSaved 
         optimizationGoal: template.optimization_goal || 'PURCHASE',
         bidStrategy: template.bid_strategy === 'LOWEST_COST_WITHOUT_CAP' ? 'LOWEST_COST' : template.bid_strategy === 'LOWEST_COST_WITH_MIN_ROAS' ? 'MINIMUM_ROAS' : template.bid_strategy || 'LOWEST_COST',
         targetRoas: template.target_roas ?? '',
-        attribution: template.attribution_window || '7d_click',
+        attribution: template.attribution_window || '7d_click_1d_view',
         includeAudiences: (template.include_audiences || []).map(a => a.id || a),
         excludeAudiences: (template.exclude_audiences || []).map(a => a.id || a),
         countries: template.countries || [],
@@ -214,7 +214,7 @@ export default function LaunchTemplateEditor({ open, onClose, template, onSaved 
         utmParams: template.utm_parameters || DEFAULT_FORM.utmParams,
         landingPageUrl: template.landing_page_url || '',
         translationLanguages: template.translation_languages || [],
-        scheduleEnabled: template.schedule_enabled || false,
+        scheduleEnabled: template.schedule_enabled ?? false,
         scheduleDate: template.schedule_date || '',
         scheduleTime: template.schedule_time || '00:00',
       });
@@ -958,7 +958,12 @@ export default function LaunchTemplateEditor({ open, onClose, template, onSaved 
                 ['Age', `${form.ageMin} – ${form.ageMax}`],
                 ['Gender', form.gender],
                 ['Ad Format', form.adFormat],
-                ['Schedule', form.scheduleEnabled && form.scheduleDate ? `${new Date(form.scheduleDate + 'T' + form.scheduleTime).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })} at ${form.scheduleTime}` : 'Immediate (Paused)'],
+                ['Schedule', (() => {
+                  if (!form.scheduleEnabled || !form.scheduleDate) return 'Immediate (Paused)';
+                  const d = new Date(form.scheduleDate + 'T' + (form.scheduleTime || '00:00'));
+                  if (isNaN(d.getTime())) return 'Immediate (Paused)';
+                  return `${d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })} at ${form.scheduleTime || '00:00'}`;
+                })()],
                 ['Languages', form.translationLanguages.length ? form.translationLanguages.join(', ') : 'None'],
               ].map(([label, value]) => (
                 <div key={label} className="flex items-center justify-between py-2 first:pt-0 last:pb-0">
@@ -983,7 +988,7 @@ export default function LaunchTemplateEditor({ open, onClose, template, onSaved 
           </button>
           <button
             onClick={handleSave}
-            disabled={saving || syncing || !form.name}
+            disabled={saving || syncing || !form.name || (form.scheduleEnabled && !form.scheduleDate)}
             className="flex items-center gap-2 px-5 py-2 text-sm font-semibold bg-[#c9a84c] hover:bg-[#d4b55a] text-[#111113] rounded-lg transition disabled:opacity-50 cursor-pointer"
           >
             {saving ? (
