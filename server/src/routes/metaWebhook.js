@@ -11,10 +11,6 @@ const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN || '';
 const SLACK_CHANNEL = process.env.SLACK_REJECTION_CHANNEL || '';
 
 const ACCOUNT_NAMES = {
-  'act_938489175321542': 'Mineblock X8',
-  'act_1972517213693373': 'Mineblock CC 4',
-  'act_1238893338181787': 'Mineblock CC 5',
-  'act_25781501541499027': 'Mineblock X6',
   'act_1363888491879561': 'Luvora CC',
   'act_1417689703203647': 'Luvora CC 2',
   'act_642819725560039': 'Luvora CC 3',
@@ -40,7 +36,7 @@ async function ensureTable() {
 
 // ── Slack Helper ────────────────────────────────────────────────────
 async function sendSlackMessage(text, blocks) {
-  if (!SLACK_BOT_TOKEN || !SLACK_CHANNEL) return;
+  if (!SLACK_BOT_TOKEN || !SLACK_CHANNEL) return { ok: false };
   const body = {
     channel: SLACK_CHANNEL,
     text,
@@ -48,13 +44,19 @@ async function sendSlackMessage(text, blocks) {
     icon_url: 'https://i.imgur.com/PJCRE4g.png',
     ...(blocks ? { blocks } : {}),
   };
-  const resp = await fetch('https://slack.com/api/chat.postMessage', {
-    method: 'POST',
-    headers: { 'Authorization': `Bearer ${SLACK_BOT_TOKEN}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  const data = await resp.json();
-  if (!data.ok) console.error('[Meta Webhook] Slack error:', data.error);
+  try {
+    const resp = await fetch('https://slack.com/api/chat.postMessage', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${SLACK_BOT_TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await resp.json();
+    if (!data.ok) console.error('[Meta Webhook] Slack error:', data.error);
+    return data;
+  } catch (err) {
+    console.error('[Meta Webhook] Slack fetch error:', err.message);
+    return { ok: false };
+  }
 }
 
 // ── GET: Webhook Verification ───────────────────────────────────────
@@ -99,14 +101,10 @@ router.post('/', async (req, res) => {
           // Only process ad-level issues
           if (level && level !== 'AD' && adIds.length === 0) continue;
 
-          // If we get ad IDs directly, process them
           if (adIds.length > 0) {
             await processRejectedAdIds(adIds, accountId);
-          } else {
-            // If no ad IDs provided, fetch current WITH_ISSUES ads for this account
-            if (accountId) {
-              await fetchAndNotifyAccount(accountId);
-            }
+          } else if (accountId) {
+            await fetchAndNotifyAccount(accountId);
           }
         }
 
@@ -133,11 +131,7 @@ router.post('/', async (req, res) => {
 async function processRejectedAdIds(adIds, accountId) {
   for (const adId of adIds) {
     try {
-      // Check if already notified
-      const existing = await pgQuery('SELECT ad_id FROM ad_rejections_notified WHERE ad_id = $1', [String(adId)]);
-      if (existing.length > 0) continue;
-
-      // Fetch ad details (include configured_status at ad/adset/campaign level)
+      // Fetch ad details
       const resp = await fetch(`${META_GRAPH_URL}/${adId}?fields=name,effective_status,configured_status,account_id,adset{configured_status},campaign{configured_status}&access_token=${META_ACCESS_TOKEN}`);
       const ad = await resp.json();
 
@@ -149,20 +143,30 @@ async function processRejectedAdIds(adIds, accountId) {
       const status = ad.effective_status;
       if (status !== 'DISAPPROVED' && status !== 'WITH_ISSUES') continue;
 
-      // Skip ads that are already turned off (paused/archived at any level)
+      // FIX #1: Only skip ARCHIVED — NOT paused. Meta auto-pauses after rejection
+      // so skipping paused ads was causing most missed alerts.
       const adConfig = ad.configured_status;
-      const adsetConfig = ad.adset?.configured_status;
-      const campaignConfig = ad.campaign?.configured_status;
-      if (adConfig === 'PAUSED' || adConfig === 'ARCHIVED' ||
-          adsetConfig === 'PAUSED' || adsetConfig === 'ARCHIVED' ||
-          campaignConfig === 'PAUSED' || campaignConfig === 'ARCHIVED') {
-        console.log(`[Meta Webhook] Skipping paused/archived ad ${adId} (ad=${adConfig}, adset=${adsetConfig}, campaign=${campaignConfig})`);
+      if (adConfig === 'ARCHIVED') {
+        console.log(`[Meta Webhook] Skipping archived ad ${adId}`);
         continue;
       }
 
       const resolvedAccountId = accountId || (ad.account_id ? `act_${ad.account_id}` : 'unknown');
       const accountName = ACCOUNT_NAMES[resolvedAccountId] || resolvedAccountId;
       const adName = ad.name || 'Unknown';
+
+      // FIX #3: Handle re-rejections and status escalations
+      const existing = await pgQuery('SELECT ad_id, status FROM ad_rejections_notified WHERE ad_id = $1', [String(adId)]);
+      if (existing.length > 0) {
+        const oldStatus = existing[0].status;
+        // If status escalated (WITH_ISSUES → DISAPPROVED), re-notify
+        if (oldStatus === 'WITH_ISSUES' && status === 'DISAPPROVED') {
+          await pgQuery('DELETE FROM ad_rejections_notified WHERE ad_id = $1', [String(adId)]);
+          console.log(`[Meta Webhook] Status escalated for ad ${adId}: ${oldStatus} → ${status}, re-notifying`);
+        } else {
+          continue; // Already notified for this status
+        }
+      }
 
       await sendRejectionNotification(adId, adName, accountName, status, resolvedAccountId);
     } catch (err) {
@@ -186,20 +190,25 @@ async function fetchAndNotifyAccount(accountId) {
     const accountName = ACCOUNT_NAMES[accountId] || accountId;
 
     for (const ad of (data.data || [])) {
-      // Skip ads that are already turned off (paused/archived at any level)
+      // FIX #1: Only skip ARCHIVED, not paused
       const adConfig = ad.configured_status;
-      const adsetConfig = ad.adset?.configured_status;
-      const campaignConfig = ad.campaign?.configured_status;
-      if (adConfig === 'PAUSED' || adConfig === 'ARCHIVED' ||
-          adsetConfig === 'PAUSED' || adsetConfig === 'ARCHIVED' ||
-          campaignConfig === 'PAUSED' || campaignConfig === 'ARCHIVED') {
-        continue;
+      if (adConfig === 'ARCHIVED') continue;
+
+      const status = ad.effective_status;
+
+      // FIX #3: Handle re-rejections
+      const existing = await pgQuery('SELECT ad_id, status FROM ad_rejections_notified WHERE ad_id = $1', [ad.id]);
+      if (existing.length > 0) {
+        const oldStatus = existing[0].status;
+        if (oldStatus === 'WITH_ISSUES' && status === 'DISAPPROVED') {
+          await pgQuery('DELETE FROM ad_rejections_notified WHERE ad_id = $1', [ad.id]);
+          console.log(`[Meta Webhook] Status escalated for ad ${ad.id}: ${oldStatus} → ${status}`);
+        } else {
+          continue;
+        }
       }
 
-      const existing = await pgQuery('SELECT ad_id FROM ad_rejections_notified WHERE ad_id = $1', [ad.id]);
-      if (existing.length > 0) continue;
-
-      await sendRejectionNotification(ad.id, ad.name, accountName, ad.effective_status, accountId);
+      await sendRejectionNotification(ad.id, ad.name, accountName, status, accountId);
     }
   } catch (err) {
     console.error(`[Meta Webhook] Error fetching account ${accountId}:`, err.message);
@@ -226,14 +235,18 @@ async function sendRejectionNotification(adId, adName, accountName, status, acco
     { type: 'divider' },
   ];
 
-  await sendSlackMessage(`${statusLabel}: ${adName} (${accountName})`, blocks);
+  const slackResult = await sendSlackMessage(`${statusLabel}: ${adName} (${accountName})`, blocks);
 
-  await pgQuery(
-    'INSERT INTO ad_rejections_notified (ad_id, ad_name, account_id, status) VALUES ($1, $2, $3, $4) ON CONFLICT (ad_id) DO NOTHING',
-    [String(adId), adName, accountId, status]
-  );
-
-  console.log(`[Meta Webhook] Notified: "${adName}" [${status}] from ${accountName}`);
+  // Only mark as notified if Slack succeeded
+  if (slackResult?.ok) {
+    await pgQuery(
+      'INSERT INTO ad_rejections_notified (ad_id, ad_name, account_id, status) VALUES ($1, $2, $3, $4) ON CONFLICT (ad_id) DO UPDATE SET status = $4, notified_at = NOW()',
+      [String(adId), adName, accountId, status]
+    );
+    console.log(`[Meta Webhook] Notified: "${adName}" [${status}] from ${accountName}`);
+  } else {
+    console.error(`[Meta Webhook] Slack failed for "${adName}" — will be caught by polling monitor`);
+  }
 }
 
 export default router;
