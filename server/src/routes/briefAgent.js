@@ -14,6 +14,7 @@ const EDITOR_SLACK_CHANNELS = {
   Faiz: 'C0AFCJ4UN9L',
   Antoni: 'C0AEZ6UQANT',
   Uly: 'C0ANNMMPUCC',
+  Neil: 'C0ARP2SBQ8J',
 };
 
 const headers = {
@@ -106,6 +107,7 @@ const USER_IDS = {
   Antoni: 94595626,
   Faiz: 170558610,
   Uly: 106674594,
+  Neil: 100889905,
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -559,7 +561,7 @@ router.post('/create', async (req, res) => {
 
 // GET /api/v1/brief-agent/editor-report/slack/:editor
 // Returns total "ready to launch" cards this week per editor — Make calls this Monday and posts to Slack
-// Slack channels: Faiz → C0AFCJ4UN9L, Antoni → C0AEZ6UQANT
+// Slack channels: Faiz → C0AFCJ4UN9L, Antoni → C0AEZ6UQANT, Neil → C0ARP2SBQ8J
 router.get('/editor-report/slack/:editor', async (req, res) => {
   try {
     const editorName = req.params.editor;
