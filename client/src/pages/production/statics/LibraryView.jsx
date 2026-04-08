@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react';
-import { ScanSearch, MousePointerSquareDashed, EyeOff, AlertCircle, X, Check, Trash2, Zap, Calendar, RefreshCw } from 'lucide-react';
+import { ScanSearch, MousePointerSquareDashed, EyeOff, AlertCircle, X, Check, Trash2, Zap, Calendar, RefreshCw, Pencil, Save, XCircle, Plus } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
 // Categories
@@ -169,14 +169,69 @@ function TemplateCard({ template, onView, onAnalyze, onDelete }) {
 }
 
 // ---------------------------------------------------------------------------
-// Reference Lightbox
+// Reference Lightbox (with Edit Mode)
 // ---------------------------------------------------------------------------
 
-function ReferenceLightbox({ template, onClose, onSelect, onAnalyze, onHide, onDelete }) {
+function ReferenceLightbox({ template, onClose, onSelect, onAnalyze, onHide, onDelete, onUpdate }) {
   const [reanalyzing, setReanalyzing] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [editName, setEditName] = useState('');
+  const [editCategory, setEditCategory] = useState('');
+  const [editTags, setEditTags] = useState([]);
+  const [tagInput, setTagInput] = useState('');
 
   if (!template) return null;
   const da = template.deep_analysis;
+
+  const startEdit = () => {
+    setEditName(template.name || '');
+    setEditCategory(template.category || '');
+    setEditTags(Array.isArray(template.tags) ? [...template.tags] : []);
+    setTagInput('');
+    setEditing(true);
+  };
+
+  const cancelEdit = () => {
+    setEditing(false);
+    setTagInput('');
+  };
+
+  const handleSave = async () => {
+    if (!onUpdate) return;
+    setSaving(true);
+    try {
+      await onUpdate(template.id, {
+        name: editName.trim() || template.name,
+        category: editCategory,
+        tags: editTags,
+      });
+      setEditing(false);
+    } catch (err) {
+      console.error('Save failed:', err);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const addTag = () => {
+    const tag = tagInput.trim().toLowerCase();
+    if (tag && !editTags.includes(tag)) {
+      setEditTags([...editTags, tag]);
+    }
+    setTagInput('');
+  };
+
+  const removeTag = (tag) => {
+    setEditTags(editTags.filter(t => t !== tag));
+  };
+
+  const handleTagKeyDown = (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); addTag(); }
+    if (e.key === 'Backspace' && tagInput === '' && editTags.length > 0) {
+      setEditTags(editTags.slice(0, -1));
+    }
+  };
 
   const handleReanalyze = async () => {
     if (!onAnalyze) return;
@@ -210,7 +265,8 @@ function ReferenceLightbox({ template, onClose, onSelect, onAnalyze, onHide, onD
     'Native': 'bg-teal-600/20 text-teal-300 border-teal-500/30',
     "What's Inside": 'bg-fuchsia-600/20 text-fuchsia-300 border-fuchsia-500/30',
   };
-  const badgeClass = categoryColors[template.category] || 'bg-zinc-600/20 text-zinc-300 border-zinc-500/30';
+  const displayCategory = editing ? editCategory : template.category;
+  const badgeClass = categoryColors[displayCategory] || 'bg-zinc-600/20 text-zinc-300 border-zinc-500/30';
 
   return (
     <div
@@ -241,47 +297,140 @@ function ReferenceLightbox({ template, onClose, onSelect, onAnalyze, onHide, onD
           {/* Header */}
           <div className="flex items-start justify-between px-6 pt-5 pb-4">
             <div className="flex-1 min-w-0 pr-4">
-              <h3 className="text-base font-semibold text-white truncate">
-                {template.name || 'Reference Ad'}
-              </h3>
+              {editing ? (
+                <input
+                  type="text"
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  className="w-full text-base font-semibold text-white bg-white/[0.06] border border-white/[0.12] rounded-lg px-3 py-1.5 outline-none focus:border-accent/50 transition-colors"
+                  placeholder="Template name"
+                  autoFocus
+                />
+              ) : (
+                <h3 className="text-base font-semibold text-white truncate">
+                  {template.name || 'Reference Ad'}
+                </h3>
+              )}
             </div>
-            <button onClick={onClose} className="p-1 text-zinc-500 hover:text-white transition-colors cursor-pointer shrink-0">
-              <X className="w-5 h-5" />
-            </button>
+            <div className="flex items-center gap-1 shrink-0">
+              {!editing && onUpdate && (
+                <button
+                  onClick={startEdit}
+                  className="p-1.5 text-zinc-500 hover:text-accent transition-colors cursor-pointer"
+                  title="Edit template"
+                >
+                  <Pencil className="w-4 h-4" />
+                </button>
+              )}
+              <button onClick={() => { cancelEdit(); onClose(); }} className="p-1 text-zinc-500 hover:text-white transition-colors cursor-pointer">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
           </div>
 
           <div className="px-6 pb-6 space-y-5 flex-1">
             {/* Category */}
             <div>
               <p className="text-[11px] text-zinc-500 uppercase tracking-wider font-medium mb-2">Category</p>
-              <span className={`inline-flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-full border ${badgeClass}`}>
-                {template.category || 'Uncategorized'}
-              </span>
+              {editing ? (
+                <select
+                  value={editCategory}
+                  onChange={(e) => setEditCategory(e.target.value)}
+                  className="w-full text-sm text-white bg-white/[0.06] border border-white/[0.12] rounded-lg px-3 py-2 outline-none focus:border-accent/50 transition-colors cursor-pointer appearance-none"
+                >
+                  <option value="" className="bg-[#1a1a1a]">Uncategorized</option>
+                  {CATEGORIES.map((cat) => (
+                    <option key={cat} value={cat} className="bg-[#1a1a1a]">{cat}</option>
+                  ))}
+                </select>
+              ) : (
+                <span className={`inline-flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-full border ${badgeClass}`}>
+                  {template.category || 'Uncategorized'}
+                </span>
+              )}
             </div>
 
-            {/* Date Added */}
-            <div>
-              <p className="text-[11px] text-zinc-500 uppercase tracking-wider font-medium mb-1">Date Added</p>
-              <p className="text-sm text-zinc-300 flex items-center gap-1.5">
-                <Calendar className="w-3.5 h-3.5 text-zinc-500" />
-                {template.created_at
-                  ? new Date(template.created_at).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })
-                  : 'Unknown'}
-              </p>
-            </div>
+            {/* Tags (edit mode) or Date Added (view mode) */}
+            {editing ? (
+              <div>
+                <p className="text-[11px] text-zinc-500 uppercase tracking-wider font-medium mb-2">Tags</p>
+                <div className="flex flex-wrap gap-1.5 mb-2">
+                  {editTags.map((tag) => (
+                    <span
+                      key={tag}
+                      className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full bg-accent/10 text-accent border border-accent/20"
+                    >
+                      {tag}
+                      <button onClick={() => removeTag(tag)} className="hover:text-red-400 cursor-pointer">
+                        <X className="w-3 h-3" />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={tagInput}
+                    onChange={(e) => setTagInput(e.target.value)}
+                    onKeyDown={handleTagKeyDown}
+                    className="flex-1 text-sm text-white bg-white/[0.06] border border-white/[0.12] rounded-lg px-3 py-1.5 outline-none focus:border-accent/50 transition-colors"
+                    placeholder="Add a tag and press Enter"
+                  />
+                  <button
+                    onClick={addTag}
+                    disabled={!tagInput.trim()}
+                    className="px-3 py-1.5 text-xs font-medium bg-white/[0.06] text-zinc-400 hover:text-white hover:bg-white/[0.1] rounded-lg transition-colors cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <>
+                {/* Tags (view mode) */}
+                {Array.isArray(template.tags) && template.tags.length > 0 && (
+                  <div>
+                    <p className="text-[11px] text-zinc-500 uppercase tracking-wider font-medium mb-2">Tags</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {template.tags.map((tag) => (
+                        <span
+                          key={tag}
+                          className="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded-full bg-white/[0.06] text-zinc-400 border border-white/[0.04]"
+                        >
+                          {tag}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
 
-            {/* AI Analysis */}
+                {/* Date Added */}
+                <div>
+                  <p className="text-[11px] text-zinc-500 uppercase tracking-wider font-medium mb-1">Date Added</p>
+                  <p className="text-sm text-zinc-300 flex items-center gap-1.5">
+                    <Calendar className="w-3.5 h-3.5 text-zinc-500" />
+                    {template.created_at
+                      ? new Date(template.created_at).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })
+                      : 'Unknown'}
+                  </p>
+                </div>
+              </>
+            )}
+
+            {/* AI Analysis (always shown) */}
             <div>
               <div className="flex items-center justify-between mb-2">
                 <p className="text-[11px] text-zinc-500 uppercase tracking-wider font-medium">AI Analysis</p>
-                <button
-                  onClick={handleReanalyze}
-                  disabled={reanalyzing}
-                  className="flex items-center gap-1 text-[11px] text-purple-400 hover:text-purple-300 transition-colors cursor-pointer disabled:opacity-50"
-                >
-                  <RefreshCw className={`w-3 h-3 ${reanalyzing ? 'animate-spin' : ''}`} />
-                  {reanalyzing ? 'Analyzing...' : 'Re-analyze'}
-                </button>
+                {!editing && (
+                  <button
+                    onClick={handleReanalyze}
+                    disabled={reanalyzing}
+                    className="flex items-center gap-1 text-[11px] text-purple-400 hover:text-purple-300 transition-colors cursor-pointer disabled:opacity-50"
+                  >
+                    <RefreshCw className={`w-3 h-3 ${reanalyzing ? 'animate-spin' : ''}`} />
+                    {reanalyzing ? 'Analyzing...' : 'Re-analyze'}
+                  </button>
+                )}
               </div>
 
               {da ? (
@@ -351,37 +500,61 @@ function ReferenceLightbox({ template, onClose, onSelect, onAnalyze, onHide, onD
 
           {/* Footer actions */}
           <div className="px-6 py-4 border-t border-white/[0.06] flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              {onHide && (
+            {editing ? (
+              /* Edit mode footer */
+              <>
                 <button
-                  onClick={() => { onHide(template); onClose(); }}
+                  onClick={cancelEdit}
                   className="flex items-center gap-1.5 text-xs text-zinc-500 hover:text-zinc-300 transition-colors cursor-pointer"
                 >
-                  <EyeOff className="w-3.5 h-3.5" />
-                  Hide
+                  <XCircle className="w-3.5 h-3.5" />
+                  Cancel
                 </button>
-              )}
-              {onDelete && (
                 <button
-                  onClick={() => { onDelete(template); onClose(); }}
-                  className="flex items-center gap-1.5 text-xs text-red-500 hover:text-red-400 transition-colors cursor-pointer"
+                  onClick={handleSave}
+                  disabled={saving}
+                  className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold bg-accent text-white hover:bg-accent-hover transition-colors cursor-pointer disabled:opacity-50"
                 >
-                  <Trash2 className="w-3.5 h-3.5" />
-                  Delete
+                  <Save className="w-3.5 h-3.5" />
+                  {saving ? 'Saving...' : 'Save Changes'}
                 </button>
-              )}
-            </div>
+              </>
+            ) : (
+              /* View mode footer */
+              <>
+                <div className="flex items-center gap-3">
+                  {onHide && (
+                    <button
+                      onClick={() => { onHide(template); onClose(); }}
+                      className="flex items-center gap-1.5 text-xs text-zinc-500 hover:text-zinc-300 transition-colors cursor-pointer"
+                    >
+                      <EyeOff className="w-3.5 h-3.5" />
+                      Hide
+                    </button>
+                  )}
+                  {onDelete && (
+                    <button
+                      onClick={() => { onDelete(template); onClose(); }}
+                      className="flex items-center gap-1.5 text-xs text-red-500 hover:text-red-400 transition-colors cursor-pointer"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      Delete
+                    </button>
+                  )}
+                </div>
 
-            <div className="flex items-center gap-3">
-              <span className="text-[10px] text-zinc-600">ID #{template.id?.slice(-4) || '—'}</span>
-              <button
-                onClick={() => { onSelect(template); onClose(); }}
-                className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold bg-accent text-white hover:bg-accent-hover transition-colors cursor-pointer"
-              >
-                <Check className="w-3.5 h-3.5" />
-                Use as Reference
-              </button>
-            </div>
+                <div className="flex items-center gap-3">
+                  <span className="text-[10px] text-zinc-600">ID #{template.id?.slice(-4) || '—'}</span>
+                  <button
+                    onClick={() => { onSelect(template); onClose(); }}
+                    className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold bg-accent text-white hover:bg-accent-hover transition-colors cursor-pointer"
+                  >
+                    <Check className="w-3.5 h-3.5" />
+                    Use as Reference
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         </div>
       </div>
@@ -402,6 +575,7 @@ export function LibraryView({
   onAnalyzeTemplate,
   onAnalyzeAll,
   onDeleteTemplate,
+  onUpdateTemplate,
 }) {
   const [selectMode, setSelectMode] = useState(false);
   const [viewingTemplate, setViewingTemplate] = useState(null);
@@ -516,6 +690,7 @@ export function LibraryView({
         onSelect={onSelectTemplate}
         onAnalyze={onAnalyzeTemplate}
         onDelete={onDeleteTemplate}
+        onUpdate={onUpdateTemplate}
       />
     </div>
   );

@@ -2596,6 +2596,12 @@ export default function StaticsGeneration() {
               console.error('Delete failed:', err);
             }
           }}
+          onUpdateTemplate={async (templateId, updates) => {
+            const res = await api.put(`/statics-templates/${templateId}`, updates);
+            if (res.data?.success) {
+              setTemplates(prev => prev.map(t => t.id === templateId ? { ...t, ...res.data.data } : t));
+            }
+          }}
         />
       )}
 
