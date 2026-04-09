@@ -141,3 +141,88 @@ Be extremely precise with colors (use actual hex values from the image), positio
     throw new Error(`Template analysis failed: ${err.message}`);
   }
 }
+
+/**
+ * Fast analysis using Haiku vision — 10x cheaper, 3x faster than Sonnet.
+ * Same prompt & output format. Used for bulk "analyze all" operations.
+ */
+export async function analyzeTemplateFast(template) {
+  const imageUrl = template.image_url;
+  if (!imageUrl) throw new Error('Template has no image_url');
+
+  let fullImageUrl = imageUrl;
+  if (imageUrl.startsWith('/')) {
+    fullImageUrl = `${process.env.RENDER_EXTERNAL_URL || 'https://mineblock-dashboard.onrender.com'}${imageUrl}`;
+  }
+
+  let imageBase64, mediaType;
+  try {
+    const response = await fetch(fullImageUrl, { signal: AbortSignal.timeout(30000) });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const buffer = Buffer.from(await response.arrayBuffer());
+    imageBase64 = buffer.toString('base64');
+    mediaType = response.headers.get('content-type') || 'image/png';
+  } catch (err) {
+    throw new Error(`Could not fetch template image: ${err.message}`);
+  }
+
+  const analysisPrompt = `Analyze this ad template image. Return ONLY a JSON object (no markdown, no fences) with this structure:
+
+{
+  "template_type": "product-hero|lifestyle|text-only|testimonial|offer-sale|feature-benefit|comparison|before-after|ugc-style|editorial|minimal|collage",
+  "layout": {
+    "orientation": "portrait|landscape|square",
+    "grid_structure": "single-column|two-column|split-diagonal|centered|asymmetric|grid-2x2|freeform",
+    "visual_hierarchy": ["element1", "element2", "element3"],
+    "safe_zones": {
+      "product_zone": {"position": "center|left|right|top|bottom", "size_percent": 40},
+      "text_zones": [{"position": "top", "purpose": "headline", "size_percent": 15}],
+      "logo_zone": {"position": "top-left", "size_percent": 5},
+      "cta_zone": {"position": "bottom-center", "size_percent": 10}
+    }
+  },
+  "background": {"type": "solid|gradient|photo|pattern", "primary_color": "#hex", "secondary_color": "#hex or null", "complexity": "simple|moderate|complex"},
+  "typography": {
+    "headline": {"font_style": "bold-sans|serif|script|display", "color": "#hex", "text_content": "exact text"},
+    "subheadline": {"text_content": "exact text or null"},
+    "body_text": {"text_content": "exact text or null"},
+    "cta_text": {"text_content": "exact text or null", "style": "button|link|badge|none"},
+    "discount_code": {"text_content": "exact code or null"},
+    "total_text_elements": 5
+  },
+  "product_analysis": {"product_count": 0, "product_visible": true, "product_type": "physical-product|digital|service|none", "product_orientation": "front-facing|angled|top-down|none", "product_is_cutout": true, "reference_product_category": "category", "reference_product_keywords": ["keyword1"]},
+  "color_palette": {"dominant": "#hex", "accent": "#hex", "text_primary": "#hex", "text_secondary": "#hex", "overall_mood": "warm|cool|neutral|vibrant|muted|dark|light"},
+  "design_elements": {"has_border": false, "has_badge": false, "badge_text": "null or text", "has_icon": false, "decorative_elements": [], "shadow_effects": "none|subtle|heavy"},
+  "emotional_tone": "urgency|trust|luxury|playful|professional|bold|minimal|warm",
+  "target_audience": "general|tech-savvy|health-conscious|budget-shoppers|premium-buyers",
+  "summary": "2-3 sentences describing the ad strategy, structure, and why it works. Write in third person.",
+  "ad_effectiveness_notes": "Brief notes on what makes this ad effective",
+  "adaptation_instructions": {
+    "critical_elements_to_preserve": ["list"],
+    "elements_safe_to_modify": ["list"],
+    "text_replacement_strategy": "direct-swap|resize-to-fit|reflow",
+    "product_replacement_difficulty": "easy|medium|hard",
+    "product_replacement_notes": "notes",
+    "common_failure_modes": ["list"]
+  }
+}
+
+Be precise with hex colors and capture all visible text exactly.`;
+
+  const response = await anthropic.messages.create({
+    model: 'claude-haiku-4-5-20251001',
+    max_tokens: 3000,
+    messages: [{
+      role: 'user',
+      content: [
+        { type: 'image', source: { type: 'base64', media_type: mediaType, data: imageBase64 } },
+        { type: 'text', text: analysisPrompt },
+      ],
+    }],
+  });
+
+  const text = response.content[0]?.text || '';
+  const jsonMatch = text.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) throw new Error('No valid JSON in response');
+  return JSON.parse(jsonMatch[0]);
+}

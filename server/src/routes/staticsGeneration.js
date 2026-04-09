@@ -6,7 +6,7 @@ import { authenticate } from '../middleware/auth.js';
 import { uploadBuffer, isR2Configured } from '../services/r2.js';
 import { editImage, isGeminiConfigured, GEMINI_EDIT_MODEL } from '../services/geminiImageGen.js';
 import crypto from 'crypto';
-import { analyzeTemplate } from '../utils/templateAnalysis.js';
+import { analyzeTemplate, analyzeTemplateFast } from '../utils/templateAnalysis.js';
 import {
   isMetaAdsConfigured, createAdSet, createFlexibleAdCreative, createAd,
   uploadAdImageFromUrl, diagnoseMetaApp, switchAppToLiveMode
@@ -2300,40 +2300,63 @@ router.post('/templates/:id/analyze', authenticate, async (req, res) => {
 });
 
 // POST /statics/templates/analyze-all — Queue analysis for all stale/unanalyzed templates
+// Track bulk analysis progress
+let analyzeAllProgress = { running: false, total: 0, completed: 0, failed: 0, startedAt: null };
+
 router.post('/templates/analyze-all', authenticate, async (req, res) => {
   try {
+    if (analyzeAllProgress.running) {
+      return res.json({ success: true, queued: 0, message: `Already running: ${analyzeAllProgress.completed}/${analyzeAllProgress.total} complete`, progress: analyzeAllProgress });
+    }
+
     const rows = await pgQuery(
-      `SELECT * FROM statics_templates WHERE deep_analysis IS NULL OR analyzed_at < NOW() - INTERVAL '30 days'`,
+      `SELECT * FROM statics_templates WHERE is_hidden = false AND (deep_analysis IS NULL OR analyzed_at < NOW() - INTERVAL '30 days') ORDER BY created_at DESC`,
       []
     );
     if (rows.length === 0) return res.json({ success: true, queued: 0, message: 'All templates are up to date' });
     const count = rows.length;
-    // Process in background — batches of 3 concurrently
+
+    analyzeAllProgress = { running: true, total: count, completed: 0, failed: 0, startedAt: new Date().toISOString() };
+
+    // Process in background — batches of 5 concurrently, using fast Haiku model
     (async () => {
-      for (let i = 0; i < rows.length; i += 3) {
-        const batch = rows.slice(i, i + 3);
-        const results = await Promise.allSettled(
+      console.log(`[analyze-all] Starting bulk analysis: ${count} templates with Haiku vision`);
+      for (let i = 0; i < rows.length; i += 5) {
+        const batch = rows.slice(i, i + 5);
+        await Promise.allSettled(
           batch.map(async (template) => {
             try {
-              const analysis = await analyzeTemplate(template);
+              const analysis = await analyzeTemplateFast(template);
               await pgQuery(
                 'UPDATE statics_templates SET deep_analysis = $1, analyzed_at = NOW() WHERE id = $2',
                 [JSON.stringify(analysis), template.id]
               );
+              analyzeAllProgress.completed++;
             } catch (err) {
-              console.error(`[analyze-all] Failed for template ${template.id}:`, err.message);
+              analyzeAllProgress.failed++;
+              console.error(`[analyze-all] Failed ${template.id}: ${err.message}`);
             }
           })
         );
-        const failed = results.filter(r => r.status === 'rejected').length;
-        if (failed) console.warn(`[analyze-all] Batch had ${failed} rejections`);
+        // Progress log every 25 templates
+        if ((i + 5) % 25 < 5) {
+          console.log(`[analyze-all] Progress: ${analyzeAllProgress.completed + analyzeAllProgress.failed}/${count} (${analyzeAllProgress.completed} ok, ${analyzeAllProgress.failed} failed)`);
+        }
       }
-      console.log(`[analyze-all] Completed analysis for ${count} templates`);
+      console.log(`[analyze-all] Complete: ${analyzeAllProgress.completed}/${count} analyzed, ${analyzeAllProgress.failed} failed`);
+      analyzeAllProgress.running = false;
     })();
-    res.json({ success: true, queued: count, message: `Analysis started for ${count} templates` });
+
+    res.json({ success: true, queued: count, message: `Analysis started for ${count} templates (Haiku vision, batches of 5)` });
   } catch (err) {
+    analyzeAllProgress.running = false;
     res.status(500).json({ success: false, error: { message: err.message } });
   }
+});
+
+// GET /templates/analyze-all/status — Check bulk analysis progress
+router.get('/templates/analyze-all/status', authenticate, async (_req, res) => {
+  res.json({ success: true, progress: analyzeAllProgress });
 });
 
 // GET /statics/templates/:id/analysis — Get analysis for a template

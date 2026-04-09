@@ -3,7 +3,7 @@ import { pgQuery } from '../db/pg.js';
 import { authenticate } from '../middleware/auth.js';
 import { buildLayoutAnalysisPrompt } from '../utils/staticsPrompts.js';
 import { resolveImage } from '../utils/imageHelpers.js';
-import { analyzeTemplate } from '../utils/templateAnalysis.js';
+import { analyzeTemplate, analyzeTemplateFast } from '../utils/templateAnalysis.js';
 
 const router = Router();
 
@@ -200,9 +200,9 @@ router.post('/', authenticate, async (req, res) => {
     const created = rows[0];
     res.status(201).json({ success: true, data: created });
 
-    // Auto-analyze in background (don't block the response)
+    // Auto-analyze in background (don't block the response) — Haiku for speed
     if (created?.id && created?.image_url) {
-      analyzeTemplate(created).then(async (analysis) => {
+      analyzeTemplateFast(created).then(async (analysis) => {
         const updated = await pgQuery(
           `UPDATE statics_templates SET deep_analysis = $1, analyzed_at = NOW() WHERE id = $2 RETURNING id`,
           [JSON.stringify(analysis), created.id]
