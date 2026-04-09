@@ -363,6 +363,41 @@ router.get('/status', authenticate, async (req, res) => {
   }
 });
 
+/** GET /debug-ad/:adId — Inspect a specific ad's status and why it was/wasn't caught */
+router.get('/debug-ad/:adId', authenticate, async (req, res) => {
+  try {
+    const { adId } = req.params;
+    const fields = 'id,name,account_id,adset_id,campaign_id,effective_status,configured_status,ad_review_feedback,updated_time,created_time,adset{name,configured_status},campaign{name,configured_status,effective_status}';
+    const url = `${META_GRAPH_URL}/${adId}?fields=${fields}&access_token=${META_ACCESS_TOKEN}`;
+    const resp = await fetch(url);
+    const data = await resp.json();
+
+    // Check if this ad is in our notified table
+    await ensureTable();
+    const notified = await pgQuery('SELECT * FROM ad_rejections_notified WHERE ad_id = $1', [adId]);
+
+    // Check if the account is monitored
+    const accountId = data.account_id ? `act_${data.account_id}` : null;
+    const isMonitored = accountId && META_AD_ACCOUNT_IDS.includes(accountId);
+    const accountName = accountId ? ACCOUNT_NAMES[accountId] || 'UNKNOWN' : 'N/A';
+
+    res.json({
+      success: true,
+      ad: data,
+      debug: {
+        account_id_full: accountId,
+        account_name: accountName,
+        is_monitored: isMonitored,
+        monitored_accounts: META_AD_ACCOUNT_IDS,
+        in_notified_table: notified.length > 0,
+        notified_record: notified[0] || null,
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
 /** POST /check-now — Manually trigger a rejection check (also used by cron) */
 router.post('/check-now', authenticate, async (req, res) => {
   try {
