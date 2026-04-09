@@ -23,6 +23,7 @@ import {
 } from 'recharts';
 import api from '../../services/api';
 import DateRangePicker from '../../components/ui/DateRangePicker';
+import { toLocalDateStr } from '../../utils/dateUtils';
 
 const EDITOR_COLORS = [
   '#8b5cf6',
@@ -57,8 +58,8 @@ function getDefaultDates() {
   const start = new Date();
   start.setDate(start.getDate() - 7);
   return {
-    startDate: start.toISOString().split('T')[0],
-    endDate: end.toISOString().split('T')[0],
+    startDate: toLocalDateStr(start),
+    endDate: toLocalDateStr(end),
   };
 }
 

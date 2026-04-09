@@ -4,6 +4,7 @@ import FilterBar from '../../components/intel/FilterBar';
 import AdCard from '../../components/intel/AdCard';
 import AdDetailModal from '../../components/intel/AdDetailModal';
 import { generateMetaAds, languages, countries } from '../../utils/mockData';
+import { toLocalDateStr } from '../../utils/dateUtils';
 
 const initialAds = generateMetaAds(40);
 
@@ -56,7 +57,7 @@ export default function MetaDiscovery() {
       const now = Date.now();
       const days = { '7d': 7, '30d': 30, '90d': 90 }[filters.dateRange];
       if (days) {
-        const cutoff = new Date(now - days * 86400000).toISOString().split('T')[0];
+        const cutoff = toLocalDateStr(new Date(now - days * 86400000));
         result = result.filter((ad) => ad.firstSeen >= cutoff);
       }
     }

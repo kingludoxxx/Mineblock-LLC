@@ -5,6 +5,7 @@ import {
   Link2, Eye, Save, Megaphone, Globe, Clock, Calendar,
 } from 'lucide-react';
 import api from '../../../services/api';
+import { todayLocalStr } from '../../../utils/dateUtils';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -675,7 +676,7 @@ export default function LaunchTemplateEditor({ open, onClose, template, onSaved 
                       type="date"
                       value={form.scheduleDate}
                       onChange={set('scheduleDate')}
-                      min={new Date().toISOString().split('T')[0]}
+                      min={todayLocalStr()}
                     />
                   </div>
                   <div>

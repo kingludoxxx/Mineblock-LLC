@@ -3,6 +3,7 @@ import { Search as SearchIcon, Play, Image, Clock } from 'lucide-react';
 import FilterBar from '../../components/intel/FilterBar';
 import AdDetailModal from '../../components/intel/AdDetailModal';
 import { generateYouTubeAds, languages, countries } from '../../utils/mockData';
+import { toLocalDateStr } from '../../utils/dateUtils';
 import { Bookmark, UserPlus } from 'lucide-react';
 
 const initialAds = generateYouTubeAds(40);
@@ -138,7 +139,7 @@ export default function YouTubeDiscovery() {
     if (filters.dateRange !== 'all') {
       const days = { '7d': 7, '30d': 30, '90d': 90 }[filters.dateRange];
       if (days) {
-        const cutoff = new Date(Date.now() - days * 86400000).toISOString().split('T')[0];
+        const cutoff = toLocalDateStr(new Date(Date.now() - days * 86400000));
         result = result.filter((ad) => ad.firstSeen >= cutoff);
       }
     }

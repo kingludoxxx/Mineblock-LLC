@@ -3,6 +3,7 @@ import { UserPlus, Bell } from 'lucide-react';
 import AdCard from '../../components/intel/AdCard';
 import AdDetailModal from '../../components/intel/AdDetailModal';
 import { generateMetaAds } from '../../utils/mockData';
+import { toLocalDateStr } from '../../utils/dateUtils';
 
 // Simulate followed brands' ads
 const initialAds = generateMetaAds(30).map((ad) => ({ ...ad, following: true }));
@@ -16,7 +17,7 @@ export default function Following() {
   const filtered = useMemo(() => {
     let result = ads.filter((ad) => ad.following);
     if (viewMode === 'new') {
-      const weekAgo = new Date(Date.now() - 7 * 86400000).toISOString().split('T')[0];
+      const weekAgo = toLocalDateStr(new Date(Date.now() - 7 * 86400000));
       result = result.filter((ad) => ad.firstSeen >= weekAgo);
     }
     return result.sort((a, b) => b.firstSeen.localeCompare(a.firstSeen));

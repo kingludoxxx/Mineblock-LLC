@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { todayLocalStr } from '../../utils/dateUtils';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -9,7 +10,7 @@ const fmtMoney = (n) =>
     maximumFractionDigits: 2,
   });
 
-const todayStr = () => new Date().toISOString().slice(0, 10);
+const todayStr = todayLocalStr;
 
 const BASE_URL = '/api/v1/kpi-system/public/cost-sheet';
 

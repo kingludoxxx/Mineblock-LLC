@@ -9,6 +9,7 @@ import {
   Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
 } from 'recharts';
 import api from '../../services/api';
+import { toLocalDateStr } from '../../utils/dateUtils';
 
 // ── Formatters ────────────────────────────────────────────────────────
 
@@ -148,7 +149,7 @@ function RetentionChart({ insights, impressions: totalImpressions }) {
 // ── Date range helper (module scope) ─────────────────────────────────
 
 const rangeToDate = (range) => {
-  const fmt = (d) => d.toISOString().slice(0, 10);
+  const fmt = toLocalDateStr;
   const today = new Date();
   const sub = (days) => { const d = new Date(); d.setDate(d.getDate() - days); return d; };
   switch (range) {

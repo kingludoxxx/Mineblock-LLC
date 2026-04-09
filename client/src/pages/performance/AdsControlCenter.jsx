@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import api from '../../services/api';
 import DatePicker from '../../components/ui/DatePicker';
+import { toLocalDateStr, todayLocalStr } from '../../utils/dateUtils';
 import {
   Zap,
   RefreshCw,
@@ -41,7 +42,7 @@ const fmtPct = (n) => Number(n || 0).toFixed(1) + '%';
 
 const fmtInt = (n) => Number(n || 0).toLocaleString();
 
-const todayStr = () => new Date().toISOString().slice(0, 10);
+const todayStr = todayLocalStr;
 
 function timeAgo(date) {
   if (!date) return 'Never';
@@ -1064,7 +1065,7 @@ export default function AdsControlCenter() {
 
   const activeRulesCount = rules.filter((r) => r.enabled).length;
   const todayActivity = activity.filter(
-    (a) => new Date(a.created_at).toISOString().slice(0, 10) === todayStr(),
+    (a) => toLocalDateStr(new Date(a.created_at)) === todayStr(),
   );
   const actionsToday = todayActivity.length;
   const pausedToday = todayActivity.filter((a) => a.action === 'pause_ad').length;

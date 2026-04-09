@@ -9,6 +9,7 @@ import {
   Percent,
 } from 'lucide-react';
 import DatePicker from '../../components/ui/DatePicker';
+import { todayLocalStr } from '../../utils/dateUtils';
 import {
   ResponsiveContainer,
   BarChart,
@@ -35,7 +36,7 @@ const fmtPct = (n) => Number(n || 0).toFixed(2) + '%';
 
 const fmtInt = (n) => Number(n || 0).toLocaleString();
 
-const todayStr = () => new Date().toISOString().slice(0, 10);
+const todayStr = todayLocalStr;
 
 const cardStyle = 'bg-[#111] border border-white/[0.06] rounded-xl p-5';
 

@@ -12,6 +12,7 @@ import {
   ShoppingCart,
 } from 'lucide-react';
 import DatePicker from '../../components/ui/DatePicker';
+import { todayLocalStr } from '../../utils/dateUtils';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -24,7 +25,7 @@ const fmtMoney = (n) =>
 
 const fmtInt = (n) => Number(n || 0).toLocaleString();
 
-const todayStr = () => new Date().toISOString().slice(0, 10);
+const todayStr = todayLocalStr;
 
 const cardStyle = 'bg-[#111] border border-white/[0.06] rounded-xl p-5';
 

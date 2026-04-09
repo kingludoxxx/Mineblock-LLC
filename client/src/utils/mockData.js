@@ -1,4 +1,5 @@
 // Mock data for Intel section
+import { toLocalDateStr } from './dateUtils';
 
 const brands = [
   { id: 'b1', name: 'Nike', avatar: null, domain: 'nike.com', adCount: 1243 },
@@ -50,7 +51,7 @@ function randomFrom(arr) {
 function randomDate(daysBack = 90) {
   const d = new Date();
   d.setDate(d.getDate() - Math.floor(Math.random() * daysBack));
-  return d.toISOString().split('T')[0];
+  return toLocalDateStr(d);
 }
 
 function randomSubset(arr, min = 1, max = 3) {

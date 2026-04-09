@@ -13,6 +13,7 @@ import {
   BarChart3,
 } from 'lucide-react';
 import DatePicker from '../../components/ui/DatePicker';
+import { toLocalDateStr, todayLocalStr } from '../../utils/dateUtils';
 import {
   ResponsiveContainer,
   ComposedChart,
@@ -38,7 +39,7 @@ const fmtPct = (n) => Number(n || 0).toFixed(1) + '%';
 
 const fmtInt = (n) => Number(n || 0).toLocaleString();
 
-const todayStr = () => new Date().toISOString().slice(0, 10);
+const todayStr = todayLocalStr;
 
 const cardStyle = 'bg-[#111] border border-white/[0.06] rounded-xl p-5';
 
@@ -149,11 +150,11 @@ export default function KpiDashboard() {
       if (period === 'weekly') {
         const s = new Date(d);
         s.setDate(s.getDate() - 6);
-        startDate = s.toISOString().slice(0, 10);
+        startDate = toLocalDateStr(s);
       } else if (period === 'monthly') {
         const s = new Date(d);
         s.setDate(s.getDate() - 29);
-        startDate = s.toISOString().slice(0, 10);
+        startDate = toLocalDateStr(s);
       }
 
       const safeGet = (url, opts) => api.get(url, opts).catch(() => ({ data: {} }));
