@@ -206,7 +206,11 @@ function ReferenceLightbox({ template, onClose, onSelect, onAnalyze, onHide, onD
   }
 
   if (!template) return null;
-  const da = template.deep_analysis;
+  // deep_analysis may come as a JSON string from the API — parse it safely
+  let da = template.deep_analysis;
+  if (typeof da === 'string') {
+    try { da = JSON.parse(da); } catch { da = null; }
+  }
   const templateTags = parseTags(template.tags);
 
   const startEdit = () => {
