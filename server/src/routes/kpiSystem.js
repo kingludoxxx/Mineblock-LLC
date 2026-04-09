@@ -1218,17 +1218,28 @@ router.post('/sync', authenticate, async (req, res) => {
   }
 });
 
-/** GET /home-dashboard — Main dashboard overview with sparklines + day-over-day comparison */
+/** GET /home-dashboard — Main dashboard overview with sparklines + day-over-day comparison
+ *  Accepts ?date=YYYY-MM-DD (single day, legacy) OR ?startDate=YYYY-MM-DD&endDate=YYYY-MM-DD (range)
+ *  When range is provided, KPI cards show aggregated totals and comparison is vs same-length prior period */
 router.get('/home-dashboard', authenticate, async (req, res) => {
   try {
     await ensureTables();
-    const dateStr = req.query.date || new Date().toISOString().slice(0, 10);
 
-    // 30-day window for chart + 7-day sparklines
-    const endDate = dateStr;
-    const sd = new Date(dateStr + 'T00:00:00Z');
-    sd.setUTCDate(sd.getUTCDate() - 30);
+    // Support both single date (legacy) and date range
+    const rangeEnd = req.query.endDate || req.query.date || new Date().toISOString().slice(0, 10);
+    const rangeStart = req.query.startDate || rangeEnd; // default to single day
+
+    // Compute range length in days
+    const rangeStartMs = new Date(rangeStart + 'T00:00:00Z').getTime();
+    const rangeEndMs = new Date(rangeEnd + 'T00:00:00Z').getTime();
+    const rangeDays = Math.round((rangeEndMs - rangeStartMs) / 86400000) + 1;
+
+    // Fetch enough data for: chart (range + 30 extra days before for context), plus comparison period
+    const chartPadding = Math.max(30, rangeDays);
+    const sd = new Date(rangeStart + 'T00:00:00Z');
+    sd.setUTCDate(sd.getUTCDate() - chartPadding);
     const startDate = sd.toISOString().slice(0, 10);
+    const endDate = rangeEnd;
 
     // Parallel: snapshots, fees, Meta spend cache, TripleWhale fallback
     const [snapshots, feeRows, metaSpendRows, twSpendRows] = await Promise.all([
@@ -1289,33 +1300,61 @@ router.get('/home-dashboard', authenticate, async (req, res) => {
       return { date: d, revenue, adSpend, roas, orders, aov, costs, cogs, shipping, fees, profit, netMargin, conversionRate };
     }
 
-    // Build daily metrics for all 31 days (fill gaps with zeros)
+    // Build daily metrics for the full fetched window
     const allDays = [];
-    for (let i = 0; i <= 30; i++) {
-      const dt = new Date(startDate + 'T00:00:00Z');
-      dt.setUTCDate(dt.getUTCDate() + i);
+    const fetchStart = new Date(startDate + 'T00:00:00Z');
+    const fetchEnd = new Date(endDate + 'T00:00:00Z');
+    for (let dt = new Date(fetchStart); dt <= fetchEnd; dt.setUTCDate(dt.getUTCDate() + 1)) {
       allDays.push(dt.toISOString().slice(0, 10));
     }
     const dailyMetrics = allDays.map(d => metricsForDate(d));
 
-    // Current = exact match for selected date
-    const current = dailyMetrics.find(m => m.date === dateStr) || null;
+    // Aggregate helper: sum/average metrics across a set of daily metrics
+    function aggregateMetrics(days) {
+      if (!days.length) return null;
+      const sum = (k) => days.reduce((s, d) => s + (d[k] || 0), 0);
+      const revenue = sum('revenue');
+      const adSpend = sum('adSpend');
+      const orders = sum('orders');
+      const costs = sum('costs');
+      const cogs = sum('cogs');
+      const shipping = sum('shipping');
+      const fees = sum('fees');
+      const profit = revenue - costs;
+      const netMargin = revenue > 0 ? Math.round((profit / revenue) * 10000) / 100 : 0;
+      const aov = orders > 0 ? Math.round((revenue / orders) * 100) / 100 : 0;
+      const roas = adSpend > 0 ? Math.round((revenue / adSpend) * 100) / 100 : 0;
+      const totalClicks = days.reduce((s, d) => s + (d.clicks || 0), 0);
+      const conversionRate = (totalClicks > 0 && orders > 0) ? Math.round((orders / totalClicks) * 10000) / 100 : null;
+      return { revenue, adSpend, roas, orders, aov, costs, cogs, shipping, fees, profit, netMargin, conversionRate };
+    }
 
-    // Previous = day before selected date
-    const prevDate = new Date(dateStr + 'T00:00:00Z');
-    prevDate.setUTCDate(prevDate.getUTCDate() - 1);
-    const prevDateStr = prevDate.toISOString().slice(0, 10);
-    const previous = dailyMetrics.find(m => m.date === prevDateStr) || null;
+    // Current period = selected range
+    const currentDays = dailyMetrics.filter(m => m.date >= rangeStart && m.date <= rangeEnd);
+    const current = aggregateMetrics(currentDays);
 
-    // Sparklines = last 7 entries before selected date (for KPI card mini-charts)
-    const sparklines = dailyMetrics.slice(-8, -1);
+    // Previous period = same length range immediately before
+    const prevEnd = new Date(rangeStart + 'T00:00:00Z');
+    prevEnd.setUTCDate(prevEnd.getUTCDate() - 1);
+    const prevStart = new Date(prevEnd);
+    prevStart.setUTCDate(prevStart.getUTCDate() - rangeDays + 1);
+    const prevStartStr = prevStart.toISOString().slice(0, 10);
+    const prevEndStr = prevEnd.toISOString().slice(0, 10);
+    const prevDays = dailyMetrics.filter(m => m.date >= prevStartStr && m.date <= prevEndStr);
+    const previous = aggregateMetrics(prevDays);
 
-    // Chart data = full 30 days (for Revenue Overview chart)
-    const chartData = dailyMetrics.slice(0, 30);
+    // Sparklines = daily metrics within the selected range (for KPI card mini-charts)
+    const sparklines = currentDays;
+
+    // Chart data = daily metrics in range (for Revenue Overview chart)
+    const chartData = currentDays;
+
+    // Daily breakdown = last day in range (for the Daily Breakdown panel)
+    const latestDay = currentDays[currentDays.length - 1] || null;
 
     res.json({
       success: true,
-      data: { current, previous, sparklines, chartData },
+      data: { current, previous, sparklines, chartData, dailyBreakdown: latestDay, dateRange: { startDate: rangeStart, endDate: rangeEnd, days: rangeDays } },
     });
   } catch (err) {
     console.error('[KPI] home-dashboard error:', err);

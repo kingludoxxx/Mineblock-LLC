@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useId } from 'react';
 import api from '../services/api';
-import DatePicker from '../components/ui/DatePicker';
+import DateRangePicker from '../components/ui/DateRangePicker';
 import {
   DollarSign,
   TrendingUp,
@@ -13,7 +13,6 @@ import {
   Megaphone,
   ArrowUpRight,
   ArrowDownRight,
-  Calendar,
   ChevronDown,
 } from 'lucide-react';
 import {
@@ -315,16 +314,22 @@ function DailyBreakdown({ current, date }) {
 // ── Main Dashboard ──────────────────────────────────────────────────────────
 
 export default function Dashboard() {
-  const [date, setDate] = useState(todayStr());
+  const [startDate, setStartDate] = useState(todayStr());
+  const [endDate, setEndDate] = useState(todayStr());
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+
+  const handleDateChange = useCallback(({ startDate: sd, endDate: ed }) => {
+    setStartDate(sd);
+    setEndDate(ed);
+  }, []);
 
   const fetchDashboard = useCallback(async (showLoading = true) => {
     if (showLoading) setLoading(true);
     setError(null);
     try {
-      const res = await api.get('/kpi-system/home-dashboard', { params: { date } });
+      const res = await api.get('/kpi-system/home-dashboard', { params: { startDate, endDate } });
       setData(res.data?.data || null);
     } catch (err) {
       console.error('[Dashboard] fetch error:', err);
@@ -332,7 +337,7 @@ export default function Dashboard() {
     } finally {
       setLoading(false);
     }
-  }, [date]);
+  }, [startDate, endDate]);
 
   useEffect(() => { fetchDashboard(true); }, [fetchDashboard]);
   useEffect(() => {
@@ -367,7 +372,7 @@ export default function Dashboard() {
               <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
               <span className="text-xs font-medium text-emerald-400">Live</span>
             </div>
-            <DatePicker value={date} onChange={setDate} period="daily" />
+            <DateRangePicker startDate={startDate} endDate={endDate} onChange={handleDateChange} />
           </div>
         </div>
 
@@ -422,7 +427,7 @@ export default function Dashboard() {
         </div>
 
         {/* Daily Breakdown */}
-        {!loading && <DailyBreakdown current={current} date={date} />}
+        {!loading && <DailyBreakdown current={current} date={startDate === endDate ? endDate : `${startDate} – ${endDate}`} />}
 
         {/* Revenue Overview Chart */}
         {!loading && chartData.length > 0 && (
