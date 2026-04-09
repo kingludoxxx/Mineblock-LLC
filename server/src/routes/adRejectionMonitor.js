@@ -35,7 +35,95 @@ async function ensureTable() {
   await pgQuery(`
     ALTER TABLE ad_rejections_notified ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'DISAPPROVED'
   `).catch(() => {});
+
+  // Rejection history log — every rejected ad seen in polling, even if auto-resolved later
+  await pgQuery(`
+    CREATE TABLE IF NOT EXISTS ad_rejection_history (
+      id SERIAL PRIMARY KEY,
+      ad_id TEXT NOT NULL,
+      ad_name TEXT,
+      account_id TEXT,
+      status TEXT,
+      seen_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+  await pgQuery(`CREATE INDEX IF NOT EXISTS idx_ad_rejection_history_ad_id ON ad_rejection_history(ad_id)`).catch(() => {});
+  await pgQuery(`CREATE INDEX IF NOT EXISTS idx_ad_rejection_history_seen_at ON ad_rejection_history(seen_at DESC)`).catch(() => {});
+
   tableReady = true;
+}
+
+// Extract the brief number (e.g., "B0136") from an ad name
+function extractBriefNumber(adName) {
+  if (!adName) return null;
+  const match = adName.match(/\bB\d{3,5}\b/);
+  return match ? match[0] : null;
+}
+
+// Check all sibling hook variants of a rejected ad (same brief number) and notify if rejected
+async function checkSiblingAds(briefNumber, sourceAccountId, sourceAccountName) {
+  if (!briefNumber) return 0;
+  let sibRejections = 0;
+  try {
+    for (const accountId of META_AD_ACCOUNT_IDS) {
+      const accountName = ACCOUNT_NAMES[accountId] || accountId;
+      const filter = encodeURIComponent(JSON.stringify([{ field: 'name', operator: 'CONTAIN', value: briefNumber }]));
+      const url = `${META_GRAPH_URL}/${accountId}/ads?fields=id,name,effective_status,configured_status&filtering=${filter}&limit=50&access_token=${META_ACCESS_TOKEN}`;
+      const resp = await fetch(url);
+      const data = await resp.json();
+      if (data.error || !data.data) continue;
+
+      for (const ad of data.data) {
+        const status = ad.effective_status;
+        if (status !== 'DISAPPROVED' && status !== 'WITH_ISSUES') continue;
+        if (ad.configured_status === 'ARCHIVED') continue;
+
+        // Skip if already notified for this status
+        const existing = await pgQuery(
+          'SELECT status FROM ad_rejections_notified WHERE ad_id = $1',
+          [ad.id]
+        );
+        if (existing.length > 0) {
+          if (!(existing[0].status === 'WITH_ISSUES' && status === 'DISAPPROVED')) continue;
+          await pgQuery('DELETE FROM ad_rejections_notified WHERE ad_id = $1', [ad.id]);
+        }
+
+        const statusLabel = status === 'WITH_ISSUES' ? 'Ad Rejected (With Issues)' : 'Ad Rejected';
+        const blocks = [
+          { type: 'header', text: { type: 'plain_text', text: `:no_entry: ${statusLabel} (Sibling)`, emoji: true } },
+          { type: 'section', fields: [
+            { type: 'mrkdwn', text: `*Ad Name:*\n${ad.name}` },
+            { type: 'mrkdwn', text: `*Ad Account:*\n${accountName}` },
+          ]},
+          { type: 'section', fields: [
+            { type: 'mrkdwn', text: `*Ad ID:*\n\`${ad.id}\`` },
+            { type: 'mrkdwn', text: `*Status:*\n${status}` },
+          ]},
+          { type: 'context', elements: [
+            { type: 'mrkdwn', text: `:link: _Found via sibling check of ${briefNumber}_` },
+          ]},
+          { type: 'divider' },
+        ];
+
+        const slackResult = await sendSlackMessage(`${statusLabel} (sibling): ${ad.name} (${accountName})`, blocks);
+        if (slackResult?.ok) {
+          await pgQuery(
+            'INSERT INTO ad_rejections_notified (ad_id, ad_name, account_id, status) VALUES ($1, $2, $3, $4) ON CONFLICT (ad_id) DO UPDATE SET status = $4, notified_at = NOW()',
+            [ad.id, ad.name, accountId, status]
+          );
+          await pgQuery(
+            'INSERT INTO ad_rejection_history (ad_id, ad_name, account_id, status) VALUES ($1, $2, $3, $4)',
+            [ad.id, ad.name, accountId, status]
+          ).catch(() => {});
+          sibRejections++;
+          console.log(`[Ad Rejection] Sibling detected: "${ad.name}" [${status}] from ${accountName} (via ${briefNumber})`);
+        }
+      }
+    }
+  } catch (err) {
+    console.warn(`[Ad Rejection] Sibling check error for ${briefNumber}:`, err.message);
+  }
+  return sibRejections;
 }
 
 // ── Slack Helper ────────────────────────────────────────────────────
@@ -158,8 +246,26 @@ async function processAdsForAccount(accountId, accountName) {
         'INSERT INTO ad_rejections_notified (ad_id, ad_name, account_id, status) VALUES ($1, $2, $3, $4) ON CONFLICT (ad_id) DO UPDATE SET status = $4, notified_at = NOW()',
         [ad.id, adName, accountId, status]
       );
+      // Log to history (audit trail)
+      await pgQuery(
+        'INSERT INTO ad_rejection_history (ad_id, ad_name, account_id, status) VALUES ($1, $2, $3, $4)',
+        [ad.id, adName, accountId, status]
+      ).catch(() => {});
       newRejections++;
       console.log(`[Ad Rejection] Notified: "${adName}" [${status}] from ${accountName}`);
+
+      // SIBLING AUTO-CHECK: when an ad is rejected, check all sibling hook variants
+      // (same brief number) across ALL accounts for rejection too. Catches batch
+      // rejections where Meta rejects multiple hook variants but only some appear
+      // in the main filter query.
+      const briefNumber = extractBriefNumber(adName);
+      if (briefNumber) {
+        const siblingCount = await checkSiblingAds(briefNumber, accountId, accountName);
+        if (siblingCount > 0) {
+          console.log(`[Ad Rejection] Sibling check for ${briefNumber} found ${siblingCount} additional rejected variants`);
+          newRejections += siblingCount;
+        }
+      }
     } else {
       console.error(`[Ad Rejection] Slack failed for "${adName}" — will retry next cycle`);
     }
@@ -495,11 +601,12 @@ setInterval(async () => {
   try { await fetch(`${RENDER_URL}/api/health`); } catch {}
 }, 5 * 60 * 1000); // FIX #4: Every 5 min instead of 10 to prevent sleep
 
-// ── Poll every 10 minutes with staggered account checks ────────────
+// ── Poll every 3 minutes with staggered account checks ────────────
 // Webhook (metaWebhook.js) handles real-time; this is the safety net
+// 3 min catches brief "flash" rejections that auto-resolve before a 10-min poll
 setTimeout(() => {
   checkRejectedAds().catch(err => console.warn('[Ad Rejection] Initial check error:', err.message));
-  setInterval(() => checkRejectedAds().catch(() => {}), 10 * 60 * 1000);
+  setInterval(() => checkRejectedAds().catch(() => {}), 3 * 60 * 1000);
 }, 45_000);
 
 // ── FIX #3: Clean up resolved ads every hour ────────────────────────

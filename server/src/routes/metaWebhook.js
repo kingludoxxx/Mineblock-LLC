@@ -31,7 +31,58 @@ async function ensureTable() {
     )
   `);
   await pgQuery(`ALTER TABLE ad_rejections_notified ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'DISAPPROVED'`).catch(() => {});
+  await pgQuery(`
+    CREATE TABLE IF NOT EXISTS ad_rejection_history (
+      id SERIAL PRIMARY KEY,
+      ad_id TEXT NOT NULL,
+      ad_name TEXT,
+      account_id TEXT,
+      status TEXT,
+      seen_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `).catch(() => {});
   tableReady = true;
+}
+
+// Extract brief number from ad name (e.g., "B0136")
+function extractBriefNumber(adName) {
+  if (!adName) return null;
+  const match = adName.match(/\bB\d{3,5}\b/);
+  return match ? match[0] : null;
+}
+
+// Check sibling hook variants of a rejected ad across all accounts
+async function checkSiblingAdsWebhook(briefNumber) {
+  if (!briefNumber) return 0;
+  let count = 0;
+  try {
+    for (const accountId of Object.keys(ACCOUNT_NAMES)) {
+      const accountName = ACCOUNT_NAMES[accountId];
+      const filter = encodeURIComponent(JSON.stringify([{ field: 'name', operator: 'CONTAIN', value: briefNumber }]));
+      const url = `${META_GRAPH_URL}/${accountId}/ads?fields=id,name,effective_status,configured_status&filtering=${filter}&limit=50&access_token=${META_ACCESS_TOKEN}`;
+      const resp = await fetch(url);
+      const data = await resp.json();
+      if (data.error || !data.data) continue;
+
+      for (const ad of data.data) {
+        const status = ad.effective_status;
+        if (status !== 'DISAPPROVED' && status !== 'WITH_ISSUES') continue;
+        if (ad.configured_status === 'ARCHIVED') continue;
+
+        const existing = await pgQuery('SELECT status FROM ad_rejections_notified WHERE ad_id = $1', [ad.id]);
+        if (existing.length > 0) {
+          if (!(existing[0].status === 'WITH_ISSUES' && status === 'DISAPPROVED')) continue;
+          await pgQuery('DELETE FROM ad_rejections_notified WHERE ad_id = $1', [ad.id]);
+        }
+
+        await sendRejectionNotification(ad.id, ad.name, accountName, status, accountId);
+        count++;
+      }
+    }
+  } catch (err) {
+    console.warn(`[Meta Webhook] Sibling check error:`, err.message);
+  }
+  return count;
 }
 
 // ── Slack Helper ────────────────────────────────────────────────────
@@ -243,7 +294,21 @@ async function sendRejectionNotification(adId, adName, accountName, status, acco
       'INSERT INTO ad_rejections_notified (ad_id, ad_name, account_id, status) VALUES ($1, $2, $3, $4) ON CONFLICT (ad_id) DO UPDATE SET status = $4, notified_at = NOW()',
       [String(adId), adName, accountId, status]
     );
+    // Log to history (audit trail)
+    await pgQuery(
+      'INSERT INTO ad_rejection_history (ad_id, ad_name, account_id, status) VALUES ($1, $2, $3, $4)',
+      [String(adId), adName, accountId, status]
+    ).catch(() => {});
     console.log(`[Meta Webhook] Notified: "${adName}" [${status}] from ${accountName}`);
+
+    // SIBLING AUTO-CHECK: find other hook variants (same brief) that are also rejected
+    const briefNumber = extractBriefNumber(adName);
+    if (briefNumber) {
+      const siblingCount = await checkSiblingAdsWebhook(briefNumber);
+      if (siblingCount > 0) {
+        console.log(`[Meta Webhook] Sibling check for ${briefNumber} found ${siblingCount} additional rejected variants`);
+      }
+    }
   } else {
     console.error(`[Meta Webhook] Slack failed for "${adName}" — will be caught by polling monitor`);
   }
