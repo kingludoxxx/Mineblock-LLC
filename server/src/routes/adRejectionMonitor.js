@@ -398,6 +398,52 @@ router.get('/debug-ad/:adId', authenticate, async (req, res) => {
   }
 });
 
+/** GET /search-by-name/:name — Find ALL ads matching a name pattern across all monitored accounts */
+router.get('/search-by-name/:name', authenticate, async (req, res) => {
+  try {
+    const { name } = req.params;
+    const results = [];
+    await ensureTable();
+
+    for (const accountId of META_AD_ACCOUNT_IDS) {
+      const accountName = ACCOUNT_NAMES[accountId] || accountId;
+      // Use filtering to find ads with the name pattern
+      const filter = encodeURIComponent(JSON.stringify([{ field: 'name', operator: 'CONTAIN', value: name }]));
+      const url = `${META_GRAPH_URL}/${accountId}/ads?fields=id,name,effective_status,configured_status,updated_time,created_time&filtering=${filter}&limit=100&access_token=${META_ACCESS_TOKEN}`;
+
+      try {
+        const resp = await fetch(url);
+        const data = await resp.json();
+        if (data.error) {
+          results.push({ account: accountName, error: data.error.message });
+          continue;
+        }
+        for (const ad of (data.data || [])) {
+          const notified = await pgQuery('SELECT status, notified_at FROM ad_rejections_notified WHERE ad_id = $1', [ad.id]);
+          results.push({
+            account: accountName,
+            id: ad.id,
+            name: ad.name,
+            effective_status: ad.effective_status,
+            configured_status: ad.configured_status,
+            created_time: ad.created_time,
+            updated_time: ad.updated_time,
+            in_notified_table: notified.length > 0,
+            notified_status: notified[0]?.status || null,
+            notified_at: notified[0]?.notified_at || null,
+          });
+        }
+      } catch (err) {
+        results.push({ account: accountName, error: err.message });
+      }
+    }
+
+    res.json({ success: true, total: results.length, ads: results });
+  } catch (err) {
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
 /** POST /check-now — Manually trigger a rejection check (also used by cron) */
 router.post('/check-now', authenticate, async (req, res) => {
   try {
