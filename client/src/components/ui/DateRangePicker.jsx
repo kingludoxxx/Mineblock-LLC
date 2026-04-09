@@ -13,7 +13,12 @@ const PRESETS = [
 ];
 
 function toDateStr(d) {
-  return d.toISOString().split('T')[0];
+  // Use local date components — toISOString() converts to UTC which shifts the
+  // date by one day in positive-UTC-offset timezones (e.g. Europe/Berlin).
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
 }
 
 function parseDate(str) {

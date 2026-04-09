@@ -28,7 +28,12 @@ import {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-const todayStr = () => new Date().toISOString().slice(0, 10);
+const todayStr = () => {
+  // Use local date components — toISOString() returns UTC, which can be a day
+  // behind the user's local date (e.g. early-morning Europe/Berlin).
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
 
 const fmtMoneyFull = (n) =>
   '$' + Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
