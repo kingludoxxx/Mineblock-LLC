@@ -367,7 +367,7 @@ router.get('/status', authenticate, async (req, res) => {
 router.get('/debug-ad/:adId', authenticate, async (req, res) => {
   try {
     const { adId } = req.params;
-    const fields = 'id,name,account_id,adset_id,campaign_id,effective_status,configured_status,ad_review_feedback,updated_time,created_time,adset{name,configured_status},campaign{name,configured_status,effective_status}';
+    const fields = 'id,name,account_id,adset_id,campaign_id,effective_status,configured_status,ad_review_feedback,issues_info,recommendations,updated_time,created_time,adset{name,configured_status},campaign{name,configured_status,effective_status}';
     const url = `${META_GRAPH_URL}/${adId}?fields=${fields}&access_token=${META_ACCESS_TOKEN}`;
     const resp = await fetch(url);
     const data = await resp.json();
