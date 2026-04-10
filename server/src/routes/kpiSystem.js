@@ -1301,6 +1301,7 @@ router.get('/home-dashboard', authenticate, async (req, res) => {
       const shipping = s ? parseFloat(s.total_shipping || 0) : 0;
       const fees = feeLookup[d] || 0;
       const orders = s ? parseInt(s.total_orders || 0) : 0;
+      const refunds = s ? parseInt(s.refund_count || 0) : 0;
       const adSpend = spendLookup[d] || 0;
       const costs = cogs + shipping + fees + adSpend;
       const profit = revenue - costs;
@@ -1312,7 +1313,7 @@ router.get('/home-dashboard', authenticate, async (req, res) => {
       const conversionRate = (clicks > 0 && orders > 0)
         ? Math.round((orders / clicks) * 10000) / 100
         : null;
-      return { date: d, revenue, adSpend, roas, orders, aov, costs, cogs, shipping, fees, profit, netMargin, conversionRate, clicks };
+      return { date: d, revenue, adSpend, roas, orders, aov, costs, cogs, shipping, fees, profit, netMargin, conversionRate, clicks, refunds };
     }
 
     // Build daily metrics for the full fetched window
@@ -1340,8 +1341,9 @@ router.get('/home-dashboard', authenticate, async (req, res) => {
       const aov = orders > 0 ? Math.round((revenue / orders) * 100) / 100 : 0;
       const roas = adSpend > 0 ? Math.round((revenue / adSpend) * 100) / 100 : 0;
       const totalClicks = days.reduce((s, d) => s + (d.clicks || 0), 0);
+      const refunds = sum('refunds');
       const conversionRate = (totalClicks > 0 && orders > 0) ? Math.round((orders / totalClicks) * 10000) / 100 : null;
-      return { revenue, adSpend, roas, orders, aov, costs, cogs, shipping, fees, profit, netMargin, conversionRate };
+      return { revenue, adSpend, roas, orders, aov, costs, cogs, shipping, fees, profit, netMargin, conversionRate, refunds };
     }
 
     // Current period = selected range

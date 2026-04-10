@@ -11,6 +11,7 @@ import {
   Percent,
   Target,
   Megaphone,
+  RotateCcw,
   ArrowUpRight,
   ArrowDownRight,
   ChevronDown,
@@ -54,6 +55,7 @@ const METRICS = [
   { key: 'profit',         label: 'Profit',           icon: Gem,           color: '#10b981', format: 'moneyFull' },
   { key: 'netMargin',      label: 'Net Margin',       icon: Percent,       color: '#a855f7', format: 'pct' },
   { key: 'conversionRate', label: 'Conversion Rate',  icon: Target,        color: '#ec4899', format: 'pct' },
+  { key: 'refunds',        label: 'Refunds',           icon: RotateCcw,     color: '#ef4444', format: 'int', invertColor: true },
 ];
 
 const formatValue = (val, format) => {
