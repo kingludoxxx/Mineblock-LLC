@@ -1270,19 +1270,20 @@ router.get('/home-dashboard', authenticate, async (req, res) => {
       feeLookup[d] = parseFloat(r.total_fees || 0);
     }
 
-    // Build ad spend lookup: TripleWhale first (fallback), then Meta overwrites (primary)
+    // Build ad spend lookup: Meta first (fallback), then TripleWhale overwrites (primary)
+    // TW includes ALL ad platforms (Meta + Google + TikTok etc.), Meta is single-platform only
     const spendLookup = {};
     const clicksLookup = {};
     const metaPurchasesLookup = {};
-    for (const r of twSpendRows) {
-      if (r.spend > 0) spendLookup[r.date] = r.spend;
-    }
     for (const r of metaSpendRows) {
       const d = typeof r.date === 'string' ? r.date.slice(0, 10) : new Date(r.date).toISOString().slice(0, 10);
       const spend = parseFloat(r.spend || 0);
-      if (spend > 0) spendLookup[d] = spend; // Meta is primary source
+      if (spend > 0) spendLookup[d] = spend; // Meta as fallback
       clicksLookup[d] = parseInt(r.clicks || 0);
       metaPurchasesLookup[d] = parseInt(r.meta_purchases || 0);
+    }
+    for (const r of twSpendRows) {
+      if (r.spend > 0) spendLookup[r.date] = r.spend; // TW is primary (all platforms)
     }
 
     // Build snapshot lookup by date
@@ -2127,15 +2128,13 @@ async function sendDailyPnlReport(dateStr, { force = false } = {}) {
      FROM whop_payment_fees WHERE DATE(paid_at AT TIME ZONE 'Europe/Berlin') = $1`, [dateStr]
   );
 
-  // Get ad spend from Meta cache (same source as dashboard)
+  // Get ad spend — TW is primary (all platforms), Meta is fallback (single platform)
   const metaCacheRows = await pgQuery(
     `SELECT total_spend as spend FROM meta_ad_spend_cache WHERE spend_date = $1`, [dateStr]
   ).catch(() => []);
-  let adSpendFallback = 0;
-  if (!metaCacheRows.length || parseFloat(metaCacheRows[0]?.spend || 0) === 0) {
-    const twRows = await fetchDailyAdSpend(dateStr, dateStr).catch(() => []);
-    adSpendFallback = twRows[0]?.spend || 0;
-  }
+  const twRows = await fetchDailyAdSpend(dateStr, dateStr).catch(() => []);
+  const twSpend = twRows[0]?.spend || 0;
+  const metaSpend = parseFloat(metaCacheRows[0]?.spend || 0);
 
   const snap = snapRows[0];
   if (!snap) {
@@ -2148,7 +2147,7 @@ async function sendDailyPnlReport(dateStr, { force = false } = {}) {
     const cogs = parseFloat(snap.total_cogs || 0);
     const shipping = parseFloat(snap.total_shipping || 0);
     const fees = parseFloat(feeRows[0]?.total_fees || 0);
-    const adSpend = parseFloat(metaCacheRows[0]?.spend || 0) || adSpendFallback;
+    const adSpend = twSpend > 0 ? twSpend : metaSpend; // TW primary (all platforms), Meta fallback
     const totalCosts = cogs + shipping + fees + adSpend;
     const profit = revenue - totalCosts;
     const roas = adSpend > 0 ? (revenue / adSpend) : 0;
