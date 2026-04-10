@@ -353,6 +353,7 @@ async function ensureTables() {
       shipping_cost NUMERIC(10,2) DEFAULT 0,
       gross_profit NUMERIC(10,2) DEFAULT 0,
       profit_margin NUMERIC(6,2) DEFAULT 0,
+      refund_amount NUMERIC(10,2) DEFAULT 0,
       synced_at TIMESTAMPTZ DEFAULT NOW()
     )
   `);
@@ -408,6 +409,7 @@ async function ensureTables() {
     )
   `);
   await pgQuery('ALTER TABLE whop_payment_fees ADD COLUMN IF NOT EXISTS lasso_fees NUMERIC DEFAULT 0').catch(() => {});
+  await pgQuery('ALTER TABLE shopify_orders_cache ADD COLUMN IF NOT EXISTS refund_amount NUMERIC(10,2) DEFAULT 0').catch(() => {});
 
   // Cache for Meta Ads spend — refreshed every 5 min by autoSync
   await pgQuery(`
@@ -896,12 +898,17 @@ async function recalculateSnapshots(startDate, endDate) {
 
     if (allOrders.length === 0) continue;
 
-    // Filter out refunded/voided/cancelled orders from revenue calculations
+    // Filter out fully refunded/voided orders from revenue calculations
+    // partially_refunded orders are KEPT but their revenue is adjusted by refund_amount
     const orders = allOrders.filter(o => !['refunded', 'voided'].includes(o.financial_status));
     const refundedOrders = allOrders.filter(o => ['refunded', 'voided'].includes(o.financial_status));
 
-    // Use subtotal_price (product revenue, excludes customer-paid shipping)
-    const totalRevenue = orders.reduce((s, o) => s + parseFloat(o.subtotal_price || o.total_price || 0), 0);
+    // Use subtotal_price minus refund_amount (handles partial refunds correctly)
+    const totalRevenue = orders.reduce((s, o) => {
+      const subtotal = parseFloat(o.subtotal_price || o.total_price || 0);
+      const refund = parseFloat(o.refund_amount || 0);
+      return s + (subtotal - refund);
+    }, 0);
     const totalCogs = orders.reduce((s, o) => s + parseFloat(o.cogs || 0), 0);
     const totalShipping = orders.reduce((s, o) => s + parseFloat(o.shipping_cost || 0), 0);
     const totalDiscounts = orders.reduce((s, o) => s + parseFloat(o.total_discounts || 0), 0);
@@ -1144,13 +1151,18 @@ router.post('/sync', authenticate, async (req, res) => {
     for (const order of eligible) {
       const costs = calculateOrderCosts(order);
 
+      // Calculate refund amount for partially_refunded orders
+      const refundAmount = order.financial_status === 'partially_refunded'
+        ? Math.max(0, parseFloat(order.subtotal_price || 0) - parseFloat(order.current_subtotal_price || order.subtotal_price || 0))
+        : (order.financial_status === 'refunded' ? parseFloat(order.subtotal_price || 0) : 0);
+
       await pgQuery(`
         INSERT INTO shopify_orders_cache (
           order_id, order_number, created_at, financial_status, fulfillment_status,
           total_price, subtotal_price, total_discounts, currency, country,
           customer_email, line_items, total_miners, total_rig_units,
-          cogs, shipping_cost, gross_profit, profit_margin, synced_at
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,NOW())
+          cogs, shipping_cost, gross_profit, profit_margin, refund_amount, synced_at
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,NOW())
         ON CONFLICT (order_id) DO UPDATE SET
           financial_status = EXCLUDED.financial_status,
           fulfillment_status = EXCLUDED.fulfillment_status,
@@ -1164,6 +1176,7 @@ router.post('/sync', authenticate, async (req, res) => {
           shipping_cost = EXCLUDED.shipping_cost,
           gross_profit = EXCLUDED.gross_profit,
           profit_margin = EXCLUDED.profit_margin,
+          refund_amount = EXCLUDED.refund_amount,
           synced_at = NOW()
       `, [
         order.id,
@@ -1184,6 +1197,7 @@ router.post('/sync', authenticate, async (req, res) => {
         costs.shippingCost,
         costs.grossProfit,
         costs.profitMargin,
+        refundAmount,
       ]);
       synced++;
     }
@@ -1297,7 +1311,7 @@ router.get('/home-dashboard', authenticate, async (req, res) => {
       const conversionRate = (clicks > 0 && orders > 0)
         ? Math.round((orders / clicks) * 10000) / 100
         : null;
-      return { date: d, revenue, adSpend, roas, orders, aov, costs, cogs, shipping, fees, profit, netMargin, conversionRate };
+      return { date: d, revenue, adSpend, roas, orders, aov, costs, cogs, shipping, fees, profit, netMargin, conversionRate, clicks };
     }
 
     // Build daily metrics for the full fetched window
@@ -1471,7 +1485,7 @@ async function buildCostSheet(period, date) {
   const orders = await pgQuery(`
     SELECT order_number, created_at, total_price, subtotal_price, cogs, shipping_cost,
            gross_profit, profit_margin, total_miners, total_rig_units,
-           line_items, country, financial_status
+           line_items, country, financial_status, refund_amount
     FROM shopify_orders_cache
     WHERE DATE(created_at AT TIME ZONE 'Europe/Berlin') BETWEEN $1 AND $2
       AND financial_status NOT IN ('refunded', 'voided')
@@ -1480,7 +1494,7 @@ async function buildCostSheet(period, date) {
 
   const summary = {
     totalOrders: orders.length,
-    totalRevenue: orders.reduce((s, o) => s + parseFloat(o.subtotal_price || o.total_price), 0),
+    totalRevenue: orders.reduce((s, o) => s + parseFloat(o.subtotal_price || o.total_price) - parseFloat(o.refund_amount || 0), 0),
     totalCogs: orders.reduce((s, o) => s + parseFloat(o.cogs), 0),
     totalShipping: orders.reduce((s, o) => s + parseFloat(o.shipping_cost), 0),
     totalGrossProfit: orders.reduce((s, o) => s + parseFloat(o.gross_profit), 0),
@@ -1906,21 +1920,27 @@ async function upsertOrders(orders) {
       }
     }
 
+    // Calculate refund amount for partially_refunded orders
+    const refundAmount = order.financial_status === 'partially_refunded'
+      ? Math.max(0, parseFloat(order.subtotal_price || 0) - parseFloat(order.current_subtotal_price || order.subtotal_price || 0))
+      : (order.financial_status === 'refunded' ? parseFloat(order.subtotal_price || 0) : 0);
+
     await pgQuery(`
       INSERT INTO shopify_orders_cache (order_id, order_number, created_at, country, financial_status,
-        total_price, subtotal_price, total_discounts, line_items, cogs, shipping_cost, gross_profit, profit_margin, total_miners, total_rig_units, synced_at)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,NOW())
+        total_price, subtotal_price, total_discounts, line_items, cogs, shipping_cost, gross_profit, profit_margin, total_miners, total_rig_units, refund_amount, synced_at)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,NOW())
       ON CONFLICT (order_id) DO UPDATE SET
         financial_status=EXCLUDED.financial_status, total_price=EXCLUDED.total_price,
         subtotal_price=EXCLUDED.subtotal_price, total_discounts=EXCLUDED.total_discounts,
         line_items=EXCLUDED.line_items, cogs=EXCLUDED.cogs, shipping_cost=EXCLUDED.shipping_cost,
         gross_profit=EXCLUDED.gross_profit, profit_margin=EXCLUDED.profit_margin, country=EXCLUDED.country,
-        total_miners=EXCLUDED.total_miners, total_rig_units=EXCLUDED.total_rig_units, synced_at=NOW()
+        total_miners=EXCLUDED.total_miners, total_rig_units=EXCLUDED.total_rig_units,
+        refund_amount=EXCLUDED.refund_amount, synced_at=NOW()
     `, [order.id, order.order_number, order.created_at,
         order.shipping_address?.country || 'United States', order.financial_status,
         order.total_price, order.subtotal_price, order.total_discounts,
         JSON.stringify(order.line_items), costs.cogs, costs.shippingCost,
-        costs.grossProfit, costs.profitMargin, costs.totalMiners || 0, costs.totalRigUnits || 0]);
+        costs.grossProfit, costs.profitMargin, costs.totalMiners || 0, costs.totalRigUnits || 0, refundAmount]);
     if (orderDate) affectedDates.add(orderDate);
     synced++;
   }
@@ -2010,7 +2030,7 @@ async function autoSync() {
     let recentOrders = [];
     if (autoSyncCount % 5 === 0) {
       const threeDaysAgo = new Date(Date.now() - 3 * 86400000).toISOString();
-      const url = `https://${SHOPIFY_STORE}/admin/api/${SHOPIFY_API_VERSION}/orders.json?status=any&created_at_min=${threeDaysAgo}&limit=250&fields=id,order_number,created_at,total_price,subtotal_price,total_discounts,line_items,shipping_address,financial_status`;
+      const url = `https://${SHOPIFY_STORE}/admin/api/${SHOPIFY_API_VERSION}/orders.json?status=any&created_at_min=${threeDaysAgo}&limit=250&fields=id,order_number,created_at,total_price,subtotal_price,current_subtotal_price,total_discounts,line_items,shipping_address,financial_status`;
       try {
         const resp = await fetch(url, { headers: { 'X-Shopify-Access-Token': SHOPIFY_TOKEN } });
         if (resp.ok) recentOrders = (await resp.json()).orders || [];
