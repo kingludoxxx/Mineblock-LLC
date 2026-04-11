@@ -354,6 +354,7 @@ async function ensureTables() {
       gross_profit NUMERIC(10,2) DEFAULT 0,
       profit_margin NUMERIC(6,2) DEFAULT 0,
       refund_amount NUMERIC(10,2) DEFAULT 0,
+      refunded_at TIMESTAMPTZ,
       synced_at TIMESTAMPTZ DEFAULT NOW()
     )
   `);
@@ -410,6 +411,9 @@ async function ensureTables() {
   `);
   await pgQuery('ALTER TABLE whop_payment_fees ADD COLUMN IF NOT EXISTS lasso_fees NUMERIC DEFAULT 0').catch(() => {});
   await pgQuery('ALTER TABLE shopify_orders_cache ADD COLUMN IF NOT EXISTS refund_amount NUMERIC(10,2) DEFAULT 0').catch(() => {});
+  await pgQuery('ALTER TABLE shopify_orders_cache ADD COLUMN IF NOT EXISTS refunded_at TIMESTAMPTZ').catch(() => {});
+  // Backfill: for orders already refunded but missing refunded_at, use synced_at as proxy
+  await pgQuery(`UPDATE shopify_orders_cache SET refunded_at = synced_at WHERE financial_status IN ('refunded', 'voided', 'partially_refunded') AND refunded_at IS NULL`).catch(() => {});
 
   // Cache for Meta Ads spend — refreshed every 5 min by autoSync
   await pgQuery(`
@@ -917,7 +921,14 @@ async function recalculateSnapshots(startDate, endDate) {
     const avgMargin = totalRevenue > 0 ? (grossProfit / totalRevenue) * 100 : 0;
     const totalMiners = orders.reduce((s, o) => s + (parseInt(o.total_miners) || 0), 0);
     const totalRigs = orders.reduce((s, o) => s + (parseInt(o.total_rig_units) || 0), 0);
-    const refunds = refundedOrders.length;
+
+    // Count refunds by the date the refund HAPPENED (refunded_at), not order creation date
+    const refundsByDate = await pgQuery(`
+      SELECT COUNT(*) as cnt FROM shopify_orders_cache
+      WHERE financial_status IN ('refunded', 'voided', 'partially_refunded')
+        AND DATE(refunded_at AT TIME ZONE 'Europe/Berlin') = $1
+    `, [d]);
+    const refunds = parseInt(refundsByDate[0]?.cnt || 0);
 
     // Find top SKU
     const skuCounts = {};
@@ -1155,14 +1166,15 @@ router.post('/sync', authenticate, async (req, res) => {
       const refundAmount = order.financial_status === 'partially_refunded'
         ? Math.max(0, parseFloat(order.subtotal_price || 0) - parseFloat(order.current_subtotal_price || order.subtotal_price || 0))
         : (order.financial_status === 'refunded' ? parseFloat(order.subtotal_price || 0) : 0);
+      const isRefunded = ['refunded', 'voided', 'partially_refunded'].includes(order.financial_status);
 
       await pgQuery(`
         INSERT INTO shopify_orders_cache (
           order_id, order_number, created_at, financial_status, fulfillment_status,
           total_price, subtotal_price, total_discounts, currency, country,
           customer_email, line_items, total_miners, total_rig_units,
-          cogs, shipping_cost, gross_profit, profit_margin, refund_amount, synced_at
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,NOW())
+          cogs, shipping_cost, gross_profit, profit_margin, refund_amount, refunded_at, synced_at
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,NOW())
         ON CONFLICT (order_id) DO UPDATE SET
           financial_status = EXCLUDED.financial_status,
           fulfillment_status = EXCLUDED.fulfillment_status,
@@ -1177,6 +1189,11 @@ router.post('/sync', authenticate, async (req, res) => {
           gross_profit = EXCLUDED.gross_profit,
           profit_margin = EXCLUDED.profit_margin,
           refund_amount = EXCLUDED.refund_amount,
+          refunded_at = CASE
+            WHEN shopify_orders_cache.refunded_at IS NOT NULL THEN shopify_orders_cache.refunded_at
+            WHEN EXCLUDED.refunded_at IS NOT NULL THEN EXCLUDED.refunded_at
+            ELSE NULL
+          END,
           synced_at = NOW()
       `, [
         order.id,
@@ -1198,6 +1215,7 @@ router.post('/sync', authenticate, async (req, res) => {
         costs.grossProfit,
         costs.profitMargin,
         refundAmount,
+        isRefunded ? new Date().toISOString() : null,
       ]);
       synced++;
     }
@@ -1927,23 +1945,31 @@ async function upsertOrders(orders) {
     const refundAmount = order.financial_status === 'partially_refunded'
       ? Math.max(0, parseFloat(order.subtotal_price || 0) - parseFloat(order.current_subtotal_price || order.subtotal_price || 0))
       : (order.financial_status === 'refunded' ? parseFloat(order.subtotal_price || 0) : 0);
+    const isRefunded = ['refunded', 'voided', 'partially_refunded'].includes(order.financial_status);
 
     await pgQuery(`
       INSERT INTO shopify_orders_cache (order_id, order_number, created_at, country, financial_status,
-        total_price, subtotal_price, total_discounts, line_items, cogs, shipping_cost, gross_profit, profit_margin, total_miners, total_rig_units, refund_amount, synced_at)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,NOW())
+        total_price, subtotal_price, total_discounts, line_items, cogs, shipping_cost, gross_profit, profit_margin, total_miners, total_rig_units, refund_amount, refunded_at, synced_at)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,NOW())
       ON CONFLICT (order_id) DO UPDATE SET
         financial_status=EXCLUDED.financial_status, total_price=EXCLUDED.total_price,
         subtotal_price=EXCLUDED.subtotal_price, total_discounts=EXCLUDED.total_discounts,
         line_items=EXCLUDED.line_items, cogs=EXCLUDED.cogs, shipping_cost=EXCLUDED.shipping_cost,
         gross_profit=EXCLUDED.gross_profit, profit_margin=EXCLUDED.profit_margin, country=EXCLUDED.country,
         total_miners=EXCLUDED.total_miners, total_rig_units=EXCLUDED.total_rig_units,
-        refund_amount=EXCLUDED.refund_amount, synced_at=NOW()
+        refund_amount=EXCLUDED.refund_amount,
+        refunded_at = CASE
+          WHEN shopify_orders_cache.refunded_at IS NOT NULL THEN shopify_orders_cache.refunded_at
+          WHEN EXCLUDED.refunded_at IS NOT NULL THEN EXCLUDED.refunded_at
+          ELSE NULL
+        END,
+        synced_at=NOW()
     `, [order.id, order.order_number, order.created_at,
         order.shipping_address?.country || 'United States', order.financial_status,
         order.total_price, order.subtotal_price, order.total_discounts,
         JSON.stringify(order.line_items), costs.cogs, costs.shippingCost,
-        costs.grossProfit, costs.profitMargin, costs.totalMiners || 0, costs.totalRigUnits || 0, refundAmount]);
+        costs.grossProfit, costs.profitMargin, costs.totalMiners || 0, costs.totalRigUnits || 0, refundAmount,
+        isRefunded ? new Date().toISOString() : null]);
     if (orderDate) affectedDates.add(orderDate);
     synced++;
   }
