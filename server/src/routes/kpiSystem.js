@@ -412,8 +412,7 @@ async function ensureTables() {
   await pgQuery('ALTER TABLE whop_payment_fees ADD COLUMN IF NOT EXISTS lasso_fees NUMERIC DEFAULT 0').catch(() => {});
   await pgQuery('ALTER TABLE shopify_orders_cache ADD COLUMN IF NOT EXISTS refund_amount NUMERIC(10,2) DEFAULT 0').catch(() => {});
   await pgQuery('ALTER TABLE shopify_orders_cache ADD COLUMN IF NOT EXISTS refunded_at TIMESTAMPTZ').catch(() => {});
-  // Backfill: for orders already refunded but missing refunded_at, use synced_at as proxy
-  await pgQuery(`UPDATE shopify_orders_cache SET refunded_at = synced_at WHERE financial_status IN ('refunded', 'voided', 'partially_refunded') AND refunded_at IS NULL`).catch(() => {});
+  // Backfill refunded_at is handled by the full sync which reads actual refund dates from Shopify
 
   // Cache for Meta Ads spend — refreshed every 5 min by autoSync
   await pgQuery(`
@@ -1131,10 +1130,17 @@ router.post('/sync', authenticate, async (req, res) => {
 
     const fullSync = req.query.full === 'true' || (req.body && req.body.full === true);
     if (fullSync) {
-      await pgQuery('DELETE FROM shopify_orders_cache');
-      await pgQuery('DELETE FROM daily_kpi_snapshots');
-      await pgQuery('DELETE FROM whop_payment_fees');
-      console.log('[KPI] Full re-sync: cleared cache');
+      // Send immediate response to avoid Render 30s timeout, continue sync in background
+      res.json({ success: true, message: 'Full sync started in background. Check logs for progress.' });
+      try {
+        await pgQuery('DELETE FROM shopify_orders_cache');
+        await pgQuery('DELETE FROM daily_kpi_snapshots');
+        await pgQuery('DELETE FROM whop_payment_fees');
+        console.log('[KPI] Full re-sync: cleared cache');
+      } catch (err) {
+        console.error('[KPI] Full sync clear error:', err.message);
+        return;
+      }
     }
 
     // Incremental sync: fetch new orders + re-fetch recent orders (last 3 days) to catch status changes
@@ -1167,6 +1173,11 @@ router.post('/sync', authenticate, async (req, res) => {
         ? Math.max(0, parseFloat(order.subtotal_price || 0) - parseFloat(order.current_subtotal_price || order.subtotal_price || 0))
         : (order.financial_status === 'refunded' ? parseFloat(order.subtotal_price || 0) : 0);
       const isRefunded = ['refunded', 'voided', 'partially_refunded'].includes(order.financial_status);
+      // Use Shopify's actual refund timestamp when available
+      const shopifyRefundDate = isRefunded && order.refunds?.length
+        ? order.refunds[order.refunds.length - 1].created_at
+        : null;
+      const refundedAtValue = isRefunded ? (shopifyRefundDate || new Date().toISOString()) : null;
 
       await pgQuery(`
         INSERT INTO shopify_orders_cache (
@@ -1190,8 +1201,8 @@ router.post('/sync', authenticate, async (req, res) => {
           profit_margin = EXCLUDED.profit_margin,
           refund_amount = EXCLUDED.refund_amount,
           refunded_at = CASE
-            WHEN shopify_orders_cache.refunded_at IS NOT NULL THEN shopify_orders_cache.refunded_at
             WHEN EXCLUDED.refunded_at IS NOT NULL THEN EXCLUDED.refunded_at
+            WHEN shopify_orders_cache.refunded_at IS NOT NULL THEN shopify_orders_cache.refunded_at
             ELSE NULL
           END,
           synced_at = NOW()
@@ -1215,7 +1226,7 @@ router.post('/sync', authenticate, async (req, res) => {
         costs.grossProfit,
         costs.profitMargin,
         refundAmount,
-        isRefunded ? new Date().toISOString() : null,
+        refundedAtValue,
       ]);
       synced++;
     }
@@ -1233,20 +1244,26 @@ router.post('/sync', authenticate, async (req, res) => {
 
     const totalOrders = await pgQuery('SELECT COUNT(*) as count FROM shopify_orders_cache');
 
-    res.json({
-      success: true,
-      data: {
-        fetched: orders.length,
-        synced,
-        skipped,
-        totalCached: parseInt(totalOrders[0].count),
-        incremental: !!sinceId,
-        feesSynced: feeResult.synced || 0,
-      },
-    });
+    if (fullSync) {
+      console.log(`[KPI] Full sync complete: ${synced} orders synced, ${parseInt(totalOrders[0].count)} total cached`);
+    } else {
+      res.json({
+        success: true,
+        data: {
+          fetched: orders.length,
+          synced,
+          skipped,
+          totalCached: parseInt(totalOrders[0].count),
+          incremental: !!sinceId,
+          feesSynced: feeResult.synced || 0,
+        },
+      });
+    }
   } catch (err) {
     console.error('[KPI Sync] Error:', err);
-    res.status(500).json({ success: false, error: { message: err.message } });
+    if (!res.headersSent) {
+      res.status(500).json({ success: false, error: { message: err.message } });
+    }
   }
 });
 
@@ -1946,6 +1963,11 @@ async function upsertOrders(orders) {
       ? Math.max(0, parseFloat(order.subtotal_price || 0) - parseFloat(order.current_subtotal_price || order.subtotal_price || 0))
       : (order.financial_status === 'refunded' ? parseFloat(order.subtotal_price || 0) : 0);
     const isRefunded = ['refunded', 'voided', 'partially_refunded'].includes(order.financial_status);
+    // Use Shopify's actual refund timestamp when available
+    const shopifyRefundDate = isRefunded && order.refunds?.length
+      ? order.refunds[order.refunds.length - 1].created_at
+      : null;
+    const refundedAtValue = isRefunded ? (shopifyRefundDate || new Date().toISOString()) : null;
 
     await pgQuery(`
       INSERT INTO shopify_orders_cache (order_id, order_number, created_at, country, financial_status,
@@ -1959,8 +1981,8 @@ async function upsertOrders(orders) {
         total_miners=EXCLUDED.total_miners, total_rig_units=EXCLUDED.total_rig_units,
         refund_amount=EXCLUDED.refund_amount,
         refunded_at = CASE
-          WHEN shopify_orders_cache.refunded_at IS NOT NULL THEN shopify_orders_cache.refunded_at
           WHEN EXCLUDED.refunded_at IS NOT NULL THEN EXCLUDED.refunded_at
+          WHEN shopify_orders_cache.refunded_at IS NOT NULL THEN shopify_orders_cache.refunded_at
           ELSE NULL
         END,
         synced_at=NOW()
@@ -1969,7 +1991,7 @@ async function upsertOrders(orders) {
         order.total_price, order.subtotal_price, order.total_discounts,
         JSON.stringify(order.line_items), costs.cogs, costs.shippingCost,
         costs.grossProfit, costs.profitMargin, costs.totalMiners || 0, costs.totalRigUnits || 0, refundAmount,
-        isRefunded ? new Date().toISOString() : null]);
+        refundedAtValue]);
     if (orderDate) affectedDates.add(orderDate);
     synced++;
   }
@@ -2059,7 +2081,7 @@ async function autoSync() {
     let recentOrders = [];
     if (autoSyncCount % 5 === 0) {
       const threeDaysAgo = new Date(Date.now() - 3 * 86400000).toISOString();
-      const url = `https://${SHOPIFY_STORE}/admin/api/${SHOPIFY_API_VERSION}/orders.json?status=any&created_at_min=${threeDaysAgo}&limit=250&fields=id,order_number,created_at,total_price,subtotal_price,current_subtotal_price,total_discounts,line_items,shipping_address,financial_status`;
+      const url = `https://${SHOPIFY_STORE}/admin/api/${SHOPIFY_API_VERSION}/orders.json?status=any&created_at_min=${threeDaysAgo}&limit=250&fields=id,order_number,created_at,total_price,subtotal_price,current_subtotal_price,total_discounts,line_items,shipping_address,financial_status,refunds`;
       try {
         const resp = await fetch(url, { headers: { 'X-Shopify-Access-Token': SHOPIFY_TOKEN } });
         if (resp.ok) recentOrders = (await resp.json()).orders || [];
