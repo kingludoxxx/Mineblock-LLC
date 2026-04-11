@@ -412,7 +412,8 @@ async function ensureTables() {
   await pgQuery('ALTER TABLE whop_payment_fees ADD COLUMN IF NOT EXISTS lasso_fees NUMERIC DEFAULT 0').catch(() => {});
   await pgQuery('ALTER TABLE shopify_orders_cache ADD COLUMN IF NOT EXISTS refund_amount NUMERIC(10,2) DEFAULT 0').catch(() => {});
   await pgQuery('ALTER TABLE shopify_orders_cache ADD COLUMN IF NOT EXISTS refunded_at TIMESTAMPTZ').catch(() => {});
-  // Backfill refunded_at is handled by the full sync which reads actual refund dates from Shopify
+  // Reset refunded_at so backfillRefundDates() pulls actual dates from Shopify
+  await pgQuery(`UPDATE shopify_orders_cache SET refunded_at = NULL WHERE financial_status IN ('refunded', 'voided', 'partially_refunded')`).catch(() => {});
 
   // Cache for Meta Ads spend — refreshed every 5 min by autoSync
   await pgQuery(`
