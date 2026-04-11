@@ -2105,8 +2105,32 @@ async function autoSync() {
   }
 }
 
+// One-time boot: backfill refunded_at from Shopify for orders missing it
+async function backfillRefundDates() {
+  try {
+    await ensureTables();
+    const missing = await pgQuery(`
+      SELECT COUNT(*) as cnt FROM shopify_orders_cache
+      WHERE financial_status IN ('refunded', 'voided', 'partially_refunded') AND refunded_at IS NULL
+    `);
+    const count = parseInt(missing[0]?.cnt || 0);
+    if (count === 0) return;
+    console.log(`[KPI] Backfilling refunded_at for ${count} orders...`);
+    // Full re-fetch to get refund dates from Shopify
+    await pgQuery('DELETE FROM shopify_orders_cache');
+    await pgQuery('DELETE FROM daily_kpi_snapshots');
+    const allOrders = await fetchAllOrders(null);
+    const { synced } = await upsertOrders(allOrders);
+    await recalculateSnapshots();
+    await syncWhopFees(30).catch(() => {});
+    console.log(`[KPI] Backfill complete: ${synced} orders with refund dates`);
+  } catch (err) {
+    console.error('[KPI] Backfill error:', err.message);
+  }
+}
+
 setTimeout(() => {
-  autoSync().catch(() => {});
+  backfillRefundDates().then(() => autoSync()).catch(() => {});
   syncMetaAdSpend().catch(() => {}); // Fetch Meta spend immediately on boot
   setInterval(() => autoSync().catch(() => {}), 60_000); // Every 60 seconds
 }, 30_000); // Start 30s after boot
