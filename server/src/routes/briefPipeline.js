@@ -2670,6 +2670,7 @@ router.get('/winners', authenticate, async (_req, res) => {
 });
 
 // POST /detect — run winner detection from creative_analysis table
+// Responds immediately after DB query, enriches ClickUp data in background
 router.post('/detect', authenticate, async (_req, res) => {
   try {
     await ensureTables();
@@ -2706,29 +2707,13 @@ router.post('/detect', authenticate, async (_req, res) => {
 
     console.log(`[BriefPipeline] Detected ${winners.length} potential winners`);
 
+    // Step 2: Upsert winners immediately (without ClickUp data) so UI updates fast
     const results = [];
-
     for (const w of winners) {
-      // Step 2: Count existing iterations in ClickUp
-      let iterations = [];
-      try {
-        iterations = await countIterations(w.creative_id);
-      } catch (err) {
-        console.error(`[BriefPipeline] countIterations error for ${w.creative_id}:`, err.message);
-      }
-
       const winnerReason = classifyWinner(w);
-      const readiness = classifyReadiness(w, iterations.length);
+      // Use 0 iterations initially — will be enriched in background
+      const readiness = classifyReadiness(w, 0);
 
-      // Find ClickUp task ID for this creative
-      let clickupTaskId = null;
-      try {
-        clickupTaskId = await findClickUpTaskByBriefCode(w.creative_id);
-      } catch (err) {
-        console.error(`[BriefPipeline] findClickUpTask error for ${w.creative_id}:`, err.message);
-      }
-
-      // Upsert into brief_pipeline_winners
       const upserted = await pgQuery(`
         INSERT INTO brief_pipeline_winners (
           creative_id, ad_name, product_code, angle, format, avatar, editor,
@@ -2738,7 +2723,7 @@ router.post('/detect', authenticate, async (_req, res) => {
         ) VALUES (
           $1, $2, 'MR', $3, $4, $5, $6, $7, $8,
           $9, $10, $11, $12, $13, $14, $15, $16,
-          $17, $18, $19, $20, $21, $22, $23, 'detected', NOW()
+          NULL, 0, '[]', $17, $18, $19, $20, 'detected', NOW()
         )
         ON CONFLICT (creative_id) DO UPDATE SET
           ad_name = EXCLUDED.ad_name,
@@ -2756,9 +2741,6 @@ router.post('/detect', authenticate, async (_req, res) => {
           ctr = EXCLUDED.ctr,
           impressions = EXCLUDED.impressions,
           clicks = EXCLUDED.clicks,
-          clickup_task_id = EXCLUDED.clickup_task_id,
-          existing_iterations = EXCLUDED.existing_iterations,
-          iteration_codes = EXCLUDED.iteration_codes,
           winner_reason = EXCLUDED.winner_reason,
           iteration_readiness = EXCLUDED.iteration_readiness,
           thumbnail_url = EXCLUDED.thumbnail_url,
@@ -2769,8 +2751,6 @@ router.post('/detect', authenticate, async (_req, res) => {
         w.creative_id, w.ad_name, w.angle, w.format, w.avatar, w.editor,
         w.hook_type, w.week, w.total_spend, w.total_revenue, w.roas,
         w.purchases, w.cpa, w.ctr, w.impressions, w.clicks,
-        clickupTaskId, iterations.length,
-        JSON.stringify(iterations.map(i => i.code)),
         winnerReason, readiness,
         w.thumbnail_url || null, w.video_url || null,
       ], { timeout: 10000 });
@@ -2780,10 +2760,91 @@ router.post('/detect', authenticate, async (_req, res) => {
       }
     }
 
+    // Respond immediately so the client doesn't timeout
     res.json({ success: true, detected: results.length, winners: results });
+
+    // Step 3: Enrich with ClickUp data in background (non-blocking)
+    (async () => {
+      try {
+        // Fetch all ClickUp tasks once (batch) instead of per-winner
+        let allTasks = [];
+        let page = 0;
+        let hasMore = true;
+        while (hasMore) {
+          const data = await clickupFetch(
+            `/list/${VIDEO_ADS_LIST}/task?page=${page}&limit=100&include_closed=true&subtasks=true`
+          );
+          const tasks = data.tasks || [];
+          allTasks = allTasks.concat(tasks);
+          hasMore = tasks.length === 100;
+          page++;
+        }
+        console.log(`[BriefPipeline] Background enrichment: fetched ${allTasks.length} ClickUp tasks`);
+
+        for (const w of winners) {
+          // Count iterations from cached task list
+          const iterations = [];
+          for (const task of allTasks) {
+            const parentField = task.custom_fields?.find(f => f.id === FIELD_IDS.parentBriefId);
+            const briefTypeField = task.custom_fields?.find(f => f.id === FIELD_IDS.briefType);
+            const briefType = briefTypeField?.type_config?.options?.find(
+              o => o.orderindex === briefTypeField?.value
+            )?.name;
+            if (briefType === 'IT') {
+              const parentValue = parentField?.value;
+              if (parentValue && parentValue.includes(w.creative_id)) {
+                const briefMatch = task.name?.match(/B(\d{2,5})/);
+                if (briefMatch) {
+                  iterations.push({ code: `B${briefMatch[1].padStart(4, '0')}` });
+                }
+              }
+            }
+          }
+
+          // Find ClickUp task ID from cached task list
+          let clickupTaskId = null;
+          const briefNum = parseInt(w.creative_id.replace(/^B0*/, ''), 10);
+          if (!isNaN(briefNum)) {
+            for (const task of allTasks) {
+              const briefField = task.custom_fields?.find(f => f.id === FIELD_IDS.briefNumber);
+              const taskBriefNum = briefField?.value != null ? parseInt(briefField.value, 10) : null;
+              if (taskBriefNum === briefNum) {
+                clickupTaskId = task.id;
+                break;
+              }
+            }
+          }
+
+          const readiness = classifyReadiness(w, iterations.length);
+
+          // Update winner with enriched ClickUp data
+          await pgQuery(`
+            UPDATE brief_pipeline_winners SET
+              clickup_task_id = $2,
+              existing_iterations = $3,
+              iteration_codes = $4,
+              iteration_readiness = $5
+            WHERE creative_id = $1
+          `, [
+            w.creative_id,
+            clickupTaskId,
+            iterations.length,
+            JSON.stringify(iterations.map(i => i.code)),
+            readiness,
+          ]).catch(err => console.error(`[BriefPipeline] Enrichment update error for ${w.creative_id}:`, err.message));
+        }
+
+        console.log(`[BriefPipeline] Background enrichment complete for ${winners.length} winners`);
+      } catch (err) {
+        console.error('[BriefPipeline] Background enrichment error:', err.message);
+      }
+    })();
+
   } catch (err) {
     console.error('[BriefPipeline] POST /detect error:', err.message);
-    res.status(500).json({ success: false, error: { message: err.message } });
+    if (!res.headersSent) {
+      res.status(500).json({ success: false, error: { message: err.message } });
+    }
   }
 });
 

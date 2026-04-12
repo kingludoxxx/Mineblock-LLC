@@ -161,12 +161,18 @@ export default function BriefPipeline() {
 
   const handleDetect = useCallback(async () => {
     setDetecting(true);
+    setError(null);
     try {
-      await api.post('/brief-pipeline/detect');
+      const { data } = await api.post('/brief-pipeline/detect');
       await fetchWinners();
+      // Background ClickUp enrichment runs server-side; auto-refresh after delay
+      if (data?.detected > 0) {
+        setTimeout(() => fetchWinners(), 15000);
+      }
     } catch (err) {
       console.error('Detection failed:', err);
-      setError('Failed to detect winners. Check console for details.');
+      const message = err.response?.data?.error?.message || 'Failed to detect winners';
+      setError(message);
     } finally {
       setDetecting(false);
     }
