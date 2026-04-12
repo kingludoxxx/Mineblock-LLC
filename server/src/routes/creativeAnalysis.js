@@ -11,6 +11,9 @@ const TW_API_KEY  = process.env.TRIPLEWHALE_API_KEY || '';
 const TW_SHOP_ID  = process.env.TRIPLEWHALE_SHOP_ID || '17cca0-2.myshopify.com';
 const TW_SQL_URL  = 'https://api.triplewhale.com/api/v2/orcabase/api/sql';
 const CRON_SECRET = process.env.CRON_SECRET || '';
+// Triple Whale attribution model — must match what TW dashboard shows
+// Options: 'lastPlatformClick', 'firstClick', 'lastClick', 'linear', 'fullImpact'
+const TW_ATTRIBUTION_MODEL = process.env.TW_ATTRIBUTION_MODEL || 'lastPlatformClick';
 
 // Meta Marketing API config
 const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN || '';
@@ -18,7 +21,7 @@ const META_AD_ACCOUNT_IDS = (process.env.META_AD_ACCOUNT_IDS || '').split(',').f
 const META_GRAPH_URL = 'https://graph.facebook.com/v21.0';
 
 let tableReady = false; // cache ensureTable so it only runs once
-let twKnownRevCol = null; // cache discovered TW column names across requests
+let twKnownRevCol = null; // cache discovered TW column names across requests — cleared on deploy
 let twKnownPurCol = null;
 
 // Server-side cache for /data-by-date results (avoids repeated TW API calls)
@@ -391,12 +394,12 @@ async function fetchTripleWhaleAds(startDate, endDate) {
     return [];
   }
 
-  // Revenue columns to try (order_revenue may not exist in all TW setups)
-  const revenueColumns = ['order_revenue', 'pixel_revenue', 'revenue'];
-  // Purchase columns to try
+  // Revenue columns to try — pixel_revenue first to match Triple Whale dashboard
+  const revenueColumns = ['pixel_revenue', 'order_revenue', 'revenue'];
+  // Purchase columns to try — pixel_purchases first to match Triple Whale dashboard
   const purchaseColumns = [
-    'website_purchases', 'orders_quantity', 'pixel purchases', 'pixel_purchases',
-    'purchases', 'pixel_capi_purchases', 'total_purchases', 'conversions',
+    'pixel_purchases', 'pixel_capi_purchases', 'website_purchases',
+    'orders_quantity', 'purchases', 'total_purchases', 'conversions',
   ];
 
   // Helper to run a TW SQL query; returns { ok, rows, status, errorText }
@@ -411,6 +414,7 @@ async function fetchTripleWhaleAds(startDate, endDate) {
         shopId: TW_SHOP_ID,
         query: sql.trim(),
         period: { startDate, endDate },
+        attributionModel: TW_ATTRIBUTION_MODEL,
       }),
       signal: AbortSignal.timeout(30000),
     });
@@ -451,7 +455,7 @@ async function fetchTripleWhaleAds(startDate, endDate) {
     `;
     const cachedResult = await twQuery(cachedSql);
     if (cachedResult.ok) {
-      console.log(`[Creative Analysis] TW query OK (cached cols) — revenue="${twKnownRevCol}", purchases="${twKnownPurCol || 'none'}", rows=${cachedResult.rows.length}`);
+      console.log(`[Creative Analysis] TW query OK (cached cols) — revenue="${twKnownRevCol}", purchases="${twKnownPurCol || 'none'}", attribution="${TW_ATTRIBUTION_MODEL}", rows=${cachedResult.rows.length}`);
       return cachedResult.rows;
     }
     // Cached combo failed — clear cache and fall through to discovery
@@ -496,7 +500,7 @@ async function fetchTripleWhaleAds(startDate, endDate) {
         const pResult = await twQuery(sqlWithPurchases);
         if (pResult.fatal) return [];
         if (pResult.ok) {
-          console.log(`[Creative Analysis] TW query OK — revenue="${revenueCol}", purchases="${purchaseCol}", rows=${pResult.rows.length}`);
+          console.log(`[Creative Analysis] TW query OK — revenue="${revenueCol}", purchases="${purchaseCol}", attribution="${TW_ATTRIBUTION_MODEL}", rows=${pResult.rows.length}`);
           twKnownRevCol = revenueCol;
           twKnownPurCol = purchaseCol;
           if (pResult.rows.length >= 2000) {
@@ -1346,7 +1350,14 @@ router.get('/data-by-date', authenticate, async (req, res) => {
     const responseData = {
       creatives,
       dateRange: { startDate, endDate },
-      meta: { total_ads: twAds.length, parsed: twAds.length - skipped, skipped },
+      meta: {
+        total_ads: twAds.length,
+        parsed: twAds.length - skipped,
+        skipped,
+        attributionModel: TW_ATTRIBUTION_MODEL,
+        revenueColumn: twKnownRevCol || 'unknown',
+        purchaseColumn: twKnownPurCol || 'unknown',
+      },
     };
 
     // Cache the result for subsequent requests
@@ -2103,18 +2114,18 @@ router.get('/creative-daily', authenticate, async (req, res) => {
       return res.json({ success: true, data: cachedDaily.data });
     }
 
-    // Revenue & purchase column discovery (same pattern as fetchTripleWhaleAds)
-    const revenueColumns = ['order_revenue', 'pixel_revenue', 'revenue'];
+    // Revenue & purchase column discovery — pixel columns first to match TW dashboard
+    const revenueColumns = ['pixel_revenue', 'order_revenue', 'revenue'];
     const purchaseColumns = [
-      'website_purchases', 'orders_quantity', 'pixel purchases', 'pixel_purchases',
-      'purchases', 'pixel_capi_purchases', 'total_purchases', 'conversions',
+      'pixel_purchases', 'pixel_capi_purchases', 'website_purchases',
+      'orders_quantity', 'purchases', 'total_purchases', 'conversions',
     ];
 
     async function twQuery(sql) {
       const r = await fetch(TW_SQL_URL, {
         method: 'POST',
         headers: { 'x-api-key': TW_API_KEY, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ shopId: TW_SHOP_ID, query: sql.trim(), period: { startDate, endDate } }),
+        body: JSON.stringify({ shopId: TW_SHOP_ID, query: sql.trim(), period: { startDate, endDate }, attributionModel: TW_ATTRIBUTION_MODEL }),
         signal: AbortSignal.timeout(30000),
       });
       if (!r.ok) {
@@ -2792,6 +2803,7 @@ export async function fetchDailyAdSpend(startDate, endDate) {
         shopId: TW_SHOP_ID,
         query: `SELECT event_date, SUM(spend) as total_spend FROM pixel_joined_tvf WHERE event_date BETWEEN @startDate AND @endDate GROUP BY event_date ORDER BY event_date`,
         period: { startDate, endDate },
+        attributionModel: TW_ATTRIBUTION_MODEL,
       }),
       signal: AbortSignal.timeout(15000),
     });
