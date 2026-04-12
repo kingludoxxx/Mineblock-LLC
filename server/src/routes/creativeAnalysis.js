@@ -14,6 +14,11 @@ const CRON_SECRET = process.env.CRON_SECRET || '';
 // Triple Whale attribution model — must match what TW dashboard shows
 // Options: 'lastPlatformClick', 'firstClick', 'lastClick', 'linear', 'fullImpact'
 const TW_ATTRIBUTION_MODEL = process.env.TW_ATTRIBUTION_MODEL || 'lastPlatformClick';
+// Triple Whale revenue/purchase columns — configurable to match TW dashboard view
+// Revenue: 'order_revenue' (Triple Attribution) or 'channel_reported_conversion_value' (Platform/Meta reported)
+// Purchases: 'website_purchases' (Triple Attribution) or 'channel_reported_conversions' (Platform/Meta reported)
+const TW_REVENUE_COL = process.env.TW_REVENUE_COL || 'order_revenue';
+const TW_PURCHASE_COL = process.env.TW_PURCHASE_COL || 'website_purchases';
 
 // Meta Marketing API config
 const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN || '';
@@ -394,13 +399,9 @@ async function fetchTripleWhaleAds(startDate, endDate) {
     return [];
   }
 
-  // Revenue columns to try — pixel_revenue first to match Triple Whale dashboard
-  const revenueColumns = ['pixel_revenue', 'order_revenue', 'revenue'];
-  // Purchase columns to try — pixel_purchases first to match Triple Whale dashboard
-  const purchaseColumns = [
-    'pixel_purchases', 'pixel_capi_purchases', 'website_purchases',
-    'orders_quantity', 'purchases', 'total_purchases', 'conversions',
-  ];
+  // Revenue/purchase columns — use configured columns first, then fallbacks (deduplicated)
+  const uniqueRevCols = [...new Set([TW_REVENUE_COL, 'order_revenue', 'channel_reported_conversion_value'])];
+  const uniquePurCols = [...new Set([TW_PURCHASE_COL, 'website_purchases', 'channel_reported_conversions'])];
 
   // Helper to run a TW SQL query; returns { ok, rows, status, errorText }
   async function twQuery(sql) {
@@ -463,9 +464,9 @@ async function fetchTripleWhaleAds(startDate, endDate) {
     twKnownPurCol = null;
   }
 
-  // Step 1: Find the working revenue column (no purchase column, isolates the variable)
+  // Column discovery: try configured column first, then fallbacks
   let workingRevenueCol = null;
-  for (const revenueCol of revenueColumns) {
+  for (const revenueCol of uniqueRevCols) {
     const revRef = revenueCol.includes(' ') ? `\`${revenueCol}\`` : revenueCol;
     const sql = `
       SELECT ad_name, SUM(spend) as total_spend, SUM(${revRef}) as total_revenue,
@@ -483,8 +484,8 @@ async function fetchTripleWhaleAds(startDate, endDate) {
       const revenueOnlyRows = result.rows;
       workingRevenueCol = revenueCol;
       console.log(`[Creative Analysis] TW revenue column found: "${revenueCol}"`);
-      // Step 2: Try adding purchase columns to the working query
-      for (const purchaseCol of purchaseColumns) {
+      // Try adding purchase columns to the working query
+      for (const purchaseCol of uniquePurCols) {
         const colRef = purchaseCol.includes(' ') ? `\`${purchaseCol}\`` : purchaseCol;
         const sqlWithPurchases = `
           SELECT ad_name, SUM(spend) as total_spend, SUM(${revenueCol}) as total_revenue,
@@ -512,12 +513,8 @@ async function fetchTripleWhaleAds(startDate, endDate) {
       }
       // No purchase column worked — return the revenue-only result
       console.warn('[Creative Analysis] WARNING: No purchase column available. Purchases will be 0.');
-      console.log(`[Creative Analysis] TW query OK (no purchases) — revenue="${revenueCol}", rows=${revenueOnlyRows.length}`);
       twKnownRevCol = revenueCol;
       twKnownPurCol = null;
-      if (revenueOnlyRows.length >= 2000) {
-        console.warn('[Creative Analysis] WARNING: TW query hit 2000 row limit — some ads may be missing');
-      }
       return revenueOnlyRows;
     }
     console.warn(`[Creative Analysis] TW revenue column "${revenueCol}" failed: ${result.errorText}`);
@@ -2114,12 +2111,9 @@ router.get('/creative-daily', authenticate, async (req, res) => {
       return res.json({ success: true, data: cachedDaily.data });
     }
 
-    // Revenue & purchase column discovery — pixel columns first to match TW dashboard
-    const revenueColumns = ['pixel_revenue', 'order_revenue', 'revenue'];
-    const purchaseColumns = [
-      'pixel_purchases', 'pixel_capi_purchases', 'website_purchases',
-      'orders_quantity', 'purchases', 'total_purchases', 'conversions',
-    ];
+    // Revenue & purchase columns — use configured columns first, then fallbacks
+    const revenueColumns = [...new Set([TW_REVENUE_COL, 'order_revenue', 'channel_reported_conversion_value'])];
+    const purchaseColumns = [...new Set([TW_PURCHASE_COL, 'website_purchases', 'channel_reported_conversions'])];
 
     async function twQuery(sql) {
       const r = await fetch(TW_SQL_URL, {
