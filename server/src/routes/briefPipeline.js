@@ -3404,12 +3404,14 @@ The selected ad angle is: "${angle}". This is NOT optional.
       const scriptHash = crypto.createHash('md5').update(rawScript).digest('hex');
 
       // Check cache — same script text produces same analysis regardless of creative_id
+      console.log(`[BriefPipeline] generate-from-script: cache lookup for script_hash=${scriptHash.substring(0, 8)}`);
       const cacheRows = await pgQuery(
         `SELECT * FROM brief_pipeline_analysis_cache WHERE script_hash = $1 ORDER BY analyzed_at DESC LIMIT 1`,
         [scriptHash]
-      ).catch(() => []);
+      ).catch((err) => { console.error(`[BriefPipeline] cache lookup error: ${err.message}`); return []; });
 
       const cachedAnalysis = cacheRows.length ? cacheRows[0].win_analysis : null;
+      console.log(`[BriefPipeline] generate-from-script: cache rows=${cacheRows.length}, has scriptDna=${!!cachedAnalysis?.scriptDna}, has psychology=${!!cachedAnalysis?.psychology}, has iterationRules=${!!cachedAnalysis?.iterationRules}`);
       if (cachedAnalysis?.scriptDna && cachedAnalysis?.psychology && cachedAnalysis?.iterationRules) {
         winAnalysis = cachedAnalysis;
         console.log(`[BriefPipeline] generate-from-script: Using cached deep analysis (hash: ${scriptHash.substring(0, 8)})`);
@@ -3428,7 +3430,8 @@ The selected ad angle is: "${angle}". This is NOT optional.
           `INSERT INTO brief_pipeline_analysis_cache (creative_id, script_hash, win_analysis)
            VALUES ($1, $2, $3) ON CONFLICT (creative_id) DO UPDATE SET script_hash = $2, win_analysis = $3, analyzed_at = NOW()`,
           [creativeId, scriptHash, JSON.stringify(winAnalysis)]
-        ).catch(() => {});
+        ).then(() => console.log(`[BriefPipeline] cache INSERT success for hash=${scriptHash.substring(0, 8)}, creative=${creativeId}`))
+         .catch((err) => console.error(`[BriefPipeline] cache INSERT failed: ${err.message}`));
       }
 
       const safeDirections = winAnalysis.iterationRules?.safe_iteration_directions || [];
