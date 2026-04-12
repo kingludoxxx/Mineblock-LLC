@@ -195,22 +195,29 @@ export default function BriefPipeline() {
       stepInterval = setInterval(() => {
         stepIdx = Math.min(stepIdx + 1, stepMessages.length - 1);
         setGeneratingStep(stepMessages[stepIdx]);
-      }, 3000);
+      }, 5000);
 
-      await api.post(`/brief-pipeline/generate/${winnerId}`, config || {});
+      const { data } = await api.post(`/brief-pipeline/generate/${winnerId}`, config || {});
+
+      // Server responds immediately — poll for completion
+      if (data.winner_id) {
+        setGeneratingStep('Identifying iteration angles...');
+        await pollGenerationStatus(data.winner_id, stepMessages, stepInterval);
+      }
+
       clearInterval(stepInterval);
       await fetchGenerated();
       await fetchWinners();
     } catch (err) {
       clearInterval(stepInterval);
       console.error('Generate failed:', err);
-      setError(err.response?.data?.error?.message || 'Brief generation failed.');
+      setError(err.response?.data?.error?.message || err.message || 'Brief generation failed.');
     } finally {
       setGenerating(false);
       setGeneratingId(null);
       setGeneratingStep('');
     }
-  }, [fetchGenerated, fetchWinners]);
+  }, [fetchGenerated, fetchWinners, pollGenerationStatus]);
 
   const handleApprove = useCallback(async (briefId) => {
     try {
@@ -253,13 +260,59 @@ export default function BriefPipeline() {
   const [scriptGenerating, setScriptGenerating] = useState(false);
   const [scriptGenStep, setScriptGenStep] = useState('');
 
+  const pollGenerationStatus = useCallback(async (winnerId, stepMessages, stepInterval) => {
+    const maxAttempts = 40; // 40 × 3s = 2 min max
+    let attempts = 0;
+    let stepIdx = 1;
+
+    const poll = () => new Promise((resolve, reject) => {
+      const check = async () => {
+        try {
+          attempts++;
+          const { data } = await api.get(`/brief-pipeline/generation-status/${winnerId}`);
+          if (data.status === 'complete') {
+            clearInterval(stepInterval);
+            resolve(data);
+            return;
+          }
+          if (data.status === 'failed') {
+            clearInterval(stepInterval);
+            reject(new Error('All brief generations failed. Check server logs.'));
+            return;
+          }
+          // Still generating — update step message and continue
+          if (attempts % 2 === 0 && stepIdx < stepMessages.length - 1) {
+            stepIdx++;
+            setScriptGenStep(stepMessages[stepIdx]);
+          }
+          if (attempts >= maxAttempts) {
+            clearInterval(stepInterval);
+            reject(new Error('Generation timed out. Briefs may still be generating — refresh in a moment.'));
+            return;
+          }
+          setTimeout(check, 3000);
+        } catch (pollErr) {
+          if (attempts >= maxAttempts) {
+            clearInterval(stepInterval);
+            reject(pollErr);
+            return;
+          }
+          setTimeout(check, 3000);
+        }
+      };
+      check();
+    });
+
+    return poll();
+  }, []);
+
   const handleGenerateFromScript = useCallback(async (config) => {
     setScriptGenerating(true);
-    setScriptGenStep('Analyzing script...');
+    setScriptGenStep('Extracting script...');
     let stepInterval;
     try {
       const stepMessages = [
-        'Analyzing script...',
+        'Extracting script...',
         'Running deep analysis (3 agents)...',
         'Generating variations...',
         'Scoring & validating...',
@@ -269,9 +322,9 @@ export default function BriefPipeline() {
       stepInterval = setInterval(() => {
         stepIdx = Math.min(stepIdx + 1, stepMessages.length - 1);
         setScriptGenStep(stepMessages[stepIdx]);
-      }, 4000);
+      }, 5000);
 
-      await api.post('/brief-pipeline/generate-from-script', {
+      const { data } = await api.post('/brief-pipeline/generate-from-script', {
         script: config.script,
         url: config.url,
         productCode: config.productCode,
@@ -279,6 +332,13 @@ export default function BriefPipeline() {
         mode: config.mode === 'clone' ? 'clone' : 'variants',
         numVariations: config.numVariations,
       });
+
+      // Server responds immediately — poll for completion
+      if (data.winner_id) {
+        setScriptGenStep('Running deep analysis (3 agents)...');
+        await pollGenerationStatus(data.winner_id, stepMessages, stepInterval);
+      }
+
       clearInterval(stepInterval);
       await fetchGenerated();
       await fetchWinners();
@@ -291,7 +351,7 @@ export default function BriefPipeline() {
       setScriptGenerating(false);
       setScriptGenStep('');
     }
-  }, [fetchGenerated, fetchWinners]);
+  }, [fetchGenerated, fetchWinners, pollGenerationStatus]);
 
   const handlePush = useCallback(async (briefId) => {
     try {

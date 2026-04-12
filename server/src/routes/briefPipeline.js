@@ -3010,6 +3010,12 @@ router.post('/generate/:id', authenticate, async (req, res) => {
       });
     }
 
+    // Respond immediately so client doesn't timeout on Render's 30s limit
+    res.json({ success: true, message: 'Generation started in background', winner_id: winner.id, creative_id: winner.creative_id });
+
+    // Continue generation in background (non-blocking)
+    (async () => {
+    try {
     // Step 4: Parse script with Claude
     console.log(`[BriefPipeline] Step 4: Parsing script for ${winner.creative_id}`);
     let parsedScript = winner.parsed_script;
@@ -3212,10 +3218,8 @@ router.post('/generate/:id', authenticate, async (req, res) => {
 
     if (!generatedBriefs.length) {
       await pgQuery(`UPDATE brief_pipeline_winners SET status = 'detected' WHERE id = $1`, [winner.id]);
-      return res.status(500).json({
-        success: false,
-        error: { message: 'All brief generations failed. Check server logs for details.' },
-      });
+      console.error(`[BriefPipeline] All brief generations failed for ${winner.creative_id}`);
+      return;
     }
 
     // Assign ranks based on overall score (parallel updates)
@@ -3233,26 +3237,29 @@ router.post('/generate/:id', authenticate, async (req, res) => {
     );
 
     console.log(`[BriefPipeline] Generation complete: ${generatedBriefs.length} briefs for ${winner.creative_id}`);
+    } catch (bgErr) {
+      console.error('[BriefPipeline] POST /generate/:id background error:', bgErr.message);
+      await pgQuery(
+        `UPDATE brief_pipeline_winners SET status = 'detected' WHERE id = $1`,
+        [req.params.id]
+      ).catch(() => {});
+    }
+    })(); // end background IIFE
 
-    res.json({
-      success: true,
-      winner_id: winner.id,
-      creative_id: winner.creative_id,
-      briefs_generated: generatedBriefs.length,
-      briefs: generatedBriefs,
-    });
   } catch (err) {
     console.error('[BriefPipeline] POST /generate/:id error:', err.message);
-    // Reset status on failure
-    await pgQuery(
-      `UPDATE brief_pipeline_winners SET status = 'detected' WHERE id = $1`,
-      [req.params.id]
-    ).catch(() => {});
-    res.status(500).json({ success: false, error: { message: err.message } });
+    if (!res.headersSent) {
+      await pgQuery(
+        `UPDATE brief_pipeline_winners SET status = 'detected' WHERE id = $1`,
+        [req.params.id]
+      ).catch(() => {});
+      res.status(500).json({ success: false, error: { message: err.message } });
+    }
   }
 });
 
 // POST /generate-from-script — Generate briefs from manually pasted/URL script
+// Responds immediately after URL extraction + winner creation, generates in background
 router.post('/generate-from-script', authenticate, async (req, res) => {
   try {
     await ensureTables();
@@ -3293,6 +3300,12 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
     ]);
     const winner = insertedWinner[0];
 
+    // Respond immediately so client doesn't timeout on Render's 30s limit
+    res.json({ success: true, message: 'Generation started in background', creative_id: creativeId, winner_id: winner.id });
+
+    // Continue generation in background (non-blocking)
+    (async () => {
+    try {
     // Step 4: Parse script + fetch product in parallel
     const isCloneMode = mode === 'clone';
     console.log(`[BriefPipeline] ${isCloneMode ? 'FAST clone' : 'Variant'} mode — parsing script`);
@@ -3514,10 +3527,8 @@ The selected ad angle is: "${angle}". This is NOT optional.
     if (!generatedBriefs.length) {
       // All DB inserts failed or all generations failed
       await pgQuery(`UPDATE brief_pipeline_winners SET status = 'detected' WHERE id = $1`, [winner.id]);
-      return res.status(500).json({
-        success: false,
-        error: { message: 'All brief generations failed. Check server logs for details.' },
-      });
+      console.error('[BriefPipeline] generate-from-script: All brief generations failed');
+      return;
     }
 
     // Rank (parallel updates)
@@ -3531,9 +3542,55 @@ The selected ad angle is: "${angle}". This is NOT optional.
     await pgQuery(`UPDATE brief_pipeline_winners SET status = 'detected' WHERE id = $1`, [winner.id]);
 
     console.log(`[BriefPipeline] generate-from-script complete: ${generatedBriefs.length} briefs`);
-    res.json({ success: true, creative_id: creativeId, briefs_generated: generatedBriefs.length, briefs: generatedBriefs });
+    } catch (bgErr) {
+      console.error('[BriefPipeline] generate-from-script background error:', bgErr.message);
+      // Reset winner status so user can retry
+      await pgQuery(`UPDATE brief_pipeline_winners SET status = 'detected' WHERE id = $1`, [winner.id]).catch(() => {});
+    }
+    })(); // end background IIFE
+
   } catch (err) {
     console.error('[BriefPipeline] generate-from-script error:', err.message);
+    if (!res.headersSent) {
+      res.status(500).json({ success: false, error: { message: err.message } });
+    }
+  }
+});
+
+// GET /generation-status/:winnerId — poll for background generation completion
+router.get('/generation-status/:winnerId', authenticate, async (req, res) => {
+  try {
+    const winnerId = req.params.winnerId;
+    // Check winner status
+    const winnerRows = await pgQuery(
+      `SELECT id, status, creative_id FROM brief_pipeline_winners WHERE id = $1`,
+      [winnerId]
+    );
+    if (!winnerRows.length) {
+      return res.status(404).json({ success: false, error: { message: 'Winner not found' } });
+    }
+    const winner = winnerRows[0];
+
+    // If still generating, return in-progress
+    if (winner.status === 'generating') {
+      return res.json({ success: true, status: 'generating', briefs: [] });
+    }
+
+    // Generation done (status reverted to 'detected') — check for generated briefs
+    const briefs = await pgQuery(
+      `SELECT * FROM brief_pipeline_generated WHERE winner_id = $1 ORDER BY rank ASC, overall_score DESC`,
+      [winnerId]
+    );
+
+    res.json({
+      success: true,
+      status: briefs.length > 0 ? 'complete' : 'failed',
+      creative_id: winner.creative_id,
+      briefs_generated: briefs.length,
+      briefs,
+    });
+  } catch (err) {
+    console.error('[BriefPipeline] GET /generation-status error:', err.message);
     res.status(500).json({ success: false, error: { message: err.message } });
   }
 });
