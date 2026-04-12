@@ -3052,6 +3052,7 @@ router.post('/generate/:id', authenticate, async (req, res) => {
       [winner.creative_id, scriptHash]
     );
     let cachedAnalysis = cacheRows.length ? cacheRows[0].win_analysis : null;
+    if (typeof cachedAnalysis === 'string') { try { cachedAnalysis = JSON.parse(cachedAnalysis); } catch { cachedAnalysis = null; } }
 
     // Fallback: same script text used by a different creative
     if (!cachedAnalysis?.scriptDna) {
@@ -3059,7 +3060,10 @@ router.post('/generate/:id', authenticate, async (req, res) => {
         `SELECT * FROM brief_pipeline_analysis_cache WHERE script_hash = $1 ORDER BY analyzed_at DESC LIMIT 1`,
         [scriptHash]
       ).catch(() => []);
-      if (hashRows.length) cachedAnalysis = hashRows[0].win_analysis;
+      if (hashRows.length) {
+        cachedAnalysis = hashRows[0].win_analysis;
+        if (typeof cachedAnalysis === 'string') { try { cachedAnalysis = JSON.parse(cachedAnalysis); } catch { cachedAnalysis = null; } }
+      }
     }
 
     // Validate cache has new 3-agent format
@@ -3410,8 +3414,9 @@ The selected ad angle is: "${angle}". This is NOT optional.
         [scriptHash]
       ).catch((err) => { console.error(`[BriefPipeline] cache lookup error: ${err.message}`); return []; });
 
-      const cachedAnalysis = cacheRows.length ? cacheRows[0].win_analysis : null;
-      console.log(`[BriefPipeline] generate-from-script: cache rows=${cacheRows.length}, has scriptDna=${!!cachedAnalysis?.scriptDna}, has psychology=${!!cachedAnalysis?.psychology}, has iterationRules=${!!cachedAnalysis?.iterationRules}, type=${typeof cachedAnalysis}, keys=${cachedAnalysis ? Object.keys(cachedAnalysis).slice(0, 5).join(',') : 'null'}, creative=${cacheRows[0]?.creative_id || 'none'}`);
+      let cachedAnalysis = cacheRows.length ? cacheRows[0].win_analysis : null;
+      if (typeof cachedAnalysis === 'string') { try { cachedAnalysis = JSON.parse(cachedAnalysis); } catch { cachedAnalysis = null; } }
+      console.log(`[BriefPipeline] generate-from-script: cache rows=${cacheRows.length}, has scriptDna=${!!cachedAnalysis?.scriptDna}, has psychology=${!!cachedAnalysis?.psychology}, has iterationRules=${!!cachedAnalysis?.iterationRules}`);
       if (cachedAnalysis?.scriptDna && cachedAnalysis?.psychology && cachedAnalysis?.iterationRules) {
         winAnalysis = cachedAnalysis;
         console.log(`[BriefPipeline] generate-from-script: Using cached deep analysis (hash: ${scriptHash.substring(0, 8)})`);
