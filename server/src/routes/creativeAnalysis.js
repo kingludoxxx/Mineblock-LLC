@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { authenticate } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/rbac.js';
 import { pgQuery, pgDb } from '../db/pg.js';
+import { getEditorNames } from '../utils/clickupEditors.js';
 
 const router = Router();
 router.use(authenticate, requirePermission('creative-analysis', 'access'));
@@ -54,11 +55,19 @@ const KNOWN_FORMATS = new Set([
   'longvsl', 'vsl', 'img', 'ugc', 'gif',
 ]);
 
+// Legacy editor names (still appear in historical ad names) + dynamic from ClickUp.
+// The set is refreshed on each /data request to pick up new ClickUp editors.
 const KNOWN_EDITORS = new Set([
-  'ludovico', 'ludo', 'uly', 'dimaranan', 'fazlul',
-  'muhammad', 'atif', 'ali', 'hamza', 'usama', 'carl',
-  'alhamjatonni', 'abdul', 'robi', 'abdullah', 'farhan',
+  'ludovico', 'ludo', 'muhammad', 'atif', 'ali', 'hamza', 'usama', 'carl',
+  'alhamjatonni', 'abdul', 'robi', 'abdullah', 'farhan', 'antoni', 'faiz',
+  'uly', 'dimaranan', 'fazlul',
 ]);
+async function refreshKnownEditors() {
+  try {
+    const dynamic = await getEditorNames();
+    for (const name of dynamic) KNOWN_EDITORS.add(name.toLowerCase());
+  } catch { /* keep existing set on failure */ }
+}
 
 const KNOWN_ANGLES = new Set([
   'lottery', 'cryptoaddict', 'moneyseeker', 'againstcompetition',
@@ -1054,6 +1063,8 @@ router.get('/data', authenticate, async (req, res) => {
       return res.status(400).json({ success: false, error: { message: 'week parameter is required (e.g. WK12_2026)' } });
     }
 
+    // Refresh editor names from ClickUp before parsing ad names
+    await refreshKnownEditors();
     await ensureTable();
 
     // Fetch only active rows (spend > 0) for this week
@@ -1206,6 +1217,9 @@ router.get('/data-by-date', authenticate, async (req, res) => {
         error: { message: 'startDate must be on or before endDate' },
       });
     }
+
+    // Refresh editor names from ClickUp before parsing ad names
+    await refreshKnownEditors();
 
     // Check server-side cache to avoid repeated TW API calls
     const cacheKey = `${startDate}|${endDate}`;

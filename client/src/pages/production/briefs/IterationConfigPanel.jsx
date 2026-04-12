@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { X, Settings, Zap, Shield } from 'lucide-react';
+import api from '../../../services/api';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -42,7 +43,7 @@ const FIXED_ELEMENTS = [
   { key: 'emotional_driver', label: 'Keep emotional driver' },
 ];
 
-const EDITORS = ['Uly', 'Dimaranan', 'Fazlul', 'Ludovico'];
+const DEFAULT_EDITORS = ['Uly', 'Dimaranan', 'Fazlul', 'Ludovico'];
 
 // ---------------------------------------------------------------------------
 // IterationConfigPanel
@@ -54,6 +55,26 @@ export default function IterationConfigPanel({ winner, isOpen, onClose, onSubmit
   const [numVariations, setNumVariations] = useState(5);
   const [fixedElements, setFixedElements] = useState(['proof_type', 'cta_structure']);
   const [editor, setEditor] = useState('Uly');
+  const [editors, setEditors] = useState(DEFAULT_EDITORS);
+
+  // Fetch dynamic editor list from ClickUp (via brief-agent field-options)
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await api.get('/brief-agent/field-options');
+        if (!cancelled && res.data?.success && res.data.options?.editors?.length) {
+          const fetched = res.data.options.editors;
+          // Add Ludovico if not present (owner is excluded from ClickUp list)
+          if (!fetched.includes('Ludovico')) fetched.push('Ludovico');
+          setEditors(fetched);
+        }
+      } catch {
+        // Keep defaults on failure
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   if (!isOpen || !winner) return null;
 
@@ -250,7 +271,7 @@ export default function IterationConfigPanel({ winner, isOpen, onClose, onSubmit
             onChange={(e) => setEditor(e.target.value)}
             className="w-full bg-bg-elevated border border-border-default rounded-lg px-3 py-2 text-sm text-text-primary focus:border-accent/50 focus:outline-none appearance-none cursor-pointer"
           >
-            {EDITORS.map((name) => (
+            {editors.map((name) => (
               <option key={name} value={name}>
                 {name}
               </option>

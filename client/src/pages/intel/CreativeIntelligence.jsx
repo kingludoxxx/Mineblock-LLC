@@ -34,8 +34,8 @@ const EDITOR_COLORS = [
   '#10b981',
 ];
 
-// Active editors — only these show in the filter dropdown
-const ACTIVE_EDITORS = ['Uly', 'Dimaranan', 'Fazlul'];
+// Editors are fetched dynamically from ClickUp — see useEffect below
+const DEFAULT_EDITORS = ['Uly', 'Dimaranan', 'Fazlul']; // fallback if API fails
 
 const STATUS_STYLES = {
   Winner: 'bg-green-500/20 text-green-400 border border-green-500/30',
@@ -100,10 +100,28 @@ export default function CreativeIntelligence() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [selectedEditors, setSelectedEditors] = useState(ACTIVE_EDITORS);
+  const [activeEditors, setActiveEditors] = useState(DEFAULT_EDITORS);
+  const [selectedEditors, setSelectedEditors] = useState(DEFAULT_EDITORS);
   const [editorDropdownOpen, setEditorDropdownOpen] = useState(false);
   const [minutesData, setMinutesData] = useState(null);
   const [minutesLoading, setMinutesLoading] = useState(false);
+
+  // Fetch dynamic editor list from ClickUp (via backend)
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await api.get('/creative-intel/editors');
+        if (!cancelled && res.data?.success && res.data.editors?.length) {
+          setActiveEditors(res.data.editors);
+          setSelectedEditors(res.data.editors);
+        }
+      } catch {
+        // Keep defaults on failure
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -148,8 +166,8 @@ export default function CreativeIntelligence() {
 
   // Only show active editors in the filter dropdown
   const allEditors = useMemo(() => {
-    return ACTIVE_EDITORS.slice().sort();
-  }, [data]);
+    return activeEditors.slice().sort();
+  }, [activeEditors]);
 
   // Filter productivity data by selected editors
   const filteredProductivity = useMemo(() => {

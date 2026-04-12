@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { authenticate } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/rbac.js';
 import { pgQuery } from '../db/pg.js';
+import { getEditors, OWNER_ID } from '../utils/clickupEditors.js';
 import crypto from 'crypto';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
@@ -159,12 +160,7 @@ const AVATAR_TASK_IDS = {
 
 const CREATOR_NA_TASK_ID = '86c7n9cvr';
 
-const USER_IDS = {
-  Ludovico: 266421907,
-  Uly: 106674594,
-  Dimaranan: 106693066,
-  Fazlul: 106694451,
-};
+// Editors are now fetched dynamically from ClickUp list members (see utils/clickupEditors.js).
 
 // ── Table Initialization ──────────────────────────────────────────────
 let tablesReady = false;
@@ -2531,7 +2527,8 @@ async function pushBriefToClickUp(generatedBrief, parentClickupTaskId) {
   const briefTypeUuid = BRIEF_TYPE_OPTIONS.IT;
   const creativeTypeUuid = CREATIVE_TYPE_OPTIONS[format] || CREATIVE_TYPE_OPTIONS.Mashup;
 
-  const editorUserId = USER_IDS[editor] || USER_IDS.Ludovico;
+  const editorMap = await getEditors();
+  const editorUserId = editorMap[editor] || OWNER_ID;
 
   const customFields = [
     { id: FIELD_IDS.briefNumber, value: brief_number },
@@ -2542,8 +2539,8 @@ async function pushBriefToClickUp(generatedBrief, parentClickupTaskId) {
     { id: FIELD_IDS.creativeType, value: creativeTypeUuid },
     { id: FIELD_IDS.namingConvention, value: namingConvention },
     { id: FIELD_IDS.creationWeek, value: weekLabel },
-    { id: FIELD_IDS.creativeStrategist, value: { add: [USER_IDS.Ludovico], rem: [] } },
-    { id: FIELD_IDS.copywriter, value: { add: [USER_IDS.Ludovico], rem: [] } },
+    { id: FIELD_IDS.creativeStrategist, value: { add: [OWNER_ID], rem: [] } },
+    { id: FIELD_IDS.copywriter, value: { add: [OWNER_ID], rem: [] } },
     { id: FIELD_IDS.editor, value: { add: [editorUserId], rem: [] } },
   ].filter(f => f.value != null);
 
@@ -2566,10 +2563,10 @@ async function pushBriefToClickUp(generatedBrief, parentClickupTaskId) {
     if (err.message.includes('FIELD_129') || err.message.includes('must have access')) {
       console.warn(`[BriefPipeline] Editor ${editor} (${editorUserId}) not accessible, falling back to Ludovico`);
       const fallbackFields = customFields.map(f => {
-        if (f.id === FIELD_IDS.editor) return { ...f, value: { add: [USER_IDS.Ludovico], rem: [] } };
+        if (f.id === FIELD_IDS.editor) return { ...f, value: { add: [OWNER_ID], rem: [] } };
         return f;
       });
-      const fallbackPayload = { ...taskPayload, assignees: [USER_IDS.Ludovico], custom_fields: fallbackFields };
+      const fallbackPayload = { ...taskPayload, assignees: [OWNER_ID], custom_fields: fallbackFields };
       createdTask = await clickupFetch(
         `/list/${VIDEO_ADS_LIST}/task`,
         { method: 'POST', body: JSON.stringify(fallbackPayload) }

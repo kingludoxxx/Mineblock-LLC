@@ -1,6 +1,7 @@
 import express from 'express';
 import { authenticate } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/rbac.js';
+import { getEditors, getEditorNames, OWNER_ID, invalidateEditorCache } from '../utils/clickupEditors.js';
 
 const router = express.Router();
 router.use(authenticate, requirePermission('brief-agent', 'access'));
@@ -100,13 +101,9 @@ const AVATAR_TASK_IDS = {
 
 const CREATOR_NA_TASK_ID = '86c7n9cvr';
 
-// User IDs
-const USER_IDS = {
-  Ludovico: 266421907,
-  Uly: 106674594,
-  Dimaranan: 106693066,
-  Fazlul: 106694451,
-};
+// Editors are now fetched dynamically from ClickUp list members (see utils/clickupEditors.js).
+// When editors are added/removed from the Video Ads Pipeline list in ClickUp, the app
+// picks them up automatically within 5 minutes (cache TTL).
 
 // ── Server-side caches (avoid paginating all ClickUp tasks on every page load) ──
 let nextBriefCache = { value: null, timestamp: 0 };
@@ -199,19 +196,25 @@ router.get('/next-brief-number', async (_req, res) => {
 });
 
 // GET /api/v1/brief-agent/field-options
-router.get('/field-options', (_req, res) => {
-  res.json({
-    success: true,
-    options: {
-      angles: Object.keys(ANGLE_OPTIONS),
-      creativeTypes: Object.keys(CREATIVE_TYPE_OPTIONS),
-      briefTypes: Object.keys(BRIEF_TYPE_OPTIONS),
-      editors: Object.keys(USER_IDS).filter((n) => n !== 'Ludovico'),
-      avatars: Object.keys(AVATAR_TASK_IDS),
-      products: Object.keys(PRODUCT_TASK_IDS),
-      creativeTypeCodes: CREATIVE_TYPE_CODES,
-    },
-  });
+router.get('/field-options', async (_req, res) => {
+  try {
+    const editorNames = await getEditorNames();
+    res.json({
+      success: true,
+      options: {
+        angles: Object.keys(ANGLE_OPTIONS),
+        creativeTypes: Object.keys(CREATIVE_TYPE_OPTIONS),
+        briefTypes: Object.keys(BRIEF_TYPE_OPTIONS),
+        editors: editorNames,
+        avatars: Object.keys(AVATAR_TASK_IDS),
+        products: Object.keys(PRODUCT_TASK_IDS),
+        creativeTypeCodes: CREATIVE_TYPE_CODES,
+      },
+    });
+  } catch (err) {
+    console.error('[BriefAgent] field-options error:', err.message);
+    res.status(500).json({ success: false, error: { message: 'Failed to load field options.' } });
+  }
 });
 
 // GET /api/v1/brief-agent/editor-queue — count of edit queue tasks per editor
@@ -222,10 +225,17 @@ router.get('/editor-queue', async (_req, res) => {
       return res.json({ success: true, counts: editorQueueCache.counts });
     }
 
+    const editorMap = await getEditors(); // { Name: numericId }
     const counts = {};
     // Initialize all editors to 0
-    for (const name of Object.keys(USER_IDS)) {
-      if (name !== 'Ludovico') counts[name] = 0;
+    for (const name of Object.keys(editorMap)) {
+      counts[name] = 0;
+    }
+
+    // Build reverse lookup: numericId → editorName
+    const idToName = {};
+    for (const [name, id] of Object.entries(editorMap)) {
+      idToName[id] = name;
     }
 
     let page = 0;
@@ -237,11 +247,9 @@ router.get('/editor-queue', async (_req, res) => {
       const tasks = data.tasks || [];
       for (const task of tasks) {
         for (const assignee of task.assignees || []) {
-          // Match assignee by user ID to our editor names
-          for (const [name, id] of Object.entries(USER_IDS)) {
-            if (name !== 'Ludovico' && assignee.id === id) {
-              counts[name] = (counts[name] || 0) + 1;
-            }
+          const editorName = idToName[assignee.id];
+          if (editorName) {
+            counts[editorName] = (counts[editorName] || 0) + 1;
           }
         }
       }
@@ -366,6 +374,16 @@ router.post('/create', async (req, res) => {
       });
     }
 
+    // 0) Resolve editor to ClickUp user ID (dynamic from list members)
+    const editorMap = await getEditors();
+    const editorId = editorMap[editor];
+    if (!editorId) {
+      return res.status(400).json({
+        success: false,
+        error: { message: `Unknown editor "${editor}". Available: ${Object.keys(editorMap).join(', ')}` },
+      });
+    }
+
     // 1) Get next brief number
     let maxBrief = 0;
     let page = 0;
@@ -469,10 +487,10 @@ router.post('/create', async (req, res) => {
       { id: FIELD_IDS.idea, value: idea || '-' },
       { id: FIELD_IDS.angle, value: ANGLE_OPTIONS[angle] },
       { id: FIELD_IDS.creativeType, value: CREATIVE_TYPE_OPTIONS[creativeType] },
-      { id: FIELD_IDS.editor, value: { add: [USER_IDS[editor]], rem: [] } },
+      { id: FIELD_IDS.editor, value: { add: [editorId], rem: [] } },
       { id: FIELD_IDS.creationWeek, value: weekStr },
-      { id: FIELD_IDS.creativeStrategist, value: { add: [USER_IDS.Ludovico], rem: [] } },
-      { id: FIELD_IDS.copywriter, value: { add: [USER_IDS.Ludovico], rem: [] } },
+      { id: FIELD_IDS.creativeStrategist, value: { add: [OWNER_ID], rem: [] } },
+      { id: FIELD_IDS.copywriter, value: { add: [OWNER_ID], rem: [] } },
       // NOTE: Do NOT set adsFrameLink here — it gets auto-created as a NEW folder
       // by the clickupWebhook handler when the task is created.
       // finalReferenceLink is only used in the task description for reference.
@@ -483,7 +501,7 @@ router.post('/create', async (req, res) => {
       name: taskName,
       description,
       status: 'edit queue',
-      assignees: [USER_IDS[editor]],
+      assignees: [editorId],
       custom_fields: customFields,
     };
 
@@ -586,9 +604,10 @@ router.post('/create', async (req, res) => {
 router.get('/editor-report/slack/:editor', async (req, res) => {
   try {
     const editorName = req.params.editor;
-    const editorId = USER_IDS[editorName];
+    const editorMap = await getEditors();
+    const editorId = editorMap[editorName];
     if (!editorId) {
-      return res.status(400).json({ success: false, error: { message: `Unknown editor: ${editorName}` } });
+      return res.status(400).json({ success: false, error: { message: `Unknown editor: ${editorName}. Available: ${Object.keys(editorMap).join(', ')}` } });
     }
 
     // Get current week boundaries (Monday 00:00 → Sunday 23:59)
@@ -688,9 +707,10 @@ router.get('/editor-report/slack/:editor', async (req, res) => {
 router.get('/weekly-recap/:editor', async (req, res) => {
   try {
     const editorName = req.params.editor;
-    const editorId = USER_IDS[editorName];
+    const editorMap = await getEditors();
+    const editorId = editorMap[editorName];
     if (!editorId) {
-      return res.status(400).json({ success: false, error: { message: `Unknown editor: ${editorName}` } });
+      return res.status(400).json({ success: false, error: { message: `Unknown editor: ${editorName}. Available: ${Object.keys(editorMap).join(', ')}` } });
     }
 
     // Always report on the previous completed week (subtract 7 days)
@@ -774,8 +794,9 @@ router.get('/weekly-recap/:editor', async (req, res) => {
 router.get('/monthly-report/:editor/:year/:month', async (req, res) => {
   try {
     const { editor, year, month } = req.params;
-    const editorId = USER_IDS[editor];
-    if (!editorId) return res.status(400).json({ success: false, error: { message: `Unknown editor: ${editor}. Available: ${Object.keys(USER_IDS).join(', ')}` } });
+    const editorMap = await getEditors();
+    const editorId = editorMap[editor];
+    if (!editorId) return res.status(400).json({ success: false, error: { message: `Unknown editor: ${editor}. Available: ${Object.keys(editorMap).join(', ')}` } });
 
     const y = parseInt(year), m = parseInt(month);
     const monthStart = new Date(Date.UTC(y, m - 1, 1)).getTime();
@@ -853,7 +874,8 @@ router.post('/send-editor-reports', async (req, res) => {
 // Runs every Monday at 10:03 CET — posts weekly recap to each editor's Slack channel
 
 async function sendEditorWeeklyReport(editorName) {
-  const editorId = USER_IDS[editorName];
+  const editorMap = await getEditors();
+  const editorId = editorMap[editorName];
   const channel = EDITOR_SLACK_CHANNELS[editorName];
   if (!editorId || !channel || !SLACK_BOT_TOKEN) return;
 

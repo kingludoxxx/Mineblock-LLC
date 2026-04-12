@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { authenticate } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/rbac.js';
 import { pgQuery } from '../db/pg.js';
+import { getEditors } from '../utils/clickupEditors.js';
 
 const router = Router();
 router.use(authenticate, requirePermission('creative-intelligence', 'access'));
@@ -19,12 +20,7 @@ const STATIC_LIST_ID = '901518769479';
 // ClickUp custom field ID for Frame link
 const FRAME_LINK_FIELD_ID = 'd90f9f25-d7a0-4eb4-9ded-aca0b4519a3b';
 
-// Editor user IDs in ClickUp
-const EDITOR_USER_IDS = {
-  Uly: 106674594,
-  Dimaranan: 106693066,
-  Fazlul: 106694451,
-};
+// Editor user IDs are now fetched dynamically from ClickUp list members (see utils/clickupEditors.js).
 
 // Known formats & angles for classification
 const KNOWN_FORMATS = ['mashup', 'mashups', 'shortvid', 'short vid', 'shortvideo', 'mini vsl', 'img'];
@@ -372,6 +368,18 @@ function classify(spend, roas) {
   if (spend >= 300) return 'tested';
   return 'other';
 }
+
+// ── Dynamic editor list ─────────────────────────────────────────────
+
+router.get('/editors', authenticate, async (_req, res) => {
+  try {
+    const editors = await getEditors();
+    res.json({ success: true, editors: Object.keys(editors) });
+  } catch (err) {
+    console.error('[CreativeIntel] editors error:', err.message);
+    res.status(500).json({ success: false, error: { message: 'Failed to load editors.' } });
+  }
+});
 
 // ── Main endpoint ───────────────────────────────────────────────────
 
