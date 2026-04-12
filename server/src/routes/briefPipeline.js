@@ -3411,7 +3411,7 @@ The selected ad angle is: "${angle}". This is NOT optional.
       ).catch((err) => { console.error(`[BriefPipeline] cache lookup error: ${err.message}`); return []; });
 
       const cachedAnalysis = cacheRows.length ? cacheRows[0].win_analysis : null;
-      console.log(`[BriefPipeline] generate-from-script: cache rows=${cacheRows.length}, has scriptDna=${!!cachedAnalysis?.scriptDna}, has psychology=${!!cachedAnalysis?.psychology}, has iterationRules=${!!cachedAnalysis?.iterationRules}`);
+      console.log(`[BriefPipeline] generate-from-script: cache rows=${cacheRows.length}, has scriptDna=${!!cachedAnalysis?.scriptDna}, has psychology=${!!cachedAnalysis?.psychology}, has iterationRules=${!!cachedAnalysis?.iterationRules}, type=${typeof cachedAnalysis}, keys=${cachedAnalysis ? Object.keys(cachedAnalysis).slice(0, 5).join(',') : 'null'}, creative=${cacheRows[0]?.creative_id || 'none'}`);
       if (cachedAnalysis?.scriptDna && cachedAnalysis?.psychology && cachedAnalysis?.iterationRules) {
         winAnalysis = cachedAnalysis;
         console.log(`[BriefPipeline] generate-from-script: Using cached deep analysis (hash: ${scriptHash.substring(0, 8)})`);
