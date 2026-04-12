@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   RefreshCw,
   Loader2,
@@ -99,6 +99,21 @@ export default function BriefPipeline() {
   const [selectedForLaunch, setSelectedForLaunch] = useState([]);
   const [launchModalOpen, setLaunchModalOpen] = useState(false);
 
+  // Refs for cleanup and double-click guards
+  const abortRef = useRef(false);
+  const generatingRef = useRef(false);
+  const scriptGeneratingRef = useRef(false);
+  const stepIntervalsRef = useRef([]);
+
+  // Cleanup on unmount: abort polling & clear all step intervals
+  useEffect(() => {
+    return () => {
+      abortRef.current = true;
+      stepIntervalsRef.current.forEach(id => clearInterval(id));
+      stepIntervalsRef.current = [];
+    };
+  }, []);
+
   // ---------------------------------------------------------------------------
   // Data fetching
   // ---------------------------------------------------------------------------
@@ -185,9 +200,19 @@ export default function BriefPipeline() {
 
     const poll = () => new Promise((resolve, reject) => {
       const check = async () => {
+        if (abortRef.current) {
+          clearInterval(stepInterval);
+          reject(new Error('Component unmounted — polling aborted.'));
+          return;
+        }
         try {
           attempts++;
           const { data } = await api.get(`/brief-pipeline/generation-status/${winnerId}`);
+          if (abortRef.current) {
+            clearInterval(stepInterval);
+            reject(new Error('Component unmounted — polling aborted.'));
+            return;
+          }
           if (data.status === 'complete') {
             clearInterval(stepInterval);
             resolve(data);
@@ -201,7 +226,7 @@ export default function BriefPipeline() {
           // Still generating — update step message and continue
           if (attempts % 2 === 0 && stepIdx < stepMessages.length - 1) {
             stepIdx++;
-            if (setStepFn) setStepFn(stepMessages[stepIdx]);
+            if (setStepFn && !abortRef.current) setStepFn(stepMessages[stepIdx]);
           }
           if (attempts >= maxAttempts) {
             clearInterval(stepInterval);
@@ -210,6 +235,11 @@ export default function BriefPipeline() {
           }
           setTimeout(check, 3000);
         } catch (pollErr) {
+          if (abortRef.current) {
+            clearInterval(stepInterval);
+            reject(new Error('Component unmounted — polling aborted.'));
+            return;
+          }
           if (attempts >= maxAttempts) {
             clearInterval(stepInterval);
             reject(pollErr);
@@ -225,6 +255,8 @@ export default function BriefPipeline() {
   }, []);
 
   const handleGenerate = useCallback(async (winnerId, config) => {
+    if (generatingRef.current) return;
+    generatingRef.current = true;
     setGenerating(true);
     setGeneratingId(winnerId);
     setGeneratingStep('Analyzing winning ad...');
@@ -239,9 +271,11 @@ export default function BriefPipeline() {
       ];
       let stepIdx = 0;
       stepInterval = setInterval(() => {
+        if (abortRef.current) { clearInterval(stepInterval); return; }
         stepIdx = Math.min(stepIdx + 1, stepMessages.length - 1);
         setGeneratingStep(stepMessages[stepIdx]);
       }, 5000);
+      stepIntervalsRef.current.push(stepInterval);
 
       const { data } = await api.post(`/brief-pipeline/generate/${winnerId}`, config || {});
 
@@ -252,16 +286,23 @@ export default function BriefPipeline() {
       }
 
       clearInterval(stepInterval);
-      await fetchGenerated();
-      await fetchWinners();
+      if (!abortRef.current) {
+        await fetchGenerated();
+        await fetchWinners();
+      }
     } catch (err) {
       clearInterval(stepInterval);
-      console.error('Generate failed:', err);
-      setError(err.response?.data?.error?.message || err.message || 'Brief generation failed.');
+      if (!abortRef.current) {
+        console.error('Generate failed:', err);
+        setError(err.response?.data?.error?.message || err.message || 'Brief generation failed.');
+      }
     } finally {
-      setGenerating(false);
-      setGeneratingId(null);
-      setGeneratingStep('');
+      generatingRef.current = false;
+      if (!abortRef.current) {
+        setGenerating(false);
+        setGeneratingId(null);
+        setGeneratingStep('');
+      }
     }
   }, [fetchGenerated, fetchWinners, pollGenerationStatus]);
 
@@ -307,6 +348,8 @@ export default function BriefPipeline() {
   const [scriptGenStep, setScriptGenStep] = useState('');
 
   const handleGenerateFromScript = useCallback(async (config) => {
+    if (scriptGeneratingRef.current) return;
+    scriptGeneratingRef.current = true;
     setScriptGenerating(true);
     setScriptGenStep('Extracting script...');
     let stepInterval;
@@ -320,9 +363,11 @@ export default function BriefPipeline() {
       ];
       let stepIdx = 0;
       stepInterval = setInterval(() => {
+        if (abortRef.current) { clearInterval(stepInterval); return; }
         stepIdx = Math.min(stepIdx + 1, stepMessages.length - 1);
         setScriptGenStep(stepMessages[stepIdx]);
       }, 5000);
+      stepIntervalsRef.current.push(stepInterval);
 
       const { data } = await api.post('/brief-pipeline/generate-from-script', {
         script: config.script,
@@ -340,16 +385,23 @@ export default function BriefPipeline() {
       }
 
       clearInterval(stepInterval);
-      await fetchGenerated();
-      await fetchWinners();
+      if (!abortRef.current) {
+        await fetchGenerated();
+        await fetchWinners();
+      }
     } catch (err) {
       clearInterval(stepInterval);
-      const msg = err.response?.data?.error?.message || err.message || 'Generation failed';
-      setError(msg);
-      throw new Error(msg);
+      if (!abortRef.current) {
+        const msg = err.response?.data?.error?.message || err.message || 'Generation failed';
+        setError(msg);
+        throw new Error(msg);
+      }
     } finally {
-      setScriptGenerating(false);
-      setScriptGenStep('');
+      scriptGeneratingRef.current = false;
+      if (!abortRef.current) {
+        setScriptGenerating(false);
+        setScriptGenStep('');
+      }
     }
   }, [fetchGenerated, fetchWinners, pollGenerationStatus]);
 

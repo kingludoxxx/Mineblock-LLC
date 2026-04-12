@@ -2,7 +2,9 @@ import { Router } from 'express';
 import { authenticate } from '../middleware/auth.js';
 import { pgQuery } from '../db/pg.js';
 import crypto from 'crypto';
-import { execSync } from 'child_process';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
+const execFileAsync = promisify(execFile);
 import { existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -29,6 +31,47 @@ const META_GRAPH_URL = 'https://graph.facebook.com/v21.0';
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
 const CLAUDE_API_URL = 'https://api.anthropic.com/v1/messages';
 const CLAUDE_MODEL = 'claude-sonnet-4-6';
+
+// Helper to safely parse JSONB values that may be double-encoded as strings
+function parseJsonb(val) {
+  if (typeof val === 'string') { try { return JSON.parse(val); } catch { return val; } }
+  return val;
+}
+
+// Validate a generated brief has the required structure
+function validateGeneratedBrief(generated) {
+  const errors = [];
+  if (!generated || typeof generated !== 'object') {
+    return { valid: false, errors: ['Generated brief is null or not an object'] };
+  }
+  if (!generated.body || typeof generated.body !== 'string' || !generated.body.trim()) {
+    errors.push('body must be a non-empty string');
+  }
+  if (!Array.isArray(generated.hooks)) {
+    errors.push('hooks must be an array');
+  } else {
+    for (let i = 0; i < generated.hooks.length; i++) {
+      const h = generated.hooks[i];
+      if (!h || typeof h.text !== 'string') {
+        errors.push(`hooks[${i}] missing required "text" string property`);
+      }
+    }
+  }
+  return { valid: errors.length === 0, errors };
+}
+
+// Validate score values are numbers 0-10
+function validateScores(scores) {
+  if (!scores || typeof scores !== 'object') return false;
+  const keys = ['novelty', 'aggression', 'coherence', 'hook_body_blend', 'conversion_potential'];
+  for (const key of keys) {
+    const val = scores[key]?.score;
+    if (val !== undefined && (typeof val !== 'number' || val < 0 || val > 10)) {
+      return false;
+    }
+  }
+  return true;
+}
 
 const headers = {
   Authorization: CLICKUP_TOKEN,
@@ -173,6 +216,7 @@ async function ensureTables() {
     await pgQuery(`ALTER TABLE brief_pipeline_winners ADD COLUMN IF NOT EXISTS video_url TEXT`).catch(() => {});
     await pgQuery(`ALTER TABLE brief_pipeline_winners ADD COLUMN IF NOT EXISTS iteration_mode TEXT`).catch(() => {});
     await pgQuery(`ALTER TABLE brief_pipeline_winners ADD COLUMN IF NOT EXISTS iteration_config JSONB`).catch(() => {});
+    await pgQuery(`ALTER TABLE brief_pipeline_winners ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()`).catch(() => {});
 
     await pgQuery(`
       CREATE TABLE IF NOT EXISTS brief_pipeline_generated (
@@ -219,6 +263,20 @@ async function ensureTables() {
       )
     `, [], { timeout: 15000 });
 
+    // Add indexes for common queries
+    await pgQuery(`
+      CREATE INDEX IF NOT EXISTS idx_bpw_status ON brief_pipeline_winners (status);
+      CREATE INDEX IF NOT EXISTS idx_bpw_creative_id ON brief_pipeline_winners (creative_id);
+    `).catch(() => {});
+    await pgQuery(`
+      CREATE INDEX IF NOT EXISTS idx_bpg_winner_id ON brief_pipeline_generated (winner_id);
+      CREATE INDEX IF NOT EXISTS idx_bpg_status ON brief_pipeline_generated (status);
+      CREATE INDEX IF NOT EXISTS idx_bpg_overall_score ON brief_pipeline_generated (overall_score DESC);
+    `).catch(() => {});
+    await pgQuery(`
+      CREATE INDEX IF NOT EXISTS idx_bpac_script_hash ON brief_pipeline_analysis_cache (script_hash);
+    `).catch(() => {});
+
     // Recover any winners stuck in 'generating' from a previous crash
     const stuck = await pgQuery(
       `UPDATE brief_pipeline_winners SET status = 'detected' WHERE status = 'generating' RETURNING creative_id`
@@ -234,6 +292,22 @@ async function ensureTables() {
     throw err;
   }
 }
+
+// Periodic recovery: reset stuck 'generating' winners every 5 minutes
+setInterval(async () => {
+  try {
+    const stuck = await pgQuery(
+      `UPDATE brief_pipeline_winners SET status = 'detected'
+       WHERE status = 'generating' AND updated_at < NOW() - INTERVAL '3 minutes'
+       RETURNING creative_id`
+    ).catch(() => []);
+    if (stuck.length) {
+      console.log(`[BriefPipeline] Periodic recovery: reset ${stuck.length} stuck winners: ${stuck.map(r => r.creative_id).join(', ')}`);
+    }
+  } catch (err) {
+    console.error(`[BriefPipeline] Periodic recovery error: ${err.message}`);
+  }
+}, 5 * 60 * 1000);
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -789,11 +863,12 @@ async function extractMetadataWithYtdlp(pageUrl) {
   if (!safeUrl) { console.warn('[BriefPipeline] Rejected unsafe URL for yt-dlp'); return null; }
   try {
     console.log(`[BriefPipeline] Extracting metadata with yt-dlp: ${safeUrl.slice(0, 100)}`);
-    const result = execSync(
-      `"${YTDLP_PATH}" -j --no-warnings --skip-download "${safeUrl}"`,
-      { timeout: 45000, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }
-    ).trim();
-    const data = JSON.parse(result);
+    const { stdout } = await execFileAsync(
+      YTDLP_PATH,
+      ['-j', '--no-warnings', '--skip-download', safeUrl],
+      { timeout: 45000, maxBuffer: 10 * 1024 * 1024 }
+    );
+    const data = JSON.parse(stdout.trim());
     return {
       title: data.title || '',
       description: data.description || '',
@@ -818,23 +893,23 @@ async function extractVideoUrlWithYtdlp(pageUrl, { audioOnly = false } = {}) {
   // For other uses: get best video
   const strategies = audioOnly ? [
     // Audio-only strategies (small files, fast transcription)
-    `"${YTDLP_PATH}" --get-url --no-warnings -f "worstaudio[ext=m4a]/worstaudio/worst" "${safeUrl}"`,
-    `"${YTDLP_PATH}" --get-url --no-warnings -f "bestaudio[ext=m4a]/bestaudio" "${safeUrl}"`,
-    `"${YTDLP_PATH}" --get-url --no-warnings -f "worst" "${safeUrl}"`,
+    ['--get-url', '--no-warnings', '-f', 'worstaudio[ext=m4a]/worstaudio/worst', safeUrl],
+    ['--get-url', '--no-warnings', '-f', 'bestaudio[ext=m4a]/bestaudio', safeUrl],
+    ['--get-url', '--no-warnings', '-f', 'worst', safeUrl],
   ] : [
-    `"${YTDLP_PATH}" --get-url --no-warnings -f "best[ext=mp4]/best" "${safeUrl}"`,
-    `"${YTDLP_PATH}" --get-url --no-warnings -f "best" "${safeUrl}"`,
-    `"${YTDLP_PATH}" --get-url --no-warnings --force-generic-extractor "${safeUrl}"`,
+    ['--get-url', '--no-warnings', '-f', 'best[ext=mp4]/best', safeUrl],
+    ['--get-url', '--no-warnings', '-f', 'best', safeUrl],
+    ['--get-url', '--no-warnings', '--force-generic-extractor', safeUrl],
   ];
 
   for (let i = 0; i < strategies.length; i++) {
     try {
       console.log(`[BriefPipeline] yt-dlp strategy ${i + 1}${audioOnly ? ' (audio)' : ''} for: ${pageUrl.slice(0, 100)}`);
-      const result = execSync(strategies[i], {
+      const { stdout } = await execFileAsync(YTDLP_PATH, strategies[i], {
         timeout: 45000,
-        encoding: 'utf8',
-        stdio: ['pipe', 'pipe', 'pipe'],
-      }).trim();
+        maxBuffer: 10 * 1024 * 1024,
+      });
+      const result = stdout.trim();
 
       const firstUrl = result.split('\n').find(line => line.startsWith('http'));
       if (firstUrl) {
@@ -2615,6 +2690,12 @@ router.get('/winners', authenticate, async (_req, res) => {
       `SELECT * FROM brief_pipeline_winners ORDER BY roas DESC, detected_at DESC`
     );
 
+    // Fix double-encoded JSONB fields
+    for (const row of rows) {
+      row.parsed_script = parseJsonb(row.parsed_script);
+      row.iteration_config = parseJsonb(row.iteration_config);
+    }
+
     // Refresh stale thumbnail/video URLs from creative_analysis (Meta CDN URLs expire)
     if (rows.length) {
       const creativeIds = rows.map(r => r.creative_id);
@@ -2873,6 +2954,9 @@ router.get('/winners/:id', authenticate, async (req, res) => {
     }
 
     const winner = rows[0];
+    // Fix double-encoded JSONB fields
+    winner.parsed_script = parseJsonb(winner.parsed_script);
+    winner.iteration_config = parseJsonb(winner.iteration_config);
 
     // Pull script from ClickUp if we have a task ID and don't have it cached
     if (winner.clickup_task_id && !winner.raw_script) {
@@ -2961,7 +3045,7 @@ router.post('/generate/:id', authenticate, async (req, res) => {
     const winner = winnerRows[0];
 
     // Read config from request body, or fall back to saved iteration_config from select step
-    const savedConfig = winner.iteration_config || {};
+    const savedConfig = parseJsonb(winner.iteration_config) || {};
     const body = req.body || {};
     const mode = body.mode || body.iteration_mode || savedConfig.mode || 'hook_body';
     const aggressiveness = body.aggressiveness || savedConfig.aggressiveness || 'medium';
@@ -2979,7 +3063,7 @@ router.post('/generate/:id', authenticate, async (req, res) => {
 
     // Update status to generating (atomic check — only from 'detected' or 'selected')
     const updated = await pgQuery(
-      `UPDATE brief_pipeline_winners SET status = 'generating' WHERE id = $1 AND status IN ('detected', 'selected') RETURNING id`,
+      `UPDATE brief_pipeline_winners SET status = 'generating', updated_at = NOW() WHERE id = $1 AND status IN ('detected', 'selected') RETURNING id`,
       [winner.id]
     );
     if (!updated.length) {
@@ -3018,8 +3102,8 @@ router.post('/generate/:id', authenticate, async (req, res) => {
     try {
     // Step 4: Parse script with Claude
     console.log(`[BriefPipeline] Step 4: Parsing script for ${winner.creative_id}`);
-    let parsedScript = winner.parsed_script;
-    if (typeof parsedScript === 'string') { try { parsedScript = JSON.parse(parsedScript); } catch { parsedScript = null; } }
+    let parsedScript = parseJsonb(winner.parsed_script);
+    if (parsedScript && typeof parsedScript !== 'object') parsedScript = null;
     if (!parsedScript) {
       const { system, user } = await buildScriptParserPrompt(winner.raw_script, winner.ad_name || winner.creative_id);
       parsedScript = await callClaude(system, user, 2000, { fast: true });
@@ -3143,13 +3227,27 @@ router.post('/generate/:id', authenticate, async (req, res) => {
         if (!Array.isArray(generated.hooks)) generated.hooks = [];
         if (!generated.body) generated.body = '';
 
+        // Deep validation: hooks must have text, body must be non-empty
+        const validation = validateGeneratedBrief(generated);
+        if (!validation.valid) {
+          console.error(`[BriefPipeline] Brief validation failed for direction #${direction.id}:`, validation.errors.join('; '));
+          throw new Error(`Brief validation failed: ${validation.errors.join('; ')}`);
+        }
+
         // Step 8: Score only (blend validation removed for speed — saves 1 API call per variant)
         const { system: scoreSystem, user: scoreUser } = await buildBriefScorerPrompt(winner, parsedScript, generated, direction.name, winAnalysis, productContext);
 
         let scores = { novelty: { score: 5 }, aggression: { score: 5 }, coherence: { score: 5 }, hook_body_blend: { score: 5 }, conversion_potential: { score: 5 } };
         try {
           const sc = await callClaude(scoreSystem, scoreUser, 1500, { fast: true });
-          if (sc) scores = sc;
+          if (sc) {
+            if (!validateScores(sc)) {
+              console.warn(`[BriefPipeline] Invalid score values for direction #${direction.id} — using defaults`);
+              scores._scoring_failed = true;
+            } else {
+              scores = sc;
+            }
+          }
         } catch (evalErr) {
           console.warn(`[BriefPipeline] Scoring error for direction #${direction.id}:`, evalErr.message);
           scores._scoring_failed = true;
@@ -3369,6 +3467,13 @@ The selected ad angle is: "${angle}". This is NOT optional.
           if (!Array.isArray(generated.hooks)) generated.hooks = [];
           if (!generated.body) generated.body = '';
 
+          // Deep validation: hooks must have text, body must be non-empty
+          const cloneValidation = validateGeneratedBrief(generated);
+          if (!cloneValidation.valid) {
+            console.error(`[BriefPipeline] Clone validation failed:`, cloneValidation.errors.join('; '));
+            throw new Error(`Clone validation failed: ${cloneValidation.errors.join('; ')}`);
+          }
+
           if (generated.clone_fidelity) {
             generated.key_changes_from_original = generated.key_adaptations || generated.key_changes_from_original || '';
           }
@@ -3481,13 +3586,27 @@ The selected ad angle is: "${angle}". This is NOT optional.
           if (!Array.isArray(generated.hooks)) generated.hooks = [];
           if (!generated.body) generated.body = '';
 
+          // Deep validation: hooks must have text, body must be non-empty
+          const genValidation = validateGeneratedBrief(generated);
+          if (!genValidation.valid) {
+            console.error(`[BriefPipeline] generate-from-script validation failed for direction #${direction.id}:`, genValidation.errors.join('; '));
+            throw new Error(`Brief validation failed: ${genValidation.errors.join('; ')}`);
+          }
+
           // Score only (blend validation removed for speed)
           const { system: scoreSystem, user: scoreUser } = await buildBriefScorerPrompt(winner, parsedScript, generated, direction.name, winAnalysis, productContext);
 
           let scores = { novelty: { score: 5 }, aggression: { score: 5 }, coherence: { score: 5 }, hook_body_blend: { score: 5 }, conversion_potential: { score: 5 } };
           try {
             const sc = await callClaude(scoreSystem, scoreUser, 1500, { fast: true });
-            if (sc) scores = sc;
+            if (sc) {
+              if (!validateScores(sc)) {
+                console.warn(`[BriefPipeline] generate-from-script: Invalid score values for direction #${direction.id} — using defaults`);
+                scores._scoring_failed = true;
+              } else {
+                scores = sc;
+              }
+            }
           } catch (evalErr) {
             console.warn(`[BriefPipeline] generate-from-script scoring error for direction #${direction.id}:`, evalErr.message);
             scores._scoring_failed = true;
@@ -3611,6 +3730,13 @@ router.get('/generation-status/:winnerId', authenticate, async (req, res) => {
       [winnerId]
     );
 
+    // Fix double-encoded JSONB fields
+    for (const b of briefs) {
+      b.win_analysis = parseJsonb(b.win_analysis);
+      b.hooks = parseJsonb(b.hooks);
+      b.scores_json = parseJsonb(b.scores_json);
+    }
+
     res.json({
       success: true,
       status: briefs.length > 0 ? 'complete' : 'failed',
@@ -3635,6 +3761,13 @@ router.get('/generated', authenticate, async (_req, res) => {
        WHERE g.status != 'rejected'
        ORDER BY g.overall_score DESC, g.created_at DESC`
     );
+    // Fix double-encoded JSONB fields
+    for (const b of rows) {
+      b.win_analysis = parseJsonb(b.win_analysis);
+      b.hooks = parseJsonb(b.hooks);
+      b.scores_json = parseJsonb(b.scores_json);
+      b.original_script = parseJsonb(b.original_script);
+    }
     res.json({ success: true, briefs: rows });
   } catch (err) {
     console.error('[BriefPipeline] GET /generated error:', err.message);
@@ -3657,7 +3790,13 @@ router.get('/generated/:id', authenticate, async (req, res) => {
     if (!rows.length) {
       return res.status(404).json({ success: false, error: { message: 'Brief not found' } });
     }
-    res.json({ success: true, brief: rows[0] });
+    // Fix double-encoded JSONB fields
+    const brief = rows[0];
+    brief.win_analysis = parseJsonb(brief.win_analysis);
+    brief.hooks = parseJsonb(brief.hooks);
+    brief.scores_json = parseJsonb(brief.scores_json);
+    brief.original_script = parseJsonb(brief.original_script);
+    res.json({ success: true, brief });
   } catch (err) {
     console.error('[BriefPipeline] GET /generated/:id error:', err.message);
     res.status(500).json({ success: false, error: { message: err.message } });
@@ -3690,7 +3829,14 @@ router.patch('/generated/:id', authenticate, async (req, res) => {
       if (!rows.length) return res.status(404).json({ success: false, error: { message: 'Brief not found' } });
       contentUpdated = true;
       contentResult = rows[0];
-      if (!newStatus) return res.json({ success: true, brief: rows[0] });
+      if (!newStatus) {
+        // Fix double-encoded JSONB fields before returning
+        const retBrief = rows[0];
+        retBrief.hooks = parseJsonb(retBrief.hooks);
+        retBrief.win_analysis = parseJsonb(retBrief.win_analysis);
+        retBrief.scores_json = parseJsonb(retBrief.scores_json);
+        return res.json({ success: true, brief: retBrief });
+      }
     }
 
     const validStatuses = ['approved', 'rejected', 'ready_to_launch', 'launched', 'launch_failed', 'generated', 'pushed'];
@@ -3736,7 +3882,12 @@ router.patch('/generated/:id', authenticate, async (req, res) => {
       return res.status(404).json({ success: false, error: { message: 'Brief not found' } });
     }
 
-    res.json({ success: true, brief: rows[0] });
+    // Fix double-encoded JSONB fields before returning
+    const patchedBrief = rows[0];
+    patchedBrief.hooks = parseJsonb(patchedBrief.hooks);
+    patchedBrief.win_analysis = parseJsonb(patchedBrief.win_analysis);
+    patchedBrief.scores_json = parseJsonb(patchedBrief.scores_json);
+    res.json({ success: true, brief: patchedBrief });
   } catch (err) {
     console.error('[BriefPipeline] PATCH /generated/:id error:', err.message);
     res.status(500).json({ success: false, error: { message: err.message } });
@@ -3869,6 +4020,11 @@ router.post('/generated/:id/push', authenticate, async (req, res) => {
     }
 
     const brief = rows[0];
+    // Fix double-encoded JSONB fields before use
+    brief.hooks = parseJsonb(brief.hooks);
+    brief.win_analysis = parseJsonb(brief.win_analysis);
+    brief.scores_json = parseJsonb(brief.scores_json);
+
     if (brief.status !== 'approved') {
       return res.status(400).json({ success: false, error: { message: 'Brief must be approved before pushing to ClickUp' } });
     }
@@ -4993,6 +5149,12 @@ router.post('/launch', authenticate, async (req, res) => {
     );
     if (!briefs.length) {
       return res.status(400).json({ success: false, error: { message: 'No launchable briefs found' } });
+    }
+    // Fix double-encoded JSONB fields before use
+    for (const b of briefs) {
+      b.hooks = parseJsonb(b.hooks);
+      b.win_analysis = parseJsonb(b.win_analysis);
+      b.scores_json = parseJsonb(b.scores_json);
     }
 
     // Mark briefs as launching
