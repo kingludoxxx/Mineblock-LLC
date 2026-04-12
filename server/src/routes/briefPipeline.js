@@ -3431,7 +3431,7 @@ The selected ad angle is: "${angle}". This is NOT optional.
         ).catch(() => {});
       }
 
-      const safeDirections = iterationRules?.safe_iteration_directions || [];
+      const safeDirections = winAnalysis.iterationRules?.safe_iteration_directions || [];
       const directions = [];
       for (let i = 0; i < numVariations; i++) {
         const dirText = safeDirections[i] || `Variation ${i + 1}: Fresh creative approach`;
@@ -3440,11 +3440,11 @@ The selected ad angle is: "${angle}". This is NOT optional.
           name: `Direction ${i + 1}`,
           description: dirText,
           what_changes: dirText,
-          what_stays: (iterationRules?.must_stay_fixed || []).slice(0, 3).join('; ') || 'Core angle and mechanism',
+          what_stays: (winAnalysis.iterationRules?.must_stay_fixed || []).slice(0, 3).join('; ') || 'Core angle and mechanism',
           hook_direction: `Variation ${i + 1} of ${numVariations}`,
           body_direction: dirText,
-          emotional_shift: psychology?.emotional_arc
-            ? `${psychology.emotional_arc?.at_hook || '?'} → ${psychology.emotional_arc?.final_state || '?'}`
+          emotional_shift: winAnalysis.psychology?.emotional_arc
+            ? `${winAnalysis.psychology.emotional_arc?.at_hook || '?'} → ${winAnalysis.psychology.emotional_arc?.final_state || '?'}`
             : 'Maintain original arc',
         });
       }
