@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { authenticate } from '../middleware/auth.js';
+import { requirePermission } from '../middleware/rbac.js';
 import { pgQuery } from '../db/pg.js';
 import {
   uploadAdVideo, waitForVideoReady, createAd, createAdSet,
@@ -10,6 +11,7 @@ import {
 import crypto from 'crypto';
 
 const router = Router();
+router.use(authenticate, requirePermission('video-ads-launcher', 'access'));
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 

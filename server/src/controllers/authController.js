@@ -259,10 +259,18 @@ export const login = async (req, res, next) => {
     setAccessCookie(res, accessToken);
     setRefreshCookie(res, refreshToken);
 
-    return res.status(200).json({
+    // Build response — include mustChangePassword flag so the frontend
+    // can redirect to the password-change form on first login.
+    const loginResponse = {
       accessToken,
       user: userData,
-    });
+    };
+
+    if (user.must_change_password) {
+      loginResponse.mustChangePassword = true;
+    }
+
+    return res.status(200).json(loginResponse);
   } catch (err) {
     logger.error('Login error', { error: err.message, stack: err.stack });
     next(err);

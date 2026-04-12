@@ -3,6 +3,7 @@ import { buildClaudePrompt, buildNanoBananaPrompt, buildSwapPairs, buildLayoutAn
 import { overlayText } from '../utils/textOverlay.js';
 import { pgQuery } from '../db/pg.js';
 import { authenticate } from '../middleware/auth.js';
+import { requirePermission } from '../middleware/rbac.js';
 import { uploadBuffer, isR2Configured } from '../services/r2.js';
 import { editImage, isGeminiConfigured, GEMINI_EDIT_MODEL } from '../services/geminiImageGen.js';
 import crypto from 'crypto';
@@ -13,6 +14,7 @@ import {
 } from '../services/metaAdsApi.js';
 
 const router = Router();
+router.use(authenticate, requirePermission('statics-generation', 'access'));
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 // ── Text overlay context store (per taskId, for post-generation text compositing) ──

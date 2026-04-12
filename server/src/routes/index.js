@@ -15,9 +15,11 @@ import advertorialRoutes from './advertorialPipeline.js';
 import adLauncherRoutes from './adLauncher.js';
 import staticsTemplatesRoutes from './staticsTemplates.js';
 import videoAdsLauncherRoutes from './videoAdsLauncher.js';
+import teamRoutes from './team.js';
 
 const mountRoutes = (app) => {
   app.use('/api/v1/users', userRoutes);
+  app.use('/api/v1/team', teamRoutes);
   app.use('/api/v1/departments', departmentRoutes);
   app.use('/api/v1/audit-logs', auditRoutes);
   app.use('/api/v1/settings', settingsRoutes);

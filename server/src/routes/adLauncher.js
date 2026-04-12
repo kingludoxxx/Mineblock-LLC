@@ -1,10 +1,12 @@
 import { Router } from 'express';
 import { authenticate } from '../middleware/auth.js';
+import { requirePermission } from '../middleware/rbac.js';
 import { pgQuery } from '../db/pg.js';
 import { uploadAdImage, createAdCreative, createAd, getDefaultAdAccountId, isMetaAdsConfigured } from '../services/metaAdsApi.js';
 import crypto from 'crypto';
 
 const router = Router();
+router.use(authenticate, requirePermission('ad-launcher', 'access'));
 
 let tablesReady = false;
 async function ensureTables() {

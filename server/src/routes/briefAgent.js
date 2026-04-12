@@ -1,8 +1,9 @@
 import express from 'express';
 import { authenticate } from '../middleware/auth.js';
+import { requirePermission } from '../middleware/rbac.js';
 
 const router = express.Router();
-router.use(authenticate);
+router.use(authenticate, requirePermission('brief-agent', 'access'));
 
 const CLICKUP_TOKEN = process.env.CLICKUP_API_TOKEN || '';
 const VIDEO_ADS_LIST_ID = '901518716584';

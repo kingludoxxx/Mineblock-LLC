@@ -1,11 +1,13 @@
 import { Router } from 'express';
 import { pgQuery } from '../db/pg.js';
 import { authenticate } from '../middleware/auth.js';
+import { requirePermission } from '../middleware/rbac.js';
 import { buildLayoutAnalysisPrompt } from '../utils/staticsPrompts.js';
 import { resolveImage } from '../utils/imageHelpers.js';
 import { analyzeTemplate, analyzeTemplateFast } from '../utils/templateAnalysis.js';
 
 const router = Router();
+router.use(authenticate, requirePermission('statics-templates', 'access'));
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
 const CLAUDE_API_URL = 'https://api.anthropic.com/v1/messages';

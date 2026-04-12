@@ -1,10 +1,11 @@
 import { Router } from 'express';
 import { pgQuery } from '../db/pg.js';
 import { authenticate } from '../middleware/auth.js';
+import { requirePermission } from '../middleware/rbac.js';
 
 const router = Router();
 
-router.use(authenticate);
+router.use(authenticate, requirePermission('product-profiles', 'access'));
 
 let tableReady = false;
 

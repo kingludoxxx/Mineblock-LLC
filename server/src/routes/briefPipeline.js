@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { authenticate } from '../middleware/auth.js';
+import { requirePermission } from '../middleware/rbac.js';
 import { pgQuery } from '../db/pg.js';
 import crypto from 'crypto';
 import { execFile } from 'child_process';
@@ -19,6 +20,7 @@ const __dirname = dirname(__filename);
 const YTDLP_PATH = join(__dirname, '..', '..', '..', 'bin', 'yt-dlp');
 
 const router = Router();
+router.use(authenticate, requirePermission('brief-pipeline', 'access'));
 
 // ── Config ────────────────────────────────────────────────────────────
 const CLICKUP_TOKEN = process.env.CLICKUP_API_TOKEN || '';

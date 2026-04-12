@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import ProtectedRoute from './components/auth/ProtectedRoute';
+import PageGate from './components/auth/PageGate';
 import AppLayout from './components/layout/AppLayout';
 import ErrorBoundary from './components/ErrorBoundary';
 
@@ -64,6 +65,9 @@ import TeamHubPage from './pages/library/TeamHubPage';
 import AssetsPage from './pages/library/AssetsPage';
 import TodoPage from './pages/library/TodoPage';
 
+// Team
+import TeamManagement from './pages/TeamManagement';
+
 // Ops
 import SupportPage from './pages/ops/SupportPage';
 import ApiRunsPage from './pages/ops/ApiRunsPage';
@@ -96,58 +100,61 @@ export default function App() {
           <Route path="settings" element={<Settings />} />
 
           {/* Intel */}
-          <Route path="meta" element={<MetaPage />} />
-          <Route path="google" element={<GooglePage />} />
-          <Route path="youtube" element={<YouTubePage />} />
-          <Route path="tiktok-ads" element={<TikTokAdsPage />} />
-          <Route path="tiktok-shop" element={<TikTokShopPage />} />
-          <Route path="tiktok-organic" element={<TikTokOrganicPage />} />
-          <Route path="brands" element={<BrandsPage />} />
-          <Route path="brands/:id" element={<BrandDetailPage />} />
-          <Route path="following" element={<FollowingPage />} />
-          <Route path="saved" element={<SavedPage />} />
-          <Route path="creative-intelligence" element={<CreativeIntelligencePage />} />
+          <Route path="meta" element={<PageGate permission="meta-ads:access"><MetaPage /></PageGate>} />
+          <Route path="google" element={<PageGate permission="google-ads:access"><GooglePage /></PageGate>} />
+          <Route path="youtube" element={<PageGate permission="youtube-ads:access"><YouTubePage /></PageGate>} />
+          <Route path="tiktok-ads" element={<PageGate permission="tiktok-ads:access"><TikTokAdsPage /></PageGate>} />
+          <Route path="tiktok-shop" element={<PageGate permission="tiktok-shop:access"><TikTokShopPage /></PageGate>} />
+          <Route path="tiktok-organic" element={<PageGate permission="tiktok-organic:access"><TikTokOrganicPage /></PageGate>} />
+          <Route path="brands" element={<PageGate permission="brands:access"><BrandsPage /></PageGate>} />
+          <Route path="brands/:id" element={<PageGate permission="brands:access"><BrandDetailPage /></PageGate>} />
+          <Route path="following" element={<PageGate permission="following:access"><FollowingPage /></PageGate>} />
+          <Route path="saved" element={<PageGate permission="saved:access"><SavedPage /></PageGate>} />
+          <Route path="creative-intelligence" element={<PageGate permission="creative-intelligence:access"><CreativeIntelligencePage /></PageGate>} />
 
           {/* Lab */}
-          <Route path="avatars" element={<AvatarsPage />} />
-          <Route path="mechanisms" element={<MechanismsPage />} />
-          <Route path="offers" element={<OffersPage />} />
-          <Route path="products" element={<ProductsPage />} />
-          <Route path="funnels" element={<FunnelsPage />} />
+          <Route path="avatars" element={<PageGate permission="avatars:access"><AvatarsPage /></PageGate>} />
+          <Route path="mechanisms" element={<PageGate permission="mechanisms:access"><MechanismsPage /></PageGate>} />
+          <Route path="offers" element={<PageGate permission="offers:access"><OffersPage /></PageGate>} />
+          <Route path="products" element={<PageGate permission="products:access"><ProductsPage /></PageGate>} />
+          <Route path="funnels" element={<PageGate permission="funnels:access"><FunnelsPage /></PageGate>} />
 
           {/* Production */}
-          <Route path="brief-agent" element={<BriefAgentPage />} />
-          <Route path="magic-ads" element={<MagicAdsPage />} />
-          <Route path="iteration-king" element={<IterationKingPage />} />
-          <Route path="images" element={<ImagesPage />} />
-          <Route path="video" element={<VideoPage />} />
-          <Route path="audio" element={<AudioPage />} />
-          <Route path="statics-generation" element={<StaticsGenerationPage />} />
-          <Route path="brief-pipeline" element={<BriefPipeline />} />
-          <Route path="ads-launcher" element={<AdsLauncherPage />} />
+          <Route path="brief-agent" element={<PageGate permission="brief-agent:access"><BriefAgentPage /></PageGate>} />
+          <Route path="magic-ads" element={<PageGate permission="magic-ads:access"><MagicAdsPage /></PageGate>} />
+          <Route path="iteration-king" element={<PageGate permission="iteration-king:access"><IterationKingPage /></PageGate>} />
+          <Route path="images" element={<PageGate permission="images:access"><ImagesPage /></PageGate>} />
+          <Route path="video" element={<PageGate permission="video:access"><VideoPage /></PageGate>} />
+          <Route path="audio" element={<PageGate permission="audio:access"><AudioPage /></PageGate>} />
+          <Route path="statics-generation" element={<PageGate permission="statics:access"><StaticsGenerationPage /></PageGate>} />
+          <Route path="brief-pipeline" element={<PageGate permission="brief-pipeline:access"><BriefPipeline /></PageGate>} />
+          <Route path="ads-launcher" element={<PageGate permission="ads-launcher:access"><AdsLauncherPage /></PageGate>} />
 
           {/* Performance */}
-          <Route path="creative-analysis" element={<CreativeAnalysisPage />} />
-          <Route path="kpi-system" element={<KpiDashboard />} />
-          <Route path="kpi-system/cost-sheet" element={<SupplierCostSheet />} />
-          <Route path="kpi-system/fees" element={<FeeBreakdown />} />
-          <Route path="attribution" element={<AttributionPage />} />
-          <Route path="live" element={<LivePage />} />
-          <Route path="ltv" element={<LtvPage />} />
-          <Route path="roas" element={<RoasPage />} />
-          <Route path="ads-control-center" element={<AdsControlCenter />} />
+          <Route path="creative-analysis" element={<PageGate permission="creative-analysis:access"><CreativeAnalysisPage /></PageGate>} />
+          <Route path="kpi-system" element={<PageGate permission="kpi-system:access"><KpiDashboard /></PageGate>} />
+          <Route path="kpi-system/cost-sheet" element={<PageGate permission="kpi-system:access"><SupplierCostSheet /></PageGate>} />
+          <Route path="kpi-system/fees" element={<PageGate permission="kpi-system:access"><FeeBreakdown /></PageGate>} />
+          <Route path="attribution" element={<PageGate permission="attribution:access"><AttributionPage /></PageGate>} />
+          <Route path="live" element={<PageGate permission="live-metrics:access"><LivePage /></PageGate>} />
+          <Route path="ltv" element={<PageGate permission="ltv:access"><LtvPage /></PageGate>} />
+          <Route path="roas" element={<PageGate permission="roas:access"><RoasPage /></PageGate>} />
+          <Route path="ads-control-center" element={<PageGate permission="ads-control-center:access"><AdsControlCenter /></PageGate>} />
 
           {/* Library */}
-          <Route path="team-hub" element={<TeamHubPage />} />
-          <Route path="assets" element={<AssetsPage />} />
-          <Route path="todo" element={<TodoPage />} />
+          <Route path="team-hub" element={<PageGate permission="team-hub:access"><TeamHubPage /></PageGate>} />
+          <Route path="assets" element={<PageGate permission="assets:access"><AssetsPage /></PageGate>} />
+          <Route path="todo" element={<PageGate permission="todo:access"><TodoPage /></PageGate>} />
+
+          {/* Team */}
+          <Route path="team" element={<PageGate permission="team:manage"><TeamManagement /></PageGate>} />
 
           {/* Ops (admin) */}
-          <Route path="support" element={<SupportPage />} />
-          <Route path="api-runs" element={<ApiRunsPage />} />
-          <Route path="ops-dashboard" element={<OpsDashboardPage />} />
-          <Route path="scrape-runs" element={<ScrapeRunsPage />} />
-          <Route path="status" element={<StatusPage />} />
+          <Route path="support" element={<PageGate permission="support:access"><SupportPage /></PageGate>} />
+          <Route path="api-runs" element={<PageGate permission="api-runs:access"><ApiRunsPage /></PageGate>} />
+          <Route path="ops-dashboard" element={<PageGate permission="ops-dashboard:access"><OpsDashboardPage /></PageGate>} />
+          <Route path="scrape-runs" element={<PageGate permission="scrape-runs:access"><ScrapeRunsPage /></PageGate>} />
+          <Route path="status" element={<PageGate permission="status:access"><StatusPage /></PageGate>} />
         </Route>
 
         {/* Public supplier route (token-based auth via query param) */}

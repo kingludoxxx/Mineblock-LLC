@@ -1,8 +1,10 @@
 import { Router } from 'express';
 import { authenticate } from '../middleware/auth.js';
+import { requirePermission } from '../middleware/rbac.js';
 import { pgQuery } from '../db/pg.js';
 
 const router = Router();
+router.use(authenticate, requirePermission('ad-rejection-monitor', 'access'));
 
 // ── Config ──────────────────────────────────────────────────────────
 const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN || '';

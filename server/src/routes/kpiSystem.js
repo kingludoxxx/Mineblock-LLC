@@ -1,9 +1,11 @@
 import { Router } from 'express';
 import { authenticate } from '../middleware/auth.js';
+import { requirePermission } from '../middleware/rbac.js';
 import { pgQuery } from '../db/pg.js';
 import { fetchDailyAdSpend } from './creativeAnalysis.js';
 
 const router = Router();
+router.use(authenticate, requirePermission('kpi-system', 'access'));
 
 // ── Config ──────────────────────────────────────────────────────────
 const SHOPIFY_STORE = '17cca0-2.myshopify.com';

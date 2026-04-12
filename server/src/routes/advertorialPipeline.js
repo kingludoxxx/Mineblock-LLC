@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { authenticate } from '../middleware/auth.js';
+import { requirePermission } from '../middleware/rbac.js';
 import { pgQuery } from '../db/pg.js';
 import Anthropic from '@anthropic-ai/sdk';
 import {
@@ -15,6 +16,7 @@ import { uploadBuffer, uploadFromUrl, isR2Configured } from '../services/r2.js';
 import crypto from 'crypto';
 
 const router = Router();
+router.use(authenticate, requirePermission('advertorial', 'access'));
 const anthropic = new Anthropic();
 
 // ── Ensure tables exist ──────────────────────────────────────────────

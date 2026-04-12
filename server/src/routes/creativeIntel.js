@@ -1,8 +1,10 @@
 import { Router } from 'express';
 import { authenticate } from '../middleware/auth.js';
+import { requirePermission } from '../middleware/rbac.js';
 import { pgQuery } from '../db/pg.js';
 
 const router = Router();
+router.use(authenticate, requirePermission('creative-intel', 'access'));
 
 // ── Config ──────────────────────────────────────────────────────────
 const CLICKUP_TOKEN  = process.env.CLICKUP_API_TOKEN  || '';

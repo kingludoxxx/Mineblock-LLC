@@ -1,8 +1,10 @@
 import { Router } from 'express';
 import { authenticate } from '../middleware/auth.js';
+import { requirePermission } from '../middleware/rbac.js';
 import { pgQuery, pgDb } from '../db/pg.js';
 
 const router = Router();
+router.use(authenticate, requirePermission('creative-analysis', 'access'));
 
 // ── Config ──────────────────────────────────────────────────────────
 const TW_API_KEY  = process.env.TRIPLEWHALE_API_KEY || '';

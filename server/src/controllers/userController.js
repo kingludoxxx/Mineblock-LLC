@@ -356,6 +356,18 @@ export const assignRole = async (req, res) => {
   }
 };
 
+export const listRoles = async (req, res) => {
+  try {
+    const result = await pool.query(
+      'SELECT id, name, description, permissions FROM roles ORDER BY name'
+    );
+    return res.json({ success: true, roles: result.rows });
+  } catch (err) {
+    console.error('listRoles error:', err);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
 export const removeRole = async (req, res) => {
   try {
     const { id, roleId } = req.params;
