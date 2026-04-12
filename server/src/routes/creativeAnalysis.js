@@ -140,7 +140,25 @@ function parseAdName(name) {
     if (underscoreSegments.length >= 3) {
       segments = underscoreSegments;
     } else {
-      return null; // Not a parseable ad name — skip
+      // Final fallback: space-delimited ads like "MR B0143 H3 IT B0011 NA Againstcompetition Mashup Ludovico NA Uly WK14 2026"
+      // Only try if name contains a creative ID pattern (B\d{3,}) and week pattern (WK\d+)
+      if (/B\d{3,}/i.test(cleanName) && /WK\d+/i.test(cleanName)) {
+        const spaceSegments = cleanName.split(/\s+/).filter(Boolean);
+        // Rejoin split week (e.g. ["WK14", "2026"] → "WK14_2026")
+        for (let i = spaceSegments.length - 1; i >= 1; i--) {
+          if (/^\d{4}$/.test(spaceSegments[i]) && /^WK\d+$/i.test(spaceSegments[i - 1])) {
+            spaceSegments.splice(i - 1, 2, `${spaceSegments[i - 1]}_${spaceSegments[i]}`);
+            break;
+          }
+        }
+        if (spaceSegments.length >= 3) {
+          segments = spaceSegments;
+        } else {
+          return null;
+        }
+      } else {
+        return null; // Not a parseable ad name — skip
+      }
     }
   }
 
@@ -1200,11 +1218,19 @@ router.get('/data-by-date', authenticate, async (req, res) => {
     // Parse and aggregate by (creative_id, hook_id) — same pattern as syncData
     const hookAgg = new Map(); // key: "creative_id|hook_id"
     let skipped = 0;
+    // Track unstructured/skipped ad totals for transparency
+    let unstructuredSpend = 0, unstructuredRevenue = 0, unstructuredPurchases = 0;
+    let unstructuredImpressions = 0, unstructuredClicks = 0;
 
     for (const ad of twAds) {
       const parsed = parseAdName(ad.ad_name);
       if (!parsed || !parsed.creative_id || !parsed.hook_id) {
         skipped++;
+        unstructuredSpend += Number(ad.total_spend) || 0;
+        unstructuredRevenue += Number(ad.total_revenue) || 0;
+        unstructuredPurchases += Number(ad.total_purchases) || 0;
+        unstructuredImpressions += Number(ad.total_impressions) || 0;
+        unstructuredClicks += Number(ad.total_clicks) || 0;
         continue;
       }
 
@@ -1354,6 +1380,13 @@ router.get('/data-by-date', authenticate, async (req, res) => {
         attributionModel: TW_ATTRIBUTION_MODEL,
         revenueColumn: twKnownRevCol || 'unknown',
         purchaseColumn: twKnownPurCol || 'unknown',
+        unstructured: {
+          count: skipped,
+          spend: Math.round(unstructuredSpend * 100) / 100,
+          revenue: Math.round(unstructuredRevenue * 100) / 100,
+          purchases: unstructuredPurchases,
+          ...computeMetrics({ spend: unstructuredSpend, revenue: unstructuredRevenue, purchases: unstructuredPurchases, impressions: unstructuredImpressions, clicks: unstructuredClicks }),
+        },
       },
     };
 
