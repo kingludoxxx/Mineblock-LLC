@@ -4,7 +4,7 @@ import { requirePermission } from '../middleware/rbac.js';
 import { pgQuery } from '../db/pg.js';
 
 const router = Router();
-router.use(authenticate, requirePermission('ads-control', 'access'));
+router.use(authenticate, requirePermission('ads-control-center', 'access'));
 
 // ── Config ──────────────────────────────────────────────────────────────
 const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN || '';

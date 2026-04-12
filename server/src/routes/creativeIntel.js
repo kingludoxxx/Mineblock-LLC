@@ -4,7 +4,7 @@ import { requirePermission } from '../middleware/rbac.js';
 import { pgQuery } from '../db/pg.js';
 
 const router = Router();
-router.use(authenticate, requirePermission('creative-intel', 'access'));
+router.use(authenticate, requirePermission('creative-intelligence', 'access'));
 
 // ── Config ──────────────────────────────────────────────────────────
 const CLICKUP_TOKEN  = process.env.CLICKUP_API_TOKEN  || '';

@@ -126,7 +126,7 @@ export default function App() {
           <Route path="images" element={<PageGate permission="images:access"><ImagesPage /></PageGate>} />
           <Route path="video" element={<PageGate permission="video:access"><VideoPage /></PageGate>} />
           <Route path="audio" element={<PageGate permission="audio:access"><AudioPage /></PageGate>} />
-          <Route path="statics-generation" element={<PageGate permission="statics:access"><StaticsGenerationPage /></PageGate>} />
+          <Route path="statics-generation" element={<PageGate permission="statics-generation:access"><StaticsGenerationPage /></PageGate>} />
           <Route path="brief-pipeline" element={<PageGate permission="brief-pipeline:access"><BriefPipeline /></PageGate>} />
           <Route path="ads-launcher" element={<PageGate permission="ads-launcher:access"><AdsLauncherPage /></PageGate>} />
 

@@ -19,8 +19,14 @@ export function usePermissions() {
     if (!resource || !action) return false;
 
     return user.roles.some((role) => {
-      const perms = role?.permissions;
-      if (!perms || typeof perms !== 'object') return false;
+      let perms = role?.permissions;
+      if (!perms) return false;
+
+      // Handle JSONB returned as string
+      if (typeof perms === 'string') {
+        try { perms = JSON.parse(perms); } catch { return false; }
+      }
+      if (typeof perms !== 'object' || Array.isArray(perms)) return false;
 
       // Wildcard: "*": ["*"] grants everything
       if (Array.isArray(perms['*']) && perms['*'].includes('*')) return true;

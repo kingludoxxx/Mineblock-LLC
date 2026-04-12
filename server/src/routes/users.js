@@ -11,12 +11,9 @@ import {
   removeRole,
   listRoles,
 } from '../controllers/userController.js';
-import { inviteTeamMember } from '../controllers/teamController.js';
-
 const router = Router();
 
-router.post('/invite', authenticate, requireRole('SuperAdmin', 'Admin'), inviteTeamMember);
-router.get('/roles', authenticate, listRoles);
+router.get('/roles', authenticate, requireRole('SuperAdmin', 'Admin'), listRoles);
 router.get('/', authenticate, requirePermission('users', 'read'), listUsers);
 router.post('/', authenticate, requirePermission('users', 'create'), createUser);
 router.get('/:id', authenticate, requirePermission('users', 'read'), getUserById);

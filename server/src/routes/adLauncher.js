@@ -6,7 +6,7 @@ import { uploadAdImage, createAdCreative, createAd, getDefaultAdAccountId, isMet
 import crypto from 'crypto';
 
 const router = Router();
-router.use(authenticate, requirePermission('ad-launcher', 'access'));
+router.use(authenticate, requirePermission('ads-launcher', 'access'));
 
 let tablesReady = false;
 async function ensureTables() {

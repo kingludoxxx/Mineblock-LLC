@@ -38,11 +38,31 @@ const NAV_ITEMS = [
 ];
 
 router.get('/navigation', (req, res) => {
-  const userPermissions = req.user?.permissions || [];
+  const roles = req.user?.roles || [];
+
+  // Build a flat set of "resource:action" strings from all roles
+  const userPermissions = new Set();
+  for (const role of roles) {
+    let perms = role.permissions;
+    if (!perms) continue;
+    if (typeof perms === 'string') {
+      try { perms = JSON.parse(perms); } catch { continue; }
+    }
+    if (perms['*'] && Array.isArray(perms['*']) && perms['*'].includes('*')) {
+      // Wildcard — grant everything
+      NAV_ITEMS.forEach((item) => item.permissions.forEach((p) => userPermissions.add(p)));
+      break;
+    }
+    for (const [resource, actions] of Object.entries(perms)) {
+      if (Array.isArray(actions)) {
+        actions.forEach((a) => userPermissions.add(`${resource}:${a}`));
+      }
+    }
+  }
 
   const filtered = NAV_ITEMS.filter((item) => {
     if (item.permissions.length === 0) return true;
-    return item.permissions.every((perm) => userPermissions.includes(perm));
+    return item.permissions.every((perm) => userPermissions.has(perm));
   });
 
   res.json({

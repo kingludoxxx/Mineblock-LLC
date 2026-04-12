@@ -5,7 +5,7 @@ import { requirePermission } from '../middleware/rbac.js';
 
 const router = Router();
 
-router.use(authenticate, requirePermission('product-profiles', 'access'));
+router.use(authenticate, requirePermission('products', 'access'));
 
 let tableReady = false;
 

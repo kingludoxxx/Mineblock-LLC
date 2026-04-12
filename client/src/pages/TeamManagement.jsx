@@ -28,6 +28,12 @@ const PAGE_CATEGORIES = [
       { key: 'google-ads', label: 'Google Ads' },
       { key: 'youtube-ads', label: 'YouTube Ads' },
       { key: 'tiktok-ads', label: 'TikTok Ads' },
+      { key: 'tiktok-shop', label: 'TikTok Shop' },
+      { key: 'tiktok-organic', label: 'TikTok Organic' },
+      { key: 'brands', label: 'Brands' },
+      { key: 'following', label: 'Following' },
+      { key: 'saved', label: 'Saved' },
+      { key: 'creative-intelligence', label: 'Creative Intelligence' },
     ],
   },
   {
@@ -36,15 +42,24 @@ const PAGE_CATEGORIES = [
       { key: 'brief-pipeline', label: 'Brief Pipeline' },
       { key: 'brief-agent', label: 'Brief Agent' },
       { key: 'magic-ads', label: 'Magic Ads' },
-      { key: 'statics', label: 'Statics' },
+      { key: 'iteration-king', label: 'Iteration King' },
+      { key: 'images', label: 'Images' },
+      { key: 'video', label: 'Video' },
+      { key: 'audio', label: 'Audio' },
+      { key: 'statics-generation', label: 'Statics' },
+      { key: 'ads-launcher', label: 'Ads Launcher' },
     ],
   },
   {
     label: 'Performance',
     pages: [
+      { key: 'creative-analysis', label: 'Creative Analysis' },
+      { key: 'kpi-system', label: 'KPI System' },
       { key: 'attribution', label: 'Attribution' },
       { key: 'live-metrics', label: 'Live Metrics' },
       { key: 'ltv', label: 'LTV' },
+      { key: 'roas', label: 'ROAS' },
+      { key: 'ads-control-center', label: 'Ads Control Center' },
     ],
   },
   {
@@ -52,7 +67,9 @@ const PAGE_CATEGORIES = [
     pages: [
       { key: 'avatars', label: 'Avatars' },
       { key: 'mechanisms', label: 'Mechanisms' },
-      { key: 'hooks', label: 'Hooks' },
+      { key: 'offers', label: 'Offers' },
+      { key: 'products', label: 'Products' },
+      { key: 'funnels', label: 'Funnels' },
     ],
   },
   {
@@ -64,10 +81,13 @@ const PAGE_CATEGORIES = [
     ],
   },
   {
-    label: 'Other',
+    label: 'Ops',
     pages: [
-      { key: 'creative-analysis', label: 'Creative Analysis' },
       { key: 'support', label: 'Support' },
+      { key: 'api-runs', label: 'API Runs' },
+      { key: 'ops-dashboard', label: 'Ops Dashboard' },
+      { key: 'scrape-runs', label: 'Scrape Runs' },
+      { key: 'status', label: 'Status' },
     ],
   },
 ];

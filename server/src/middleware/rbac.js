@@ -7,8 +7,13 @@ export const requirePermission = (resource, action) => {
     const roles = req.user.roles || [];
 
     for (const role of roles) {
-      const permissions = role.permissions;
+      let permissions = role.permissions;
       if (!permissions) continue;
+
+      // Handle JSONB returned as string from postgres.js
+      if (typeof permissions === 'string') {
+        try { permissions = JSON.parse(permissions); } catch { continue; }
+      }
 
       // SuperAdmin wildcard: {"*": ["*"]}
       if (permissions['*'] && Array.isArray(permissions['*']) && permissions['*'].includes('*')) {

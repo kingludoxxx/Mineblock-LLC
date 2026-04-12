@@ -250,6 +250,9 @@ export const changeTeamMemberRole = async (req, res) => {
       client.release();
     }
 
+    // Invalidate user's sessions so new permissions take effect immediately
+    await pool.query('DELETE FROM sessions WHERE user_id = $1', [userId]);
+
     await createAuditLog({
       userId: req.user.id,
       action: 'CHANGE_TEAM_ROLE',
@@ -431,6 +434,9 @@ export const updateTeamMemberPages = async (req, res) => {
       }
 
       await client.query('COMMIT');
+
+      // Invalidate user's sessions so new permissions take effect immediately
+      await pool.query('DELETE FROM sessions WHERE user_id = $1', [userId]);
 
       await createAuditLog({
         userId: req.user.id,

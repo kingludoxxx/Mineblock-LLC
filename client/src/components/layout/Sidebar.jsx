@@ -67,7 +67,7 @@ const navGroups = [
     items: [
       { to: '/app/brief-agent', icon: Sparkles, label: 'Brief Agent', permission: 'brief-agent:access' },
       { to: '/app/iteration-king', icon: Crown, label: 'Iteration King', permission: 'iteration-king:access' },
-      { to: '/app/statics-generation', icon: Layers, label: 'Statics Generation', permission: 'statics:access' },
+      { to: '/app/statics-generation', icon: Layers, label: 'Statics Generation', permission: 'statics-generation:access' },
       { to: '/app/brief-pipeline', icon: FileText, label: 'Brief Pipeline', permission: 'brief-pipeline:access' },
       { to: '/app/ads-launcher', icon: Rocket, label: 'Ads Launcher', permission: 'ads-launcher:access' },
     ],
