@@ -76,7 +76,7 @@ export default function StatusPage() {
   const allOperational = services.every((s) => s.status === 'operational');
 
   return (
-    <div className="min-h-screen bg-[#0a0a0a]">
+    <div className="min-h-screen bg-[#0a0a0a] p-6 lg:p-10">
       <div className="mb-8">
         <h1 className="text-2xl font-bold text-white">System Status</h1>
         <p className="text-slate-400 mt-1">Service health, latency, and incident history</p>
