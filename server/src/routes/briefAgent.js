@@ -12,10 +12,8 @@ const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN || '';
 
 // Editor Slack channels for Monday reports
 const EDITOR_SLACK_CHANNELS = {
-  Faiz: 'C0AFCJ4UN9L',
-  Antoni: 'C0AEZ6UQANT',
   Uly: 'C0ANNMMPUCC',
-  Neil: 'C0ARP2SBQ8J',
+  Dimaranan: 'C0ARP2SBQ8J',
 };
 
 const headers = {
@@ -105,11 +103,16 @@ const CREATOR_NA_TASK_ID = '86c7n9cvr';
 // User IDs
 const USER_IDS = {
   Ludovico: 266421907,
-  Antoni: 94595626,
-  Faiz: 170558610,
   Uly: 106674594,
-  Neil: 100889905,
+  Dimaranan: 106693066,
+  Fazlul: 106694451,
 };
+
+// ── Server-side caches (avoid paginating all ClickUp tasks on every page load) ──
+let nextBriefCache = { value: null, timestamp: 0 };
+const NEXT_BRIEF_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+let editorQueueCache = { counts: null, timestamp: 0 };
+const EDITOR_QUEUE_CACHE_TTL = 2 * 60 * 1000; // 2 minutes
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -146,6 +149,11 @@ function getISOWeekNumber() {
 // GET /api/v1/brief-agent/next-brief-number
 router.get('/next-brief-number', async (_req, res) => {
   try {
+    // Return cached value if fresh (avoids paginating all ClickUp tasks)
+    if (nextBriefCache.value && (Date.now() - nextBriefCache.timestamp < NEXT_BRIEF_CACHE_TTL)) {
+      return res.json({ success: true, nextBriefNumber: nextBriefCache.value });
+    }
+
     let maxBrief = 0;
     let page = 0;
     let hasMore = true;
@@ -178,7 +186,9 @@ router.get('/next-brief-number', async (_req, res) => {
       page++;
     }
 
-    res.json({ success: true, nextBriefNumber: maxBrief + 1 });
+    const nextNumber = maxBrief + 1;
+    nextBriefCache = { value: nextNumber, timestamp: Date.now() };
+    res.json({ success: true, nextBriefNumber: nextNumber });
   } catch (err) {
     console.error('[BriefAgent] next-brief-number error:', err.message);
     res.status(500).json({
@@ -207,6 +217,11 @@ router.get('/field-options', (_req, res) => {
 // GET /api/v1/brief-agent/editor-queue — count of edit queue tasks per editor
 router.get('/editor-queue', async (_req, res) => {
   try {
+    // Return cached counts if fresh
+    if (editorQueueCache.counts && (Date.now() - editorQueueCache.timestamp < EDITOR_QUEUE_CACHE_TTL)) {
+      return res.json({ success: true, counts: editorQueueCache.counts });
+    }
+
     const counts = {};
     // Initialize all editors to 0
     for (const name of Object.keys(USER_IDS)) {
@@ -234,6 +249,7 @@ router.get('/editor-queue', async (_req, res) => {
       page++;
     }
 
+    editorQueueCache = { counts, timestamp: Date.now() };
     res.json({ success: true, counts });
   } catch (err) {
     console.error('[BriefAgent] editor-queue error:', err.message);
@@ -539,6 +555,10 @@ router.post('/create', async (req, res) => {
       body: JSON.stringify({ name: taskName }),
     }).catch((err) => console.error('[BriefAgent] Name re-set error:', err.message));
 
+    // Invalidate caches after creating a new brief
+    nextBriefCache = { value: briefNumber + 1, timestamp: Date.now() };
+    editorQueueCache = { counts: null, timestamp: 0 };
+
     res.json({
       success: true,
       task: {
@@ -562,7 +582,7 @@ router.post('/create', async (req, res) => {
 
 // GET /api/v1/brief-agent/editor-report/slack/:editor
 // Returns total "ready to launch" cards this week per editor — Make calls this Monday and posts to Slack
-// Slack channels: Faiz → C0AFCJ4UN9L, Antoni → C0AEZ6UQANT, Neil → C0ARP2SBQ8J
+// Slack channels: Uly → C0ANNMMPUCC, Dimaranan → C0ARP2SBQ8J
 router.get('/editor-report/slack/:editor', async (req, res) => {
   try {
     const editorName = req.params.editor;
@@ -667,7 +687,7 @@ router.get('/editor-report/slack/:editor', async (req, res) => {
 // Make calls this on Monday and posts the response text directly to Slack.
 router.get('/weekly-recap/:editor', async (req, res) => {
   try {
-    const editorName = req.params.editor; // "Antoni" or "Faiz"
+    const editorName = req.params.editor;
     const editorId = USER_IDS[editorName];
     if (!editorId) {
       return res.status(400).json({ success: false, error: { message: `Unknown editor: ${editorName}` } });
@@ -784,8 +804,8 @@ router.get('/monthly-report/:editor/:year/:month', async (req, res) => {
       }
     }
 
-    // Filter by editor: check assignee ID OR editor name in task name (Muhammad/Faiz)
-    const editorNames = { Faiz: ['muhammad', 'faiz'], Antoni: ['antoni'], Uly: ['uly'], Neil: ['neil'] };
+    // Filter by editor: check assignee ID OR editor name in task name
+    const editorNames = { Uly: ['uly'], Dimaranan: ['dimaranan', 'neil john'], Fazlul: ['fazlul'] };
     const nameMatches = editorNames[editor] || [editor.toLowerCase()];
 
     const editorTasks = allTasks.filter(t => {

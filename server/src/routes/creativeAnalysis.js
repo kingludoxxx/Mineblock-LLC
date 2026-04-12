@@ -55,8 +55,9 @@ const KNOWN_FORMATS = new Set([
 ]);
 
 const KNOWN_EDITORS = new Set([
-  'faiz', 'muhammad', 'antoni', 'ludovico', 'ludo', 'atif', 'ali', 'hamza',
-  'usama', 'carl', 'alhamjatonni', 'abdul', 'robi', 'abdullah', 'farhan',
+  'ludovico', 'ludo', 'uly', 'dimaranan', 'fazlul',
+  'muhammad', 'atif', 'ali', 'hamza', 'usama', 'carl',
+  'alhamjatonni', 'abdul', 'robi', 'abdullah', 'farhan',
 ]);
 
 const KNOWN_ANGLES = new Set([

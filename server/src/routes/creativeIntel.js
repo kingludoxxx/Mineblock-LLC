@@ -21,8 +21,9 @@ const FRAME_LINK_FIELD_ID = 'd90f9f25-d7a0-4eb4-9ded-aca0b4519a3b';
 
 // Editor user IDs in ClickUp
 const EDITOR_USER_IDS = {
-  Antoni: 94595626,
-  Faiz: 170558610,
+  Uly: 106674594,
+  Dimaranan: 106693066,
+  Fazlul: 106694451,
 };
 
 // Known formats & angles for classification
@@ -99,10 +100,10 @@ function parseTaskName(name) {
   if (editor) {
     editor = editor.charAt(0).toUpperCase() + editor.slice(1).toLowerCase();
     const editorMap = {
-      'mohammad': 'Faiz', 'mohammed': 'Faiz', 'muhammad': 'Faiz',
-      'antoni': 'Antoni', 'anthony': 'Antoni',
       'ludovico': 'Ludovico', 'ludo': 'Ludovico',
-      'faiz': 'Faiz', 'atif': 'Atif', 'ali': 'Ali', 'hamza': 'Hamza',
+      'uly': 'Uly', 'dimaranan': 'Dimaranan', 'fazlul': 'Fazlul',
+      'muhammad': 'Muhammad', 'mohammad': 'Muhammad', 'mohammed': 'Muhammad',
+      'atif': 'Atif', 'ali': 'Ali', 'hamza': 'Hamza',
       'usama': 'Usama', 'carl': 'Carl', 'alhamjatonni': 'Alhamjatonni',
       'abdul': 'Abdul', 'robi': 'Robi', 'abdullah': 'Abdullah', 'farhan': 'Farhan',
       'team': 'Team',

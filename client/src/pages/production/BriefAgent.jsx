@@ -41,7 +41,7 @@ export default function BriefAgent() {
   const [recentBriefs, setRecentBriefs] = useState([]);
   const [parentLookup, setParentLookup] = useState(null); // { loading, task }
   const [lookupTimer, setLookupTimer] = useState(null);
-  const [editorCounts, setEditorCounts] = useState({}); // { Antoni: 5, Faiz: 6 }
+  const [editorCounts, setEditorCounts] = useState({}); // { Uly: 5, Dimaranan: 3 }
 
   // Fetch editor queue counts
   const fetchEditorCounts = useCallback(async () => {

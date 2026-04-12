@@ -161,10 +161,9 @@ const CREATOR_NA_TASK_ID = '86c7n9cvr';
 
 const USER_IDS = {
   Ludovico: 266421907,
-  Antoni: 94595626,
-  Faiz: 170558610,
   Uly: 106674594,
-  Neil: 100889905,
+  Dimaranan: 106693066,
+  Fazlul: 106694451,
 };
 
 // ── Table Initialization ──────────────────────────────────────────────
@@ -635,7 +634,7 @@ function buildNamingConvention({ product_code, brief_number, parent_creative_id,
     format || 'Mashup',
     strategist || 'Ludovico',
     creator || 'NA',
-    editor || 'Antoni',
+    editor || 'Uly',
     week || getCurrentWeekLabel(),
   ].join(' - ');
 }
@@ -3287,7 +3286,7 @@ router.post('/generate/:id', authenticate, async (req, res) => {
         format: winner.format,
         strategist: 'Ludovico',
         creator: 'NA',
-        editor: configEditor || winner.editor || 'Antoni',
+        editor: configEditor || winner.editor || 'Uly',
         week: weekLabel,
       });
 
@@ -3315,7 +3314,7 @@ router.post('/generate/:id', authenticate, async (req, res) => {
           scores.coherence?.score || 5, overall,
           scores.verdict || 'MAYBE', JSON.stringify(scores),
           briefNumber, winner.product_code || 'MR', winner.angle, winner.format,
-          winner.avatar, configEditor || winner.editor || 'Antoni',
+          winner.avatar, configEditor || winner.editor || 'Uly',
           'Ludovico', 'NA', namingConvention,
         ], { timeout: 10000 });
 
@@ -3640,7 +3639,7 @@ The selected ad angle is: "${angle}". This is NOT optional.
       const namingConvention = buildNamingConvention({
         product_code: productCode || 'MR', brief_number: briefNumber,
         parent_creative_id: creativeId, avatar: 'NA', angle: angle || 'NA',
-        format: 'Mashup', strategist: 'Ludovico', creator: 'NA', editor: 'Antoni', week: weekLabel,
+        format: 'Mashup', strategist: 'Ludovico', creator: 'NA', editor: 'Uly', week: weekLabel,
       });
 
       try {
@@ -3666,7 +3665,7 @@ The selected ad angle is: "${angle}". This is NOT optional.
           scores.coherence?.score || 5, overall,
           scores.verdict || 'MAYBE', JSON.stringify(scores),
           briefNumber, productCode || 'MR', angle || 'NA', 'Mashup',
-          'NA', 'Antoni', 'Ludovico', 'NA', namingConvention,
+          'NA', 'Uly', 'Ludovico', 'NA', namingConvention,
         ], { timeout: 10000 });
         generatedBriefs.push({ ...inserted[0], scores, direction });
       } catch (dbErr) {

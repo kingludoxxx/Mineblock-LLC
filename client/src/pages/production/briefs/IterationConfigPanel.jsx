@@ -42,7 +42,7 @@ const FIXED_ELEMENTS = [
   { key: 'emotional_driver', label: 'Keep emotional driver' },
 ];
 
-const EDITORS = ['Antoni', 'Faiz', 'Ludovico', 'Uly'];
+const EDITORS = ['Uly', 'Dimaranan', 'Fazlul', 'Ludovico'];
 
 // ---------------------------------------------------------------------------
 // IterationConfigPanel
@@ -53,7 +53,7 @@ export default function IterationConfigPanel({ winner, isOpen, onClose, onSubmit
   const [aggressiveness, setAggressiveness] = useState('medium');
   const [numVariations, setNumVariations] = useState(5);
   const [fixedElements, setFixedElements] = useState(['proof_type', 'cta_structure']);
-  const [editor, setEditor] = useState('Antoni');
+  const [editor, setEditor] = useState('Uly');
 
   if (!isOpen || !winner) return null;
 

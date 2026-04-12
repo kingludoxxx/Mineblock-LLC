@@ -35,7 +35,7 @@ const EDITOR_COLORS = [
 ];
 
 // Active editors — only these show in the filter dropdown
-const ACTIVE_EDITORS = ['Antoni', 'Faiz'];
+const ACTIVE_EDITORS = ['Uly', 'Dimaranan', 'Fazlul'];
 
 const STATUS_STYLES = {
   Winner: 'bg-green-500/20 text-green-400 border border-green-500/30',
