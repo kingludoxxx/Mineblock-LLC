@@ -1,6 +1,6 @@
 databases:
   - name: mineblock-db
-    plan: free
+    plan: basic_256mb
     databaseName: mineblock
     user: mineblock_user
 
