@@ -26,12 +26,13 @@ export default function Login() {
       await login(form.email, form.password);
       navigate('/app/dashboard');
     } catch (err) {
+      const status = err.response?.status;
       const data = err.response?.data;
+      const rawMsg = data?.error?.message || (typeof data?.error === 'string' ? data.error : null) || data?.message;
       setError(
-        data?.error?.message ||
-        (typeof data?.error === 'string' ? data.error : null) ||
-        data?.message ||
-        (err.response?.status >= 500 ? 'Service temporarily unavailable. Please try again later.' : 'Invalid credentials. Please try again.'),
+        status >= 500
+          ? 'Service temporarily unavailable. Please try again later.'
+          : rawMsg || 'Invalid credentials. Please try again.',
       );
     } finally {
       setLoading(false);
