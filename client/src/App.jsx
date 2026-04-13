@@ -77,6 +77,7 @@ import StatusPage from './pages/ops/StatusPage';
 
 export default function App() {
   return (
+    <ErrorBoundary>
     <BrowserRouter>
       <Routes>
         {/* Public auth routes */}
@@ -166,5 +167,6 @@ export default function App() {
         <Route path="*" element={<NotFound />} />
       </Routes>
     </BrowserRouter>
+    </ErrorBoundary>
   );
 }
