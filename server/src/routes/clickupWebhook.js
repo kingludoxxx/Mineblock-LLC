@@ -743,30 +743,35 @@ router.get('/frame-list', async (req, res) => {
       results.teams_error = e.message;
     }
 
+    // Try additional v2 paths to find projects
+    const userId = me?.id;
+    try {
+      const meProjects = await frameioFetch('/me/projects');
+      const pList = Array.isArray(meProjects) ? meProjects : (meProjects?.data || []);
+      results.me_projects = pList.map(p => ({ id: p.id, name: p.name, root_asset_id: p.root_asset_id }));
+    } catch (e) {
+      results.me_projects_error = e.message;
+    }
+    if (userId) {
+      try {
+        const userProjects = await frameioFetch(`/users/${userId}/projects`);
+        const pList = Array.isArray(userProjects) ? userProjects : (userProjects?.data || []);
+        results.user_projects = pList.map(p => ({ id: p.id, name: p.name, root_asset_id: p.root_asset_id }));
+      } catch (e) {
+        results.user_projects_error = e.message;
+      }
+      try {
+        const userTeams = await frameioFetch(`/users/${userId}/teams`);
+        const tList = Array.isArray(userTeams) ? userTeams : (userTeams?.data || []);
+        results.user_teams = tList.map(t => ({ id: t.id, name: t.name }));
+      } catch (e) {
+        results.user_teams_error = e.message;
+      }
+    }
     // Try v4 API paths
     try {
       const v4me = await frameioFetchV4('/me');
       results.v4_me = { id: v4me?.id, email: v4me?.email, account_id: v4me?.account_id };
-      const v4AccountId = v4me?.account_id || accountId;
-      try {
-        const v4teams = await frameioFetchV4(`/accounts/${v4AccountId}/teams`);
-        const v4teamList = Array.isArray(v4teams) ? v4teams : (v4teams?.data || []);
-        results.v4_teams = v4teamList.map(t => ({ id: t.id, name: t.name }));
-        for (const team of v4teamList.slice(0, 3)) {
-          try {
-            const v4projects = await frameioFetchV4(`/teams/${team.id}/projects`);
-            const v4pList = Array.isArray(v4projects) ? v4projects : (v4projects?.data || []);
-            if (!results.v4_projects) results.v4_projects = [];
-            for (const p of v4pList) {
-              results.v4_projects.push({ id: p.id, name: p.name, root_asset_id: p.root_asset_id, team_id: team.id });
-            }
-          } catch (e) {
-            results.v4_team_projects_error = e.message;
-          }
-        }
-      } catch (e) {
-        results.v4_teams_error = e.message;
-      }
     } catch (e) {
       results.v4_error = e.message;
     }
