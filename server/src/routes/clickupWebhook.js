@@ -710,6 +710,63 @@ router.get('/frame-diagnose', async (req, res) => {
   }
 });
 
+// GET /api/v1/clickup-webhook/frame-list — list all accessible projects via teams
+router.get('/frame-list', async (req, res) => {
+  try {
+    const me = await frameioFetch('/me');
+    const accountId = me?.account_id;
+    const results = { account_id: accountId, email: me?.email, teams: [] };
+
+    // Get teams for this account
+    const teams = await frameioFetch(`/accounts/${accountId}/teams`);
+    const teamList = Array.isArray(teams) ? teams : (teams?.data || []);
+
+    for (const team of teamList.slice(0, 5)) {
+      const teamEntry = { id: team.id, name: team.name, projects: [] };
+      try {
+        const projects = await frameioFetch(`/teams/${team.id}/projects`);
+        const projectList = Array.isArray(projects) ? projects : (projects?.data || []);
+        for (const p of projectList) {
+          teamEntry.projects.push({ id: p.id, name: p.name, root_asset_id: p.root_asset_id });
+        }
+      } catch (e) {
+        teamEntry.projects_error = e.message;
+      }
+      results.teams.push(teamEntry);
+    }
+
+    res.json(results);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/v1/clickup-webhook/frame-children/:assetId — list children of a folder
+router.get('/frame-children/:assetId', async (req, res) => {
+  try {
+    const children = await frameioFetch(`/assets/${req.params.assetId}/children`);
+    const list = Array.isArray(children) ? children : (children?.data || []);
+    res.json(list.map(a => ({ id: a.id, name: a.name, type: a.type, item_count: a.item_count })));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /api/v1/clickup-webhook/frame-move — move an asset to a new parent folder
+router.post('/frame-move', async (req, res) => {
+  const { asset_id, new_parent_id } = req.body;
+  if (!asset_id || !new_parent_id) return res.status(400).json({ error: 'asset_id and new_parent_id required' });
+  try {
+    const result = await frameioFetch(`/assets/${asset_id}`, {
+      method: 'PUT',
+      body: JSON.stringify({ parent_id: new_parent_id }),
+    });
+    res.json({ success: true, id: result?.id, name: result?.name, parent_id: result?.parent_id });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Debug: check a Frame.io asset directly
 router.get('/frame-asset/:assetId', async (req, res) => {
   try {
