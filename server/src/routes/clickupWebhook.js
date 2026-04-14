@@ -9,10 +9,10 @@ const CLICKUP_TOKEN = process.env.CLICKUP_API_TOKEN || '';
 const CLICKUP_API = 'https://api.clickup.com/api/v2';
 const TEAM_ID = '90152075024';
 
-// Frame.io config (folder creation handled by Make.com scenario)
-// These are kept for diagnostic/manual fix endpoints only
+// Frame.io config
 const FRAMEIO_TOKEN = process.env.FRAMEIO_TOKEN || '';
 const FRAMEIO_PROJECT_ID = '19c0ce1f-f357-4da8-ba1f-bd7eb201e660';
+const FRAMEIO_EDITING_FOLDER = '2eb1701e-fd39-45fa-a981-947a565f9093'; // "Video Ads Pipeline" folder
 const FRAMEIO_API = 'https://api.frame.io/v2';
 
 // List IDs
@@ -450,8 +450,40 @@ async function ensureMediaBuyingTask(task, taskListId) {
   }
 }
 
-// NOTE: Frame.io folder creation on "editing" status is handled by Make.com scenario
-// Our webhook only handles naming, status sync, YT duplication, and Media Buying tasks
+/**
+ * Create Frame.io folder for a task when it moves to "editing".
+ * Uses the full task name and places it in the correct editing folder.
+ */
+async function handleFrameFolderCreation(task) {
+  const taskId = task.id;
+
+  // Check if a Frame.io link already exists on this task
+  const existingLink = getFieldValue(task, 'd90f9f25-d7a0-4eb4-9ded-aca0b4519a3b');
+  if (existingLink) {
+    logger.info(`[Frame.io] Task ${taskId} already has a Frame link — skipping`);
+    return;
+  }
+
+  if (!FRAMEIO_TOKEN) {
+    logger.warn('[Frame.io] FRAMEIO_TOKEN not set — skipping folder creation');
+    return;
+  }
+
+  // Use the full task name (not the truncated namingConvention field)
+  const folderName = task.name;
+
+  logger.info(`[Frame.io] Creating folder "${folderName}" in editing folder for task ${taskId}`);
+
+  const result = await createFrameFolder(FRAMEIO_EDITING_FOLDER, folderName);
+  if (!result) {
+    logger.error(`[Frame.io] Folder creation returned null for task ${taskId}`);
+    return;
+  }
+
+  // Write the Frame.io link back to the ClickUp task
+  await setCustomField(taskId, 'd90f9f25-d7a0-4eb4-9ded-aca0b4519a3b', result.folderUrl);
+  logger.info(`[Frame.io] Folder created for task ${taskId}: ${result.folderUrl}`);
+}
 
 // Handle status sync between linked tasks
 async function handleStatusSync(taskId, historyItems) {
@@ -463,6 +495,13 @@ async function handleStatusSync(taskId, historyItems) {
 
   const task = await getTask(taskId);
   const taskListId = task.list?.id;
+
+  // Create Frame.io folder when any Video Ads task moves to "editing"
+  if (newStatus === 'editing' && taskListId === VIDEO_ADS_LIST) {
+    await handleFrameFolderCreation(task).catch(err =>
+      logger.error(`[Frame.io] Error during folder creation for task ${taskId}: ${err.message}`)
+    );
+  }
 
   if (!SYNC_LISTS.includes(taskListId)) return;
 
@@ -741,28 +780,11 @@ router.get('/create-frame-folder/:taskId', async (req, res) => {
       return res.json({ already_exists: true, frame_link: existingLink, task_name: task.name });
     }
 
-    // Use the naming convention or task name as folder name
-    const folderName = getFieldValue(task, FIELD_IDS.namingConvention) || task.name;
+    // Always use the full task name for the folder name
+    const folderName = task.name;
 
-    // Find the root folder
-    const FRAMEIO_ROOT_FOLDER = '43c81cb1-4592-4382-89f1-a99908f95850';
-    let rootFolderId = null;
-
-    // First try the configured project
-    try {
-      const project = await frameioFetch(`/projects/${FRAMEIO_PROJECT_ID}`);
-      rootFolderId = project?.root_asset_id;
-    } catch {
-      logger.warn('[create-frame-folder] Project API not accessible, using hardcoded root folder');
-      rootFolderId = FRAMEIO_ROOT_FOLDER;
-    }
-
-    if (!rootFolderId) {
-      return res.status(500).json({ error: 'Could not find Frame.io project root folder. The configured project ID may be invalid.' });
-    }
-
-    // Create the folder
-    const result = await createFrameFolder(rootFolderId, folderName);
+    // Create the folder directly in the correct editing folder
+    const result = await createFrameFolder(FRAMEIO_EDITING_FOLDER, folderName);
     if (!result) {
       return res.status(500).json({ error: 'Frame.io folder creation failed' });
     }
