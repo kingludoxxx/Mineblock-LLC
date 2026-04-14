@@ -450,40 +450,8 @@ async function ensureMediaBuyingTask(task, taskListId) {
   }
 }
 
-/**
- * Create Frame.io folder for a task when it moves to "editing".
- * Uses the full task name and places it in the correct editing folder.
- */
-async function handleFrameFolderCreation(task) {
-  const taskId = task.id;
-
-  // Check if a Frame.io link already exists on this task
-  const existingLink = getFieldValue(task, 'd90f9f25-d7a0-4eb4-9ded-aca0b4519a3b');
-  if (existingLink) {
-    logger.info(`[Frame.io] Task ${taskId} already has a Frame link — skipping`);
-    return;
-  }
-
-  if (!FRAMEIO_TOKEN) {
-    logger.warn('[Frame.io] FRAMEIO_TOKEN not set — skipping folder creation');
-    return;
-  }
-
-  // Use the full task name (not the truncated namingConvention field)
-  const folderName = task.name;
-
-  logger.info(`[Frame.io] Creating folder "${folderName}" in editing folder for task ${taskId}`);
-
-  const result = await createFrameFolder(FRAMEIO_EDITING_FOLDER, folderName);
-  if (!result) {
-    logger.error(`[Frame.io] Folder creation returned null for task ${taskId}`);
-    return;
-  }
-
-  // Write the Frame.io link back to the ClickUp task
-  await setCustomField(taskId, 'd90f9f25-d7a0-4eb4-9ded-aca0b4519a3b', result.folderUrl);
-  logger.info(`[Frame.io] Folder created for task ${taskId}: ${result.folderUrl}`);
-}
+// NOTE: Frame.io folder creation on "editing" status is handled by Make.com scenario
+// Our webhook only handles naming, status sync, YT duplication, and Media Buying tasks
 
 // Handle status sync between linked tasks
 async function handleStatusSync(taskId, historyItems) {
@@ -495,13 +463,6 @@ async function handleStatusSync(taskId, historyItems) {
 
   const task = await getTask(taskId);
   const taskListId = task.list?.id;
-
-  // Create Frame.io folder when any Video Ads task moves to "editing"
-  if (newStatus === 'editing' && taskListId === VIDEO_ADS_LIST) {
-    await handleFrameFolderCreation(task).catch(err =>
-      logger.error(`[Frame.io] Error during folder creation for task ${taskId}: ${err.message}`)
-    );
-  }
 
   if (!SYNC_LISTS.includes(taskListId)) return;
 
