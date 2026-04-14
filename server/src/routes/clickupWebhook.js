@@ -710,29 +710,50 @@ router.get('/frame-diagnose', async (req, res) => {
   }
 });
 
-// GET /api/v1/clickup-webhook/frame-list — list all accessible projects via teams
+// GET /api/v1/clickup-webhook/frame-list — list all accessible projects via teams or account
 router.get('/frame-list', async (req, res) => {
   try {
     const me = await frameioFetch('/me');
     const accountId = me?.account_id;
-    const results = { account_id: accountId, email: me?.email, teams: [] };
+    const results = { account_id: accountId, email: me?.email, teams: [], projects: [] };
 
-    // Get teams for this account
-    const teams = await frameioFetch(`/accounts/${accountId}/teams`);
-    const teamList = Array.isArray(teams) ? teams : (teams?.data || []);
-
-    for (const team of teamList.slice(0, 5)) {
-      const teamEntry = { id: team.id, name: team.name, projects: [] };
-      try {
-        const projects = await frameioFetch(`/teams/${team.id}/projects`);
-        const projectList = Array.isArray(projects) ? projects : (projects?.data || []);
-        for (const p of projectList) {
-          teamEntry.projects.push({ id: p.id, name: p.name, root_asset_id: p.root_asset_id });
+    // Try teams path first
+    try {
+      const teams = await frameioFetch(`/accounts/${accountId}/teams`);
+      const teamList = Array.isArray(teams) ? teams : (teams?.data || []);
+      for (const team of teamList.slice(0, 5)) {
+        const teamEntry = { id: team.id, name: team.name, projects: [] };
+        try {
+          const projects = await frameioFetch(`/teams/${team.id}/projects`);
+          const projectList = Array.isArray(projects) ? projects : (projects?.data || []);
+          for (const p of projectList) {
+            teamEntry.projects.push({ id: p.id, name: p.name, root_asset_id: p.root_asset_id });
+          }
+        } catch (e) {
+          teamEntry.projects_error = e.message;
         }
-      } catch (e) {
-        teamEntry.projects_error = e.message;
+        results.teams.push(teamEntry);
       }
-      results.teams.push(teamEntry);
+    } catch (e) {
+      results.teams_error = e.message;
+    }
+
+    // Also try direct account projects
+    try {
+      const acctProjects = await frameioFetch(`/accounts/${accountId}/projects`);
+      const pList = Array.isArray(acctProjects) ? acctProjects : (acctProjects?.data || []);
+      results.projects = pList.map(p => ({ id: p.id, name: p.name, root_asset_id: p.root_asset_id, team_id: p.team_id }));
+    } catch (e) {
+      results.projects_error = e.message;
+    }
+
+    // Also try /me/teams
+    try {
+      const myTeams = await frameioFetch('/me/teams');
+      const myTeamList = Array.isArray(myTeams) ? myTeams : (myTeams?.data || []);
+      results.my_teams = myTeamList.map(t => ({ id: t.id, name: t.name }));
+    } catch (e) {
+      results.my_teams_error = e.message;
     }
 
     res.json(results);
