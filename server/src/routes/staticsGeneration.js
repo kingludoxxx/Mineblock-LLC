@@ -542,8 +542,9 @@ router.post('/generate', authenticate, async (req, res) => {
     // ── Step B: Call Claude to analyze the reference ad ─────────────────
     const t0 = Date.now();
     const claudeBody = {
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 2048,
+      model: 'claude-sonnet-4-6',
+      max_tokens: 4000,
+      temperature: 0.4,
       messages: [
         {
           role: 'user',

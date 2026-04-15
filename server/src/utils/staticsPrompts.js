@@ -84,6 +84,7 @@ export function buildClaudePrompt(product, angle, customOverrides = null, layout
     profile.guarantee && `GUARANTEE: ${profile.guarantee}`,
     profile.complianceRestrictions && `🚫 COMPLIANCE (NEVER claim these): ${profile.complianceRestrictions}`,
     `NO FABRICATED QUANTITY CLAIMS: NEVER count individual offer items and create claims like "4 FREE GIFTS", "3 FREE BONUSES", "5 FREE ITEMS". If the product context lists free shipping, warranty, etc. as separate features, they are INDIVIDUAL OFFER COMPONENTS — not "gifts" to be counted. Only use quantity claims (e.g. "X FREE gifts/bonuses") if that EXACT phrase appears verbatim in the product context. When in doubt, list benefits individually ("FREE Shipping + Lifetime Warranty") instead of fabricating a count.`,
+    `🚫 NO FABRICATED SOCIAL PROOF: NEVER invent review counts, user counts, customer counts, rating counts, testimonial counts, star ratings, "verified" counts, or any numeric social-proof claim (e.g. "2,400+ Verified Users", "10,000 Happy Customers", "4.9★ from 5,000 reviews", "Join 50k+"). Only use such numbers if that EXACT figure appears verbatim in PRODUCT CONTEXT. If no real number exists, REMOVE the numeric claim entirely and either omit the element or replace it with a non-numeric benefit ("Trusted by our community", "Loved by customers"). Synthesizing fake numbers is a critical failure — when in doubt, remove it.`,
     `🚫 NO MONTH NAMES OR SEASONAL SALE TEXT: If the reference contains ANY month name (January, February, March, April, May, June, July, August, September, October, November, December) or seasonal text ("Spring Sale", "Summer Deal", "March Promo", etc.), you MUST replace it with generic urgency copy ("Limited Time", "Flash Sale", "Today Only", "Ends Soon"). NEVER carry over a month name or season-specific sale text into adapted_text. This is non-negotiable.`,
     !product.price && `🚫 NO INVENTED PRICES: The product price is not set. Do NOT copy, adapt, or carry over ANY price from the reference. Replace all price text with a non-price benefit claim (e.g. "Free Shipping" or the product name).`,
   ].filter(Boolean).map(l => `⚠️ ${l}`).join('\n');
@@ -475,11 +476,24 @@ export function buildSwapPairs(originalText, adaptedText, productName = '') {
     return '';
   };
 
+  // Track leakage telemetry: when the reference has text but Claude's
+  // adapted_text is empty or identical to the original, we emit NO swap pair
+  // — which means Gemini silently carries the REFERENCE text (e.g. competitor
+  // brand names, reference offers) into the generated image. That's the
+  // "Hyro"-in-MineBlock-ad class of bug.
+  const leakedFields = [];
+
   // Standard text fields
   for (const field of ['headline', 'subheadline', 'body', 'cta', 'disclaimer']) {
-    const orig = toStr(originalText[field]), adapted = toStr(adaptedText[field]);
-    if (orig && adapted && orig.trim() !== adapted.trim())
-      pairs.push({ original: orig.trim(), adapted: adapted.trim(), field });
+    const orig = toStr(originalText[field]).trim();
+    const adapted = toStr(adaptedText[field]).trim();
+    if (orig && adapted && orig !== adapted) {
+      pairs.push({ original: orig, adapted, field });
+    } else if (orig && !adapted) {
+      leakedFields.push({ field, original: orig, reason: 'adapted_empty' });
+    } else if (orig && adapted && orig.toLowerCase() === adapted.toLowerCase()) {
+      leakedFields.push({ field, original: orig, reason: 'adapted_equals_original' });
+    }
   }
 
   // Array fields
@@ -488,9 +502,23 @@ export function buildSwapPairs(originalText, adaptedText, productName = '') {
     const rawAdapted = Array.isArray(adaptedText[field]) ? adaptedText[field] : [];
     const origArr = rawOrig.map(toStr);
     const adaptedArr = rawAdapted.map(toStr);
-    for (let i = 0; i < Math.min(origArr.length, adaptedArr.length); i++) {
-      if (origArr[i] && adaptedArr[i] && origArr[i].trim() !== adaptedArr[i].trim())
-        pairs.push({ original: origArr[i].trim(), adapted: adaptedArr[i].trim(), field: `${field}[${i}]` });
+    for (let i = 0; i < origArr.length; i++) {
+      const o = (origArr[i] || '').trim();
+      const a = (adaptedArr[i] || '').trim();
+      if (o && a && o !== a) {
+        pairs.push({ original: o, adapted: a, field: `${field}[${i}]` });
+      } else if (o && !a) {
+        leakedFields.push({ field: `${field}[${i}]`, original: o, reason: 'adapted_empty' });
+      } else if (o && a && o.toLowerCase() === a.toLowerCase()) {
+        leakedFields.push({ field: `${field}[${i}]`, original: o, reason: 'adapted_equals_original' });
+      }
+    }
+  }
+
+  if (leakedFields.length > 0) {
+    console.warn(`[buildSwapPairs] ⚠️ REFERENCE LEAKAGE RISK: ${leakedFields.length} field(s) have no valid adapted_text — Gemini will carry the reference text through to the final image:`);
+    for (const lf of leakedFields) {
+      console.warn(`[buildSwapPairs]   • [${lf.field}] reason=${lf.reason} original="${lf.original.slice(0, 80)}"`);
     }
   }
 
@@ -679,27 +707,11 @@ ${templateData.deep_analysis.adaptation_instructions?.common_failure_modes?.leng
     console.log(`[buildNanoBananaPrompt] Complex layout detected (${meaningfulPairs.length} swaps) — using extended limit of ${MAX_SWAP_PAIRS}`);
   }
 
-  // Truncate swap pairs that are too long — NanoBanana garbles long text
-  // EXCEPTION: Never truncate swaps containing the product name (brand replacement)
-  const productNameLower = (product.name || '').toLowerCase();
-  const truncatedPairs = limitedPairs.map(pair => {
-    const origLen = (pair.original || '').length;
-    let adapted = pair.adapted || '';
-    // Skip truncation if adapted text contains the product name — brand replacement is sacred
-    if (productNameLower && adapted.toLowerCase().includes(productNameLower)) {
-      return { ...pair, adapted };
-    }
-    // If adapted is much longer than original, truncate with warning
-    if (adapted.length > origLen * 1.3 && origLen > 0 && origLen < 80) {
-      adapted = adapted.slice(0, Math.max(origLen + 5, 20));
-      // Clean up truncation — don't end mid-word
-      const lastSpace = adapted.lastIndexOf(' ');
-      if (lastSpace > adapted.length * 0.6) adapted = adapted.slice(0, lastSpace);
-    }
-    return { ...pair, adapted };
-  });
-
-  const swapSectionFinal = truncatedPairs.map((pair, i) =>
+  // Length enforcement happens ONCE in buildSwapPairs (source of truth).
+  // We intentionally do NOT re-truncate here — double truncation with a tighter
+  // (origLen+5) cap was causing mid-word cuts ("younaking" instead of "making"
+  // real mining") that Gemini then rendered as merged/misspelled glyphs.
+  const swapSectionFinal = limitedPairs.map((pair, i) =>
     `  ${i + 1}. "${pair.original}" → "${pair.adapted}"`
   ).join('\n');
 
