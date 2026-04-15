@@ -1,6 +1,59 @@
 # Progress Log
 
 ---
+TIMESTAMP: 2026-04-15 12:10
+TASK: Frame.io monitoring + alerting (prevents recurrence of strays / silent OAuth failures)
+BUILT:
+  - server/src/utils/slackAlert.js — reusable Slack chat.postMessage wrapper.
+    Targets SLACK_ALERTS_CHANNEL (falls back to SLACK_REJECTION_CHANNEL so
+    alerts don't silently drop if the dedicated channel isn't configured).
+    No-ops when SLACK_BOT_TOKEN is missing.
+  - GET /api/v1/webhook/frameio-oauth-health
+    * 200 when /me call succeeds with stored refresh_token
+    * 503 + Slack alert when refresh_token missing or /me throws
+    * Alert includes hint about re-auth URL
+  - GET /api/v1/webhook/frameio-stray-check
+    * 200 when workspace contains only "Mineblock LLC"
+    * 409 + Slack alert listing stray names + ready-to-paste cleanup curl
+  - createFrameFolder() now Slack-alerts on every failure with hint
+    ("Likely OAuth token issue" vs "Check Render logs")
+  - server/scripts/frameio-health-check.js — cron script that hits both
+    health endpoints and exits 1 on failure
+  - Render cron job `frameio-health-monitor` (crn-d7fm7freo5us73f0j1a0)
+    * Schedule: "0 7 * * *" (07:00 UTC daily)
+    * Region: frankfurt, plan: starter
+    * notifyOnFail: default — Render emails workspace owner on cron fail
+TESTED:
+  - Live GET /frameio-oauth-health → 200 {ok:true, authorized:true, email:info@trypuure.com}
+  - Live GET /frameio-stray-check → 200 {ok:true, project_count:1, strays:0}
+  - Ran server/scripts/frameio-health-check.js locally against prod → exit 0 on healthy
+  - Render cron service created successfully, deploy dep-d7fm7g3eo5us73f0j1kg triggered
+  - Edge cases verified by code inspection:
+    * Missing refresh_token → 503 branch fires Slack alert
+    * /me call throws → catch block fires Slack alert
+    * Stray project in workspace → 409 branch fires Slack alert with stray list
+    * createFrameFolder throws → catch block fires Slack alert with hint
+OUTPUT:
+  - Three layers of alerting now exist for Frame.io failures:
+    1. Slack channel alert the moment a failure is detected (via endpoint)
+    2. Render email on cron failure (because script exits non-zero)
+    3. Render server log entries (logger.error)
+  - Stray projects cannot silently accumulate — any drift is surfaced within 24h.
+DECISIONS:
+  - DECISION MADE: One cron covering both checks (vs two separate crons)
+    to minimise cost. Schedule at 07:00 UTC so alerts land before work starts
+    in CET.
+  - DECISION MADE: 409 for strays rather than 500 — it's a well-defined
+    state ("conflict" with expected clean workspace), not an internal error.
+  - DECISION MADE: Slack alert + cron fail (belt + suspenders) rather than
+    picking one. Slack can break, email can break — unlikely to break both.
+  - DECISION MADE: Reused SLACK_BOT_TOKEN from metaWebhook rather than a
+    new integration, but routed to SLACK_ALERTS_CHANNEL with fallback.
+    Add SLACK_ALERTS_CHANNEL on Render if a dedicated ops channel is wanted.
+STATUS: COMPLETE
+---
+
+---
 TIMESTAMP: 2026-04-15 11:50
 TASK: Frame.io v4 integration + stray project cleanup (unblocks "BLOCKED" task from 05:35)
 BUILT:
