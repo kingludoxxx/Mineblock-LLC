@@ -452,6 +452,16 @@ router.post('/generate', authenticate, async (req, res) => {
   storeGeminiResult(earlyTaskId, { status: 'processing', progress: 'Analyzing reference image...' });
   res.json({ success: true, data: { taskId: earlyTaskId, tasks: [earlyTask], provider: 'gemini', status: 'processing' } });
 
+  // ── Watchdog: if the pipeline hangs (unhandled promise, proxy cutoff, etc.)
+  // flip earlyTaskId to error after 8 minutes so the client doesn't poll forever.
+  const watchdog = setTimeout(() => {
+    const cur = geminiResults.get(earlyTaskId);
+    if (cur && cur.status === 'processing') {
+      console.error(`[staticsGeneration] Watchdog fired for ${earlyTaskId} — still processing after 8m, marking as error`);
+      storeGeminiResult(earlyTaskId, { status: 'error', error: 'Generation exceeded 8-minute limit (pipeline hang)' });
+    }
+  }, 8 * 60 * 1000);
+
   // ── Run the full pipeline in the background ──────────────────────────
   setImmediate(async () => {
   try {
@@ -544,6 +554,7 @@ router.post('/generate', authenticate, async (req, res) => {
 
     const claudeData = await claudeRes.json();
     console.log(`[staticsGeneration] ⏱ Claude finished in ${Date.now() - t0}ms`);
+    storeGeminiResult(earlyTaskId, { status: 'processing', progress: 'Building image prompt...' });
     const rawText = claudeData.content?.[0]?.text;
     if (!rawText) throw new Error('Empty response from Claude');
 
@@ -742,6 +753,10 @@ router.post('/generate', authenticate, async (req, res) => {
           .map(r => r.status === 'fulfilled' ? r.value : null)
           .filter(Boolean);
         console.log(`[staticsGeneration] Gemini: ${inputImages.length} images loaded in ${Date.now() - tFetch}ms`);
+        if (inputImages.length === 0) {
+          throw new Error('No input images could be fetched for Gemini (reference image + product images all failed to load)');
+        }
+        storeGeminiResult(earlyTaskId, { status: 'processing', progress: `Generating ${ratiosToGenerate.length} image ratio(s)...` });
 
         // Generate all ratios in parallel
         const tAll = Date.now();
@@ -880,7 +895,10 @@ router.post('/generate', authenticate, async (req, res) => {
 
     if (tasks.length === 0) {
       console.error(`[staticsGeneration] All NanoBanana calls failed. nbResponses: ${JSON.stringify(nbResponses)}`);
-      return res.status(500).json({ success: false, error: 'Image generation failed after retries' });
+      // setImmediate: res already consumed. Update earlyTaskId so the client
+      // sees a clean failure state instead of polling until client-side timeout.
+      storeGeminiResult(earlyTaskId, { status: 'error', error: 'Image generation failed after retries (all providers failed)' });
+      return;
     }
 
     // ── Store text overlay context per task for the /status endpoint ──
@@ -923,6 +941,8 @@ router.post('/generate', authenticate, async (req, res) => {
   } catch (err) {
     console.error('[staticsGeneration] /generate background error:', err);
     storeGeminiResult(earlyTaskId, { status: 'error', error: err.message });
+  } finally {
+    clearTimeout(watchdog);
   }
   }); // end setImmediate
 });

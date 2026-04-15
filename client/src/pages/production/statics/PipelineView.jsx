@@ -872,12 +872,20 @@ export function PipelineView({ creatives = [], onStatusChange, onAngleChange, on
   // Bucket creatives into columns by status
   const buckets = useMemo(() => {
     const map = { generating: [], review: [], approved: [], ready: [], launched: [] };
+    const STALE_GENERATING_MS = 7 * 60 * 1000; // 7 min
+    const now = Date.now();
     for (const c of creatives) {
-      if (c.status === 'rejected' || c.status === 'archived') continue;
+      if (c.status === 'rejected' || c.status === 'archived' || c.status === 'failed') continue;
       // Show launched variants even if they have a parent — their parents may no longer exist
       if (c.parent_creative_id && c.status !== 'launched') continue;
       if (c.status === 'launching') continue;
       if (c.status === 'generating') {
+        // Mark as stale if it's been "generating" too long — the server-side task
+        // is almost certainly dead (crash, restart, or quota hit).
+        const createdAt = c.created_at ? new Date(c.created_at).getTime() : now;
+        if (now - createdAt > STALE_GENERATING_MS) {
+          c._stale = true;
+        }
         map.generating.push(c);
         continue;
       }

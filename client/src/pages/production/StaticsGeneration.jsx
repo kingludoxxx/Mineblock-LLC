@@ -1097,18 +1097,30 @@ export default function StaticsGeneration() {
       setGenerationStep(2);
 
       const pollTask = async (task) => {
-        const maxPolls = 60;
+        // Hard cap ~8 min: 10×2s + 50×4s + 60×6s = 500s = 8m20s
+        const maxPolls = 120;
+        let consecutiveNetworkErrors = 0;
         for (let i = 0; i < maxPolls; i++) {
-          // Fast polls first (2s for first 10), then back off to 4s
-          const delay = i < 10 ? 2000 : 4000;
+          const delay = i < 10 ? 2000 : (i < 60 ? 4000 : 6000);
           await new Promise(r => setTimeout(r, delay));
-          const statusRes = await api.get(`/statics-generation/status/${task.taskId}`);
-          const statusData = statusRes.data?.data || statusRes.data;
-          if (statusData?.resultImageUrl) {
-            return { ratio: task.ratio, imageUrl: statusData.resultImageUrl, taskId: task.taskId };
-          }
-          if (statusData?.status === 'failed' || statusData?.error) {
-            throw new Error(`Generation failed for ${task.ratio}: ${statusData?.error || 'Unknown error'}`);
+          try {
+            const statusRes = await api.get(`/statics-generation/status/${task.taskId}`);
+            consecutiveNetworkErrors = 0;
+            const statusData = statusRes.data?.data || statusRes.data;
+            if (statusData?.resultImageUrl) {
+              return { ratio: task.ratio, imageUrl: statusData.resultImageUrl, taskId: task.taskId };
+            }
+            if (statusData?.status === 'failed' || statusData?.error) {
+              throw new Error(`Generation failed for ${task.ratio}: ${statusData?.error || 'Unknown error'}`);
+            }
+          } catch (err) {
+            // Let app-level "Generation failed" errors propagate; only swallow network blips.
+            if (err.message?.startsWith('Generation failed')) throw err;
+            consecutiveNetworkErrors++;
+            if (consecutiveNetworkErrors >= 5) {
+              throw new Error(`Network error polling for ${task.ratio}: ${err.message || 'unknown'}`);
+            }
+            // Otherwise retry the loop — transient 5xx / disconnect
           }
         }
         throw new Error(`Generation timed out for ${task.ratio}`);
@@ -1357,18 +1369,28 @@ export default function StaticsGeneration() {
         const allErrors = [];
 
         const pollTask = async (task) => {
-          const maxPolls = 60;
+          const maxPolls = 120;
+          let consecutiveNetworkErrors = 0;
           for (let i = 0; i < maxPolls; i++) {
-            const delay = i < 10 ? 2000 : 4000;
+            const delay = i < 10 ? 2000 : (i < 60 ? 4000 : 6000);
             await new Promise(r => setTimeout(r, delay));
-            const statusRes = await api.get(`/statics-generation/status/${task.taskId}`);
-            const statusData = statusRes.data?.data || statusRes.data;
-            if (statusData?.resultImageUrl) {
-              return { ratio: task.ratio, imageUrl: statusData.resultImageUrl, taskId: task.taskId };
-            }
-            if (statusData?.status === 'failed' || statusData?.error) {
-              const errMsg = statusData?.error || `Generation failed (code ${statusData?.successFlag || '?'})`;
-              throw new Error(`Failed for ${task.ratio}: ${errMsg}`);
+            try {
+              const statusRes = await api.get(`/statics-generation/status/${task.taskId}`);
+              consecutiveNetworkErrors = 0;
+              const statusData = statusRes.data?.data || statusRes.data;
+              if (statusData?.resultImageUrl) {
+                return { ratio: task.ratio, imageUrl: statusData.resultImageUrl, taskId: task.taskId };
+              }
+              if (statusData?.status === 'failed' || statusData?.error) {
+                const errMsg = statusData?.error || `Generation failed (code ${statusData?.successFlag || '?'})`;
+                throw new Error(`Failed for ${task.ratio}: ${errMsg}`);
+              }
+            } catch (err) {
+              if (err.message?.startsWith('Failed for')) throw err;
+              consecutiveNetworkErrors++;
+              if (consecutiveNetworkErrors >= 5) {
+                throw new Error(`Network error polling ${task.ratio}: ${err.message || 'unknown'}`);
+              }
             }
           }
           throw new Error(`Timed out for ${task.ratio}`);
