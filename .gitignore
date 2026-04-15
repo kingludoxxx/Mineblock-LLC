@@ -4,6 +4,8 @@ client/dist/
 .env
 .env.local
 .env.*.local
+.env.testharness
+server/.env.testharness
 *.log
 .DS_Store
 coverage/

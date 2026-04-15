@@ -85,6 +85,8 @@ export function buildClaudePrompt(product, angle, customOverrides = null, layout
     profile.complianceRestrictions && `🚫 COMPLIANCE (NEVER claim these): ${profile.complianceRestrictions}`,
     `NO FABRICATED QUANTITY CLAIMS: NEVER count individual offer items and create claims like "4 FREE GIFTS", "3 FREE BONUSES", "5 FREE ITEMS". If the product context lists free shipping, warranty, etc. as separate features, they are INDIVIDUAL OFFER COMPONENTS — not "gifts" to be counted. Only use quantity claims (e.g. "X FREE gifts/bonuses") if that EXACT phrase appears verbatim in the product context. When in doubt, list benefits individually ("FREE Shipping + Lifetime Warranty") instead of fabricating a count.`,
     `🚫 NO FABRICATED SOCIAL PROOF: NEVER invent review counts, user counts, customer counts, rating counts, testimonial counts, star ratings, "verified" counts, or any numeric social-proof claim (e.g. "2,400+ Verified Users", "10,000 Happy Customers", "4.9★ from 5,000 reviews", "Join 50k+"). Only use such numbers if that EXACT figure appears verbatim in PRODUCT CONTEXT. If no real number exists, REMOVE the numeric claim entirely and either omit the element or replace it with a non-numeric benefit ("Trusted by our community", "Loved by customers"). Synthesizing fake numbers is a critical failure — when in doubt, remove it.`,
+    `🚫 NO FABRICATED SCARCITY / INVENTORY NUMBERS: NEVER invent stock counts, units-remaining, viewer counts, or countdown numbers (e.g. "Only 47 Units Left", "Last 12 in stock", "3 people viewing now", "7 sold in the last hour", "Ends in 02:14:33"). These are outright fabricated unless PRODUCT CONTEXT contains the exact figure. Use non-numeric scarcity instead ("Limited Stock", "Almost Gone", "While Supplies Last", "Selling Fast") — never a fake specific integer. Fabricated scarcity is both dishonest and a Meta/FTC compliance risk.`,
+    `🚫 NO DECORATIVE GLYPHS IN ADAPTED_TEXT: Do NOT prefix bullets, badges, stats, or any copy with ✓ ✗ ★ ☆ → • ● ◆ ▶ » or similar symbol/checkmark glyphs. The image renderer will either mangle them into garbled shapes or strip them and leave an awkward leading space. Write plain text — the visual layout already communicates bullet structure.`,
     `🚫 NO MONTH NAMES OR SEASONAL SALE TEXT: If the reference contains ANY month name (January, February, March, April, May, June, July, August, September, October, November, December) or seasonal text ("Spring Sale", "Summer Deal", "March Promo", etc.), you MUST replace it with generic urgency copy ("Limited Time", "Flash Sale", "Today Only", "Ends Soon"). NEVER carry over a month name or season-specific sale text into adapted_text. This is non-negotiable.`,
     !product.price && `🚫 NO INVENTED PRICES: The product price is not set. Do NOT copy, adapt, or carry over ANY price from the reference. Replace all price text with a non-price benefit claim (e.g. "Free Shipping" or the product name).`,
   ].filter(Boolean).map(l => `⚠️ ${l}`).join('\n');
@@ -170,9 +172,28 @@ USE PRODUCT DATA AS YOUR SOURCE:
 - NEVER invent claims that aren't in the product context
 - NEVER synthesize quantity claims by counting offer items (e.g. seeing "free shipping" + "warranty" + "odds boost" does NOT mean "3 FREE GIFTS" — list them individually instead)
 
-ELEMENT COUNT: Your adapted_text must have the EXACT SAME number of elements as original_text — same number of headlines, bullets, badges, stats. Don't add or remove. Leave fields empty ("") if no corresponding text exists.
-- Generic labels like "SPECIAL DEAL", "FREE SHIPPING" can stay as-is
-- Discount codes MUST use the product's actual code from PRODUCT CONTEXT`;
+🔴🔴 ELEMENT COUNT — ARRAY LENGTH IS CRITICAL 🔴🔴
+Your adapted_text must have EXACTLY the same number of entries as original_text at every key AND every array index. Missing entries leak the reference text into the final image — this is a CRITICAL BUG.
+
+RULES:
+- adapted_text.badges.length MUST equal original_text.badges.length
+- adapted_text.bullets.length MUST equal original_text.bullets.length
+- adapted_text.stats.length MUST equal original_text.stats.length
+- adapted_text.other_text.length MUST equal original_text.other_text.length
+- Same for comparison_labels, ingredient_labels, timeline_labels
+
+If you want to REMOVE an element entirely (e.g. a competitor coin name, a stray price, a useless UI label), supply an EMPTY STRING "" at that index — NEVER omit the entry or shorten the array.
+
+EXAMPLE — DO THIS:
+  original_text.other_text: ["Bitcoin", "Ethereum", "Tether", "€39,740.00", "€1,448.00"]
+  adapted_text.other_text:  ["Selling Fast", "While Supplies Last", "", "", ""]  ✅ 5 entries matching
+
+EXAMPLE — NEVER DO THIS:
+  original_text.other_text: ["Bitcoin", "Ethereum", "Tether", "€39,740.00", "€1,448.00"]
+  adapted_text.other_text:  ["Selling Fast", "While Supplies Last"]  ❌ WRONG — 3 reference strings will leak
+
+Generic labels like "SPECIAL DEAL", "FREE SHIPPING" can stay as-is.
+Discount codes MUST use the product's actual code from PRODUCT CONTEXT.`;
 
   // Cross-niche visual mapping
   const crossNicheSection = co.crossNicheAdaptation
@@ -483,20 +504,25 @@ export function buildSwapPairs(originalText, adaptedText, productName = '') {
   // "Hyro"-in-MineBlock-ad class of bug.
   const leakedFields = [];
 
-  // Standard text fields
+  // Standard text fields. Scalar-field empty-adapted is also a remove signal.
   for (const field of ['headline', 'subheadline', 'body', 'cta', 'disclaimer']) {
     const orig = toStr(originalText[field]).trim();
     const adapted = toStr(adaptedText[field]).trim();
     if (orig && adapted && orig !== adapted) {
       pairs.push({ original: orig, adapted, field });
     } else if (orig && !adapted) {
+      pairs.push({ original: orig, adapted: '', field, remove: true });
       leakedFields.push({ field, original: orig, reason: 'adapted_empty' });
     } else if (orig && adapted && orig.toLowerCase() === adapted.toLowerCase()) {
       leakedFields.push({ field, original: orig, reason: 'adapted_equals_original' });
     }
   }
 
-  // Array fields
+  // Array fields. When Claude supplies a SHORTER adapted array than original,
+  // the trailing entries are implicit removals — we emit explicit REMOVE swaps
+  // (adapted: '') so the Gemini prompt can tell the image model to delete them.
+  // Without this, trailing reference text (competitor coin names, euro prices,
+  // etc.) leaks straight through to the final image — the "Hyro" bug class.
   for (const field of ['badges', 'bullets', 'stats', 'other_text', 'comparison_labels', 'ingredient_labels', 'timeline_labels']) {
     const rawOrig = Array.isArray(originalText[field]) ? originalText[field] : [];
     const rawAdapted = Array.isArray(adaptedText[field]) ? adaptedText[field] : [];
@@ -508,7 +534,11 @@ export function buildSwapPairs(originalText, adaptedText, productName = '') {
       if (o && a && o !== a) {
         pairs.push({ original: o, adapted: a, field: `${field}[${i}]` });
       } else if (o && !a) {
-        leakedFields.push({ field: `${field}[${i}]`, original: o, reason: 'adapted_empty' });
+        // Claude either returned "" at this index (explicit remove) OR the
+        // array was shorter than original (implicit remove). Either way, emit
+        // a REMOVE swap so the downstream prompt instructs Gemini to delete it.
+        pairs.push({ original: o, adapted: '', field: `${field}[${i}]`, remove: true });
+        leakedFields.push({ field: `${field}[${i}]`, original: o, reason: i >= adaptedArr.length ? 'array_shorter_than_original' : 'adapted_empty' });
       } else if (o && a && o.toLowerCase() === a.toLowerCase()) {
         leakedFields.push({ field: `${field}[${i}]`, original: o, reason: 'adapted_equals_original' });
       }
@@ -534,12 +564,17 @@ export function buildSwapPairs(originalText, adaptedText, productName = '') {
   }
 
   // ── Length enforcement: truncate adapted text that's too long ──
-  // NanoBanana garbles/misspells text that exceeds the original length significantly
-  // EXCEPTION: Never truncate swaps that contain the product name (brand replacement)
+  // Gemini garbles long text that overflows the original slot significantly.
+  // Tolerances:
+  //   short originals (<50 chars): 1.5x — lets one extra word through so the
+  //     hook word isn't chopped (e.g. "...Less Than You Think" stays intact)
+  //   medium/long originals (50+): 1.3x — Gemini struggles more as slots grow
+  // EXCEPTION: swaps containing the product name are sacred (brand replacement)
   for (const pair of pairs) {
     const origLen = pair.original.length;
     const adaptedLen = pair.adapted.length;
-    const maxLen = Math.max(origLen * 1.3, 20); // allow 30% overshoot or minimum 20 chars
+    const tolerance = origLen < 50 ? 1.5 : 1.3;
+    const maxLen = Math.max(origLen * tolerance, 20);
 
     // Skip truncation if the adapted text contains the product name — brand replacement is sacred
     const containsProductName = productName && pair.adapted.toLowerCase().includes(productName.toLowerCase());
@@ -692,14 +727,23 @@ ${templateData.deep_analysis.adaptation_instructions?.common_failure_modes?.leng
     return true;
   });
 
-  // Dynamic swap limit based on complexity:
-  // - Simple layouts (≤7 meaningful swaps): use all swaps, best quality
-  // - Complex layouts (8+ swaps): keep ALL swaps to prevent reference text bleed-through
-  //   Dropping swaps from complex layouts causes the reference product's text to remain visible
-  const isComplexLayout = meaningfulPairs.length > 7;
+  // Split REMOVE pairs from REPLACEMENT pairs. REMOVEs are cheap (one-line
+  // delete instructions) — they shouldn't compete with replacements for the
+  // swap-slot budget. We cap replacements at MAX_SWAP_PAIRS and render every
+  // REMOVE separately as a compact delete list, so even 15+ reference-text
+  // carryovers get cleaned up.
+  const removePairs     = meaningfulPairs.filter(p => p.remove || (p.adapted === '' && p.original));
+  const replacementPairs = meaningfulPairs.filter(p => !(p.remove || (p.adapted === '' && p.original)));
+
+  const isComplexLayout = replacementPairs.length > 7;
   const MAX_SWAP_PAIRS = isComplexLayout ? 12 : 7; // complex = keep more, simple = keep tight
-  const sortedPairs = [...meaningfulPairs].sort((a, b) => getFieldPriority(a.field) - getFieldPriority(b.field));
-  const limitedPairs = sortedPairs.slice(0, MAX_SWAP_PAIRS);
+  const sortedPairs = [...replacementPairs].sort((a, b) => getFieldPriority(a.field) - getFieldPriority(b.field));
+  const limitedReplacements = sortedPairs.slice(0, MAX_SWAP_PAIRS);
+  // Always keep ALL removes, capped generously to avoid prompt blowup
+  const limitedPairs = [...limitedReplacements, ...removePairs.slice(0, 25)];
+  if (removePairs.length > 0) {
+    console.log(`[buildNanoBananaPrompt] ${removePairs.length} REMOVE pair(s) — reference text to delete: ${removePairs.slice(0, 10).map(p => `"${p.original}"`).join(', ')}${removePairs.length > 10 ? '…' : ''}`);
+  }
   if (sortedPairs.length > MAX_SWAP_PAIRS) {
     console.log(`[buildNanoBananaPrompt] ⚠️ Limited swap pairs from ${sortedPairs.length} to ${MAX_SWAP_PAIRS} (dropped low-priority pairs)`);
   }
@@ -711,9 +755,15 @@ ${templateData.deep_analysis.adaptation_instructions?.common_failure_modes?.leng
   // We intentionally do NOT re-truncate here — double truncation with a tighter
   // (origLen+5) cap was causing mid-word cuts ("younaking" instead of "making"
   // real mining") that Gemini then rendered as merged/misspelled glyphs.
-  const swapSectionFinal = limitedPairs.map((pair, i) =>
-    `  ${i + 1}. "${pair.original}" → "${pair.adapted}"`
-  ).join('\n');
+  // REMOVE pairs (adapted is empty / pair.remove flagged) render as explicit
+  // delete instructions so Gemini erases the element entirely instead of
+  // carrying the reference text through to the final image.
+  const swapSectionFinal = limitedPairs.map((pair, i) => {
+    if (pair.remove || (pair.adapted === '' && pair.original)) {
+      return `  ${i + 1}. "${pair.original}" → [REMOVE — delete this text element entirely, leave the space blank]`;
+    }
+    return `  ${i + 1}. "${pair.original}" → "${pair.adapted}"`;
+  }).join('\n');
 
   // Banned text — reference product category and keywords
   const refCategory = claudeResult.reference_product_category || '';
