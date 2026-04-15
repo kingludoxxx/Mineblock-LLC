@@ -33,6 +33,38 @@ CREATE TABLE IF NOT EXISTS creative_analysis (
   UNIQUE(creative_id, hook_id)
 );
 
+-- Backfill columns if an earlier build of this table existed without them.
+-- Without these, the CREATE INDEX statements below throw and the entire
+-- migration queue halts for every subsequent deploy.
+ALTER TABLE creative_analysis
+  ADD COLUMN IF NOT EXISTS ad_name TEXT,
+  ADD COLUMN IF NOT EXISTS creative_id VARCHAR(20),
+  ADD COLUMN IF NOT EXISTS hook_id VARCHAR(20),
+  ADD COLUMN IF NOT EXISTS creative_type VARCHAR(10),
+  ADD COLUMN IF NOT EXISTS avatar VARCHAR(100),
+  ADD COLUMN IF NOT EXISTS angle VARCHAR(100),
+  ADD COLUMN IF NOT EXISTS format VARCHAR(50),
+  ADD COLUMN IF NOT EXISTS editor VARCHAR(100),
+  ADD COLUMN IF NOT EXISTS week_code VARCHAR(20),
+  ADD COLUMN IF NOT EXISTS spend NUMERIC DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS revenue NUMERIC DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS roas NUMERIC DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS purchases NUMERIC DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS cpa NUMERIC DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS cpm NUMERIC DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS aov NUMERIC DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS conv_value NUMERIC DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS cpc NUMERIC DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS ctr NUMERIC DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS impressions BIGINT DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS clicks BIGINT DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS ad_status VARCHAR(20) DEFAULT 'active',
+  ADD COLUMN IF NOT EXISTS creative_link TEXT,
+  ADD COLUMN IF NOT EXISTS launch_date DATE,
+  ADD COLUMN IF NOT EXISTS synced_at TIMESTAMPTZ DEFAULT NOW(),
+  ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW(),
+  ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
+
 CREATE INDEX IF NOT EXISTS idx_creative_analysis_creative_id ON creative_analysis(creative_id);
 CREATE INDEX IF NOT EXISTS idx_creative_analysis_week_code ON creative_analysis(week_code);
 CREATE INDEX IF NOT EXISTS idx_creative_analysis_editor ON creative_analysis(editor);
