@@ -1133,12 +1133,45 @@ router.get('/frameio-v4-status', async (req, res) => {
   }
 });
 
+// Diagnostic: list Frame.io v4 accounts + projects visible to the authed user.
+// Helps confirm account_id + see stray projects before running cleanup.
+router.get('/frameio-v4-explore', async (req, res) => {
+  try {
+    const me = await frameioFetchV4('/me');
+    // Try multiple shapes to find accounts
+    let accounts = null;
+    try {
+      const r = await frameioFetchV4('/accounts');
+      accounts = r?.data || r?.accounts || r;
+    } catch (err) {
+      accounts = { error: err.message };
+    }
+    // Pick the first account id we can find
+    const firstAccountId = Array.isArray(accounts)
+      ? accounts[0]?.id
+      : (accounts?.[0]?.id || null);
+    let projects = null;
+    if (firstAccountId) {
+      try {
+        const r = await frameioFetchV4(`/accounts/${firstAccountId}/projects?page_size=100`);
+        projects = r?.data || r?.projects || r;
+      } catch (err) {
+        projects = { error: err.message };
+      }
+    }
+    res.json({ me, accounts, firstAccountId, projects });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── Frame.io v4 cleanup: move stray account-level projects into the editing folder ──
 // One-shot admin operation. Locked behind CRON_SECRET header.
 router.post('/admin-frameio-cleanup', async (req, res) => {
-  const secret = req.headers['x-cron-secret'];
-  if (!secret || secret !== process.env.CRON_SECRET) {
-    return res.status(401).json({ error: 'Unauthorized — missing/invalid x-cron-secret' });
+  const secret = req.headers['x-admin-secret'];
+  const expected = process.env.FRAMEIO_CLEANUP_SECRET || process.env.CRON_SECRET;
+  if (!secret || !expected || secret !== expected) {
+    return res.status(401).json({ error: 'Unauthorized — missing/invalid x-admin-secret' });
   }
 
   const report = { discovered: [], moved: [], skipped_has_content: [], deleted: [], errors: [] };
