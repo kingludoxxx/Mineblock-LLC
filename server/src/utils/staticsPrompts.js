@@ -460,16 +460,34 @@ Return ONLY valid JSON (no markdown, no code fences):
 export function buildSwapPairs(originalText, adaptedText, productName = '') {
   const pairs = [];
 
+  // Coerce Claude output to a string. Haiku sometimes returns objects like
+  // { text: "..." } or numbers — .trim() on those crashes. Accept strings,
+  // { text }, { value }, numbers, and booleans; skip anything else.
+  const toStr = (v) => {
+    if (v == null) return '';
+    if (typeof v === 'string') return v;
+    if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+    if (typeof v === 'object') {
+      if (typeof v.text === 'string') return v.text;
+      if (typeof v.value === 'string') return v.value;
+      if (typeof v.label === 'string') return v.label;
+    }
+    return '';
+  };
+
   // Standard text fields
   for (const field of ['headline', 'subheadline', 'body', 'cta', 'disclaimer']) {
-    const orig = originalText[field], adapted = adaptedText[field];
+    const orig = toStr(originalText[field]), adapted = toStr(adaptedText[field]);
     if (orig && adapted && orig.trim() !== adapted.trim())
       pairs.push({ original: orig.trim(), adapted: adapted.trim(), field });
   }
 
   // Array fields
   for (const field of ['badges', 'bullets', 'stats', 'other_text', 'comparison_labels', 'ingredient_labels', 'timeline_labels']) {
-    const origArr = originalText[field] || [], adaptedArr = adaptedText[field] || [];
+    const rawOrig = Array.isArray(originalText[field]) ? originalText[field] : [];
+    const rawAdapted = Array.isArray(adaptedText[field]) ? adaptedText[field] : [];
+    const origArr = rawOrig.map(toStr);
+    const adaptedArr = rawAdapted.map(toStr);
     for (let i = 0; i < Math.min(origArr.length, adaptedArr.length); i++) {
       if (origArr[i] && adaptedArr[i] && origArr[i].trim() !== adaptedArr[i].trim())
         pairs.push({ original: origArr[i].trim(), adapted: adaptedArr[i].trim(), field: `${field}[${i}]` });
