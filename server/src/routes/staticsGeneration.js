@@ -174,6 +174,22 @@ router.post('/reset-launched', authenticate, async (req, res) => {
   }
 });
 
+// ── Reset stuck 'generating' creatives back to 'ready' ──
+router.post('/reset-generating', authenticate, async (req, res) => {
+  try {
+    const result = await pgQuery(
+      `UPDATE spy_creatives SET status = 'ready', review_notes = 'Reset: stuck in generating after server restart', updated_at = NOW()
+       WHERE status = 'generating'
+       RETURNING id, angle, aspect_ratio, product_name`,
+      []
+    );
+    console.log(`[staticsGeneration] Reset ${result.length} stuck generating creatives to ready`);
+    res.json({ success: true, reset_count: result.length, creatives: result.map(r => ({ id: r.id, angle: r.angle, ratio: r.aspect_ratio, product: r.product_name })) });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // ── Meta App Diagnostic & Live Mode Toggle ──
 router.get('/meta-app-diagnose', authenticate, async (req, res) => {
   try {
@@ -958,6 +974,11 @@ router.get('/status/:taskId', authenticate, async (req, res) => {
           error: geminiResult.error || null,
         },
       });
+    }
+
+    // ── gen-xxx taskId not in memory → server restarted, task expired ──
+    if (taskId.startsWith('gen-')) {
+      return res.json({ success: true, data: { taskId, status: 'failed', error: 'Generation expired (server restarted). Please retry.' } });
     }
 
     // ── NanoBanana results: poll kie.ai ──
