@@ -5,7 +5,7 @@ const GEMINI_KEYS = [
   process.env.GEMINI_API_KEY_3 || '',
 ].filter(Boolean);
 const GEMINI_MODEL = 'gemini-2.0-flash-preview-image-generation';
-const GEMINI_EDIT_MODEL = 'gemini-2.0-flash-001'; // stable model name (gemini-3.1-flash-image-preview was deprecated)
+const GEMINI_EDIT_MODEL = 'gemini-2.5-flash-image'; // Nano Banana (image edit/gen model). 2.0-flash-001 is text-only and returns 400 INVALID_ARGUMENT for image modalities.
 const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 const GEMINI_EDIT_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_EDIT_MODEL}:generateContent`;
 const MAX_CONCURRENT = 4; // increased from 2 — allows more parallel generations
