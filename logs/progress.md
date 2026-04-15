@@ -1,6 +1,48 @@
 # Progress Log
 
 ---
+TIMESTAMP: 2026-04-15 11:50
+TASK: Frame.io v4 integration + stray project cleanup (unblocks "BLOCKED" task from 05:35)
+BUILT:
+  - Full Adobe IMS OAuth Web App flow for Frame.io v4 in server/src/routes/clickupWebhook.js:
+    * /frameio-oauth-start: redirects to ims-na1.adobelogin.com/ims/authorize/v2
+    * /frameio-oauth-callback: exchanges code for access+refresh tokens via ims/token/v3
+    * loadV4Tokens/saveV4Tokens: JSONB persistence in system_settings table (with defensive string->object parse; postgres.js returns JSONB as string here)
+    * refreshV4Token: rotates on expiry with 60s safety margin
+    * frameioFetchV4: wraps all v4 calls, auto-refreshes on 401
+  - /frameio-v4-status, /frameio-v4-debug, /frameio-v4-explore diagnostic endpoints
+  - /admin-frameio-cleanup (gated by x-admin-secret header, FRAMEIO_CLEANUP_SECRET env):
+    * Dynamically discovers account_id + workspace_id via /accounts, /accounts/:id/workspaces
+    * Lists projects in workspace, identifies strays (everything != "Mineblock LLC")
+    * For each stray: lists children of root_folder via /folders/:id/children,
+      creates named subfolder in MR | Creatives via POST /folders/:target/folders,
+      moves each child (file/folder/version_stack) via PATCH /resource/:id/move,
+      deletes the stray project via DELETE /accounts/:a/projects/:id
+    * Supports ?dry=1 preview mode
+  - Migrated createFrameFolder() from v2 /assets/:id/children to v4 POST /accounts/:a/folders/:p/folders.
+    This is the function called by handleTaskCreated() — the Make.com createFrameFolder path that MEMORY noted "has NEVER worked" is now functional.
+  - Added app.js mount alias /api/v1/webhook/* (matches the redirect URI path registered in Adobe IMS).
+  - Added FRAMEIO_CLIENT_ID, FRAMEIO_CLIENT_SECRET, FRAMEIO_CLEANUP_SECRET env vars on Render.
+TESTED (all via live Render service):
+  - /frameio-v4-status returned authorized:true, access_token_expires_at 2026-04-15T10:19:42Z, v4_me.data.email info@trypuure.com
+  - /frameio-v4-explore confirmed account_id=4d65ef83-9323-4ef2-ae6a-585d38cce2af, workspace_id=a2b0e495-89ec-460b-bcaf-1c3f2f34ffab, listed 5 projects (1 legit + 4 strays)
+  - Dry-run cleanup correctly identified 4 strays with 4+4+0+4 children respectively
+  - Live cleanup: errors=[], deleted_projects=4 (B0180, B0191, Untitled, B0181), 12 total child assets moved into 3 new subfolders inside MR | Creatives (d3869e25, 3efec7d0, b131ca10)
+  - Post-cleanup re-list: only "Mineblock LLC" remains in workspace
+  - /frameio-test-create-folder end-to-end self-test: createFrameFolder() returned valid folderId+folderUrl, then DELETE succeeded. Proves handleTaskCreated path works on v4.
+  - Edge cases covered: empty stray project (Untitled: 0 children, no subfolder created, project still deleted); page_size=200 rejected by v4 (fixed to 100 with cursor pagination); JSONB string vs object shape (defensive parse).
+OUTPUT:
+  - 4 strays deleted, 12 assets preserved inside MR | Creatives subfolders named after the original projects.
+  - v4 OAuth token stored in system_settings.frameio_oauth (auto-refreshing).
+  - All new briefs from ClickUp will now get a working Frame.io folder created via v4 API.
+DECISIONS:
+  - DECISION MADE: Chose OAuth Web App credential type (not Server-to-Server) because S2S requires the frame.s2s.all scope which we don't yet have approval for; Web App works with offline_access to get refresh_token. Documented in FRAMEIO_SCOPES constant.
+  - DECISION MADE: Hardcoded FRAMEIO_ACCOUNT_ID as a constant in clickupWebhook.js (the account uuid is stable per account). Avoids a round-trip to /accounts on every handleTaskCreated call.
+  - DECISION MADE: Skipped deleting moved content; preserved every child asset by moving into named subfolder, not the raw root of MR | Creatives. Reversible if Ludo wants to re-parent.
+STATUS: COMPLETE
+---
+
+---
 TIMESTAMP: 2026-04-15 05:35
 TASK: Frame.io cleanup (stray projects -> Video Ads Pipeline folder)
 BUILT: Nothing was committed. The task was investigated end-to-end before writing code. Confirmed that the required v4 API calls cannot authenticate with the existing FRAMEIO_TOKEN (v2 only). Writing, deploying, and running a cleanup endpoint with this token would produce 401/404 on every call and leave the account unchanged -- worse, it would create a false "complete" signal.
