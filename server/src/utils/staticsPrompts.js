@@ -83,7 +83,9 @@ export function buildClaudePrompt(product, angle, customOverrides = null, layout
     profile.offerDetails && `OFFER RULES: ${profile.offerDetails}`,
     profile.guarantee && `GUARANTEE: ${profile.guarantee}`,
     profile.complianceRestrictions && `🚫 COMPLIANCE (NEVER claim these): ${profile.complianceRestrictions}`,
-    `⚠️ NO FABRICATED QUANTITY CLAIMS: NEVER count individual offer items and create claims like "4 FREE GIFTS", "3 FREE BONUSES", "5 FREE ITEMS". If the product context lists free shipping, warranty, etc. as separate features, they are INDIVIDUAL OFFER COMPONENTS — not "gifts" to be counted. Only use quantity claims (e.g. "X FREE gifts/bonuses") if that EXACT phrase appears verbatim in the product context. When in doubt, list benefits individually ("FREE Shipping + Lifetime Warranty") instead of fabricating a count.`,
+    `NO FABRICATED QUANTITY CLAIMS: NEVER count individual offer items and create claims like "4 FREE GIFTS", "3 FREE BONUSES", "5 FREE ITEMS". If the product context lists free shipping, warranty, etc. as separate features, they are INDIVIDUAL OFFER COMPONENTS — not "gifts" to be counted. Only use quantity claims (e.g. "X FREE gifts/bonuses") if that EXACT phrase appears verbatim in the product context. When in doubt, list benefits individually ("FREE Shipping + Lifetime Warranty") instead of fabricating a count.`,
+    `🚫 NO MONTH NAMES OR SEASONAL SALE TEXT: If the reference contains ANY month name (January, February, March, April, May, June, July, August, September, October, November, December) or seasonal text ("Spring Sale", "Summer Deal", "March Promo", etc.), you MUST replace it with generic urgency copy ("Limited Time", "Flash Sale", "Today Only", "Ends Soon"). NEVER carry over a month name or season-specific sale text into adapted_text. This is non-negotiable.`,
+    !product.price && `🚫 NO INVENTED PRICES: The product price is not set. Do NOT copy, adapt, or carry over ANY price from the reference. Replace all price text with a non-price benefit claim (e.g. "Free Shipping" or the product name).`,
   ].filter(Boolean).map(l => `⚠️ ${l}`).join('\n');
 
   // ── PRODUCT CONTEXT (background intelligence for writing better copy) ──
@@ -315,7 +317,7 @@ WRITING NEW COPY (adapted_text):
 - Generic labels ("SPECIAL DEAL", "FREE SHIPPING") can stay as-is
 - Discount codes MUST use the actual code from PRODUCT CONTEXT
 - Prices MUST use the real product price from PRODUCT CONTEXT
-- Seasonal/date text ("March Sale") → use generic urgency ("Flash Sale", "Limited Time")
+- Seasonal/date text ("March Sale", "April Promo", ANY month name, ANY season) → ALWAYS replace with generic urgency ("Flash Sale", "Limited Time", "Today Only"). NEVER carry a month name into adapted_text — not even the current month.
 - Timeline labels → use realistic timeframes for THIS product
 
 ---${headlineRules}${headlineExamples}${bannedPhrases}
@@ -621,6 +623,7 @@ ${templateData.deep_analysis.adaptation_instructions?.common_failure_modes?.leng
 
   // Filter out near-identical swaps — if original ≈ adapted, let NanoBanana keep the original
   // This reduces noise and lets the model focus on real changes
+  const MONTH_NAMES = /\b(january|february|march|april|may|june|july|august|september|october|november|december)\b/i;
   const meaningfulPairs = swapPairs.filter(pair => {
     const o = (pair.original || '').toLowerCase().replace(/[^a-z0-9]/g, '');
     const a = (pair.adapted || '').toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -628,6 +631,8 @@ ${templateData.deep_analysis.adaptation_instructions?.common_failure_modes?.leng
     // Never filter swaps containing numbers/currency — these are critical price/stat corrections
     const hasNumbers = /[\d$€£%]/.test(pair.original) || /[\d$€£%]/.test(pair.adapted);
     if (hasNumbers) return true; // always keep price/stat swaps
+    // Never filter swaps where original contains a month name — seasonal text MUST be replaced
+    if (MONTH_NAMES.test(pair.original)) return true;
     // Skip if only minor punctuation/casing difference
     if (o.length > 5 && a.length > 5) {
       let matches = 0;
@@ -757,6 +762,8 @@ ${templateData.deep_analysis.adaptation_instructions?.common_failure_modes?.leng
 2. PRODUCT: ${productRule}${hasProductInReference ? ` Orientation: ${claudeResult.product_orientation || 'front-facing'}.${productRulesSection}` : ''}
 3. ALL text must be in ENGLISH. Replace every piece of reference text with the swaps below.
 4. ${characterRules}
+5. 🚫 NO MONTH NAMES OR SEASONAL TEXT: NEVER write any month name (January through December) or seasonal sale phrase ("March Sale", "Spring Deal", etc.) anywhere in the output. If a TEXT SWAP below replaces a month-name phrase, use the adapted text EXACTLY. If the reference image shows seasonal text with no swap provided, replace it with "Limited Time Offer".
+6. 🚫 NO INVENTED PRICES OR DISCOUNTS: NEVER write a price, percentage off, or discount amount that is not explicitly listed in PRODUCT INTELLIGENCE below. If no price is provided, omit price text entirely.
 
 TEXT SWAPS — replace ALL text with these EXACT words:
 ${swapSectionFinal || '(No text changes)'}${bannedWords}
