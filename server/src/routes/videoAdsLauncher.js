@@ -6,7 +6,7 @@ import {
   uploadAdVideo, waitForVideoReady, createAd, createAdSet,
   createFlexibleAdCreative, getDefaultAdAccountId, isMetaAdsConfigured,
   getAdAccounts, getPages, getPixels, getCampaigns, getAdSets,
-  getCustomAudiences,
+  getCustomAudiences, DEFAULT_URL_TAGS,
 } from '../services/metaAdsApi.js';
 import crypto from 'crypto';
 
@@ -608,8 +608,10 @@ async function launchVideoToAdset({ video, template, adsetId, adsetName, page, a
       },
     };
 
-    const cleanUTM = template.utm_parameters?.replace(/^[?&]+/, '');
-    if (cleanUTM) creativeBody.url_tags = cleanUTM;
+    // HARDCODED default tracking template for ALL launched ads.
+    // template.utm_parameters is intentionally ignored — Meta-side dynamic
+    // placeholders must be sent LITERALLY.
+    creativeBody.url_tags = DEFAULT_URL_TAGS;
 
     const creativeRes = await fetch(`https://graph.facebook.com/v21.0/${template.ad_account_id}/adcreatives`, {
       method: 'POST',

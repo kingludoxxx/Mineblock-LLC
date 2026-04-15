@@ -8,6 +8,12 @@ const META_GRAPH_URL = 'https://graph.facebook.com/v21.0';
 const META_API_TIMEOUT = 45000;  // 45s timeout for all Meta API calls
 const META_UPLOAD_TIMEOUT = 60000; // 60s for image uploads (larger payloads)
 
+// ── GLOBAL DEFAULT url_tags (Meta Ads Manager tracking template) ──
+// Applied to EVERY ad creative launched through this codebase.
+// Meta dynamic placeholders — must be sent LITERALLY to Meta (do NOT template-expand).
+// See: https://www.facebook.com/business/help/2360940870872492
+export const DEFAULT_URL_TAGS = 'tw_source={{site_source_name}}&tw_adid={{ad.id}}';
+
 /**
  * Upload an ad image to a Meta ad account
  * @param {string} adAccountId - e.g. 'act_123456'
@@ -71,6 +77,8 @@ export async function createAdCreative(adAccountId, params) {
       object_story_spec: {
         page_id: pageId || process.env.META_PAGE_ID || '',
       },
+      // HARDCODED default tracking template for ALL launched ads.
+      url_tags: DEFAULT_URL_TAGS,
     }),
   });
 
@@ -363,7 +371,10 @@ export async function createFlexibleAdCreative(adAccountId, params) {
     verticalImageHash, // kept for future use
   } = params;
 
-  const cleanUTM = utmParameters?.replace(/^[?&]+/, '');
+  // NOTE: user-supplied utmParameters are intentionally IGNORED.
+  // Every ad launched from this codebase uses the hardcoded DEFAULT_URL_TAGS.
+  // Reference kept for log/traceability only.
+  void utmParameters;
 
   // Use standard (non-dynamic) creative with object_story_spec + link_data
   // This allows multiple ads per adset without is_dynamic_creative
@@ -384,11 +395,12 @@ export async function createFlexibleAdCreative(adAccountId, params) {
         },
       },
     },
-    // url_tags appends tracking params to all links — supports Meta dynamic macros like {{ad.id}}
-    ...(cleanUTM ? { url_tags: cleanUTM } : {}),
+    // HARDCODED default tracking template for ALL launched ads.
+    // Meta dynamic placeholders — must be sent literally.
+    url_tags: DEFAULT_URL_TAGS,
   };
 
-  console.log(`[createFlexibleAdCreative] link: ${link}, url_tags: ${cleanUTM || 'none'}`);
+  console.log(`[createFlexibleAdCreative] link: ${link}, url_tags: ${DEFAULT_URL_TAGS}`);
 
   const res = await fetch(`${META_GRAPH_URL}/${adAccountId}/adcreatives`, {
     method: 'POST',
