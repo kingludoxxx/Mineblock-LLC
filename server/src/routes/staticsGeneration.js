@@ -14,6 +14,39 @@ import {
 } from '../services/metaAdsApi.js';
 
 const router = Router();
+
+// ── Public (no auth) — must be defined BEFORE router.use(authenticate) ──
+router.get('/tmp-img/:id', async (req, res) => {
+  // 1. Check in-memory cache first (fast path)
+  const entry = tempImages.get(req.params.id);
+  if (entry) {
+    res.set('Content-Type', entry.contentType);
+    res.set('Cache-Control', 'public, max-age=86400');
+    return res.send(entry.buf);
+  }
+  // 2. Fall back to persistent DB store
+  try {
+    const rows = await pgQuery(
+      'SELECT data, content_type FROM image_store WHERE id = $1',
+      [req.params.id],
+      { timeout: 10000 }
+    );
+    if (rows.length > 0) {
+      const { data, content_type } = rows[0];
+      const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
+      // Re-populate memory cache
+      tempImages.set(req.params.id, { buf, contentType: content_type });
+      setTimeout(() => tempImages.delete(req.params.id), TEMP_IMAGE_TTL);
+      res.set('Content-Type', content_type);
+      res.set('Cache-Control', 'public, max-age=86400');
+      return res.send(buf);
+    }
+  } catch (err) {
+    console.warn('[tmp-img] DB lookup failed:', err.message);
+  }
+  return res.status(404).send('Expired or not found');
+});
+
 router.use(authenticate, requirePermission('statics-generation', 'access'));
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
@@ -122,37 +155,6 @@ async function storeTempImage(buf, contentType) {
   }
   return id;
 }
-
-router.get('/tmp-img/:id', async (req, res) => {
-  // 1. Check in-memory cache first (fast path)
-  const entry = tempImages.get(req.params.id);
-  if (entry) {
-    res.set('Content-Type', entry.contentType);
-    res.set('Cache-Control', 'public, max-age=86400');
-    return res.send(entry.buf);
-  }
-  // 2. Fall back to persistent DB store
-  try {
-    const rows = await pgQuery(
-      'SELECT data, content_type FROM image_store WHERE id = $1',
-      [req.params.id],
-      { timeout: 10000 }
-    );
-    if (rows.length > 0) {
-      const { data, content_type } = rows[0];
-      const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
-      // Re-populate memory cache
-      tempImages.set(req.params.id, { buf, contentType: content_type });
-      setTimeout(() => tempImages.delete(req.params.id), TEMP_IMAGE_TTL);
-      res.set('Content-Type', content_type);
-      res.set('Cache-Control', 'public, max-age=86400');
-      return res.send(buf);
-    }
-  } catch (err) {
-    console.warn('[tmp-img] DB lookup failed:', err.message);
-  }
-  return res.status(404).send('Expired or not found');
-});
 
 // ── Reset launched creatives back to ready ──
 router.post('/reset-launched', authenticate, async (req, res) => {
