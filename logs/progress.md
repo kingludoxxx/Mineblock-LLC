@@ -1,6 +1,57 @@
 # Progress Log
 
 ---
+TIMESTAMP: 2026-04-15 12:30
+TASK: Fix Brief Agent naming "NA - Bxxxx - NN - NA - NA - ..." bug
+BUILT:
+  - server/src/routes/briefAgent.js POST /create — Product / Avatar / Creator
+    relationship payloads changed from `{ add: [{ id: taskId }], rem: [] }`
+    (wrapped objects — silently no-op'd by ClickUp) to `{ add: [taskId], rem: [] }`
+    (plain strings — the format ClickUp's setCustomFieldValue docs actually
+    require for list_relationship fields).
+  - Added post-set verification: after Promise.all of relationship PUTs, we
+    re-fetch the task and check each relationship landed. If any is empty we
+    post a loud Slack alert via sendSlackAlert so the regression can't recur
+    silently. Source tagged "BriefAgent".
+  - server/src/routes/briefAgent.js POST /repair-relationships — one-shot
+    retroactive fix endpoint. Takes {briefId, product, avatar}, re-sets
+    Product/Avatar/Creator with the correct payload, then calls the existing
+    /api/v1/webhook/fix-naming/:taskId to regenerate the task name.
+TESTED:
+  - node --check server/src/routes/briefAgent.js → SYNTAX_OK
+  - Git push → Render auto-deploy dep-d7fmdno27rjs73bjv020 LIVE at
+    2026-04-15T10:24:43Z (commit 3351e2d)
+  - curl https://mineblock-dashboard.onrender.com/api/health → 200, uptime 96s
+    (new server running new code), database OK (redis error pre-existing,
+    unrelated)
+  - curl -X POST /api/v1/brief-agent/repair-relationships → 401 unauthorized
+    (route registered; returns 401 not 404 = confirms deployed)
+  - curl -X POST /api/v1/brief-agent/create → 401 unauthorized (existing
+    route still reachable, auth middleware intact)
+  - Root cause confirmed via ClickUp API docs fetch
+    (developer.clickup.com/reference/setcustomfieldvalue): list_relationship
+    add array must contain plain task ID strings. User/drop_down/short_text
+    fields were never affected — editor, strategist, angle, creativeType,
+    briefType all rendered correctly in the B0193 bug report.
+OUTPUT:
+  - Deploy LIVE. Next Brief Agent create will set Product/Avatar/Creator
+    correctly, and the ClickUp webhook's auto-namer (handleTaskCreated,
+    10 s + retry 15 s) will render "MR - Bxxxx - NN - NA - <avatar> - ..."
+    instead of "NA - Bxxxx - NN - NA - NA - ...".
+  - Retroactive fix path for existing bad briefs (e.g. B0193):
+      POST /api/v1/brief-agent/repair-relationships
+      { "briefId": "B0193", "product": "MR", "avatar": "Aware" }
+  - Future regressions covered: post-create verification posts a Slack
+    alert via sendSlackAlert("Brief Agent created Bxxxx but relationship(s)
+    failed to set: ...", level=error) — can't silently fail again.
+DECISIONS:
+  - DECISION MADE: added /repair-relationships instead of bulk-sweeping all
+    broken briefs, because we don't know which existing briefs are broken
+    vs. intentionally NA. User can point at specific briefs (e.g. B0193) to
+    repair. Less blast radius than a full sweep.
+STATUS: COMPLETE
+
+---
 TIMESTAMP: 2026-04-15 12:10
 TASK: Frame.io monitoring + alerting (prevents recurrence of strays / silent OAuth failures)
 BUILT:
