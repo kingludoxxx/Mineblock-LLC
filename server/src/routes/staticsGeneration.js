@@ -15,27 +15,6 @@ import {
 
 const router = Router();
 
-// ── Admin bypass — must be before authenticate middleware ──
-router.post('/admin-reset-launched', async (req, res) => {
-  const secret = req.query.secret || req.body?.secret;
-  const valid = secret === process.env.CRON_SECRET || secret === 'mb-reset-2026-tmp';
-  if (!valid) return res.status(403).json({ error: 'Forbidden' });
-  try {
-    const limit = parseInt(req.query.limit) || 6;
-    const result = await pgQuery(
-      `UPDATE spy_creatives SET status = 'ready', review_notes = 'Admin reset to re-launch', updated_at = NOW()
-       WHERE id IN (
-         SELECT id FROM spy_creatives WHERE status = 'launched' ORDER BY updated_at DESC LIMIT $1
-       )
-       RETURNING id, angle, status`,
-      [limit]
-    );
-    res.json({ success: true, reset_count: result.length, creatives: result });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
 // ── Public (no auth) — must be defined BEFORE router.use(authenticate) ──
 router.get('/tmp-img/:id', async (req, res) => {
   // 1. Check in-memory cache first (fast path)
