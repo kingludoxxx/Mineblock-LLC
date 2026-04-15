@@ -1228,10 +1228,19 @@ router.post('/admin-frameio-cleanup', async (req, res) => {
       };
       try {
         // 3a. List children of stray's root folder
-        const childrenResp = await frameioFetchV4(
-          `/accounts/${accountId}/folders/${proj.root_folder_id}/children?page_size=200`
-        );
-        const children = childrenResp?.data || [];
+        // Page through children (max 100/page per v4 API)
+        const children = [];
+        let cursor = '';
+        for (let page = 0; page < 20; page++) {
+          const q = cursor ? `&after=${encodeURIComponent(cursor)}` : '';
+          const childrenResp = await frameioFetchV4(
+            `/accounts/${accountId}/folders/${proj.root_folder_id}/children?page_size=100${q}`
+          );
+          const batch = childrenResp?.data || [];
+          children.push(...batch);
+          cursor = childrenResp?.links?.next || childrenResp?.pagination?.next || '';
+          if (!cursor || batch.length === 0) break;
+        }
         entry.child_count = children.length;
 
         if (dry) {
