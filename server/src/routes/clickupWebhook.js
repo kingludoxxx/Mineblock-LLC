@@ -1136,32 +1136,36 @@ router.get('/frameio-v4-status', async (req, res) => {
 // Diagnostic: list Frame.io v4 accounts + projects visible to the authed user.
 // Helps confirm account_id + see stray projects before running cleanup.
 router.get('/frameio-v4-explore', async (req, res) => {
-  try {
-    const me = await frameioFetchV4('/me');
-    // Try multiple shapes to find accounts
-    let accounts = null;
+  const out = {};
+  const tryPath = async (path) => {
     try {
-      const r = await frameioFetchV4('/accounts');
-      accounts = r?.data || r?.accounts || r;
+      const r = await frameioFetchV4(path);
+      return r;
     } catch (err) {
-      accounts = { error: err.message };
+      return { __error: err.message };
     }
-    // Pick the first account id we can find
-    const firstAccountId = Array.isArray(accounts)
-      ? accounts[0]?.id
-      : (accounts?.[0]?.id || null);
-    let projects = null;
-    if (firstAccountId) {
-      try {
-        const r = await frameioFetchV4(`/accounts/${firstAccountId}/projects?page_size=100`);
-        projects = r?.data || r?.projects || r;
-      } catch (err) {
-        projects = { error: err.message };
-      }
+  };
+  try {
+    out.me = await tryPath('/me');
+    out.accounts = await tryPath('/accounts');
+    const accountId = out.accounts?.[0]?.id || out.accounts?.data?.[0]?.id;
+    out.accountId = accountId;
+    if (accountId) {
+      out.workspaces = await tryPath(`/accounts/${accountId}/workspaces?page_size=50`);
     }
-    res.json({ me, accounts, firstAccountId, projects });
+    // Try to look up FRAMEIO_PROJECT_ID directly to see if it's a project or workspace
+    out.lookup_project = await tryPath(`/projects/${FRAMEIO_PROJECT_ID}`);
+    out.lookup_workspace = await tryPath(`/workspaces/${FRAMEIO_PROJECT_ID}`);
+    // If it's a workspace, list projects inside
+    const wsProjects = await tryPath(`/workspaces/${FRAMEIO_PROJECT_ID}/projects?page_size=100`);
+    out.workspace_projects = wsProjects;
+    // Also try account-level project listing (returned 404 before, try alt path)
+    if (accountId) {
+      out.account_projects_alt = await tryPath(`/accounts/${accountId}/projects`);
+    }
+    res.json(out);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: err.message, partial: out });
   }
 });
 
