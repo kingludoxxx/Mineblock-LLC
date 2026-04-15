@@ -203,6 +203,10 @@ async function main() {
       re: /\b[a-z]{1,3}[A-Z][a-z]/ },
     { name: 'Profit guarantee (compliance violation)',
       re: /\b(guaranteed profits?|guaranteed income|passive income|get rich|make \$\d)/i },
+    { name: 'AI-tell crutch words',
+      re: /\b(effortlessly|seamlessly|revolutioniz(e|ing|es)|revolutionary|game[- ]chang(er|ing)|elevate your|unleash|unlock your potential|transformative|leverage|empowering?|harness the power|your journey|cutting[- ]edge|state[- ]of[- ]the[- ]art|next[- ]level|delve into|embark on|meticulous(ly)?|intricate|tapestry|paradigm|holistic|bespoke|curated|immerse|ever[- ]evolving|at your fingertips|dive in(to)?|say goodbye to|hello to|power of [a-z]+|world of [a-z]+|realm of [a-z]+|embrace the|look no further)\b/i },
+    { name: 'Vague benefit-speak',
+      re: /\b(best[- ]in[- ]class|premium experience|top[- ]tier|industry[- ]leading|proven to work|unparalleled|unmatched|unrivaled|second to none)\b/i },
   ];
   for (const c of checks) {
     const m = allText.match(c.re);
