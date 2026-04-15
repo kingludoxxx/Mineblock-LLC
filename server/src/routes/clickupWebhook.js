@@ -194,6 +194,92 @@ function generateNamingConvention(task, listId, briefNumber) {
 
 // ── Frame.io helpers ──────────────────────────────────────────────
 const FRAMEIO_API_V4 = 'https://api.frame.io/v4';
+const FRAMEIO_CLIENT_ID = process.env.FRAMEIO_CLIENT_ID || '';
+const FRAMEIO_CLIENT_SECRET = process.env.FRAMEIO_CLIENT_SECRET || '';
+const FRAMEIO_REDIRECT_URI = 'https://mineblock-dashboard.onrender.com/api/v1/webhook/frameio-oauth-callback';
+const ADOBE_IMS_AUTHORIZE = 'https://ims-na1.adobelogin.com/ims/authorize/v2';
+const ADOBE_IMS_TOKEN = 'https://ims-na1.adobelogin.com/ims/token/v3';
+
+// In-memory cache to avoid hitting the DB on every API call
+let v4TokenCache = { accessToken: null, expiresAt: 0 };
+
+/**
+ * Load the stored OAuth token set from system_settings.
+ * Shape: { access_token, refresh_token, expires_at (ms epoch) }
+ */
+async function loadV4Tokens() {
+  const rows = await pgQuery(
+    "SELECT value FROM system_settings WHERE key = 'frameio_oauth'"
+  );
+  return rows?.[0]?.value || null;
+}
+
+async function saveV4Tokens(tokens) {
+  await pgQuery(
+    `INSERT INTO system_settings (key, value, description, updated_at)
+     VALUES ('frameio_oauth', $1::jsonb, 'Frame.io v4 OAuth tokens (Adobe IMS)', NOW())
+     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
+    [JSON.stringify(tokens)]
+  );
+  // Invalidate cache so the next request re-reads
+  v4TokenCache = { accessToken: null, expiresAt: 0 };
+}
+
+/**
+ * Refresh the v4 access token using the stored refresh_token.
+ * Returns the new access_token, or throws if refresh failed.
+ */
+async function refreshV4Token() {
+  const stored = await loadV4Tokens();
+  if (!stored?.refresh_token) {
+    throw new Error('No Frame.io refresh_token stored — visit /api/v1/webhook/frameio-oauth-start to authorize');
+  }
+
+  const body = new URLSearchParams({
+    grant_type: 'refresh_token',
+    refresh_token: stored.refresh_token,
+    client_id: FRAMEIO_CLIENT_ID,
+    client_secret: FRAMEIO_CLIENT_SECRET,
+  });
+
+  const res = await fetch(ADOBE_IMS_TOKEN, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: body.toString(),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Adobe IMS refresh failed ${res.status}: ${text.slice(0, 300)}`);
+  }
+  const json = await res.json();
+  const newTokens = {
+    access_token: json.access_token,
+    // Adobe returns a new refresh_token if rotating; fall back to old one otherwise
+    refresh_token: json.refresh_token || stored.refresh_token,
+    expires_at: Date.now() + (json.expires_in || 86400) * 1000 - 60_000, // 1-min safety margin
+    token_type: json.token_type || 'Bearer',
+  };
+  await saveV4Tokens(newTokens);
+  return newTokens.access_token;
+}
+
+/**
+ * Get a valid v4 access token — refreshes transparently if expired.
+ */
+async function getV4AccessToken() {
+  if (v4TokenCache.accessToken && Date.now() < v4TokenCache.expiresAt) {
+    return v4TokenCache.accessToken;
+  }
+  const stored = await loadV4Tokens();
+  if (stored?.access_token && stored.expires_at && Date.now() < stored.expires_at) {
+    v4TokenCache = { accessToken: stored.access_token, expiresAt: stored.expires_at };
+    return stored.access_token;
+  }
+  const fresh = await refreshV4Token();
+  const latest = await loadV4Tokens();
+  v4TokenCache = { accessToken: fresh, expiresAt: latest.expires_at };
+  return fresh;
+}
 
 async function frameioFetch(url, options = {}, baseUrl = FRAMEIO_API) {
   if (!FRAMEIO_TOKEN) {
@@ -215,8 +301,48 @@ async function frameioFetch(url, options = {}, baseUrl = FRAMEIO_API) {
   return res.json();
 }
 
+/**
+ * Fetch against Frame.io v4 using Adobe IMS OAuth (auto-refreshing token).
+ * Falls back to the legacy FRAMEIO_TOKEN if no OAuth tokens are stored
+ * (keeps the pre-OAuth codepath alive for v2-only endpoints).
+ */
 async function frameioFetchV4(url, options = {}) {
-  return frameioFetch(url, options, FRAMEIO_API_V4);
+  const stored = await loadV4Tokens().catch(() => null);
+  if (!stored?.refresh_token) {
+    // No OAuth yet → fall through to legacy v2 token (will likely 401 on v4, but keeps old behavior)
+    return frameioFetch(url, options, FRAMEIO_API_V4);
+  }
+  const accessToken = await getV4AccessToken();
+  const res = await fetch(`${FRAMEIO_API_V4}${url}`, {
+    ...options,
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+      ...options.headers,
+    },
+  });
+  if (res.status === 401) {
+    // Token may have been revoked server-side — force a refresh and retry once
+    const refreshed = await refreshV4Token();
+    const retry = await fetch(`${FRAMEIO_API_V4}${url}`, {
+      ...options,
+      headers: {
+        Authorization: `Bearer ${refreshed}`,
+        'Content-Type': 'application/json',
+        ...options.headers,
+      },
+    });
+    if (!retry.ok) {
+      const text = await retry.text();
+      throw new Error(`Frame.io v4 API error ${retry.status}: ${text.slice(0, 300)}`);
+    }
+    return retry.status === 204 ? null : retry.json();
+  }
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Frame.io v4 API error ${res.status}: ${text.slice(0, 300)}`);
+  }
+  return res.status === 204 ? null : res.json();
 }
 
 /**
@@ -886,6 +1012,164 @@ router.get('/create-frame-folder/:taskId', async (req, res) => {
   } catch (err) {
     logger.error('[create-frame-folder] Error:', err.message);
     res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Frame.io v4 OAuth (Adobe IMS) ──────────────────────────────────
+// Scopes Adobe requires for Frame.io v4 API calls. `offline_access` is what
+// grants us a refresh_token so we don't re-auth every 24h.
+const FRAMEIO_SCOPES = 'openid,AdobeID,email,profile,offline_access,additional_info.roles,frame.s2s.all,additional_info.projectedProductContext';
+
+// Step 1: kick off the auth flow. User opens this URL in a browser once.
+router.get('/frameio-oauth-start', (req, res) => {
+  if (!FRAMEIO_CLIENT_ID || !FRAMEIO_CLIENT_SECRET) {
+    return res.status(500).json({ error: 'FRAMEIO_CLIENT_ID / FRAMEIO_CLIENT_SECRET not set on Render' });
+  }
+  const params = new URLSearchParams({
+    client_id: FRAMEIO_CLIENT_ID,
+    redirect_uri: FRAMEIO_REDIRECT_URI,
+    response_type: 'code',
+    scope: FRAMEIO_SCOPES,
+    state: 'frameio-v4-init',
+  });
+  res.redirect(`${ADOBE_IMS_AUTHORIZE}?${params.toString()}`);
+});
+
+// Step 2: Adobe redirects back here with ?code=... — exchange for tokens.
+router.get('/frameio-oauth-callback', async (req, res) => {
+  const { code, error, error_description } = req.query;
+  if (error) {
+    logger.error(`[frameio-oauth-callback] Adobe returned error: ${error} — ${error_description}`);
+    return res.status(400).send(`Adobe OAuth error: ${error} — ${error_description}`);
+  }
+  if (!code) return res.status(400).send('Missing ?code param');
+  try {
+    const body = new URLSearchParams({
+      grant_type: 'authorization_code',
+      code,
+      client_id: FRAMEIO_CLIENT_ID,
+      client_secret: FRAMEIO_CLIENT_SECRET,
+    });
+    const r = await fetch(ADOBE_IMS_TOKEN, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: body.toString(),
+    });
+    if (!r.ok) {
+      const text = await r.text();
+      throw new Error(`IMS token exchange failed ${r.status}: ${text.slice(0, 400)}`);
+    }
+    const tok = await r.json();
+    if (!tok.refresh_token) {
+      throw new Error('IMS did not return refresh_token — check that `offline_access` scope was granted');
+    }
+    await saveV4Tokens({
+      access_token: tok.access_token,
+      refresh_token: tok.refresh_token,
+      expires_at: Date.now() + (tok.expires_in || 86400) * 1000 - 60_000,
+      token_type: tok.token_type || 'Bearer',
+    });
+    logger.info('[frameio-oauth-callback] Frame.io v4 OAuth tokens stored — integration unblocked');
+    res.send('<h1>Frame.io v4 authorized ✅</h1><p>Tokens stored. You can close this tab.</p>');
+  } catch (err) {
+    logger.error('[frameio-oauth-callback] Error:', err.message);
+    res.status(500).send(`OAuth callback failed: ${err.message}`);
+  }
+});
+
+// Diagnostic: is v4 OAuth set up and currently working?
+router.get('/frameio-v4-status', async (req, res) => {
+  try {
+    const stored = await loadV4Tokens().catch(() => null);
+    if (!stored?.refresh_token) {
+      return res.json({ authorized: false, hint: 'Visit /api/v1/webhook/frameio-oauth-start to authorize' });
+    }
+    const me = await frameioFetchV4('/me');
+    res.json({
+      authorized: true,
+      access_token_expires_at: new Date(stored.expires_at).toISOString(),
+      v4_me: me,
+    });
+  } catch (err) {
+    res.status(500).json({ authorized: false, error: err.message });
+  }
+});
+
+// ── Frame.io v4 cleanup: move stray account-level projects into the editing folder ──
+// One-shot admin operation. Locked behind CRON_SECRET header.
+router.post('/admin-frameio-cleanup', async (req, res) => {
+  const secret = req.headers['x-cron-secret'];
+  if (!secret || secret !== process.env.CRON_SECRET) {
+    return res.status(401).json({ error: 'Unauthorized — missing/invalid x-cron-secret' });
+  }
+
+  const report = { discovered: [], moved: [], skipped_has_content: [], deleted: [], errors: [] };
+
+  try {
+    // 1. Identify the v4 account + its workspaces/projects.
+    const me = await frameioFetchV4('/me');
+    const accountId = me?.account_id || me?.data?.account_id || me?.id;
+    report.account_id = accountId;
+
+    // 2. List v4 projects under the account. Frame.io v4 REST shape:
+    //    GET /v4/accounts/:accountId/projects?include=workspace
+    let projects = [];
+    try {
+      const r = await frameioFetchV4(`/accounts/${accountId}/projects?page_size=100`);
+      projects = r?.data || r?.projects || r || [];
+    } catch (err) {
+      report.errors.push({ step: 'list_projects', error: err.message });
+    }
+    report.discovered = projects.map(p => ({ id: p.id, name: p.name, workspace_id: p.workspace_id }));
+
+    // 3. For each project that is NOT the legit one, try to migrate.
+    //    KEEP: FRAMEIO_PROJECT_ID (the canonical "Mineblock LLC" v2 project)
+    //    The v4 version of that project has a DIFFERENT id — we identify it by name.
+    const LEGIT_NAMES = new Set(['Mineblock LLC', 'mineblock llc']);
+    const strays = projects.filter(p =>
+      !LEGIT_NAMES.has((p.name || '').trim()) &&
+      p.id !== FRAMEIO_PROJECT_ID
+    );
+
+    for (const proj of strays) {
+      try {
+        // Check if project has assets
+        let children = [];
+        try {
+          const r = await frameioFetchV4(`/projects/${proj.id}/root?include=children`);
+          children = r?.children || r?.data?.children || [];
+        } catch { /* empty/new project */ }
+
+        if (children.length > 0) {
+          // Don't auto-delete content; let Ludo migrate manually.
+          report.skipped_has_content.push({ id: proj.id, name: proj.name, child_count: children.length });
+          continue;
+        }
+
+        // Empty project → create matching folder inside target editing folder, then delete the project.
+        const folder = await createFrameFolder(FRAMEIO_EDITING_FOLDER, proj.name);
+        if (!folder) {
+          report.errors.push({ step: 'create_folder', project: proj.name, error: 'createFrameFolder returned null' });
+          continue;
+        }
+        report.moved.push({ from_project_id: proj.id, to_folder_id: folder.folderId, name: proj.name, url: folder.folderUrl });
+
+        // Delete the now-redundant empty v4 project.
+        try {
+          await frameioFetchV4(`/projects/${proj.id}`, { method: 'DELETE' });
+          report.deleted.push({ id: proj.id, name: proj.name });
+        } catch (err) {
+          report.errors.push({ step: 'delete_project', id: proj.id, error: err.message });
+        }
+      } catch (err) {
+        report.errors.push({ step: 'migrate', project: proj.name, error: err.message });
+      }
+    }
+
+    res.json({ success: true, ...report });
+  } catch (err) {
+    logger.error('[admin-frameio-cleanup] Fatal:', err.message);
+    res.status(500).json({ success: false, error: err.message, partial_report: report });
   }
 });
 
