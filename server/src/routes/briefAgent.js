@@ -344,6 +344,126 @@ router.get('/lookup/:briefId', async (req, res) => {
   }
 });
 
+// POST /api/v1/brief-agent/repair-relationships
+// Retroactively fix a brief whose Product / Avatar / Creator relationship fields
+// never landed (the "NA - Bxxxx - ... - NA - NA - ..." bug). Pass the briefId
+// (e.g. "B0193" or "193"), product code ("MR" / "TX"), and avatar name.
+// This re-sets the relationship fields with the correct payload shape and then
+// triggers a name regenerate via the clickupWebhook's fix-naming endpoint.
+router.post('/repair-relationships', async (req, res) => {
+  try {
+    const { briefId, product = 'MR', avatar } = req.body;
+    if (!briefId || !avatar) {
+      return res.status(400).json({
+        success: false,
+        error: { message: 'briefId and avatar are required.' },
+      });
+    }
+
+    const productTaskId = PRODUCT_TASK_IDS[product];
+    const avatarTaskId = AVATAR_TASK_IDS[avatar];
+    if (!productTaskId) {
+      return res.status(400).json({ success: false, error: { message: `Unknown product "${product}".` } });
+    }
+    if (avatar !== 'NA' && !avatarTaskId) {
+      return res.status(400).json({ success: false, error: { message: `Unknown avatar "${avatar}". Available: ${Object.keys(AVATAR_TASK_IDS).join(', ')}` } });
+    }
+
+    // Find the task by brief number
+    const briefNum = parseInt(String(briefId).toUpperCase().replace(/^B0*/, ''), 10);
+    if (isNaN(briefNum)) {
+      return res.status(400).json({ success: false, error: { message: 'Invalid briefId.' } });
+    }
+
+    let found = null;
+    let page = 0;
+    let hasMore = true;
+    while (hasMore && !found) {
+      const data = await clickupFetch(
+        `${CLICKUP_API}/list/${VIDEO_ADS_LIST_ID}/task?page=${page}&limit=100&include_closed=true&subtasks=true`,
+      );
+      const tasks = data.tasks || [];
+      for (const task of tasks) {
+        const briefField = task.custom_fields?.find((f) => f.id === FIELD_IDS.briefNumber);
+        const taskBriefNum = briefField?.value != null ? parseInt(briefField.value, 10) : null;
+        const nameMatch = task.name?.match(/B0*(\d+)/);
+        const nameBriefNum = nameMatch ? parseInt(nameMatch[1], 10) : null;
+        if (taskBriefNum === briefNum || nameBriefNum === briefNum) {
+          found = task;
+          break;
+        }
+      }
+      hasMore = tasks.length === 100;
+      page++;
+    }
+
+    if (!found) {
+      return res.status(404).json({ success: false, error: { message: `Brief B${briefNum} not found.` } });
+    }
+
+    const taskId = found.id;
+    const results = { product: null, avatar: null, creator: null };
+
+    try {
+      await clickupFetch(`${CLICKUP_API}/task/${taskId}/field/${FIELD_IDS.product}`, {
+        method: 'POST',
+        body: JSON.stringify({ value: { add: [productTaskId], rem: [] } }),
+      });
+      results.product = 'set';
+    } catch (e) {
+      results.product = `error: ${e.message}`;
+    }
+
+    if (avatarTaskId) {
+      try {
+        await clickupFetch(`${CLICKUP_API}/task/${taskId}/field/${FIELD_IDS.avatar}`, {
+          method: 'POST',
+          body: JSON.stringify({ value: { add: [avatarTaskId], rem: [] } }),
+        });
+        results.avatar = 'set';
+      } catch (e) {
+        results.avatar = `error: ${e.message}`;
+      }
+    } else {
+      results.avatar = 'skipped (NA has no task)';
+    }
+
+    try {
+      await clickupFetch(`${CLICKUP_API}/task/${taskId}/field/${FIELD_IDS.creator}`, {
+        method: 'POST',
+        body: JSON.stringify({ value: { add: [CREATOR_NA_TASK_ID], rem: [] } }),
+      });
+      results.creator = 'set';
+    } catch (e) {
+      results.creator = `error: ${e.message}`;
+    }
+
+    // Ask the clickupWebhook route to re-generate the naming convention.
+    // Relative fetch works because both routes are on the same server.
+    const port = process.env.PORT || 3000;
+    const renameUrl = `http://127.0.0.1:${port}/api/v1/webhook/fix-naming/${taskId}`;
+    let rename = null;
+    try {
+      const r = await fetch(renameUrl);
+      rename = await r.json().catch(() => ({ ok: r.ok }));
+    } catch (e) {
+      rename = { error: e.message };
+    }
+
+    res.json({
+      success: true,
+      taskId,
+      briefId: `B${String(briefNum).padStart(4, '0')}`,
+      oldName: found.name,
+      relationships: results,
+      rename,
+    });
+  } catch (err) {
+    console.error('[BriefAgent] repair-relationships error:', err.message);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
 // POST /api/v1/brief-agent/create
 router.post('/create', async (req, res) => {
   try {
