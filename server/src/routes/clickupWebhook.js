@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import logger from '../utils/logger.js';
 import { pgQuery } from '../db/pg.js';
+import sendSlackAlert from '../utils/slackAlert.js';
 
 const router = Router();
 
@@ -380,13 +381,37 @@ async function createFrameFolder(parentFolderId, folderName) {
     );
     const newId = resp?.data?.id || resp?.id;
     if (!newId) {
-      logger.error(`[createFrameFolder] v4 response had no id: ${JSON.stringify(resp).slice(0, 200)}`);
+      const preview = JSON.stringify(resp).slice(0, 200);
+      logger.error(`[createFrameFolder] v4 response had no id: ${preview}`);
+      // Loud alert — this blocks brief pipeline silently otherwise.
+      sendSlackAlert(
+        `createFrameFolder returned a response with no id. Folder was NOT created, so the brief has no Frame.io URL.`,
+        {
+          level: 'error',
+          source: 'Frame.io',
+          fields: { folder_name: folderName, parent_folder_id: parentFolderId, response_preview: preview },
+        },
+      ).catch(() => {});
       return null;
     }
     const folderUrl = `https://next.frame.io/project/${FRAMEIO_PROJECT_ID}/${newId}`;
     return { folderId: newId, folderUrl };
   } catch (err) {
     logger.error(`[createFrameFolder] v4 create failed: ${err.message}`);
+    sendSlackAlert(
+      `Frame.io folder creation failed for brief. API call threw: ${err.message.slice(0, 200)}`,
+      {
+        level: 'error',
+        source: 'Frame.io',
+        fields: {
+          folder_name: folderName,
+          parent_folder_id: parentFolderId,
+          hint: err.message.includes('401') || err.message.includes('refresh_token')
+            ? 'Likely OAuth token issue — re-authorize at /api/v1/webhook/frameio-oauth-start'
+            : 'Check Render logs for full stack trace',
+        },
+      },
+    ).catch(() => {});
     return null;
   }
 }
@@ -1147,6 +1172,108 @@ router.post('/frameio-test-create-folder', async (req, res) => {
     res.json({ success: true, folder, deleted });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ── Health endpoints hit by Render crons ─────────────────────────────
+//
+// Both use `curl -f` semantics: 2xx = healthy, 5xx/4xx = alert.
+// Render automatically emails the workspace owner when a cron returns
+// non-zero, so these provide belt-and-suspenders alerting alongside
+// the Slack post.
+//
+// GET /frameio-oauth-health — confirms the v4 OAuth token can still
+// authenticate. Posts to Slack and returns 503 if refresh or /me fails.
+router.get('/frameio-oauth-health', async (req, res) => {
+  try {
+    const stored = await loadV4Tokens().catch(() => null);
+    if (!stored?.refresh_token) {
+      await sendSlackAlert(
+        'Frame.io v4 OAuth is NOT authorized — no refresh_token stored. Re-auth required.',
+        {
+          level: 'error',
+          source: 'Frame.io Health',
+          fields: { action: 'Visit /api/v1/webhook/frameio-oauth-start to re-authorize' },
+        },
+      );
+      return res.status(503).json({ ok: false, reason: 'no_refresh_token' });
+    }
+    // Force an authenticated call to confirm the token actually works
+    const me = await frameioFetchV4('/me');
+    const email = me?.data?.email || me?.email;
+    res.json({
+      ok: true,
+      authorized: true,
+      access_token_expires_at: new Date(stored.expires_at).toISOString(),
+      account_email: email,
+    });
+  } catch (err) {
+    await sendSlackAlert(
+      `Frame.io v4 OAuth call failed: ${err.message.slice(0, 200)}`,
+      {
+        level: 'error',
+        source: 'Frame.io Health',
+        fields: {
+          hint: err.message.includes('401') || err.message.includes('refresh')
+            ? 'Refresh token likely expired — re-auth at /api/v1/webhook/frameio-oauth-start'
+            : 'Unknown — check server logs',
+        },
+      },
+    );
+    res.status(503).json({ ok: false, error: err.message });
+  }
+});
+
+// GET /frameio-stray-check — confirms the workspace has exactly one
+// project ("Mineblock LLC"). Returns 409 + Slack alert if strays
+// appeared. Run daily or weekly from Render cron.
+router.get('/frameio-stray-check', async (req, res) => {
+  try {
+    const accountsResp = await frameioFetchV4('/accounts');
+    const accountId = accountsResp?.data?.[0]?.id;
+    if (!accountId) throw new Error('no account_id');
+
+    const workspacesResp = await frameioFetchV4(`/accounts/${accountId}/workspaces?page_size=50`);
+    const workspaceId = workspacesResp?.data?.[0]?.id;
+    if (!workspaceId) throw new Error('no workspace');
+
+    const projectsResp = await frameioFetchV4(
+      `/accounts/${accountId}/workspaces/${workspaceId}/projects?page_size=100`,
+    );
+    const projects = projectsResp?.data || [];
+
+    const LEGIT_NAMES = new Set(['Mineblock LLC', 'mineblock llc']);
+    const strays = projects.filter(
+      p => !LEGIT_NAMES.has((p.name || '').trim()) && p.id !== FRAMEIO_PROJECT_ID,
+    );
+
+    if (strays.length > 0) {
+      await sendSlackAlert(
+        `Detected ${strays.length} stray Frame.io project(s) in the workspace. Run POST /api/v1/webhook/admin-frameio-cleanup to move them back.`,
+        {
+          level: 'warn',
+          source: 'Frame.io Stray Check',
+          fields: {
+            stray_count: String(strays.length),
+            strays: strays.map(s => `• ${s.name} (${s.id})`).join('\n'),
+            cleanup_cmd: 'curl -X POST -H "x-admin-secret: $FRAMEIO_CLEANUP_SECRET" https://mineblock-dashboard.onrender.com/api/v1/webhook/admin-frameio-cleanup',
+          },
+        },
+      );
+      return res.status(409).json({
+        ok: false,
+        stray_count: strays.length,
+        strays: strays.map(s => ({ id: s.id, name: s.name })),
+      });
+    }
+
+    res.json({ ok: true, project_count: projects.length, strays: 0 });
+  } catch (err) {
+    await sendSlackAlert(
+      `Frame.io stray-check failed to run: ${err.message.slice(0, 200)}`,
+      { level: 'error', source: 'Frame.io Stray Check' },
+    );
+    res.status(500).json({ ok: false, error: err.message });
   }
 });
 
