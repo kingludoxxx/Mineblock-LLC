@@ -190,6 +190,34 @@ router.post('/reset-generating', authenticate, async (req, res) => {
   }
 });
 
+// ── Background reconciliation: mark long-stuck generating rows as rejected ──
+// Runs every 3 minutes. Any DB row still in 'generating' for >10 minutes is
+// almost certainly orphaned (server restarted mid-poll or Gemini/NB failed
+// silently) — mark it rejected with a clear note so the UI stops showing a
+// permanent spinner. Tracked separately from the API reset endpoint so ops
+// doesn't have to remember to run it.
+const STALE_GENERATING_TIMEOUT_MS = 10 * 60 * 1000;
+const RECONCILE_INTERVAL_MS = 3 * 60 * 1000;
+setInterval(async () => {
+  try {
+    const cutoff = new Date(Date.now() - STALE_GENERATING_TIMEOUT_MS).toISOString();
+    const result = await pgQuery(
+      `UPDATE spy_creatives
+         SET status = 'rejected',
+             review_notes = COALESCE(review_notes, '') || ' [auto-reconciled: stuck generating >10m]',
+             updated_at = NOW()
+       WHERE status = 'generating' AND created_at < $1
+       RETURNING id`,
+      [cutoff]
+    );
+    if (result.length > 0) {
+      console.log(`[staticsGeneration] Reconciliation: marked ${result.length} stale 'generating' rows as rejected`);
+    }
+  } catch (err) {
+    console.warn(`[staticsGeneration] Reconciliation error: ${err.message}`);
+  }
+}, RECONCILE_INTERVAL_MS).unref?.();
+
 // ── Meta App Diagnostic & Live Mode Toggle ──
 router.get('/meta-app-diagnose', authenticate, async (req, res) => {
   try {
@@ -1348,6 +1376,13 @@ async function generateVariant(parent, newAspectRatio) {
         throw new Error('No taskId returned from NanoBanana resize after 3 attempts');
       }
     }
+
+    // 3b. Persist taskId BEFORE polling so a crash/restart mid-poll leaves a
+    // recoverable reference in DB instead of an orphan 'generating' row.
+    await pgQuery(
+      "UPDATE spy_creatives SET generation_task_id = $1, updated_at = NOW() WHERE id = $2",
+      [taskId, child.id]
+    );
 
     // 4. Poll for completion
     const imageUrl = await pollNanoBanana(taskId);
