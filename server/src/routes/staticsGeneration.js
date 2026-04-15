@@ -2013,9 +2013,9 @@ router.post('/launch', authenticate, async (req, res) => {
       [creative_ids]
     );
 
-    // Date format: DD-MM (e.g., "08-04" for April 8)
+    // Date format: DD/MM (e.g., "08/04" for April 8)
     const now = new Date();
-    const dateStr = `${String(now.getDate()).padStart(2, '0')}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    const dateStr = `${String(now.getDate()).padStart(2, '0')}/${String(now.getMonth() + 1).padStart(2, '0')}`;
     const batchNum = Math.floor(Date.now() / 1000) % 10000;
     const results = [];
 
