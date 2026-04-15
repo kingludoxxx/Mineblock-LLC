@@ -194,6 +194,7 @@ function generateNamingConvention(task, listId, briefNumber) {
 
 // ── Frame.io helpers ──────────────────────────────────────────────
 const FRAMEIO_API_V4 = 'https://api.frame.io/v4';
+const FRAMEIO_ACCOUNT_ID = '4d65ef83-9323-4ef2-ae6a-585d38cce2af'; // Ludovico's Account (Mineblock). Stable per account.
 const FRAMEIO_CLIENT_ID = process.env.FRAMEIO_CLIENT_ID || '';
 const FRAMEIO_CLIENT_SECRET = process.env.FRAMEIO_CLIENT_SECRET || '';
 const FRAMEIO_REDIRECT_URI = 'https://mineblock-dashboard.onrender.com/api/v1/webhook/frameio-oauth-callback';
@@ -367,18 +368,27 @@ async function getProjectRootFolder() {
  * @returns {{ folderId: string, folderUrl: string } | null}
  */
 async function createFrameFolder(parentFolderId, folderName) {
-  const folder = await frameioFetch(`/assets/${parentFolderId}/children`, {
-    method: 'POST',
-    body: JSON.stringify({
-      name: folderName,
-      type: 'folder',
-    }),
-  });
-  if (!folder?.id) return null;
-
-  // Build the shareable URL
-  const folderUrl = `https://next.frame.io/project/${FRAMEIO_PROJECT_ID}/${folder.id}`;
-  return { folderId: folder.id, folderUrl };
+  // v4 path: POST /v4/accounts/:accountId/folders/:parentFolderId/folders
+  // body: { data: { name } }
+  try {
+    const resp = await frameioFetchV4(
+      `/accounts/${FRAMEIO_ACCOUNT_ID}/folders/${parentFolderId}/folders`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ data: { name: folderName } }),
+      }
+    );
+    const newId = resp?.data?.id || resp?.id;
+    if (!newId) {
+      logger.error(`[createFrameFolder] v4 response had no id: ${JSON.stringify(resp).slice(0, 200)}`);
+      return null;
+    }
+    const folderUrl = `https://next.frame.io/project/${FRAMEIO_PROJECT_ID}/${newId}`;
+    return { folderId: newId, folderUrl };
+  } catch (err) {
+    logger.error(`[createFrameFolder] v4 create failed: ${err.message}`);
+    return null;
+  }
 }
 
 // Handle taskCreated — auto-generate naming convention + create Frame.io folder
