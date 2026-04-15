@@ -2,6 +2,7 @@ import express from 'express';
 import { authenticate } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/rbac.js';
 import { getEditors, getEditorNames, OWNER_ID, invalidateEditorCache } from '../utils/clickupEditors.js';
+import sendSlackAlert from '../utils/slackAlert.js';
 
 const router = express.Router();
 router.use(authenticate, requirePermission('brief-agent', 'access'));
@@ -519,6 +520,11 @@ router.post('/create', async (req, res) => {
     const relationshipPromises = [];
 
     // Product relationship
+    // ClickUp list_relationship fields expect PLAIN task ID strings in `add`/`rem`,
+    // NOT wrapped objects like { id: "..." }. Using the wrapped shape silently no-ops
+    // and the field stays empty, which is why Product/Avatar/Creator were rendering
+    // as "NA" in the auto-generated naming convention.
+    // Docs: https://developer.clickup.com/reference/setcustomfieldvalue
     const productTaskId = PRODUCT_TASK_IDS[product];
     if (productTaskId) {
       relationshipPromises.push(
@@ -527,7 +533,7 @@ router.post('/create', async (req, res) => {
           {
             method: 'POST',
             body: JSON.stringify({
-              value: { add: [{ id: productTaskId }], rem: [] },
+              value: { add: [productTaskId], rem: [] },
             }),
           },
         ).catch((err) => console.error('[BriefAgent] Product relationship error:', err.message)),
@@ -543,7 +549,7 @@ router.post('/create', async (req, res) => {
           {
             method: 'POST',
             body: JSON.stringify({
-              value: { add: [{ id: avatarTaskId }], rem: [] },
+              value: { add: [avatarTaskId], rem: [] },
             }),
           },
         ).catch((err) => console.error('[BriefAgent] Avatar relationship error:', err.message)),
@@ -557,13 +563,43 @@ router.post('/create', async (req, res) => {
         {
           method: 'POST',
           body: JSON.stringify({
-            value: { add: [{ id: CREATOR_NA_TASK_ID }], rem: [] },
+            value: { add: [CREATOR_NA_TASK_ID], rem: [] },
           }),
         },
       ).catch((err) => console.error('[BriefAgent] Creator relationship error:', err.message)),
     );
 
     await Promise.all(relationshipPromises);
+
+    // Verify the relationships actually landed. If the payload shape drifts
+    // again (or a linked task is deleted), this catches it loudly so the
+    // auto-naming doesn't silently render "NA - Bxxxx - ... - NA - NA - ...".
+    try {
+      const verify = await clickupFetch(`${CLICKUP_API}/task/${taskId}`);
+      const missing = [];
+      const hasRelation = (fieldId) => {
+        const f = verify.custom_fields?.find((cf) => cf.id === fieldId);
+        return Array.isArray(f?.value) && f.value.length > 0;
+      };
+      if (productTaskId && !hasRelation(FIELD_IDS.product)) missing.push(`product→${product}`);
+      if (avatarTaskId && !hasRelation(FIELD_IDS.avatar)) missing.push(`avatar→${avatar}`);
+      if (!hasRelation(FIELD_IDS.creator)) missing.push('creator→NA');
+      if (missing.length > 0) {
+        const msg = `Brief Agent created B${briefNumberPadded} (${taskId}) but relationship(s) failed to set: ${missing.join(', ')}. Auto-naming will render these as "NA".`;
+        console.error(`[BriefAgent] ${msg}`);
+        await sendSlackAlert(msg, {
+          level: 'error',
+          source: 'BriefAgent',
+          fields: {
+            task: taskId,
+            brief: `B${briefNumberPadded}`,
+            missing: missing.join(', '),
+          },
+        }).catch((e) => console.error('[BriefAgent] slack alert failed:', e.message));
+      }
+    } catch (verifyErr) {
+      console.error('[BriefAgent] Relationship verification error:', verifyErr.message);
+    }
 
     // Re-set the task name AFTER relationships are set, so the ClickUp webhook
     // (which fires on taskCreated and reads product from the relationship field)
