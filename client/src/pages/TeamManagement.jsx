@@ -530,7 +530,7 @@ function InviteModal({ open, onClose, roles, onInvited }) {
       } else {
         payload.roleId = Number(form.roleId);
       }
-      const res = await api.post('/users/invite', payload);
+      const res = await api.post('/team/invite', payload);
       setResult(res.data);
       onInvited();
     } catch (err) {
@@ -809,6 +809,19 @@ export default function TeamManagement() {
     }
   };
 
+  const handleReactivate = async (userId) => {
+    setActionLoading((prev) => ({ ...prev, [`reactivate-${userId}`]: true }));
+    try {
+      await api.patch(`/team/${userId}/activate`);
+      await fetchData();
+    } catch (err) {
+      const msg = err.response?.data?.error || err.response?.data?.message || 'Failed to reactivate member.';
+      setError(msg);
+    } finally {
+      setActionLoading((prev) => ({ ...prev, [`reactivate-${userId}`]: false }));
+    }
+  };
+
   const currentUserId = user?.id || user?.userId;
 
   return (
@@ -938,14 +951,25 @@ export default function TeamManagement() {
                                 loading={actionLoading[`role-${memberId}`]}
                                 onChange={(newRoleId) => handleChangeRole(memberId, newRoleId)}
                               />
-                              <button
-                                onClick={() => setConfirmDeactivate(member)}
-                                disabled={actionLoading[`deactivate-${memberId}`]}
-                                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border border-danger/30 text-danger hover:bg-danger/10 transition-colors cursor-pointer"
-                              >
-                                <X className="w-3 h-3" />
-                                Deactivate
-                              </button>
+                              {isActive ? (
+                                <button
+                                  onClick={() => setConfirmDeactivate(member)}
+                                  disabled={actionLoading[`deactivate-${memberId}`]}
+                                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border border-danger/30 text-danger hover:bg-danger/10 transition-colors cursor-pointer"
+                                >
+                                  <X className="w-3 h-3" />
+                                  Deactivate
+                                </button>
+                              ) : (
+                                <button
+                                  onClick={() => handleReactivate(memberId)}
+                                  disabled={actionLoading[`reactivate-${memberId}`]}
+                                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border border-green-500/30 text-green-400 hover:bg-green-500/10 transition-colors cursor-pointer"
+                                >
+                                  <Check className="w-3 h-3" />
+                                  {actionLoading[`reactivate-${memberId}`] ? 'Reactivating…' : 'Reactivate'}
+                                </button>
+                              )}
                             </>
                           )}
                         </div>

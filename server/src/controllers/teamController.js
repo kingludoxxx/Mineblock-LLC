@@ -363,6 +363,56 @@ export const deactivateTeamMember = async (req, res) => {
 };
 
 // ---------------------------------------------------------------------------
+// PATCH /api/v1/team/:userId/activate — Reactivate a previously deactivated team member
+// ---------------------------------------------------------------------------
+export const reactivateTeamMember = async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    const userCheck = await pool.query(
+      'SELECT id, email, is_active FROM users WHERE id = $1',
+      [userId],
+    );
+    if (userCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    if (userCheck.rows[0].is_active) {
+      return res.status(400).json({ error: 'User is already active' });
+    }
+
+    await pool.query(
+      'UPDATE users SET is_active = true, updated_at = NOW() WHERE id = $1',
+      [userId],
+    );
+
+    await createAuditLog({
+      userId: req.user.id,
+      action: 'REACTIVATE_TEAM_MEMBER',
+      resourceType: 'user',
+      resourceId: userId,
+      oldValues: { isActive: false },
+      newValues: { isActive: true },
+      ip: req.ip,
+      userAgent: req.headers['user-agent'],
+    });
+
+    return res.json({
+      success: true,
+      message: 'Team member reactivated successfully',
+      user: {
+        id: userId,
+        email: userCheck.rows[0].email,
+        isActive: true,
+      },
+    });
+  } catch (err) {
+    logger.error('reactivateTeamMember error', { error: err.message, stack: err.stack });
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
+// ---------------------------------------------------------------------------
 // PUT /api/v1/team/:userId/pages — Update a team member's page access
 // ---------------------------------------------------------------------------
 export const updateTeamMemberPages = async (req, res) => {

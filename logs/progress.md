@@ -778,3 +778,78 @@ OUTPUT: Commit pending. All local syntax checks pass. Harness committed to serve
 DECISIONS: DECISION MADE — REMOVE pairs synthesized automatically in buildSwapPairs (code-side safety net) rather than relying solely on Claude following the new prompt rule. Two-layer defense: the prompt tells Sonnet to emit matching arrays with "" for removals, and even if Sonnet forgets, the code catches array-length mismatches and emits REMOVE pairs anyway. DECISION MADE — kept the 1.3x truncation for originals ≥50 chars because long headline overflow does actually produce garbled Gemini output; only short slots got the 1.5x bump. DECISION MADE — kept the P0.4 warn-only "adapted_equals_original" warning because it's genuinely a false positive for generic UI chrome words (e.g. "Reminder", "Menu", "Home") — the real leakage risk is the array-length case, which is now hard-handled. DECISION MADE — didn't commit server/.env.testharness (secrets) or server/scripts/pg_test.mjs (debug leftover, deleted). Added server/.env.testharness to .gitignore.
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-04-15 13:45
+TASK: P1.0–P1.1 static-ad quality — field-aware truncation + fabricated stats ban
+BUILT:
+  - server/src/utils/staticsPrompts.js buildSwapPairs: replaced the flat
+    tolerance table (1.5x if <50 else 1.3x, floor 20) with a field-aware
+    fieldToleranceRule():
+      * badges / cta / comparison_labels / ingredient_labels /
+        timeline_labels : 1.5x, floor 20
+      * headline / subheadline                                 : 1.6x, floor 40
+      * bullets / body / stats / other_text / disclaimer /
+        unknown                                                : 2.8x, floor 60
+    This stops comparison bullets from being chopped mid-sentence. A
+    terse reference like "Doesn't stop DHT" (16 chars) was capping the
+    adapted bullet to ~24 chars ("Pool controls your") when the visual
+    slot had clear room for 60+ char full-word adaptations.
+  - server/src/utils/staticsPrompts.js mandatoryRules: added
+    "NO FABRICATED STATISTICS / STUDY CLAIMS / RETENTION DATA" rule.
+    Bans invented percentages, ratios, sample sizes, study results,
+    clinical claims, efficacy figures, satisfaction/retention scores,
+    AND fabricated supporting disclaimers ("*Based on a 2-month study…",
+    "*Based on customer retention data…"). Instructs Claude to DROP
+    BOTH elements (empty adapted → REMOVE pair emitted downstream) OR
+    replace with non-numeric credibility claim when no real data backs
+    the stat.
+  - server/scripts/test-claude-copy.mjs: extended quality-check suite
+    with two new detectors — "Fabricated percentage/ratio stat"
+    (N% of <people-noun> or N in N <people-noun>) and
+    "Fabricated study/retention disclaimer" (*Based on …study/data/
+    retention/survey/trial/clinical/adults…). Regex scoped to
+    people-nouns so mathematical truths like "100% of every block
+    reward" (solo mining = no pool share) don't false-positive.
+TESTED:
+  Ran the Claude-stage harness against 4 references in 2 parallel
+  batches:
+  1. test2-social-1598 (Pendulum supplement, 72%* stat + 50-adult
+     footnote) with angle="Social Proof"
+  2. test7-noangle-3732 (Hair Transplant VS AlphaInfuse, 12 bullets
+     across red/green columns) with angle="Compare"
+  3. test4-value-4408 (MUD\WTR testimonial, "Over 50k 5-star reviews")
+     with angle="Value Proposition"
+  4. test6-social-1983 (Trustpilot-style gut health, "Rated Excellent
+     • 3,800+ Reviews") with angle="Trust"
+  All 4 passed ALL 9 quality checks, INCLUDING the new two detectors.
+OUTPUT:
+  - t2: Claude refused to fabricate a stat. Headline 72%* emitted as
+    empty → REMOVE pair instructs Gemini to delete it. Footnote
+    swapped to "30-day money-back guarantee. Free worldwide shipping."
+    Full other_text array adapted (6 elements) — no leakage.
+  - t7: ZERO truncation warnings. All 12 bullets pass at full length,
+    e.g. "Pool controls your Bitcoin — not you" (37 chars from a
+    16-char original "Doesn't stop DHT"), "Solo mining the way Bitcoin
+    was meant to work" (45 chars from 26-char "The future of hair
+    regrowth"). "Black Friday Sale 90% OFF" correctly swapped to
+    "Flash Sale — Use Code BITCOIN10" (season-ban + invented-discount
+    rules both hold).
+  - t4: "Over 50k 5-star reviews" → "30-day money-back guarantee"
+    (refused to fabricate review count). All 4 bullets at full length.
+  - t6: "Trustpilot" → "MineBlock Solo Miner", "Rated Excellent •
+     3,800+ Reviews" → "Trusted by home miners worldwide" (non-numeric).
+DECISIONS:
+  - Tolerance floor of 60 chars for bullets is aggressive; gambled
+    that Gemini's text rendering handles 60-char slots in comparison
+    layouts as well as it handles the 42-char original bullets on the
+    AlphaInfuse reference. Verified visually via prior production
+    runs — bullets are typically rendered in multi-line flow, so
+    2x–3x original length is safe when the visual block is the
+    constraint, not the slot width.
+  - Kept 1.5x tolerance on badges/CTAs since those are genuinely
+    space-constrained.
+COMMIT: 2eb25d0 fix(statics): P1.0–P1.1 — field-aware truncation + fabricated-stats ban
+DEPLOY: dep-d7fnje6rnols73avct4g (in progress at time of log)
+STATUS: COMPLETE
+---

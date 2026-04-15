@@ -6,6 +6,7 @@ import {
   listTeamMembers,
   changeTeamMemberRole,
   deactivateTeamMember,
+  reactivateTeamMember,
   updateTeamMemberPages,
 } from '../controllers/teamController.js';
 
@@ -25,5 +26,8 @@ router.put('/:userId/pages', authenticate, requireRole('SuperAdmin', 'Admin'), u
 
 // DELETE /api/v1/team/:userId — deactivate a team member (SuperAdmin only)
 router.delete('/:userId', authenticate, requireRole('SuperAdmin'), deactivateTeamMember);
+
+// PATCH /api/v1/team/:userId/activate — reactivate a previously deactivated member (SuperAdmin only)
+router.patch('/:userId/activate', authenticate, requireRole('SuperAdmin'), reactivateTeamMember);
 
 export default router;
