@@ -1018,7 +1018,10 @@ router.get('/create-frame-folder/:taskId', async (req, res) => {
 // ── Frame.io v4 OAuth (Adobe IMS) ──────────────────────────────────
 // Scopes Adobe requires for Frame.io v4 API calls. `offline_access` is what
 // grants us a refresh_token so we don't re-auth every 24h.
-const FRAMEIO_SCOPES = 'openid,AdobeID,email,profile,offline_access,additional_info.roles,frame.s2s.all,additional_info.projectedProductContext';
+// Scopes granted to OAuth Web App credentials for Frame.io. `frame.s2s.all` is
+// S2S-only and rejects Web App flows with invalid_scope — don't include it.
+// `offline_access` is required to get a refresh_token.
+const FRAMEIO_SCOPES = 'openid,AdobeID,email,profile,offline_access,additional_info.roles';
 
 // Step 1: kick off the auth flow. User opens this URL in a browser once.
 router.get('/frameio-oauth-start', (req, res) => {
