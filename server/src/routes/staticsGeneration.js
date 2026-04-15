@@ -486,9 +486,10 @@ router.post('/generate', authenticate, async (req, res) => {
     const { base64, mediaType, isUrl } = await resolveImage(reference_image_url);
 
     // ── Step B: Call Claude to analyze the reference ad ─────────────────
+    const t0 = Date.now();
     const claudeBody = {
       model: 'claude-sonnet-4-6',
-      max_tokens: 4096,
+      max_tokens: 2048,
       messages: [
         {
           role: 'user',
@@ -526,6 +527,7 @@ router.post('/generate', authenticate, async (req, res) => {
     }
 
     const claudeData = await claudeRes.json();
+    console.log(`[staticsGeneration] ⏱ Claude finished in ${Date.now() - t0}ms`);
     const rawText = claudeData.content?.[0]?.text;
     if (!rawText) throw new Error('Empty response from Claude');
 
@@ -732,8 +734,10 @@ router.post('/generate', authenticate, async (req, res) => {
           // Map ratio format: Gemini uses "ASPECT_RATIO" format
           const geminiRatio = r; // Gemini accepts "4:5", "1:1", "9:16" etc.
           try {
+            const tGemini = Date.now();
             console.log(`[staticsGeneration] Gemini: generating ${r}...`);
             const result = await editImage(nbPrompt, inputImages, geminiRatio);
+            console.log(`[staticsGeneration] ⏱ Gemini ${r} finished in ${Date.now() - tGemini}ms`);
 
             // Upload to R2 or store as temp
             let resultImageUrl;
@@ -765,19 +769,23 @@ router.post('/generate', authenticate, async (req, res) => {
 
         if (tasks.length > 0) {
           console.log(`[staticsGeneration] Gemini tasks completed: ${tasks.map(t => `${t.ratio}=${t.taskId}`).join(', ')}`);
-          return res.json({
-            success: true,
-            data: {
-              taskId: tasks[0]?.taskId,
+          // Update earlyTaskId so the polling client gets the completed result
+          const primaryResult = geminiResults.get(tasks[0].taskId);
+          if (primaryResult) {
+            storeGeminiResult(earlyTaskId, primaryResult);
+            console.log(`[staticsGeneration] earlyTaskId ${earlyTaskId} updated → completed (${tasks[0].taskId})`);
+          } else {
+            // Fallback: mark earlyTaskId completed with redirect to real taskId
+            storeGeminiResult(earlyTaskId, {
+              status: 'redirect',
+              realTaskId: tasks[0].taskId,
               tasks,
-              provider: 'gemini',
-              model: GEMINI_EDIT_MODEL,
               claudeAnalysis: claudeResult,
-              adaptedText: claudeResult.adapted_text || claudeResult.adaptedText,
               swapPairs,
-              originalText: claudeResult.original_text || claudeResult.originalText,
-            },
-          });
+            });
+            console.log(`[staticsGeneration] earlyTaskId ${earlyTaskId} updated → redirect to ${tasks[0].taskId}`);
+          }
+          return; // Exit background task — don't fall through to NanoBanana
         }
 
         // If Gemini failed for all ratios, fall through to NanoBanana
