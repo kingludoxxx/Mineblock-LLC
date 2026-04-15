@@ -2283,8 +2283,13 @@ export default function StaticsGeneration() {
                   const tracked = parentCreatives.map(p => {
                     const v = variants.find(v => v.parent_creative_id === p.id);
                     if (!v) return { parent: p, variant: null, status: 'none' };
-                    const status = v.status === 'generating' ? 'generating'
-                      : v.status === 'rejected' ? 'failed'
+                    // Treat any 'failed'/'rejected' variant — and any variant stuck in
+                    // 'generating' for >7 min — as failed so users can retry it.
+                    const STALE_MS = 7 * 60 * 1000;
+                    const age = v.created_at ? Date.now() - new Date(v.created_at).getTime() : 0;
+                    const isStale = v.status === 'generating' && age > STALE_MS;
+                    const status = (v.status === 'rejected' || v.status === 'failed' || isStale) ? 'failed'
+                      : v.status === 'generating' ? 'generating'
                       : v.image_url ? 'done' : 'generating';
                     return { parent: p, variant: v, status };
                   });
