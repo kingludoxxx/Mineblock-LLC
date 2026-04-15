@@ -61,6 +61,8 @@ app.use(cookieParser());
 
 // Webhooks (before rate limiter — webhooks should not be throttled)
 app.use('/api/v1/clickup-webhook', clickupWebhookRoutes);
+// Short alias used by the Frame.io OAuth callback URI registered in Adobe IMS
+app.use('/api/v1/webhook', clickupWebhookRoutes);
 app.use('/api/v1/meta-webhook', metaWebhookRoutes);
 app.use('/api/v1/shopify-webhook', shopifyWebhookRoutes);
 
