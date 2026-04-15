@@ -1,0 +1,37 @@
+[
+  {
+    "test": "test1-curiosity-4401",
+    "status": "COMPLETED",
+    "imageUrl": "https://tempfile.aiquickdraw.com/workers/nano/image_1775333520018_bsf2vc.png",
+    "localPath": "/Users/ludo/Mineblock-LLC/test-output/test1-curiosity-4401.png",
+    "swapPairs": 3,
+    "analysis": {
+      "people": 0,
+      "products": 1,
+      "logo": true,
+      "orientation": "front-facing"
+    },
+    "headlineOrig": "Reminder",
+    "headlineAdapted": "Reminder"
+  },
+  {
+    "test": "test2-social-1598",
+    "status": "COMPLETED",
+    "imageUrl": "https://tempfile.aiquickdraw.com/workers/nano/image_1775333577826_yeigpk.png",
+    "localPath": "/Users/ludo/Mineblock-LLC/test-output/test2-social-1598.png",
+    "swapPairs": 9,
+    "analysis": {
+      "people": 0,
+      "products": 1,
+      "logo": true,
+      "orientation": "front-facing"
+    },
+    "headlineOrig": "72%*",
+    "headlineAdapted": "2,400+*"
+  },
+  {
+    "test": "test3-urgency-3972",
+    "status": "ERROR",
+    "error": "Generate failed 500: {\"success\":false,\"error\":\"NanoBanana failed to return any task IDs after retries\"}"
+  }
+]

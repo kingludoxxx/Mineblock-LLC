@@ -211,7 +211,13 @@ async function loadV4Tokens() {
   const rows = await pgQuery(
     "SELECT value FROM system_settings WHERE key = 'frameio_oauth'"
   );
-  return rows?.[0]?.value || null;
+  const raw = rows?.[0]?.value;
+  if (!raw) return null;
+  // postgres.js usually auto-parses JSONB but defend against either shape
+  if (typeof raw === 'string') {
+    try { return JSON.parse(raw); } catch { return null; }
+  }
+  return raw;
 }
 
 async function saveV4Tokens(tokens) {
@@ -1077,6 +1083,35 @@ router.get('/frameio-oauth-callback', async (req, res) => {
   } catch (err) {
     logger.error('[frameio-oauth-callback] Error:', err.message);
     res.status(500).send(`OAuth callback failed: ${err.message}`);
+  }
+});
+
+// Deep diagnostic — shows raw DB state for debugging "why does status report unauthorized"
+router.get('/frameio-v4-debug', async (req, res) => {
+  try {
+    const rows = await pgQuery(
+      "SELECT key, value, updated_at FROM system_settings WHERE key = 'frameio_oauth'"
+    );
+    const row = rows?.[0];
+    const raw = row?.value;
+    res.json({
+      row_count: rows?.length || 0,
+      updated_at: row?.updated_at || null,
+      value_type: typeof raw,
+      value_is_null: raw === null,
+      value_keys: raw && typeof raw === 'object' ? Object.keys(raw) : null,
+      has_refresh_token: !!(raw && (typeof raw === 'string'
+        ? (() => { try { return JSON.parse(raw)?.refresh_token; } catch { return false; } })()
+        : raw.refresh_token)),
+      access_token_preview: raw && typeof raw === 'object' && raw.access_token
+        ? `${String(raw.access_token).slice(0, 10)}…(${String(raw.access_token).length} chars)`
+        : null,
+      expires_at: raw && typeof raw === 'object' ? raw.expires_at : null,
+      client_id_set: !!FRAMEIO_CLIENT_ID,
+      client_secret_set: !!FRAMEIO_CLIENT_SECRET,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
