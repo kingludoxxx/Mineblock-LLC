@@ -85,6 +85,7 @@ export function buildClaudePrompt(product, angle, customOverrides = null, layout
     profile.complianceRestrictions && `🚫 COMPLIANCE (NEVER claim these): ${profile.complianceRestrictions}`,
     `NO FABRICATED QUANTITY CLAIMS: NEVER count individual offer items and create claims like "4 FREE GIFTS", "3 FREE BONUSES", "5 FREE ITEMS". If the product context lists free shipping, warranty, etc. as separate features, they are INDIVIDUAL OFFER COMPONENTS — not "gifts" to be counted. Only use quantity claims (e.g. "X FREE gifts/bonuses") if that EXACT phrase appears verbatim in the product context. When in doubt, list benefits individually ("FREE Shipping + Lifetime Warranty") instead of fabricating a count.`,
     `🚫 NO FABRICATED SOCIAL PROOF: NEVER invent review counts, user counts, customer counts, rating counts, testimonial counts, star ratings, "verified" counts, or any numeric social-proof claim (e.g. "2,400+ Verified Users", "10,000 Happy Customers", "4.9★ from 5,000 reviews", "Join 50k+"). Only use such numbers if that EXACT figure appears verbatim in PRODUCT CONTEXT. If no real number exists, REMOVE the numeric claim entirely and either omit the element or replace it with a non-numeric benefit ("Trusted by our community", "Loved by customers"). Synthesizing fake numbers is a critical failure — when in doubt, remove it.`,
+    `🚫 NO FABRICATED STATISTICS / STUDY CLAIMS / RETENTION DATA: NEVER invent percentages, ratios, sample sizes, study results, clinical claims, efficacy figures, satisfaction scores, retention rates, or any "N%/N in N/N out of N" claim (e.g. "9 in 10 customers...", "72% improved fatigue", "87% saw results in 30 days", "93% satisfied"). Equally critical: NEVER fabricate a supporting footnote / asterisk disclaimer to back up a number (e.g. "*Based on a 2-month study of 50 adults", "*Based on customer retention data"). If the reference template has a big stat + footer disclaimer and the product has no real study/data, DROP BOTH elements (emit empty adapted_text so they are removed) OR replace with a non-numeric credibility claim ("Built for home miners who want 100% of their rewards"). Inventing studies is outright fraud — when in doubt, remove it.`,
     `🚫 NO FABRICATED SCARCITY / INVENTORY NUMBERS: NEVER invent stock counts, units-remaining, viewer counts, or countdown numbers (e.g. "Only 47 Units Left", "Last 12 in stock", "3 people viewing now", "7 sold in the last hour", "Ends in 02:14:33"). These are outright fabricated unless PRODUCT CONTEXT contains the exact figure. Use non-numeric scarcity instead ("Limited Stock", "Almost Gone", "While Supplies Last", "Selling Fast") — never a fake specific integer. Fabricated scarcity is both dishonest and a Meta/FTC compliance risk.`,
     `🚫 NO DECORATIVE GLYPHS IN ADAPTED_TEXT: Do NOT prefix bullets, badges, stats, or any copy with ✓ ✗ ★ ☆ → • ● ◆ ▶ » or similar symbol/checkmark glyphs. The image renderer will either mangle them into garbled shapes or strip them and leave an awkward leading space. Write plain text — the visual layout already communicates bullet structure.`,
     `🚫 NO MONTH NAMES OR SEASONAL SALE TEXT: If the reference contains ANY month name (January, February, March, April, May, June, July, August, September, October, November, December) or seasonal text ("Spring Sale", "Summer Deal", "March Promo", etc.), you MUST replace it with generic urgency copy ("Limited Time", "Flash Sale", "Today Only", "Ends Soon"). NEVER carry over a month name or season-specific sale text into adapted_text. This is non-negotiable.`,
@@ -564,17 +565,33 @@ export function buildSwapPairs(originalText, adaptedText, productName = '') {
   }
 
   // ── Length enforcement: truncate adapted text that's too long ──
-  // Gemini garbles long text that overflows the original slot significantly.
-  // Tolerances:
-  //   short originals (<50 chars): 1.5x — lets one extra word through so the
-  //     hook word isn't chopped (e.g. "...Less Than You Think" stays intact)
-  //   medium/long originals (50+): 1.3x — Gemini struggles more as slots grow
+  // Gemini garbles long text that overflows the original slot significantly,
+  // BUT an over-aggressive cap chops hook words from bullets/body and destroys
+  // meaning (e.g. "Pool controls your mining — you own nothing" → "Pool
+  // controls your"). Tolerance is field-aware:
+  //   badges / cta                : 1.5x, floor 20 — labels are dense by design
+  //   headline / subheadline      : 1.6x, floor 40 — hooks need room
+  //   bullets / body / stats /    : 2.8x, floor 60 — reference bullets often
+  //     other_text / disclaimer       use jargon/acronyms ("DHT") that require
+  //                                   full-word equivalents in the adaptation
   // EXCEPTION: swaps containing the product name are sacred (brand replacement)
+  const fieldToleranceRule = (fieldName) => {
+    // fieldName can be e.g. 'bullets[3]', 'headline', 'badges[0]'
+    const base = (fieldName || '').split('[')[0];
+    if (base === 'badges' || base === 'cta' || base === 'comparison_labels' || base === 'timeline_labels' || base === 'ingredient_labels') {
+      return { tol: 1.5, floor: 20 };
+    }
+    if (base === 'headline' || base === 'subheadline') {
+      return { tol: 1.6, floor: 40 };
+    }
+    // bullets, body, stats, other_text, disclaimer, and any unknown field
+    return { tol: 2.8, floor: 60 };
+  };
   for (const pair of pairs) {
     const origLen = pair.original.length;
     const adaptedLen = pair.adapted.length;
-    const tolerance = origLen < 50 ? 1.5 : 1.3;
-    const maxLen = Math.max(origLen * tolerance, 20);
+    const rule = fieldToleranceRule(pair.field);
+    const maxLen = Math.max(origLen * rule.tol, rule.floor);
 
     // Skip truncation if the adapted text contains the product name — brand replacement is sacred
     const containsProductName = productName && pair.adapted.toLowerCase().includes(productName.toLowerCase());

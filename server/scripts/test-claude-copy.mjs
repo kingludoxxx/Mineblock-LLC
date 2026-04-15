@@ -185,6 +185,12 @@ async function main() {
   const checks = [
     { name: 'Fabricated social-proof numbers',
       re: /\b\d{1,3}(,\d{3})*\s*\+?\s*(verified|customers?|users?|reviews?|ratings?|solo\s*miners?|happy|members?|subscribers?)\b/i },
+    { name: 'Fabricated percentage/ratio stat',
+      // Must be paired with a people-noun to count as social-proof fabrication.
+      // "100% of every block reward" is a mathematical truth, not a fake stat.
+      re: /\b(\d{1,3}%\*?\s+of\s+(participants|customers|users|people|adults|subjects|clients|members|buyers|owners|miners|respondents|surveyed)|\d+\s*(in|out of)\s*\d+\*?\s+(participants|customers|users|people|adults|subjects|clients|members|buyers|owners|miners))\b/i },
+    { name: 'Fabricated study/retention disclaimer',
+      re: /\*?\s*based on (a |an |customer |user |our )?(study|data|retention|survey|trial|clinical|adults|participants|subjects|owners|respondents)/i },
     { name: 'Star rating claims',
       re: /\d(\.\d)?\s*★|\d(\.\d)?\s*(stars?|out of 5)/i },
     { name: 'Month names',
