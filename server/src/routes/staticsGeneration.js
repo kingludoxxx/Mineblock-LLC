@@ -421,13 +421,25 @@ async function analyzeAndCacheLayout(templateId, imageUrl) {
 }
 
 // ── POST /generate ─────────────────────────────────────────────────────
+// Returns a taskId IMMEDIATELY and runs generation in the background.
+// Client polls GET /status/:taskId for progress/result.
 
 router.post('/generate', authenticate, async (req, res) => {
+  const { reference_image_url, product, angle, ratio, template_id } = req.body;
+
+  if (!reference_image_url) return res.status(400).json({ success: false, error: 'reference_image_url is required' });
+  if (!product)             return res.status(400).json({ success: false, error: 'product is required' });
+
+  // Pre-allocate a taskId and respond IMMEDIATELY — no more 502s from proxy timeout
+  const earlyTaskId = `gen-${crypto.randomUUID()}`;
+  const earlyTask = { taskId: earlyTaskId, ratio: ratio || '4:5' };
+  storeGeminiResult(earlyTaskId, { status: 'processing', progress: 'Analyzing reference image...' });
+  res.json({ success: true, data: { taskId: earlyTaskId, tasks: [earlyTask], provider: 'gemini', status: 'processing' } });
+
+  // ── Run the full pipeline in the background ──────────────────────────
+  setImmediate(async () => {
   try {
     const { reference_image_url, product, angle, ratio, template_id } = req.body;
-
-    if (!reference_image_url) return res.status(400).json({ success: false, error: 'reference_image_url is required' });
-    if (!product)             return res.status(400).json({ success: false, error: 'product is required' });
 
     // Log product context for debugging copy quality
     const profileFields = product.profile ? Object.keys(product.profile).filter(k => product.profile[k]) : [];
@@ -857,26 +869,33 @@ router.post('/generate', authenticate, async (req, res) => {
       }
     }
 
-    // ── Step E: Return immediately — client polls /status/:taskId ──────
-    console.log(`[staticsGeneration] NanoBanana tasks submitted: ${tasks.map(t => `${t.ratio}=${t.taskId}`).join(', ')}`);
-    res.json({
-      success: true,
-      data: {
-        taskId: tasks[0]?.taskId,
+    // ── Step E: Store final result under the pre-allocated earlyTaskId ──
+    console.log(`[staticsGeneration] Generation complete, updating task ${earlyTaskId}`);
+    // If Gemini path: update the earlyTaskId result with the real completed data
+    const primaryTask = tasks[0];
+    if (primaryTask) {
+      const primaryResult = geminiResults.get(primaryTask.taskId);
+      if (primaryResult && primaryTask.taskId !== earlyTaskId) {
+        // Copy completed result into earlyTaskId so the client's poll resolves
+        storeGeminiResult(earlyTaskId, primaryResult);
+      }
+    }
+    // For NanoBanana: store a redirect pointer so /status knows the real taskId
+    if (tasks[0]?.taskId && tasks[0].taskId !== earlyTaskId) {
+      storeGeminiResult(earlyTaskId, {
+        status: 'redirect',
+        realTaskId: tasks[0].taskId,
         tasks,
-        provider: 'nanobanana',
-        model: 'google/nano-banana-edit',
         claudeAnalysis: claudeResult,
-        adaptedText: claudeResult.adapted_text || claudeResult.adaptedText,
         swapPairs,
-        originalText: claudeResult.original_text || claudeResult.originalText,
-      },
-    });
+      });
+    }
+    console.log(`[staticsGeneration] Tasks ready: ${tasks.map(t => `${t.ratio}=${t.taskId}`).join(', ')}`);
   } catch (err) {
-    console.error('[staticsGeneration] /generate error:', err);
-    const status = err.message.includes('is required') ? 400 : 500;
-    return res.status(status).json({ success: false, error: err.message });
+    console.error('[staticsGeneration] /generate background error:', err);
+    storeGeminiResult(earlyTaskId, { status: 'error', error: err.message });
   }
+  }); // end setImmediate
 });
 
 // ── GET /status/:taskId ────────────────────────────────────────────────
@@ -886,11 +905,39 @@ router.get('/status/:taskId', authenticate, async (req, res) => {
     const { taskId } = req.params;
     if (!taskId) return res.status(400).json({ success: false, error: 'taskId is required' });
 
-    // ── Gemini results: already completed, stored in memory ──
+    // ── Background-generated tasks: check in-memory store ──
     const geminiResult = geminiResults.get(taskId);
     if (geminiResult) {
       res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
       res.set('Pragma', 'no-cache');
+
+      // Still processing — tell client to keep polling
+      if (geminiResult.status === 'processing') {
+        return res.json({ success: true, data: { taskId, status: 'processing', progress: geminiResult.progress || 'Generating...' } });
+      }
+
+      // Redirect: NanoBanana path — forward to the real taskId
+      if (geminiResult.status === 'redirect') {
+        const realResult = await fetch(`${NB_BASE}/recordInfo?taskId=${geminiResult.realTaskId}`, {
+          headers: { Authorization: `Bearer ${NANOBANANA_API_KEY}` },
+        }).then(r => r.json()).catch(() => null);
+        const state = realResult?.data?.state || realResult?.state;
+        if (state === 'success') {
+          const imgUrl = realResult?.data?.resultImageUrl || realResult?.resultImageUrl;
+          return res.json({ success: true, data: { taskId, status: 'completed', successFlag: true, resultImageUrl: imgUrl, provider: 'nanobanana' } });
+        }
+        if (state === 'fail') {
+          return res.json({ success: true, data: { taskId, status: 'failed', error: 'Generation failed' } });
+        }
+        return res.json({ success: true, data: { taskId, status: 'processing', progress: 'Generating image...' } });
+      }
+
+      // Error state
+      if (geminiResult.status === 'error') {
+        return res.json({ success: true, data: { taskId, status: 'failed', error: geminiResult.error } });
+      }
+
+      // Completed Gemini result
       return res.json({
         success: true,
         data: {

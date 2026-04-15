@@ -1,12 +1,25 @@
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
+// API key rotation — spread load across up to 3 keys for 3x throughput
+const GEMINI_KEYS = [
+  process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '',
+  process.env.GEMINI_API_KEY_2 || '',
+  process.env.GEMINI_API_KEY_3 || '',
+].filter(Boolean);
 const GEMINI_MODEL = 'gemini-2.0-flash-preview-image-generation';
-const GEMINI_EDIT_MODEL = 'gemini-3.1-flash-image-preview';
+const GEMINI_EDIT_MODEL = 'gemini-2.0-flash-001'; // stable model name (gemini-3.1-flash-image-preview was deprecated)
 const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 const GEMINI_EDIT_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_EDIT_MODEL}:generateContent`;
-const MAX_CONCURRENT = 2;
+const MAX_CONCURRENT = 4; // increased from 2 — allows more parallel generations
 
 let activeRequests = 0;
+let keyIndex = 0; // round-robin key selector
 const queue = [];
+
+function getNextKey() {
+  if (GEMINI_KEYS.length === 0) return '';
+  const key = GEMINI_KEYS[keyIndex % GEMINI_KEYS.length];
+  keyIndex++;
+  return key;
+}
 
 // Rate-limited Gemini image generation
 async function generateImage(prompt, systemInstruction, aspectRatio = '4:5') {
@@ -29,7 +42,7 @@ async function generateImage(prompt, systemInstruction, aspectRatio = '4:5') {
       body.systemInstruction = { parts: [{ text: systemInstruction }] };
     }
 
-    const res = await fetch(`${GEMINI_URL}?key=${GEMINI_API_KEY}`, {
+    const res = await fetch(`${GEMINI_URL}?key=${getNextKey()}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -117,7 +130,7 @@ async function editImage(prompt, inputImages, aspectRatio = '4:5') {
     const MAX_RETRIES = 3;
     let lastError;
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-      const res = await fetch(`${GEMINI_EDIT_URL}?key=${GEMINI_API_KEY}`, {
+      const res = await fetch(`${GEMINI_EDIT_URL}?key=${getNextKey()}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -175,7 +188,7 @@ async function editImage(prompt, inputImages, aspectRatio = '4:5') {
 }
 
 function isGeminiConfigured() {
-  return !!GEMINI_API_KEY;
+  return GEMINI_KEYS.length > 0;
 }
 
 export { generateImage, generateImages, editImage, isGeminiConfigured, GEMINI_EDIT_MODEL };
