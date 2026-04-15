@@ -1125,6 +1125,31 @@ router.get('/frameio-v4-debug', async (req, res) => {
   }
 });
 
+// One-shot test: exercise createFrameFolder() end-to-end, then delete the test folder.
+router.post('/frameio-test-create-folder', async (req, res) => {
+  const secret = req.headers['x-admin-secret'];
+  const expected = process.env.FRAMEIO_CLEANUP_SECRET || process.env.CRON_SECRET;
+  if (!secret || !expected || secret !== expected) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  const name = `__test_${Date.now()}`;
+  try {
+    const folder = await createFrameFolder(FRAMEIO_EDITING_FOLDER, name);
+    if (!folder) return res.status(500).json({ success: false, error: 'createFrameFolder returned null' });
+    // Clean up: delete the test folder we just made so we don't pollute the UI
+    let deleted = false;
+    try {
+      await frameioFetchV4(`/accounts/${FRAMEIO_ACCOUNT_ID}/folders/${folder.folderId}`, { method: 'DELETE' });
+      deleted = true;
+    } catch (err) {
+      return res.json({ success: true, folder, deleted, delete_error: err.message });
+    }
+    res.json({ success: true, folder, deleted });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // Diagnostic: is v4 OAuth set up and currently working?
 router.get('/frameio-v4-status', async (req, res) => {
   try {
