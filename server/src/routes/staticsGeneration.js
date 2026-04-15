@@ -504,7 +504,7 @@ router.post('/generate', authenticate, async (req, res) => {
     // ── Step B: Call Claude to analyze the reference ad ─────────────────
     const t0 = Date.now();
     const claudeBody = {
-      model: 'claude-sonnet-4-6',
+      model: 'claude-haiku-4-5-20251001',
       max_tokens: 2048,
       messages: [
         {
@@ -730,29 +730,26 @@ router.post('/generate', authenticate, async (req, res) => {
       }
 
       try {
-        // Build input images array: product, extras, logos, reference (same order as NanoBanana)
-        const inputImages = [];
-        for (const url of imageUrls) {
-          if (url) {
-            try {
-              const img = await fetchImageAsBase64(url);
-              if (img) inputImages.push(img);
-            } catch (imgErr) {
-              console.warn(`[staticsGeneration] ⚠️ Failed to fetch image (skipping): ${url.slice(0, 100)} — ${imgErr.message}`);
-            }
-          }
-        }
-        console.log(`[staticsGeneration] Gemini: ${inputImages.length} images loaded as base64`);
+        // Build input images array in parallel — fetch all images simultaneously
+        const tFetch = Date.now();
+        const fetchResults = await Promise.allSettled(
+          imageUrls.filter(Boolean).map(url => fetchImageAsBase64(url).catch(e => {
+            console.warn(`[staticsGeneration] ⚠️ Failed to fetch image (skipping): ${url.slice(0, 100)} — ${e.message}`);
+            return null;
+          }))
+        );
+        const inputImages = fetchResults
+          .map(r => r.status === 'fulfilled' ? r.value : null)
+          .filter(Boolean);
+        console.log(`[staticsGeneration] Gemini: ${inputImages.length} images loaded in ${Date.now() - tFetch}ms`);
 
-        // Generate for each ratio
-        const tasks = [];
-        for (const r of ratiosToGenerate) {
-          // Map ratio format: Gemini uses "ASPECT_RATIO" format
-          const geminiRatio = r; // Gemini accepts "4:5", "1:1", "9:16" etc.
-          try {
+        // Generate all ratios in parallel
+        const tAll = Date.now();
+        const ratioResults = await Promise.allSettled(
+          ratiosToGenerate.map(async (r) => {
             const tGemini = Date.now();
             console.log(`[staticsGeneration] Gemini: generating ${r}...`);
-            const result = await editImage(nbPrompt, inputImages, geminiRatio);
+            const result = await editImage(nbPrompt, inputImages, r);
             console.log(`[staticsGeneration] ⏱ Gemini ${r} finished in ${Date.now() - tGemini}ms`);
 
             // Upload to R2 or store as temp
@@ -767,7 +764,6 @@ router.post('/generate', authenticate, async (req, res) => {
               resultImageUrl = `${srvUrl}/api/v1/statics-generation/tmp-img/${tmpId}`;
             }
 
-            // Create a fake taskId and store completed result for /status polling
             const taskId = `gemini-${crypto.randomUUID()}`;
             storeGeminiResult(taskId, {
               status: 'completed',
@@ -775,13 +771,22 @@ router.post('/generate', authenticate, async (req, res) => {
               provider: 'gemini',
               model: GEMINI_EDIT_MODEL,
             });
-            tasks.push({ taskId, ratio: r });
             console.log(`[staticsGeneration] Gemini ${r} complete: ${taskId}`);
-          } catch (geminiErr) {
-            console.error(`[staticsGeneration] Gemini ${r} failed: ${geminiErr.message}`);
-            // Don't add to tasks — will fall through
-          }
+            return { taskId, ratio: r };
+          })
+        );
+
+        if (ratiosToGenerate.length > 1) {
+          console.log(`[staticsGeneration] ⏱ All ${ratiosToGenerate.length} ratios finished in ${Date.now() - tAll}ms (parallel)`);
         }
+
+        const tasks = ratioResults
+          .filter(r => r.status === 'fulfilled')
+          .map(r => r.value);
+
+        ratioResults
+          .filter(r => r.status === 'rejected')
+          .forEach((r, i) => console.error(`[staticsGeneration] Gemini ${ratiosToGenerate[i]} failed: ${r.reason?.message}`));
 
         if (tasks.length > 0) {
           console.log(`[staticsGeneration] Gemini tasks completed: ${tasks.map(t => `${t.ratio}=${t.taskId}`).join(', ')}`);
