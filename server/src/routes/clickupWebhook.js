@@ -1168,36 +1168,49 @@ router.get('/frameio-v4-explore', async (req, res) => {
 });
 
 // ── Frame.io v4 cleanup: move stray account-level projects into the editing folder ──
-// One-shot admin operation. Locked behind CRON_SECRET header.
+// One-shot admin operation. Locked behind x-admin-secret header.
+//
+// Strategy per stray project:
+//   1. GET children of the stray's root folder
+//   2. For each child: create subfolder in target with project name (if not already),
+//      then PATCH move the child into that subfolder via /folders/:id/move or /files/:id/move
+//   3. Delete the now-empty stray project
+//
+// Accepts ?dry=1 query param to just report what WOULD happen without touching data.
 router.post('/admin-frameio-cleanup', async (req, res) => {
   const secret = req.headers['x-admin-secret'];
   const expected = process.env.FRAMEIO_CLEANUP_SECRET || process.env.CRON_SECRET;
   if (!secret || !expected || secret !== expected) {
     return res.status(401).json({ error: 'Unauthorized — missing/invalid x-admin-secret' });
   }
+  const dry = req.query.dry === '1' || req.query.dry === 'true';
 
-  const report = { discovered: [], moved: [], skipped_has_content: [], deleted: [], errors: [] };
+  const report = {
+    dry_run: dry,
+    discovered: [],
+    processed: [],
+    deleted_projects: [],
+    errors: [],
+  };
 
   try {
-    // 1. Identify the v4 account + its workspaces/projects.
-    const me = await frameioFetchV4('/me');
-    const accountId = me?.account_id || me?.data?.account_id || me?.id;
+    // 1. Find the account + workspace.
+    const accountsResp = await frameioFetchV4('/accounts');
+    const accountId = accountsResp?.data?.[0]?.id || accountsResp?.[0]?.id;
+    if (!accountId) throw new Error('No account_id found on /accounts response');
     report.account_id = accountId;
 
-    // 2. List v4 projects under the account. Frame.io v4 REST shape:
-    //    GET /v4/accounts/:accountId/projects?include=workspace
-    let projects = [];
-    try {
-      const r = await frameioFetchV4(`/accounts/${accountId}/projects?page_size=100`);
-      projects = r?.data || r?.projects || r || [];
-    } catch (err) {
-      report.errors.push({ step: 'list_projects', error: err.message });
-    }
-    report.discovered = projects.map(p => ({ id: p.id, name: p.name, workspace_id: p.workspace_id }));
+    const workspacesResp = await frameioFetchV4(`/accounts/${accountId}/workspaces?page_size=50`);
+    const workspaceId = workspacesResp?.data?.[0]?.id;
+    if (!workspaceId) throw new Error('No workspace found');
+    report.workspace_id = workspaceId;
 
-    // 3. For each project that is NOT the legit one, try to migrate.
-    //    KEEP: FRAMEIO_PROJECT_ID (the canonical "Mineblock LLC" v2 project)
-    //    The v4 version of that project has a DIFFERENT id — we identify it by name.
+    // 2. List projects in workspace.
+    const projectsResp = await frameioFetchV4(`/accounts/${accountId}/workspaces/${workspaceId}/projects?page_size=100`);
+    const projects = projectsResp?.data || [];
+    report.discovered = projects.map(p => ({ id: p.id, name: p.name, storage: p.storage, root_folder_id: p.root_folder_id }));
+
+    // 3. Strays = everything except the canonical Mineblock LLC project.
     const LEGIT_NAMES = new Set(['Mineblock LLC', 'mineblock llc']);
     const strays = projects.filter(p =>
       !LEGIT_NAMES.has((p.name || '').trim()) &&
@@ -1205,38 +1218,84 @@ router.post('/admin-frameio-cleanup', async (req, res) => {
     );
 
     for (const proj of strays) {
+      const entry = {
+        project_id: proj.id,
+        project_name: proj.name,
+        root_folder_id: proj.root_folder_id,
+        children_moved: [],
+        subfolder_created: null,
+        project_deleted: false,
+      };
       try {
-        // Check if project has assets
-        let children = [];
-        try {
-          const r = await frameioFetchV4(`/projects/${proj.id}/root?include=children`);
-          children = r?.children || r?.data?.children || [];
-        } catch { /* empty/new project */ }
+        // 3a. List children of stray's root folder
+        const childrenResp = await frameioFetchV4(
+          `/accounts/${accountId}/folders/${proj.root_folder_id}/children?page_size=200`
+        );
+        const children = childrenResp?.data || [];
+        entry.child_count = children.length;
 
+        if (dry) {
+          entry.children_preview = children.map(c => ({ id: c.id, name: c.name, type: c.type }));
+          report.processed.push(entry);
+          continue;
+        }
+
+        // 3b. Create subfolder inside target editing folder, named after the stray project
+        //     (skip if child_count is 0 — we'll just delete the empty stray project)
+        let targetSubfolderId = null;
         if (children.length > 0) {
-          // Don't auto-delete content; let Ludo migrate manually.
-          report.skipped_has_content.push({ id: proj.id, name: proj.name, child_count: children.length });
-          continue;
+          const folderResp = await frameioFetchV4(
+            `/accounts/${accountId}/folders/${FRAMEIO_EDITING_FOLDER}/folders`,
+            {
+              method: 'POST',
+              body: JSON.stringify({ data: { name: proj.name } }),
+            }
+          );
+          targetSubfolderId = folderResp?.data?.id;
+          if (!targetSubfolderId) throw new Error(`Failed to create target subfolder; response: ${JSON.stringify(folderResp).slice(0, 200)}`);
+          entry.subfolder_created = { id: targetSubfolderId, name: proj.name };
         }
 
-        // Empty project → create matching folder inside target editing folder, then delete the project.
-        const folder = await createFrameFolder(FRAMEIO_EDITING_FOLDER, proj.name);
-        if (!folder) {
-          report.errors.push({ step: 'create_folder', project: proj.name, error: 'createFrameFolder returned null' });
-          continue;
+        // 3c. Move each child into the new subfolder
+        for (const child of children) {
+          try {
+            // type is 'folder', 'file', or 'version_stack'
+            const resource = child.type === 'folder'
+              ? 'folders'
+              : (child.type === 'version_stack' ? 'version_stacks' : 'files');
+            await frameioFetchV4(
+              `/accounts/${accountId}/${resource}/${child.id}/move`,
+              {
+                method: 'PATCH',
+                body: JSON.stringify({ data: { parent_id: targetSubfolderId } }),
+              }
+            );
+            entry.children_moved.push({ id: child.id, name: child.name, type: child.type });
+          } catch (err) {
+            report.errors.push({
+              step: 'move_child',
+              project: proj.name,
+              child: { id: child.id, name: child.name, type: child.type },
+              error: err.message,
+            });
+          }
         }
-        report.moved.push({ from_project_id: proj.id, to_folder_id: folder.folderId, name: proj.name, url: folder.folderUrl });
 
-        // Delete the now-redundant empty v4 project.
+        // 3d. Delete the now-empty stray project
         try {
-          await frameioFetchV4(`/projects/${proj.id}`, { method: 'DELETE' });
-          report.deleted.push({ id: proj.id, name: proj.name });
+          await frameioFetchV4(
+            `/accounts/${accountId}/projects/${proj.id}`,
+            { method: 'DELETE' }
+          );
+          entry.project_deleted = true;
+          report.deleted_projects.push({ id: proj.id, name: proj.name });
         } catch (err) {
-          report.errors.push({ step: 'delete_project', id: proj.id, error: err.message });
+          report.errors.push({ step: 'delete_project', id: proj.id, name: proj.name, error: err.message });
         }
       } catch (err) {
-        report.errors.push({ step: 'migrate', project: proj.name, error: err.message });
+        report.errors.push({ step: 'process_stray', project: proj.name, error: err.message });
       }
+      report.processed.push(entry);
     }
 
     res.json({ success: true, ...report });
