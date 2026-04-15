@@ -1153,16 +1153,14 @@ router.get('/frameio-v4-explore', async (req, res) => {
     if (accountId) {
       out.workspaces = await tryPath(`/accounts/${accountId}/workspaces?page_size=50`);
     }
-    // Try to look up FRAMEIO_PROJECT_ID directly to see if it's a project or workspace
-    out.lookup_project = await tryPath(`/projects/${FRAMEIO_PROJECT_ID}`);
-    out.lookup_workspace = await tryPath(`/workspaces/${FRAMEIO_PROJECT_ID}`);
-    // If it's a workspace, list projects inside
-    const wsProjects = await tryPath(`/workspaces/${FRAMEIO_PROJECT_ID}/projects?page_size=100`);
-    out.workspace_projects = wsProjects;
-    // Also try account-level project listing (returned 404 before, try alt path)
-    if (accountId) {
-      out.account_projects_alt = await tryPath(`/accounts/${accountId}/projects`);
+    // List projects inside the first workspace (this is where strays live)
+    const wsId = out.workspaces?.data?.[0]?.id || out.workspaces?.[0]?.id;
+    out.first_workspace_id = wsId;
+    if (wsId) {
+      out.workspace_projects = await tryPath(`/accounts/${accountId}/workspaces/${wsId}/projects?page_size=100`);
     }
+    // Try direct lookup of the editing folder
+    out.editing_folder = await tryPath(`/accounts/${accountId}/folders/${FRAMEIO_EDITING_FOLDER}`);
     res.json(out);
   } catch (err) {
     res.status(500).json({ error: err.message, partial: out });
