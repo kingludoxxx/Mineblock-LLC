@@ -1161,6 +1161,10 @@ router.get('/frameio-v4-explore', async (req, res) => {
     }
     // Try direct lookup of the editing folder
     out.editing_folder = await tryPath(`/accounts/${accountId}/folders/${FRAMEIO_EDITING_FOLDER}`);
+    // List children of editing folder to verify cleanup result
+    out.editing_folder_children = await tryPath(
+      `/accounts/${accountId}/folders/${FRAMEIO_EDITING_FOLDER}/children?page_size=100`
+    );
     res.json(out);
   } catch (err) {
     res.status(500).json({ error: err.message, partial: out });
