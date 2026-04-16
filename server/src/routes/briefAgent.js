@@ -612,8 +612,10 @@ router.post('/create', async (req, res) => {
       { id: FIELD_IDS.creationWeek, value: weekStr },
       { id: FIELD_IDS.creativeStrategist, value: { add: [OWNER_ID], rem: [] } },
       { id: FIELD_IDS.copywriter, value: { add: [OWNER_ID], rem: [] } },
-      // NOTE: Do NOT set adsFrameLink here — it gets auto-created as a NEW folder
-      // by the clickupWebhook handler when the task is created.
+      // NOTE: Do NOT set adsFrameLink here — the clickupWebhook handler
+      // creates a NEW Frame.io folder inside FRAMEIO_EDITING_FOLDER
+      // automatically when the task moves to the "editing" status, and
+      // writes the folder URL back to this field.
       // finalReferenceLink is only used in the task description for reference.
     ].filter((f) => f != null && f.value != null);
 
