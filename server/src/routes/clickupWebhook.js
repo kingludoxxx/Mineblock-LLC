@@ -36,6 +36,7 @@ const FIELD_IDS = {
   namingConvention: 'c97d93bc-ad82-4b90-98e0-092df383d9b8',
   creationWeek: 'a609d8d0-661e-400f-87cb-2557bd48857b',
   briefNumber: '62b61cc4-2d35-4dfc-86f4-a3913e2bbca3',
+  adsFrameLink: 'd90f9f25-d7a0-4eb4-9ded-aca0b4519a3b',
   // Video Ads only
   productVideo: '7bc3b414-363e-421e-9445-473b4b8ccf18',
   avatarVideo: '4ad59f88-89cc-45e5-bc56-0027a4ab8624',
@@ -476,8 +477,8 @@ async function handleTaskCreated(taskId) {
     logger.info(`[ClickUp Webhook] Skipping auto-naming for brief-pipeline task ${taskId}`);
   }
 
-  // Frame.io folder creation is now handled on status change to "editing"
-  // (see handleEditingStatusChange below)
+  // Frame.io folder creation runs on status change to "editing" — see
+  // handleEditingStatusChange (called from handleStatusSync).
 }
 
 // Handle custom field changes — regenerate naming convention
@@ -622,8 +623,63 @@ async function ensureMediaBuyingTask(task, taskListId) {
   }
 }
 
-// NOTE: Frame.io folder creation on "editing" status is handled by Make.com scenario
-// Our webhook only handles naming, status sync, YT duplication, and Media Buying tasks
+// ── Frame.io folder auto-creation on "editing" status ─────────────────────
+// When a Video Ads task moves to the "editing" column, create a Frame.io
+// subfolder named after the ClickUp task and write the folder URL back to
+// the task's "Ads Frame Link" custom field. Idempotent — skips if the field
+// is already populated. Previously this lived in a Make.com scenario that
+// became unreliable; moving it in-code gives a single source of truth,
+// observability via Render logs, and no external dependency.
+async function handleEditingStatusChange(task, taskListId) {
+  const taskId = task.id;
+
+  // Only run for the Video Ads list. Brief-pipeline tasks and YT duplicates
+  // are handled elsewhere (or not at all — YT ready-to-launch copies reuse
+  // the parent's frame link).
+  if (taskListId !== VIDEO_ADS_LIST) {
+    logger.info(`[handleEditingStatusChange] Skipping ${taskId} — not in Video Ads list (list=${taskListId})`);
+    return;
+  }
+  if (task.description?.includes('[yt-duplicate]')) {
+    logger.info(`[handleEditingStatusChange] Skipping ${taskId} — YT duplicate, reuses parent frame link`);
+    return;
+  }
+
+  // Idempotency — if the field is already populated, do nothing.
+  const existingLink = getFieldValue(task, FIELD_IDS.adsFrameLink);
+  if (existingLink) {
+    logger.info(`[handleEditingStatusChange] Skipping ${taskId} — Ads Frame Link already set (${existingLink})`);
+    return;
+  }
+
+  // Use the full task name (matches the naming convention) as the folder name.
+  const folderName = task.name;
+  if (!folderName || folderName.length < 3) {
+    logger.warn(`[handleEditingStatusChange] Skipping ${taskId} — task name empty or too short ("${folderName}")`);
+    return;
+  }
+
+  try {
+    logger.info(`[handleEditingStatusChange] Creating Frame.io folder for ${taskId}: "${folderName}"`);
+    const result = await createFrameFolder(FRAMEIO_EDITING_FOLDER, folderName);
+    if (!result?.folderUrl) {
+      logger.error(`[handleEditingStatusChange] createFrameFolder returned no URL for ${taskId} — aborting`);
+      return;
+    }
+    await setCustomField(taskId, FIELD_IDS.adsFrameLink, result.folderUrl);
+    logger.info(`[handleEditingStatusChange] ✅ ${taskId} → ${result.folderUrl}`);
+  } catch (err) {
+    logger.error(`[handleEditingStatusChange] FAILED for ${taskId}: ${err.message}`);
+    sendSlackAlert(
+      `Frame.io folder auto-creation failed for task ${taskId} ("${folderName}"). Error: ${err.message.slice(0, 200)}`,
+      {
+        title: 'Frame.io auto-create failed',
+        source: 'Frame.io',
+        nextStep: `Hit GET /api/v1/clickup-webhook/create-frame-folder/${taskId} manually to retry.`,
+      }
+    );
+  }
+}
 
 // Handle status sync between linked tasks
 async function handleStatusSync(taskId, historyItems) {
@@ -637,6 +693,12 @@ async function handleStatusSync(taskId, historyItems) {
   const taskListId = task.list?.id;
 
   if (!SYNC_LISTS.includes(taskListId)) return;
+
+  // When a VA task hits "editing", auto-create a Frame.io folder and
+  // write the URL into the Ads Frame Link custom field.
+  if (newStatus === 'editing') {
+    await handleEditingStatusChange(task, taskListId);
+  }
 
   // When a VA task hits "ready to launch", auto-create YT counterpart
   if (newStatus === 'ready to launch') {
