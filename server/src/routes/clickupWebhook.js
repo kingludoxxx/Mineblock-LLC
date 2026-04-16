@@ -2,8 +2,26 @@ import { Router } from 'express';
 import logger from '../utils/logger.js';
 import { pgQuery } from '../db/pg.js';
 import sendSlackAlert from '../utils/slackAlert.js';
+import { authenticate } from '../middleware/auth.js';
+import { requireRole } from '../middleware/rbac.js';
 
 const router = Router();
+
+// Admin-auth middleware for Frame.io cleanup: accepts EITHER the x-admin-secret
+// header (used by cron jobs) OR a SuperAdmin JWT (used by humans from the UI /
+// from an authenticated curl session). Lets us run the cleanup without needing
+// to copy the secret out of Render.
+function adminOrSuperAdmin(req, res, next) {
+  const secret = req.headers['x-admin-secret'];
+  const expected = process.env.FRAMEIO_CLEANUP_SECRET || process.env.CRON_SECRET;
+  if (secret && expected && secret === expected) return next();
+
+  // Fall through to JWT + SuperAdmin check
+  return authenticate(req, res, (err) => {
+    if (err) return next(err);
+    return requireRole('SuperAdmin')(req, res, next);
+  });
+}
 
 // ClickUp API config
 const CLICKUP_TOKEN = process.env.CLICKUP_API_TOKEN || '';
@@ -1405,12 +1423,7 @@ router.get('/frameio-v4-explore', async (req, res) => {
 //   3. Delete the now-empty stray project
 //
 // Accepts ?dry=1 query param to just report what WOULD happen without touching data.
-router.post('/admin-frameio-cleanup', async (req, res) => {
-  const secret = req.headers['x-admin-secret'];
-  const expected = process.env.FRAMEIO_CLEANUP_SECRET || process.env.CRON_SECRET;
-  if (!secret || !expected || secret !== expected) {
-    return res.status(401).json({ error: 'Unauthorized — missing/invalid x-admin-secret' });
-  }
+router.post('/admin-frameio-cleanup', adminOrSuperAdmin, async (req, res) => {
   const dry = req.query.dry === '1' || req.query.dry === 'true';
 
   const report = {
