@@ -207,10 +207,24 @@ async function main() {
       re: /\b(effortlessly|seamlessly|revolutioniz(e|ing|es)|revolutionary|game[- ]chang(er|ing)|elevate your|unleash|unlock your potential|transformative|leverage|empowering?|harness the power|your journey|cutting[- ]edge|state[- ]of[- ]the[- ]art|next[- ]level|delve into|embark on|meticulous(ly)?|intricate|tapestry|paradigm|holistic|bespoke|curated|immerse|ever[- ]evolving|at your fingertips|dive in(to)?|say goodbye to|hello to|power of [a-z]+|world of [a-z]+|realm of [a-z]+|embrace the|look no further)\b/i },
     { name: 'Vague benefit-speak',
       re: /\b(best[- ]in[- ]class|premium experience|top[- ]tier|industry[- ]leading|proven to work|unparalleled|unmatched|unrivaled|second to none)\b/i },
+    { name: 'Fabricated BOGO / N-for-M / get-free offer (P3.1)',
+      re: /\b(buy\s+\d+\s+get\s+\d+\s+free|buy\s+one\s+get\s+one|\bbogo\b|\b\d+\s+for\s+\d+\b|get\s+\d+\s+free|extra\s+\d+\s+free|free\s+\w+\s+with\s+(purchase|order|any)|\d+\s*\+\s*\d+\s+free)\b/i },
   ];
   for (const c of checks) {
     const m = allText.match(c.re);
     console.log(`  ${m ? '❌ HIT ' : '✅ PASS'} ${c.name}${m ? ' → "' + m[0] + '"' : ''}`);
+  }
+
+  // Cross-check any "FREE" or "Buy X Get Y" claim against the real product library
+  const offerCtx = `${PRODUCT.profile.offerDetails || ''} ${PRODUCT.profile.bundleVariants || ''} ${PRODUCT.profile.discountCodes || ''} ${PRODUCT.profile.maxDiscount || ''}`.toLowerCase();
+  const offerMatches = [...allText.matchAll(/\b(buy\s+\d+\s+get\s+\d+\s+free|buy\s+one\s+get\s+one|\d+\s+for\s+\d+|get\s+\d+\s+free|free\s+\w+\s+with\s+(?:purchase|order|any)|\d+\s*\+\s*\d+\s+free)\b/gi)];
+  if (offerMatches.length > 0) {
+    console.log('\n  Offer-construction reality check vs product library:');
+    for (const m of offerMatches) {
+      const phrase = m[0].toLowerCase();
+      const inCtx = offerCtx.includes(phrase);
+      console.log(`    ${inCtx ? '✅ CONFIRMED' : '❌ FABRICATED'} "${m[0]}"${inCtx ? '' : ' — not present in offerDetails/bundleVariants/discountCodes'}`);
+    }
   }
 
   banner('Done');
