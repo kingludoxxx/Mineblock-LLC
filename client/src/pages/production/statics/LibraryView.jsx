@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { ScanSearch, MousePointerSquareDashed, EyeOff, AlertCircle, X, Check, Trash2, Zap, Calendar, RefreshCw, Pencil, Save, XCircle, Plus } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
@@ -189,6 +189,9 @@ function parseTags(raw) {
 }
 
 function ReferenceLightbox({ template, onClose, onSelect, onAnalyze, onHide, onDelete, onUpdate }) {
+  // ⚠️ ALL hooks MUST be declared above the `if (!template) return null` guard,
+  // or the component hits React error #310 (rendered fewer hooks than previous
+  // render) the moment `template` flips from truthy to null and back.
   const [reanalyzing, setReanalyzing] = useState(false);
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -196,14 +199,15 @@ function ReferenceLightbox({ template, onClose, onSelect, onAnalyze, onHide, onD
   const [editCategory, setEditCategory] = useState('');
   const [editTags, setEditTags] = useState([]);
   const [tagInput, setTagInput] = useState('');
-  const [lastTemplateId, setLastTemplateId] = useState(null);
+  const [saveError, setSaveError] = useState('');
 
-  // Reset edit mode when switching templates (always reset tagInput to avoid stale data)
-  if (template && template.id !== lastTemplateId) {
-    setLastTemplateId(template.id);
+  // Reset edit mode + tag input whenever we switch templates. useEffect runs
+  // after commit, so the hook call happens unconditionally on every render.
+  useEffect(() => {
     setEditing(false);
     setTagInput('');
-  }
+    setSaveError('');
+  }, [template?.id]);
 
   if (!template) return null;
   // deep_analysis may come as a JSON string from the API — parse it safely
@@ -225,8 +229,6 @@ function ReferenceLightbox({ template, onClose, onSelect, onAnalyze, onHide, onD
     setEditing(false);
     setTagInput('');
   };
-
-  const [saveError, setSaveError] = useState('');
 
   const handleSave = async () => {
     if (!onUpdate) return;
