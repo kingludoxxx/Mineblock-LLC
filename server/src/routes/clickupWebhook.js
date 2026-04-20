@@ -1423,6 +1423,26 @@ router.get('/frameio-v4-explore', async (req, res) => {
 //   3. Delete the now-empty stray project
 //
 // Accepts ?dry=1 query param to just report what WOULD happen without touching data.
+// DELETE /api/v1/clickup-webhook/admin-frameio-folder/:folderId
+// Deletes a single Frame.io folder by ID (v4). Used to clean up orphaned
+// folders after their ClickUp task gets deleted. Same admin gating as
+// the cleanup endpoint (x-admin-secret OR SuperAdmin JWT).
+router.delete('/admin-frameio-folder/:folderId', adminOrSuperAdmin, async (req, res) => {
+  const { folderId } = req.params;
+  if (!folderId) return res.status(400).json({ error: 'folderId required' });
+  try {
+    const accountsResp = await frameioFetchV4('/accounts');
+    const accountId = accountsResp?.data?.[0]?.id || accountsResp?.[0]?.id;
+    if (!accountId) return res.status(500).json({ error: 'no account_id' });
+    await frameioFetchV4(`/accounts/${accountId}/folders/${folderId}`, { method: 'DELETE' });
+    logger.info(`[admin-frameio-folder] Deleted folder ${folderId}`);
+    return res.json({ success: true, deleted_folder_id: folderId });
+  } catch (err) {
+    logger.error(`[admin-frameio-folder] Failed to delete ${folderId}: ${err.message}`);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 router.post('/admin-frameio-cleanup', adminOrSuperAdmin, async (req, res) => {
   const dry = req.query.dry === '1' || req.query.dry === 'true';
 
