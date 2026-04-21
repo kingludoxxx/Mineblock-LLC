@@ -367,7 +367,9 @@ export async function overlayText(imageBuffer, swapPairs, layoutMap, options = {
     return imageBuffer;
   }
 
-  // Step 4: Sample dominant background color for erasing NanoBanana's garbled text
+  // Step 4: Sample dominant background color for tinting the text-region masks.
+  // This is used ONLY for the fallback tint; the primary cover is a gaussian
+  // blur (below) which is reliable regardless of Gemini's underlying text.
   let bgColor = null;
   try {
     const { dominant } = await sharp(imageBuffer).stats();
@@ -378,15 +380,28 @@ export async function overlayText(imageBuffer, swapPairs, layoutMap, options = {
       bgColor = `rgb(${r},${g},${b})`;
       console.log(`${LOG_PREFIX} Sampled dominant bg color: ${bgColor}`);
     }
-  } catch (e) {
-    // Fallback: use tone-based estimate
+  } catch {
     bgColor = backgroundTone === 'light' ? '#F0F0F0' : backgroundTone === 'dark' ? '#1A1A1A' : '#333333';
     console.log(`${LOG_PREFIX} Could not sample bg color, using fallback: ${bgColor}`);
   }
 
-  // Step 5: Build SVG and render to PNG
+  // ── Step 4.5: Pixel-level masking of Gemini's text via Gaussian blur ──
+  // Gemini won't actually produce a text-free image even when prompted to.
+  // To guarantee our overlay reads cleanly, we aggressively blur each text
+  // region so any underlying glyphs become unreadable noise. Our painted
+  // text then sits on smooth pixels with no readable garble underneath.
+  // This is the step that makes P1.1 actually work.
+  let maskedBuffer = imageBuffer;
+  try {
+    maskedBuffer = await blurTextRegions(imageBuffer, svgElements, width, height);
+    console.log(`${LOG_PREFIX} Masked ${svgElements.length} text region(s) via Gaussian blur`);
+  } catch (maskErr) {
+    console.warn(`${LOG_PREFIX} blurTextRegions failed (${maskErr.message}) — proceeding with raw buffer; Gemini's text may bleed through`);
+  }
+
+  // Step 5: Build SVG with per-element bg rectangles + high-contrast text stroke.
   const svgString = buildTextSvg(width, height, svgElements, bgColor);
-  console.log(`${LOG_PREFIX} SVG generated: ${svgString.length} chars, ${svgElements.length} text element(s), bg erase: ${bgColor || 'none'}`);
+  console.log(`${LOG_PREFIX} SVG generated: ${svgString.length} chars, ${svgElements.length} text element(s)`);
 
   let textPng;
   try {
@@ -402,8 +417,8 @@ export async function overlayText(imageBuffer, swapPairs, layoutMap, options = {
 
   console.log(`${LOG_PREFIX} Text layer rendered: ${textPng.length} bytes`);
 
-  // Step 6: Composite text layer onto base image
-  const composited = await sharp(imageBuffer)
+  // Step 6: Composite text layer onto the BLURRED base image.
+  const composited = await sharp(maskedBuffer)
     .composite([{
       input: textPng,
       top: 0,
@@ -416,6 +431,85 @@ export async function overlayText(imageBuffer, swapPairs, layoutMap, options = {
   console.log(`${LOG_PREFIX} Compositing complete: ${composited.length} bytes (${width}x${height})`);
 
   return composited;
+}
+
+/**
+ * For each text element, blur a rectangular region around its position with a
+ * heavy Gaussian (sigma ~18) so any underlying rendered text becomes
+ * unreadable. Returns a new Buffer with the blurred regions composited back
+ * onto the original.
+ *
+ * @param {Buffer} baseBuffer
+ * @param {Array} svgElements - from overlayText, each has { x, y, fontSize, lines, alignment }
+ * @param {number} width
+ * @param {number} height
+ * @returns {Promise<Buffer>}
+ */
+async function blurTextRegions(baseBuffer, svgElements, width, height) {
+  // Build a list of bounding boxes with generous padding
+  const boxes = [];
+  for (const el of svgElements) {
+    const totalLines = el.lines.length;
+    const lineHeight = el.fontSize * 1.2;
+    const blockH = totalLines * lineHeight + el.fontSize * 0.6;
+
+    const maxChars = Math.max(...el.lines.map(l => l.length));
+    // Wide estimate with extra padding — we'd rather blur slightly too much
+    // than leave a sliver of readable Gemini text exposed.
+    const estW = Math.min(maxChars * el.fontSize * 0.65 + el.fontSize * 3, width * 0.98);
+
+    const bboxX = el.alignment === 'left'
+      ? Math.max(0, Math.round(width * 0.02))
+      : el.alignment === 'right'
+        ? Math.max(0, Math.round(width * 0.98 - estW))
+        : Math.max(0, Math.round(el.x - estW / 2));
+    const bboxY = Math.max(0, Math.round(el.y - blockH / 2 - el.fontSize * 0.3));
+    const bboxW = Math.max(1, Math.min(Math.round(estW), width - bboxX));
+    const bboxH = Math.max(1, Math.min(Math.round(blockH + el.fontSize * 0.6), height - bboxY));
+
+    boxes.push({ left: bboxX, top: bboxY, width: bboxW, height: bboxH, field: el.field });
+  }
+
+  // Optionally merge overlapping boxes to avoid repeated extraction work
+  const merged = [];
+  for (const b of boxes) {
+    const overlap = merged.find(m => rectsOverlap(m, b));
+    if (overlap) {
+      overlap.left = Math.min(overlap.left, b.left);
+      overlap.top = Math.min(overlap.top, b.top);
+      overlap.width = Math.max(overlap.left + overlap.width, b.left + b.width) - overlap.left;
+      overlap.height = Math.max(overlap.top + overlap.height, b.top + b.height) - overlap.top;
+    } else {
+      merged.push({ ...b });
+    }
+  }
+
+  let out = baseBuffer;
+  for (const box of merged) {
+    try {
+      const blurred = await sharp(out)
+        .extract({ left: box.left, top: box.top, width: box.width, height: box.height })
+        .blur(22)  // heavy blur — any text is unreadable after this
+        .modulate({ saturation: 0.7 })  // mute color noise
+        .toBuffer();
+
+      out = await sharp(out)
+        .composite([{ input: blurred, left: box.left, top: box.top }])
+        .toBuffer();
+
+      console.log(`${LOG_PREFIX}     blurred region (${box.field}): ${box.width}x${box.height} @ (${box.left},${box.top})`);
+    } catch (err) {
+      console.warn(`${LOG_PREFIX}     blur skipped for ${box.field}: ${err.message}`);
+    }
+  }
+  return out;
+}
+
+function rectsOverlap(a, b) {
+  return !(a.left + a.width < b.left ||
+           b.left + b.width < a.left ||
+           a.top + a.height < b.top ||
+           b.top + b.height < a.top);
 }
 
 /**
