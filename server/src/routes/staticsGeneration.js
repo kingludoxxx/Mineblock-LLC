@@ -787,14 +787,69 @@ router.post('/generate', authenticate, async (req, res) => {
         }
         storeGeminiResult(earlyTaskId, { status: 'processing', progress: `Generating ${ratiosToGenerate.length} image ratio(s)...` });
 
-        // Generate all ratios in parallel
+        // Generate all ratios in parallel. Each ratio gets up to MAX_GEN_ATTEMPTS
+        // attempts — after each attempt we run a strict text-quality check
+        // (validateGenerationText) and regenerate on HARD-fail (misspellings,
+        // duplicated words, fabricated offers, letter-swaps, etc). Best-of-N
+        // is kept if all attempts fail so we still ship SOMETHING — but with a
+        // quality_warning flag so the UI / frontend can show a review banner.
+        const { validateGenerationText, summarizeTextValidation } = await import('../utils/generationTextValidator.js');
+        const MAX_GEN_ATTEMPTS = 3;
+
         const tAll = Date.now();
         const ratioResults = await Promise.allSettled(
           ratiosToGenerate.map(async (r) => {
             const tGemini = Date.now();
-            console.log(`[staticsGeneration] Gemini: generating ${r}...`);
-            const result = await editImage(nbPrompt, inputImages, r);
-            console.log(`[staticsGeneration] ⏱ Gemini ${r} finished in ${Date.now() - tGemini}ms`);
+            const attempts = [];
+
+            for (let attempt = 1; attempt <= MAX_GEN_ATTEMPTS; attempt++) {
+              console.log(`[staticsGeneration] Gemini ${r}: generating (attempt ${attempt}/${MAX_GEN_ATTEMPTS})...`);
+              const tAttempt = Date.now();
+              const result = await editImage(nbPrompt, inputImages, r);
+              console.log(`[staticsGeneration] ⏱ Gemini ${r} attempt ${attempt} finished in ${Date.now() - tAttempt}ms`);
+
+              // Text-quality check (blocking). ~5-10s added per attempt, worth it
+              // to not ship broken text. Hard-fails trigger regeneration.
+              let validation = null;
+              try {
+                validation = await validateGenerationText(
+                  result.buffer,
+                  result.mimeType,
+                  claudeResult?.adapted_text || {},
+                  product,
+                );
+                console.log(`[text-validator] ${r} attempt ${attempt}: ${summarizeTextValidation(validation)}`);
+              } catch (valErr) {
+                console.warn(`[text-validator] ${r} attempt ${attempt} threw — allowing the attempt to proceed: ${valErr.message}`);
+                validation = { passed: true, severity: 'clean', totalErrors: 0, errors: {}, skipped: `validator error: ${valErr.message}` };
+              }
+
+              attempts.push({ attempt, result, validation });
+
+              if (validation.passed) {
+                console.log(`[staticsGeneration] ${r}: passed text QC on attempt ${attempt} — accepting`);
+                break;
+              }
+              if (attempt < MAX_GEN_ATTEMPTS) {
+                console.warn(`[staticsGeneration] ${r}: failed text QC on attempt ${attempt} — regenerating`);
+              } else {
+                console.error(`[staticsGeneration] ${r}: failed text QC on ALL ${MAX_GEN_ATTEMPTS} attempts — shipping best-of-N with quality_warning`);
+              }
+            }
+
+            // Pick the best attempt: first passing one, otherwise the one with
+            // the fewest hard errors (tiebreaker: fewest total errors).
+            const passing = attempts.find(a => a.validation?.passed);
+            const chosen = passing || attempts.reduce((best, cur) => {
+              const bh = best?.validation?.hardErrorCount ?? Infinity;
+              const ch = cur?.validation?.hardErrorCount ?? Infinity;
+              if (ch < bh) return cur;
+              if (ch === bh && (cur?.validation?.totalErrors ?? Infinity) < (best?.validation?.totalErrors ?? Infinity)) return cur;
+              return best;
+            }, attempts[0]);
+
+            const { result, validation, attempt: chosenAttempt } = chosen;
+            console.log(`[staticsGeneration] ⏱ Gemini ${r} total (incl. QC + retries) ${Date.now() - tGemini}ms — chose attempt ${chosenAttempt}`);
 
             // Upload to R2 or store as temp
             let resultImageUrl;
@@ -814,8 +869,17 @@ router.post('/generate', authenticate, async (req, res) => {
               resultImageUrl,
               provider: 'gemini',
               model: GEMINI_EDIT_MODEL,
+              textValidation: validation ? {
+                passed: validation.passed,
+                severity: validation.severity,
+                totalErrors: validation.totalErrors,
+                hardErrorCount: validation.hardErrorCount,
+                errors: validation.errors,
+                attempts: attempts.length,
+              } : null,
+              quality_warning: validation && !validation.passed ? summarizeTextValidation(validation) : null,
             });
-            console.log(`[staticsGeneration] Gemini ${r} complete: ${taskId}`);
+            console.log(`[staticsGeneration] Gemini ${r} complete: ${taskId} ${validation?.passed ? '' : `(${summarizeTextValidation(validation)})`}`);
             return { taskId, ratio: r };
           })
         );
