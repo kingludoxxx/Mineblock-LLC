@@ -69,6 +69,9 @@ const ANGLE_OPTIONS = {
   Breakingnews: 'e5cd049f-13a5-45e4-a8d7-6b78f0acc9a3',
   Offer: 'e0c1d0fd-b376-4146-8887-ad7c0c209489',
   Reaction: 'bbe5f0c0-8bbf-45a2-bc04-fbcebb11e242',
+  Miningwhilesleep: '8bfcbdeb-c21b-4d78-b2f4-fa45f7856b18',
+  Apology: '3c59aca9-f26b-4d8d-95b9-652fd4d30044',
+  Gamblingaddiction: null,
 };
 
 const BRIEF_TYPE_OPTIONS = {
