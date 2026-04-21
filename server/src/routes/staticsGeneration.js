@@ -62,6 +62,7 @@ router.post('/reset-failed', async (req, res) => {
 
 async function _doResetFailed(res) {
   try {
+    // Reset rejected/error rows from failed generation
     const result = await pgQuery(
       `UPDATE spy_creatives
        SET status = 'ready', review_notes = NULL, updated_at = NOW()
@@ -72,12 +73,26 @@ async function _doResetFailed(res) {
            OR review_notes LIKE '%NanaBanana%'
            OR review_notes LIKE '%NanoBanana%'
            OR review_notes LIKE '%Image generation failed%'
+           OR review_notes LIKE '%Variant resize failed%'
+           OR review_notes IS NULL
          )
+         AND parent_creative_id IS NOT NULL
        RETURNING id, angle, aspect_ratio, product_name`,
       []
     );
-    console.log(`[staticsGeneration] reset-failed: reset ${result.length} creatives to ready`);
-    res.json({ success: true, reset_count: result.length, creatives: result.map(r => ({ id: r.id, angle: r.angle, ratio: r.aspect_ratio, product: r.product_name })) });
+    // Also reset generating rows stuck > 10 min (orphaned from killed server)
+    const staleResult = await pgQuery(
+      `UPDATE spy_creatives
+       SET status = 'ready', review_notes = NULL, updated_at = NOW()
+       WHERE status = 'generating'
+         AND created_at < NOW() - INTERVAL '10 minutes'
+         AND parent_creative_id IS NOT NULL
+       RETURNING id, angle, aspect_ratio, product_name`,
+      []
+    );
+    const all = [...result, ...staleResult];
+    console.log(`[staticsGeneration] reset-failed: reset ${all.length} creatives to ready (${result.length} rejected/error, ${staleResult.length} stale generating)`);
+    res.json({ success: true, reset_count: all.length, creatives: all.map(r => ({ id: r.id, angle: r.angle, ratio: r.aspect_ratio, product: r.product_name })) });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
