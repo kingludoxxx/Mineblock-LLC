@@ -240,7 +240,7 @@ router.post('/meta-app-go-live', authenticate, async (req, res) => {
 const ANTHROPIC_API_KEY   = process.env.ANTHROPIC_API_KEY || '';
 const NANOBANANA_API_KEY  = process.env.NANOBANANA_API_KEY || '';
 
-const NB_BASE        = 'https://api.kie.ai/api/v1/jobs';
+const NB_BASE        = 'https://api.nanobananaapi.ai/api/v1/nanobanana';
 const CLAUDE_API_URL = 'https://api.anthropic.com/v1/messages';
 const MAX_POLLS      = 60;
 const POLL_INTERVAL  = 5000;
@@ -335,7 +335,7 @@ async function pollNanoBanana(taskId) {
   for (let i = 0; i < MAX_POLLS; i++) {
     await sleep(POLL_INTERVAL);
 
-    const res = await fetch(`${NB_BASE}/recordInfo?taskId=${taskId}`, {
+    const res = await fetch(`${NB_BASE}/record-info?taskId=${taskId}`, {
       headers: { Authorization: `Bearer ${NANOBANANA_API_KEY}` },
     });
 
@@ -746,7 +746,7 @@ router.post('/generate', authenticate, async (req, res) => {
     // overlayText() step paints the exact adapted_text on top using real
     // fonts via satori/resvg + Sharp. Result: zero text errors by
     // construction. Controlled via env STATICS_TEXT_OVERLAY (default on).
-    const skipTextRendering = (process.env.STATICS_TEXT_OVERLAY || 'true').toLowerCase() !== 'false';
+    const skipTextRendering = (process.env.STATICS_TEXT_OVERLAY || 'false').toLowerCase() !== 'false';
     // Pass extra product count so prompt builder can calculate correct logo image indices
     claudeResult._extraProductCount = refHasProduct ? extraProductUrls.length : 0;
     claudeResult._refHasProduct = refHasProduct;
@@ -766,7 +766,7 @@ router.post('/generate', authenticate, async (req, res) => {
       : ['1:1', '9:16'];
 
     // Determine provider: default to gemini, fallback to nanobanana
-    const provider = req.body.provider || (isGeminiConfigured() ? 'gemini' : 'nanobanana');
+    const provider = req.body.provider || 'nanobanana';
     console.log(`[staticsGeneration] Provider: ${provider}, Generating ${ratiosToGenerate.length} ratio(s): ${ratiosToGenerate.join(', ')}`);
 
     // ── GEMINI PATH: Direct image editing via Gemini 3.1 Flash ──
@@ -1014,18 +1014,17 @@ router.post('/generate', authenticate, async (req, res) => {
     const nbResponses = await Promise.all(
       ratiosToGenerate.map(async (r) => {
         const body = JSON.stringify({
-          model: 'google/nano-banana-edit',
-          input: {
-            prompt: nbPrompt,
-            image_urls: imageUrls,
-            image_size: r,
-            output_format: 'png',
-          },
+          prompt: nbPrompt,
+          model: 'nano-banana-2',
+          imageUrls: imageUrls,
+          aspectRatio: r,
+          resolution: '2K',
+          outputFormat: 'png',
         });
 
         let data = null;
         for (let attempt = 1; attempt <= NB_RETRY_ATTEMPTS; attempt++) {
-          const res = await fetch(`${NB_BASE}/createTask`, {
+          const res = await fetch(`${NB_BASE}/generate-2`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${NANOBANANA_API_KEY}` },
             body,
@@ -1127,7 +1126,7 @@ router.get('/status/:taskId', authenticate, async (req, res) => {
 
       // Redirect: NanoBanana path — forward to the real taskId
       if (geminiResult.status === 'redirect') {
-        const realResult = await fetch(`${NB_BASE}/recordInfo?taskId=${geminiResult.realTaskId}`, {
+        const realResult = await fetch(`${NB_BASE}/record-info?taskId=${geminiResult.realTaskId}`, {
           headers: { Authorization: `Bearer ${NANOBANANA_API_KEY}` },
         }).then(r => r.json()).catch(() => null);
         const state = realResult?.data?.state || realResult?.state;
@@ -1170,7 +1169,7 @@ router.get('/status/:taskId', authenticate, async (req, res) => {
     }
 
     // ── NanoBanana results: poll kie.ai ──
-    const nbRes = await fetch(`${NB_BASE}/recordInfo?taskId=${taskId}`, {
+    const nbRes = await fetch(`${NB_BASE}/record-info?taskId=${taskId}`, {
       headers: { Authorization: `Bearer ${NANOBANANA_API_KEY}` },
     });
 
@@ -1468,20 +1467,19 @@ async function generateVariant(parent, newAspectRatio) {
     const resizePrompt = `Seamlessly resize this ad image to ${newAspectRatio} aspect ratio. Keep ALL content identical — same text, same product, same layout, same colors, same style. Extend or adjust the background naturally to fill the new format.`;
 
     const nbPayload = {
-      model: 'google/nano-banana-edit',
-      input: {
-        prompt: resizePrompt,
-        image_urls: [parentImageUrl],
-        image_size: newAspectRatio,
-        output_format: 'png',
-      },
+      prompt: resizePrompt,
+      model: 'nano-banana-2',
+      imageUrls: [parentImageUrl],
+      aspectRatio: newAspectRatio,
+      resolution: '1K',
+      outputFormat: 'png',
     };
 
     console.log(`[staticsGeneration] Resize ${parent.id} → ${newAspectRatio}: sending parent image to NanoBanana`, String(parentImageUrl).slice(0, 120));
 
     let taskId = null;
     for (let attempt = 1; attempt <= 3; attempt++) {
-      const nbRes = await fetch(`${NB_BASE}/createTask`, {
+      const nbRes = await fetch(`${NB_BASE}/generate-2`, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${NANOBANANA_API_KEY}`,
@@ -1992,17 +1990,16 @@ Return ONLY a JSON object:
         } else {
           // Fallback to NanoBanana
           const httpImageUrl = await ensureHttpUrlGlobal(creative.image_url, 'adjust-ref');
-          const nbRes = await fetch(`${NB_BASE}/createTask`, {
+          const nbRes = await fetch(`${NB_BASE}/generate-2`, {
             method: 'POST',
             headers: { Authorization: `Bearer ${NANOBANANA_API_KEY}`, 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              model: 'google/nano-banana-edit',
-              input: {
-                prompt: adjustResult.adjusted_prompt,
-                image_urls: [httpImageUrl],
-                image_size: creative.aspect_ratio || '4:5',
-                output_format: 'png',
-              },
+              prompt: adjustResult.adjusted_prompt,
+              model: 'nano-banana-2',
+              imageUrls: [httpImageUrl],
+              aspectRatio: creative.aspect_ratio || '4:5',
+              resolution: '1K',
+              outputFormat: 'png',
             }),
           });
           if (!nbRes.ok) throw new Error(`NanoBanana error ${nbRes.status}: ${await nbRes.text()}`);
