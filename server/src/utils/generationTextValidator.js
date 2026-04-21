@@ -67,6 +67,7 @@ export async function validateGenerationText(imageBuffer, imageMimeType, adapted
   const discountCodes    = productProfile.discountCodes    || '(none)';
   const maxDiscount      = productProfile.maxDiscount      || '(none)';
   const guarantee        = productProfile.guarantee        || '(none)';
+  const productPrice     = product?.price                  || '(not set)';
 
   const prompt = `You are a strict text-quality inspector for AI-generated ad images.
 
@@ -74,37 +75,66 @@ INTENDED TEXT (what the image should display, verbatim):
 ${intendedLines.length > 0 ? intendedLines.map((l, i) => `${i + 1}. "${l}"`).join('\n') : '(none provided)'}
 
 PRODUCT CONTEXT (ground-truth offer facts — anything that contradicts these is fabricated):
-- Product name: "${product?.name || '(unknown)'}"
+- Product name:   "${product?.name || '(unknown)'}"
+- Current price:  ${productPrice}
 - offerDetails:   ${offerDetails}
 - bundleVariants: ${bundleVariants}
 - discountCodes:  ${discountCodes}
 - maxDiscount:    ${maxDiscount}
 - guarantee:      ${guarantee}
 
-Carefully read ALL text rendered in the generated image. Check for each of these failure modes:
+READ EVERY RENDERED WORD LETTER-BY-LETTER. Do not approximate — if a word is
+short (WORLDWIDE, HONEST, GUARANTEE), verify each letter is present AND in the
+right order. Dropped letters and swapped letters are the #1 failure mode and
+you must not miss them.
 
-1. MISSPELLINGS: Any misspelled word (e.g. "blocchain" for "blockchain", "Verifable" for "Verifiable")
-2. DUPLICATED_WORDS: Any word/phrase rendered twice in a row (e.g. "per per", "stock stock", "Every single one Every single one")
-3. LETTER_SWAPS: Any word where the wrong letter was rendered (e.g. "Pight" for "Right", "Tree" for "Free", "MMineBlock" with doubled M)
+Then check each failure mode below:
+
+1. MISSPELLINGS: Any word where one or more letters are missing/wrong/doubled relative to correct English.
+   Examples you MUST catch: "WORLWIDE" (missing D → WORLDWIDE), "blocchain" (extra c → blockchain), "Verifable" (missing i → Verifiable), "recieve" (swap → receive), "GAURANTEE" (missing letter → GUARANTEE), "MMineBlock" (doubled M).
+   If a word renders with LESS than 100% letter match to the correctly-spelled version, flag it.
+
+2. DUPLICATED_WORDS: Any word/phrase rendered twice in a row (e.g. "per per", "stock stock", "Every single one Every single one").
+
+3. LETTER_SWAPS: Any word where one letter was visually substituted for a similar-shaped one (e.g. "Pight" for "Right", "Tree" for "Free", "Oure" for "Our", "morig" for "more"). This is distinct from misspellings — it's when the model picked the wrong letter.
+
 4. FABRICATED_OFFERS: Any "Buy X Get Y Free", "BOGO", "N for M", "Free [item] with purchase", "Get N free" — UNLESS that exact structure appears verbatim in offerDetails/bundleVariants above. Bundle SAVINGS ("Save $118 on 3-pack") are NOT equivalent to "Buy X Get Y Free".
-5. FABRICATED_STATS: Claims that contradict PRODUCT CONTEXT (e.g. "LIFETIME WARRANTY" when guarantee says 2-year; "90-DAY MONEY BACK" when guarantee says 30-day; fabricated percentages or counts)
-6. EMOJI_PRESENT: Any emoji characters rendered as part of the text (😭 😊 ⭐ etc)
-7. CORRUPTED_PRODUCT_TEXT: Garbled text on the physical product itself — screen readouts, LED/LCD labels, button text that doesn't match the real product. If you can see the product has clearly gibberish text on it (e.g. "BIM MINER", "000-01:23:04", random letters), flag it.
-8. MISSING_INTENDED_TEXT: Any INTENDED TEXT line above that does NOT appear in the rendered image (approximate/partial match is fine; flag only if it's clearly absent).
+
+5. FABRICATED_STATS: Claims that contradict PRODUCT CONTEXT (e.g. "LIFETIME WARRANTY" when guarantee says 2-year; "90-DAY MONEY BACK" when guarantee says 30-day; fabricated percentages or satisfaction counts; fabricated user counts).
+
+6. FABRICATED_PRICES: Any price shown that is NOT the Current price above AND NOT derivable from it via the maxDiscount. Watch for:
+   - Fake "WAS $X, NOW $Y" where X is an inflated anchor that was never the real price (e.g. current price is $249 but ad shows "WAS $277, NOW $249" — the $277 is fabricated).
+   - Prices that don't match bundleVariants.
+   - Discount percentages that don't match maxDiscount.
+   Real math allowed: if Current price is $249 and maxDiscount is 10% off, then $249 → $224 (or $224.10) is VALID. But inventing a higher "WAS" price to make the current price look discounted is FABRICATED.
+
+7. NONSENSICAL_COPY: Any copy that is grammatically or logically nonsense, including:
+   - Two unrelated facts joined with "=" or other bad punctuation ("Runs on ~30W = 2-Yr Warranty")
+   - Sentences that don't parse ("Other USB miners show numbers moving moving")
+   - Claims with no subject/verb or that contradict themselves internally
+   Flag the exact phrase.
+
+8. EMOJI_PRESENT: Any emoji characters rendered as part of the text (😭 😊 ⭐ ✅ ❌ etc).
+
+9. CORRUPTED_PRODUCT_TEXT: Garbled text on the physical product itself — screen readouts, LED/LCD labels, button text that doesn't match the real product. If the product has clearly gibberish text on it (e.g. "BIM MINER", "000-01:23:04", random letters), flag it.
+
+10. MISSING_INTENDED_TEXT: Any INTENDED TEXT line above that does NOT appear in the rendered image (approximate/partial match is fine; flag only if it's clearly absent).
 
 Return ONLY valid JSON (no markdown fences, no extra commentary):
 {
-  "misspellings": [{"found": "blocchain", "expected": "blockchain"}],
+  "misspellings": [{"found": "WORLWIDE", "expected": "WORLDWIDE"}],
   "duplicated_words": ["per per", "stock stock"],
   "letter_swaps": [{"found": "Pight", "expected": "Right"}],
   "fabricated_offers": ["Buy 3 Get 1 Free"],
   "fabricated_stats": ["LIFETIME WARRANTY"],
+  "fabricated_prices": ["WAS $277, NOW $249 — the $277 is invented; product is $249 with optional 10% off"],
+  "nonsensical_copy": ["Runs on ~30W = 2-Yr Warranty"],
   "emoji_present": ["😭"],
   "corrupted_product_text": ["BIM MINER"],
   "missing_intended_text": ["expected line that is absent"]
 }
 
-If a category has no issues, return an empty array. Do not invent issues — only report what you actually see in the image.`;
+If a category has no issues, return an empty array. Do not invent issues — only report what you actually see in the image. When in doubt on a misspelling, ASSUME IT IS MISSPELLED and flag it — false positives cost us one extra regeneration; false negatives ship a broken ad.`;
 
   const body = {
     model: 'claude-sonnet-4-20250514',
@@ -165,6 +195,8 @@ If a category has no issues, return an empty array. Do not invent issues — onl
     letter_swaps:            Array.isArray(parsed.letter_swaps)           ? parsed.letter_swaps           : [],
     fabricated_offers:       Array.isArray(parsed.fabricated_offers)      ? parsed.fabricated_offers      : [],
     fabricated_stats:        Array.isArray(parsed.fabricated_stats)       ? parsed.fabricated_stats       : [],
+    fabricated_prices:       Array.isArray(parsed.fabricated_prices)      ? parsed.fabricated_prices      : [],
+    nonsensical_copy:        Array.isArray(parsed.nonsensical_copy)       ? parsed.nonsensical_copy       : [],
     emoji_present:           Array.isArray(parsed.emoji_present)          ? parsed.emoji_present          : [],
     corrupted_product_text:  Array.isArray(parsed.corrupted_product_text) ? parsed.corrupted_product_text : [],
     missing_intended_text:   Array.isArray(parsed.missing_intended_text)  ? parsed.missing_intended_text  : [],
@@ -178,7 +210,8 @@ If a category has no issues, return an empty array. Do not invent issues — onl
   //   clean = no errors at all
   const hardErrorCount = errors.misspellings.length + errors.duplicated_words.length +
                          errors.letter_swaps.length + errors.fabricated_offers.length +
-                         errors.fabricated_stats.length + errors.emoji_present.length +
+                         errors.fabricated_stats.length + errors.fabricated_prices.length +
+                         errors.nonsensical_copy.length + errors.emoji_present.length +
                          errors.corrupted_product_text.length;
   const softErrorCount = errors.missing_intended_text.length;
 
@@ -209,6 +242,8 @@ export function summarizeTextValidation(validation) {
   if (e.letter_swaps?.length)           parts.push(`${e.letter_swaps.length} letter-swap(s)`);
   if (e.fabricated_offers?.length)      parts.push(`${e.fabricated_offers.length} fake-offer(s)`);
   if (e.fabricated_stats?.length)       parts.push(`${e.fabricated_stats.length} fake-stat(s)`);
+  if (e.fabricated_prices?.length)      parts.push(`${e.fabricated_prices.length} fake-price(s)`);
+  if (e.nonsensical_copy?.length)       parts.push(`${e.nonsensical_copy.length} nonsense-phrase(s)`);
   if (e.emoji_present?.length)          parts.push(`${e.emoji_present.length} emoji`);
   if (e.corrupted_product_text?.length) parts.push(`${e.corrupted_product_text.length} garbled-product-text`);
   if (e.missing_intended_text?.length)  parts.push(`${e.missing_intended_text.length} missing-line(s)`);
