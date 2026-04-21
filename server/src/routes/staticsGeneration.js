@@ -1228,13 +1228,39 @@ router.get('/status/:taskId', authenticate, async (req, res) => {
         const realResult = await fetch(`${NB_BASE}/record-info?taskId=${geminiResult.realTaskId}`, {
           headers: { Authorization: `Bearer ${NANOBANANA_API_KEY}` },
         }).then(r => r.json()).catch(() => null);
-        const state = realResult?.data?.state || realResult?.state;
-        if (state === 'success') {
-          const imgUrl = realResult?.data?.resultImageUrl || realResult?.resultImageUrl;
+        const flag = realResult?.data?.successFlag;
+        if (flag === 2) {
+          let imgUrl = extractNanoBananaImageUrl(realResult);
+          // Apply text overlay if pending
+          const overlayCtx = textOverlayContexts.get(geminiResult.realTaskId);
+          if (overlayCtx && !overlayCtx.applied && imgUrl) {
+            overlayCtx.applied = true;
+            try {
+              const imgRes = await fetch(imgUrl);
+              if (!imgRes.ok) throw new Error(`HTTP ${imgRes.status}`);
+              const buf = Buffer.from(await imgRes.arrayBuffer());
+              const composited = await overlayText(buf, overlayCtx.swapPairs, overlayCtx.layoutMap, { fonts: overlayCtx.fonts, backgroundTone: overlayCtx.backgroundTone });
+              const srvUrl = process.env.RENDER_EXTERNAL_URL || `http://localhost:${process.env.PORT || 3000}`;
+              if (isR2Configured()) {
+                imgUrl = await uploadBuffer(composited, `statics-composited/${crypto.randomUUID()}.png`, 'image/png');
+              } else {
+                const tmpId = await storeTempImage(composited, 'image/png');
+                imgUrl = `${srvUrl}/api/v1/statics-generation/tmp-img/${tmpId}`;
+              }
+              overlayCtx.compositedUrl = imgUrl;
+            } catch (e) {
+              overlayCtx.applied = false;
+              console.error(`[textOverlay] Redirect overlay failed:`, e.message);
+            }
+          } else if (overlayCtx?.compositedUrl) {
+            imgUrl = overlayCtx.compositedUrl;
+          }
           return res.json({ success: true, data: { taskId, status: 'completed', successFlag: true, resultImageUrl: imgUrl, provider: 'nanobanana' } });
         }
-        if (state === 'fail') {
-          return res.json({ success: true, data: { taskId, status: 'failed', error: 'Generation failed' } });
+        if (flag === 3) {
+          const errMsg = realResult?.data?.errorMessage || 'NanoBanana generation failed';
+          console.error(`[staticsGeneration] NanoBanana failed for redirect task ${taskId} (realTaskId: ${geminiResult.realTaskId}):`, errMsg);
+          return res.json({ success: true, data: { taskId, status: 'failed', error: errMsg } });
         }
         return res.json({ success: true, data: { taskId, status: 'processing', progress: 'Generating image...' } });
       }
