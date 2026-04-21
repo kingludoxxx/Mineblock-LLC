@@ -428,20 +428,13 @@ async function pollNanoBanana(taskId) {
 
     const data = await res.json();
     const record = data.data || data;
-    const state = record.state;
+    // NanoBanana uses successFlag: 1=processing, 2=success, 3=error
+    const flag = record.successFlag;
 
-    // Log every poll response for debugging
-    console.log(`[staticsGeneration] Poll ${i+1}/${MAX_POLLS} — state=${state}, keys=${Object.keys(data)}, record.keys=${Object.keys(record)}`);
+    console.log(`[staticsGeneration] Poll ${i+1}/${MAX_POLLS} — successFlag=${flag}, taskId=${taskId}`);
 
-    if (state === 'success') {
-      // Kie.ai returns resultJson as a JSON string with resultUrls array
-      let imageUrl;
-      try {
-        const resultObj = typeof record.resultJson === 'string' ? JSON.parse(record.resultJson) : record.resultJson;
-        imageUrl = resultObj?.resultUrls?.[0];
-      } catch {}
-      // Fallback to old format
-      if (!imageUrl) imageUrl = extractNanoBananaImageUrl(data);
+    if (flag === 2) {
+      const imageUrl = extractNanoBananaImageUrl(data);
       if (!imageUrl) {
         console.error('[staticsGeneration] NanoBanana success but no image URL extracted.');
         console.error('[staticsGeneration] Full response (3000 chars):', JSON.stringify(data).slice(0, 3000));
@@ -449,11 +442,11 @@ async function pollNanoBanana(taskId) {
       }
       return imageUrl;
     }
-    if (state === 'fail') {
+    if (flag === 3) {
       console.error('[staticsGeneration] NanoBanana failed. Full response:', JSON.stringify(data).slice(0, 2000));
-      throw new Error(`NanoBanana generation failed: ${record.failMsg || 'Unknown error'}`);
+      throw new Error(`NanoBanana generation failed: ${record.errorMessage || 'Unknown error'}`);
     }
-    // state === 'waiting' | 'queuing' | 'generating' → still pending, keep polling
+    // flag === 1 (or undefined/pending) → still processing, keep polling
   }
 
   throw new Error('NanoBanana generation timed out after 5 minutes');
@@ -1265,28 +1258,25 @@ router.get('/status/:taskId', authenticate, async (req, res) => {
 
     const data = await nbRes.json();
     const record = data.data || data;
-    const state = record.state;
+    // NanoBanana uses successFlag: 1=processing, 2=success, 3=error
+    const flag = record.successFlag;
 
     let status;
     let errorDetail = null;
-    if (state === 'success')  status = 'completed';
-    else if (state === 'fail') {
+    if (flag === 2) {
+      status = 'completed';
+    } else if (flag === 3) {
       status = 'failed';
-      errorDetail = record.failMsg || data.error || data.data?.error
-        || `NanoBanana generation failed`;
-      console.error('[staticsGeneration] NanoBanana failed for task', taskId, '— state:', state, '— error:', errorDetail);
+      errorDetail = record.errorMessage || data.error || data.data?.error || 'NanoBanana generation failed';
+      console.error('[staticsGeneration] NanoBanana failed for task', taskId, '— flag:', flag, '— error:', errorDetail);
     } else {
-      // waiting, queuing, generating
+      // flag === 1 or undefined → still processing
       status = 'pending';
     }
 
     let resultImageUrl = null;
     if (status === 'completed') {
-      try {
-        const resultObj = typeof record.resultJson === 'string' ? JSON.parse(record.resultJson) : record.resultJson;
-        resultImageUrl = resultObj?.resultUrls?.[0];
-      } catch {}
-      if (!resultImageUrl) resultImageUrl = extractNanoBananaImageUrl(data);
+      resultImageUrl = extractNanoBananaImageUrl(data);
 
       // ── Text Overlay: composite programmatic text onto the text-free image ──
       const overlayCtx = textOverlayContexts.get(taskId);
