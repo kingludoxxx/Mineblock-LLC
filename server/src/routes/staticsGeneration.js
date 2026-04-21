@@ -190,6 +190,29 @@ router.post('/reset-generating', authenticate, async (req, res) => {
   }
 });
 
+// Reset auto-reconciled or error'd creatives back to ready for regeneration
+router.post('/reset-failed', authenticate, async (req, res) => {
+  try {
+    const result = await pgQuery(
+      `UPDATE spy_creatives
+       SET status = 'ready', review_notes = NULL, updated_at = NOW()
+       WHERE status IN ('rejected', 'error')
+         AND (
+           review_notes LIKE '%auto-reconciled%'
+           OR review_notes LIKE '%generation failed%'
+           OR review_notes LIKE '%NanoBanana%'
+           OR review_notes LIKE '%Image generation failed%'
+         )
+       RETURNING id, angle, aspect_ratio, product_name, review_notes`,
+      []
+    );
+    console.log(`[staticsGeneration] reset-failed: reset ${result.length} creatives to ready`);
+    res.json({ success: true, reset_count: result.length, creatives: result.map(r => ({ id: r.id, angle: r.angle, ratio: r.aspect_ratio, product: r.product_name })) });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // ── Background reconciliation: mark long-stuck generating rows as rejected ──
 // Runs every 3 minutes. Any DB row still in 'generating' for >10 minutes is
 // almost certainly orphaned (server restarted mid-poll or Gemini/NB failed
