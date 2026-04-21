@@ -1302,6 +1302,8 @@ router.get('/status/:taskId', authenticate, async (req, res) => {
       // ── Text Overlay: composite programmatic text onto the text-free image ──
       const overlayCtx = textOverlayContexts.get(taskId);
       if (overlayCtx && !overlayCtx.applied && resultImageUrl) {
+        // Claim the slot immediately (optimistic lock) — prevents concurrent polls from double-applying
+        overlayCtx.applied = true;
         try {
           console.log(`[textOverlay] Downloading generated image for text overlay: ${resultImageUrl.slice(0, 120)}`);
           const imgRes = await fetch(resultImageUrl);
@@ -1329,16 +1331,15 @@ router.get('/status/:taskId', authenticate, async (req, res) => {
             console.log(`[textOverlay] Composited image stored as temp: ${resultImageUrl}`);
           }
 
-          overlayCtx.applied = true;
           overlayCtx.compositedUrl = resultImageUrl;
           console.log(`[textOverlay] Text overlay applied successfully for task ${taskId}`);
         } catch (overlayErr) {
+          overlayCtx.applied = false; // Release lock so next poll can retry
           console.error(`[textOverlay] Text overlay failed for task ${taskId}:`, overlayErr.message);
-          console.warn(`[textOverlay] Falling back to raw NanoBanana image (text may be AI-rendered or missing)`);
-          // resultImageUrl stays as the raw NanoBanana URL — fallback behavior
+          console.warn(`[textOverlay] Falling back to raw image (text may be AI-rendered or missing)`);
         }
-      } else if (overlayCtx?.applied && overlayCtx?.compositedUrl) {
-        // Already applied on a previous poll — return the cached composited URL
+      } else if (overlayCtx?.compositedUrl) {
+        // Already composited — return cached URL regardless of applied flag state
         resultImageUrl = overlayCtx.compositedUrl;
       }
     }
@@ -1351,7 +1352,7 @@ router.get('/status/:taskId', authenticate, async (req, res) => {
       data: {
         taskId,
         status,
-        successFlag: state === 'success',
+        successFlag: flag === 2,
         resultImageUrl,
         error: errorDetail,
       },
@@ -1571,6 +1572,21 @@ async function generateVariant(parent, newAspectRatio) {
       outputFormat: 'png',
     };
 
+    // 2b. Pre-flight: verify parent image is accessible before burning an API call
+    if (parentImageUrl.startsWith('http')) {
+      try {
+        const checkRes = await fetch(parentImageUrl, { method: 'HEAD', signal: AbortSignal.timeout(8000) });
+        if (!checkRes.ok) {
+          const note = `Parent image expired or inaccessible (HTTP ${checkRes.status}) — regenerate the parent from the UI`;
+          await pgQuery("UPDATE spy_creatives SET status = 'rejected', review_notes = $1, updated_at = NOW() WHERE id = $2", [note, child.id]);
+          console.warn(`[staticsGeneration] Variant resize ${parent.id} → ${newAspectRatio}: pre-flight 404, skipping`);
+          return;
+        }
+      } catch (checkErr) {
+        console.warn(`[staticsGeneration] Variant resize ${parent.id}: pre-flight check failed (${checkErr.message}), proceeding anyway`);
+      }
+    }
+
     console.log(`[staticsGeneration] Resize ${parent.id} → ${newAspectRatio}: sending parent image to NanoBanana`, String(parentImageUrl).slice(0, 120));
 
     let taskId = null;
@@ -1614,12 +1630,32 @@ async function generateVariant(parent, newAspectRatio) {
     );
 
     // 4. Poll for completion
-    const imageUrl = await pollNanoBanana(taskId);
+    const nbImageUrl = await pollNanoBanana(taskId);
 
-    // 5. Update child creative with result
+    // 5. Download and permanently store the result so the URL never expires
+    let finalImageUrl = nbImageUrl;
+    try {
+      const imgFetch = await fetch(nbImageUrl, { signal: AbortSignal.timeout(30000) });
+      if (imgFetch.ok) {
+        const buf = Buffer.from(await imgFetch.arrayBuffer());
+        const mime = detectMime(buf);
+        if (isR2Configured()) {
+          const ext = mime.includes('png') ? 'png' : 'jpg';
+          finalImageUrl = await uploadBuffer(buf, `statics-variants/${crypto.randomUUID()}.${ext}`, mime);
+        } else {
+          const imgId = await storeTempImage(buf, mime);
+          finalImageUrl = `${VARIANT_SERVER_URL}/api/v1/statics-generation/tmp-img/${imgId}`;
+        }
+        console.log(`[staticsGeneration] Variant ${child.id} image stored permanently`);
+      }
+    } catch (storeErr) {
+      console.warn(`[staticsGeneration] Variant image store failed, using CDN URL: ${storeErr.message}`);
+    }
+
+    // 6. Update child creative with permanent URL
     await pgQuery(
       "UPDATE spy_creatives SET image_url = $1, generation_task_id = $2, status = 'review', updated_at = NOW() WHERE id = $3",
-      [imageUrl, taskId, child.id]
+      [finalImageUrl, taskId, child.id]
     );
 
     console.log(`[staticsGeneration] Variant ${child.id} (${newAspectRatio}) resized successfully`);
