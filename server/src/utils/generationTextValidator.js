@@ -138,7 +138,10 @@ Then check each failure mode below:
 
 4. FABRICATED_OFFERS: Any "Buy X Get Y Free", "BOGO", "N for M", "Free [item] with purchase", "Get N free" — UNLESS that exact structure appears verbatim in offerDetails/bundleVariants above. Bundle SAVINGS ("Save $118 on 3-pack") are NOT equivalent to "Buy X Get Y Free".
 
-5. FABRICATED_STATS: Claims that contradict PRODUCT CONTEXT (e.g. "LIFETIME WARRANTY" when guarantee says 2-year; "90-DAY MONEY BACK" when guarantee says 30-day; fabricated percentages or satisfaction counts; fabricated user counts).
+5. FABRICATED_STATS: Claims that contradict PRODUCT CONTEXT. Includes:
+   a. Fabricated guarantee / warranty periods: "LIFETIME WARRANTY" when guarantee is 2-year, "90-DAY MONEY BACK" when real is 30-day, "1-YEAR WARRANTY" when real is 2-year. Compare every "N-day", "N-year", "LIFETIME" claim verbatim to the guarantee / offerDetails above.
+   b. Fabricated discount percentages: ANY "X% OFF" where X does NOT match the maxDiscount above. E.g. if maxDiscount is "10% off", then "UP TO 58% OFF", "46% OFF", "40% OFF SITEWIDE", "75% OFF", "HUGE 80% OFF" are ALL fabricated. Only the exact maxDiscount percentage is valid.
+   c. Fabricated satisfaction / user counts: "Loved by 10,000+ customers" when no real figure exists. Any specific integer claim about people/reviews that isn't in product context is fabricated.
 
 6. FABRICATED_PRICES: OCR every $ amount in the image. Compare each to the PRODUCT CONTEXT's Current price (${productPrice}), the maxDiscount-derived price, and every bundleVariants price. If a $ amount does NOT match any of these (within rounding), it is FABRICATED. Do this check mechanically — do not assume a random-looking number is a typo or stylistic choice.
 
