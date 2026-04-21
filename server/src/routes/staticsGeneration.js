@@ -724,7 +724,13 @@ router.post('/generate', authenticate, async (req, res) => {
     }
 
     const logoBackgroundTone = claudeResult.logo_background_tone || null;
-    const skipTextRendering = false;
+    // ── P1.1: Text-overlay compositing is the real fix for Gemini's text-
+    // rendering defects (misspellings, dupes, letter-swaps, fabricated
+    // prices). When enabled, Gemini produces a text-FREE image and our
+    // overlayText() step paints the exact adapted_text on top using real
+    // fonts via satori/resvg + Sharp. Result: zero text errors by
+    // construction. Controlled via env STATICS_TEXT_OVERLAY (default on).
+    const skipTextRendering = (process.env.STATICS_TEXT_OVERLAY || 'true').toLowerCase() !== 'false';
     // Pass extra product count so prompt builder can calculate correct logo image indices
     claudeResult._extraProductCount = refHasProduct ? extraProductUrls.length : 0;
     claudeResult._refHasProduct = refHasProduct;
@@ -793,8 +799,14 @@ router.post('/generate', authenticate, async (req, res) => {
         // duplicated words, fabricated offers, letter-swaps, etc). Best-of-N
         // is kept if all attempts fail so we still ship SOMETHING — but with a
         // quality_warning flag so the UI / frontend can show a review banner.
+        //
+        // P1.1: When skipTextRendering is on, we're producing text-FREE images
+        // and compositing real-font text on top — so the text-quality validator
+        // becomes irrelevant (no text to validate on the raw Gemini buffer;
+        // overlay-rendered text is deterministically correct). Skip it in that
+        // mode; 1 attempt is enough.
         const { validateGenerationText, summarizeTextValidation } = await import('../utils/generationTextValidator.js');
-        const MAX_GEN_ATTEMPTS = 3;
+        const MAX_GEN_ATTEMPTS = skipTextRendering ? 1 : 3;
 
         const tAll = Date.now();
         const ratioResults = await Promise.allSettled(
@@ -810,18 +822,24 @@ router.post('/generate', authenticate, async (req, res) => {
 
               // Text-quality check (blocking). ~5-10s added per attempt, worth it
               // to not ship broken text. Hard-fails trigger regeneration.
+              // Skip in P1.1 overlay mode (no text on raw buffer to validate).
               let validation = null;
-              try {
-                validation = await validateGenerationText(
-                  result.buffer,
-                  result.mimeType,
-                  claudeResult?.adapted_text || {},
-                  product,
-                );
-                console.log(`[text-validator] ${r} attempt ${attempt}: ${summarizeTextValidation(validation)}`);
-              } catch (valErr) {
-                console.warn(`[text-validator] ${r} attempt ${attempt} threw — allowing the attempt to proceed: ${valErr.message}`);
-                validation = { passed: true, severity: 'clean', totalErrors: 0, errors: {}, skipped: `validator error: ${valErr.message}` };
+              if (skipTextRendering) {
+                validation = { passed: true, severity: 'clean', totalErrors: 0, errors: {}, skipped: 'text-overlay mode' };
+                console.log(`[text-validator] ${r} attempt ${attempt}: skipped (overlay mode active)`);
+              } else {
+                try {
+                  validation = await validateGenerationText(
+                    result.buffer,
+                    result.mimeType,
+                    claudeResult?.adapted_text || {},
+                    product,
+                  );
+                  console.log(`[text-validator] ${r} attempt ${attempt}: ${summarizeTextValidation(validation)}`);
+                } catch (valErr) {
+                  console.warn(`[text-validator] ${r} attempt ${attempt} threw — allowing the attempt to proceed: ${valErr.message}`);
+                  validation = { passed: true, severity: 'clean', totalErrors: 0, errors: {}, skipped: `validator error: ${valErr.message}` };
+                }
               }
 
               attempts.push({ attempt, result, validation });
@@ -851,14 +869,47 @@ router.post('/generate', authenticate, async (req, res) => {
             const { result, validation, attempt: chosenAttempt } = chosen;
             console.log(`[staticsGeneration] ⏱ Gemini ${r} total (incl. QC + retries) ${Date.now() - tGemini}ms — chose attempt ${chosenAttempt}`);
 
+            // ── P1.1: Text-overlay compositing. When skipTextRendering is on,
+            // Gemini returned a text-FREE image; now paint real-font text onto
+            // it using swap pairs + Claude's layout map. If overlay throws, we
+            // fall back to the raw Gemini buffer (which will be text-free and
+            // obviously incomplete — but at least it's something visible).
+            let finalBuffer = result.buffer;
+            let finalMimeType = result.mimeType;
+            let overlayApplied = false;
+            if (skipTextRendering) {
+              try {
+                const { overlayText } = await import('../utils/textOverlay.js');
+                const composited = await overlayText(
+                  result.buffer,
+                  swapPairs,
+                  layoutMap,
+                  {
+                    fonts: product.fonts || [],
+                    backgroundTone: layoutMap?.background?.tone || logoBackgroundTone || 'dark',
+                  }
+                );
+                if (Buffer.isBuffer(composited) && composited.length > 0) {
+                  finalBuffer = composited;
+                  finalMimeType = 'image/png';
+                  overlayApplied = true;
+                  console.log(`[staticsGeneration] ✅ Gemini ${r}: text overlay composited (${composited.length} bytes)`);
+                } else {
+                  console.warn(`[staticsGeneration] Gemini ${r}: overlayText returned empty — using raw text-free buffer`);
+                }
+              } catch (overlayErr) {
+                console.error(`[staticsGeneration] Gemini ${r}: overlay failed — ${overlayErr.message}. Falling back to raw text-free buffer.`);
+              }
+            }
+
             // Upload to R2 or store as temp
             let resultImageUrl;
             if (isR2Configured()) {
               const r2Key = `statics-gemini/${crypto.randomUUID()}.png`;
-              resultImageUrl = await uploadBuffer(result.buffer, r2Key, result.mimeType);
+              resultImageUrl = await uploadBuffer(finalBuffer, r2Key, finalMimeType);
               console.log(`[staticsGeneration] Gemini result uploaded to R2: ${resultImageUrl}`);
             } else {
-              const tmpId = await storeTempImage(result.buffer, result.mimeType);
+              const tmpId = await storeTempImage(finalBuffer, finalMimeType);
               const srvUrl = process.env.RENDER_EXTERNAL_URL || `http://localhost:${process.env.PORT || 3000}`;
               resultImageUrl = `${srvUrl}/api/v1/statics-generation/tmp-img/${tmpId}`;
             }

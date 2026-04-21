@@ -857,6 +857,30 @@ ${templateData.deep_analysis.adaptation_instructions?.common_failure_modes?.leng
     ? `\n- Brand colors: ${Object.values(product.brand_colors).filter(Boolean).slice(0, 3).join(', ')} — use these for accent elements.`
     : '';
 
+  // ── P1.1: If skipTextRendering=true, instruct the model to produce a
+  // TEXT-FREE image (no headlines, body copy, badges, CTAs, prices). The
+  // overlayText() function in server/src/utils/textOverlay.js will composite
+  // real fonts + exact copy on top, eliminating all Gemini text-rendering
+  // defects (misspellings, dupes, fabricated prices, letter swaps).
+  // We still tell the model WHERE the text regions should go so layout and
+  // visual hierarchy are preserved — it just fills those regions with solid
+  // color blocks / placeholders instead of rendered glyphs.
+  if (skipTextRendering) {
+    return `Edit the reference ad (LAST image) into a TEXT-FREE version.${templateIntelligence}
+
+🔴 STRICT RULES (most important):
+1. NO TEXT AT ALL. The output image must contain ZERO rendered text — no headlines, no subheadlines, no body copy, no prices, no codes, no CTAs, no badges, no fine print, no logos-with-text. The text will be composited afterwards by our system. Preserve the layout structure but leave text regions as either:
+   - Empty solid-color blocks matching the ad's background tone, OR
+   - Gently blurred/desaturated space where text would go
+2. LOGO: If the reference has a brand logo mark (pictogram, shield, icon), replace it with the ${product.profile?.shortName || product.name || 'brand'} logo pictogram. If the "logo" is purely wordmark text, leave that region blank — we'll overlay it.
+3. PRODUCT: ${productRule}${hasProductInReference ? ` Orientation: ${claudeResult.product_orientation || 'front-facing'}.${productRulesSection}` : ''}
+4. ${characterRules}
+5. Keep EXACT same layout, background, colors, overall composition, and visual elements as the reference. ONLY change: (a) the product to ours, (b) remove all rendered text.
+6. PRODUCT LABEL: The product image (FIRST image) already has its real label/packaging. Copy it EXACTLY as provided — do NOT modify, redesign, or add text to the product packaging.${brandColorHint}${productContext}${co.absoluteRules ? `\n${co.absoluteRules}` : ''}
+
+THIS IS CRITICAL: zero rendered text. If in doubt whether something is text, DON'T render it. Our overlay system will add every piece of copy afterwards with pixel-perfect typography.`;
+  }
+
   return `Edit the reference ad (LAST image).${templateIntelligence}
 
 🔴 STRICT RULES (most important):
