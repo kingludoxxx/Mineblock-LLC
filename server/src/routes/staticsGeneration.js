@@ -454,20 +454,21 @@ async function pollNanoBanana(taskId) {
 
     console.log(`[staticsGeneration] Poll ${i+1}/${MAX_POLLS} — successFlag=${flag}, taskId=${taskId}`);
 
-    if (flag === 2) {
-      const imageUrl = extractNanoBananaImageUrl(data);
-      if (!imageUrl) {
-        console.error('[staticsGeneration] NanoBanana success but no image URL extracted.');
-        console.error('[staticsGeneration] Full response (3000 chars):', JSON.stringify(data).slice(0, 3000));
-        throw new Error('NanoBanana completed but no resultImageUrl found');
-      }
+    const imageUrl = flag === 2 || flag === 1 ? extractNanoBananaImageUrl(data) : null;
+    if (imageUrl) {
       return imageUrl;
+    }
+    if (flag === 2) {
+      // flag says success but no URL — log and fail
+      console.error('[staticsGeneration] NanoBanana success but no image URL extracted.');
+      console.error('[staticsGeneration] Full response (3000 chars):', JSON.stringify(data).slice(0, 3000));
+      throw new Error('NanoBanana completed but no resultImageUrl found');
     }
     if (flag === 3) {
       console.error('[staticsGeneration] NanoBanana failed. Full response:', JSON.stringify(data).slice(0, 2000));
       throw new Error(`NanoBanana generation failed: ${record.errorMessage || 'Unknown error'}`);
     }
-    // flag === 1 (or undefined/pending) → still processing, keep polling
+    // flag === 1 (no URL yet) or undefined/pending → still processing, keep polling
   }
 
   throw new Error('NanoBanana generation timed out after 5 minutes');
@@ -1229,8 +1230,9 @@ router.get('/status/:taskId', authenticate, async (req, res) => {
           headers: { Authorization: `Bearer ${NANOBANANA_API_KEY}` },
         }).then(r => r.json()).catch(() => null);
         const flag = realResult?.data?.successFlag;
-        if (flag === 2) {
-          let imgUrl = extractNanoBananaImageUrl(realResult);
+        const preCheckUrl = (flag === 2 || flag === 1) ? extractNanoBananaImageUrl(realResult) : null;
+        if (preCheckUrl || flag === 2) {
+          let imgUrl = preCheckUrl || extractNanoBananaImageUrl(realResult);
           // Apply text overlay if pending
           const overlayCtx = textOverlayContexts.get(geminiResult.realTaskId);
           if (overlayCtx && !overlayCtx.applied && imgUrl) {
@@ -1308,22 +1310,24 @@ router.get('/status/:taskId', authenticate, async (req, res) => {
     // NanoBanana uses successFlag: 1=processing, 2=success, 3=error
     const flag = record.successFlag;
 
+    // Pre-extract URL — some main-gen tasks keep flag=1 but populate response.resultImageUrl
+    const earlyUrl = (flag === 2 || flag === 1) ? extractNanoBananaImageUrl(data) : null;
     let status;
     let errorDetail = null;
-    if (flag === 2) {
+    if (flag === 2 || earlyUrl) {
       status = 'completed';
     } else if (flag === 3) {
       status = 'failed';
       errorDetail = record.errorMessage || data.error || data.data?.error || 'NanoBanana generation failed';
       console.error('[staticsGeneration] NanoBanana failed for task', taskId, '— flag:', flag, '— error:', errorDetail);
     } else {
-      // flag === 1 or undefined → still processing
+      // flag === 1, no URL yet → still processing
       status = 'pending';
     }
 
     let resultImageUrl = null;
     if (status === 'completed') {
-      resultImageUrl = extractNanoBananaImageUrl(data);
+      resultImageUrl = earlyUrl || extractNanoBananaImageUrl(data);
 
       // ── Text Overlay: composite programmatic text onto the text-free image ──
       const overlayCtx = textOverlayContexts.get(taskId);
