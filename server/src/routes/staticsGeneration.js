@@ -735,18 +735,24 @@ router.post('/generate', authenticate, async (req, res) => {
       // Convert relative paths to full URLs (NanoBanana needs absolute HTTP URLs)
       if (dataUri.startsWith('/')) return `${SERVER_URL}${dataUri}`;
       if (!dataUri.startsWith('data:image')) return dataUri;
-      const m = dataUri.match(/^data:(image\/[^;]+);base64,(.+)$/);
-      if (!m) return dataUri;
-      const buf = Buffer.from(m[2], 'base64');
+      // Split on first comma to robustly handle base64 strings with embedded newlines
+      const commaIdx = dataUri.indexOf(',');
+      if (commaIdx === -1) return dataUri;
+      const header = dataUri.slice(0, commaIdx);
+      const b64 = dataUri.slice(commaIdx + 1).replace(/\s/g, ''); // strip any whitespace/newlines
+      const mimeMatch = header.match(/^data:(image\/[^;]+)/);
+      if (!mimeMatch) return dataUri;
+      const mimeType = mimeMatch[1];
+      const buf = Buffer.from(b64, 'base64');
       if (isR2Configured()) {
-        const ext = m[1].includes('png') ? 'png' : 'jpg';
+        const ext = mimeType.includes('png') ? 'png' : 'jpg';
         const key = `statics-${label}/${crypto.randomUUID()}.${ext}`;
-        const url = await uploadBuffer(buf, key, m[1]);
+        const url = await uploadBuffer(buf, key, mimeType);
         console.log(`[staticsGeneration] Uploaded ${label} to R2: ${url}`);
         return url;
       }
       // Fallback: self-host as persistent DB image
-      const id = await storeTempImage(buf, m[1]);
+      const id = await storeTempImage(buf, mimeType);
       const url = `${SERVER_URL}/api/v1/statics-generation/tmp-img/${id}`;
       console.log(`[staticsGeneration] Stored ${label} as temp image: ${url}`);
       return url;
