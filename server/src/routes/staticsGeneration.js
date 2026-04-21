@@ -83,6 +83,54 @@ async function _doResetFailed(res) {
   }
 }
 
+// Trigger regeneration for all ready variant creatives — CRON_SECRET auth
+router.post('/regenerate-ready', async (req, res) => {
+  const cronSecret = process.env.CRON_SECRET;
+  const provided = req.headers['x-cron-secret'];
+  if (!cronSecret || provided !== cronSecret) {
+    return authenticate(req, res, () => _doRegenerateReady(res));
+  }
+  _doRegenerateReady(res);
+});
+
+async function _doRegenerateReady(res) {
+  try {
+    // Find ready creatives that are variants (have a parent with an image)
+    const rows = await pgQuery(
+      `SELECT c.*, p.image_url AS parent_image_url
+       FROM spy_creatives c
+       LEFT JOIN spy_creatives p ON c.parent_creative_id = p.id
+       WHERE c.status = 'ready'
+       ORDER BY c.updated_at DESC
+       LIMIT 20`,
+      []
+    );
+    const triggered = [];
+    const skipped = [];
+    for (const row of rows) {
+      if (row.parent_creative_id && row.parent_image_url) {
+        // It's a variant — reset to generating and kick off resize
+        await pgQuery("UPDATE spy_creatives SET status = 'generating', review_notes = NULL, updated_at = NOW() WHERE id = $1", [row.id]);
+        const parent = await pgQuery('SELECT * FROM spy_creatives WHERE id = $1', [row.parent_creative_id]);
+        if (parent.length > 0) {
+          generateVariant(parent[0], row.aspect_ratio).catch(err =>
+            console.error(`[regenerate-ready] variant error for ${row.id}:`, err.message)
+          );
+          triggered.push({ id: row.id, angle: row.angle, ratio: row.aspect_ratio, type: 'variant' });
+        }
+      } else if (!row.parent_creative_id) {
+        skipped.push({ id: row.id, angle: row.angle, ratio: row.aspect_ratio, reason: 'standalone — needs UI to regenerate' });
+      } else {
+        skipped.push({ id: row.id, angle: row.angle, ratio: row.aspect_ratio, reason: 'parent has no image yet' });
+      }
+    }
+    console.log(`[regenerate-ready] triggered=${triggered.length}, skipped=${skipped.length}`);
+    res.json({ success: true, triggered, skipped });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+}
+
 router.use(authenticate, requirePermission('statics-generation', 'access'));
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
