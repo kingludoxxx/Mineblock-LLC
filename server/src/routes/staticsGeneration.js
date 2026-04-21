@@ -606,6 +606,22 @@ router.post('/generate', authenticate, async (req, res) => {
       if (!claudeResult) throw new Error(`Failed to parse Claude JSON: ${parseErr.message}`);
     }
 
+    // ── Step B.5 (P0.4.6): Deterministic sanitizer on adapted_text ─────
+    // Last chance to catch Claude's fabrications (fake %-OFF, fake
+    // WARRANTY periods, fake WAS-$ anchors, invented prices). Rewrites
+    // the adapted_text in-place so the overlay / image model only ever
+    // sees ground-truth numbers.
+    try {
+      const { sanitizeAdaptedText } = await import('../utils/adaptedTextSanitizer.js');
+      const { sanitizedText, changes } = sanitizeAdaptedText(claudeResult.adapted_text, product);
+      if (changes.length > 0) {
+        claudeResult.adapted_text = sanitizedText;
+        console.log(`[staticsGeneration] Sanitizer rewrote ${changes.length} claim(s) in adapted_text`);
+      }
+    } catch (sanErr) {
+      console.warn(`[staticsGeneration] Sanitizer threw — passing adapted_text through unchanged: ${sanErr.message}`);
+    }
+
     // ── Step C: Build swap pairs ───────────────────────────────────────
     const swapPairs = buildSwapPairs(claudeResult.original_text, claudeResult.adapted_text, product.name);
 

@@ -367,6 +367,43 @@ export async function overlayText(imageBuffer, swapPairs, layoutMap, options = {
     return imageBuffer;
   }
 
+  // ── P1.1.1: Collision detection + auto-spread ────────────────────────
+  // When Claude's layout_map has weak positions, multiple elements can land
+  // at the same pixel (e.g. all default to "center, centered" → y=576).
+  // That produces the overlapping-text disaster we saw in image [1].
+  // Detect any two elements within 40px of each other and re-position the
+  // collider to its per-field default, then re-check. Iterate until stable
+  // or max 5 passes.
+  const TOLERANCE = 40; // pixels — anything closer is considered a collision
+  for (let pass = 0; pass < 5; pass++) {
+    let movedAny = false;
+    for (let i = 0; i < svgElements.length; i++) {
+      for (let j = i + 1; j < svgElements.length; j++) {
+        const a = svgElements[i];
+        const b = svgElements[j];
+        if (Math.abs(a.x - b.x) < TOLERANCE && Math.abs(a.y - b.y) < TOLERANCE) {
+          // Collision — move b to its per-field default position.
+          const defaultStr = getDefaultPosition(b.field);
+          const { x: nx, y: ny } = parsePosition(defaultStr, width, height);
+          if (nx !== b.x || ny !== b.y) {
+            console.log(`${LOG_PREFIX}   collision: [${b.field}] @ (${b.x},${b.y}) → default [${defaultStr}] → (${nx},${ny}) (conflict with [${a.field}])`);
+            b.x = nx;
+            b.y = ny;
+            movedAny = true;
+          } else {
+            // Already at default — nudge vertically by 1.5× its own font-size
+            const nudge = Math.round(b.fontSize * 1.5);
+            const nudged = Math.min(Math.max(b.y + nudge, b.fontSize), height - b.fontSize);
+            console.log(`${LOG_PREFIX}   collision: [${b.field}] @ (${b.x},${b.y}) already at default, nudging to y=${nudged}`);
+            b.y = nudged;
+            movedAny = true;
+          }
+        }
+      }
+    }
+    if (!movedAny) break;
+  }
+
   // Step 4: Sample dominant background color for tinting the text-region masks.
   // This is used ONLY for the fallback tint; the primary cover is a gaussian
   // blur (below) which is reliable regardless of Gemini's underlying text.
