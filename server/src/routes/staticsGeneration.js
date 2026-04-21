@@ -1090,6 +1090,9 @@ router.get('/status/:taskId', authenticate, async (req, res) => {
           provider: geminiResult.provider,
           model: geminiResult.model,
           error: geminiResult.error || null,
+          // Pass text-QC payload through so the frontend can surface retries + issues
+          textValidation: geminiResult.textValidation || null,
+          quality_warning: geminiResult.quality_warning || null,
         },
       });
     }
