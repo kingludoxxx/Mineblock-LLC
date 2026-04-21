@@ -91,8 +91,14 @@ async function _doResetFailed(res) {
       []
     );
     const all = [...result, ...staleResult];
+    // Diagnostic: show all variant rows regardless of status
+    const diagnostic = await pgQuery(
+      `SELECT id, status, angle, aspect_ratio, product_name, review_notes, created_at
+       FROM spy_creatives WHERE parent_creative_id IS NOT NULL ORDER BY created_at DESC LIMIT 20`,
+      []
+    );
     console.log(`[staticsGeneration] reset-failed: reset ${all.length} creatives to ready (${result.length} rejected/error, ${staleResult.length} stale generating)`);
-    res.json({ success: true, reset_count: all.length, creatives: all.map(r => ({ id: r.id, angle: r.angle, ratio: r.aspect_ratio, product: r.product_name })) });
+    res.json({ success: true, reset_count: all.length, creatives: all.map(r => ({ id: r.id, angle: r.angle, ratio: r.aspect_ratio, product: r.product_name })), diagnostic });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
