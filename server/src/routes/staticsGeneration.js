@@ -758,7 +758,7 @@ router.post('/generate', authenticate, async (req, res) => {
       return url;
     }
 
-    let finalReferenceUrl = isUrl ? reference_image_url : await ensureHttpUrl(reference_image_url, 'refs');
+    let finalReferenceUrl = await ensureHttpUrl(reference_image_url, 'refs');
     let finalProductUrl = await ensureHttpUrl(product.product_image_url, 'products');
 
     // Fallback: if no main product image, try product_images array
