@@ -112,6 +112,11 @@ to look for:
     above. If it's not in "Product name:" above, it's wrong.
   • TRUNCATED CODES: "code BITCOIN" missing the "10" suffix; "code BTC10"
     that should be "BITCOIN10" — compare verbatim to discountCodes above.
+  • BROKEN-UP CODES: a discount code rendered with spaces INSIDE it
+    ("BITCO IN 10" should be "BITCOIN10", "COD E 1 0" should be "CODE10").
+    The discountCodes value above must appear as a SINGLE unbroken token
+    with no internal whitespace and no inserted characters. Any letter or
+    digit separation mid-code is a misspelling.
   • STRAY PUNCTUATION: a word beginning with " or ' or other punctuation
     that shouldn't be there (e.g. '"BITCOIN10' as the discount code) —
     flag as misspelling.
@@ -135,11 +140,16 @@ Then check each failure mode below:
 
 5. FABRICATED_STATS: Claims that contradict PRODUCT CONTEXT (e.g. "LIFETIME WARRANTY" when guarantee says 2-year; "90-DAY MONEY BACK" when guarantee says 30-day; fabricated percentages or satisfaction counts; fabricated user counts).
 
-6. FABRICATED_PRICES: Any price shown that is NOT the Current price above AND NOT derivable from it via the maxDiscount. Watch for:
-   - Fake "WAS $X, NOW $Y" where X is an inflated anchor that was never the real price (e.g. current price is $249 but ad shows "WAS $277, NOW $249" — the $277 is fabricated).
+6. FABRICATED_PRICES: OCR every $ amount in the image. Compare each to the PRODUCT CONTEXT's Current price (${productPrice}), the maxDiscount-derived price, and every bundleVariants price. If a $ amount does NOT match any of these (within rounding), it is FABRICATED. Do this check mechanically — do not assume a random-looking number is a typo or stylistic choice.
+
+   Watch for:
+   - Fake "WAS $X, NOW $Y" where X is an inflated anchor never matching product.price (e.g. "WAS $277, NOW $249" when product is $249 → $277 is fabricated).
+   - Random-looking prices like "$59.99", "$99", "$19/mo" that don't appear anywhere in product context.
+   - Prices mis-rendered by Gemini (e.g. product is $249 but image shows $59.99 because digits got mangled) — still a fabrication from the viewer's standpoint.
    - Prices that don't match bundleVariants.
    - Discount percentages that don't match maxDiscount.
-   Real math allowed: if Current price is $249 and maxDiscount is 10% off, then $249 → $224 (or $224.10) is VALID. But inventing a higher "WAS" price to make the current price look discounted is FABRICATED.
+
+   Real math allowed: if Current price is $249 and maxDiscount is 10% off, then $249 → $224 (or $224.10) is VALID. Bundle prices from bundleVariants are VALID. ANYTHING else is FABRICATED — even if it's a "plausible" crypto-device price. Our job is to protect real pricing integrity, not let plausible-looking fakes through.
 
 7. NONSENSICAL_COPY: Any copy that is grammatically or logically nonsense, including:
    - Two unrelated facts joined with "=" or other bad punctuation ("Runs on ~30W = 2-Yr Warranty")
