@@ -84,9 +84,42 @@ PRODUCT CONTEXT (ground-truth offer facts — anything that contradicts these is
 - guarantee:      ${guarantee}
 
 READ EVERY RENDERED WORD LETTER-BY-LETTER. Do not approximate — if a word is
-short (WORLDWIDE, HONEST, GUARANTEE), verify each letter is present AND in the
-right order. Dropped letters and swapped letters are the #1 failure mode and
-you must not miss them.
+short (WORLDWIDE, HONEST, GUARANTEE, FLASH, FREE, YEAR), verify each letter is
+present AND in the right order. Dropped letters and swapped letters are the
+#1 failure mode and you must not miss them.
+
+BE AGGRESSIVE — if in doubt about a word, FLAG IT. A false positive costs
+one regeneration. A false negative ships a broken ad. We have observed the
+validator missing errors that a 6-year-old would catch. STOP that.
+
+Specifically, the image model (Gemini 2.5 Flash Image) has these known
+failure modes that you MUST catch — treat them as the ground truth of what
+to look for:
+
+  • NUMBER → SYMBOL SWAPS: "+Year" where it should be "2-Year", "+-year",
+    "30X" where it should be "30W", "24/+" where it should be "24/7".
+    Any non-alphanumeric character mid-word (+ - . ; ' ") inside what should
+    be a normal word is a RED FLAG — flag it as letter_swap.
+  • RANDOM LETTER-PAIR GARBAGE: "OFF FF", "FREE FREe", "$$", dangling "FF"
+    or "AA" inside a sentence — flag as misspellings.
+  • DUPLICATED SHORT WORDS: "AT AT CHECKOUT", "to to the", "is is", "a a" —
+    ANY two-letter or three-letter word rendered twice in a row is a
+    duplicated_words hit. Read slowly.
+  • FULL PHRASE DUPLICATES: "GET 10% OFF WITH CODE BITCOIN10" appearing
+    twice in the same ad → duplicated_words.
+  • GIBBERISH BRAND/PRODUCT NAMES: "Aerovc", "V-15 Miner", "MineBlok",
+    "Minr Forj" — any product-like token that is NOT the real product name
+    above. If it's not in "Product name:" above, it's wrong.
+  • TRUNCATED CODES: "code BITCOIN" missing the "10" suffix; "code BTC10"
+    that should be "BITCOIN10" — compare verbatim to discountCodes above.
+  • STRAY PUNCTUATION: a word beginning with " or ' or other punctuation
+    that shouldn't be there (e.g. '"BITCOIN10' as the discount code) —
+    flag as misspelling.
+  • COMPETITOR / FOREIGN LOGOS: if you see a logo or brand name that is NOT
+    "${product?.profile?.shortName || product?.name?.split(' ')[0] || '(unknown)'}" in the image
+    (e.g. "earth breeze", "Pendulum", "Coinbase"), flag under
+    corrupted_product_text (abuse of the field — there's no dedicated
+    category yet but the ad shouldn't carry a competitor brand).
 
 Then check each failure mode below:
 
@@ -137,9 +170,9 @@ Return ONLY valid JSON (no markdown fences, no extra commentary):
 If a category has no issues, return an empty array. Do not invent issues — only report what you actually see in the image. When in doubt on a misspelling, ASSUME IT IS MISSPELLED and flag it — false positives cost us one extra regeneration; false negatives ship a broken ad.`;
 
   const body = {
-    model: 'claude-sonnet-4-20250514',
-    max_tokens: 1500,
-    system: 'You are a strict text-quality inspector. You never invent issues. You read the image carefully and only flag what is actually rendered wrong. Always return valid JSON only.',
+    model: 'claude-sonnet-4-5',
+    max_tokens: 2000,
+    system: 'You are a strict text-quality inspector for AI-generated ad images. You read every rendered word letter-by-letter. You aggressively flag any misspelling, letter-swap, duplicated word, nonsensical phrase, fabricated offer or price, and gibberish product name. False positives are acceptable (they cost one regen). False negatives ship broken ads and are unacceptable. Return valid JSON only.',
     messages: [{
       role: 'user',
       content: [
