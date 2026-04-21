@@ -47,6 +47,42 @@ router.get('/tmp-img/:id', async (req, res) => {
   return res.status(404).send('Expired or not found');
 });
 
+// Reset auto-reconciled / errored creatives — CRON_SECRET or JWT auth
+router.post('/reset-failed', async (req, res) => {
+  const cronSecret = process.env.CRON_SECRET;
+  const provided = req.headers['x-cron-secret'];
+  const authed = cronSecret && provided === cronSecret;
+  if (!authed) {
+    return authenticate(req, res, async () => {
+      await _doResetFailed(res);
+    });
+  }
+  await _doResetFailed(res);
+});
+
+async function _doResetFailed(res) {
+  try {
+    const result = await pgQuery(
+      `UPDATE spy_creatives
+       SET status = 'ready', review_notes = NULL, updated_at = NOW()
+       WHERE status IN ('rejected', 'error')
+         AND (
+           review_notes LIKE '%auto-reconciled%'
+           OR review_notes LIKE '%generation failed%'
+           OR review_notes LIKE '%NanaBanana%'
+           OR review_notes LIKE '%NanoBanana%'
+           OR review_notes LIKE '%Image generation failed%'
+         )
+       RETURNING id, angle, aspect_ratio, product_name`,
+      []
+    );
+    console.log(`[staticsGeneration] reset-failed: reset ${result.length} creatives to ready`);
+    res.json({ success: true, reset_count: result.length, creatives: result.map(r => ({ id: r.id, angle: r.angle, ratio: r.aspect_ratio, product: r.product_name })) });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+}
+
 router.use(authenticate, requirePermission('statics-generation', 'access'));
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
@@ -190,39 +226,6 @@ router.post('/reset-generating', authenticate, async (req, res) => {
   }
 });
 
-// Reset auto-reconciled or error'd creatives back to ready for regeneration
-// Accepts JWT (via authenticate) OR CRON_SECRET header for headless calls
-async function doResetFailed(res) {
-  try {
-    const result = await pgQuery(
-      `UPDATE spy_creatives
-       SET status = 'ready', review_notes = NULL, updated_at = NOW()
-       WHERE status IN ('rejected', 'error')
-         AND (
-           review_notes LIKE '%auto-reconciled%'
-           OR review_notes LIKE '%generation failed%'
-           OR review_notes LIKE '%NanaBanana%'
-           OR review_notes LIKE '%NanoBanana%'
-           OR review_notes LIKE '%Image generation failed%'
-         )
-       RETURNING id, angle, aspect_ratio, product_name`,
-      []
-    );
-    console.log(`[staticsGeneration] reset-failed: reset ${result.length} creatives to ready`);
-    res.json({ success: true, reset_count: result.length, creatives: result.map(r => ({ id: r.id, angle: r.angle, ratio: r.aspect_ratio, product: r.product_name })) });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-}
-
-router.post('/reset-failed', async (req, res) => {
-  const cronSecret = process.env.CRON_SECRET;
-  const provided = req.headers['x-cron-secret'];
-  if (cronSecret && provided === cronSecret) {
-    return doResetFailed(res);
-  }
-  authenticate(req, res, () => doResetFailed(res));
-});
 
 // ── Background reconciliation: mark long-stuck generating rows as rejected ──
 // Runs every 3 minutes. Any DB row still in 'generating' for >10 minutes is
