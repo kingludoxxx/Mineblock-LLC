@@ -1944,7 +1944,7 @@ router.get('/creatives', authenticate, async (req, res) => {
   try {
     await ensureCreativesTable();
     const { product_id, status, pipeline = 'standard' } = req.query;
-    let query = "SELECT id, product_id, product_name, image_url, thumbnail_url, source_label, angle, archetype, aspect_ratio, status, reference_thumbnail, reference_name, parent_creative_id, pipeline, copy_set_id, meta_ad_ids, meta_image_hash, generated_copy, created_at FROM spy_creatives WHERE pipeline = $1";
+    let query = "SELECT id, product_id, product_name, image_url, thumbnail_url, source_label, angle, archetype, aspect_ratio, status, reference_thumbnail, reference_name, parent_creative_id, pipeline, copy_set_id, meta_ad_ids, meta_image_hash, generated_copy, parent_creative_id_ref, parent_im_number, im_number, iteration_change_description, created_at FROM spy_creatives WHERE pipeline = $1";
     const params = [pipeline];
     let idx = 2;
 
@@ -2231,10 +2231,10 @@ router.get('/creatives/pipeline', authenticate, async (req, res) => {
     await ensureCreativesTable();
     const { product_id } = req.query;
 
-    let query = 'SELECT id, product_id, product_name, image_url, thumbnail_url, source_label, angle, archetype, aspect_ratio, status, reference_thumbnail, reference_name, parent_creative_id, pipeline, copy_set_id, meta_ad_ids, meta_image_hash, generated_copy, created_at FROM spy_creatives WHERE pipeline = $1';
-    const params = ['standard'];
+    let query = "SELECT id, product_id, product_name, image_url, thumbnail_url, source_label, angle, archetype, aspect_ratio, status, reference_thumbnail, reference_name, parent_creative_id, pipeline, copy_set_id, meta_ad_ids, meta_image_hash, generated_copy, parent_creative_id_ref, parent_im_number, im_number, iteration_change_description, created_at FROM spy_creatives WHERE pipeline IN ('standard', 'iteration')";
+    const params = [];
     if (product_id) {
-      query += ' AND product_id = $2';
+      query += ' AND product_id = $1';
       params.push(product_id);
     }
     query += ' ORDER BY created_at DESC';

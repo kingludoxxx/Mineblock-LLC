@@ -2048,6 +2048,7 @@ export default function StaticsGeneration() {
                   onRefresh={fetchCreatives}
                   queue={queue}
                   onRemoveFromQueue={handleRemoveFromQueue}
+                  productId={selectedProductId}
                   onStatusChange={async (id, newStatus) => {
                     try {
                       await api.patch(`/statics-generation/creatives/${id}/status`, { status: newStatus });

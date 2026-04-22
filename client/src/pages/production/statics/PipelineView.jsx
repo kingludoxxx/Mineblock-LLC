@@ -19,6 +19,7 @@ import {
   RotateCcw,
 } from 'lucide-react';
 import api from '../../../services/api';
+import { IterationsColumn } from './IterationsColumn';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -244,14 +245,27 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, onRegener
               View Full
             </span>
           </div>
-          {creative.parent_creative_id && (
+          {creative.parent_creative_id && creative.pipeline !== 'iteration' && (
             <span className="absolute top-2 left-2 text-[9px] font-mono bg-[#c9a84c]/20 text-[#e8d5a3] px-1.5 py-0.5 rounded border border-[#c9a84c]/30 backdrop-blur-md">
               Variant
             </span>
           )}
-          {creative.parent_creative_id && (
+          {creative.parent_creative_id && creative.pipeline !== 'iteration' && (
             <span className="absolute top-2 right-2 text-[9px] font-mono bg-black/50 text-zinc-300 px-1.5 py-0.5 rounded border border-white/[0.1] backdrop-blur-md">
               9:16
+            </span>
+          )}
+          {creative.pipeline === 'iteration' && (
+            <span
+              className="absolute top-2 left-2 text-[9px] font-mono bg-[#c9a84c]/20 text-[#e8d5a3] px-1.5 py-0.5 rounded border border-[#c9a84c]/30 backdrop-blur-md"
+              title={creative.iteration_change_description || 'Iteration'}
+            >
+              🔄 IT of {creative.parent_creative_id_ref || `IM${creative.parent_im_number}`}
+            </span>
+          )}
+          {creative.pipeline === 'iteration' && creative.im_number && (
+            <span className="absolute top-2 right-2 text-[9px] font-mono bg-black/50 text-zinc-300 px-1.5 py-0.5 rounded border border-white/[0.1] backdrop-blur-md">
+              IM{creative.im_number}
             </span>
           )}
         </div>
@@ -868,7 +882,7 @@ function LaunchedColumn({ column, items, onCardClick, onStatusChange }) {
 // Main PipelineView component
 // ---------------------------------------------------------------------------
 
-export function PipelineView({ creatives = [], onStatusChange, onAngleChange, onCardClick, onRegenerate, onRefresh, loading, onOpenTemplates, onOpenCopySets, queue = [], onRemoveFromQueue }) {
+export function PipelineView({ creatives = [], onStatusChange, onAngleChange, onCardClick, onRegenerate, onRefresh, loading, onOpenTemplates, onOpenCopySets, queue = [], onRemoveFromQueue, productId = null }) {
   // Bucket creatives into columns by status
   const buckets = useMemo(() => {
     const map = { generating: [], review: [], approved: [], ready: [], launched: [] };
@@ -1056,6 +1070,12 @@ export function PipelineView({ creatives = [], onStatusChange, onAngleChange, on
 
       {/* Columns */}
       <div className="flex gap-6 flex-1 min-h-0 overflow-x-auto">
+        {/* Iterations column — pulls winners from creative_analysis, not spy_creatives */}
+        <IterationsColumn
+          productId={productId}
+          onSubmitted={() => onRefresh?.()}
+        />
+
         {/* Standard columns: generating, review, approved */}
         {standardColumns.map((col) => (
           <PipelineColumn
