@@ -4,6 +4,29 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+const MONTH_RE = /\b(january|february|march|april|may|june|july|august|september|october|november|december)\b/i;
+const SEASON_RE = /\b(spring|summer|fall|autumn|winter)\b/i;
+
+/**
+ * Fix B: Strip seasonal/month context from maxDiscount before passing to Claude.
+ * "58% — never exceed. Current March Sale runs 58% off sitewide." → "58%"
+ * Logs a warning so Ludo knows the product library needs updating.
+ */
+function sanitizeMaxDiscount(raw) {
+  if (!raw) return raw;
+  if (MONTH_RE.test(raw) || SEASON_RE.test(raw)) {
+    const match = raw.match(/(\d+(?:\.\d+)?)\s*%/);
+    const clean = match ? `${match[1]}%` : raw;
+    console.warn(`[staticsPrompts] ⚠️ max_discount contains stale seasonal text — stripped to "${clean}". Update the Product Library field to remove the seasonal language.`);
+    return clean;
+  }
+  return raw;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // STEP 0: Layout Analysis — Structural Map (cached per template)
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -70,6 +93,9 @@ export function buildClaudePrompt(product, angle, customOverrides = null, layout
   const profile = product.profile || {};
   const co = customOverrides?.claudeAnalysis || {};
 
+  // Fix B: sanitize maxDiscount before it reaches any prompt rule
+  if (profile.maxDiscount) profile.maxDiscount = sanitizeMaxDiscount(profile.maxDiscount);
+
   // Build product context from all available profile fields
   // Split into MANDATORY RULES (pricing/offers) and CONTEXT (background info)
   // This ensures Claude uses real product data instead of inventing prices/offers
@@ -79,6 +105,7 @@ export function buildClaudePrompt(product, angle, customOverrides = null, layout
     product.price && `PRICE: The ONLY valid price is ${product.price}. If the reference shows ANY price, replace it with ${product.price}.`,
     profile.discountCodes && `DISCOUNT CODE: The ONLY valid discount code is ${profile.discountCodes}. If the reference shows ANY discount code (e.g. "SPRING10", "PROMO20", "CODE: XYZ"), you MUST replace it with this code. NEVER invent a discount code.`,
     profile.maxDiscount && `MAX DISCOUNT: ${profile.maxDiscount}. This number is STRICTLY a cap on sale-discount percentages (the "% OFF" on the sticker price). It is NOT a reward share, a performance metric, a power rating, a hash rate, a warranty percent, a retention figure, a satisfaction score, or anything else. USE IT ONLY inside price/discount badges framed as "N% OFF" / "SAVE N%" / "N% OFF WITH CODE X". NEVER use this number in bullets, headlines, stats, or body copy about block rewards, mining output, earnings, efficiency, ownership, or any non-discount concept. For example: "Keep 58% of the Reward" is BANNED — the product keeps 100% of the block reward (solo mining); 58% is a discount cap only. If the reference template has a big number in a non-discount slot, write the real value from PRODUCT CONTEXT for that specific concept (e.g. "100% of the block reward", "144 daily attempts") — never reuse maxDiscount's number.`,
+    `🚫 REWARD PERCENTAGE IS ALWAYS 100%: If the reference ad has ANY percentage in a slot about "what you keep", "your earnings", "your reward share", "your cut", "returns for you", or anything framed as a portion of the mining reward — ALWAYS replace it with "100%" or "the full block reward". This is non-negotiable for solo-mining products. The user keeps every satoshi; no pool takes a cut. It doesn't matter what number is in the reference or what maxDiscount says — reward-share percentages are always 100%.\n  ❌ BANNED: "keeps 58% for you" / "you get 70%" / "earn 80% of rewards" / "keeps X% of the block"\n  ✅ CORRECT: "keeps 100% for you" / "you keep the full block reward" / "100% yours — no pool cut"`,
     profile.bundleVariants && `BUNDLE PRICING (use these EXACT numbers):\n${profile.bundleVariants}`,
     profile.offerDetails && `OFFER RULES: ${profile.offerDetails}`,
     profile.guarantee && `GUARANTEE: ${profile.guarantee}`,

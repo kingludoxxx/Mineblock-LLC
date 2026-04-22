@@ -463,6 +463,77 @@ async function shrinkForClaude(base64, mediaType) {
 }
 
 /**
+ * Fix C: Post-generation Claude Vision audit.
+ * Extracts all prices/percentages from the generated image and flags mismatches
+ * against the expected product values before the image reaches the review queue.
+ * Returns a warning string if mismatches found, null if clean or on error.
+ */
+async function runVisionAudit(buffer, mimeType, expectedPrice, expectedMaxDiscount) {
+  if (!ANTHROPIC_API_KEY) return null;
+  try {
+    const b64raw = buffer.toString('base64');
+    const { base64, mediaType } = await shrinkForClaude(b64raw, mimeType);
+
+    const expectedList = [];
+    if (expectedPrice) expectedList.push(`product price: ${expectedPrice}`);
+    if (expectedMaxDiscount) {
+      const pctMatch = String(expectedMaxDiscount).match(/(\d+(?:\.\d+)?)\s*%/);
+      if (pctMatch) expectedList.push(`max discount: ${pctMatch[1]}% (never use in reward/earnings slot — that must always say 100%)`);
+    }
+    expectedList.push('reward/earnings share percentage: 100%');
+
+    const prompt = `You are a compliance auditor for direct-response cryptocurrency mining ad images.
+
+List every price ($X.XX), percentage (X%), and monetary value visible anywhere in this image — headline, body, badges, fine print, everywhere.
+
+Then check each value against these expected rules:
+${expectedList.map((e, i) => `${i + 1}. ${e}`).join('\n')}
+
+Return ONLY valid JSON, no markdown:
+{"found": ["$59.99", "100%", ...], "mismatches": ["found '58%' in reward slot but expected 100%", ...]}
+
+If no mismatches return: {"found": [...], "mismatches": []}`;
+
+    const resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 500,
+        messages: [{ role: 'user', content: [
+          { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } },
+          { type: 'text', text: prompt },
+        ] }],
+      }),
+    });
+
+    if (!resp.ok) {
+      console.warn(`[vision-audit] Claude API ${resp.status} — skipping audit`);
+      return null;
+    }
+    const json = await resp.json();
+    const raw = json.content?.[0]?.text || '';
+    const jsonMatch = raw.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) return null;
+    const result = JSON.parse(jsonMatch[0]);
+    if (result.mismatches?.length > 0) {
+      const summary = result.mismatches.join('; ');
+      console.warn(`[vision-audit] ⚠️ Price/percentage mismatches detected: ${summary}`);
+      return `Vision audit flagged: ${summary}`;
+    }
+    console.log(`[vision-audit] ✅ All values correct: ${(result.found || []).join(', ')}`);
+    return null;
+  } catch (err) {
+    console.warn(`[vision-audit] Failed (non-blocking): ${err.message}`);
+    return null;
+  }
+}
+
+/**
  * Poll NanoBanana for task completion.
  */
 async function pollNanoBanana(taskId) {
@@ -1064,6 +1135,16 @@ router.post('/generate', authenticate, async (req, res) => {
               resultImageUrl = `${srvUrl}/api/v1/statics-generation/tmp-img/${tmpId}`;
             }
 
+            // Fix C: post-generation vision audit — catch price/percentage drift before review queue
+            const visionWarning = await runVisionAudit(
+              finalBuffer,
+              finalMimeType,
+              product.price,
+              product.profile?.maxDiscount,
+            );
+            const textWarning = validation && !validation.passed ? summarizeTextValidation(validation) : null;
+            const combinedWarning = [visionWarning, textWarning].filter(Boolean).join(' | ') || null;
+
             const taskId = `gemini-${crypto.randomUUID()}`;
             storeGeminiResult(taskId, {
               status: 'completed',
@@ -1078,7 +1159,7 @@ router.post('/generate', authenticate, async (req, res) => {
                 errors: validation.errors,
                 attempts: attempts.length,
               } : null,
-              quality_warning: validation && !validation.passed ? summarizeTextValidation(validation) : null,
+              quality_warning: combinedWarning,
             });
             console.log(`[staticsGeneration] Gemini ${r} complete: ${taskId} ${validation?.passed ? '' : `(${summarizeTextValidation(validation)})`}`);
             return { taskId, ratio: r };
