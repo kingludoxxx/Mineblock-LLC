@@ -998,7 +998,10 @@ HARD CONSTRAINTS
 4. The ${N} variations must each test a DIFFERENT element — do NOT produce near-duplicates.
 5. Respect PRODUCT CONTEXT compliance rules. No fabricated claims beyond what winningAngles + mechanism support.
 6. Every element you list as "load-bearing" in analysis must appear verbatim in the "preserved" list of EVERY variation.
-7. Allowed change_category values: "visual-refresh" | "hook-swap" | "angle-variant" | "product-orientation" | "badge-restyle". Pick the BEST ${N} distinct categories.
+7. Allowed change_category values: "visual-refresh" | "hook-swap" | "angle-variant" | "product-orientation" | "badge-restyle" | "background-redesign" | "color-scheme-swap". Pick the BEST ${N} distinct categories.
+   - "background-redesign": completely replace the background with a different environment, scene, or mood (e.g. dark tech lab → outdoor mining site, red gradient → deep space). Product and all text stay identical.
+   - "color-scheme-swap": shift the entire color palette to a contrasting scheme (e.g. red/warm → dark navy/cool, or gold/black → green/black). Keep layout and text identical.
+   These two bolder categories should be used for at least 1 variation when ${N} >= 2 — they produce the most visually distinct tests.
 
 ═══════════════════════════════════════════════════════════════
 OUTPUT — return ONE JSON object (no markdown, no code fences)
@@ -1058,6 +1061,36 @@ export function buildIterationNanoBananaPrompt(variation, product = {}) {
     ? 'Product orientation may change per the modified list above — but product identity, packaging, brand mark, and label text remain identical.'
     : 'Product identity, orientation, packaging, brand mark, and label text remain identical to the reference.';
 
+  const isBoldCategory = v.change_category === 'background-redesign' || v.change_category === 'color-scheme-swap';
+
+  if (isBoldCategory) {
+    return `Edit the reference ad (LAST image).
+
+🎨 BOLD VISUAL VARIANT — same offer, substantially different look.
+
+WHAT TO CHANGE:
+${v.change || '(see modified list below)'}
+
+Specific modifications:
+${modifiedList}
+
+WHAT MUST STAY IDENTICAL (text content — character-perfect):
+${preservedList}
+
+RULES:
+- All TEXT content (headlines, badges, prices, CTAs, body copy) must be reproduced character-perfectly — same words, same spelling, same punctuation.
+- ${productRule}
+- Text layout positions (top/middle/bottom zones) should remain recognisable, but visual treatment of the background, colors, lighting, and atmosphere should be substantially different.
+- Fonts and font sizes of text elements stay the same.
+
+🔴 CHARACTER-LEVEL FIDELITY (CRITICAL):
+- Render EVERY character in every text element.
+- Never drop "$", "%", leading words, or trailing words.
+- If text feels too long for its slot, shrink font to fit. NEVER truncate.
+
+Output: same aspect ratio as the reference, same or higher resolution. This variant should look visually distinct from the reference at a glance — different enough that a viewer immediately notices the difference — while communicating the exact same offer.`;
+  }
+
   return `Edit the reference ad (LAST image).
 
 🔴 SURGICAL IMAGE EDIT — CHANGE EXACTLY ONE THING.
@@ -1085,6 +1118,6 @@ DO NOT ALTER:
 - If new text feels too long for its slot, shrink font to fit. NEVER truncate.
 - Spell every preserved word exactly as shown in the reference.
 
-Output: same aspect ratio and composition as the reference, same or higher resolution. Result should look like a small A/B variant of the reference — not a new ad.`;
+Output: same aspect ratio and composition as the reference, same or higher resolution. Result should look like a clean A/B variant of the reference — same structure, one isolated change.`;
 }
 
