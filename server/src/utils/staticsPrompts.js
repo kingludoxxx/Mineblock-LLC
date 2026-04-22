@@ -572,27 +572,32 @@ export function buildSwapPairs(originalText, adaptedText, productName = '') {
   }
 
   // ── Length enforcement: truncate adapted text that's too long ──
-  // Gemini garbles long text that overflows the original slot significantly,
-  // BUT an over-aggressive cap chops hook words from bullets/body and destroys
-  // meaning (e.g. "Pool controls your mining — you own nothing" → "Pool
-  // controls your"). Tolerance is field-aware:
-  //   badges / cta                : 1.5x, floor 20 — labels are dense by design
-  //   headline / subheadline      : 1.6x, floor 40 — hooks need room
-  //   bullets / body / stats /    : 2.8x, floor 60 — reference bullets often
-  //     other_text / disclaimer       use jargon/acronyms ("DHT") that require
-  //                                   full-word equivalents in the adaptation
+  // NanoBanana drops leading words and $-signs on small slots when text
+  // overflows the original visual space. Keep adapted text close to reference
+  // length so the model never feels squeezed into truncating. Tolerance is
+  // field-aware:
+  //   badges / cta                : 1.3x, floor 18 — labels are dense, short matters most
+  //   headline / subheadline      : 1.5x, floor 38 — hooks need some room
+  //   bullets / stats / short lbls: 1.5x, floor 28 — bullet labels render small,
+  //                                   NanoBanana drops leading words/"$" when
+  //                                   significantly longer than the reference
+  //   body / other_text / discl.  : 2.2x, floor 55 — longer text areas are
+  //                                   more forgiving in NanoBanana's rendering
   // EXCEPTION: swaps containing the product name are sacred (brand replacement)
   const fieldToleranceRule = (fieldName) => {
     // fieldName can be e.g. 'bullets[3]', 'headline', 'badges[0]'
     const base = (fieldName || '').split('[')[0];
     if (base === 'badges' || base === 'cta' || base === 'comparison_labels' || base === 'timeline_labels' || base === 'ingredient_labels') {
-      return { tol: 1.5, floor: 20 };
+      return { tol: 1.3, floor: 18 };
     }
     if (base === 'headline' || base === 'subheadline') {
-      return { tol: 1.6, floor: 40 };
+      return { tol: 1.5, floor: 38 };
     }
-    // bullets, body, stats, other_text, disclaimer, and any unknown field
-    return { tol: 2.8, floor: 60 };
+    if (base === 'bullets' || base === 'stats') {
+      return { tol: 1.5, floor: 28 };
+    }
+    // body, other_text, disclaimer, and any unknown field
+    return { tol: 2.2, floor: 55 };
   };
   for (const pair of pairs) {
     const origLen = pair.original.length;
@@ -892,8 +897,16 @@ THIS IS CRITICAL: zero rendered text. If in doubt whether something is text, DON
 4. ${characterRules}
 5. 🚫 NO MONTH NAMES OR SEASONAL TEXT: NEVER write any month name (January through December) or seasonal sale phrase ("March Sale", "Spring Deal", etc.) anywhere in the output. If a TEXT SWAP below replaces a month-name phrase, use the adapted text EXACTLY. If the reference image shows seasonal text with no swap provided, replace it with "Limited Time Offer".
 6. 🚫 NO INVENTED PRICES OR DISCOUNTS: NEVER write a price, percentage off, or discount amount that is not explicitly listed in PRODUCT INTELLIGENCE below. If no price is provided, omit price text entirely.
+7. 🔴 CHARACTER-LEVEL FIDELITY (CRITICAL — READ TWICE):
+   - Render EVERY character in each swap value. Do NOT drop, skip, or omit any character — including the FIRST word, the LAST word, punctuation, and especially the dollar sign "$".
+   - Prices and monetary claims MUST be rendered as the full string. "$300K" must appear as "$", "3", "0", "0", "K" — never as "300K" or "K" alone. "$1" must appear as "$", "1" — never as "1" or dropped. "$59.99" must appear complete.
+   - Percentages must include the "%" symbol. "58% OFF" must not become "58 OFF" or "OFF".
+   - Leading words matter: if a bullet says "Plug In. Mine in 60 Sec.", the output must START with "Plug". Do NOT drop the first word to fit the space.
+   - Trailing words matter: if a bullet ends with "to Run", the output must END with "Run". Do NOT cut off the last word.
+   - If a swap's text feels too long for its visual slot, you MUST shrink the font size to fit. NEVER truncate, abbreviate, drop words, drop characters, or substitute "..." for real text.
+   - If shrinking makes text unreadable, compress letter-spacing slightly, but every character must be visible and legible.
 
-TEXT SWAPS — replace ALL text with these EXACT words:
+TEXT SWAPS — replace ALL text with these EXACT words (character-for-character):
 ${swapSectionFinal || '(No text changes)'}${bannedWords}
 
 LAYOUT RULES:
