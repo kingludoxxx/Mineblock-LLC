@@ -131,10 +131,14 @@ export function sanitizeAdaptedText(adaptedText, product) {
 
     // ── A. Fake "% OFF" rewrites ──
     if (maxDiscountPct != null) {
-      // Match "UP TO 58% OFF", "58% OFF", "SAVE 50%", "GET 75% OFF", etc.
-      const pctRe = /\b(?:up\s+to\s+)?(\d{1,3})\s*%\s*(?:off|savings?|save|discount)?/gi;
+      // Only match explicit discount claims: "58% OFF", "UP TO 65% SAVE", "SAVE 70%", etc.
+      // Bare percentages without a discount keyword (e.g. "100% yours", "100% of the block reward")
+      // are NOT discount claims and must NOT be rewritten — they are reward-share or retention figures.
+      // 100% is always exempt: it is the correct reward-share value for solo mining.
+      const pctRe = /\b(?:up\s+to\s+)?(\d{1,3})\s*%\s*(?:off|savings?|save|discount)\b/gi;
       out = out.replace(pctRe, (match, digits) => {
         const n = parseInt(digits, 10);
+        if (n === 100) return match;            // 100% is always a valid reward-share claim
         if (n === maxDiscountPct) return match; // already correct
         if (n < maxDiscountPct) return match;   // smaller claim — allow it
         // Inflated claim — rewrite to the real max
