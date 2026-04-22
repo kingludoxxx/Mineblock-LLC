@@ -1814,13 +1814,18 @@ router.post('/iterate/:creativeId', authenticate, async (req, res) => {
  */
 router.get('/iterate/:batchId/status', authenticate, async (req, res) => {
   try {
+    const { batchId } = req.params;
+    // UUID v4 format check — avoids 500 on bad input, returns empty batch instead
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(batchId)) {
+      return res.status(404).json({ success: false, error: 'Invalid batchId format' });
+    }
     const rows = await pgQuery(
       `SELECT id, im_number, parent_creative_id_ref, status, image_url, thumbnail_url,
               source_label, iteration_change_description, review_notes, updated_at
        FROM spy_creatives
        WHERE batch_id = $1
        ORDER BY batch_position ASC`,
-      [req.params.batchId]
+      [batchId]
     );
     res.json({
       success: true,
