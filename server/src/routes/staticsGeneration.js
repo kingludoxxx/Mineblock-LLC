@@ -8,6 +8,7 @@ import { uploadBuffer, isR2Configured } from '../services/r2.js';
 import { editImage, isGeminiConfigured, GEMINI_EDIT_MODEL } from '../services/geminiImageGen.js';
 import crypto from 'crypto';
 import { analyzeTemplate, analyzeTemplateFast } from '../utils/templateAnalysis.js';
+import sharp from 'sharp';
 import {
   isMetaAdsConfigured, createAdSet, createFlexibleAdCreative, createAd,
   uploadAdImageFromUrl, diagnoseMetaApp, switchAppToLiveMode
@@ -432,6 +433,33 @@ async function resolveImage(referenceImageUrl) {
   const buf = Buffer.from(await res.arrayBuffer());
   const mediaType = detectMime(buf);
   return { base64: buf.toString('base64'), mediaType, isUrl: true };
+}
+
+const CLAUDE_IMAGE_LIMIT_BYTES = 4 * 1024 * 1024; // 4 MB — Claude hard limit is 5 MB
+
+/**
+ * Shrink a base64 image so it fits under Claude's 5 MB base64 limit.
+ * Converts to JPEG and progressively reduces quality until it fits.
+ */
+async function shrinkForClaude(base64, mediaType) {
+  const rawBytes = Math.ceil(base64.length * 0.75); // approx decoded byte size
+  if (rawBytes <= CLAUDE_IMAGE_LIMIT_BYTES) return { base64, mediaType };
+
+  let quality = 80;
+  let buf = Buffer.from(base64, 'base64');
+  while (quality >= 30) {
+    const compressed = await sharp(buf).jpeg({ quality }).toBuffer();
+    const b64 = compressed.toString('base64');
+    if (b64.length * 0.75 <= CLAUDE_IMAGE_LIMIT_BYTES) {
+      console.log(`[shrinkForClaude] Compressed image to JPEG q${quality}: ${(compressed.length / 1024).toFixed(0)} KB`);
+      return { base64: b64, mediaType: 'image/jpeg' };
+    }
+    quality -= 15;
+  }
+  // Last resort: scale down to 1024px wide
+  const scaled = await sharp(buf).resize({ width: 1024 }).jpeg({ quality: 60 }).toBuffer();
+  console.log(`[shrinkForClaude] Scaled down to 1024px: ${(scaled.length / 1024).toFixed(0)} KB`);
+  return { base64: scaled.toString('base64'), mediaType: 'image/jpeg' };
 }
 
 /**
@@ -2539,10 +2567,11 @@ router.post('/creatives/:id/ai-adjust', authenticate, async (req, res) => {
         // what needs to change instead of guessing from text descriptions
         const claudeContent = [];
 
-        // Add the current creative image as vision input
+        // Add the current creative image as vision input (compressed to fit Claude's 5 MB limit)
         if (creative.image_url) {
           try {
-            const { base64, mediaType } = await resolveImage(creative.image_url);
+            const resolved = await resolveImage(creative.image_url);
+            const { base64, mediaType } = await shrinkForClaude(resolved.base64, resolved.mediaType);
             claudeContent.push({
               type: 'image',
               source: { type: 'base64', media_type: mediaType, data: base64 },
