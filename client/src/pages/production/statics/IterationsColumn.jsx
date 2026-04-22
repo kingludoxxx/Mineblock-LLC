@@ -1,12 +1,13 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import {
-  Repeat, Loader2, RefreshCw, TrendingUp, DollarSign, Target, Clock, X, Sparkles,
+  Repeat, Loader2, RefreshCw, TrendingUp, DollarSign, Target, Clock, X, Sparkles, SlidersHorizontal,
 } from 'lucide-react';
 import api from '../../../services/api';
 
-// Time window (days) and thresholds — match backend defaults
-const DEFAULT_MIN_SPEND = 200;
-const DEFAULT_MIN_ROAS = 2.0;
+// Default thresholds are permissive — show anything with meaningful spend + positive ROAS.
+// User can tighten via the filters panel. Strict "winners" would be $200+ / 2x+.
+const DEFAULT_MIN_SPEND = 50;
+const DEFAULT_MIN_ROAS = 1.5;
 const DEFAULT_WINDOW_DAYS = 30;
 
 function formatMoney(n) {
@@ -208,13 +209,17 @@ export function IterationsColumn({ productId, onSubmitted }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [selected, setSelected] = useState(null);
+  const [showFilters, setShowFilters] = useState(false);
+  const [minSpend, setMinSpend] = useState(DEFAULT_MIN_SPEND);
+  const [minRoas, setMinRoas] = useState(DEFAULT_MIN_ROAS);
+  const [windowDays, setWindowDays] = useState(DEFAULT_WINDOW_DAYS);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
       const res = await api.get('/statics-generation/iterations', {
-        params: { minSpend: DEFAULT_MIN_SPEND, minRoas: DEFAULT_MIN_ROAS, windowDays: DEFAULT_WINDOW_DAYS },
+        params: { minSpend, minRoas, windowDays },
       });
       const data = res.data?.data || res.data;
       setWinners(data.winners || []);
@@ -222,7 +227,7 @@ export function IterationsColumn({ productId, onSubmitted }) {
       setError(err.response?.data?.error || err.message);
     }
     setLoading(false);
-  }, []);
+  }, [minSpend, minRoas, windowDays]);
 
   useEffect(() => {
     load();
@@ -231,9 +236,12 @@ export function IterationsColumn({ productId, onSubmitted }) {
   }, [load]);
 
   const handleSubmitted = (batchData) => {
-    // Re-fetch winners (to show updated iteration_count + iterated_at)
     load();
     onSubmitted?.(batchData);
+  };
+
+  const applyPreset = (spend, roas, days) => {
+    setMinSpend(spend); setMinRoas(roas); setWindowDays(days);
   };
 
   return (
@@ -249,15 +257,74 @@ export function IterationsColumn({ productId, onSubmitted }) {
             {winners.length}
           </span>
         </div>
-        <button
-          onClick={load}
-          disabled={loading}
-          className="text-zinc-500 hover:text-zinc-200 disabled:opacity-40 cursor-pointer"
-          title="Refresh"
-        >
-          {loading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
-        </button>
+        <div className="flex items-center gap-1.5">
+          <button
+            onClick={() => setShowFilters((v) => !v)}
+            className={`transition-colors cursor-pointer ${showFilters ? 'text-[#d4b55a]' : 'text-zinc-500 hover:text-zinc-200'}`}
+            title="Filters"
+          >
+            <SlidersHorizontal className="w-3.5 h-3.5" />
+          </button>
+          <button
+            onClick={load}
+            disabled={loading}
+            className="text-zinc-500 hover:text-zinc-200 disabled:opacity-40 cursor-pointer"
+            title="Refresh"
+          >
+            {loading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+          </button>
+        </div>
       </div>
+
+      {/* Filters panel */}
+      {showFilters && (
+        <div className="mb-3 p-3 glass-card border border-white/[0.06] rounded-lg space-y-3">
+          <div>
+            <div className="flex justify-between text-[10px] font-mono text-zinc-400 uppercase tracking-wider mb-1.5">
+              <span>Min Spend</span><span className="text-zinc-200">${minSpend}</span>
+            </div>
+            <input
+              type="range" min="0" max="500" step="10" value={minSpend}
+              onChange={(e) => setMinSpend(Number(e.target.value))}
+              className="w-full accent-[#d4b55a]"
+            />
+          </div>
+          <div>
+            <div className="flex justify-between text-[10px] font-mono text-zinc-400 uppercase tracking-wider mb-1.5">
+              <span>Min ROAS</span><span className="text-zinc-200">{minRoas.toFixed(1)}x</span>
+            </div>
+            <input
+              type="range" min="0" max="5" step="0.1" value={minRoas}
+              onChange={(e) => setMinRoas(Number(e.target.value))}
+              className="w-full accent-[#d4b55a]"
+            />
+          </div>
+          <div>
+            <div className="flex justify-between text-[10px] font-mono text-zinc-400 uppercase tracking-wider mb-1.5">
+              <span>Window</span><span className="text-zinc-200">{windowDays}d</span>
+            </div>
+            <input
+              type="range" min="7" max="90" step="1" value={windowDays}
+              onChange={(e) => setWindowDays(Number(e.target.value))}
+              className="w-full accent-[#d4b55a]"
+            />
+          </div>
+          <div className="flex gap-1 pt-1">
+            <button
+              onClick={() => applyPreset(50, 1.5, 30)}
+              className="flex-1 px-2 py-1 text-[10px] font-mono uppercase tracking-wider text-zinc-300 border border-white/[0.08] rounded hover:border-white/[0.2] cursor-pointer"
+            >All</button>
+            <button
+              onClick={() => applyPreset(100, 2.0, 30)}
+              className="flex-1 px-2 py-1 text-[10px] font-mono uppercase tracking-wider text-zinc-300 border border-white/[0.08] rounded hover:border-white/[0.2] cursor-pointer"
+            >Promising</button>
+            <button
+              onClick={() => applyPreset(200, 2.0, 30)}
+              className="flex-1 px-2 py-1 text-[10px] font-mono uppercase tracking-wider text-[#d4b55a] border border-[#c9a84c]/30 bg-[#c9a84c]/10 rounded hover:border-[#c9a84c]/50 cursor-pointer"
+            >Winners</button>
+          </div>
+        </div>
+      )}
 
       {/* Content */}
       <div className="flex-1 overflow-y-auto space-y-3 pr-1">
@@ -269,10 +336,9 @@ export function IterationsColumn({ productId, onSubmitted }) {
 
         {!loading && !error && winners.length === 0 && (
           <div className="px-3 py-6 text-xs text-zinc-500 text-center leading-relaxed">
-            No winning ads in the last {DEFAULT_WINDOW_DAYS} days with
-            <br />${DEFAULT_MIN_SPEND}+ spend and {DEFAULT_MIN_ROAS}x+ ROAS.
+            No ads match the current filters.
             <br /><br />
-            Check Creative Analysis or wait for more data.
+            Try clicking <span className="text-[#d4b55a]">All</span> in the filters panel to widen the range.
           </div>
         )}
 
