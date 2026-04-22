@@ -17,6 +17,8 @@ const CLICKUP_API = 'https://api.clickup.com/api/v2';
 const VIDEO_ADS_LIST_ID = '901518716584';
 const OWNER_ID = 266421907; // Ludovico — always excluded from editor list
 
+const EXCLUDED_EDITORS = new Set(['Jesame', 'Roman', 'Ultino', 'Abdullah', 'Aleksandra']);
+
 // Cache
 let editorsCache = { editors: null, timestamp: 0 };
 const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
@@ -58,7 +60,7 @@ export async function getEditors() {
       const id = member.id || member.user?.id;
       const username = member.username || member.user?.username || '';
 
-      // Skip owner
+      // Skip owner and excluded editors
       if (id === OWNER_ID) continue;
 
       // Derive short display name (matches ad naming convention: first names)
@@ -76,7 +78,7 @@ export async function getEditors() {
       // Capitalize properly
       displayName = displayName.charAt(0).toUpperCase() + displayName.slice(1).toLowerCase();
 
-      if (displayName && id) {
+      if (displayName && id && !EXCLUDED_EDITORS.has(displayName)) {
         editors[displayName] = id;
       }
     }
