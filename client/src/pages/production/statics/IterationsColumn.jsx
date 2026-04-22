@@ -145,72 +145,54 @@ function WinnerCard({ winner, productId, onIterate }) {
   const itAgo = timeAgo(winner.iterated_at);
 
   return (
-    <div className="group relative glass-card border border-white/[0.05] hover:border-white/[0.12] rounded-lg overflow-hidden transition-all">
-      {/* Thumbnail */}
+    <div className="group relative glass-card border border-white/[0.05] hover:border-white/[0.12] rounded-xl overflow-hidden transition-all shadow-[inset_0_1px_0_0_rgba(255,255,255,0.03)]">
+      {/* Thumbnail — aspect-[4/3] matches pipeline cards */}
       {winner.thumbnail_url ? (
-        <div className="relative aspect-[4/5] bg-black/40 overflow-hidden">
+        <div className="relative aspect-[4/3] bg-black/40 overflow-hidden">
           <img
             src={winner.thumbnail_url}
             alt={winner.ad_name || winner.creative_id}
-            className="w-full h-full object-cover"
+            className="w-full h-full object-cover opacity-90 group-hover:opacity-100 group-hover:scale-105 transition-all duration-500"
             onError={(e) => { e.currentTarget.style.opacity = '0.2'; }}
           />
-          {/* Top-right metrics overlay */}
-          <div className="absolute top-2 right-2 flex flex-col gap-1 items-end">
-            <span className="px-1.5 py-0.5 text-[10px] font-mono font-bold bg-emerald-500/90 text-black rounded">
-              {roas.toFixed(1)}x
-            </span>
-          </div>
-          {/* Creative ID tag */}
-          <div className="absolute top-2 left-2">
-            <span className="px-1.5 py-0.5 text-[10px] font-mono font-semibold bg-black/70 text-white rounded">
-              {winner.creative_id}
-            </span>
-          </div>
+          {/* Creative ID badge */}
+          <span className="absolute top-2 left-2 text-[9px] font-mono bg-black/60 text-zinc-200 px-1.5 py-0.5 rounded border border-white/[0.1] backdrop-blur-md">
+            {winner.creative_id}
+          </span>
+          {/* ROAS badge */}
+          <span className="absolute top-2 right-2 text-[9px] font-mono font-semibold bg-emerald-500/90 text-black px-1.5 py-0.5 rounded">
+            {roas.toFixed(1)}x
+          </span>
         </div>
       ) : (
-        <div className="aspect-[4/5] bg-white/[0.02] flex items-center justify-center text-zinc-600 text-xs">
-          No preview
-        </div>
+        <div className="aspect-[4/3] bg-white/[0.02] flex items-center justify-center text-zinc-600 text-xs">No preview</div>
       )}
 
-      {/* Body */}
-      <div className="p-3">
-        {/* Ad name */}
-        <div className="text-[11px] font-mono text-zinc-300 truncate mb-1.5" title={winner.ad_name}>
-          {winner.ad_name || winner.creative_id}
-        </div>
-
-        {/* Metric row */}
-        <div className="flex gap-2 text-[10px] font-mono mb-2">
-          <span className="flex items-center gap-0.5 text-zinc-400">
-            <DollarSign className="w-2.5 h-2.5" />{formatMoney(spend)}
+      {/* Body — compact, matches pipeline card padding */}
+      <div className="px-3 pt-2.5 pb-3 space-y-2">
+        {/* Angle pill + metrics — single row, matches pipeline layout */}
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="inline-flex items-center text-[11px] font-medium px-2 py-0.5 rounded-full bg-white/[0.06] text-zinc-200 border border-white/[0.1] truncate">
+            {winner.angle || 'Uncategorized'}
           </span>
-          {cpa > 0 && (
-            <span className="flex items-center gap-0.5 text-zinc-400">
-              <Target className="w-2.5 h-2.5" />{formatMoney(cpa)}
-            </span>
-          )}
-          {winner.angle && (
-            <span className="text-zinc-500 truncate">{winner.angle}</span>
-          )}
+          <span className="text-[10px] text-zinc-400 font-mono shrink-0">{formatMoney(spend)}</span>
+          {cpa > 0 && <span className="text-[10px] text-zinc-500 font-mono shrink-0">{formatMoney(cpa)} CPA</span>}
         </div>
 
-        {/* Iteration history indicator */}
+        {/* Iteration history (small, only when iterated before) */}
         {itCount > 0 && (
-          <div className="flex items-center gap-1 mb-2 text-[9px] font-mono text-zinc-500">
+          <div className="flex items-center gap-1 text-[9px] font-mono text-zinc-500">
             <Clock className="w-2.5 h-2.5" />
-            {itCount} iter{itCount !== 1 ? 's' : ''}
-            {itAgo && ` · ${itAgo}`}
+            {itCount} iter{itCount !== 1 ? 's' : ''}{itAgo && ` · ${itAgo}`}
           </div>
         )}
 
-        {/* Iterate button */}
+        {/* Iterate button — matches "Approve" style: subtle border/bg + gold text */}
         <button
           onClick={() => onIterate(winner)}
-          className="w-full flex items-center justify-center gap-1 px-2 py-1.5 text-[11px] font-mono font-medium uppercase tracking-wider text-black bg-[#d4b55a] hover:bg-[#e4c56a] rounded-md transition-colors cursor-pointer"
+          className="w-full inline-flex items-center justify-center gap-1.5 h-9 rounded-lg text-[12px] font-semibold border border-[#c9a84c]/30 bg-[#c9a84c]/[0.08] text-[#d4b55a] hover:bg-[#c9a84c]/15 transition-colors cursor-pointer"
         >
-          <Sparkles className="w-3 h-3" />
+          <Sparkles className="w-3.5 h-3.5 shrink-0" />
           Iterate
         </button>
       </div>
@@ -255,7 +237,7 @@ export function IterationsColumn({ productId, onSubmitted }) {
   };
 
   return (
-    <div className="flex flex-col flex-shrink-0 w-[280px] h-full">
+    <div className="flex flex-col min-w-[240px] max-w-[340px] flex-1 relative h-full">
       {/* Header */}
       <div className="flex items-center justify-between mb-3 px-1">
         <div className="flex items-center gap-2">

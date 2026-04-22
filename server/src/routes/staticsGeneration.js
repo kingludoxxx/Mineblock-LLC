@@ -1645,7 +1645,9 @@ router.post('/iterate/:creativeId', authenticate, async (req, res) => {
         const mediaType = imgRes.headers.get('content-type') || 'image/png';
         const base64 = imgBuf.toString('base64');
 
-        // Step 2: Upload parent image to a stable URL (NanoBanana needs HTTP)
+        // Step 2: Upload parent image to a stable URL (NanoBanana needs HTTP,
+        // and Meta CDN URLs expire — so both NanoBanana and the generating-
+        // column preview need a non-expiring copy).
         let refHttpUrl;
         if (isR2Configured()) {
           refHttpUrl = await uploadBuffer(imgBuf, `iterations-ref/${batchId}.${mediaType.split('/')[1] || 'png'}`, mediaType);
@@ -1654,6 +1656,13 @@ router.post('/iterate/:creativeId', authenticate, async (req, res) => {
           const baseUrl = process.env.RENDER_EXTERNAL_URL || `http://localhost:${process.env.PORT || 3000}`;
           refHttpUrl = `${baseUrl}/api/v1/statics-generation/tmp-img/${tmpId}`;
         }
+        // Point all batch rows at the stable URL so the Generating column
+        // can show the parent preview (with faded overlay + spinner) instead
+        // of a broken image when Meta's URL expires.
+        await pgQuery(
+          `UPDATE spy_creatives SET reference_thumbnail = $1 WHERE batch_id = $2`,
+          [refHttpUrl, batchId]
+        ).catch((e) => console.warn('[iterations] reference_thumbnail update failed:', e.message));
 
         // Step 3: Call Claude with iteration prompt
         const winnerMeta = {
