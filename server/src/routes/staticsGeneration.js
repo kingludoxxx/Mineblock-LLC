@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { buildClaudePrompt, buildNanoBananaPrompt, buildSwapPairs, buildLayoutAnalysisPrompt } from '../utils/staticsPrompts.js';
+import { buildClaudePrompt, buildNanoBananaPrompt, buildSwapPairs, buildLayoutAnalysisPrompt, buildIterationPrompt, buildIterationNanoBananaPrompt } from '../utils/staticsPrompts.js';
 import { overlayText } from '../utils/textOverlay.js';
 import { pgQuery } from '../db/pg.js';
 import { authenticate } from '../middleware/auth.js';
@@ -1406,6 +1406,438 @@ router.get('/status/:taskId', authenticate, async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────────────────────────────────
+// ITERATIONS — iterate on our OWN winning static ads (from Creative Analysis)
+// ─────────────────────────────────────────────────────────────────────────
+
+const WINNER_MIN_SPEND = 200;
+const WINNER_MIN_ROAS = 2.0;
+
+/**
+ * GET /iterations
+ *
+ * Returns winning static ads from creative_analysis.
+ * A winner = type='image' AND lifetime spend >= $200 AND lifetime ROAS >= 2.0,
+ * from the last 30 days.
+ *
+ * Query params (optional): minSpend (default 200), minRoas (default 2.0), windowDays (default 30)
+ */
+router.get('/iterations', authenticate, async (req, res) => {
+  try {
+    await ensureCreativesTable();
+    const minSpend = parseFloat(req.query.minSpend) || WINNER_MIN_SPEND;
+    const minRoas = parseFloat(req.query.minRoas) || WINNER_MIN_ROAS;
+    const windowDays = parseInt(req.query.windowDays) || 30;
+
+    // Aggregate creative_analysis by creative_id (sum across hooks + weeks),
+    // pick best hook for ad_name/image, filter to type=image + thresholds.
+    // Use the most-recent hook row per creative for ad_name + thumbnail (Meta
+    // URLs rotate, latest sync is freshest).
+    const rows = await pgQuery(`
+      WITH agg AS (
+        SELECT
+          ca.creative_id,
+          SUM(ca.spend) AS spend,
+          SUM(ca.revenue) AS revenue,
+          SUM(ca.purchases) AS purchases,
+          SUM(ca.impressions) AS impressions,
+          SUM(ca.clicks) AS clicks,
+          MAX(ca.synced_at) AS latest_synced_at,
+          MAX(ca.iterated_at) AS iterated_at
+        FROM creative_analysis ca
+        WHERE ca.type = 'image'
+          AND ca.synced_at >= NOW() - ($1 || ' days')::INTERVAL
+        GROUP BY ca.creative_id
+      ),
+      best_hook AS (
+        SELECT DISTINCT ON (ca.creative_id)
+          ca.creative_id, ca.ad_name, ca.hook_id, ca.avatar, ca.angle, ca.editor,
+          ca.week, ca.thumbnail_url, ca.meta_ad_id, ca.roas AS hook_roas,
+          ca.cpa AS hook_cpa, ca.ctr AS hook_ctr, ca.spend AS hook_spend
+        FROM creative_analysis ca
+        WHERE ca.type = 'image' AND ca.thumbnail_url IS NOT NULL
+        ORDER BY ca.creative_id, ca.spend DESC
+      )
+      SELECT
+        agg.creative_id,
+        agg.spend::FLOAT AS spend,
+        agg.revenue::FLOAT AS revenue,
+        (CASE WHEN agg.spend > 0 THEN (agg.revenue / agg.spend)::FLOAT ELSE 0 END) AS roas,
+        (CASE WHEN agg.purchases > 0 THEN (agg.spend / agg.purchases)::FLOAT ELSE 0 END) AS cpa,
+        agg.purchases, agg.impressions::BIGINT AS impressions, agg.clicks::BIGINT AS clicks,
+        agg.latest_synced_at, agg.iterated_at,
+        bh.ad_name, bh.hook_id, bh.avatar, bh.angle, bh.editor, bh.week,
+        bh.thumbnail_url, bh.meta_ad_id, bh.hook_roas::FLOAT AS best_hook_roas,
+        bh.hook_cpa::FLOAT AS best_hook_cpa, bh.hook_ctr::FLOAT AS best_hook_ctr,
+        (SELECT COUNT(*) FROM spy_creatives WHERE parent_creative_id_ref = agg.creative_id) AS iteration_count
+      FROM agg
+      JOIN best_hook bh ON bh.creative_id = agg.creative_id
+      WHERE agg.spend >= $2
+        AND (CASE WHEN agg.spend > 0 THEN agg.revenue / agg.spend ELSE 0 END) >= $3
+      ORDER BY (CASE WHEN agg.spend > 0 THEN agg.revenue / agg.spend ELSE 0 END) DESC, agg.spend DESC
+    `, [String(windowDays), minSpend, minRoas]);
+
+    res.json({
+      success: true,
+      data: {
+        winners: rows,
+        filters: { minSpend, minRoas, windowDays },
+        count: rows.length,
+      },
+    });
+  } catch (err) {
+    console.error('[iterations] GET /iterations error:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * Assign the next IM number atomically. Single-row-locked increment.
+ */
+async function assignNextImNumber() {
+  const rows = await pgQuery(`
+    UPDATE statics_im_counter
+    SET next_number = next_number + 1
+    WHERE id = 1
+    RETURNING next_number - 1 AS assigned
+  `);
+  if (!rows || rows.length === 0) {
+    throw new Error('IM counter row missing — ensureCreativesTable() not run?');
+  }
+  return rows[0].assigned;
+}
+
+/**
+ * POST /iterate/:creativeId
+ *
+ * Body: { variations?: number (1-5, default 3), productId?: integer }
+ *
+ * Analyzes a winner with Claude, generates N surgical iterations via NanoBanana,
+ * stores each as a spy_creatives row with pipeline='iteration' and status='review'.
+ * Returns immediately with assigned IM numbers; generation runs in background.
+ */
+router.post('/iterate/:creativeId', authenticate, async (req, res) => {
+  try {
+    await ensureCreativesTable();
+    const parentCreativeId = req.params.creativeId;
+    const variations = Math.max(1, Math.min(5, parseInt(req.body.variations) || 3));
+    const productId = req.body.productId || null;
+
+    // Validate parent exists + has image
+    const parentRows = await pgQuery(`
+      SELECT DISTINCT ON (creative_id)
+        creative_id, ad_name, avatar, angle, editor, week, thumbnail_url, meta_ad_id,
+        spend, roas, cpa, ctr
+      FROM creative_analysis
+      WHERE creative_id = $1 AND type = 'image' AND thumbnail_url IS NOT NULL
+      ORDER BY creative_id, spend DESC
+      LIMIT 1
+    `, [parentCreativeId]);
+    if (parentRows.length === 0) {
+      return res.status(404).json({ success: false, error: `No image creative found for ${parentCreativeId}` });
+    }
+    const parent = parentRows[0];
+    const parentImMatch = String(parent.creative_id).match(/^IM(\d+)$/);
+    const parentImNumber = parentImMatch ? parseInt(parentImMatch[1]) : null;
+
+    // Load product profile (if productId provided) — otherwise use sensible defaults
+    let product = { name: 'Miner Forge Pro', profile: {} };
+    if (productId) {
+      const prodRows = await pgQuery('SELECT * FROM product_profiles WHERE id = $1', [productId]);
+      if (prodRows.length > 0) {
+        const p = prodRows[0];
+        product = {
+          name: p.name,
+          price: p.price,
+          description: p.description,
+          profile: {
+            oneliner: p.oneliner, customerAvatar: p.customer_avatar,
+            customerFrustration: p.customer_frustration, customerDream: p.customer_dream,
+            bigPromise: p.big_promise, mechanism: p.mechanism,
+            differentiator: p.differentiator, voice: p.voice, guarantee: p.guarantee,
+            benefits: p.benefits, painPoints: p.pain_points,
+            commonObjections: p.common_objections, winningAngles: p.winning_angles,
+            customAngles: p.custom_angles_text, competitiveEdge: p.competitive_edge,
+            offerDetails: p.offer_details, maxDiscount: p.max_discount,
+            discountCodes: p.discount_codes, bundleVariants: p.bundle_variants,
+            complianceRestrictions: p.compliance_restrictions,
+            targetDemographics: p.target_demographics,
+            productType: p.product_type, shortName: p.short_name,
+          },
+        };
+      }
+    }
+
+    // Pre-allocate spy_creatives rows + assign IM numbers (one per variation)
+    const batchId = crypto.randomUUID();
+    const createdRows = [];
+    for (let i = 0; i < variations; i++) {
+      const imNum = await assignNextImNumber();
+      const sourceLabel = `IM${imNum} - IT - ${parent.creative_id}`;
+      const row = await pgQuery(`
+        INSERT INTO spy_creatives
+          (pipeline, product_id, product_name, status, aspect_ratio,
+           source_label, reference_name, reference_thumbnail, angle,
+           parent_creative_id_ref, parent_im_number, im_number, batch_id, batch_position)
+        VALUES ('iteration', $1, $2, 'generating', '4:5',
+                $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        RETURNING id, im_number, source_label
+      `, [
+        productId, product.name, sourceLabel, parent.ad_name, parent.thumbnail_url,
+        parent.angle, parent.creative_id, parentImNumber, imNum, batchId, i + 1,
+      ]);
+      createdRows.push(row[0]);
+    }
+
+    // Mark parent as iterated (for UI "last iterated" display)
+    await pgQuery(
+      `UPDATE creative_analysis SET iterated_at = NOW() WHERE creative_id = $1`,
+      [parent.creative_id]
+    );
+
+    // Respond immediately — pipeline runs in background
+    res.json({
+      success: true,
+      data: {
+        batchId,
+        parentCreativeId: parent.creative_id,
+        parentImNumber,
+        variations,
+        creatives: createdRows.map(r => ({
+          id: r.id, im_number: r.im_number, source_label: r.source_label, status: 'generating',
+        })),
+      },
+    });
+
+    // ── Background pipeline ─────────────────────────────────────────────
+    setImmediate(async () => {
+      console.log(`[iterations] batch ${batchId} start | parent=${parent.creative_id} | variations=${variations}`);
+
+      try {
+        // Step 1: Download the parent image (refresh Meta URL if expired)
+        let refImgUrl = parent.thumbnail_url;
+        let imgRes = await fetch(refImgUrl);
+        if (!imgRes.ok && imgRes.status === 403 && parent.meta_ad_id) {
+          console.log(`[iterations] batch ${batchId} | Meta URL expired, attempting refresh for ad ${parent.meta_ad_id}`);
+          // Best-effort refresh — if it fails, we'll error the batch
+          try {
+            const refreshRes = await fetch(
+              `https://graph.facebook.com/v23.0/${parent.meta_ad_id}?fields=creative{image_url,thumbnail_url}&access_token=${process.env.META_ACCESS_TOKEN}`
+            );
+            if (refreshRes.ok) {
+              const rData = await refreshRes.json();
+              const newUrl = rData.creative?.image_url || rData.creative?.thumbnail_url;
+              if (newUrl) {
+                refImgUrl = newUrl;
+                imgRes = await fetch(refImgUrl);
+                await pgQuery(
+                  `UPDATE creative_analysis SET thumbnail_url = $1 WHERE creative_id = $2`,
+                  [newUrl, parent.creative_id]
+                );
+              }
+            }
+          } catch (e) { console.warn(`[iterations] Meta refresh failed:`, e.message); }
+        }
+        if (!imgRes.ok) {
+          throw new Error(`Parent image fetch failed: ${imgRes.status}`);
+        }
+        const imgBuf = Buffer.from(await imgRes.arrayBuffer());
+        const mediaType = imgRes.headers.get('content-type') || 'image/png';
+        const base64 = imgBuf.toString('base64');
+
+        // Step 2: Upload parent image to a stable URL (NanoBanana needs HTTP)
+        let refHttpUrl;
+        if (isR2Configured()) {
+          refHttpUrl = await uploadBuffer(imgBuf, `iterations-ref/${batchId}.${mediaType.split('/')[1] || 'png'}`, mediaType);
+        } else {
+          const tmpId = await storeTempImage(imgBuf, mediaType);
+          const baseUrl = process.env.RENDER_EXTERNAL_URL || `http://localhost:${process.env.PORT || 3000}`;
+          refHttpUrl = `${baseUrl}/api/v1/statics-generation/tmp-img/${tmpId}`;
+        }
+
+        // Step 3: Call Claude with iteration prompt
+        const winnerMeta = {
+          creative_id: parent.creative_id, ad_name: parent.ad_name,
+          spend: parseFloat(parent.spend) || 0, roas: parseFloat(parent.roas) || 0,
+          cpa: parseFloat(parent.cpa) || 0, ctr: parseFloat(parent.ctr) || 0,
+          angle: parent.angle, avatar: parent.avatar, week: parent.week,
+        };
+        const iterPrompt = buildIterationPrompt(winnerMeta, product, variations);
+
+        const t0 = Date.now();
+        const claudeRes = await fetch(CLAUDE_API_URL, {
+          method: 'POST',
+          headers: {
+            'x-api-key': ANTHROPIC_API_KEY,
+            'anthropic-version': '2023-06-01',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model: 'claude-sonnet-4-6', max_tokens: 4000, temperature: 0.4,
+            messages: [{
+              role: 'user',
+              content: [
+                { type: 'text', text: iterPrompt },
+                { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } },
+              ],
+            }],
+          }),
+        });
+        if (!claudeRes.ok) {
+          throw new Error(`Claude error ${claudeRes.status}: ${await claudeRes.text()}`);
+        }
+        const claudeData = await claudeRes.json();
+        console.log(`[iterations] batch ${batchId} | Claude done in ${Date.now() - t0}ms`);
+
+        const raw = claudeData.content?.[0]?.text || '';
+        const jsonMatch = raw.match(/\{[\s\S]*\}/);
+        if (!jsonMatch) throw new Error('No JSON in Claude response');
+        const iter = JSON.parse(jsonMatch[0]);
+        if (!Array.isArray(iter.variations) || iter.variations.length === 0) {
+          throw new Error(`Claude returned ${iter.variations?.length || 0} variations, expected ${variations}`);
+        }
+        console.log(`[iterations] batch ${batchId} | works_because: ${iter.analysis?.works_because}`);
+
+        // Step 4: For each variation, build NanoBanana prompt + fire generation
+        const nbTasks = [];
+        for (let i = 0; i < Math.min(iter.variations.length, createdRows.length); i++) {
+          const v = iter.variations[i];
+          const spyRow = createdRows[i];
+          const nbPrompt = buildIterationNanoBananaPrompt(v, product);
+
+          // Store Claude's change description on the row
+          await pgQuery(
+            `UPDATE spy_creatives SET
+               iteration_change_description = $1,
+               claude_analysis = $2,
+               generation_prompt = $3,
+               angle = COALESCE($4, angle),
+               updated_at = NOW()
+             WHERE id = $5`,
+            [v.change || null, JSON.stringify({ analysis: iter.analysis, variation: v }),
+             nbPrompt, parent.angle, spyRow.id]
+          );
+
+          console.log(`[iterations] batch ${batchId} | variation ${v.variation_id}: ${v.change_category} — ${v.change}`);
+
+          // Submit to NanoBanana
+          const nbRes = await fetch(`${NB_BASE}/generate-2`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${NANOBANANA_API_KEY}` },
+            body: JSON.stringify({
+              model: 'nano-banana-2',
+              prompt: nbPrompt,
+              imageUrls: [refHttpUrl],
+              aspectRatio: '4:5',
+              resolution: '2K',
+              outputFormat: 'png',
+            }),
+          });
+          if (!nbRes.ok) {
+            const errText = await nbRes.text();
+            console.error(`[iterations] batch ${batchId} | variation ${v.variation_id} NanoBanana error:`, errText);
+            await pgQuery(
+              `UPDATE spy_creatives SET status = 'rejected', review_notes = $1 WHERE id = $2`,
+              [`NanoBanana submit failed: ${nbRes.status}`, spyRow.id]
+            );
+            continue;
+          }
+          const nbData = await nbRes.json();
+          const nbTaskId = nbData?.data?.taskId || nbData?.taskId;
+          if (!nbTaskId) {
+            console.error(`[iterations] batch ${batchId} | variation ${v.variation_id} no taskId in response`);
+            await pgQuery(
+              `UPDATE spy_creatives SET status = 'rejected', review_notes = $1 WHERE id = $2`,
+              ['NanoBanana returned no taskId', spyRow.id]
+            );
+            continue;
+          }
+          await pgQuery(
+            `UPDATE spy_creatives SET generation_task_id = $1 WHERE id = $2`,
+            [nbTaskId, spyRow.id]
+          );
+          nbTasks.push({ spyId: spyRow.id, nbTaskId, imNum: spyRow.im_number });
+          console.log(`[iterations] batch ${batchId} | variation ${v.variation_id} submitted: nbTaskId=${nbTaskId}`);
+        }
+
+        // Step 5: Poll each NanoBanana task and finalize
+        await Promise.allSettled(nbTasks.map(async (task) => {
+          try {
+            const imageUrl = await pollNanoBanana(task.nbTaskId);
+            // Download + store permanently
+            const finalImgRes = await fetch(imageUrl);
+            if (!finalImgRes.ok) throw new Error(`Final image fetch failed: ${finalImgRes.status}`);
+            const finalBuf = Buffer.from(await finalImgRes.arrayBuffer());
+
+            let storedUrl;
+            if (isR2Configured()) {
+              storedUrl = await uploadBuffer(finalBuf, `iterations-out/${task.spyId}.png`, 'image/png');
+            } else {
+              const tmpId = await storeTempImage(finalBuf, 'image/png');
+              const baseUrl = process.env.RENDER_EXTERNAL_URL || `http://localhost:${process.env.PORT || 3000}`;
+              storedUrl = `${baseUrl}/api/v1/statics-generation/tmp-img/${tmpId}`;
+            }
+
+            await pgQuery(
+              `UPDATE spy_creatives SET image_url = $1, thumbnail_url = $1, status = 'review', updated_at = NOW() WHERE id = $2`,
+              [storedUrl, task.spyId]
+            );
+            console.log(`[iterations] batch ${batchId} | IM${task.imNum} complete: ${storedUrl}`);
+          } catch (err) {
+            console.error(`[iterations] batch ${batchId} | IM${task.imNum} failed:`, err.message);
+            await pgQuery(
+              `UPDATE spy_creatives SET status = 'rejected', review_notes = $1 WHERE id = $2`,
+              [`Generation failed: ${err.message}`, task.spyId]
+            );
+          }
+        }));
+
+        console.log(`[iterations] batch ${batchId} done`);
+      } catch (err) {
+        console.error(`[iterations] batch ${batchId} fatal error:`, err);
+        // Mark all pending rows as failed
+        await pgQuery(
+          `UPDATE spy_creatives SET status = 'rejected', review_notes = $1 WHERE batch_id = $2 AND status = 'generating'`,
+          [`Batch error: ${err.message}`, batchId]
+        ).catch(() => {});
+      }
+    });
+  } catch (err) {
+    console.error('[iterations] POST /iterate error:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * GET /iterate/:batchId/status
+ * Returns per-creative status for an iteration batch.
+ */
+router.get('/iterate/:batchId/status', authenticate, async (req, res) => {
+  try {
+    const rows = await pgQuery(
+      `SELECT id, im_number, parent_creative_id_ref, status, image_url, thumbnail_url,
+              source_label, iteration_change_description, review_notes, updated_at
+       FROM spy_creatives
+       WHERE batch_id = $1
+       ORDER BY batch_position ASC`,
+      [req.params.batchId]
+    );
+    res.json({
+      success: true,
+      data: {
+        batchId: req.params.batchId,
+        count: rows.length,
+        complete: rows.filter(r => r.status === 'review').length,
+        failed: rows.filter(r => r.status === 'rejected').length,
+        pending: rows.filter(r => r.status === 'generating').length,
+        creatives: rows,
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // ── Creatives CRUD (for standard pipeline review flow) ────────────────
 
 let crTableReady = false;
@@ -1459,6 +1891,33 @@ async function ensureCreativesTable() {
   await pgQuery('ALTER TABLE spy_creatives ADD COLUMN IF NOT EXISTS meta_ad_ids JSONB DEFAULT \'[]\'').catch(() => {});
   await pgQuery('ALTER TABLE spy_creatives ADD COLUMN IF NOT EXISTS meta_image_hash TEXT').catch(() => {});
   await pgQuery('ALTER TABLE spy_creatives ADD COLUMN IF NOT EXISTS generated_copy JSONB').catch(() => {});
+
+  // ── Iterations feature columns ──
+  await pgQuery('ALTER TABLE spy_creatives ADD COLUMN IF NOT EXISTS parent_creative_id_ref TEXT').catch(() => {});
+  await pgQuery('ALTER TABLE spy_creatives ADD COLUMN IF NOT EXISTS parent_im_number INTEGER').catch(() => {});
+  await pgQuery('ALTER TABLE spy_creatives ADD COLUMN IF NOT EXISTS im_number INTEGER').catch(() => {});
+  await pgQuery('ALTER TABLE spy_creatives ADD COLUMN IF NOT EXISTS iteration_change_description TEXT').catch(() => {});
+  await pgQuery(`CREATE INDEX IF NOT EXISTS idx_spy_creatives_parent_ref ON spy_creatives(parent_creative_id_ref)`).catch(() => {});
+  await pgQuery(`CREATE UNIQUE INDEX IF NOT EXISTS idx_spy_creatives_im_number ON spy_creatives(im_number) WHERE im_number IS NOT NULL`).catch(() => {});
+  await pgQuery('ALTER TABLE creative_analysis ADD COLUMN IF NOT EXISTS iterated_at TIMESTAMPTZ').catch(() => {});
+
+  // IM counter — seeded from max existing IM number in creative_analysis, then auto-increments
+  await pgQuery(`CREATE TABLE IF NOT EXISTS statics_im_counter (
+    id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    next_number INTEGER NOT NULL DEFAULT 1
+  )`).catch(() => {});
+  // Seed: if counter row is absent, initialize to max(existing IM numbers) + 1
+  await pgQuery(`
+    INSERT INTO statics_im_counter (id, next_number)
+    SELECT 1, COALESCE((
+      SELECT MAX(CAST(SUBSTRING(creative_id FROM 3) AS INTEGER))
+      FROM creative_analysis
+      WHERE creative_id ~ '^IM[0-9]+$'
+    ), 0) + 1
+    ON CONFLICT (id) DO NOTHING
+  `).catch((err) => {
+    console.warn('[iterations] IM counter seed failed:', err.message);
+  });
   await pgQuery(`CREATE TABLE IF NOT EXISTS statics_launches (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     creative_id UUID REFERENCES spy_creatives(id) ON DELETE CASCADE,

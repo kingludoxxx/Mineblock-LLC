@@ -914,3 +914,169 @@ LAYOUT RULES:
 - Spell every word correctly with proper spacing between words.
 - PRODUCT LABEL: The product image (FIRST image) already has its real label/packaging. Copy it EXACTLY as provided — do NOT modify, redesign, or add text to the product packaging.${brandColorHint}${productContext}${co.absoluteRules ? `\n${co.absoluteRules}` : ''}`;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ITERATIONS PIPELINE — prompt builders for iterating on our OWN winning ads
+// Different from the adapt flow: input is a proven winner, output is a surgical
+// variation that preserves the working elements and tests ONE isolated change.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Builds the Claude prompt for analyzing a winning ad and producing N surgical
+ * variations. Claude must identify load-bearing elements (never touch) vs
+ * safe-to-vary elements, then propose N variations that each test exactly ONE
+ * change. All other elements are preserved character-identical.
+ *
+ * @param {object} winner       — the parent ad's metadata: { creative_id, ad_name, spend, roas, cpa, angle, avatar, week }
+ * @param {object} product      — full product profile (same shape as adapt flow)
+ * @param {number} variations   — how many variations to produce (1..5, default 3)
+ */
+export function buildIterationPrompt(winner, product, variations = 3) {
+  const N = Math.max(1, Math.min(5, Math.floor(variations)));
+  const profile = product.profile || {};
+  const p = product || {};
+  const w = winner || {};
+
+  const productContextLines = [
+    p.name && `- Name: ${p.name}`,
+    p.price && `- Price: ${p.price}`,
+    profile.discountCodes && `- Discount codes: ${profile.discountCodes}`,
+    profile.maxDiscount && `- Max discount allowed: ${profile.maxDiscount}`,
+    profile.bundleVariants && `- Bundle pricing (exact): ${profile.bundleVariants}`,
+    profile.guarantee && `- Guarantee: ${profile.guarantee}`,
+    profile.mechanism && `- Mechanism (how it works): ${profile.mechanism}`,
+    profile.bigPromise && `- Big promise: ${profile.bigPromise}`,
+    profile.differentiator && `- Differentiator: ${profile.differentiator}`,
+    profile.winningAngles && `- Winning angles (already validated — safe to echo): ${profile.winningAngles}`,
+    profile.customAngles && `- Custom angles to test: ${profile.customAngles}`,
+    profile.painPoints && `- Pain points: ${profile.painPoints}`,
+    profile.commonObjections && `- Objections + handling: ${profile.commonObjections}`,
+    profile.voice && `- Brand voice/tone: ${profile.voice}`,
+    profile.complianceRestrictions && `- 🚫 Compliance (NEVER claim): ${profile.complianceRestrictions}`,
+  ].filter(Boolean).join('\n');
+
+  const winnerContext = [
+    w.creative_id && `- Parent creative_id: ${w.creative_id}`,
+    w.ad_name && `- Parent ad name: ${w.ad_name}`,
+    (w.spend != null) && `- Spend: $${Number(w.spend).toFixed(2)}`,
+    (w.roas != null) && `- ROAS: ${Number(w.roas).toFixed(2)}x`,
+    (w.cpa != null) && `- CPA: $${Number(w.cpa).toFixed(2)}`,
+    (w.ctr != null) && `- CTR: ${Number(w.ctr).toFixed(2)}%`,
+    w.angle && `- Angle: ${w.angle}`,
+    w.avatar && `- Avatar: ${w.avatar}`,
+    w.week && `- Launch week: ${w.week}`,
+  ].filter(Boolean).join('\n');
+
+  return `You are a $50K/month Facebook media buyer iterating on a WINNING static ad.
+
+This ad is working — don't rewrite it. Your job is to identify what makes it convert, then propose ${N} surgical variations that each test EXACTLY ONE change. A 2x+ ROAS ad is sacred — every working element earned its place.
+
+═══════════════════════════════════════════════════════════════
+WINNER METADATA
+═══════════════════════════════════════════════════════════════
+${winnerContext}
+
+═══════════════════════════════════════════════════════════════
+PRODUCT CONTEXT (compliance only — do NOT invent new claims)
+═══════════════════════════════════════════════════════════════
+${productContextLines}
+
+═══════════════════════════════════════════════════════════════
+HARD CONSTRAINTS
+═══════════════════════════════════════════════════════════════
+1. EXACTLY ONE change per variation. No compound changes.
+2. Preserved text is CHARACTER-IDENTICAL. Do not rephrase, do not "polish", do not fix typos in the reference (the typos may be part of what converts).
+3. NEVER touch product identity, brand name, logo, or core pricing unless the variation category is explicitly "badge-restyle" and the change is price-styling only.
+4. The ${N} variations must each test a DIFFERENT element — do NOT produce near-duplicates.
+5. Respect PRODUCT CONTEXT compliance rules. No fabricated claims beyond what winningAngles + mechanism support.
+6. Every element you list as "load-bearing" in analysis must appear verbatim in the "preserved" list of EVERY variation.
+7. Allowed change_category values: "visual-refresh" | "hook-swap" | "angle-variant" | "product-orientation" | "badge-restyle". Pick the BEST ${N} distinct categories.
+
+═══════════════════════════════════════════════════════════════
+OUTPUT — return ONE JSON object (no markdown, no code fences)
+═══════════════════════════════════════════════════════════════
+{
+  "analysis": {
+    "works_because": "<1 sentence — what makes this ad convert>",
+    "load_bearing_elements": [<array — elements that MUST NOT change across variations: the hook, the primary claim, the proof point, the visual anchor. Be specific: "headline text: 'X'", not just "headline">],
+    "safe_to_vary": [<array — elements where A/B testing is reasonable: background palette, badge style, product angle, etc.>],
+    "extracted_text": {
+      "headline": "<exact text or null>",
+      "subheadline": "<exact text or null>",
+      "badges": [<exact text array>],
+      "cta": "<exact text or null>",
+      "price": "<exact text or null>",
+      "bullets": [<exact text array>]
+    },
+    "visual_summary": "<1 sentence: scene composition, color palette, overall mood>"
+  },
+  "variations": [
+    {
+      "variation_id": 1,
+      "change_category": "<one of the 5 allowed values>",
+      "change": "<ONE-sentence description of the SINGLE change>",
+      "preserved": [<explicit array — every load-bearing element from analysis + anything else kept character-identical; be specific>],
+      "modified": {
+        "<element_name>": "<exact new content — text or concrete visual instruction>"
+      },
+      "rationale": "<1 sentence — WHY this change could lift performance>"
+    },
+    ... (${N} total)
+  ]
+}
+
+Analyze the LAST image (the reference winning ad). Produce the JSON. Nothing else.`;
+}
+
+/**
+ * Build the NanoBanana prompt for ONE iteration variation. Output is strictly
+ * surgical — Change only what Claude specified, preserve everything else.
+ *
+ * @param {object} variation  — { change_category, change, preserved, modified, rationale }
+ * @param {object} product    — product profile (for brand color hints)
+ */
+export function buildIterationNanoBananaPrompt(variation, product = {}) {
+  const v = variation || {};
+  const preservedList = Array.isArray(v.preserved) && v.preserved.length > 0
+    ? v.preserved.map(p => `- ${p}`).join('\n')
+    : '- all unchanged elements from the reference';
+  const modifiedObj = v.modified && typeof v.modified === 'object' ? v.modified : {};
+  const modifiedList = Object.keys(modifiedObj).length > 0
+    ? Object.entries(modifiedObj).map(([k, val]) => `- Change ${k} to: ${val}`).join('\n')
+    : `- ${v.change || '(no specific modifications)'}`;
+
+  // product-orientation is a special case — product can rotate, but identity/packaging stays
+  const productRule = v.change_category === 'product-orientation'
+    ? 'Product orientation may change per the modified list above — but product identity, packaging, brand mark, and label text remain identical.'
+    : 'Product identity, orientation, packaging, brand mark, and label text remain identical to the reference.';
+
+  return `Edit the reference ad (LAST image).
+
+🔴 SURGICAL IMAGE EDIT — CHANGE EXACTLY ONE THING.
+
+CHANGE ONLY THIS (single isolated change):
+${v.change || '(see modified list below)'}
+
+Specific modifications:
+${modifiedList}
+
+PRESERVE EXACTLY (character-identical for text, pixel-identical for visuals):
+${preservedList}
+
+DO NOT ALTER:
+- Overall layout, composition, grid structure
+- ${productRule}
+- Fonts, font sizes, letter-spacing, text color of unchanged elements
+- Position of every element that is NOT in the modified list above
+- Color palette of regions that are NOT in the modified list above
+- Typography, alignment, or weight of any preserved text
+
+🔴 CHARACTER-LEVEL FIDELITY (CRITICAL — READ TWICE):
+- Render EVERY character in every preserved + modified text value.
+- Never drop "$", "%", leading words, or trailing words.
+- If new text feels too long for its slot, shrink font to fit. NEVER truncate.
+- Spell every preserved word exactly as shown in the reference.
+
+Output: same aspect ratio and composition as the reference, same or higher resolution. Result should look like a small A/B variant of the reference — not a new ad.`;
+}
+
