@@ -860,7 +860,7 @@ ${templateData.deep_analysis.adaptation_instructions?.common_failure_modes?.leng
     profile.notes && `Notes: ${profile.notes.slice(0, 120)}`,
   ].filter(Boolean);
   const productContext = productContextLines.length > 0
-    ? `\n\nPRODUCT INTELLIGENCE (use this data for ANY text you generate — NEVER invent facts):\n${productContextLines.map(l => `- ${l}`).join('\n')}`
+    ? `\n\nPRODUCT FACTS (cross-check only — do NOT use to add new text elements; only the TEXT SWAPS above determine what text appears in the output):\n${productContextLines.map(l => `- ${l}`).join('\n')}`
     : '';
 
   // Brand colors for visual consistency
@@ -895,7 +895,7 @@ THIS IS CRITICAL: zero rendered text. If in doubt whether something is text, DON
   return `Edit the reference ad (LAST image).${templateIntelligence}
 
 🔴 STRICT RULES (most important):
-1. ELEMENT COUNT: Output must have the EXACT same number of text elements, logos, badges, and images as the reference. Do NOT add or remove any.${logoRule}
+1. ELEMENT COUNT: Output must have the EXACT same number of text elements, logos, badges, and images as the reference. Do NOT add or remove any. 🚫 ZERO new text elements — if a slot has no swap listed below, carry the original text through unchanged. The PRODUCT FACTS section is for cross-checking accuracy only — it is NOT permission to add new copy, headlines, or badges.${logoRule}
 2. PRODUCT: ${productRule}${hasProductInReference ? ` Orientation: ${claudeResult.product_orientation || 'front-facing'}.${productRulesSection}` : ''}
 3. ALL text must be in ENGLISH. Replace every piece of reference text with the swaps below.
 4. ${characterRules}
