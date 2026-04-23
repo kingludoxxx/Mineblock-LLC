@@ -7,6 +7,48 @@ import { resolveImage } from '../utils/imageHelpers.js';
 import { analyzeTemplate, analyzeTemplateFast } from '../utils/templateAnalysis.js';
 
 const router = Router();
+
+// ── POST /bulk-import — Unauthenticated import (CRON_SECRET-gated, CORS-enabled) ──
+// Must be registered BEFORE router.use(authenticate,...) so the JWT middleware
+// does not intercept requests that authenticate via ?secret=CRON_SECRET.
+router.options('/bulk-import', (req, res) => {
+  res.set({ 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'POST', 'Access-Control-Allow-Headers': 'Content-Type' });
+  res.sendStatus(204);
+});
+router.post('/bulk-import', async (req, res) => {
+  res.set('Access-Control-Allow-Origin', '*');
+  const secret = req.query.secret;
+  if (secret !== process.env.CRON_SECRET) return res.status(403).json({ error: 'Forbidden' });
+  try {
+    await ensureTable();
+    let { templates } = req.body;
+    // Handle form-urlencoded POST (templates comes as a JSON string)
+    if (typeof templates === 'string') { try { templates = JSON.parse(templates); } catch { return res.status(400).json({ error: 'invalid JSON' }); } }
+    if (!Array.isArray(templates)) return res.status(400).json({ error: 'templates array required' });
+    // Batch insert for performance (up to 200 per query)
+    const valid = templates.filter(t => t.name && t.image_url);
+    let count = 0;
+    for (let i = 0; i < valid.length; i += 200) {
+      const batch = valid.slice(i, i + 200);
+      const values = [];
+      const params = [];
+      batch.forEach((t, idx) => {
+        const off = idx * 4;
+        values.push(`($${off+1}, $${off+2}, $${off+3}, $${off+4})`);
+        params.push(t.name, t.category || 'Uncategorized', t.image_url, JSON.stringify(t.tags || []));
+      });
+      await pgQuery(
+        `INSERT INTO statics_templates (name, category, image_url, tags) VALUES ${values.join(', ')} ON CONFLICT DO NOTHING`,
+        params
+      );
+      count += batch.length;
+    }
+    res.status(201).json({ success: true, count });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.use(authenticate, requirePermission('statics-templates', 'access'));
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
@@ -222,44 +264,8 @@ router.post('/', authenticate, async (req, res) => {
   }
 });
 
-// ── POST /bulk-import — Temporary unauthenticated import (CORS-enabled) ──
-router.options('/bulk-import', (req, res) => {
-  res.set({ 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'POST', 'Access-Control-Allow-Headers': 'Content-Type' });
-  res.sendStatus(204);
-});
-router.post('/bulk-import', async (req, res) => {
-  res.set('Access-Control-Allow-Origin', '*');
-  const secret = req.query.secret;
-  if (secret !== process.env.CRON_SECRET) return res.status(403).json({ error: 'Forbidden' });
-  try {
-    await ensureTable();
-    let { templates } = req.body;
-    // Handle form-urlencoded POST (templates comes as a JSON string)
-    if (typeof templates === 'string') { try { templates = JSON.parse(templates); } catch { return res.status(400).json({ error: 'invalid JSON' }); } }
-    if (!Array.isArray(templates)) return res.status(400).json({ error: 'templates array required' });
-    // Batch insert for performance (up to 200 per query)
-    const valid = templates.filter(t => t.name && t.image_url);
-    let count = 0;
-    for (let i = 0; i < valid.length; i += 200) {
-      const batch = valid.slice(i, i + 200);
-      const values = [];
-      const params = [];
-      batch.forEach((t, idx) => {
-        const off = idx * 4;
-        values.push(`($${off+1}, $${off+2}, $${off+3}, $${off+4})`);
-        params.push(t.name, t.category || 'Uncategorized', t.image_url, JSON.stringify(t.tags || []));
-      });
-      await pgQuery(
-        `INSERT INTO statics_templates (name, category, image_url, tags) VALUES ${values.join(', ')} ON CONFLICT DO NOTHING`,
-        params
-      );
-      count += batch.length;
-    }
-    res.status(201).json({ success: true, count });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+// POST /bulk-import is registered at the top of this file (before router.use(authenticate,...))
+// so that CRON_SECRET-authenticated requests bypass JWT middleware.
 
 // ── POST /bulk — Bulk create templates ──────────────────────────────────
 
