@@ -1,3 +1,10 @@
+// Routes use kebab-case keys (e.g. 'brief-agent'); stored permissions may use
+// camelCase (e.g. 'briefAgent') when built from the invite pages array.
+// Normalise to kebab-case before comparing so both forms match.
+function toKebab(str) {
+  return str.replace(/([A-Z])/g, (c) => '-' + c.toLowerCase());
+}
+
 export const requirePermission = (resource, action) => {
   return (req, res, next) => {
     if (!req.user) {
@@ -20,9 +27,10 @@ export const requirePermission = (resource, action) => {
         return next();
       }
 
-      // Check specific resource permission
-      if (permissions[resource] && Array.isArray(permissions[resource])) {
-        if (permissions[resource].includes('*') || permissions[resource].includes(action)) {
+      // Check every stored key normalised to kebab-case against the resource key
+      for (const [key, actions] of Object.entries(permissions)) {
+        if (toKebab(key) !== resource) continue;
+        if (Array.isArray(actions) && (actions.includes('*') || actions.includes(action))) {
           return next();
         }
       }
