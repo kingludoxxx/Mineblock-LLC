@@ -1,3 +1,27 @@
+# AREA SCOPE: ANALYTICS
+
+This worktree is the **Analytics** area. Branch: `analytics/active`.
+
+## In scope (edit freely)
+- `server/src/routes/kpiSystem.js`
+- `server/src/routes/creativeAnalysis.js`
+- `server/src/routes/creativeIntel.js`
+- `server/src/routes/dashboard.js`
+- Analytics-only utils
+
+## Out of scope (DO NOT EDIT — use the right worktree)
+- Ads (`adLauncher`, `adRejectionMonitor`, `adsControlCenter`, `videoAdsLauncher`, `metaWebhook`, `metaAdsApi`) → **`/Users/ludo/Mineblock-LLC-ads`**
+- Creative pipeline → **`/Users/ludo/Mineblock-LLC-creative`**
+- Storefront (`shopifyWebhook`, `productProfiles`) → **`/Users/ludo/Mineblock-LLC-storefront`**
+- Platform (`auth`, `users`, `team`, `departments`, `settings`, `audit`, `health`, all controllers, models, middleware, `authService`, `auditService`) → **`/Users/ludo/Mineblock-LLC-platform`**
+
+## Shared coordination files (edit with care, merge early)
+- `app.js`, `package.json`, `server/migrations/*`, `render.yaml`
+
+If a change requires touching out-of-scope code, STOP and tell the operator — do not cross lanes.
+
+---
+
 # CLAUDE.md — Behavior Instructions
 
 ---
@@ -115,8 +139,8 @@ or environment limitation:
 
 At the start of every session, before doing anything else:
 
-1. Read this file fully
-2. Check /tasks/TASKS.md for the current task queue
+1. Read this file fully (includes AREA SCOPE: ANALYTICS at the top)
+2. Check /tasks/ACTIVE-analytics.md for the current task queue (NOT /tasks/TASKS.md — that's historical)
 3. Check /logs/progress.md for the last recorded checkpoint
 4. Begin at the first incomplete task
 5. Do not ask for confirmation before starting. Start.

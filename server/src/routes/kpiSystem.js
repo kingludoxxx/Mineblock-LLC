@@ -5,6 +5,52 @@ import { pgQuery } from '../db/pg.js';
 import { fetchDailyAdSpend } from './creativeAnalysis.js';
 
 const router = Router();
+
+// ── Unauthenticated routes (before global auth middleware) ──────────────────
+// These use their own auth mechanisms (CRON_SECRET, SUPPLIER_SHARE_TOKEN).
+// They MUST be registered before router.use(authenticate,...) or they get 401.
+
+// GET /cron/daily-pnl — called by Render Cron Job, protected by CRON_SECRET
+router.get('/cron/daily-pnl', async (req, res) => {
+  const secret = process.env.CRON_SECRET;
+  if (!secret || req.query.secret !== secret) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+  try {
+    let dateStr = req.query.date;
+    if (!dateStr) {
+      const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Berlin', year: 'numeric', month: '2-digit', day: '2-digit' });
+      const berlinToday = fmt.format(new Date());
+      const [y, m, d] = berlinToday.split('-').map(Number);
+      const yesterday = new Date(Date.UTC(y, m - 1, d));
+      yesterday.setUTCDate(yesterday.getUTCDate() - 1);
+      dateStr = `${yesterday.getUTCFullYear()}-${String(yesterday.getUTCMonth() + 1).padStart(2, '0')}-${String(yesterday.getUTCDate()).padStart(2, '0')}`;
+    }
+    console.log(`[Daily P&L] Cron trigger for ${dateStr}`);
+    await sendDailyPnlReport(dateStr);
+    res.json({ success: true, date: dateStr });
+  } catch (err) {
+    console.error('[Daily P&L] Cron error:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// GET /public/cost-sheet — supplier-facing, protected by SUPPLIER_SHARE_TOKEN
+router.get('/public/cost-sheet', async (req, res) => {
+  try {
+    const { token, period, date } = req.query;
+    if (!token || !SUPPLIER_SHARE_TOKEN || token !== SUPPLIER_SHARE_TOKEN) {
+      return res.status(403).json({ success: false, error: { message: 'Invalid or missing share token' } });
+    }
+    if (!date) return res.status(400).json({ success: false, error: { message: 'date is required' } });
+    const data = await buildCostSheet(period || 'daily', date);
+    res.json({ success: true, data });
+  } catch (err) {
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// ── All remaining routes require JWT auth + kpi-system permission ───────────
 router.use(authenticate, requirePermission('kpi-system', 'access'));
 
 // ── Config ──────────────────────────────────────────────────────────
@@ -1581,22 +1627,7 @@ router.get('/share-token', authenticate, (req, res) => {
   res.json({ success: true, data: { token } });
 });
 
-/** GET /public/cost-sheet — Public supplier cost sheet (token-based auth) */
-router.get('/public/cost-sheet', async (req, res) => {
-  try {
-    const { token, period, date } = req.query;
-
-    if (!token || !SUPPLIER_SHARE_TOKEN || token !== SUPPLIER_SHARE_TOKEN) {
-      return res.status(403).json({ success: false, error: { message: 'Invalid or missing share token' } });
-    }
-    if (!date) return res.status(400).json({ success: false, error: { message: 'date is required' } });
-
-    const data = await buildCostSheet(period || 'daily', date);
-    res.json({ success: true, data });
-  } catch (err) {
-    res.status(500).json({ success: false, error: { message: err.message } });
-  }
-});
+// /public/cost-sheet is registered above the auth middleware — see top of file
 
 /** GET /trends — Revenue/profit/order trends over N days */
 router.get('/trends', authenticate, async (req, res) => {
@@ -2314,34 +2345,7 @@ router.post('/daily-pnl', authenticate, async (req, res) => {
   }
 });
 
-// ── Cron-triggered endpoint (called by Render Cron Job daily) ──────────────
-// Protected by CRON_SECRET env var instead of JWT auth
-router.get('/cron/daily-pnl', async (req, res) => {
-  const secret = process.env.CRON_SECRET;
-  if (!secret || req.query.secret !== secret) {
-    return res.status(403).json({ error: 'Forbidden' });
-  }
-  try {
-    // Use explicit date if provided, otherwise calculate yesterday in Berlin timezone
-    let dateStr = req.query.date;
-    if (!dateStr) {
-      // Calculate yesterday in Berlin timezone using UTC to avoid local timezone issues
-      const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Berlin', year: 'numeric', month: '2-digit', day: '2-digit' });
-      const berlinToday = fmt.format(new Date()); // YYYY-MM-DD in Berlin time
-      const [y, m, d] = berlinToday.split('-').map(Number);
-      const yesterday = new Date(Date.UTC(y, m - 1, d));
-      yesterday.setUTCDate(yesterday.getUTCDate() - 1);
-      dateStr = `${yesterday.getUTCFullYear()}-${String(yesterday.getUTCMonth() + 1).padStart(2, '0')}-${String(yesterday.getUTCDate()).padStart(2, '0')}`;
-    }
-
-    console.log(`[Daily P&L] Cron trigger for ${dateStr}`);
-    await sendDailyPnlReport(dateStr);
-    res.json({ success: true, date: dateStr });
-  } catch (err) {
-    console.error('[Daily P&L] Cron error:', err.message);
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
+// /cron/daily-pnl is registered above the auth middleware — see top of file
 
 // P&L report is triggered ONLY by the Render cron job endpoint (GET /cron/daily-pnl).
 // No startup catch-up — prevents duplicate messages on server restarts.
