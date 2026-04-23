@@ -706,29 +706,21 @@ export default function CreativeAnalysis() {
   // regardless of which historical date range is selected.
   const currentWeekLabel = useMemo(() => getWeekLabel(new Date()), []);
 
+  // Use processedData so user filters (type, angle, format, editor, avatar)
+  // also apply to New This Week and Top Creatives cards — previously they
+  // ignored filters and contradicted the Performance table below.
   const newWinners = useMemo(() => {
-    return (data || [])
-      .filter(c => c.first_seen === currentWeekLabel && c.roas >= 1.5 && (c.total_spend ?? 0) >= 20)
-      .map(c => ({
-        ...c,
-        ad_name: c.ad_name || c.hooks?.reduce((best, h) => (h.spend > (best?.spend ?? -1) ? h : best), null)?.ad_name || c.creative_id,
-      }))
-      .sort((a, b) => b.roas - a.roas);
-  }, [data, currentWeekLabel]);
+    return processedData
+      .filter(c => c.first_seen === currentWeekLabel && (c.roas ?? 0) >= 1.5 && (c.spend ?? 0) >= 20)
+      .sort((a, b) => (b.roas ?? 0) - (a.roas ?? 0));
+  }, [processedData, currentWeekLabel]);
 
   const sortedCreatives = useMemo(() => {
-    // Normalize raw data so cards have consistent field names
-    let filtered = (data || []).map(c => ({
-      ...c,
-      spend: c.total_spend ?? c.spend ?? 0,
-      revenue: c.total_revenue ?? c.revenue ?? 0,
-      purchases: c.total_purchases ?? c.purchases ?? 0,
-      ad_name: c.ad_name || c.hooks?.reduce((best, h) => (h.spend > (best?.spend ?? -1) ? h : best), null)?.ad_name || c.creative_id,
-    }));
+    let filtered = processedData;
     // For ROAS and velocity sorts, require minimum spend to avoid noise
     if (creativeSort === 'roas') filtered = filtered.filter(c => c.spend >= 50);
     if (creativeSort === 'velocity') filtered = filtered.filter(c => c.spend >= 20);
-    return filtered.sort((a, b) => {
+    return [...filtered].sort((a, b) => {
       switch (creativeSort) {
         case 'roas': return b.roas - a.roas;
         case 'newest': return (b.first_seen || '').localeCompare(a.first_seen || '') || b.spend - a.spend;
@@ -736,7 +728,7 @@ export default function CreativeAnalysis() {
         default: return b.spend - a.spend;
       }
     }).slice(0, 15);
-  }, [data, creativeSort]);
+  }, [processedData, creativeSort]);
 
   // ── Interactions ──
 
@@ -1186,7 +1178,7 @@ export default function CreativeAnalysis() {
                     <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
                       <div className="flex justify-between">
                         <span className="text-gray-500">Spend</span>
-                        <span className="text-white font-medium">{fmtMoney(creative.total_spend)}</span>
+                        <span className="text-white font-medium">{fmtMoney(creative.spend ?? creative.total_spend)}</span>
                       </div>
                       <div className="flex justify-between">
                         <span className="text-gray-500">ROAS</span>
