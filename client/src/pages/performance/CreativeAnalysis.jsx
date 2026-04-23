@@ -23,6 +23,8 @@ import {
   Sparkles,
   VolumeX,
   Volume2,
+  Info,
+  AlertTriangle,
 } from 'lucide-react';
 import CreativeDetailModal from './CreativeDetailModal';
 import {
@@ -339,6 +341,36 @@ function presetToRange(key) {
     case 'last_365': return { startDate: fmt(sub(364)), endDate: fmt(today) };
     default: return { startDate: fmt(sub(13)), endDate: fmt(today) };
   }
+}
+
+// ── Info Tooltip ─────────────────────────────────────────────────────────────
+
+function InfoTooltip({ lines }) {
+  const [visible, setVisible] = useState(false);
+  return (
+    <div className="relative inline-flex items-center">
+      <button
+        onMouseEnter={() => setVisible(true)}
+        onMouseLeave={() => setVisible(false)}
+        className="text-gray-600 hover:text-[#c9a84c] transition-colors cursor-default"
+      >
+        <Info className="w-3.5 h-3.5" />
+      </button>
+      {visible && (
+        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 z-50 w-72 p-3 bg-[#111113] border border-[#c9a84c]/20 rounded-xl shadow-2xl pointer-events-none">
+          <ul className="space-y-1.5">
+            {lines.map((line, i) => (
+              <li key={i} className="text-[11px] text-gray-300 leading-relaxed flex gap-2">
+                <span className="text-[#c9a84c] mt-0.5 shrink-0">·</span>
+                <span>{line}</span>
+              </li>
+            ))}
+          </ul>
+          <div className="absolute top-full left-1/2 -translate-x-1/2 w-0 h-0 border-l-[6px] border-r-[6px] border-t-[6px] border-l-transparent border-r-transparent border-t-[#c9a84c]/20" />
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ── Component ────────────────────────────────────────────────────────────────
@@ -869,9 +901,9 @@ export default function CreativeAnalysis() {
           <div className="relative" ref={datePickerRef}>
             <button
               onClick={() => setDatePickerOpen((v) => !v)}
-              className="flex items-center gap-2 px-4 py-2 rounded-lg bg-white/[0.05] border border-white/[0.08] text-zinc-100 text-sm hover:bg-white/[0.08] transition-colors cursor-pointer"
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg bg-white/[0.05] border text-zinc-100 text-sm hover:bg-white/[0.08] transition-colors cursor-pointer ${datePickerOpen ? 'border-[#c9a84c]/60' : 'border-[#c9a84c]/25 hover:border-[#c9a84c]/50'}`}
             >
-              <Calendar className="w-3.5 h-3.5 text-zinc-400" />
+              <Calendar className="w-3.5 h-3.5 text-[#c9a84c]" />
               {DATE_PRESETS.find((p) => p.key === datePreset)?.label || `${startDate} – ${endDate}`}
               <ChevronDown className="w-3.5 h-3.5 text-gray-500" />
             </button>
@@ -921,7 +953,7 @@ export default function CreativeAnalysis() {
               for (let d = 1; d <= daysInMonth; d++) cells.push(d);
 
               return (
-              <div className="absolute right-0 top-full mt-2 z-50 bg-[#1a1a2e] border border-white/[0.1] rounded-xl shadow-2xl flex min-w-[560px]">
+              <div className="absolute right-0 top-full mt-2 z-50 bg-[#111113] border border-[#c9a84c]/20 rounded-xl shadow-2xl flex min-w-[560px]" style={{ boxShadow: '0 0 40px rgba(201,168,76,0.06)' }}>
                 {/* Presets */}
                 <div className="w-44 border-r border-white/[0.06] py-2 overflow-y-auto max-h-[400px]">
                   <p className="px-3 py-1.5 text-gray-500 text-[10px] uppercase tracking-wider font-semibold">Presets</p>
@@ -1106,11 +1138,16 @@ export default function CreativeAnalysis() {
           <div className="flex items-center gap-2 mb-4">
             <Sparkles className="w-4 h-4 text-[#c9a84c]" />
             <h2 className="text-sm font-semibold text-white/60 uppercase tracking-wider">
-              New Winners This Period
+              New This Week
             </h2>
             <span className="text-xs px-2 py-0.5 rounded-full bg-[#c9a84c]/10 text-[#c9a84c] border border-[#c9a84c]/20">
               {newWinners.length} new
             </span>
+            <InfoTooltip lines={[
+              'Creatives that debuted this ISO week (Mon–Sun), with ROAS ≥ 1.5x and spend ≥ $20.',
+              'Independent of the selected date range — always shows debuts from the current week.',
+              'Winner badge (⭐) = lifetime spend ≥ $500 AND lifetime ROAS ≥ 1.8x.',
+            ]} />
           </div>
           <div className="flex gap-4 overflow-x-auto pb-2" style={{ scrollbarWidth: 'thin' }}>
             {newWinners.map((creative) => {
@@ -1153,9 +1190,16 @@ export default function CreativeAnalysis() {
                         <span className="text-gray-500">ROAS</span>
                         <span className={creative.roas >= 1.5 ? 'text-emerald-400 font-semibold' : creative.roas >= 1.0 ? 'text-[#c9a84c]' : 'text-red-400'}>{fmtRoas(creative.roas)}</span>
                       </div>
-                      <div className="flex justify-between">
+                      <div className="flex justify-between items-center">
                         <span className="text-gray-500">Purchases</span>
-                        <span className="text-white font-medium">{creative.purchases ?? creative.total_purchases ?? 0}</span>
+                        <span className="flex items-center gap-1 text-white font-medium">
+                          {creative.purchases ?? creative.total_purchases ?? 0}
+                          {(creative.purchases ?? creative.total_purchases ?? 0) === 0 && (creative.roas ?? 0) > 0 && (
+                            <span title="Revenue attributed without purchase events — likely view-through attribution in Triple Whale">
+                              <AlertTriangle className="w-3 h-3 text-amber-500/70" />
+                            </span>
+                          )}
+                        </span>
                       </div>
                       <div className="flex justify-between">
                         <span className="text-gray-500">CPA</span>
@@ -1191,8 +1235,15 @@ export default function CreativeAnalysis() {
       {/* Top Creatives Visual Cards (Motion-style) */}
       {processedData.length > 0 && (
         <div className="mb-8">
-          <div className="flex items-center mb-4">
+          <div className="flex items-center mb-4 gap-2">
             <h2 className="text-white font-semibold text-lg">Top Creatives</h2>
+            <InfoTooltip lines={[
+              'Top Spend — sorted by total ad spend in the selected period. Top 15 creatives.',
+              'Best ROAS — min $50 spend, sorted by revenue ÷ spend descending.',
+              'Newest — sorted by launch week (first_seen) descending, then spend.',
+              'Fastest Scaling — sorted by spend ÷ weeks active. Highlights creatives gaining momentum quickly. Min $20 spend.',
+              'ROAS = revenue attributed by Triple Whale ÷ ad spend. Can be > 0 even if purchases = 0 (view-through attribution).',
+            ]} />
             <div className="flex items-center gap-2 ml-auto">
               {['spend', 'roas', 'newest', 'velocity'].map(key => {
                 const labels = { spend: 'Top Spend', roas: 'Best ROAS', newest: 'Newest', velocity: 'Fastest Scaling' };
@@ -1251,9 +1302,16 @@ export default function CreativeAnalysis() {
                         <span className="text-gray-500">ROAS</span>
                         <span className={creative.roas >= 1.5 ? 'text-emerald-400 font-semibold' : creative.roas >= 1.0 ? 'text-[#c9a84c]' : 'text-red-400'}>{fmtRoas(creative.roas)}</span>
                       </div>
-                      <div className="flex justify-between">
+                      <div className="flex justify-between items-center">
                         <span className="text-gray-500">Purchases</span>
-                        <span className="text-white font-medium">{creative.purchases ?? creative.total_purchases ?? 0}</span>
+                        <span className="flex items-center gap-1 text-white font-medium">
+                          {creative.purchases ?? creative.total_purchases ?? 0}
+                          {(creative.purchases ?? creative.total_purchases ?? 0) === 0 && (creative.roas ?? 0) > 0 && (
+                            <span title="Revenue attributed without purchase events — likely view-through attribution in Triple Whale">
+                              <AlertTriangle className="w-3 h-3 text-amber-500/70" />
+                            </span>
+                          )}
+                        </span>
                       </div>
                       <div className="flex justify-between">
                         <span className="text-gray-500">CPA</span>
@@ -1468,7 +1526,12 @@ export default function CreativeAnalysis() {
                 <div className="flex items-center gap-2 mb-4">
                   <Flame className="w-4 h-4 text-orange-400" />
                   <h3 className="text-white font-semibold text-sm">Rising Stars</h3>
-                  <span className="text-gray-500 text-xs ml-1">Profitable creatives not yet scaled (spend $50–$500, ROAS {'>'}1.0x)</span>
+                  <InfoTooltip lines={[
+                    'Profitable creatives that haven\'t yet crossed the $500 spend threshold.',
+                    'Criteria: spend $50–$499 AND ROAS ≥ 1.0x. Sorted by ROAS descending. Top 10.',
+                    'Scale bar shows % progress to $500 — the threshold where a creative qualifies as a lifetime Winner.',
+                    'These are candidates to increase budget on.',
+                  ]} />
                 </div>
                 <div className="flex gap-3 overflow-x-auto pb-2">
                   {risingStars.map((star) => {
