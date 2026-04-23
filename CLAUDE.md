@@ -1,3 +1,37 @@
+# AREA SCOPE: PLATFORM
+
+This worktree is the **Platform** area (auth, users, infra, shared services). Branch: `platform/active`.
+
+## In scope (edit freely)
+- `server/src/routes/auth.js`
+- `server/src/routes/users.js`
+- `server/src/routes/team.js`
+- `server/src/routes/departments.js`
+- `server/src/routes/settings.js`
+- `server/src/routes/audit.js`
+- `server/src/routes/health.js`
+- `server/src/routes/index.js`
+- All `server/src/controllers/*`
+- All `server/src/models/*`
+- All `server/src/middleware/*`
+- `server/src/services/authService.js`
+- `server/src/services/auditService.js`
+- `server/src/utils/jwt.js`, shared utils (slackAlert, logger, hash, r2)
+- `server/src/config/*`, `server/src/db/*`
+
+## Out of scope (DO NOT EDIT — use the right worktree)
+- Ads (`adLauncher`, `adRejectionMonitor`, `adsControlCenter`, `videoAdsLauncher`, `metaWebhook`, `metaAdsApi`) → **`/Users/ludo/Mineblock-LLC-ads`**
+- Creative pipeline (`briefAgent`, `briefPipeline`, `advertorialPipeline`, `statics*`, `iterationKing`, `clickupWebhook`, creative utils) → **`/Users/ludo/Mineblock-LLC-creative`**
+- Analytics (`kpiSystem`, `creativeAnalysis`, `creativeIntel`, `dashboard`) → **`/Users/ludo/Mineblock-LLC-analytics`**
+- Storefront (`shopifyWebhook`, `productProfiles`) → **`/Users/ludo/Mineblock-LLC-storefront`**
+
+## Shared coordination files (Platform usually owns these — coordinate when other areas need changes)
+- `app.js` (route mounting), `package.json`, `server/migrations/*`, `render.yaml`
+
+If a change requires touching out-of-scope code, STOP and tell the operator — do not cross lanes.
+
+---
+
 # CLAUDE.md — Behavior Instructions
 
 ---
@@ -115,8 +149,8 @@ or environment limitation:
 
 At the start of every session, before doing anything else:
 
-1. Read this file fully
-2. Check /tasks/TASKS.md for the current task queue
+1. Read this file fully (includes AREA SCOPE: PLATFORM at the top)
+2. Check /tasks/ACTIVE-platform.md for the current task queue (NOT /tasks/TASKS.md — that's historical)
 3. Check /logs/progress.md for the last recorded checkpoint
 4. Begin at the first incomplete task
 5. Do not ask for confirmation before starting. Start.
