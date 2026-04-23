@@ -1,3 +1,33 @@
+# AREA SCOPE: CREATIVE
+
+This worktree is the **Creative** area. Branch: `creative/active`.
+
+## In scope (edit freely)
+- `server/src/routes/briefAgent.js`
+- `server/src/routes/briefPipeline.js`
+- `server/src/routes/advertorialPipeline.js`
+- `server/src/routes/staticsGeneration.js`
+- `server/src/routes/staticsTemplates.js`
+- `server/src/routes/iterationKing.js`
+- `server/src/routes/clickupWebhook.js`
+- `server/src/services/geminiImageGen.js`
+- `server/src/services/imageGeneration.js`
+- `server/src/services/redditScraper.js`
+- All creative utils in `server/src/utils/` (staticsPrompts, etc.)
+
+## Out of scope (DO NOT EDIT — use the right worktree)
+- Ads (`adLauncher`, `adRejectionMonitor`, `adsControlCenter`, `videoAdsLauncher`, `metaWebhook`, `metaAdsApi`) → **`/Users/ludo/Mineblock-LLC-ads`**
+- Analytics (`kpiSystem`, `creativeAnalysis`, `creativeIntel`, `dashboard`) → **`/Users/ludo/Mineblock-LLC-analytics`**
+- Storefront (`shopifyWebhook`, `productProfiles`) → **`/Users/ludo/Mineblock-LLC-storefront`**
+- Platform (`auth`, `users`, `team`, `departments`, `settings`, `audit`, `health`, all controllers, models, middleware, `authService`, `auditService`) → **`/Users/ludo/Mineblock-LLC-platform`**
+
+## Shared coordination files (edit with care, merge early)
+- `app.js`, `package.json`, `server/migrations/*`, `render.yaml`
+
+If a change requires touching out-of-scope code, STOP and tell the operator — do not cross lanes.
+
+---
+
 # CLAUDE.md — Behavior Instructions
 
 ---
@@ -115,8 +145,8 @@ or environment limitation:
 
 At the start of every session, before doing anything else:
 
-1. Read this file fully
-2. Check /tasks/TASKS.md for the current task queue
+1. Read this file fully (includes AREA SCOPE: CREATIVE at the top)
+2. Check /tasks/ACTIVE-creative.md for the current task queue (NOT /tasks/TASKS.md — that's historical)
 3. Check /logs/progress.md for the last recorded checkpoint
 4. Begin at the first incomplete task
 5. Do not ask for confirmation before starting. Start.
