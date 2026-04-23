@@ -702,7 +702,9 @@ export default function CreativeAnalysis() {
 
   // ── New Winners & Sort for Top Creatives ──
 
-  const currentWeekLabel = useMemo(() => getWeekLabel(endDate || new Date()), [endDate]);
+  // Always use today's ISO week so "New This Week" means the actual current week,
+  // regardless of which historical date range is selected.
+  const currentWeekLabel = useMemo(() => getWeekLabel(new Date()), []);
 
   const newWinners = useMemo(() => {
     return (data || [])
@@ -1144,8 +1146,8 @@ export default function CreativeAnalysis() {
               {newWinners.length} new
             </span>
             <InfoTooltip lines={[
-              'Creatives that debuted this ISO week (Mon–Sun), with ROAS ≥ 1.5x and spend ≥ $20.',
-              'Independent of the selected date range — always shows debuts from the current week.',
+              'Creatives that debuted in the current ISO week (Mon–Sun of this week), with ROAS ≥ 1.5x and spend ≥ $20.',
+              'Always anchored to today\'s week — independent of the date range selected above.',
               'Winner badge (⭐) = lifetime spend ≥ $500 AND lifetime ROAS ≥ 1.8x.',
             ]} />
           </div>
