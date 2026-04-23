@@ -1,3 +1,29 @@
+# AREA SCOPE: STOREFRONT
+
+This worktree is the **Storefront** area. Branch: `storefront/active`.
+
+## In scope (edit freely)
+- `server/src/routes/shopifyWebhook.js`
+- `server/src/routes/productProfiles.js`
+- Any storefront-only utils/services
+
+## NOT in scope — the live Shopify theme is a SEPARATE repo
+- Shopify theme lives at `/tmp/shopify-theme/` (GitHub: `kingludoxxx/Shopify-Theme`, theme `199021920587`). Edit the theme files there, not here.
+- This Storefront area is for the **backend glue** (Shopify webhooks, product profile sync) — NOT theme templates.
+
+## Out of scope (DO NOT EDIT — use the right worktree)
+- Ads (`adLauncher`, `adRejectionMonitor`, `adsControlCenter`, `videoAdsLauncher`, `metaWebhook`, `metaAdsApi`) → **`/Users/ludo/Mineblock-LLC-ads`**
+- Creative pipeline → **`/Users/ludo/Mineblock-LLC-creative`**
+- Analytics → **`/Users/ludo/Mineblock-LLC-analytics`**
+- Platform (`auth`, `users`, `team`, `departments`, `settings`, `audit`, `health`, all controllers, models, middleware, `authService`, `auditService`) → **`/Users/ludo/Mineblock-LLC-platform`**
+
+## Shared coordination files (edit with care, merge early)
+- `app.js`, `package.json`, `server/migrations/*`, `render.yaml`
+
+If a change requires touching out-of-scope code, STOP and tell the operator — do not cross lanes.
+
+---
+
 # CLAUDE.md — Behavior Instructions
 
 ---
@@ -115,8 +141,8 @@ or environment limitation:
 
 At the start of every session, before doing anything else:
 
-1. Read this file fully
-2. Check /tasks/TASKS.md for the current task queue
+1. Read this file fully (includes AREA SCOPE: STOREFRONT at the top)
+2. Check /tasks/ACTIVE-storefront.md for the current task queue (NOT /tasks/TASKS.md — that's historical)
 3. Check /logs/progress.md for the last recorded checkpoint
 4. Begin at the first incomplete task
 5. Do not ask for confirmation before starting. Start.
