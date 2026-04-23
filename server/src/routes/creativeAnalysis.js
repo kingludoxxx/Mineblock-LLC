@@ -5,6 +5,34 @@ import { pgQuery, pgDb } from '../db/pg.js';
 import { getEditorNames } from '../utils/clickupEditors.js';
 
 const router = Router();
+
+// ── Unauthenticated cron routes (before global auth middleware) ─────────────
+// POST /sync-weekly — called by Render Cron Job, protected by X-Cron-Secret.
+// MUST be defined before router.use(authenticate,...) or it gets a 401 before
+// the secret check runs.
+router.post('/sync-weekly', async (req, res) => {
+  try {
+    const secret = req.headers['x-cron-secret'];
+    if (!CRON_SECRET || secret !== CRON_SECRET) {
+      return res.status(401).json({ success: false, error: { message: 'Unauthorized' } });
+    }
+    const week = getCurrentWeek();
+    const range = weekToDateRange(week);
+    if (!range) {
+      return res.status(500).json({ success: false, error: { message: 'Failed to determine current week range' } });
+    }
+    const result = await syncData({ periodWeek: week, startDate: range.startDate, endDate: range.endDate });
+    res.json({
+      success: true,
+      data: { week, ...result, period: { startDate: range.startDate, endDate: range.endDate } },
+    });
+  } catch (err) {
+    console.error('[Creative Analysis] /sync-weekly error:', err);
+    res.status(500).json({ success: false, error: { message: 'Weekly sync failed' } });
+  }
+});
+
+// ── All remaining routes require JWT auth + creative-analysis permission ────
 router.use(authenticate, requirePermission('creative-analysis', 'access'));
 
 // ── Config ──────────────────────────────────────────────────────────
@@ -1938,35 +1966,7 @@ router.post('/sync', authenticate, async (req, res) => {
  * Cron endpoint — no auth, checks X-Cron-Secret header.
  * Auto-determines current week and syncs.
  */
-router.post('/sync-weekly', async (req, res) => {
-  try {
-    // Verify cron secret
-    const secret = req.headers['x-cron-secret'];
-    if (!CRON_SECRET || secret !== CRON_SECRET) {
-      return res.status(401).json({ success: false, error: { message: 'Unauthorized' } });
-    }
-
-    const week = getCurrentWeek();
-    const range = weekToDateRange(week);
-    if (!range) {
-      return res.status(500).json({ success: false, error: { message: 'Failed to determine current week range' } });
-    }
-
-    const result = await syncData({ periodWeek: week, startDate: range.startDate, endDate: range.endDate });
-
-    res.json({
-      success: true,
-      data: {
-        week,
-        ...result,
-        period: { startDate: range.startDate, endDate: range.endDate },
-      },
-    });
-  } catch (err) {
-    console.error('[Creative Analysis] /sync-weekly error:', err);
-    res.status(500).json({ success: false, error: { message: 'Weekly sync failed' } });
-  }
-});
+// /sync-weekly is registered above the auth middleware — see top of file
 
 /**
  * POST /sync-all
