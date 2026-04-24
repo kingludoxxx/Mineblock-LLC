@@ -345,28 +345,35 @@ function presetToRange(key) {
 
 // ── Info Tooltip ─────────────────────────────────────────────────────────────
 
-function InfoTooltip({ lines }) {
-  const [visible, setVisible] = useState(false);
+function InfoTooltip({ lines, label = 'How this works' }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [open]);
   return (
-    <div className="relative inline-flex items-center">
+    <div className="relative inline-flex items-center" ref={ref}>
       <button
-        onMouseEnter={() => setVisible(true)}
-        onMouseLeave={() => setVisible(false)}
-        className="text-gray-600 hover:text-[#c9a84c] transition-colors cursor-default"
+        onClick={() => setOpen((v) => !v)}
+        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium border transition-colors cursor-pointer ${open ? 'bg-[#c9a84c]/15 text-[#c9a84c] border-[#c9a84c]/40' : 'bg-white/[0.03] text-gray-400 border-white/[0.08] hover:border-[#c9a84c]/40 hover:text-[#c9a84c]'}`}
       >
-        <Info className="w-3.5 h-3.5" />
+        <Info className="w-3 h-3" />
+        {label}
       </button>
-      {visible && (
-        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 z-50 w-72 p-3 bg-[#111113] border border-[#c9a84c]/20 rounded-xl shadow-2xl pointer-events-none">
-          <ul className="space-y-1.5">
+      {open && (
+        <div className="absolute top-full left-0 mt-2 z-50 w-80 p-4 bg-[#111113] border border-[#c9a84c]/30 rounded-xl shadow-2xl" style={{ boxShadow: '0 0 40px rgba(201,168,76,0.08)' }}>
+          <div className="text-[11px] font-semibold text-[#c9a84c] uppercase tracking-wider mb-2">How this works</div>
+          <ul className="space-y-2">
             {lines.map((line, i) => (
-              <li key={i} className="text-[11px] text-gray-300 leading-relaxed flex gap-2">
-                <span className="text-[#c9a84c] mt-0.5 shrink-0">·</span>
+              <li key={i} className="text-xs text-gray-300 leading-relaxed flex gap-2">
+                <span className="text-[#c9a84c] mt-0.5 shrink-0">›</span>
                 <span>{line}</span>
               </li>
             ))}
           </ul>
-          <div className="absolute top-full left-1/2 -translate-x-1/2 w-0 h-0 border-l-[6px] border-r-[6px] border-t-[6px] border-l-transparent border-r-transparent border-t-[#c9a84c]/20" />
         </div>
       )}
     </div>
@@ -1365,7 +1372,10 @@ export default function CreativeAnalysis() {
                       <XAxis type="number" tick={{ fill: '#6b7280', fontSize: 10 }} axisLine={false} tickLine={false} tickFormatter={(v) => `${Number(v || 0).toFixed(1)}x`} />
                       <YAxis type="category" dataKey="angle" tick={{ fill: '#9ca3af', fontSize: 11 }} axisLine={false} tickLine={false} width={160} interval={0} />
                       <Tooltip
-                        contentStyle={{ background: '#1a1a2e', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, color: '#fff', fontSize: 12 }}
+                        cursor={{ fill: 'rgba(201,168,76,0.08)' }}
+                        contentStyle={{ background: '#111113', border: '1px solid rgba(201,168,76,0.25)', borderRadius: 8, fontSize: 12 }}
+                        labelStyle={{ color: '#ffffff', fontWeight: 600 }}
+                        itemStyle={{ color: '#e8d5a3' }}
                         formatter={(v, name) => [name === 'roas' ? `${Number(v || 0).toFixed(2)}x` : `$${Number(v || 0).toLocaleString()}`, name === 'roas' ? 'ROAS' : name === 'spend' ? 'Spend' : 'Revenue']}
                       />
                       <Bar dataKey="roas" radius={[0, 4, 4, 0]}>
@@ -1406,7 +1416,10 @@ export default function CreativeAnalysis() {
                       <XAxis type="number" tick={{ fill: '#6b7280', fontSize: 10 }} axisLine={false} tickLine={false} tickFormatter={(v) => `${Number(v || 0).toFixed(1)}x`} />
                       <YAxis type="category" dataKey="format" tick={{ fill: '#9ca3af', fontSize: 11 }} axisLine={false} tickLine={false} width={120} interval={0} />
                       <Tooltip
-                        contentStyle={{ background: '#1a1a2e', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, color: '#fff', fontSize: 12 }}
+                        cursor={{ fill: 'rgba(201,168,76,0.08)' }}
+                        contentStyle={{ background: '#111113', border: '1px solid rgba(201,168,76,0.25)', borderRadius: 8, fontSize: 12 }}
+                        labelStyle={{ color: '#ffffff', fontWeight: 600 }}
+                        itemStyle={{ color: '#e8d5a3' }}
                         formatter={(v, name) => [name === 'roas' ? `${Number(v || 0).toFixed(2)}x` : `$${Number(v || 0).toLocaleString()}`, name === 'roas' ? 'ROAS' : name === 'spend' ? 'Spend' : 'Revenue']}
                       />
                       <Bar dataKey="roas" radius={[0, 4, 4, 0]}>
@@ -1469,7 +1482,10 @@ export default function CreativeAnalysis() {
                         allowDecimals={false}
                       />
                       <Tooltip
-                        contentStyle={{ background: '#1a1a2e', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, color: '#fff', fontSize: 12 }}
+                        cursor={{ fill: 'rgba(201,168,76,0.08)' }}
+                        contentStyle={{ background: '#111113', border: '1px solid rgba(201,168,76,0.25)', borderRadius: 8, fontSize: 12 }}
+                        labelStyle={{ color: '#ffffff', fontWeight: 600 }}
+                        itemStyle={{ color: '#e8d5a3' }}
                         formatter={(value, name) => [value, name === 'nn' ? 'Net New' : 'Iterations']}
                         labelFormatter={(label) => {
                           const [y, m] = label.split('-');

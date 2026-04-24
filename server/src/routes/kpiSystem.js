@@ -35,6 +35,118 @@ router.get('/cron/daily-pnl', async (req, res) => {
   }
 });
 
+// GET /cron/pnl-watchdog — runs at 01:00 UTC after the main P&L cron.
+// Verifies yesterday's P&L ledger row exists. If missing, re-triggers
+// sendDailyPnlReport. If STILL missing after retry, posts a loud alert
+// to Slack and returns 500 so Render marks the cron failed (→ email alert).
+// This is the lock-in: catches ANY failure mode, not just the specific auth bug.
+router.get('/cron/pnl-watchdog', async (req, res) => {
+  const secret = process.env.CRON_SECRET;
+  if (!secret || req.query.secret !== secret) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+  try {
+    // Target date = yesterday in Berlin TZ (same logic as the P&L cron)
+    const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Berlin', year: 'numeric', month: '2-digit', day: '2-digit' });
+    const berlinToday = fmt.format(new Date());
+    const [y, m, d] = berlinToday.split('-').map(Number);
+    const yesterday = new Date(Date.UTC(y, m - 1, d));
+    yesterday.setUTCDate(yesterday.getUTCDate() - 1);
+    const dateStr = `${yesterday.getUTCFullYear()}-${String(yesterday.getUTCMonth() + 1).padStart(2, '0')}-${String(yesterday.getUTCDate()).padStart(2, '0')}`;
+
+    await ensureTables();
+    const check = await pgQuery('SELECT sent_at FROM daily_pnl_reports WHERE report_date = $1', [dateStr]);
+    if (check.length > 0) {
+      console.log(`[P&L Watchdog] OK — ${dateStr} was sent at ${check[0].sent_at}`);
+      return res.json({ ok: true, date: dateStr, sentAt: check[0].sent_at, action: 'none' });
+    }
+
+    // Missing — re-trigger with force=true
+    console.warn(`[P&L Watchdog] MISSING ledger for ${dateStr} — re-triggering P&L send`);
+    let retriggered = false;
+    try {
+      await sendDailyPnlReport(dateStr, { force: true });
+      retriggered = true;
+    } catch (err) {
+      console.error(`[P&L Watchdog] Re-trigger failed: ${err.message}`);
+    }
+
+    // Verify it actually wrote to the ledger this time
+    const recheck = await pgQuery('SELECT sent_at FROM daily_pnl_reports WHERE report_date = $1', [dateStr]);
+    if (recheck.length > 0) {
+      console.log(`[P&L Watchdog] Recovered — ${dateStr} now in ledger`);
+      return res.json({ ok: true, date: dateStr, action: 'retriggered', sentAt: recheck[0].sent_at });
+    }
+
+    // Still broken → post loud alert to the P&L channel (uses chat.postMessage,
+    // which works with bots-basic scope — not the missing channels:history).
+    const SLACK_TOKEN = process.env.SLACK_BOT_TOKEN || '';
+    if (SLACK_TOKEN) {
+      await fetch('https://slack.com/api/chat.postMessage', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${SLACK_TOKEN}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          channel: 'C0AF724MJPR',
+          text: `:rotating_light: *Daily P&L automation is BROKEN* — no report sent for ${dateStr}. Watchdog retry also failed. Check Render logs for \`mineblock-dashboard\` around ${new Date().toISOString()}.`,
+          username: 'Mineblock Watchdog',
+        }),
+      }).catch(() => {});
+    }
+    return res.status(500).json({ ok: false, date: dateStr, action: 'alerted', retriggered });
+  } catch (err) {
+    console.error('[P&L Watchdog] Error:', err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// GET /health/daily-pnl — diagnostic endpoint for manual debugging.
+// Returns every precondition the P&L automation depends on. No PII leaked.
+router.get('/health/daily-pnl', async (req, res) => {
+  const secret = process.env.CRON_SECRET;
+  if (!secret || req.query.secret !== secret) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+  try {
+    const SLACK_TOKEN = process.env.SLACK_BOT_TOKEN || '';
+    await ensureTables();
+
+    // Yesterday (Berlin)
+    const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Berlin', year: 'numeric', month: '2-digit', day: '2-digit' });
+    const berlinToday = fmt.format(new Date());
+    const [y, m, d] = berlinToday.split('-').map(Number);
+    const yesterday = new Date(Date.UTC(y, m - 1, d));
+    yesterday.setUTCDate(yesterday.getUTCDate() - 1);
+    const dateStr = `${yesterday.getUTCFullYear()}-${String(yesterday.getUTCMonth() + 1).padStart(2, '0')}-${String(yesterday.getUTCDate()).padStart(2, '0')}`;
+
+    const [snap, ledger, authTest] = await Promise.all([
+      pgQuery('SELECT snapshot_date FROM daily_kpi_snapshots WHERE snapshot_date = $1', [dateStr]).catch(() => []),
+      pgQuery('SELECT report_date, sent_at, profit FROM daily_pnl_reports ORDER BY report_date DESC LIMIT 7').catch(() => []),
+      SLACK_TOKEN
+        ? fetch('https://slack.com/api/auth.test', { headers: { Authorization: `Bearer ${SLACK_TOKEN}` } })
+            .then((r) => r.json())
+            .catch((e) => ({ ok: false, error: e.message }))
+        : Promise.resolve({ ok: false, error: 'no_token' }),
+    ]);
+
+    return res.json({
+      ok: true,
+      checks: {
+        cronSecretConfigured: !!process.env.CRON_SECRET,
+        slackTokenConfigured: !!SLACK_TOKEN,
+        slackAuthOk: authTest.ok === true,
+        slackTeam: authTest.team || null,
+        slackBotUserId: authTest.user_id || null,
+        yesterdaySnapshotExists: snap.length > 0,
+        yesterdayDate: dateStr,
+        channelId: 'C0AF724MJPR',
+      },
+      recentReports: ledger.map((r) => ({ date: r.report_date, sentAt: r.sent_at, profit: r.profit })),
+    });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 // GET /public/cost-sheet — supplier-facing, protected by SUPPLIER_SHARE_TOKEN
 router.get('/public/cost-sheet', async (req, res) => {
   try {
@@ -480,6 +592,21 @@ async function ensureTables() {
       amount NUMERIC,
       created_at TIMESTAMPTZ,
       synced_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+
+  // Ledger of Daily P&L Slack reports — authoritative record of what was sent.
+  // Backs server-side dedup (survives restarts) AND the pnl-watchdog cron
+  // that catches any missed send by checking this table the next morning.
+  await pgQuery(`
+    CREATE TABLE IF NOT EXISTS daily_pnl_reports (
+      report_date DATE PRIMARY KEY,
+      sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      profit NUMERIC(12,2),
+      revenue NUMERIC(12,2),
+      ad_spend NUMERIC(12,2),
+      slack_channel TEXT,
+      slack_ts TEXT
     )
   `);
 
@@ -2180,41 +2307,28 @@ async function sendDailyPnlReport(dateStr, { force = false } = {}) {
     throw new Error('No SLACK_BOT_TOKEN configured');
   }
 
+  await ensureTables();
+
   if (!force) {
-    // Check in-memory dedup (blocks concurrent calls within same instance)
-    if (sentReports.has(dateStr)) {
-      console.log(`[Daily P&L] Already sent for ${dateStr} in this instance — skipping`);
+    // DB-backed dedup — authoritative, survives restarts. Replaces the old
+    // Slack conversations.history check which silently failed on missing_scope.
+    const existing = await pgQuery(
+      'SELECT sent_at FROM daily_pnl_reports WHERE report_date = $1',
+      [dateStr]
+    ).catch(() => []);
+    if (existing.length > 0) {
+      console.log(`[Daily P&L] Already sent for ${dateStr} at ${existing[0].sent_at} — skipping (force=true to override)`);
+      sentReports.add(dateStr);
       return;
     }
-
-    // Check Slack history before sending (look back 7 days)
-    const [cy, cm, cd] = dateStr.split('-');
-    const displayDateCheck = `${cm}/${cd}/${cy}`;
-    try {
-      const oldest = Math.floor(Date.now() / 1000) - 604800;
-      const histResp = await fetch(
-        `https://slack.com/api/conversations.history?channel=${SLACK_DAILY_PNL_CHANNEL}&oldest=${oldest}&limit=100`,
-        { headers: { Authorization: `Bearer ${SLACK_BOT_TOKEN}` } }
-      );
-      const hist = await histResp.json();
-      if (hist.ok && (hist.messages || []).some(msg => msg.text?.includes(`Daily P&L for ${displayDateCheck}`))) {
-        console.log(`[Daily P&L] Report for ${displayDateCheck} already in Slack — skipping`);
-        sentReports.add(dateStr); // Safe to mark — it IS in Slack
-        return;
-      }
-      // If Slack history check fails (not ok), proceed anyway — better to risk a dupe than skip
-      if (!hist.ok) {
-        console.warn(`[Daily P&L] Slack history check returned error: ${hist.error} — proceeding anyway`);
-      }
-    } catch (checkErr) {
-      // Network error — proceed anyway, don't abort
-      console.warn(`[Daily P&L] Slack history check failed: ${checkErr.message} — proceeding anyway`);
+    // In-memory secondary dedup — blocks two concurrent calls on same instance
+    if (sentReports.has(dateStr)) {
+      console.log(`[Daily P&L] Send already in flight for ${dateStr} — skipping`);
+      return;
     }
   } else {
     console.log(`[Daily P&L] Force-sending report for ${dateStr}`);
   }
-
-  await ensureTables();
 
   // Force a fresh Meta spend sync so P&L numbers match the live dashboard
   try {
@@ -2318,6 +2432,22 @@ async function sendDailyPnlReport(dateStr, { force = false } = {}) {
     if (!result.ok) {
       throw new Error(`Slack postMessage failed: ${result.error}`);
     }
+
+    // Persist to ledger — authoritative record. Watchdog checks this table
+    // the next morning to confirm yesterday's P&L actually went out.
+    await pgQuery(
+      `INSERT INTO daily_pnl_reports (report_date, profit, revenue, ad_spend, slack_channel, slack_ts)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (report_date) DO UPDATE SET
+         sent_at = NOW(),
+         profit = EXCLUDED.profit,
+         revenue = EXCLUDED.revenue,
+         ad_spend = EXCLUDED.ad_spend,
+         slack_ts = EXCLUDED.slack_ts`,
+      [dateStr, profit, revenue, adSpend, SLACK_DAILY_PNL_CHANNEL, result.ts || null]
+    ).catch((err) => {
+      console.error(`[Daily P&L] Failed to persist ledger row for ${dateStr}: ${err.message}`);
+    });
 
     sentReports.add(dateStr);
     console.log(`[Daily P&L] Sent report for ${displayDate}: Profit ${fmt(profit)}`);
