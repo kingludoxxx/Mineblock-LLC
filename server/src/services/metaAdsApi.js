@@ -48,38 +48,63 @@ export async function uploadAdImage(adAccountId, imageBuffer) {
 }
 
 /**
- * Create an ad creative (flexible ad format)
+ * Create an image ad creative using the standard (non-dynamic) object_story_spec
+ * + link_data shape. This is the same shape the video launcher uses successfully
+ * in production — the previous asset_feed_spec variant was unused and malformed
+ * (Meta rejects asset_feed_spec paired with an object_story_spec that has no
+ * link_data / video_data).
+ *
  * @param {string} adAccountId
- * @param {object} params - { name, imageHashes[], primaryText, headlines[], descriptions[], cta, link }
+ * @param {object} params - { name, imageHashes[], primaryText, headlines[], descriptions[], cta, link, pageId, instagramActorId }
  * @returns {string} creativeId
  */
 export async function createAdCreative(adAccountId, params) {
-  const { name, imageHashes, primaryText, headlines, descriptions, cta = 'LEARN_MORE', link, pageId } = params;
+  const {
+    name, imageHashes = [], primaryText = '', headlines = [], descriptions = [],
+    cta = 'SHOP_NOW', link, pageId, instagramActorId,
+  } = params;
 
-  // Build asset feed spec for flexible ad
-  const assetFeedSpec = {
-    images: imageHashes.map(hash => ({ hash })),
-    bodies: [{ text: primaryText }],
-    titles: headlines.map(h => ({ text: h })),
-    descriptions: descriptions.map(d => ({ text: d })),
-    call_to_action_types: [cta],
-    link_urls: [{ website_url: link }],
+  const resolvedPageId = pageId || process.env.META_PAGE_ID || '';
+  if (!resolvedPageId) {
+    throw new Error('createAdCreative: page_id is required — pass pageId or set META_PAGE_ID env var');
+  }
+  if (!imageHashes.length) {
+    throw new Error('createAdCreative: at least one image hash is required');
+  }
+  if (!link) {
+    throw new Error('createAdCreative: link (landing URL) is required');
+  }
+
+  const body = {
+    access_token: META_ACCESS_TOKEN,
+    name,
+    object_story_spec: {
+      page_id: resolvedPageId,
+      ...(instagramActorId ? { instagram_actor_id: instagramActorId } : {}),
+      link_data: {
+        link,
+        message: primaryText,
+        image_hash: imageHashes[0],
+        name: headlines[0] || '',
+        description: descriptions[0] || '',
+        call_to_action: {
+          type: cta,
+          value: { link },
+        },
+      },
+    },
+    // HARDCODED default tracking template for ALL launched ads.
+    // Meta dynamic placeholders — must be sent literally.
+    url_tags: DEFAULT_URL_TAGS,
   };
+
+  console.log(`[createAdCreative] link: ${link}, page_id: ${resolvedPageId}, cta: ${cta}`);
 
   const res = await fetch(`${META_GRAPH_URL}/${adAccountId}/adcreatives`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     signal: AbortSignal.timeout(META_API_TIMEOUT),
-    body: JSON.stringify({
-      access_token: META_ACCESS_TOKEN,
-      name,
-      asset_feed_spec: assetFeedSpec,
-      object_story_spec: {
-        page_id: pageId || process.env.META_PAGE_ID || '',
-      },
-      // HARDCODED default tracking template for ALL launched ads.
-      url_tags: DEFAULT_URL_TAGS,
-    }),
+    body: JSON.stringify(body),
   });
 
   if (!res.ok) {
