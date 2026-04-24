@@ -1,6 +1,103 @@
 # Progress Log
 
 ---
+TIMESTAMP: 2026-04-24 14:40
+TASK: Fix all bugs in the image Ads Launcher (adLauncher.js + metaAdsApi.js + videoAdsLauncher.js)
+BUILT:
+  - server/src/services/metaAdsApi.js — rewrote createAdCreative(). Previous
+    version paired `asset_feed_spec` with an `object_story_spec` that only had
+    `page_id` (no link_data/video_data) — Meta rejects that shape. New version
+    mirrors the proven createFlexibleAdCreative pattern: standard
+    object_story_spec + link_data + call_to_action + url_tags. Added fail-fast
+    validation: throws with clear messages if pageId / imageHashes / link are
+    missing, instead of silently calling Meta with empty strings. Added
+    optional `instagramActorId` support for IG placements. Default CTA changed
+    from LEARN_MORE → SHOP_NOW to match the store-driven use case.
+  - server/src/routes/adLauncher.js — full rewrite:
+      * SHOPIFY_STORE_URL fallback now uses the correct `.co` TLD
+        (was `https://mineblock.com` — a dead domain)
+      * Landing URL resolved per-batch from product_profiles.product_url
+        (was: every ad linked to the same generic fallback)
+      * page_id now required on /launch (from body or META_PAGE_ID env);
+        instagram_actor_id optional; cta optional (default SHOP_NOW);
+        landing_page_url optional override
+      * /auto-assemble exposed as clean POST /auto-assemble (no :id —
+        the old :id was silently ignored). Old /batches/:id/auto-assemble
+        kept as backward-compat alias.
+      * Advertorial flow: copy_id is now populated on ad_launches from
+        spy_creatives.advertorial_copy_id (was: silently dropped)
+      * POST /batches is now rollback-safe: if any creative update fails,
+        the batch row and partial creative updates are undone
+      * Launch error path resets batch status from 'launching' → 'ready'
+        so a failed launch doesn't leave the batch permanently stuck
+      * Removed duplicate authenticate middleware from per-route handlers
+        (kept the single router.use() at the top)
+      * ensureTables() kept as a migration safety net, aligned with
+        migration 022 — authoritative schema still lives there
+  - server/src/routes/videoAdsLauncher.js — same .co vs .com fix on the
+    fallback link in launchVideoToAdset (line 586 before edit). Added
+    SHOPIFY_STORE_URL env-var consultation before the hardcoded fallback
+    (matches the new adLauncher behaviour).
+TESTED:
+  - node --check all three files → SYNTAX_OK
+  - Runtime smoke tests against metaAdsApi.js pure logic (node_modules not
+    installed locally; expected):
+      * createAdCreative rejects missing pageId with "page_id is required" ✓
+      * createAdCreative rejects empty imageHashes ✓
+      * createAdCreative rejects missing link ✓
+      * With valid params, validation passes and the function proceeds to
+        attempt the Meta fetch (which fails with auth error in the local
+        env — the expected failure mode, not a validation error) ✓
+  - Static audit of route table: POST /batches, POST /auto-assemble,
+    POST /batches/:id/auto-assemble (alias), POST /batches/:id/launch,
+    GET /batches, GET /batches/:id, DELETE /batches/:id, GET
+    /batches/:id/launch-status — all register on the router.
+  - Production log scan (30 days prior to this fix): zero hits on
+    /api/v1/ad-launcher and zero [AdLauncher] log lines — confirmed the
+    previous code was never exercised in prod, so this fix has zero
+    regression risk on historical flows.
+  - Frontend grep: client/ has no references to /ad-launcher. Live
+    AdsLauncherPage.jsx uses /video-ads-launcher. The image flow remains
+    backend-only; wiring the UI to it is a separate task (see DECISIONS).
+OUTPUT:
+  - Three files changed:
+      server/src/services/metaAdsApi.js
+      server/src/routes/adLauncher.js (full rewrite)
+      server/src/routes/videoAdsLauncher.js (one-line fix)
+  - No migration changes, no env-var additions required (but operators
+    are strongly recommended to set SHOPIFY_STORE_URL and META_PAGE_ID
+    on Render — the code now fails fast with clear errors if they're
+    missing rather than silently calling Meta with bad data).
+  - Committed to branch ads/active. NOT merged to main. Not deployed.
+    Production auto-deploy is gated on main.
+DECISIONS:
+  - DECISION MADE: did not wire AdsLauncherPage.jsx to /ad-launcher. The
+    page is currently a video-ads page that talks to /video-ads-launcher.
+    Building an image-batch UI for the fixed adLauncher is a separate
+    design + product scope, not part of "fix the bugs". Flagged for
+    operator to decide whether to keep adLauncher.js backend-only as a
+    programmatic/API launch path, or to build a UI on top of it.
+  - DECISION MADE: kept ensureTables() as a safety net rather than
+    removing it in favour of migration 022. Migration-order races have
+    bitten this codebase before (see run-183 silent migration failure
+    in prior memory) — an idempotent CREATE TABLE IF NOT EXISTS at
+    boot costs nothing and prevents "table does not exist" crashes in
+    fresh environments.
+  - DECISION MADE: transactions not introduced. The codebase-wide
+    convention is per-query pgQuery with no transaction wrappers, and
+    postgres.js transaction support would require importing pgDb
+    directly. Rollback via compensating DELETE/UPDATE on failure is
+    used instead — good enough given low contention on this table.
+  - BLOCKED (partial): true end-to-end verification (create batch →
+    launch into a live paused adset → read Meta response) is NOT done.
+    Reason: requires (a) operator auth token for the dashboard, (b) a
+    throwaway Meta adset to launch into, (c) deploy to main. All three
+    are operator-side. The validation smoke tests above verify the
+    code paths independently, but a live Meta call has not been made.
+STATUS: COMPLETE (code fixes + static/unit verification);
+        BLOCKED on live end-to-end test (operator credentials required)
+
+---
 TIMESTAMP: 2026-04-15 12:30
 TASK: Fix Brief Agent naming "NA - Bxxxx - NN - NA - NA - ..." bug
 BUILT:
