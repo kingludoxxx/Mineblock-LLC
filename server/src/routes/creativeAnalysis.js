@@ -449,9 +449,16 @@ function computeMetrics(row) {
 
 // ── Triple Whale API ────────────────────────────────────────────────
 
+// Tracks the reason fetchTripleWhaleAds last returned []. Callers can check
+// this to distinguish "TW returned zero ads" (legitimate) from "TW was
+// unreachable / misconfigured" (needs to surface as an error, not silent ok).
+let twLastSyncError = null;
+
 async function fetchTripleWhaleAds(startDate, endDate) {
+  twLastSyncError = null;
   if (!TW_API_KEY) {
     console.error('[Creative Analysis] TRIPLEWHALE_API_KEY not set');
+    twLastSyncError = 'TRIPLEWHALE_API_KEY not configured on server';
     return [];
   }
 
@@ -535,7 +542,7 @@ async function fetchTripleWhaleAds(startDate, endDate) {
       LIMIT 2000
     `;
     const result = await twQuery(sql);
-    if (result.fatal) return [];
+    if (result.fatal) { twLastSyncError = 'Triple Whale API auth/server error (fatal)'; return []; }
     if (result.ok) {
       const revenueOnlyRows = result.rows;
       workingRevenueCol = revenueCol;
@@ -555,7 +562,7 @@ async function fetchTripleWhaleAds(startDate, endDate) {
           LIMIT 2000
         `;
         const pResult = await twQuery(sqlWithPurchases);
-        if (pResult.fatal) return [];
+        if (pResult.fatal) { twLastSyncError = 'Triple Whale API auth/server error (fatal)'; return []; }
         if (pResult.ok) {
           console.log(`[Creative Analysis] TW query OK — revenue="${revenueCol}", purchases="${purchaseCol}", attribution="${TW_ATTRIBUTION_MODEL}", rows=${pResult.rows.length}`);
           twKnownRevCol = revenueCol;
@@ -577,6 +584,7 @@ async function fetchTripleWhaleAds(startDate, endDate) {
   }
 
   console.error('[Creative Analysis] All TW revenue column variants failed. No data returned.');
+  twLastSyncError = 'All Triple Whale revenue column variants failed — check TW API status';
   return [];
 }
 
@@ -696,8 +704,15 @@ async function syncData({ periodWeek, startDate, endDate }) {
   await ensureTable();
 
   const twAds = await fetchTripleWhaleAds(startDate, endDate);
+  // Distinguish "TW genuinely returned 0 ads" from "TW errored and returned []"
+  // — silent success on error was causing users to think syncs worked when they didn't.
+  if (twAds.length === 0 && twLastSyncError) {
+    const err = new Error(`Triple Whale sync failed: ${twLastSyncError}`);
+    err.upstream = true;
+    throw err;
+  }
   if (twAds.length === 0) {
-    return { synced: 0, skipped: 0, errors: 0 };
+    return { synced: 0, skipped: 0, errors: 0, note: 'No ads returned for this date range' };
   }
 
   // Parse all ads and aggregate by (creative_id, hook_id) to avoid UNIQUE constraint violations.
@@ -1957,7 +1972,13 @@ router.post('/sync', authenticate, async (req, res) => {
     });
   } catch (err) {
     console.error('[Creative Analysis] /sync error:', err);
-    res.status(500).json({ success: false, error: { message: 'Sync failed' } });
+    // Surface upstream (Triple Whale) errors to the user with the real reason
+    // — previously these silently succeeded with empty data.
+    const isUpstream = err.upstream === true;
+    res.status(isUpstream ? 503 : 500).json({
+      success: false,
+      error: { message: err.message || 'Sync failed', upstream: isUpstream },
+    });
   }
 });
 
