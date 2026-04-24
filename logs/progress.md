@@ -853,3 +853,13 @@ COMMIT: 2eb25d0 fix(statics): P1.0–P1.1 — field-aware truncation + fabricate
 DEPLOY: dep-d7fnje6rnols73avct4g (in progress at time of log)
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-04-23 10:45
+TASK: Daily P&L Slack automation fix
+BUILT: Moved /cron/daily-pnl and /public/cost-sheet route registrations to before router.use(authenticate, requirePermission(...)) in kpiSystem.js. The global auth middleware at line 8 was intercepting all cron calls with 401 before the CRON_SECRET check ever ran. Fix: register the two unauthenticated routes at the top of the router, before the middleware line.
+TESTED: Confirmed via Render logs — cron fired at 23:30 UTC on 2026-04-22, all 5 retry attempts got HTTP 401 {"error":"Authentication required"} — the JWT middleware signature, not the CRON_SECRET handler (which returns 403). Route order verified in code: /cron/daily-pnl at line 14, /public/cost-sheet at line 39, router.use(authenticate,...) at line 54.
+OUTPUT: Commit 3e917fd on analytics/active. Pushed to GitHub. Render will deploy on merge to main.
+DECISIONS: Also fixed /public/cost-sheet which had the same bug (broken but not yet noticed). Both routes now use their own secret checks as intended.
+STATUS: COMPLETE — pending merge to main for Render deploy
+---

@@ -112,7 +112,9 @@ function RetentionChart({ insights, impressions: totalImpressions }) {
           <XAxis dataKey="label" tick={{ fill: '#6b7280', fontSize: 10 }} axisLine={{ stroke: 'rgba(255,255,255,0.06)' }} tickLine={false} />
           <YAxis domain={[0, 100]} tick={{ fill: '#6b7280', fontSize: 10 }} axisLine={{ stroke: 'rgba(255,255,255,0.06)' }} tickLine={false} tickFormatter={v => `${v}%`} />
           <Tooltip
-            contentStyle={{ background: '#1c1c1c', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, color: '#fff', fontSize: 12 }}
+            contentStyle={{ background: '#111113', border: '1px solid rgba(201,168,76,0.25)', borderRadius: 8, fontSize: 12 }}
+            labelStyle={{ color: '#ffffff', fontWeight: 600 }}
+            itemStyle={{ color: '#e8d5a3' }}
             formatter={(value) => [`${value}%`, 'Retention']}
           />
           <Area type="monotone" dataKey="pct" fill="url(#retentionGrad)" stroke="#a78bfa" strokeWidth={2} dot={{ r: 4, fill: '#a78bfa', stroke: '#1c1c1c', strokeWidth: 2 }} />
@@ -639,7 +641,10 @@ export default function CreativeDetailModal({ creative, onClose }) {
                       <YAxis yAxisId="left" tick={{ fill: '#6b7280', fontSize: 10 }} axisLine={{ stroke: 'rgba(255,255,255,0.06)' }} tickLine={false} tickFormatter={v => `$${v}`} />
                       <YAxis yAxisId="right" orientation="right" tick={{ fill: '#6b7280', fontSize: 10 }} axisLine={{ stroke: 'rgba(255,255,255,0.06)' }} tickLine={false} tickFormatter={v => `${v}x`} />
                       <Tooltip
-                        contentStyle={{ background: '#1c1c1c', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, color: '#fff', fontSize: 12 }}
+                        cursor={{ stroke: 'rgba(201,168,76,0.25)', strokeWidth: 1 }}
+                        contentStyle={{ background: '#111113', border: '1px solid rgba(201,168,76,0.25)', borderRadius: 8, fontSize: 12 }}
+                        labelStyle={{ color: '#ffffff', fontWeight: 600 }}
+                        itemStyle={{ color: '#e8d5a3' }}
                         formatter={(value, name) => {
                           if (name === 'Spend') return [`$${Number(value || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, 'Spend'];
                           return [`${Number(value || 0).toFixed(2)}x`, 'ROAS'];

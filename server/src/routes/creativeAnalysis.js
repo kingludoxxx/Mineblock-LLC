@@ -64,7 +64,7 @@ const DATA_CACHE_TTL = 10 * 60 * 1000; // 10 minutes (TW API calls are slow, cac
 
 // Server-side cache for /creative-daily results
 const creativeDailyCache = new Map(); // key: "creative_id|startDate|endDate" → { data, timestamp }
-const CREATIVE_DAILY_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+const CREATIVE_DAILY_CACHE_TTL = 30 * 60 * 1000; // 30 minutes — TW queries are slow (10-30s), historical data rarely changes intraday
 
 // Cache for latest week (avoids running the expensive SPLIT_PART query on every page load)
 let latestWeekCache = { week: null, timestamp: 0 };
