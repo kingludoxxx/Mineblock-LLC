@@ -528,7 +528,7 @@ function InviteModal({ open, onClose, roles, onInvited }) {
       if (accessMode === 'custom') {
         payload.pages = selectedPages;
       } else {
-        payload.roleId = Number(form.roleId);
+        payload.roleId = form.roleId;
       }
       const res = await api.post('/team/invite', payload);
       setResult(res.data);
