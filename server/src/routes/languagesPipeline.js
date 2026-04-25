@@ -333,24 +333,25 @@ function buildTranslationPrompt(langCode, script) {
   const { name, market } = LANG_META[langCode];
   return `Translate and localize the following Facebook video ad script into ${name}.
 
-The goal is not a literal translation. The goal is to make it sound like it was originally written by a native performance marketer for a Facebook audience in ${market}.
+The goal is NOT a literal translation. The goal is to make it sound like it was ORIGINALLY WRITTEN by a native performance marketer specifically for a Facebook/TikTok audience in ${market}.
 
 Requirements:
 - Keep the same meaning, offer, hook, emotional angle, and CTA.
-- Make the language natural, persuasive, and native.
-- Avoid AI-sounding phrasing.
-- Avoid overly formal wording unless the original script requires it.
+- Make the language completely natural, persuasive, and native — like a local copywriter wrote it.
+- Avoid ANY AI-sounding phrasing, stiff formality, or literal word-for-word translation.
+- Use colloquial expressions and idioms that feel authentic in ${market}.
 - Keep the structure close to the original script.
-- Optimize for short-form video ads.
-- Make it sound human, clear, and conversion-focused.
-- Preserve any product names, brand names, creator names, codes, and campaign identifiers.
+- Translate ALL section labels/headers (e.g. "Body Script" → local equivalent, "Hooks" → local equivalent).
+- Preserve markdown formatting exactly: **bold** stays **bold**, bullet points stay as bullet points.
+- Preserve any product names, brand names, discount codes, percentages, and numbers exactly as written.
 - Do not add claims that are not in the original script.
 - Do not remove important selling points.
+- Use informal register (tu/jij/tu form) appropriate for social media ads in ${market}.
 
 Original English script:
 ${script}
 
-Return only the translated script.`;
+Return ONLY the translated script. Do not add any preamble, commentary, or explanation.`;
 }
 
 /** Call Claude Sonnet with retry on rate-limit */
