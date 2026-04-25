@@ -168,13 +168,16 @@ async function syncToSheet(csvText) {
   });
   const existingRows = allExisting.data.values || [];
 
-  // Filter only new
-  const newRecords = records.filter((r) => r['Session ID'] && !existingIds.has(r['Session ID']));
+  // Filter only new + must have a phone number
+  const withPhone = records.filter((r) => r['Phone'] && r['Phone'].trim());
+  const noPhoneCount = records.length - withPhone.length;
+  if (noPhoneCount > 0) log(`Skipped ${noPhoneCount} records with no phone number`);
+  const newRecords = withPhone.filter((r) => r['Session ID'] && !existingIds.has(r['Session ID']));
   log(`New abandoners to add: ${newRecords.length}`);
 
   if (newRecords.length === 0) {
     log('Nothing to add — sheet is up to date');
-    return { added: 0, total: existingIds.size, c1: 0, c2: 0, skipped: 0 };
+    return { added: 0, total: existingIds.size, c1: 0, c2: 0, skipped: 0, noPhone: noPhoneCount };
   }
 
   // Auto-assign: balance round-robin from current totals
@@ -240,6 +243,7 @@ async function syncToSheet(csvText) {
     c1: c1New,
     c2: c2New,
     skipped: records.length - newRecords.length,
+    noPhone: noPhoneCount,
   };
 }
 
@@ -255,9 +259,10 @@ async function syncToSheet(csvText) {
       : await downloadLassoCSV();
     const result = await syncToSheet(csv);
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    const noPhoneNote = result.noPhone > 0 ? ` Skipped (no phone): ${result.noPhone}.` : '';
     const msg = result.added === 0
-      ? `✅ Lasso sync — no new abandoners. Total: ${result.total}. (${elapsed}s)`
-      : `✅ Lasso sync — ${result.added} new abandoners added (Caller 1: ${result.c1}, Caller 2: ${result.c2}). Total in sheet: ${result.total}. Skipped (already present): ${result.skipped}. (${elapsed}s)`;
+      ? `✅ Lasso sync — no new abandoners. Total: ${result.total}.${noPhoneNote} (${elapsed}s)`
+      : `✅ Lasso sync — ${result.added} new abandoners added (Caller 1: ${result.c1}, Caller 2: ${result.c2}). Total in sheet: ${result.total}. Skipped (already present): ${result.skipped}.${noPhoneNote} (${elapsed}s)`;
     log(msg);
     await notifySlack(msg, 'good');
     process.exit(0);
