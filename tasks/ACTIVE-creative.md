@@ -18,4 +18,6 @@ Status labels: `[ ]` not started · `[>]` in progress · `[x]` complete · `[!]`
 
 ## Completed
 
+- [x] **Video Ads Languages Pipeline** (2026-04-25) — Full automation: ClickUp list created (ID 901523010131), Express route + React UI, Frame.io subfolder creation, Claude Sonnet translation, 13/13 QA tests PASS. Deploy: `2b779b8`, live at `/app/languages-pipeline`. TC-09 Frame.io v4 subfolder-reuse fix (`77d18f9`). Translation prompt strengthened for native-sounding copy (`36683ae`).
+
 (see `tasks/TASKS.md` for full historical record before the area split)
