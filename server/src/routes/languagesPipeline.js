@@ -682,7 +682,7 @@ router.post('/generate', async (req, res) => {
           body: JSON.stringify({
             name:        langTaskName,
             description: taskDescription,
-            status:      'to do',
+            status:      'edit queue',
           }),
         });
       } catch (err) {
