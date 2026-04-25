@@ -1523,12 +1523,13 @@ router.get('/home-dashboard', authenticate, async (req, res) => {
       const profit = revenue - costs;
       const netMargin = revenue > 0 ? Math.round((profit / revenue) * 10000) / 100 : 0;
       const aov = orders > 0 ? Math.round((revenue / orders) * 100) / 100 : 0;
-      // ROAS uses Triple Whale's Triple-Attribution revenue (includes view-through
-      // and multi-touch credit) so the number matches the TW dashboard exactly.
-      // Falls back to direct Shopify revenue when TW data is missing.
+      // ROAS = Total Sales (Shopify direct revenue) / Ad Spend.
+      // Matches TW Summary widget formula: Total Sales / Ads. The Triple-
+      // Attribution revenue is also tracked (twRevenue field) but no longer
+      // used for ROAS — using attributed revenue inflated ROAS confusingly
+      // (showed 2.38x when TW Summary showed 1.42x).
       const twRevenue = twRevenueLookup[d] || 0;
-      const roasRevenue = twRevenue > 0 ? twRevenue : revenue;
-      const roas = adSpend > 0 ? Math.round((roasRevenue / adSpend) * 100) / 100 : 0;
+      const roas = adSpend > 0 ? Math.round((revenue / adSpend) * 100) / 100 : 0;
       // Conversion rate: use Meta clicks as denominator when Shopify sessions unavailable
       const clicks = clicksLookup[d] || 0;
       const conversionRate = (clicks > 0 && orders > 0)
@@ -1561,10 +1562,8 @@ router.get('/home-dashboard', authenticate, async (req, res) => {
       const profit = revenue - costs;
       const netMargin = revenue > 0 ? Math.round((profit / revenue) * 10000) / 100 : 0;
       const aov = orders > 0 ? Math.round((revenue / orders) * 100) / 100 : 0;
-      // ROAS = TW Triple-Attribution revenue ÷ ad spend (matches TW dashboard).
-      // Falls back to Shopify revenue if TW unavailable.
-      const roasRevenue = twRevenue > 0 ? twRevenue : revenue;
-      const roas = adSpend > 0 ? Math.round((roasRevenue / adSpend) * 100) / 100 : 0;
+      // ROAS = Total Sales / Ad Spend (matches TW Summary widget formula)
+      const roas = adSpend > 0 ? Math.round((revenue / adSpend) * 100) / 100 : 0;
       const totalClicks = days.reduce((s, d) => s + (d.clicks || 0), 0);
       const refunds = sum('refunds');
       const conversionRate = (totalClicks > 0 && orders > 0) ? Math.round((orders / totalClicks) * 10000) / 100 : null;
