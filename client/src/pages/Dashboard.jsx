@@ -393,6 +393,33 @@ export default function Dashboard() {
           </div>
         )}
 
+        {/* Future-date warning — shown when the user's local clock is ahead of
+            the server's actual date, which causes "Today" to query a date with
+            no data and display all zeros. */}
+        {!loading && data?.serverDate && data?.latestSnapshotDate && endDate > data.serverDate && (
+          <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-4">
+            <div className="flex items-start gap-3">
+              <span className="text-amber-400 text-lg">⚠</span>
+              <div className="flex-1">
+                <p className="text-sm font-medium text-amber-200 mb-1">
+                  Selected date is in the future — your computer's clock may be ahead.
+                </p>
+                <p className="text-xs text-amber-200/70 mb-2">
+                  Server time is <span className="font-mono">{data.serverDate}</span> (Europe/Berlin).
+                  Latest data available is <span className="font-mono">{data.latestSnapshotDate}</span>.
+                  No orders/spend exist on <span className="font-mono">{endDate}</span> yet.
+                </p>
+                <button
+                  onClick={() => { setStartDate(data.serverDate); setEndDate(data.serverDate); }}
+                  className="text-xs px-3 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-200 font-medium cursor-pointer transition-colors"
+                >
+                  Jump to {data.serverDate}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* KPI Grid — Top row: 5 cards */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
           {METRICS.slice(0, 5).map((m, i) => (
