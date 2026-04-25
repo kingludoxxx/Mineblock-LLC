@@ -336,45 +336,63 @@ function buildTranslationPrompt(langCode, script) {
 Localize the following Facebook video ad script into ${name}.
 
 ━━━ WHAT THIS IS ━━━
-This is a production script template for a video ad. It has two sections:
-1. A visual direction block (for the editor — layout, B-roll, on-screen text labels).
-2. The actual ad copy: hooks and body script (for the voiceover/spokesperson).
+A production script for a video ad. It contains:
+1. A visual direction block (editor instructions — layout, B-roll descriptions, on-screen text labels in quotes).
+2. The ad copy: hooks (H1/H2/H3) and a body script for the voiceover.
 
-━━━ HARD RULES — FOLLOW EXACTLY ━━━
+Translate EVERYTHING into ${name} — both sections, all headers, all quoted on-screen labels.
 
-LABELS:
-• Hook labels H1, H2, H3 must stay EXACTLY as H1, H2, H3. Never change them to G1, A1, or anything else.
-• Section headers (e.g. "Hooks (First 3 seconds)", "Body Script") should be translated to natural ${name} equivalents. Keep the same structure.
+━━━ HARD RULES ━━━
+
+HOOK LABELS:
+• H1, H2, H3 stay EXACTLY as H1, H2, H3. Never change them to G1, G2, A1, A2 or anything else.
+
+SECTION HEADERS — ALL must be translated:
+• "Visual Style Reference" → translate to natural ${name}
+• "Layout Match" / "Layout" → translate
+• "Hooks (First 3 seconds)" → translate the header, keep H1/H2/H3 labels
+• "Body Script" → translate
+• No English section header may remain in the output.
+
+ON-SCREEN TEXT LABELS (quoted text inside the visual block):
+• Translate them into ${name} — they are the actual text that will appear on screen for a ${name}-speaking audience.
+• Exception: "PCB" stays "PCB" everywhere (it is a universally recognised abbreviation, even within translated labels).
+• Example: "0 Moving Parts" → translate; "Industrial PCB" → translate but keep "PCB".
 
 CONTENT FIDELITY:
-• Do NOT add any sentence, phrase, or word that is not in the original. No filler, no "let's find out", no extra commentary.
-• Do NOT remove any selling point, claim, or CTA element.
-• Every piece of information in the original must be in the translation. Nothing added. Nothing removed.
+• Do NOT add any word, sentence, or phrase not in the original. No filler, no commentary, no "let's find out".
+• Do NOT remove any selling point, number, or CTA element.
+• When the original says "0 [noun]" to mean zero quantity — render it as a clean positive or numerical statement in ${name}. Do NOT construct a double negative (e.g. French "Il ne possède 0 pièces" is wrong; write "0 pièces mobiles" or "aucune pièce mobile" instead).
 
-TECHNICAL TERMS — DO NOT TRANSLATE THESE:
-• "PCB" stays "PCB" (it is a label that will appear on screen in the video).
-• "B-roll" stays "B-roll" (video production term understood across all markets).
-• Numbers, percentages, and codes stay exactly: 0, 1, 24/7, 52%, 144, 90 days, MINER10.
-• Product names stay exactly: Miner Forge PRO 2.0.
-• Video specs stay exactly: 9x16.
+TECHNICAL TERMS THAT STAY IN ENGLISH:
+• "PCB" — keep as-is even inside translated labels.
+• "B-roll" — video production term, keep as-is.
+• Numbers, codes, specs: 0, 1, 24/7, 52%, 144, 90, 9x16, MINER10 — exact.
+• Product name: Miner Forge PRO 2.0 — exact.
 
-LANGUAGE:
-• Neutral, pan-regional ${name}. Must work for the entire ${market} audience — not one specific country or city dialect.
-• Conversational but clean. Not slang. Not overly formal. The tone of a trusted friend who knows what they are talking about.
-• Natural word order for ${name}. Read each sentence aloud in your head. If it sounds stiff, rewrite it.
-• Do not use diminutives to describe the product (no "cosita", "juguetito", etc.). The product is premium.
-• Use the appropriate informal address form (tu/jij/tu) for social media, but keep it neutral and respectful.
+COMMON PHRASES TO TRANSLATE (do not leave in English):
+• "high-speed" → translate fully.
+• "home miner" → translate ("miner voor thuisgebruik", "miner domestico", etc.).
+• Any compound English descriptor must be translated. No partial translations.
+
+LANGUAGE REGISTER:
+• Neutral, pan-regional ${name}. No dialect-specific slang. Must work across all of ${market}.
+• Conversational and direct — like a trusted friend who knows their subject.
+• Not formal. Not slang. Clean and smooth.
+• No diminutives to describe the product (no "cosita", "cosina", "juguetito", etc.) — the product is premium.
+• Use informal address (tu / jij) appropriate for social media, but keep it respectful and neutral.
+• Read every sentence aloud mentally. If it sounds awkward when spoken, rewrite it.
 
 FORMATTING:
-• Preserve ALL markdown exactly: **bold** stays **bold**, * bullets stay bullets, --- stays ---.
+• Preserve ALL markdown exactly: **bold** stays **bold**, bullets stay bullets, --- stays ---.
 • Do not add or remove blank lines.
-• Do not add words like "Translated:", "Note:", or any meta-commentary inside the output.
+• No meta-words inside the output: no "Translated:", "Note:", "Script:", etc.
 
-━━━ THE SCRIPT TO LOCALIZE ━━━
+━━━ SCRIPT TO LOCALIZE ━━━
 ${script}
 
 ━━━ OUTPUT ━━━
-Return ONLY the localized script. No preamble. No explanation. No commentary before or after.`;
+Return ONLY the localized script. Nothing before it. Nothing after it.`;
 }
 
 /** Call Claude Sonnet with retry on rate-limit */
