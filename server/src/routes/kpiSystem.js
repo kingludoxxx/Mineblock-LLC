@@ -1489,6 +1489,7 @@ router.get('/home-dashboard', authenticate, async (req, res) => {
     const spendLookup = {};
     const clicksLookup = {};
     const metaPurchasesLookup = {};
+    const twRevenueLookup = {};  // Triple Attribution revenue per day — matches TW dashboard
     for (const r of metaSpendRows) {
       const d = typeof r.date === 'string' ? r.date.slice(0, 10) : new Date(r.date).toISOString().slice(0, 10);
       const spend = parseFloat(r.spend || 0);
@@ -1498,6 +1499,7 @@ router.get('/home-dashboard', authenticate, async (req, res) => {
     }
     for (const r of twSpendRows) {
       if (r.spend > 0) spendLookup[r.date] = r.spend; // TW is primary (all platforms)
+      if (r.revenue > 0) twRevenueLookup[r.date] = r.revenue;
     }
 
     // Build snapshot lookup by date
@@ -1521,13 +1523,18 @@ router.get('/home-dashboard', authenticate, async (req, res) => {
       const profit = revenue - costs;
       const netMargin = revenue > 0 ? Math.round((profit / revenue) * 10000) / 100 : 0;
       const aov = orders > 0 ? Math.round((revenue / orders) * 100) / 100 : 0;
-      const roas = adSpend > 0 ? Math.round((revenue / adSpend) * 100) / 100 : 0;
+      // ROAS uses Triple Whale's Triple-Attribution revenue (includes view-through
+      // and multi-touch credit) so the number matches the TW dashboard exactly.
+      // Falls back to direct Shopify revenue when TW data is missing.
+      const twRevenue = twRevenueLookup[d] || 0;
+      const roasRevenue = twRevenue > 0 ? twRevenue : revenue;
+      const roas = adSpend > 0 ? Math.round((roasRevenue / adSpend) * 100) / 100 : 0;
       // Conversion rate: use Meta clicks as denominator when Shopify sessions unavailable
       const clicks = clicksLookup[d] || 0;
       const conversionRate = (clicks > 0 && orders > 0)
         ? Math.round((orders / clicks) * 10000) / 100
         : null;
-      return { date: d, revenue, adSpend, roas, orders, aov, costs, cogs, shipping, fees, profit, netMargin, conversionRate, clicks, refunds };
+      return { date: d, revenue, twRevenue, adSpend, roas, orders, aov, costs, cogs, shipping, fees, profit, netMargin, conversionRate, clicks, refunds };
     }
 
     // Build daily metrics for the full fetched window
@@ -1544,6 +1551,7 @@ router.get('/home-dashboard', authenticate, async (req, res) => {
       if (!days.length) return null;
       const sum = (k) => days.reduce((s, d) => s + (d[k] || 0), 0);
       const revenue = sum('revenue');
+      const twRevenue = sum('twRevenue');
       const adSpend = sum('adSpend');
       const orders = sum('orders');
       const costs = sum('costs');
@@ -1553,11 +1561,14 @@ router.get('/home-dashboard', authenticate, async (req, res) => {
       const profit = revenue - costs;
       const netMargin = revenue > 0 ? Math.round((profit / revenue) * 10000) / 100 : 0;
       const aov = orders > 0 ? Math.round((revenue / orders) * 100) / 100 : 0;
-      const roas = adSpend > 0 ? Math.round((revenue / adSpend) * 100) / 100 : 0;
+      // ROAS = TW Triple-Attribution revenue ÷ ad spend (matches TW dashboard).
+      // Falls back to Shopify revenue if TW unavailable.
+      const roasRevenue = twRevenue > 0 ? twRevenue : revenue;
+      const roas = adSpend > 0 ? Math.round((roasRevenue / adSpend) * 100) / 100 : 0;
       const totalClicks = days.reduce((s, d) => s + (d.clicks || 0), 0);
       const refunds = sum('refunds');
       const conversionRate = (totalClicks > 0 && orders > 0) ? Math.round((orders / totalClicks) * 10000) / 100 : null;
-      return { revenue, adSpend, roas, orders, aov, costs, cogs, shipping, fees, profit, netMargin, conversionRate, refunds };
+      return { revenue, twRevenue, adSpend, roas, orders, aov, costs, cogs, shipping, fees, profit, netMargin, conversionRate, refunds };
     }
 
     // Current period = selected range
