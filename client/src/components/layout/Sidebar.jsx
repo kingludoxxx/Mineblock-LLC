@@ -39,6 +39,7 @@ import {
   Sparkles,
   FileText,
   Rocket,
+  Globe,
   // Performance icons
   Target,
   Activity,
@@ -70,6 +71,7 @@ const navGroups = [
       { to: '/app/statics-generation', icon: Layers, label: 'Statics Generation', permission: 'statics-generation:access' },
       { to: '/app/brief-pipeline', icon: FileText, label: 'Brief Pipeline', permission: 'brief-pipeline:access' },
       { to: '/app/ads-launcher', icon: Rocket, label: 'Ads Launcher', permission: 'ads-launcher:access' },
+      { to: '/app/languages-pipeline', icon: Globe, label: 'Languages Pipeline', permission: 'languages-pipeline:access' },
     ],
   },
   {
