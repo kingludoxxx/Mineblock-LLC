@@ -292,10 +292,13 @@ async function createFrameFolder(parentFolderId, folderName) {
  */
 async function getOrCreateLangSubfolder(sourceFolderId, langCode) {
   try {
-    const resp = await frameioFetchV4(`/assets/${sourceFolderId}/children`);
-    const items = resp?.data || resp?.assets || [];
+    // v4 folder-children endpoint (v2 /assets/{id}/children is not used in v4 auth context)
+    const resp = await frameioFetchV4(
+      `/accounts/${FRAMEIO_ACCOUNT_ID}/folders/${sourceFolderId}/children?page_size=100`
+    );
+    const items = Array.isArray(resp) ? resp : (resp?.data || []);
     const existing = items.find(
-      (c) => c.name === langCode && (c.type === 'folder' || c._type === 'folder')
+      (c) => c.name === langCode && (c.type === 'folder' || c._type === 'folder' || c.item_type === 'folder')
     );
     if (existing) {
       return {
