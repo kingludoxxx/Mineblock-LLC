@@ -153,39 +153,45 @@ async function syncToSheet(csvText) {
   const records = parse(csvText, { columns: true, skip_empty_lines: true, trim: true });
   log(`Parsed ${records.length} rows from Lasso CSV`);
 
-  // Read existing Session IDs from sheet (column M)
-  const existing = await sheets.spreadsheets.values.get({
-    spreadsheetId: LASSO_SHEET_ID,
-    range: 'M2:M10000',
-  });
-  const existingIds = new Set((existing.data.values || []).flat().filter(Boolean));
-  log(`Sheet already has ${existingIds.size} unique abandoners`);
-
   // Read full existing data (to merge after we add new rows on top)
   const allExisting = await sheets.spreadsheets.values.get({
     spreadsheetId: LASSO_SHEET_ID,
     range: 'A2:M10000',
   });
-  const existingRows = allExisting.data.values || [];
+  const rawExistingRows = allExisting.data.values || [];
+  const needsAddressMigration = rawExistingRows.some((row) => row.length >= 13);
+  // Strip Address column (index 6) from any existing rows that still have it (13-col old layout)
+  const existingRows = rawExistingRows.map((row) =>
+    row.length >= 13 ? [...row.slice(0, 6), ...row.slice(7)] : row
+  );
+  // Session ID is now always at index 11 in the (possibly stripped) row
+  const existingIds = new Set(existingRows.map((row) => row[11]).filter(Boolean));
+  log(`Sheet already has ${existingIds.size} unique abandoners`);
 
   // Filter only new + must have a phone number
   const withPhone = records.filter((r) => r['Phone'] && r['Phone'].trim());
   const noPhoneCount = records.length - withPhone.length;
   if (noPhoneCount > 0) log(`Skipped ${noPhoneCount} records with no phone number`);
-  const newRecords = withPhone.filter((r) => r['Session ID'] && !existingIds.has(r['Session ID']));
+  const newRecords = process.argv.includes('--force')
+    ? withPhone
+    : withPhone.filter((r) => r['Session ID'] && !existingIds.has(r['Session ID']));
   log(`New abandoners to add: ${newRecords.length}`);
 
-  if (newRecords.length === 0) {
+  const forceRewrite = process.argv.includes('--force');
+  if (newRecords.length === 0 && !needsAddressMigration && !forceRewrite) {
     log('Nothing to add — sheet is up to date');
     return { added: 0, total: existingIds.size, c1: 0, c2: 0, skipped: 0, noPhone: noPhoneCount };
   }
+  if (newRecords.length === 0) log('No new records — rewriting sheet to remove Address column / deduplicate');
+
+  // --force: rebuild from CSV only (discards duplicated sheet state)
+  const baseRows = forceRewrite ? [] : existingRows;
 
   // Auto-assign: balance round-robin from current totals
-  // Count existing assignments to keep distribution even
   let c1Existing = 0, c2Existing = 0;
-  for (const row of existingRows) {
-    if (row[9] === 'Caller 1') c1Existing++;
-    else if (row[9] === 'Caller 2') c2Existing++;
+  for (const row of baseRows) {
+    if (row[8] === 'Caller 1') c1Existing++;
+    else if (row[8] === 'Caller 2') c2Existing++;
   }
   log(`Existing assignment: Caller 1 = ${c1Existing}, Caller 2 = ${c2Existing}`);
 
@@ -212,7 +218,6 @@ async function syncToSheet(csvText) {
       r['Phone'] || '',
       cartValue,
       items,
-      r['Address'] || '',
       r['Country'] || '',
       'New',           // Status
       assignedTo,      // Assigned To (auto-balanced)
@@ -222,8 +227,16 @@ async function syncToSheet(csvText) {
     ];
   });
 
-  // Combine: new rows on top, then all existing rows (preserves Status/Notes/Call Date)
-  const combined = [...newSheetRows, ...existingRows];
+  // Combine: new rows on top, then existing rows (preserves Status/Notes/Call Date)
+  const combined = [...newSheetRows, ...baseRows];
+
+  // Update header row to remove Address column
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: LASSO_SHEET_ID,
+    range: 'A1:L1',
+    valueInputOption: 'USER_ENTERED',
+    requestBody: { values: [['Last Active', 'Customer Name', 'Email', 'Phone', 'Cart Value', 'Items', 'Country', 'Status', 'Assigned To', 'Call Notes', 'Call Date', 'Session ID']] },
+  });
 
   // Clear data area + write everything back in one shot
   await sheets.spreadsheets.values.clear({
@@ -232,7 +245,7 @@ async function syncToSheet(csvText) {
   });
   await sheets.spreadsheets.values.update({
     spreadsheetId: LASSO_SHEET_ID,
-    range: `A2:M${combined.length + 1}`,
+    range: `A2:L${combined.length + 1}`,
     valueInputOption: 'USER_ENTERED',
     requestBody: { values: combined },
   });
