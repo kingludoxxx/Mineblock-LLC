@@ -380,6 +380,83 @@ function InfoTooltip({ lines, label = 'How this works' }) {
   );
 }
 
+// ── Scoring Logic content (shown in the Scoring Logic modal) ────────────────
+
+const LOGIC_SECTIONS = [
+  {
+    title: 'New This Week',
+    lines: [
+      'Creatives that debuted in the current ISO week (Mon–Sun of this week).',
+      'Filter: ROAS ≥ 1.5x AND spend ≥ $20 in the selected date range.',
+      'Always anchored to today\'s week — independent of the date range picker above.',
+      'Winner badge (⭐) = lifetime spend ≥ $500 AND lifetime ROAS ≥ 1.8x.',
+      'Sorted by ROAS descending.',
+    ],
+  },
+  {
+    title: 'Top Creatives',
+    lines: [
+      'Top Spend — sorted by total ad spend in the selected period. Top 15.',
+      'Best ROAS — min $50 spend, sorted by revenue ÷ spend descending.',
+      'Newest — sorted by launch week (first_seen) descending, then by spend.',
+      'Fastest Scaling — sorted by spend ÷ weeks active. Highlights momentum. Min $20 spend.',
+      'All filters above (type, angle, format, editor) apply to this section.',
+    ],
+  },
+  {
+    title: 'Rising Stars',
+    lines: [
+      'Profitable creatives not yet at the $500 scale threshold — candidates to increase budget on.',
+      'Filter: spend $50–$499 AND ROAS ≥ 1.0x in the selected period.',
+      'Sorted by ROAS descending. Top 10.',
+      'Scale bar shows % progress to $500 — the threshold to become a lifetime Winner.',
+    ],
+  },
+  {
+    title: 'Leaderboard (only in "Active only" mode)',
+    lines: [
+      'Three rankings for the latest ISO week, limited to creatives with spend ≥ $200:',
+      'Top ROAS — sorted by revenue ÷ spend descending. Top 10.',
+      'Top Purchases — sorted by total purchases descending. Top 10.',
+      'Top Efficiency — sorted by CPA (spend ÷ purchases) ascending. Requires purchases > 0. Top 10.',
+    ],
+  },
+  {
+    title: 'ROAS / Purchases / CPA',
+    lines: [
+      'ROAS = Triple Whale attributed revenue ÷ ad spend. Can be > 0 even if purchases = 0 (view-through attribution).',
+      'Purchases = website_purchases event count from Triple Whale.',
+      'CPA = spend ÷ purchases. Shown as $0.00 when purchases = 0.',
+      '⚠ icon next to Purchases means revenue was attributed without a matching purchase event.',
+    ],
+  },
+  {
+    title: 'Performance by Angle / Format',
+    lines: [
+      'Aggregates the filtered creatives by angle or format.',
+      'ROAS = sum(revenue) ÷ sum(spend) across all creatives in that bucket.',
+      'Green bar = ROAS ≥ 1.8x (winning). Red = below threshold.',
+    ],
+  },
+  {
+    title: 'Date Range & Timezone',
+    lines: [
+      'Date presets use your local timezone to compute YYYY-MM-DD strings.',
+      '"Today" / "Yesterday" = your local calendar day.',
+      'The backend queries Triple Whale with these exact dates — so the cutoff follows your local midnight, not UTC.',
+    ],
+  },
+  {
+    title: 'Data Freshness',
+    lines: [
+      'Raw Shopify/Meta/TW data is auto-synced every 5 minutes.',
+      '/data-by-date responses are cached server-side for 10 minutes (TW queries are slow).',
+      'The per-creative Spend & ROAS chart is cached 30 minutes.',
+      'Click "Sync Data" to force a fresh pull and clear all caches.',
+    ],
+  },
+];
+
 // ── Component ────────────────────────────────────────────────────────────────
 
 export default function CreativeAnalysis() {
@@ -411,6 +488,9 @@ export default function CreativeAnalysis() {
 
   // ── Detail panel state ──
   const [detailPanel, setDetailPanel] = useState(null); // creative object or null
+
+  // ── Scoring Logic modal state ──
+  const [logicModalOpen, setLogicModalOpen] = useState(false);
 
   // ── Calendar widget state ──
   const [calViewYear, setCalViewYear] = useState(() => new Date().getFullYear());
@@ -1061,6 +1141,15 @@ export default function CreativeAnalysis() {
             })()}
           </div>
 
+          {/* Scoring Logic button — opens modal with all metric definitions */}
+          <button
+            onClick={() => setLogicModalOpen(true)}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-[#c9a84c]/10 hover:bg-[#c9a84c]/20 text-[#d4b55a] text-sm font-medium transition-colors cursor-pointer border border-[#c9a84c]/25"
+          >
+            <Info className="w-3.5 h-3.5" />
+            Scoring Logic
+          </button>
+
           {/* Sync button */}
           <button
             onClick={handleSync}
@@ -1072,6 +1161,42 @@ export default function CreativeAnalysis() {
           </button>
         </div>
       </div>
+
+      {/* Scoring Logic modal — explains every threshold/formula */}
+      {logicModalOpen && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm" onClick={() => setLogicModalOpen(false)}>
+          <div className="bg-[#111113] border border-[#c9a84c]/30 rounded-2xl shadow-2xl max-w-3xl w-full max-h-[85vh] overflow-hidden flex flex-col" style={{ boxShadow: '0 0 60px rgba(201,168,76,0.12)' }} onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-6 py-4 border-b border-white/[0.06]">
+              <div className="flex items-center gap-2">
+                <Info className="w-5 h-5 text-[#c9a84c]" />
+                <h2 className="text-white font-semibold text-lg">Scoring Logic</h2>
+                <span className="text-gray-500 text-xs ml-2">How every metric in this page is computed</span>
+              </div>
+              <button onClick={() => setLogicModalOpen(false)} className="p-1.5 rounded-lg hover:bg-white/[0.06] text-gray-400 hover:text-white transition-colors cursor-pointer">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="overflow-y-auto px-6 py-5 space-y-6">
+              {LOGIC_SECTIONS.map((section) => (
+                <div key={section.title}>
+                  <div className="flex items-center gap-2 mb-2">
+                    <div className="w-1 h-4 bg-[#c9a84c] rounded-full" />
+                    <h3 className="text-[#c9a84c] font-semibold text-sm uppercase tracking-wider">{section.title}</h3>
+                  </div>
+                  <ul className="space-y-1.5 pl-3">
+                    {section.lines.map((line, i) => (
+                      <li key={i} className="text-sm text-gray-300 leading-relaxed flex gap-2">
+                        <span className="text-[#c9a84c]/60 mt-0.5 shrink-0">›</span>
+                        <span>{line}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
 
       {error && (
         <div className="mb-6 px-4 py-3 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-sm">

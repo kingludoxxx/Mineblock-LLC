@@ -178,7 +178,8 @@ export default function CreativeDetailModal({ creative, onClose }) {
   const [metaAdId, setMetaAdId] = useState(creative?.meta_ad_id || null);
   const [twData, setTwData] = useState(null);
   const [twLoading, setTwLoading] = useState(false);
-  const [chartRange, setChartRange] = useState('last_30');
+  // Default to 7D — fastest TW query, modal feels snappy on first open. User can pick 14D/30D/Lifetime if needed.
+  const [chartRange, setChartRange] = useState('last_7');
   const twCacheRef = useRef({}); // { [cid__range]: twData }
   const [videoUrl, setVideoUrl] = useState(creative?.video_url || null);
   const [thumbnailUrl, setThumbnailUrl] = useState(creative?.thumbnail_url || null);
@@ -545,15 +546,19 @@ export default function CreativeDetailModal({ creative, onClose }) {
 
             {/* Right: Metrics + Charts */}
             <div className="lg:w-[58%] p-4 sm:p-6 space-y-5">
-              {/* Top highlight: CPA, Revenue, ROAS */}
-              <div className="grid grid-cols-3 gap-3">
-                <div className="bg-white/[0.04] border border-white/[0.06] rounded-xl p-4 text-center">
-                  <p className="text-gray-500 text-[10px] uppercase tracking-wider mb-1">CPA</p>
-                  <p className="text-white font-bold text-xl">{fmtMoney(cpa)}</p>
+              {/* Top highlight: Spend, Revenue, CPA, ROAS — Spend first because it's the lever */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <div className="bg-[#c9a84c]/10 border border-[#c9a84c]/25 rounded-xl p-4 text-center">
+                  <p className="text-[#c9a84c] text-[10px] uppercase tracking-wider mb-1">Spend</p>
+                  <p className="text-white font-bold text-xl">{fmtMoney(spend)}</p>
                 </div>
                 <div className="bg-white/[0.04] border border-white/[0.06] rounded-xl p-4 text-center">
                   <p className="text-gray-500 text-[10px] uppercase tracking-wider mb-1">Revenue</p>
                   <p className="text-white font-bold text-xl">{fmtMoney(revenue)}</p>
+                </div>
+                <div className="bg-white/[0.04] border border-white/[0.06] rounded-xl p-4 text-center">
+                  <p className="text-gray-500 text-[10px] uppercase tracking-wider mb-1">CPA</p>
+                  <p className="text-white font-bold text-xl">{fmtMoney(cpa)}</p>
                 </div>
                 <div className={`${roas >= 1 ? 'bg-emerald-500/10 border border-emerald-500/20' : 'bg-red-500/10 border border-red-500/20'} rounded-xl p-4 text-center`}>
                   <p className={`${roas >= 1 ? 'text-emerald-500' : 'text-red-500'} text-[10px] uppercase tracking-wider mb-1`}>ROAS</p>
@@ -561,10 +566,9 @@ export default function CreativeDetailModal({ creative, onClose }) {
                 </div>
               </div>
 
-              {/* Purchases / CPA / AOV */}
-              <div className="grid grid-cols-3 gap-2">
+              {/* Purchases / AOV */}
+              <div className="grid grid-cols-2 gap-2">
                 <MetricCard label="Purchases" value={fmtInt(purchases)} />
-                <MetricCard label="CPA" value={fmtMoney(cpa)} />
                 <MetricCard label="AOV" value={fmtMoney(aov)} />
               </div>
 
