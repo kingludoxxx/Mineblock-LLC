@@ -331,27 +331,50 @@ function stripHtml(text) {
 /** Build the translation prompt for a given language code and script */
 function buildTranslationPrompt(langCode, script) {
   const { name, market } = LANG_META[langCode];
-  return `Translate and localize the following Facebook video ad script into ${name}.
+  return `You are a senior direct-response copywriter and localization specialist with native fluency in ${name}. You specialize in Facebook and TikTok video ads for ${market}.
 
-The goal is NOT a literal translation. The goal is to make it sound like it was ORIGINALLY WRITTEN by a native performance marketer specifically for a Facebook/TikTok audience in ${market}.
+Localize the following Facebook video ad script into ${name}.
 
-Requirements:
-- Keep the same meaning, offer, hook, emotional angle, and CTA.
-- Make the language completely natural, persuasive, and native — like a local copywriter wrote it.
-- Avoid ANY AI-sounding phrasing, stiff formality, or literal word-for-word translation.
-- Use colloquial expressions and idioms that feel authentic in ${market}.
-- Keep the structure close to the original script.
-- Translate ALL section labels/headers (e.g. "Body Script" → local equivalent, "Hooks" → local equivalent).
-- Preserve markdown formatting exactly: **bold** stays **bold**, bullet points stay as bullet points.
-- Preserve any product names, brand names, discount codes, percentages, and numbers exactly as written.
-- Do not add claims that are not in the original script.
-- Do not remove important selling points.
-- Use informal register (tu/jij/tu form) appropriate for social media ads in ${market}.
+━━━ WHAT THIS IS ━━━
+This is a production script template for a video ad. It has two sections:
+1. A visual direction block (for the editor — layout, B-roll, on-screen text labels).
+2. The actual ad copy: hooks and body script (for the voiceover/spokesperson).
 
-Original English script:
+━━━ HARD RULES — FOLLOW EXACTLY ━━━
+
+LABELS:
+• Hook labels H1, H2, H3 must stay EXACTLY as H1, H2, H3. Never change them to G1, A1, or anything else.
+• Section headers (e.g. "Hooks (First 3 seconds)", "Body Script") should be translated to natural ${name} equivalents. Keep the same structure.
+
+CONTENT FIDELITY:
+• Do NOT add any sentence, phrase, or word that is not in the original. No filler, no "let's find out", no extra commentary.
+• Do NOT remove any selling point, claim, or CTA element.
+• Every piece of information in the original must be in the translation. Nothing added. Nothing removed.
+
+TECHNICAL TERMS — DO NOT TRANSLATE THESE:
+• "PCB" stays "PCB" (it is a label that will appear on screen in the video).
+• "B-roll" stays "B-roll" (video production term understood across all markets).
+• Numbers, percentages, and codes stay exactly: 0, 1, 24/7, 52%, 144, 90 days, MINER10.
+• Product names stay exactly: Miner Forge PRO 2.0.
+• Video specs stay exactly: 9x16.
+
+LANGUAGE:
+• Neutral, pan-regional ${name}. Must work for the entire ${market} audience — not one specific country or city dialect.
+• Conversational but clean. Not slang. Not overly formal. The tone of a trusted friend who knows what they are talking about.
+• Natural word order for ${name}. Read each sentence aloud in your head. If it sounds stiff, rewrite it.
+• Do not use diminutives to describe the product (no "cosita", "juguetito", etc.). The product is premium.
+• Use the appropriate informal address form (tu/jij/tu) for social media, but keep it neutral and respectful.
+
+FORMATTING:
+• Preserve ALL markdown exactly: **bold** stays **bold**, * bullets stay bullets, --- stays ---.
+• Do not add or remove blank lines.
+• Do not add words like "Translated:", "Note:", or any meta-commentary inside the output.
+
+━━━ THE SCRIPT TO LOCALIZE ━━━
 ${script}
 
-Return ONLY the translated script. Do not add any preamble, commentary, or explanation.`;
+━━━ OUTPUT ━━━
+Return ONLY the localized script. No preamble. No explanation. No commentary before or after.`;
 }
 
 /** Call Claude Sonnet with retry on rate-limit */
