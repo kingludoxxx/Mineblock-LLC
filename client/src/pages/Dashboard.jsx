@@ -347,6 +347,17 @@ export default function Dashboard() {
   }, [startDate, endDate]);
 
   useEffect(() => { fetchDashboard(true); }, [fetchDashboard]);
+
+  // Auto-correct when the browser's clock is ahead of the server's date.
+  // Without this, "Today" silently shows zeros for a future date the user
+  // doesn't realize they're requesting. Triggers once per response.
+  useEffect(() => {
+    if (!data?.serverDate) return;
+    if (endDate > data.serverDate) {
+      setStartDate(data.serverDate);
+      setEndDate(data.serverDate);
+    }
+  }, [data?.serverDate, endDate]);
   useEffect(() => {
     const interval = setInterval(() => fetchDashboard(false), 60000);
     return () => clearInterval(interval);
