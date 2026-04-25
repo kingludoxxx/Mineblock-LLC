@@ -30,3 +30,29 @@ services:
         value: ""
       - key: GEMINI_API_KEY
         value: ""
+
+  # ── Lasso → Google Sheet daily sync ────────────────────────────────────
+  # Runs every day at 22:00 UTC = 00:00 CEST (Italy time during DST)
+  # Pulls cart abandoners from Lasso, dedupes by Session ID, auto-assigns to
+  # Caller 1 / Caller 2 (round-robin balanced), pushes only NEW rows to the sheet.
+  # Requires env vars: LASSO_EMAIL, LASSO_PASSWORD, GOOGLE_SHEETS_CREDENTIALS_JSON
+  - type: cron
+    name: lasso-sheet-sync
+    runtime: node
+    plan: starter
+    schedule: "0 22 * * *"
+    buildCommand: npm install && npx playwright install chromium --with-deps
+    startCommand: node server/scripts/sync-lasso.mjs
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: LASSO_EMAIL
+        sync: false
+      - key: LASSO_PASSWORD
+        sync: false
+      - key: GOOGLE_SHEETS_CREDENTIALS_JSON
+        sync: false
+      - key: LASSO_SHEET_ID
+        value: "1bv_tMbizihBeGpd-uxUPMlm0OHUL3VnRKYnExPjsNAo"
+      - key: SLACK_WEBHOOK_URL
+        sync: false
