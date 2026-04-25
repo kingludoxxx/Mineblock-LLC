@@ -1449,8 +1449,12 @@ router.get('/home-dashboard', authenticate, async (req, res) => {
   try {
     await ensureTables();
 
-    // Support both single date (legacy) and date range
-    const rangeEnd = req.query.endDate || req.query.date || new Date().toISOString().slice(0, 10);
+    // Support both single date (legacy) and date range.
+    // Default to "today" in Europe/Berlin — matches where the business
+    // operates and where snapshots are keyed. Avoids UTC-vs-local drift.
+    const _berlinFmt = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Berlin', year: 'numeric', month: '2-digit', day: '2-digit' });
+    const _berlinToday = _berlinFmt.format(new Date());
+    const rangeEnd = req.query.endDate || req.query.date || _berlinToday;
     const rangeStart = req.query.startDate || rangeEnd; // default to single day
 
     // Compute range length in days
