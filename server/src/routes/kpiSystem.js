@@ -1579,9 +1579,26 @@ router.get('/home-dashboard', authenticate, async (req, res) => {
     // Daily breakdown = last day in range (for the Daily Breakdown panel)
     const latestDay = currentDays[currentDays.length - 1] || null;
 
+    // Server's authoritative "today" in Berlin TZ — frontend can use this
+    // to detect when the user's local clock is ahead/behind reality.
+    const fmtBerlin = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Berlin', year: 'numeric', month: '2-digit', day: '2-digit' });
+    const serverToday = fmtBerlin.format(new Date());
+
+    // Latest snapshot date — what the dashboard "really has data for"
+    const latestSnapshotRow = await pgQuery(
+      `SELECT MAX(snapshot_date)::text AS d FROM daily_kpi_snapshots`
+    ).catch(() => [{ d: null }]);
+    const latestSnapshotDate = latestSnapshotRow[0]?.d || null;
+
     res.json({
       success: true,
-      data: { current, previous, sparklines, chartData, dailyBreakdown: latestDay, dateRange: { startDate: rangeStart, endDate: rangeEnd, days: rangeDays } },
+      data: {
+        current, previous, sparklines, chartData,
+        dailyBreakdown: latestDay,
+        dateRange: { startDate: rangeStart, endDate: rangeEnd, days: rangeDays },
+        serverDate: serverToday,                  // Berlin-TZ "today" per server clock
+        latestSnapshotDate,                       // Most recent date with actual data
+      },
     });
   } catch (err) {
     console.error('[KPI] home-dashboard error:', err);
