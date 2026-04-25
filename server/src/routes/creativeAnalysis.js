@@ -2859,23 +2859,51 @@ router.get('/meta-lookup/:creativeId', authenticate, async (req, res) => {
 export async function fetchDailyAdSpend(startDate, endDate) {
   if (!TW_API_KEY) return [];
   try {
+    // Use the revenue column previously discovered by fetchTripleWhaleAds
+    // (cached in twKnownRevCol). Falls back to the configured TW_REVENUE_COL
+    // or 'order_revenue'. Wrapping in backticks if the column has spaces.
+    const revCol = twKnownRevCol || TW_REVENUE_COL || 'order_revenue';
+    const revRef = revCol.includes(' ') ? `\`${revCol}\`` : revCol;
+
     const res = await fetch(TW_SQL_URL, {
       method: 'POST',
       headers: { 'x-api-key': TW_API_KEY, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         shopId: TW_SHOP_ID,
-        query: `SELECT event_date, SUM(spend) as total_spend FROM pixel_joined_tvf WHERE event_date BETWEEN @startDate AND @endDate GROUP BY event_date ORDER BY event_date`,
+        query: `SELECT event_date, SUM(spend) as total_spend, SUM(${revRef}) as total_revenue FROM pixel_joined_tvf WHERE event_date BETWEEN @startDate AND @endDate GROUP BY event_date ORDER BY event_date`,
         period: { startDate, endDate },
         attributionModel: TW_ATTRIBUTION_MODEL,
       }),
       signal: AbortSignal.timeout(15000),
     });
-    if (!res.ok) return [];
+    if (!res.ok) {
+      // Fallback to spend-only query if revenue column rejected
+      const fb = await fetch(TW_SQL_URL, {
+        method: 'POST',
+        headers: { 'x-api-key': TW_API_KEY, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          shopId: TW_SHOP_ID,
+          query: `SELECT event_date, SUM(spend) as total_spend FROM pixel_joined_tvf WHERE event_date BETWEEN @startDate AND @endDate GROUP BY event_date ORDER BY event_date`,
+          period: { startDate, endDate },
+          attributionModel: TW_ATTRIBUTION_MODEL,
+        }),
+        signal: AbortSignal.timeout(15000),
+      });
+      if (!fb.ok) return [];
+      const fbData = await fb.json();
+      const fbRows = Array.isArray(fbData) ? fbData : (fbData?.data || fbData?.rows || []);
+      return fbRows.map(r => ({
+        date: (r.event_date || '').slice(0, 10),
+        spend: parseFloat(r.total_spend || 0),
+        revenue: 0,
+      }));
+    }
     const data = await res.json();
     const rows = Array.isArray(data) ? data : (data?.data || data?.rows || []);
     return rows.map(r => ({
       date: (r.event_date || '').slice(0, 10),
       spend: parseFloat(r.total_spend || 0),
+      revenue: parseFloat(r.total_revenue || 0),  // Triple Attribution revenue (matches TW dashboard ROAS)
     }));
   } catch (err) {
     console.error('[TW] fetchDailyAdSpend error:', err.message);
