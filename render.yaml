@@ -41,7 +41,9 @@ services:
     runtime: node
     plan: starter
     schedule: "0 22 * * *"
-    buildCommand: npm install && npx playwright install chromium --with-deps
+    # NOTE: Cannot use --with-deps because Render's build user lacks sudo.
+    # Render's standard Ubuntu base ships most Chromium libs already.
+    buildCommand: npm install && npx playwright install chromium
     startCommand: node server/scripts/sync-lasso.mjs
     envVars:
       - key: NODE_ENV
