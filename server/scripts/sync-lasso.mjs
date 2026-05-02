@@ -239,14 +239,19 @@ async function createContactsAndDeals(records) {
   for (const batch of chunk(records, 100)) {
     const inputs = batch
       .filter((r) => {
-        const email = (r['Email'] || '').toLowerCase().trim();
-        // Skip obviously invalid emails — upsert will reject them anyway
-        return email && email.includes('@') && email.includes('.');
+        // Strip trailing garbage chars (=====) that Lasso sometimes appends
+        const email = (r['Email'] || '').toLowerCase().trim().replace(/[^a-z0-9@._+\-]/g, '');
+        // Basic structural check: has @, has dot after @, no spaces
+        if (!email || !email.includes('@') || !email.includes('.')) return false;
+        const [local, domain] = email.split('@');
+        // Domain must have a TLD of at least 2 chars and no stray chars
+        return local && domain && /^[a-z0-9.-]+\.[a-z]{2,}$/.test(domain);
       })
       .map((r) => {
         const { firstname, lastname } = splitName(r['Customer Name']);
         const cartAbandonedAt = isoDay(r['Updated At']);
-        const email = (r['Email'] || '').toLowerCase().trim();
+        // Apply same sanitization as the filter
+        const email = (r['Email'] || '').toLowerCase().trim().replace(/[^a-z0-9@._+\-]/g, '');
         return {
           idProperty: 'email',
           id: email,
