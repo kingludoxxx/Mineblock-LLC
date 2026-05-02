@@ -28,11 +28,21 @@ import { tmpdir } from 'node:os';
 import { readFileSync, unlinkSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 
-// Self-healing: ensure Chromium is present regardless of build cache state
-try {
-  execSync('npx playwright install chromium', { stdio: 'pipe' });
-} catch (e) {
-  console.warn('[sync-lasso] playwright install warning (non-fatal):', e.message?.slice(0, 120));
+// Self-healing: install Chromium only if the binary is missing.
+// Skips the ~20s install on normal runs where the binary is cached.
+async function ensureChromium() {
+  try {
+    const instance = await chromium.executablePath();
+    // If executablePath() returns without throwing, binary exists — nothing to do
+  } catch {
+    log('Chromium binary missing — installing now...');
+    try {
+      execSync('npx playwright install chromium', { stdio: 'pipe' });
+      log('Chromium installed.');
+    } catch (e) {
+      log(`playwright install warning: ${e.message?.slice(0, 120)}`);
+    }
+  }
 }
 
 // ─── Config ────────────────────────────────────────────────────────────────
@@ -148,6 +158,7 @@ function chunk(arr, size) {
 
 // ─── Step 1: Scrape Lasso ──────────────────────────────────────────────────
 async function downloadLassoCSV() {
+  await ensureChromium();
   log('Launching headless Chromium...');
   const browser = await chromium.launch({
     headless: LASSO_HEADLESS !== 'false',
@@ -223,40 +234,51 @@ async function createContactsAndDeals(records) {
   let failedContacts = 0;
   let failedDeals = 0;
 
-  // Batch create contacts (100 per request max)
+  // Batch upsert contacts by email (100 per request max).
+  // Upsert creates new contacts OR updates existing ones — no 409 duplicates.
   for (const batch of chunk(records, 100)) {
-    const inputs = batch.map((r) => {
-      const { firstname, lastname } = splitName(r['Customer Name']);
-      const cartAbandonedAt = isoDay(r['Updated At']);
-      return {
-        properties: {
-          email: (r['Email'] || '').toLowerCase().trim(),
-          firstname,
-          lastname,
-          phone: (r['Phone'] || '').trim(),
-          country: r['Country'] || '',
-          lasso_session_id: r['Session ID'],
-          cart_value: parseCartValue(r['Cart Value']),
-          cart_items: parseInt(r['Items'], 10) || 0,
-          ...(cartAbandonedAt ? { cart_abandoned_at: cartAbandonedAt } : {}),
-        },
-      };
-    });
+    const inputs = batch
+      .filter((r) => {
+        const email = (r['Email'] || '').toLowerCase().trim();
+        // Skip obviously invalid emails — upsert will reject them anyway
+        return email && email.includes('@') && email.includes('.');
+      })
+      .map((r) => {
+        const { firstname, lastname } = splitName(r['Customer Name']);
+        const cartAbandonedAt = isoDay(r['Updated At']);
+        const email = (r['Email'] || '').toLowerCase().trim();
+        return {
+          idProperty: 'email',
+          id: email,
+          properties: {
+            email,
+            firstname,
+            lastname,
+            phone: (r['Phone'] || '').trim(),
+            country: r['Country'] || '',
+            lasso_session_id: r['Session ID'],
+            cart_value: parseCartValue(r['Cart Value']),
+            cart_items: parseInt(r['Items'], 10) || 0,
+            ...(cartAbandonedAt ? { cart_abandoned_at: cartAbandonedAt } : {}),
+          },
+        };
+      });
+
+    if (inputs.length === 0) continue;
 
     let result;
     try {
-      result = await hub('POST', '/crm/v3/objects/contacts/batch/create', { inputs });
+      result = await hub('POST', '/crm/v3/objects/contacts/batch/upsert', { inputs });
     } catch (err) {
-      // 207 multi-status or 400 batch errors: try individually so one bad row doesn't kill batch
-      log(`Batch contact create failed (${err.status}); falling back to individual creates`);
+      log(`Batch contact upsert failed (${err.status}); falling back to individual upserts`);
       result = { results: [] };
       for (const input of inputs) {
         try {
-          const single = await hub('POST', '/crm/v3/objects/contacts', input);
-          result.results.push(single);
+          const single = await hub('POST', '/crm/v3/objects/contacts/batch/upsert', { inputs: [input] });
+          result.results.push(...(single.results || []));
         } catch (e) {
           failedContacts++;
-          log(`  contact ${input.properties.email} failed: ${e.status} ${e.data?.message || ''}`);
+          log(`  contact ${input.id} failed: ${e.status} ${e.data?.message || ''}`);
         }
       }
     }
