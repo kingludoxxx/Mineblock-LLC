@@ -201,27 +201,40 @@ async function downloadLassoCSV() {
   }
 }
 
-// ─── Step 2: HubSpot dedup lookup ──────────────────────────────────────────
-async function getExistingSessionIds() {
-  // Search returns up to 100/page; paginate.
-  const ids = new Set();
+// ─── Email helpers ──────────────────────────────────────────────────────────
+function sanitizeEmail(raw) {
+  return (raw || '').toLowerCase().trim().replace(/[^a-z0-9@._+\-]/g, '');
+}
+
+function isValidEmail(email) {
+  if (!email || !email.includes('@') || !email.includes('.')) return false;
+  const [local, domain] = email.split('@');
+  return !!(local && domain && /^[a-z0-9.-]+\.[a-z]{2,}$/.test(domain));
+}
+
+// ─── Step 2: HubSpot dedup lookup (email-based) ─────────────────────────────
+// Returns the set of emails already in HubSpot that came from Lasso.
+// Email-based (not session-ID-based) so repeat abandoners (same person,
+// two sessions) are correctly identified as already-processed.
+async function getExistingLassoEmails() {
+  const emails = new Set();
   let after;
-  for (let page = 0; page < 50; page++) { // safety cap = 5000 contacts
+  for (let page = 0; page < 100; page++) { // cap = 10 000 contacts
     const body = {
       filterGroups: [{ filters: [{ propertyName: 'lasso_session_id', operator: 'HAS_PROPERTY' }] }],
-      properties: ['lasso_session_id'],
+      properties: ['email'],
       limit: 100,
-      after,
+      ...(after ? { after } : {}),
     };
     const data = await hub('POST', '/crm/v3/objects/contacts/search', body);
     for (const r of data.results || []) {
-      const sid = r.properties?.lasso_session_id;
-      if (sid) ids.add(sid);
+      const email = (r.properties?.email || '').toLowerCase().trim();
+      if (email) emails.add(email);
     }
     if (!data.paging?.next?.after) break;
     after = data.paging.next.after;
   }
-  return ids;
+  return emails;
 }
 
 // ─── Step 3: Batch create in HubSpot ───────────────────────────────────────
@@ -234,37 +247,27 @@ async function createContactsAndDeals(records) {
   // Batch upsert contacts by email (100 per request max).
   // Upsert creates new contacts OR updates existing ones — no 409 duplicates.
   for (const batch of chunk(records, 100)) {
-    const inputs = batch
-      .filter((r) => {
-        // Strip trailing garbage chars (=====) that Lasso sometimes appends
-        const email = (r['Email'] || '').toLowerCase().trim().replace(/[^a-z0-9@._+\-]/g, '');
-        // Basic structural check: has @, has dot after @, no spaces
-        if (!email || !email.includes('@') || !email.includes('.')) return false;
-        const [local, domain] = email.split('@');
-        // Domain must have a TLD of at least 2 chars and no stray chars
-        return local && domain && /^[a-z0-9.-]+\.[a-z]{2,}$/.test(domain);
-      })
-      .map((r) => {
-        const { firstname, lastname } = splitName(r['Customer Name']);
-        const cartAbandonedAt = isoDay(r['Updated At']);
-        // Apply same sanitization as the filter
-        const email = (r['Email'] || '').toLowerCase().trim().replace(/[^a-z0-9@._+\-]/g, '');
-        return {
-          idProperty: 'email',
-          id: email,
-          properties: {
-            email,
-            firstname,
-            lastname,
-            phone: (r['Phone'] || '').trim(),
-            country: r['Country'] || '',
-            lasso_session_id: r['Session ID'],
-            cart_value: parseCartValue(r['Cart Value']),
-            cart_items: parseInt(r['Items'], 10) || 0,
-            ...(cartAbandonedAt ? { cart_abandoned_at: cartAbandonedAt } : {}),
-          },
-        };
-      });
+    // Records arriving here are already email-validated and deduplicated upstream.
+    const inputs = batch.map((r) => {
+      const { firstname, lastname } = splitName(r['Customer Name']);
+      const cartAbandonedAt = isoDay(r['Updated At']);
+      const email = sanitizeEmail(r['Email']);
+      return {
+        idProperty: 'email',
+        id: email,
+        properties: {
+          email,
+          firstname,
+          lastname,
+          phone: (r['Phone'] || '').trim(),
+          country: r['Country'] || '',
+          lasso_session_id: r['Session ID'],
+          cart_value: parseCartValue(r['Cart Value']),
+          cart_items: parseInt(r['Items'], 10) || 0,
+          ...(cartAbandonedAt ? { cart_abandoned_at: cartAbandonedAt } : {}),
+        },
+      };
+    });
 
     if (inputs.length === 0) continue;
 
@@ -272,7 +275,7 @@ async function createContactsAndDeals(records) {
     try {
       result = await hub('POST', '/crm/v3/objects/contacts/batch/upsert', { inputs });
     } catch (err) {
-      const batchErrDetail = JSON.stringify(err.data || '').slice(0, 500);
+      const batchErrDetail = JSON.stringify(err.data || '').slice(0, 300);
       log(`Batch contact upsert failed (${err.status}): ${batchErrDetail}`);
       log(`Falling back to individual upserts (${inputs.length} records)`);
       result = { results: [] };
@@ -280,7 +283,6 @@ async function createContactsAndDeals(records) {
         try {
           const single = await hub('POST', '/crm/v3/objects/contacts/batch/upsert', { inputs: [input] });
           result.results.push(...(single.results || []));
-          log(`  ✓ ${input.id}`);
         } catch (e) {
           const errBody = JSON.stringify(e.data || '');
           log(`  ✗ ${input.id} → ${e.status}: ${errBody.slice(0, 200)}`);
@@ -315,7 +317,7 @@ async function createContactsAndDeals(records) {
 
     // Build deal inputs for the contacts we successfully created
     const dealInputs = batch
-      .filter((r) => emailToContactId.has((r['Email'] || '').toLowerCase().trim()))
+      .filter((r) => emailToContactId.has(sanitizeEmail(r['Email'])))
       .map((r) => {
         const cartValue = parseCartValue(r['Cart Value']);
         const { firstname, lastname } = splitName(r['Customer Name']);
@@ -328,7 +330,7 @@ async function createContactsAndDeals(records) {
             dealstage: HUBSPOT_STAGE_NEW,
           },
           // Inline associations require knowing contact ID
-          _email: (r['Email'] || '').toLowerCase().trim(),
+          _email: sanitizeEmail(r['Email']),
         };
       });
 
@@ -381,25 +383,42 @@ async function syncToHubSpot(csvText) {
   const noPhoneCount = records.length - withPhone.length;
   if (noPhoneCount > 0) log(`Skipped ${noPhoneCount} records with no phone number`);
 
-  // Filter: must have valid Session ID + email
-  const valid = withPhone.filter((r) => r['Session ID'] && r['Email']);
+  // Filter: must have valid Session ID AND a structurally valid email.
+  // Invalid emails (e.g. hotmail.cim typos) are dropped here — no point
+  // sending them to HubSpot since they can never be upserted by email.
+  const valid = withPhone.filter((r) => {
+    if (!r['Session ID']) return false;
+    const email = sanitizeEmail(r['Email']);
+    return isValidEmail(email);
+  });
   const noIdOrEmail = withPhone.length - valid.length;
-  if (noIdOrEmail > 0) log(`Skipped ${noIdOrEmail} records missing Session ID or email`);
+  if (noIdOrEmail > 0) log(`Skipped ${noIdOrEmail} records (missing Session ID or invalid email)`);
 
   if (DRY_RUN) {
     log(`DRY RUN — would push ${valid.length} contacts to HubSpot`);
     return { added: 0, total: 0, noPhone: noPhoneCount, dryRun: valid.length };
   }
 
-  log('Fetching existing Lasso Session IDs from HubSpot...');
-  const existingIds = await getExistingSessionIds();
-  log(`HubSpot already has ${existingIds.size} contacts with a Lasso Session ID`);
+  log('Fetching existing Lasso contact emails from HubSpot...');
+  const existingEmails = await getExistingLassoEmails();
+  log(`HubSpot already has ${existingEmails.size} Lasso contacts`);
 
-  const newRecords = valid.filter((r) => !existingIds.has(r['Session ID']));
-  log(`New leads to create: ${newRecords.length}`);
+  // Deduplicate by email: skip already-in-HubSpot contacts AND deduplicate
+  // within this batch (same person who abandoned twice has two session IDs
+  // both appearing as "new" — keep only the first occurrence per email).
+  const seenEmails = new Set();
+  const newRecords = [];
+  for (const r of valid) {
+    const email = sanitizeEmail(r['Email']);
+    if (existingEmails.has(email)) continue;   // already in HubSpot
+    if (seenEmails.has(email)) continue;        // duplicate in this CSV batch
+    seenEmails.add(email);
+    newRecords.push(r);
+  }
+  log(`New unique leads to create: ${newRecords.length}`);
 
   if (newRecords.length === 0) {
-    return { added: 0, total: existingIds.size, noPhone: noPhoneCount, skipped: valid.length };
+    return { added: 0, total: existingEmails.size, noPhone: noPhoneCount, skipped: valid.length };
   }
 
   const result = await createContactsAndDeals(newRecords);
@@ -413,7 +432,7 @@ async function syncToHubSpot(csvText) {
     deals: result.createdDeals,
     failedContacts: result.failedContacts,
     failedDeals: result.failedDeals,
-    total: existingIds.size + result.createdContacts,
+    total: existingEmails.size + result.createdContacts,
     noPhone: noPhoneCount,
     skipped: valid.length - newRecords.length,
   };
