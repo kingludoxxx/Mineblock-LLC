@@ -272,14 +272,18 @@ async function createContactsAndDeals(records) {
     try {
       result = await hub('POST', '/crm/v3/objects/contacts/batch/upsert', { inputs });
     } catch (err) {
-      log(`Batch contact upsert failed (${err.status}); falling back to individual upserts`);
+      const batchErrDetail = JSON.stringify(err.data || '').slice(0, 500);
+      log(`Batch contact upsert failed (${err.status}): ${batchErrDetail}`);
+      log(`Falling back to individual upserts (${inputs.length} records)`);
       result = { results: [] };
       for (const input of inputs) {
         try {
           const single = await hub('POST', '/crm/v3/objects/contacts/batch/upsert', { inputs: [input] });
           result.results.push(...(single.results || []));
+          log(`  ✓ ${input.id}`);
         } catch (e) {
           const errBody = JSON.stringify(e.data || '');
+          log(`  ✗ ${input.id} → ${e.status}: ${errBody.slice(0, 200)}`);
           if (e.status === 400 && errBody.includes('INVALID_EMAIL')) {
             // Email is genuinely malformed (e.g. hotmail.cim). Create the contact
             // WITHOUT email so the lasso_session_id is persisted and this record
