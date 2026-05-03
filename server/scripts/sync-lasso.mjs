@@ -271,6 +271,7 @@ async function createContactsAndDeals(records) {
           lasso_session_id: r['Session ID'],
           cart_value: parseCartValue(r['Cart Value']),
           cart_items: parseInt(r['Items'], 10) || 0,
+          hs_lead_status: 'READY_TO_CALL',
           ...(cartAbandonedAt ? { cart_abandoned_at: cartAbandonedAt } : {}),
         },
       };
