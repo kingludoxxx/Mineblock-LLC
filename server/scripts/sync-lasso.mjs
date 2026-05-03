@@ -111,12 +111,12 @@ function splitName(full) {
   return { firstname: parts[0], lastname: parts.slice(1).join(' ') };
 }
 
-function isoDay(dateStr) {
-  if (!dateStr) return '';
+function toHubSpotDatetime(dateStr) {
+  if (!dateStr) return null;
   const d = new Date(dateStr);
-  if (isNaN(d.getTime())) return '';
-  // HubSpot date properties want YYYY-MM-DD at midnight UTC
-  return d.toISOString().slice(0, 10);
+  if (isNaN(d.getTime())) return null;
+  // HubSpot datetime properties want Unix epoch in milliseconds
+  return d.getTime();
 }
 
 // HubSpot helper with retry on 429
@@ -257,7 +257,7 @@ async function createContactsAndDeals(records) {
     // Records arriving here are already email-validated and deduplicated upstream.
     const inputs = batch.map((r) => {
       const { firstname, lastname } = splitName(r['Customer Name']);
-      const cartAbandonedAt = isoDay(r['Updated At']);
+      const cartAbandonedAt = toHubSpotDatetime(r['Updated At']);
       const email = sanitizeEmail(r['Email']);
       return {
         idProperty: 'email',
@@ -416,14 +416,41 @@ async function syncToHubSpot(csvText) {
   // both appearing as "new" — keep only the first occurrence per email).
   const seenEmails = new Set();
   const newRecords = [];
+  const existingInCsv = [];
   for (const r of valid) {
     const email = sanitizeEmail(r['Email']);
-    if (existingEmails.has(email)) continue;   // already in HubSpot
+    if (existingEmails.has(email)) {
+      if (!seenEmails.has(email)) existingInCsv.push(r); // refresh timestamps
+      seenEmails.add(email);
+      continue;
+    }
     if (seenEmails.has(email)) continue;        // duplicate in this CSV batch
     seenEmails.add(email);
     newRecords.push(r);
   }
   log(`New unique leads to create: ${newRecords.length}`);
+
+  // Refresh cart_abandoned_at for existing contacts in this CSV window.
+  // ONLY updates cart_abandoned_at — does NOT touch Lead Status, Notes, or Recovered Amount.
+  if (existingInCsv.length > 0) {
+    log(`Refreshing cart_abandoned_at for ${existingInCsv.length} existing contacts...`);
+    for (const batch of chunk(existingInCsv, 100)) {
+      const inputs = batch
+        .map((r) => {
+          const ts = toHubSpotDatetime(r['Updated At']);
+          if (!ts) return null;
+          return { idProperty: 'email', id: sanitizeEmail(r['Email']), properties: { cart_abandoned_at: ts } };
+        })
+        .filter(Boolean);
+      if (inputs.length > 0) {
+        try {
+          await hub('POST', '/crm/v3/objects/contacts/batch/upsert', { inputs });
+        } catch (e) {
+          log(`  cart_abandoned_at refresh failed: ${e.status}`);
+        }
+      }
+    }
+  }
 
   if (newRecords.length === 0) {
     return { added: 0, total: existingEmails.size, noPhone: noPhoneCount, skipped: valid.length };
