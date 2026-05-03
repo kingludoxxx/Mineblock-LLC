@@ -206,10 +206,17 @@ function sanitizeEmail(raw) {
   return (raw || '').toLowerCase().trim().replace(/[^a-z0-9@._+\-]/g, '');
 }
 
+// Common TLD typos that pass structural checks but HubSpot rejects as INVALID_EMAIL
+const INVALID_TLDS = new Set(['cim', 'ocm', 'cpm', 'con', 'comm', 'conm', 'gmai', 'gmial', 'yaho', 'yahooo', 'htomail', 'hotmal']);
+
 function isValidEmail(email) {
   if (!email || !email.includes('@') || !email.includes('.')) return false;
   const [local, domain] = email.split('@');
-  return !!(local && domain && /^[a-z0-9.-]+\.[a-z]{2,}$/.test(domain));
+  if (!local || !domain) return false;
+  if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(domain)) return false;
+  const tld = domain.split('.').pop();
+  if (INVALID_TLDS.has(tld)) return false;
+  return true;
 }
 
 // ─── Step 2: HubSpot dedup lookup (email-based) ─────────────────────────────
