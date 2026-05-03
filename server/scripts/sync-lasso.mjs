@@ -27,21 +27,18 @@ import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { readFileSync, unlinkSync } from 'node:fs';
 import { execSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 
-// Self-healing: install Chromium only if the binary is missing.
-// Skips the ~20s install on normal runs where the binary is cached.
-async function ensureChromium() {
-  try {
-    const instance = await chromium.executablePath();
-    // If executablePath() returns without throwing, binary exists — nothing to do
-  } catch {
+// Self-healing: check if the Chromium binary actually exists on disk.
+// Render cron containers are ephemeral — the build cache doesn't carry over
+// to runtime, so the start command installs it first. This is a belt-and-
+// suspenders fallback in case the start command ever changes.
+function ensureChromium() {
+  const exePath = chromium.executablePath();
+  if (!existsSync(exePath)) {
     log('Chromium binary missing — installing now...');
-    try {
-      execSync('npx playwright install chromium', { stdio: 'pipe' });
-      log('Chromium installed.');
-    } catch (e) {
-      log(`playwright install warning: ${e.message?.slice(0, 120)}`);
-    }
+    execSync('npx playwright install chromium', { stdio: 'pipe' });
+    log('Chromium installed.');
   }
 }
 
@@ -158,7 +155,7 @@ function chunk(arr, size) {
 
 // ─── Step 1: Scrape Lasso ──────────────────────────────────────────────────
 async function downloadLassoCSV() {
-  await ensureChromium();
+  ensureChromium();
   log('Launching headless Chromium...');
   const browser = await chromium.launch({
     headless: LASSO_HEADLESS !== 'false',
