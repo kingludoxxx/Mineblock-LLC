@@ -126,13 +126,14 @@ router.post('/api/sales/generate-link', async (req, res) => {
       : `${firstItem.product_name} + ${items.length - 1} more`;
     const title = (discount > 0 ? `${titleBase} (${discount}% off)` : titleBase).slice(0, 60);
 
-    // Create custom Whop plan (one_per_user:true is set automatically by Whop)
+    // Create custom Whop plan — must explicitly set unlimited_stock:true or Whop defaults to false
     const payload = {
       access_pass_id: CUSTOM_PLAN_PRODUCT,
       plan_type: 'one_time',
       release_method: 'buy_now',
       initial_price: finalPrice,
       renewal_price: 0,
+      unlimited_stock: true,
       visibility: 'hidden',
       description: fullDesc.slice(0, 1000),
       internal_notes: title.slice(0, 500),
