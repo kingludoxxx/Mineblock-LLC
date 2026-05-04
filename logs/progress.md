@@ -1,6 +1,46 @@
 # Progress Log
 
 ---
+TIMESTAMP: 2026-05-04 00:15
+TASK: Whop Payment Link Generator — phone sales tool
+BUILT: Express router (server/src/routes/salesTools.js, 698 lines) with 3 endpoints: GET /sales/payment-links (self-contained dark-themed HTML page), GET /api/sales/products (product catalog JSON), POST /api/sales/generate-link (creates checkout links). 6 products / 19 plans hardcoded. Single-item no-discount returns existing plan direct link. All other cases create a hidden one-time Whop plan via v2 API and return its direct_link. Mounted in app.js before SPA fallback.
+TESTED: All endpoints verified locally (port 3099) and on production (mineblock-dashboard.onrender.com). Single item → direct link (no API call). Discounted single item → custom plan with correct price (10% off $299.99 = $269.99, verified in Whop). Multi-product → summed price ($69.99 + $299.99 = $369.98). Multi-product + discount → correct combined price ($1037.59 = ($299.99+$997) × 0.8). Error cases: empty items → 400, 100% discount → 400 (price < $1). All 6 plan IDs verified against Whop API; fixed PhantomAxe Ultra Buy 2 from plan_6fyMedZK7KMum → plan_6fyMedZK7QMum.
+OUTPUT: Live at https://mineblock-dashboard.onrender.com/sales/payment-links — HTTP 200, all 6 products loaded, checkout links generated and verified in Whop. Deploy dep-d7ru5n8k1i2s73e5p110, commit 39d18e9.
+DECISIONS: Route mounted without requireAuth middleware — no login required, accessible from any device on the dashboard origin. Product catalog hardcoded (not DB-backed) for simplicity. Custom plans created under prod_f39F0e4fpb26N (existing Mineblock product that has custom_cta=complete_order set).
+STATUS: COMPLETE
+---
+TIMESTAMP: 2026-05-03 18:10
+TASK: Lasso → HubSpot sync — full pipeline completion + reliability hardening
+BUILT:
+  - server/scripts/sync-lasso.mjs (commits 5ba40a7, 2b6882c, 06d00cc):
+    Playwright headless Chromium scrapes Lasso CSV every 5 min. Dedupes by
+    lasso_session_id. Batch-upserts Contacts + Deals into HubSpot Cart Recovery
+    pipeline (ID 2237887205). Self-healing Chromium via existsSync fallback.
+    Invalid-email contacts now saved without email to prevent infinite retry.
+  - Render env var PLAYWRIGHT_BROWSERS_PATH=/opt/render/project/src/.browsers:
+    Chromium downloaded into project dir during build — survives container recycling.
+  - Render cron schedule updated to */5 * * * * (every 5 min).
+TESTED:
+  - Confirmed run at 2026-05-03T17:55:19Z: Chromium launched, Lasso CSV downloaded
+    (143653 bytes / 748 rows), 559 existing session IDs fetched, 26 new leads
+    processed, 23 contacts + 23 deals created, 1 invalid email contact saved
+    without email. Total: 582 contacts. Runtime: 26s.
+  - Confirmed PLAYWRIGHT_BROWSERS_PATH fix: build at 17:54 downloaded Chromium to
+    /opt/render/project/src/.browsers/chromium_headless_shell-1217 — runtime at
+    17:55 launched immediately with no re-download.
+  - Invalid-email fallback (commit 06d00cc): contacts with INVALID_EMAIL get saved
+    without email field — session ID persisted, breaks infinite-retry loop.
+OUTPUT:
+  - 582 HubSpot contacts with phone, name, country, cart_value, lasso_session_id.
+  - 23 new contacts + 23 deals on the 17:55 run. Zero duplicate errors.
+  - Build successful + uploaded to Render. Cron running every 5 min.
+DECISIONS:
+  - Used existsSync(chromium.executablePath()) not try/catch — executablePath()
+    never throws, only returns a string; must check disk directly.
+  - Contacts with invalid emails saved WITHOUT email field rather than skipped —
+    ensures lasso_session_id is tracked and they are never retried.
+STATUS: COMPLETE
+---
 TIMESTAMP: 2026-04-25 22:40
 TASK: Video Ads Languages Pipeline — full build, TC-09 Frame.io fix, translation quality improvement
 BUILT:
