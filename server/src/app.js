@@ -21,6 +21,7 @@ import metaWebhookRoutes from './routes/metaWebhook.js';
 import shopifyWebhookRoutes from './routes/shopifyWebhook.js';
 import departmentRegistry from './departments/registry.js';
 import briefPipelineRouter from './routes/briefPipeline.js';
+import salesToolsRouter from './routes/salesTools.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -80,8 +81,7 @@ app.use('/api/auth', authRoutes);       // alias for client compatibility
 mountRoutes(app);
 
 app.use('/api/v1/brief-pipeline', briefPipelineRouter);
-
-
+app.use(salesToolsRouter);
 
 // Mount department modules
 app.use('/api/v1/departments/modules', departmentRegistry.getRouter());
