@@ -126,7 +126,7 @@ router.post('/api/sales/generate-link', async (req, res) => {
       : `${firstItem.product_name} + ${items.length - 1} more`;
     const title = (discount > 0 ? `${titleBase} (${discount}% off)` : titleBase).slice(0, 60);
 
-    // Create custom Whop plan — stock: 1 so each link is single-use
+    // Create custom Whop plan — stock:1 + unlimited_stock:false = single-use link
     const payload = {
       access_pass_id: CUSTOM_PLAN_PRODUCT,
       plan_type: 'one_time',
@@ -134,10 +134,10 @@ router.post('/api/sales/generate-link', async (req, res) => {
       initial_price: finalPrice,
       renewal_price: 0,
       stock: 1,
+      unlimited_stock: false,
       visibility: 'hidden',
-      title,
       description: fullDesc.slice(0, 1000),
-      internal_notes: fullDesc.slice(0, 500),
+      internal_notes: title.slice(0, 500),
     };
 
     const whopRes = await fetch('https://api.whop.com/api/v2/plans', {
