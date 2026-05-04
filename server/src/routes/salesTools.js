@@ -523,26 +523,16 @@ function filterProducts(query) {
 }
 
 function toggleVariant(prodId, prodName, planId, label, price) {
-  // If already selected, deselect
   if (cart[planId]) {
     delete cart[planId];
   } else {
-    // Deselect any other variant of the same product first
     const prod = PRODUCTS.find(p => p.id === prodId);
     prod.plans.forEach(p => { delete cart[p.id]; });
-    // Add this one
     cart[planId] = { product_name: prodName, variant_label: label, price, plan_id: planId };
   }
-  renderProducts(PRODUCTS.filter(p => {
-    const card = document.getElementById('card-' + p.id);
-    return card ? !card.classList.contains('hidden') : true;
-  }));
-  // Re-render without losing search filter
+  renderProducts(PRODUCTS);
   const q = document.getElementById('search').value.toLowerCase();
-  PRODUCTS.forEach(prod => {
-    const card = document.getElementById('card-' + prod.id);
-    if (card && q) card.classList.toggle('hidden', !prod.name.toLowerCase().includes(q));
-  });
+  if (q) filterProducts(q);
   updateCart();
 }
 
@@ -591,7 +581,8 @@ function updateTotals() {
   const items = Object.values(cart);
   if (items.length === 0) return;
 
-  const discount = parseFloat(document.getElementById('discount').value) || 0;
+  const raw = parseFloat(document.getElementById('discount').value) || 0;
+  const discount = Math.max(0, Math.min(99, raw));
   const subtotal = items.reduce((s, i) => s + i.price, 0);
   const total = discount > 0 ? subtotal * (1 - discount / 100) : subtotal;
 
@@ -625,7 +616,8 @@ async function generateLink() {
   hideResult();
 
   try {
-    const discount_pct = parseFloat(document.getElementById('discount').value) || 0;
+    const raw = parseFloat(document.getElementById('discount').value) || 0;
+    const discount_pct = Math.max(0, Math.min(99, raw));
     const res = await fetch('/api/sales/generate-link', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -638,6 +630,10 @@ async function generateLink() {
       return;
     }
 
+    if (!data.link) {
+      showError('No link returned — please try again');
+      return;
+    }
     showResult(data.link);
   } catch (err) {
     showError('Network error — please try again');
@@ -661,12 +657,37 @@ function showResult(link) {
 
 function copyLink() {
   const link = document.getElementById('result-link').dataset.link;
-  navigator.clipboard.writeText(link).then(() => {
+  if (!link) return;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(link).then(() => {
+      const btn = document.getElementById('copy-btn');
+      btn.textContent = 'Copied!';
+      btn.classList.add('copied');
+      setTimeout(() => { btn.textContent = 'Copy Link'; btn.classList.remove('copied'); }, 2000);
+    }).catch(() => fallbackCopy(link));
+  } else {
+    fallbackCopy(link);
+  }
+}
+
+function fallbackCopy(link) {
+  const ta = document.createElement('textarea');
+  ta.value = link;
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  try {
+    document.execCommand('copy');
     const btn = document.getElementById('copy-btn');
     btn.textContent = 'Copied!';
     btn.classList.add('copied');
     setTimeout(() => { btn.textContent = 'Copy Link'; btn.classList.remove('copied'); }, 2000);
-  });
+  } catch (e) {
+    const btn = document.getElementById('copy-btn');
+    btn.textContent = 'Select link above';
+  }
+  document.body.removeChild(ta);
 }
 
 function showError(msg) {
