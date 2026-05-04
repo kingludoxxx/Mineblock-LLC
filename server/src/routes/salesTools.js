@@ -93,7 +93,7 @@ router.post('/api/sales/generate-link', async (req, res) => {
       return res.status(400).json({ error: 'No items selected' });
     }
 
-    const discount = parseFloat(discount_pct) || 0;
+    const discount = Math.max(0, Math.min(99, parseFloat(discount_pct) || 0));
     const isSingle = items.length === 1 && discount === 0;
 
     // Single item, no discount — return existing plan link directly
@@ -119,16 +119,23 @@ router.post('/api/sales/generate-link', async (req, res) => {
       : null;
     const fullDesc = discountNote ? `${description} | ${discountNote}` : description;
 
-    // Create custom Whop plan
+    // Build a readable title from the first item (truncated to 60 chars)
+    const firstItem = items[0];
+    const titleBase = items.length === 1
+      ? `${firstItem.product_name} — ${firstItem.variant_label}`
+      : `${firstItem.product_name} + ${items.length - 1} more`;
+    const title = (discount > 0 ? `${titleBase} (${discount}% off)` : titleBase).slice(0, 60);
+
+    // Create custom Whop plan — stock: 1 so each link is single-use
     const payload = {
       access_pass_id: CUSTOM_PLAN_PRODUCT,
       plan_type: 'one_time',
       release_method: 'buy_now',
       initial_price: finalPrice,
       renewal_price: 0,
-      unlimited_stock: true,
+      stock: 1,
       visibility: 'hidden',
-      title: 'Custom Order',
+      title,
       description: fullDesc.slice(0, 1000),
       internal_notes: fullDesc.slice(0, 500),
     };
