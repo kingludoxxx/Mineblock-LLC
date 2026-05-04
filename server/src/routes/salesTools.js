@@ -403,6 +403,7 @@ function buildPage() {
   }
   .result.visible { display: block; }
   .result-link {
+    display: block;
     background: #0d2137;
     border: 1px solid #1e4e8c;
     border-radius: 8px;
@@ -413,8 +414,9 @@ function buildPage() {
     margin-bottom: 8px;
     cursor: pointer;
     transition: background 0.15s;
+    text-decoration: none;
   }
-  .result-link:hover { background: #102843; }
+  .result-link:hover { background: #102843; color: #bfdbfe; }
   .copy-btn {
     width: 100%;
     background: #052e16;
@@ -517,7 +519,7 @@ function buildPage() {
       <button class="btn-reset" onclick="resetAll()">Clear</button>
 
       <div class="result" id="result">
-        <div class="result-link" id="result-link" onclick="copyLink()"></div>
+        <a class="result-link" id="result-link" href="#" target="_blank" rel="noopener"></a>
         <button class="copy-btn" id="copy-btn" onclick="copyLink()">Copy Link</button>
       </div>
       <div class="error-msg" id="error-msg"></div>
@@ -735,6 +737,7 @@ function showResult(link) {
   const linkEl = document.getElementById('result-link');
   const copyBtn = document.getElementById('copy-btn');
   linkEl.textContent = link;
+  linkEl.href = link;
   linkEl.dataset.link = link;
   copyBtn.textContent = 'Copy Link';
   copyBtn.classList.remove('copied');
