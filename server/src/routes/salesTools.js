@@ -84,6 +84,37 @@ router.get('/api/sales/products', (req, res) => {
   res.json(PRODUCTS);
 });
 
+// Validate an agent discount code against Whop promo codes
+router.get('/api/sales/validate-code', async (req, res) => {
+  try {
+    const code = (req.query.code || '').trim().toUpperCase();
+    if (!code) return res.json({ valid: false });
+
+    const whopRes = await fetch('https://api.whop.com/api/v2/promo_codes?page=1&per=100', {
+      headers: { Authorization: `Bearer ${WHOP_TOKEN}` },
+    });
+
+    if (!whopRes.ok) {
+      console.error('[sales-tools] promo_codes fetch failed:', await whopRes.text());
+      return res.status(502).json({ valid: false, error: 'Could not reach Whop' });
+    }
+
+    const { data } = await whopRes.json();
+    const match = (data || []).find(p =>
+      p.code.toUpperCase() === code &&
+      p.status === 'active' &&
+      p.promo_type === 'percentage'
+    );
+
+    if (!match) return res.json({ valid: false });
+
+    return res.json({ valid: true, pct: parseFloat(match.amount_off), code });
+  } catch (err) {
+    console.error('[sales-tools] validate-code error:', err);
+    return res.status(500).json({ valid: false, error: 'Internal server error' });
+  }
+});
+
 // Generate a Whop checkout link
 router.post('/api/sales/generate-link', async (req, res) => {
   try {
@@ -535,12 +566,12 @@ function buildPage() {
 
 <script>
 const PRODUCTS = ${JSON.stringify(PRODUCTS)};
-const DISCOUNT_CODES = ${JSON.stringify(DISCOUNT_CODES)};
 
 // State
 let cart = {};
 let activeDiscount = 0;
 let activeAgent = null;
+let codeDebounce = null;
 
 // Render product cards
 function renderProducts(list) {
@@ -610,30 +641,44 @@ function applyDiscountCode(val) {
     statusEl.className = 'discount-status';
     badge.className = 'discount-badge';
     badge.textContent = '';
+    clearTimeout(codeDebounce);
     updateTotals();
     return;
   }
 
-  const entry = DISCOUNT_CODES[code];
-  if (entry) {
-    activeDiscount = entry.pct;
-    activeAgent = { code, name: entry.name, pct: entry.pct };
-    inputEl.className = 'discount-input valid';
-    statusEl.textContent = \`✓ \${entry.name} — \${entry.pct}% discount applied\`;
-    statusEl.className = 'discount-status ok';
-    badge.textContent = entry.pct + '% off';
-    badge.className = 'discount-badge visible';
-  } else {
-    activeDiscount = 0;
-    activeAgent = null;
-    inputEl.className = 'discount-input invalid';
-    statusEl.textContent = 'Invalid code';
-    statusEl.className = 'discount-status err';
-    badge.className = 'discount-badge';
-    badge.textContent = '';
-  }
-  updateTotals();
-  hideResult();
+  statusEl.textContent = 'Checking...';
+  statusEl.className = 'discount-status';
+
+  clearTimeout(codeDebounce);
+  codeDebounce = setTimeout(async () => {
+    try {
+      const res = await fetch('/api/sales/validate-code?code=' + encodeURIComponent(code));
+      const data = await res.json();
+
+      if (data.valid) {
+        activeDiscount = data.pct;
+        activeAgent = { code, pct: data.pct };
+        inputEl.className = 'discount-input valid';
+        statusEl.textContent = \`✓ \${code} — \${data.pct}% discount applied\`;
+        statusEl.className = 'discount-status ok';
+        badge.textContent = data.pct + '% off';
+        badge.className = 'discount-badge visible';
+      } else {
+        activeDiscount = 0;
+        activeAgent = null;
+        inputEl.className = 'discount-input invalid';
+        statusEl.textContent = 'Invalid code';
+        statusEl.className = 'discount-status err';
+        badge.className = 'discount-badge';
+        badge.textContent = '';
+      }
+    } catch (e) {
+      statusEl.textContent = 'Could not verify code';
+      statusEl.className = 'discount-status err';
+    }
+    updateTotals();
+    hideResult();
+  }, 400);
 }
 
 function updateCart() {
