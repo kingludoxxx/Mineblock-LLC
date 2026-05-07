@@ -53,7 +53,15 @@ const {
   LASSO_ABANDONERS_URL = 'https://dashboard.lassocheckout.com/sales/cart-abandoners',
   SLACK_WEBHOOK_URL,
   LASSO_HEADLESS = 'true',
+  HUBSPOT_OWNER_IDS = '',                  // Comma-separated HubSpot owner IDs for round-robin assignment
 } = process.env;
+
+// Round-robin owner pool — parsed once at startup
+// Set HUBSPOT_OWNER_IDS=id1,id2,id3 on Render to enable auto-assignment
+const OWNER_POOL = HUBSPOT_OWNER_IDS
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
 
 const DRY_RUN = process.argv.includes('--dry-run');
 const USING_CSV = process.argv.includes('--csv');
@@ -245,7 +253,8 @@ async function getExistingLassoEmails() {
 }
 
 // ─── Step 3: Batch create in HubSpot ───────────────────────────────────────
-async function createContactsAndDeals(records) {
+// ownerStartIndex: global offset so round-robin continues across batches
+async function createContactsAndDeals(records, ownerStartIndex = 0) {
   let createdContacts = 0;
   let createdDeals = 0;
   let failedContacts = 0;
@@ -253,12 +262,18 @@ async function createContactsAndDeals(records) {
 
   // Batch upsert contacts by email (100 per request max).
   // Upsert creates new contacts OR updates existing ones — no 409 duplicates.
+  let batchOffset = 0;
   for (const batch of chunk(records, 100)) {
     // Records arriving here are already email-validated and deduplicated upstream.
-    const inputs = batch.map((r) => {
+    const inputs = batch.map((r, i) => {
       const { firstname, lastname } = splitName(r['Customer Name']);
       const cartAbandonedAt = toHubSpotDatetime(r['Updated At']);
       const email = sanitizeEmail(r['Email']);
+      // Round-robin owner assignment across the full records array
+      const globalIdx = ownerStartIndex + batchOffset + i;
+      const ownerId = OWNER_POOL.length > 0
+        ? OWNER_POOL[globalIdx % OWNER_POOL.length]
+        : null;
       return {
         idProperty: 'email',
         id: email,
@@ -273,9 +288,11 @@ async function createContactsAndDeals(records) {
           cart_items: parseInt(r['Items'], 10) || 0,
           hs_lead_status: 'READY_TO_CALL',
           ...(cartAbandonedAt ? { cart_abandoned_at: cartAbandonedAt } : {}),
+          ...(ownerId ? { hubspot_owner_id: ownerId } : {}),
         },
       };
     });
+    batchOffset += batch.length;
 
     if (inputs.length === 0) continue;
 
@@ -456,7 +473,10 @@ async function syncToHubSpot(csvText) {
     return { added: 0, total: existingEmails.size, noPhone: noPhoneCount, skipped: valid.length };
   }
 
-  const result = await createContactsAndDeals(newRecords);
+  if (OWNER_POOL.length > 0) {
+    log(`Round-robin assignment: ${newRecords.length} leads → ${OWNER_POOL.length} reps (${OWNER_POOL.join(', ')})`);
+  }
+  const result = await createContactsAndDeals(newRecords, 0);
   log(`Created ${result.createdContacts} contacts and ${result.createdDeals} deals`);
   if (result.failedContacts || result.failedDeals) {
     log(`Failures: ${result.failedContacts} contacts, ${result.failedDeals} deals`);
