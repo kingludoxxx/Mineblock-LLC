@@ -53,14 +53,17 @@ const {
   LASSO_ABANDONERS_URL = 'https://dashboard.lassocheckout.com/sales/cart-abandoners',
   SLACK_WEBHOOK_URL,
   LASSO_HEADLESS = 'true',
-  HUBSPOT_OWNER_IDS = '',                  // Comma-separated HubSpot owner IDs for round-robin assignment
+  HUBSPOT_AGENTS = '',                     // Format: "Jerome:ownerId1,Christian:ownerId2,Tyrone:ownerId3"
 } = process.env;
 
-// Round-robin owner pool — parsed once at startup
-// Set HUBSPOT_OWNER_IDS=id1,id2,id3 on Render to enable auto-assignment
-const OWNER_POOL = HUBSPOT_OWNER_IDS
+// Round-robin agent pool — parsed once at startup
+// Set HUBSPOT_AGENTS=Jerome:id1,Christian:id2,Tyrone:id3 on Render to enable auto-assignment
+const OWNER_POOL = HUBSPOT_AGENTS
   .split(',')
-  .map((s) => s.trim())
+  .map((s) => {
+    const [name, id] = s.trim().split(':');
+    return (name && id) ? { name: name.trim(), id: id.trim() } : null;
+  })
   .filter(Boolean);
 
 const DRY_RUN = process.argv.includes('--dry-run');
@@ -269,9 +272,9 @@ async function createContactsAndDeals(records, ownerStartIndex = 0) {
       const { firstname, lastname } = splitName(r['Customer Name']);
       const cartAbandonedAt = toHubSpotDatetime(r['Updated At']);
       const email = sanitizeEmail(r['Email']);
-      // Round-robin owner assignment across the full records array
+      // Round-robin agent assignment across the full records array
       const globalIdx = ownerStartIndex + batchOffset + i;
-      const ownerId = OWNER_POOL.length > 0
+      const agent = OWNER_POOL.length > 0
         ? OWNER_POOL[globalIdx % OWNER_POOL.length]
         : null;
       return {
@@ -288,7 +291,7 @@ async function createContactsAndDeals(records, ownerStartIndex = 0) {
           cart_items: parseInt(r['Items'], 10) || 0,
           hs_lead_status: 'READY_TO_CALL',
           ...(cartAbandonedAt ? { cart_abandoned_at: cartAbandonedAt } : {}),
-          ...(ownerId ? { hubspot_owner_id: ownerId } : {}),
+          ...(agent ? { hubspot_owner_id: agent.id, agent: agent.name } : {}),
         },
       };
     });
@@ -474,7 +477,7 @@ async function syncToHubSpot(csvText) {
   }
 
   if (OWNER_POOL.length > 0) {
-    log(`Round-robin assignment: ${newRecords.length} leads → ${OWNER_POOL.length} reps (${OWNER_POOL.join(', ')})`);
+    log(`Round-robin assignment: ${newRecords.length} leads → ${OWNER_POOL.length} agents (${OWNER_POOL.map(a => a.name).join(', ')})`);
   }
   const result = await createContactsAndDeals(newRecords, 0);
   log(`Created ${result.createdContacts} contacts and ${result.createdDeals} deals`);
