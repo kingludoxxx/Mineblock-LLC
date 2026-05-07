@@ -57,14 +57,37 @@ const {
 } = process.env;
 
 // Round-robin agent pool — parsed once at startup
-// Set HUBSPOT_AGENTS=Jerome:id1,Christian:id2,Tyrone:id3 on Render to enable auto-assignment
+// Format: HUBSPOT_AGENTS=Christian:id1,Tyrone:id2:400
+// Optional 3rd field = max cart value this agent accepts (no limit if omitted)
 const OWNER_POOL = HUBSPOT_AGENTS
   .split(',')
   .map((s) => {
-    const [name, id] = s.trim().split(':');
-    return (name && id) ? { name: name.trim(), id: id.trim() } : null;
+    const parts = s.trim().split(':');
+    const name = parts[0]?.trim();
+    const id   = parts[1]?.trim();
+    const maxCart = parts[2] ? parseFloat(parts[2]) : Infinity;
+    return (name && id) ? { name, id, maxCart } : null;
   })
   .filter(Boolean);
+
+// Returns the eligible agent for a given cart value using round-robin
+// among agents whose maxCart >= cartValue
+const ownerCounters = {};
+function assignAgent(cartValue) {
+  const eligible = OWNER_POOL.filter((a) => cartValue <= a.maxCart);
+  if (eligible.length === 0) {
+    // Fallback: assign to agent with highest maxCart (or first if all unlimited)
+    const fallback = OWNER_POOL.slice().sort((a, b) => b.maxCart - a.maxCart)[0];
+    return fallback || null;
+  }
+  // Round-robin key is the sorted list of eligible names (so the counter is
+  // shared across the same eligibility group, giving true alternation)
+  const key = eligible.map((a) => a.name).join(',');
+  ownerCounters[key] = (ownerCounters[key] || 0);
+  const agent = eligible[ownerCounters[key] % eligible.length];
+  ownerCounters[key]++;
+  return agent;
+}
 
 const DRY_RUN = process.argv.includes('--dry-run');
 const USING_CSV = process.argv.includes('--csv');
@@ -257,7 +280,7 @@ async function getExistingLassoEmails() {
 
 // ─── Step 3: Batch create in HubSpot ───────────────────────────────────────
 // ownerStartIndex: global offset so round-robin continues across batches
-async function createContactsAndDeals(records, ownerStartIndex = 0) {
+async function createContactsAndDeals(records) {
   let createdContacts = 0;
   let createdDeals = 0;
   let failedContacts = 0;
@@ -265,18 +288,15 @@ async function createContactsAndDeals(records, ownerStartIndex = 0) {
 
   // Batch upsert contacts by email (100 per request max).
   // Upsert creates new contacts OR updates existing ones — no 409 duplicates.
-  let batchOffset = 0;
   for (const batch of chunk(records, 100)) {
     // Records arriving here are already email-validated and deduplicated upstream.
-    const inputs = batch.map((r, i) => {
+    const inputs = batch.map((r) => {
       const { firstname, lastname } = splitName(r['Customer Name']);
       const cartAbandonedAt = toHubSpotDatetime(r['Updated At']);
       const email = sanitizeEmail(r['Email']);
-      // Round-robin agent assignment across the full records array
-      const globalIdx = ownerStartIndex + batchOffset + i;
-      const agent = OWNER_POOL.length > 0
-        ? OWNER_POOL[globalIdx % OWNER_POOL.length]
-        : null;
+      // Assign agent based on cart value constraint + round-robin
+      const cartValue = parseCartValue(r['Cart Value']);
+      const agent = OWNER_POOL.length > 0 ? assignAgent(cartValue) : null;
       return {
         idProperty: 'email',
         id: email,
@@ -295,7 +315,6 @@ async function createContactsAndDeals(records, ownerStartIndex = 0) {
         },
       };
     });
-    batchOffset += batch.length;
 
     if (inputs.length === 0) continue;
 
@@ -479,7 +498,7 @@ async function syncToHubSpot(csvText) {
   if (OWNER_POOL.length > 0) {
     log(`Round-robin assignment: ${newRecords.length} leads → ${OWNER_POOL.length} agents (${OWNER_POOL.map(a => a.name).join(', ')})`);
   }
-  const result = await createContactsAndDeals(newRecords, 0);
+  const result = await createContactsAndDeals(newRecords);
   log(`Created ${result.createdContacts} contacts and ${result.createdDeals} deals`);
   if (result.failedContacts || result.failedDeals) {
     log(`Failures: ${result.failedContacts} contacts, ${result.failedDeals} deals`);
