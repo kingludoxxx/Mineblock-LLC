@@ -339,10 +339,10 @@ async function enrichWithMetaLinks(rows) {
   }
 
   // 2. Resolve each ad_id to actual FB post via Graph API.
-  // Request a wide field set — different ad types expose the post identifier
-  // in different places (effective_object_story_id, object_story_id,
-  // permalink_url, or buried inside object_story_spec.page_id).
-  const FIELDS = 'creative{effective_object_story_id,object_story_id,permalink_url,instagram_permalink_url,object_story_spec{page_id,instagram_actor_id}}';
+  // permalink_url is NOT a valid AdCreative field (Meta returns code 100 if
+  // requested) — only effective_object_story_id / object_story_id /
+  // instagram_permalink_url, plus object_story_spec for fallback.
+  const FIELDS = 'creative{effective_object_story_id,object_story_id,instagram_permalink_url,object_story_spec{page_id,instagram_actor_id}}';
   let realPostCount = 0, libraryCount = 0, sampleLogged = false;
 
   await Promise.all(
@@ -358,17 +358,11 @@ async function enrichWithMetaLinks(rows) {
           }
           const c = d?.creative || {};
           const eosi   = c.effective_object_story_id || c.object_story_id;
-          const permalink = c.permalink_url;
-          const igPerma   = c.instagram_permalink_url;
+          const igPerma = c.instagram_permalink_url;
 
           if (eosi && /^\d+_\d+$/.test(eosi)) {
             const [pageId, postId] = eosi.split('_');
             map[adName] = `https://www.facebook.com/${pageId}/posts/${postId}`;
-            realPostCount++;
-            return;
-          }
-          if (permalink) {
-            map[adName] = permalink.startsWith('http') ? permalink : `https://www.facebook.com${permalink}`;
             realPostCount++;
             return;
           }
