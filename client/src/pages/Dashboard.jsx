@@ -590,14 +590,29 @@ export default function Dashboard() {
   const fetchDashboard = useCallback(async (showLoading = true) => {
     if (showLoading) setLoading(true);
     setError(null);
-    try {
-      const res = await api.get('/kpi-system/home-dashboard', { params: { startDate, endDate } });
-      setData(res.data?.data || null);
-    } catch (err) {
-      console.error('[Dashboard] fetch error:', err);
-      setError(err.response?.data?.error?.message || err.message || 'Failed to load');
-    } finally {
-      setLoading(false);
+    // Retry transient network errors (deploy restarts, brief connectivity
+    // hiccups). Auth errors / 4xx / 5xx fail-fast on the first attempt.
+    const isTransient = (err) =>
+      !err.response && (err.code === 'ERR_NETWORK' || err.message === 'Network Error' || err.code === 'ECONNABORTED');
+    let attempt = 0;
+    const maxAttempts = 3;
+    while (attempt < maxAttempts) {
+      try {
+        const res = await api.get('/kpi-system/home-dashboard', { params: { startDate, endDate } });
+        setData(res.data?.data || null);
+        setLoading(false);
+        return;
+      } catch (err) {
+        attempt++;
+        if (isTransient(err) && attempt < maxAttempts) {
+          await new Promise((r) => setTimeout(r, 1000 * attempt));  // 1s, 2s
+          continue;
+        }
+        console.error('[Dashboard] fetch error:', err);
+        setError(err.response?.data?.error?.message || err.message || 'Failed to load');
+        setLoading(false);
+        return;
+      }
     }
   }, [startDate, endDate]);
 
