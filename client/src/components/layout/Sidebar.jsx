@@ -87,6 +87,7 @@ const navGroups = [
     icon: BarChart3,
     items: [
       { to: '/app/creative-analysis', icon: BarChart3, label: 'Creative Analysis', permission: 'creative-analysis:access' },
+      { to: '/app/ads-reporting', icon: TrendingUp, label: 'Ads Reporting', permission: 'ads-reporting:access' },
       { to: '/app/ads-control-center', icon: Zap, label: 'Ads Control', permission: 'ads-control-center:access' },
       {
         icon: DollarSign,
