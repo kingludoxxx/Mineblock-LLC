@@ -193,7 +193,8 @@ async function fetchTwData(startDate, endDate) {
     return { ok: true, rows };
   }
 
-  // Try the rich query (campaign_name + ad_id + purchases + nvp) for each rev × pur combo
+  // Try the rich query (campaign_name + ad_id + purchases). TW is ClickHouse-flavored:
+  // CAST uses `String` (not `STRING`); `new_visitor_rate` is not a column in pixel_joined_tvf.
   for (const revCol of uniqueRevCols) {
     const revRef = revCol.includes(' ') ? `\`${revCol}\`` : revCol;
     for (const purCol of uniquePurCols) {
@@ -202,11 +203,10 @@ async function fetchTwData(startDate, endDate) {
         SELECT
           ad_name,
           MAX(campaign_name) AS campaign_name,
-          MAX(CAST(ad_id AS STRING)) AS ad_id,
+          MAX(toString(ad_id)) AS ad_id,
           SUM(spend) AS total_spend,
           SUM(${revRef}) AS total_revenue,
-          SUM(${purRef}) AS total_purchases,
-          AVG(new_visitor_rate) AS avg_nvp
+          SUM(${purRef}) AS total_purchases
         FROM pixel_joined_tvf
         WHERE event_date BETWEEN @startDate AND @endDate
           AND channel = 'facebook-ads'
@@ -223,7 +223,7 @@ async function fetchTwData(startDate, endDate) {
     }
   }
 
-  // Fallback: drop ad_id (in case that column isn't available)
+  // Fallback: drop ad_id (in case toString or ad_id column unavailable)
   for (const revCol of uniqueRevCols) {
     const revRef = revCol.includes(' ') ? `\`${revCol}\`` : revCol;
     for (const purCol of uniquePurCols) {
@@ -234,8 +234,7 @@ async function fetchTwData(startDate, endDate) {
           MAX(campaign_name) AS campaign_name,
           SUM(spend) AS total_spend,
           SUM(${revRef}) AS total_revenue,
-          SUM(${purRef}) AS total_purchases,
-          AVG(new_visitor_rate) AS avg_nvp
+          SUM(${purRef}) AS total_purchases
         FROM pixel_joined_tvf
         WHERE event_date BETWEEN @startDate AND @endDate
           AND channel = 'facebook-ads'
@@ -251,7 +250,33 @@ async function fetchTwData(startDate, endDate) {
     }
   }
 
-  // Last-resort: minimal query
+  // Fallback: drop campaign_name too
+  for (const revCol of uniqueRevCols) {
+    const revRef = revCol.includes(' ') ? `\`${revCol}\`` : revCol;
+    for (const purCol of uniquePurCols) {
+      const purRef = purCol.includes(' ') ? `\`${purCol}\`` : purCol;
+      const result = await twQuery(`
+        SELECT
+          ad_name,
+          SUM(spend) AS total_spend,
+          SUM(${revRef}) AS total_revenue,
+          SUM(${purRef}) AS total_purchases
+        FROM pixel_joined_tvf
+        WHERE event_date BETWEEN @startDate AND @endDate
+          AND channel = 'facebook-ads'
+        GROUP BY ad_name
+        HAVING SUM(spend) > 0.01
+        ORDER BY SUM(spend) DESC
+        LIMIT 500
+      `);
+      if (result.ok) {
+        console.warn(`[Ads Report] TW fallback no campaign rev="${revCol}" pur="${purCol}"`);
+        return { rows: result.rows, revCol, purCol, hasCampaign: false, hasAdId: false };
+      }
+    }
+  }
+
+  // Last-resort: revenue only
   for (const revCol of uniqueRevCols) {
     const revRef = revCol.includes(' ') ? `\`${revCol}\`` : revCol;
     const result = await twQuery(`
