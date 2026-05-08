@@ -263,43 +263,75 @@ function parseAdName(adName) {
   };
 }
 
-// ── ClickUp task URL lookup via brief_pipeline_generated ─────────────────────
+// ── ClickUp task URL lookup ───────────────────────────────────────────────────
+// Checks brief_pipeline_winners (by creative_id "B0112") and
+// brief_pipeline_generated (by brief_number integer 112) for ClickUp links.
 async function enrichWithClickUpLinks(rows) {
   const adNames = [...new Set(rows.map(r => r.ad_name).filter(Boolean))];
   if (!adNames.length) return {};
 
-  // Parse brief number from second segment (e.g. "MR - B0112 - ..." → 112)
-  const briefNumMap = {};
+  // Parse creative_id and brief_number from the second ' - ' segment
+  const creativeIdMap = {};  // adName → "B0112"
+  const briefNumMap   = {};  // adName → 112
   for (const adName of adNames) {
-    const parts = adName.split(' - ');
-    const m = parts[1]?.trim().match(/^B(\d+)$/);
-    if (m) briefNumMap[adName] = parseInt(m[1], 10);
+    const seg = adName.split(' - ')[1]?.trim();
+    const m = seg?.match(/^B(\d+)$/);
+    if (m) {
+      creativeIdMap[adName] = seg;
+      briefNumMap[adName]   = parseInt(m[1], 10);
+    }
   }
 
-  const briefNums = [...new Set(Object.values(briefNumMap))];
-  if (!briefNums.length) return {};
+  const creativeIds = [...new Set(Object.values(creativeIdMap))];
+  const briefNums   = [...new Set(Object.values(briefNumMap))];
+  if (!creativeIds.length) return {};
+
+  const urlByCreativeId = {};
+  const urlByBriefNum   = {};
 
   try {
-    const result = await pgQuery(
-      `SELECT DISTINCT ON (brief_number) brief_number, clickup_task_url
-       FROM brief_pipeline_generated
-       WHERE brief_number = ANY($1) AND clickup_task_url IS NOT NULL
-       ORDER BY brief_number, pushed_at DESC`,
-      [briefNums]
+    // 1. Winners table: creative_id → clickup_task_id → construct URL
+    const winners = await pgQuery(
+      `SELECT creative_id, clickup_task_id FROM brief_pipeline_winners
+       WHERE creative_id = ANY($1) AND clickup_task_id IS NOT NULL`,
+      [creativeIds]
     );
-    const numToUrl = {};
-    for (const r of (result || [])) {
-      if (r.brief_number && r.clickup_task_url) numToUrl[r.brief_number] = r.clickup_task_url;
+    for (const r of (winners || [])) {
+      if (r.creative_id && r.clickup_task_id)
+        urlByCreativeId[r.creative_id] = `https://app.clickup.com/t/${r.clickup_task_id}`;
     }
-    const map = {};
-    for (const [adName, num] of Object.entries(briefNumMap)) {
-      if (numToUrl[num]) map[adName] = numToUrl[num];
-    }
-    return map;
   } catch (err) {
-    console.error('[Ads Report] ClickUp link lookup failed:', err.message);
-    return {};
+    console.error('[Ads Report] ClickUp winners lookup failed:', err.message);
   }
+
+  try {
+    // 2. Generated table: brief_number → clickup_task_url
+    if (briefNums.length) {
+      const generated = await pgQuery(
+        `SELECT DISTINCT ON (brief_number) brief_number, clickup_task_url
+         FROM brief_pipeline_generated
+         WHERE brief_number = ANY($1) AND clickup_task_url IS NOT NULL
+         ORDER BY brief_number, pushed_at DESC`,
+        [briefNums]
+      );
+      for (const r of (generated || [])) {
+        if (r.brief_number && r.clickup_task_url)
+          urlByBriefNum[r.brief_number] = r.clickup_task_url;
+      }
+    }
+  } catch (err) {
+    console.error('[Ads Report] ClickUp generated lookup failed:', err.message);
+  }
+
+  const map = {};
+  for (const adName of adNames) {
+    const cid = creativeIdMap[adName];
+    const num = briefNumMap[adName];
+    const url = (cid && urlByCreativeId[cid]) || (num && urlByBriefNum[num]) || null;
+    if (url) map[adName] = url;
+  }
+  console.log(`[Ads Report] ClickUp links found: ${Object.keys(map).length}/${adNames.length}`);
+  return map;
 }
 
 // ── Build report rows ─────────────────────────────────────────────────────────
