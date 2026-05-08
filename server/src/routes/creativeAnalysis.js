@@ -2853,94 +2853,58 @@ router.get('/meta-lookup/:creativeId', authenticate, async (req, res) => {
 // ── Exported helpers for cross-module use ──────────────────────────
 
 /**
- * Fetch daily ad spend + attributed revenue from Triple Whale for a date range.
- * Returns array of { date: 'YYYY-MM-DD', spend: Number, revenue: Number }
- *
- * Spend source priority:
- *  1. ads_tvf  — raw ad-platform data, includes ALL spend even on zero-conversion days
- *  2. pixel_joined_tvf — attribution join, misses spend on non-converting ads (~14% gap)
- *
- * Revenue always comes from pixel_joined_tvf (that is the attribution model).
+ * Fetch daily ad spend totals from Triple Whale for a date range.
+ * Returns array of { date: 'YYYY-MM-DD', spend: Number }
  */
 export async function fetchDailyAdSpend(startDate, endDate) {
   if (!TW_API_KEY) return [];
   try {
-    function twPost(query) {
-      return fetch(TW_SQL_URL, {
-        method: 'POST',
-        headers: { 'x-api-key': TW_API_KEY, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ shopId: TW_SHOP_ID, query, period: { startDate, endDate }, attributionModel: TW_ATTRIBUTION_MODEL }),
-        signal: AbortSignal.timeout(15000),
-      });
-    }
-
-    // --- Step 1: spend from ads_tvf (all ads, no pixel-event join required) ---
-    let spendByDate = {};
-    let adsTvfOk = false;
-    try {
-      const adsRes = await twPost(
-        `SELECT event_date, SUM(spend) as total_spend FROM ads_tvf WHERE event_date BETWEEN @startDate AND @endDate GROUP BY event_date ORDER BY event_date`
-      );
-      if (adsRes.ok) {
-        const adsData = await adsRes.json();
-        const adsRows = Array.isArray(adsData) ? adsData : (adsData?.data || adsData?.rows || []);
-        if (!adsData?.error) {
-          adsTvfOk = true;
-          for (const r of adsRows) {
-            const d = (r.event_date || '').slice(0, 10);
-            if (d) spendByDate[d] = parseFloat(r.total_spend || 0);
-          }
-          console.log(`[TW] fetchDailyAdSpend — spend from ads_tvf (${adsRows.length} days)`);
-        } else {
-          console.warn('[TW] fetchDailyAdSpend — ads_tvf error:', adsData.error);
-        }
-      } else {
-        console.warn('[TW] fetchDailyAdSpend — ads_tvf HTTP', adsRes.status);
-      }
-    } catch (e) {
-      console.warn('[TW] fetchDailyAdSpend — ads_tvf exception:', e.message);
-    }
-
-    // --- Step 2: revenue (+ spend fallback) from pixel_joined_tvf ---
+    // Use the revenue column previously discovered by fetchTripleWhaleAds
+    // (cached in twKnownRevCol). Falls back to the configured TW_REVENUE_COL
+    // or 'order_revenue'. Wrapping in backticks if the column has spaces.
     const revCol = twKnownRevCol || TW_REVENUE_COL || 'order_revenue';
     const revRef = revCol.includes(' ') ? `\`${revCol}\`` : revCol;
 
-    const pixelRes = await twPost(
-      `SELECT event_date, SUM(spend) as total_spend, SUM(${revRef}) as total_revenue FROM pixel_joined_tvf WHERE event_date BETWEEN @startDate AND @endDate GROUP BY event_date ORDER BY event_date`
-    ).catch(() => null);
-
-    // Merge: seed result with ads_tvf spend (revenue=0 placeholder)
-    const byDate = {};
-    for (const [d, spend] of Object.entries(spendByDate)) {
-      byDate[d] = { date: d, spend, revenue: 0 };
+    const res = await fetch(TW_SQL_URL, {
+      method: 'POST',
+      headers: { 'x-api-key': TW_API_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        shopId: TW_SHOP_ID,
+        query: `SELECT event_date, SUM(spend) as total_spend, SUM(${revRef}) as total_revenue FROM pixel_joined_tvf WHERE event_date BETWEEN @startDate AND @endDate GROUP BY event_date ORDER BY event_date`,
+        period: { startDate, endDate },
+        attributionModel: TW_ATTRIBUTION_MODEL,
+      }),
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!res.ok) {
+      // Fallback to spend-only query if revenue column rejected
+      const fb = await fetch(TW_SQL_URL, {
+        method: 'POST',
+        headers: { 'x-api-key': TW_API_KEY, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          shopId: TW_SHOP_ID,
+          query: `SELECT event_date, SUM(spend) as total_spend FROM pixel_joined_tvf WHERE event_date BETWEEN @startDate AND @endDate GROUP BY event_date ORDER BY event_date`,
+          period: { startDate, endDate },
+          attributionModel: TW_ATTRIBUTION_MODEL,
+        }),
+        signal: AbortSignal.timeout(15000),
+      });
+      if (!fb.ok) return [];
+      const fbData = await fb.json();
+      const fbRows = Array.isArray(fbData) ? fbData : (fbData?.data || fbData?.rows || []);
+      return fbRows.map(r => ({
+        date: (r.event_date || '').slice(0, 10),
+        spend: parseFloat(r.total_spend || 0),
+        revenue: 0,
+      }));
     }
-
-    if (pixelRes?.ok) {
-      const pixelData = await pixelRes.json();
-      const pixelRows = Array.isArray(pixelData) ? pixelData : (pixelData?.data || pixelData?.rows || []);
-      for (const r of pixelRows) {
-        const d = (r.event_date || '').slice(0, 10);
-        if (!d) continue;
-        if (!byDate[d]) byDate[d] = { date: d, spend: 0, revenue: 0 };
-        if (!adsTvfOk) byDate[d].spend = parseFloat(r.total_spend || 0); // fallback spend
-        byDate[d].revenue = parseFloat(r.total_revenue || 0);
-      }
-    } else if (!adsTvfOk) {
-      // Both sources failed — try a spend-only pixel query as last resort
-      const fbRes = await twPost(
-        `SELECT event_date, SUM(spend) as total_spend FROM pixel_joined_tvf WHERE event_date BETWEEN @startDate AND @endDate GROUP BY event_date ORDER BY event_date`
-      ).catch(() => null);
-      if (fbRes?.ok) {
-        const fbData = await fbRes.json();
-        const fbRows = Array.isArray(fbData) ? fbData : (fbData?.data || fbData?.rows || []);
-        for (const r of fbRows) {
-          const d = (r.event_date || '').slice(0, 10);
-          if (d) byDate[d] = { date: d, spend: parseFloat(r.total_spend || 0), revenue: 0 };
-        }
-      }
-    }
-
-    return Object.values(byDate).sort((a, b) => a.date.localeCompare(b.date));
+    const data = await res.json();
+    const rows = Array.isArray(data) ? data : (data?.data || data?.rows || []);
+    return rows.map(r => ({
+      date: (r.event_date || '').slice(0, 10),
+      spend: parseFloat(r.total_spend || 0),
+      revenue: parseFloat(r.total_revenue || 0),  // Triple Attribution revenue (matches TW dashboard ROAS)
+    }));
   } catch (err) {
     console.error('[TW] fetchDailyAdSpend error:', err.message);
     return [];
