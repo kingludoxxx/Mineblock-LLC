@@ -42,7 +42,7 @@ async function ensureTables() {
 // ── Date range helpers ────────────────────────────────────────────────────────
 const PRESET_KEYS = new Set([
   'today', 'yesterday', 'this_week', 'last_week', 'this_month', 'last_month',
-  'last_7_days', 'last_14_days', 'last_30_days', 'last_365_days', 'lifetime',
+  'last_7_days', 'last_14_days', 'last_30_days', 'last_90_days', 'last_365_days', 'lifetime',
 ]);
 
 const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
@@ -60,6 +60,7 @@ const PRESET_LABELS = {
   last_7_days: 'Last 7 days',
   last_14_days: 'Last 14 days',
   last_30_days: 'Last 30 days',
+  last_90_days: 'Last 90 days',
   last_365_days: 'Last 365 days',
   lifetime: 'Lifetime',
 };
@@ -125,6 +126,12 @@ function getDateRange(rangeKey, customFrom, customTo) {
       const s = new Date(today); s.setUTCDate(today.getUTCDate() - 29);
       start = s; end = today;
       label = `Last 30 days · ${labelDay(s)} – ${labelDay(today)}`;
+      break;
+    }
+    case 'last_90_days': {
+      const s = new Date(today); s.setUTCDate(today.getUTCDate() - 89);
+      start = s; end = today;
+      label = `Last 90 days · ${labelDay(s)} – ${labelDay(today)}`;
       break;
     }
     case 'last_365_days': {
@@ -511,15 +518,20 @@ async function enrichWithClickUpLinks(rows) {
           let task = (data.tasks || [])[0];
 
           if (!task) {
+            // Team-wide search (no list filter) — older briefs may live in a
+            // different list/space than the current one. Match by brief code
+            // appearing anywhere in the task name.
             const briefCode = `B${String(num).padStart(4, '0')}`;
             const searchRes = await fetch(
-              `https://api.clickup.com/api/v2/team/${CLICKUP_TEAM_ID}/task?query=${encodeURIComponent(briefCode)}&list_ids%5B%5D=${CLICKUP_LIST_ID}&include_closed=true`,
+              `https://api.clickup.com/api/v2/team/${CLICKUP_TEAM_ID}/task?query=${encodeURIComponent(briefCode)}&include_closed=true`,
               { headers: { Authorization: CLICKUP_TOKEN }, signal: AbortSignal.timeout(12000) }
             );
             if (searchRes.ok) {
               const sd = await searchRes.json();
               const tasks = sd.tasks || [];
-              task = tasks.find(t => t.name?.includes(briefCode)) || null;
+              task = tasks.find(t => t.name?.includes(briefCode))
+                  || tasks.find(t => t.name?.match(new RegExp(`\\bB?0*${num}\\b`)))
+                  || null;
             }
           }
 
@@ -660,7 +672,7 @@ router.get('/cron/refresh', async (req, res) => {
   if (!CRON_SECRET || req.query.secret !== CRON_SECRET) {
     return res.status(403).json({ error: 'Forbidden' });
   }
-  const targets = ['today', 'yesterday', 'this_week', 'last_week', 'last_7_days', 'last_14_days', 'last_30_days', 'this_month', 'last_month'];
+  const targets = ['today', 'yesterday', 'this_week', 'last_week', 'last_7_days', 'last_14_days', 'last_30_days', 'last_90_days', 'this_month', 'last_month'];
   const settled = await Promise.allSettled(targets.map(k => refreshReport(k)));
   const results = settled.map((s, i) => {
     if (s.status === 'fulfilled') return { range: targets[i], rows: s.value.report.length, ok: true };

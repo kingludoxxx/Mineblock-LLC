@@ -11,6 +11,8 @@ import {
   Calendar,
   Clock,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
 
 // ── Formatters ────────────────────────────────────────────────────────────────
@@ -55,9 +57,16 @@ const RANGE_PRESETS = [
   { key: 'last_7_days',   label: 'Last 7 days' },
   { key: 'last_14_days',  label: 'Last 14 days' },
   { key: 'last_30_days',  label: 'Last 30 days' },
+  { key: 'last_90_days',  label: 'Last 90 days' },
   { key: 'last_365_days', label: 'Last 365 days' },
   { key: 'lifetime',      label: 'Lifetime' },
 ];
+
+const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+const DOW_LABELS = ['Su','Mo','Tu','We','Th','Fr','Sa'];
+
+const fmtIsoDay = (d) => `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-${String(d.getUTCDate()).padStart(2,'0')}`;
+const todayUtc  = () => { const n = new Date(); return new Date(Date.UTC(n.getUTCFullYear(), n.getUTCMonth(), n.getUTCDate())); };
 
 // ── Column helpers ────────────────────────────────────────────────────────────
 function Th({ children, className = '' }) {
@@ -111,11 +120,17 @@ function Tag({ label, color = 'default' }) {
   );
 }
 
-// ── Date range dropdown ───────────────────────────────────────────────────────
-function RangeDropdown({ value, onChange, disabled }) {
+// ── Date range picker (presets + single-month calendar) ──────────────────────
+function DateRangePicker({ value, customRange, onPreset, onCustom, disabled }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
-  const current = RANGE_PRESETS.find(p => p.key === value) || RANGE_PRESETS[2];
+
+  // View state for the calendar
+  const initial = todayUtc();
+  const [viewYear, setViewYear]   = useState(initial.getUTCFullYear());
+  const [viewMonth, setViewMonth] = useState(initial.getUTCMonth());
+  const [tempStart, setTempStart] = useState(null);
+  const [tempEnd,   setTempEnd]   = useState(null);
 
   useEffect(() => {
     function onClick(e) { if (ref.current && !ref.current.contains(e.target)) setOpen(false); }
@@ -123,34 +138,202 @@ function RangeDropdown({ value, onChange, disabled }) {
     return () => document.removeEventListener('mousedown', onClick);
   }, [open]);
 
+  // Reset temp range when opening
+  useEffect(() => {
+    if (open) {
+      if (value === 'custom' && customRange?.from && customRange?.to) {
+        setTempStart(new Date(customRange.from + 'T00:00:00Z'));
+        setTempEnd(new Date(customRange.to   + 'T00:00:00Z'));
+        const d = new Date(customRange.to + 'T00:00:00Z');
+        setViewYear(d.getUTCFullYear()); setViewMonth(d.getUTCMonth());
+      } else {
+        setTempStart(null); setTempEnd(null);
+      }
+    }
+  }, [open, value, customRange?.from, customRange?.to]);
+
+  // Trigger button label
+  const triggerLabel = (() => {
+    if (value === 'custom' && customRange?.from && customRange?.to) {
+      const s = new Date(customRange.from + 'T00:00:00Z');
+      const e = new Date(customRange.to   + 'T00:00:00Z');
+      const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+      return `${months[s.getUTCMonth()]} ${s.getUTCDate()} – ${months[e.getUTCMonth()]} ${e.getUTCDate()}`;
+    }
+    return RANGE_PRESETS.find(p => p.key === value)?.label || 'Range';
+  })();
+
+  function pickPreset(k) {
+    onPreset(k);
+    setOpen(false);
+  }
+
+  function pickDay(d) {
+    if (!tempStart || (tempStart && tempEnd)) {
+      setTempStart(d); setTempEnd(null);
+      return;
+    }
+    if (+d < +tempStart) {
+      setTempEnd(tempStart); setTempStart(d);
+    } else {
+      setTempEnd(d);
+    }
+  }
+
+  function applyCustom() {
+    if (!tempStart || !tempEnd) return;
+    onCustom(fmtIsoDay(tempStart), fmtIsoDay(tempEnd));
+    setOpen(false);
+  }
+
+  function shiftMonth(delta) {
+    let m = viewMonth + delta, y = viewYear;
+    if (m < 0)  { m = 11; y -= 1; }
+    if (m > 11) { m = 0;  y += 1; }
+    setViewMonth(m); setViewYear(y);
+  }
+
+  // Build calendar grid (Sunday-start)
+  const today = todayUtc();
+  const firstDow     = new Date(Date.UTC(viewYear, viewMonth, 1)).getUTCDay();
+  const daysInMonth  = new Date(Date.UTC(viewYear, viewMonth + 1, 0)).getUTCDate();
+  const cells = [];
+  for (let i = 0; i < firstDow; i++) cells.push(null);
+  for (let d = 1; d <= daysInMonth; d++) cells.push(new Date(Date.UTC(viewYear, viewMonth, d)));
+
   return (
     <div className="relative" ref={ref}>
       <button
         type="button"
         onClick={() => setOpen(o => !o)}
         disabled={disabled}
-        className="flex items-center gap-2 px-3 py-1.5 rounded text-xs font-medium border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] hover:bg-[var(--color-bg-hover)] text-[var(--color-text-primary)] transition-colors disabled:opacity-50 min-w-[150px]"
+        className="flex items-center gap-2 px-3 py-1.5 rounded text-xs font-medium border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] hover:bg-[var(--color-bg-hover)] text-[var(--color-text-primary)] transition-colors disabled:opacity-50 min-w-[170px]"
       >
         <Calendar size={13} className="text-[var(--color-text-muted)]" />
-        <span className="flex-1 text-left">{current.label}</span>
+        <span className="flex-1 text-left">{triggerLabel}</span>
         <ChevronDown size={13} className={`text-[var(--color-text-muted)] transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
+
       {open && (
-        <div className="absolute z-20 mt-1 w-56 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-card)] shadow-lg overflow-hidden">
-          <div className="py-1 max-h-80 overflow-y-auto">
-            {RANGE_PRESETS.map(p => (
+        <div className="absolute z-30 mt-2 right-0 rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-card)] shadow-2xl overflow-hidden flex" style={{ width: 600 }}>
+          {/* Presets sidebar */}
+          <div className="w-44 border-r border-[var(--color-border-subtle)] py-2 bg-[var(--color-bg-elevated)]/40">
+            <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]">Presets</div>
+            {RANGE_PRESETS.map(p => {
+              const active = p.key === value;
+              return (
+                <button
+                  key={p.key}
+                  onClick={() => pickPreset(p.key)}
+                  className={`w-full flex items-center justify-between px-3 py-1.5 text-xs transition-colors ${
+                    active
+                      ? 'bg-[var(--color-accent-muted)] text-[var(--color-accent-text)] font-medium'
+                      : 'text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)]'
+                  }`}
+                >
+                  <span>{p.label}</span>
+                  {active && <Check size={12} className="text-[var(--color-accent)]" />}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Calendar */}
+          <div className="flex-1 p-4 flex flex-col">
+            <div className="flex items-center justify-between mb-3">
               <button
-                key={p.key}
-                onClick={() => { onChange(p.key); setOpen(false); }}
-                className={`w-full text-left px-3 py-1.5 text-xs transition-colors ${
-                  p.key === value
-                    ? 'bg-[var(--color-accent-muted)] text-[var(--color-accent-text)]'
-                    : 'text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)]'
-                }`}
+                onClick={() => shiftMonth(-1)}
+                className="w-7 h-7 inline-flex items-center justify-center rounded hover:bg-[var(--color-bg-hover)] text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]"
+                aria-label="Previous month"
               >
-                {p.label}
+                <ChevronLeft size={15} />
               </button>
-            ))}
+              <div className="text-sm font-medium text-[var(--color-accent)]">
+                {MONTH_NAMES[viewMonth]} {viewYear}
+              </div>
+              <button
+                onClick={() => shiftMonth(1)}
+                className="w-7 h-7 inline-flex items-center justify-center rounded hover:bg-[var(--color-bg-hover)] text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]"
+                aria-label="Next month"
+              >
+                <ChevronRight size={15} />
+              </button>
+            </div>
+
+            {/* Day-of-week headers */}
+            <div className="grid grid-cols-7 gap-y-1 mb-1">
+              {DOW_LABELS.map((d, i) => (
+                <div
+                  key={d}
+                  className={`text-[10px] uppercase text-center font-medium ${
+                    i === today.getUTCDay() && viewMonth === today.getUTCMonth() && viewYear === today.getUTCFullYear()
+                      ? 'text-[var(--color-text-primary)]'
+                      : 'text-[var(--color-text-faint)]'
+                  }`}
+                >
+                  {d}
+                </div>
+              ))}
+            </div>
+
+            {/* Date grid */}
+            <div className="grid grid-cols-7 gap-y-1">
+              {cells.map((cell, i) => {
+                if (!cell) return <div key={`e${i}`} />;
+                const isToday   = +cell === +today;
+                const isStart   = tempStart && +cell === +tempStart;
+                const isEnd     = tempEnd   && +cell === +tempEnd;
+                const inRange   = tempStart && tempEnd && +cell > +tempStart && +cell < +tempEnd;
+                const isFuture  = +cell > +today;
+                return (
+                  <button
+                    key={i}
+                    onClick={() => !isFuture && pickDay(cell)}
+                    disabled={isFuture}
+                    className={`
+                      h-9 w-9 mx-auto inline-flex items-center justify-center text-xs rounded-md transition-colors
+                      ${isStart || isEnd
+                        ? 'bg-[var(--color-accent)] text-black font-semibold'
+                        : inRange
+                          ? 'bg-[var(--color-accent-muted)] text-[var(--color-accent-text)]'
+                          : isFuture
+                            ? 'text-[var(--color-text-faint)] cursor-not-allowed'
+                            : isToday
+                              ? 'text-[var(--color-accent)] font-medium hover:bg-[var(--color-bg-hover)]'
+                              : 'text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)]'
+                      }
+                    `}
+                  >
+                    {cell.getUTCDate()}
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="text-[11px] text-[var(--color-text-faint)] mt-3 pt-3 border-t border-[var(--color-border-subtle)]">
+              {tempStart && tempEnd
+                ? `${fmtIsoDay(tempStart)} → ${fmtIsoDay(tempEnd)}`
+                : tempStart
+                  ? `Start: ${fmtIsoDay(tempStart)} — pick end date`
+                  : 'Click a day to start a custom range'}
+              <span className="float-right">Timezone: UTC</span>
+            </div>
+
+            <div className="flex justify-end gap-2 mt-3">
+              <button
+                onClick={() => setOpen(false)}
+                className="px-4 py-1.5 text-xs font-medium rounded border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] hover:bg-[var(--color-bg-hover)] text-[var(--color-text-primary)] transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={applyCustom}
+                disabled={!tempStart || !tempEnd}
+                className="px-4 py-1.5 text-xs font-medium rounded bg-[var(--color-accent)] text-black hover:opacity-90 transition-opacity disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                Apply
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -160,24 +343,30 @@ function RangeDropdown({ value, onChange, disabled }) {
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 export default function AdsReporting() {
-  const [range,    setRange]    = useState('this_week');
-  // `displayed` is the range whose data is currently rendered — only updates
-  // once a fetch completes, so switching ranges never blanks the page.
+  const [range,    setRange]    = useState('this_week');         // preset key OR 'custom'
+  const [customRange, setCustomRange] = useState({ from: null, to: null });
+  // `displayed` is the cache key whose data is currently rendered — only
+  // updates once a fetch completes, so switching ranges never blanks the page.
   const [displayed, setDisplayed] = useState('this_week');
   const [error,    setError]    = useState(null);
   const [refreshing, setRefreshing] = useState(false);
   const [copied,   setCopied]   = useState(false);
   const [adNameWidth, setAdNameWidth] = useState(220);
 
-  // Cache responses per range key — flips between presets are instant after first load
+  // Cache responses per cache key — flips between presets are instant after first load
   const cacheRef = useRef(new Map());
   const [tick, setTick] = useState(0); // eslint-disable-line no-unused-vars
   const current = cacheRef.current.get(displayed);
 
-  const load = useCallback(async (rangeKey, force = false) => {
-    const cached = cacheRef.current.get(rangeKey);
+  const cacheKeyFor = (key, from, to) => key === 'custom' ? `custom:${from}:${to}` : key;
+
+  const load = useCallback(async (rangeKey, opts = {}) => {
+    const { force = false, from = null, to = null } = opts;
+    if (rangeKey === 'custom' && (!from || !to)) return;
+    const cacheKey = cacheKeyFor(rangeKey, from, to);
+    const cached = cacheRef.current.get(cacheKey);
     if (cached && !force) {
-      setDisplayed(rangeKey);
+      setDisplayed(cacheKey);
       setError(null);
       return;
     }
@@ -186,15 +375,18 @@ export default function AdsReporting() {
       setRefreshing(true);
       setError(null);
 
-      const url = `/ads-reporting/report?range=${encodeURIComponent(rangeKey)}${force ? '&refresh=1' : ''}`;
-      const res = await api.get(url);
-      cacheRef.current.set(rangeKey, {
+      const params = new URLSearchParams({ range: rangeKey });
+      if (rangeKey === 'custom') { params.set('from', from); params.set('to', to); }
+      if (force) params.set('refresh', '1');
+
+      const res = await api.get(`/ads-reporting/report?${params.toString()}`);
+      cacheRef.current.set(cacheKey, {
         data:        res.data.data || [],
         rangeMeta:   res.data.range,
         generatedAt: res.data.generatedAt,
         shareToken:  res.data.shareToken,
       });
-      setDisplayed(rangeKey);
+      setDisplayed(cacheKey);
       setTick(t => t + 1);
     } catch (err) {
       setError(err?.response?.data?.error || err.message || 'Failed to load report');
@@ -203,8 +395,20 @@ export default function AdsReporting() {
     }
   }, []);
 
-  // Load whenever range changes (also fires on mount with default 'this_week')
-  useEffect(() => { load(range); }, [range, load]);
+  // Load whenever range or custom range changes
+  useEffect(() => {
+    if (range === 'custom') load('custom', { from: customRange.from, to: customRange.to });
+    else                    load(range);
+  }, [range, customRange.from, customRange.to, load]);
+
+  const onPresetSelect = useCallback((k) => {
+    setRange(k);
+  }, []);
+
+  const onCustomApply = useCallback((from, to) => {
+    setCustomRange({ from, to });
+    setRange('custom');
+  }, []);
 
   function startResize(e) {
     const startX = e.clientX;
@@ -255,7 +459,7 @@ export default function AdsReporting() {
         <p className="text-sm text-red-400 font-medium">Failed to load report</p>
         <p className="text-xs text-center max-w-sm">{error}</p>
         <button
-          onClick={() => load(range, true)}
+          onClick={() => load(range, { force: true, from: customRange.from, to: customRange.to })}
           className="mt-2 px-4 py-1.5 rounded text-xs font-medium bg-[var(--color-bg-elevated)] hover:bg-[var(--color-bg-hover)] border border-[var(--color-border-default)] text-[var(--color-text-primary)] transition-colors"
         >
           Try again
@@ -293,7 +497,13 @@ export default function AdsReporting() {
 
         <div className="flex items-center gap-2">
           {/* Range picker */}
-          <RangeDropdown value={range} onChange={setRange} disabled={refreshing} />
+          <DateRangePicker
+            value={range}
+            customRange={customRange}
+            onPreset={onPresetSelect}
+            onCustom={onCustomApply}
+            disabled={refreshing}
+          />
 
           {/* Share button */}
           <button
@@ -307,7 +517,7 @@ export default function AdsReporting() {
 
           {/* Refresh button */}
           <button
-            onClick={() => load(range, true)}
+            onClick={() => load(range, { force: true, from: customRange.from, to: customRange.to })}
             disabled={refreshing}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium bg-[var(--color-accent-muted)] hover:bg-[var(--color-accent-muted)] text-[var(--color-accent-text)] border border-[var(--color-accent-muted)] hover:border-[var(--color-accent)] transition-colors disabled:opacity-50"
           >
