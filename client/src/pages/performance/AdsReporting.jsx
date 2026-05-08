@@ -377,10 +377,11 @@ export default function AdsReporting() {
   const [adNameWidth, setAdNameWidth] = useState(220);
   // Default sort matches what the API returns: ROAS desc.
   const [sort, setSort] = useState({ key: 'roas', dir: 'desc' });
-  // User-configurable filter thresholds. Defaults match the historical
-  // "winning ads" definition; setting either to 0 shows everything.
-  const [spendMin, setSpendMin] = useState(100);
-  const [roasMin,  setRoasMin]  = useState(1.6);
+  // Fixed winning-ads thresholds. The server now returns all ads ≥ $1 so the
+  // /audit endpoint can cross-check against TW, but the dashboard view is
+  // strictly the winning subset.
+  const SPEND_MIN = 100;
+  const ROAS_MIN  = 1.6;
 
   function handleSort(key) {
     setSort(s => {
@@ -476,7 +477,7 @@ export default function AdsReporting() {
 
   const rawData     = current?.data || [];
   const totalCount  = rawData.length;
-  const filtered    = rawData.filter(r => r.spend >= spendMin && r.roas >= roasMin);
+  const filtered    = rawData.filter(r => r.spend >= SPEND_MIN && r.roas >= ROAS_MIN);
   const data        = (() => {
     if (!sort || !filtered.length) return filtered;
     const dir = sort.dir === 'asc' ? 1 : -1;
@@ -580,43 +581,16 @@ export default function AdsReporting() {
         </div>
       </div>
 
-      {/* ── Filter inputs ── */}
-      <div className="flex items-center gap-2 text-xs text-[var(--color-text-muted)] flex-wrap">
-        <label className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)]">
-          <span>Spend ≥</span>
-          <span className="text-[var(--color-text-faint)]">$</span>
-          <input
-            type="number"
-            min="0"
-            step="10"
-            value={spendMin}
-            onChange={(e) => setSpendMin(Number(e.target.value) || 0)}
-            className="w-14 bg-transparent text-[var(--color-text-primary)] text-xs focus:outline-none"
-          />
-        </label>
-        <label className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)]">
-          <span>ROAS ≥</span>
-          <input
-            type="number"
-            min="0"
-            step="0.1"
-            value={roasMin}
-            onChange={(e) => setRoasMin(Number(e.target.value) || 0)}
-            className="w-12 bg-transparent text-[var(--color-text-primary)] text-xs focus:outline-none"
-          />
-          <span className="text-[var(--color-text-faint)]">×</span>
-        </label>
-        <button
-          onClick={() => { setSpendMin(0); setRoasMin(0); }}
-          className="px-2 py-0.5 rounded text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)] transition-colors"
-          title="Show all ads"
-        >
-          Show all
-        </button>
-        <span className="text-[var(--color-text-faint)]">·</span>
-        <span>
-          {data.length} of {totalCount} ad{totalCount !== 1 ? 's' : ''}
+      {/* ── Filter badges (fixed thresholds) ── */}
+      <div className="flex items-center gap-2 text-xs text-[var(--color-text-muted)]">
+        <span className="px-2 py-0.5 rounded bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)]">
+          Spend ≥ $100
         </span>
+        <span className="px-2 py-0.5 rounded bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)]">
+          ROAS ≥ 1.6×
+        </span>
+        <span className="text-[var(--color-text-faint)]">·</span>
+        <span>{data.length} winning ad{data.length !== 1 ? 's' : ''}</span>
         {refreshing && (
           <span className="flex items-center gap-1 text-[var(--color-accent)]">
             <Loader2 size={11} className="animate-spin" /> refreshing…
@@ -628,11 +602,9 @@ export default function AdsReporting() {
       {data.length === 0 && !refreshing && (
         <div className="flex flex-col items-center justify-center h-56 gap-3 border border-[var(--color-border-subtle)] rounded-xl bg-[var(--color-bg-card)]">
           <TrendingUp size={28} className="text-[var(--color-text-faint)]" />
-          <p className="text-sm font-medium text-[var(--color-text-muted)]">No ads match the current filter</p>
+          <p className="text-sm font-medium text-[var(--color-text-muted)]">No qualifying ads</p>
           <p className="text-xs text-[var(--color-text-faint)] text-center max-w-xs">
-            {totalCount === 0
-              ? `No ads found for ${rangeMeta?.label || 'this range'}.`
-              : `${totalCount} ad${totalCount === 1 ? '' : 's'} in this range, but none match Spend ≥ $${spendMin} AND ROAS ≥ ${roasMin}×. Try lowering the thresholds or click "Show all".`}
+            No ads met the Spend ≥ $100 AND ROAS ≥ 1.6× threshold for {rangeMeta?.label || 'this range'}.
           </p>
         </div>
       )}
