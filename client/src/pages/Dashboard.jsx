@@ -15,6 +15,7 @@ import {
   ArrowUpRight,
   ArrowDownRight,
   ChevronDown,
+  Scale,
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -49,6 +50,7 @@ const METRICS = [
   { key: 'revenue',        label: 'Total Sales',      icon: DollarSign,   color: '#10b981', format: 'moneyFull' },
   { key: 'adSpend',        label: 'Ad Spend',         icon: Megaphone,    color: '#f59e0b', format: 'moneyFull' },
   { key: 'roas',           label: 'ROAS',             icon: TrendingUp,   color: '#3b82f6', format: 'roas' },
+  { key: 'breakEvenRoas',  label: 'Break-Even ROAS',  icon: Scale,         color: '#c9a84c', format: 'roas', invertColor: true },
   { key: 'orders',         label: 'Purchases',        icon: ShoppingCart,  color: '#8b5cf6', format: 'int' },
   { key: 'aov',            label: 'AOV',              icon: Receipt,       color: '#06b6d4', format: 'moneyFull' },
   { key: 'costs',          label: 'Total Costs',      icon: Wallet,        color: '#ef4444', format: 'moneyFull', invertColor: true },
@@ -274,6 +276,126 @@ function RevenueChart({ sparklines, dateRange, onDateRangeChange }) {
   );
 }
 
+// ── Profitability Health (Break-Even ROAS + AOV Sensitivity) ────────────────
+//
+// As AOV rises (with sub-linear COGS), break-even ROAS drops — meaning lower-
+// ROAS campaigns become profitable. This panel makes that relationship visible
+// and lets the user eyeball how much headroom they have.
+//
+// Math:
+//   Break-even ROAS = Revenue / (Revenue − COGS − Shipping − Fees)
+//   Equivalently per order: AOV / (AOV − variable cost per order)
+//
+// The sensitivity table holds the *current* per-order variable cost fixed and
+// re-projects break-even ROAS at different AOV levels. Honest assumption: in
+// reality COGS scales somewhat with AOV (bigger order = pricier mix), so this
+// is a slight under-estimate of break-even at higher AOV.
+
+function ProfitabilityPanel({ current, loading }) {
+  if (loading || !current) return null;
+
+  const aov = current.aov || 0;
+  const orders = current.orders || 0;
+  const varCostPerOrder = orders > 0 ? (current.cogs + current.shipping + current.fees) / orders : 0;
+  const breakEven = current.breakEvenRoas || 0;
+  const actualRoas = current.roas || 0;
+  const margin = current.contributionMarginPct || 0;
+  const headroomPct = breakEven > 0 ? ((actualRoas - breakEven) / breakEven) * 100 : 0;
+
+  // Sensitivity: how break-even ROAS shifts at different AOVs (assuming
+  // variable cost per order stays roughly constant).
+  const aovScenarios = [
+    Math.max(50, Math.round(aov * 0.7 / 25) * 25),
+    Math.max(75, Math.round(aov * 0.85 / 25) * 25),
+    Math.round(aov / 25) * 25 || aov,
+    Math.round(aov * 1.15 / 25) * 25,
+    Math.round(aov * 1.3 / 25) * 25,
+  ];
+
+  const isHealthy = actualRoas > breakEven && breakEven > 0;
+
+  return (
+    <div className="glass-card border border-white/[0.05] rounded-xl p-5">
+      <div className="flex items-start justify-between gap-4 mb-5">
+        <div>
+          <h3 className="text-sm font-medium text-white mb-0.5 flex items-center gap-2">
+            <Scale className="w-4 h-4 text-[#c9a84c]" />
+            Profitability Health
+          </h3>
+          <p className="text-xs text-zinc-500">
+            How break-even ROAS shifts with AOV — your safety margin on ad campaigns
+          </p>
+        </div>
+        <div className={`px-3 py-1.5 rounded-lg text-xs font-medium border ${
+          isHealthy
+            ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+            : 'bg-red-500/10 text-red-400 border-red-500/20'
+        }`}>
+          {isHealthy ? `+${headroomPct.toFixed(0)}% headroom` : `${headroomPct.toFixed(0)}% below`}
+        </div>
+      </div>
+
+      {/* Current state */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-5">
+        <div className="bg-white/[0.02] border border-white/[0.05] rounded-lg p-3">
+          <p className="text-[10px] uppercase tracking-wider text-zinc-500 mb-1">Current AOV</p>
+          <p className="text-lg font-semibold text-white">{fmtMoneyFull(aov)}</p>
+        </div>
+        <div className="bg-white/[0.02] border border-white/[0.05] rounded-lg p-3">
+          <p className="text-[10px] uppercase tracking-wider text-zinc-500 mb-1">Var. Cost / Order</p>
+          <p className="text-lg font-semibold text-white">{fmtMoneyFull(varCostPerOrder)}</p>
+        </div>
+        <div className="bg-[#c9a84c]/5 border border-[#c9a84c]/20 rounded-lg p-3">
+          <p className="text-[10px] uppercase tracking-wider text-[#c9a84c] mb-1">Break-Even ROAS</p>
+          <p className="text-lg font-semibold text-white">{fmtRoas(breakEven)}</p>
+        </div>
+        <div className={`rounded-lg p-3 border ${
+          isHealthy ? 'bg-emerald-500/5 border-emerald-500/20' : 'bg-red-500/5 border-red-500/20'
+        }`}>
+          <p className={`text-[10px] uppercase tracking-wider mb-1 ${
+            isHealthy ? 'text-emerald-400' : 'text-red-400'
+          }`}>Actual ROAS</p>
+          <p className="text-lg font-semibold text-white">{fmtRoas(actualRoas)}</p>
+        </div>
+      </div>
+
+      {/* Sensitivity table */}
+      <div>
+        <p className="text-xs text-zinc-500 mb-2">
+          If AOV changes (variable cost ~${varCostPerOrder.toFixed(0)}/order, contribution margin {margin.toFixed(1)}%):
+        </p>
+        <div className="grid grid-cols-5 gap-2">
+          {aovScenarios.map((aovVal) => {
+            const contrib = aovVal - varCostPerOrder;
+            const beRoas = contrib > 0 ? aovVal / contrib : null;
+            const isCurrent = aovVal === aovScenarios[2];
+            return (
+              <div
+                key={aovVal}
+                className={`rounded-lg p-3 text-center border ${
+                  isCurrent
+                    ? 'bg-[#c9a84c]/10 border-[#c9a84c]/30'
+                    : 'bg-white/[0.02] border-white/[0.05]'
+                }`}
+              >
+                <p className="text-[10px] uppercase tracking-wider text-zinc-500 mb-1">
+                  {isCurrent ? 'Now' : `AOV $${aovVal}`}
+                </p>
+                <p className="text-base font-semibold text-white">
+                  {beRoas ? `${beRoas.toFixed(2)}x` : '—'}
+                </p>
+                {isCurrent && (
+                  <p className="text-[9px] text-[#c9a84c] mt-0.5">${aovVal} AOV</p>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Daily Breakdown ─────────────────────────────────────────────────────────
 
 function DailyBreakdown({ current, date }) {
@@ -451,8 +573,8 @@ export default function Dashboard() {
           ))}
         </div>
 
-        {/* KPI Grid — Bottom row: 4 cards */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        {/* KPI Grid — Bottom row: 6 cards (after adding Break-Even ROAS in top row) */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {METRICS.slice(5).map((m, i) => (
             <KpiCard
               key={m.key}
@@ -470,6 +592,9 @@ export default function Dashboard() {
             />
           ))}
         </div>
+
+        {/* Profitability Health — Break-Even ROAS + AOV sensitivity */}
+        <ProfitabilityPanel current={current} loading={loading} />
 
         {/* Daily Breakdown */}
         {!loading && <DailyBreakdown current={current} date={startDate === endDate ? endDate : `${startDate} – ${endDate}`} />}

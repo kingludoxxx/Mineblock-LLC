@@ -1530,12 +1530,25 @@ router.get('/home-dashboard', authenticate, async (req, res) => {
       // (showed 2.38x when TW Summary showed 1.42x).
       const twRevenue = twRevenueLookup[d] || 0;
       const roas = adSpend > 0 ? Math.round((revenue / adSpend) * 100) / 100 : 0;
+      // Break-even ROAS = Revenue / (Revenue − COGS − Shipping − Fees).
+      // Equivalent per-order: AOV / (AOV − variable cost per order).
+      // This is the minimum ROAS at which a campaign is cash-neutral.
+      // As AOV rises (with sub-linear COGS), break-even ROAS drops — meaning
+      // lower-ROAS campaigns become profitable.
+      const variableCosts = cogs + shipping + fees;
+      const contribution = revenue - variableCosts;
+      const breakEvenRoas = contribution > 0
+        ? Math.round((revenue / contribution) * 100) / 100
+        : null;
+      const contributionMarginPct = revenue > 0
+        ? Math.round((contribution / revenue) * 10000) / 100
+        : 0;
       // Conversion rate: use Meta clicks as denominator when Shopify sessions unavailable
       const clicks = clicksLookup[d] || 0;
       const conversionRate = (clicks > 0 && orders > 0)
         ? Math.round((orders / clicks) * 10000) / 100
         : null;
-      return { date: d, revenue, twRevenue, adSpend, roas, orders, aov, costs, cogs, shipping, fees, profit, netMargin, conversionRate, clicks, refunds };
+      return { date: d, revenue, twRevenue, adSpend, roas, breakEvenRoas, contributionMarginPct, orders, aov, costs, cogs, shipping, fees, profit, netMargin, conversionRate, clicks, refunds };
     }
 
     // Build daily metrics for the full fetched window
@@ -1564,10 +1577,23 @@ router.get('/home-dashboard', authenticate, async (req, res) => {
       const aov = orders > 0 ? Math.round((revenue / orders) * 100) / 100 : 0;
       // ROAS = Total Sales / Ad Spend (matches TW Summary widget formula)
       const roas = adSpend > 0 ? Math.round((revenue / adSpend) * 100) / 100 : 0;
+      // Break-even ROAS — minimum ROAS at which campaigns are cash-neutral
+      const variableCosts = cogs + shipping + fees;
+      const contribution = revenue - variableCosts;
+      const breakEvenRoas = contribution > 0
+        ? Math.round((revenue / contribution) * 100) / 100
+        : null;
+      const contributionMarginPct = revenue > 0
+        ? Math.round((contribution / revenue) * 10000) / 100
+        : 0;
+      // Variable cost per order — useful for sensitivity analysis
+      const varCostPerOrder = orders > 0
+        ? Math.round((variableCosts / orders) * 100) / 100
+        : 0;
       const totalClicks = days.reduce((s, d) => s + (d.clicks || 0), 0);
       const refunds = sum('refunds');
       const conversionRate = (totalClicks > 0 && orders > 0) ? Math.round((orders / totalClicks) * 10000) / 100 : null;
-      return { revenue, twRevenue, adSpend, roas, orders, aov, costs, cogs, shipping, fees, profit, netMargin, conversionRate, refunds };
+      return { revenue, twRevenue, adSpend, roas, breakEvenRoas, contributionMarginPct, varCostPerOrder, orders, aov, costs, cogs, shipping, fees, profit, netMargin, conversionRate, refunds };
     }
 
     // Current period = selected range
