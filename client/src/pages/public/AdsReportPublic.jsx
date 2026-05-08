@@ -159,7 +159,16 @@ export default function AdsReportPublic() {
   const [generatedAt, setGeneratedAt] = useState(null);
   const [pickerOpen,  setPickerOpen]  = useState(false);
   const [adNameWidth, setAdNameWidth] = useState(220);
+  const [sort,        setSort]        = useState({ key: 'roas', dir: 'desc' });
   const pickerRef = useRef(null);
+
+  function handleSort(key) {
+    setSort(s => {
+      if (s.key !== key) return { key, dir: 'desc' };
+      if (s.dir === 'desc') return { key, dir: 'asc' };
+      return { key: 'roas', dir: 'desc' };
+    });
+  }
 
   useEffect(() => {
     function onClick(e) { if (pickerRef.current && !pickerRef.current.contains(e.target)) setPickerOpen(false); }
@@ -167,10 +176,20 @@ export default function AdsReportPublic() {
     return () => document.removeEventListener('mousedown', onClick);
   }, [pickerOpen]);
 
-  // Apply the same winning-ads filter the auth page uses
-  const data = rawData
-    .filter(r => r.spend >= 100 && r.roas >= 1.6)
-    .sort((a, b) => b.roas - a.roas);
+  // Winning-ads filter + user-driven sort (default ROAS desc)
+  const filtered = rawData.filter(r => r.spend >= 100 && r.roas >= 1.6);
+  const data = (() => {
+    if (!filtered.length) return filtered;
+    const dir = sort.dir === 'asc' ? 1 : -1;
+    return [...filtered].sort((a, b) => {
+      const av = a[sort.key], bv = b[sort.key];
+      if (av == null && bv == null) return 0;
+      if (av == null) return 1;
+      if (bv == null) return -1;
+      if (typeof av === 'string' && typeof bv === 'string') return av.localeCompare(bv) * dir;
+      return (av - bv) * dir;
+    });
+  })();
 
   function startResize(e) {
     const startX = e.clientX;
@@ -343,9 +362,54 @@ export default function AdsReportPublic() {
                     Ad Name
                     <div onMouseDown={startResize} style={{ position: 'absolute', right: 0, top: 0, bottom: 0, width: 6, cursor: 'col-resize', borderRight: '2px solid rgba(255,255,255,0.06)' }} />
                   </th>
-                  {['FB Post','Spend','ROAS','PUR','CPA','AOV','NVP','Avatar','Angle','Format','Launch Date'].map(h => (
-                    <th key={h} style={S.th}>{h}</th>
-                  ))}
+                  <th style={S.th}>FB Post</th>
+                  {[
+                    { label: 'Spend', key: 'spend' },
+                    { label: 'ROAS',  key: 'roas'  },
+                    { label: 'PUR',   key: 'purchases' },
+                    { label: 'CPA',   key: 'cpa'   },
+                    { label: 'AOV',   key: 'aov'   },
+                  ].map(h => {
+                    const active = sort.key === h.key;
+                    const arrow  = !active ? '⇕' : sort.dir === 'asc' ? '▲' : '▼';
+                    return (
+                      <th
+                        key={h.key}
+                        onClick={() => handleSort(h.key)}
+                        style={{
+                          ...S.th,
+                          cursor: 'pointer',
+                          color: active ? '#c9a84c' : '#71717a',
+                          userSelect: 'none',
+                        }}
+                      >
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                          {h.label}
+                          <span style={{ fontSize: '9px', opacity: active ? 1 : 0.5 }}>{arrow}</span>
+                        </span>
+                      </th>
+                    );
+                  })}
+                  <th style={S.th}>NVP</th>
+                  <th style={S.th}>Avatar</th>
+                  <th style={S.th}>Angle</th>
+                  <th style={S.th}>Format</th>
+                  <th
+                    onClick={() => handleSort('dateLaunched')}
+                    style={{
+                      ...S.th,
+                      cursor: 'pointer',
+                      color: sort.key === 'dateLaunched' ? '#c9a84c' : '#71717a',
+                      userSelect: 'none',
+                    }}
+                  >
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                      Launch Date
+                      <span style={{ fontSize: '9px', opacity: sort.key === 'dateLaunched' ? 1 : 0.5 }}>
+                        {sort.key !== 'dateLaunched' ? '⇕' : sort.dir === 'asc' ? '▲' : '▼'}
+                      </span>
+                    </span>
+                  </th>
                 </tr>
               </thead>
               <tbody>
