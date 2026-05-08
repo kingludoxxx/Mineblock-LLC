@@ -1,6 +1,21 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useParams } from 'react-router-dom';
-import { TrendingUp, ExternalLink, AlertCircle, Loader2, Calendar } from 'lucide-react';
+import { TrendingUp, ExternalLink, AlertCircle, Loader2, Calendar, ChevronDown } from 'lucide-react';
+
+const PUBLIC_PRESETS = [
+  { key: 'today',         label: 'Today' },
+  { key: 'yesterday',     label: 'Yesterday' },
+  { key: 'this_week',     label: 'This week' },
+  { key: 'last_week',     label: 'Last week' },
+  { key: 'this_month',    label: 'This month' },
+  { key: 'last_month',    label: 'Last month' },
+  { key: 'last_7_days',   label: 'Last 7 days' },
+  { key: 'last_14_days',  label: 'Last 14 days' },
+  { key: 'last_30_days',  label: 'Last 30 days' },
+  { key: 'last_90_days',  label: 'Last 90 days' },
+  { key: 'last_365_days', label: 'Last 365 days' },
+  { key: 'lifetime',      label: 'Lifetime' },
+];
 
 const fmtMoney = (n) =>
   '$' + Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 });
@@ -138,9 +153,24 @@ export default function AdsReportPublic() {
   const { token } = useParams();
   const [loading,     setLoading]     = useState(true);
   const [error,       setError]       = useState(null);
-  const [data,        setData]        = useState([]);
+  const [rawData,     setRawData]     = useState([]);
   const [range,       setRange]       = useState(null);
+  const [rangeKey,    setRangeKey]    = useState(null);  // null = use snapshot's range
+  const [generatedAt, setGeneratedAt] = useState(null);
+  const [pickerOpen,  setPickerOpen]  = useState(false);
   const [adNameWidth, setAdNameWidth] = useState(220);
+  const pickerRef = useRef(null);
+
+  useEffect(() => {
+    function onClick(e) { if (pickerRef.current && !pickerRef.current.contains(e.target)) setPickerOpen(false); }
+    if (pickerOpen) document.addEventListener('mousedown', onClick);
+    return () => document.removeEventListener('mousedown', onClick);
+  }, [pickerOpen]);
+
+  // Apply the same winning-ads filter the auth page uses
+  const data = rawData
+    .filter(r => r.spend >= 100 && r.roas >= 1.6)
+    .sort((a, b) => b.roas - a.roas);
 
   function startResize(e) {
     const startX = e.clientX;
@@ -154,24 +184,24 @@ export default function AdsReportPublic() {
 
   useEffect(() => {
     if (!token) { setError('Invalid share link'); setLoading(false); return; }
-    fetch(`/api/v1/ads-reporting/public?token=${encodeURIComponent(token)}`)
+    setLoading(true);
+    setError(null);
+    const params = new URLSearchParams({ token });
+    if (rangeKey) params.set('range', rangeKey);
+    fetch(`/api/v1/ads-reporting/public?${params.toString()}`)
       .then(r => r.json())
       .then(res => {
         if (!res.ok) throw new Error(res.error || 'Failed to load');
-        // Public share = curated "winning ads" view; backend now returns all
-        // ads, so apply the historical winning filter here for shareable
-        // snapshots that read like the original report.
-        const all = res.data || [];
-        const winners = all.filter(r => r.spend >= 100 && r.roas >= 1.6)
-          .sort((a, b) => b.roas - a.roas);
-        setData(winners);
+        setRawData(res.data || []);
         setRange(res.range || res.week || null);
+        setGeneratedAt(res.generatedAt || null);
       })
       .catch(err => setError(err.message))
       .finally(() => setLoading(false));
-  }, [token]);
+  }, [token, rangeKey]);
 
-  if (loading) {
+  // Only show full-page spinner on the very first load (no data + no range yet)
+  if (loading && !range) {
     return (
       <div style={S.page}>
         <div style={S.center}>
@@ -232,9 +262,62 @@ export default function AdsReportPublic() {
             </div>
           )}
         </div>
-        <div style={S.logo}>
-          <TrendingUp size={14} />
-          MineBlock
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          {/* Range picker */}
+          <div ref={pickerRef} style={{ position: 'relative' }}>
+            <button
+              type="button"
+              onClick={() => setPickerOpen(o => !o)}
+              style={{
+                display: 'flex', alignItems: 'center', gap: '6px',
+                padding: '6px 12px', borderRadius: '6px',
+                background: 'rgba(255,255,255,0.04)',
+                border: '1px solid rgba(255,255,255,0.08)',
+                color: '#fafafa', fontSize: '12px', fontWeight: 500,
+                cursor: 'pointer', minWidth: 150,
+              }}
+            >
+              <Calendar size={13} style={{ color: '#a1a1aa' }} />
+              <span style={{ flex: 1, textAlign: 'left' }}>
+                {PUBLIC_PRESETS.find(p => p.key === (rangeKey || range?.key))?.label || 'Range'}
+              </span>
+              <ChevronDown size={13} style={{ color: '#a1a1aa', transform: pickerOpen ? 'rotate(180deg)' : '', transition: 'transform 0.15s' }} />
+            </button>
+            {pickerOpen && (
+              <div style={{
+                position: 'absolute', zIndex: 30, marginTop: '4px', right: 0,
+                width: '224px', borderRadius: '8px',
+                background: '#111113', border: '1px solid rgba(255,255,255,0.08)',
+                boxShadow: '0 12px 40px rgba(0,0,0,0.5)', overflow: 'hidden',
+                padding: '4px 0', maxHeight: '320px', overflowY: 'auto',
+              }}>
+                {PUBLIC_PRESETS.map(p => {
+                  const active = p.key === (rangeKey || range?.key);
+                  return (
+                    <button
+                      key={p.key}
+                      onClick={() => { setRangeKey(p.key); setPickerOpen(false); }}
+                      style={{
+                        width: '100%', textAlign: 'left',
+                        padding: '6px 12px', fontSize: '12px',
+                        background: active ? 'rgba(201,168,76,0.12)' : 'transparent',
+                        color: active ? '#e8d5a3' : '#fafafa',
+                        border: 'none', cursor: 'pointer',
+                      }}
+                      onMouseEnter={(e) => { if (!active) e.currentTarget.style.background = 'rgba(255,255,255,0.04)'; }}
+                      onMouseLeave={(e) => { if (!active) e.currentTarget.style.background = 'transparent'; }}
+                    >
+                      {p.label}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+          <div style={S.logo}>
+            <TrendingUp size={14} />
+            MineBlock
+          </div>
         </div>
       </div>
 

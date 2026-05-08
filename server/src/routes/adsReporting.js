@@ -696,21 +696,68 @@ function staleThresholdMs(rangeKey) {
 
 // ── Routes ────────────────────────────────────────────────────────────────────
 
-// Public share endpoint — token-protected, no auth
+// Public share endpoint — token-protected, no auth.
+// Without `range`: returns the snapshot the share token was originally minted
+// for. With `range` (or range=custom + from/to): the token grants access to
+// any range, and we look up / refresh the corresponding cache row.
 router.get('/public', async (req, res) => {
   const { token } = req.query;
   if (!token) return res.status(400).json({ error: 'Missing token' });
   try {
     await ensureTables();
-    const [row] = await pgQuery(
-      `SELECT * FROM ads_report_cache WHERE share_token = $1`, [token]
+
+    // Validate the token first by finding ANY row that owns it
+    const [tokenOwner] = await pgQuery(
+      `SELECT range_key FROM ads_report_cache WHERE share_token = $1 LIMIT 1`, [token]
     );
-    if (!row) return res.status(404).json({ error: 'Report not found or link expired' });
+    if (!tokenOwner) return res.status(404).json({ error: 'Report not found or link expired' });
+
+    const requestedRange = req.query.range?.toString();
+    const from = req.query.from?.toString();
+    const to   = req.query.to?.toString();
+
+    // No range param → return the original snapshot
+    if (!requestedRange) {
+      const [row] = await pgQuery(
+        `SELECT * FROM ads_report_cache WHERE share_token = $1`, [token]
+      );
+      return res.json({
+        ok: true,
+        range: { key: row.range_key, start: row.start_date, end: row.end_date, label: PRESET_LABELS[row.range_key] || row.range_key },
+        generatedAt: row.generated_at,
+        data: parseDbData(row.data),
+      });
+    }
+
+    // Range param → validate, then return / refresh the corresponding cache row
+    if (requestedRange !== 'custom' && !PRESET_KEYS.has(requestedRange)) {
+      return res.status(400).json({ ok: false, error: `Unknown range: ${requestedRange}` });
+    }
+    let range;
+    try { range = getDateRange(requestedRange, from, to); }
+    catch (err) { return res.status(400).json({ ok: false, error: err.message }); }
+
+    const [cached] = await pgQuery(
+      `SELECT * FROM ads_report_cache WHERE range_key = $1`, [range.key]
+    );
+
+    const ttl = staleThresholdMs(requestedRange);
+    const isStale = !cached || (Date.now() - new Date(cached.generated_at).getTime() > ttl);
+
+    if (!cached || isStale) {
+      const result = await refreshReport(requestedRange, from, to);
+      return res.json({
+        ok: true,
+        range: { key: range.key, start: range.start, end: range.end, label: range.label },
+        generatedAt: result.generatedAt,
+        data: result.report,
+      });
+    }
     return res.json({
       ok: true,
-      range: { key: row.range_key, start: row.start_date, end: row.end_date, label: PRESET_LABELS[row.range_key] || row.range_key },
-      generatedAt: row.generated_at,
-      data: parseDbData(row.data),
+      range: { key: range.key, start: cached.start_date, end: cached.end_date, label: range.label },
+      generatedAt: cached.generated_at,
+      data: parseDbData(cached.data),
     });
   } catch (err) {
     console.error('[Ads Report] /public error:', err.message);
