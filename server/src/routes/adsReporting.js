@@ -15,6 +15,9 @@ const TW_REVENUE_COL       = process.env.TW_REVENUE_COL || 'order_revenue';
 const CRON_SECRET          = process.env.CRON_SECRET || '';
 const META_ACCESS_TOKEN    = process.env.META_ACCESS_TOKEN || '';
 const META_GRAPH_URL       = 'https://graph.facebook.com/v21.0';
+const CLICKUP_TOKEN        = process.env.CLICKUP_API_TOKEN || '';
+const CLICKUP_LIST_ID      = '901518716584';
+const CLICKUP_BRIEF_FIELD  = '62b61cc4-2d35-4dfc-86f4-a3913e2bbca3';
 
 // Revenue + purchase column candidates — must match creativeAnalysis.js column names
 const REV_COLS = [TW_REVENUE_COL, 'order_revenue', 'channel_reported_conversion_value'];
@@ -330,6 +333,40 @@ async function enrichWithClickUpLinks(rows) {
     const url = (cid && urlByCreativeId[cid]) || (num && urlByBriefNum[num]) || null;
     if (url) map[adName] = url;
   }
+
+  // Fallback: call ClickUp API directly for briefs not resolved from DB
+  const missing = adNames.filter(n => !map[n] && briefNumMap[n] != null);
+  if (missing.length && CLICKUP_TOKEN) {
+    console.log(`[Ads Report] ClickUp DB miss ${missing.length} briefs — falling back to API`);
+    const apiResults = await Promise.all(
+      missing.map(async adName => {
+        const num = briefNumMap[adName];
+        try {
+          const filter = encodeURIComponent(JSON.stringify([{
+            field_id: CLICKUP_BRIEF_FIELD,
+            operator: '=',
+            value: String(num),
+          }]));
+          const res = await fetch(
+            `https://api.clickup.com/api/v2/list/${CLICKUP_LIST_ID}/task?custom_fields=${filter}&include_closed=true`,
+            { headers: { Authorization: CLICKUP_TOKEN }, signal: AbortSignal.timeout(12000) }
+          );
+          if (!res.ok) return [adName, null];
+          const data = await res.json();
+          const task = (data.tasks || [])[0];
+          if (!task) return [adName, null];
+          return [adName, task.url || `https://app.clickup.com/t/${task.id}`];
+        } catch (err) {
+          console.error(`[Ads Report] ClickUp API fallback failed for B${String(num).padStart(4,'0')}:`, err.message);
+          return [adName, null];
+        }
+      })
+    );
+    for (const [adName, url] of apiResults) {
+      if (url) map[adName] = url;
+    }
+  }
+
   console.log(`[Ads Report] ClickUp links found: ${Object.keys(map).length}/${adNames.length}`);
   return map;
 }
