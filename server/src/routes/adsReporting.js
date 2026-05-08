@@ -213,7 +213,7 @@ async function fetchTwData(startDate, endDate) {
         GROUP BY ad_name
         HAVING SUM(spend) > 0.01
         ORDER BY SUM(spend) DESC
-        LIMIT 500
+        LIMIT 5000
       `);
       if (result.fatal) throw new Error('TW API auth/server error — check TRIPLEWHALE_API_KEY');
       if (result.ok) {
@@ -241,7 +241,7 @@ async function fetchTwData(startDate, endDate) {
         GROUP BY ad_name
         HAVING SUM(spend) > 0.01
         ORDER BY SUM(spend) DESC
-        LIMIT 500
+        LIMIT 5000
       `);
       if (result.ok) {
         console.warn(`[Ads Report] TW fallback no ad_id rev="${revCol}" pur="${purCol}"`);
@@ -267,7 +267,7 @@ async function fetchTwData(startDate, endDate) {
         GROUP BY ad_name
         HAVING SUM(spend) > 0.01
         ORDER BY SUM(spend) DESC
-        LIMIT 500
+        LIMIT 5000
       `);
       if (result.ok) {
         console.warn(`[Ads Report] TW fallback no campaign rev="${revCol}" pur="${purCol}"`);
@@ -523,35 +523,45 @@ async function enrichWithClickUpLinks(rows) {
 function buildReportRows(twResult, metaLinks, clickupLinks) {
   const { rows } = twResult;
 
-  return rows
-    .map(r => {
-      const spend     = parseFloat(r.total_spend     || 0);
-      const revenue   = parseFloat(r.total_revenue   || 0);
-      const purchases = parseFloat(r.total_purchases || 0);
-      const roas      = spend > 0 ? +(revenue / spend).toFixed(2) : 0;
-      const cpa       = purchases > 0 ? +(spend / purchases).toFixed(2) : null;
-      const aov       = purchases > 0 ? +(revenue / purchases).toFixed(2) : null;
-      const nvp       = r.avg_nvp != null ? +parseFloat(r.avg_nvp * 100).toFixed(1) : null;
-      const { avatar, angle, dateLaunched } = parseAdName(r.ad_name);
+  const enriched = rows.map(r => {
+    const spend     = parseFloat(r.total_spend     || 0);
+    const revenue   = parseFloat(r.total_revenue   || 0);
+    const purchases = parseFloat(r.total_purchases || 0);
+    const roas      = spend > 0 ? +(revenue / spend).toFixed(2) : 0;
+    const cpa       = purchases > 0 ? +(spend / purchases).toFixed(2) : null;
+    const aov       = purchases > 0 ? +(revenue / purchases).toFixed(2) : null;
+    const nvp       = r.avg_nvp != null ? +parseFloat(r.avg_nvp * 100).toFixed(1) : null;
+    const { avatar, angle, dateLaunched } = parseAdName(r.ad_name);
 
-      return {
-        adName:       r.ad_name       || '',
-        campaignName: r.campaign_name || '',
-        fbLink:       metaLinks[r.ad_name] || null,
-        clickupUrl:   clickupLinks[r.ad_name] || null,
-        spend:        +spend.toFixed(2),
-        roas,
-        purchases:    purchases > 0 ? Math.round(purchases) : null,
-        cpa,
-        aov,
-        nvp,
-        avatar,
-        angle,
-        dateLaunched,
-      };
-    })
+    return {
+      adName:       r.ad_name       || '',
+      campaignName: r.campaign_name || '',
+      fbLink:       metaLinks[r.ad_name] || null,
+      clickupUrl:   clickupLinks[r.ad_name] || null,
+      spend:        +spend.toFixed(2),
+      roas,
+      purchases:    purchases > 0 ? Math.round(purchases) : null,
+      cpa,
+      aov,
+      nvp,
+      avatar,
+      angle,
+      dateLaunched,
+    };
+  });
+
+  const totalAds       = enriched.length;
+  const adsWithSpend   = enriched.filter(r => r.spend >= 1).length;
+  const adsAbove100    = enriched.filter(r => r.spend >= 100).length;
+  const winning        = enriched
     .filter(r => r.spend >= 100 && r.roas >= 1.6)
     .sort((a, b) => b.roas - a.roas);
+
+  console.log(
+    `[Ads Report] AUDIT total=${totalAds} spend≥$1=${adsWithSpend} spend≥$100=${adsAbove100} winning=${winning.length} (spend≥$100 & ROAS≥1.6)`
+  );
+
+  return winning;
 }
 
 // ── Main refresh function ─────────────────────────────────────────────────────
@@ -715,6 +725,61 @@ async function handleReportRequest(req, res, defaultRangeKey = 'this_week') {
 
 // GET /report?range=this_week|last_week|...|custom&from=YYYY-MM-DD&to=YYYY-MM-DD&refresh=1
 router.get('/report', (req, res) => handleReportRequest(req, res));
+
+// GET /audit?range=... — returns ALL ads from TW (no spend/ROAS filter) so
+// you can verify the winning-ads list is complete vs. what TW actually has.
+// Includes a summary counting how many ads pass each threshold.
+router.get('/audit', async (req, res) => {
+  try {
+    const rangeKey = (req.query.range || 'this_week').toString();
+    const from = req.query.from?.toString();
+    const to   = req.query.to?.toString();
+
+    if (rangeKey !== 'custom' && !PRESET_KEYS.has(rangeKey)) {
+      return res.status(400).json({ ok: false, error: `Unknown range: ${rangeKey}` });
+    }
+
+    let range;
+    try { range = getDateRange(rangeKey, from, to); }
+    catch (err) { return res.status(400).json({ ok: false, error: err.message }); }
+
+    const twResult = await fetchTwData(range.start, range.end);
+    const all = twResult.rows.map(r => {
+      const spend     = parseFloat(r.total_spend     || 0);
+      const revenue   = parseFloat(r.total_revenue   || 0);
+      const purchases = parseFloat(r.total_purchases || 0);
+      const roas      = spend > 0 ? +(revenue / spend).toFixed(2) : 0;
+      return {
+        adName:       r.ad_name || '',
+        campaignName: r.campaign_name || '',
+        adId:         r.ad_id || null,
+        spend:        +spend.toFixed(2),
+        revenue:      +revenue.toFixed(2),
+        purchases:    purchases > 0 ? Math.round(purchases) : 0,
+        roas,
+      };
+    }).sort((a, b) => b.spend - a.spend);
+
+    return res.json({
+      ok: true,
+      range: { key: range.key, start: range.start, end: range.end, label: range.label },
+      summary: {
+        totalAds:        all.length,
+        adsWithAnySpend: all.filter(r => r.spend >= 1).length,
+        adsAbove100:     all.filter(r => r.spend >= 100).length,
+        winning:         all.filter(r => r.spend >= 100 && r.roas >= 1.6).length,
+        totalSpend:      +all.reduce((s, r) => s + r.spend, 0).toFixed(2),
+        totalRevenue:    +all.reduce((s, r) => s + r.revenue, 0).toFixed(2),
+        totalPurchases:  all.reduce((s, r) => s + r.purchases, 0),
+        truncated:       all.length >= 5000,
+      },
+      data: all,
+    });
+  } catch (err) {
+    console.error('[Ads Report] /audit error:', err.message);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
 
 // Legacy alias — kept so old clients keep working during deploy rollover
 router.get('/weekly', (req, res) => handleReportRequest(req, res, 'this_week'));
