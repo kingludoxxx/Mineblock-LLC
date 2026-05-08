@@ -625,13 +625,20 @@ function buildReportRows(twResult, metaResult, clickupLinks) {
   const adsAbove100    = enriched.filter(r => r.spend >= 100).length;
   const winning        = enriched
     .filter(r => r.spend >= 100 && r.roas >= 1.6)
-    .sort((a, b) => b.roas - a.roas);
+    .length;
+
+  // Return ALL ads with non-trivial spend, sorted by spend desc. The frontend
+  // applies user-configurable spend/ROAS thresholds — the server should never
+  // hide an ad just because it doesn't currently meet the "winning" bar.
+  const out = enriched
+    .filter(r => r.spend >= 1)
+    .sort((a, b) => b.spend - a.spend);
 
   console.log(
-    `[Ads Report] AUDIT total=${totalAds} spend≥$1=${adsWithSpend} spend≥$100=${adsAbove100} winning=${winning.length} (spend≥$100 & ROAS≥1.6)`
+    `[Ads Report] AUDIT total=${totalAds} spend≥$1=${adsWithSpend} spend≥$100=${adsAbove100} winning(≥$100 & ROAS≥1.6)=${winning} returned=${out.length}`
   );
 
-  return winning;
+  return out;
 }
 
 // ── Main refresh function ─────────────────────────────────────────────────────

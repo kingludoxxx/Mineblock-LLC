@@ -158,8 +158,13 @@ export default function AdsReportPublic() {
       .then(r => r.json())
       .then(res => {
         if (!res.ok) throw new Error(res.error || 'Failed to load');
-        setData(res.data || []);
-        // Support both new (range) and legacy (week) shapes
+        // Public share = curated "winning ads" view; backend now returns all
+        // ads, so apply the historical winning filter here for shareable
+        // snapshots that read like the original report.
+        const all = res.data || [];
+        const winners = all.filter(r => r.spend >= 100 && r.roas >= 1.6)
+          .sort((a, b) => b.roas - a.roas);
+        setData(winners);
         setRange(res.range || res.week || null);
       })
       .catch(err => setError(err.message))
