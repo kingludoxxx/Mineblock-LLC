@@ -14,7 +14,7 @@ const TW_ATTRIBUTION_MODEL = process.env.TW_ATTRIBUTION_MODEL || 'lastPlatformCl
 const TW_REVENUE_COL       = process.env.TW_REVENUE_COL || 'order_revenue';
 const CRON_SECRET          = process.env.CRON_SECRET || '';
 const META_ACCESS_TOKEN    = process.env.META_ACCESS_TOKEN || '';
-const META_GRAPH_URL       = 'https://graph.facebook.com/v21.0';
+const META_GRAPH_URL       = 'https://graph.facebook.com/v22.0';
 const CLICKUP_TOKEN        = process.env.CLICKUP_API_TOKEN || '';
 const CLICKUP_LIST_ID      = '901518716584';
 const CLICKUP_TEAM_ID      = '90152075024';
@@ -346,10 +346,11 @@ async function enrichWithMetaLinks(rows) {
   }
 
   // 2. Resolve each ad_id to actual FB post via Graph API.
-  // permalink_url is NOT a valid AdCreative field (Meta returns code 100 if
-  // requested) — only effective_object_story_id / object_story_id /
-  // instagram_permalink_url, plus object_story_spec for fallback.
-  const FIELDS = 'creative{effective_object_story_id,object_story_id,instagram_permalink_url,object_story_spec{page_id,instagram_actor_id}}';
+  // - permalink_url is NOT a valid AdCreative field (#100)
+  // - object_story_spec.instagram_actor_id is deprecated in v22+ (#12)
+  // The minimum set that gives us a real post URL is the object story IDs +
+  // the IG permalink for IG-only creatives.
+  const FIELDS = 'creative{effective_object_story_id,object_story_id,instagram_permalink_url,effective_instagram_media_id}';
   let realPostCount = 0, libraryCount = 0, sampleLogged = false;
 
   await Promise.all(
