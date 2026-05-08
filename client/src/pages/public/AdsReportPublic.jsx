@@ -199,6 +199,15 @@ export default function AdsReportPublic() {
 
   return (
     <div style={S.page}>
+      {/* Single gradient definition — avoids duplicate IDs across rows */}
+      <svg width={0} height={0} style={{ position: 'absolute' }}>
+        <defs>
+          <linearGradient id="cu-p" x1="4" y1="21" x2="44" y2="21" gradientUnits="userSpaceOnUse">
+            <stop stopColor="#FF7043"/><stop offset="0.5" stopColor="#C550E0"/><stop offset="1" stopColor="#38B2F4"/>
+          </linearGradient>
+        </defs>
+      </svg>
+
       <div style={S.header}>
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
@@ -308,11 +317,6 @@ export default function AdsReportPublic() {
                           style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 24, height: 24, borderRadius: 4, cursor: 'pointer', textDecoration: 'none' }}>
                           <svg width="14" height="10" viewBox="0 0 48 32" fill="none">
                             <path d="M4 26 L14 16 L24 26 L34 16 L44 26" stroke="url(#cu-p)" strokeWidth="6" strokeLinecap="round" strokeLinejoin="round"/>
-                            <defs>
-                              <linearGradient id="cu-p" x1="4" y1="21" x2="44" y2="21" gradientUnits="userSpaceOnUse">
-                                <stop stopColor="#FF7043"/><stop offset="0.5" stopColor="#C550E0"/><stop offset="1" stopColor="#38B2F4"/>
-                              </linearGradient>
-                            </defs>
                           </svg>
                         </a>
                       ) : <span style={{ color: '#52525b' }}>—</span>}

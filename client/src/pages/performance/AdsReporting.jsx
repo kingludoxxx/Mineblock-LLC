@@ -65,16 +65,24 @@ function Td({ children, className = '' }) {
 }
 
 // ── ClickUp logo ─────────────────────────────────────────────────────────────
+// Gradient defined once in a hidden SVG so duplicate-ID issues across rows are avoided
+const CU_GRAD_ID = 'cu-grad-internal';
+function ClickUpGradientDef() {
+  return (
+    <svg width={0} height={0} style={{ position: 'absolute' }}>
+      <defs>
+        <linearGradient id={CU_GRAD_ID} x1="4" y1="21" x2="44" y2="21" gradientUnits="userSpaceOnUse">
+          <stop stopColor="#FF7043"/>
+          <stop offset="0.5" stopColor="#C550E0"/>
+          <stop offset="1" stopColor="#38B2F4"/>
+        </linearGradient>
+      </defs>
+    </svg>
+  );
+}
 const ClickUpLogo = ({ size = 13 }) => (
   <svg width={size} height={size} viewBox="0 0 48 32" fill="none">
-    <path d="M4 26 L14 16 L24 26 L34 16 L44 26" stroke="url(#cu-a)" strokeWidth="6" strokeLinecap="round" strokeLinejoin="round"/>
-    <defs>
-      <linearGradient id="cu-a" x1="4" y1="21" x2="44" y2="21" gradientUnits="userSpaceOnUse">
-        <stop stopColor="#FF7043"/>
-        <stop offset="0.5" stopColor="#C550E0"/>
-        <stop offset="1" stopColor="#38B2F4"/>
-      </linearGradient>
-    </defs>
+    <path d="M4 26 L14 16 L24 26 L34 16 L44 26" stroke={`url(#${CU_GRAD_ID})`} strokeWidth="6" strokeLinecap="round" strokeLinejoin="round"/>
   </svg>
 );
 
@@ -182,6 +190,7 @@ export default function AdsReporting() {
 
   return (
     <div className="p-6 space-y-5">
+      <ClickUpGradientDef />
 
       {/* ── Header ── */}
       <div className="flex items-start justify-between gap-4 flex-wrap">
