@@ -161,7 +161,9 @@ function RangeDropdown({ value, onChange, disabled }) {
 // ── Main page ─────────────────────────────────────────────────────────────────
 export default function AdsReporting() {
   const [range,    setRange]    = useState('this_week');
-  const [loading,  setLoading]  = useState(true);
+  // `displayed` is the range whose data is currently rendered — only updates
+  // once a fetch completes, so switching ranges never blanks the page.
+  const [displayed, setDisplayed] = useState('this_week');
   const [error,    setError]    = useState(null);
   const [refreshing, setRefreshing] = useState(false);
   const [copied,   setCopied]   = useState(false);
@@ -169,20 +171,19 @@ export default function AdsReporting() {
 
   // Cache responses per range key — flips between presets are instant after first load
   const cacheRef = useRef(new Map());
-  const [tick, setTick] = useState(0); // forces re-render when cache changes
-  const current = cacheRef.current.get(range);
+  const [tick, setTick] = useState(0); // eslint-disable-line no-unused-vars
+  const current = cacheRef.current.get(displayed);
 
   const load = useCallback(async (rangeKey, force = false) => {
     const cached = cacheRef.current.get(rangeKey);
     if (cached && !force) {
-      setLoading(false);
+      setDisplayed(rangeKey);
       setError(null);
-      return; // instant — already in client cache
+      return;
     }
 
     try {
-      if (force) setRefreshing(true);
-      else       setLoading(!cached);
+      setRefreshing(true);
       setError(null);
 
       const url = `/ads-reporting/report?range=${encodeURIComponent(rangeKey)}${force ? '&refresh=1' : ''}`;
@@ -193,11 +194,11 @@ export default function AdsReporting() {
         generatedAt: res.data.generatedAt,
         shareToken:  res.data.shareToken,
       });
+      setDisplayed(rangeKey);
       setTick(t => t + 1);
     } catch (err) {
       setError(err?.response?.data?.error || err.message || 'Failed to load report');
     } finally {
-      setLoading(false);
       setRefreshing(false);
     }
   }, []);
@@ -236,8 +237,8 @@ export default function AdsReporting() {
   const rangeMeta   = current?.rangeMeta;
   const generatedAt = current?.generatedAt;
 
-  // ── Loading state ─────────────────────────────────────────────────────────
-  if (loading && !current) {
+  // ── Initial loading state (no data anywhere yet) ──────────────────────────
+  if (refreshing && !current && cacheRef.current.size === 0) {
     return (
       <div className="flex flex-col items-center justify-center h-72 gap-3 text-[var(--color-text-muted)]">
         <Loader2 size={28} className="animate-spin text-[var(--color-accent)]" />
@@ -334,7 +335,7 @@ export default function AdsReporting() {
       </div>
 
       {/* ── Empty state ── */}
-      {data.length === 0 && !loading && (
+      {data.length === 0 && !refreshing && (
         <div className="flex flex-col items-center justify-center h-56 gap-3 border border-[var(--color-border-subtle)] rounded-xl bg-[var(--color-bg-card)]">
           <TrendingUp size={28} className="text-[var(--color-text-faint)]" />
           <p className="text-sm font-medium text-[var(--color-text-muted)]">No qualifying ads</p>
