@@ -14,9 +14,9 @@ const TW_ATTRIBUTION_MODEL = process.env.TW_ATTRIBUTION_MODEL || 'lastPlatformCl
 const TW_REVENUE_COL       = process.env.TW_REVENUE_COL || 'order_revenue';
 const CRON_SECRET          = process.env.CRON_SECRET || '';
 
-// Revenue + purchase column candidates (in preference order)
+// Revenue + purchase column candidates — must match creativeAnalysis.js column names
 const REV_COLS = [TW_REVENUE_COL, 'order_revenue', 'channel_reported_conversion_value'];
-const PUR_COLS = ['purchases', 'order_count'];
+const PUR_COLS = ['website_purchases', 'channel_reported_conversions'];
 
 // Dedup lists while preserving order
 const uniqueRevCols = [...new Set(REV_COLS)];
@@ -61,101 +61,107 @@ function getWeekDates() {
 async function fetchWeeklyTwData(startDate, endDate) {
   if (!TW_API_KEY) throw new Error('TRIPLEWHALE_API_KEY not set');
 
-  function twPost(query) {
-    return fetch(TW_SQL_URL, {
+  async function twQuery(sql) {
+    const res = await fetch(TW_SQL_URL, {
       method:  'POST',
       headers: { 'x-api-key': TW_API_KEY, 'Content-Type': 'application/json' },
       body:    JSON.stringify({
         shopId:           TW_SHOP_ID,
-        query,
+        query:            sql.trim(),
         period:           { startDate, endDate },
         attributionModel: TW_ATTRIBUTION_MODEL,
       }),
       signal: AbortSignal.timeout(30000),
     });
-  }
-
-  async function tryQuery(sql) {
-    const res = await twPost(sql).catch(() => null);
-    if (!res?.ok) return null;
-    const data = await res.json().catch(() => null);
-    if (!data || data.error) return null;
+    if (res.status === 401 || res.status === 403) {
+      const text = await res.text();
+      console.error(`[Ads Report] TW auth error ${res.status}: ${text.slice(0, 200)}`);
+      return { ok: false, fatal: true };
+    }
+    if (res.status >= 500) {
+      const text = await res.text();
+      console.error(`[Ads Report] TW server error ${res.status}: ${text.slice(0, 200)}`);
+      return { ok: false, fatal: false };
+    }
+    if (!res.ok) {
+      const text = await res.text();
+      console.error(`[Ads Report] TW query error ${res.status}: ${text.slice(0, 200)}`);
+      return { ok: false, fatal: false };
+    }
+    const data = await res.json();
     const rows = Array.isArray(data) ? data : (data?.data || data?.rows || []);
-    return rows;
+    return { ok: true, rows };
   }
 
-  // Try progressively simpler queries until one works.
-  // Outer loop: revenue + purchase column combinations.
-  // Inner: optional extra columns (campaign_name, ad_id, nvp).
+  // Step 1: discover working revenue column (simple ad_name + spend + revenue query)
+  let workingRevCol = null;
+  let baseRows = null;
   for (const revCol of uniqueRevCols) {
-    for (const purCol of uniquePurCols) {
-      const rev = revCol.includes(' ') ? `\`${revCol}\`` : revCol;
-      const pur = purCol.includes(' ') ? `\`${purCol}\`` : purCol;
-
-      // Attempt 1: all columns including campaign_name, ad_id, NVP
-      let rows = await tryQuery(`
-        SELECT campaign_name, ad_name, ad_id,
-               SUM(spend) AS total_spend,
-               SUM(${rev}) AS total_revenue,
-               SUM(${pur}) AS total_purchases,
-               AVG(new_visitor_rate) AS avg_nvp
-        FROM pixel_joined_tvf
-        WHERE event_date BETWEEN @startDate AND @endDate
-        GROUP BY campaign_name, ad_name, ad_id
-        HAVING SUM(spend) > 0
-        ORDER BY SUM(${rev}) / NULLIF(SUM(spend), 0) DESC
-        LIMIT 500
-      `);
-      if (rows) return { rows, revCol, purCol, hasCampaign: true, hasAdId: true, hasNvp: true };
-
-      // Attempt 2: drop NVP
-      rows = await tryQuery(`
-        SELECT campaign_name, ad_name, ad_id,
-               SUM(spend) AS total_spend,
-               SUM(${rev}) AS total_revenue,
-               SUM(${pur}) AS total_purchases
-        FROM pixel_joined_tvf
-        WHERE event_date BETWEEN @startDate AND @endDate
-        GROUP BY campaign_name, ad_name, ad_id
-        HAVING SUM(spend) > 0
-        ORDER BY SUM(${rev}) / NULLIF(SUM(spend), 0) DESC
-        LIMIT 500
-      `);
-      if (rows) return { rows, revCol, purCol, hasCampaign: true, hasAdId: true, hasNvp: false };
-
-      // Attempt 3: drop ad_id + NVP
-      rows = await tryQuery(`
-        SELECT campaign_name, ad_name,
-               SUM(spend) AS total_spend,
-               SUM(${rev}) AS total_revenue,
-               SUM(${pur}) AS total_purchases
-        FROM pixel_joined_tvf
-        WHERE event_date BETWEEN @startDate AND @endDate
-        GROUP BY campaign_name, ad_name
-        HAVING SUM(spend) > 0
-        ORDER BY SUM(${rev}) / NULLIF(SUM(spend), 0) DESC
-        LIMIT 500
-      `);
-      if (rows) return { rows, revCol, purCol, hasCampaign: true, hasAdId: false, hasNvp: false };
-
-      // Attempt 4: ad_name only (most compatible)
-      rows = await tryQuery(`
-        SELECT ad_name,
-               SUM(spend) AS total_spend,
-               SUM(${rev}) AS total_revenue,
-               SUM(${pur}) AS total_purchases
-        FROM pixel_joined_tvf
-        WHERE event_date BETWEEN @startDate AND @endDate
-        GROUP BY ad_name
-        HAVING SUM(spend) > 0
-        ORDER BY SUM(${rev}) / NULLIF(SUM(spend), 0) DESC
-        LIMIT 500
-      `);
-      if (rows) return { rows, revCol, purCol, hasCampaign: false, hasAdId: false, hasNvp: false };
+    const revRef = revCol.includes(' ') ? `\`${revCol}\`` : revCol;
+    const result = await twQuery(`
+      SELECT ad_name, SUM(spend) AS total_spend, SUM(${revRef}) AS total_revenue
+      FROM pixel_joined_tvf
+      WHERE event_date BETWEEN @startDate AND @endDate
+      GROUP BY ad_name
+      HAVING SUM(spend) > 0.01
+      ORDER BY SUM(spend) DESC
+      LIMIT 500
+    `);
+    if (result.fatal) throw new Error('TW API auth/server error — check TRIPLEWHALE_API_KEY');
+    if (result.ok) {
+      workingRevCol = revCol;
+      baseRows = result.rows;
+      console.log(`[Ads Report] TW revenue column found: "${revCol}", rows=${result.rows.length}`);
+      break;
     }
   }
 
-  throw new Error('TW query failed for all column/model combinations');
+  if (!workingRevCol) throw new Error('TW query failed — no working revenue column found');
+
+  const revRef = workingRevCol.includes(' ') ? `\`${workingRevCol}\`` : workingRevCol;
+
+  // Step 2: try adding purchase column
+  let workingPurCol = null;
+  for (const purCol of uniquePurCols) {
+    const purRef = purCol.includes(' ') ? `\`${purCol}\`` : purCol;
+    const result = await twQuery(`
+      SELECT ad_name, SUM(spend) AS total_spend, SUM(${revRef}) AS total_revenue,
+             SUM(${purRef}) AS total_purchases
+      FROM pixel_joined_tvf
+      WHERE event_date BETWEEN @startDate AND @endDate
+      GROUP BY ad_name
+      HAVING SUM(spend) > 0.01
+      ORDER BY SUM(spend) DESC
+      LIMIT 500
+    `);
+    if (result.ok) {
+      workingPurCol = purCol;
+      baseRows = result.rows;
+      console.log(`[Ads Report] TW purchase column found: "${purCol}"`);
+      break;
+    }
+  }
+
+  // Step 3: try adding campaign_name (optional — graceful fallback if column unavailable)
+  const purRef = workingPurCol ? (workingPurCol.includes(' ') ? `\`${workingPurCol}\`` : workingPurCol) : null;
+  const purSelect = purRef ? `, SUM(${purRef}) AS total_purchases` : '';
+
+  const withCampaignResult = await twQuery(`
+    SELECT campaign_name, ad_name, SUM(spend) AS total_spend,
+           SUM(${revRef}) AS total_revenue${purSelect}
+    FROM pixel_joined_tvf
+    WHERE event_date BETWEEN @startDate AND @endDate
+    GROUP BY campaign_name, ad_name
+    HAVING SUM(spend) > 0.01
+    ORDER BY SUM(spend) DESC
+    LIMIT 500
+  `);
+
+  const finalRows = withCampaignResult.ok ? withCampaignResult.rows : baseRows;
+  const hasCampaign = withCampaignResult.ok;
+
+  console.log(`[Ads Report] TW final rows=${finalRows.length}, hasCampaign=${hasCampaign}, revCol="${workingRevCol}", purCol="${workingPurCol || 'none'}"`);
+  return { rows: finalRows, revCol: workingRevCol, purCol: workingPurCol, hasCampaign };
 }
 
 // ── Meta ad-id → FB link lookup via creative_analysis table ──────────────────
@@ -194,30 +200,28 @@ function parseAdName(adName) {
 
 // ── Build report rows ─────────────────────────────────────────────────────────
 function buildReportRows(twResult, metaLinks) {
-  const { rows, revCol, purCol } = twResult; // eslint-disable-line no-unused-vars
+  const { rows } = twResult;
 
   return rows
     .map(r => {
-      const spend    = parseFloat(r.total_spend    || 0);
-      const revenue  = parseFloat(r.total_revenue  || 0);
+      const spend     = parseFloat(r.total_spend    || 0);
+      const revenue   = parseFloat(r.total_revenue  || 0);
       const purchases = parseFloat(r.total_purchases || 0);
-      const roas     = spend > 0 ? +(revenue / spend).toFixed(2) : 0;
-      const cpa      = purchases > 0 ? +(spend / purchases).toFixed(2) : null;
-      const aov      = purchases > 0 ? +(revenue / purchases).toFixed(2) : null;
-      const nvp      = r.avg_nvp != null ? +(parseFloat(r.avg_nvp) * 100).toFixed(1) : null;
+      const roas      = spend > 0 ? +(revenue / spend).toFixed(2) : 0;
+      const cpa       = purchases > 0 ? +(spend / purchases).toFixed(2) : null;
+      const aov       = purchases > 0 ? +(revenue / purchases).toFixed(2) : null;
       const { avatar, angle } = parseAdName(r.ad_name);
 
       return {
         adName:       r.ad_name       || '',
         campaignName: r.campaign_name || '',
-        adId:         r.ad_id         || null,
         fbLink:       metaLinks[r.ad_name] || null,
         spend:        +spend.toFixed(2),
         roas,
-        purchases:    Math.round(purchases),
+        purchases:    purchases > 0 ? Math.round(purchases) : null,
         cpa,
         aov,
-        nvp,
+        nvp:          null,
         avatar,
         angle,
       };
