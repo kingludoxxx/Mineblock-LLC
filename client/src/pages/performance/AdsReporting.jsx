@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import api from '../../services/api';
+import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip } from 'recharts';
 import {
   RefreshCw,
   ExternalLink,
@@ -128,6 +129,53 @@ const ClickUpLogo = ({ size = 14 }) => (
     <path d="M4 26 L14 16 L24 26 L34 16 L44 26" stroke={`url(#${CU_GRAD_ID})`} strokeWidth="6" strokeLinecap="round" strokeLinejoin="round"/>
   </svg>
 );
+
+// ── Chart palette + helpers ──────────────────────────────────────────────────
+const CHART_COLORS = ['#c9a84c', '#FF7043', '#38B2F4', '#C550E0', '#4ade80', '#fb7185', '#a78bfa', '#22d3ee', '#facc15', '#fb923c'];
+
+function aggregateBy(rows, key) {
+  const map = new Map();
+  for (const r of rows) {
+    const v = r[key];
+    if (!v) continue;
+    map.set(v, (map.get(v) || 0) + 1);
+  }
+  return [...map.entries()]
+    .map(([name, value]) => ({ name, value }))
+    .sort((a, b) => b.value - a.value);
+}
+
+function aggregateRoasBy(rows, key) {
+  const buckets = new Map();
+  for (const r of rows) {
+    const k = r[key];
+    if (!k || !r.spend) continue;
+    if (!buckets.has(k)) buckets.set(k, { spend: 0, revenue: 0 });
+    const b = buckets.get(k);
+    b.spend   += r.spend || 0;
+    b.revenue += (r.spend || 0) * (r.roas || 0); // back into revenue from spend × ROAS
+  }
+  return [...buckets.entries()]
+    .map(([name, b]) => ({
+      name,
+      roas: b.spend > 0 ? +(b.revenue / b.spend).toFixed(2) : 0,
+      spend: +b.spend.toFixed(0),
+    }))
+    .sort((a, b) => b.roas - a.roas);
+}
+
+function ChartTooltip({ active, payload, valueKey = 'value', suffix = '' }) {
+  if (!active || !payload?.length) return null;
+  const p = payload[0];
+  return (
+    <div className="px-2 py-1.5 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-card)] text-xs">
+      <div className="font-medium text-[var(--color-text-primary)]">{p.payload.name}</div>
+      <div className="text-[var(--color-text-muted)]">
+        {p.payload[valueKey]}{suffix}
+      </div>
+    </div>
+  );
+}
 
 // ── Tag pill ──────────────────────────────────────────────────────────────────
 function Tag({ label, color = 'default' }) {
@@ -750,6 +798,78 @@ export default function AdsReporting() {
           </div>
         </div>
       )}
+
+      {/* ── Insights (charts) ── */}
+      {data.length > 0 && (() => {
+        const byFormat = aggregateBy(data, 'format');
+        const byAngle  = aggregateBy(data, 'angle');
+        const byEditor = aggregateRoasBy(data, 'editor');
+        const total    = data.length;
+
+        const renderDonut = (rows, title, hint) => (
+          <div className="rounded-xl border border-[var(--color-border-subtle)] bg-[var(--color-bg-card)] p-4">
+            <div className="flex items-baseline justify-between mb-2">
+              <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">{title}</h3>
+              <span className="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]">{hint}</span>
+            </div>
+            {rows.length === 0 ? (
+              <div className="h-56 flex items-center justify-center text-xs text-[var(--color-text-faint)]">no data</div>
+            ) : (
+              <div className="flex items-center gap-3">
+                <ResponsiveContainer width="55%" height={220}>
+                  <PieChart>
+                    <Pie data={rows} dataKey="value" nameKey="name" innerRadius={50} outerRadius={85} paddingAngle={2}>
+                      {rows.map((r, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
+                    </Pie>
+                    <Tooltip content={<ChartTooltip valueKey="value" suffix=" ads" />} />
+                  </PieChart>
+                </ResponsiveContainer>
+                <div className="flex-1 space-y-1.5 text-xs min-w-0">
+                  {rows.map((r, i) => {
+                    const pct = (100 * r.value / total).toFixed(1);
+                    return (
+                      <div key={r.name} className="flex items-center gap-2 min-w-0">
+                        <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: CHART_COLORS[i % CHART_COLORS.length] }} />
+                        <span className="flex-1 truncate text-[var(--color-text-primary)]" title={r.name}>{r.name}</span>
+                        <span className="text-[var(--color-text-muted)] tabular-nums">{r.value} <span className="text-[var(--color-text-faint)]">({pct}%)</span></span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+        );
+
+        return (
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2">
+            {renderDonut(byFormat, 'Winning ads by Format', `${total} ads`)}
+            {renderDonut(byAngle,  'Winning ads by Angle',  `${total} ads`)}
+
+            {/* ROAS by editor — horizontal bar chart */}
+            <div className="rounded-xl border border-[var(--color-border-subtle)] bg-[var(--color-bg-card)] p-4">
+              <div className="flex items-baseline justify-between mb-2">
+                <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">ROAS by Editor</h3>
+                <span className="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]">avg of winners</span>
+              </div>
+              {byEditor.length === 0 ? (
+                <div className="h-56 flex items-center justify-center text-xs text-[var(--color-text-faint)]">no editor data</div>
+              ) : (
+                <ResponsiveContainer width="100%" height={Math.max(220, byEditor.length * 28 + 30)}>
+                  <BarChart data={byEditor} layout="vertical" margin={{ top: 4, right: 24, bottom: 4, left: 4 }}>
+                    <XAxis type="number" tick={{ fontSize: 10, fill: '#71717a' }} axisLine={false} tickLine={false} />
+                    <YAxis dataKey="name" type="category" width={90} tick={{ fontSize: 11, fill: '#fafafa' }} axisLine={false} tickLine={false} />
+                    <Tooltip content={<ChartTooltip valueKey="roas" suffix="× ROAS" />} cursor={{ fill: 'rgba(255,255,255,0.04)' }} />
+                    <Bar dataKey="roas" radius={[0, 4, 4, 0]}>
+                      {byEditor.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              )}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ── Footer note ── */}
       <p className="text-xs text-[var(--color-text-faint)]">

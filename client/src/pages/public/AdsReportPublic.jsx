@@ -1,6 +1,39 @@
 import { useState, useEffect, useRef } from 'react';
 import { useParams } from 'react-router-dom';
 import { TrendingUp, ExternalLink, AlertCircle, Loader2, Calendar, ChevronDown } from 'lucide-react';
+import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip } from 'recharts';
+
+const CHART_COLORS = ['#c9a84c', '#FF7043', '#38B2F4', '#C550E0', '#4ade80', '#fb7185', '#a78bfa', '#22d3ee', '#facc15', '#fb923c'];
+
+function aggregateByPublic(rows, key) {
+  const map = new Map();
+  for (const r of rows) {
+    const v = r[key];
+    if (!v) continue;
+    map.set(v, (map.get(v) || 0) + 1);
+  }
+  return [...map.entries()]
+    .map(([name, value]) => ({ name, value }))
+    .sort((a, b) => b.value - a.value);
+}
+
+function aggregateRoasByPublic(rows, key) {
+  const buckets = new Map();
+  for (const r of rows) {
+    const k = r[key];
+    if (!k || !r.spend) continue;
+    if (!buckets.has(k)) buckets.set(k, { spend: 0, revenue: 0 });
+    const b = buckets.get(k);
+    b.spend   += r.spend || 0;
+    b.revenue += (r.spend || 0) * (r.roas || 0);
+  }
+  return [...buckets.entries()]
+    .map(([name, b]) => ({
+      name,
+      roas: b.spend > 0 ? +(b.revenue / b.spend).toFixed(2) : 0,
+    }))
+    .sort((a, b) => b.roas - a.roas);
+}
 
 const PUBLIC_PRESETS = [
   { key: 'today',         label: 'Today' },
@@ -487,6 +520,99 @@ export default function AdsReportPublic() {
           </div>
         </div>
       )}
+
+      {/* ── Insights (charts) ── */}
+      {data.length > 0 && (() => {
+        const byFormat = aggregateByPublic(data, 'format');
+        const byAngle  = aggregateByPublic(data, 'angle');
+        const byEditor = aggregateRoasByPublic(data, 'editor');
+        const total    = data.length;
+        const cardStyle = {
+          borderRadius: '12px',
+          border: '1px solid rgba(255,255,255,0.05)',
+          background: '#111113',
+          padding: '16px',
+        };
+        const titleStyle = { fontSize: '14px', fontWeight: 600, margin: 0, color: '#fafafa' };
+
+        const tooltipStyle = ({ active, payload, suffix = '' }) => {
+          if (!active || !payload?.length) return null;
+          const p = payload[0];
+          return (
+            <div style={{ padding: '6px 10px', borderRadius: '6px', border: '1px solid rgba(255,255,255,0.08)', background: '#111113', fontSize: '12px' }}>
+              <div style={{ color: '#fafafa', fontWeight: 500 }}>{p.payload.name}</div>
+              <div style={{ color: '#a1a1aa' }}>{p.value}{suffix}</div>
+            </div>
+          );
+        };
+
+        const renderDonut = (rows, title) => (
+          <div style={cardStyle}>
+            <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: '8px' }}>
+              <h3 style={titleStyle}>{title}</h3>
+              <span style={{ fontSize: '10px', textTransform: 'uppercase', letterSpacing: '0.05em', color: '#52525b' }}>{total} ads</span>
+            </div>
+            {rows.length === 0 ? (
+              <div style={{ height: '220px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#52525b', fontSize: '12px' }}>no data</div>
+            ) : (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <div style={{ width: '55%', height: '220px' }}>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie data={rows} dataKey="value" nameKey="name" innerRadius={50} outerRadius={85} paddingAngle={2}>
+                        {rows.map((r, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
+                      </Pie>
+                      <Tooltip content={(p) => tooltipStyle({ ...p, suffix: ' ads' })} />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+                <div style={{ flex: 1, fontSize: '12px', minWidth: 0 }}>
+                  {rows.map((r, i) => {
+                    const pct = (100 * r.value / total).toFixed(1);
+                    return (
+                      <div key={r.name} style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px', minWidth: 0 }}>
+                        <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: CHART_COLORS[i % CHART_COLORS.length], flexShrink: 0 }} />
+                        <span style={{ flex: 1, color: '#fafafa', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.name}>{r.name}</span>
+                        <span style={{ color: '#a1a1aa', fontVariantNumeric: 'tabular-nums' }}>{r.value} <span style={{ color: '#52525b' }}>({pct}%)</span></span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+        );
+
+        return (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '16px', marginTop: '20px' }}>
+            {renderDonut(byFormat, 'Winning ads by Format')}
+            {renderDonut(byAngle,  'Winning ads by Angle')}
+
+            <div style={cardStyle}>
+              <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: '8px' }}>
+                <h3 style={titleStyle}>ROAS by Editor</h3>
+                <span style={{ fontSize: '10px', textTransform: 'uppercase', letterSpacing: '0.05em', color: '#52525b' }}>avg of winners</span>
+              </div>
+              {byEditor.length === 0 ? (
+                <div style={{ height: '220px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#52525b', fontSize: '12px' }}>no editor data</div>
+              ) : (
+                <div style={{ width: '100%', height: `${Math.max(220, byEditor.length * 28 + 30)}px` }}>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={byEditor} layout="vertical" margin={{ top: 4, right: 24, bottom: 4, left: 4 }}>
+                      <XAxis type="number" tick={{ fontSize: 10, fill: '#71717a' }} axisLine={false} tickLine={false} />
+                      <YAxis dataKey="name" type="category" width={90} tick={{ fontSize: 11, fill: '#fafafa' }} axisLine={false} tickLine={false} />
+                      <Tooltip content={(p) => tooltipStyle({ active: p.active, payload: p.payload?.map(x => ({...x, value: x.payload.roas})), suffix: '× ROAS' })} cursor={{ fill: 'rgba(255,255,255,0.04)' }} />
+                      <Bar dataKey="roas" radius={[0, 4, 4, 0]}>
+                        {byEditor.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })()}
 
       <p style={{ marginTop: '20px', fontSize: '11px', color: '#3f3f46' }}>
         Data from Triple Whale · Facebook post links via Meta Graph API
