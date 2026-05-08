@@ -284,6 +284,24 @@ router.get('/public', async (req, res) => {
   }
 });
 
+// Data preview — returns cached rows for verification (secret-protected)
+router.get('/cron/data', async (req, res) => {
+  if (!CRON_SECRET || req.query.secret !== CRON_SECRET) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+  try {
+    await ensureTables();
+    const week = getWeekDates();
+    const [row] = await pgQuery(
+      `SELECT * FROM ads_weekly_report_cache WHERE week_start = $1`, [week.start]
+    );
+    if (!row) return res.json({ ok: true, week: week.start, data: [], note: 'no cache yet' });
+    return res.json({ ok: true, week: { start: row.week_start, end: row.week_end }, generatedAt: row.generated_at, shareToken: row.share_token, data: row.data });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 // Cron endpoint — 12:00 AM CET daily (22:00 UTC in CEST / 23:00 UTC in CET)
 router.get('/cron/refresh', async (req, res) => {
   if (!CRON_SECRET || req.query.secret !== CRON_SECRET) {
