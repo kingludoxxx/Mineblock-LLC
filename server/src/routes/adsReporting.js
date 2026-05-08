@@ -336,22 +336,23 @@ async function enrichWithMetaLinks(rows) {
     }
   }
 
-  if (!Object.keys(adIdMap).length) return map;
+  if (!Object.keys(adIdMap).length) return { links: map, created: {} };
   if (!META_ACCESS_TOKEN) {
     // No token — best we can do is link to Ads Library
     for (const [adName, adId] of Object.entries(adIdMap)) {
       map[adName] = `https://www.facebook.com/ads/library/?id=${adId}`;
     }
-    return map;
+    return { links: map, created: {} };
   }
 
-  // 2. Resolve each ad_id to actual FB post via Graph API.
+  // 2. Resolve each ad_id to actual FB post + created_time via Graph API.
   // - permalink_url is NOT a valid AdCreative field (#100)
   // - object_story_spec.instagram_actor_id is deprecated in v22+ (#12)
-  // The minimum set that gives us a real post URL is the object story IDs +
-  // the IG permalink for IG-only creatives.
-  const FIELDS = 'creative{effective_object_story_id,object_story_id,instagram_permalink_url,effective_instagram_media_id}';
-  let realPostCount = 0, libraryCount = 0, sampleLogged = false;
+  // We also pull `created_time` so ads whose names don't contain WK##_YYYY
+  // (e.g. "Urgency - 1") still get a Launch Date in the report.
+  const FIELDS = 'created_time,creative{effective_object_story_id,object_story_id,instagram_permalink_url,effective_instagram_media_id}';
+  let realPostCount = 0, libraryCount = 0, datedFromMeta = 0, sampleLogged = false;
+  const createdMap = {}; // adName → 'YYYY-MM-DD'
 
   await Promise.all(
     Object.entries(adIdMap).map(async ([adName, adId]) => {
@@ -364,6 +365,12 @@ async function enrichWithMetaLinks(rows) {
             console.log(`[Ads Report] Meta sample for adId=${adId}:`, JSON.stringify(d).slice(0, 500));
             sampleLogged = true;
           }
+          // Capture created_time as YYYY-MM-DD (Meta returns ISO 8601 like "2026-04-27T10:13:42+0000")
+          if (d?.created_time && typeof d.created_time === 'string' && d.created_time.length >= 10) {
+            createdMap[adName] = d.created_time.slice(0, 10);
+            datedFromMeta++;
+          }
+
           const c = d?.creative || {};
           const eosi   = c.effective_object_story_id || c.object_story_id;
           const igPerma = c.instagram_permalink_url;
@@ -395,8 +402,8 @@ async function enrichWithMetaLinks(rows) {
     })
   );
 
-  console.log(`[Ads Report] Meta links: realPosts=${realPostCount} libraryFallback=${libraryCount} total=${Object.keys(adIdMap).length}`);
-  return map;
+  console.log(`[Ads Report] Meta links: realPosts=${realPostCount} libraryFallback=${libraryCount} datedFromMeta=${datedFromMeta} total=${Object.keys(adIdMap).length}`);
+  return { links: map, created: createdMap };
 }
 
 // ── Avatar / Angle / Date Launched parser ────────────────────────────────────
@@ -554,8 +561,9 @@ async function enrichWithClickUpLinks(rows) {
 }
 
 // ── Build report rows ─────────────────────────────────────────────────────────
-function buildReportRows(twResult, metaLinks, clickupLinks) {
+function buildReportRows(twResult, metaResult, clickupLinks) {
   const { rows } = twResult;
+  const { links: metaLinks, created: metaCreated } = metaResult;
 
   const enriched = rows.map(r => {
     const spend     = parseFloat(r.total_spend     || 0);
@@ -580,7 +588,10 @@ function buildReportRows(twResult, metaLinks, clickupLinks) {
       nvp,
       avatar,
       angle,
-      dateLaunched,
+      // Prefer the WK marker parsed out of the ad name; fall back to Meta's
+      // created_time so non-brief-coded ads (e.g. "Urgency - 1") still get a
+      // launch date.
+      dateLaunched: dateLaunched || metaCreated[r.ad_name] || null,
     };
   });
 
@@ -604,11 +615,11 @@ async function refreshReport(rangeKey, customFrom, customTo) {
   const range = getDateRange(rangeKey, customFrom, customTo);
 
   const twResult     = await fetchTwData(range.start, range.end);
-  const [metaLinks, clickupLinks] = await Promise.all([
+  const [metaResult, clickupLinks] = await Promise.all([
     enrichWithMetaLinks(twResult.rows),
     enrichWithClickUpLinks(twResult.rows),
   ]);
-  const report = buildReportRows(twResult, metaLinks, clickupLinks);
+  const report = buildReportRows(twResult, metaResult, clickupLinks);
 
   await pgQuery(`
     INSERT INTO ads_report_cache (range_key, start_date, end_date, share_token, data, generated_at)
