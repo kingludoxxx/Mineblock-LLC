@@ -200,8 +200,10 @@ async function fetchTwData(startDate, endDate) {
     return { ok: true, rows };
   }
 
-  // Try the rich query (campaign_name + ad_id + purchases). TW is ClickHouse-flavored:
-  // CAST uses `String` (not `STRING`); `new_visitor_rate` is not a column in pixel_joined_tvf.
+  // Try the rich query (campaign_name + ad_id + purchases + new-customer orders).
+  // TW is ClickHouse-flavored: CAST uses `String` (not `STRING`).
+  // NVP is computed from `new_customer_orders` (the actual TW column for
+  // first-time-buyer orders); the legacy `new_visitor_rate` does not exist.
   for (const revCol of uniqueRevCols) {
     const revRef = revCol.includes(' ') ? `\`${revCol}\`` : revCol;
     for (const purCol of uniquePurCols) {
@@ -213,7 +215,8 @@ async function fetchTwData(startDate, endDate) {
           MAX(toString(ad_id)) AS ad_id,
           SUM(spend) AS total_spend,
           SUM(${revRef}) AS total_revenue,
-          SUM(${purRef}) AS total_purchases
+          SUM(${purRef}) AS total_purchases,
+          SUM(new_customer_orders) AS total_new_customer_orders
         FROM pixel_joined_tvf
         WHERE event_date BETWEEN @startDate AND @endDate
           AND channel = 'facebook-ads'
@@ -225,7 +228,7 @@ async function fetchTwData(startDate, endDate) {
       if (result.fatal) throw new Error('TW API auth/server error — check TRIPLEWHALE_API_KEY');
       if (result.ok) {
         console.log(`[Ads Report] TW success rev="${revCol}" pur="${purCol}" rows=${result.rows.length}`);
-        return { rows: result.rows, revCol, purCol, hasCampaign: true, hasAdId: true };
+        return { rows: result.rows, revCol, purCol, hasCampaign: true, hasAdId: true, hasNvp: true };
       }
     }
   }
@@ -590,7 +593,11 @@ function buildReportRows(twResult, metaResult, clickupLinks) {
     const roas      = spend > 0 ? +(revenue / spend).toFixed(2) : 0;
     const cpa       = purchases > 0 ? +(spend / purchases).toFixed(2) : null;
     const aov       = purchases > 0 ? +(revenue / purchases).toFixed(2) : null;
-    const nvp       = r.avg_nvp != null ? +parseFloat(r.avg_nvp * 100).toFixed(1) : null;
+    // NVP = new-visitor-purchase rate = new_customer_orders / total_purchases × 100.
+    // Only computed when the rich query ran AND there was at least 1 purchase.
+    const nvp       = (r.total_new_customer_orders != null && purchases > 0)
+      ? +(100 * parseFloat(r.total_new_customer_orders) / purchases).toFixed(1)
+      : null;
     const { avatar, angle, dateLaunched } = parseAdName(r.ad_name);
 
     return {
