@@ -13,6 +13,8 @@ const TW_SQL_URL           = 'https://api.triplewhale.com/api/v2/orcabase/api/sq
 const TW_ATTRIBUTION_MODEL = process.env.TW_ATTRIBUTION_MODEL || 'lastPlatformClick';
 const TW_REVENUE_COL       = process.env.TW_REVENUE_COL || 'order_revenue';
 const CRON_SECRET          = process.env.CRON_SECRET || '';
+const META_ACCESS_TOKEN    = process.env.META_ACCESS_TOKEN || '';
+const META_GRAPH_URL       = 'https://graph.facebook.com/v21.0';
 
 // Revenue + purchase column candidates — must match creativeAnalysis.js column names
 const REV_COLS = [TW_REVENUE_COL, 'order_revenue', 'channel_reported_conversion_value'];
@@ -102,6 +104,7 @@ async function fetchWeeklyTwData(startDate, endDate) {
       SELECT ad_name, SUM(spend) AS total_spend, SUM(${revRef}) AS total_revenue
       FROM pixel_joined_tvf
       WHERE event_date BETWEEN @startDate AND @endDate
+        AND channel = 'facebook-ads'
       GROUP BY ad_name
       HAVING SUM(spend) > 0.01
       ORDER BY SUM(spend) DESC
@@ -129,6 +132,7 @@ async function fetchWeeklyTwData(startDate, endDate) {
              SUM(${purRef}) AS total_purchases
       FROM pixel_joined_tvf
       WHERE event_date BETWEEN @startDate AND @endDate
+        AND channel = 'facebook-ads'
       GROUP BY ad_name
       HAVING SUM(spend) > 0.01
       ORDER BY SUM(spend) DESC
@@ -148,9 +152,11 @@ async function fetchWeeklyTwData(startDate, endDate) {
 
   const withCampaignResult = await twQuery(`
     SELECT campaign_name, ad_name, SUM(spend) AS total_spend,
-           SUM(${revRef}) AS total_revenue${purSelect}
+           SUM(${revRef}) AS total_revenue${purSelect},
+           AVG(new_visitor_rate) AS avg_nvp
     FROM pixel_joined_tvf
     WHERE event_date BETWEEN @startDate AND @endDate
+      AND channel = 'facebook-ads'
     GROUP BY campaign_name, ad_name
     HAVING SUM(spend) > 0.01
     ORDER BY SUM(spend) DESC
@@ -164,50 +170,96 @@ async function fetchWeeklyTwData(startDate, endDate) {
   return { rows: finalRows, revCol: workingRevCol, purCol: workingPurCol, hasCampaign };
 }
 
-// ── Meta ad-id → FB link lookup via creative_analysis table ──────────────────
+// ── Meta ad-id → Facebook post link lookup ───────────────────────────────────
 async function enrichWithMetaLinks(rows) {
   const adNames = [...new Set(rows.map(r => r.ad_name).filter(Boolean))];
   if (!adNames.length) return {};
 
+  // 1. Get meta_ad_id from DB
+  const adIdMap = {};
   try {
     const result = await pgQuery(
       `SELECT ad_name, meta_ad_id FROM creative_analysis
        WHERE ad_name = ANY($1) AND meta_ad_id IS NOT NULL`,
       [adNames]
     );
-    const map = {};
     for (const r of (result || [])) {
-      if (r.ad_name && r.meta_ad_id) {
-        map[r.ad_name] = `https://www.facebook.com/ads/library/?id=${r.meta_ad_id}`;
-      }
+      if (r.ad_name && r.meta_ad_id) adIdMap[r.ad_name] = r.meta_ad_id;
     }
-    return map;
   } catch {
     return {};
   }
+
+  if (!Object.keys(adIdMap).length) return {};
+
+  // 2. Resolve each ad_id → Facebook post permalink via Meta Graph API
+  const map = {};
+  if (META_ACCESS_TOKEN) {
+    await Promise.all(
+      Object.entries(adIdMap).map(async ([adName, adId]) => {
+        try {
+          const res = await fetch(
+            `${META_GRAPH_URL}/${adId}?fields=creative{permalink_url}&access_token=${META_ACCESS_TOKEN}`,
+            { signal: AbortSignal.timeout(10000) }
+          );
+          if (res.ok) {
+            const d = await res.json();
+            const permalink = d?.creative?.permalink_url;
+            if (permalink) { map[adName] = permalink; return; }
+          }
+        } catch { /* fall through to Ads Library */ }
+        map[adName] = `https://www.facebook.com/ads/library/?id=${adId}`;
+      })
+    );
+  } else {
+    for (const [adName, adId] of Object.entries(adIdMap)) {
+      map[adName] = `https://www.facebook.com/ads/library/?id=${adId}`;
+    }
+  }
+
+  return map;
 }
 
-// ── Avatar / Angle parser ─────────────────────────────────────────────────────
+// ── Avatar / Angle / Date Launched parser ────────────────────────────────────
 // Naming convention has variable segment counts depending on whether a hook ID
 // (H1/H2/HX) and/or geo code (NN/IT) are present. Anchoring on the week marker
 // (WK##_YYYY) from the right is the only reliable way to extract the slots:
 //   week_pos - 6 = Avatar
 //   week_pos - 5 = Angle
 // Falls back to parts[4]/parts[5] if no week marker found (older/non-standard names).
+function weekToDate(weekNum, year) {
+  // ISO week: Jan 4 is always in week 1 of its year
+  const jan4 = new Date(Date.UTC(year, 0, 4));
+  const dow  = jan4.getUTCDay();
+  const mon  = new Date(jan4);
+  mon.setUTCDate(jan4.getUTCDate() - (dow === 0 ? 6 : dow - 1));
+  mon.setUTCDate(mon.getUTCDate() + (weekNum - 1) * 7);
+  return mon.toISOString().slice(0, 10);
+}
+
 function parseAdName(adName) {
-  if (!adName) return { avatar: null, angle: null };
+  if (!adName) return { avatar: null, angle: null, dateLaunched: null };
   const parts = adName.split(' - ');
   const weekIdx = parts.findIndex(p => /^WK\d+_\d{4}/i.test(p.trim()));
+
+  let dateLaunched = null;
+  if (weekIdx >= 0) {
+    const m = parts[weekIdx].trim().match(/^WK(\d+)_(\d{4})/i);
+    if (m) dateLaunched = weekToDate(parseInt(m[1], 10), parseInt(m[2], 10));
+  }
+
   if (weekIdx >= 6) {
     return {
       avatar: parts[weekIdx - 6]?.trim() || null,
       angle:  parts[weekIdx - 5]?.trim() || null,
+      dateLaunched,
     };
   }
   // Fallback for names without a week marker
   return {
     avatar: parts[4] || null,
     angle:  parts[5] || null,
+    dateLaunched,
   };
 }
 
@@ -223,7 +275,8 @@ function buildReportRows(twResult, metaLinks) {
       const roas      = spend > 0 ? +(revenue / spend).toFixed(2) : 0;
       const cpa       = purchases > 0 ? +(spend / purchases).toFixed(2) : null;
       const aov       = purchases > 0 ? +(revenue / purchases).toFixed(2) : null;
-      const { avatar, angle } = parseAdName(r.ad_name);
+      const nvp = r.avg_nvp != null ? +parseFloat(r.avg_nvp * 100).toFixed(1) : null;
+      const { avatar, angle, dateLaunched } = parseAdName(r.ad_name);
 
       return {
         adName:       r.ad_name       || '',
@@ -234,9 +287,10 @@ function buildReportRows(twResult, metaLinks) {
         purchases:    purchases > 0 ? Math.round(purchases) : null,
         cpa,
         aov,
-        nvp:          null,
+        nvp,
         avatar,
         angle,
+        dateLaunched,
       };
     })
     // Filter: spend >= 100 AND ROAS >= 1.6

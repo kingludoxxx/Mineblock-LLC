@@ -21,6 +21,13 @@ const fmtDec = (n, d = 2) => Number(n || 0).toFixed(d);
 
 const fmtPct = (n) => (n != null ? Number(n).toFixed(1) + '%' : '—');
 
+const fmtDate = (iso) => {
+  if (!iso) return '—';
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const d = new Date(iso + 'T00:00:00Z');
+  return `${months[d.getUTCMonth()]} ${d.getUTCDate()}, ${d.getUTCFullYear()}`;
+};
+
 function roasColor(roas) {
   if (roas >= 2.5) return 'text-green-400';
   if (roas >= 1.6) return 'text-[var(--color-accent)]';
@@ -81,6 +88,7 @@ export default function AdsReporting() {
   const [token,    setToken]    = useState(null);
   const [copied,   setCopied]   = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [adNameWidth, setAdNameWidth] = useState(220);
 
   const load = useCallback(async (force = false) => {
     try {
@@ -103,6 +111,16 @@ export default function AdsReporting() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  function startResize(e) {
+    const startX = e.clientX;
+    const startW = adNameWidth;
+    function onMove(ev) { setAdNameWidth(Math.max(80, startW + ev.clientX - startX)); }
+    function onUp()     { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); }
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    e.preventDefault();
+  }
 
   const copyLink = async () => {
     if (!token) return;
@@ -228,7 +246,16 @@ export default function AdsReporting() {
                 <tr className="border-b border-[var(--color-border-subtle)]">
                   <Th>#</Th>
                   <Th>Campaign</Th>
-                  <Th>Ad Name</Th>
+                  <th
+                    className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-[var(--color-text-muted)] whitespace-nowrap select-none"
+                    style={{ position: 'relative', minWidth: adNameWidth, width: adNameWidth }}
+                  >
+                    Ad Name
+                    <div
+                      onMouseDown={startResize}
+                      style={{ position: 'absolute', right: 0, top: 0, bottom: 0, width: 6, cursor: 'col-resize', borderRight: '2px solid rgba(255,255,255,0.08)' }}
+                    />
+                  </th>
                   <Th>Link</Th>
                   <Th>Spend</Th>
                   <Th>ROAS</Th>
@@ -238,6 +265,7 @@ export default function AdsReporting() {
                   <Th>NVP</Th>
                   <Th>Avatar</Th>
                   <Th>Angle</Th>
+                  <Th>Launched</Th>
                 </tr>
               </thead>
               <tbody>
@@ -259,14 +287,14 @@ export default function AdsReporting() {
                     </Td>
 
                     {/* Ad Name */}
-                    <Td>
+                    <td className="px-4 py-3 text-sm text-[var(--color-text-primary)]" style={{ maxWidth: adNameWidth, width: adNameWidth }}>
                       <span
-                        className="block max-w-[220px] truncate font-medium"
+                        className="block truncate font-medium"
                         title={row.adName}
                       >
                         {row.adName}
                       </span>
-                    </Td>
+                    </td>
 
                     {/* FB Link */}
                     <Td>
@@ -319,6 +347,11 @@ export default function AdsReporting() {
 
                     {/* Angle */}
                     <Td><Tag label={row.angle} /></Td>
+
+                    {/* Date Launched */}
+                    <Td className="tabular-nums text-[var(--color-text-muted)] whitespace-nowrap">
+                      {fmtDate(row.dateLaunched)}
+                    </Td>
                   </tr>
                 ))}
               </tbody>

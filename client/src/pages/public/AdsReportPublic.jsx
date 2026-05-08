@@ -9,6 +9,13 @@ const fmtDec = (n, d = 2) => Number(n || 0).toFixed(d);
 
 const fmtPct = (n) => (n != null ? Number(n).toFixed(1) + '%' : '—');
 
+const fmtDate = (iso) => {
+  if (!iso) return '—';
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const d = new Date(iso + 'T00:00:00Z');
+  return `${months[d.getUTCMonth()]} ${d.getUTCDate()}, ${d.getUTCFullYear()}`;
+};
+
 function roasColor(roas) {
   if (roas >= 2.5) return '#4ade80';
   if (roas >= 1.6) return '#c9a84c';
@@ -129,10 +136,21 @@ const S = {
 
 export default function AdsReportPublic() {
   const { token } = useParams();
-  const [loading, setLoading] = useState(true);
-  const [error,   setError]   = useState(null);
-  const [data,    setData]    = useState([]);
-  const [week,    setWeek]    = useState(null);
+  const [loading,     setLoading]     = useState(true);
+  const [error,       setError]       = useState(null);
+  const [data,        setData]        = useState([]);
+  const [week,        setWeek]        = useState(null);
+  const [adNameWidth, setAdNameWidth] = useState(220);
+
+  function startResize(e) {
+    const startX = e.clientX;
+    const startW = adNameWidth;
+    function onMove(ev) { setAdNameWidth(Math.max(80, startW + ev.clientX - startX)); }
+    function onUp()     { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); }
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    e.preventDefault();
+  }
 
   useEffect(() => {
     if (!token) { setError('Invalid share link'); setLoading(false); return; }
@@ -219,7 +237,12 @@ export default function AdsReportPublic() {
             <table style={S.table}>
               <thead>
                 <tr>
-                  {['#','Campaign','Ad Name','Link','Spend','ROAS','PUR','CPA','AOV','NVP','Avatar','Angle'].map(h => (
+                  {['#','Campaign'].map(h => <th key={h} style={S.th}>{h}</th>)}
+                  <th style={{ ...S.th, position: 'relative', minWidth: adNameWidth, width: adNameWidth, userSelect: 'none' }}>
+                    Ad Name
+                    <div onMouseDown={startResize} style={{ position: 'absolute', right: 0, top: 0, bottom: 0, width: 6, cursor: 'col-resize', borderRight: '2px solid rgba(255,255,255,0.06)' }} />
+                  </th>
+                  {['Link','Spend','ROAS','PUR','CPA','AOV','NVP','Avatar','Angle','Launched'].map(h => (
                     <th key={h} style={S.th}>{h}</th>
                   ))}
                 </tr>
@@ -236,8 +259,8 @@ export default function AdsReportPublic() {
                       </span>
                     </td>
 
-                    <td style={S.td}>
-                      <span style={{ display: 'block', maxWidth: '220px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 500 }}
+                    <td style={{ ...S.td, maxWidth: adNameWidth, width: adNameWidth }}>
+                      <span style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 500 }}
                         title={row.adName}>
                         {row.adName}
                       </span>
@@ -278,6 +301,7 @@ export default function AdsReportPublic() {
 
                     <td style={S.td}><Tag label={row.avatar} /></td>
                     <td style={S.td}><TagGrey label={row.angle} /></td>
+                    <td style={{ ...S.td, color: '#a1a1aa', whiteSpace: 'nowrap' }}>{fmtDate(row.dateLaunched)}</td>
                   </tr>
                 ))}
               </tbody>
