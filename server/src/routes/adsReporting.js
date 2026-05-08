@@ -197,7 +197,7 @@ async function enrichWithMetaLinks(rows) {
 function parseAdName(adName) {
   if (!adName) return { avatar: null, angle: null };
   const parts = adName.split(' - ');
-  const weekIdx = parts.findIndex(p => /^WK\d+_\d{4}$/i.test(p.trim()));
+  const weekIdx = parts.findIndex(p => /^WK\d+_\d{4}/i.test(p.trim()));
   if (weekIdx >= 6) {
     return {
       avatar: parts[weekIdx - 6]?.trim() || null,
