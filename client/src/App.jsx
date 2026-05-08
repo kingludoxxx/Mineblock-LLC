@@ -59,6 +59,10 @@ import KpiDashboard from './pages/performance/KpiDashboard';
 import SupplierCostSheet from './pages/performance/SupplierCostSheet';
 import FeeBreakdown from './pages/performance/FeeBreakdown';
 import AdsControlCenter from './pages/performance/AdsControlCenter';
+import AdsReportingPage from './pages/performance/AdsReportingPage';
+
+// Public
+import AdsReportPublic from './pages/public/AdsReportPublic';
 
 // Library
 import TeamHubPage from './pages/library/TeamHubPage';
@@ -141,6 +145,7 @@ export default function App() {
           <Route path="ltv" element={<PageGate permission="ltv:access"><LtvPage /></PageGate>} />
           <Route path="roas" element={<PageGate permission="roas:access"><RoasPage /></PageGate>} />
           <Route path="ads-control-center" element={<PageGate permission="ads-control-center:access"><AdsControlCenter /></PageGate>} />
+          <Route path="ads-reporting" element={<PageGate permission="ads-reporting:access"><AdsReportingPage /></PageGate>} />
 
           {/* Library */}
           <Route path="team-hub" element={<PageGate permission="team-hub:access"><TeamHubPage /></PageGate>} />
@@ -160,6 +165,9 @@ export default function App() {
 
         {/* Public supplier route (token-based auth via query param) */}
         <Route path="/supplier/cost-sheet" element={<SupplierPublicSheet />} />
+
+        {/* Public ads report (share token in URL) */}
+        <Route path="/ads-report/:token" element={<AdsReportPublic />} />
 
         {/* Redirects */}
         <Route path="/" element={<Navigate to="/app/dashboard" replace />} />
