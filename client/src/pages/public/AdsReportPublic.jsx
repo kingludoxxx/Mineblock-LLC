@@ -242,7 +242,7 @@ export default function AdsReportPublic() {
                     Ad Name
                     <div onMouseDown={startResize} style={{ position: 'absolute', right: 0, top: 0, bottom: 0, width: 6, cursor: 'col-resize', borderRight: '2px solid rgba(255,255,255,0.06)' }} />
                   </th>
-                  {['Link','Spend','ROAS','PUR','CPA','AOV','NVP','Avatar','Angle','Launched'].map(h => (
+                  {['Link','Spend','ROAS','PUR','CPA','AOV','NVP','Avatar','Angle','Launch Date','CU'].map(h => (
                     <th key={h} style={S.th}>{h}</th>
                   ))}
                 </tr>
@@ -302,6 +302,21 @@ export default function AdsReportPublic() {
                     <td style={S.td}><Tag label={row.avatar} /></td>
                     <td style={S.td}><TagGrey label={row.angle} /></td>
                     <td style={{ ...S.td, color: '#a1a1aa', whiteSpace: 'nowrap' }}>{fmtDate(row.dateLaunched)}</td>
+                    <td style={S.td}>
+                      {row.clickupUrl ? (
+                        <a href={row.clickupUrl} target="_blank" rel="noopener noreferrer" title="Open in ClickUp"
+                          style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 24, height: 24, borderRadius: 4, cursor: 'pointer', textDecoration: 'none' }}>
+                          <svg width="14" height="10" viewBox="0 0 48 32" fill="none">
+                            <path d="M4 26 L14 16 L24 26 L34 16 L44 26" stroke="url(#cu-p)" strokeWidth="6" strokeLinecap="round" strokeLinejoin="round"/>
+                            <defs>
+                              <linearGradient id="cu-p" x1="4" y1="21" x2="44" y2="21" gradientUnits="userSpaceOnUse">
+                                <stop stopColor="#FF7043"/><stop offset="0.5" stopColor="#C550E0"/><stop offset="1" stopColor="#38B2F4"/>
+                              </linearGradient>
+                            </defs>
+                          </svg>
+                        </a>
+                      ) : <span style={{ color: '#52525b' }}>—</span>}
+                    </td>
                   </tr>
                 ))}
               </tbody>

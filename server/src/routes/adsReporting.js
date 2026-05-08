@@ -263,8 +263,47 @@ function parseAdName(adName) {
   };
 }
 
+// ── ClickUp task URL lookup via brief_pipeline_generated ─────────────────────
+async function enrichWithClickUpLinks(rows) {
+  const adNames = [...new Set(rows.map(r => r.ad_name).filter(Boolean))];
+  if (!adNames.length) return {};
+
+  // Parse brief number from second segment (e.g. "MR - B0112 - ..." → 112)
+  const briefNumMap = {};
+  for (const adName of adNames) {
+    const parts = adName.split(' - ');
+    const m = parts[1]?.trim().match(/^B(\d+)$/);
+    if (m) briefNumMap[adName] = parseInt(m[1], 10);
+  }
+
+  const briefNums = [...new Set(Object.values(briefNumMap))];
+  if (!briefNums.length) return {};
+
+  try {
+    const result = await pgQuery(
+      `SELECT DISTINCT ON (brief_number) brief_number, clickup_task_url
+       FROM brief_pipeline_generated
+       WHERE brief_number = ANY($1) AND clickup_task_url IS NOT NULL
+       ORDER BY brief_number, pushed_at DESC`,
+      [briefNums]
+    );
+    const numToUrl = {};
+    for (const r of (result || [])) {
+      if (r.brief_number && r.clickup_task_url) numToUrl[r.brief_number] = r.clickup_task_url;
+    }
+    const map = {};
+    for (const [adName, num] of Object.entries(briefNumMap)) {
+      if (numToUrl[num]) map[adName] = numToUrl[num];
+    }
+    return map;
+  } catch (err) {
+    console.error('[Ads Report] ClickUp link lookup failed:', err.message);
+    return {};
+  }
+}
+
 // ── Build report rows ─────────────────────────────────────────────────────────
-function buildReportRows(twResult, metaLinks) {
+function buildReportRows(twResult, metaLinks, clickupLinks) {
   const { rows } = twResult;
 
   return rows
@@ -282,6 +321,7 @@ function buildReportRows(twResult, metaLinks) {
         adName:       r.ad_name       || '',
         campaignName: r.campaign_name || '',
         fbLink:       metaLinks[r.ad_name] || null,
+        clickupUrl:   clickupLinks[r.ad_name] || null,
         spend:        +spend.toFixed(2),
         roas,
         purchases:    purchases > 0 ? Math.round(purchases) : null,
@@ -304,9 +344,12 @@ async function refreshWeeklyReport() {
   await ensureTables();
   const week = getWeekDates();
 
-  const twResult  = await fetchWeeklyTwData(week.start, week.end);
-  const metaLinks = await enrichWithMetaLinks(twResult.rows);
-  const report    = buildReportRows(twResult, metaLinks);
+  const twResult     = await fetchWeeklyTwData(week.start, week.end);
+  const [metaLinks, clickupLinks] = await Promise.all([
+    enrichWithMetaLinks(twResult.rows),
+    enrichWithClickUpLinks(twResult.rows),
+  ]);
+  const report = buildReportRows(twResult, metaLinks, clickupLinks);
 
   // Upsert cache row — keep the same share_token if row already exists
   await pgQuery(`

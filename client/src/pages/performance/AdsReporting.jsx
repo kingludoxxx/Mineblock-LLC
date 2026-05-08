@@ -64,6 +64,20 @@ function Td({ children, className = '' }) {
   );
 }
 
+// ── ClickUp logo ─────────────────────────────────────────────────────────────
+const ClickUpLogo = ({ size = 13 }) => (
+  <svg width={size} height={size} viewBox="0 0 48 32" fill="none">
+    <path d="M4 26 L14 16 L24 26 L34 16 L44 26" stroke="url(#cu-a)" strokeWidth="6" strokeLinecap="round" strokeLinejoin="round"/>
+    <defs>
+      <linearGradient id="cu-a" x1="4" y1="21" x2="44" y2="21" gradientUnits="userSpaceOnUse">
+        <stop stopColor="#FF7043"/>
+        <stop offset="0.5" stopColor="#C550E0"/>
+        <stop offset="1" stopColor="#38B2F4"/>
+      </linearGradient>
+    </defs>
+  </svg>
+);
+
 // ── Tag pill ──────────────────────────────────────────────────────────────────
 function Tag({ label, color = 'default' }) {
   if (!label) return <span className="text-[var(--color-text-faint)]">—</span>;
@@ -265,7 +279,8 @@ export default function AdsReporting() {
                   <Th>NVP</Th>
                   <Th>Avatar</Th>
                   <Th>Angle</Th>
-                  <Th>Launched</Th>
+                  <Th>Launch Date</Th>
+                  <Th>CU</Th>
                 </tr>
               </thead>
               <tbody>
@@ -348,9 +363,26 @@ export default function AdsReporting() {
                     {/* Angle */}
                     <Td><Tag label={row.angle} /></Td>
 
-                    {/* Date Launched */}
+                    {/* Launch Date */}
                     <Td className="tabular-nums text-[var(--color-text-muted)] whitespace-nowrap">
                       {fmtDate(row.dateLaunched)}
+                    </Td>
+
+                    {/* ClickUp */}
+                    <Td>
+                      {row.clickupUrl ? (
+                        <a
+                          href={row.clickupUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          title="Open in ClickUp"
+                          className="inline-flex items-center justify-center w-6 h-6 rounded hover:bg-purple-500/10 transition-colors"
+                        >
+                          <ClickUpLogo />
+                        </a>
+                      ) : (
+                        <span className="text-[var(--color-text-faint)]">—</span>
+                      )}
                     </Td>
                   </tr>
                 ))}
