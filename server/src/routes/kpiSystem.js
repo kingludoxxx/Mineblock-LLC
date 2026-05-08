@@ -99,6 +99,66 @@ router.get('/cron/pnl-watchdog', async (req, res) => {
   }
 });
 
+// GET /health/break-even — diagnostic for the daily break-even ROAS feature.
+// Verifies the math against production data without needing JWT auth.
+router.get('/health/break-even', async (req, res) => {
+  const secret = process.env.CRON_SECRET;
+  if (!secret || req.query.secret !== secret) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+  try {
+    await ensureTables();
+    const days = Math.min(parseInt(req.query.days) || 7, 30);
+    const rows = await pgQuery(`
+      SELECT
+        s.snapshot_date::text AS date,
+        s.total_revenue::numeric AS revenue,
+        s.total_cogs::numeric AS cogs,
+        s.total_shipping::numeric AS shipping,
+        s.total_orders::int AS orders,
+        COALESCE((SELECT SUM(total_fees) FROM whop_payment_fees w
+                  WHERE DATE(w.paid_at AT TIME ZONE 'Europe/Berlin') = s.snapshot_date), 0)::numeric AS fees,
+        COALESCE((SELECT total_spend FROM meta_ad_spend_cache m
+                  WHERE m.spend_date = s.snapshot_date), 0)::numeric AS ad_spend
+      FROM daily_kpi_snapshots s
+      WHERE s.snapshot_date >= CURRENT_DATE - $1::int
+      ORDER BY s.snapshot_date DESC
+    `, [days]);
+
+    const result = rows.map((r) => {
+      const revenue = parseFloat(r.revenue) || 0;
+      const cogs = parseFloat(r.cogs) || 0;
+      const shipping = parseFloat(r.shipping) || 0;
+      const fees = parseFloat(r.fees) || 0;
+      const adSpend = parseFloat(r.ad_spend) || 0;
+      const orders = parseInt(r.orders) || 0;
+      const variableCosts = cogs + shipping + fees;
+      const contribution = revenue - variableCosts;
+      const breakEvenRoas = contribution > 0 ? +(revenue / contribution).toFixed(2) : null;
+      const actualRoas = adSpend > 0 ? +(revenue / adSpend).toFixed(2) : null;
+      const aov = orders > 0 ? +(revenue / orders).toFixed(2) : 0;
+      const profitable = actualRoas != null && breakEvenRoas != null && actualRoas > breakEvenRoas;
+      return {
+        date: r.date,
+        revenue: +revenue.toFixed(2),
+        cogs: +cogs.toFixed(2),
+        shipping: +shipping.toFixed(2),
+        fees: +fees.toFixed(2),
+        ad_spend: +adSpend.toFixed(2),
+        orders,
+        aov,
+        break_even_roas: breakEvenRoas,
+        actual_roas: actualRoas,
+        profitable,
+      };
+    });
+
+    return res.json({ ok: true, days_returned: result.length, data: result });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 // GET /health/daily-pnl — diagnostic endpoint for manual debugging.
 // Returns every precondition the P&L automation depends on. No PII leaked.
 router.get('/health/daily-pnl', async (req, res) => {
