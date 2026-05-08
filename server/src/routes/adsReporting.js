@@ -789,6 +789,50 @@ async function handleReportRequest(req, res, defaultRangeKey = 'this_week') {
 // GET /report?range=this_week|last_week|...|custom&from=YYYY-MM-DD&to=YYYY-MM-DD&refresh=1
 router.get('/report', (req, res) => handleReportRequest(req, res));
 
+// GET /tw-probe — diagnostic: tries several candidate NVP column expressions
+// against pixel_joined_tvf and reports which ones TW accepts. Use this to
+// discover the right column without guessing in the main query path.
+router.get('/tw-probe', async (req, res) => {
+  if (!TW_API_KEY) return res.status(500).json({ error: 'TRIPLEWHALE_API_KEY not set' });
+  const range = getDateRange('this_week');
+
+  async function tryQuery(label, sql) {
+    try {
+      const r = await fetch(TW_SQL_URL, {
+        method: 'POST',
+        headers: { 'x-api-key': TW_API_KEY, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          shopId: TW_SHOP_ID,
+          query: sql.trim(),
+          period: { startDate: range.start, endDate: range.end },
+          attributionModel: TW_ATTRIBUTION_MODEL,
+        }),
+        signal: AbortSignal.timeout(20000),
+      });
+      const text = await r.text();
+      let body;
+      try { body = JSON.parse(text); } catch { body = text.slice(0, 300); }
+      return { label, ok: r.ok, status: r.status, sample: Array.isArray(body) ? body[0] : body };
+    } catch (err) {
+      return { label, ok: false, error: err.message };
+    }
+  }
+
+  const probes = [
+    { label: 'star',                    sql: `SELECT * FROM pixel_joined_tvf WHERE event_date BETWEEN @startDate AND @endDate AND channel = 'facebook-ads' LIMIT 1` },
+    { label: 'is_new_visitor',          sql: `SELECT AVG(is_new_visitor) AS x FROM pixel_joined_tvf WHERE event_date BETWEEN @startDate AND @endDate AND channel = 'facebook-ads' LIMIT 1` },
+    { label: 'new_visitor_purchases',   sql: `SELECT SUM(new_visitor_purchases) AS x FROM pixel_joined_tvf WHERE event_date BETWEEN @startDate AND @endDate AND channel = 'facebook-ads' LIMIT 1` },
+    { label: 'first_time_buyers',       sql: `SELECT SUM(first_time_buyers) AS x FROM pixel_joined_tvf WHERE event_date BETWEEN @startDate AND @endDate AND channel = 'facebook-ads' LIMIT 1` },
+    { label: 'new_buyer',               sql: `SELECT SUM(new_buyer) AS x FROM pixel_joined_tvf WHERE event_date BETWEEN @startDate AND @endDate AND channel = 'facebook-ads' LIMIT 1` },
+    { label: 'is_new_buyer',            sql: `SELECT AVG(is_new_buyer) AS x FROM pixel_joined_tvf WHERE event_date BETWEEN @startDate AND @endDate AND channel = 'facebook-ads' LIMIT 1` },
+    { label: 'new_visitors',            sql: `SELECT SUM(new_visitors) AS x FROM pixel_joined_tvf WHERE event_date BETWEEN @startDate AND @endDate AND channel = 'facebook-ads' LIMIT 1` },
+    { label: 'new_visitor_revenue',     sql: `SELECT SUM(new_visitor_revenue) AS x FROM pixel_joined_tvf WHERE event_date BETWEEN @startDate AND @endDate AND channel = 'facebook-ads' LIMIT 1` },
+  ];
+
+  const results = await Promise.all(probes.map(p => tryQuery(p.label, p.sql)));
+  return res.json({ ok: true, range, results });
+});
+
 // GET /audit?range=... — returns ALL ads from TW (no spend/ROAS filter) so
 // you can verify the winning-ads list is complete vs. what TW actually has.
 // Includes a summary counting how many ads pass each threshold.
