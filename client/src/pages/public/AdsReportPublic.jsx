@@ -173,8 +173,8 @@ export default function AdsReportPublic() {
   const weekLabel = week
     ? (() => {
         const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-        const s = new Date(week.start + 'T00:00:00Z');
-        const e = new Date(week.end   + 'T00:00:00Z');
+        const s = new Date(week.start);
+        const e = new Date(week.end);
         return `${months[s.getUTCMonth()]} ${s.getUTCDate()} – ${months[e.getUTCMonth()]} ${e.getUTCDate()}`;
       })()
     : '';
