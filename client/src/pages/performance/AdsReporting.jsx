@@ -13,6 +13,8 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  ChevronsUpDown,
+  ChevronUp,
 } from 'lucide-react';
 
 // ── Formatters ────────────────────────────────────────────────────────────────
@@ -73,6 +75,27 @@ function Th({ children, className = '' }) {
   return (
     <th className={`px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-[var(--color-text-muted)] whitespace-nowrap ${className}`}>
       {children}
+    </th>
+  );
+}
+
+// Sortable header — click toggles direction (or switches column with desc default)
+function SortableTh({ children, sortKey, sort, onSort, className = '' }) {
+  const active = sort?.key === sortKey;
+  const dir = active ? sort.dir : null;
+  return (
+    <th
+      onClick={() => onSort(sortKey)}
+      className={`px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider whitespace-nowrap select-none cursor-pointer transition-colors ${
+        active ? 'text-[var(--color-accent)]' : 'text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]'
+      } ${className}`}
+    >
+      <span className="inline-flex items-center gap-1">
+        {children}
+        {dir === 'asc'  ? <ChevronUp size={12} />
+          : dir === 'desc' ? <ChevronDown size={12} />
+          : <ChevronsUpDown size={11} className="opacity-60" />}
+      </span>
     </th>
   );
 }
@@ -352,6 +375,16 @@ export default function AdsReporting() {
   const [refreshing, setRefreshing] = useState(false);
   const [copied,   setCopied]   = useState(false);
   const [adNameWidth, setAdNameWidth] = useState(220);
+  // Default sort matches what the API returns: ROAS desc.
+  const [sort, setSort] = useState({ key: 'roas', dir: 'desc' });
+
+  function handleSort(key) {
+    setSort(s => {
+      if (s.key !== key) return { key, dir: 'desc' }; // new column → desc default
+      if (s.dir === 'desc') return { key, dir: 'asc' };
+      return { key: 'roas', dir: 'desc' }; // third click resets
+    });
+  }
 
   // Cache responses per cache key — flips between presets are instant after first load
   const cacheRef = useRef(new Map());
@@ -437,7 +470,21 @@ export default function AdsReporting() {
     setTimeout(() => setCopied(false), 2500);
   };
 
-  const data        = current?.data || [];
+  const rawData     = current?.data || [];
+  const data        = (() => {
+    if (!sort || !rawData.length) return rawData;
+    const dir = sort.dir === 'asc' ? 1 : -1;
+    return [...rawData].sort((a, b) => {
+      const av = a[sort.key], bv = b[sort.key];
+      // null/undefined sort to the end regardless of direction
+      if (av == null && bv == null) return 0;
+      if (av == null) return 1;
+      if (bv == null) return -1;
+      // For dateLaunched (YYYY-MM-DD strings), string compare works.
+      if (typeof av === 'string' && typeof bv === 'string') return av.localeCompare(bv) * dir;
+      return (av - bv) * dir;
+    });
+  })();
   const rangeMeta   = current?.rangeMeta;
   const generatedAt = current?.generatedAt;
 
@@ -575,15 +622,15 @@ export default function AdsReporting() {
                     />
                   </th>
                   <Th>FB Post</Th>
-                  <Th>Spend</Th>
-                  <Th>ROAS</Th>
-                  <Th>PUR</Th>
-                  <Th>CPA</Th>
-                  <Th>AOV</Th>
+                  <SortableTh sortKey="spend"        sort={sort} onSort={handleSort}>Spend</SortableTh>
+                  <SortableTh sortKey="roas"         sort={sort} onSort={handleSort}>ROAS</SortableTh>
+                  <SortableTh sortKey="purchases"    sort={sort} onSort={handleSort}>PUR</SortableTh>
+                  <SortableTh sortKey="cpa"          sort={sort} onSort={handleSort}>CPA</SortableTh>
+                  <SortableTh sortKey="aov"          sort={sort} onSort={handleSort}>AOV</SortableTh>
                   <Th>NVP</Th>
                   <Th>Avatar</Th>
                   <Th>Angle</Th>
-                  <Th>Launch Date</Th>
+                  <SortableTh sortKey="dateLaunched" sort={sort} onSort={handleSort}>Launch Date</SortableTh>
                 </tr>
               </thead>
               <tbody>

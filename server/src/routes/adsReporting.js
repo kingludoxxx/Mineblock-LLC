@@ -497,11 +497,14 @@ async function enrichWithClickUpLinks(rows) {
   }
 
   const map = {};
+  // We track which ads got a real task vs fell back to the list view, so the
+  // log line at the end is meaningful.
+  const resolvedFromDb = [];
   for (const adName of adNames) {
     const cid = creativeIdMap[adName];
     const num = briefNumMap[adName];
     const url = (cid && urlByCreativeId[cid]) || (num && urlByBriefNum[num]) || null;
-    if (url) map[adName] = url;
+    if (url) { map[adName] = url; resolvedFromDb.push(adName); }
   }
 
   // Fallback: ClickUp API (custom field, then name search)
@@ -556,7 +559,22 @@ async function enrichWithClickUpLinks(rows) {
     }
   }
 
-  console.log(`[Ads Report] ClickUp links found: ${Object.keys(map).length}/${adNames.length}`);
+  // Final fallback — every ad that has a brief code still gets a clickable
+  // ClickUp icon, but it points at the list view (search-pre-filtered by
+  // brief code) so the user can find or create the task themselves.
+  // Non-brief-coded ads (e.g. "Urgency - 1", "Lottery - 6") get nothing.
+  let resolved = 0, listFallback = 0;
+  for (const adName of adNames) {
+    if (map[adName]) { resolved++; continue; }
+    const num = briefNumMap[adName];
+    if (num != null) {
+      const briefCode = `B${String(num).padStart(4, '0')}`;
+      map[adName] = `https://app.clickup.com/${CLICKUP_TEAM_ID}/v/li/${CLICKUP_LIST_ID}?query=${encodeURIComponent(briefCode)}`;
+      listFallback++;
+    }
+  }
+
+  console.log(`[Ads Report] ClickUp links: resolved=${resolved} listFallback=${listFallback} total=${adNames.length}`);
   return map;
 }
 
