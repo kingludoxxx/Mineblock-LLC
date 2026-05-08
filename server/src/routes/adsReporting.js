@@ -338,35 +338,62 @@ async function enrichWithMetaLinks(rows) {
     return map;
   }
 
-  // 2. Resolve each ad_id to actual FB post via Graph API
+  // 2. Resolve each ad_id to actual FB post via Graph API.
+  // Request a wide field set — different ad types expose the post identifier
+  // in different places (effective_object_story_id, object_story_id,
+  // permalink_url, or buried inside object_story_spec.page_id).
+  const FIELDS = 'creative{effective_object_story_id,object_story_id,permalink_url,instagram_permalink_url,object_story_spec{page_id,instagram_actor_id}}';
+  let realPostCount = 0, libraryCount = 0, sampleLogged = false;
+
   await Promise.all(
     Object.entries(adIdMap).map(async ([adName, adId]) => {
       try {
-        const url = `${META_GRAPH_URL}/${adId}?fields=creative{effective_object_story_id,permalink_url}&access_token=${META_ACCESS_TOKEN}`;
+        const url = `${META_GRAPH_URL}/${adId}?fields=${encodeURIComponent(FIELDS)}&access_token=${META_ACCESS_TOKEN}`;
         const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
         if (res.ok) {
           const d = await res.json();
-          const eosi = d?.creative?.effective_object_story_id;
-          const permalink = d?.creative?.permalink_url;
+          if (!sampleLogged) {
+            console.log(`[Ads Report] Meta sample for adId=${adId}:`, JSON.stringify(d).slice(0, 500));
+            sampleLogged = true;
+          }
+          const c = d?.creative || {};
+          const eosi   = c.effective_object_story_id || c.object_story_id;
+          const permalink = c.permalink_url;
+          const igPerma   = c.instagram_permalink_url;
+
           if (eosi && /^\d+_\d+$/.test(eosi)) {
             const [pageId, postId] = eosi.split('_');
             map[adName] = `https://www.facebook.com/${pageId}/posts/${postId}`;
+            realPostCount++;
             return;
           }
           if (permalink) {
             map[adName] = permalink.startsWith('http') ? permalink : `https://www.facebook.com${permalink}`;
+            realPostCount++;
             return;
+          }
+          if (igPerma) {
+            map[adName] = igPerma;
+            realPostCount++;
+            return;
+          }
+        } else {
+          if (!sampleLogged) {
+            const errText = await res.text();
+            console.warn(`[Ads Report] Meta error ${res.status} for adId=${adId}: ${errText.slice(0, 300)}`);
+            sampleLogged = true;
           }
         }
       } catch (err) {
         // fall through
       }
-      // Fallback to Ads Library (still useful)
+      // Fallback to Ads Library
       map[adName] = `https://www.facebook.com/ads/library/?id=${adId}`;
+      libraryCount++;
     })
   );
 
-  console.log(`[Ads Report] Meta links resolved: ${Object.keys(map).length}/${Object.keys(adIdMap).length}`);
+  console.log(`[Ads Report] Meta links: realPosts=${realPostCount} libraryFallback=${libraryCount} total=${Object.keys(adIdMap).length}`);
   return map;
 }
 
