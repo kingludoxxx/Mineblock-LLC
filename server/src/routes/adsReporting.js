@@ -420,26 +420,34 @@ function weekToDate(weekNum, year) {
 }
 
 function parseAdName(adName) {
-  if (!adName) return { avatar: null, angle: null, dateLaunched: null };
-  const parts = adName.split(' - ');
-  const weekIdx = parts.findIndex(p => /^WK\d+_\d{4}/i.test(p.trim()));
+  if (!adName) return { avatar: null, angle: null, format: null, dateLaunched: null };
+  const parts = adName.split(' - ').map(p => p?.trim() || '');
+  const weekIdx = parts.findIndex(p => /^WK\d+_\d{4}/i.test(p));
 
   let dateLaunched = null;
   if (weekIdx >= 0) {
-    const m = parts[weekIdx].trim().match(/^WK(\d+)_(\d{4})/i);
+    const m = parts[weekIdx].match(/^WK(\d+)_(\d{4})/i);
     if (m) dateLaunched = weekToDate(parseInt(m[1], 10), parseInt(m[2], 10));
   }
 
+  // Naming convention (anchored on WK marker, right-to-left):
+  //   weekIdx - 6 = Avatar     (e.g. MoneySeeker)
+  //   weekIdx - 5 = Angle      (e.g. Lottery)
+  //   weekIdx - 4 = Format     (e.g. ShortVid, Mashup, UGC)
   if (weekIdx >= 6) {
     return {
-      avatar: parts[weekIdx - 6]?.trim() || null,
-      angle:  parts[weekIdx - 5]?.trim() || null,
+      avatar: parts[weekIdx - 6] || null,
+      angle:  parts[weekIdx - 5] || null,
+      format: parts[weekIdx - 4] || null,
       dateLaunched,
     };
   }
+  // Names without a WK marker: same offsets relative to the end of the name.
+  // These typically follow MR - B#### - H# - <geo> - <NA> - <Avatar> - <Angle> - <Format> - …
   return {
-    avatar: parts[4] || null,
-    angle:  parts[5] || null,
+    avatar: parts[5] || null,
+    angle:  parts[6] || null,
+    format: parts[7] || null,
     dateLaunched,
   };
 }
@@ -598,7 +606,7 @@ function buildReportRows(twResult, metaResult, clickupLinks) {
     const nvp       = (r.total_new_customer_orders != null && purchases > 0)
       ? +(100 * parseFloat(r.total_new_customer_orders) / purchases).toFixed(1)
       : null;
-    const { avatar, angle, dateLaunched } = parseAdName(r.ad_name);
+    const { avatar, angle, format, dateLaunched } = parseAdName(r.ad_name);
 
     return {
       adName:       r.ad_name       || '',
@@ -613,6 +621,7 @@ function buildReportRows(twResult, metaResult, clickupLinks) {
       nvp,
       avatar,
       angle,
+      format,
       // Prefer the WK marker parsed out of the ad name; fall back to Meta's
       // created_time so non-brief-coded ads (e.g. "Urgency - 1") still get a
       // launch date.

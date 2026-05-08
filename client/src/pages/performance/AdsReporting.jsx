@@ -637,6 +637,7 @@ export default function AdsReporting() {
                   <Th>NVP</Th>
                   <Th>Avatar</Th>
                   <Th>Angle</Th>
+                  <Th>Format</Th>
                   <SortableTh sortKey="dateLaunched" sort={sort} onSort={handleSort}>Launch Date</SortableTh>
                 </tr>
               </thead>
@@ -734,6 +735,9 @@ export default function AdsReporting() {
 
                     {/* Angle */}
                     <Td><Tag label={row.angle} /></Td>
+
+                    {/* Format */}
+                    <Td><Tag label={row.format} /></Td>
 
                     {/* Launch Date */}
                     <Td className="tabular-nums text-[var(--color-text-muted)] whitespace-nowrap">

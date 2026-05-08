@@ -260,7 +260,7 @@ export default function AdsReportPublic() {
                     Ad Name
                     <div onMouseDown={startResize} style={{ position: 'absolute', right: 0, top: 0, bottom: 0, width: 6, cursor: 'col-resize', borderRight: '2px solid rgba(255,255,255,0.06)' }} />
                   </th>
-                  {['FB Post','Spend','ROAS','PUR','CPA','AOV','NVP','Avatar','Angle','Launch Date'].map(h => (
+                  {['FB Post','Spend','ROAS','PUR','CPA','AOV','NVP','Avatar','Angle','Format','Launch Date'].map(h => (
                     <th key={h} style={S.th}>{h}</th>
                   ))}
                 </tr>
@@ -331,6 +331,7 @@ export default function AdsReportPublic() {
 
                     <td style={S.td}><Tag label={row.avatar} /></td>
                     <td style={S.td}><TagGrey label={row.angle} /></td>
+                    <td style={S.td}><TagGrey label={row.format} /></td>
                     <td style={{ ...S.td, color: '#a1a1aa', whiteSpace: 'nowrap' }}>{fmtDate(row.dateLaunched)}</td>
                   </tr>
                 ))}
