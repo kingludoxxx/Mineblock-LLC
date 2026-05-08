@@ -188,10 +188,23 @@ async function enrichWithMetaLinks(rows) {
 }
 
 // ── Avatar / Angle parser ─────────────────────────────────────────────────────
-// Convention: "MR - B0309 - NN - NA - Cryptoaddict - Apology - ..."
-//  index:          0    1     2    3         4              5
+// Naming convention has variable segment counts depending on whether a hook ID
+// (H1/H2/HX) and/or geo code (NN/IT) are present. Anchoring on the week marker
+// (WK##_YYYY) from the right is the only reliable way to extract the slots:
+//   week_pos - 6 = Avatar
+//   week_pos - 5 = Angle
+// Falls back to parts[4]/parts[5] if no week marker found (older/non-standard names).
 function parseAdName(adName) {
-  const parts = (adName || '').split(' - ');
+  if (!adName) return { avatar: null, angle: null };
+  const parts = adName.split(' - ');
+  const weekIdx = parts.findIndex(p => /^WK\d+_\d{4}$/i.test(p.trim()));
+  if (weekIdx >= 6) {
+    return {
+      avatar: parts[weekIdx - 6]?.trim() || null,
+      angle:  parts[weekIdx - 5]?.trim() || null,
+    };
+  }
+  // Fallback for names without a week marker
   return {
     avatar: parts[4] || null,
     angle:  parts[5] || null,
