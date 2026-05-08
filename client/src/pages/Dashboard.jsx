@@ -276,6 +276,139 @@ function RevenueChart({ sparklines, dateRange, onDateRangeChange }) {
   );
 }
 
+// ── Break-Even ROAS Daily Trend ─────────────────────────────────────────────
+//
+// Plots daily break-even ROAS and actual ROAS together. Days where the actual
+// line sits above break-even = profitable. Below = burning cash. The gap
+// between the two lines is your safety margin.
+//
+// Why this matters: as AOV trends up, break-even drops, opening up cheaper
+// audiences. As COGS/shipping/fees trend up, break-even climbs. Watching the
+// trend reveals these shifts before they hit profit.
+
+function BreakEvenChart({ sparklines }) {
+  const chartData = (sparklines || [])
+    .filter((d) => d.breakEvenRoas !== null && d.breakEvenRoas !== undefined)
+    .map((d) => ({
+      date: d.date ? new Date(d.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '',
+      breakEvenRoas: typeof d.breakEvenRoas === 'number' ? d.breakEvenRoas : null,
+      roas: typeof d.roas === 'number' ? d.roas : 0,
+      aov: d.aov || 0,
+    }));
+
+  if (chartData.length < 2) return null;
+
+  // Average values for the summary line at top
+  const avgBreakEven = chartData.reduce((s, d) => s + (d.breakEvenRoas || 0), 0) / chartData.length;
+  const avgActual = chartData.reduce((s, d) => s + (d.roas || 0), 0) / chartData.length;
+  const profitableDays = chartData.filter((d) => d.roas > (d.breakEvenRoas || 0)).length;
+
+  return (
+    <div className="glass-card border border-white/[0.05] rounded-xl p-5 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.03)]">
+      <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
+        <div>
+          <h3 className="text-sm font-semibold text-white mb-0.5 flex items-center gap-2">
+            <Scale className="w-4 h-4 text-[#c9a84c]" />
+            Break-Even ROAS — Daily Trend
+          </h3>
+          <p className="text-xs text-zinc-500">
+            Where Actual ROAS sits above Break-Even = profitable day
+          </p>
+        </div>
+        <div className="flex items-center gap-3 text-xs">
+          <div className="flex items-center gap-1.5">
+            <span className="w-2 h-2 rounded-full bg-emerald-500" />
+            <span className="text-zinc-400">Profitable: <span className="text-white font-medium">{profitableDays}/{chartData.length} days</span></span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span className="text-zinc-400">Avg Break-Even: <span className="text-[#c9a84c] font-medium">{avgBreakEven.toFixed(2)}x</span></span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span className="text-zinc-400">Avg Actual: <span className={`font-medium ${avgActual >= avgBreakEven ? 'text-emerald-400' : 'text-red-400'}`}>{avgActual.toFixed(2)}x</span></span>
+          </div>
+        </div>
+      </div>
+
+      <div className="h-[260px] w-full">
+        <ResponsiveContainer width="100%" height="100%">
+          <AreaChart data={chartData} margin={{ top: 10, right: 15, left: -20, bottom: 0 }}>
+            <defs>
+              <linearGradient id="colorBreakEven" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="#c9a84c" stopOpacity={0.18} />
+                <stop offset="100%" stopColor="#c9a84c" stopOpacity={0.01} />
+              </linearGradient>
+              <linearGradient id="colorActualRoas" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="#10b981" stopOpacity={0.20} />
+                <stop offset="100%" stopColor="#10b981" stopOpacity={0.01} />
+              </linearGradient>
+            </defs>
+            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" vertical={false} />
+            <XAxis
+              dataKey="date"
+              stroke="rgba(255,255,255,0.1)"
+              tick={{ fill: '#71717a', fontSize: 11, fontFamily: 'monospace' }}
+              tickLine={false}
+              axisLine={false}
+              dy={10}
+              minTickGap={30}
+            />
+            <YAxis
+              stroke="rgba(255,255,255,0.1)"
+              tick={{ fill: '#71717a', fontSize: 11, fontFamily: 'monospace' }}
+              tickLine={false}
+              axisLine={false}
+              tickFormatter={(v) => `${v}x`}
+              domain={[0, (dataMax) => Math.ceil(dataMax * 1.2)]}
+              dx={-10}
+            />
+            <Tooltip
+              cursor={{ stroke: 'rgba(255,255,255,0.1)', strokeWidth: 1, strokeDasharray: '4 4' }}
+              contentStyle={{
+                background: 'rgba(17, 17, 19, 0.95)',
+                border: '1px solid rgba(201,168,76,0.3)',
+                borderRadius: '8px',
+                fontSize: '12px',
+              }}
+              labelStyle={{ color: '#fff', fontWeight: 600, marginBottom: 4 }}
+              itemStyle={{ color: '#e5e5e5' }}
+              formatter={(value, name) => [`${Number(value).toFixed(2)}x`, name]}
+            />
+            <Legend
+              verticalAlign="bottom"
+              height={28}
+              iconType="circle"
+              wrapperStyle={{ fontSize: '12px', color: '#a1a1aa', paddingTop: '12px' }}
+            />
+            <Area
+              type="monotone"
+              dataKey="breakEvenRoas"
+              name="Break-Even"
+              stroke="#c9a84c"
+              strokeWidth={1.5}
+              strokeDasharray="4 4"
+              fillOpacity={1}
+              fill="url(#colorBreakEven)"
+              dot={false}
+              isAnimationActive={false}
+            />
+            <Area
+              type="monotone"
+              dataKey="roas"
+              name="Actual ROAS"
+              stroke="#10b981"
+              strokeWidth={2}
+              fillOpacity={1}
+              fill="url(#colorActualRoas)"
+              dot={false}
+              isAnimationActive={false}
+            />
+          </AreaChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
+  );
+}
+
 // ── Profitability Health (Break-Even ROAS + AOV Sensitivity) ────────────────
 //
 // As AOV rises (with sub-linear COGS), break-even ROAS drops — meaning lower-
@@ -595,6 +728,9 @@ export default function Dashboard() {
 
         {/* Profitability Health — Break-Even ROAS + AOV sensitivity */}
         <ProfitabilityPanel current={current} loading={loading} />
+
+        {/* Break-Even ROAS Daily Trend — actual vs break-even, profitable days count */}
+        {!loading && chartData.length > 1 && <BreakEvenChart sparklines={chartData} />}
 
         {/* Daily Breakdown */}
         {!loading && <DailyBreakdown current={current} date={startDate === endDate ? endDate : `${startDate} – ${endDate}`} />}
