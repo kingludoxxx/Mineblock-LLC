@@ -20,20 +20,18 @@ const CLICKUP_LIST_ID      = '901518716584';
 const CLICKUP_TEAM_ID      = '90152075024';
 const CLICKUP_BRIEF_FIELD  = '62b61cc4-2d35-4dfc-86f4-a3913e2bbca3';
 
-// Revenue + purchase column candidates — must match creativeAnalysis.js column names
 const REV_COLS = [TW_REVENUE_COL, 'order_revenue', 'channel_reported_conversion_value'];
 const PUR_COLS = ['website_purchases', 'channel_reported_conversions'];
-
-// Dedup lists while preserving order
 const uniqueRevCols = [...new Set(REV_COLS)];
 const uniquePurCols = [...new Set(PUR_COLS)];
 
 // ── DB setup ──────────────────────────────────────────────────────────────────
 async function ensureTables() {
   await pgQuery(`
-    CREATE TABLE IF NOT EXISTS ads_weekly_report_cache (
-      week_start   DATE        NOT NULL PRIMARY KEY,
-      week_end     DATE        NOT NULL,
+    CREATE TABLE IF NOT EXISTS ads_report_cache (
+      range_key    TEXT        NOT NULL PRIMARY KEY,
+      start_date   DATE        NOT NULL,
+      end_date     DATE        NOT NULL,
       share_token  TEXT        NOT NULL UNIQUE,
       data         JSONB       NOT NULL DEFAULT '[]',
       generated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -41,30 +39,131 @@ async function ensureTables() {
   `);
 }
 
-// ── Week helpers ──────────────────────────────────────────────────────────────
-function getWeekDates() {
-  const now   = new Date();
-  const today = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()));
-  const dow   = today.getUTCDay(); // 0=Sun…6=Sat
-  const daysFromMon = dow === 0 ? 6 : dow - 1;
-  const weekStart   = new Date(today);
-  weekStart.setUTCDate(today.getUTCDate() - daysFromMon);
+// ── Date range helpers ────────────────────────────────────────────────────────
+const PRESET_KEYS = new Set([
+  'today', 'yesterday', 'this_week', 'last_week', 'this_month', 'last_month',
+  'last_7_days', 'last_14_days', 'last_30_days', 'last_365_days', 'lifetime',
+]);
 
-  const fmt = (d) => d.toISOString().slice(0, 10);
-  const label = (d) => {
-    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-    return `${months[d.getUTCMonth()]} ${d.getUTCDate()}`;
-  };
+const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const fmt = (d) => d.toISOString().slice(0, 10);
+const labelDay = (d) => `${MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}`;
+const utcDay = (now) => new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+
+const PRESET_LABELS = {
+  today: 'Today',
+  yesterday: 'Yesterday',
+  this_week: 'This week',
+  last_week: 'Last week',
+  this_month: 'This month',
+  last_month: 'Last month',
+  last_7_days: 'Last 7 days',
+  last_14_days: 'Last 14 days',
+  last_30_days: 'Last 30 days',
+  last_365_days: 'Last 365 days',
+  lifetime: 'Lifetime',
+};
+
+function getDateRange(rangeKey, customFrom, customTo) {
+  const now   = new Date();
+  const today = utcDay(now);
+  const dow   = today.getUTCDay();
+  const daysFromMon = dow === 0 ? 6 : dow - 1;
+
+  let start, end, label = PRESET_LABELS[rangeKey] || rangeKey;
+
+  switch (rangeKey) {
+    case 'today':
+      start = end = new Date(today);
+      label = `Today · ${labelDay(today)}`;
+      break;
+    case 'yesterday': {
+      const y = new Date(today); y.setUTCDate(today.getUTCDate() - 1);
+      start = end = y;
+      label = `Yesterday · ${labelDay(y)}`;
+      break;
+    }
+    case 'this_week': {
+      const ws = new Date(today); ws.setUTCDate(today.getUTCDate() - daysFromMon);
+      start = ws; end = today;
+      label = `This week · ${labelDay(ws)} – ${labelDay(today)}`;
+      break;
+    }
+    case 'last_week': {
+      const we = new Date(today); we.setUTCDate(today.getUTCDate() - daysFromMon - 1);
+      const ws = new Date(we); ws.setUTCDate(we.getUTCDate() - 6);
+      start = ws; end = we;
+      label = `Last week · ${labelDay(ws)} – ${labelDay(we)}`;
+      break;
+    }
+    case 'this_month': {
+      const ms = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), 1));
+      start = ms; end = today;
+      label = `${MONTHS[today.getUTCMonth()]} · ${labelDay(ms)} – ${labelDay(today)}`;
+      break;
+    }
+    case 'last_month': {
+      const ms = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() - 1, 1));
+      const me = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), 0));
+      start = ms; end = me;
+      label = `${MONTHS[ms.getUTCMonth()]} · ${labelDay(ms)} – ${labelDay(me)}`;
+      break;
+    }
+    case 'last_7_days': {
+      const s = new Date(today); s.setUTCDate(today.getUTCDate() - 6);
+      start = s; end = today;
+      label = `Last 7 days · ${labelDay(s)} – ${labelDay(today)}`;
+      break;
+    }
+    case 'last_14_days': {
+      const s = new Date(today); s.setUTCDate(today.getUTCDate() - 13);
+      start = s; end = today;
+      label = `Last 14 days · ${labelDay(s)} – ${labelDay(today)}`;
+      break;
+    }
+    case 'last_30_days': {
+      const s = new Date(today); s.setUTCDate(today.getUTCDate() - 29);
+      start = s; end = today;
+      label = `Last 30 days · ${labelDay(s)} – ${labelDay(today)}`;
+      break;
+    }
+    case 'last_365_days': {
+      const s = new Date(today); s.setUTCDate(today.getUTCDate() - 364);
+      start = s; end = today;
+      label = `Last 365 days`;
+      break;
+    }
+    case 'lifetime': {
+      start = new Date(Date.UTC(2020, 0, 1));
+      end = today;
+      label = `Lifetime · since ${labelDay(start)} ${start.getUTCFullYear()}`;
+      break;
+    }
+    case 'custom': {
+      if (!customFrom || !customTo) throw new Error('custom range requires from/to');
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(customFrom) || !/^\d{4}-\d{2}-\d{2}$/.test(customTo))
+        throw new Error('custom from/to must be YYYY-MM-DD');
+      start = new Date(customFrom + 'T00:00:00Z');
+      end   = new Date(customTo   + 'T00:00:00Z');
+      if (isNaN(start) || isNaN(end)) throw new Error('invalid custom dates');
+      if (start > end) throw new Error('from must be ≤ to');
+      label = `${labelDay(start)} – ${labelDay(end)}`;
+      break;
+    }
+    default:
+      throw new Error(`Unknown range: ${rangeKey}`);
+  }
 
   return {
-    start: fmt(weekStart),
-    end:   fmt(today),
-    label: `${label(weekStart)} – ${label(today)}`,
+    key:   rangeKey === 'custom' ? `custom:${fmt(start)}:${fmt(end)}` : rangeKey,
+    start: fmt(start),
+    end:   fmt(end),
+    label,
   };
 }
 
 // ── Triple Whale query ────────────────────────────────────────────────────────
-async function fetchWeeklyTwData(startDate, endDate) {
+async function fetchTwData(startDate, endDate) {
   if (!TW_API_KEY) throw new Error('TRIPLEWHALE_API_KEY not set');
 
   async function twQuery(sql) {
@@ -77,17 +176,12 @@ async function fetchWeeklyTwData(startDate, endDate) {
         period:           { startDate, endDate },
         attributionModel: TW_ATTRIBUTION_MODEL,
       }),
-      signal: AbortSignal.timeout(30000),
+      signal: AbortSignal.timeout(60000),
     });
     if (res.status === 401 || res.status === 403) {
       const text = await res.text();
       console.error(`[Ads Report] TW auth error ${res.status}: ${text.slice(0, 200)}`);
       return { ok: false, fatal: true };
-    }
-    if (res.status >= 500) {
-      const text = await res.text();
-      console.error(`[Ads Report] TW server error ${res.status}: ${text.slice(0, 200)}`);
-      return { ok: false, fatal: false };
     }
     if (!res.ok) {
       const text = await res.text();
@@ -99,9 +193,65 @@ async function fetchWeeklyTwData(startDate, endDate) {
     return { ok: true, rows };
   }
 
-  // Step 1: discover working revenue column (simple ad_name + spend + revenue query)
-  let workingRevCol = null;
-  let baseRows = null;
+  // Try the rich query (campaign_name + ad_id + purchases + nvp) for each rev × pur combo
+  for (const revCol of uniqueRevCols) {
+    const revRef = revCol.includes(' ') ? `\`${revCol}\`` : revCol;
+    for (const purCol of uniquePurCols) {
+      const purRef = purCol.includes(' ') ? `\`${purCol}\`` : purCol;
+      const result = await twQuery(`
+        SELECT
+          ad_name,
+          MAX(campaign_name) AS campaign_name,
+          MAX(CAST(ad_id AS STRING)) AS ad_id,
+          SUM(spend) AS total_spend,
+          SUM(${revRef}) AS total_revenue,
+          SUM(${purRef}) AS total_purchases,
+          AVG(new_visitor_rate) AS avg_nvp
+        FROM pixel_joined_tvf
+        WHERE event_date BETWEEN @startDate AND @endDate
+          AND channel = 'facebook-ads'
+        GROUP BY ad_name
+        HAVING SUM(spend) > 0.01
+        ORDER BY SUM(spend) DESC
+        LIMIT 500
+      `);
+      if (result.fatal) throw new Error('TW API auth/server error — check TRIPLEWHALE_API_KEY');
+      if (result.ok) {
+        console.log(`[Ads Report] TW success rev="${revCol}" pur="${purCol}" rows=${result.rows.length}`);
+        return { rows: result.rows, revCol, purCol, hasCampaign: true, hasAdId: true };
+      }
+    }
+  }
+
+  // Fallback: drop ad_id (in case that column isn't available)
+  for (const revCol of uniqueRevCols) {
+    const revRef = revCol.includes(' ') ? `\`${revCol}\`` : revCol;
+    for (const purCol of uniquePurCols) {
+      const purRef = purCol.includes(' ') ? `\`${purCol}\`` : purCol;
+      const result = await twQuery(`
+        SELECT
+          ad_name,
+          MAX(campaign_name) AS campaign_name,
+          SUM(spend) AS total_spend,
+          SUM(${revRef}) AS total_revenue,
+          SUM(${purRef}) AS total_purchases,
+          AVG(new_visitor_rate) AS avg_nvp
+        FROM pixel_joined_tvf
+        WHERE event_date BETWEEN @startDate AND @endDate
+          AND channel = 'facebook-ads'
+        GROUP BY ad_name
+        HAVING SUM(spend) > 0.01
+        ORDER BY SUM(spend) DESC
+        LIMIT 500
+      `);
+      if (result.ok) {
+        console.warn(`[Ads Report] TW fallback no ad_id rev="${revCol}" pur="${purCol}"`);
+        return { rows: result.rows, revCol, purCol, hasCampaign: true, hasAdId: false };
+      }
+    }
+  }
+
+  // Last-resort: minimal query
   for (const revCol of uniqueRevCols) {
     const revRef = revCol.includes(' ') ? `\`${revCol}\`` : revCol;
     const result = await twQuery(`
@@ -114,125 +264,89 @@ async function fetchWeeklyTwData(startDate, endDate) {
       ORDER BY SUM(spend) DESC
       LIMIT 500
     `);
-    if (result.fatal) throw new Error('TW API auth/server error — check TRIPLEWHALE_API_KEY');
     if (result.ok) {
-      workingRevCol = revCol;
-      baseRows = result.rows;
-      console.log(`[Ads Report] TW revenue column found: "${revCol}", rows=${result.rows.length}`);
-      break;
+      console.warn(`[Ads Report] TW minimal fallback rev="${revCol}"`);
+      return { rows: result.rows, revCol, purCol: null, hasCampaign: false, hasAdId: false };
     }
   }
 
-  if (!workingRevCol) throw new Error('TW query failed — no working revenue column found');
-
-  const revRef = workingRevCol.includes(' ') ? `\`${workingRevCol}\`` : workingRevCol;
-
-  // Step 2: try adding purchase column
-  let workingPurCol = null;
-  for (const purCol of uniquePurCols) {
-    const purRef = purCol.includes(' ') ? `\`${purCol}\`` : purCol;
-    const result = await twQuery(`
-      SELECT ad_name, SUM(spend) AS total_spend, SUM(${revRef}) AS total_revenue,
-             SUM(${purRef}) AS total_purchases
-      FROM pixel_joined_tvf
-      WHERE event_date BETWEEN @startDate AND @endDate
-        AND channel = 'facebook-ads'
-      GROUP BY ad_name
-      HAVING SUM(spend) > 0.01
-      ORDER BY SUM(spend) DESC
-      LIMIT 500
-    `);
-    if (result.ok) {
-      workingPurCol = purCol;
-      baseRows = result.rows;
-      console.log(`[Ads Report] TW purchase column found: "${purCol}"`);
-      break;
-    }
-  }
-
-  // Step 3: try adding campaign_name (optional — graceful fallback if column unavailable)
-  const purRef = workingPurCol ? (workingPurCol.includes(' ') ? `\`${workingPurCol}\`` : workingPurCol) : null;
-  const purSelect = purRef ? `, SUM(${purRef}) AS total_purchases` : '';
-
-  const withCampaignResult = await twQuery(`
-    SELECT campaign_name, ad_name, SUM(spend) AS total_spend,
-           SUM(${revRef}) AS total_revenue${purSelect},
-           AVG(new_visitor_rate) AS avg_nvp
-    FROM pixel_joined_tvf
-    WHERE event_date BETWEEN @startDate AND @endDate
-      AND channel = 'facebook-ads'
-    GROUP BY campaign_name, ad_name
-    HAVING SUM(spend) > 0.01
-    ORDER BY SUM(spend) DESC
-    LIMIT 500
-  `);
-
-  const finalRows = withCampaignResult.ok ? withCampaignResult.rows : baseRows;
-  const hasCampaign = withCampaignResult.ok;
-
-  console.log(`[Ads Report] TW final rows=${finalRows.length}, hasCampaign=${hasCampaign}, revCol="${workingRevCol}", purCol="${workingPurCol || 'none'}"`);
-  return { rows: finalRows, revCol: workingRevCol, purCol: workingPurCol, hasCampaign };
+  throw new Error('TW query failed — all column combinations rejected');
 }
 
-// ── Meta ad-id → Facebook post link lookup ───────────────────────────────────
+// ── Meta ad-id → real Facebook post link ──────────────────────────────────────
+// Uses ad_id from Triple Whale first, then falls back to creative_analysis DB lookup.
+// Resolves to actual FB post URL via effective_object_story_id when available.
 async function enrichWithMetaLinks(rows) {
-  const adNames = [...new Set(rows.map(r => r.ad_name).filter(Boolean))];
-  if (!adNames.length) return {};
+  const map = {};
 
-  // 1. Get meta_ad_id from DB
+  // 1. Build ad_name → ad_id map: prefer TW ad_id, fall back to creative_analysis
   const adIdMap = {};
-  try {
-    const result = await pgQuery(
-      `SELECT ad_name, meta_ad_id FROM creative_analysis
-       WHERE ad_name = ANY($1) AND meta_ad_id IS NOT NULL`,
-      [adNames]
-    );
-    for (const r of (result || [])) {
-      if (r.ad_name && r.meta_ad_id) adIdMap[r.ad_name] = r.meta_ad_id;
-    }
-  } catch {
-    return {};
+  for (const r of rows) {
+    if (r.ad_name && r.ad_id) adIdMap[r.ad_name] = String(r.ad_id);
   }
 
-  if (!Object.keys(adIdMap).length) return {};
+  const missingAdNames = rows
+    .filter(r => r.ad_name && !adIdMap[r.ad_name])
+    .map(r => r.ad_name);
 
-  // 2. Resolve each ad_id → Facebook post permalink via Meta Graph API
-  const map = {};
-  if (META_ACCESS_TOKEN) {
-    await Promise.all(
-      Object.entries(adIdMap).map(async ([adName, adId]) => {
-        try {
-          const res = await fetch(
-            `${META_GRAPH_URL}/${adId}?fields=creative{permalink_url}&access_token=${META_ACCESS_TOKEN}`,
-            { signal: AbortSignal.timeout(10000) }
-          );
-          if (res.ok) {
-            const d = await res.json();
-            const permalink = d?.creative?.permalink_url;
-            if (permalink) { map[adName] = permalink; return; }
-          }
-        } catch { /* fall through to Ads Library */ }
-        map[adName] = `https://www.facebook.com/ads/library/?id=${adId}`;
-      })
-    );
-  } else {
+  if (missingAdNames.length) {
+    try {
+      const result = await pgQuery(
+        `SELECT ad_name, meta_ad_id FROM creative_analysis
+         WHERE ad_name = ANY($1) AND meta_ad_id IS NOT NULL`,
+        [missingAdNames]
+      );
+      for (const r of (result || [])) {
+        if (r.ad_name && r.meta_ad_id) adIdMap[r.ad_name] = String(r.meta_ad_id);
+      }
+    } catch (err) {
+      console.error('[Ads Report] creative_analysis lookup failed:', err.message);
+    }
+  }
+
+  if (!Object.keys(adIdMap).length) return map;
+  if (!META_ACCESS_TOKEN) {
+    // No token — best we can do is link to Ads Library
     for (const [adName, adId] of Object.entries(adIdMap)) {
       map[adName] = `https://www.facebook.com/ads/library/?id=${adId}`;
     }
+    return map;
   }
 
+  // 2. Resolve each ad_id to actual FB post via Graph API
+  await Promise.all(
+    Object.entries(adIdMap).map(async ([adName, adId]) => {
+      try {
+        const url = `${META_GRAPH_URL}/${adId}?fields=creative{effective_object_story_id,permalink_url}&access_token=${META_ACCESS_TOKEN}`;
+        const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
+        if (res.ok) {
+          const d = await res.json();
+          const eosi = d?.creative?.effective_object_story_id;
+          const permalink = d?.creative?.permalink_url;
+          if (eosi && /^\d+_\d+$/.test(eosi)) {
+            const [pageId, postId] = eosi.split('_');
+            map[adName] = `https://www.facebook.com/${pageId}/posts/${postId}`;
+            return;
+          }
+          if (permalink) {
+            map[adName] = permalink.startsWith('http') ? permalink : `https://www.facebook.com${permalink}`;
+            return;
+          }
+        }
+      } catch (err) {
+        // fall through
+      }
+      // Fallback to Ads Library (still useful)
+      map[adName] = `https://www.facebook.com/ads/library/?id=${adId}`;
+    })
+  );
+
+  console.log(`[Ads Report] Meta links resolved: ${Object.keys(map).length}/${Object.keys(adIdMap).length}`);
   return map;
 }
 
 // ── Avatar / Angle / Date Launched parser ────────────────────────────────────
-// Naming convention has variable segment counts depending on whether a hook ID
-// (H1/H2/HX) and/or geo code (NN/IT) are present. Anchoring on the week marker
-// (WK##_YYYY) from the right is the only reliable way to extract the slots:
-//   week_pos - 6 = Avatar
-//   week_pos - 5 = Angle
-// Falls back to parts[4]/parts[5] if no week marker found (older/non-standard names).
 function weekToDate(weekNum, year) {
-  // ISO week: Jan 4 is always in week 1 of its year
   const jan4 = new Date(Date.UTC(year, 0, 4));
   const dow  = jan4.getUTCDay();
   const mon  = new Date(jan4);
@@ -259,7 +373,6 @@ function parseAdName(adName) {
       dateLaunched,
     };
   }
-  // Fallback for names without a week marker
   return {
     avatar: parts[4] || null,
     angle:  parts[5] || null,
@@ -268,15 +381,12 @@ function parseAdName(adName) {
 }
 
 // ── ClickUp task URL lookup ───────────────────────────────────────────────────
-// Checks brief_pipeline_winners (by creative_id "B0112") and
-// brief_pipeline_generated (by brief_number integer 112) for ClickUp links.
 async function enrichWithClickUpLinks(rows) {
   const adNames = [...new Set(rows.map(r => r.ad_name).filter(Boolean))];
   if (!adNames.length) return {};
 
-  // Parse creative_id and brief_number from the second ' - ' segment
-  const creativeIdMap = {};  // adName → "B0112"
-  const briefNumMap   = {};  // adName → 112
+  const creativeIdMap = {};
+  const briefNumMap   = {};
   for (const adName of adNames) {
     const seg = adName.split(' - ')[1]?.trim();
     const m = seg?.match(/^B(\d+)$/);
@@ -294,7 +404,6 @@ async function enrichWithClickUpLinks(rows) {
   const urlByBriefNum   = {};
 
   try {
-    // 1. Winners table: creative_id → clickup_task_id → construct URL
     const winners = await pgQuery(
       `SELECT creative_id, clickup_task_id FROM brief_pipeline_winners
        WHERE creative_id = ANY($1) AND clickup_task_id IS NOT NULL`,
@@ -309,7 +418,6 @@ async function enrichWithClickUpLinks(rows) {
   }
 
   try {
-    // 2. Generated table: brief_number → clickup_task_url
     if (briefNums.length) {
       const generated = await pgQuery(
         `SELECT DISTINCT ON (brief_number) brief_number, clickup_task_url
@@ -335,7 +443,7 @@ async function enrichWithClickUpLinks(rows) {
     if (url) map[adName] = url;
   }
 
-  // Fallback: call ClickUp API directly for briefs not resolved from DB
+  // Fallback: ClickUp API (custom field, then name search)
   const missing = adNames.filter(n => !map[n] && briefNumMap[n] != null);
   if (missing.length && CLICKUP_TOKEN) {
     console.log(`[Ads Report] ClickUp DB miss ${missing.length} briefs — falling back to API`);
@@ -356,7 +464,6 @@ async function enrichWithClickUpLinks(rows) {
           const data = await res.json();
           let task = (data.tasks || [])[0];
 
-          // If custom field returned nothing, try name-based team search
           if (!task) {
             const briefCode = `B${String(num).padStart(4, '0')}`;
             const searchRes = await fetch(
@@ -393,13 +500,13 @@ function buildReportRows(twResult, metaLinks, clickupLinks) {
 
   return rows
     .map(r => {
-      const spend     = parseFloat(r.total_spend    || 0);
-      const revenue   = parseFloat(r.total_revenue  || 0);
+      const spend     = parseFloat(r.total_spend     || 0);
+      const revenue   = parseFloat(r.total_revenue   || 0);
       const purchases = parseFloat(r.total_purchases || 0);
       const roas      = spend > 0 ? +(revenue / spend).toFixed(2) : 0;
       const cpa       = purchases > 0 ? +(spend / purchases).toFixed(2) : null;
       const aov       = purchases > 0 ? +(revenue / purchases).toFixed(2) : null;
-      const nvp = r.avg_nvp != null ? +parseFloat(r.avg_nvp * 100).toFixed(1) : null;
+      const nvp       = r.avg_nvp != null ? +parseFloat(r.avg_nvp * 100).toFixed(1) : null;
       const { avatar, angle, dateLaunched } = parseAdName(r.ad_name);
 
       return {
@@ -418,61 +525,69 @@ function buildReportRows(twResult, metaLinks, clickupLinks) {
         dateLaunched,
       };
     })
-    // Filter: spend >= 100 AND ROAS >= 1.6
     .filter(r => r.spend >= 100 && r.roas >= 1.6)
-    // Sort by ROAS descending
     .sort((a, b) => b.roas - a.roas);
 }
 
 // ── Main refresh function ─────────────────────────────────────────────────────
-async function refreshWeeklyReport() {
+async function refreshReport(rangeKey, customFrom, customTo) {
   await ensureTables();
-  const week = getWeekDates();
+  const range = getDateRange(rangeKey, customFrom, customTo);
 
-  const twResult     = await fetchWeeklyTwData(week.start, week.end);
+  const twResult     = await fetchTwData(range.start, range.end);
   const [metaLinks, clickupLinks] = await Promise.all([
     enrichWithMetaLinks(twResult.rows),
     enrichWithClickUpLinks(twResult.rows),
   ]);
   const report = buildReportRows(twResult, metaLinks, clickupLinks);
 
-  // Upsert cache row — keep the same share_token if row already exists
   await pgQuery(`
-    INSERT INTO ads_weekly_report_cache (week_start, week_end, share_token, data, generated_at)
-    VALUES ($1, $2, $3, $4, NOW())
-    ON CONFLICT (week_start) DO UPDATE SET
-      week_end     = EXCLUDED.week_end,
+    INSERT INTO ads_report_cache (range_key, start_date, end_date, share_token, data, generated_at)
+    VALUES ($1, $2, $3, $4, $5, NOW())
+    ON CONFLICT (range_key) DO UPDATE SET
+      start_date   = EXCLUDED.start_date,
+      end_date     = EXCLUDED.end_date,
       data         = EXCLUDED.data,
       generated_at = NOW()
-  `, [week.start, week.end, randomUUID(), JSON.stringify(report)]);
+  `, [range.key, range.start, range.end, randomUUID(), JSON.stringify(report)]);
 
-  // Return the stored row (including the token that survived a conflict)
   const [row] = await pgQuery(
-    `SELECT * FROM ads_weekly_report_cache WHERE week_start = $1`, [week.start]
+    `SELECT * FROM ads_report_cache WHERE range_key = $1`, [range.key]
   );
 
-  console.log(`[Ads Report] Refreshed ${week.label}: ${report.length} qualifying ads`);
-  return { week, report, shareToken: row.share_token };
+  console.log(`[Ads Report] Refreshed ${range.label}: ${report.length} qualifying ads`);
+  return { range, report, shareToken: row.share_token, generatedAt: row.generated_at };
 }
 
 // pg returns JSONB columns as strings in some driver configurations
 const parseDbData = (d) => (typeof d === 'string' ? JSON.parse(d) : d) || [];
 
+// Determine cache TTL by range. "today"/"yesterday" need to be fresh; long ranges can be cached longer.
+function staleThresholdMs(rangeKey) {
+  if (rangeKey === 'today')        return  30 * 60 * 1000;   // 30 min
+  if (rangeKey === 'yesterday')    return   6 * 60 * 60 * 1000; // 6h
+  if (rangeKey === 'this_week')    return   2 * 60 * 60 * 1000; // 2h
+  if (rangeKey === 'this_month')   return   2 * 60 * 60 * 1000; // 2h
+  if (rangeKey?.startsWith('last_')) return 6 * 60 * 60 * 1000; // 6h
+  if (rangeKey === 'lifetime')     return  24 * 60 * 60 * 1000; // 24h
+  return 6 * 60 * 60 * 1000;
+}
+
 // ── Routes ────────────────────────────────────────────────────────────────────
 
-// Public share endpoint — no JWT required, token-protected
+// Public share endpoint — token-protected, no auth
 router.get('/public', async (req, res) => {
   const { token } = req.query;
   if (!token) return res.status(400).json({ error: 'Missing token' });
   try {
     await ensureTables();
     const [row] = await pgQuery(
-      `SELECT * FROM ads_weekly_report_cache WHERE share_token = $1`, [token]
+      `SELECT * FROM ads_report_cache WHERE share_token = $1`, [token]
     );
     if (!row) return res.status(404).json({ error: 'Report not found or link expired' });
     return res.json({
       ok: true,
-      week: { start: row.week_start, end: row.week_end },
+      range: { key: row.range_key, start: row.start_date, end: row.end_date, label: PRESET_LABELS[row.range_key] || row.range_key },
       generatedAt: row.generated_at,
       data: parseDbData(row.data),
     });
@@ -482,80 +597,101 @@ router.get('/public', async (req, res) => {
   }
 });
 
-// Data preview — returns cached rows for verification (secret-protected)
+// Cron: refresh all common ranges so the UI feels instant for the user.
+// Runs ranges in parallel to keep total runtime bounded; cron only completes
+// when ALL requested ranges finish or fail.
+router.get('/cron/refresh', async (req, res) => {
+  if (!CRON_SECRET || req.query.secret !== CRON_SECRET) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+  const targets = ['today', 'yesterday', 'this_week', 'last_week', 'last_7_days', 'last_14_days', 'last_30_days', 'this_month', 'last_month'];
+  const settled = await Promise.allSettled(targets.map(k => refreshReport(k)));
+  const results = settled.map((s, i) => {
+    if (s.status === 'fulfilled') return { range: targets[i], rows: s.value.report.length, ok: true };
+    console.error(`[Ads Report] cron refresh failed for ${targets[i]}:`, s.reason?.message);
+    return { range: targets[i], ok: false, error: s.reason?.message };
+  });
+  return res.json({ ok: true, results });
+});
+
+// Cron data preview
 router.get('/cron/data', async (req, res) => {
   if (!CRON_SECRET || req.query.secret !== CRON_SECRET) {
     return res.status(403).json({ error: 'Forbidden' });
   }
   try {
     await ensureTables();
-    const week = getWeekDates();
+    const rangeKey = req.query.range || 'this_week';
     const [row] = await pgQuery(
-      `SELECT * FROM ads_weekly_report_cache WHERE week_start = $1`, [week.start]
+      `SELECT * FROM ads_report_cache WHERE range_key = $1`, [rangeKey]
     );
-    if (!row) return res.json({ ok: true, week: week.start, data: [], note: 'no cache yet' });
-    return res.json({ ok: true, week: { start: row.week_start, end: row.week_end }, generatedAt: row.generated_at, shareToken: row.share_token, data: parseDbData(row.data) });
+    if (!row) return res.json({ ok: true, range: rangeKey, data: [], note: 'no cache yet' });
+    return res.json({
+      ok: true,
+      range: { key: row.range_key, start: row.start_date, end: row.end_date },
+      generatedAt: row.generated_at,
+      shareToken: row.share_token,
+      data: parseDbData(row.data),
+    });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
 });
 
-// Cron endpoint — 12:00 AM CET daily (22:00 UTC in CEST / 23:00 UTC in CET)
-router.get('/cron/refresh', async (req, res) => {
-  if (!CRON_SECRET || req.query.secret !== CRON_SECRET) {
-    return res.status(403).json({ error: 'Forbidden' });
-  }
-  try {
-    const result = await refreshWeeklyReport();
-    return res.json({ ok: true, week: result.week.label, rows: result.report.length });
-  } catch (err) {
-    console.error('[Ads Report] cron refresh error:', err.message);
-    return res.status(500).json({ error: err.message });
-  }
-});
-
-// Protected routes (require JWT + permission)
+// Authenticated routes
 router.use(authenticate, requirePermission('ads-reporting', 'access'));
 
-// GET /weekly — fetch or refresh current week report
-router.get('/weekly', async (req, res) => {
+async function handleReportRequest(req, res, defaultRangeKey = 'this_week') {
   try {
     await ensureTables();
-    const week   = getWeekDates();
+    const rangeKey = (req.query.range || defaultRangeKey).toString();
+    const from = req.query.from?.toString();
+    const to   = req.query.to?.toString();
+
+    if (rangeKey !== 'custom' && !PRESET_KEYS.has(rangeKey)) {
+      return res.status(400).json({ ok: false, error: `Unknown range: ${rangeKey}` });
+    }
+
+    let range;
+    try { range = getDateRange(rangeKey, from, to); }
+    catch (err) { return res.status(400).json({ ok: false, error: err.message }); }
+
     const [cached] = await pgQuery(
-      `SELECT * FROM ads_weekly_report_cache WHERE week_start = $1`, [week.start]
+      `SELECT * FROM ads_report_cache WHERE range_key = $1`, [range.key]
     );
 
-    // Auto-refresh if: no cache, or data is stale (> 6 hours old), or user forced refresh
-    const forceRefresh  = req.query.refresh === '1';
-    const staleThreshold = 6 * 60 * 60 * 1000; // 6 hours
-    const isStale = !cached || (Date.now() - new Date(cached.generated_at).getTime() > staleThreshold);
+    const forceRefresh = req.query.refresh === '1';
+    const ttl = staleThresholdMs(rangeKey);
+    const isStale = !cached || (Date.now() - new Date(cached.generated_at).getTime() > ttl);
 
     if (!cached || forceRefresh || isStale) {
-      const result = await refreshWeeklyReport();
-      const [fresh] = await pgQuery(
-        `SELECT * FROM ads_weekly_report_cache WHERE week_start = $1`, [week.start]
-      );
+      const result = await refreshReport(rangeKey, from, to);
       return res.json({
         ok: true,
-        week: { start: fresh.week_start, end: fresh.week_end, label: week.label },
-        shareToken: fresh.share_token,
-        generatedAt: fresh.generated_at,
+        range: { key: range.key, start: range.start, end: range.end, label: range.label },
+        shareToken: result.shareToken,
+        generatedAt: result.generatedAt,
         data: result.report,
       });
     }
 
     return res.json({
       ok: true,
-      week: { start: cached.week_start, end: cached.week_end, label: week.label },
+      range: { key: range.key, start: cached.start_date, end: cached.end_date, label: range.label },
       shareToken: cached.share_token,
       generatedAt: cached.generated_at,
       data: parseDbData(cached.data),
     });
   } catch (err) {
-    console.error('[Ads Report] /weekly error:', err.message);
+    console.error('[Ads Report] /report error:', err.message);
     return res.status(500).json({ ok: false, error: err.message });
   }
-});
+}
+
+// GET /report?range=this_week|last_week|...|custom&from=YYYY-MM-DD&to=YYYY-MM-DD&refresh=1
+router.get('/report', (req, res) => handleReportRequest(req, res));
+
+// Legacy alias — kept so old clients keep working during deploy rollover
+router.get('/weekly', (req, res) => handleReportRequest(req, res, 'this_week'));
 
 export default router;

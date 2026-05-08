@@ -139,7 +139,7 @@ export default function AdsReportPublic() {
   const [loading,     setLoading]     = useState(true);
   const [error,       setError]       = useState(null);
   const [data,        setData]        = useState([]);
-  const [week,        setWeek]        = useState(null);
+  const [range,       setRange]       = useState(null);
   const [adNameWidth, setAdNameWidth] = useState(220);
 
   function startResize(e) {
@@ -159,7 +159,8 @@ export default function AdsReportPublic() {
       .then(res => {
         if (!res.ok) throw new Error(res.error || 'Failed to load');
         setData(res.data || []);
-        setWeek(res.week);
+        // Support both new (range) and legacy (week) shapes
+        setRange(res.range || res.week || null);
       })
       .catch(err => setError(err.message))
       .finally(() => setLoading(false));
@@ -188,13 +189,16 @@ export default function AdsReportPublic() {
     );
   }
 
-  const weekLabel = week
-    ? (() => {
+  const rangeLabel = range
+    ? (range.label || (() => {
         const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-        const s = new Date(week.start);
-        const e = new Date(week.end);
-        return `${months[s.getUTCMonth()]} ${s.getUTCDate()} – ${months[e.getUTCMonth()]} ${e.getUTCDate()}`;
-      })()
+        const s = new Date(range.start);
+        const e = new Date(range.end);
+        if (isNaN(s.getTime()) || isNaN(e.getTime())) return '';
+        const sLabel = `${months[s.getUTCMonth()]} ${s.getUTCDate()}`;
+        const eLabel = `${months[e.getUTCMonth()]} ${e.getUTCDate()}`;
+        return sLabel === eLabel ? sLabel : `${sLabel} – ${eLabel}`;
+      })())
     : '';
 
   return (
@@ -214,10 +218,10 @@ export default function AdsReportPublic() {
             <TrendingUp size={18} style={{ color: '#c9a84c' }} />
             <h1 style={S.title}>Ads Reporting</h1>
           </div>
-          {weekLabel && (
+          {rangeLabel && (
             <div style={S.subtitle}>
               <Calendar size={12} />
-              {weekLabel}
+              {rangeLabel}
               <span style={{ color: '#52525b' }}>·</span>
               {data.length} winning ad{data.length !== 1 ? 's' : ''}
             </div>
@@ -238,7 +242,7 @@ export default function AdsReportPublic() {
       {data.length === 0 ? (
         <div style={{ ...S.center, border: '1px solid rgba(255,255,255,0.05)', borderRadius: '12px' }}>
           <TrendingUp size={28} style={{ color: '#3f3f46' }} />
-          <p style={{ fontWeight: 500, color: '#a1a1aa' }}>No qualifying ads this week</p>
+          <p style={{ fontWeight: 500, color: '#a1a1aa' }}>No qualifying ads in this range</p>
         </div>
       ) : (
         <div style={S.card}>
@@ -251,7 +255,7 @@ export default function AdsReportPublic() {
                     Ad Name
                     <div onMouseDown={startResize} style={{ position: 'absolute', right: 0, top: 0, bottom: 0, width: 6, cursor: 'col-resize', borderRight: '2px solid rgba(255,255,255,0.06)' }} />
                   </th>
-                  {['Link','Spend','ROAS','PUR','CPA','AOV','NVP','Avatar','Angle','Launch Date','CU'].map(h => (
+                  {['FB Post','Spend','ROAS','PUR','CPA','AOV','NVP','Avatar','Angle','Launch Date'].map(h => (
                     <th key={h} style={S.th}>{h}</th>
                   ))}
                 </tr>
@@ -269,10 +273,22 @@ export default function AdsReportPublic() {
                     </td>
 
                     <td style={{ ...S.td, maxWidth: adNameWidth, width: adNameWidth }}>
-                      <span style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 500 }}
-                        title={row.adName}>
-                        {row.adName}
-                      </span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
+                        {row.clickupUrl ? (
+                          <a href={row.clickupUrl} target="_blank" rel="noopener noreferrer" title="Open in ClickUp"
+                            style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 20, height: 20, borderRadius: 4, cursor: 'pointer', textDecoration: 'none', flexShrink: 0 }}>
+                            <svg width="14" height="10" viewBox="0 0 48 32" fill="none">
+                              <path d="M4 26 L14 16 L24 26 L34 16 L44 26" stroke="url(#cu-p)" strokeWidth="6" strokeLinecap="round" strokeLinejoin="round"/>
+                            </svg>
+                          </a>
+                        ) : (
+                          <span style={{ display: 'inline-block', width: 20, height: 20, flexShrink: 0 }} aria-hidden="true" />
+                        )}
+                        <span style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 500, minWidth: 0 }}
+                          title={row.adName}>
+                          {row.adName}
+                        </span>
+                      </div>
                     </td>
 
                     <td style={S.td}>
@@ -311,16 +327,6 @@ export default function AdsReportPublic() {
                     <td style={S.td}><Tag label={row.avatar} /></td>
                     <td style={S.td}><TagGrey label={row.angle} /></td>
                     <td style={{ ...S.td, color: '#a1a1aa', whiteSpace: 'nowrap' }}>{fmtDate(row.dateLaunched)}</td>
-                    <td style={S.td}>
-                      {row.clickupUrl ? (
-                        <a href={row.clickupUrl} target="_blank" rel="noopener noreferrer" title="Open in ClickUp"
-                          style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 24, height: 24, borderRadius: 4, cursor: 'pointer', textDecoration: 'none' }}>
-                          <svg width="14" height="10" viewBox="0 0 48 32" fill="none">
-                            <path d="M4 26 L14 16 L24 26 L34 16 L44 26" stroke="url(#cu-p)" strokeWidth="6" strokeLinecap="round" strokeLinejoin="round"/>
-                          </svg>
-                        </a>
-                      ) : <span style={{ color: '#52525b' }}>—</span>}
-                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -330,7 +336,7 @@ export default function AdsReportPublic() {
       )}
 
       <p style={{ marginTop: '20px', fontSize: '11px', color: '#3f3f46' }}>
-        Data from Triple Whale · Facebook creative links via Meta Ads Library
+        Data from Triple Whale · Facebook post links via Meta Graph API
       </p>
     </div>
   );

@@ -1,9 +1,8 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import api from '../../services/api';
 import {
   RefreshCw,
   ExternalLink,
-  Copy,
   Check,
   TrendingUp,
   AlertCircle,
@@ -11,6 +10,7 @@ import {
   Link2,
   Calendar,
   Clock,
+  ChevronDown,
 } from 'lucide-react';
 
 // ── Formatters ────────────────────────────────────────────────────────────────
@@ -18,13 +18,12 @@ const fmtMoney = (n) =>
   '$' + Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 });
 
 const fmtDec = (n, d = 2) => Number(n || 0).toFixed(d);
-
 const fmtPct = (n) => (n != null ? Number(n).toFixed(1) + '%' : '—');
-
 const fmtDate = (iso) => {
   if (!iso) return '—';
   const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   const d = new Date(iso + 'T00:00:00Z');
+  if (isNaN(d.getTime())) return '—';
   return `${months[d.getUTCMonth()]} ${d.getUTCDate()}, ${d.getUTCFullYear()}`;
 };
 
@@ -45,12 +44,25 @@ function timeAgo(iso) {
   return `${Math.floor(h / 24)}d ago`;
 }
 
-// ── Column header ─────────────────────────────────────────────────────────────
+// ── Date range presets ────────────────────────────────────────────────────────
+const RANGE_PRESETS = [
+  { key: 'today',         label: 'Today' },
+  { key: 'yesterday',     label: 'Yesterday' },
+  { key: 'this_week',     label: 'This week' },
+  { key: 'last_week',     label: 'Last week' },
+  { key: 'this_month',    label: 'This month' },
+  { key: 'last_month',    label: 'Last month' },
+  { key: 'last_7_days',   label: 'Last 7 days' },
+  { key: 'last_14_days',  label: 'Last 14 days' },
+  { key: 'last_30_days',  label: 'Last 30 days' },
+  { key: 'last_365_days', label: 'Last 365 days' },
+  { key: 'lifetime',      label: 'Lifetime' },
+];
+
+// ── Column helpers ────────────────────────────────────────────────────────────
 function Th({ children, className = '' }) {
   return (
-    <th
-      className={`px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-[var(--color-text-muted)] whitespace-nowrap ${className}`}
-    >
+    <th className={`px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-[var(--color-text-muted)] whitespace-nowrap ${className}`}>
       {children}
     </th>
   );
@@ -65,7 +77,6 @@ function Td({ children, className = '' }) {
 }
 
 // ── ClickUp logo ─────────────────────────────────────────────────────────────
-// Gradient defined once in a hidden SVG so duplicate-ID issues across rows are avoided
 const CU_GRAD_ID = 'cu-grad-internal';
 function ClickUpGradientDef() {
   return (
@@ -80,7 +91,7 @@ function ClickUpGradientDef() {
     </svg>
   );
 }
-const ClickUpLogo = ({ size = 13 }) => (
+const ClickUpLogo = ({ size = 14 }) => (
   <svg width={size} height={size} viewBox="0 0 48 32" fill="none">
     <path d="M4 26 L14 16 L24 26 L34 16 L44 26" stroke={`url(#${CU_GRAD_ID})`} strokeWidth="6" strokeLinecap="round" strokeLinejoin="round"/>
   </svg>
@@ -100,30 +111,89 @@ function Tag({ label, color = 'default' }) {
   );
 }
 
+// ── Date range dropdown ───────────────────────────────────────────────────────
+function RangeDropdown({ value, onChange, disabled }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  const current = RANGE_PRESETS.find(p => p.key === value) || RANGE_PRESETS[2];
+
+  useEffect(() => {
+    function onClick(e) { if (ref.current && !ref.current.contains(e.target)) setOpen(false); }
+    if (open) document.addEventListener('mousedown', onClick);
+    return () => document.removeEventListener('mousedown', onClick);
+  }, [open]);
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        disabled={disabled}
+        className="flex items-center gap-2 px-3 py-1.5 rounded text-xs font-medium border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] hover:bg-[var(--color-bg-hover)] text-[var(--color-text-primary)] transition-colors disabled:opacity-50 min-w-[150px]"
+      >
+        <Calendar size={13} className="text-[var(--color-text-muted)]" />
+        <span className="flex-1 text-left">{current.label}</span>
+        <ChevronDown size={13} className={`text-[var(--color-text-muted)] transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+      {open && (
+        <div className="absolute z-20 mt-1 w-56 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-card)] shadow-lg overflow-hidden">
+          <div className="py-1 max-h-80 overflow-y-auto">
+            {RANGE_PRESETS.map(p => (
+              <button
+                key={p.key}
+                onClick={() => { onChange(p.key); setOpen(false); }}
+                className={`w-full text-left px-3 py-1.5 text-xs transition-colors ${
+                  p.key === value
+                    ? 'bg-[var(--color-accent-muted)] text-[var(--color-accent-text)]'
+                    : 'text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)]'
+                }`}
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 export default function AdsReporting() {
+  const [range,    setRange]    = useState('this_week');
   const [loading,  setLoading]  = useState(true);
   const [error,    setError]    = useState(null);
-  const [data,     setData]     = useState([]);
-  const [week,     setWeek]     = useState(null);
-  const [genAt,    setGenAt]    = useState(null);
-  const [token,    setToken]    = useState(null);
-  const [copied,   setCopied]   = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [copied,   setCopied]   = useState(false);
   const [adNameWidth, setAdNameWidth] = useState(220);
 
-  const load = useCallback(async (force = false) => {
+  // Cache responses per range key — flips between presets are instant after first load
+  const cacheRef = useRef(new Map());
+  const [tick, setTick] = useState(0); // forces re-render when cache changes
+  const current = cacheRef.current.get(range);
+
+  const load = useCallback(async (rangeKey, force = false) => {
+    const cached = cacheRef.current.get(rangeKey);
+    if (cached && !force) {
+      setLoading(false);
+      setError(null);
+      return; // instant — already in client cache
+    }
+
     try {
       if (force) setRefreshing(true);
-      else       setLoading(true);
+      else       setLoading(!cached);
       setError(null);
 
-      const url = force ? '/ads-reporting/weekly?refresh=1' : '/ads-reporting/weekly';
+      const url = `/ads-reporting/report?range=${encodeURIComponent(rangeKey)}${force ? '&refresh=1' : ''}`;
       const res = await api.get(url);
-      setData(res.data.data || []);
-      setWeek(res.data.week);
-      setGenAt(res.data.generatedAt);
-      setToken(res.data.shareToken);
+      cacheRef.current.set(rangeKey, {
+        data:        res.data.data || [],
+        rangeMeta:   res.data.range,
+        generatedAt: res.data.generatedAt,
+        shareToken:  res.data.shareToken,
+      });
+      setTick(t => t + 1);
     } catch (err) {
       setError(err?.response?.data?.error || err.message || 'Failed to load report');
     } finally {
@@ -132,7 +202,8 @@ export default function AdsReporting() {
     }
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  // Load whenever range changes (also fires on mount with default 'this_week')
+  useEffect(() => { load(range); }, [range, load]);
 
   function startResize(e) {
     const startX = e.clientX;
@@ -145,8 +216,8 @@ export default function AdsReporting() {
   }
 
   const copyLink = async () => {
-    if (!token) return;
-    const url = `${window.location.origin}/ads-report/${token}`;
+    if (!current?.shareToken) return;
+    const url = `${window.location.origin}/ads-report/${current.shareToken}`;
     try {
       await navigator.clipboard.writeText(url);
     } catch {
@@ -161,8 +232,12 @@ export default function AdsReporting() {
     setTimeout(() => setCopied(false), 2500);
   };
 
+  const data        = current?.data || [];
+  const rangeMeta   = current?.rangeMeta;
+  const generatedAt = current?.generatedAt;
+
   // ── Loading state ─────────────────────────────────────────────────────────
-  if (loading) {
+  if (loading && !current) {
     return (
       <div className="flex flex-col items-center justify-center h-72 gap-3 text-[var(--color-text-muted)]">
         <Loader2 size={28} className="animate-spin text-[var(--color-accent)]" />
@@ -172,14 +247,14 @@ export default function AdsReporting() {
   }
 
   // ── Error state ───────────────────────────────────────────────────────────
-  if (error) {
+  if (error && !current) {
     return (
       <div className="flex flex-col items-center justify-center h-72 gap-3 text-[var(--color-text-muted)]">
         <AlertCircle size={28} className="text-red-400" />
         <p className="text-sm text-red-400 font-medium">Failed to load report</p>
         <p className="text-xs text-center max-w-sm">{error}</p>
         <button
-          onClick={() => load()}
+          onClick={() => load(range, true)}
           className="mt-2 px-4 py-1.5 rounded text-xs font-medium bg-[var(--color-bg-elevated)] hover:bg-[var(--color-bg-hover)] border border-[var(--color-border-default)] text-[var(--color-text-primary)] transition-colors"
         >
           Try again
@@ -200,26 +275,30 @@ export default function AdsReporting() {
             <h1 className="text-xl font-semibold text-[var(--color-text-primary)]">Ads Reporting</h1>
           </div>
           <div className="flex items-center gap-3 text-xs text-[var(--color-text-muted)]">
-            {week && (
+            {rangeMeta?.label && (
               <span className="flex items-center gap-1.5">
                 <Calendar size={12} />
-                {week.label}
+                {rangeMeta.label}
               </span>
             )}
-            {genAt && (
+            {generatedAt && (
               <span className="flex items-center gap-1.5">
                 <Clock size={12} />
-                Updated {timeAgo(genAt)}
+                Updated {timeAgo(generatedAt)}
               </span>
             )}
           </div>
         </div>
 
         <div className="flex items-center gap-2">
+          {/* Range picker */}
+          <RangeDropdown value={range} onChange={setRange} disabled={refreshing} />
+
           {/* Share button */}
           <button
             onClick={copyLink}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] hover:bg-[var(--color-bg-hover)] text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] transition-colors"
+            disabled={!current?.shareToken}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] hover:bg-[var(--color-bg-hover)] text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] transition-colors disabled:opacity-50"
           >
             {copied ? <Check size={13} className="text-green-400" /> : <Link2 size={13} />}
             {copied ? 'Link copied!' : 'Share report'}
@@ -227,7 +306,7 @@ export default function AdsReporting() {
 
           {/* Refresh button */}
           <button
-            onClick={() => load(true)}
+            onClick={() => load(range, true)}
             disabled={refreshing}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium bg-[var(--color-accent-muted)] hover:bg-[var(--color-accent-muted)] text-[var(--color-accent-text)] border border-[var(--color-accent-muted)] hover:border-[var(--color-accent)] transition-colors disabled:opacity-50"
           >
@@ -247,15 +326,20 @@ export default function AdsReporting() {
         </span>
         <span className="text-[var(--color-text-faint)]">·</span>
         <span>{data.length} winning ad{data.length !== 1 ? 's' : ''}</span>
+        {refreshing && (
+          <span className="flex items-center gap-1 text-[var(--color-accent)]">
+            <Loader2 size={11} className="animate-spin" /> refreshing…
+          </span>
+        )}
       </div>
 
       {/* ── Empty state ── */}
-      {data.length === 0 && (
+      {data.length === 0 && !loading && (
         <div className="flex flex-col items-center justify-center h-56 gap-3 border border-[var(--color-border-subtle)] rounded-xl bg-[var(--color-bg-card)]">
           <TrendingUp size={28} className="text-[var(--color-text-faint)]" />
-          <p className="text-sm font-medium text-[var(--color-text-muted)]">No qualifying ads this week</p>
+          <p className="text-sm font-medium text-[var(--color-text-muted)]">No qualifying ads</p>
           <p className="text-xs text-[var(--color-text-faint)] text-center max-w-xs">
-            No ads met the spend ≥ $100 and ROAS ≥ 1.6× threshold for {week?.label}.
+            No ads met the spend ≥ $100 and ROAS ≥ 1.6× threshold for {rangeMeta?.label || 'this range'}.
           </p>
         </div>
       )}
@@ -279,7 +363,7 @@ export default function AdsReporting() {
                       style={{ position: 'absolute', right: 0, top: 0, bottom: 0, width: 6, cursor: 'col-resize', borderRight: '2px solid rgba(255,255,255,0.08)' }}
                     />
                   </th>
-                  <Th>Link</Th>
+                  <Th>FB Post</Th>
                   <Th>Spend</Th>
                   <Th>ROAS</Th>
                   <Th>PUR</Th>
@@ -289,7 +373,6 @@ export default function AdsReporting() {
                   <Th>Avatar</Th>
                   <Th>Angle</Th>
                   <Th>Launch Date</Th>
-                  <Th>CU</Th>
                 </tr>
               </thead>
               <tbody>
@@ -310,17 +393,32 @@ export default function AdsReporting() {
                       </span>
                     </Td>
 
-                    {/* Ad Name */}
+                    {/* Ad Name + ClickUp logo on the left */}
                     <td className="px-4 py-3 text-sm text-[var(--color-text-primary)]" style={{ maxWidth: adNameWidth, width: adNameWidth }}>
-                      <span
-                        className="block truncate font-medium"
-                        title={row.adName}
-                      >
-                        {row.adName}
-                      </span>
+                      <div className="flex items-center gap-2 min-w-0">
+                        {row.clickupUrl ? (
+                          <a
+                            href={row.clickupUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            title="Open in ClickUp"
+                            className="inline-flex items-center justify-center w-5 h-5 rounded hover:bg-purple-500/10 transition-colors flex-shrink-0"
+                          >
+                            <ClickUpLogo />
+                          </a>
+                        ) : (
+                          <span className="inline-block w-5 h-5 flex-shrink-0" aria-hidden="true" />
+                        )}
+                        <span
+                          className="block truncate font-medium min-w-0"
+                          title={row.adName}
+                        >
+                          {row.adName}
+                        </span>
+                      </div>
                     </td>
 
-                    {/* FB Link */}
+                    {/* FB Post link */}
                     <Td>
                       {row.fbLink ? (
                         <a
@@ -376,23 +474,6 @@ export default function AdsReporting() {
                     <Td className="tabular-nums text-[var(--color-text-muted)] whitespace-nowrap">
                       {fmtDate(row.dateLaunched)}
                     </Td>
-
-                    {/* ClickUp */}
-                    <Td>
-                      {row.clickupUrl ? (
-                        <a
-                          href={row.clickupUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          title="Open in ClickUp"
-                          className="inline-flex items-center justify-center w-6 h-6 rounded hover:bg-purple-500/10 transition-colors"
-                        >
-                          <ClickUpLogo />
-                        </a>
-                      ) : (
-                        <span className="text-[var(--color-text-faint)]">—</span>
-                      )}
-                    </Td>
                   </tr>
                 ))}
               </tbody>
@@ -403,7 +484,7 @@ export default function AdsReporting() {
 
       {/* ── Footer note ── */}
       <p className="text-xs text-[var(--color-text-faint)]">
-        Data sourced from Triple Whale · Facebook creative links from Meta Ads Library · Updates automatically at 12:00 AM CET
+        Data sourced from Triple Whale · Facebook post links from Meta Graph API · Cached refresh runs daily at 12:00 AM CET
       </p>
     </div>
   );
