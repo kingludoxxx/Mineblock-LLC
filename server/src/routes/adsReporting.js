@@ -17,6 +17,7 @@ const META_ACCESS_TOKEN    = process.env.META_ACCESS_TOKEN || '';
 const META_GRAPH_URL       = 'https://graph.facebook.com/v21.0';
 const CLICKUP_TOKEN        = process.env.CLICKUP_API_TOKEN || '';
 const CLICKUP_LIST_ID      = '901518716584';
+const CLICKUP_TEAM_ID      = '90152075024';
 const CLICKUP_BRIEF_FIELD  = '62b61cc4-2d35-4dfc-86f4-a3913e2bbca3';
 
 // Revenue + purchase column candidates — must match creativeAnalysis.js column names
@@ -353,7 +354,22 @@ async function enrichWithClickUpLinks(rows) {
           );
           if (!res.ok) return [adName, null];
           const data = await res.json();
-          const task = (data.tasks || [])[0];
+          let task = (data.tasks || [])[0];
+
+          // If custom field returned nothing, try name-based team search
+          if (!task) {
+            const briefCode = `B${String(num).padStart(4, '0')}`;
+            const searchRes = await fetch(
+              `https://api.clickup.com/api/v2/team/${CLICKUP_TEAM_ID}/task?query=${encodeURIComponent(briefCode)}&list_ids%5B%5D=${CLICKUP_LIST_ID}&include_closed=true`,
+              { headers: { Authorization: CLICKUP_TOKEN }, signal: AbortSignal.timeout(12000) }
+            );
+            if (searchRes.ok) {
+              const sd = await searchRes.json();
+              const tasks = sd.tasks || [];
+              task = tasks.find(t => t.name?.includes(briefCode)) || null;
+            }
+          }
+
           if (!task) return [adName, null];
           return [adName, task.url || `https://app.clickup.com/t/${task.id}`];
         } catch (err) {
