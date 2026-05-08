@@ -273,6 +273,9 @@ async function refreshWeeklyReport() {
   return { week, report, shareToken: row.share_token };
 }
 
+// pg returns JSONB columns as strings in some driver configurations
+const parseDbData = (d) => (typeof d === 'string' ? JSON.parse(d) : d) || [];
+
 // ── Routes ────────────────────────────────────────────────────────────────────
 
 // Public share endpoint — no JWT required, token-protected
@@ -289,7 +292,7 @@ router.get('/public', async (req, res) => {
       ok: true,
       week: { start: row.week_start, end: row.week_end },
       generatedAt: row.generated_at,
-      data: row.data,
+      data: parseDbData(row.data),
     });
   } catch (err) {
     console.error('[Ads Report] /public error:', err.message);
@@ -309,7 +312,7 @@ router.get('/cron/data', async (req, res) => {
       `SELECT * FROM ads_weekly_report_cache WHERE week_start = $1`, [week.start]
     );
     if (!row) return res.json({ ok: true, week: week.start, data: [], note: 'no cache yet' });
-    return res.json({ ok: true, week: { start: row.week_start, end: row.week_end }, generatedAt: row.generated_at, shareToken: row.share_token, data: row.data });
+    return res.json({ ok: true, week: { start: row.week_start, end: row.week_end }, generatedAt: row.generated_at, shareToken: row.share_token, data: parseDbData(row.data) });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
@@ -365,7 +368,7 @@ router.get('/weekly', async (req, res) => {
       week: { start: cached.week_start, end: cached.week_end, label: week.label },
       shareToken: cached.share_token,
       generatedAt: cached.generated_at,
-      data: cached.data,
+      data: parseDbData(cached.data),
     });
   } catch (err) {
     console.error('[Ads Report] /weekly error:', err.message);
