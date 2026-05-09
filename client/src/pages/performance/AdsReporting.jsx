@@ -683,10 +683,24 @@ export default function AdsReporting() {
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
           <div className="flex items-center gap-2 mb-1">
-            <TrendingUp size={26} strokeWidth={2.5} className="text-[var(--color-accent)]" />
-            <h1 className="text-2xl font-bold tracking-tight">
-              <span className="text-[var(--color-text-primary)]">Ads</span>{' '}
-              <span className="text-[var(--color-accent)]">Reporting</span>
+            <TrendingUp
+              size={32}
+              strokeWidth={2.25}
+              className="text-[var(--color-accent)]"
+              style={{ filter: 'drop-shadow(0 0 10px rgba(232,213,163,0.45))' }}
+            />
+            <h1 className="text-3xl font-semibold tracking-tight">
+              <span className="text-white">Ads</span>{' '}
+              <span
+                style={{
+                  background: 'linear-gradient(120deg, #f0e0b8 0%, #c9a84c 60%, #b48c2e 100%)',
+                  WebkitBackgroundClip: 'text',
+                  WebkitTextFillColor: 'transparent',
+                  backgroundClip: 'text',
+                }}
+              >
+                Reporting
+              </span>
             </h1>
           </div>
           <div className="flex items-center gap-3 text-xs text-[var(--color-text-muted)]">

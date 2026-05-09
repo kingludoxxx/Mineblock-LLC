@@ -342,10 +342,23 @@ export default function AdsReportPublic() {
       <div style={S.header}>
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
-            <TrendingUp size={26} strokeWidth={2.5} style={{ color: '#c9a84c' }} />
-            <h1 style={{ fontSize: '24px', fontWeight: 700, margin: 0, letterSpacing: '-0.01em' }}>
-              <span style={{ color: '#fafafa' }}>Ads</span>{' '}
-              <span style={{ color: '#c9a84c' }}>Reporting</span>
+            <TrendingUp
+              size={32}
+              strokeWidth={2.25}
+              style={{ color: '#c9a84c', filter: 'drop-shadow(0 0 10px rgba(232,213,163,0.45))' }}
+            />
+            <h1 style={{ fontSize: '30px', fontWeight: 600, margin: 0, letterSpacing: '-0.01em' }}>
+              <span style={{ color: '#ffffff' }}>Ads</span>{' '}
+              <span
+                style={{
+                  background: 'linear-gradient(120deg, #f0e0b8 0%, #c9a84c 60%, #b48c2e 100%)',
+                  WebkitBackgroundClip: 'text',
+                  WebkitTextFillColor: 'transparent',
+                  backgroundClip: 'text',
+                }}
+              >
+                Reporting
+              </span>
             </h1>
           </div>
           {rangeLabel && (
