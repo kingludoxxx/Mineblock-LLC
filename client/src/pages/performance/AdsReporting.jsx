@@ -672,6 +672,12 @@ export default function AdsReporting() {
   return (
     <div className="p-6 space-y-5">
       <ClickUpGradientDef />
+      {/* Suppress the default browser focus ring on recharts SVGs so clicking
+          a chart doesn't draw a blue rectangle around the card. */}
+      <style>{`
+        .recharts-wrapper, .recharts-wrapper *,
+        .recharts-surface, .recharts-surface * { outline: none !important; }
+      `}</style>
 
       {/* ── Header ── */}
       <div className="flex items-start justify-between gap-4 flex-wrap">
@@ -1090,8 +1096,29 @@ export default function AdsReporting() {
                 <div className="h-60 flex items-center justify-center text-xs text-[var(--color-text-faint)]">No editor data</div>
               ) : (
                 <div className="flex-1">
-                  <ResponsiveContainer width="100%" height={Math.max(220, byEditor.length * 32 + 30)}>
-                    <BarChart data={byEditor} layout="vertical" margin={{ top: 4, right: 16, bottom: 4, left: 4 }}>
+                  <ResponsiveContainer width="100%" height={Math.max(220, byEditor.length * 34 + 30)}>
+                    <BarChart data={byEditor} layout="vertical" margin={{ top: 4, right: 24, bottom: 4, left: 4 }}>
+                      <defs>
+                        <linearGradient id="editorGreen" x1="0" y1="0" x2="1" y2="0">
+                          <stop offset="0%"   stopColor="#0d9b6c" />
+                          <stop offset="100%" stopColor="#aef5d4" />
+                        </linearGradient>
+                        <linearGradient id="editorGold" x1="0" y1="0" x2="1" y2="0">
+                          <stop offset="0%"   stopColor="#a98a3a" />
+                          <stop offset="100%" stopColor="#f0e0b8" />
+                        </linearGradient>
+                        <linearGradient id="editorPink" x1="0" y1="0" x2="1" y2="0">
+                          <stop offset="0%"   stopColor="#c2185b" />
+                          <stop offset="100%" stopColor="#f5a3b8" />
+                        </linearGradient>
+                        <filter id="editorGreenGlow" x="-10%" y="-100%" width="120%" height="300%">
+                          <feGaussianBlur stdDeviation="2" result="blur" />
+                          <feMerge>
+                            <feMergeNode in="blur" />
+                            <feMergeNode in="SourceGraphic" />
+                          </feMerge>
+                        </filter>
+                      </defs>
                       <CartesianGrid stroke="rgba(255,255,255,0.04)" strokeDasharray="2 4" horizontal={false} />
                       <XAxis
                         type="number"
@@ -1104,15 +1131,15 @@ export default function AdsReporting() {
                         dataKey="name"
                         type="category"
                         width={86}
-                        tick={{ fontSize: 11, fill: '#fafafa' }}
+                        tick={{ fontSize: 12, fill: '#fafafa' }}
                         axisLine={false}
                         tickLine={false}
                       />
-                      <Tooltip content={<ChartTooltip valueKey="roas" suffix="× ROAS" />} cursor={{ fill: 'rgba(255,255,255,0.04)' }} />
-                      <Bar dataKey="roas" radius={[0, 4, 4, 0]} maxBarSize={20}>
+                      <Tooltip content={<ChartTooltip valueKey="roas" suffix="× ROAS" />} cursor={false} />
+                      <Bar dataKey="roas" radius={[10, 10, 10, 10]} maxBarSize={14}>
                         {byEditor.map((e, i) => {
-                          const color = e.roas >= 2.0 ? '#4ade80' : e.roas >= 1.5 ? '#c9a84c' : '#f87171';
-                          return <Cell key={i} fill={color} />;
+                          const grad = e.roas >= 2.0 ? 'url(#editorGreen)' : e.roas >= 1.5 ? 'url(#editorGold)' : 'url(#editorPink)';
+                          return <Cell key={i} fill={grad} filter={e.roas >= 2.0 ? 'url(#editorGreenGlow)' : undefined} />;
                         })}
                       </Bar>
                     </BarChart>

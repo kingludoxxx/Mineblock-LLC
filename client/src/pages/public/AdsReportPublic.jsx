@@ -325,6 +325,11 @@ export default function AdsReportPublic() {
 
   return (
     <div style={S.page}>
+      {/* Suppress browser's default focus rectangle on chart SVGs */}
+      <style>{`
+        .recharts-wrapper, .recharts-wrapper *,
+        .recharts-surface, .recharts-surface * { outline: none !important; }
+      `}</style>
       {/* Single gradient definition — avoids duplicate IDs across rows */}
       <svg width={0} height={0} style={{ position: 'absolute' }}>
         <defs>
@@ -737,16 +742,37 @@ export default function AdsReportPublic() {
                 <div style={{ height: '240px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#52525b', fontSize: '12px' }}>No editor data</div>
               ) : (
                 <div style={{ flex: 1 }}>
-                  <ResponsiveContainer width="100%" height={Math.max(220, byEditor.length * 32 + 30)}>
-                    <BarChart data={byEditor} layout="vertical" margin={{ top: 4, right: 16, bottom: 4, left: 4 }}>
+                  <ResponsiveContainer width="100%" height={Math.max(220, byEditor.length * 34 + 30)}>
+                    <BarChart data={byEditor} layout="vertical" margin={{ top: 4, right: 24, bottom: 4, left: 4 }}>
+                      <defs>
+                        <linearGradient id="editorGreenPub" x1="0" y1="0" x2="1" y2="0">
+                          <stop offset="0%"   stopColor="#0d9b6c" />
+                          <stop offset="100%" stopColor="#aef5d4" />
+                        </linearGradient>
+                        <linearGradient id="editorGoldPub" x1="0" y1="0" x2="1" y2="0">
+                          <stop offset="0%"   stopColor="#a98a3a" />
+                          <stop offset="100%" stopColor="#f0e0b8" />
+                        </linearGradient>
+                        <linearGradient id="editorPinkPub" x1="0" y1="0" x2="1" y2="0">
+                          <stop offset="0%"   stopColor="#c2185b" />
+                          <stop offset="100%" stopColor="#f5a3b8" />
+                        </linearGradient>
+                        <filter id="editorGreenGlowPub" x="-10%" y="-100%" width="120%" height="300%">
+                          <feGaussianBlur stdDeviation="2" result="blur" />
+                          <feMerge>
+                            <feMergeNode in="blur" />
+                            <feMergeNode in="SourceGraphic" />
+                          </feMerge>
+                        </filter>
+                      </defs>
                       <CartesianGrid stroke="rgba(255,255,255,0.04)" strokeDasharray="2 4" horizontal={false} />
                       <XAxis type="number" tick={{ fontSize: 10, fill: '#71717a' }} axisLine={false} tickLine={false} tickFormatter={(v) => `${v}×`} />
-                      <YAxis dataKey="name" type="category" width={86} tick={{ fontSize: 11, fill: '#fafafa' }} axisLine={false} tickLine={false} />
-                      <Tooltip content={(p) => tipFn({ active: p.active, payload: p.payload?.map(x => ({...x, value: x.payload.roas})), suffix: '× ROAS' })} cursor={{ fill: 'rgba(255,255,255,0.04)' }} />
-                      <Bar dataKey="roas" radius={[0, 4, 4, 0]} maxBarSize={20}>
+                      <YAxis dataKey="name" type="category" width={86} tick={{ fontSize: 12, fill: '#fafafa' }} axisLine={false} tickLine={false} />
+                      <Tooltip content={(p) => tipFn({ active: p.active, payload: p.payload?.map(x => ({...x, value: x.payload.roas})), suffix: '× ROAS' })} cursor={false} />
+                      <Bar dataKey="roas" radius={[10, 10, 10, 10]} maxBarSize={14}>
                         {byEditor.map((e, i) => {
-                          const color = e.roas >= 2.0 ? '#4ade80' : e.roas >= 1.5 ? '#c9a84c' : '#f87171';
-                          return <Cell key={i} fill={color} />;
+                          const grad = e.roas >= 2.0 ? 'url(#editorGreenPub)' : e.roas >= 1.5 ? 'url(#editorGoldPub)' : 'url(#editorPinkPub)';
+                          return <Cell key={i} fill={grad} filter={e.roas >= 2.0 ? 'url(#editorGreenGlowPub)' : undefined} />;
                         })}
                       </Bar>
                     </BarChart>
