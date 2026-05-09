@@ -653,7 +653,12 @@ export default function AdsReportPublic() {
                             return <Cell key={i} fill={fills[i] || 'url(#formatFourthPub)'} filter={i === 0 ? 'url(#winnerGlowPub)' : undefined} />;
                           })}
                         </Pie>
-                        <Tooltip content={(p) => tipFn({ ...p, suffix: ' winners' })} />
+                        <Tooltip
+                          content={(p) => tipFn({ ...p, suffix: ' winners' })}
+                          isAnimationActive={false}
+                          wrapperStyle={{ pointerEvents: 'none', transition: 'none', outline: 'none' }}
+                          allowEscapeViewBox={{ x: false, y: false }}
+                        />
                       </PieChart>
                     </ResponsiveContainer>
                     <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
@@ -713,7 +718,13 @@ export default function AdsReportPublic() {
                       <CartesianGrid stroke="rgba(255,255,255,0.05)" strokeDasharray="2 4" vertical={false} />
                       <XAxis dataKey="name" tick={{ fontSize: 12, fill: '#a1a1aa', fontStyle: 'italic' }} axisLine={false} tickLine={false} interval={0} angle={-25} textAnchor="end" height={80} />
                       <YAxis tick={{ fontSize: 13, fill: '#a1a1aa' }} axisLine={false} tickLine={false} width={36} allowDecimals={false} />
-                      <Tooltip content={(p) => tipFn({ ...p, suffix: ' winners' })} cursor={false} />
+                      <Tooltip
+                        content={(p) => tipFn({ ...p, suffix: ' winners' })}
+                        cursor={false}
+                        isAnimationActive={false}
+                        wrapperStyle={{ pointerEvents: 'none', transition: 'none', outline: 'none' }}
+                        allowEscapeViewBox={{ x: false, y: false }}
+                      />
                       <Bar dataKey="value" radius={[4, 4, 0, 0]} maxBarSize={64}>
                         {byAngle.map((_, i) => (
                           <Cell key={i} fill={i === 0 ? 'url(#goldBarPub)' : 'url(#dimBarPub)'} />
@@ -771,7 +782,13 @@ export default function AdsReportPublic() {
                       <CartesianGrid stroke="rgba(255,255,255,0.04)" strokeDasharray="2 4" horizontal={false} />
                       <XAxis type="number" tick={{ fontSize: 10, fill: '#71717a' }} axisLine={false} tickLine={false} tickFormatter={(v) => `${v}×`} />
                       <YAxis dataKey="name" type="category" width={86} tick={{ fontSize: 12, fill: '#fafafa' }} axisLine={false} tickLine={false} />
-                      <Tooltip content={(p) => tipFn({ active: p.active, payload: p.payload?.map(x => ({...x, value: x.payload.roas})), suffix: '× ROAS' })} cursor={false} />
+                      <Tooltip
+                        content={(p) => tipFn({ active: p.active, payload: p.payload?.map(x => ({...x, value: x.payload.roas})), suffix: '× ROAS' })}
+                        cursor={false}
+                        isAnimationActive={false}
+                        wrapperStyle={{ pointerEvents: 'none', transition: 'none', outline: 'none' }}
+                        allowEscapeViewBox={{ x: false, y: false }}
+                      />
                       <Bar dataKey="roas" radius={[10, 10, 10, 10]} maxBarSize={14}>
                         {byEditor.map((e, i) => {
                           const grad = e.roas >= 2.0 ? 'url(#editorGreenPub)' : e.roas >= 1.5 ? 'url(#editorGoldPub)' : 'url(#editorPinkPub)';

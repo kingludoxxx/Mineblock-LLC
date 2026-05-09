@@ -987,7 +987,12 @@ export default function AdsReporting() {
                             return <Cell key={i} fill={fills[i] || 'url(#formatFourth)'} filter={i === 0 ? 'url(#winnerGlow)' : undefined} />;
                           })}
                         </Pie>
-                        <Tooltip content={<ChartTooltip valueKey="winCount" suffix=" winners" />} />
+                        <Tooltip
+                          content={<ChartTooltip valueKey="winCount" suffix=" winners" />}
+                          isAnimationActive={false}
+                          wrapperStyle={{ pointerEvents: 'none', transition: 'none', outline: 'none' }}
+                          allowEscapeViewBox={{ x: false, y: false }}
+                        />
                       </PieChart>
                     </ResponsiveContainer>
                     <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
@@ -1065,7 +1070,13 @@ export default function AdsReporting() {
                         width={36}
                         allowDecimals={false}
                       />
-                      <Tooltip content={<ChartTooltip valueKey="value" suffix=" winners" />} cursor={false} />
+                      <Tooltip
+                        content={<ChartTooltip valueKey="value" suffix=" winners" />}
+                        cursor={false}
+                        isAnimationActive={false}
+                        wrapperStyle={{ pointerEvents: 'none', transition: 'none', outline: 'none' }}
+                        allowEscapeViewBox={{ x: false, y: false }}
+                      />
                       <Bar dataKey="value" radius={[4, 4, 0, 0]} maxBarSize={64}>
                         {byAngle.map((_, i) => (
                           <Cell key={i} fill={i === 0 ? 'url(#goldBar)' : 'url(#dimBar)'} />
@@ -1138,7 +1149,13 @@ export default function AdsReporting() {
                         axisLine={false}
                         tickLine={false}
                       />
-                      <Tooltip content={<ChartTooltip valueKey="roas" suffix="× ROAS" />} cursor={false} />
+                      <Tooltip
+                        content={<ChartTooltip valueKey="roas" suffix="× ROAS" />}
+                        cursor={false}
+                        isAnimationActive={false}
+                        wrapperStyle={{ pointerEvents: 'none', transition: 'none', outline: 'none' }}
+                        allowEscapeViewBox={{ x: false, y: false }}
+                      />
                       <Bar dataKey="roas" radius={[10, 10, 10, 10]} maxBarSize={14}>
                         {byEditor.map((e, i) => {
                           const grad = e.roas >= 2.0 ? 'url(#editorGreen)' : e.roas >= 1.5 ? 'url(#editorGold)' : 'url(#editorPink)';
