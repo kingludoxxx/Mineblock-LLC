@@ -829,9 +829,16 @@ export default function AdsReporting() {
 
       {/* ── Insights (charts) — Magic Patterns design ── */}
       {data.length > 0 && (() => {
-        const byFormat = aggregateWithTotals(data, rawData, 'format');
+        // Denominator for the format X/Y ratio: ads tested at meaningful
+        // scale (≥ $100 spend), not raw ≥ $1 — matches the user's mental
+        // model of "12 of the 18 Mashup ads we actually tested".
+        const allAdsAtScale = rawData.filter(r => r.spend >= 100);
+        const byFormat = aggregateWithTotals(data, allAdsAtScale, 'format');
         const byAngle  = aggregateBy(data, 'angle');
-        const byEditor = aggregateRoasBy(data, 'editor');
+        // Editor ROAS over ALL their ≥$100 ads — winners-only would skew
+        // the picture (an editor with a small sample of high-ROAS winners
+        // would outrank one with broader, steadier performance).
+        const byEditor = aggregateRoasBy(allAdsAtScale, 'editor');
         const total    = data.length;
         const topFormat = byFormat[0]?.name;
         const topAngle  = byAngle[0]?.name;

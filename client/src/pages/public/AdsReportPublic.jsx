@@ -546,9 +546,11 @@ export default function AdsReportPublic() {
 
       {/* ── Insights (charts) — Magic Patterns design ── */}
       {data.length > 0 && (() => {
-        const byFormat = aggregateWithTotalsPublic(data, rawData.filter(r => r.spend >= 100), 'format');
+        const allAdsAtScale = rawData.filter(r => r.spend >= 100);
+        const byFormat = aggregateWithTotalsPublic(data, allAdsAtScale, 'format');
         const byAngle  = aggregateByPublic(data, 'angle');
-        const byEditor = aggregateRoasByPublic(data, 'editor');
+        // Editor ROAS over ALL their ≥$100 ads — same rationale as auth page.
+        const byEditor = aggregateRoasByPublic(allAdsAtScale, 'editor');
         const total    = data.length;
         const topFormat = byFormat[0]?.name;
         const topAngle  = byAngle[0]?.name;
