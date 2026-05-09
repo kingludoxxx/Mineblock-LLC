@@ -33,10 +33,51 @@ const fmtDate = (iso) => {
   return `${months[d.getUTCMonth()]} ${d.getUTCDate()}, ${d.getUTCFullYear()}`;
 };
 
+// ROAS color thresholds aligned to the Magic Patterns design:
+// ≥ 2.0× green, ≥ 1.0× gold, < 1.0× red.
 function roasColor(roas) {
-  if (roas >= 2.5) return 'text-green-400';
-  if (roas >= 1.6) return 'text-[var(--color-accent)]';
+  if (roas >= 2.0) return 'text-[#22c55e]';
+  if (roas >= 1.0) return 'text-[var(--color-accent)]';
   return 'text-red-400';
+}
+
+// Stable color per tag value: known keys mapped explicitly, unknowns hash
+// into a curated palette so every distinct angle/format/avatar gets a
+// consistent color across the page.
+const TAG_PALETTE = ['#fb923c', '#f87171', '#a78bfa', '#38bdf8', '#22c55e', '#facc15', '#fb7185', '#22d3ee', '#e8d5a3', '#06b6d4', '#c084fc', '#fbbf24'];
+const TAG_OVERRIDES = {
+  // Angles
+  'Lottery': '#fb923c',
+  'Againstcompetition': '#f87171',
+  'Offer': '#a78bfa',
+  'ASMR': '#22d3ee',
+  'BTC Made easy': '#4ade80',
+  'GTRS': '#06b6d4',
+  'BTCFARM': '#22c55e',
+  'Reaction': '#fb7185',
+  'Missedopportunity': '#facc15',
+  'Aware': '#94a3b8',
+  // Formats
+  'Mashup': '#a78bfa',
+  'ShortVid': '#38bdf8',
+  'Cartoon': '#22c55e',
+  'UGC': '#fb923c',
+  'IMG': '#22d3ee',
+  'Mini VSL': '#e8d5a3',
+  // Avatars
+  'MoneySeeker': '#c9a84c',
+  'Cryptoaddict': '#facc15',
+  'NA': '#71717a',
+};
+function tagColor(label) {
+  if (!label) return '#71717a';
+  if (TAG_OVERRIDES[label]) return TAG_OVERRIDES[label];
+  let hash = 0;
+  for (let i = 0; i < label.length; i++) {
+    hash = ((hash << 5) - hash) + label.charCodeAt(i);
+    hash |= 0;
+  }
+  return TAG_PALETTE[Math.abs(hash) % TAG_PALETTE.length];
 }
 
 function timeAgo(iso) {
@@ -206,14 +247,17 @@ function ChartTooltip({ active, payload, valueKey = 'value', suffix = '' }) {
 }
 
 // ── Tag pill ──────────────────────────────────────────────────────────────────
-function Tag({ label, color = 'default' }) {
+// Each tag gets a distinct outline color from `tagColor(label)`. The `color`
+// prop is no longer used — kept on the signature so existing callsites still
+// compile, but every value derives its own outline now.
+function Tag({ label }) {
   if (!label) return <span className="text-[var(--color-text-faint)]">—</span>;
-  const styles = {
-    default: 'bg-[var(--color-bg-elevated)] text-[var(--color-text-muted)] border-[var(--color-border-default)]',
-    gold:    'bg-[var(--color-accent-muted)] text-[var(--color-accent-text)] border-[var(--color-accent-muted)]',
-  };
+  const c = tagColor(label);
   return (
-    <span className={`inline-block px-2 py-0.5 rounded text-xs border font-medium ${styles[color]}`}>
+    <span
+      className="inline-block px-2 py-0.5 rounded text-[11px] uppercase tracking-wider font-semibold border"
+      style={{ color: c, borderColor: `${c}66`, background: `${c}14` }}
+    >
       {label}
     </span>
   );
@@ -237,7 +281,31 @@ function DateRangePicker({ value, customRange, onPreset, onCustom, disabled }) {
     return () => document.removeEventListener('mousedown', onClick);
   }, [open]);
 
-  // Reset temp range when opening
+  // Compute the date range a preset represents — mirror of the backend logic.
+  function computePresetRange(key) {
+    const t = todayUtc();
+    const dow = t.getUTCDay();
+    const daysFromMon = dow === 0 ? 6 : dow - 1;
+    const subtractDays = (n) => { const d = new Date(t); d.setUTCDate(t.getUTCDate() - n); return d; };
+    switch (key) {
+      case 'today':         return [t, t];
+      case 'yesterday':     return [subtractDays(1), subtractDays(1)];
+      case 'this_week':     return [subtractDays(daysFromMon), t];
+      case 'last_week':     { const we = subtractDays(daysFromMon + 1); const ws = subtractDays(daysFromMon + 7); return [ws, we]; }
+      case 'this_month':    return [new Date(Date.UTC(t.getUTCFullYear(), t.getUTCMonth(), 1)), t];
+      case 'last_month':    return [new Date(Date.UTC(t.getUTCFullYear(), t.getUTCMonth() - 1, 1)), new Date(Date.UTC(t.getUTCFullYear(), t.getUTCMonth(), 0))];
+      case 'last_7_days':   return [subtractDays(6), t];
+      case 'last_14_days':  return [subtractDays(13), t];
+      case 'last_30_days':  return [subtractDays(29), t];
+      case 'last_90_days':  return [subtractDays(89), t];
+      case 'last_365_days': return [subtractDays(364), t];
+      case 'lifetime':      return [new Date(Date.UTC(2020, 0, 1)), t];
+      default:              return [null, null];
+    }
+  }
+
+  // Reset temp range when opening — populate it from the active selection so
+  // the calendar visually highlights whatever range is currently chosen.
   useEffect(() => {
     if (open) {
       if (value === 'custom' && customRange?.from && customRange?.to) {
@@ -246,7 +314,10 @@ function DateRangePicker({ value, customRange, onPreset, onCustom, disabled }) {
         const d = new Date(customRange.to + 'T00:00:00Z');
         setViewYear(d.getUTCFullYear()); setViewMonth(d.getUTCMonth());
       } else {
-        setTempStart(null); setTempEnd(null);
+        const [s, e] = computePresetRange(value);
+        setTempStart(s); setTempEnd(e);
+        const focus = e || s || todayUtc();
+        setViewYear(focus.getUTCFullYear()); setViewMonth(focus.getUTCMonth());
       }
     }
   }, [open, value, customRange?.from, customRange?.to]);
@@ -306,11 +377,11 @@ function DateRangePicker({ value, customRange, onPreset, onCustom, disabled }) {
         type="button"
         onClick={() => setOpen(o => !o)}
         disabled={disabled}
-        className="flex items-center gap-2 px-3 py-1.5 rounded text-xs font-medium border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] hover:bg-[var(--color-bg-hover)] text-[var(--color-text-primary)] transition-colors disabled:opacity-50 min-w-[170px]"
+        className="flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-medium border border-[var(--color-accent)]/60 hover:border-[var(--color-accent)] bg-transparent hover:bg-[var(--color-accent)]/10 text-[var(--color-accent)] transition-colors disabled:opacity-50 min-w-[170px]"
       >
-        <Calendar size={13} className="text-[var(--color-text-muted)]" />
+        <Calendar size={14} className="text-[var(--color-accent)]" />
         <span className="flex-1 text-left">{triggerLabel}</span>
-        <ChevronDown size={13} className={`text-[var(--color-text-muted)] transition-transform ${open ? 'rotate-180' : ''}`} />
+        <ChevronDown size={14} className={`text-[var(--color-accent)] transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
 
       {open && (

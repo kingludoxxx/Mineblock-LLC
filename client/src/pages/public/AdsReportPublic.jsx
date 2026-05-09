@@ -87,46 +87,58 @@ const fmtDate = (iso) => {
   return `${months[d.getUTCMonth()]} ${d.getUTCDate()}, ${d.getUTCFullYear()}`;
 };
 
+// ROAS color thresholds aligned to the Magic Patterns design.
 function roasColor(roas) {
-  if (roas >= 2.5) return '#4ade80';
-  if (roas >= 1.6) return '#c9a84c';
+  if (roas >= 2.0) return '#22c55e';
+  if (roas >= 1.0) return '#c9a84c';
   return '#f87171';
+}
+
+// Stable color per tag value (must match the auth page's TAG_OVERRIDES).
+const TAG_PALETTE_PUB = ['#fb923c', '#f87171', '#a78bfa', '#38bdf8', '#22c55e', '#facc15', '#fb7185', '#22d3ee', '#e8d5a3', '#06b6d4', '#c084fc', '#fbbf24'];
+const TAG_OVERRIDES_PUB = {
+  'Lottery': '#fb923c', 'Againstcompetition': '#f87171', 'Offer': '#a78bfa',
+  'ASMR': '#22d3ee', 'BTC Made easy': '#4ade80', 'GTRS': '#06b6d4',
+  'BTCFARM': '#22c55e', 'Reaction': '#fb7185', 'Missedopportunity': '#facc15',
+  'Aware': '#94a3b8', 'Mashup': '#a78bfa', 'ShortVid': '#38bdf8',
+  'Cartoon': '#22c55e', 'UGC': '#fb923c', 'IMG': '#22d3ee', 'Mini VSL': '#e8d5a3',
+  'MoneySeeker': '#c9a84c', 'Cryptoaddict': '#facc15', 'NA': '#71717a',
+};
+function tagColorPub(label) {
+  if (!label) return '#71717a';
+  if (TAG_OVERRIDES_PUB[label]) return TAG_OVERRIDES_PUB[label];
+  let hash = 0;
+  for (let i = 0; i < label.length; i++) {
+    hash = ((hash << 5) - hash) + label.charCodeAt(i);
+    hash |= 0;
+  }
+  return TAG_PALETTE_PUB[Math.abs(hash) % TAG_PALETTE_PUB.length];
 }
 
 function Tag({ label }) {
   if (!label) return <span style={{ color: '#52525b' }}>—</span>;
+  const c = tagColorPub(label);
   return (
     <span style={{
       display: 'inline-block',
       padding: '2px 8px',
       borderRadius: '4px',
-      background: 'rgba(201,168,76,0.12)',
-      color: '#e8d5a3',
-      border: '1px solid rgba(201,168,76,0.2)',
-      fontSize: '11px',
-      fontWeight: 500,
+      background: `${c}14`,
+      color: c,
+      border: `1px solid ${c}66`,
+      fontSize: '10px',
+      fontWeight: 600,
+      textTransform: 'uppercase',
+      letterSpacing: '0.05em',
     }}>
       {label}
     </span>
   );
 }
 
+// Kept for compatibility with existing call sites; same look as Tag now.
 function TagGrey({ label }) {
-  if (!label) return <span style={{ color: '#52525b' }}>—</span>;
-  return (
-    <span style={{
-      display: 'inline-block',
-      padding: '2px 8px',
-      borderRadius: '4px',
-      background: 'rgba(255,255,255,0.04)',
-      color: '#a1a1aa',
-      border: '1px solid rgba(255,255,255,0.08)',
-      fontSize: '11px',
-      fontWeight: 500,
-    }}>
-      {label}
-    </span>
-  );
+  return <Tag label={label} />;
 }
 
 const S = {
@@ -344,19 +356,19 @@ export default function AdsReportPublic() {
               type="button"
               onClick={() => setPickerOpen(o => !o)}
               style={{
-                display: 'flex', alignItems: 'center', gap: '6px',
-                padding: '6px 12px', borderRadius: '6px',
-                background: 'rgba(255,255,255,0.04)',
-                border: '1px solid rgba(255,255,255,0.08)',
-                color: '#fafafa', fontSize: '12px', fontWeight: 500,
-                cursor: 'pointer', minWidth: 150,
+                display: 'flex', alignItems: 'center', gap: '8px',
+                padding: '8px 14px', borderRadius: '8px',
+                background: 'transparent',
+                border: '1px solid rgba(201,168,76,0.6)',
+                color: '#c9a84c', fontSize: '12px', fontWeight: 500,
+                cursor: 'pointer', minWidth: 170,
               }}
             >
-              <Calendar size={13} style={{ color: '#a1a1aa' }} />
+              <Calendar size={14} style={{ color: '#c9a84c' }} />
               <span style={{ flex: 1, textAlign: 'left' }}>
                 {PUBLIC_PRESETS.find(p => p.key === (rangeKey || range?.key))?.label || 'Range'}
               </span>
-              <ChevronDown size={13} style={{ color: '#a1a1aa', transform: pickerOpen ? 'rotate(180deg)' : '', transition: 'transform 0.15s' }} />
+              <ChevronDown size={14} style={{ color: '#c9a84c', transform: pickerOpen ? 'rotate(180deg)' : '', transition: 'transform 0.15s' }} />
             </button>
             {pickerOpen && (
               <div style={{
