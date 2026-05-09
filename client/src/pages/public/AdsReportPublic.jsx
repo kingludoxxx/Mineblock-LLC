@@ -581,17 +581,6 @@ export default function AdsReportPublic() {
           );
         };
 
-        const tipFn = ({ active, payload, suffix = '' }) => {
-          if (!active || !payload?.length) return null;
-          const p = payload[0];
-          return (
-            <div style={{ padding: '6px 10px', borderRadius: '6px', border: '1px solid rgba(255,255,255,0.08)', background: '#111113', fontSize: '12px' }}>
-              <div style={{ color: '#fafafa', fontWeight: 500 }}>{p.payload.name}</div>
-              <div style={{ color: '#a1a1aa' }}>{p.value}{suffix}</div>
-            </div>
-          );
-        };
-
         return (
           <div style={{ marginTop: '24px', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: '20px' }}>
             {/* Winning Ads by Format */}
