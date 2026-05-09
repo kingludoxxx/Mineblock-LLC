@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import api from '../../services/api';
-import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip } from 'recharts';
+import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip, CartesianGrid } from 'recharts';
+import { Trophy, Target, User } from 'lucide-react';
 import {
   RefreshCw,
   ExternalLink,
@@ -131,7 +132,9 @@ const ClickUpLogo = ({ size = 14 }) => (
 );
 
 // ── Chart palette + helpers ──────────────────────────────────────────────────
-const CHART_COLORS = ['#c9a84c', '#FF7043', '#38B2F4', '#C550E0', '#4ade80', '#fb7185', '#a78bfa', '#22d3ee', '#facc15', '#fb923c'];
+// Refined gold-forward palette matching the Magic Patterns design — varied
+// gold tones with one mint accent so the donut reads as a cohesive set.
+const CHART_COLORS = ['#c9a84c', '#e8d5a3', '#a08838', '#806a2a', '#4ade80', '#d4b169', '#5d4d1e', '#f0e0b8', '#bf9e44', '#9a8030'];
 
 function aggregateBy(rows, key) {
   const map = new Map();
@@ -143,6 +146,31 @@ function aggregateBy(rows, key) {
   return [...map.entries()]
     .map(([name, value]) => ({ name, value }))
     .sort((a, b) => b.value - a.value);
+}
+
+// Aggregate winners + total per category. Used for the "12/18" win-rate
+// ratio in the Format card. `winners` is the filtered winning set,
+// `allRows` is the full ad list (server returns ≥$1 spend).
+function aggregateWithTotals(winners, allRows, key) {
+  const totals = new Map();
+  for (const r of allRows) {
+    const v = r[key];
+    if (!v) continue;
+    totals.set(v, (totals.get(v) || 0) + 1);
+  }
+  const wins = new Map();
+  for (const r of winners) {
+    const v = r[key];
+    if (!v) continue;
+    wins.set(v, (wins.get(v) || 0) + 1);
+  }
+  return [...wins.entries()]
+    .map(([name, winCount]) => ({
+      name,
+      winCount,
+      totalCount: totals.get(name) || winCount,
+    }))
+    .sort((a, b) => b.winCount - a.winCount);
 }
 
 function aggregateRoasBy(rows, key) {
@@ -799,126 +827,178 @@ export default function AdsReporting() {
         </div>
       )}
 
-      {/* ── Insights (charts) ── */}
+      {/* ── Insights (charts) — Magic Patterns design ── */}
       {data.length > 0 && (() => {
-        const byFormat = aggregateBy(data, 'format');
+        const byFormat = aggregateWithTotals(data, rawData, 'format');
         const byAngle  = aggregateBy(data, 'angle');
         const byEditor = aggregateRoasBy(data, 'editor');
         const total    = data.length;
+        const topFormat = byFormat[0]?.name;
+        const topAngle  = byAngle[0]?.name;
+        const topEditor = byEditor[0];
 
-        const Card = ({ title, subtitle, children }) => (
-          <div className="rounded-xl border border-[var(--color-border-subtle)] bg-[var(--color-bg-card)] p-5 flex flex-col">
-            <div className="flex items-baseline justify-between mb-4">
-              <div>
-                <h3 className="text-sm font-semibold text-[var(--color-text-primary)] tracking-tight">{title}</h3>
-                {subtitle && <p className="text-[11px] text-[var(--color-text-faint)] mt-0.5">{subtitle}</p>}
-              </div>
-            </div>
-            {children}
-          </div>
-        );
+        const cardCls = "rounded-2xl p-6 flex flex-col bg-gradient-to-br from-[#181818] to-[#0e0e10] border border-white/[0.06] shadow-lg";
+        const headerCls = "flex items-start gap-3 mb-5";
+        const iconCls  = "inline-flex items-center justify-center w-7 h-7 rounded-full border border-[var(--color-accent)]/40 text-[var(--color-accent)] flex-shrink-0";
+        const titleCls = "text-[11px] uppercase tracking-[0.18em] font-semibold text-[var(--color-text-primary)]";
+        const subCls   = "text-[11px] text-[var(--color-text-faint)] mt-0.5 italic";
+        const footerCls = "mt-auto pt-4 border-t border-white/[0.05] flex items-center justify-between";
+        const footerLabelCls = "text-[10px] uppercase tracking-[0.15em] text-[var(--color-text-faint)]";
 
         return (
-          <div className="space-y-4 pt-2">
-            <div className="flex items-center gap-2 text-xs">
-              <span className="text-[10px] uppercase tracking-[0.15em] text-[var(--color-accent)] font-semibold">Insights</span>
-              <span className="flex-1 h-px bg-[var(--color-border-subtle)]" />
-              <span className="text-[var(--color-text-faint)]">{total} winning ad{total !== 1 ? 's' : ''}</span>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-5 pt-3">
+            {/* ─── Winning Ads by Format ─── */}
+            <div className={cardCls}>
+              <div className={headerCls}>
+                <span className={iconCls}><Trophy size={14} /></span>
+                <div>
+                  <h3 className={titleCls}>Winning Ads by Format</h3>
+                  <p className={subCls}>Share of winners (ROAS ≥ 1.6×)</p>
+                </div>
+              </div>
+
+              {byFormat.length === 0 ? (
+                <div className="h-60 flex items-center justify-center text-xs text-[var(--color-text-faint)]">No format data</div>
+              ) : (
+                <>
+                  <div className="relative">
+                    <ResponsiveContainer width="100%" height={220}>
+                      <PieChart>
+                        <Pie data={byFormat} dataKey="winCount" nameKey="name" innerRadius={68} outerRadius={100} paddingAngle={2} stroke="none">
+                          {byFormat.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
+                        </Pie>
+                        <Tooltip content={<ChartTooltip valueKey="winCount" suffix=" winners" />} />
+                      </PieChart>
+                    </ResponsiveContainer>
+                    <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                      <div className="text-3xl font-semibold tabular-nums text-[var(--color-text-primary)]">{total}</div>
+                      <div className="text-[10px] uppercase tracking-[0.18em] text-[var(--color-text-faint)] mt-1">winners</div>
+                    </div>
+                  </div>
+
+                  <div className="mt-5 space-y-2.5 text-xs">
+                    {byFormat.map((r, i) => {
+                      const pct = (100 * r.winCount / total).toFixed(1);
+                      return (
+                        <div key={r.name} className="flex items-center gap-3">
+                          <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: CHART_COLORS[i % CHART_COLORS.length] }} />
+                          <span className="flex-1 truncate text-[var(--color-text-primary)]" title={r.name}>{r.name}</span>
+                          <span className="tabular-nums text-[var(--color-text-faint)] w-12 text-right">{r.winCount}/{r.totalCount}</span>
+                          <span className="tabular-nums text-[var(--color-accent)] font-semibold w-12 text-right">{pct}%</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
+
+              <div className={footerCls}>
+                <span className={footerLabelCls}>Top Format</span>
+                <span className="text-xs font-medium text-[var(--color-accent)]">{topFormat || '—'}</span>
+              </div>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              {/* ─── Format — Donut ─── */}
-              <Card title="Format mix" subtitle="Distribution of winning ads">
-                {byFormat.length === 0 ? (
-                  <div className="h-60 flex items-center justify-center text-xs text-[var(--color-text-faint)]">No format data</div>
-                ) : (
-                  <>
-                    <div className="relative">
-                      <ResponsiveContainer width="100%" height={200}>
-                        <PieChart>
-                          <Pie data={byFormat} dataKey="value" nameKey="name" innerRadius={58} outerRadius={88} paddingAngle={3} stroke="none">
-                            {byFormat.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
-                          </Pie>
-                          <Tooltip content={<ChartTooltip valueKey="value" suffix=" ads" />} />
-                        </PieChart>
-                      </ResponsiveContainer>
-                      <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-                        <div className="text-2xl font-semibold tabular-nums text-[var(--color-text-primary)]">{total}</div>
-                        <div className="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]">ads</div>
-                      </div>
-                    </div>
-                    <div className="mt-4 space-y-2 text-xs">
-                      {byFormat.map((r, i) => {
-                        const pct = (100 * r.value / total).toFixed(0);
-                        return (
-                          <div key={r.name} className="flex items-center gap-2">
-                            <span className="w-2.5 h-2.5 rounded-sm flex-shrink-0" style={{ background: CHART_COLORS[i % CHART_COLORS.length] }} />
-                            <span className="flex-1 truncate text-[var(--color-text-primary)] font-medium" title={r.name}>{r.name}</span>
-                            <span className="tabular-nums text-[var(--color-text-muted)]">{pct}%</span>
-                            <span className="tabular-nums text-[var(--color-text-faint)] w-8 text-right">{r.value}</span>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </>
-                )}
-              </Card>
+            {/* ─── Winning Ads by Angle ─── */}
+            <div className={cardCls}>
+              <div className={headerCls}>
+                <span className={iconCls}><Target size={14} /></span>
+                <div>
+                  <h3 className={titleCls}>Winning Ads by Angle</h3>
+                  <p className={subCls}>Count of winners (ROAS ≥ 1.6×) per angle</p>
+                </div>
+              </div>
 
-              {/* ─── Angle — Vertical bars ─── */}
-              <Card title="Top angles" subtitle="Winning ads by creative angle">
-                {byAngle.length === 0 ? (
-                  <div className="h-60 flex items-center justify-center text-xs text-[var(--color-text-faint)]">No angle data</div>
-                ) : (
-                  <ResponsiveContainer width="100%" height={Math.max(260, byAngle.length * 14 + 80)}>
-                    <BarChart data={byAngle} margin={{ top: 16, right: 4, bottom: 4, left: 4 }}>
-                      <XAxis dataKey="name" tick={{ fontSize: 10, fill: '#a1a1aa' }} axisLine={false} tickLine={false} interval={0} angle={byAngle.length > 4 ? -25 : 0} textAnchor={byAngle.length > 4 ? 'end' : 'middle'} height={byAngle.length > 4 ? 60 : 30} />
-                      <YAxis hide />
-                      <Tooltip content={<ChartTooltip valueKey="value" suffix=" ads" />} cursor={{ fill: 'rgba(255,255,255,0.04)' }} />
-                      <Bar dataKey="value" radius={[6, 6, 0, 0]} maxBarSize={48} label={{ position: 'top', fill: '#fafafa', fontSize: 11, fontWeight: 600 }}>
-                        {byAngle.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
+              {byAngle.length === 0 ? (
+                <div className="h-60 flex items-center justify-center text-xs text-[var(--color-text-faint)]">No angle data</div>
+              ) : (
+                <div className="flex-1">
+                  <ResponsiveContainer width="100%" height={300}>
+                    <BarChart data={byAngle} margin={{ top: 10, right: 4, bottom: 8, left: 0 }}>
+                      <CartesianGrid stroke="rgba(255,255,255,0.04)" strokeDasharray="2 4" vertical={false} />
+                      <XAxis
+                        dataKey="name"
+                        tick={{ fontSize: 10, fill: '#a1a1aa' }}
+                        axisLine={false}
+                        tickLine={false}
+                        interval={0}
+                        angle={-30}
+                        textAnchor="end"
+                        height={70}
+                      />
+                      <YAxis
+                        tick={{ fontSize: 10, fill: '#71717a' }}
+                        axisLine={false}
+                        tickLine={false}
+                        width={28}
+                        allowDecimals={false}
+                      />
+                      <Tooltip content={<ChartTooltip valueKey="value" suffix=" winners" />} cursor={{ fill: 'rgba(255,255,255,0.04)' }} />
+                      <Bar dataKey="value" radius={[4, 4, 0, 0]} maxBarSize={42} fill="#c9a84c" />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+
+              <div className={footerCls}>
+                <span className={footerLabelCls}>Top Angle</span>
+                <span className="text-xs font-medium text-[var(--color-accent)]">{topAngle || '—'}</span>
+              </div>
+            </div>
+
+            {/* ─── ROAS by Editor ─── */}
+            <div className={cardCls}>
+              <div className={headerCls}>
+                <span className={iconCls}><User size={14} /></span>
+                <div>
+                  <h3 className={titleCls}>ROAS by Editor</h3>
+                  <p className={subCls}>Average return on ad spend per editor</p>
+                </div>
+              </div>
+
+              {byEditor.length === 0 ? (
+                <div className="h-60 flex items-center justify-center text-xs text-[var(--color-text-faint)]">No editor data</div>
+              ) : (
+                <div className="flex-1">
+                  <ResponsiveContainer width="100%" height={Math.max(220, byEditor.length * 32 + 30)}>
+                    <BarChart data={byEditor} layout="vertical" margin={{ top: 4, right: 16, bottom: 4, left: 4 }}>
+                      <CartesianGrid stroke="rgba(255,255,255,0.04)" strokeDasharray="2 4" horizontal={false} />
+                      <XAxis
+                        type="number"
+                        tick={{ fontSize: 10, fill: '#71717a' }}
+                        axisLine={false}
+                        tickLine={false}
+                        tickFormatter={(v) => `${v}×`}
+                      />
+                      <YAxis
+                        dataKey="name"
+                        type="category"
+                        width={86}
+                        tick={{ fontSize: 11, fill: '#fafafa' }}
+                        axisLine={false}
+                        tickLine={false}
+                      />
+                      <Tooltip content={<ChartTooltip valueKey="roas" suffix="× ROAS" />} cursor={{ fill: 'rgba(255,255,255,0.04)' }} />
+                      <Bar dataKey="roas" radius={[0, 4, 4, 0]} maxBarSize={20}>
+                        {byEditor.map((e, i) => {
+                          const color = e.roas >= 2.0 ? '#4ade80' : e.roas >= 1.5 ? '#c9a84c' : '#f87171';
+                          return <Cell key={i} fill={color} />;
+                        })}
                       </Bar>
                     </BarChart>
                   </ResponsiveContainer>
-                )}
-              </Card>
+                </div>
+              )}
 
-              {/* ─── Editor — Leaderboard ─── */}
-              <Card title="ROAS by Editor" subtitle="Spend-weighted average">
-                {byEditor.length === 0 ? (
-                  <div className="h-60 flex items-center justify-center text-xs text-[var(--color-text-faint)]">No editor data</div>
-                ) : (() => {
-                  const max = Math.max(...byEditor.map(e => e.roas), 0.01);
-                  return (
-                    <div className="space-y-2.5">
-                      {byEditor.map((e, i) => {
-                        const widthPct = (100 * e.roas / max).toFixed(1);
-                        const goodRoas = e.roas >= 2.5;
-                        const okRoas   = e.roas >= 1.6;
-                        const color    = goodRoas ? '#4ade80' : okRoas ? '#c9a84c' : '#f87171';
-                        return (
-                          <div key={e.name} className="text-xs">
-                            <div className="flex items-baseline justify-between mb-1">
-                              <span className="font-medium text-[var(--color-text-primary)] truncate" title={e.name}>
-                                <span className="text-[var(--color-text-faint)] tabular-nums mr-2">#{i + 1}</span>
-                                {e.name}
-                              </span>
-                              <span className="tabular-nums font-semibold" style={{ color }}>
-                                {e.roas.toFixed(2)}×
-                              </span>
-                            </div>
-                            <div className="h-1.5 rounded-full bg-[var(--color-bg-elevated)] overflow-hidden">
-                              <div className="h-full rounded-full transition-[width]" style={{ width: `${widthPct}%`, background: color }} />
-                            </div>
-                            <div className="flex justify-end mt-0.5">
-                              <span className="text-[10px] text-[var(--color-text-faint)] tabular-nums">${e.spend?.toLocaleString() || 0} spent</span>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  );
-                })()}
-              </Card>
+              <div className={footerCls}>
+                <span className={footerLabelCls}>Top Editor</span>
+                <span className="text-xs font-medium" style={{
+                  color: topEditor && topEditor.roas >= 2.0 ? '#4ade80'
+                       : topEditor && topEditor.roas >= 1.5 ? '#c9a84c'
+                       : '#fafafa'
+                }}>
+                  {topEditor ? `${topEditor.name} · ${topEditor.roas.toFixed(2)}×` : '—'}
+                </span>
+              </div>
             </div>
           </div>
         );
