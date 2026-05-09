@@ -435,12 +435,16 @@ function parseAdName(adName) {
   //   weekIdx - 5 = Angle      (e.g. Lottery)
   //   weekIdx - 4 = Format     (e.g. ShortVid, Mashup, UGC)
   //   weekIdx - 1 = Editor     (e.g. Elizaveta, Muhammad, Antoni)
-  // "NA" / single-dash placeholders are dropped so the editor field doesn't
-  // get polluted by skipped slots.
+  // Reject placeholders (NA / "-" / empty) AND pure-number tails ("4", "6")
+  // so sequence-number suffixes from short non-WK names ("Urgency - 4")
+  // don't get parsed as editors.
   const cleanEditor = (s) => {
     if (!s) return null;
     const v = s.trim();
     if (!v || v === '-' || /^N\/?A$/i.test(v)) return null;
+    if (/^\d+$/.test(v)) return null;                       // pure number
+    if (/^WK\d+_\d{4}/i.test(v)) return null;               // stray WK marker
+    if (/^Copy\b/i.test(v) || /^v\d+$/i.test(v)) return null; // version tails
     return v;
   };
 
@@ -453,13 +457,17 @@ function parseAdName(adName) {
       dateLaunched,
     };
   }
-  // Names without a WK marker: editor is the last non-empty segment.
-  const lastIdx = parts.length - 1;
+  // Names without a WK marker: only attempt to extract editor when the name
+  // is long enough to plausibly follow the brief convention
+  // (MR - B#### - H# - <geo> - <NA> - <Avatar> - <Angle> - <Format> - … - <Editor>).
+  // Short names like "Urgency - 4" return null for editor — that "4" is a
+  // sequence number, not a person.
+  const editor = parts.length >= 8 ? cleanEditor(parts[parts.length - 1]) : null;
   return {
     avatar: parts[5] || null,
     angle:  parts[6] || null,
     format: parts[7] || null,
-    editor: cleanEditor(parts[lastIdx]),
+    editor,
     dateLaunched,
   };
 }
