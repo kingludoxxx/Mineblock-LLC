@@ -377,11 +377,11 @@ function DateRangePicker({ value, customRange, onPreset, onCustom, disabled }) {
         type="button"
         onClick={() => setOpen(o => !o)}
         disabled={disabled}
-        className="flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-medium border border-[var(--color-accent)]/60 hover:border-[var(--color-accent)] bg-transparent hover:bg-[var(--color-accent)]/10 text-[var(--color-accent)] transition-colors disabled:opacity-50 min-w-[170px]"
+        className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-medium border border-[var(--color-accent)]/60 hover:border-[var(--color-accent)] bg-transparent hover:bg-[var(--color-accent)]/10 text-[var(--color-accent)] transition-colors disabled:opacity-50 min-w-[200px]"
       >
-        <Calendar size={14} className="text-[var(--color-accent)]" />
+        <Calendar size={16} className="text-[var(--color-accent)]" />
         <span className="flex-1 text-left">{triggerLabel}</span>
-        <ChevronDown size={14} className={`text-[var(--color-accent)] transition-transform ${open ? 'rotate-180' : ''}`} />
+        <ChevronDown size={16} className={`text-[var(--color-accent)] transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
 
       {open && (
@@ -729,23 +729,23 @@ export default function AdsReporting() {
             disabled={refreshing}
           />
 
-          {/* Share button — matches date picker size, neutral palette */}
+          {/* Share button — solid charcoal fill matching the mockup */}
           <button
             onClick={copyLink}
             disabled={!current?.shareToken}
-            className="flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-medium border border-white/[0.08] hover:border-white/[0.16] bg-transparent hover:bg-white/[0.04] text-[var(--color-text-primary)] transition-colors disabled:opacity-50"
+            className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-medium border border-white/[0.06] bg-[#1a1a1c] hover:bg-[#222224] hover:border-white/[0.12] text-white transition-colors disabled:opacity-50"
           >
-            {copied ? <Check size={14} className="text-green-400" /> : <Link2 size={14} className="text-[var(--color-text-muted)]" />}
+            {copied ? <Check size={16} className="text-green-400" /> : <Link2 size={16} className="text-zinc-400" />}
             {copied ? 'Link copied!' : 'Share report'}
           </button>
 
-          {/* Refresh button — matches date picker size, neutral palette */}
+          {/* Refresh button — solid charcoal fill matching the mockup */}
           <button
             onClick={() => load(range, { force: true, from: customRange.from, to: customRange.to })}
             disabled={refreshing}
-            className="flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-medium border border-white/[0.08] hover:border-white/[0.16] bg-transparent hover:bg-white/[0.04] text-[var(--color-text-primary)] transition-colors disabled:opacity-50"
+            className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-medium border border-white/[0.06] bg-[#1a1a1c] hover:bg-[#222224] hover:border-white/[0.12] text-white transition-colors disabled:opacity-50"
           >
-            <RefreshCw size={14} className={`text-[var(--color-text-muted)] ${refreshing ? 'animate-spin' : ''}`} />
+            <RefreshCw size={16} className={`text-zinc-400 ${refreshing ? 'animate-spin' : ''}`} />
             {refreshing ? 'Refreshing…' : 'Refresh'}
           </button>
         </div>
