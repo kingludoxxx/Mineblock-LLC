@@ -578,7 +578,7 @@ export default function AdsReportPublic() {
           boxShadow: '0 4px 24px rgba(0,0,0,0.2)',
         };
         const headerRow = { display: 'flex', alignItems: 'flex-start', gap: '12px', marginBottom: '20px' };
-        const iconBox = { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '36px', height: '36px', borderRadius: '50%', border: '1px solid rgba(201,168,76,0.4)', color: '#c9a84c', flexShrink: 0 };
+        const iconBox = { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '40px', height: '40px', borderRadius: '12px', border: '1px solid rgba(201,168,76,0.4)', background: 'rgba(201,168,76,0.06)', color: '#c9a84c', flexShrink: 0 };
         const title = { fontSize: '14px', textTransform: 'uppercase', letterSpacing: '0.22em', fontWeight: 600, color: '#fafafa', margin: 0 };
         const subtitle = { fontSize: '12px', color: '#52525b', fontStyle: 'italic', marginTop: '4px', margin: 0 };
         const footer = { marginTop: 'auto', paddingTop: '16px', borderTop: '1px solid rgba(255,255,255,0.05)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' };
@@ -611,25 +611,53 @@ export default function AdsReportPublic() {
               ) : (
                 <>
                   <div style={{ position: 'relative' }}>
-                    <ResponsiveContainer width="100%" height={220}>
+                    <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', borderRadius: '50%', background: 'radial-gradient(circle at 50% 50%, rgba(34,197,94,0.18), rgba(34,197,94,0) 55%)' }} />
+                    <ResponsiveContainer width="100%" height={240}>
                       <PieChart>
-                        <Pie data={byFormat} dataKey="winCount" nameKey="name" innerRadius={68} outerRadius={100} paddingAngle={2} stroke="none">
-                          {byFormat.map((_, i) => (
-                            <Cell key={i} fill={i === 0 ? '#22c55e' : CHART_COLORS[i % CHART_COLORS.length]} />
-                          ))}
+                        <defs>
+                          <linearGradient id="formatWinnerPub" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="0%" stopColor="#34d399" />
+                            <stop offset="100%" stopColor="#15a169" />
+                          </linearGradient>
+                          <linearGradient id="formatSecondPub" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="0%" stopColor="#f0e0b8" />
+                            <stop offset="100%" stopColor="#c9a84c" />
+                          </linearGradient>
+                          <linearGradient id="formatThirdPub" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="0%" stopColor="#5b6b80" />
+                            <stop offset="100%" stopColor="#3a4756" />
+                          </linearGradient>
+                          <linearGradient id="formatFourthPub" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="0%" stopColor="#3a3a3a" />
+                            <stop offset="100%" stopColor="#1f1f1f" />
+                          </linearGradient>
+                          <filter id="winnerGlowPub" x="-30%" y="-30%" width="160%" height="160%">
+                            <feGaussianBlur stdDeviation="3" result="blur" />
+                            <feMerge>
+                              <feMergeNode in="blur" />
+                              <feMergeNode in="SourceGraphic" />
+                            </feMerge>
+                          </filter>
+                        </defs>
+                        <Pie data={byFormat} dataKey="winCount" nameKey="name" innerRadius={72} outerRadius={104} paddingAngle={2} stroke="none">
+                          {byFormat.map((_, i) => {
+                            const fills = ['url(#formatWinnerPub)', 'url(#formatSecondPub)', 'url(#formatThirdPub)', 'url(#formatFourthPub)'];
+                            return <Cell key={i} fill={fills[i] || 'url(#formatFourthPub)'} filter={i === 0 ? 'url(#winnerGlowPub)' : undefined} />;
+                          })}
                         </Pie>
                         <Tooltip content={(p) => tipFn({ ...p, suffix: ' winners' })} />
                       </PieChart>
                     </ResponsiveContainer>
                     <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
-                      <div style={{ fontSize: '30px', fontWeight: 600, color: '#fafafa', fontVariantNumeric: 'tabular-nums' }}>{total}</div>
-                      <div style={{ fontSize: '10px', textTransform: 'uppercase', letterSpacing: '0.18em', color: '#52525b', marginTop: '4px' }}>winners</div>
+                      <div style={{ fontSize: '36px', fontWeight: 600, color: '#fafafa', fontVariantNumeric: 'tabular-nums' }}>{total}</div>
+                      <div style={{ fontSize: '10px', textTransform: 'uppercase', letterSpacing: '0.22em', color: '#52525b', marginTop: '4px' }}>winners</div>
                     </div>
                   </div>
                   <div style={{ marginTop: '20px' }}>
                     {byFormat.map((r, i) => {
                       const pct = (100 * r.winCount / total).toFixed(1);
-                      const dotColor = i === 0 ? '#22c55e' : CHART_COLORS[i % CHART_COLORS.length];
+                      const legendColors = ['#22c55e', '#e8d5a3', '#5b6b80', '#3a3a3a', '#7a7a7a', '#52525b'];
+                      const dotColor = legendColors[i] || legendColors[legendColors.length - 1];
                       const pctColor = i === 0 ? '#22c55e' : '#c9a84c';
                       return (
                         <div key={r.name} style={{ display: 'flex', alignItems: 'center', gap: '12px', fontSize: '12px', marginBottom: '10px', minWidth: 0 }}>

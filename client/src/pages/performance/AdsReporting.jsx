@@ -917,7 +917,7 @@ export default function AdsReporting() {
 
         const cardCls = "rounded-2xl p-6 flex flex-col bg-gradient-to-br from-[#181818] to-[#0e0e10] border border-white/[0.06] shadow-lg";
         const headerCls = "flex items-start gap-3 mb-5";
-        const iconCls  = "inline-flex items-center justify-center w-9 h-9 rounded-full border border-[var(--color-accent)]/40 text-[var(--color-accent)] flex-shrink-0";
+        const iconCls  = "inline-flex items-center justify-center w-10 h-10 rounded-xl border border-[var(--color-accent)]/40 text-[var(--color-accent)] bg-[var(--color-accent)]/[0.06] flex-shrink-0";
         const titleCls = "text-sm uppercase tracking-[0.22em] font-semibold text-[var(--color-text-primary)]";
         const subCls   = "text-xs text-[var(--color-text-faint)] mt-1 italic";
         const footerCls = "mt-auto pt-4 border-t border-white/[0.05] flex items-center justify-between";
@@ -940,26 +940,58 @@ export default function AdsReporting() {
               ) : (
                 <>
                   <div className="relative">
-                    <ResponsiveContainer width="100%" height={220}>
+                    {/* soft green glow halo behind the donut */}
+                    <div
+                      className="absolute inset-0 rounded-full pointer-events-none"
+                      style={{ background: 'radial-gradient(circle at 50% 50%, rgba(34,197,94,0.18), rgba(34,197,94,0) 55%)' }}
+                    />
+                    <ResponsiveContainer width="100%" height={240}>
                       <PieChart>
-                        <Pie data={byFormat} dataKey="winCount" nameKey="name" innerRadius={68} outerRadius={100} paddingAngle={2} stroke="none">
-                          {byFormat.map((_, i) => (
-                            <Cell key={i} fill={i === 0 ? '#22c55e' : CHART_COLORS[i % CHART_COLORS.length]} />
-                          ))}
+                        <defs>
+                          <linearGradient id="formatWinner" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="0%" stopColor="#34d399" />
+                            <stop offset="100%" stopColor="#15a169" />
+                          </linearGradient>
+                          <linearGradient id="formatSecond" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="0%" stopColor="#f0e0b8" />
+                            <stop offset="100%" stopColor="#c9a84c" />
+                          </linearGradient>
+                          <linearGradient id="formatThird" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="0%" stopColor="#5b6b80" />
+                            <stop offset="100%" stopColor="#3a4756" />
+                          </linearGradient>
+                          <linearGradient id="formatFourth" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="0%" stopColor="#3a3a3a" />
+                            <stop offset="100%" stopColor="#1f1f1f" />
+                          </linearGradient>
+                          <filter id="winnerGlow" x="-30%" y="-30%" width="160%" height="160%">
+                            <feGaussianBlur stdDeviation="3" result="blur" />
+                            <feMerge>
+                              <feMergeNode in="blur" />
+                              <feMergeNode in="SourceGraphic" />
+                            </feMerge>
+                          </filter>
+                        </defs>
+                        <Pie data={byFormat} dataKey="winCount" nameKey="name" innerRadius={72} outerRadius={104} paddingAngle={2} stroke="none">
+                          {byFormat.map((_, i) => {
+                            const fills = ['url(#formatWinner)', 'url(#formatSecond)', 'url(#formatThird)', 'url(#formatFourth)'];
+                            return <Cell key={i} fill={fills[i] || 'url(#formatFourth)'} filter={i === 0 ? 'url(#winnerGlow)' : undefined} />;
+                          })}
                         </Pie>
                         <Tooltip content={<ChartTooltip valueKey="winCount" suffix=" winners" />} />
                       </PieChart>
                     </ResponsiveContainer>
                     <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-                      <div className="text-3xl font-semibold tabular-nums text-[var(--color-text-primary)]">{total}</div>
-                      <div className="text-[10px] uppercase tracking-[0.18em] text-[var(--color-text-faint)] mt-1">winners</div>
+                      <div className="text-4xl font-semibold tabular-nums text-[var(--color-text-primary)]">{total}</div>
+                      <div className="text-[10px] uppercase tracking-[0.22em] text-[var(--color-text-faint)] mt-1">winners</div>
                     </div>
                   </div>
 
                   <div className="mt-5 space-y-2.5 text-xs">
                     {byFormat.map((r, i) => {
                       const pct = (100 * r.winCount / total).toFixed(1);
-                      const dotColor = i === 0 ? '#22c55e' : CHART_COLORS[i % CHART_COLORS.length];
+                      const legendColors = ['#22c55e', '#e8d5a3', '#5b6b80', '#3a3a3a', '#7a7a7a', '#52525b'];
+                      const dotColor = legendColors[i] || legendColors[legendColors.length - 1];
                       const pctColor = i === 0 ? '#22c55e' : 'var(--color-accent)';
                       return (
                         <div key={r.name} className="flex items-center gap-3">
