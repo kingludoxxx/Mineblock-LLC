@@ -440,7 +440,9 @@ function parseAdName(adName) {
   // don't get parsed as editors.
   const cleanEditor = (s) => {
     if (!s) return null;
-    const v = s.trim();
+    let v = s.trim();
+    // Strip trailing dashes/whitespace ("Mashup -" → "Mashup", "Antoni-" → "Antoni")
+    v = v.replace(/[\s-]+$/, '').trim();
     if (!v || v === '-' || /^N\/?A$/i.test(v)) return null;
     if (/^\d+$/.test(v)) return null;                       // pure number
     if (/^WK\d+_\d{4}/i.test(v)) return null;               // stray WK marker
@@ -704,15 +706,21 @@ async function refreshReport(rangeKey, customFrom, customTo) {
 // pg returns JSONB columns as strings in some driver configurations
 const parseDbData = (d) => (typeof d === 'string' ? JSON.parse(d) : d) || [];
 
-// Detect cache rows produced by an older code version that didn't yet emit
-// the format / editor fields. If the first row of a non-empty cache lacks
-// either, force a refresh so the new shape is written. Empty caches are
-// not considered legacy (nothing to compare against).
+// Detect cache rows produced by an older code version. Triggers a refresh if:
+//   • format or editor fields are missing entirely (legacy schema)
+//   • any editor value is a pure number ("4", "5") — sequence-suffix bug
+//   • any editor value still has a trailing " -" (dash-tail bug)
 function hasLegacyCacheShape(rawData) {
   const arr = parseDbData(rawData);
   if (!arr.length) return false;
   const sample = arr[0];
-  return sample.format === undefined || sample.editor === undefined;
+  if (sample.format === undefined || sample.editor === undefined) return true;
+  for (const r of arr) {
+    if (!r.editor) continue;
+    if (/^\d+$/.test(r.editor)) return true;
+    if (/\s-\s*$/.test(r.editor) || /-$/.test(r.editor)) return true;
+  }
+  return false;
 }
 
 // Determine cache TTL by range. "today"/"yesterday" need to be fresh; long ranges can be cached longer.
