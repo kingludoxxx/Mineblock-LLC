@@ -704,6 +704,17 @@ async function refreshReport(rangeKey, customFrom, customTo) {
 // pg returns JSONB columns as strings in some driver configurations
 const parseDbData = (d) => (typeof d === 'string' ? JSON.parse(d) : d) || [];
 
+// Detect cache rows produced by an older code version that didn't yet emit
+// the format / editor fields. If the first row of a non-empty cache lacks
+// either, force a refresh so the new shape is written. Empty caches are
+// not considered legacy (nothing to compare against).
+function hasLegacyCacheShape(rawData) {
+  const arr = parseDbData(rawData);
+  if (!arr.length) return false;
+  const sample = arr[0];
+  return sample.format === undefined || sample.editor === undefined;
+}
+
 // Determine cache TTL by range. "today"/"yesterday" need to be fresh; long ranges can be cached longer.
 function staleThresholdMs(rangeKey) {
   if (rangeKey === 'today')        return  30 * 60 * 1000;   // 30 min
@@ -737,11 +748,20 @@ router.get('/public', async (req, res) => {
     const from = req.query.from?.toString();
     const to   = req.query.to?.toString();
 
-    // No range param → return the original snapshot
+    // No range param → return the original snapshot, refreshing first if
+    // the row was produced by an older shape (missing format/editor).
     if (!requestedRange) {
-      const [row] = await pgQuery(
+      let [row] = await pgQuery(
         `SELECT * FROM ads_report_cache WHERE share_token = $1`, [token]
       );
+      if (row && hasLegacyCacheShape(row.data)) {
+        console.log(`[Ads Report] Legacy cache shape for share_token snapshot range_key="${row.range_key}" — refreshing`);
+        await refreshReport(row.range_key);
+        const refreshed = await pgQuery(
+          `SELECT * FROM ads_report_cache WHERE share_token = $1`, [token]
+        );
+        if (refreshed[0]) row = refreshed[0];
+      }
       return res.json({
         ok: true,
         range: { key: row.range_key, start: row.start_date, end: row.end_date, label: PRESET_LABELS[row.range_key] || row.range_key },
@@ -764,8 +784,9 @@ router.get('/public', async (req, res) => {
 
     const ttl = staleThresholdMs(requestedRange);
     const isStale = !cached || (Date.now() - new Date(cached.generated_at).getTime() > ttl);
+    const isLegacy = cached && hasLegacyCacheShape(cached.data);
 
-    if (!cached || isStale) {
+    if (!cached || isStale || isLegacy) {
       const result = await refreshReport(requestedRange, from, to);
       return res.json({
         ok: true,
@@ -852,8 +873,10 @@ async function handleReportRequest(req, res, defaultRangeKey = 'this_week') {
     const forceRefresh = req.query.refresh === '1';
     const ttl = staleThresholdMs(rangeKey);
     const isStale = !cached || (Date.now() - new Date(cached.generated_at).getTime() > ttl);
+    const isLegacy = cached && hasLegacyCacheShape(cached.data);
+    if (isLegacy) console.log(`[Ads Report] Legacy cache shape for range_key="${range.key}" — forcing refresh`);
 
-    if (!cached || forceRefresh || isStale) {
+    if (!cached || forceRefresh || isStale || isLegacy) {
       const result = await refreshReport(rangeKey, from, to);
       return res.json({
         ok: true,
