@@ -689,18 +689,8 @@ export default function AdsReporting() {
               className="text-[var(--color-accent)]"
               style={{ filter: 'drop-shadow(0 0 10px rgba(232,213,163,0.45))' }}
             />
-            <h1 className="text-3xl font-semibold tracking-tight">
-              <span className="text-white">Ads</span>{' '}
-              <span
-                style={{
-                  background: 'linear-gradient(120deg, #f0e0b8 0%, #c9a84c 60%, #b48c2e 100%)',
-                  WebkitBackgroundClip: 'text',
-                  WebkitTextFillColor: 'transparent',
-                  backgroundClip: 'text',
-                }}
-              >
-                Reporting
-              </span>
+            <h1 className="text-3xl font-semibold tracking-tight text-white">
+              Ads Reporting
             </h1>
           </div>
           <div className="flex items-center gap-3 text-xs text-[var(--color-text-muted)]">
@@ -1088,7 +1078,7 @@ export default function AdsReporting() {
                         content={<ChartTooltip valueKey="value" suffix=" winners" />}
                         cursor={false}
                         isAnimationActive={false}
-                        wrapperStyle={{ pointerEvents: 'none', transition: 'none', outline: 'none' }}
+                        wrapperStyle={{ pointerEvents: 'none', transition: 'left 120ms ease, top 120ms ease', outline: 'none' }}
                         allowEscapeViewBox={{ x: false, y: false }}
                       />
                       <Bar dataKey="value" radius={[4, 4, 0, 0]} maxBarSize={64}>
@@ -1167,7 +1157,7 @@ export default function AdsReporting() {
                         content={<ChartTooltip valueKey="roas" suffix="× ROAS" />}
                         cursor={false}
                         isAnimationActive={false}
-                        wrapperStyle={{ pointerEvents: 'none', transition: 'none', outline: 'none' }}
+                        wrapperStyle={{ pointerEvents: 'none', transition: 'left 120ms ease, top 120ms ease', outline: 'none' }}
                         allowEscapeViewBox={{ x: false, y: false }}
                       />
                       <Bar dataKey="roas" radius={[10, 10, 10, 10]} maxBarSize={14}>

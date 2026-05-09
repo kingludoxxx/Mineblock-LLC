@@ -347,18 +347,8 @@ export default function AdsReportPublic() {
               strokeWidth={2.25}
               style={{ color: '#c9a84c', filter: 'drop-shadow(0 0 10px rgba(232,213,163,0.45))' }}
             />
-            <h1 style={{ fontSize: '30px', fontWeight: 600, margin: 0, letterSpacing: '-0.01em' }}>
-              <span style={{ color: '#ffffff' }}>Ads</span>{' '}
-              <span
-                style={{
-                  background: 'linear-gradient(120deg, #f0e0b8 0%, #c9a84c 60%, #b48c2e 100%)',
-                  WebkitBackgroundClip: 'text',
-                  WebkitTextFillColor: 'transparent',
-                  backgroundClip: 'text',
-                }}
-              >
-                Reporting
-              </span>
+            <h1 style={{ fontSize: '30px', fontWeight: 600, margin: 0, letterSpacing: '-0.01em', color: '#ffffff' }}>
+              Ads Reporting
             </h1>
           </div>
           {rangeLabel && (
@@ -735,7 +725,7 @@ export default function AdsReportPublic() {
                         content={(p) => tipFn({ ...p, suffix: ' winners' })}
                         cursor={false}
                         isAnimationActive={false}
-                        wrapperStyle={{ pointerEvents: 'none', transition: 'none', outline: 'none' }}
+                        wrapperStyle={{ pointerEvents: 'none', transition: 'left 120ms ease, top 120ms ease', outline: 'none' }}
                         allowEscapeViewBox={{ x: false, y: false }}
                       />
                       <Bar dataKey="value" radius={[4, 4, 0, 0]} maxBarSize={64}>
@@ -799,7 +789,7 @@ export default function AdsReportPublic() {
                         content={(p) => tipFn({ active: p.active, payload: p.payload?.map(x => ({...x, value: x.payload.roas})), suffix: '× ROAS' })}
                         cursor={false}
                         isAnimationActive={false}
-                        wrapperStyle={{ pointerEvents: 'none', transition: 'none', outline: 'none' }}
+                        wrapperStyle={{ pointerEvents: 'none', transition: 'left 120ms ease, top 120ms ease', outline: 'none' }}
                         allowEscapeViewBox={{ x: false, y: false }}
                       />
                       <Bar dataKey="roas" radius={[10, 10, 10, 10]} maxBarSize={14}>
