@@ -806,66 +806,119 @@ export default function AdsReporting() {
         const byEditor = aggregateRoasBy(data, 'editor');
         const total    = data.length;
 
-        const renderDonut = (rows, title, hint) => (
-          <div className="rounded-xl border border-[var(--color-border-subtle)] bg-[var(--color-bg-card)] p-4">
-            <div className="flex items-baseline justify-between mb-2">
-              <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">{title}</h3>
-              <span className="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]">{hint}</span>
-            </div>
-            {rows.length === 0 ? (
-              <div className="h-56 flex items-center justify-center text-xs text-[var(--color-text-faint)]">no data</div>
-            ) : (
-              <div className="flex items-center gap-3">
-                <ResponsiveContainer width="55%" height={220}>
-                  <PieChart>
-                    <Pie data={rows} dataKey="value" nameKey="name" innerRadius={50} outerRadius={85} paddingAngle={2}>
-                      {rows.map((r, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
-                    </Pie>
-                    <Tooltip content={<ChartTooltip valueKey="value" suffix=" ads" />} />
-                  </PieChart>
-                </ResponsiveContainer>
-                <div className="flex-1 space-y-1.5 text-xs min-w-0">
-                  {rows.map((r, i) => {
-                    const pct = (100 * r.value / total).toFixed(1);
-                    return (
-                      <div key={r.name} className="flex items-center gap-2 min-w-0">
-                        <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: CHART_COLORS[i % CHART_COLORS.length] }} />
-                        <span className="flex-1 truncate text-[var(--color-text-primary)]" title={r.name}>{r.name}</span>
-                        <span className="text-[var(--color-text-muted)] tabular-nums">{r.value} <span className="text-[var(--color-text-faint)]">({pct}%)</span></span>
-                      </div>
-                    );
-                  })}
-                </div>
+        const Card = ({ title, subtitle, children }) => (
+          <div className="rounded-xl border border-[var(--color-border-subtle)] bg-[var(--color-bg-card)] p-5 flex flex-col">
+            <div className="flex items-baseline justify-between mb-4">
+              <div>
+                <h3 className="text-sm font-semibold text-[var(--color-text-primary)] tracking-tight">{title}</h3>
+                {subtitle && <p className="text-[11px] text-[var(--color-text-faint)] mt-0.5">{subtitle}</p>}
               </div>
-            )}
+            </div>
+            {children}
           </div>
         );
 
         return (
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2">
-            {renderDonut(byFormat, 'Winning ads by Format', `${total} ads`)}
-            {renderDonut(byAngle,  'Winning ads by Angle',  `${total} ads`)}
+          <div className="space-y-4 pt-2">
+            <div className="flex items-center gap-2 text-xs">
+              <span className="text-[10px] uppercase tracking-[0.15em] text-[var(--color-accent)] font-semibold">Insights</span>
+              <span className="flex-1 h-px bg-[var(--color-border-subtle)]" />
+              <span className="text-[var(--color-text-faint)]">{total} winning ad{total !== 1 ? 's' : ''}</span>
+            </div>
 
-            {/* ROAS by editor — horizontal bar chart */}
-            <div className="rounded-xl border border-[var(--color-border-subtle)] bg-[var(--color-bg-card)] p-4">
-              <div className="flex items-baseline justify-between mb-2">
-                <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">ROAS by Editor</h3>
-                <span className="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]">avg of winners</span>
-              </div>
-              {byEditor.length === 0 ? (
-                <div className="h-56 flex items-center justify-center text-xs text-[var(--color-text-faint)]">no editor data</div>
-              ) : (
-                <ResponsiveContainer width="100%" height={Math.max(220, byEditor.length * 28 + 30)}>
-                  <BarChart data={byEditor} layout="vertical" margin={{ top: 4, right: 24, bottom: 4, left: 4 }}>
-                    <XAxis type="number" tick={{ fontSize: 10, fill: '#71717a' }} axisLine={false} tickLine={false} />
-                    <YAxis dataKey="name" type="category" width={90} tick={{ fontSize: 11, fill: '#fafafa' }} axisLine={false} tickLine={false} />
-                    <Tooltip content={<ChartTooltip valueKey="roas" suffix="× ROAS" />} cursor={{ fill: 'rgba(255,255,255,0.04)' }} />
-                    <Bar dataKey="roas" radius={[0, 4, 4, 0]}>
-                      {byEditor.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
-              )}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              {/* ─── Format — Donut ─── */}
+              <Card title="Format mix" subtitle="Distribution of winning ads">
+                {byFormat.length === 0 ? (
+                  <div className="h-60 flex items-center justify-center text-xs text-[var(--color-text-faint)]">No format data</div>
+                ) : (
+                  <>
+                    <div className="relative">
+                      <ResponsiveContainer width="100%" height={200}>
+                        <PieChart>
+                          <Pie data={byFormat} dataKey="value" nameKey="name" innerRadius={58} outerRadius={88} paddingAngle={3} stroke="none">
+                            {byFormat.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
+                          </Pie>
+                          <Tooltip content={<ChartTooltip valueKey="value" suffix=" ads" />} />
+                        </PieChart>
+                      </ResponsiveContainer>
+                      <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                        <div className="text-2xl font-semibold tabular-nums text-[var(--color-text-primary)]">{total}</div>
+                        <div className="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]">ads</div>
+                      </div>
+                    </div>
+                    <div className="mt-4 space-y-2 text-xs">
+                      {byFormat.map((r, i) => {
+                        const pct = (100 * r.value / total).toFixed(0);
+                        return (
+                          <div key={r.name} className="flex items-center gap-2">
+                            <span className="w-2.5 h-2.5 rounded-sm flex-shrink-0" style={{ background: CHART_COLORS[i % CHART_COLORS.length] }} />
+                            <span className="flex-1 truncate text-[var(--color-text-primary)] font-medium" title={r.name}>{r.name}</span>
+                            <span className="tabular-nums text-[var(--color-text-muted)]">{pct}%</span>
+                            <span className="tabular-nums text-[var(--color-text-faint)] w-8 text-right">{r.value}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </>
+                )}
+              </Card>
+
+              {/* ─── Angle — Vertical bars ─── */}
+              <Card title="Top angles" subtitle="Winning ads by creative angle">
+                {byAngle.length === 0 ? (
+                  <div className="h-60 flex items-center justify-center text-xs text-[var(--color-text-faint)]">No angle data</div>
+                ) : (
+                  <ResponsiveContainer width="100%" height={Math.max(260, byAngle.length * 14 + 80)}>
+                    <BarChart data={byAngle} margin={{ top: 16, right: 4, bottom: 4, left: 4 }}>
+                      <XAxis dataKey="name" tick={{ fontSize: 10, fill: '#a1a1aa' }} axisLine={false} tickLine={false} interval={0} angle={byAngle.length > 4 ? -25 : 0} textAnchor={byAngle.length > 4 ? 'end' : 'middle'} height={byAngle.length > 4 ? 60 : 30} />
+                      <YAxis hide />
+                      <Tooltip content={<ChartTooltip valueKey="value" suffix=" ads" />} cursor={{ fill: 'rgba(255,255,255,0.04)' }} />
+                      <Bar dataKey="value" radius={[6, 6, 0, 0]} maxBarSize={48} label={{ position: 'top', fill: '#fafafa', fontSize: 11, fontWeight: 600 }}>
+                        {byAngle.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                )}
+              </Card>
+
+              {/* ─── Editor — Leaderboard ─── */}
+              <Card title="ROAS by Editor" subtitle="Spend-weighted average">
+                {byEditor.length === 0 ? (
+                  <div className="h-60 flex items-center justify-center text-xs text-[var(--color-text-faint)]">No editor data</div>
+                ) : (() => {
+                  const max = Math.max(...byEditor.map(e => e.roas), 0.01);
+                  return (
+                    <div className="space-y-2.5">
+                      {byEditor.map((e, i) => {
+                        const widthPct = (100 * e.roas / max).toFixed(1);
+                        const goodRoas = e.roas >= 2.5;
+                        const okRoas   = e.roas >= 1.6;
+                        const color    = goodRoas ? '#4ade80' : okRoas ? '#c9a84c' : '#f87171';
+                        return (
+                          <div key={e.name} className="text-xs">
+                            <div className="flex items-baseline justify-between mb-1">
+                              <span className="font-medium text-[var(--color-text-primary)] truncate" title={e.name}>
+                                <span className="text-[var(--color-text-faint)] tabular-nums mr-2">#{i + 1}</span>
+                                {e.name}
+                              </span>
+                              <span className="tabular-nums font-semibold" style={{ color }}>
+                                {e.roas.toFixed(2)}×
+                              </span>
+                            </div>
+                            <div className="h-1.5 rounded-full bg-[var(--color-bg-elevated)] overflow-hidden">
+                              <div className="h-full rounded-full transition-[width]" style={{ width: `${widthPct}%`, background: color }} />
+                            </div>
+                            <div className="flex justify-end mt-0.5">
+                              <span className="text-[10px] text-[var(--color-text-faint)] tabular-nums">${e.spend?.toLocaleString() || 0} spent</span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
+              </Card>
             </div>
           </div>
         );

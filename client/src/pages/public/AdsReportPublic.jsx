@@ -527,15 +527,20 @@ export default function AdsReportPublic() {
         const byAngle  = aggregateByPublic(data, 'angle');
         const byEditor = aggregateRoasByPublic(data, 'editor');
         const total    = data.length;
-        const cardStyle = {
+
+        const card = {
           borderRadius: '12px',
           border: '1px solid rgba(255,255,255,0.05)',
           background: '#111113',
-          padding: '16px',
+          padding: '20px',
+          display: 'flex',
+          flexDirection: 'column',
         };
-        const titleStyle = { fontSize: '14px', fontWeight: 600, margin: 0, color: '#fafafa' };
+        const titleRow = { display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: '16px' };
+        const title = { fontSize: '14px', fontWeight: 600, margin: 0, color: '#fafafa', letterSpacing: '-0.01em' };
+        const subtitle = { fontSize: '11px', color: '#52525b', marginTop: '2px' };
 
-        const tooltipStyle = ({ active, payload, suffix = '' }) => {
+        const tipFn = ({ active, payload, suffix = '' }) => {
           if (!active || !payload?.length) return null;
           const p = payload[0];
           return (
@@ -546,69 +551,121 @@ export default function AdsReportPublic() {
           );
         };
 
-        const renderDonut = (rows, title) => (
-          <div style={cardStyle}>
-            <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: '8px' }}>
-              <h3 style={titleStyle}>{title}</h3>
-              <span style={{ fontSize: '10px', textTransform: 'uppercase', letterSpacing: '0.05em', color: '#52525b' }}>{total} ads</span>
-            </div>
-            {rows.length === 0 ? (
-              <div style={{ height: '220px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#52525b', fontSize: '12px' }}>no data</div>
-            ) : (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                <div style={{ width: '55%', height: '220px' }}>
-                  <ResponsiveContainer width="100%" height="100%">
-                    <PieChart>
-                      <Pie data={rows} dataKey="value" nameKey="name" innerRadius={50} outerRadius={85} paddingAngle={2}>
-                        {rows.map((r, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
-                      </Pie>
-                      <Tooltip content={(p) => tooltipStyle({ ...p, suffix: ' ads' })} />
-                    </PieChart>
-                  </ResponsiveContainer>
-                </div>
-                <div style={{ flex: 1, fontSize: '12px', minWidth: 0 }}>
-                  {rows.map((r, i) => {
-                    const pct = (100 * r.value / total).toFixed(1);
-                    return (
-                      <div key={r.name} style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px', minWidth: 0 }}>
-                        <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: CHART_COLORS[i % CHART_COLORS.length], flexShrink: 0 }} />
-                        <span style={{ flex: 1, color: '#fafafa', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.name}>{r.name}</span>
-                        <span style={{ color: '#a1a1aa', fontVariantNumeric: 'tabular-nums' }}>{r.value} <span style={{ color: '#52525b' }}>({pct}%)</span></span>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-          </div>
-        );
-
         return (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '16px', marginTop: '20px' }}>
-            {renderDonut(byFormat, 'Winning ads by Format')}
-            {renderDonut(byAngle,  'Winning ads by Angle')}
+          <div style={{ marginTop: '24px' }}>
+            {/* Section divider */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', marginBottom: '12px' }}>
+              <span style={{ fontSize: '10px', textTransform: 'uppercase', letterSpacing: '0.15em', color: '#c9a84c', fontWeight: 600 }}>Insights</span>
+              <span style={{ flex: 1, height: '1px', background: 'rgba(255,255,255,0.05)' }} />
+              <span style={{ color: '#52525b' }}>{total} winning ad{total !== 1 ? 's' : ''}</span>
+            </div>
 
-            <div style={cardStyle}>
-              <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: '8px' }}>
-                <h3 style={titleStyle}>ROAS by Editor</h3>
-                <span style={{ fontSize: '10px', textTransform: 'uppercase', letterSpacing: '0.05em', color: '#52525b' }}>avg of winners</span>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '16px' }}>
+              {/* Format mix — donut with center label */}
+              <div style={card}>
+                <div style={titleRow}>
+                  <div>
+                    <h3 style={title}>Format mix</h3>
+                    <p style={subtitle}>Distribution of winning ads</p>
+                  </div>
+                </div>
+                {byFormat.length === 0 ? (
+                  <div style={{ height: '240px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#52525b', fontSize: '12px' }}>No format data</div>
+                ) : (
+                  <>
+                    <div style={{ position: 'relative' }}>
+                      <ResponsiveContainer width="100%" height={200}>
+                        <PieChart>
+                          <Pie data={byFormat} dataKey="value" nameKey="name" innerRadius={58} outerRadius={88} paddingAngle={3} stroke="none">
+                            {byFormat.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
+                          </Pie>
+                          <Tooltip content={(p) => tipFn({ ...p, suffix: ' ads' })} />
+                        </PieChart>
+                      </ResponsiveContainer>
+                      <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
+                        <div style={{ fontSize: '24px', fontWeight: 600, color: '#fafafa', fontVariantNumeric: 'tabular-nums' }}>{total}</div>
+                        <div style={{ fontSize: '10px', textTransform: 'uppercase', letterSpacing: '0.1em', color: '#52525b' }}>ads</div>
+                      </div>
+                    </div>
+                    <div style={{ marginTop: '16px', fontSize: '12px' }}>
+                      {byFormat.map((r, i) => {
+                        const pct = (100 * r.value / total).toFixed(0);
+                        return (
+                          <div key={r.name} style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                            <span style={{ width: '10px', height: '10px', borderRadius: '2px', background: CHART_COLORS[i % CHART_COLORS.length], flexShrink: 0 }} />
+                            <span style={{ flex: 1, color: '#fafafa', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.name}>{r.name}</span>
+                            <span style={{ color: '#a1a1aa', fontVariantNumeric: 'tabular-nums' }}>{pct}%</span>
+                            <span style={{ color: '#52525b', fontVariantNumeric: 'tabular-nums', width: '28px', textAlign: 'right' }}>{r.value}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </>
+                )}
               </div>
-              {byEditor.length === 0 ? (
-                <div style={{ height: '220px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#52525b', fontSize: '12px' }}>no editor data</div>
-              ) : (
-                <div style={{ width: '100%', height: `${Math.max(220, byEditor.length * 28 + 30)}px` }}>
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={byEditor} layout="vertical" margin={{ top: 4, right: 24, bottom: 4, left: 4 }}>
-                      <XAxis type="number" tick={{ fontSize: 10, fill: '#71717a' }} axisLine={false} tickLine={false} />
-                      <YAxis dataKey="name" type="category" width={90} tick={{ fontSize: 11, fill: '#fafafa' }} axisLine={false} tickLine={false} />
-                      <Tooltip content={(p) => tooltipStyle({ active: p.active, payload: p.payload?.map(x => ({...x, value: x.payload.roas})), suffix: '× ROAS' })} cursor={{ fill: 'rgba(255,255,255,0.04)' }} />
-                      <Bar dataKey="roas" radius={[0, 4, 4, 0]}>
-                        {byEditor.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
+
+              {/* Top angles — vertical bars */}
+              <div style={card}>
+                <div style={titleRow}>
+                  <div>
+                    <h3 style={title}>Top angles</h3>
+                    <p style={subtitle}>Winning ads by creative angle</p>
+                  </div>
+                </div>
+                {byAngle.length === 0 ? (
+                  <div style={{ height: '240px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#52525b', fontSize: '12px' }}>No angle data</div>
+                ) : (
+                  <ResponsiveContainer width="100%" height={Math.max(260, byAngle.length * 14 + 80)}>
+                    <BarChart data={byAngle} margin={{ top: 16, right: 4, bottom: 4, left: 4 }}>
+                      <XAxis dataKey="name" tick={{ fontSize: 10, fill: '#a1a1aa' }} axisLine={false} tickLine={false} interval={0} angle={byAngle.length > 4 ? -25 : 0} textAnchor={byAngle.length > 4 ? 'end' : 'middle'} height={byAngle.length > 4 ? 60 : 30} />
+                      <YAxis hide />
+                      <Tooltip content={(p) => tipFn({ ...p, suffix: ' ads' })} cursor={{ fill: 'rgba(255,255,255,0.04)' }} />
+                      <Bar dataKey="value" radius={[6, 6, 0, 0]} maxBarSize={48} label={{ position: 'top', fill: '#fafafa', fontSize: 11, fontWeight: 600 }}>
+                        {byAngle.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
                       </Bar>
                     </BarChart>
                   </ResponsiveContainer>
+                )}
+              </div>
+
+              {/* ROAS by editor — leaderboard */}
+              <div style={card}>
+                <div style={titleRow}>
+                  <div>
+                    <h3 style={title}>ROAS by Editor</h3>
+                    <p style={subtitle}>Spend-weighted average</p>
+                  </div>
                 </div>
-              )}
+                {byEditor.length === 0 ? (
+                  <div style={{ height: '240px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#52525b', fontSize: '12px' }}>No editor data</div>
+                ) : (() => {
+                  const max = Math.max(...byEditor.map(e => e.roas), 0.01);
+                  return (
+                    <div>
+                      {byEditor.map((e, i) => {
+                        const widthPct = (100 * e.roas / max).toFixed(1);
+                        const goodRoas = e.roas >= 2.5;
+                        const okRoas   = e.roas >= 1.6;
+                        const color    = goodRoas ? '#4ade80' : okRoas ? '#c9a84c' : '#f87171';
+                        return (
+                          <div key={e.name} style={{ fontSize: '12px', marginBottom: '12px' }}>
+                            <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: '4px' }}>
+                              <span style={{ color: '#fafafa', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={e.name}>
+                                <span style={{ color: '#52525b', fontVariantNumeric: 'tabular-nums', marginRight: '8px' }}>#{i + 1}</span>
+                                {e.name}
+                              </span>
+                              <span style={{ color, fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>{e.roas.toFixed(2)}×</span>
+                            </div>
+                            <div style={{ height: '6px', borderRadius: '3px', background: 'rgba(255,255,255,0.04)', overflow: 'hidden' }}>
+                              <div style={{ height: '100%', width: `${widthPct}%`, background: color, borderRadius: '3px', transition: 'width 0.3s' }} />
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
+              </div>
             </div>
           </div>
         );
