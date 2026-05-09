@@ -342,8 +342,11 @@ export default function AdsReportPublic() {
       <div style={S.header}>
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
-            <TrendingUp size={18} style={{ color: '#c9a84c' }} />
-            <h1 style={S.title}>Ads Reporting</h1>
+            <TrendingUp size={26} strokeWidth={2.5} style={{ color: '#c9a84c' }} />
+            <h1 style={{ fontSize: '24px', fontWeight: 700, margin: 0, letterSpacing: '-0.01em' }}>
+              <span style={{ color: '#fafafa' }}>Ads</span>{' '}
+              <span style={{ color: '#c9a84c' }}>Reporting</span>
+            </h1>
           </div>
           {rangeLabel && (
             <div style={S.subtitle}>
@@ -710,7 +713,7 @@ export default function AdsReportPublic() {
                       <CartesianGrid stroke="rgba(255,255,255,0.05)" strokeDasharray="2 4" vertical={false} />
                       <XAxis dataKey="name" tick={{ fontSize: 12, fill: '#a1a1aa', fontStyle: 'italic' }} axisLine={false} tickLine={false} interval={0} angle={-25} textAnchor="end" height={80} />
                       <YAxis tick={{ fontSize: 13, fill: '#a1a1aa' }} axisLine={false} tickLine={false} width={36} allowDecimals={false} />
-                      <Tooltip content={(p) => tipFn({ ...p, suffix: ' winners' })} cursor={{ fill: 'rgba(255,255,255,0.04)' }} />
+                      <Tooltip content={(p) => tipFn({ ...p, suffix: ' winners' })} cursor={false} />
                       <Bar dataKey="value" radius={[4, 4, 0, 0]} maxBarSize={64}>
                         {byAngle.map((_, i) => (
                           <Cell key={i} fill={i === 0 ? 'url(#goldBarPub)' : 'url(#dimBarPub)'} />
