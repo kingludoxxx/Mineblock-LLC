@@ -998,13 +998,12 @@ export default function AdsReporting() {
                     <BarChart data={byAngle} margin={{ top: 10, right: 8, bottom: 8, left: 0 }}>
                       <defs>
                         <linearGradient id="goldBar" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="0%"   stopColor="#e8d5a3" />
-                          <stop offset="60%"  stopColor="#c9a84c" />
-                          <stop offset="100%" stopColor="#9a8030" />
+                          <stop offset="0%"   stopColor="#d8b66a" />
+                          <stop offset="100%" stopColor="#a98a3a" />
                         </linearGradient>
                         <linearGradient id="dimBar" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="0%"   stopColor="#3a3a3a" />
-                          <stop offset="100%" stopColor="#1a1a1a" />
+                          <stop offset="0%"   stopColor="#2a2a2a" />
+                          <stop offset="100%" stopColor="#141414" />
                         </linearGradient>
                       </defs>
                       <CartesianGrid stroke="rgba(255,255,255,0.05)" strokeDasharray="2 4" vertical={false} />
