@@ -712,23 +712,23 @@ export default function AdsReporting() {
             disabled={refreshing}
           />
 
-          {/* Share button */}
+          {/* Share button — matches date picker size, neutral palette */}
           <button
             onClick={copyLink}
             disabled={!current?.shareToken}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] hover:bg-[var(--color-bg-hover)] text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] transition-colors disabled:opacity-50"
+            className="flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-medium border border-white/[0.08] hover:border-white/[0.16] bg-transparent hover:bg-white/[0.04] text-[var(--color-text-primary)] transition-colors disabled:opacity-50"
           >
-            {copied ? <Check size={13} className="text-green-400" /> : <Link2 size={13} />}
+            {copied ? <Check size={14} className="text-green-400" /> : <Link2 size={14} className="text-[var(--color-text-muted)]" />}
             {copied ? 'Link copied!' : 'Share report'}
           </button>
 
-          {/* Refresh button */}
+          {/* Refresh button — matches date picker size, neutral palette */}
           <button
             onClick={() => load(range, { force: true, from: customRange.from, to: customRange.to })}
             disabled={refreshing}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium bg-[var(--color-accent-muted)] hover:bg-[var(--color-accent-muted)] text-[var(--color-accent-text)] border border-[var(--color-accent-muted)] hover:border-[var(--color-accent)] transition-colors disabled:opacity-50"
+            className="flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-medium border border-white/[0.08] hover:border-white/[0.16] bg-transparent hover:bg-white/[0.04] text-[var(--color-text-primary)] transition-colors disabled:opacity-50"
           >
-            <RefreshCw size={13} className={refreshing ? 'animate-spin' : ''} />
+            <RefreshCw size={14} className={`text-[var(--color-text-muted)] ${refreshing ? 'animate-spin' : ''}`} />
             {refreshing ? 'Refreshing…' : 'Refresh'}
           </button>
         </div>
