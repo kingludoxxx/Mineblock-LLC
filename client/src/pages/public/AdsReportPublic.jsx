@@ -668,14 +668,21 @@ export default function AdsReportPublic() {
                       <XAxis dataKey="name" tick={{ fontSize: 10, fill: '#a1a1aa' }} axisLine={false} tickLine={false} interval={0} angle={-30} textAnchor="end" height={70} />
                       <YAxis tick={{ fontSize: 10, fill: '#71717a' }} axisLine={false} tickLine={false} width={28} allowDecimals={false} />
                       <Tooltip content={(p) => tipFn({ ...p, suffix: ' winners' })} cursor={{ fill: 'rgba(255,255,255,0.04)' }} />
-                      <Bar dataKey="value" radius={[4, 4, 0, 0]} maxBarSize={42} fill="#c9a84c" />
+                      <Bar dataKey="value" radius={[4, 4, 0, 0]} maxBarSize={42}>
+                        {byAngle.map((_, i) => (
+                          <Cell key={i} fill={i === 0 ? '#c9a84c' : '#1f1f1f'} stroke={i === 0 ? '#c9a84c' : '#2a2a2a'} />
+                        ))}
+                      </Bar>
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
               )}
               <div style={footer}>
                 <span style={footerLabel}>Top Angle</span>
-                <span style={{ fontSize: '12px', fontWeight: 500, color: '#c9a84c' }}>{topAngle || '—'}</span>
+                <span style={{ fontSize: '12px', fontWeight: 500, color: '#c9a84c', display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                  <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#c9a84c' }} />
+                  {topAngle || '—'}
+                </span>
               </div>
             </div>
 

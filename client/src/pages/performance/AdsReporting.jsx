@@ -1015,7 +1015,15 @@ export default function AdsReporting() {
                         allowDecimals={false}
                       />
                       <Tooltip content={<ChartTooltip valueKey="value" suffix=" winners" />} cursor={{ fill: 'rgba(255,255,255,0.04)' }} />
-                      <Bar dataKey="value" radius={[4, 4, 0, 0]} maxBarSize={42} fill="#c9a84c" />
+                      <Bar dataKey="value" radius={[4, 4, 0, 0]} maxBarSize={42}>
+                        {byAngle.map((_, i) => (
+                          <Cell
+                            key={i}
+                            fill={i === 0 ? '#c9a84c' : '#1f1f1f'}
+                            stroke={i === 0 ? '#c9a84c' : '#2a2a2a'}
+                          />
+                        ))}
+                      </Bar>
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
@@ -1023,7 +1031,10 @@ export default function AdsReporting() {
 
               <div className={footerCls}>
                 <span className={footerLabelCls}>Top Angle</span>
-                <span className="text-xs font-medium text-[var(--color-accent)]">{topAngle || '—'}</span>
+                <span className="inline-flex items-center gap-2 text-xs font-medium text-[var(--color-accent)]">
+                  <span className="w-1.5 h-1.5 rounded-full bg-[var(--color-accent)]" />
+                  {topAngle || '—'}
+                </span>
               </div>
             </div>
 
