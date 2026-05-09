@@ -578,9 +578,9 @@ export default function AdsReportPublic() {
           boxShadow: '0 4px 24px rgba(0,0,0,0.2)',
         };
         const headerRow = { display: 'flex', alignItems: 'flex-start', gap: '12px', marginBottom: '20px' };
-        const iconBox = { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '28px', height: '28px', borderRadius: '50%', border: '1px solid rgba(201,168,76,0.4)', color: '#c9a84c', flexShrink: 0 };
-        const title = { fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.18em', fontWeight: 600, color: '#fafafa', margin: 0 };
-        const subtitle = { fontSize: '11px', color: '#52525b', fontStyle: 'italic', marginTop: '2px', margin: 0 };
+        const iconBox = { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '36px', height: '36px', borderRadius: '50%', border: '1px solid rgba(201,168,76,0.4)', color: '#c9a84c', flexShrink: 0 };
+        const title = { fontSize: '14px', textTransform: 'uppercase', letterSpacing: '0.22em', fontWeight: 600, color: '#fafafa', margin: 0 };
+        const subtitle = { fontSize: '12px', color: '#52525b', fontStyle: 'italic', marginTop: '4px', margin: 0 };
         const footer = { marginTop: 'auto', paddingTop: '16px', borderTop: '1px solid rgba(255,255,255,0.05)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' };
         const footerLabel = { fontSize: '10px', textTransform: 'uppercase', letterSpacing: '0.15em', color: '#52525b' };
 
@@ -661,16 +661,27 @@ export default function AdsReportPublic() {
               {byAngle.length === 0 ? (
                 <div style={{ height: '240px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#52525b', fontSize: '12px' }}>No angle data</div>
               ) : (
-                <div style={{ flex: 1, minHeight: '300px' }}>
-                  <ResponsiveContainer width="100%" height={300}>
-                    <BarChart data={byAngle} margin={{ top: 10, right: 4, bottom: 8, left: 0 }}>
-                      <CartesianGrid stroke="rgba(255,255,255,0.04)" strokeDasharray="2 4" vertical={false} />
-                      <XAxis dataKey="name" tick={{ fontSize: 10, fill: '#a1a1aa' }} axisLine={false} tickLine={false} interval={0} angle={-30} textAnchor="end" height={70} />
-                      <YAxis tick={{ fontSize: 10, fill: '#71717a' }} axisLine={false} tickLine={false} width={28} allowDecimals={false} />
+                <div style={{ flex: 1, minHeight: '340px' }}>
+                  <ResponsiveContainer width="100%" height={340}>
+                    <BarChart data={byAngle} margin={{ top: 10, right: 8, bottom: 8, left: 0 }}>
+                      <defs>
+                        <linearGradient id="goldBarPub" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%"   stopColor="#e8d5a3" />
+                          <stop offset="60%"  stopColor="#c9a84c" />
+                          <stop offset="100%" stopColor="#9a8030" />
+                        </linearGradient>
+                        <linearGradient id="dimBarPub" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%"   stopColor="#3a3a3a" />
+                          <stop offset="100%" stopColor="#1a1a1a" />
+                        </linearGradient>
+                      </defs>
+                      <CartesianGrid stroke="rgba(255,255,255,0.05)" strokeDasharray="2 4" vertical={false} />
+                      <XAxis dataKey="name" tick={{ fontSize: 12, fill: '#a1a1aa', fontStyle: 'italic' }} axisLine={false} tickLine={false} interval={0} angle={-25} textAnchor="end" height={80} />
+                      <YAxis tick={{ fontSize: 13, fill: '#a1a1aa' }} axisLine={false} tickLine={false} width={36} allowDecimals={false} />
                       <Tooltip content={(p) => tipFn({ ...p, suffix: ' winners' })} cursor={{ fill: 'rgba(255,255,255,0.04)' }} />
-                      <Bar dataKey="value" radius={[4, 4, 0, 0]} maxBarSize={42}>
+                      <Bar dataKey="value" radius={[4, 4, 0, 0]} maxBarSize={64}>
                         {byAngle.map((_, i) => (
-                          <Cell key={i} fill={i === 0 ? '#c9a84c' : '#1f1f1f'} stroke={i === 0 ? '#c9a84c' : '#2a2a2a'} />
+                          <Cell key={i} fill={i === 0 ? 'url(#goldBarPub)' : 'url(#dimBarPub)'} />
                         ))}
                       </Bar>
                     </BarChart>

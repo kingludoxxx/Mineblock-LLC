@@ -917,9 +917,9 @@ export default function AdsReporting() {
 
         const cardCls = "rounded-2xl p-6 flex flex-col bg-gradient-to-br from-[#181818] to-[#0e0e10] border border-white/[0.06] shadow-lg";
         const headerCls = "flex items-start gap-3 mb-5";
-        const iconCls  = "inline-flex items-center justify-center w-7 h-7 rounded-full border border-[var(--color-accent)]/40 text-[var(--color-accent)] flex-shrink-0";
-        const titleCls = "text-[11px] uppercase tracking-[0.18em] font-semibold text-[var(--color-text-primary)]";
-        const subCls   = "text-[11px] text-[var(--color-text-faint)] mt-0.5 italic";
+        const iconCls  = "inline-flex items-center justify-center w-9 h-9 rounded-full border border-[var(--color-accent)]/40 text-[var(--color-accent)] flex-shrink-0";
+        const titleCls = "text-sm uppercase tracking-[0.22em] font-semibold text-[var(--color-text-primary)]";
+        const subCls   = "text-xs text-[var(--color-text-faint)] mt-1 italic";
         const footerCls = "mt-auto pt-4 border-t border-white/[0.05] flex items-center justify-between";
         const footerLabelCls = "text-[10px] uppercase tracking-[0.15em] text-[var(--color-text-faint)]";
 
@@ -994,34 +994,41 @@ export default function AdsReporting() {
                 <div className="h-60 flex items-center justify-center text-xs text-[var(--color-text-faint)]">No angle data</div>
               ) : (
                 <div className="flex-1">
-                  <ResponsiveContainer width="100%" height={300}>
-                    <BarChart data={byAngle} margin={{ top: 10, right: 4, bottom: 8, left: 0 }}>
-                      <CartesianGrid stroke="rgba(255,255,255,0.04)" strokeDasharray="2 4" vertical={false} />
+                  <ResponsiveContainer width="100%" height={340}>
+                    <BarChart data={byAngle} margin={{ top: 10, right: 8, bottom: 8, left: 0 }}>
+                      <defs>
+                        <linearGradient id="goldBar" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%"   stopColor="#e8d5a3" />
+                          <stop offset="60%"  stopColor="#c9a84c" />
+                          <stop offset="100%" stopColor="#9a8030" />
+                        </linearGradient>
+                        <linearGradient id="dimBar" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%"   stopColor="#3a3a3a" />
+                          <stop offset="100%" stopColor="#1a1a1a" />
+                        </linearGradient>
+                      </defs>
+                      <CartesianGrid stroke="rgba(255,255,255,0.05)" strokeDasharray="2 4" vertical={false} />
                       <XAxis
                         dataKey="name"
-                        tick={{ fontSize: 10, fill: '#a1a1aa' }}
+                        tick={{ fontSize: 12, fill: '#a1a1aa', fontStyle: 'italic' }}
                         axisLine={false}
                         tickLine={false}
                         interval={0}
-                        angle={-30}
+                        angle={-25}
                         textAnchor="end"
-                        height={70}
+                        height={80}
                       />
                       <YAxis
-                        tick={{ fontSize: 10, fill: '#71717a' }}
+                        tick={{ fontSize: 13, fill: '#a1a1aa' }}
                         axisLine={false}
                         tickLine={false}
-                        width={28}
+                        width={36}
                         allowDecimals={false}
                       />
                       <Tooltip content={<ChartTooltip valueKey="value" suffix=" winners" />} cursor={{ fill: 'rgba(255,255,255,0.04)' }} />
-                      <Bar dataKey="value" radius={[4, 4, 0, 0]} maxBarSize={42}>
+                      <Bar dataKey="value" radius={[4, 4, 0, 0]} maxBarSize={64}>
                         {byAngle.map((_, i) => (
-                          <Cell
-                            key={i}
-                            fill={i === 0 ? '#c9a84c' : '#1f1f1f'}
-                            stroke={i === 0 ? '#c9a84c' : '#2a2a2a'}
-                          />
+                          <Cell key={i} fill={i === 0 ? 'url(#goldBar)' : 'url(#dimBar)'} />
                         ))}
                       </Bar>
                     </BarChart>
