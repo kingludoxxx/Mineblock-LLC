@@ -37,6 +37,17 @@ async function ensureTables() {
       generated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+  // Permanent cache of Meta Graph resolutions per ad_id. ad creatives don't
+  // change after launch, so we can cache forever and dodge the Meta API
+  // rate limit (which we were hammering every cache refresh).
+  await pgQuery(`
+    CREATE TABLE IF NOT EXISTS meta_ad_resolutions (
+      ad_id        TEXT PRIMARY KEY,
+      fb_link      TEXT,
+      created_time DATE,
+      resolved_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
 }
 
 // ── Date range helpers ────────────────────────────────────────────────────────
@@ -349,63 +360,122 @@ async function enrichWithMetaLinks(rows) {
   }
 
   // 2. Resolve each ad_id to actual FB post + created_time via Graph API.
-  // - permalink_url is NOT a valid AdCreative field (#100)
-  // - object_story_spec.instagram_actor_id is deprecated in v22+ (#12)
-  // We also pull `created_time` so ads whose names don't contain WK##_YYYY
-  // (e.g. "Urgency - 1") still get a Launch Date in the report.
+  // Permanently cache resolutions in `meta_ad_resolutions` so each ad_id is
+  // fetched ONCE ever. Ad creatives don't change after launch, so this is
+  // safe to cache forever and saves us from Meta's strict rate limit
+  // (which we were hammering every cache refresh).
   const FIELDS = 'created_time,creative{effective_object_story_id,object_story_id,instagram_permalink_url,effective_instagram_media_id}';
-  let realPostCount = 0, libraryCount = 0, datedFromMeta = 0, sampleLogged = false;
-  const createdMap = {}; // adName → 'YYYY-MM-DD'
+  const createdMap = {};
+  const allAdIds = [...new Set(Object.values(adIdMap))];
 
-  await Promise.all(
-    Object.entries(adIdMap).map(async ([adName, adId]) => {
+  // Pull whatever we already resolved
+  const cached = {};
+  try {
+    const rows = await pgQuery(
+      `SELECT ad_id, fb_link, created_time FROM meta_ad_resolutions WHERE ad_id = ANY($1)`,
+      [allAdIds]
+    );
+    for (const r of (rows || [])) {
+      cached[r.ad_id] = { fb_link: r.fb_link, created_time: r.created_time };
+    }
+  } catch (err) {
+    console.error('[Ads Report] meta_ad_resolutions read failed:', err.message);
+  }
+
+  let cacheHit = 0, fetched = 0, realPostCount = 0, libraryCount = 0, rateLimited = 0, sampleLogged = false;
+  const newRows = []; // pending writes to meta_ad_resolutions
+
+  // Apply cached resolutions first
+  for (const [adName, adId] of Object.entries(adIdMap)) {
+    if (cached[adId]) {
+      cacheHit++;
+      map[adName] = cached[adId].fb_link || `https://www.facebook.com/ads/library/?id=${adId}`;
+      if (cached[adId].fb_link && !cached[adId].fb_link.includes('/ads/library/')) realPostCount++;
+      else libraryCount++;
+      if (cached[adId].created_time) {
+        const c = cached[adId].created_time;
+        createdMap[adName] = (c instanceof Date) ? c.toISOString().slice(0, 10) : String(c).slice(0, 10);
+      }
+    }
+  }
+
+  // Fetch the rest. Throttle to 5 concurrent so we don't trigger rate limits.
+  const toFetch = Object.entries(adIdMap).filter(([_, id]) => !cached[id]);
+  const CONCURRENCY = 5;
+  for (let i = 0; i < toFetch.length; i += CONCURRENCY) {
+    const batch = toFetch.slice(i, i + CONCURRENCY);
+    await Promise.all(batch.map(async ([adName, adId]) => {
+      let resolvedFbLink = null;
+      let resolvedCreatedTime = null;
       try {
         const url = `${META_GRAPH_URL}/${adId}?fields=${encodeURIComponent(FIELDS)}&access_token=${META_ACCESS_TOKEN}`;
         const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
         if (res.ok) {
           const d = await res.json();
           if (!sampleLogged) {
-            console.log(`[Ads Report] Meta sample for adId=${adId}:`, JSON.stringify(d).slice(0, 500));
+            console.log(`[Ads Report] Meta sample adId=${adId}:`, JSON.stringify(d).slice(0, 500));
             sampleLogged = true;
           }
-          // Capture created_time as YYYY-MM-DD (Meta returns ISO 8601 like "2026-04-27T10:13:42+0000")
           if (d?.created_time && typeof d.created_time === 'string' && d.created_time.length >= 10) {
-            createdMap[adName] = d.created_time.slice(0, 10);
-            datedFromMeta++;
+            resolvedCreatedTime = d.created_time.slice(0, 10);
+            createdMap[adName] = resolvedCreatedTime;
           }
-
           const c = d?.creative || {};
-          const eosi   = c.effective_object_story_id || c.object_story_id;
+          const eosi    = c.effective_object_story_id || c.object_story_id;
           const igPerma = c.instagram_permalink_url;
-
           if (eosi && /^\d+_\d+$/.test(eosi)) {
             const [pageId, postId] = eosi.split('_');
-            map[adName] = `https://www.facebook.com/${pageId}/posts/${postId}`;
-            realPostCount++;
-            return;
-          }
-          if (igPerma) {
-            map[adName] = igPerma;
-            realPostCount++;
-            return;
+            resolvedFbLink = `https://www.facebook.com/${pageId}/posts/${postId}`;
+          } else if (igPerma) {
+            resolvedFbLink = igPerma;
           }
         } else {
+          const errText = await res.text();
+          if (errText.includes('rate') || errText.includes('80004') || res.status === 429) {
+            rateLimited++;
+          }
           if (!sampleLogged) {
-            const errText = await res.text();
-            console.warn(`[Ads Report] Meta error ${res.status} for adId=${adId}: ${errText.slice(0, 300)}`);
+            console.warn(`[Ads Report] Meta error ${res.status} adId=${adId}: ${errText.slice(0, 300)}`);
             sampleLogged = true;
           }
         }
       } catch (err) {
-        // fall through
+        // fall through to library fallback
       }
-      // Fallback to Ads Library
-      map[adName] = `https://www.facebook.com/ads/library/?id=${adId}`;
-      libraryCount++;
-    })
-  );
+      fetched++;
+      if (resolvedFbLink) { map[adName] = resolvedFbLink; realPostCount++; }
+      else { map[adName] = `https://www.facebook.com/ads/library/?id=${adId}`; libraryCount++; }
+      // Save the resolution — but ONLY if we got something real OR a non-rate-limit
+      // error. We don't want to permanently cache "library fallback" results that
+      // came from a rate-limit response (they'll resolve properly next time).
+      if (resolvedFbLink) {
+        newRows.push({ ad_id: adId, fb_link: resolvedFbLink, created_time: resolvedCreatedTime });
+      }
+    }));
+  }
 
-  console.log(`[Ads Report] Meta links: realPosts=${realPostCount} libraryFallback=${libraryCount} datedFromMeta=${datedFromMeta} total=${Object.keys(adIdMap).length}`);
+  // Bulk-insert new resolutions
+  if (newRows.length) {
+    try {
+      const values = newRows.map((_, i) => `($${i*3+1}, $${i*3+2}, $${i*3+3})`).join(',');
+      const params = [];
+      for (const r of newRows) {
+        params.push(r.ad_id, r.fb_link, r.created_time);
+      }
+      await pgQuery(
+        `INSERT INTO meta_ad_resolutions (ad_id, fb_link, created_time) VALUES ${values}
+         ON CONFLICT (ad_id) DO UPDATE SET
+           fb_link = COALESCE(EXCLUDED.fb_link, meta_ad_resolutions.fb_link),
+           created_time = COALESCE(EXCLUDED.created_time, meta_ad_resolutions.created_time),
+           resolved_at = NOW()`,
+        params
+      );
+    } catch (err) {
+      console.error('[Ads Report] meta_ad_resolutions write failed:', err.message);
+    }
+  }
+
+  console.log(`[Ads Report] Meta links: cacheHit=${cacheHit} fetched=${fetched} realPosts=${realPostCount} libraryFallback=${libraryCount} rateLimited=${rateLimited} total=${Object.keys(adIdMap).length}`);
   return { links: map, created: createdMap };
 }
 

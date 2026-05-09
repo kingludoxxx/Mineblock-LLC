@@ -614,7 +614,9 @@ export default function AdsReportPublic() {
                     <ResponsiveContainer width="100%" height={220}>
                       <PieChart>
                         <Pie data={byFormat} dataKey="winCount" nameKey="name" innerRadius={68} outerRadius={100} paddingAngle={2} stroke="none">
-                          {byFormat.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
+                          {byFormat.map((_, i) => (
+                            <Cell key={i} fill={i === 0 ? '#22c55e' : CHART_COLORS[i % CHART_COLORS.length]} />
+                          ))}
                         </Pie>
                         <Tooltip content={(p) => tipFn({ ...p, suffix: ' winners' })} />
                       </PieChart>
@@ -627,12 +629,14 @@ export default function AdsReportPublic() {
                   <div style={{ marginTop: '20px' }}>
                     {byFormat.map((r, i) => {
                       const pct = (100 * r.winCount / total).toFixed(1);
+                      const dotColor = i === 0 ? '#22c55e' : CHART_COLORS[i % CHART_COLORS.length];
+                      const pctColor = i === 0 ? '#22c55e' : '#c9a84c';
                       return (
                         <div key={r.name} style={{ display: 'flex', alignItems: 'center', gap: '12px', fontSize: '12px', marginBottom: '10px', minWidth: 0 }}>
-                          <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: CHART_COLORS[i % CHART_COLORS.length], flexShrink: 0 }} />
+                          <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: dotColor, flexShrink: 0 }} />
                           <span style={{ flex: 1, color: '#fafafa', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.name}>{r.name}</span>
                           <span style={{ color: '#52525b', fontVariantNumeric: 'tabular-nums', width: '52px', textAlign: 'right' }}>{r.winCount}/{r.totalCount}</span>
-                          <span style={{ color: '#c9a84c', fontWeight: 600, fontVariantNumeric: 'tabular-nums', width: '50px', textAlign: 'right' }}>{pct}%</span>
+                          <span style={{ color: pctColor, fontWeight: 600, fontVariantNumeric: 'tabular-nums', width: '50px', textAlign: 'right' }}>{pct}%</span>
                         </div>
                       );
                     })}
@@ -641,7 +645,7 @@ export default function AdsReportPublic() {
               )}
               <div style={footer}>
                 <span style={footerLabel}>Top Format</span>
-                <span style={{ fontSize: '12px', fontWeight: 500, color: '#c9a84c' }}>{topFormat || '—'}</span>
+                <span style={{ fontSize: '12px', fontWeight: 500, color: '#22c55e' }}>{topFormat || '—'}</span>
               </div>
             </div>
 

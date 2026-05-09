@@ -943,7 +943,9 @@ export default function AdsReporting() {
                     <ResponsiveContainer width="100%" height={220}>
                       <PieChart>
                         <Pie data={byFormat} dataKey="winCount" nameKey="name" innerRadius={68} outerRadius={100} paddingAngle={2} stroke="none">
-                          {byFormat.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
+                          {byFormat.map((_, i) => (
+                            <Cell key={i} fill={i === 0 ? '#22c55e' : CHART_COLORS[i % CHART_COLORS.length]} />
+                          ))}
                         </Pie>
                         <Tooltip content={<ChartTooltip valueKey="winCount" suffix=" winners" />} />
                       </PieChart>
@@ -957,12 +959,14 @@ export default function AdsReporting() {
                   <div className="mt-5 space-y-2.5 text-xs">
                     {byFormat.map((r, i) => {
                       const pct = (100 * r.winCount / total).toFixed(1);
+                      const dotColor = i === 0 ? '#22c55e' : CHART_COLORS[i % CHART_COLORS.length];
+                      const pctColor = i === 0 ? '#22c55e' : 'var(--color-accent)';
                       return (
                         <div key={r.name} className="flex items-center gap-3">
-                          <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: CHART_COLORS[i % CHART_COLORS.length] }} />
+                          <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: dotColor }} />
                           <span className="flex-1 truncate text-[var(--color-text-primary)]" title={r.name}>{r.name}</span>
                           <span className="tabular-nums text-[var(--color-text-faint)] w-12 text-right">{r.winCount}/{r.totalCount}</span>
-                          <span className="tabular-nums text-[var(--color-accent)] font-semibold w-12 text-right">{pct}%</span>
+                          <span className="tabular-nums font-semibold w-12 text-right" style={{ color: pctColor }}>{pct}%</span>
                         </div>
                       );
                     })}
@@ -972,7 +976,7 @@ export default function AdsReporting() {
 
               <div className={footerCls}>
                 <span className={footerLabelCls}>Top Format</span>
-                <span className="text-xs font-medium text-[var(--color-accent)]">{topFormat || '—'}</span>
+                <span className="text-xs font-medium" style={{ color: '#22c55e' }}>{topFormat || '—'}</span>
               </div>
             </div>
 
