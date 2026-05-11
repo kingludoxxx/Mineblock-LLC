@@ -1118,25 +1118,43 @@ router.get('/frame-durations', async (req, res) => {
     }
   }
 
+  // Fetch the full file resource (includes media metadata with duration)
+  async function fetchFileMeta(fileId) {
+    try {
+      const resp = await frameioFetchV4(`/accounts/${FRAMEIO_ACCOUNT_ID}/files/${fileId}`);
+      const d = resp?.data || resp;
+      // v4 file resource exposes media_type, media_metadata.duration, frame_rate, etc.
+      const dur =
+        d?.media_metadata?.duration ??
+        d?.metadata?.duration ??
+        d?.media_links?.video_h264_180?.metadata?.duration_in_seconds ??
+        d?.media_links?.video_h264_540?.metadata?.duration_in_seconds ??
+        d?.duration ??
+        null;
+      return { duration: dur, raw_keys: Object.keys(d || {}).slice(0, 20) };
+    } catch (err) {
+      return { duration: null, error: err.message };
+    }
+  }
+
   const out = {};
   for (const folderId of folderIds) {
     const items = await listChildren(folderId);
     if (items && items.__error) { out[folderId] = { error: items.__error }; continue; }
     const assets = [];
     for (const item of items) {
-      // Each item has id, name, type, and (for video files) media_links / metadata
       const id = item.id;
       const name = item.name || '';
       const type = item.type;
-      // Duration may be in metadata.duration or media_links / properties — try several paths
-      const duration =
-        item?.media_links?.video_h264_180?.metadata?.duration_in_seconds ??
-        item?.media_links?.video_h264_540?.metadata?.duration_in_seconds ??
-        item?.metadata?.duration_in_seconds ??
-        item?.properties?.duration_in_seconds ??
-        item?.duration ??
-        null;
-      assets.push({ id, name, type, duration });
+      let duration = null;
+      let err = null;
+      // Only fetch metadata for file-type items (skip nested folders)
+      if (type === 'file' || type === 'asset' || /\.(mp4|mov|avi|m4v|webm)$/i.test(name)) {
+        const meta = await fetchFileMeta(id);
+        duration = meta.duration;
+        if (meta.error) err = meta.error;
+      }
+      assets.push({ id, name, type, duration, ...(err ? { error: err } : {}) });
     }
     out[folderId] = { count: assets.length, assets };
   }
