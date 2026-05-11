@@ -1126,9 +1126,10 @@ router.get('/frame-durations', async (req, res) => {
       // Frame.io v4 file resource doesn't expose duration by default.
       // Probe several sub-paths in parallel and pick whichever returns a duration.
       const paths = [
-        `/accounts/${FRAMEIO_ACCOUNT_ID}/files/${fileId}/media_metadata`,
-        `/accounts/${FRAMEIO_ACCOUNT_ID}/files/${fileId}/playback`,
-        `/accounts/${FRAMEIO_ACCOUNT_ID}/files/${fileId}/proxies`,
+        `/accounts/${FRAMEIO_ACCOUNT_ID}/files/${fileId}?include=media_metadata,attributes,proxies,playback`,
+        `/accounts/${FRAMEIO_ACCOUNT_ID}/files/${fileId}/download`,
+        `/accounts/${FRAMEIO_ACCOUNT_ID}/files/${fileId}/asset_urls`,
+        `/accounts/${FRAMEIO_ACCOUNT_ID}/files/${fileId}/media`,
         `/accounts/${FRAMEIO_ACCOUNT_ID}/files/${fileId}`,
       ];
       const probes = await Promise.all(paths.map(p =>
