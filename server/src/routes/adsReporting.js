@@ -48,6 +48,16 @@ async function ensureTables() {
       resolved_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+  // Permanent cache of ClickUp task URLs per brief number. Avoids hitting the
+  // ClickUp API on every page load for older briefs not in brief_pipeline_*.
+  await pgQuery(`
+    CREATE TABLE IF NOT EXISTS clickup_brief_resolutions (
+      brief_number INTEGER PRIMARY KEY,
+      task_id      TEXT,
+      task_url     TEXT NOT NULL,
+      resolved_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
 }
 
 // ── Date range helpers ────────────────────────────────────────────────────────
@@ -600,23 +610,47 @@ async function enrichWithClickUpLinks(rows) {
   }
 
   const map = {};
-  // We track which ads got a real task vs fell back to the list view, so the
-  // log line at the end is meaningful.
-  const resolvedFromDb = [];
   for (const adName of adNames) {
     const cid = creativeIdMap[adName];
     const num = briefNumMap[adName];
     const url = (cid && urlByCreativeId[cid]) || (num && urlByBriefNum[num]) || null;
-    if (url) { map[adName] = url; resolvedFromDb.push(adName); }
+    if (url) map[adName] = url;
+  }
+
+  // Check the permanent resolution cache for any still-missing briefs
+  const stillMissingNums = [...new Set(
+    adNames.filter(n => !map[n] && briefNumMap[n] != null).map(n => briefNumMap[n])
+  )];
+  if (stillMissingNums.length) {
+    try {
+      const cached = await pgQuery(
+        `SELECT brief_number, task_url FROM clickup_brief_resolutions WHERE brief_number = ANY($1)`,
+        [stillMissingNums]
+      );
+      const urlByNumCache = {};
+      for (const r of (cached || [])) urlByNumCache[r.brief_number] = r.task_url;
+      for (const adName of adNames) {
+        if (!map[adName] && briefNumMap[adName] != null)
+          if (urlByNumCache[briefNumMap[adName]]) map[adName] = urlByNumCache[briefNumMap[adName]];
+      }
+    } catch (err) {
+      console.error('[Ads Report] ClickUp resolution cache lookup failed:', err.message);
+    }
   }
 
   // Fallback: ClickUp API (custom field, then name search)
   const missing = adNames.filter(n => !map[n] && briefNumMap[n] != null);
   if (missing.length && CLICKUP_TOKEN) {
     console.log(`[Ads Report] ClickUp DB miss ${missing.length} briefs — falling back to API`);
+    // Dedupe by brief number so we don't make N parallel calls for the same brief
+    const missingByNum = new Map();
+    for (const adName of missing) {
+      const num = briefNumMap[adName];
+      if (!missingByNum.has(num)) missingByNum.set(num, []);
+      missingByNum.get(num).push(adName);
+    }
     const apiResults = await Promise.all(
-      missing.map(async adName => {
-        const num = briefNumMap[adName];
+      [...missingByNum.entries()].map(async ([num, adNamesForNum]) => {
         try {
           const filter = encodeURIComponent(JSON.stringify([{
             field_id: CLICKUP_BRIEF_FIELD,
@@ -627,14 +661,14 @@ async function enrichWithClickUpLinks(rows) {
             `https://api.clickup.com/api/v2/list/${CLICKUP_LIST_ID}/task?custom_fields=${filter}&include_closed=true`,
             { headers: { Authorization: CLICKUP_TOKEN }, signal: AbortSignal.timeout(12000) }
           );
-          if (!res.ok) return [adName, null];
-          const data = await res.json();
-          let task = (data.tasks || [])[0];
+          let task = null;
+          if (res.ok) {
+            const data = await res.json();
+            task = (data.tasks || [])[0] || null;
+          }
 
           if (!task) {
-            // Team-wide search (no list filter) — older briefs may live in a
-            // different list/space than the current one. Match by brief code
-            // appearing anywhere in the task name.
+            // Team-wide search — older briefs may live in a different list.
             const briefCode = `B${String(num).padStart(4, '0')}`;
             const searchRes = await fetch(
               `https://api.clickup.com/api/v2/team/${CLICKUP_TEAM_ID}/task?query=${encodeURIComponent(briefCode)}&include_closed=true`,
@@ -649,16 +683,31 @@ async function enrichWithClickUpLinks(rows) {
             }
           }
 
-          if (!task) return [adName, null];
-          return [adName, task.url || `https://app.clickup.com/t/${task.id}`];
+          if (!task) return [num, adNamesForNum, null];
+          const url = task.url || `https://app.clickup.com/t/${task.id}`;
+          return [num, adNamesForNum, url];
         } catch (err) {
           console.error(`[Ads Report] ClickUp API fallback failed for B${String(num).padStart(4,'0')}:`, err.message);
-          return [adName, null];
+          return [num, adNamesForNum, null];
         }
       })
     );
-    for (const [adName, url] of apiResults) {
-      if (url) map[adName] = url;
+
+    // Apply results and write successes to the permanent cache
+    const toCache = [];
+    for (const [num, adNamesForNum, url] of apiResults) {
+      if (url) {
+        for (const adName of adNamesForNum) map[adName] = url;
+        toCache.push([num, url]);
+      }
+    }
+    if (toCache.length) {
+      pgQuery(
+        `INSERT INTO clickup_brief_resolutions (brief_number, task_url)
+         SELECT n, u FROM unnest($1::int[], $2::text[]) AS t(n, u)
+         ON CONFLICT (brief_number) DO UPDATE SET task_url = EXCLUDED.task_url, resolved_at = NOW()`,
+        [toCache.map(([n]) => n), toCache.map(([, u]) => u)]
+      ).catch(err => console.error('[Ads Report] ClickUp cache write failed:', err.message));
     }
   }
 
