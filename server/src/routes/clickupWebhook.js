@@ -1118,50 +1118,24 @@ router.get('/frame-durations', async (req, res) => {
     }
   }
 
-  // Fetch the full file resource (includes media metadata with duration)
-  const debugFirst = req.query.debug === '1';
-  let debugDump = null;
+  // Frame.io v4 doesn't expose duration in the file resource — fetch what we
+  // can (file_size, media_type) per asset and return that.
   async function fetchFileMeta(fileId) {
     try {
-      // Frame.io v4 file resource doesn't expose duration by default.
-      // Probe several sub-paths in parallel and pick whichever returns a duration.
-      const paths = [
-        `/accounts/${FRAMEIO_ACCOUNT_ID}/files/${fileId}?include=media_metadata,attributes,proxies,playback`,
-        `/accounts/${FRAMEIO_ACCOUNT_ID}/files/${fileId}/download`,
-        `/accounts/${FRAMEIO_ACCOUNT_ID}/files/${fileId}/asset_urls`,
-        `/accounts/${FRAMEIO_ACCOUNT_ID}/files/${fileId}/media`,
-        `/accounts/${FRAMEIO_ACCOUNT_ID}/files/${fileId}`,
-      ];
-      const probes = await Promise.all(paths.map(p =>
-        frameioFetchV4(p).then(r => ({ path: p, resp: r })).catch(e => ({ path: p, error: e.message }))
-      ));
-      if (debugFirst && !debugDump) debugDump = { fileId, probes };
-
-      // Find duration anywhere in the response payloads
-      function findDuration(obj, depth=0) {
-        if (!obj || depth > 6) return null;
-        if (typeof obj !== 'object') return null;
-        for (const [k, v] of Object.entries(obj)) {
-          if (/^duration(_in_seconds|_seconds|_ms)?$/i.test(k) && typeof v === 'number') return { key: k, value: v };
-          if (typeof v === 'object') {
-            const sub = findDuration(v, depth+1);
-            if (sub) return sub;
-          }
-        }
-        return null;
-      }
-      let durationInfo = null;
-      for (const p of probes) {
-        if (p.error) continue;
-        const found = findDuration(p.resp);
-        if (found) { durationInfo = { ...found, path: p.path }; break; }
-      }
-      const dur = durationInfo?.value ?? null;
-      return { duration: dur };
+      const resp = await frameioFetchV4(`/accounts/${FRAMEIO_ACCOUNT_ID}/files/${fileId}`);
+      const d = resp?.data || {};
+      return {
+        duration: null,
+        file_size: d.file_size ?? null,
+        media_type: d.media_type ?? null,
+        status: d.status ?? null,
+      };
     } catch (err) {
       return { duration: null, error: err.message };
     }
   }
+  const debugFirst = false;
+  const debugDump = null;
 
   const out = {};
   for (const folderId of folderIds) {
@@ -1173,14 +1147,17 @@ router.get('/frame-durations', async (req, res) => {
       const name = item.name || '';
       const type = item.type;
       let duration = null;
+      let file_size = null;
+      let media_type = null;
       let err = null;
-      // Only fetch metadata for file-type items (skip nested folders)
       if (type === 'file' || type === 'asset' || /\.(mp4|mov|avi|m4v|webm)$/i.test(name)) {
         const meta = await fetchFileMeta(id);
         duration = meta.duration;
+        file_size = meta.file_size;
+        media_type = meta.media_type;
         if (meta.error) err = meta.error;
       }
-      assets.push({ id, name, type, duration, ...(err ? { error: err } : {}) });
+      assets.push({ id, name, type, duration, file_size, media_type, ...(err ? { error: err } : {}) });
     }
     out[folderId] = { count: assets.length, assets };
   }
