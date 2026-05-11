@@ -556,7 +556,9 @@ function parseAdName(adName) {
 
 // ── ClickUp task URL lookup ───────────────────────────────────────────────────
 async function enrichWithClickUpLinks(rows) {
-  const adNames = [...new Set(rows.map(r => r.ad_name).filter(Boolean))];
+  // Normalise away Meta-generated " – Copy" suffixes so we don't make
+  // duplicate ClickUp lookups for the same underlying ad.
+  const adNames = [...new Set(rows.map(r => normalizeAdName(r.ad_name)).filter(Boolean))];
   if (!adNames.length) return {};
 
   const creativeIdMap = {};
@@ -731,11 +733,50 @@ async function enrichWithClickUpLinks(rows) {
 }
 
 // ── Build report rows ─────────────────────────────────────────────────────────
+// When an ad is duplicated inside Meta Ads Manager the platform appends
+// " – Copy" (or " - Copy", " – Copy 2", etc.) to the ad name.  Triple Whale
+// tracks each ad separately, so the same creative shows up as two rows.
+// Strip the suffix and merge those rows so reporting reflects one ad.
+const COPY_SUFFIX_RE = /\s*[–—-]\s*Copy(\s+\d+)?\s*$/i;
+function normalizeAdName(name) {
+  return (name || '').replace(COPY_SUFFIX_RE, '').trimEnd();
+}
+
 function buildReportRows(twResult, metaResult, clickupLinks) {
   const { rows } = twResult;
   const { links: metaLinks, created: metaCreated } = metaResult;
 
-  const enriched = rows.map(r => {
+  // First pass: build raw rows keyed by normalised ad name.
+  // When two raw names normalise to the same string (original + copy) we
+  // sum the numeric metrics and prefer the canonical (non-copy) name for
+  // the FB/ClickUp links so we keep the best-resolved URL.
+  const mergedMap = new Map(); // normalisedName → merged raw row
+
+  for (const r of rows) {
+    const norm = normalizeAdName(r.ad_name);
+    const isCopy = COPY_SUFFIX_RE.test(r.ad_name || '');
+    if (!mergedMap.has(norm)) {
+      mergedMap.set(norm, { ...r, _canonical: isCopy ? null : r.ad_name });
+    } else {
+      const m = mergedMap.get(norm);
+      m.total_spend    = (parseFloat(m.total_spend    || 0) + parseFloat(r.total_spend    || 0));
+      m.total_revenue  = (parseFloat(m.total_revenue  || 0) + parseFloat(r.total_revenue  || 0));
+      m.total_purchases= (parseFloat(m.total_purchases|| 0) + parseFloat(r.total_purchases|| 0));
+      if (r.total_new_customer_orders != null)
+        m.total_new_customer_orders = (parseFloat(m.total_new_customer_orders || 0) + parseFloat(r.total_new_customer_orders));
+      // Prefer the non-copy ad name for link lookups
+      if (!isCopy) m._canonical = r.ad_name;
+      // campaign_name: keep whichever is non-empty
+      if (!m.campaign_name && r.campaign_name) m.campaign_name = r.campaign_name;
+    }
+  }
+
+  const mergedRows = [...mergedMap.values()];
+  const mergedCount = rows.length - mergedRows.length;
+  if (mergedCount > 0)
+    console.log(`[Ads Report] Merged ${mergedCount} Meta-copy duplicate ad name(s) into their originals`);
+
+  const enriched = mergedRows.map(r => {
     const spend     = parseFloat(r.total_spend     || 0);
     const revenue   = parseFloat(r.total_revenue   || 0);
     const purchases = parseFloat(r.total_purchases || 0);
@@ -747,13 +788,16 @@ function buildReportRows(twResult, metaResult, clickupLinks) {
     const nvp       = (r.total_new_customer_orders != null && purchases > 0)
       ? +(100 * parseFloat(r.total_new_customer_orders) / purchases).toFixed(1)
       : null;
-    const { avatar, angle, format, editor, dateLaunched } = parseAdName(r.ad_name);
+
+    // Use canonical (non-copy) name for display and link lookups
+    const displayName = r._canonical || normalizeAdName(r.ad_name);
+    const { avatar, angle, format, editor, dateLaunched } = parseAdName(displayName);
 
     return {
-      adName:       r.ad_name       || '',
+      adName:       displayName,
       campaignName: r.campaign_name || '',
-      fbLink:       metaLinks[r.ad_name] || null,
-      clickupUrl:   clickupLinks[r.ad_name] || null,
+      fbLink:       metaLinks[r._canonical || r.ad_name] || metaLinks[r.ad_name] || null,
+      clickupUrl:   clickupLinks[r._canonical || r.ad_name] || clickupLinks[r.ad_name] || null,
       spend:        +spend.toFixed(2),
       roas,
       purchases:    purchases > 0 ? Math.round(purchases) : null,
@@ -767,7 +811,7 @@ function buildReportRows(twResult, metaResult, clickupLinks) {
       // Prefer the WK marker parsed out of the ad name; fall back to Meta's
       // created_time so non-brief-coded ads (e.g. "Urgency - 1") still get a
       // launch date.
-      dateLaunched: dateLaunched || metaCreated[r.ad_name] || null,
+      dateLaunched: dateLaunched || metaCreated[r._canonical || r.ad_name] || metaCreated[r.ad_name] || null,
     };
   });
 
