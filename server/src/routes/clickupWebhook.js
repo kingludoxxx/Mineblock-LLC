@@ -1123,26 +1123,39 @@ router.get('/frame-durations', async (req, res) => {
   let debugDump = null;
   async function fetchFileMeta(fileId) {
     try {
-      // Try with include params to get media metadata
-      const resp = await frameioFetchV4(
-        `/accounts/${FRAMEIO_ACCOUNT_ID}/files/${fileId}?include=media_metadata,attributes&fields=id,name,duration,media_metadata,attributes,properties`
-      );
-      const d = resp?.data || resp;
-      if (debugFirst && !debugDump) debugDump = { fileId, raw: resp };
-      // v4 file resource — try every known duration path
-      const dur =
-        d?.media_metadata?.duration ??
-        d?.metadata?.duration ??
-        d?.media_metadata?.duration_in_seconds ??
-        d?.metadata?.duration_in_seconds ??
-        d?.media?.duration ??
-        d?.video?.duration ??
-        d?.media_links?.video_h264_180?.metadata?.duration_in_seconds ??
-        d?.media_links?.video_h264_540?.metadata?.duration_in_seconds ??
-        d?.duration ??
-        d?.attributes?.duration ??
-        d?.attributes?.media_metadata?.duration ??
-        null;
+      // Frame.io v4 file resource doesn't expose duration by default.
+      // Probe several sub-paths in parallel and pick whichever returns a duration.
+      const paths = [
+        `/accounts/${FRAMEIO_ACCOUNT_ID}/files/${fileId}/media_metadata`,
+        `/accounts/${FRAMEIO_ACCOUNT_ID}/files/${fileId}/playback`,
+        `/accounts/${FRAMEIO_ACCOUNT_ID}/files/${fileId}/proxies`,
+        `/accounts/${FRAMEIO_ACCOUNT_ID}/files/${fileId}`,
+      ];
+      const probes = await Promise.all(paths.map(p =>
+        frameioFetchV4(p).then(r => ({ path: p, resp: r })).catch(e => ({ path: p, error: e.message }))
+      ));
+      if (debugFirst && !debugDump) debugDump = { fileId, probes };
+
+      // Find duration anywhere in the response payloads
+      function findDuration(obj, depth=0) {
+        if (!obj || depth > 6) return null;
+        if (typeof obj !== 'object') return null;
+        for (const [k, v] of Object.entries(obj)) {
+          if (/^duration(_in_seconds|_seconds|_ms)?$/i.test(k) && typeof v === 'number') return { key: k, value: v };
+          if (typeof v === 'object') {
+            const sub = findDuration(v, depth+1);
+            if (sub) return sub;
+          }
+        }
+        return null;
+      }
+      let durationInfo = null;
+      for (const p of probes) {
+        if (p.error) continue;
+        const found = findDuration(p.resp);
+        if (found) { durationInfo = { ...found, path: p.path }; break; }
+      }
+      const dur = durationInfo?.value ?? null;
       return { duration: dur };
     } catch (err) {
       return { duration: null, error: err.message };
