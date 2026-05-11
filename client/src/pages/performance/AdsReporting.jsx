@@ -798,6 +798,7 @@ export default function AdsReporting() {
                   <Th>Avatar</Th>
                   <Th>Angle</Th>
                   <Th>Format</Th>
+                  <Th>Editor</Th>
                   <SortableTh sortKey="dateLaunched" sort={sort} onSort={handleSort}>Launch Date</SortableTh>
                 </tr>
               </thead>
@@ -898,6 +899,9 @@ export default function AdsReporting() {
 
                     {/* Format */}
                     <Td><Tag label={row.format} /></Td>
+
+                    {/* Editor */}
+                    <Td><Tag label={row.editor} /></Td>
 
                     {/* Launch Date */}
                     <Td className="tabular-nums text-[var(--color-text-muted)] whitespace-nowrap">

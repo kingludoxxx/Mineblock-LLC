@@ -473,6 +473,7 @@ export default function AdsReportPublic() {
                   <th style={S.th}>Avatar</th>
                   <th style={S.th}>Angle</th>
                   <th style={S.th}>Format</th>
+                  <th style={S.th}>Editor</th>
                   <th
                     onClick={() => handleSort('dateLaunched')}
                     style={{
@@ -558,6 +559,7 @@ export default function AdsReportPublic() {
                     <td style={S.td}><Tag label={row.avatar} /></td>
                     <td style={S.td}><TagGrey label={row.angle} /></td>
                     <td style={S.td}><TagGrey label={row.format} /></td>
+                    <td style={S.td}><TagGrey label={row.editor} /></td>
                     <td style={{ ...S.td, color: '#a1a1aa', whiteSpace: 'nowrap' }}>{fmtDate(row.dateLaunched)}</td>
                   </tr>
                 ))}
