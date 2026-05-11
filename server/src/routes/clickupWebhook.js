@@ -1119,19 +1119,28 @@ router.get('/frame-durations', async (req, res) => {
   }
 
   // Fetch the full file resource (includes media metadata with duration)
+  const debugFirst = req.query.debug === '1';
+  let debugDump = null;
   async function fetchFileMeta(fileId) {
     try {
       const resp = await frameioFetchV4(`/accounts/${FRAMEIO_ACCOUNT_ID}/files/${fileId}`);
       const d = resp?.data || resp;
-      // v4 file resource exposes media_type, media_metadata.duration, frame_rate, etc.
+      if (debugFirst && !debugDump) debugDump = { fileId, raw: resp };
+      // v4 file resource — try every known duration path
       const dur =
         d?.media_metadata?.duration ??
         d?.metadata?.duration ??
+        d?.media_metadata?.duration_in_seconds ??
+        d?.metadata?.duration_in_seconds ??
+        d?.media?.duration ??
+        d?.video?.duration ??
         d?.media_links?.video_h264_180?.metadata?.duration_in_seconds ??
         d?.media_links?.video_h264_540?.metadata?.duration_in_seconds ??
         d?.duration ??
+        d?.attributes?.duration ??
+        d?.attributes?.media_metadata?.duration ??
         null;
-      return { duration: dur, raw_keys: Object.keys(d || {}).slice(0, 20) };
+      return { duration: dur };
     } catch (err) {
       return { duration: null, error: err.message };
     }
@@ -1158,7 +1167,7 @@ router.get('/frame-durations', async (req, res) => {
     }
     out[folderId] = { count: assets.length, assets };
   }
-  res.json({ project_id: FRAMEIO_PROJECT_ID, folders: out });
+  res.json({ project_id: FRAMEIO_PROJECT_ID, folders: out, ...(debugDump ? { debug: debugDump } : {}) });
 });
 
 // Manual Frame.io folder creation for tasks missing frame links
