@@ -1123,7 +1123,10 @@ router.get('/frame-durations', async (req, res) => {
   let debugDump = null;
   async function fetchFileMeta(fileId) {
     try {
-      const resp = await frameioFetchV4(`/accounts/${FRAMEIO_ACCOUNT_ID}/files/${fileId}`);
+      // Try with include params to get media metadata
+      const resp = await frameioFetchV4(
+        `/accounts/${FRAMEIO_ACCOUNT_ID}/files/${fileId}?include=media_metadata,attributes&fields=id,name,duration,media_metadata,attributes,properties`
+      );
       const d = resp?.data || resp;
       if (debugFirst && !debugDump) debugDump = { fileId, raw: resp };
       // v4 file resource — try every known duration path
