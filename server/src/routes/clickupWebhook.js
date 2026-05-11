@@ -1098,6 +1098,51 @@ router.get('/frame-asset/:assetId', async (req, res) => {
 // Frame.io folder creation is handled by Make.com scenario
 // Use /frame-diagnose to check Frame.io API access if needed
 
+// One-shot helper for the "how long did Faiz edit" analysis.
+// Accepts a comma-separated list of folder IDs via ?folders=
+// For each folder, recursively walks it via the v4 API and returns
+// asset names + durations. Caller decides how to attribute hooks.
+router.get('/frame-durations', async (req, res) => {
+  const foldersParam = String(req.query.folders || '');
+  if (!foldersParam) return res.status(400).json({ error: 'folders query param required (comma-separated folder IDs)' });
+  const folderIds = foldersParam.split(',').map(s => s.trim()).filter(Boolean);
+
+  async function listChildren(folderId) {
+    // v4: GET /accounts/:accountId/folders/:folderId/children?include=children
+    try {
+      const resp = await frameioFetchV4(`/accounts/${FRAMEIO_ACCOUNT_ID}/folders/${folderId}/children`);
+      const items = Array.isArray(resp?.data) ? resp.data : (Array.isArray(resp) ? resp : []);
+      return items;
+    } catch (err) {
+      return { __error: err.message };
+    }
+  }
+
+  const out = {};
+  for (const folderId of folderIds) {
+    const items = await listChildren(folderId);
+    if (items && items.__error) { out[folderId] = { error: items.__error }; continue; }
+    const assets = [];
+    for (const item of items) {
+      // Each item has id, name, type, and (for video files) media_links / metadata
+      const id = item.id;
+      const name = item.name || '';
+      const type = item.type;
+      // Duration may be in metadata.duration or media_links / properties — try several paths
+      const duration =
+        item?.media_links?.video_h264_180?.metadata?.duration_in_seconds ??
+        item?.media_links?.video_h264_540?.metadata?.duration_in_seconds ??
+        item?.metadata?.duration_in_seconds ??
+        item?.properties?.duration_in_seconds ??
+        item?.duration ??
+        null;
+      assets.push({ id, name, type, duration });
+    }
+    out[folderId] = { count: assets.length, assets };
+  }
+  res.json({ project_id: FRAMEIO_PROJECT_ID, folders: out });
+});
+
 // Manual Frame.io folder creation for tasks missing frame links
 router.get('/create-frame-folder/:taskId', async (req, res) => {
   const { taskId } = req.params;
