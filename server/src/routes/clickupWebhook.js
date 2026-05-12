@@ -1197,8 +1197,23 @@ router.post('/frame-rescue-stray-project/:strayProjectId', async (req, res) => {
     const strayRoot = stray.root_folder_id;
     if (!strayRoot) return res.status(500).json({ error: 'stray project has no root_folder_id', stray });
 
-    // 2. Create a new folder inside the target with the stray's name
-    const newFolder = await createFrameFolder(targetFolderId, stray.name);
+    // 2. Find an existing folder inside the target with the same name (from a
+    //    prior failed rescue attempt) or create a new one
+    let newFolder = null;
+    try {
+      const targetChildren = await frameioFetchV4(
+        `/accounts/${FRAMEIO_ACCOUNT_ID}/folders/${targetFolderId}/children?page_size=100`
+      );
+      const existing = (targetChildren?.data || []).find(
+        x => x.type === 'folder' && x.name === stray.name
+      );
+      if (existing) {
+        newFolder = { folderId: existing.id, folderUrl: `https://next.frame.io/project/${FRAMEIO_PROJECT_ID}/${existing.id}` };
+      }
+    } catch {}
+    if (!newFolder) {
+      newFolder = await createFrameFolder(targetFolderId, stray.name);
+    }
     if (!newFolder?.folderId)
       return res.status(500).json({ error: 'failed to create destination folder' });
 
@@ -1221,20 +1236,40 @@ router.post('/frame-rescue-stray-project/:strayProjectId', async (req, res) => {
     for (const item of items) {
       const id = item.id;
       const type = item.type;
-      try {
-        // v4 move endpoint: PATCH /accounts/:acct/(files|folders)/:id with new parent_id
-        const resource = type === 'folder' ? 'folders' : 'files';
-        const patchResp = await frameioFetchV4(
-          `/accounts/${FRAMEIO_ACCOUNT_ID}/${resource}/${id}`,
-          {
-            method: 'PATCH',
-            body: JSON.stringify({ data: { parent_id: newFolder.folderId } }),
-          }
-        );
-        moved.push({ id, name: item.name, type, ok: true });
-      } catch (err) {
-        failed.push({ id, name: item.name, type, error: err.message });
+      const resource = type === 'folder' ? 'folders' : 'files';
+      // Try several known v4 move endpoint variants — the actual shape isn't
+      // publicly documented; fall through on each failure.
+      const attempts = [
+        // attempt 1: POST /v4/accounts/:acct/(files|folders)/:id/move with folder_id
+        { path: `/accounts/${FRAMEIO_ACCOUNT_ID}/${resource}/${id}/move`,
+          method: 'POST', body: { data: { folder_id: newFolder.folderId } } },
+        // attempt 2: same path with destination_folder_id
+        { path: `/accounts/${FRAMEIO_ACCOUNT_ID}/${resource}/${id}/move`,
+          method: 'POST', body: { data: { destination_folder_id: newFolder.folderId } } },
+        // attempt 3: PATCH file with folder_id (in data)
+        { path: `/accounts/${FRAMEIO_ACCOUNT_ID}/${resource}/${id}`,
+          method: 'PATCH', body: { data: { folder_id: newFolder.folderId } } },
+        // attempt 4: PATCH with new_parent_id
+        { path: `/accounts/${FRAMEIO_ACCOUNT_ID}/${resource}/${id}`,
+          method: 'PATCH', body: { data: { new_parent_id: newFolder.folderId } } },
+        // attempt 5: PATCH at /files/:id/parent
+        { path: `/accounts/${FRAMEIO_ACCOUNT_ID}/${resource}/${id}/parent`,
+          method: 'PUT', body: { data: { id: newFolder.folderId } } },
+      ];
+      let ok = false;
+      let lastErr = null;
+      for (const a of attempts) {
+        try {
+          await frameioFetchV4(a.path, { method: a.method, body: JSON.stringify(a.body) });
+          ok = true;
+          moved.push({ id, name: item.name, type, ok: true, via: `${a.method} ${a.path.split('/').slice(-2).join('/')}` });
+          break;
+        } catch (err) {
+          lastErr = err.message;
+          // continue
+        }
       }
+      if (!ok) failed.push({ id, name: item.name, type, error: lastErr });
     }
 
     // 4. Optionally delete the now-empty stray project (only if all moved)
