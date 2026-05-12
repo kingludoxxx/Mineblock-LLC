@@ -1150,6 +1150,114 @@ router.get('/frame-asset/:assetId', async (req, res) => {
 // Frame.io folder creation is handled by Make.com scenario
 // Use /frame-diagnose to check Frame.io API access if needed
 
+// List all PROJECTS in the Frame.io workspace (v4). Useful for finding
+// misplaced workspace-level "projects" that should have been folders inside
+// the main Mineblock LLC project.
+router.get('/frame-list-workspace-projects', async (req, res) => {
+  try {
+    const wsResp = await frameioFetchV4(`/accounts/${FRAMEIO_ACCOUNT_ID}/workspaces?page_size=20`);
+    const workspaces = wsResp?.data || [];
+    const out = [];
+    for (const ws of workspaces) {
+      const projResp = await frameioFetchV4(
+        `/accounts/${FRAMEIO_ACCOUNT_ID}/workspaces/${ws.id}/projects?page_size=100&archived=false`
+      );
+      const projects = projResp?.data || [];
+      out.push({
+        workspace_id: ws.id,
+        workspace_name: ws.name,
+        project_count: projects.length,
+        projects: projects.map(p => ({
+          id: p.id,
+          name: p.name,
+          updated_at: p.updated_at,
+          root_folder_id: p.root_folder_id,
+        })),
+      });
+    }
+    res.json({ account_id: FRAMEIO_ACCOUNT_ID, workspaces: out });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Move all assets out of a workspace-level "stray" project into a target
+// folder inside the main Mineblock LLC project, then delete the empty
+// stray project. Used to clean up Make.com damage.
+router.post('/frame-rescue-stray-project/:strayProjectId', async (req, res) => {
+  const { strayProjectId } = req.params;
+  const targetFolderId = String(req.query.target || FRAMEIO_EDITING_FOLDER);
+  try {
+    // 1. Get the stray project to read its name + root folder
+    const strayResp = await frameioFetchV4(
+      `/accounts/${FRAMEIO_ACCOUNT_ID}/projects/${strayProjectId}`
+    );
+    const stray = strayResp?.data || strayResp;
+    if (!stray?.id) return res.status(404).json({ error: 'stray project not found' });
+    const strayRoot = stray.root_folder_id;
+    if (!strayRoot) return res.status(500).json({ error: 'stray project has no root_folder_id', stray });
+
+    // 2. Create a new folder inside the target with the stray's name
+    const newFolder = await createFrameFolder(targetFolderId, stray.name);
+    if (!newFolder?.folderId)
+      return res.status(500).json({ error: 'failed to create destination folder' });
+
+    // 3. List everything inside the stray's root and move it
+    const moved = [];
+    const failed = [];
+    const childResp = await frameioFetchV4(
+      `/accounts/${FRAMEIO_ACCOUNT_ID}/folders/${strayRoot}/children?page_size=200`
+    );
+    const items = Array.isArray(childResp?.data) ? childResp.data : [];
+    for (const item of items) {
+      const id = item.id;
+      const type = item.type;
+      try {
+        // v4 move endpoint: PATCH /accounts/:acct/(files|folders)/:id with new parent_id
+        const resource = type === 'folder' ? 'folders' : 'files';
+        const patchResp = await frameioFetchV4(
+          `/accounts/${FRAMEIO_ACCOUNT_ID}/${resource}/${id}`,
+          {
+            method: 'PATCH',
+            body: JSON.stringify({ data: { parent_id: newFolder.folderId } }),
+          }
+        );
+        moved.push({ id, name: item.name, type, ok: true });
+      } catch (err) {
+        failed.push({ id, name: item.name, type, error: err.message });
+      }
+    }
+
+    // 4. Optionally delete the now-empty stray project (only if all moved)
+    let deleted = false;
+    if (failed.length === 0 && req.query.delete === '1') {
+      try {
+        await frameioFetchV4(
+          `/accounts/${FRAMEIO_ACCOUNT_ID}/projects/${strayProjectId}`,
+          { method: 'DELETE' }
+        );
+        deleted = true;
+      } catch (err) {
+        // log but don't fail the rescue
+        logger.warn(`[frame-rescue] delete failed for ${strayProjectId}: ${err.message}`);
+      }
+    }
+
+    res.json({
+      stray_project_id: strayProjectId,
+      stray_name: stray.name,
+      destination_folder_id: newFolder.folderId,
+      destination_folder_url: newFolder.folderUrl,
+      moved_count: moved.length,
+      failed_count: failed.length,
+      moved, failed,
+      stray_deleted: deleted,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // List the top-level folders in the Frame.io project (v4). Used to discover
 // the Static Ads Pipeline folder ID so it can be wired into auto-create.
 router.get('/frame-list-project-folders', async (req, res) => {
