@@ -593,7 +593,34 @@ async function syncToHubSpot(csvText) {
 
     // Debug: dump our recognised env-var values at startup so we can see if
     // the cron service has them at all.
-    log(`[env] DUMP_OWNERS=${JSON.stringify(process.env.DUMP_OWNERS)} FORCE_ASSIGN_TO=${JSON.stringify(process.env.FORCE_ASSIGN_TO)} HUBSPOT_AGENTS=${JSON.stringify(process.env.HUBSPOT_AGENTS)}`);
+    log(`[env] DUMP_OWNERS=${JSON.stringify(process.env.DUMP_OWNERS)} FORCE_ASSIGN_TO=${JSON.stringify(process.env.FORCE_ASSIGN_TO)} HUBSPOT_AGENTS=${JSON.stringify(process.env.HUBSPOT_AGENTS)} DUMP_PROPS=${JSON.stringify(process.env.DUMP_PROPS)}`);
+
+    // Diagnostic: dump all custom contact properties so we can find which
+    // internal property the user's "SALES AGENT" column is actually reading.
+    if (process.env.DUMP_PROPS === '1') {
+      try {
+        const props = await hub('GET', '/crm/v3/properties/contacts?archived=false');
+        const custom = (props.results || []).filter(p => !p.hubspotDefined);
+        const lines = custom.map(p => `${p.name}\t${p.label}\t${p.type}/${p.fieldType}`);
+        log(`[DUMP_PROPS] ${lines.length} custom contact properties:\n${lines.join('\n')}`);
+        // Also fetch ONE sample contact with all known agent-like properties to see actual stored values
+        const sample = await hub('POST', '/crm/v3/objects/contacts/search', {
+          filterGroups: [{ filters: [{ propertyName: 'lasso_session_id', operator: 'HAS_PROPERTY' }] }],
+          properties: [...custom.map(p => p.name), 'hubspot_owner_id'],
+          limit: 1,
+        });
+        if (sample.results?.[0]) {
+          const c = sample.results[0];
+          const interesting = Object.entries(c.properties || {})
+            .filter(([k, v]) => v && (typeof v === 'string' && /christian|tyrone|joshua/i.test(v)))
+            .map(([k, v]) => `  ${k} = ${v}`);
+          if (interesting.length) log(`[DUMP_PROPS] sample contact ${c.id} has agent-like values:\n${interesting.join('\n')}`);
+          else log(`[DUMP_PROPS] sample contact ${c.id} has no agent-like values in custom props`);
+        }
+      } catch (e) {
+        log(`[DUMP_PROPS] failed: ${e.status} ${e.data?.message || e.message}`);
+      }
+    }
 
     // One-shot owners-list diagnostic — set DUMP_OWNERS=1 on the cron and the
     // next run will log every HubSpot owner (id, name, email, archived) and
