@@ -1305,6 +1305,17 @@ router.post('/frame-rescue-stray-project/:strayProjectId', async (req, res) => {
   }
 });
 
+// One-shot: delete a specific Frame.io folder (used to clean up placeholders).
+router.delete('/frame-delete-folder/:folderId', async (req, res) => {
+  const { folderId } = req.params;
+  try {
+    await frameioFetchV4(`/accounts/${FRAMEIO_ACCOUNT_ID}/folders/${folderId}`, { method: 'DELETE' });
+    res.json({ folderId, deleted: true });
+  } catch (err) {
+    res.status(500).json({ folderId, error: err.message });
+  }
+});
+
 // List the top-level folders in the Frame.io project (v4). Used to discover
 // the Static Ads Pipeline folder ID so it can be wired into auto-create.
 router.get('/frame-list-project-folders', async (req, res) => {
