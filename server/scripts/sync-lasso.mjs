@@ -427,14 +427,18 @@ async function createContactsAndDeals(records) {
 // on Joshua). Idempotent — once everyone is on the target, subsequent runs
 // are zero-write. Set FORCE_ASSIGN_TO back to empty when done.
 async function forceAssignAllContacts(targetOwnerId) {
-  log(`[FORCE_ASSIGN] Scanning all HubSpot contacts to reassign to owner ${targetOwnerId}...`);
+  // Look up the agent display name from OWNER_POOL (so the custom 'agent' field
+  // stays in sync with the new owner). Falls back to '' if not found.
+  const matched = OWNER_POOL.find(a => String(a.id) === String(targetOwnerId));
+  const targetAgentName = matched?.name || '';
+  log(`[FORCE_ASSIGN] Scanning all HubSpot contacts to reassign to owner ${targetOwnerId}${targetAgentName ? ` (${targetAgentName})` : ''}...`);
   let after;
   let totalScanned = 0;
   const toUpdate = [];
 
-  // Walk all contacts (paged)
+  // Walk all contacts (paged) — fetch both owner_id and the 'agent' custom field
   for (let page = 0; page < 500; page++) { // cap = 50,000 contacts
-    const qs = `limit=100&properties=hubspot_owner_id${after ? `&after=${encodeURIComponent(after)}` : ''}`;
+    const qs = `limit=100&properties=hubspot_owner_id,agent${after ? `&after=${encodeURIComponent(after)}` : ''}`;
     let data;
     try {
       data = await hub('GET', `/crm/v3/objects/contacts?${qs}`);
@@ -445,9 +449,13 @@ async function forceAssignAllContacts(targetOwnerId) {
     const results = data.results || [];
     totalScanned += results.length;
     for (const c of results) {
-      const cur = c.properties?.hubspot_owner_id;
-      if (cur !== String(targetOwnerId)) {
-        toUpdate.push({ id: c.id, properties: { hubspot_owner_id: String(targetOwnerId) } });
+      const curOwner = c.properties?.hubspot_owner_id;
+      const curAgent = c.properties?.agent || '';
+      const updates = {};
+      if (curOwner !== String(targetOwnerId)) updates.hubspot_owner_id = String(targetOwnerId);
+      if (targetAgentName && curAgent !== targetAgentName) updates.agent = targetAgentName;
+      if (Object.keys(updates).length > 0) {
+        toUpdate.push({ id: c.id, properties: updates });
       }
     }
     if (!data.paging?.next?.after) break;
