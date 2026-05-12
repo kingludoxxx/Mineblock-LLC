@@ -1116,6 +1116,34 @@ router.get('/frame-asset/:assetId', async (req, res) => {
 // Frame.io folder creation is handled by Make.com scenario
 // Use /frame-diagnose to check Frame.io API access if needed
 
+// List the top-level folders in the Frame.io project (v4). Used to discover
+// the Static Ads Pipeline folder ID so it can be wired into auto-create.
+router.get('/frame-list-project-folders', async (req, res) => {
+  try {
+    // Get the project, then list children of its root folder
+    const projResp = await frameioFetchV4(
+      `/accounts/${FRAMEIO_ACCOUNT_ID}/projects/${FRAMEIO_PROJECT_ID}`
+    );
+    const project = projResp?.data || projResp;
+    const rootId = project?.root_folder_id || project?.root_asset_id;
+    if (!rootId) {
+      return res.status(500).json({ error: 'No root_folder_id on project', project });
+    }
+    const childResp = await frameioFetchV4(
+      `/accounts/${FRAMEIO_ACCOUNT_ID}/folders/${rootId}/children`
+    );
+    const items = Array.isArray(childResp?.data) ? childResp.data : (Array.isArray(childResp) ? childResp : []);
+    res.json({
+      project_id: FRAMEIO_PROJECT_ID,
+      root_folder_id: rootId,
+      project_name: project?.name,
+      items: items.map(i => ({ id: i.id, name: i.name, type: i.type })),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Retroactively run the naming-convention automation on a specific task.
 // Useful for cards that were created before the Static Ads list was wired in.
 router.post('/regenerate-name/:taskId', async (req, res) => {
