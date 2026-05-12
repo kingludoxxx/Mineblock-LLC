@@ -1305,6 +1305,34 @@ router.post('/frame-rescue-stray-project/:strayProjectId', async (req, res) => {
   }
 });
 
+// One-shot HubSpot owners list — used to find owner IDs for round-robin agents.
+// Returns id, email, firstName, lastName for every active owner.
+router.get('/hubspot-owners', async (req, res) => {
+  const token = process.env.HUBSPOT_TOKEN;
+  if (!token) return res.status(500).json({ error: 'HUBSPOT_TOKEN not set on server' });
+  try {
+    const r = await fetch('https://api.hubapi.com/crm/v3/owners?limit=100', {
+      headers: { 'Authorization': `Bearer ${token}` },
+    });
+    if (!r.ok) {
+      const t = await r.text();
+      return res.status(r.status).json({ error: `HubSpot ${r.status}: ${t.slice(0, 300)}` });
+    }
+    const data = await r.json();
+    const owners = (data.results || []).map(o => ({
+      id: o.id,
+      email: o.email,
+      firstName: o.firstName,
+      lastName: o.lastName,
+      userId: o.userId,
+      archived: o.archived,
+    }));
+    res.json({ count: owners.length, owners });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // One-shot: delete a specific Frame.io folder (used to clean up placeholders).
 router.delete('/frame-delete-folder/:folderId', async (req, res) => {
   const { folderId } = req.params;
