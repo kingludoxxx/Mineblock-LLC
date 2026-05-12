@@ -420,6 +420,68 @@ async function createContactsAndDeals(records) {
   return { createdContacts, createdDeals, failedContacts, failedDeals };
 }
 
+// ─── One-shot bulk reassignment ────────────────────────────────────────────
+// When env FORCE_ASSIGN_TO=<ownerId> is set, scan EVERY HubSpot contact and
+// reassign any whose hubspot_owner_id != <ownerId>. Used to bulk-move legacy
+// leads onto a new agent (e.g. retiring Christian/Tyrone, putting everyone
+// on Joshua). Idempotent — once everyone is on the target, subsequent runs
+// are zero-write. Set FORCE_ASSIGN_TO back to empty when done.
+async function forceAssignAllContacts(targetOwnerId) {
+  log(`[FORCE_ASSIGN] Scanning all HubSpot contacts to reassign to owner ${targetOwnerId}...`);
+  let after;
+  let totalScanned = 0;
+  const toUpdate = [];
+
+  // Walk all contacts (paged)
+  for (let page = 0; page < 500; page++) { // cap = 50,000 contacts
+    const qs = `limit=100&properties=hubspot_owner_id${after ? `&after=${encodeURIComponent(after)}` : ''}`;
+    let data;
+    try {
+      data = await hub('GET', `/crm/v3/objects/contacts?${qs}`);
+    } catch (e) {
+      log(`[FORCE_ASSIGN] paginated fetch failed (page ${page}): ${e.status} ${e.data?.message || e.message}`);
+      break;
+    }
+    const results = data.results || [];
+    totalScanned += results.length;
+    for (const c of results) {
+      const cur = c.properties?.hubspot_owner_id;
+      if (cur !== String(targetOwnerId)) {
+        toUpdate.push({ id: c.id, properties: { hubspot_owner_id: String(targetOwnerId) } });
+      }
+    }
+    if (!data.paging?.next?.after) break;
+    after = data.paging.next.after;
+  }
+
+  log(`[FORCE_ASSIGN] Scanned ${totalScanned}, need to reassign ${toUpdate.length}`);
+  if (toUpdate.length === 0) return { scanned: totalScanned, reassigned: 0 };
+
+  // Batch update — 100 inputs per request
+  let reassigned = 0;
+  let failed = 0;
+  for (const batch of chunk(toUpdate, 100)) {
+    try {
+      await hub('POST', '/crm/v3/objects/contacts/batch/update', { inputs: batch });
+      reassigned += batch.length;
+    } catch (e) {
+      log(`[FORCE_ASSIGN] batch update failed: ${e.status} ${e.data?.message || e.message}`);
+      // Fallback to individual updates so one bad record doesn't kill the batch
+      for (const input of batch) {
+        try {
+          await hub('PATCH', `/crm/v3/objects/contacts/${input.id}`, { properties: input.properties });
+          reassigned++;
+        } catch (e2) {
+          failed++;
+          log(`  ${input.id} → ${e2.status} ${e2.data?.message || ''}`);
+        }
+      }
+    }
+  }
+  log(`[FORCE_ASSIGN] ✅ Reassigned ${reassigned} contacts to owner ${targetOwnerId} (${failed} failed)`);
+  return { scanned: totalScanned, reassigned, failed };
+}
+
 // ─── Step 4: Sync orchestrator ─────────────────────────────────────────────
 async function syncToHubSpot(csvText) {
   const records = parse(csvText, { columns: true, skip_empty_lines: true, trim: true });
@@ -520,6 +582,19 @@ async function syncToHubSpot(csvText) {
   const startTime = Date.now();
   try {
     log('=== Lasso → HubSpot sync starting ===');
+
+    // One-shot bulk owner reassignment. Set FORCE_ASSIGN_TO=<ownerId> on the
+    // cron service to push every HubSpot contact onto that owner (used when
+    // agents change). Idempotent — once everyone is on the target it's a
+    // no-op. Unset the env var when done.
+    const FORCE_ASSIGN_TO = (process.env.FORCE_ASSIGN_TO || '').trim();
+    if (FORCE_ASSIGN_TO) {
+      const fa = await forceAssignAllContacts(FORCE_ASSIGN_TO);
+      if (fa.reassigned > 0) {
+        await notifySlack(`🔁 Lasso sync — bulk reassigned ${fa.reassigned}/${fa.scanned} contacts to owner ${FORCE_ASSIGN_TO}`, 'good');
+      }
+    }
+
     const csvFlagIdx = process.argv.indexOf('--csv');
     const csv = csvFlagIdx !== -1 && process.argv[csvFlagIdx + 1]
       ? (log(`Using local CSV file: ${process.argv[csvFlagIdx + 1]}`), readFileSync(process.argv[csvFlagIdx + 1], 'utf-8'))
