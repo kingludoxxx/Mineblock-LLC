@@ -102,8 +102,35 @@ async function clickupFetch(url, options = {}) {
   return res.json();
 }
 
+// Cards in the Static Ads list currently 500 on GET /v2/task/{id} due to a
+// ClickUp-side bug (verified across multiple cards 2026-05-12). Fall back to
+// scanning the list endpoint — which works — to keep the webhook resilient.
 async function getTask(taskId) {
-  return clickupFetch(`/task/${taskId}`);
+  try {
+    return await clickupFetch(`/task/${taskId}`);
+  } catch (err) {
+    if (!/500|ERROR_HANDLER/i.test(err.message)) throw err;
+    // Try each NAMING_LISTS in turn
+    for (const listId of NAMING_LISTS) {
+      try {
+        for (let page = 0; page < 5; page++) {
+          const data = await clickupFetch(
+            `/list/${listId}/task?page=${page}&limit=100&include_closed=true&subtasks=true`
+          );
+          const tasks = data?.tasks || [];
+          const hit = tasks.find(t => t.id === taskId);
+          if (hit) {
+            logger.warn(`[getTask] ${taskId} hit ClickUp 500 on direct GET — recovered via list ${listId}`);
+            return hit;
+          }
+          if (tasks.length < 100) break;
+        }
+      } catch (e) {
+        // try next list
+      }
+    }
+    throw err;
+  }
 }
 
 async function updateTaskStatus(taskId, status) {
