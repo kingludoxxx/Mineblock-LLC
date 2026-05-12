@@ -1236,25 +1236,29 @@ router.post('/frame-rescue-stray-project/:strayProjectId', async (req, res) => {
     for (const item of items) {
       const id = item.id;
       const type = item.type;
-      const resource = type === 'folder' ? 'folders' : 'files';
-      // Try several known v4 move endpoint variants — the actual shape isn't
-      // publicly documented; fall through on each failure.
+      // Map Frame.io v4 type → API resource path
+      let resource;
+      if (type === 'folder') resource = 'folders';
+      else if (type === 'version_stack') resource = 'version_stacks';
+      else if (type === 'file') resource = 'files';
+      else resource = type + 's';
+
       const attempts = [
-        // attempt 1: POST /v4/accounts/:acct/(files|folders)/:id/move with folder_id
+        // attempt 1: POST /:resource/:id/move with folder_id
         { path: `/accounts/${FRAMEIO_ACCOUNT_ID}/${resource}/${id}/move`,
           method: 'POST', body: { data: { folder_id: newFolder.folderId } } },
-        // attempt 2: same path with destination_folder_id
+        // attempt 2: POST /:resource/:id/move with parent_id
         { path: `/accounts/${FRAMEIO_ACCOUNT_ID}/${resource}/${id}/move`,
-          method: 'POST', body: { data: { destination_folder_id: newFolder.folderId } } },
-        // attempt 3: PATCH file with folder_id (in data)
+          method: 'POST', body: { data: { parent_id: newFolder.folderId } } },
+        // attempt 3: PATCH /:resource/:id with parent_folder_id
         { path: `/accounts/${FRAMEIO_ACCOUNT_ID}/${resource}/${id}`,
-          method: 'PATCH', body: { data: { folder_id: newFolder.folderId } } },
-        // attempt 4: PATCH with new_parent_id
+          method: 'PATCH', body: { data: { parent_folder_id: newFolder.folderId } } },
+        // attempt 4: PATCH with destination_id
         { path: `/accounts/${FRAMEIO_ACCOUNT_ID}/${resource}/${id}`,
-          method: 'PATCH', body: { data: { new_parent_id: newFolder.folderId } } },
-        // attempt 5: PATCH at /files/:id/parent
-        { path: `/accounts/${FRAMEIO_ACCOUNT_ID}/${resource}/${id}/parent`,
-          method: 'PUT', body: { data: { id: newFolder.folderId } } },
+          method: 'PATCH', body: { data: { destination_id: newFolder.folderId } } },
+        // attempt 5: PATCH with name only (no-op probe to see what fields accept)
+        { path: `/accounts/${FRAMEIO_ACCOUNT_ID}/${resource}/${id}`,
+          method: 'PATCH', body: { data: { folder: { id: newFolder.folderId } } } },
       ];
       let ok = false;
       const attemptErrors = [];
@@ -1265,7 +1269,7 @@ router.post('/frame-rescue-stray-project/:strayProjectId', async (req, res) => {
           moved.push({ id, name: item.name, type, ok: true, via: `${a.method} ${a.path.split('/').slice(-2).join('/')}` });
           break;
         } catch (err) {
-          attemptErrors.push(`${a.method} ${a.path.replace(/^.*?\/files\//, '/files/').replace(/^.*?\/folders\//,'/folders/').slice(0,60)} body=${Object.keys(a.body.data || {}).join(',')} → ${err.message.slice(0, 80)}`);
+          attemptErrors.push(`${a.method} ${a.path.split('/').slice(-3).join('/')} body=${JSON.stringify(a.body.data).slice(0,80)} → ${err.message.slice(0, 220)}`);
         }
       }
       if (!ok) failed.push({ id, name: item.name, type, errors: attemptErrors });
