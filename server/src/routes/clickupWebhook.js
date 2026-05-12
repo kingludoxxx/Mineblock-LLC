@@ -1257,7 +1257,7 @@ router.post('/frame-rescue-stray-project/:strayProjectId', async (req, res) => {
           method: 'PUT', body: { data: { id: newFolder.folderId } } },
       ];
       let ok = false;
-      let lastErr = null;
+      const attemptErrors = [];
       for (const a of attempts) {
         try {
           await frameioFetchV4(a.path, { method: a.method, body: JSON.stringify(a.body) });
@@ -1265,11 +1265,10 @@ router.post('/frame-rescue-stray-project/:strayProjectId', async (req, res) => {
           moved.push({ id, name: item.name, type, ok: true, via: `${a.method} ${a.path.split('/').slice(-2).join('/')}` });
           break;
         } catch (err) {
-          lastErr = err.message;
-          // continue
+          attemptErrors.push(`${a.method} ${a.path.replace(/^.*?\/files\//, '/files/').replace(/^.*?\/folders\//,'/folders/').slice(0,60)} body=${Object.keys(a.body.data || {}).join(',')} → ${err.message.slice(0, 80)}`);
         }
       }
-      if (!ok) failed.push({ id, name: item.name, type, error: lastErr });
+      if (!ok) failed.push({ id, name: item.name, type, errors: attemptErrors });
     }
 
     // 4. Optionally delete the now-empty stray project (only if all moved)
