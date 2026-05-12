@@ -591,6 +591,20 @@ async function syncToHubSpot(csvText) {
   try {
     log('=== Lasso → HubSpot sync starting ===');
 
+    // One-shot owners-list diagnostic — set DUMP_OWNERS=1 on the cron and the
+    // next run will log every HubSpot owner (id, name, email, archived) and
+    // post to Slack. Used to verify agent owner-IDs.
+    if (process.env.DUMP_OWNERS === '1') {
+      try {
+        const ownersResp = await hub('GET', '/crm/v3/owners?limit=100');
+        const lines = (ownersResp.results || []).map(o => `${o.id}\t${o.firstName || ''} ${o.lastName || ''}\t${o.email}${o.archived ? ' [ARCHIVED]' : ''}`);
+        log(`[DUMP_OWNERS] ${lines.length} owners:\n${lines.join('\n')}`);
+        await notifySlack(`📋 HubSpot owners list (${lines.length}):\n\`\`\`\n${lines.join('\n')}\n\`\`\``, 'good');
+      } catch (e) {
+        log(`[DUMP_OWNERS] failed: ${e.status} ${e.data?.message || e.message}`);
+      }
+    }
+
     // One-shot bulk owner reassignment. Set FORCE_ASSIGN_TO=<ownerId> on the
     // cron service to push every HubSpot contact onto that owner (used when
     // agents change). Idempotent — once everyone is on the target it's a
