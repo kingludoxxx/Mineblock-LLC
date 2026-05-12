@@ -37,8 +37,9 @@ const FRAMEIO_API = 'https://api.frame.io/v2';
 // List IDs
 const MEDIA_BUYING_LIST = '901518769621';
 const VIDEO_ADS_LIST = '901518716584';
+const STATIC_ADS_LIST = '901518769479';
 const SYNC_LISTS = [VIDEO_ADS_LIST];
-const NAMING_LISTS = [VIDEO_ADS_LIST];
+const NAMING_LISTS = [VIDEO_ADS_LIST, STATIC_ADS_LIST];
 
 // Statuses to sync
 const SYNC_STATUSES = ['launched', 'ready to launch'];
@@ -60,6 +61,10 @@ const FIELD_IDS = {
   avatarVideo: '4ad59f88-89cc-45e5-bc56-0027a4ab8624',
   creativeType: 'b7f50dff-c752-47a7-830d-c3780021a27f',
   creator: 'be5a2a58-f355-4fac-8263-2824725eaa64',
+  // Static Ads only — different field IDs for Product / Avatar; no Creative
+  // Type or Creator fields exist on that list (creativeType is always "IMG")
+  productStatic: '11a3ee08-50c8-4c19-b8cc-7c50eaabbe65',
+  avatarStatic: 'a007dc5d-2422-4fc4-b3ca-e9e53489e76b',
 };
 
 // Dropdown index → label mappings
@@ -185,9 +190,16 @@ async function getNextBriefNumber() {
   return maxBrief + 1;
 }
 
-// Generate naming convention from task custom fields
+// Generate naming convention from task custom fields. The Video Ads and
+// Static Ads lists share most field IDs but differ on Product, Avatar, and
+// Creative Type / Creator presence — pick the right ones per list.
 function generateNamingConvention(task, listId, briefNumber) {
-  const product = getFieldValue(task, FIELD_IDS.productVideo) || 'NA';
+  const isStatic = listId === STATIC_ADS_LIST;
+
+  const productFieldId = isStatic ? FIELD_IDS.productStatic : FIELD_IDS.productVideo;
+  const avatarFieldId  = isStatic ? FIELD_IDS.avatarStatic  : FIELD_IDS.avatarVideo;
+
+  const product = getFieldValue(task, productFieldId) || 'NA';
   const parentBriefId = getFieldValue(task, FIELD_IDS.parentBriefId) || 'NA';
 
   // Brief ID always uses B prefix
@@ -195,9 +207,14 @@ function generateNamingConvention(task, listId, briefNumber) {
 
   const angle = getFieldValue(task, FIELD_IDS.angle) || 'NA';
   const briefType = getFieldValue(task, FIELD_IDS.briefType) || 'NA';
-  const creativeType = getFieldValue(task, FIELD_IDS.creativeType) || 'NA';
-  const avatar = getFieldValue(task, FIELD_IDS.avatarVideo) || 'NA';
-  const creator = getFieldValue(task, FIELD_IDS.creator) || 'NA';
+  // Static Ads list has no "Creative Type" field — the type is always IMG.
+  // Video Ads picks creativeType from the dropdown (Mashup, ShortVid, etc.)
+  const creativeType = isStatic
+    ? 'IMG'
+    : (getFieldValue(task, FIELD_IDS.creativeType) || 'NA');
+  const avatar = getFieldValue(task, avatarFieldId) || 'NA';
+  // Static Ads list has no Creator field — leave as NA
+  const creator = isStatic ? 'NA' : (getFieldValue(task, FIELD_IDS.creator) || 'NA');
   const editor = getFieldValue(task, FIELD_IDS.editor) || 'NA';
   const strategist = getFieldValue(task, FIELD_IDS.creativeStrategist) || 'NA';
 
@@ -462,14 +479,15 @@ async function handleTaskCreated(taskId) {
       logger.info(`[ClickUp Webhook] Auto-assigned brief number B${String(briefNumber).padStart(4, '0')} to task ${taskId}`);
     }
 
-    // Check if product relationship is set yet
-    let product = getFieldValue(task, FIELD_IDS.productVideo);
+    // Check if product relationship is set yet (field ID depends on the list)
+    const productFieldId = listId === STATIC_ADS_LIST ? FIELD_IDS.productStatic : FIELD_IDS.productVideo;
+    let product = getFieldValue(task, productFieldId);
     if (!product) {
       // Product not set yet — wait longer and re-fetch
       logger.info(`[ClickUp Webhook] Product not set for ${taskId}, waiting 15s more...`);
       await new Promise((r) => setTimeout(r, 15000));
       const refreshed = await getTask(taskId);
-      product = getFieldValue(refreshed, FIELD_IDS.productVideo);
+      product = getFieldValue(refreshed, productFieldId);
       if (product) {
         // Use refreshed task for naming
         const namingConv = generateNamingConvention(refreshed, listId, briefNumber);
@@ -1097,6 +1115,58 @@ router.get('/frame-asset/:assetId', async (req, res) => {
 
 // Frame.io folder creation is handled by Make.com scenario
 // Use /frame-diagnose to check Frame.io API access if needed
+
+// Retroactively run the naming-convention automation on a specific task.
+// Useful for cards that were created before the Static Ads list was wired in.
+router.post('/regenerate-name/:taskId', async (req, res) => {
+  const { taskId } = req.params;
+  try {
+    await handleCustomFieldChanged(taskId);
+    const task = await getTask(taskId);
+    res.json({ ok: true, taskId, new_name: task?.name || null });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Bulk: regenerate naming for every task in a list that still has the literal
+// short name (length < 30) — i.e. those the automation missed.
+router.post('/regenerate-names-in-list/:listId', async (req, res) => {
+  const { listId } = req.params;
+  if (!NAMING_LISTS.includes(listId))
+    return res.status(400).json({ error: `List ${listId} not in NAMING_LISTS` });
+  const stale = [];
+  try {
+    for (let page = 0; page < 20; page++) {
+      const data = await clickupFetch(
+        `/list/${listId}/task?page=${page}&limit=100&include_closed=true&subtasks=true`
+      );
+      const tasks = data?.tasks || [];
+      if (!tasks.length) break;
+      for (const t of tasks) {
+        const nm = String(t.name || '').trim();
+        // "Looks unrenamed" heuristic: name does not contain " - B" + 4 digits.
+        if (!/ - B\d{4}/.test(nm)) {
+          stale.push({ id: t.id, name: nm });
+        }
+      }
+      if (tasks.length < 100) break;
+    }
+    const results = [];
+    for (const t of stale) {
+      try {
+        await handleCustomFieldChanged(t.id);
+        const refreshed = await getTask(t.id);
+        results.push({ id: t.id, old: t.name, new: refreshed?.name || null });
+      } catch (err) {
+        results.push({ id: t.id, old: t.name, error: err.message });
+      }
+    }
+    res.json({ listId, scanned: stale.length, results });
+  } catch (err) {
+    res.status(500).json({ error: err.message, partial: stale });
+  }
+});
 
 // One-shot helper for the "how long did Faiz edit" analysis.
 // Accepts a comma-separated list of folder IDs via ?folders=
