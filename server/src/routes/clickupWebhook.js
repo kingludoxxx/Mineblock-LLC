@@ -31,14 +31,18 @@ const TEAM_ID = '90152075024';
 // Frame.io config
 const FRAMEIO_TOKEN = process.env.FRAMEIO_TOKEN || '';
 const FRAMEIO_PROJECT_ID = '19c0ce1f-f357-4da8-ba1f-bd7eb201e660';
-const FRAMEIO_EDITING_FOLDER = '2eb1701e-fd39-45fa-a981-947a565f9093'; // "Video Ads Pipeline" folder
+const FRAMEIO_EDITING_FOLDER = '2eb1701e-fd39-45fa-a981-947a565f9093';        // "MR | Creatives" (video pipeline)
+const FRAMEIO_STATIC_EDITING_FOLDER = 'c9440b5e-beb0-416a-91bf-27cfb8dad2e9'; // "MR | Static Ads" (static pipeline)
 const FRAMEIO_API = 'https://api.frame.io/v2';
 
 // List IDs
 const MEDIA_BUYING_LIST = '901518769621';
 const VIDEO_ADS_LIST = '901518716584';
 const STATIC_ADS_LIST = '901518769479';
-const SYNC_LISTS = [VIDEO_ADS_LIST];
+// Lists whose status changes the webhook processes (frame folder auto-create,
+// YT-counterpart duplication, etc.). Static Ads only uses the frame folder
+// piece — YT duplication is video-only.
+const SYNC_LISTS = [VIDEO_ADS_LIST, STATIC_ADS_LIST];
 const NAMING_LISTS = [VIDEO_ADS_LIST, STATIC_ADS_LIST];
 
 // Statuses to sync
@@ -669,13 +673,16 @@ async function ensureMediaBuyingTask(task, taskListId) {
 async function handleEditingStatusChange(task, taskListId) {
   const taskId = task.id;
 
-  // Only run for the Video Ads list. Brief-pipeline tasks and YT duplicates
-  // are handled elsewhere (or not at all — YT ready-to-launch copies reuse
-  // the parent's frame link).
-  if (taskListId !== VIDEO_ADS_LIST) {
-    logger.info(`[handleEditingStatusChange] Skipping ${taskId} — not in Video Ads list (list=${taskListId})`);
+  // Pick the right Frame.io parent folder for this ClickUp list. Static Ads
+  // get a separate "MR | Static Ads" parent; video lives under "MR | Creatives".
+  let parentFolderId;
+  if (taskListId === VIDEO_ADS_LIST)         parentFolderId = FRAMEIO_EDITING_FOLDER;
+  else if (taskListId === STATIC_ADS_LIST)   parentFolderId = FRAMEIO_STATIC_EDITING_FOLDER;
+  else {
+    logger.info(`[handleEditingStatusChange] Skipping ${taskId} — not a pipeline list (list=${taskListId})`);
     return;
   }
+
   if (task.description?.includes('[yt-duplicate]')) {
     logger.info(`[handleEditingStatusChange] Skipping ${taskId} — YT duplicate, reuses parent frame link`);
     return;
@@ -696,8 +703,8 @@ async function handleEditingStatusChange(task, taskListId) {
   }
 
   try {
-    logger.info(`[handleEditingStatusChange] Creating Frame.io folder for ${taskId}: "${folderName}"`);
-    const result = await createFrameFolder(FRAMEIO_EDITING_FOLDER, folderName);
+    logger.info(`[handleEditingStatusChange] Creating Frame.io folder for ${taskId} (list=${taskListId}, parent=${parentFolderId}): "${folderName}"`);
+    const result = await createFrameFolder(parentFolderId, folderName);
     if (!result?.folderUrl) {
       logger.error(`[handleEditingStatusChange] createFrameFolder returned no URL for ${taskId} — aborting`);
       return;
@@ -1283,8 +1290,13 @@ router.get('/create-frame-folder/:taskId', async (req, res) => {
     // Always use the full task name for the folder name
     const folderName = task.name;
 
+    // Pick the right parent folder based on the task's list
+    const taskListId = task.list?.id;
+    let parentFolderId = FRAMEIO_EDITING_FOLDER;
+    if (taskListId === STATIC_ADS_LIST) parentFolderId = FRAMEIO_STATIC_EDITING_FOLDER;
+
     // Create the folder directly in the correct editing folder
-    const result = await createFrameFolder(FRAMEIO_EDITING_FOLDER, folderName);
+    const result = await createFrameFolder(parentFolderId, folderName);
     if (!result) {
       return res.status(500).json({ error: 'Frame.io folder creation failed' });
     }
