@@ -591,6 +591,10 @@ async function syncToHubSpot(csvText) {
   try {
     log('=== Lasso → HubSpot sync starting ===');
 
+    // Debug: dump our recognised env-var values at startup so we can see if
+    // the cron service has them at all.
+    log(`[env] DUMP_OWNERS=${JSON.stringify(process.env.DUMP_OWNERS)} FORCE_ASSIGN_TO=${JSON.stringify(process.env.FORCE_ASSIGN_TO)} HUBSPOT_AGENTS=${JSON.stringify(process.env.HUBSPOT_AGENTS)}`);
+
     // One-shot owners-list diagnostic — set DUMP_OWNERS=1 on the cron and the
     // next run will log every HubSpot owner (id, name, email, archived) and
     // post to Slack. Used to verify agent owner-IDs.
