@@ -1205,10 +1205,19 @@ router.post('/frame-rescue-stray-project/:strayProjectId', async (req, res) => {
     // 3. List everything inside the stray's root and move it
     const moved = [];
     const failed = [];
-    const childResp = await frameioFetchV4(
-      `/accounts/${FRAMEIO_ACCOUNT_ID}/folders/${strayRoot}/children?page_size=200`
-    );
-    const items = Array.isArray(childResp?.data) ? childResp.data : [];
+    // Frame.io v4 caps page_size at 100; walk pages to be safe
+    const items = [];
+    let cursor = null;
+    for (let page = 0; page < 10; page++) {
+      const qs = cursor ? `?page_size=100&page_token=${cursor}` : `?page_size=100`;
+      const childResp = await frameioFetchV4(
+        `/accounts/${FRAMEIO_ACCOUNT_ID}/folders/${strayRoot}/children${qs}`
+      );
+      const data = Array.isArray(childResp?.data) ? childResp.data : [];
+      items.push(...data);
+      cursor = childResp?.pagination?.next_cursor || childResp?.links?.next || null;
+      if (!cursor || data.length < 100) break;
+    }
     for (const item of items) {
       const id = item.id;
       const type = item.type;
