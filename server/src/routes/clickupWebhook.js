@@ -1160,7 +1160,7 @@ router.get('/frame-list-workspace-projects', async (req, res) => {
     const out = [];
     for (const ws of workspaces) {
       const projResp = await frameioFetchV4(
-        `/accounts/${FRAMEIO_ACCOUNT_ID}/workspaces/${ws.id}/projects?page_size=100&archived=false`
+        `/accounts/${FRAMEIO_ACCOUNT_ID}/workspaces/${ws.id}/projects?page_size=100`
       );
       const projects = projResp?.data || [];
       out.push({
