@@ -490,6 +490,81 @@ async function forceAssignAllContacts(targetOwnerId) {
   return { scanned: totalScanned, reassigned, failed };
 }
 
+// One-shot bulk SPLIT: divide every HubSpot contact across multiple owner IDs
+// in deterministic round-robin order (hash-based on contact ID so the split
+// is stable across runs and idempotent — same contact always ends up on the
+// same owner). Triggered by SPLIT_BETWEEN env var with comma-separated IDs.
+async function splitContactsBetweenOwners(ownerIds) {
+  // Build name lookup from OWNER_POOL (which is already parsed from HUBSPOT_AGENTS)
+  const targetById = {};
+  for (const id of ownerIds) {
+    const match = OWNER_POOL.find(a => String(a.id) === String(id));
+    targetById[id] = { id, name: match?.name || '' };
+  }
+  const nameList = Object.values(targetById).map(t => `${t.id}(${t.name || '?'})`).join(', ');
+  log(`[SPLIT] Splitting all contacts between ${ownerIds.length} owners: ${nameList}`);
+
+  let after;
+  let scanned = 0;
+  const toUpdate = [];
+
+  for (let page = 0; page < 500; page++) {
+    const qs = `limit=100&properties=hubspot_owner_id,agent${after ? `&after=${encodeURIComponent(after)}` : ''}`;
+    let data;
+    try {
+      data = await hub('GET', `/crm/v3/objects/contacts?${qs}`);
+    } catch (e) {
+      log(`[SPLIT] paginated fetch failed (page ${page}): ${e.status} ${e.data?.message || e.message}`);
+      break;
+    }
+    const results = data.results || [];
+    for (const c of results) {
+      scanned++;
+      // Stable round-robin: hash the contact ID and mod by owner count.
+      // Same contact always ends up on the same owner across runs.
+      const hash = [...String(c.id)].reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) >>> 0, 0);
+      const target = targetById[ownerIds[hash % ownerIds.length]];
+      const curOwner = c.properties?.hubspot_owner_id;
+      const curAgent = c.properties?.agent || '';
+      const updates = {};
+      if (curOwner !== String(target.id)) updates.hubspot_owner_id = String(target.id);
+      if (target.name && curAgent !== target.name) updates.agent = target.name;
+      if (Object.keys(updates).length > 0) toUpdate.push({ id: c.id, properties: updates });
+    }
+    if (!data.paging?.next?.after) break;
+    after = data.paging.next.after;
+  }
+
+  log(`[SPLIT] Scanned ${scanned}, need to reassign ${toUpdate.length}`);
+  if (toUpdate.length === 0) return { scanned, reassigned: 0 };
+
+  // Count distribution of the split
+  const dist = {};
+  for (const u of toUpdate) {
+    const owner = u.properties.hubspot_owner_id || '?';
+    dist[owner] = (dist[owner] || 0) + 1;
+  }
+  log(`[SPLIT] Distribution: ${JSON.stringify(dist)}`);
+
+  let reassigned = 0, failed = 0;
+  for (const batch of chunk(toUpdate, 100)) {
+    try {
+      await hub('POST', '/crm/v3/objects/contacts/batch/update', { inputs: batch });
+      reassigned += batch.length;
+    } catch (e) {
+      log(`[SPLIT] batch update failed: ${e.status} ${e.data?.message || e.message}`);
+      for (const input of batch) {
+        try {
+          await hub('PATCH', `/crm/v3/objects/contacts/${input.id}`, { properties: input.properties });
+          reassigned++;
+        } catch (e2) { failed++; log(`  ${input.id} → ${e2.status} ${e2.data?.message || ''}`); }
+      }
+    }
+  }
+  log(`[SPLIT] ✅ Reassigned ${reassigned} (${failed} failed)`);
+  return { scanned, reassigned, failed };
+}
+
 // ─── Step 4: Sync orchestrator ─────────────────────────────────────────────
 async function syncToHubSpot(csvText) {
   const records = parse(csvText, { columns: true, skip_empty_lines: true, trim: true });
@@ -645,6 +720,20 @@ async function syncToHubSpot(csvText) {
       const fa = await forceAssignAllContacts(FORCE_ASSIGN_TO);
       if (fa.reassigned > 0) {
         await notifySlack(`🔁 Lasso sync — bulk reassigned ${fa.reassigned}/${fa.scanned} contacts to owner ${FORCE_ASSIGN_TO}`, 'good');
+      }
+    }
+
+    // One-shot bulk SPLIT: divide existing contacts across N owners (round-robin
+    // by contact-ID hash, stable across runs). Set SPLIT_BETWEEN=id1,id2[,id3...]
+    // on the cron. Idempotent — once split it's a no-op. Unset when done.
+    const SPLIT_BETWEEN = (process.env.SPLIT_BETWEEN || '').trim();
+    if (SPLIT_BETWEEN) {
+      const ids = SPLIT_BETWEEN.split(',').map(s => s.trim()).filter(Boolean);
+      if (ids.length >= 2) {
+        const sp = await splitContactsBetweenOwners(ids);
+        if (sp.reassigned > 0) {
+          await notifySlack(`🔀 Lasso sync — split ${sp.reassigned}/${sp.scanned} contacts across ${ids.length} owners`, 'good');
+        }
       }
     }
 
