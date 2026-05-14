@@ -106,8 +106,8 @@ export function ConfigSidebar({
             </label>
           </div>
 
-          {/* Product angles from library */}
-          {productAngles && productAngles.length > 0 ? (
+          {/* Product angles from library — only renders when the product has angles configured */}
+          {productAngles && productAngles.length > 0 && (
             <div className="flex flex-wrap gap-2">
               {productAngles.map((a) => (
                 <button
@@ -132,13 +132,6 @@ export function ConfigSidebar({
                 </button>
               ))}
             </div>
-          ) : selectedProduct ? (
-            <p className="text-[11px] text-zinc-600 italic">
-              No angles configured for this product.
-              <br />Add angles in the Product Library.
-            </p>
-          ) : (
-            <p className="text-[11px] text-zinc-600 italic">Select a product to see its angles.</p>
           )}
 
           {/* Selected angle detail */}
