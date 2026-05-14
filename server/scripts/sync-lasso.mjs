@@ -619,6 +619,78 @@ async function ensureWhopDeclineProperties() {
   }
 }
 
+// One-shot cleanup: undo the import of historical (pre-today) Whop declines.
+// Finds contacts whose last_decline_at is BEFORE today and clears their decline
+// fields + resets hs_lead_status back to READY_TO_CALL if it's still DECLINE.
+// Safe to leave running — once everyone with old declines is cleared it's a no-op.
+async function cleanupHistoricalDeclines() {
+  const now = new Date();
+  const startOfTodayUTC = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  log(`[CLEANUP] Looking for decline contacts whose last_decline_at < ${new Date(startOfTodayUTC).toISOString()}`);
+
+  // Search for contacts that have last_decline_at set AND it's before today.
+  const toUpdate = [];
+  let after;
+  for (let page = 0; page < 50; page++) {
+    let resp;
+    try {
+      resp = await hub('POST', '/crm/v3/objects/contacts/search', {
+        filterGroups: [{
+          filters: [
+            { propertyName: 'last_decline_at', operator: 'LT', value: String(startOfTodayUTC) },
+            { propertyName: 'last_decline_at', operator: 'HAS_PROPERTY' },
+          ],
+        }],
+        properties: ['email', 'last_decline_at', 'hs_lead_status'],
+        limit: 100,
+        ...(after ? { after } : {}),
+      });
+    } catch (e) {
+      log(`[CLEANUP] search failed: ${e.status} ${e.data?.message || e.message}`);
+      break;
+    }
+    for (const c of (resp.results || [])) {
+      const props = c.properties || {};
+      const update = {
+        // Clear all decline-related fields
+        last_decline_amount: '',
+        last_decline_at: '',
+        decline_count: '',
+        total_declined: '',
+        last_whop_payment_id: '',
+      };
+      // Reset lead status only if it's currently DECLINE
+      if (props.hs_lead_status === 'DECLINE') {
+        update.hs_lead_status = 'READY_TO_CALL';
+      }
+      toUpdate.push({ id: c.id, properties: update });
+    }
+    if (!resp.paging?.next?.after) break;
+    after = resp.paging.next.after;
+  }
+
+  log(`[CLEANUP] Found ${toUpdate.length} historical-decline contacts to clean up`);
+  if (toUpdate.length === 0) return { cleaned: 0 };
+
+  let cleaned = 0, failed = 0;
+  for (const batch of chunk(toUpdate, 100)) {
+    try {
+      await hub('POST', '/crm/v3/objects/contacts/batch/update', { inputs: batch });
+      cleaned += batch.length;
+    } catch (e) {
+      log(`[CLEANUP] batch failed: ${e.status} ${e.data?.message || e.message}`);
+      for (const input of batch) {
+        try {
+          await hub('PATCH', `/crm/v3/objects/contacts/${input.id}`, { properties: input.properties });
+          cleaned++;
+        } catch (e2) { failed++; }
+      }
+    }
+  }
+  log(`[CLEANUP] ✅ Cleaned ${cleaned} historical decline contacts (${failed} failed)`);
+  return { cleaned, failed };
+}
+
 async function syncWhopDeclines() {
   if (!WHOP_API_TOKEN) {
     log('[WHOP] WHOP_API_TOKEN not set — skipping decline sync');
@@ -1001,6 +1073,21 @@ async function syncToHubSpot(csvText) {
       : `✅ Lasso → HubSpot — ${result.added} new contacts, ${result.deals} new deals.${failNote} Total: ${result.total}. Skipped (existing): ${result.skipped}.${noPhoneNote} (${elapsed}s)`;
     log(msg);
     await notifySlack(msg, (result.failedContacts || result.failedDeals) ? 'warning' : 'good');
+
+    // One-shot cleanup of historical decline imports — triggered by
+    // CLEANUP_HISTORICAL_DECLINES=1. Reverts the pre-today-filter mistake
+    // where 186 old declines got pushed into HubSpot. Set back to empty
+    // when satisfied.
+    if (process.env.CLEANUP_HISTORICAL_DECLINES === '1') {
+      try {
+        const c = await cleanupHistoricalDeclines();
+        if (c.cleaned > 0) {
+          await notifySlack(`🧹 Cleanup — reverted ${c.cleaned} historical decline contacts`, 'good');
+        }
+      } catch (e) {
+        log(`[CLEANUP] error: ${e.message}`);
+      }
+    }
 
     // Whop decline sync — run after Lasso so HubSpot already has fresh
     // Lasso contacts we may want to enrich. Best-effort: a failure here
