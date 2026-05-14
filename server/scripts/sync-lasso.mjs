@@ -628,9 +628,19 @@ async function syncWhopDeclines() {
   // Make sure custom properties exist before writing to them
   await ensureWhopDeclineProperties();
 
+  // Only import declines from TODAY onward (per Ludo's instruction —
+  // historical declines are too cold to be worth a recovery call).
+  // Cutoff = start of today in UTC, as a unix-second timestamp.
+  const now = new Date();
+  const startOfTodayUTC = Math.floor(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) / 1000
+  );
+  log(`[WHOP] Cutoff: only declines whose last_payment_attempt >= ${new Date(startOfTodayUTC * 1000).toISOString()}`);
+
   // Pull the newest N pages of payments. Whop returns newest first.
   const maxPages = parseInt(WHOP_DECLINE_PAGES, 10) || 5;
   const declines = [];
+  let stoppedEarly = false;
   for (let page = 1; page <= maxPages; page++) {
     let resp;
     try {
@@ -649,17 +659,27 @@ async function syncWhopDeclines() {
     const data = await resp.json();
     const payments = data.data || [];
     if (payments.length === 0) break;
+    // Whop returns newest first — once we hit a payment whose attempt is
+    // before today's cutoff, every subsequent page is also old. Short-circuit.
+    let pageHadAnyRecent = false;
     for (const p of payments) {
       // "Failed" in the Whop UI = status=open AND payments_failed >= 1.
       // status=paid + payments_failed>=1 means they declined then succeeded — skip those.
       if (p.status === 'paid') continue;
       if ((p.payments_failed || 0) < 1) continue;
       if (!p.user_email) continue;
+      const lastAttempt = p.last_payment_attempt || p.created_at || 0;
+      if (lastAttempt < startOfTodayUTC) continue;          // older than today's cutoff
+      pageHadAnyRecent = true;
       declines.push(p);
+    }
+    if (!pageHadAnyRecent && page > 1) {
+      stoppedEarly = true;
+      break;  // every payment on this page is before today → no need to keep paging
     }
   }
 
-  log(`[WHOP] Found ${declines.length} declined payments across ${maxPages} pages`);
+  log(`[WHOP] Found ${declines.length} declined payments today${stoppedEarly ? ' (stopped paging — older payments encountered)' : ''}`);
 
   // Group by email — keep latest attempt + sum amounts
   const byEmail = new Map();
