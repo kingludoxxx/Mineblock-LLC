@@ -54,6 +54,9 @@ const {
   SLACK_WEBHOOK_URL,
   LASSO_HEADLESS = 'true',
   HUBSPOT_AGENTS = '',                     // Format: "Jerome:ownerId1,Christian:ownerId2,Tyrone:ownerId3"
+  WHOP_API_TOKEN,                          // Used to pull failed payments into HubSpot
+  WHOP_API_URL = 'https://api.whop.com/api',
+  WHOP_DECLINE_PAGES = '5',                // How many pages of recent Whop payments to scan each run
 } = process.env;
 
 // Round-robin agent pool — parsed once at startup
@@ -565,6 +568,225 @@ async function splitContactsBetweenOwners(ownerIds) {
   return { scanned, reassigned, failed };
 }
 
+// ─── Whop decline sync ─────────────────────────────────────────────────────
+// Pull recent declined Whop payments (status=open + payments_failed >= 1) and
+// push them into HubSpot. Creates/updates contacts with decline metadata and
+// flags them with hs_lead_status="DECLINE" so Mark/Jasper can call back.
+//
+// Matching strategy:
+//   1. Whop's membership_metadata.lasso_session_id (if present) — exact match
+//   2. user_email (lowercased) — falls back to upsert
+//
+// HubSpot fields written (must exist on the contacts object):
+//   last_decline_amount  (number)
+//   last_decline_at      (datetime, ms)
+//   decline_count        (number)
+//   total_declined       (number, cumulative)
+//   hs_lead_status       (= "DECLINE")
+
+async function ensureWhopDeclineProperties() {
+  const props = [
+    { name: 'last_decline_amount', label: 'Last Decline Amount', type: 'number', fieldType: 'number', groupName: 'contactinformation', description: 'Most recent failed payment amount from Whop' },
+    { name: 'last_decline_at',     label: 'Last Decline At',     type: 'datetime', fieldType: 'date',   groupName: 'contactinformation', description: 'Timestamp of most recent failed Whop payment attempt' },
+    { name: 'decline_count',       label: 'Decline Count',       type: 'number', fieldType: 'number', groupName: 'contactinformation', description: 'Number of failed Whop payment attempts' },
+    { name: 'total_declined',      label: 'Total Declined',      type: 'number', fieldType: 'number', groupName: 'contactinformation', description: 'Cumulative $ amount of failed Whop payment attempts' },
+    { name: 'last_whop_payment_id',label: 'Last Whop Payment ID',type: 'string', fieldType: 'text',   groupName: 'contactinformation', description: 'Whop payment ID of most recent decline (for idempotency)' },
+  ];
+  for (const p of props) {
+    try {
+      await hub('POST', '/crm/v3/properties/contacts', p);
+      log(`[WHOP] Created contact property: ${p.name}`);
+    } catch (e) {
+      if (e.status === 409 || /already exists/i.test(JSON.stringify(e.data || ''))) {
+        // already exists — fine
+      } else {
+        log(`[WHOP] Failed to create property ${p.name}: ${e.status} ${e.data?.message || e.message}`);
+      }
+    }
+  }
+
+  // Ensure hs_lead_status has a "DECLINE" option
+  try {
+    const lsProp = await hub('GET', '/crm/v3/properties/contacts/hs_lead_status');
+    const opts = lsProp?.options || [];
+    if (!opts.find(o => (o.value || '').toUpperCase() === 'DECLINE')) {
+      const newOptions = [...opts, { label: 'Decline', value: 'DECLINE', displayOrder: opts.length, hidden: false }];
+      await hub('PATCH', '/crm/v3/properties/contacts/hs_lead_status', { options: newOptions });
+      log('[WHOP] Added "DECLINE" option to hs_lead_status');
+    }
+  } catch (e) {
+    log(`[WHOP] Could not ensure DECLINE lead status: ${e.status} ${e.data?.message || e.message}`);
+  }
+}
+
+async function syncWhopDeclines() {
+  if (!WHOP_API_TOKEN) {
+    log('[WHOP] WHOP_API_TOKEN not set — skipping decline sync');
+    return { synced: 0 };
+  }
+
+  // Make sure custom properties exist before writing to them
+  await ensureWhopDeclineProperties();
+
+  // Pull the newest N pages of payments. Whop returns newest first.
+  const maxPages = parseInt(WHOP_DECLINE_PAGES, 10) || 5;
+  const declines = [];
+  for (let page = 1; page <= maxPages; page++) {
+    let resp;
+    try {
+      resp = await fetch(`${WHOP_API_URL}/v5/company/payments?per=100&page=${page}`, {
+        headers: { Authorization: `Bearer ${WHOP_API_TOKEN}` },
+        signal: AbortSignal.timeout(15000),
+      });
+    } catch (err) {
+      log(`[WHOP] Page ${page} fetch failed: ${err.message}`);
+      break;
+    }
+    if (!resp.ok) {
+      log(`[WHOP] Page ${page} returned ${resp.status}`);
+      break;
+    }
+    const data = await resp.json();
+    const payments = data.data || [];
+    if (payments.length === 0) break;
+    for (const p of payments) {
+      // "Failed" in the Whop UI = status=open AND payments_failed >= 1.
+      // status=paid + payments_failed>=1 means they declined then succeeded — skip those.
+      if (p.status === 'paid') continue;
+      if ((p.payments_failed || 0) < 1) continue;
+      if (!p.user_email) continue;
+      declines.push(p);
+    }
+  }
+
+  log(`[WHOP] Found ${declines.length} declined payments across ${maxPages} pages`);
+
+  // Group by email — keep latest attempt + sum amounts
+  const byEmail = new Map();
+  for (const p of declines) {
+    const email = sanitizeEmail(p.user_email);
+    if (!isValidEmail(email)) continue;
+    const lastAttempt = p.last_payment_attempt || p.created_at || 0;
+    const amount = parseFloat(p.final_amount || 0);
+    const cur = byEmail.get(email) || {
+      email,
+      last_attempt: 0,
+      last_amount: 0,
+      last_payment_id: '',
+      total_declined: 0,
+      decline_count: 0,
+      lasso_session_id: '',
+      firstname: '',
+      lastname: '',
+      phone: '',
+    };
+    cur.total_declined += amount;
+    cur.decline_count += (p.payments_failed || 1);
+    if (lastAttempt > cur.last_attempt) {
+      cur.last_attempt = lastAttempt;
+      cur.last_amount = amount;
+      cur.last_payment_id = p.id;
+      if (p.membership_metadata?.lasso_session_id) cur.lasso_session_id = p.membership_metadata.lasso_session_id;
+      if (p.billing_address?.name) {
+        const { firstname, lastname } = splitName(p.billing_address.name);
+        cur.firstname = firstname;
+        cur.lastname = lastname;
+      }
+    }
+    byEmail.set(email, cur);
+  }
+
+  log(`[WHOP] ${byEmail.size} unique decliners by email`);
+  if (byEmail.size === 0) return { synced: 0 };
+
+  // Look up which of these emails already exist in HubSpot so we don't clobber
+  // existing owners (we only assign via round-robin for net-new contacts).
+  const decliners = [...byEmail.values()];
+  const emails = decliners.map(d => d.email);
+  const existingMap = new Map();
+  for (const batch of chunk(emails, 100)) {
+    try {
+      const r = await hub('POST', '/crm/v3/objects/contacts/batch/read', {
+        idProperty: 'email',
+        properties: ['email', 'hubspot_owner_id', 'last_whop_payment_id'],
+        inputs: batch.map(e => ({ id: e })),
+      });
+      for (const c of (r.results || [])) {
+        const e = (c.properties?.email || '').toLowerCase();
+        if (e) existingMap.set(e, {
+          id: c.id,
+          ownerId: c.properties?.hubspot_owner_id,
+          lastPaymentId: c.properties?.last_whop_payment_id,
+        });
+      }
+    } catch (e) {
+      // 207 = some not found, which is expected — read still returns the ones it found
+      if (e.status !== 207) log(`[WHOP] batch read failed: ${e.status} ${e.data?.message || ''}`);
+    }
+  }
+
+  // Build upsert payload
+  const inputs = [];
+  let skipped = 0;
+  for (const d of decliners) {
+    const existing = existingMap.get(d.email);
+    // Idempotency — if we've already seen this exact payment ID, skip
+    if (existing?.lastPaymentId === d.last_payment_id) {
+      skipped++;
+      continue;
+    }
+    const properties = {
+      email: d.email,
+      last_decline_amount: d.last_amount,
+      last_decline_at: toHubSpotDatetime(new Date(d.last_attempt * 1000).toISOString()),
+      decline_count: d.decline_count,
+      total_declined: d.total_declined,
+      last_whop_payment_id: d.last_payment_id,
+      hs_lead_status: 'DECLINE',
+      ...(d.firstname ? { firstname: d.firstname } : {}),
+      ...(d.lastname  ? { lastname:  d.lastname  } : {}),
+      ...(d.lasso_session_id ? { lasso_session_id: d.lasso_session_id } : {}),
+    };
+    // Net-new contact → round-robin assignment
+    if (!existing) {
+      const agent = OWNER_POOL.length > 0 ? assignAgent(d.last_amount || 0) : null;
+      if (agent) {
+        properties.hubspot_owner_id = agent.id;
+        properties.agent = agent.name;
+      }
+    }
+    inputs.push({ idProperty: 'email', id: d.email, properties });
+  }
+
+  if (inputs.length === 0) {
+    log(`[WHOP] Nothing to update (skipped ${skipped} unchanged decliners)`);
+    return { synced: 0, skipped };
+  }
+
+  // Batch upsert
+  let synced = 0, failed = 0;
+  for (const batch of chunk(inputs, 100)) {
+    try {
+      const r = await hub('POST', '/crm/v3/objects/contacts/batch/upsert', { inputs: batch });
+      synced += (r.results || []).length;
+    } catch (e) {
+      log(`[WHOP] batch upsert failed: ${e.status} ${e.data?.message || ''}`);
+      for (const input of batch) {
+        try {
+          const r2 = await hub('POST', '/crm/v3/objects/contacts/batch/upsert', { inputs: [input] });
+          synced += (r2.results || []).length;
+        } catch (e2) {
+          failed++;
+          log(`  decliner ${input.id} failed: ${e2.status} ${e2.data?.message || ''}`);
+        }
+      }
+    }
+  }
+
+  log(`[WHOP] ✅ Synced ${synced} decliners to HubSpot (${skipped} unchanged, ${failed} failed)`);
+  return { synced, skipped, failed, total: decliners.length };
+}
+
 // ─── Step 4: Sync orchestrator ─────────────────────────────────────────────
 async function syncToHubSpot(csvText) {
   const records = parse(csvText, { columns: true, skip_empty_lines: true, trim: true });
@@ -759,6 +981,23 @@ async function syncToHubSpot(csvText) {
       : `✅ Lasso → HubSpot — ${result.added} new contacts, ${result.deals} new deals.${failNote} Total: ${result.total}. Skipped (existing): ${result.skipped}.${noPhoneNote} (${elapsed}s)`;
     log(msg);
     await notifySlack(msg, (result.failedContacts || result.failedDeals) ? 'warning' : 'good');
+
+    // Whop decline sync — run after Lasso so HubSpot already has fresh
+    // Lasso contacts we may want to enrich. Best-effort: a failure here
+    // shouldn't block the Lasso run from succeeding.
+    try {
+      const whop = await syncWhopDeclines();
+      if (whop?.synced > 0) {
+        await notifySlack(
+          `💳 Whop declines → HubSpot — ${whop.synced} new/updated decliners (${whop.skipped || 0} unchanged${whop.failed ? `, ${whop.failed} failed` : ''})`,
+          'good'
+        );
+      }
+    } catch (whopErr) {
+      log(`[WHOP] sync threw: ${whopErr.message}`);
+      await notifySlack(`⚠️ Whop decline sync failed: ${whopErr.message.slice(0, 200)}`, 'warning').catch(() => {});
+    }
+
     process.exit(0);
   } catch (err) {
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
