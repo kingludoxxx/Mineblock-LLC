@@ -668,7 +668,7 @@ async function analyzeAndCacheLayout(templateId, imageUrl) {
 // Client polls GET /status/:taskId for progress/result.
 
 router.post('/generate', authenticate, async (req, res) => {
-  const { reference_image_url, product, angle, ratio, template_id } = req.body;
+  const { reference_image_url, product, angle, angle_data, ratio, template_id } = req.body;
 
   if (!reference_image_url) return res.status(400).json({ success: false, error: 'reference_image_url is required' });
   if (!product)             return res.status(400).json({ success: false, error: 'product is required' });
@@ -692,11 +692,11 @@ router.post('/generate', authenticate, async (req, res) => {
   // ── Run the full pipeline in the background ──────────────────────────
   setImmediate(async () => {
   try {
-    const { reference_image_url, product, angle, ratio, template_id } = req.body;
+    const { reference_image_url, product, angle, angle_data, ratio, template_id } = req.body;
 
     // Log product context for debugging copy quality
     const profileFields = product.profile ? Object.keys(product.profile).filter(k => product.profile[k]) : [];
-    console.log(`[staticsGeneration] Product: "${product.name}" | Price: ${product.price || 'N/A'} | Profile fields: [${profileFields.join(', ')}] (${profileFields.length} fields)`);
+    console.log(`[staticsGeneration] Product: "${product.name}" | Price: ${product.price || 'N/A'} | Angle: ${angle_data?.name || angle || 'none'} | Profile fields: [${profileFields.join(', ')}] (${profileFields.length} fields)`);
     if (profileFields.length === 0) {
       console.warn(`[staticsGeneration] ⚠️ No product profile fields sent! Copy will lack product context.`);
     }
@@ -748,7 +748,7 @@ router.post('/generate', authenticate, async (req, res) => {
         {
           role: 'user',
           content: [
-            { type: 'text', text: buildClaudePrompt(product, angle, customPrompts, layoutMap, templateData) },
+            { type: 'text', text: buildClaudePrompt(product, angle, customPrompts, layoutMap, templateData, angle_data || null) },
             { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } },
           ],
         },

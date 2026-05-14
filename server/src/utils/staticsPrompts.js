@@ -89,7 +89,7 @@ Return ONLY valid JSON (no markdown, no code fences):
 // STEP 1: Claude Vision — Copy Extraction + Rewriting
 // ─────────────────────────────────────────────────────────────────────────────
 
-export function buildClaudePrompt(product, angle, customOverrides = null, layoutMap = null, templateData = null) {
+export function buildClaudePrompt(product, angle, customOverrides = null, layoutMap = null, templateData = null, angleData = null) {
   const profile = product.profile || {};
   const co = customOverrides?.claudeAnalysis || {};
 
@@ -264,10 +264,44 @@ IMPORTANT: Follow the adaptation_instructions closely. Pay special attention to:
 - text_replacement_strategy: Use "${templateData.deep_analysis.adaptation_instructions?.text_replacement_strategy || 'direct-swap'}" approach
 ` : '';
 
+  // ── Angle Strategy Section ─────────────────────────────────────────
+  // When a full angleData object is provided (from product library), inject a
+  // rich creative brief that overrides the template's default strategy.
+  // Falls back to a simple one-liner when only the angle name string is available.
+  const angleStrategySection = (() => {
+    if (angleData && typeof angleData === 'object' && angleData.name) {
+      const parts = [
+        `\n\n${'═'.repeat(67)}`,
+        `🎯 ANGLE STRATEGY — YOUR CREATIVE BRIEF (read this before analyzing the template)`,
+        `This ad must execute the "${angleData.name}" angle.${angleData.funnel_stage ? ` Funnel stage: ${angleData.funnel_stage}.` : ''}`,
+        `The reference template provides VISUAL STRUCTURE only. The creative direction below OVERRIDES the template's original messaging strategy.`,
+        `${'═'.repeat(67)}`,
+      ];
+      if (angleData.lead_with) parts.push(`\nLEAD WITH:\n${angleData.lead_with}`);
+      if (angleData.copy_directives || angleData.hook_strategy) {
+        parts.push(`\nCOPYWRITING DIRECTIVES:\n${angleData.copy_directives || angleData.hook_strategy}`);
+      }
+      if (angleData.tone) parts.push(`\nTONE & VOICE:\n${angleData.tone}`);
+      if (Array.isArray(angleData.required_elements) && angleData.required_elements.length > 0) {
+        parts.push(`\nREQUIRED ELEMENTS (at least one must appear in the copy):\n${angleData.required_elements.map(e => `- ${e}`).join('\n')}`);
+      }
+      if (Array.isArray(angleData.headline_examples) && angleData.headline_examples.length > 0) {
+        parts.push(`\nHEADLINE EXAMPLES (inspiration only — do NOT copy verbatim):\n${angleData.headline_examples.map(e => `- "${e}"`).join('\n')}`);
+      }
+      if (Array.isArray(angleData.banned_phrases) && angleData.banned_phrases.length > 0) {
+        parts.push(`\nBANNED FOR THIS ANGLE: ${angleData.banned_phrases.join(', ')}`);
+      }
+      parts.push(`\nCRITICAL: Every headline, bullet, and hook you write must execute this angle. Do NOT default to what the reference template was saying — use the brief above as your primary creative direction.`);
+      parts.push(`${'═'.repeat(67)}\n`);
+      return parts.join('\n');
+    }
+    // Fallback: just the name string
+    return angle ? `\n\n🎯 MARKETING ANGLE FOR THIS AD: ${angle}\n` : '';
+  })();
+
   return `You are a $50K/month media buyer who writes ad copy that actually converts cold traffic. You've spent millions on Facebook ads. You know exactly what makes someone stop scrolling and click.
 
-You are analyzing a reference ad image. You will extract its text layout, then write COMPLETELY NEW copy for a different product that fits the same visual slots.
-
+You are analyzing a reference ad image. You will extract its text layout, then write COMPLETELY NEW copy for a different product that fits the same visual slots.${angleStrategySection}
 YOUR JOB:
 1. Extract every text element visible in the image — miss NOTHING. Note each element's ROLE (headline, subheadline, bullet, badge, stat, CTA, etc.) and CHARACTER COUNT.
 2. Count people and product shots
