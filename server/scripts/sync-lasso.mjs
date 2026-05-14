@@ -619,6 +619,66 @@ async function ensureWhopDeclineProperties() {
   }
 }
 
+// Diagnostic: check whether Whop decliners overlap with HubSpot contacts.
+// Sample N recent Whop declines, look them up in HubSpot by email, and report
+// how many already exist + have phone numbers. Triggered by DIAG_WHOP_OVERLAP=1.
+async function diagnoseWhopOverlap() {
+  if (!WHOP_API_TOKEN) { log('[DIAG] no WHOP_API_TOKEN'); return; }
+  const resp = await fetch(`${WHOP_API_URL}/v5/company/payments?per=100&page=1`, {
+    headers: { Authorization: `Bearer ${WHOP_API_TOKEN}` },
+  });
+  if (!resp.ok) { log(`[DIAG] whop fetch ${resp.status}`); return; }
+  const data = await resp.json();
+  const declines = (data.data || []).filter(p =>
+    p.status !== 'paid' && (p.payments_failed || 0) >= 1 && p.user_email
+  );
+  log(`[DIAG] Sampling ${declines.length} recent Whop declines from page 1`);
+
+  // Look up in HubSpot by email — fetch phone + lasso_session_id
+  const inputs = declines.map(p => ({ id: sanitizeEmail(p.user_email) }));
+  let results = [];
+  try {
+    const r = await hub('POST', '/crm/v3/objects/contacts/batch/read', {
+      idProperty: 'email',
+      properties: ['email', 'phone', 'lasso_session_id', 'firstname', 'lastname'],
+      inputs,
+    });
+    results = r.results || [];
+  } catch (e) {
+    log(`[DIAG] batch read error: ${e.status} ${JSON.stringify(e.data || '').slice(0,200)}`);
+    if (e.data?.results) results = e.data.results;  // partial results on 207
+  }
+
+  const foundByEmail = new Map();
+  for (const c of results) {
+    const e = (c.properties?.email || '').toLowerCase();
+    if (e) foundByEmail.set(e, c.properties);
+  }
+
+  let inHubspot = 0, withPhone = 0, withLassoId = 0, notFound = 0;
+  const sampleNotFound = [];
+  for (const p of declines) {
+    const email = sanitizeEmail(p.user_email);
+    const hub = foundByEmail.get(email);
+    if (hub) {
+      inHubspot++;
+      if (hub.phone) withPhone++;
+      if (hub.lasso_session_id) withLassoId++;
+    } else {
+      notFound++;
+      if (sampleNotFound.length < 3) sampleNotFound.push({email, lasso: p.membership_metadata?.lasso_session_id, amount: p.final_amount});
+    }
+  }
+  log(`[DIAG] Whop decliners: ${declines.length} sampled`);
+  log(`[DIAG]   in HubSpot:    ${inHubspot} (${Math.round(100*inHubspot/declines.length)}%)`);
+  log(`[DIAG]   with phone:    ${withPhone} (${Math.round(100*withPhone/declines.length)}% of total)`);
+  log(`[DIAG]   with lasso_id: ${withLassoId}`);
+  log(`[DIAG]   NOT in HubSpot: ${notFound}`);
+  if (sampleNotFound.length) {
+    log(`[DIAG] Sample missing: ${JSON.stringify(sampleNotFound)}`);
+  }
+}
+
 // One-shot cleanup: undo the import of historical (pre-today) Whop declines.
 // Finds contacts whose last_decline_at is BEFORE today and clears their decline
 // fields + resets hs_lead_status back to READY_TO_CALL if it's still DECLINE.
@@ -1073,6 +1133,11 @@ async function syncToHubSpot(csvText) {
       : `✅ Lasso → HubSpot — ${result.added} new contacts, ${result.deals} new deals.${failNote} Total: ${result.total}. Skipped (existing): ${result.skipped}.${noPhoneNote} (${elapsed}s)`;
     log(msg);
     await notifySlack(msg, (result.failedContacts || result.failedDeals) ? 'warning' : 'good');
+
+    // Diagnostic: check Whop ↔ HubSpot overlap (% of Whop decliners with phone)
+    if (process.env.DIAG_WHOP_OVERLAP === '1') {
+      try { await diagnoseWhopOverlap(); } catch (e) { log(`[DIAG] error: ${e.message}`); }
+    }
 
     // One-shot cleanup of historical decline imports — triggered by
     // CLEANUP_HISTORICAL_DECLINES=1. Reverts the pre-today-filter mistake
