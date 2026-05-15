@@ -875,8 +875,10 @@ export default function StaticsGeneration() {
       const saved = localStorage.getItem('statics_references');
       if (saved) {
         const parsed = JSON.parse(saved);
-        // Only restore library references (non-base64) — uploads are too large for localStorage
-        return Array.isArray(parsed) ? parsed.filter(r => r.image_url && !r.image_url.startsWith('data:')) : [];
+        // Restore template stubs (is_template: true) and URL-based refs; skip raw base64 uploads
+        return Array.isArray(parsed)
+          ? parsed.filter(r => r.is_template || (r.image_url && !r.image_url.startsWith('data:')))
+          : [];
       }
     } catch {}
     return [];
@@ -984,10 +986,19 @@ export default function StaticsGeneration() {
     setReferenceImageUrl('');
   }, []);
 
-  // Persist library references to localStorage (skip base64 uploads — too large)
+  // Persist references to localStorage.
+  // Templates are stored as lightweight stubs {id, name, is_template: true} — their base64
+  // image_url is too large for localStorage and is re-fetched on mount instead.
+  // Raw file uploads (blob/data: URLs) are skipped entirely — they can't be serialized.
   useEffect(() => {
     try {
-      const toSave = references.filter(r => r.image_url && !r.image_url.startsWith('data:'));
+      const toSave = references
+        .map(r => {
+          if (r.is_template && r.id) return { id: r.id, name: r.name, is_template: true };
+          if (r.image_url && !r.image_url.startsWith('data:') && !r.image_url.startsWith('blob:')) return r;
+          return null;
+        })
+        .filter(Boolean);
       if (toSave.length > 0) {
         localStorage.setItem('statics_references', JSON.stringify(toSave));
       } else {
@@ -995,6 +1006,23 @@ export default function StaticsGeneration() {
       }
     } catch {}
   }, [references]);
+
+  // Re-hydrate template image_urls after mount (stubs from localStorage have no image_url)
+  useEffect(() => {
+    const stubs = references.filter(r => r.is_template && !r.image_url);
+    if (stubs.length === 0) return;
+    api.get('/statics-generation/templates').then(res => {
+      const allTemplates = res.data?.templates || res.data || [];
+      setReferences(prev =>
+        prev.map(ref => {
+          if (!ref.is_template || ref.image_url) return ref;
+          const found = allTemplates.find(t => t.id === ref.id);
+          return found ? { ...ref, image_url: found.image_url } : ref;
+        })
+      );
+    }).catch(() => {});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const clearReference = useCallback(() => {
     setReferencePreview((prev) => { if (prev?.startsWith('blob:')) URL.revokeObjectURL(prev); return ''; });
@@ -2662,7 +2690,7 @@ export default function StaticsGeneration() {
           templates={templates}
           onSelectTemplate={(template) => {
             handleTemplateSelect(template);
-            setReferences([{ id: template.id || Date.now(), image_url: template.image_url, name: template.name }]);
+            setReferences([{ id: template.id || Date.now(), image_url: template.image_url, name: template.name, is_template: !!template.id }]);
             setActiveTab('pipeline');
           }}
           onAddReference={() => setAddRefModal(true)}
@@ -2733,7 +2761,7 @@ export default function StaticsGeneration() {
           templates={templates}
           onSelect={(template) => {
             handleTemplateSelect(template);
-            setReferences([{ id: template.id || Date.now(), image_url: template.image_url, name: template.name }]);
+            setReferences([{ id: template.id || Date.now(), image_url: template.image_url, name: template.name, is_template: !!template.id }]);
           }}
           onClose={() => setTemplateModal(false)}
         />
