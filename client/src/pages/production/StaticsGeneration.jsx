@@ -870,7 +870,17 @@ export default function StaticsGeneration() {
   // Creative review state (Standard pipeline)
   const [creatives, setCreatives] = useState([]);
   const [creativesLoading, setCreativesLoading] = useState(false);
-  const [references, setReferences] = useState([]);
+  const [references, setReferences] = useState(() => {
+    try {
+      const saved = localStorage.getItem('statics_references');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        // Only restore library references (non-base64) — uploads are too large for localStorage
+        return Array.isArray(parsed) ? parsed.filter(r => r.image_url && !r.image_url.startsWith('data:')) : [];
+      }
+    } catch {}
+    return [];
+  });
 
   // Templates state
   const [templates, setTemplates] = useState([]);
@@ -973,6 +983,18 @@ export default function StaticsGeneration() {
     setReferenceFile(file);
     setReferenceImageUrl('');
   }, []);
+
+  // Persist library references to localStorage (skip base64 uploads — too large)
+  useEffect(() => {
+    try {
+      const toSave = references.filter(r => r.image_url && !r.image_url.startsWith('data:'));
+      if (toSave.length > 0) {
+        localStorage.setItem('statics_references', JSON.stringify(toSave));
+      } else {
+        localStorage.removeItem('statics_references');
+      }
+    } catch {}
+  }, [references]);
 
   const clearReference = useCallback(() => {
     setReferencePreview((prev) => { if (prev?.startsWith('blob:')) URL.revokeObjectURL(prev); return ''; });
@@ -1133,7 +1155,13 @@ export default function StaticsGeneration() {
             consecutiveNetworkErrors = 0;
             const statusData = statusRes.data?.data || statusRes.data;
             if (statusData?.resultImageUrl) {
-              return { ratio: task.ratio, imageUrl: statusData.resultImageUrl, taskId: task.taskId };
+              return {
+                ratio: task.ratio,
+                imageUrl: statusData.resultImageUrl,
+                taskId: task.taskId,
+                claudeAnalysis: statusData.claudeAnalysis || null,
+                swapPairs: statusData.swapPairs || null,
+              };
             }
             if (statusData?.status === 'failed' || statusData?.error) {
               throw new Error(`Generation failed for ${task.ratio}: ${statusData?.error || 'Unknown error'}`);
@@ -1181,9 +1209,9 @@ export default function StaticsGeneration() {
           aspect_ratio: task.ratio,
           group_id: groupId,
           generation_task_id: task.taskId,
-          adapted_text: genResult.adaptedText || genResult.claudeAnalysis?.adapted_text,
-          swap_pairs: genResult.swapPairs,
-          claude_analysis: genResult.claudeAnalysis,
+          adapted_text: task.claudeAnalysis?.adapted_text || genResult.adaptedText || genResult.claudeAnalysis?.adapted_text,
+          swap_pairs: task.swapPairs || genResult.swapPairs,
+          claude_analysis: task.claudeAnalysis || genResult.claudeAnalysis,
           reference_thumbnail: resolvedRefUrl,
           reference_name: currentRef?.name || 'Reference',
           source_label: currentRef?.source_label || currentRef?.name || null,
@@ -1481,9 +1509,9 @@ export default function StaticsGeneration() {
                     aspect_ratio: task.ratio,
                     group_id: groupId,
                     generation_task_id: task.taskId,
-                    adapted_text: genResult.adaptedText || genResult.claudeAnalysis?.adapted_text,
-                    swap_pairs: genResult.swapPairs,
-                    claude_analysis: genResult.claudeAnalysis,
+                    adapted_text: task.claudeAnalysis?.adapted_text || genResult.adaptedText || genResult.claudeAnalysis?.adapted_text,
+                    swap_pairs: task.swapPairs || genResult.swapPairs,
+                    claude_analysis: task.claudeAnalysis || genResult.claudeAnalysis,
                     reference_thumbnail: resolvedRefUrl,
                     reference_name: currentRef?.name || 'Reference',
                     source_label: currentRef?.source_label || currentRef?.name || null,

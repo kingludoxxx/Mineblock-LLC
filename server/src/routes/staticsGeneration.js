@@ -1369,7 +1369,7 @@ router.get('/status/:taskId', authenticate, async (req, res) => {
           } else if (overlayCtx?.compositedUrl) {
             imgUrl = overlayCtx.compositedUrl;
           }
-          return res.json({ success: true, data: { taskId, status: 'completed', successFlag: true, resultImageUrl: imgUrl, provider: 'nanobanana' } });
+          return res.json({ success: true, data: { taskId, status: 'completed', successFlag: true, resultImageUrl: imgUrl, provider: 'nanobanana', claudeAnalysis: geminiResult.claudeAnalysis || null, swapPairs: geminiResult.swapPairs || null } });
         }
         if (flag === 3) {
           const errMsg = realResult?.data?.errorMessage || 'NanoBanana generation failed';
