@@ -8,7 +8,7 @@ const router = Router();
 router.use(authenticate, requirePermission('products', 'access'));
 
 // ── MinerForge Pro — Canonical Angle Library ────────────────────────────────
-// Seeded on startup if the product has fewer than 6 angles.
+// Seeded on startup if the product has fewer angles than MINERFORGE_ANGLES.length (currently 8).
 // Update this array to add, remove, or edit angles — then redeploy.
 
 const MINERFORGE_ANGLES = [
@@ -216,6 +216,69 @@ const MINERFORGE_ANGLES = [
     banned_phrases: ['buy now', 'incredible opportunity', 'amazing results', 'you will love', 'everyone is talking about'],
     created_at: new Date().toISOString(),
   },
+  {
+    id: 'angle_seed_007',
+    name: 'Promo / Limited-Time Deal',
+    funnel_stage: 'bottom',
+    hook_strategy: 'He already knows the product. The middle funnel did its job. This angle closes with a concrete, time-bounded offer that removes the last friction to purchase. Lead with the savings mechanism — not the product story, not the mechanism — just the deal. He needs permission to buy now, not more reasons to consider.',
+    lead_with: 'The price just dropped. Use code BITCOIN10 for 10% off. Free shipping. 2-year warranty. 30-day money-back. One device. 144 daily shots at the full block reward. Every order ships the same week.',
+    tone: 'Direct, factual, transactional. No hype, no artificial urgency language, no false scarcity. The confidence of a company that knows the product sells itself. State the offer clearly and get out of the way.',
+    copy_directives: `- Lead with the discount mechanism: code BITCOIN10 = 10% off
+- State the exact post-discount price clearly — never invent a fake "was" anchor
+- Include the three guarantee signals in order: free shipping, 2-year warranty, 30-day money-back
+- One brief product claim max — the buyer already knows what it is
+- Close with shipping speed and a clean CTA
+- Do NOT use: "limited time", "selling out fast", "act now", "last chance" — these signal desperation; the deal speaks for itself
+- Do NOT invent bundle deals, BOGO, or "buy X get Y" structures — use only bundleVariants from the product library`,
+    required_elements: [
+      'Discount code: BITCOIN10 (10% off)',
+      'The real post-discount price (product.price minus 10%)',
+      'Free shipping + 2-year warranty + 30-day money-back guarantee',
+      'Shipping speed (same-week or similar)',
+    ],
+    headline_examples: [
+      '10% off today — code BITCOIN10',
+      'Use BITCOIN10 at checkout',
+      'Ships this week. 30 days to decide.',
+      'Free shipping. 2-year warranty. 30-day returns.',
+      'Code BITCOIN10 — expires when this campaign ends',
+      'The price just dropped',
+    ],
+    banned_phrases: ['buy now or miss out', 'selling fast', 'only a few left', 'last chance', 'limited supply', 'act now'],
+    created_at: new Date().toISOString(),
+  },
+  {
+    id: 'angle_seed_008',
+    name: 'Urgency / Scarcity',
+    funnel_stage: 'bottom',
+    hook_strategy: 'Create genuine time or supply pressure without fabricating specific inventory counts or fake countdown timers. The buyer has been considering — this angle gives him a real reason to stop deferring. Use the block reward schedule, Bitcoin halving math, or shipment window as the honest urgency mechanism.',
+    lead_with: 'The block reward is 3.125 Bitcoin right now. After the next halving, it drops to 1.5625. Every day you wait is a day you\'re attempting to mine at half the payout. The device ships the same week you order. The window to mine at this reward level is finite.',
+    tone: 'Calm urgency — not hysterical, not pushy. The tone of someone sharing a time-sensitive insight, not a car salesman. Factual and specific. The math creates urgency; the copy just states the math.',
+    copy_directives: `- The urgency mechanism is the Bitcoin block reward schedule — NOT fake inventory counts or countdown timers
+- Current block reward: 3.125 BTC. After next halving: 1.5625 BTC. The math is the closer.
+- Every day of delay = mining attempts at a lower future payout — make this concrete
+- Shipping window language is valid: "ships same week" creates soft FOMO without fabrication
+- Do NOT write: "Only X left in stock", "X people viewing now", "Ends in 02:14:33", or any invented integer
+- Valid non-numeric urgency: "Limited stock", "Almost gone", "While supplies last", "Selling fast"
+- Close with code BITCOIN10 and the 30-day guarantee — remove every last objection`,
+    required_elements: [
+      'Current block reward: 3.125 Bitcoin',
+      'Halving context: reward cuts in half at next halving (the mathematical urgency)',
+      '"Ships same week" or equivalent shipping speed',
+      'BITCOIN10 discount code as the final closer',
+    ],
+    headline_examples: [
+      'The block reward halves. Not if. When.',
+      '3.125 Bitcoin per block — right now',
+      'Every day you wait is a lower block reward',
+      'Ships this week. Mine at full reward.',
+      'The halving doesn\'t wait for you to decide',
+      'Mine now. Reward drops later.',
+      'While supplies last',
+    ],
+    banned_phrases: ['only X left', 'X people viewing', 'ends in', 'countdown', 'flash sale ends', 'you will regret', 'FOMO'],
+    created_at: new Date().toISOString(),
+  },
 ];
 
 let tableReady = false;
@@ -305,7 +368,7 @@ async function ensureTable() {
 ensureTable().then(seedMinerAngles).catch(console.error);
 
 // ── Seed MinerForge Pro angles on startup ───────────────────────────────────
-// Runs once per server start. Skips if the product already has 6+ angles.
+// Runs once per server start. Skips if the product already has MINERFORGE_ANGLES.length+ angles.
 // To force re-seed: temporarily change the condition below to angles.length < 999.
 
 async function seedMinerAngles() {
