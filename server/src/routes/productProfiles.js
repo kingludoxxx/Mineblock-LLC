@@ -395,11 +395,17 @@ router.delete('/:id/scripts/:scriptId', async (req, res) => {
 });
 
 // ── POST /:id/angles — Add angle ───────────────────────────────────
+// Full angle schema:
+// { name, funnel_stage, hook_strategy, lead_with, tone, copy_directives,
+//   required_elements[], headline_examples[], banned_phrases[], color_style }
 
 router.post('/:id/angles', async (req, res) => {
   try {
     await ensureTable();
-    const { name, description } = req.body;
+    const {
+      name, funnel_stage, hook_strategy, lead_with, tone,
+      copy_directives, required_elements, headline_examples, banned_phrases, color_style,
+    } = req.body;
     if (!name) {
       return res.status(400).json({ success: false, error: { message: 'name is required' } });
     }
@@ -407,7 +413,15 @@ router.post('/:id/angles', async (req, res) => {
     const angle = {
       id: `angle_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       name,
-      description: description || '',
+      funnel_stage: funnel_stage || '',
+      hook_strategy: hook_strategy || '',
+      lead_with: lead_with || '',
+      tone: tone || '',
+      copy_directives: copy_directives || '',
+      required_elements: Array.isArray(required_elements) ? required_elements : [],
+      headline_examples: Array.isArray(headline_examples) ? headline_examples : [],
+      banned_phrases: Array.isArray(banned_phrases) ? banned_phrases : [],
+      color_style: color_style || '',
       created_at: new Date().toISOString(),
     };
 
@@ -425,6 +439,83 @@ router.post('/:id/angles', async (req, res) => {
     return res.json({ success: true, data: parseRow(rows[0]) });
   } catch (err) {
     console.error('POST /product-profiles/:id/angles error:', err);
+    return res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// ── PUT /:id/angles/:angleId — Update a single angle ──────────────
+
+router.put('/:id/angles/:angleId', async (req, res) => {
+  try {
+    await ensureTable();
+    const { id, angleId } = req.params;
+    const {
+      name, funnel_stage, hook_strategy, lead_with, tone,
+      copy_directives, required_elements, headline_examples, banned_phrases, color_style,
+    } = req.body;
+
+    // Load the current angles array
+    const rows = await pgQuery('SELECT angles FROM product_profiles WHERE id = $1', [id]);
+    if (rows.length === 0) {
+      return res.status(404).json({ success: false, error: { message: 'Profile not found' } });
+    }
+    let angles = rows[0].angles;
+    if (typeof angles === 'string') { try { angles = JSON.parse(angles); } catch { angles = []; } }
+    if (!Array.isArray(angles)) angles = [];
+
+    const idx = angles.findIndex(a => a.id === angleId);
+    if (idx === -1) {
+      return res.status(404).json({ success: false, error: { message: 'Angle not found' } });
+    }
+
+    const updated = {
+      ...angles[idx],
+      ...(name !== undefined && { name }),
+      ...(funnel_stage !== undefined && { funnel_stage }),
+      ...(hook_strategy !== undefined && { hook_strategy }),
+      ...(lead_with !== undefined && { lead_with }),
+      ...(tone !== undefined && { tone }),
+      ...(copy_directives !== undefined && { copy_directives }),
+      ...(Array.isArray(required_elements) && { required_elements }),
+      ...(Array.isArray(headline_examples) && { headline_examples }),
+      ...(Array.isArray(banned_phrases) && { banned_phrases }),
+      ...(color_style !== undefined && { color_style }),
+    };
+    angles[idx] = updated;
+
+    const result = await pgQuery(
+      `UPDATE product_profiles SET angles = $1::jsonb, updated_at = NOW() WHERE id = $2 RETURNING *`,
+      [JSON.stringify(angles), id]
+    );
+    return res.json({ success: true, data: parseRow(result[0]) });
+  } catch (err) {
+    console.error('PUT /product-profiles/:id/angles/:angleId error:', err);
+    return res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// ── DELETE /:id/angles/:angleId — Remove a single angle ────────────
+
+router.delete('/:id/angles/:angleId', async (req, res) => {
+  try {
+    await ensureTable();
+    const rows = await pgQuery(
+      `UPDATE product_profiles
+       SET angles = (
+         SELECT COALESCE(jsonb_agg(elem), '[]'::jsonb)
+         FROM jsonb_array_elements(angles) AS elem
+         WHERE elem->>'id' != $1
+       ),
+       updated_at = NOW()
+       WHERE id = $2 RETURNING *`,
+      [req.params.angleId, req.params.id]
+    );
+    if (rows.length === 0) {
+      return res.status(404).json({ success: false, error: { message: 'Profile not found' } });
+    }
+    return res.json({ success: true, data: parseRow(rows[0]) });
+  } catch (err) {
+    console.error('DELETE /product-profiles/:id/angles/:angleId error:', err);
     return res.status(500).json({ success: false, error: { message: err.message } });
   }
 });

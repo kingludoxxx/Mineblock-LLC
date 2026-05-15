@@ -808,6 +808,8 @@ export default function StaticsGeneration() {
   const [productPreview, setProductPreview] = useState('');
   const [selectedProductImages, setSelectedProductImages] = useState([]); // extra images selected for generation
   const [marketingAngle, setMarketingAngle] = useState('');
+  const [selectedAngleData, setSelectedAngleData] = useState(null); // full angle object from product library
+  const [productAngles, setProductAngles] = useState([]); // angle buttons for the selected product
   const [customAngle, setCustomAngle] = useState('');
   const [aspectRatio, setAspectRatio] = useState('4:5');
   const [profileOpen, setProfileOpen] = useState(false);
@@ -926,8 +928,13 @@ export default function StaticsGeneration() {
       setDifferentiator(fullProduct.differentiator || '');
       setVoice(fullProduct.voice || '');
       setGuarantee(fullProduct.guarantee || '');
-      if (fullProduct.angles?.length > 0) {
-        setMarketingAngle(fullProduct.angles[0].name || '');
+      // Load product angles for sidebar buttons
+      const angles = fullProduct.angles || [];
+      setProductAngles(angles);
+      // Auto-select first angle if one exists, but don't override a user's existing choice
+      if (angles.length > 0 && !marketingAngle) {
+        setMarketingAngle(angles[0].name || '');
+        setSelectedAngleData(angles[0]);
       }
     } else {
       // Fallback to partial product — warn user
@@ -1073,11 +1080,12 @@ export default function StaticsGeneration() {
           profile: Object.keys(profile).length > 0 ? profile : undefined,
         },
         angle: customAngle || marketingAngle || undefined,
-        ratio: aspectRatio,
+        angle_data: !customAngle && selectedAngleData ? selectedAngleData : undefined,
+        ratio: 'all',
       });
 
       const genResult = response.data?.data || response.data;
-      const tasks = genResult.tasks || (genResult.taskId ? [{ taskId: genResult.taskId, ratio: aspectRatio }] : []);
+      const tasks = genResult.tasks || (genResult.taskId ? [{ taskId: genResult.taskId, ratio: '1:1' }] : []);
 
       if (tasks.length === 0) {
         removeDirectGen();
@@ -1217,6 +1225,7 @@ export default function StaticsGeneration() {
       id: crypto.randomUUID(),
       references: references.map(r => ({ ...r })),
       angle: marketingAngle,
+      angleData: !customAngle && selectedAngleData ? selectedAngleData : null,
       customAngle: customAngle,
       productId: selectedProductId,
       productName: productName,
@@ -1423,11 +1432,12 @@ export default function StaticsGeneration() {
                 template_id: isRefTemplate ? refId : undefined,
                 product: productPayload,
                 angle: item.customAngle || item.angle || undefined,
-                ratio: item.aspectRatio,
+                angle_data: !item.customAngle && item.angleData ? item.angleData : undefined,
+                ratio: 'all',
               });
 
               const genResult = response.data?.data || response.data;
-              const tasks = genResult.tasks || (genResult.taskId ? [{ taskId: genResult.taskId, ratio: item.aspectRatio }] : []);
+              const tasks = genResult.tasks || (genResult.taskId ? [{ taskId: genResult.taskId, ratio: '1:1' }] : []);
 
               // Signal that generate is done — next ref can start
               return { genDone: true, pollPromise: (async () => {
@@ -1846,6 +1856,9 @@ export default function StaticsGeneration() {
                   onProductChange={(product) => handleProductSelect(product)}
                   angle={marketingAngle}
                   onAngleChange={setMarketingAngle}
+                  angleData={selectedAngleData}
+                  onAngleDataChange={setSelectedAngleData}
+                  productAngles={productAngles}
                   customAngle={customAngle}
                   onCustomAngleChange={setCustomAngle}
                   references={references}

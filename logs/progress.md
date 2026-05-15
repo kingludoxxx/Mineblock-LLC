@@ -1009,3 +1009,12 @@ DECISIONS:
   the language subfolder will be created on the next run.
 STATUS: COMPLETE — all tests passed, automation is production-ready
 ---
+---
+TIMESTAMP: 2026-04-25 00:00
+TASK: Structured angle system for statics generation
+BUILT: Full end-to-end angle data pipeline. (1) productProfiles.js — enriched POST /:id/angles to accept funnel_stage, hook_strategy, lead_with, tone, copy_directives, required_elements[], headline_examples[], banned_phrases[]; added PUT /:id/angles/:angleId and DELETE /:id/angles/:angleId. (2) staticsPrompts.js — buildClaudePrompt now accepts angleData as 6th param and injects a prominent '🎯 ANGLE STRATEGY' section at the very top of the Claude prompt, before template analysis begins, overriding the reference template's default messaging strategy. Falls back to simple one-liner when only a string angle name is provided. (3) staticsGeneration.js — destructures angle_data from request body, passes to buildClaudePrompt, logs angle name. (4) StaticsGeneration.jsx — adds selectedAngleData and productAngles state; populates from product on select; passes angle_data to direct generate and queue generate API calls. (5) ConfigSidebar.jsx — removes hardcoded generic 6-button angle list; shows product's angles dynamically from product library with funnel stage badges and lead_with preview; custom text clears the product angle selection.
+TESTED: Ran buildClaudePrompt in Node with a full angleData object — confirmed 🎯 ANGLE STRATEGY section appears at top of prompt with all fields correctly injected. Ran without angleData (string only) — confirmed fallback one-liner. Git diff: 209 insertions across 5 files. Pushed to creative/active (3d4c4b8).
+OUTPUT: Commit 3d4c4b8 live on creative/active. Angles defined in the product library now fully drive Claude's copy strategy. The sidebar shows real product angles (not generic labels). The angle is the first thing Claude reads.
+DECISIONS: Injected angle section BEFORE Step 1 (template analysis) so Claude approaches the reference with the angle brief already in mind. angleData only populated when a product angle button is clicked (not for custom text), preserving free-text override behavior. Auto-selects first angle on product load only if no angle was already chosen.
+STATUS: COMPLETE
+---

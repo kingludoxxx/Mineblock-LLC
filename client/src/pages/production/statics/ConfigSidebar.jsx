@@ -14,16 +14,7 @@ import { AresAgent } from './AresAgent';
 // Constants
 // ---------------------------------------------------------------------------
 
-const AD_ANGLES = [
-  'Social Proof',
-  'Problem/Solution',
-  'Before & After',
-  'Urgency',
-  'Curiosity',
-  'Authority',
-];
-
-const ASPECT_RATIOS = ['1:1', '9:10', '4:5', '16:9', '2:3'];
+// Ratios are always 1:1, 4:5, 9:16 — generated automatically, no selector needed
 
 // ---------------------------------------------------------------------------
 // ConfigSidebar
@@ -35,6 +26,9 @@ export function ConfigSidebar({
   onProductChange,
   angle,
   onAngleChange,
+  angleData,
+  onAngleDataChange,
+  productAngles,
   customAngle,
   onCustomAngleChange,
   references,
@@ -111,27 +105,59 @@ export function ConfigSidebar({
               Ad_Angle <span className="text-zinc-600 opacity-70">[OPTIONAL]</span>
             </label>
           </div>
-          <div className="flex flex-wrap gap-2">
-            {AD_ANGLES.map((a) => (
-              <button
-                key={a}
-                type="button"
-                onClick={() => onAngleChange(angle === a ? null : a)}
-                className={`px-2.5 py-1 text-xs rounded-md border transition-all duration-300 cursor-pointer ${
-                  angle === a
-                    ? 'bg-[#c9a84c]/10 border-[#c9a84c]/30 text-[#e8d5a3] shadow-[0_0_8px_rgba(201,168,76,0.1)]'
-                    : 'bg-white/[0.02] border-white/[0.05] text-zinc-400 hover:border-white/[0.1] hover:text-zinc-200 hover:bg-white/[0.04]'
-                }`}
-              >
-                {a}
-              </button>
-            ))}
-          </div>
+
+          {/* Product angles from library — only renders when the product has angles configured */}
+          {productAngles && productAngles.length > 0 && (
+            <div className="flex flex-wrap gap-2">
+              {productAngles.map((a) => (
+                <button
+                  key={a.id}
+                  type="button"
+                  title={a.funnel_stage ? `${a.funnel_stage} funnel` : a.hook_strategy || ''}
+                  onClick={() => {
+                    const selecting = angle !== a.name;
+                    onAngleChange(selecting ? a.name : null);
+                    if (onAngleDataChange) onAngleDataChange(selecting ? a : null);
+                  }}
+                  className={`px-2.5 py-1 text-xs rounded-md border transition-all duration-300 cursor-pointer ${
+                    angle === a.name
+                      ? 'bg-[#c9a84c]/10 border-[#c9a84c]/30 text-[#e8d5a3] shadow-[0_0_8px_rgba(201,168,76,0.1)]'
+                      : 'bg-white/[0.02] border-white/[0.05] text-zinc-400 hover:border-white/[0.1] hover:text-zinc-200 hover:bg-white/[0.04]'
+                  }`}
+                >
+                  {a.name}
+                  {a.funnel_stage && (
+                    <span className="ml-1.5 text-[9px] opacity-50 uppercase tracking-wide">{a.funnel_stage}</span>
+                  )}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Selected angle detail */}
+          {angleData && !customAngle && (
+            <div className="bg-[#c9a84c]/[0.04] border border-[#c9a84c]/10 rounded-lg px-3 py-2 space-y-1">
+              {angleData.funnel_stage && (
+                <div className="text-[10px] font-mono text-[#c9a84c]/60 uppercase tracking-wider">
+                  {angleData.funnel_stage} funnel
+                </div>
+              )}
+              {angleData.lead_with && (
+                <p className="text-[11px] text-zinc-400 leading-snug line-clamp-2">{angleData.lead_with}</p>
+              )}
+            </div>
+          )}
+
+          {/* Custom angle override */}
           <input
             type="text"
             value={customAngle || ''}
-            onChange={(e) => onCustomAngleChange(e.target.value)}
-            placeholder="Custom angle... (or leave blank)"
+            onChange={(e) => {
+              onCustomAngleChange(e.target.value);
+              // Custom text clears the product angle selection
+              if (e.target.value && onAngleDataChange) onAngleDataChange(null);
+            }}
+            placeholder="Or type a custom angle..."
             className="w-full bg-white/[0.02] border border-white/[0.05] rounded-lg p-2.5 text-sm text-zinc-300 placeholder:text-zinc-600 focus:outline-none focus:ring-1 focus:ring-[#c9a84c]/30 focus:border-[#c9a84c]/20 transition-all shadow-[inset_0_1px_0_0_rgba(255,255,255,0.02)]"
           />
         </div>

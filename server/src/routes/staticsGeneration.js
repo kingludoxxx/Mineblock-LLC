@@ -668,7 +668,7 @@ async function analyzeAndCacheLayout(templateId, imageUrl) {
 // Client polls GET /status/:taskId for progress/result.
 
 router.post('/generate', authenticate, async (req, res) => {
-  const { reference_image_url, product, angle, ratio, template_id } = req.body;
+  const { reference_image_url, product, angle, angle_data, ratio, template_id } = req.body;
 
   if (!reference_image_url) return res.status(400).json({ success: false, error: 'reference_image_url is required' });
   if (!product)             return res.status(400).json({ success: false, error: 'product is required' });
@@ -692,11 +692,11 @@ router.post('/generate', authenticate, async (req, res) => {
   // ── Run the full pipeline in the background ──────────────────────────
   setImmediate(async () => {
   try {
-    const { reference_image_url, product, angle, ratio, template_id } = req.body;
+    const { reference_image_url, product, angle, angle_data, ratio, template_id } = req.body;
 
     // Log product context for debugging copy quality
     const profileFields = product.profile ? Object.keys(product.profile).filter(k => product.profile[k]) : [];
-    console.log(`[staticsGeneration] Product: "${product.name}" | Price: ${product.price || 'N/A'} | Profile fields: [${profileFields.join(', ')}] (${profileFields.length} fields)`);
+    console.log(`[staticsGeneration] Product: "${product.name}" | Price: ${product.price || 'N/A'} | Angle: ${angle_data?.name || angle || 'none'} | Profile fields: [${profileFields.join(', ')}] (${profileFields.length} fields)`);
     if (profileFields.length === 0) {
       console.warn(`[staticsGeneration] ⚠️ No product profile fields sent! Copy will lack product context.`);
     }
@@ -748,7 +748,7 @@ router.post('/generate', authenticate, async (req, res) => {
         {
           role: 'user',
           content: [
-            { type: 'text', text: buildClaudePrompt(product, angle, customPrompts, layoutMap, templateData) },
+            { type: 'text', text: buildClaudePrompt(product, angle, customPrompts, layoutMap, templateData, angle_data || null) },
             { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } },
           ],
         },
@@ -964,11 +964,8 @@ router.post('/generate', authenticate, async (req, res) => {
     console.log(`[staticsGeneration] Prompt:\n${nbPrompt}`);
     console.log(`[staticsGeneration] Total images: ${imageUrls.length} (${extraProductUrls.length} extra product, ${logoUrls.length} logos)`);
 
-    // Determine which ratios to generate
-    const requestedRatio = req.body.ratio;
-    const ratiosToGenerate = requestedRatio && requestedRatio !== 'all'
-      ? [requestedRatio]
-      : ['1:1', '9:16'];
+    // Always generate all 3 required formats: 1:1, 4:5, 9:16
+    const ratiosToGenerate = ['1:1', '4:5', '9:16'];
 
     // Determine provider: default to gemini, fallback to nanobanana
     const provider = req.body.provider || 'nanobanana';
@@ -2021,6 +2018,10 @@ async function ensureCreativesTable() {
   await pgQuery('ALTER TABLE spy_creatives ADD COLUMN IF NOT EXISTS im_number INTEGER').catch(() => {});
   await pgQuery('ALTER TABLE spy_creatives ADD COLUMN IF NOT EXISTS iteration_change_description TEXT').catch(() => {});
   await pgQuery(`CREATE INDEX IF NOT EXISTS idx_spy_creatives_parent_ref ON spy_creatives(parent_creative_id_ref)`).catch(() => {});
+
+  // ── Multi-ratio group tracking ──
+  await pgQuery('ALTER TABLE spy_creatives ADD COLUMN IF NOT EXISTS group_id UUID').catch(() => {});
+  await pgQuery(`CREATE INDEX IF NOT EXISTS idx_spy_creatives_group_id ON spy_creatives(group_id)`).catch(() => {});
   await pgQuery(`CREATE UNIQUE INDEX IF NOT EXISTS idx_spy_creatives_im_number ON spy_creatives(im_number) WHERE im_number IS NOT NULL`).catch(() => {});
   await pgQuery('ALTER TABLE creative_analysis ADD COLUMN IF NOT EXISTS iterated_at TIMESTAMPTZ').catch(() => {});
 
@@ -3105,9 +3106,20 @@ router.post('/launch', authenticate, async (req, res) => {
     }
 
     let pageIdx = 0;
+    // Deduplicate: if the user selects multiple ratio variants from the same group,
+    // only launch once per group (the first selected item drives the launch for all ratios)
+    const processedGroupIds = new Set();
 
     for (let i = 0; i < creatives.length; i++) {
       const creative = creatives[i];
+
+      // Skip sibling ratios already handled as part of a group launch
+      if (creative.group_id && processedGroupIds.has(creative.group_id)) {
+        results.push({ creative_id: creative.id, status: 'skipped', reason: 'Handled as part of group launch' });
+        continue;
+      }
+      if (creative.group_id) processedGroupIds.add(creative.group_id);
+
       const page = selectedPages.length ? selectedPages[pageIdx % selectedPages.length] : null;
       pageIdx++;
 
@@ -3125,45 +3137,68 @@ router.post('/launch', authenticate, async (req, res) => {
           throw new Error(`Creative ${creative.id} has no image — cannot launch without an image`);
         }
 
-        // Upload 4:5 image to Meta (reuse cached hash if available)
-        let imageHashes = [];
-        let imageHash = creative.meta_image_hash || null;
-        if (creative.image_url) {
-          if (imageHash) {
-            imageHashes = [imageHash];
-          } else {
-            const uploadResult = await uploadAdImageFromUrl(template.ad_account_id, creative.image_url);
-            if (!uploadResult?.hash) throw new Error('Image upload returned no hash');
-            imageHash = uploadResult.hash;
-            imageHashes = [imageHash];
-          }
-        }
+        // ── Collect all ratio variants for this creative ──────────────────
+        // Priority: group_id siblings (new 3-ratio flow) > parent_creative_id variants (legacy)
+        const selfRatio = creative.aspect_ratio || '4:5';
+        const ratioImages = {}; // ratio → { id, image_url, meta_image_hash }
+        ratioImages[selfRatio] = {
+          id: creative.id,
+          image_url: creative.image_url,
+          meta_image_hash: creative.meta_image_hash || null,
+        };
 
-        // Find and upload the 9:16 variant for stories/reels placements
-        let verticalImageHash = null;
-        const variants = await pgQuery(
-          "SELECT id, image_url, meta_image_hash FROM spy_creatives WHERE parent_creative_id = $1 AND aspect_ratio = '9:16' AND status IN ('approved', 'ready') ORDER BY created_at DESC LIMIT 1",
-          [creative.id]
-        );
-        if (variants.length && variants[0].image_url) {
-          if (variants[0].meta_image_hash) {
-            verticalImageHash = variants[0].meta_image_hash;
-          } else {
-            try {
-              const vUpload = await uploadAdImageFromUrl(template.ad_account_id, variants[0].image_url);
-              verticalImageHash = vUpload.hash;
-              // Cache the hash for future launches
-              await pgQuery('UPDATE spy_creatives SET meta_image_hash = $1, updated_at = NOW() WHERE id = $2', [vUpload.hash, variants[0].id]).catch(() => {});
-            } catch (vErr) {
-              console.warn(`[staticsGeneration] ⚠️ Failed to upload 9:16 variant (continuing with 4:5 only): ${vErr.message}`);
+        // New flow: siblings share the same group_id, all ratios generated together
+        if (creative.group_id) {
+          const siblings = await pgQuery(
+            "SELECT id, aspect_ratio, image_url, meta_image_hash FROM spy_creatives WHERE group_id = $1 AND id != $2 AND status IN ('approved', 'ready') AND image_url IS NOT NULL",
+            [creative.group_id, creative.id]
+          ).catch(() => []);
+          for (const s of siblings) {
+            if (!ratioImages[s.aspect_ratio]) {
+              ratioImages[s.aspect_ratio] = { id: s.id, image_url: s.image_url, meta_image_hash: s.meta_image_hash };
             }
           }
-          console.log(`[staticsGeneration] 9:16 variant found for creative ${creative.id} — hash: ${verticalImageHash ? 'yes' : 'no'}`);
-        } else {
-          console.log(`[staticsGeneration] No 9:16 variant for creative ${creative.id} — using 4:5 for all placements`);
+        }
+        // Legacy flow: child variants linked via parent_creative_id
+        const legacyVariants = await pgQuery(
+          "SELECT id, aspect_ratio, image_url, meta_image_hash FROM spy_creatives WHERE parent_creative_id = $1 AND status IN ('approved', 'ready') AND image_url IS NOT NULL",
+          [creative.id]
+        ).catch(() => []);
+        for (const v of legacyVariants) {
+          if (!ratioImages[v.aspect_ratio]) {
+            ratioImages[v.aspect_ratio] = { id: v.id, image_url: v.image_url, meta_image_hash: v.meta_image_hash };
+          }
         }
 
-        // Determine ad copy: copy set > generated_copy > fallbacks
+        const ratioList = Object.keys(ratioImages);
+        console.log(`[staticsGeneration] Creative ${creative.id} — launching ${ratioList.length} ratio(s): ${ratioList.join(', ')}`);
+
+        // ── Upload images for each ratio ──────────────────────────────────
+        const uploadedRatios = []; // [{ ratio, id, imageHash }]
+        for (const [ratio, data] of Object.entries(ratioImages)) {
+          let hash = data.meta_image_hash;
+          if (!hash && data.image_url) {
+            try {
+              const uRes = await uploadAdImageFromUrl(template.ad_account_id, data.image_url);
+              if (!uRes?.hash) throw new Error(`Upload returned no hash for ratio ${ratio}`);
+              hash = uRes.hash;
+              await pgQuery(
+                'UPDATE spy_creatives SET meta_image_hash = $1, updated_at = NOW() WHERE id = $2',
+                [hash, data.id]
+              ).catch(() => {});
+            } catch (uErr) {
+              console.warn(`[staticsGeneration] ⚠️ Skipping ${ratio} (${data.id}) — upload failed: ${uErr.message}`);
+              continue;
+            }
+          }
+          if (hash) uploadedRatios.push({ ratio, id: data.id, imageHash: hash });
+        }
+
+        if (uploadedRatios.length === 0) {
+          throw new Error('No images could be uploaded to Meta for any ratio');
+        }
+
+        // ── Determine ad copy: copy set > generated_copy > fallbacks ─────
         const genCopy = safeObj(creative.generated_copy);
         const csPrimaryTexts = safeArr(copySet?.primary_texts);
         const csHeadlines = safeArr(copySet?.headlines);
@@ -3183,63 +3218,83 @@ router.post('/launch', authenticate, async (req, res) => {
         const cta = copySet?.cta_button || genCopy.cta || 'SHOP_NOW';
         const link = copySet?.landing_page_url || template.landing_page_url || 'https://mineblock.com';
 
-        // Create standard ad creative (non-dynamic, multiple ads per adset)
-        const metaCreativeId = await createFlexibleAdCreative(template.ad_account_id, {
-          name: adName,
-          imageHashes,
-          primaryTexts,
-          headlines,
-          descriptions,
-          cta,
-          link,
-          pageId: page?.id || selectedPages[0]?.id,
-          utmParameters: template.utm_parameters,
-          verticalImageHash, // 9:16 for stories/reels, null if no variant exists
-        });
-
-        // Create the ad
-        const metaAdId = await createAd(template.ad_account_id, {
-          name: adName,
-          adsetId,
-          creativeId: metaCreativeId,
-          status: 'ACTIVE',
-        });
-
-        // Build meta_ad_ids entry
-        const metaEntry = {
-          ad_id: metaAdId,
-          creative_id: metaCreativeId,
-          adset_id: adsetId,
-          campaign_id: template.campaign_id,
-          page_id: page?.id || selectedPages[0]?.id,
-          ad_name: adName,
-          launched_at: new Date().toISOString(),
-        };
+        // ── Create one Meta ad per ratio variant ──────────────────────────
         const existingMeta = safeArr(creative.meta_ad_ids);
-        existingMeta.push(metaEntry);
+        let primaryMetaAdId = null;
+        let primaryImageHash = creative.meta_image_hash;
 
-        // Update creative with launch tracking
-        await pgQuery(
-          `UPDATE spy_creatives SET status = 'launched', meta_ad_ids = $1, meta_image_hash = $2, updated_at = NOW() WHERE id = $3`,
-          [JSON.stringify(existingMeta), imageHash, creative.id]
-        );
+        for (const ratioItem of uploadedRatios) {
+          // Append ratio tag to ad name when launching multiple ratios
+          const ratioSuffix = uploadedRatios.length > 1 ? ` [${ratioItem.ratio}]` : '';
+          const ratioAdName = `${adName}${ratioSuffix}`;
 
-        // Create audit log entry
-        await pgQuery(
-          `INSERT INTO statics_launches (creative_id, template_id, copy_set_id, ad_account_id, meta_campaign_id, meta_adset_id, meta_ad_id, meta_creative_id, meta_image_hash, ad_name, adset_name, page_id, page_name, batch_number, status, launched_at)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'launched',NOW())`,
-          [creative.id, template_id, copy_set_id || null, template.ad_account_id, template.campaign_id, adsetId, metaAdId, metaCreativeId, imageHash, adName, adsetName, page?.id || null, page?.name || null, batchNum]
-        ).catch(err => console.warn('[staticsGeneration] Failed to log launch:', err.message));
+          const metaCreativeId = await createFlexibleAdCreative(template.ad_account_id, {
+            name: ratioAdName,
+            imageHashes: [ratioItem.imageHash],
+            primaryTexts,
+            headlines,
+            descriptions,
+            cta,
+            link,
+            pageId: page?.id || selectedPages[0]?.id,
+            utmParameters: template.utm_parameters,
+          });
 
-        // Also mark the 9:16 variant as launched if it was included
-        if (variants.length && verticalImageHash) {
+          const metaAdId = await createAd(template.ad_account_id, {
+            name: ratioAdName,
+            adsetId,
+            creativeId: metaCreativeId,
+            status: 'ACTIVE',
+          });
+
+          existingMeta.push({
+            ad_id: metaAdId,
+            creative_id: metaCreativeId,
+            adset_id: adsetId,
+            campaign_id: template.campaign_id,
+            page_id: page?.id || selectedPages[0]?.id,
+            ad_name: ratioAdName,
+            aspect_ratio: ratioItem.ratio,
+            launched_at: new Date().toISOString(),
+          });
+
+          // Audit log per ratio
           await pgQuery(
-            "UPDATE spy_creatives SET status = 'launched', updated_at = NOW() WHERE id = $1",
-            [variants[0].id]
-          ).catch(() => {});
+            `INSERT INTO statics_launches (creative_id, template_id, copy_set_id, ad_account_id, meta_campaign_id, meta_adset_id, meta_ad_id, meta_creative_id, meta_image_hash, ad_name, adset_name, page_id, page_name, batch_number, status, launched_at)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'launched',NOW())`,
+            [ratioItem.id, template_id, copy_set_id || null, template.ad_account_id, template.campaign_id, adsetId, metaAdId, metaCreativeId, ratioItem.imageHash, ratioAdName, adsetName, page?.id || null, page?.name || null, batchNum]
+          ).catch(err => console.warn('[staticsGeneration] Failed to log launch:', err.message));
+
+          // Track primary creative's ad ID and image hash
+          if (ratioItem.id === creative.id) {
+            primaryMetaAdId = metaAdId;
+            primaryImageHash = ratioItem.imageHash;
+          }
         }
 
-        results.push({ creative_id: creative.id, status: 'launched', meta_ad_id: metaAdId, ad_name: adName });
+        // ── Update primary creative DB record ─────────────────────────────
+        await pgQuery(
+          `UPDATE spy_creatives SET status = 'launched', meta_ad_ids = $1, meta_image_hash = $2, updated_at = NOW() WHERE id = $3`,
+          [JSON.stringify(existingMeta), primaryImageHash || uploadedRatios[0]?.imageHash, creative.id]
+        );
+
+        // ── Mark all sibling ratio variants as launched ───────────────────
+        for (const ratioItem of uploadedRatios) {
+          if (ratioItem.id !== creative.id) {
+            await pgQuery(
+              "UPDATE spy_creatives SET status = 'launched', meta_image_hash = $1, updated_at = NOW() WHERE id = $2",
+              [ratioItem.imageHash, ratioItem.id]
+            ).catch(() => {});
+          }
+        }
+
+        results.push({
+          creative_id: creative.id,
+          status: 'launched',
+          meta_ad_id: primaryMetaAdId || uploadedRatios[0]?.imageHash,
+          ad_name: adName,
+          ratios_launched: uploadedRatios.map(r => r.ratio),
+        });
       } catch (err) {
         // Log failed launch attempt
         await pgQuery(
