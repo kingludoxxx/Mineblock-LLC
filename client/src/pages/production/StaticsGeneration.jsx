@@ -1081,7 +1081,21 @@ export default function StaticsGeneration() {
         resolvedReferenceUrl = await fileToBase64(referenceFile);
       }
       if (!resolvedReferenceUrl && references.length > 0) {
-        resolvedReferenceUrl = references[0].image_url || references[0].thumbnail || references[0].url || '';
+        const ref = references[0];
+        resolvedReferenceUrl = ref.image_url || ref.thumbnail || ref.url || '';
+        // If still empty and this is a template stub (hydration may not have completed),
+        // fetch the template image inline before proceeding
+        if (!resolvedReferenceUrl && ref.is_template && ref.id) {
+          try {
+            const tmplRes = await api.get('/statics-generation/templates');
+            const allTmpls = tmplRes.data?.templates || tmplRes.data || [];
+            const found = allTmpls.find(t => t.id === ref.id);
+            if (found?.image_url) {
+              resolvedReferenceUrl = found.image_url;
+              setReferences(prev => prev.map(r => r.id === ref.id ? { ...r, image_url: found.image_url } : r));
+            }
+          } catch { /* fall through — server will reject with a clear error */ }
+        }
       }
       let resolvedProductUrl = productImageUrl;
       if (productFile) {
@@ -1258,6 +1272,11 @@ export default function StaticsGeneration() {
       addToast(`${completedTasks.length} creatives generated (${completedTasks.map(t => t.ratio).join(' + ')}) & saved to Pipeline`, 'success', 8000);
       setGenerationStep(0);
       setCreatives(prev => [...savedCreatives, ...prev]);
+      // Only clear references on success so a failed generation retains the template selection
+      setReferences([]);
+      setReferenceImageUrl('');
+      setReferencePreview('');
+      setReferenceFile(null);
     } catch (err) {
       const message =
         err.response?.data?.error ||
@@ -1270,11 +1289,6 @@ export default function StaticsGeneration() {
     } finally {
       removeDirectGen();
       setGenerating(false);
-      // Clear references so next template selection starts fresh
-      setReferences([]);
-      setReferenceImageUrl('');
-      setReferencePreview('');
-      setReferenceFile(null);
       // Catch-up fetch after direct generation to pick up server-side changes
       // (e.g. auto-generated 9:16 variants). Delay lets the server finish processing.
       setTimeout(() => fetchCreatives(true), 3000);
