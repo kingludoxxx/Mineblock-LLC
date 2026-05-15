@@ -955,7 +955,7 @@ router.post('/generate', authenticate, async (req, res) => {
     // Pass extra product count so prompt builder can calculate correct logo image indices
     claudeResult._extraProductCount = refHasProduct ? extraProductUrls.length : 0;
     claudeResult._refHasProduct = refHasProduct;
-    const nbPrompt = buildNanoBananaPrompt(claudeResult, swapPairs, product, logoUrls.length, customPrompts, layoutMap, logoBackgroundTone, skipTextRendering, templateData);
+    const nbPrompt = buildNanoBananaPrompt(claudeResult, swapPairs, product, logoUrls.length, customPrompts, layoutMap, logoBackgroundTone, skipTextRendering, templateData, angle_data || null);
 
     // Send: product images (only if ref has product), then logos, then reference ad (last)
     // Filter out null/undefined entries — NanoBanana requires all URLs to be valid strings
@@ -3182,9 +3182,13 @@ router.post('/launch', authenticate, async (req, res) => {
               const uRes = await uploadAdImageFromUrl(template.ad_account_id, data.image_url);
               if (!uRes?.hash) throw new Error(`Upload returned no hash for ratio ${ratio}`);
               hash = uRes.hash;
+              // Also store the Meta CDN URL in image_url — this is permanent
+              // (survives far longer than the 7-day image_store TTL) and lets
+              // the LAUNCHED column show real thumbnails instead of black tiles.
+              const metaCdnUrl = uRes.url || null;
               await pgQuery(
-                'UPDATE spy_creatives SET meta_image_hash = $1, updated_at = NOW() WHERE id = $2',
-                [hash, data.id]
+                `UPDATE spy_creatives SET meta_image_hash = $1${metaCdnUrl ? ', image_url = $3, thumbnail_url = $3' : ''}, updated_at = NOW() WHERE id = $2`,
+                metaCdnUrl ? [hash, data.id, metaCdnUrl] : [hash, data.id]
               ).catch(() => {});
             } catch (uErr) {
               console.warn(`[staticsGeneration] ⚠️ Skipping ${ratio} (${data.id}) — upload failed: ${uErr.message}`);

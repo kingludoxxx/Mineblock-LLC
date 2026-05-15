@@ -706,7 +706,53 @@ export function buildSwapPairs(originalText, adaptedText, productName = '') {
 // STEP 3: NanoBanana (Gemini) — Image Generation Prompt
 // ─────────────────────────────────────────────────────────────────────────────
 
-export function buildNanoBananaPrompt(claudeResult, swapPairs, product, logoCount = 0, customOverrides = null, layoutMap = null, logoBackgroundTone = null, skipTextRendering = false, templateData = null) {
+// ── Angle → Scene direction map ─────────────────────────────────────────────
+// Tells Gemini how to adjust the background ATMOSPHERE to match the angle.
+// The layout (positions, zones) stays fixed — only the env/mood shifts.
+const ANGLE_SCENE_MAP = [
+  {
+    match: /anti.?fake|competitor.?callout/i,
+    scene: 'Dark tech-lab atmosphere. A screen or display in the background shows blockchain data / transaction ledger rows (no specific coins). Scientific, evidence-forward composition. Subtle blue-green data glow on background surfaces. Cool contrast between real product and a blurred/faded generic competitor device silhouette if space allows.',
+  },
+  {
+    match: /skeptic.?to.?believer|blockchain.?proof/i,
+    scene: 'A desk or workspace background with a laptop or monitor showing a block-explorer interface (generic blockchain rows, no coin names). Cool blue digital tones. The scene feels like a private discovery moment — someone doing their own research. Analytical, deliberate, calm.',
+  },
+  {
+    match: /accidental.?winner|passive.?success/i,
+    scene: 'Cozy home environment — living room shelf, TV stand, home-office desk corner. Soft warm ambient light. The device is casually placed, not center-stage hero. Background shows normal home life: books, plants, soft furnishings. The scene communicates "set it and forget it" calm, not a flashy tech lab.',
+  },
+  {
+    match: /hater.?deflection/i,
+    scene: 'Bold, confident dark background — deep charcoal or navy. The product sits front and center as the undeniable protagonist. Background may suggest a stat counter or tally display (abstract, not literal numbers). High contrast, unapologetic. The composition feels like "proof speaks louder than comments."',
+  },
+  {
+    match: /apology|false.?confession/i,
+    scene: 'Clean, minimal, light or neutral background. No clutter, no hype elements. Simple, honest composition. White or very light grey background preferred. The scene feels like a direct, eye-level conversation — nothing to hide, everything transparent.',
+  },
+  {
+    match: /ai.?chip|mechanism.?explainer|pov/i,
+    scene: 'Circuit board pattern or dark navy/black tech background with subtle PCB trace lines. The scene communicates engineering precision and mechanical reliability. Cool dark tones, possibly with a faint grid or chip-die pattern. The device is the only organic element in an otherwise technical environment.',
+  },
+  {
+    match: /promo|deal|discount|limited.?time/i,
+    scene: 'Clean product-showcase environment with a hint of promotional energy — subtle warm amber or gold gradient behind the product, suggesting value and celebration. Price or offer elements feel natural in this setting. Not garish or sale-rack — premium promotional.',
+  },
+  {
+    match: /urgency|scarcity|last.?chance|almost.?gone/i,
+    scene: 'Dark background with a focused beam of light or spotlight effect on the product. The atmosphere is tense, action-ready. Deep charcoal, near-black, with a single warm or amber accent source. The composition communicates "this window closes — act now." No clutter; stark and decisive.',
+  },
+];
+
+function getAngleSceneDirection(angleName) {
+  if (!angleName) return null;
+  for (const entry of ANGLE_SCENE_MAP) {
+    if (entry.match.test(angleName)) return entry.scene;
+  }
+  return null;
+}
+
+export function buildNanoBananaPrompt(claudeResult, swapPairs, product, logoCount = 0, customOverrides = null, layoutMap = null, logoBackgroundTone = null, skipTextRendering = false, templateData = null, angleData = null) {
   const {
     people_count, product_count, adapted_audience,
     character_adaptation, visual_adaptations
@@ -906,6 +952,13 @@ ${templateData.deep_analysis.adaptation_instructions?.common_failure_modes?.leng
     ? `\n- Brand colors: ${Object.values(product.brand_colors).filter(Boolean).slice(0, 3).join(', ')} — use these for accent elements.`
     : '';
 
+  // Angle-specific scene/atmosphere direction (keeps layout fixed, shifts background mood)
+  const rawAngleName = angleData?.name || null;
+  const angleSceneDirection = getAngleSceneDirection(rawAngleName);
+  const angleSceneSection = angleSceneDirection && rawAngleName
+    ? `\n\n🎨 ANGLE SCENE DIRECTION — "${rawAngleName}":\nThe TEXT SWAPS above already carry the angle's copy. Your visual job: adjust the BACKGROUND ATMOSPHERE of the ad to match the angle's emotional world. Keep the EXACT same layout, zones, and product position — only shift the background mood/environment.\n${angleSceneDirection}\nDo NOT change: text positions, product size/position, badge/CTA zones, overall layout structure. Only the background scene and atmosphere should reflect this angle.`
+    : '';
+
   // ── P1.1: If skipTextRendering=true, instruct the model to produce a
   // TEXT-FREE image (no headlines, body copy, badges, CTAs, prices). The
   // overlayText() function in server/src/utils/textOverlay.js will composite
@@ -924,7 +977,7 @@ ${templateData.deep_analysis.adaptation_instructions?.common_failure_modes?.leng
 2. LOGO: If the reference has a brand logo mark (pictogram, shield, icon), replace it with the ${product.profile?.shortName || product.name || 'brand'} logo pictogram. If the "logo" is purely wordmark text, leave that region blank — we'll overlay it.
 3. PRODUCT: ${productRule}${hasProductInReference ? ` Orientation: ${claudeResult.product_orientation || 'front-facing'}.${productRulesSection}` : ''}
 4. ${characterRules}
-5. Keep EXACT same layout, background, colors, overall composition, and visual elements as the reference. ONLY change: (a) the product to ours, (b) remove all rendered text.
+5. Keep EXACT same layout, background, colors, overall composition, and visual elements as the reference. ONLY change: (a) the product to ours, (b) remove all rendered text.${angleSceneSection}
 6. PRODUCT LABEL: The product image (FIRST image) already has its real label/packaging. Copy it EXACTLY as provided — do NOT modify, redesign, or add text to the product packaging.${brandColorHint}${productContext}${co.absoluteRules ? `\n${co.absoluteRules}` : ''}
 
 THIS IS CRITICAL: zero rendered text. If in doubt whether something is text, DON'T render it. Our overlay system will add every piece of copy afterwards with pixel-perfect typography.`;
@@ -952,9 +1005,9 @@ TEXT SWAPS — replace ALL text with these EXACT words (character-for-character)
 ${swapSectionFinal || '(No text changes)'}${bannedWords}
 
 LAYOUT RULES:
-- Keep EXACT same layout, background, colors, fonts, positions.${visualLine}
+- Keep EXACT same layout, text positions, badge zones, product zone, and fonts as the reference.${visualLine}
 - Spell every word correctly with proper spacing between words.
-- PRODUCT LABEL: The product image (FIRST image) already has its real label/packaging. Copy it EXACTLY as provided — do NOT modify, redesign, or add text to the product packaging.${brandColorHint}${productContext}${co.absoluteRules ? `\n${co.absoluteRules}` : ''}`;
+- PRODUCT LABEL: The product image (FIRST image) already has its real label/packaging. Copy it EXACTLY as provided — do NOT modify, redesign, or add text to the product packaging.${angleSceneSection}${brandColorHint}${productContext}${co.absoluteRules ? `\n${co.absoluteRules}` : ''}`;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

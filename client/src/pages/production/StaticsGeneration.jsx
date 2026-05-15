@@ -286,6 +286,7 @@ function CreativeReviewCard({ creative, onApprove, onReject }) {
           src={creative.image_url}
           alt={creative.name || 'Creative'}
           className="w-full h-48 object-cover"
+          onError={(e) => { e.currentTarget.style.display = 'none'; }}
         />
       )}
       <div className="p-4 space-y-3">
@@ -546,11 +547,27 @@ function GeneratedView({ creatives, loading, onRefresh, onCreativeClick }) {
               className="group relative bg-[#0a0a0a] border border-white/[0.06] rounded-2xl overflow-hidden hover:border-white/[0.15] hover:shadow-lg hover:shadow-black/30 transition-all duration-200 cursor-pointer text-left"
             >
               {creative.image_url ? (
-                <img
-                  src={creative.image_url}
-                  alt={creative.name || 'Creative'}
-                  className="w-full h-[120px] object-cover"
-                />
+                <div className="relative w-full h-[120px]">
+                  <img
+                    src={creative.image_url}
+                    alt={creative.name || 'Creative'}
+                    className="w-full h-[120px] object-cover"
+                    onError={(e) => {
+                      e.currentTarget.style.display = 'none';
+                      const fb = e.currentTarget.parentElement?.querySelector('.img-fallback');
+                      if (fb) fb.style.display = 'flex';
+                    }}
+                  />
+                  <div
+                    className="img-fallback absolute inset-0 bg-white/[0.02] flex-col items-center justify-center gap-1"
+                    style={{ display: 'none' }}
+                  >
+                    <Image className="w-5 h-5 text-slate-700" />
+                    {creative.status === 'launched' && (
+                      <span className="text-[9px] text-slate-600">Live on Meta</span>
+                    )}
+                  </div>
+                </div>
               ) : (
                 <div className="w-full h-[120px] bg-white/[0.02] flex items-center justify-center">
                   <Image className="w-5 h-5 text-slate-700" />
