@@ -1081,11 +1081,11 @@ export default function StaticsGeneration() {
         },
         angle: customAngle || marketingAngle || undefined,
         angle_data: !customAngle && selectedAngleData ? selectedAngleData : undefined,
-        ratio: aspectRatio,
+        ratio: 'all',
       });
 
       const genResult = response.data?.data || response.data;
-      const tasks = genResult.tasks || (genResult.taskId ? [{ taskId: genResult.taskId, ratio: aspectRatio }] : []);
+      const tasks = genResult.tasks || (genResult.taskId ? [{ taskId: genResult.taskId, ratio: '1:1' }] : []);
 
       if (tasks.length === 0) {
         removeDirectGen();
@@ -1433,11 +1433,11 @@ export default function StaticsGeneration() {
                 product: productPayload,
                 angle: item.customAngle || item.angle || undefined,
                 angle_data: !item.customAngle && item.angleData ? item.angleData : undefined,
-                ratio: item.aspectRatio,
+                ratio: 'all',
               });
 
               const genResult = response.data?.data || response.data;
-              const tasks = genResult.tasks || (genResult.taskId ? [{ taskId: genResult.taskId, ratio: item.aspectRatio }] : []);
+              const tasks = genResult.tasks || (genResult.taskId ? [{ taskId: genResult.taskId, ratio: '1:1' }] : []);
 
               // Signal that generate is done — next ref can start
               return { genDone: true, pollPromise: (async () => {

@@ -14,7 +14,7 @@ import { AresAgent } from './AresAgent';
 // Constants
 // ---------------------------------------------------------------------------
 
-const ASPECT_RATIOS = ['1:1', '9:10', '4:5', '16:9', '2:3'];
+// Ratios are always 1:1, 4:5, 9:16 — generated automatically, no selector needed
 
 // ---------------------------------------------------------------------------
 // ConfigSidebar

@@ -964,11 +964,8 @@ router.post('/generate', authenticate, async (req, res) => {
     console.log(`[staticsGeneration] Prompt:\n${nbPrompt}`);
     console.log(`[staticsGeneration] Total images: ${imageUrls.length} (${extraProductUrls.length} extra product, ${logoUrls.length} logos)`);
 
-    // Determine which ratios to generate
-    const requestedRatio = req.body.ratio;
-    const ratiosToGenerate = requestedRatio && requestedRatio !== 'all'
-      ? [requestedRatio]
-      : ['1:1', '9:16'];
+    // Always generate all 3 required formats: 1:1, 4:5, 9:16
+    const ratiosToGenerate = ['1:1', '4:5', '9:16'];
 
     // Determine provider: default to gemini, fallback to nanobanana
     const provider = req.body.provider || 'nanobanana';
