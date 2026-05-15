@@ -7,6 +7,217 @@ const router = Router();
 
 router.use(authenticate, requirePermission('products', 'access'));
 
+// ── MinerForge Pro — Canonical Angle Library ────────────────────────────────
+// Seeded on startup if the product has fewer than 6 angles.
+// Update this array to add, remove, or edit angles — then redeploy.
+
+const MINERFORGE_ANGLES = [
+  {
+    id: 'angle_seed_001',
+    name: 'Anti-Fake / Competitor Callout',
+    funnel_stage: 'middle',
+    hook_strategy: 'Voice his suspicion BEFORE he can use it as a reason to scroll. He is in filtering mode, not buying mode — this angle has to pass his filter first, then convert him.',
+    lead_with: 'The market is flooded with fakes and he already suspects it. Most miners you see in your feed never actually mine. We tested the knockoffs — zero blockchain activity. MinerForge Pro is the original. Verified on chain. You can check it yourself right now.',
+    tone: 'Confident and evidence-based. Slightly confrontational toward the fakes — never defensive about MinerForge Pro. The tone of a company with nothing to hide. Calm authority, not anger.',
+    copy_directives: `- Open by voicing his suspicion — agree with his filter before trying to pass it
+- Immediately give him the verification mechanism: blockchain data is neutral, public, unfakeable
+- Show the specific contrast: competitor dashboard shows numbers / competitor blockchain shows nothing
+- MinerForge Pro: real blockchain activity, publicly verifiable
+- Never be defensive about the category — be the product that proves itself
+- Lead with external proof, never brand claims
+- End with a "verify yourself" CTA — pull up any block explorer right now`,
+    required_elements: [
+      'Competitor comparison showing zero blockchain activity',
+      'MinerForge Pro blockchain activity (specific, verifiable)',
+      '"Verify yourself" call to action',
+      'Block explorer reference — tell them exactly where to look',
+    ],
+    headline_examples: [
+      'Not all miners actually mine',
+      'We tested the knockoffs. Zero blockchain activity.',
+      'Their dashboard shows numbers. Their blockchain shows nothing.',
+      'Same look. No actual mining.',
+      'The blockchain does not lie.',
+      'Check the blockchain. Find zero.',
+      'Real mining vs screen animation.',
+    ],
+    banned_phrases: ['trust us', 'best miner', 'buy now', 'limited time offer', 'join thousands'],
+    created_at: new Date().toISOString(),
+  },
+  {
+    id: 'angle_seed_002',
+    name: 'Skeptic to Believer / Blockchain Proof',
+    funnel_stage: 'middle',
+    hook_strategy: 'Put someone exactly like him on screen — a skeptic who went and checked the data himself. Walk through the blockchain verification step by step. Specific block numbers are not optional — they are the proof. Remove them and the angle collapses into another unverifiable claim.',
+    lead_with: 'I was certain this was a scam. So I checked the blockchain myself. Block 891,612. Solo mined. One miner. One wallet. Full reward. These are not coming from warehouses. Small devices sitting on desks somewhere.',
+    tone: 'First-person skeptic voice. Analytical, methodical, personal. Not a pitch — a discovery story told by someone who did the homework. He is walking the viewer through what he found, not what the company told him.',
+    copy_directives: `- Open from the perspective of a skeptic who was exactly where the viewer is now
+- Walk through the verification process step by step — not abstractly
+- Use SPECIFIC block numbers (e.g. Block 891,612) — without specifics this is just another claim
+- "Solo mined. One wallet. Full reward." — the three facts that prove it is real
+- End at the pivot: "I stopped doubting and started running one"
+- The blockchain does not care what anyone thinks — it just records what happened
+- Viewer should feel like they watched someone do the research they would do`,
+    required_elements: [
+      'Specific block number (e.g. Block 891,612)',
+      'Solo mine details: one miner, one wallet, full reward',
+      'Block explorer — tell them exactly where to pull the data',
+      'Personal pivot: skeptic → believer',
+    ],
+    headline_examples: [
+      'I was certain this was a scam',
+      'So I checked the blockchain myself',
+      'Block 891,612. Solo mined.',
+      'One miner. One wallet. Full reward.',
+      'Small devices sitting on desks somewhere',
+      'Solo blocks get found every single day',
+      'The blockchain does not care what anyone thinks',
+      'Pull up any block explorer right now',
+    ],
+    banned_phrases: ['you should trust', 'our company', 'we promise', 'guaranteed results', 'everyone is doing it'],
+    created_at: new Date().toISOString(),
+  },
+  {
+    id: 'angle_seed_003',
+    name: 'Accidental Winner / Passive Success',
+    funnel_stage: 'bottom',
+    hook_strategy: 'Give him a face-saving justification for buying. The character did not buy because he believed in it — he bought to end a family argument. That gives this buyer permission to buy without admitting he is trying at something uncertain. The almost-unplugged moment is critical — it creates the retroactive near-miss that makes the outcome feel earned by the device, not lucky.',
+    lead_with: 'He bought it to end a family argument. Plugged it in behind the TV stand. Forgot it existed. He checked it maybe twice — both times out of obligation. He almost unplugged it. Every 10 minutes that little device was quietly taking a shot. One Sunday morning, a notification he almost deleted as spam. 3.125 Bitcoin. Straight to his wallet.',
+    tone: 'Story-driven, calm, unhurried. The tone of someone watching a movie. No urgency, no hype. The device did the work — not the buyer, not the brand. Understated is more powerful than excited.',
+    copy_directives: `- Tell a story — the viewer is watching a character, not receiving a pitch
+- The purchase motivation must be face-saving: bought to end an argument, not because he believed
+- Plug in and forget — low commitment, no babysitting, no maintenance
+- The almost-unplugged moment is mandatory — it creates the near-miss tension
+- Resolution is quiet and specific: a notification he almost deleted as spam
+- Use the exact figure: 3.125 Bitcoin (the current block reward) — specificity makes it real
+- The device earns the win, not luck and not the buyer's effort
+- Device works quietly in the background while he lives his normal life`,
+    required_elements: [
+      'Face-saving purchase motivation (ends an argument, not a big commitment)',
+      'Plug in and forget — no monitoring required',
+      'The almost-unplugged moment',
+      'Specific block reward: 3.125 Bitcoin',
+      'A notification he almost deleted as spam',
+    ],
+    headline_examples: [
+      'He bought it to end a family argument',
+      'Plugged it in behind the TV stand. Forgot it existed.',
+      'He almost unplugged it',
+      'Every 10 minutes that little device was quietly taking a shot',
+      'One Sunday morning',
+      '3.125 Bitcoin. Straight to his wallet.',
+      'Set it. Forget it.',
+      'Still trying while you sleep',
+      'You never touch it again',
+    ],
+    banned_phrases: ['get rich quick', 'easy money', 'guaranteed win', 'you will definitely', 'passive income opportunity'],
+    created_at: new Date().toISOString(),
+  },
+  {
+    id: 'angle_seed_004',
+    name: 'Hater Deflection',
+    funnel_stage: 'bottom',
+    hook_strategy: 'Mirror his internal skepticism as an external mocking comment. Then respond with confidence and minimal explanation. The less the brand explains itself the stronger the signal — long defensive responses tell him the hater might have been right. Short confident redirection to blockchain proof tells him the product does not need defending.',
+    lead_with: '"You will never make anything with that 😂" — Still here. Still mining. 144 attempts since you said that. The blockchain disagrees.',
+    tone: 'Confident, non-reactive, unshakeable. The tone of someone who does not need to win the argument because the data wins it for them. Never defensive, never angry. Walking away, not fighting back.',
+    copy_directives: `- Open with a specific hater comment — the mockery voice activates his "prove them wrong" instinct
+- Do NOT argue back — confidence is shown by not needing to argue
+- Redirect immediately to blockchain data as the neutral third party
+- "Still here. Still mining." — present tense, calm, undeniable
+- Specific counter: 144 attempts since you said that (10 min intervals × 24 hrs = 144 per day)
+- Short is stronger than long — every extra sentence is one more sign it needed defending
+- End on "Check the ledger" — let the data speak, not the brand`,
+    required_elements: [
+      'Opening hater comment with laugh emoji (specific and realistic)',
+      '"Still here. Still mining." response',
+      '144 attempts stat (10-minute intervals × 24 hours)',
+      'Blockchain reference as neutral proof — "Check the ledger"',
+    ],
+    headline_examples: [
+      '"You will never make anything with that 😂"',
+      '"Nobody wins those 😂"',
+      '"Good luck with your little toy miner 😂"',
+      'Still here. Still mining.',
+      'Blockchain disagrees.',
+      '144 attempts since you said that',
+      'Check the ledger.',
+      'Everyone has an opinion until you show them the data',
+      'The proof is on the blockchain. Not in the comments.',
+    ],
+    banned_phrases: ['actually...', 'let me explain', 'you are wrong because', 'statistics show', 'many experts'],
+    created_at: new Date().toISOString(),
+  },
+  {
+    id: 'angle_seed_005',
+    name: 'Apology / False Confession',
+    funnel_stage: 'bottom',
+    hook_strategy: 'Open with a confession that signals honesty. Rebuild every product claim inside that trust framework using the yes ladder — restating facts as verified truths one by one. Keep the confession itself minor — the price being lower than promised is perfect. A more serious admission would undermine the product. Then close with the corrected offer and the guarantee.',
+    lead_with: 'I owe you an apology. I got one thing wrong. Two years later I am correcting the record. I told people the launch price was the best deal. It was not. The price is lower now than when I launched it.',
+    tone: 'Honest, slightly humble, direct. Not apologetic to the point of weakness — correcting the record like a confident person who is not afraid to admit a small mistake. The honesty is what earns the trust, not the severity of the admission.',
+    copy_directives: `- Open with the apology — "I owe you an apology" — no preamble, no setup
+- Keep the confession minor: the price was lower than I claimed, not a product failure
+- Rebuild trust claim by claim using the yes ladder: "Yes it is true that... yes it is true that..."
+- Each "yes" restates a product fact as a verified truth the listener already suspects is real
+- Include: people message me not because they won, but because they feel like they have a real shot
+- Close with the corrected price and the 30-day guarantee
+- The honesty signal is the conversion mechanism — once he trusts the messenger, the product sells itself`,
+    required_elements: [
+      '"I owe you an apology" opening — no setup, no preamble',
+      'The false confession: price lower than originally claimed',
+      'Yes ladder: "Yes it is true that..." × 3 product claims',
+      '"They message me not because they won — because for the first time they feel like they have a real shot"',
+      'Corrected price + 30-day guarantee close',
+    ],
+    headline_examples: [
+      'I owe you an apology',
+      'I got one thing wrong',
+      'Two years later I am correcting the record',
+      'I told people the launch price was the best deal. It was not.',
+      'Yes it is true that...',
+      'Here is what I should have told you from the start',
+      'I lied about one thing. The price.',
+    ],
+    banned_phrases: ['act now', 'limited supply', 'selling out fast', 'do not miss out', 'last chance'],
+    created_at: new Date().toISOString(),
+  },
+  {
+    id: 'angle_seed_006',
+    name: 'AI Chip POV / Mechanism Explainer',
+    funnel_stage: 'middle',
+    hook_strategy: 'Make the technology feel alive and simple. Each "I am" statement is a product claim delivered without feeling like a pitch. The chip speaks in first person — this neutrality removes the sales layer and lets the mechanism explain itself directly. The chip does not want anything from the buyer. It just explains what it does.',
+    lead_with: 'I am the chip inside MinerForge Pro. I try every 10 minutes. Forever. I am solo mining — no pool, no splitting with thousands of strangers. If we find a block, everything goes to your wallet. I am 1 watt. 11 cents a month. I never stop. You never have to.',
+    tone: 'Factual, direct, mechanical. First-person chip voice — not enthusiastic, not salesy. The chip has no agenda. It states facts and only facts. The calm authority of something that does exactly one thing and does it without stopping.',
+    copy_directives: `- The chip speaks in first person throughout — never break to third person
+- "I am" structure for each claim: feature → what it means for the buyer
+- NEVER use sales language — the chip does not sell, it describes
+- Cover the four key facts in order: attempts (144/day), solo mining, power draw (1W/11¢), blockchain verification
+- The blockchain verification is the credibility anchor — "every attempt is real and public"
+- End on the loop: "You plug me in once and I never stop trying" — the device does the work forever
+- Demystify without jargon — after hearing this, he can explain it to a skeptical partner`,
+    required_elements: [
+      '"I am the chip inside MinerForge Pro" opening line',
+      '144 attempts per day (every 10 minutes)',
+      'Solo mining — no pool, no splitting, full reward to your wallet',
+      '1 watt power draw — approximately 11 cents per month',
+      'Blockchain verification — every attempt is real and public',
+      '"You plug me in once and I never stop trying" closing',
+    ],
+    headline_examples: [
+      'I am the chip inside MinerForge Pro',
+      'I try every 10 minutes. Forever.',
+      'I am solo mining. No pool. No splitting.',
+      'If we find a block everything goes to your wallet',
+      'I am 1 watt. 11 cents a month.',
+      'I am blockchain verified. Every attempt is real and public.',
+      'I never stop. You never have to.',
+      '144 times per day. Automatically. Without you lifting a finger.',
+      'You plug me in once and I never stop trying',
+    ],
+    banned_phrases: ['buy now', 'incredible opportunity', 'amazing results', 'you will love', 'everyone is talking about'],
+    created_at: new Date().toISOString(),
+  },
+];
+
 let tableReady = false;
 
 // ── Ensure Table Exists ─────────────────────────────────────────────
@@ -91,7 +302,40 @@ async function ensureTable() {
   tableReady = true;
 }
 
-ensureTable().catch(console.error);
+ensureTable().then(seedMinerAngles).catch(console.error);
+
+// ── Seed MinerForge Pro angles on startup ───────────────────────────────────
+// Runs once per server start. Skips if the product already has 6+ angles.
+// To force re-seed: temporarily change the condition below to angles.length < 999.
+
+async function seedMinerAngles() {
+  try {
+    const products = await pgQuery(
+      `SELECT id, angles FROM product_profiles WHERE name ILIKE '%miner%forge%' ORDER BY updated_at DESC LIMIT 1`
+    );
+    if (!products.length) {
+      console.log('[productProfiles] seedMinerAngles: no MinerForge product found — skipping');
+      return;
+    }
+    const product = products[0];
+    let existing = product.angles;
+    if (typeof existing === 'string') { try { existing = JSON.parse(existing); } catch { existing = []; } }
+    if (!Array.isArray(existing)) existing = [];
+
+    if (existing.length >= MINERFORGE_ANGLES.length) {
+      console.log(`[productProfiles] seedMinerAngles: product ${product.id} already has ${existing.length} angles — skipping`);
+      return;
+    }
+
+    await pgQuery(
+      `UPDATE product_profiles SET angles = $1::jsonb, updated_at = NOW() WHERE id = $2`,
+      [JSON.stringify(MINERFORGE_ANGLES), product.id]
+    );
+    console.log(`[productProfiles] seedMinerAngles: wrote ${MINERFORGE_ANGLES.length} angles to product ${product.id}`);
+  } catch (err) {
+    console.error('[productProfiles] seedMinerAngles error:', err.message);
+  }
+}
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
