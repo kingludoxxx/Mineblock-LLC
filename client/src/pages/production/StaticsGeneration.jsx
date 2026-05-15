@@ -1571,7 +1571,7 @@ export default function StaticsGeneration() {
   // Fetch creatives for pipeline
   // `silent` skips the loading spinner — used by auto-refresh so the UI
   // doesn't flash a spinner every 8 seconds while items are generating.
-  const fetchCreatives = async (silent = false) => {
+  const fetchCreatives = async (silent = false, _retryCount = 0) => {
     if (!silent) setCreativesLoading(true);
     try {
       const res = await api.get('/statics-generation/creatives/pipeline');
@@ -1586,8 +1586,16 @@ export default function StaticsGeneration() {
         ...variants,
       ];
       setCreatives(flat);
+      // If result is unexpectedly empty on initial (non-silent) load, retry once after 1.5s
+      // to handle transient auth/network hiccups that silently return empty data.
+      if (!silent && flat.length === 0 && _retryCount === 0) {
+        setTimeout(() => fetchCreatives(true, 1), 1500);
+      }
     } catch {
-      // silently fail
+      // Retry once on failure
+      if (_retryCount === 0) {
+        setTimeout(() => fetchCreatives(true, 1), 1500);
+      }
     } finally {
       if (!silent) setCreativesLoading(false);
     }
