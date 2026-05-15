@@ -1,6 +1,23 @@
 # Progress Log
 
 ---
+TIMESTAMP: 2026-05-15 00:51
+TASK: FB Launch — all 3 ratio variants to Meta
+BUILT: Updated POST /statics-generation/launch to find all sibling ratio creatives via group_id
+  and create one Meta ad per ratio (up to 3: 1:1, 4:5, 9:16) in the same adset. Each ad is named
+  with a ratio suffix (e.g. "Ad Name [1:1]"). Legacy parent_creative_id variants still work as
+  fallback. Added group_id deduplication so selecting multiple siblings from the same group doesn't
+  double-launch. All sibling DB rows are marked launched with cached hashes. Added ALTER TABLE
+  migration + index for group_id column on spy_creatives.
+TESTED: Syntax check passed (node --check). Deployed to production via merge to main
+  (deploy dep-d836rvs2m8qs73f584ng — build_in_progress at time of log).
+OUTPUT: Build triggered on Render, commit 0c7dbd8 on main. Will serve all 3 ratio ads on
+  next real launch from the UI.
+DECISIONS: Created 3 separate Meta ads (one per ratio) in the same adset rather than using
+  asset_feed_spec — simpler, no adset changes needed, Meta tests all 3 and serves the best.
+STATUS: COMPLETE
+
+---
 TIMESTAMP: 2026-04-25 22:40
 TASK: Video Ads Languages Pipeline — full build, TC-09 Frame.io fix, translation quality improvement
 BUILT:
