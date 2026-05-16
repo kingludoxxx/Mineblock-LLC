@@ -275,6 +275,23 @@ function PipelineToggle({ active, onChange }) {
 }
 
 // ---------------------------------------------------------------------------
+// Helper: derive a human-readable name for a creative that has no explicit name
+// ---------------------------------------------------------------------------
+
+function getCreativeName(creative) {
+  if (creative.name) return creative.name;
+  const parts = [];
+  if (creative.angle) parts.push(creative.angle);
+  if (creative.created_at) {
+    const d = new Date(creative.created_at);
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    parts.push(`${mm}/${dd}`);
+  }
+  return parts.length > 0 ? parts.join(' — ') : 'Untitled';
+}
+
+// ---------------------------------------------------------------------------
 // Standard Pipeline — Creative Review Card
 // ---------------------------------------------------------------------------
 
@@ -284,7 +301,7 @@ function CreativeReviewCard({ creative, onApprove, onReject }) {
       {creative.image_url && (
         <img
           src={creative.image_url}
-          alt={creative.name || 'Creative'}
+          alt={getCreativeName(creative)}
           className="w-full h-48 object-cover"
           onError={(e) => { e.currentTarget.style.display = 'none'; }}
         />
@@ -292,7 +309,7 @@ function CreativeReviewCard({ creative, onApprove, onReject }) {
       <div className="p-4 space-y-3">
         <div className="flex items-center justify-between">
           <span className="text-sm font-medium text-white truncate">
-            {creative.name || 'Untitled Creative'}
+            {getCreativeName(creative)}
           </span>
           <StatusBadge status={creative.status || 'review'} />
         </div>
@@ -550,7 +567,7 @@ function GeneratedView({ creatives, loading, onRefresh, onCreativeClick }) {
                 <div className="relative w-full h-[120px]">
                   <img
                     src={creative.image_url}
-                    alt={creative.name || 'Creative'}
+                    alt={getCreativeName(creative)}
                     className="w-full h-[120px] object-cover"
                     onError={(e) => {
                       e.currentTarget.style.display = 'none';
@@ -581,7 +598,7 @@ function GeneratedView({ creatives, loading, onRefresh, onCreativeClick }) {
               </div>
               <div className="px-2.5 py-2 space-y-1">
                 <p className="text-[11px] text-gray-200 font-medium truncate">
-                  {creative.name || 'Untitled'}
+                  {getCreativeName(creative)}
                 </p>
                 <StatusBadge status={creative.status || 'review'} />
               </div>
@@ -589,6 +606,95 @@ function GeneratedView({ creatives, loading, onRefresh, onCreativeClick }) {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Per-Angle Analytics (embedded in Logic & Settings tab)
+// ---------------------------------------------------------------------------
+
+function AngleAnalytics() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      try {
+        const res = await api.get('/v1/statics-generation/analytics/by-angle');
+        setData(res.data?.data || []);
+      } catch (err) {
+        setError(err.response?.data?.error?.message || err.message);
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
+
+  if (loading) {
+    return (
+      <div className="flex items-center gap-2 text-text-muted text-sm py-4">
+        <Loader2 className="w-4 h-4 animate-spin" /> Loading angle data…
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="text-red-400 text-sm py-2">Failed to load analytics: {error}</div>
+    );
+  }
+
+  if (!data || data.length === 0) {
+    return (
+      <div className="text-text-faint text-sm py-2">No generations in the last 90 days.</div>
+    );
+  }
+
+  const maxTotal = Math.max(...data.map(r => r.total), 1);
+
+  return (
+    <div className="space-y-3">
+      {data.map((row) => {
+        const barW = Math.round((row.total / maxTotal) * 100);
+        return (
+          <div key={row.angle} className="bg-bg-elevated border border-border-default rounded-xl px-4 py-3 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-medium text-text-primary truncate max-w-[60%]">{row.angle}</span>
+              <div className="flex items-center gap-3 text-xs text-text-muted shrink-0">
+                <span className="text-text-primary font-semibold">{row.total} generated</span>
+                {row.total > 0 && (
+                  <span className={`font-medium ${row.approval_rate >= 50 ? 'text-emerald-400' : row.approval_rate >= 25 ? 'text-amber-400' : 'text-red-400'}`}>
+                    {row.approval_rate}% approved
+                  </span>
+                )}
+              </div>
+            </div>
+            {/* Volume bar */}
+            <div className="h-1.5 bg-white/[0.04] rounded-full overflow-hidden">
+              <div
+                className="h-full bg-gradient-to-r from-[#c9a84c]/70 to-[#c9a84c]/30 rounded-full"
+                style={{ width: `${barW}%` }}
+              />
+            </div>
+            {/* Status breakdown */}
+            <div className="flex items-center gap-3 text-[10px] text-text-faint">
+              {row.approved > 0 && <span className="text-emerald-400">{row.approved} approved</span>}
+              {row.launched > 0 && <span className="text-blue-400">{row.launched} launched</span>}
+              {row.in_review > 0 && <span className="text-amber-400">{row.in_review} in review</span>}
+              {row.rejected > 0 && <span className="text-red-400/70">{row.rejected} rejected</span>}
+              {row.last_generated && (
+                <span className="ml-auto">
+                  last {new Date(row.last_generated).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                </span>
+              )}
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -1011,7 +1117,7 @@ export default function StaticsGeneration() {
   useEffect(() => {
     const stubs = references.filter(r => r.is_template && !r.image_url);
     if (stubs.length === 0) return;
-    api.get('/statics-generation/templates').then(res => {
+    api.get('/v1/statics-generation/templates').then(res => {
       const allTemplates = res.data?.templates || res.data || [];
       setReferences(prev =>
         prev.map(ref => {
@@ -1087,7 +1193,7 @@ export default function StaticsGeneration() {
         // fetch the template image inline before proceeding
         if (!resolvedReferenceUrl && ref.is_template && ref.id) {
           try {
-            const tmplRes = await api.get('/statics-generation/templates');
+            const tmplRes = await api.get('/v1/statics-generation/templates');
             const allTmpls = tmplRes.data?.templates || tmplRes.data || [];
             const found = allTmpls.find(t => t.id === ref.id);
             if (found?.image_url) {
@@ -2757,12 +2863,20 @@ export default function StaticsGeneration() {
       {/* SETTINGS TAB                                                       */}
       {/* ================================================================= */}
       {activeTab === 'settings' && (
-        <div className="max-w-4xl">
-          <div className="mb-6">
-            <h2 className="text-base font-semibold text-text-primary mb-1">Generation Logic & Prompt Settings</h2>
-            <p className="text-sm text-text-muted">Configure how Claude analyzes reference ads and how images are generated. Changes apply to all future generations.</p>
+        <div className="max-w-4xl space-y-10">
+          {/* ---- Per-angle analytics ---- */}
+          <div>
+            <h2 className="text-base font-semibold text-text-primary mb-1">Angle Performance (last 90 days)</h2>
+            <p className="text-sm text-text-muted mb-4">Generations, approval rate, and status breakdown per marketing angle.</p>
+            <AngleAnalytics />
           </div>
-          <StaticsSettingsInline />
+
+          {/* ---- Prompt settings ---- */}
+          <div>
+            <h2 className="text-base font-semibold text-text-primary mb-1">Generation Logic & Prompt Settings</h2>
+            <p className="text-sm text-text-muted mb-4">Configure how Claude analyzes reference ads and how images are generated. Changes apply to all future generations.</p>
+            <StaticsSettingsInline />
+          </div>
         </div>
       )}
 

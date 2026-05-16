@@ -126,6 +126,17 @@ export function buildClaudePrompt(product, angle, customOverrides = null, layout
     `🚫 NO FABRICATED GUARANTEE / WARRANTY PERIODS: The ONLY guarantee period allowed is what's in PRODUCT CONTEXT (${product.profile?.guarantee || 'not specified'}). Any other "N-day / N-year / LIFETIME" claim is fabricated.\n\n❌ BANNED (unless the EXACT period matches guarantee above):\n  "LIFETIME WARRANTY"      — fabricated (lifetime ≠ 2-year)\n  "90-DAY MONEY BACK"      — fabricated if real is 30-day\n  "1-YEAR WARRANTY"        — fabricated if real is 2-year\n  "5-YEAR COVERAGE"        — fabricated\n  "UNLIMITED GUARANTEE"    — fabricated\n\n✅ VALID (must match guarantee string verbatim):\n  "30-DAY MONEY BACK"      — matches guarantee\n  "2-YEAR WARRANTY"        — matches offerDetails (if 2-year)\n  "30-DAY RETURNS"         — equivalent rewording of the real 30-day guarantee\n\nIF the reference ad shows "LIFETIME WARRANTY" or any non-matching period, you MUST replace it with the real guarantee ("${product.profile?.guarantee || product.profile?.offerDetails || 'the real guarantee'}") verbatim. "LIFETIME" is an especially common fabrication — it is NEVER valid unless the product literally has a lifetime warranty. Mis-stating warranty length is deceptive advertising.`,
   ].filter(Boolean).map(l => `⚠️ ${l}`).join('\n');
 
+  // ── AI CHIP POV: first-person chip voice override ──────────────────────────
+  // Fires whenever the angle is "AI Chip POV" (or the angle data carries that name).
+  // Injected as a mandatory rule so it overrides the default brand-voice guidance.
+  const isAiChipPov =
+    (angleData?.name || '').toLowerCase().includes('ai chip') ||
+    (angle || '').toLowerCase().includes('ai chip');
+
+  const aiChipVoiceBlock = isAiChipPov
+    ? `\n\n🔴 VOICE OVERRIDE — AI CHIP POV (ABSOLUTE, overrides all other guidance):\nThis ad is narrated BY THE AI CHIP ITSELF — the chip speaks in first person. Every bullet, headline, and copy element must use first-person chip voice.\n\n✅ CORRECT (chip speaks as "I"):\n  "I sit inside your machine, working 24/7."\n  "I attempt a block 144 times every day."\n  "I don't share. Every satoshi I mine goes to you."\n  "I run for 1 dollar a month. I never sleep."\n  "I am the hardware. I am the miner. I do the work."\n\n❌ BANNED (company/narrator voice):\n  "MinerForge Pro mines Bitcoin for you"\n  "Our chip works 24/7"\n  "We deliver results"\n  "The device attempts 144 blocks daily"\n  "Designed to run 24/7"\n\nEVERY bullet and headline MUST use "I" (chip) as subject. If the reference uses "you" framing, translate to chip first-person ("I do X for you"). Never use "we", "our", or the product name as the agent — the chip speaks for itself.`
+    : '';
+
   // ── PRODUCT CONTEXT (background intelligence for writing better copy) ──
   const contextLines = [
     `Product Name: ${product.name}`,
@@ -375,7 +386,7 @@ ${mandatoryRules ? `
 ${mandatoryRules}
 
 ANY price, discount code, discount percentage, bundle pricing, or offer in your adapted text MUST come from the rules above. If the reference ad shows "$29.99" but our price is "$59.99", you write "$59.99". If the reference says "Use code SPRING10" but our code is "MINER10", you write "MINER10". NEVER invent prices or codes. If the reference has pricing/offers but no matching data exists above, keep the reference structure but use the EXACT numbers from above.
-` : ''}
+` : ''}${aiChipVoiceBlock}
 ${layoutMap ? `
 ---
 
@@ -975,10 +986,11 @@ ${templateData.deep_analysis.adaptation_instructions?.common_failure_modes?.leng
    - Empty solid-color blocks matching the ad's background tone, OR
    - Gently blurred/desaturated space where text would go
 2. LOGO: If the reference has a brand logo mark (pictogram, shield, icon), replace it with the ${product.profile?.shortName || product.name || 'brand'} logo pictogram. If the "logo" is purely wordmark text, leave that region blank — we'll overlay it.
-3. PRODUCT: ${productRule}${hasProductInReference ? ` Orientation: ${claudeResult.product_orientation || 'front-facing'}.${productRulesSection}` : ''}
-4. ${characterRules}
-5. Keep EXACT same layout, background, colors, overall composition, and visual elements as the reference. ONLY change: (a) the product to ours, (b) remove all rendered text.${angleSceneSection}
-6. PRODUCT LABEL: The product image (FIRST image) already has its real label/packaging. Copy it EXACTLY as provided — do NOT modify, redesign, or add text to the product packaging.${brandColorHint}${productContext}${co.absoluteRules ? `\n${co.absoluteRules}` : ''}
+3. 🚫 STRIP ALL THIRD-PARTY BRAND ELEMENTS: Remove every logo, wordmark, emblem, slogan, or visual identity mark from the reference that belongs to a different brand. Replace with a clean solid-color fill matching the background tone, or swap in our product's visual identity where contextually appropriate.
+4. PRODUCT: ${productRule}${hasProductInReference ? ` Orientation: ${claudeResult.product_orientation || 'front-facing'}.${productRulesSection}` : ''}
+5. ${characterRules}
+6. Keep EXACT same layout, background, colors, overall composition, and visual elements as the reference. ONLY change: (a) the product to ours, (b) remove all rendered text, (c) strip third-party brand marks.${angleSceneSection}
+7. PRODUCT LABEL: The product image (FIRST image) already has its real label/packaging. Copy it EXACTLY as provided — do NOT modify, redesign, or add text to the product packaging.${brandColorHint}${productContext}${co.absoluteRules ? `\n${co.absoluteRules}` : ''}
 
 THIS IS CRITICAL: zero rendered text. If in doubt whether something is text, DON'T render it. Our overlay system will add every piece of copy afterwards with pixel-perfect typography.`;
   }
@@ -988,11 +1000,12 @@ THIS IS CRITICAL: zero rendered text. If in doubt whether something is text, DON
 🔴 STRICT RULES (most important):
 1. ELEMENT COUNT: Output must have the EXACT same number of text elements, logos, badges, and images as the reference. Do NOT add or remove any. 🚫 ZERO new text elements — if a slot has no swap listed below, carry the original text through unchanged. The PRODUCT FACTS section is for cross-checking accuracy only — it is NOT permission to add new copy, headlines, or badges.${logoRule}
 2. PRODUCT: ${productRule}${hasProductInReference ? ` Orientation: ${claudeResult.product_orientation || 'front-facing'}.${productRulesSection}` : ''} 🚫 LOGO-ON-PRODUCT: NEVER place any logo, text, badge, icon, or watermark ON TOP OF the physical product device itself. The device surface must remain completely clean and unmodified — no overlays of any kind on the hardware.
-3. ALL text must be in ENGLISH. Replace every piece of reference text with the swaps below.
-4. ${characterRules}
-5. 🚫 NO MONTH NAMES OR SEASONAL TEXT: NEVER write any month name (January through December) or seasonal sale phrase ("March Sale", "Spring Deal", etc.) anywhere in the output. If a TEXT SWAP below replaces a month-name phrase, use the adapted text EXACTLY. If the reference image shows seasonal text with no swap provided, replace it with "Limited Time Offer".
-6. 🚫 NO INVENTED PRICES OR DISCOUNTS: NEVER write a price, percentage off, or discount amount that is not explicitly listed in PRODUCT INTELLIGENCE below. If no price is provided, omit price text entirely.
-7. 🔴 CHARACTER-LEVEL FIDELITY (CRITICAL — READ TWICE):
+3. 🚫 STRIP ALL THIRD-PARTY BRAND ELEMENTS: NEVER carry over any logo, wordmark, brand name, tagline, or visual identity mark from the reference template that belongs to a DIFFERENT brand. This includes: brand logo graphics (icon or text form), competitor product names displayed as design elements, slogans, proprietary phrases, and any distinctive graphical mark of another company. For every such element: (a) replace it with our brand/product identity if the slot serves a brand-identity purpose, OR (b) fill it with a clean solid-color block matching the background tone. Examples of what MUST be stripped: "earth breeze" wordmark, "Tide" logo, "Downy" emblem, "No More Plastic Jug" text, any consumer brand name that is NOT our product. If you are uncertain whether a mark belongs to our product, strip it.
+4. ALL text must be in ENGLISH. Replace every piece of reference text with the swaps below.
+5. ${characterRules}
+6. 🚫 NO MONTH NAMES OR SEASONAL TEXT: NEVER write any month name (January through December) or seasonal sale phrase ("March Sale", "Spring Deal", etc.) anywhere in the output. If a TEXT SWAP below replaces a month-name phrase, use the adapted text EXACTLY. If the reference image shows seasonal text with no swap provided, replace it with "Limited Time Offer".
+7. 🚫 NO INVENTED PRICES OR DISCOUNTS: NEVER write a price, percentage off, or discount amount that is not explicitly listed in PRODUCT INTELLIGENCE below. If no price is provided, omit price text entirely.
+8. 🔴 CHARACTER-LEVEL FIDELITY (CRITICAL — READ TWICE):
    - Render EVERY character in each swap value. Do NOT drop, skip, or omit any character — including the FIRST word, the LAST word, punctuation, and especially the dollar sign "$".
    - Prices and monetary claims MUST be rendered as the full string. "$300K" must appear as "$", "3", "0", "0", "K" — never as "300K" or "K" alone. "$1" must appear as "$", "1" — never as "1" or dropped. "$59.99" must appear complete.
    - Percentages must include the "%" symbol. "58% OFF" must not become "58 OFF" or "OFF".
