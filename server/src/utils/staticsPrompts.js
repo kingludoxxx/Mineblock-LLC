@@ -987,7 +987,7 @@ THIS IS CRITICAL: zero rendered text. If in doubt whether something is text, DON
 
 🔴 STRICT RULES (most important):
 1. ELEMENT COUNT: Output must have the EXACT same number of text elements, logos, badges, and images as the reference. Do NOT add or remove any. 🚫 ZERO new text elements — if a slot has no swap listed below, carry the original text through unchanged. The PRODUCT FACTS section is for cross-checking accuracy only — it is NOT permission to add new copy, headlines, or badges.${logoRule}
-2. PRODUCT: ${productRule}${hasProductInReference ? ` Orientation: ${claudeResult.product_orientation || 'front-facing'}.${productRulesSection}` : ''}
+2. PRODUCT: ${productRule}${hasProductInReference ? ` Orientation: ${claudeResult.product_orientation || 'front-facing'}.${productRulesSection}` : ''} 🚫 LOGO-ON-PRODUCT: NEVER place any logo, text, badge, icon, or watermark ON TOP OF the physical product device itself. The device surface must remain completely clean and unmodified — no overlays of any kind on the hardware.
 3. ALL text must be in ENGLISH. Replace every piece of reference text with the swaps below.
 4. ${characterRules}
 5. 🚫 NO MONTH NAMES OR SEASONAL TEXT: NEVER write any month name (January through December) or seasonal sale phrase ("March Sale", "Spring Deal", etc.) anywhere in the output. If a TEXT SWAP below replaces a month-name phrase, use the adapted text EXACTLY. If the reference image shows seasonal text with no swap provided, replace it with "Limited Time Offer".
