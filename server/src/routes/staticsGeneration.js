@@ -3479,6 +3479,50 @@ router.delete('/templates/:id', authenticate, async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Analytics: per-angle breakdown
+// GET /analytics/by-angle
+// Returns generation count, approval rate, and status breakdown per angle,
+// scoped to the last 90 days.
+// ─────────────────────────────────────────────────────────────────────────────
+
+router.get('/analytics/by-angle', authenticate, async (_req, res) => {
+  try {
+    const rows = await pgQuery(`
+      SELECT
+        COALESCE(angle, 'No angle') AS angle,
+        COUNT(*)::int                AS total,
+        COUNT(*) FILTER (WHERE status = 'approved')::int  AS approved,
+        COUNT(*) FILTER (WHERE status = 'rejected')::int  AS rejected,
+        COUNT(*) FILTER (WHERE status = 'review')::int    AS in_review,
+        COUNT(*) FILTER (WHERE status = 'launched')::int  AS launched,
+        MIN(created_at)              AS first_generated,
+        MAX(created_at)              AS last_generated
+      FROM spy_creatives
+      WHERE created_at >= NOW() - INTERVAL '90 days'
+        AND parent_creative_id IS NULL
+      GROUP BY COALESCE(angle, 'No angle')
+      ORDER BY total DESC
+    `);
+
+    const data = rows.map(r => ({
+      angle: r.angle,
+      total: r.total,
+      approved: r.approved,
+      rejected: r.rejected,
+      in_review: r.in_review,
+      launched: r.launched,
+      approval_rate: r.total > 0 ? Math.round((r.approved / r.total) * 100) : 0,
+      first_generated: r.first_generated,
+      last_generated: r.last_generated,
+    }));
+
+    res.json({ success: true, data, period_days: 90 });
+  } catch (err) {
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
 export { getCustomStaticsPrompts, getDefaultStaticsPrompts };
 
 export default router;
