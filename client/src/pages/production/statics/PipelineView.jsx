@@ -17,6 +17,10 @@ import {
   Settings,
   Tag,
   RotateCcw,
+  Square,
+  CheckSquare,
+  ThumbsUp,
+  ThumbsDown,
 } from 'lucide-react';
 import api from '../../../services/api';
 import { IterationsColumn } from './IterationsColumn';
@@ -196,9 +200,19 @@ function RatioPill({ label, status }) {
   return null;
 }
 
-function CreativeCard({ creative, column, onStatusChange, onCardClick, onRegenerate, variantStatus }) {
+function CreativeCard({ creative, column, onStatusChange, onCardClick, onRegenerate, variantStatus, selectable, isSelected, onSelect }) {
   const [wasDragged, setWasDragged] = useState(false);
-  const isDraggable = !column.noDropZone;
+  const isDraggable = !column.noDropZone && !selectable;
+
+  const handleClick = (e) => {
+    if (wasDragged) return;
+    if (selectable) {
+      e.stopPropagation();
+      onSelect?.(creative.id);
+      return;
+    }
+    onCardClick?.(creative);
+  };
 
   return (
     <div
@@ -209,8 +223,8 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, onRegener
         e.dataTransfer.effectAllowed = 'move';
       } : undefined}
       onDragEnd={isDraggable ? () => setTimeout(() => setWasDragged(false), 100) : undefined}
-      onClick={() => { if (!wasDragged) onCardClick?.(creative); }}
-      className={`animated-border-gradient rounded-xl ${isDraggable ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'}`}
+      onClick={handleClick}
+      className={`animated-border-gradient rounded-xl ${isDraggable ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'} ${isSelected ? 'ring-2 ring-[#c9a84c]/60' : ''}`}
     >
       <div className="glass-card border border-white/[0.05] rounded-xl overflow-hidden group hover:border-white/[0.1] transition-all shadow-[inset_0_1px_0_0_rgba(255,255,255,0.03)] relative z-10">
         {/* Thumbnail */}
@@ -241,10 +255,25 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, onRegener
             />
           ) : null}
           <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-            <span className="text-[10px] font-medium text-white bg-white/[0.15] backdrop-blur-sm px-2.5 py-1 rounded-full">
-              View Full
-            </span>
+            {!selectable && (
+              <span className="text-[10px] font-medium text-white bg-white/[0.15] backdrop-blur-sm px-2.5 py-1 rounded-full">
+                View Full
+              </span>
+            )}
           </div>
+          {/* Bulk select checkbox */}
+          {selectable && (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onSelect?.(creative.id); }}
+              className="absolute top-2 left-2 z-20 p-0.5 rounded bg-black/50 backdrop-blur-sm border border-white/20 transition-colors"
+            >
+              {isSelected
+                ? <CheckSquare className="w-4 h-4 text-[#c9a84c]" />
+                : <Square className="w-4 h-4 text-zinc-400" />
+              }
+            </button>
+          )}
           {creative.parent_creative_id && creative.pipeline !== 'iteration' && (
             <span className="absolute top-2 left-2 text-[9px] font-mono bg-[#c9a84c]/20 text-[#e8d5a3] px-1.5 py-0.5 rounded border border-[#c9a84c]/30 backdrop-blur-md">
               Variant
@@ -626,9 +655,42 @@ function QueueCard({ item, onRemove }) {
 // Standard pipeline column (generating, review, approved)
 // ---------------------------------------------------------------------------
 
-function PipelineColumn({ column, items, onStatusChange, onCardClick, onRegenerate, allCreatives, queueItems, onRemoveFromQueue }) {
+function PipelineColumn({ column, items, onStatusChange, onBulkStatusChange, onCardClick, onRegenerate, allCreatives, queueItems, onRemoveFromQueue }) {
   const Icon = column.icon;
   const [dragOver, setDragOver] = useState(false);
+  // Bulk selection — only active in the review column
+  const [selectedIds, setSelectedIds] = useState(new Set());
+  const [bulkLoading, setBulkLoading] = useState(false);
+  const isReviewColumn = column.key === 'review';
+  const selectable = isReviewColumn && items.length > 0;
+  const anySelected = selectedIds.size > 0;
+
+  const toggleSelect = (id) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    if (selectedIds.size === items.length) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(items.map(c => c.id)));
+    }
+  };
+
+  const handleBulkAction = async (status) => {
+    if (selectedIds.size === 0) return;
+    setBulkLoading(true);
+    try {
+      await onBulkStatusChange?.(Array.from(selectedIds), status);
+      setSelectedIds(new Set());
+    } finally {
+      setBulkLoading(false);
+    }
+  };
 
   const handleDrop = (e) => {
     if (column.noDropZone) return;
@@ -658,10 +720,64 @@ function PipelineColumn({ column, items, onStatusChange, onCardClick, onRegenera
             {column.label}
           </h3>
         </div>
-        <span className={`text-[10px] font-mono px-2 py-0.5 rounded border ${column.badgeBg} ${column.badgeText} ${column.badgeBorder}`}>
-          {items.length + (queueItems?.length || 0)}
-        </span>
+        <div className="flex items-center gap-2">
+          {/* Select all toggle — only for review column */}
+          {selectable && (
+            <button
+              type="button"
+              onClick={toggleSelectAll}
+              className="flex items-center gap-1 text-[10px] text-zinc-500 hover:text-zinc-300 transition-colors cursor-pointer"
+              title={selectedIds.size === items.length ? 'Deselect all' : 'Select all'}
+            >
+              {selectedIds.size === items.length && items.length > 0
+                ? <CheckSquare className="w-3.5 h-3.5 text-[#c9a84c]" />
+                : <Square className="w-3.5 h-3.5" />
+              }
+              <span className="font-mono">{selectedIds.size > 0 ? `${selectedIds.size}/${items.length}` : 'All'}</span>
+            </button>
+          )}
+          <span className={`text-[10px] font-mono px-2 py-0.5 rounded border ${column.badgeBg} ${column.badgeText} ${column.badgeBorder}`}>
+            {items.length + (queueItems?.length || 0)}
+          </span>
+        </div>
       </div>
+
+      {/* Bulk action bar — slides in when items are selected */}
+      {isReviewColumn && anySelected && (
+        <div className="mb-3 flex items-center gap-2 p-2 rounded-lg bg-[#c9a84c]/[0.06] border border-[#c9a84c]/20">
+          <span className="text-[10px] text-[#d4b55a] font-mono font-medium shrink-0">
+            {selectedIds.size} selected
+          </span>
+          <div className="flex items-center gap-1.5 ml-auto">
+            <button
+              type="button"
+              disabled={bulkLoading}
+              onClick={() => handleBulkAction('approved')}
+              className="flex items-center gap-1 h-7 px-2.5 rounded-md text-[11px] font-semibold bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20 transition-colors disabled:opacity-50 cursor-pointer"
+            >
+              {bulkLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <ThumbsUp className="w-3 h-3" />}
+              Approve
+            </button>
+            <button
+              type="button"
+              disabled={bulkLoading}
+              onClick={() => handleBulkAction('rejected')}
+              className="flex items-center gap-1 h-7 px-2.5 rounded-md text-[11px] font-semibold bg-red-500/10 border border-red-500/30 text-red-400 hover:bg-red-500/20 transition-colors disabled:opacity-50 cursor-pointer"
+            >
+              {bulkLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <ThumbsDown className="w-3 h-3" />}
+              Reject
+            </button>
+            <button
+              type="button"
+              onClick={() => setSelectedIds(new Set())}
+              className="h-7 w-7 flex items-center justify-center rounded-md bg-white/[0.04] border border-white/[0.08] text-zinc-500 hover:text-zinc-300 transition-colors cursor-pointer"
+              title="Clear selection"
+            >
+              <X className="w-3 h-3" />
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Scrollable card list */}
       <div className={`flex-1 overflow-y-auto pr-2 space-y-4 pb-4 custom-scrollbar transition-colors rounded-lg ${dragOver ? 'bg-white/[0.03] ring-1 ring-[#c9a84c]/30' : ''}`}>
@@ -696,6 +812,9 @@ function PipelineColumn({ column, items, onStatusChange, onCardClick, onRegenera
                 onCardClick={onCardClick}
                 onRegenerate={onRegenerate}
                 variantStatus={vStatus}
+                selectable={selectable}
+                isSelected={selectedIds.has(creative.id)}
+                onSelect={toggleSelect}
               />
             );
           })
@@ -1014,6 +1133,16 @@ export function PipelineView({ creatives = [], onStatusChange, onAngleChange, on
     onStatusChange?.(id, newStatus);
   };
 
+  // Bulk status change handler — calls the bulk API endpoint then refreshes
+  const handleBulkStatusChange = async (ids, status) => {
+    try {
+      await api.patch('/statics-generation/creatives/bulk-status', { ids, status });
+      onRefresh?.();
+    } catch (err) {
+      setLaunchError(err.response?.data?.error?.message || `Bulk ${status} failed`);
+    }
+  };
+
   // Standard columns (generating, review, approved)
   const standardColumns = COLUMNS.filter(c => !['ready', 'launched'].includes(c.key));
   const readyColumn = COLUMNS.find(c => c.key === 'ready');
@@ -1083,6 +1212,7 @@ export function PipelineView({ creatives = [], onStatusChange, onAngleChange, on
             column={col}
             items={buckets[col.key]}
             onStatusChange={handleStatusChange}
+            onBulkStatusChange={handleBulkStatusChange}
             onCardClick={onCardClick}
             onRegenerate={onRegenerate}
             allCreatives={creatives}

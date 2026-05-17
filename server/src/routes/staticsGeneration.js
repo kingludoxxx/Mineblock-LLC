@@ -736,7 +736,9 @@ router.post('/generate', authenticate, async (req, res) => {
     }
 
     // ── Step A: Resolve reference image to base64 ──────────────────────
-    const { base64, mediaType, isUrl } = await resolveImage(reference_image_url);
+    const { base64: rawBase64, mediaType: rawMediaType } = await resolveImage(reference_image_url);
+    // Shrink to stay under Claude's 5 MB hard limit (large reference images caused silent failures)
+    const { base64, mediaType } = await shrinkForClaude(rawBase64, rawMediaType);
 
     // ── Step B: Call Claude to analyze the reference ad ─────────────────
     const t0 = Date.now();
@@ -2349,6 +2351,26 @@ router.patch('/creatives/:id/angle', authenticate, async (req, res) => {
   }
 });
 
+// PATCH /creatives/:id/copy — Update the adapted_text (headline, body, CTA, etc.)
+// Used by the inline copy editor in the CreativeDetailModal.
+router.patch('/creatives/:id/copy', authenticate, async (req, res) => {
+  try {
+    const { adapted_text } = req.body;
+    if (!adapted_text || typeof adapted_text !== 'object' || Array.isArray(adapted_text)) {
+      return res.status(400).json({ success: false, error: { message: 'adapted_text must be a plain object' } });
+    }
+    const rows = await pgQuery(
+      "UPDATE spy_creatives SET adapted_text = $1, updated_at = NOW() WHERE id = $2 RETURNING id, adapted_text",
+      [JSON.stringify(adapted_text), req.params.id]
+    );
+    if (rows.length === 0) return res.status(404).json({ success: false, error: { message: 'Creative not found' } });
+    res.json({ success: true, data: rows[0] });
+  } catch (err) {
+    console.error('[staticsGeneration] /creatives/:id/copy error:', err);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
 // GET /creatives/pipeline — Creatives grouped by status for pipeline view
 router.get('/creatives/pipeline', authenticate, async (req, res) => {
   try {
@@ -3512,13 +3534,62 @@ router.get('/analytics/by-angle', authenticate, async (_req, res) => {
       rejected: r.rejected,
       in_review: r.in_review,
       launched: r.launched,
-      approval_rate: r.total > 0 ? Math.round((r.approved / r.total) * 100) : 0,
+      // Approval rate counts both approved + launched (launched = ran, which means it was approved)
+      approval_rate: r.total > 0 ? Math.round(((r.approved + r.launched) / r.total) * 100) : 0,
       first_generated: r.first_generated,
       last_generated: r.last_generated,
     }));
 
     res.json({ success: true, data, period_days: 90 });
   } catch (err) {
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Bulk status update
+// PATCH /creatives/bulk-status
+// Body: { ids: string[], status: string }
+// ─────────────────────────────────────────────────────────────────────────────
+router.patch('/creatives/bulk-status', authenticate, async (req, res) => {
+  try {
+    const { ids, status } = req.body;
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ success: false, error: { message: 'ids must be a non-empty array' } });
+    }
+    const validStatuses = ['review', 'approved', 'ready', 'rejected', 'archived'];
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({ success: false, error: { message: `Invalid status: ${status}` } });
+    }
+
+    const placeholders = ids.map((_, i) => `$${i + 2}`).join(', ');
+    await pgQuery(
+      `UPDATE spy_creatives SET status = $1, updated_at = NOW() WHERE id IN (${placeholders})`,
+      [status, ...ids]
+    );
+
+    // Auto-generate 9:16 variants for newly approved creatives
+    if (status === 'approved') {
+      for (const id of ids) {
+        const rows = await pgQuery(`SELECT * FROM spy_creatives WHERE id = $1`, [id]);
+        const creative = rows[0];
+        if (creative && creative.aspect_ratio !== '9:16' && !creative.parent_creative_id) {
+          const existing = await pgQuery(
+            "SELECT id FROM spy_creatives WHERE parent_creative_id = $1 AND aspect_ratio = '9:16'",
+            [id]
+          );
+          if (existing.length === 0) {
+            generateVariant(creative, '9:16').catch(err =>
+              console.error(`[bulkStatus] Auto 9:16 variant error for ${id}:`, err.message)
+            );
+          }
+        }
+      }
+    }
+
+    res.json({ success: true, data: { updated: ids.length, status } });
+  } catch (err) {
+    console.error('[staticsGeneration] /creatives/bulk-status error:', err);
     res.status(500).json({ success: false, error: { message: err.message } });
   }
 });

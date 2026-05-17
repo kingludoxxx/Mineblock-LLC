@@ -58,19 +58,42 @@ function ScrollSentinel({ onVisible }) {
 
 const PAGE_SIZE = 40;
 
-export function TemplateSelectModal({ isOpen, onClose, onSelect, templates = [] }) {
+// Map angle names (partial/fuzzy) → best matching template category
+const ANGLE_CATEGORY_MAP = [
+  { pattern: /promo|urgenc|sale|discount|offer/i, category: 'Offer & Promotion' },
+  { pattern: /social.?proof|testimonial|review|ugc/i, category: 'Social Proof & Testimonials' },
+  { pattern: /scam|fear|authority|trust|warn/i, category: 'Bold Claim' },
+  { pattern: /income|claim|proof|result|earn/i, category: 'Statistics' },
+  { pattern: /problem|solution|pain|fix/i, category: 'Problem + Solution' },
+  { pattern: /feature|benefit|how.?it.?works|function/i, category: 'Benefits & Features' },
+  { pattern: /lifestyle|brand|aspirat|status/i, category: 'Lifestyle & Brand' },
+  { pattern: /us.?vs|compar|better.?than|switch/i, category: 'Us vs Them' },
+  { pattern: /before.?after|transform|change/i, category: 'Before & After' },
+  { pattern: /headline|attention|hook/i, category: 'Headline' },
+];
+
+function angleToCategoryHint(angle) {
+  if (!angle) return null;
+  for (const { pattern, category } of ANGLE_CATEGORY_MAP) {
+    if (pattern.test(angle)) return category;
+  }
+  return null;
+}
+
+export function TemplateSelectModal({ isOpen, onClose, onSelect, templates = [], angle }) {
   const [search, setSearch] = useState('');
   const [activeCategory, setActiveCategory] = useState('all');
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
 
-  // Reset state when modal opens
+  // Reset state when modal opens — pre-select category if angle hint matches
   useEffect(() => {
     if (isOpen) {
       setSearch('');
-      setActiveCategory('all');
+      const hint = angleToCategoryHint(angle);
+      setActiveCategory(hint || 'all');
       setVisibleCount(PAGE_SIZE);
     }
-  }, [isOpen]);
+  }, [isOpen, angle]);
 
   // Lock body scroll while open
   useEffect(() => {

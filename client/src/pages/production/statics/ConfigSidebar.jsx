@@ -6,6 +6,7 @@ import {
   Loader2,
   Sparkles,
   ListPlus,
+  Zap,
 } from 'lucide-react';
 import ProductSelector from '../../../components/ProductSelector';
 import { AresAgent } from './AresAgent';
@@ -36,8 +37,10 @@ export function ConfigSidebar({
   onUploadReference,
   onRemoveReference,
   onGenerate,
+  onGenerateAll,
   onAddToQueue,
   generating,
+  generatingAll,
   generationStep,
   onProductsLoaded,
 }) {
@@ -277,6 +280,21 @@ export function ConfigSidebar({
           >
             <ListPlus className="w-4 h-4" />
             Add to Queue
+          </button>
+        )}
+        {/* Generate All Angles — one click queues every product angle */}
+        {onGenerateAll && productAngles && productAngles.length > 1 && (
+          <button
+            type="button"
+            onClick={onGenerateAll}
+            disabled={!canGenerate || generatingAll}
+            className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-xs font-mono font-medium uppercase tracking-wide bg-transparent border border-[#c9a84c]/20 text-[#c9a84c]/70 hover:border-[#c9a84c]/40 hover:text-[#c9a84c] transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {generatingAll ? (
+              <><Loader2 className="w-3.5 h-3.5 animate-spin" />Queuing…</>
+            ) : (
+              <><Zap className="w-3.5 h-3.5" />Generate All {productAngles.length} Angles</>
+            )}
           </button>
         )}
       </div>

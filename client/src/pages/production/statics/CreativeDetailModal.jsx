@@ -13,6 +13,8 @@ import {
   Loader2,
   Rocket,
   ExternalLink,
+  Pencil,
+  Save,
 } from 'lucide-react';
 import api from '../../../services/api';
 
@@ -114,6 +116,11 @@ export function CreativeDetailModal({
   const [aiSuccess, setAiSuccess] = useState(false);
   const [aiPolling, setAiPolling] = useState(false);
   const [aiPollProgress, setAiPollProgress] = useState('');
+  // Inline copy editor state
+  const [copyEditMode, setCopyEditMode] = useState(false);
+  const [copyEdits, setCopyEdits] = useState({});
+  const [copySaving, setCopySaving] = useState(false);
+  const [copySaveError, setCopySaveError] = useState(null);
 
   // Reset state when creative changes or modal opens/closes
   const abortRef = useRef(false);
@@ -129,6 +136,9 @@ export function CreativeDetailModal({
     setLaunchHistoryOpen(false);
     setActiveRatio('primary');
     setRefLightbox(false);
+    setCopyEditMode(false);
+    setCopyEdits({});
+    setCopySaveError(null);
     return () => { abortRef.current = true; };
   }, [isOpen, creative?.id]);
 
@@ -341,19 +351,69 @@ export function CreativeDetailModal({
               </div>
             )}
 
-            {/* Adapted Text */}
+            {/* Adapted Text — with inline editor */}
             {Object.keys(adaptedText).length > 0 && (
               <div>
-                <SectionLabel>Adapted Text</SectionLabel>
+                <div className="flex items-center justify-between mb-2">
+                  <SectionLabel>Adapted Text</SectionLabel>
+                  {!copyEditMode ? (
+                    <button
+                      type="button"
+                      onClick={() => { setCopyEdits({ ...adaptedText }); setCopyEditMode(true); setCopySaveError(null); }}
+                      className="flex items-center gap-1 text-[10px] text-slate-500 hover:text-slate-300 transition-colors cursor-pointer"
+                    >
+                      <Pencil className="w-3 h-3" /> Edit
+                    </button>
+                  ) : (
+                    <div className="flex items-center gap-1.5">
+                      {copySaveError && <span className="text-[10px] text-red-400">{copySaveError}</span>}
+                      <button
+                        type="button"
+                        onClick={() => { setCopyEditMode(false); setCopySaveError(null); }}
+                        className="text-[10px] text-slate-500 hover:text-slate-300 cursor-pointer"
+                      >Cancel</button>
+                      <button
+                        type="button"
+                        disabled={copySaving}
+                        onClick={async () => {
+                          setCopySaving(true);
+                          setCopySaveError(null);
+                          try {
+                            await api.patch(`/statics-generation/creatives/${creative.id}/copy`, { adapted_text: copyEdits });
+                            onRefresh?.();
+                            setCopyEditMode(false);
+                          } catch (err) {
+                            setCopySaveError(err.response?.data?.error?.message || 'Save failed');
+                          } finally {
+                            setCopySaving(false);
+                          }
+                        }}
+                        className="flex items-center gap-1 h-6 px-2 rounded-md text-[10px] font-semibold bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20 transition-colors disabled:opacity-50 cursor-pointer"
+                      >
+                        {copySaving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
+                        Save
+                      </button>
+                    </div>
+                  )}
+                </div>
                 <div className="space-y-2">
-                  {Object.entries(adaptedText).map(([key, value]) => (
-                    <div key={key} className="flex gap-2 text-xs">
-                      <span className="text-slate-500 shrink-0 w-20 font-medium">
+                  {Object.entries(copyEditMode ? copyEdits : adaptedText).map(([key, value]) => (
+                    <div key={key} className={`text-xs ${copyEditMode ? 'space-y-0.5' : 'flex gap-2'}`}>
+                      <span className="text-slate-500 shrink-0 w-20 font-medium block">
                         {ADAPTED_TEXT_LABELS[key] || key}:
                       </span>
-                      <span className="text-slate-300 break-words">
-                        {typeof value === 'string' ? value : Array.isArray(value) ? value.join(', ') : JSON.stringify(value)}
-                      </span>
+                      {copyEditMode ? (
+                        <textarea
+                          rows={2}
+                          value={typeof copyEdits[key] === 'string' ? copyEdits[key] : Array.isArray(copyEdits[key]) ? copyEdits[key].join(', ') : JSON.stringify(copyEdits[key])}
+                          onChange={(e) => setCopyEdits(prev => ({ ...prev, [key]: e.target.value }))}
+                          className="w-full bg-[#0a0a0a] border border-white/[0.1] rounded-md px-2 py-1.5 text-xs text-white resize-none focus:border-accent/40 focus:outline-none"
+                        />
+                      ) : (
+                        <span className="text-slate-300 break-words">
+                          {typeof value === 'string' ? value : Array.isArray(value) ? value.join(', ') : JSON.stringify(value)}
+                        </span>
+                      )}
                     </div>
                   ))}
                 </div>
