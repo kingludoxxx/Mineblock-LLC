@@ -1214,6 +1214,16 @@ export default function StaticsGeneration() {
         return;
       }
 
+      // Guard: warn if product has no image — Gemini will hallucinate the product without one
+      const fullProduct = selectedProductRef.current;
+      if (fullProduct && !fullProduct.product_image_url && (!fullProduct.product_images || fullProduct.product_images.length === 0)) {
+        removeDirectGen();
+        setError(`"${fullProduct.name}" has no product image configured. Add a product image in the Product Library before generating.`);
+        setGenerating(false);
+        setGenerationStep(0);
+        return;
+      }
+
       let resolvedProductUrl = productImageUrl;
       if (productFile) {
         resolvedProductUrl = await fileToBase64(productFile);

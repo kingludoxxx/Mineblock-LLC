@@ -935,11 +935,12 @@ ${templateData.deep_analysis.adaptation_instructions?.common_failure_modes?.leng
     : `This is a TEXT-ONLY ad. Do NOT add any product photo, device image, or physical object. The output must contain ONLY text and profile elements — ZERO product images.`;
 
   const logoToneNote = logoBackgroundTone === 'dark' ? ' Use WHITE version (dark bg).' : logoBackgroundTone === 'light' ? ' Use BLACK version (light bg).' : '';
-  const logoRule = logoCount > 0
-    ? (hasCompetitorLogo
-        ? `\n🔴 LOGO: Copy the EXACT logo from ${logoImageRef} pixel-perfectly — same text, shapes, proportions. Do NOT redesign it.${logoToneNote}`
-        : `\n🔴 BRAND LOGO: Place the brand logo from ${logoImageRef} as a small watermark (≈12–15% of ad width) in the bottom-left or bottom-right corner — whichever has the most empty space. Do NOT place it on the product device. Do NOT place it over main text. Scale it to be subtle but legible.${logoToneNote}`)
-    : '';
+  // Logo rule: only ask Gemini to handle COMPETITOR LOGO REPLACEMENT (pixel-perfect swap).
+  // Brand watermark placement is done programmatically via sharp after generation —
+  // Gemini renders text instead of the actual logo image when asked to place a watermark.
+  const logoRule = logoCount > 0 && hasCompetitorLogo
+    ? `\n🔴 LOGO REPLACEMENT: Copy the EXACT logo from ${logoImageRef} pixel-perfectly into the competitor logo slot — same shapes, proportions, text. Do NOT redesign or reposition it.${logoToneNote}`
+    : '';  // watermark case: composited by sharp after generation, Gemini does NOT handle it
 
   // Banned words — keep very short
   const bannedWords = refKeywords.length > 0
@@ -983,49 +984,198 @@ ${templateData.deep_analysis.adaptation_instructions?.common_failure_modes?.leng
   // We still tell the model WHERE the text regions should go so layout and
   // visual hierarchy are preserved — it just fills those regions with solid
   // color blocks / placeholders instead of rendered glyphs.
+  // Cross-niche detection: fire mandatory swap block when reference product clearly isn't ours.
+  // "Our" category = mining / tech / hardware / crypto. Anything else is cross-niche.
+  const isCrossNicheProduct = hasProductInReference && refCategory &&
+    !/(miner|mining|crypto|bitcoin|hardware|tech|device|chip|asic|electronic|computer|gpu|blockchain)/i.test(refCategory);
+
+  const crossNicheBlock = isCrossNicheProduct
+    ? `\n\n🚨 MANDATORY FIRST STEP — PRODUCT SWAP (do this before anything else):\nThe reference contains a "${refCategory}" product. THIS PRODUCT MUST NOT APPEAR in your output.\nExecute in this exact order:\n1. LOCATE the "${refCategory}" in the reference image\n2. COMPLETELY ERASE it — paint over it with background fill matching the surrounding area (seamless, no visible ghost or outline)\n3. PLACE the "${product.name}" hardware (from FIRST input image) in that zone:\n   — Match the same position and approximate scale as what was erased\n   — Study the shape, screen/display, ports, and physical details from FIRST image\n   — Render photorealistically: correct perspective, natural lighting matching the scene\n   — Generate a fresh realistic depiction — do NOT paste the photo directly\nCRITICAL: Zero trace of "${refCategory}" product anywhere in the final output.`
+    : '';
+
   if (skipTextRendering) {
-    return `Edit the reference ad (LAST image) into a TEXT-FREE version.${templateIntelligence}
+    return `The LAST image is a structural reference — use its LAYOUT only. Produce a text-free version with our product.${crossNicheBlock}${templateIntelligence}
 
-🔴 STRICT RULES (most important):
-1. NO TEXT AT ALL. The output image must contain ZERO rendered text — no headlines, no subheadlines, no body copy, no prices, no codes, no CTAs, no badges, no fine print, no logos-with-text. The text will be composited afterwards by our system. Preserve the layout structure but leave text regions as either:
-   - Empty solid-color blocks matching the ad's background tone, OR
-   - Gently blurred/desaturated space where text would go
-2. LOGO: If the reference has a brand logo mark (pictogram, shield, icon), replace it with the ${product.profile?.shortName || product.name || 'brand'} logo pictogram. If the "logo" is purely wordmark text, leave that region blank — we'll overlay it.
-3. 🚫 STRIP ALL THIRD-PARTY BRAND ELEMENTS: Remove every logo, wordmark, emblem, slogan, or visual identity mark from the reference that belongs to a different brand. Replace with a clean solid-color fill matching the background tone, or swap in our product's visual identity where contextually appropriate.
-4. PRODUCT: ${productRule}${hasProductInReference ? ` Orientation: ${claudeResult.product_orientation || 'front-facing'}.${productRulesSection}` : ''}
-5. ${characterRules}
-6. Keep EXACT same layout, background, colors, overall composition, and visual elements as the reference. ONLY change: (a) the product to ours, (b) remove all rendered text, (c) strip third-party brand marks.${angleSceneSection}
-7. PRODUCT LABEL: The product image (FIRST image) already has its real label/packaging. Copy it EXACTLY as provided — do NOT modify, redesign, or add text to the product packaging.${brandColorHint}${productContext}${co.absoluteRules ? `\n${co.absoluteRules}` : ''}
+🔴 STRICT RULES:
+1. 🔴 PRODUCT: ${productRule}${hasProductInReference ? ` Orientation: ${claudeResult.product_orientation || 'front-facing'}.${productRulesSection}` : ''} 🚫 LOGO-ON-PRODUCT: NEVER place anything ON the product device surface.
+2. NO TEXT AT ALL: Output must contain ZERO rendered text — no headlines, subheadlines, body, prices, codes, CTAs, badges, fine print, or logos-with-text. Text will be composited by our system. Leave text regions as empty solid-color blocks matching the background tone.
+3. 🚫 STRIP ALL THIRD-PARTY BRAND ELEMENTS: Remove every logo, wordmark, emblem, or brand mark from a different company. Replace with clean solid-color fill matching background.${logoRule}
+4. ${characterRules}
+5. Keep EXACT same layout, background, colors, and composition. ONLY change: (a) product → ours, (b) remove all text, (c) strip third-party brands.${angleSceneSection}
+6. PRODUCT LABEL: Copy the product image (FIRST image) EXACTLY — do NOT modify packaging.${brandColorHint}${productContext}${co.absoluteRules ? `\n${co.absoluteRules}` : ''}
 
-THIS IS CRITICAL: zero rendered text. If in doubt whether something is text, DON'T render it. Our overlay system will add every piece of copy afterwards with pixel-perfect typography.`;
+CRITICAL: zero rendered text. When in doubt whether something is text — DON'T render it. Our overlay system adds all copy with pixel-perfect typography.`;
   }
 
-  return `Edit the reference ad (LAST image).${templateIntelligence}
+  return `The LAST image is a structural reference — use its layout for our product.${crossNicheBlock}${templateIntelligence}
 
-🔴 STRICT RULES (most important):
-1. ELEMENT COUNT: Output must have the EXACT same number of text elements, logos, badges, and images as the reference. Do NOT add or remove any. 🚫 ZERO new text elements — if a slot has no swap listed below, carry the original text through unchanged. The PRODUCT FACTS section is for cross-checking accuracy only — it is NOT permission to add new copy, headlines, or badges.${logoRule}
-2. PRODUCT: ${productRule}${hasProductInReference ? ` Orientation: ${claudeResult.product_orientation || 'front-facing'}.${productRulesSection}` : ''} 🚫 LOGO-ON-PRODUCT: NEVER place any logo, text, badge, icon, or watermark ON TOP OF the physical product device itself. The device surface must remain completely clean and unmodified — no overlays of any kind on the hardware.
-3. 🚫 STRIP ALL THIRD-PARTY BRAND ELEMENTS: NEVER carry over any logo, wordmark, brand name, tagline, or visual identity mark from the reference template that belongs to a DIFFERENT brand. This includes: brand logo graphics (icon or text form), competitor product names displayed as design elements, slogans, proprietary phrases, and any distinctive graphical mark of another company. For every such element: (a) replace it with our brand/product identity if the slot serves a brand-identity purpose, OR (b) fill it with a clean solid-color block matching the background tone. Examples of what MUST be stripped: "earth breeze" wordmark, "Tide" logo, "Downy" emblem, "No More Plastic Jug" text, any consumer brand name that is NOT our product. If you are uncertain whether a mark belongs to our product, strip it.
-4. ALL text must be in ENGLISH. Replace every piece of reference text with the swaps below.
-5. ${characterRules}
-6. 🚫 NO MONTH NAMES OR SEASONAL TEXT: NEVER write any month name (January through December) or seasonal sale phrase ("March Sale", "Spring Deal", etc.) anywhere in the output. If a TEXT SWAP below replaces a month-name phrase, use the adapted text EXACTLY. If the reference image shows seasonal text with no swap provided, replace it with "Limited Time Offer".
-7. 🚫 NO INVENTED PRICES OR DISCOUNTS: NEVER write a price, percentage off, or discount amount that is not explicitly listed in PRODUCT INTELLIGENCE below. If no price is provided, omit price text entirely.
-8. 🔴 CHARACTER-LEVEL FIDELITY (CRITICAL — READ TWICE):
-   - Render EVERY character in each swap value. Do NOT drop, skip, or omit any character — including the FIRST word, the LAST word, punctuation, and especially the dollar sign "$".
-   - Prices and monetary claims MUST be rendered as the full string. "$300K" must appear as "$", "3", "0", "0", "K" — never as "300K" or "K" alone. "$1" must appear as "$", "1" — never as "1" or dropped. "$59.99" must appear complete.
-   - Percentages must include the "%" symbol. "58% OFF" must not become "58 OFF" or "OFF".
-   - Leading words matter: if a bullet says "Plug In. Mine in 60 Sec.", the output must START with "Plug". Do NOT drop the first word to fit the space.
-   - Trailing words matter: if a bullet ends with "to Run", the output must END with "Run". Do NOT cut off the last word.
-   - If a swap's text feels too long for its visual slot, you MUST shrink the font size to fit. NEVER truncate, abbreviate, drop words, drop characters, or substitute "..." for real text.
-   - If shrinking makes text unreadable, compress letter-spacing slightly, but every character must be visible and legible.
+🔴 RULES IN PRIORITY ORDER:
+1. 🔴 PRODUCT: ${productRule}${hasProductInReference ? ` Orientation: ${claudeResult.product_orientation || 'front-facing'}.${productRulesSection}` : ''} 🚫 LOGO-ON-PRODUCT: NEVER place any logo, text, badge, or watermark ON TOP OF the physical product device. Device surface must be completely clean.${logoRule}
+2. 🚫 ERASE ALL REFERENCE BRAND & PRODUCT ELEMENTS: Strip every logo, wordmark, brand name, tagline, competitor product, and visual identity mark from the reference that belongs to a DIFFERENT brand. Replace each with a clean solid-color fill matching the background tone. Examples that MUST be removed: supplement brand wordmarks, food brand logos, clothing brand graphics, any brand that is NOT our product. If uncertain → strip it.
+3. TEXT SWAPS — apply ALL of these EXACTLY (character-for-character):
+${swapSectionFinal || '(no text changes)'}${bannedWords}
+4. ELEMENT COUNT: Output must have the EXACT same number of text elements, logos, badges as the reference. Zero new elements added. 🚫 If a slot has no swap listed, carry the original text through unchanged.
+5. PEOPLE: ${characterRules}
+6. ALL text in ENGLISH. 🚫 No month names (January–December) or seasonal phrases. If reference shows seasonal text with no swap provided, replace with "Limited Time Offer". 🚫 No invented prices or discounts not in PRICE ANCHORS below.
+7. 🔴 CHARACTER FIDELITY: Render EVERY character in each swap — first word, last word, punctuation, "$", "%". Shrink font size before dropping any character. "$300K" = "$" + "3" + "0" + "0" + "K", never "300K". "58% OFF" never "58 OFF". If text is long → shrink font, never truncate.
 
-TEXT SWAPS — replace ALL text with these EXACT words (character-for-character):
-${swapSectionFinal || '(No text changes)'}${bannedWords}
+LAYOUT — preserve exactly:
+- Keep all text positions, badge zones, CTA zones, product zone, and colors as in reference${visualLine}
+- Spell every word correctly with proper spacing
+- PRODUCT LABEL: Copy the product image (FIRST image) label EXACTLY — do NOT redesign or add text to packaging${angleSceneSection}${brandColorHint}${productContext}${co.absoluteRules ? `\n${co.absoluteRules}` : ''}`;
+}
 
-LAYOUT RULES:
-- Keep EXACT same layout, text positions, badge zones, product zone, and fonts as the reference.${visualLine}
-- Spell every word correctly with proper spacing between words.
-- PRODUCT LABEL: The product image (FIRST image) already has its real label/packaging. Copy it EXACTLY as provided — do NOT modify, redesign, or add text to the product packaging.${angleSceneSection}${brandColorHint}${productContext}${co.absoluteRules ? `\n${co.absoluteRules}` : ''}`;
+// ─────────────────────────────────────────────────────────────────────────────
+// TWO-PASS PIPELINE — for cross-niche template adaptation
+// Pass 1: product swap only (reference + product → intermediate with our product)
+// Pass 2: text + atmosphere (intermediate → final polished ad)
+// Logo compositing happens programmatically via sharp after Pass 2.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Pass 1 prompt — replaces the reference product with ours, nothing else.
+ * Images sent: [productImage, referenceImage] — product FIRST, reference LAST.
+ */
+export function buildProductSwapPrompt(claudeResult, product) {
+  const {
+    reference_product_category: refCategory,
+    product_orientation,
+    product_count,
+    _refHasProduct,
+    people_count,
+  } = claudeResult;
+
+  const hasProductInReference = (product_count ?? 1) > 0 && _refHasProduct !== false;
+  const orientation = product_orientation || 'front-facing';
+  const categoryName = refCategory || 'the existing product';
+  const pCount = people_count ?? 0;
+  const peopleRule = pCount === 0
+    ? 'There are NO people in the reference. Do NOT add any human faces or bodies.'
+    : `The reference has EXACTLY ${pCount} person(s). Keep the same number of people — do NOT add or remove faces.`;
+
+  if (!hasProductInReference) {
+    // Text-only or testimonial template — no product to swap
+    return `The LAST image is a text-only reference ad. Your ONLY task: remove any third-party brand marks.
+
+🔴 RULES:
+1. 🚫 STRIP ALL THIRD-PARTY BRAND ELEMENTS: Remove every logo, wordmark, and brand graphic that belongs to a different company. Replace with clean background fill.
+2. Do NOT change any text, layout, colors, or composition.
+3. ${peopleRule}
+
+Output: identical to reference except third-party brand marks are removed.`;
+  }
+
+  return `The LAST image is a reference ad. Your ONLY task: replace the product shown with ours.
+
+🔴 PRODUCT REPLACEMENT — execute in this exact order:
+1. FIND the "${categoryName}" in the reference image
+2. COMPLETELY ERASE it — paint over it with background fill matching the surrounding area (blend seamlessly, no ghost outline)
+3. PLACE the "${product.name}" hardware (from FIRST image) in that exact zone:
+   — Match the original product's position and approximate scale
+   — Study the shape, screen/display, ports, and physical details from FIRST image carefully
+   — Render photorealistically: correct perspective for ${orientation}, natural lighting matching the scene environment
+   — Generate a fresh realistic depiction — do NOT paste the product photo directly
+   — 🚫 LOGO-ON-PRODUCT: NEVER place logos, text, badges, or watermarks ON the product device surface
+
+🚫 DO NOT change anything else:
+- All text stays exactly as in the reference (same words, same positions)
+- Background, colors, badges, layout, and overall composition stay identical
+- Do NOT add logos, watermarks, or any new elements whatsoever
+- Do NOT move or modify any text elements
+- ${peopleRule}
+
+Your output is an INTERMEDIATE image: identical to the reference in every way except the product zone, which now shows the ${product.name}.`;
+}
+
+/**
+ * Pass 2 prompt — applies text swaps and atmosphere to the Pass 1 result.
+ * Images sent: [pass1ResultImage] — just the intermediate (no reference, no product).
+ * The product is already correctly placed; do NOT touch it.
+ */
+export function buildTextPolishPrompt(claudeResult, swapPairs, product, layoutMap = null, angleData = null, customOverrides = null) {
+  const {
+    people_count, adapted_audience, character_adaptation, visual_adaptations,
+    reference_product_keywords: refKeywords,
+  } = claudeResult;
+  const co = customOverrides?.nanoBanana || {};
+
+  const pCount = people_count ?? 0;
+  let characterRules;
+  if (pCount === 0) {
+    characterRules = 'There are NO people in the image. Do NOT add any human faces or bodies.';
+  } else {
+    characterRules = `The image has EXACTLY ${pCount} person(s). Keep EXACTLY ${pCount} — do NOT add or remove faces.`;
+    if (adapted_audience) characterRules += ` Target: ${adapted_audience}.`;
+    if (character_adaptation) characterRules += ` ${character_adaptation}.`;
+  }
+
+  // Build swap section (same logic as buildNanoBananaPrompt, simplified)
+  const MONTH_NAMES_RE = /\b(january|february|march|april|may|june|july|august|september|october|november|december)\b/i;
+  const removePairs = swapPairs.filter(p => p.remove || (p.adapted === '' && p.original));
+  const replacePairs = swapPairs.filter(p => !(p.remove || (p.adapted === '' && p.original)));
+  const FIELD_PRIO = { headline: 1, subheadline: 2, cta: 3 };
+  const getPrio = f => FIELD_PRIO[(f || '').split('[')[0]] || 5;
+  const sortedReplace = [...replacePairs].sort((a, b) => getPrio(a.field) - getPrio(b.field));
+  const limitedPairs = [...sortedReplace.slice(0, 12), ...removePairs.slice(0, 20)];
+
+  const swapSectionFinal = limitedPairs.map((pair, i) => {
+    if (pair.remove || (pair.adapted === '' && pair.original)) {
+      return `  ${i + 1}. "${pair.original}" → [REMOVE — delete this text, leave the space blank]`;
+    }
+    return `  ${i + 1}. "${pair.original}" → "${pair.adapted}"`;
+  }).join('\n');
+
+  const bannedWords = (refKeywords || []).length > 0
+    ? `\nBANNED WORDS (from reference product): ${refKeywords.map(w => `"${w}"`).join(', ')}. NEVER use these.`
+    : '';
+
+  const mustChangeVisuals = (visual_adaptations || []).filter(v => v.is_angle_specific);
+  const visualLine = mustChangeVisuals.length > 0
+    ? `\nVisual changes: ${mustChangeVisuals.slice(0, 3).map(v => {
+        const orig = (v.original_visual || '').slice(0, 40);
+        const adapted = (v.adapted_visual || '').slice(0, 50);
+        return `${v.position}: "${orig}" → "${adapted}"`;
+      }).join('; ')}`
+    : '';
+
+  const profile = product.profile || {};
+  const productContextLines = [
+    product.name && `Product name: ${product.name}`,
+    product.price && `Exact price: ${product.price} — ONLY valid price; never write any other price`,
+    profile.bundleVariants && `Bundle prices:\n${profile.bundleVariants}`,
+    profile.discountCodes && `Discount code: ${profile.discountCodes}`,
+    profile.maxDiscount && `Max discount %: ${profile.maxDiscount} — ONLY valid discount`,
+    profile.complianceRestrictions && `🚫 NEVER claim: ${profile.complianceRestrictions.slice(0, 120)}`,
+  ].filter(Boolean);
+  const productContext = productContextLines.length > 0
+    ? `\n\nPRICE ANCHORS (for accuracy only — do NOT use to add new copy):\n${productContextLines.map(l => `- ${l}`).join('\n')}`
+    : '';
+
+  const brandColorHint = (product.brand_colors && Object.keys(product.brand_colors).length > 0)
+    ? `\n- Brand colors: ${Object.values(product.brand_colors).filter(Boolean).slice(0, 3).join(', ')} — use for accents`
+    : '';
+
+  const rawAngleName = angleData?.name || null;
+  const angleSceneDirection = getAngleSceneDirection(rawAngleName);
+  const angleSceneSection = angleSceneDirection && rawAngleName
+    ? `\n\n🎨 BACKGROUND ATMOSPHERE — "${rawAngleName}":\nShift the BACKGROUND only to match this angle's emotional world. Keep ALL text positions, product position, and layout structure IDENTICAL.\n${angleSceneDirection}`
+    : '';
+
+  return `Apply text replacements and atmosphere to this image. The product is already correctly placed — do NOT touch it.
+
+🔴 RULES:
+1. PRODUCT: Already correct — do NOT move, resize, modify, or reprocess it. 🚫 NEVER place anything ON the product device surface.
+2. 🚫 STRIP REMAINING THIRD-PARTY BRAND ELEMENTS: Remove any logo, wordmark, or brand mark belonging to a different company. Fill with background color.
+3. TEXT SWAPS — replace ALL reference text with these EXACT words (character-for-character):
+${swapSectionFinal || '(no text changes)'}${bannedWords}
+4. ELEMENT COUNT: Same number of text elements, badges, logos as input. Zero new elements.
+5. PEOPLE: ${characterRules}
+6. ALL text in ENGLISH. 🚫 No month names. 🚫 No seasonal phrases. 🚫 No invented prices.
+7. 🔴 CHARACTER FIDELITY: Render EVERY character in each swap. Shrink font before dropping any character. "$" always renders. "%" always renders.
+
+LAYOUT — preserve exactly:
+- All text positions, badge zones, CTA zones, colors, overall composition${visualLine}
+- Spell every word correctly with proper spacing${angleSceneSection}${brandColorHint}${productContext}${co.absoluteRules ? `\n${co.absoluteRules}` : ''}`;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

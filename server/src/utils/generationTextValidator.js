@@ -274,6 +274,104 @@ If a category has no issues, return an empty array. Do not invent issues — onl
 }
 
 /**
+ * Validate that the generated image shows OUR product as the dominant visual element,
+ * and that the reference product (from a different category) is NOT visible.
+ *
+ * Used for cross-niche template adaptations to catch the most common failure:
+ * the supplement/food/clothing product from the reference is still visible while
+ * our miner was only partially or incorrectly integrated.
+ *
+ * @param {Buffer} imageBuffer         - The generated image
+ * @param {string} imageMimeType       - 'image/png' | 'image/jpeg'
+ * @param {string} productName         - Our product name (e.g. "MinerForge Pro")
+ * @param {string} referenceCategory   - The reference product category (e.g. "supplement", "food")
+ * @returns {Promise<{passed: boolean, referenceProductVisible: boolean, ourProductDominant: boolean, reason: string}>}
+ */
+export async function validateProductPresence(imageBuffer, imageMimeType, productName, referenceCategory) {
+  const defaultPass = { passed: true, referenceProductVisible: false, ourProductDominant: true, reason: 'skipped' };
+
+  if (!ANTHROPIC_API_KEY) return { ...defaultPass, reason: 'no API key' };
+  if (!imageBuffer || !Buffer.isBuffer(imageBuffer) || imageBuffer.length === 0) return { ...defaultPass, reason: 'empty buffer' };
+  if (!referenceCategory) return { ...defaultPass, reason: 'no reference category to check against' };
+
+  const prompt = `You are checking an AI-generated ad image for a product swap failure.
+
+CONTEXT:
+- This ad was generated from a "${referenceCategory}" product template
+- The "${referenceCategory}" product should have been REPLACED with "${productName}" (a Bitcoin mining hardware device)
+- Check if the swap succeeded
+
+Answer these two questions by examining the image:
+
+1. REFERENCE PRODUCT VISIBLE: Is a "${referenceCategory}" product (e.g. supplement bottle, food item, health product, clothing, etc.) STILL VISIBLE anywhere in this image — even partially, faded, or as a background element?
+
+2. OUR PRODUCT DOMINANT: Is "${productName}" (a Bitcoin miner / ASIC hardware device / tech device) the PRIMARY and DOMINANT visual element in the product zone of this image?
+
+Return ONLY valid JSON:
+{
+  "reference_product_visible": true/false,
+  "our_product_dominant": true/false,
+  "reference_product_description": "describe exactly what you see if reference product is visible, or 'none' if not",
+  "our_product_description": "describe what you see in the main product zone",
+  "confidence": "high|medium|low"
+}`;
+
+  try {
+    const res = await fetch(CLAUDE_API_URL, {
+      method: 'POST',
+      headers: {
+        'x-api-key': ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001', // use Haiku — fast and cheap for binary check
+        max_tokens: 400,
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'text', text: prompt },
+            { type: 'image', source: { type: 'base64', media_type: imageMimeType || 'image/png', data: imageBuffer.toString('base64') } },
+          ],
+        }],
+      }),
+      signal: AbortSignal.timeout(30000),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '');
+      throw new Error(`Claude API ${res.status}: ${errText.slice(0, 200)}`);
+    }
+
+    const data = await res.json();
+    const rawText = data.content?.[0]?.text || '';
+    const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) throw new Error('No JSON in response');
+
+    let parsed;
+    try { parsed = JSON.parse(jsonMatch[0]); }
+    catch { parsed = {}; }
+
+    const referenceProductVisible = parsed.reference_product_visible === true;
+    const ourProductDominant = parsed.our_product_dominant !== false; // default true if unclear
+    const reason = referenceProductVisible
+      ? `Reference "${referenceCategory}" still visible: ${parsed.reference_product_description || 'detected'}`
+      : ourProductDominant
+        ? `${productName} is dominant (${parsed.confidence || 'unknown'} confidence)`
+        : `${productName} not dominant: ${parsed.our_product_description || 'unclear'}`;
+
+    const passed = !referenceProductVisible && ourProductDominant;
+
+    console.log(`[product-presence-validator] reference_visible=${referenceProductVisible}, our_dominant=${ourProductDominant}, passed=${passed} — ${reason}`);
+    return { passed, referenceProductVisible, ourProductDominant, reason };
+
+  } catch (err) {
+    console.warn(`[product-presence-validator] Check failed: ${err.message} — allowing generation`);
+    return { ...defaultPass, reason: `validator error: ${err.message}` };
+  }
+}
+
+/**
  * Produce a one-line human-readable summary of a validation result.
  * Useful for logs and Slack alerts.
  */

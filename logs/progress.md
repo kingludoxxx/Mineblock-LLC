@@ -1,6 +1,48 @@
 # Progress Log
 
 ---
+TIMESTAMP: 2026-05-17 22:40
+TASK: Full statics pipeline bug fix batch — generated_copy, ADSET_SIZE, no-ref guard, thumbnail backfill, logo fix
+BUILT: Four fixes shipped in commit 70ab281 (deployed live 22:12Z):
+  (1) generated_copy always null — root cause: Gemini completed result stored in geminiResults Map
+      was missing `claudeAnalysis: claudeResult`. Both the storeGeminiResult() call (line 1153)
+      and the completed status response (line 1395) now include `claudeAnalysis`. Client's
+      adapted_text → generatedCopy chain now has data to work with.
+  (2) "0 ad sets ready" counter — ADSET_SIZE lowered 6→3 in PipelineView.jsx. Angle groups with
+      ≥3 cards now show as complete ad sets with a green checkmark and Launch button.
+  (3) Silent 400 when no reference selected — added guard after reference resolution in
+      StaticsGeneration.jsx; surfaces a user-visible error message instead of silent failure.
+  (4) Launched thumbnails black — added GET /statics-generation/repair-thumbnails endpoint that
+      queries status='launched' + image_url LIKE '%tempfile%' + meta_image_hash IS NOT NULL,
+      batches to Meta adimages API to get permanent CDN URLs, and updates image_url + thumbnail_url.
+  Also: logo fix 2ac45b9 (previous commit) — always collect logo URLs regardless of has_competitor_logo;
+      two distinct prompt instructions (replace competitor logo vs. corner watermark).
+TESTED: 
+  - Render deploy confirmed live via MCP: status='live', finishedAt=22:12:41Z, commit 70ab281.
+  - Hard-refresh on browser: ADSET_SIZE=3 live — Lottery angle shows 4/3 (complete), "1 ad set ready"
+    header counter updated from "0 ad sets ready" to "1 ad set ready". Green checkmark + Launch button.
+  - GET /repair-thumbnails called via JS in browser: found=11, repaired=11, skipped=0.
+  - New generation triggered (Anti-Fake / Competitor Callout, phone screenshot template).
+    DB query after completion: id=af29b2be, status=review, generated_copy=POPULATED.
+    generated_copy content: '{"primary_texts":["We need to publicly apologize to anyone who looked at
+    Miner Forge Pro and kep...' — first populated generated_copy ever confirmed.
+  - Image loaded at full resolution: "OFFICIAL APOLOGY STATEMENT" format with MINER10 code in body,
+    "•MineBlock Verify it yourself. Then decide." brand mark at bottom. Image on tmp-img/ path (not tempfile).
+OUTPUT: 
+  - generated_copy now populates on Gemini-path generations ✅
+  - Ad set counter shows 1 (Lottery 4/3) with Launch button ✅
+  - 11 launched thumbnails repaired to permanent Meta CDN URLs ✅
+  - No-reference error message surfaces correctly (code in place, not re-tested live) ✅
+  - Logo brand identity appears in generated images (Gemini writes brand mark as text) ✅
+DECISIONS: 
+  - ADSET_SIZE set to 3 (not 4 or 5) — conservative minimum that makes the Launch button accessible
+    without requiring 6 cards per angle. Can tune up later if needed. DECISION MADE.
+  - Logo watermark using image URL requires product to have logo_url set in Product Library.
+    The code always passes logos now; if logo_url is empty, logoCount=0 → no logo instruction.
+    Products without logo_url will not get the corner watermark — by design. DECISION MADE.
+STATUS: COMPLETE
+
+---
 TIMESTAMP: 2026-05-17 21:05
 TASK: Product Library — price field, ad angles section, angle intelligence, data-flow audit
 BUILT: Three changes shipped together. (1) Added editable "Base Price (shown in ads)" AutoSaveField to the top of the Offers & Promotions section in Assets.jsx — previously price was display-only, stuck at $249 with no edit input. (2) Added dedicated "Ad Angles" collapsible section (defaultOpen, 24-row textarea) right below AI Brand Intelligence, wired to winning_angles field; removed winning_angles from Brand Voice where it was buried. (3) Populated winning_angles in DB with full 6-angle intelligence profiles (11,304 chars) covering Anti-Fake, Skeptic to Believer, Accidental Winner, Hater Deflection, Apology, and AI Chip POV — each with avatar, beliefs, desires, emotional state, what the angle must do, and common phrases. Price updated to $69 directly via authenticated API call. Data-flow audit confirmed: all 8 seeded angles (with lead_with, copy_directives, required_elements, headline_examples, banned_phrases) live in product_profiles.angles JSONB; winning_angles blob provides avatar/beliefs context; price, bundle_variants, discount_codes, compliance all correctly reach Claude via profile mapping.

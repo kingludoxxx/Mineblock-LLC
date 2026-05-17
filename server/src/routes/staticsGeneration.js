@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { buildClaudePrompt, buildNanoBananaPrompt, buildSwapPairs, buildLayoutAnalysisPrompt, buildIterationPrompt, buildIterationNanoBananaPrompt } from '../utils/staticsPrompts.js';
+import { buildClaudePrompt, buildNanoBananaPrompt, buildSwapPairs, buildLayoutAnalysisPrompt, buildIterationPrompt, buildIterationNanoBananaPrompt, buildProductSwapPrompt, buildTextPolishPrompt } from '../utils/staticsPrompts.js';
 import { overlayText } from '../utils/textOverlay.js';
 import { pgQuery } from '../db/pg.js';
 import { authenticate } from '../middleware/auth.js';
@@ -182,6 +182,55 @@ function storeGeminiResult(taskId, result) {
   }
   geminiResults.set(taskId, result);
   setTimeout(() => geminiResults.delete(taskId), GEMINI_RESULT_TTL);
+}
+
+// ── Programmatic logo compositing via sharp (replaces Gemini watermark placement) ──
+// Gemini generates text-brand-marks instead of placing actual logo images.
+// This function composites the real logo pixel-perfectly into the bottom-right corner.
+async function compositeLogoWithSharp(imageBuffer, logoUrl) {
+  try {
+    if (!logoUrl || !imageBuffer) return imageBuffer;
+
+    // Fetch the logo
+    let fetchUrl = logoUrl;
+    if (fetchUrl.startsWith('/')) {
+      const base = process.env.RENDER_EXTERNAL_URL || `http://localhost:${process.env.PORT || 3000}`;
+      fetchUrl = `${base}${fetchUrl}`;
+    }
+    const logoRes = await fetch(fetchUrl, { signal: AbortSignal.timeout(15000) });
+    if (!logoRes.ok) throw new Error(`Logo fetch failed: ${logoRes.status}`);
+    const logoBuffer = Buffer.from(await logoRes.arrayBuffer());
+
+    // Get image dimensions
+    const meta = await sharp(imageBuffer).metadata();
+    const width = meta.width || 1080;
+    const height = meta.height || 1350;
+
+    // Resize logo to ~12% of image width (subtle but legible)
+    const targetWidth = Math.round(width * 0.12);
+    const resizedLogo = await sharp(logoBuffer)
+      .resize(targetWidth, null, { fit: 'inside', withoutEnlargement: true })
+      .toBuffer();
+
+    const logoMeta = await sharp(resizedLogo).metadata();
+    const logoH = logoMeta.height || 50;
+
+    // Place in bottom-right with 3% padding
+    const padding = Math.round(width * 0.03);
+    const left = Math.max(0, width - targetWidth - padding);
+    const top = Math.max(0, height - logoH - padding);
+
+    const composited = await sharp(imageBuffer)
+      .composite([{ input: resizedLogo, left, top, blend: 'over' }])
+      .png()
+      .toBuffer();
+
+    console.log(`[compositeLogoWithSharp] ✅ Logo composited at bottom-right (${targetWidth}px wide)`);
+    return composited;
+  } catch (err) {
+    console.warn(`[compositeLogoWithSharp] ⚠️ Failed: ${err.message} — returning original image`);
+    return imageBuffer; // safe fallback
+  }
 }
 
 // ── Persistent image store (DB-backed, in-memory cache for speed) ──
@@ -959,14 +1008,27 @@ router.post('/generate', authenticate, async (req, res) => {
     // Pass extra product count so prompt builder can calculate correct logo image indices
     claudeResult._extraProductCount = refHasProduct ? extraProductUrls.length : 0;
     claudeResult._refHasProduct = refHasProduct;
-    const nbPrompt = buildNanoBananaPrompt(claudeResult, swapPairs, product, logoUrls.length, customPrompts, layoutMap, logoBackgroundTone, skipTextRendering, templateData, angle_data || null, false, hasCompetitorLogo);
+    // Pass geminiLogoCount (not logoUrls.length) — only competitor logos go into Gemini's input images
+    const geminiLogoCount = hasCompetitorLogo ? logoUrls.length : 0;
+    const nbPrompt = buildNanoBananaPrompt(claudeResult, swapPairs, product, geminiLogoCount, customPrompts, layoutMap, logoBackgroundTone, skipTextRendering, templateData, angle_data || null, false, hasCompetitorLogo);
     // Gemini-specific prompt: identical except product rule tells model to render naturally, not copy-paste
-    const geminiPrompt = buildNanoBananaPrompt(claudeResult, swapPairs, product, logoUrls.length, customPrompts, layoutMap, logoBackgroundTone, skipTextRendering, templateData, angle_data || null, true, hasCompetitorLogo);
+    const geminiPrompt = buildNanoBananaPrompt(claudeResult, swapPairs, product, geminiLogoCount, customPrompts, layoutMap, logoBackgroundTone, skipTextRendering, templateData, angle_data || null, true, hasCompetitorLogo);
 
-    // Send: product images (only if ref has product), then logos, then reference ad (last)
-    // Filter out null/undefined entries — NanoBanana requires all URLs to be valid strings
+    // Cross-niche detection: reference product is from a different category than our product
+    const refCategory = claudeResult.reference_product_category || '';
+    const isCrossNiche = refHasProduct && refCategory &&
+      !/(miner|mining|crypto|bitcoin|hardware|tech|device|chip|asic|electronic|computer|gpu|blockchain)/i.test(refCategory);
+    if (isCrossNiche) {
+      console.log(`[staticsGeneration] 🔀 Cross-niche detected: reference is "${refCategory}" — will use two-pass generation`);
+    }
+
+    // Send: product images (only if ref has product), then logos (competitor-slot only), then reference ad (last)
+    // Brand watermark logos are NOT sent to Gemini — they are composited via sharp after generation.
+    // Only include logos in the Gemini input when hasCompetitorLogo=true (pixel-perfect logo replacement).
     const productImages = refHasProduct ? [finalProductUrl, ...extraProductUrls] : [];
-    const imageUrls = [...productImages, ...logoUrls, finalReferenceUrl].filter(Boolean);
+    const geminiLogoUrls = hasCompetitorLogo ? logoUrls : [];
+    const imageUrls = [...productImages, ...geminiLogoUrls, finalReferenceUrl].filter(Boolean);
+    console.log(`[staticsGeneration] Logo handling: hasCompetitorLogo=${hasCompetitorLogo}, logos in Gemini input=${geminiLogoUrls.length}, logos for sharp composite=${hasCompetitorLogo ? 0 : logoUrls.length}`);
     console.log(`[staticsGeneration] NanoBanana prompt:\n${nbPrompt}`);
     console.log(`[staticsGeneration] Gemini prompt (product rule differs):\n${geminiPrompt}`);
     console.log(`[staticsGeneration] Total images: ${imageUrls.length} (${extraProductUrls.length} extra product, ${logoUrls.length} logos)`);
@@ -1016,7 +1078,7 @@ router.post('/generate', authenticate, async (req, res) => {
         if (inputImages.length === 0) {
           throw new Error('No input images could be fetched for Gemini (reference image + product images all failed to load)');
         }
-        storeGeminiResult(earlyTaskId, { status: 'processing', progress: `Generating ${ratiosToGenerate.length} image ratio(s)...` });
+        storeGeminiResult(earlyTaskId, { status: 'processing', progress: isCrossNiche ? `Adapting template cross-niche (${ratiosToGenerate.length} ratios, 2-pass)...` : `Generating ${ratiosToGenerate.length} image ratio(s)...` });
 
         // Generate all ratios in parallel. Each ratio gets up to MAX_GEN_ATTEMPTS
         // attempts — after each attempt we run a strict text-quality check
@@ -1030,8 +1092,13 @@ router.post('/generate', authenticate, async (req, res) => {
         // becomes irrelevant (no text to validate on the raw Gemini buffer;
         // overlay-rendered text is deterministically correct). Skip it in that
         // mode; 1 attempt is enough.
-        const { validateGenerationText, summarizeTextValidation } = await import('../utils/generationTextValidator.js');
+        const { validateGenerationText, summarizeTextValidation, validateProductPresence } = await import('../utils/generationTextValidator.js');
         const MAX_GEN_ATTEMPTS = skipTextRendering ? 1 : 3;
+
+        // For two-pass: identify the product image (first) and reference image (last) individually
+        const pass1ProductImages = inputImages.length > 1
+          ? [inputImages[0], inputImages[inputImages.length - 1]]  // [product, reference]
+          : inputImages; // fallback: use all if only 1 image somehow
 
         const tAll = Date.now();
         const ratioResults = await Promise.allSettled(
@@ -1040,10 +1107,31 @@ router.post('/generate', authenticate, async (req, res) => {
             const attempts = [];
 
             for (let attempt = 1; attempt <= MAX_GEN_ATTEMPTS; attempt++) {
-              console.log(`[staticsGeneration] Gemini ${r}: generating (attempt ${attempt}/${MAX_GEN_ATTEMPTS})...`);
               const tAttempt = Date.now();
-              const result = await editImage(geminiPrompt, inputImages, r);
-              console.log(`[staticsGeneration] ⏱ Gemini ${r} attempt ${attempt} finished in ${Date.now() - tAttempt}ms`);
+              let result;
+
+              if (isCrossNiche && pass1ProductImages.length >= 2) {
+                // ── TWO-PASS: cross-niche template adaptation ──────────────────
+                // Pass 1: Erase reference product, integrate our product
+                // Pass 2: Apply text swaps and atmosphere direction
+                console.log(`[staticsGeneration] Gemini ${r}: two-pass cross-niche "${refCategory}" — attempt ${attempt}/${MAX_GEN_ATTEMPTS}...`);
+                storeGeminiResult(earlyTaskId, { status: 'processing', progress: `Pass 1/2: Placing product (${r})...` });
+
+                const pass1Prompt = buildProductSwapPrompt(claudeResult, product);
+                const pass1 = await editImage(pass1Prompt, pass1ProductImages, r);
+                console.log(`[staticsGeneration] ⏱ Gemini ${r} pass1 done in ${Date.now() - tAttempt}ms`);
+
+                storeGeminiResult(earlyTaskId, { status: 'processing', progress: `Pass 2/2: Applying copy (${r})...` });
+                const pass2Prompt = buildTextPolishPrompt(claudeResult, swapPairs, product, layoutMap, angle_data || null, customPrompts);
+                const pass2InputImages = [{ base64: pass1.buffer.toString('base64'), mimeType: pass1.mimeType }];
+                result = await editImage(pass2Prompt, pass2InputImages, r);
+                console.log(`[staticsGeneration] ⏱ Gemini ${r} two-pass complete in ${Date.now() - tAttempt}ms`);
+              } else {
+                // ── SINGLE-PASS: same-niche or text-only template ─────────────
+                console.log(`[staticsGeneration] Gemini ${r}: single-pass attempt ${attempt}/${MAX_GEN_ATTEMPTS}...`);
+                result = await editImage(geminiPrompt, inputImages, r);
+                console.log(`[staticsGeneration] ⏱ Gemini ${r} attempt ${attempt} finished in ${Date.now() - tAttempt}ms`);
+              }
 
               // Text-quality check (blocking). ~5-10s added per attempt, worth it
               // to not ship broken text. Hard-fails trigger regeneration.
@@ -1067,16 +1155,47 @@ router.post('/generate', authenticate, async (req, res) => {
                 }
               }
 
-              attempts.push({ attempt, result, validation });
+              // Product presence check for cross-niche templates — catch reference product bleed-through.
+              // Only runs when isCrossNiche AND text validation passed (don't double-penalize).
+              let productPresence = null;
+              if (isCrossNiche && validation.passed) {
+                try {
+                  productPresence = await validateProductPresence(
+                    result.buffer,
+                    result.mimeType,
+                    product.name,
+                    refCategory,
+                  );
+                  if (!productPresence.passed) {
+                    // Treat reference-product-bleed-through as a hard validation failure
+                    validation = {
+                      ...validation,
+                      passed: false,
+                      severity: 'hard',
+                      hardErrorCount: (validation.hardErrorCount || 0) + 1,
+                      totalErrors: (validation.totalErrors || 0) + 1,
+                      errors: {
+                        ...validation.errors,
+                        reference_product_bleedthrough: [productPresence.reason],
+                      },
+                    };
+                    console.warn(`[staticsGeneration] ${r}: product presence FAILED — ${productPresence.reason}`);
+                  }
+                } catch (presErr) {
+                  console.warn(`[product-presence] ${r}: check threw — ${presErr.message}`);
+                }
+              }
+
+              attempts.push({ attempt, result, validation, productPresence });
 
               if (validation.passed) {
-                console.log(`[staticsGeneration] ${r}: passed text QC on attempt ${attempt} — accepting`);
+                console.log(`[staticsGeneration] ${r}: passed text QC${isCrossNiche ? ' + product presence' : ''} on attempt ${attempt} — accepting`);
                 break;
               }
               if (attempt < MAX_GEN_ATTEMPTS) {
-                console.warn(`[staticsGeneration] ${r}: failed text QC on attempt ${attempt} — regenerating`);
+                console.warn(`[staticsGeneration] ${r}: failed QC on attempt ${attempt} — regenerating`);
               } else {
-                console.error(`[staticsGeneration] ${r}: failed text QC on ALL ${MAX_GEN_ATTEMPTS} attempts — shipping best-of-N with quality_warning`);
+                console.error(`[staticsGeneration] ${r}: failed QC on ALL ${MAX_GEN_ATTEMPTS} attempts — shipping best-of-N with quality_warning`);
               }
             }
 
@@ -1127,6 +1246,18 @@ router.post('/generate', authenticate, async (req, res) => {
               }
             }
 
+            // ── Sharp logo compositing — brand watermark (not Gemini-rendered) ──
+            // Only fires when there's a brand logo AND it's NOT a competitor-logo-replacement
+            // (competitor logos were already sent to Gemini for pixel-perfect replacement).
+            // Gemini reliably renders a text-brand-mark instead of the actual logo image;
+            // sharp compositing is 100% reliable and produces a real image watermark.
+            if (!hasCompetitorLogo && logoUrls.length > 0) {
+              const tLogo = Date.now();
+              finalBuffer = await compositeLogoWithSharp(finalBuffer, logoUrls[0]);
+              finalMimeType = 'image/png'; // sharp always outputs png
+              console.log(`[staticsGeneration] ⏱ Logo composited in ${Date.now() - tLogo}ms`);
+            }
+
             // Upload to R2 or store as temp
             let resultImageUrl;
             if (isR2Configured()) {
@@ -1147,7 +1278,12 @@ router.post('/generate', authenticate, async (req, res) => {
               product.profile?.maxDiscount,
             );
             const textWarning = validation && !validation.passed ? summarizeTextValidation(validation) : null;
-            const combinedWarning = [visionWarning, textWarning].filter(Boolean).join(' | ') || null;
+            // Surface product presence failure in the warning shown to reviewers
+            const { productPresence: chosenProductPresence } = chosen;
+            const productWarning = (chosenProductPresence && !chosenProductPresence.passed)
+              ? `⚠️ Product swap: ${chosenProductPresence.reason}`
+              : null;
+            const combinedWarning = [visionWarning, textWarning, productWarning].filter(Boolean).join(' | ') || null;
 
             const taskId = `gemini-${crypto.randomUUID()}`;
             storeGeminiResult(taskId, {
