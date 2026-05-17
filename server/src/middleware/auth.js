@@ -23,14 +23,24 @@ const SESSION_TTL = 300; // 5 minutes in seconds
 const tokenHash = (token) =>
   crypto.createHash('sha256').update(token).digest('hex');
 
+// Maximum ms to wait for Redis before falling through to DB query.
+// ioredis offline queue can hang for up to 3×5000ms when Redis is down —
+// this timeout ensures a Redis outage never stalls every authenticated request.
+const REDIS_TIMEOUT_MS = 300;
+
 /**
  * Try to get a cached session from Redis.
+ * Fails fast (300 ms) so a Redis outage doesn't stall every request.
  * Returns parsed user object or null.
  */
 const getCachedSession = async (hash) => {
   if (!redisClient) return null;
   try {
-    const data = await redisClient.get(`session:${hash}`);
+    const redisPromise = redisClient.get(`session:${hash}`);
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('Redis timeout')), REDIS_TIMEOUT_MS)
+    );
+    const data = await Promise.race([redisPromise, timeoutPromise]);
     return data ? JSON.parse(data) : null;
   } catch {
     return null;
