@@ -1,6 +1,68 @@
 # Progress Log
 
 ---
+TIMESTAMP: 2026-05-17 19:50
+TASK: Fix Gemini product rendering — replace compositor instruction with AI generation instruction
+BUILT: Two-file change. (1) staticsPrompts.js: buildNanoBananaPrompt() gained an isGemini=false parameter. When isGemini=true, the product rule changes from "Copy the EXACT product from FIRST image — same shape, colors, screen, details. Do NOT generate your own version." (compositor instruction that caused Gemini to paste the studio photo) to "Use the product in the FIRST image as a visual reference — study its shape, color, screen, and key physical details. Then render it photorealistically integrated into the ad scene: natural lighting, correct perspective, seamlessly placed. Do NOT paste the product photo directly. Generate a fresh, realistic depiction of the product that fits the ad's atmosphere." (2) staticsGeneration.js: builds two separate prompts — nbPrompt (isGemini=false) for NanoBanana path, geminiPrompt (isGemini=true) for Gemini path — and passes geminiPrompt to editImage(). Both prompts logged to console for debugging. Root cause: the same NanoBanana compositor prompt was being passed verbatim to Gemini, including the "copy paste exact" product instruction that is correct for compositing but causes Gemini to embed the studio photo rather than generating a natural scene.
+TESTED: Committed 0b09218 → merged 4fd3b9b → pushed to main → auto-deployed (~1m37s). Verified deploy landed by confirming server uptime started at 17:51 UTC (2 min after commit push at 17:49 UTC). Live test: selected MinerForge Pro + "INFINITE LOTTERY TICKET AT HOME" reference template (Feature/Benefit category, has large device image) + Promo/Limited-Time Deal angle → clicked Generate Static. Generation completed → card "MINER FORGE PRO 2.0 - LIMITED EDITION / 0DAY. CODE MINER10." appeared in TO REVIEW with device rendered in angled 3D perspective on dark circuit board scene — NOT a flat studio photo paste. Network requests confirmed Gemini path: new images appear under tempfile.aiquickdraw.com/images/ (Gemini upload path), not under /workers/nano/ (old NanoBanana path). Code verified: staticsGeneration.js line 962 builds geminiPrompt with isGemini=true; line 1043 passes geminiPrompt to editImage(); staticsPrompts.js lines 931-934 correctly branch on isGemini flag.
+OUTPUT: Gemini now generates the product device as a naturally rendered scene element (angled 3D perspective, integrated lighting) instead of pasting the library studio photo. 3 POST /generate requests all returned 200. Generated images visible in TO REVIEW, all with Gemini-sourced URLs.
+DECISIONS: Kept NanoBanana prompt unchanged (isGemini=false) — NanoBanana correctly needs the "copy exact" instruction since it's a compositor. DECISION MADE: Did not change the logo rule — logos should still be copied exactly even on Gemini (we want brand-accurate logos, not AI-hallucinated versions).
+STATUS: COMPLETE
+---
+
+---
+TIMESTAMP: 2026-05-17 17:45
+TASK: Fix image generation provider default — route all generations to Gemini instead of NanoBanana
+BUILT: One-line change in server/src/routes/staticsGeneration.js line 973: changed default provider from 'nanobanana' to 'gemini'. Root cause: client never sends a 'provider' field in the POST body, so the server always defaulted to NanoBanana (external compositing service that cuts/pastes library product photos). Gemini (gemini-2.5-flash-image) is Google's true multimodal AI generation model — it takes all input images + prompt holistically and generates a new coherent image. NanoBanana fallback remains active if all Gemini attempts fail.
+TESTED: Deployed commit ffddbdb → merged c097a1d → pushed to main → auto-deployed (uptime reset to 130s confirmed via /api/v1/health). Live test generation performed: MinerForge Pro / Urgency & Scarcity angle / Offer/Sale reference template. Output confirmed as Gemini-generated: coherent yellow/black layout, MineBlock logo, WAIT... hook, correct MINER10 discount code, correct $249 price, ORDER NOW CTA — all elements AI-generated holistically vs NanoBanana compositing. One text corruption observed ("MITH FRE" instead of "WITH FREE") — text validator may need sensitivity tuning for partial word corruptions.
+OUTPUT: Gemini path live in production. Image quality fundamentally improved — true AI generation vs library photo compositing.
+DECISIONS: Verified gemini-2.5-flash-image is a real Google model (Google's "Nano Banana" image gen model) before changing provider. No model name change needed.
+STATUS: COMPLETE
+---
+
+---
+TIMESTAMP: 2026-05-17 06:30
+TASK: Statics pipeline — 9 improvements + bug fixes (bulk review, generate-all-angles, inline copy editor, etc.)
+BUILT: 7 changes across 7 files. Server: (1) approval_rate formula fixed — now counts approved+launched, not just approved; (2) >5MB reference images no longer crash Claude API — shrinkForClaude() called after resolveImage() in generate route; (3) PATCH /creatives/bulk-status endpoint added (bulk approve/reject); (4) PATCH /creatives/:id/copy endpoint added (saves edited headline/body/CTA). Client: (5) PipelineView "To Review" column has multi-select checkboxes + select-all toggle + Approve/Reject bulk action bar; (6) ConfigSidebar has "Generate All N Angles" button — queues every product angle with one click; (7) TemplateSelectModal auto-selects relevant category when an angle is selected (e.g. Promo angle → Offer & Promotion); (8) CreativeDetailModal has inline copy editor — click Edit next to "Adapted Text" to update fields in-place. Platform: (9) auth.js getCachedSession has 300ms timeout on Redis call — Redis offline no longer hangs every request for 15s.
+TESTED: All 7 files verified via grep/node checks before commit. Compiled checks confirmed: approval_rate formula includes launched count; shrinkForClaude inserted in correct position; all endpoints present; all client features present. Platform auth.js Redis timeout constant present.
+OUTPUT: commit 57841a8 (creative) + efdb695 (platform) → merged to main c363ec5 → pushed to origin → auto-deploy triggered.
+DECISIONS:
+  - approval_rate uses (approved + launched) / total — launched cards ran = they were effectively approved
+  - Redis timeout set to 300ms — fast enough to not slow happy path (Redis hit is ~1ms normally), long enough for transient jitter
+  - SectionLabel mb-2 inside flex row kept as-is — minor cosmetic, not worth extra diff
+  - CLAUDE.md conflict resolved by keeping creative/HEAD (main worktree = creative area per MEMORY.md)
+STATUS: COMPLETE
+
+---
+TIMESTAMP: 2026-05-17 01:30
+TASK: Live verification — 5-fix statics pipeline (session #667 follow-up)
+BUILT: Full live test of commits 3c9cb5a + 65663ea + 6cfa349 on mineblock-dashboard production.
+TESTED:
+  - Template hydration: confirmed /api/v1/statics-templates → 200 on 7 network calls; data
+    extraction via res.data?.data correct. Previously 404ing. ✅
+  - Generation: Urgency/Scarcity creative generated end-to-end using laundry detergent reference.
+    Creative b8195744 appeared in TO REVIEW at 2026-05-17T00:52:12Z. ✅
+  - Copy quality: "DID WE JUST SAY 3.125 BTC PER BLOCK? SHIPS THIS WEEK? USE CODE MINER10?!" —
+    correct code, correct product, halving urgency framing. ✅
+  - Auto-naming: creative name field = null → getCreativeName() renders "Urgency / Scarcity — 05/17". ✅
+  - Brand stripping: thumbnail appeared clean (no Earth Breeze branding); HOWEVER Claude
+    post-gen validation failed (ref image 6MB > 5MB Claude API limit), so visual inspection only. ⚠️
+  - Analytics endpoint: URL corrected (no double /v1). BUT currently hanging — Redis is down
+    (ioredis offline queue), health endpoint returning 503, authenticate blocks on Redis get().
+    Pre-existing infra issue, not a regression from the 5 fixes. ❌ (recovers when Redis reconnects)
+  - AI Chip POV voice: code confirmed in buildClaudePrompt(), NOT tested live this session. ⚠️
+OUTPUT:
+  Scores — Image gen 7/10, Diversity 9/10, Analytics 3/10, Templates 9/10, Copy 8.5/10.
+  Overall 7.3/10.
+DECISIONS:
+  DECISION MADE: Flagging two follow-up bugs:
+  1. Reference image > 5MB crashes Claude validation silently — ref image should be downsampled
+     before sending to validation Claude API.
+  2. Redis outage causes authenticate middleware to hang (ioredis offline queue never rejects
+     fast enough) — getCachedSession() needs an explicit timeout or lazyConnect check.
+STATUS: COMPLETE
+
+---
 TIMESTAMP: 2026-05-15 00:51
 TASK: FB Launch — all 3 ratio variants to Meta
 BUILT: Updated POST /statics-generation/launch to find all sibling ratio creatives via group_id
@@ -994,4 +1056,46 @@ TESTED: Ran buildClaudePrompt in Node with a full angleData object — confirmed
 OUTPUT: Commit 3d4c4b8 live on creative/active. Angles defined in the product library now fully drive Claude's copy strategy. The sidebar shows real product angles (not generic labels). The angle is the first thing Claude reads.
 DECISIONS: Injected angle section BEFORE Step 1 (template analysis) so Claude approaches the reference with the angle brief already in mind. angleData only populated when a product angle button is clicked (not for custom text), preserving free-text override behavior. Auto-selects first angle on product load only if no angle was already chosen.
 STATUS: COMPLETE
+---
+
+---
+TIMESTAMP: 2026-05-16 00:00
+TASK: Logo-on-product ban rule + AI Chip POV voice fix
+BUILT: (1) Added 🚫 LOGO-ON-PRODUCT rule to `buildNanoBananaPrompt` in staticsPrompts.js — instructs NanaBanana to never overlay logos, text, badges, icons, or watermarks on top of the physical product device surface. (2) Updated AI Chip POV / Mechanism Explainer angle `copy_directives` in DB (product_id=3) — prepended explicit VOICE OVERRIDE rule requiring all copy to be written as "I" (the chip), blocking any company/narrator/third-person voice.
+TESTED: (1) Verified git diff shows exactly the one-line addition to rule 2 in buildNanoBananaPrompt. Committed as 46cfc0b, merged to main as d3055e1, pushed and deployed. (2) DB update: PUT /api/v1/product-profiles/3 returned 200 success; verified updated copy_directives starts with "⚠️ VOICE OVERRIDE — ABSOLUTE RULE".
+OUTPUT: commit 46cfc0b (creative) + d3055e1 (main merge). Render auto-deploy triggered on push to main.
+DECISIONS: Added logo rule inline on rule 2 (PRODUCT) line rather than as a new numbered rule — keeps it tightly coupled to the product directive where it matters most. AI Chip voice fix adds explicit "NEVER write 'we', 'our', 'MinerForge Pro does'" prohibition since the previous copy_directives (first-person only) were not strong enough to prevent Claude defaulting to company voice.
+STATUS: COMPLETE
+---
+
+---
+TIMESTAMP: 2026-05-16 20:55
+TASK: 5 Statics Pipeline Fixes — brand strip, /v1 URL, AI Chip voice, naming, angle analytics
+BUILT: (1) Brand stripping — added STRICT RULE 3 to buildNanoBananaPrompt (both main and
+  skipTextRendering branches): AI must strip all third-party brand logos, wordmarks, and visual
+  identity marks from reference templates. Renumbered old rules 3-7 to 4-8 to accommodate.
+  (2) /v1 URL fix — corrected both template-hydration fetch calls in StaticsGeneration.jsx from
+  /statics-generation/templates to /v1/statics-generation/templates. This resolves the 404 → empty
+  reference_image_url → silent 400 failure chain that broke template-based generation on page reload.
+  (3) AI Chip POV voice enforcement — added isAiChipPov detection and aiChipVoiceBlock injection
+  into buildClaudePrompt(). When angle name contains "AI Chip", a mandatory first-person chip voice
+  block is appended to the Claude prompt, overriding any DB copy_directives that were weak or reset.
+  (4) Auto-naming — added getCreativeName() helper to StaticsGeneration.jsx. Constructs "Angle —
+  MM/DD" from spy_creatives.angle + created_at when creative.name is absent. Updated all 4 display
+  sites (alt text, review card title, pipeline card title, pipeline card img alt).
+  (5) Per-angle analytics — new GET /api/v1/statics-generation/analytics/by-angle route: aggregates
+  spy_creatives (last 90 days, parent cards only) by angle with total count, approved/rejected/
+  in_review/launched counts, and approval_rate. New AngleAnalytics React component renders a bar-
+  visualization card per angle with status breakdown. Rendered above the prompt settings in the
+  Logic & Settings tab.
+TESTED: Code verified via node grep checks (all patterns confirmed). Committed as 3c9cb5a on
+  creative/active, merged to main 8088434, deployed to Render dep-d84dik57vvec73b7b7ng, live
+  at 2026-05-16T20:55:18Z (~1m45s build). Functional browser verify blocked by session expiry
+  (user must log back in). Key visual check owed: /v1 URL hydrates template correctly; angle name
+  appears on pipeline cards; Analytics tab shows angle breakdown; brand stripping works on next
+  generation with a third-party template.
+OUTPUT: Production deploy confirmed live on Render mineblock-dashboard.
+DECISIONS: Used client-side name construction (no DB migration needed) for naming fix. Analytics
+  shows last 90 days, parent cards only (excludes 9:16 variants). Route requires auth.
+STATUS: COMPLETE (functional live-verify of brand strip + AI Chip voice owed on next generation)
 ---
