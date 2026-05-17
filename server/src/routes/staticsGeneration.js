@@ -1155,6 +1155,7 @@ router.post('/generate', authenticate, async (req, res) => {
               resultImageUrl,
               provider: 'gemini',
               model: GEMINI_EDIT_MODEL,
+              claudeAnalysis: claudeResult || null,
               textValidation: validation ? {
                 passed: validation.passed,
                 severity: validation.severity,
@@ -1401,6 +1402,7 @@ router.get('/status/:taskId', authenticate, async (req, res) => {
           resultImageUrl: geminiResult.resultImageUrl,
           provider: geminiResult.provider,
           model: geminiResult.model,
+          claudeAnalysis: geminiResult.claudeAnalysis || null,
           error: geminiResult.error || null,
           // Pass text-QC payload through so the frontend can surface retries + issues
           textValidation: geminiResult.textValidation || null,
@@ -3595,6 +3597,122 @@ router.patch('/creatives/bulk-status', authenticate, async (req, res) => {
     res.json({ success: true, data: { updated: ids.length, status } });
   } catch (err) {
     console.error('[staticsGeneration] /creatives/bulk-status error:', err);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// ── Backfill launched thumbnails that have expired tempfile.aiquickdraw.com URLs ──
+// Query all launched creatives with expired URLs but valid meta_image_hash.
+// Re-fetch the permanent Meta CDN URL from the hash and update the DB row.
+// GET /statics-generation/repair-thumbnails
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/repair-thumbnails', authenticate, async (req, res) => {
+  try {
+    const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN || '';
+    const META_GRAPH_URL = 'https://graph.facebook.com/v21.0';
+
+    // Find all launched creatives with expired tempfile URLs that have a meta_image_hash
+    const stale = await pgQuery(
+      `SELECT c.id, c.image_url, c.meta_image_hash, l.ad_account_id
+       FROM spy_creatives c
+       LEFT JOIN statics_launches l ON l.creative_id = c.id
+       WHERE c.status = 'launched'
+         AND (c.image_url LIKE '%tempfile%' OR c.image_url IS NULL OR c.image_url = '')
+         AND c.meta_image_hash IS NOT NULL
+         AND c.meta_image_hash != ''
+       ORDER BY c.id`
+    );
+
+    if (stale.length === 0) {
+      return res.json({ success: true, data: { repaired: 0, skipped: 0, message: 'No stale thumbnails found' } });
+    }
+
+    console.log(`[repair-thumbnails] Found ${stale.length} stale launched thumbnails to repair`);
+
+    // Group by ad_account_id so we can batch by account
+    const byAccount = {};
+    for (const row of stale) {
+      const acct = row.ad_account_id || (process.env.META_AD_ACCOUNT_IDS || '').split(',')[0];
+      if (!acct) { continue; }
+      if (!byAccount[acct]) byAccount[acct] = [];
+      byAccount[acct].push(row);
+    }
+
+    let repaired = 0;
+    let skipped = 0;
+    const errors = [];
+
+    for (const [adAccountId, rows] of Object.entries(byAccount)) {
+      // Batch fetch CDN URLs from Meta for all hashes in this account (max 50 at a time)
+      const BATCH = 50;
+      for (let i = 0; i < rows.length; i += BATCH) {
+        const batch = rows.slice(i, i + BATCH);
+        const hashes = batch.map(r => r.meta_image_hash);
+        const hashParams = hashes.map(h => `hashes[]=${encodeURIComponent(h)}`).join('&');
+        const metaUrl = `${META_GRAPH_URL}/${adAccountId}/adimages?${hashParams}&fields=hash,url,url_128&access_token=${META_ACCESS_TOKEN}`;
+        let imageMap = {};
+        try {
+          const mRes = await fetch(metaUrl, { signal: AbortSignal.timeout(15000) });
+          if (!mRes.ok) {
+            const errText = await mRes.text();
+            console.warn(`[repair-thumbnails] Meta API error for ${adAccountId}: ${mRes.status} ${errText.slice(0, 200)}`);
+            skipped += batch.length;
+            errors.push(`Meta ${mRes.status} for account ${adAccountId}`);
+            continue;
+          }
+          const mData = await mRes.json();
+          const imageList = mData.data || [];
+          for (const img of imageList) {
+            if (img.hash && (img.url || img.url_128)) {
+              imageMap[img.hash] = img.url || img.url_128;
+            }
+          }
+        } catch (fetchErr) {
+          console.warn(`[repair-thumbnails] Fetch error for ${adAccountId}: ${fetchErr.message}`);
+          skipped += batch.length;
+          errors.push(fetchErr.message);
+          continue;
+        }
+
+        // Update each row that got a CDN URL back
+        for (const row of batch) {
+          const cdnUrl = imageMap[row.meta_image_hash];
+          if (!cdnUrl) {
+            console.warn(`[repair-thumbnails] No CDN URL for creative ${row.id} hash ${row.meta_image_hash}`);
+            skipped++;
+            continue;
+          }
+          try {
+            await pgQuery(
+              `UPDATE spy_creatives SET image_url = $1, thumbnail_url = $1, updated_at = NOW() WHERE id = $2`,
+              [cdnUrl, row.id]
+            );
+            console.log(`[repair-thumbnails] ✅ Repaired creative ${row.id} → ${cdnUrl.slice(0, 80)}`);
+            repaired++;
+          } catch (dbErr) {
+            console.error(`[repair-thumbnails] DB update error for creative ${row.id}: ${dbErr.message}`);
+            skipped++;
+            errors.push(`DB error for ${row.id}: ${dbErr.message}`);
+          }
+        }
+      }
+    }
+
+    const noAccount = stale.filter(r => !r.ad_account_id && !(process.env.META_AD_ACCOUNT_IDS || '').split(',')[0]);
+    skipped += noAccount.length;
+
+    console.log(`[repair-thumbnails] Done — repaired: ${repaired}, skipped: ${skipped}`);
+    res.json({
+      success: true,
+      data: {
+        found: stale.length,
+        repaired,
+        skipped,
+        errors: errors.length > 0 ? errors : undefined,
+      },
+    });
+  } catch (err) {
+    console.error('[staticsGeneration] /repair-thumbnails error:', err);
     res.status(500).json({ success: false, error: { message: err.message } });
   }
 });

@@ -1204,6 +1204,16 @@ export default function StaticsGeneration() {
           } catch { /* fall through — server will reject with a clear error */ }
         }
       }
+
+      // Guard: surface a clear error instead of a silent 400 from the server
+      if (!resolvedReferenceUrl) {
+        removeDirectGen();
+        setError('No reference image found. Please select a template or upload an image before generating.');
+        setGenerating(false);
+        setGenerationStep(0);
+        return;
+      }
+
       let resolvedProductUrl = productImageUrl;
       if (productFile) {
         resolvedProductUrl = await fileToBase64(productFile);
