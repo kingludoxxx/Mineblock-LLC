@@ -624,7 +624,7 @@ function AngleAnalytics() {
     (async () => {
       setLoading(true);
       try {
-        const res = await api.get('/v1/statics-generation/analytics/by-angle');
+        const res = await api.get('/statics-generation/analytics/by-angle');
         setData(res.data?.data || []);
       } catch (err) {
         setError(err.response?.data?.error?.message || err.message);
