@@ -966,6 +966,7 @@ export default function StaticsGeneration() {
   const [variantsExpanded, setVariantsExpanded] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
+  const [generatingAll, setGeneratingAll] = useState(false);
 
   // Queue state
   const [queue, setQueue] = useState([]);
@@ -1405,6 +1406,79 @@ export default function StaticsGeneration() {
     setResult(null);
     setError(null);
     setGenerationStep(0);
+  };
+
+  // =========================================================================
+  // GENERATE ALL ANGLES
+  // Queues one generation request per product angle using the current reference
+  // =========================================================================
+
+  const handleGenerateAllAngles = async () => {
+    if (!canGenerate || generatingAll || productAngles.length === 0) return;
+    setGeneratingAll(true);
+
+    let resolvedReferenceUrl = referenceImageUrl;
+    if (referenceFile) {
+      resolvedReferenceUrl = await fileToBase64(referenceFile);
+    }
+    if (!resolvedReferenceUrl && references.length > 0) {
+      const ref = references[0];
+      resolvedReferenceUrl = ref.image_url || ref.thumbnail || ref.url || '';
+    }
+
+    const full = selectedProductRef.current;
+    const profile = {};
+    if (full) {
+      if (full.benefits) profile.benefits = full.benefits;
+      if (full.pain_points) profile.painPoints = full.pain_points;
+      if (full.winning_angles) profile.winningAngles = full.winning_angles;
+      if (full.common_objections) profile.commonObjections = full.common_objections;
+      if (full.offer_details) profile.offerDetails = full.offer_details;
+      if (full.max_discount) profile.maxDiscount = full.max_discount;
+      if (full.discount_codes) profile.discountCodes = full.discount_codes;
+    }
+    if (oneliner) profile.oneliner = oneliner;
+    if (customerAvatar) profile.customerAvatar = customerAvatar;
+
+    let queued = 0;
+    let failed = 0;
+    for (const angleObj of productAngles) {
+      try {
+        const refTemplateId = references[0]?.id;
+        const isTemplateUUID = typeof refTemplateId === 'string' && refTemplateId.includes('-');
+        await api.post('/statics-generation/generate', {
+          reference_image_url: resolvedReferenceUrl,
+          template_id: isTemplateUUID ? refTemplateId : undefined,
+          product: {
+            name: productName,
+            description: productDescription || undefined,
+            price: productPrice || undefined,
+            product_image_url: productImageUrl || undefined,
+            product_images: full?.product_images || [],
+            logos: full?.logos || [],
+            logo_url: full?.logo_url || undefined,
+            brand_colors: full?.brand_colors || undefined,
+            profile: Object.keys(profile).length > 0 ? profile : undefined,
+          },
+          angle: angleObj.name,
+          angle_data: angleObj,
+        });
+        queued++;
+        // Small delay between submissions to avoid overwhelming the pipeline
+        await new Promise(r => setTimeout(r, 400));
+      } catch {
+        failed++;
+      }
+    }
+
+    setGeneratingAll(false);
+    if (failed > 0) {
+      addToast(`Queued ${queued}/${productAngles.length} angles — ${failed} failed to submit`, 'warning', 8000);
+    } else {
+      addToast(`All ${queued} angles queued — switch to Pipeline to track progress`, 'success', 8000);
+    }
+    // Refresh pipeline to show new generating cards
+    setTimeout(() => fetchCreatives(true), 1500);
   };
 
   // =========================================================================
@@ -2076,8 +2150,10 @@ export default function StaticsGeneration() {
                   }}
                   onRemoveReference={(id) => setReferences(prev => prev.filter(r => r.id !== id))}
                   onGenerate={handleGenerate}
+                  onGenerateAll={handleGenerateAllAngles}
                   onAddToQueue={handleAddToQueue}
                   generating={generating}
+                  generatingAll={generatingAll}
                   generationStep={generationStep}
                   onProductsLoaded={(list) => {
                     // Auto-select Miner Forge Pro if no product is selected yet
@@ -2887,6 +2963,7 @@ export default function StaticsGeneration() {
         <TemplateSelectModal
           isOpen={true}
           templates={templates}
+          angle={customAngle || marketingAngle}
           onSelect={(template) => {
             handleTemplateSelect(template);
             setReferences([{ id: template.id || Date.now(), image_url: template.image_url, name: template.name, is_template: !!template.id }]);
