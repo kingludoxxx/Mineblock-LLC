@@ -763,7 +763,7 @@ function getAngleSceneDirection(angleName) {
   return null;
 }
 
-export function buildNanoBananaPrompt(claudeResult, swapPairs, product, logoCount = 0, customOverrides = null, layoutMap = null, logoBackgroundTone = null, skipTextRendering = false, templateData = null, angleData = null, isGemini = false) {
+export function buildNanoBananaPrompt(claudeResult, swapPairs, product, logoCount = 0, customOverrides = null, layoutMap = null, logoBackgroundTone = null, skipTextRendering = false, templateData = null, angleData = null, isGemini = false, hasCompetitorLogo = false) {
   const {
     people_count, product_count, adapted_audience,
     character_adaptation, visual_adaptations
@@ -934,8 +934,11 @@ ${templateData.deep_analysis.adaptation_instructions?.common_failure_modes?.leng
         : `Copy the EXACT product from FIRST image — same shape, colors, screen, details. Do NOT generate your own version.`)
     : `This is a TEXT-ONLY ad. Do NOT add any product photo, device image, or physical object. The output must contain ONLY text and profile elements — ZERO product images.`;
 
+  const logoToneNote = logoBackgroundTone === 'dark' ? ' Use WHITE version (dark bg).' : logoBackgroundTone === 'light' ? ' Use BLACK version (light bg).' : '';
   const logoRule = logoCount > 0
-    ? `\n🔴 LOGO: Copy the EXACT logo from ${logoImageRef} pixel-perfectly — same text, shapes, proportions. Do NOT redesign it.${logoBackgroundTone === 'dark' ? ' Use WHITE version (dark bg).' : logoBackgroundTone === 'light' ? ' Use BLACK version (light bg).' : ''}`
+    ? (hasCompetitorLogo
+        ? `\n🔴 LOGO: Copy the EXACT logo from ${logoImageRef} pixel-perfectly — same text, shapes, proportions. Do NOT redesign it.${logoToneNote}`
+        : `\n🔴 BRAND LOGO: Place the brand logo from ${logoImageRef} as a small watermark (≈12–15% of ad width) in the bottom-left or bottom-right corner — whichever has the most empty space. Do NOT place it on the product device. Do NOT place it over main text. Scale it to be subtle but legible.${logoToneNote}`)
     : '';
 
   // Banned words — keep very short

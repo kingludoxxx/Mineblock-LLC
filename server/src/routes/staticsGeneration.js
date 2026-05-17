@@ -899,12 +899,13 @@ router.post('/generate', authenticate, async (req, res) => {
     }
 
     // ── LOGO INJECTION ──
-    // When Claude detects a competitor logo in the reference, send our brand logo(s)
-    // so Gemini can swap them. Validated against visual_adaptations to prevent false positives.
+    // Always send brand logos so they appear in every generated ad.
+    // When Claude detects a competitor logo in the reference, the logo REPLACES it.
+    // When there's no competitor logo, the logo is placed as a corner watermark.
     const logoUrls = [];
     let hasCompetitorLogo = claudeResult.has_competitor_logo === true;
 
-    // Strict validation: only inject logo if Claude also listed it in visual_adaptations
+    // Strict validation: only treat as competitor-logo-slot if Claude also listed it in visual_adaptations
     if (hasCompetitorLogo) {
       const visualAdapts = claudeResult.visual_adaptations || [];
       const hasLogoInVisuals = visualAdapts.some(v =>
@@ -916,16 +917,17 @@ router.post('/generate', authenticate, async (req, res) => {
       }
     }
 
-    if (hasCompetitorLogo) {
-      const allLogos = [...(product.logos || [])];
-      if (product.logo_url) allLogos.unshift(product.logo_url);
-      for (let i = 0; i < Math.min(allLogos.length, 2); i++) {
-        const url = await ensureHttpUrl(allLogos[i], `logos-${i}`);
-        if (url) logoUrls.push(url);
-      }
-      console.log(`[staticsGeneration] ✅ Competitor logo detected — sending ${logoUrls.length} brand logo(s)`);
+    // Always collect logo URLs (competitor-logo-slot → replace; no slot → corner watermark)
+    const allLogos = [...(product.logos || [])];
+    if (product.logo_url) allLogos.unshift(product.logo_url);
+    for (let i = 0; i < Math.min(allLogos.length, 2); i++) {
+      const url = await ensureHttpUrl(allLogos[i], `logos-${i}`);
+      if (url) logoUrls.push(url);
+    }
+    if (logoUrls.length > 0) {
+      console.log(`[staticsGeneration] ✅ Brand logo(s) collected (${logoUrls.length}) — mode: ${hasCompetitorLogo ? 'replace competitor logo' : 'corner watermark'}`);
     } else {
-      console.log(`[staticsGeneration] No competitor logo in reference — skipping logo injection`);
+      console.log(`[staticsGeneration] No brand logos configured on product — skipping logo injection`);
     }
 
     console.log(`[staticsGeneration] Logo data: logo_url=${product.logo_url ? 'yes' : 'no'}, logos=${(product.logos || []).length}, resolved logoUrls=${logoUrls.length}`);
@@ -957,9 +959,9 @@ router.post('/generate', authenticate, async (req, res) => {
     // Pass extra product count so prompt builder can calculate correct logo image indices
     claudeResult._extraProductCount = refHasProduct ? extraProductUrls.length : 0;
     claudeResult._refHasProduct = refHasProduct;
-    const nbPrompt = buildNanoBananaPrompt(claudeResult, swapPairs, product, logoUrls.length, customPrompts, layoutMap, logoBackgroundTone, skipTextRendering, templateData, angle_data || null, false);
+    const nbPrompt = buildNanoBananaPrompt(claudeResult, swapPairs, product, logoUrls.length, customPrompts, layoutMap, logoBackgroundTone, skipTextRendering, templateData, angle_data || null, false, hasCompetitorLogo);
     // Gemini-specific prompt: identical except product rule tells model to render naturally, not copy-paste
-    const geminiPrompt = buildNanoBananaPrompt(claudeResult, swapPairs, product, logoUrls.length, customPrompts, layoutMap, logoBackgroundTone, skipTextRendering, templateData, angle_data || null, true);
+    const geminiPrompt = buildNanoBananaPrompt(claudeResult, swapPairs, product, logoUrls.length, customPrompts, layoutMap, logoBackgroundTone, skipTextRendering, templateData, angle_data || null, true, hasCompetitorLogo);
 
     // Send: product images (only if ref has product), then logos, then reference ad (last)
     // Filter out null/undefined entries — NanoBanana requires all URLs to be valid strings
