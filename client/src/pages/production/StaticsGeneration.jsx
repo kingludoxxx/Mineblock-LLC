@@ -1117,8 +1117,8 @@ export default function StaticsGeneration() {
   useEffect(() => {
     const stubs = references.filter(r => r.is_template && !r.image_url);
     if (stubs.length === 0) return;
-    api.get('/v1/statics-generation/templates').then(res => {
-      const allTemplates = res.data?.templates || res.data || [];
+    api.get('/statics-templates').then(res => {
+      const allTemplates = res.data?.data || res.data?.templates || [];
       setReferences(prev =>
         prev.map(ref => {
           if (!ref.is_template || ref.image_url) return ref;
@@ -1193,8 +1193,8 @@ export default function StaticsGeneration() {
         // fetch the template image inline before proceeding
         if (!resolvedReferenceUrl && ref.is_template && ref.id) {
           try {
-            const tmplRes = await api.get('/v1/statics-generation/templates');
-            const allTmpls = tmplRes.data?.templates || tmplRes.data || [];
+            const tmplRes = await api.get('/statics-templates');
+            const allTmpls = tmplRes.data?.data || tmplRes.data?.templates || [];
             const found = allTmpls.find(t => t.id === ref.id);
             if (found?.image_url) {
               resolvedReferenceUrl = found.image_url;
