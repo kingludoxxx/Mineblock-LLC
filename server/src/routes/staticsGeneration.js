@@ -957,13 +957,16 @@ router.post('/generate', authenticate, async (req, res) => {
     // Pass extra product count so prompt builder can calculate correct logo image indices
     claudeResult._extraProductCount = refHasProduct ? extraProductUrls.length : 0;
     claudeResult._refHasProduct = refHasProduct;
-    const nbPrompt = buildNanoBananaPrompt(claudeResult, swapPairs, product, logoUrls.length, customPrompts, layoutMap, logoBackgroundTone, skipTextRendering, templateData, angle_data || null);
+    const nbPrompt = buildNanoBananaPrompt(claudeResult, swapPairs, product, logoUrls.length, customPrompts, layoutMap, logoBackgroundTone, skipTextRendering, templateData, angle_data || null, false);
+    // Gemini-specific prompt: identical except product rule tells model to render naturally, not copy-paste
+    const geminiPrompt = buildNanoBananaPrompt(claudeResult, swapPairs, product, logoUrls.length, customPrompts, layoutMap, logoBackgroundTone, skipTextRendering, templateData, angle_data || null, true);
 
     // Send: product images (only if ref has product), then logos, then reference ad (last)
     // Filter out null/undefined entries — NanoBanana requires all URLs to be valid strings
     const productImages = refHasProduct ? [finalProductUrl, ...extraProductUrls] : [];
     const imageUrls = [...productImages, ...logoUrls, finalReferenceUrl].filter(Boolean);
-    console.log(`[staticsGeneration] Prompt:\n${nbPrompt}`);
+    console.log(`[staticsGeneration] NanoBanana prompt:\n${nbPrompt}`);
+    console.log(`[staticsGeneration] Gemini prompt (product rule differs):\n${geminiPrompt}`);
     console.log(`[staticsGeneration] Total images: ${imageUrls.length} (${extraProductUrls.length} extra product, ${logoUrls.length} logos)`);
 
     // Always generate all 3 required formats: 1:1, 4:5, 9:16
@@ -1037,7 +1040,7 @@ router.post('/generate', authenticate, async (req, res) => {
             for (let attempt = 1; attempt <= MAX_GEN_ATTEMPTS; attempt++) {
               console.log(`[staticsGeneration] Gemini ${r}: generating (attempt ${attempt}/${MAX_GEN_ATTEMPTS})...`);
               const tAttempt = Date.now();
-              const result = await editImage(nbPrompt, inputImages, r);
+              const result = await editImage(geminiPrompt, inputImages, r);
               console.log(`[staticsGeneration] ⏱ Gemini ${r} attempt ${attempt} finished in ${Date.now() - tAttempt}ms`);
 
               // Text-quality check (blocking). ~5-10s added per attempt, worth it
