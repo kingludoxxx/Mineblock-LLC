@@ -615,6 +615,23 @@ function ProductDetailView({ product, onBack, onFieldSave, onAiFill, onProductCh
           </div>
         </CollapsibleSection>
 
+        {/* Ad Angles Intelligence */}
+        <CollapsibleSection
+          icon={Target}
+          title="Ad Angles"
+          subtitle="6 angles with full avatar profiles, beliefs, desires, and common phrases"
+          defaultOpen
+        >
+          <AutoSaveField
+            label="Angle Intelligence (all 6 angles)"
+            value={product.winning_angles}
+            onChange={(v) => updateField('winning_angles', v)}
+            onSave={(v) => saveFieldDirect('winning_angles', v)}
+            placeholder="Paste full angle profiles here — avatar, beliefs, desires, emotional state, common phrases..."
+            rows={24}
+          />
+        </CollapsibleSection>
+
         {/* Key Benefits */}
         <CollapsibleSection
           icon={Star}
@@ -744,24 +761,14 @@ function ProductDetailView({ product, onBack, onFieldSave, onAiFill, onProductCh
             placeholder="e.g. Direct, authoritative, slightly edgy. Speaks like a knowledgeable friend..."
             rows={4}
           />
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <AutoSaveField
-              label="Winning Angles (What's Working Right Now)"
-              value={product.winning_angles}
-              onChange={(v) => updateField('winning_angles', v)}
-              onSave={(v) => saveFieldDirect('winning_angles', v)}
-              placeholder="List proven angles, hooks, and themes that convert..."
-              rows={4}
-            />
-            <AutoSaveField
-              label="Custom Angles to Test"
-              value={product.custom_angles_text}
-              onChange={(v) => updateField('custom_angles_text', v)}
-              onSave={(v) => saveFieldDirect('custom_angles_text', v)}
-              placeholder="New angles you want the AI to try..."
-              rows={4}
-            />
-          </div>
+          <AutoSaveField
+            label="Custom Angles to Test"
+            value={product.custom_angles_text}
+            onChange={(v) => updateField('custom_angles_text', v)}
+            onSave={(v) => saveFieldDirect('custom_angles_text', v)}
+            placeholder="New angles you want the AI to try..."
+            rows={4}
+          />
         </CollapsibleSection>
 
         {/* Competitive Edge & Offer */}
