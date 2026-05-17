@@ -970,7 +970,7 @@ router.post('/generate', authenticate, async (req, res) => {
     const ratiosToGenerate = ['1:1', '4:5', '9:16'];
 
     // Determine provider: default to gemini, fallback to nanobanana
-    const provider = req.body.provider || 'nanobanana';
+    const provider = req.body.provider || 'gemini';
     console.log(`[staticsGeneration] Provider: ${provider}, Generating ${ratiosToGenerate.length} ratio(s): ${ratiosToGenerate.join(', ')}`);
 
     // ── GEMINI PATH: Direct image editing via Gemini 3.1 Flash ──
