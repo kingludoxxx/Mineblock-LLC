@@ -797,6 +797,13 @@ function ProductDetailView({ product, onBack, onFieldSave, onAiFill, onProductCh
           subtitle="Discounts, codes, bundles — what the AI can reference in ads"
         >
           <AutoSaveField
+            label="Base Price (shown in ads)"
+            value={product.price}
+            onChange={(v) => updateField('price', v)}
+            onSave={(v) => saveFieldDirect('price', v)}
+            placeholder="e.g. $69.99 — the single-unit price the AI uses in generated copy"
+          />
+          <AutoSaveField
             label="Max Discount Allowed in Ads"
             value={product.max_discount}
             onChange={(v) => updateField('max_discount', v)}
