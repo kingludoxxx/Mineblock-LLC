@@ -5,13 +5,13 @@
     "description": "Mineblock LLC Admin Dashboard",
     "main": "server/src/server.js",
     "scripts": {
-        "start": "node server/src/server.js",
-        "dev": "node --watch server/src/server.js",
+        "start": "PLAYWRIGHT_BROWSERS_PATH=./playwright-browsers node server/src/server.js",
+        "dev": "PLAYWRIGHT_BROWSERS_PATH=./playwright-browsers node --watch server/src/server.js",
         "migrate": "node server/migrations/run.js",
         "seed": "node server/seeds/run.js",
         "build": "cd client && npm run build && node scripts/setup-ytdlp.js",
         "sync:lasso": "node server/scripts/sync-lasso.mjs",
-        "postinstall": "npx playwright install chromium",
+        "postinstall": "PLAYWRIGHT_BROWSERS_PATH=./playwright-browsers npx playwright install chromium",
         "test": "echo \"Error: no test specified\" && exit 1"
     },
     "keywords": [],
