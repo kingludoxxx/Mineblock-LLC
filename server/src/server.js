@@ -11,6 +11,14 @@ import { hashPassword } from './utils/hash.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+// ── Playwright browser path — must point inside project dir so Render deploys it ──
+// Default (/opt/render/.cache/…) is build-time only and NOT available at runtime.
+if (!process.env.PLAYWRIGHT_BROWSERS_PATH) {
+  const projectRoot = path.resolve(__dirname, '../../..');
+  process.env.PLAYWRIGHT_BROWSERS_PATH = path.join(projectRoot, 'playwright-browsers');
+  console.log(`[server] PLAYWRIGHT_BROWSERS_PATH set to: ${process.env.PLAYWRIGHT_BROWSERS_PATH}`);
+}
+
 // ---------------------------------------------------------------------------
 // Auto-migration (reads .sql files from server/migrations/)
 // Uses the legacy pg Pool for migrations since it supports transactional DDL
