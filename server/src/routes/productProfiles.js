@@ -321,7 +321,7 @@ const MINERFORGE_ANGLES = [
     ],
     banned_phrases: ['only X left', 'X people viewing', 'ends in', 'countdown', 'flash sale ends', 'you will regret', 'FOMO'],
     sticky_note_text: [
-      '3.125 BTC per block. Right now.',
+      'Full block reward. Right now.',
       'Block reward halves. Not if. When.',
       'Mine now or mine at half.',
     ],
@@ -826,6 +826,7 @@ router.put('/:id/angles/:angleId', async (req, res) => {
     const {
       name, funnel_stage, hook_strategy, lead_with, tone,
       copy_directives, required_elements, headline_examples, banned_phrases, color_style,
+      sticky_note_text,
     } = req.body;
 
     // Load the current angles array
@@ -854,6 +855,7 @@ router.put('/:id/angles/:angleId', async (req, res) => {
       ...(Array.isArray(headline_examples) && { headline_examples }),
       ...(Array.isArray(banned_phrases) && { banned_phrases }),
       ...(color_style !== undefined && { color_style }),
+      ...(Array.isArray(sticky_note_text) && { sticky_note_text }),
     };
     angles[idx] = updated;
 
