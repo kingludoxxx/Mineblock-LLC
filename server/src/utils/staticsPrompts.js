@@ -354,11 +354,10 @@ For each text element visible in the image, note:
 - Its PURPOSE in the template's strategy (e.g. "this badge creates urgency", "this bullet proves a benefit", "this headline is the curiosity hook")
 
 STEP 3 — WRITE ORIGINAL COPY:
-For each text slot, write the best possible copy for YOUR product. You have FULL creative freedom — write whatever will convert best. The only constraints are:
+${angleData?.name ? `⚡ BEFORE WRITING A SINGLE WORD: Your copy must execute the "${angleData.name}" angle. Re-read the ANGLE STRATEGY brief at the top of this prompt. Your first headline MUST be a direct execution of that angle's hook — not a product-feature headline. If you can't immediately articulate how your headline executes "${angleData.name}", stop and re-read the brief.\n\n` : ''}For each text slot, write the best possible copy for YOUR product. You have FULL creative freedom — write whatever will convert best. The only constraints are:
 - Stay within ±20% of the original element's character count (critical — an AI image generator renders the text, longer text gets garbled/misspelled)
 - SHORT = PERFECT RENDERING. LONG = GARBLED MESS.
-- Use the SAME template strategy (if it's a benefit showcase, write benefits; if it's a curiosity hook, write a hook)
-- Use the SAME emotional tone
+- Use the SAME template STRUCTURE (layout type, number of elements, visual hierarchy) — NOT the same words or emotional angle${angleData?.name ? `\n- 🔴 The ANGLE drives the emotional angle and hook — override the template's original emotion if needed to execute "${angleData.name}"` : ''}
 - Use the product name "${product.name}" exactly as written — never abbreviate or rename it
 - Every element must be a COMPLETE thought — never a fragment that trails off
 - NEVER use AI-sounding phrases: "game-changer", "revolutionary", "cutting-edge", "seamless", "elevate", "unlock", "transform your"
@@ -445,6 +444,7 @@ COPY QUALITY SELF-CHECK (run this mentally before returning):
 12. PRODUCT NAME CHECK: Does "${product.name}" appear correctly? Zero competitor names in output.
 13. ⚠️ FABRICATED CLAIMS CHECK: Did you invent ANY quantity claim like "X FREE GIFTS", "X FREE BONUSES", "X ITEMS FREE"? If so, DELETE IT. You may only use such claims if the EXACT phrase appears in the product context. Individual offer features (shipping, warranty, etc.) are NOT "gifts" to be counted up.
 14. ⚠️⚠️ OFFER STRUCTURE CHECK (MOST CRITICAL FOR COMPLIANCE): Scan every adapted string for offer constructions: "Buy X Get Y Free", "BOGO", "N-for-M" (e.g. "3 for 2"), "Free [item] with purchase", "Get N free". If ANY of these appear, verify the EXACT structure is listed verbatim in bundleVariants / offerDetails / discountCodes. If it is NOT, you MUST replace it with the real bundle/offer from PRODUCT CONTEXT (bundle pricing, real discount code, real free-shipping/warranty claim) OR blank the slot with "". Bundle SAVINGS never translate to "get free" language — "3-pack saves $118" is NEVER "Buy 3 Get 2 Free". Fabricating offers is false advertising and a hard Meta/FTC violation.
+${angleData?.name ? `15. 🔴 ANGLE EXECUTION CHECK — "${angleData.name}" (NON-NEGOTIABLE FINAL GATE): Would a stranger reading ONLY your adapted copy — without seeing the product or the brief — immediately identify this as a "${angleData.name}" ad? If YES → pass. If NO → you failed the angle and must rewrite the failing elements from scratch using the ANGLE STRATEGY section at the top of this prompt. Warning signs of angle failure: (a) headlines/bullets that read like a generic feature list instead of executing the angle's hook, (b) copy that the reference template's original angle could have said, (c) no emotional or rhetorical tie to what makes "${angleData.name}" distinct. The angle is NOT optional framing — it IS the ad strategy. Every headline, stat, bullet, and badge must execute it.` : ''}
 
 ---
 
@@ -1013,14 +1013,15 @@ Every character in every line must exactly match what is listed. Check each word
     : '';
 
   if (skipTextRendering) {
+    const hasAngleScene = !!angleSceneDirection;
     return `The LAST image is a structural reference — use its LAYOUT only. Produce a text-free version with our product.${crossNicheBlock}${templateIntelligence}
 
 🔴 STRICT RULES:
 1. 🔴 PRODUCT: ${productRule}${hasProductInReference ? ` Orientation: ${claudeResult.product_orientation || 'front-facing'}.${productRulesSection}` : ''} 🚫 LOGO-ON-PRODUCT: NEVER place anything ON the product device surface.
-2. NO TEXT AT ALL: Output must contain ZERO rendered text — no headlines, subheadlines, body, prices, codes, CTAs, badges, fine print, or logos-with-text. Text will be composited by our system. Leave text regions as empty solid-color blocks matching the background tone.
+2. 🔴 ZERO TEXT — ERASE EVERYTHING: Output must contain ZERO rendered text — no headlines, subheadlines, body, prices, sale banners ("MARCH SALE", "40% OFF", "SPRING DEAL"), date text, promo codes, CTAs, badges, fine print, logo-with-text, decorative labels, UI strings, or ANY character visible in the reference. This includes text printed on backgrounds, promotional overlays, and sticker-style text elements. Leave every text region as a flat solid-color block matching the surrounding background tone. Our typography system composites the correct copy on top. When in doubt whether something is text — DON'T render it.
 3. 🚫 STRIP ALL THIRD-PARTY BRAND ELEMENTS: Remove every logo, wordmark, emblem, or brand mark from a different company. Replace with clean solid-color fill matching background.${logoRule}
 4. ${characterRules}
-5. Keep EXACT same layout, background, colors, and composition. ONLY change: (a) product → ours, (b) remove all text, (c) strip third-party brands.${angleSceneSection}
+5. Layout: Keep EXACT same positions, zones, product placement, and text-region shapes.${hasAngleScene ? ` Background atmosphere: follow ANGLE SCENE DIRECTION below.` : ` Keep the same background colors and overall composition.`} ONLY change: (a) product → ours, (b) erase all text, (c) strip third-party brands.${angleSceneSection}
 6. PRODUCT LABEL: Copy the product image (FIRST image) EXACTLY — do NOT modify packaging.${brandColorHint}${productContext}${co.absoluteRules ? `\n${co.absoluteRules}` : ''}
 
 CRITICAL: zero rendered text. When in doubt whether something is text — DON'T render it. Our overlay system adds all copy with pixel-perfect typography.`;

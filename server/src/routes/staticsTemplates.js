@@ -166,6 +166,10 @@ router.get('/', authenticate, async (req, res) => {
     if (category) {
       query += ` AND category = $${idx++}`;
       params.push(category);
+    } else {
+      // Exclude uncategorized templates from default listing — they clutter the picker
+      // and typically haven't been reviewed/tagged yet. Pass ?category=Uncategorized to see them.
+      query += ` AND (category IS NULL OR category != 'Uncategorized')`;
     }
     if (search) {
       const searchTerm = `%${search}%`;
@@ -181,6 +185,7 @@ router.get('/', authenticate, async (req, res) => {
       SELECT category AS name, COUNT(*)::int AS count
       FROM statics_templates
       WHERE is_hidden = false
+        AND (category IS NULL OR category != 'Uncategorized')
       GROUP BY category
       ORDER BY count DESC
     `);
@@ -201,6 +206,7 @@ router.get('/categories', authenticate, async (req, res) => {
       SELECT category AS name, COUNT(*)::int AS count
       FROM statics_templates
       WHERE is_hidden = false
+        AND (category IS NULL OR category != 'Uncategorized')
       GROUP BY category
       ORDER BY count DESC
     `);
