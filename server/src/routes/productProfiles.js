@@ -152,7 +152,7 @@ const MINERFORGE_ANGLES = [
     name: 'Apology / False Confession',
     funnel_stage: 'bottom',
     hook_strategy: 'Open with a confession that signals honesty. Rebuild every product claim inside that trust framework using the yes ladder — restating facts as verified truths one by one. Keep the confession itself minor — the price being lower than promised is perfect. A more serious admission would undermine the product. Then close with the corrected offer and the guarantee.',
-    lead_with: 'I owe you an apology. I got one thing wrong. Two years later I am correcting the record. I told people the launch price was the best deal. It was not. The price is lower now than when I launched it.',
+    lead_with: 'I owe you an apology. I told you $69 was NOT worth it. It is lower now than the day I launched it. (Static image sticky note: use these exact 3 sentences, spelled correctly — "an apology" not "a apology", "It is lower" not "I is lower".)',
     tone: 'Honest, slightly humble, direct. Not apologetic to the point of weakness — correcting the record like a confident person who is not afraid to admit a small mistake. The honesty is what earns the trust, not the severity of the admission.',
     copy_directives: `- Open with the apology — "I owe you an apology" — no preamble, no setup
 - Keep the confession minor: the price was lower than I claimed, not a product failure
@@ -160,7 +160,12 @@ const MINERFORGE_ANGLES = [
 - Each "yes" restates a product fact as a verified truth the listener already suspects is real
 - Include: people message me not because they won, but because they feel like they have a real shot
 - Close with the corrected price and the 30-day guarantee
-- The honesty signal is the conversion mechanism — once he trusts the messenger, the product sells itself`,
+- The honesty signal is the conversion mechanism — once he trusts the messenger, the product sells itself
+- 🖊️ STICKY NOTE TEXT (static image only): If the template contains a handwritten sticky note, render EXACTLY these lines — spelled perfectly, no deviation:
+  Line 1: "I owe you an apology."
+  Line 2: "I told you $69 was NOT worth it."
+  Line 3: "It is lower now than the day I launched it."
+  CRITICAL SPELLING: "an apology" (NOT "a apology") · "It is lower" (NOT "I is lower") · every word correct`,
     required_elements: [
       '"I owe you an apology" opening — no setup, no preamble',
       'The false confession: price lower than originally claimed',
