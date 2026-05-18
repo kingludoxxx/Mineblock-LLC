@@ -50,9 +50,13 @@ function flattenAdaptedText(adaptedText) {
  * @param {string} imageMimeType    - MIME type ('image/png' | 'image/jpeg' | 'image/webp')
  * @param {object} adaptedText      - Claude's adapted_text JSON (headline, body, bullets, ...)
  * @param {object} product          - { name, price, profile: { offerDetails, bundleVariants, discountCodes, maxDiscount, guarantee, ... } }
+ * @param {string[]} [stickyNoteLines] - Optional: exact lines expected on handwritten sticky note elements.
+ *                                       These are angle-specific (e.g. Apology angle sticky note text).
+ *                                       Passed separately from adaptedText because Gemini gets them
+ *                                       via copy_directives, not via Claude's adapted_text output.
  * @returns {Promise<{passed: boolean, totalErrors: number, errors: object, severity: 'clean'|'soft'|'hard'}>}
  */
-export async function validateGenerationText(imageBuffer, imageMimeType, adaptedText, product) {
+export async function validateGenerationText(imageBuffer, imageMimeType, adaptedText, product, stickyNoteLines = []) {
   if (!ANTHROPIC_API_KEY) {
     return { passed: true, totalErrors: 0, errors: {}, severity: 'clean', skipped: 'no ANTHROPIC_API_KEY' };
   }
@@ -61,6 +65,19 @@ export async function validateGenerationText(imageBuffer, imageMimeType, adapted
   }
 
   const intendedLines = flattenAdaptedText(adaptedText);
+
+  // Merge angle-specific sticky note lines so the validator knows to look for them.
+  // These lines come from angle_data.sticky_note_text — not from Claude's adapted_text —
+  // because Gemini receives them via copy_directives only. Without this merge the validator
+  // would never flag grammar errors on handwritten sticky note elements.
+  if (Array.isArray(stickyNoteLines) && stickyNoteLines.length > 0) {
+    for (const line of stickyNoteLines) {
+      if (line && typeof line === 'string' && !intendedLines.includes(line.trim())) {
+        intendedLines.push(line.trim());
+      }
+    }
+  }
+
   const productProfile = product?.profile || {};
   const offerDetails     = productProfile.offerDetails     || '(none)';
   const bundleVariants   = productProfile.bundleVariants   || '(none)';
@@ -126,7 +143,18 @@ to look for:
     corrupted_product_text (abuse of the field — there's no dedicated
     category yet but the ad shouldn't carry a competitor brand).
 
-Then check each failure mode below:
+${stickyNoteLines.length > 0 ? `
+STICKY NOTE EXPECTED TEXT (handwritten element check):
+The image may contain a handwritten sticky note. If it does, it must read EXACTLY:
+${stickyNoteLines.map((l, i) => `  Line ${i + 1}: "${l}"`).join('\n')}
+
+Common Gemini failures on sticky notes:
+  - "a apology" instead of "an apology" — wrong article, flag as nonsensical_copy
+  - "I is lower" instead of "It is lower" — wrong pronoun, flag as nonsensical_copy
+  - Missing words, extra words, or reordered lines — flag as misspelling or nonsensical_copy
+  - ANY deviation from the exact expected lines above is a hard error.
+
+` : ''}Then check each failure mode below:
 
 1. MISSPELLINGS: Any word where one or more letters are missing/wrong/doubled relative to correct English.
    Examples you MUST catch: "WORLWIDE" (missing D → WORLDWIDE), "blocchain" (extra c → blockchain), "Verifable" (missing i → Verifiable), "recieve" (swap → receive), "GAURANTEE" (missing letter → GUARANTEE), "MMineBlock" (doubled M).

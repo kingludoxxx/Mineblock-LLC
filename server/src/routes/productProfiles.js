@@ -183,6 +183,14 @@ const MINERFORGE_ANGLES = [
       'I lied about one thing. The price.',
     ],
     banned_phrases: ['act now', 'limited supply', 'selling out fast', 'do not miss out', 'last chance'],
+    // Dedicated sticky note expected text — fed to the OCR validator so it can
+    // catch Gemini hallucinations (grammar errors, wrong articles) on templates
+    // that have handwritten sticky note elements.
+    sticky_note_text: [
+      'I owe you an apology.',
+      'I told you $69 was NOT worth it.',
+      'It is lower now than the day I launched it.',
+    ],
     created_at: new Date().toISOString(),
   },
   {
@@ -373,8 +381,9 @@ async function ensureTable() {
 ensureTable().then(seedMinerAngles).catch(console.error);
 
 // ── Seed MinerForge Pro angles on startup ───────────────────────────────────
-// Runs once per server start. Skips if the product already has MINERFORGE_ANGLES.length+ angles.
-// To force re-seed: temporarily change the condition below to angles.length < 999.
+// Runs once per server start. Uses ID-based merge: only appends angles whose
+// id is not already in the DB. Never overwrites existing angles so user edits
+// (e.g. copy_directives fixes) are always preserved across redeploys.
 
 async function seedMinerAngles() {
   try {
@@ -390,16 +399,21 @@ async function seedMinerAngles() {
     if (typeof existing === 'string') { try { existing = JSON.parse(existing); } catch { existing = []; } }
     if (!Array.isArray(existing)) existing = [];
 
-    if (existing.length >= MINERFORGE_ANGLES.length) {
-      console.log(`[productProfiles] seedMinerAngles: product ${product.id} already has ${existing.length} angles — skipping`);
+    // Build set of IDs already in DB so we never overwrite user edits
+    const existingIds = new Set(existing.map(a => String(a.id)));
+    const toAdd = MINERFORGE_ANGLES.filter(a => !existingIds.has(String(a.id)));
+
+    if (toAdd.length === 0) {
+      console.log(`[productProfiles] seedMinerAngles: product ${product.id} already has all ${existing.length} angles — skipping`);
       return;
     }
 
+    const merged = [...existing, ...toAdd];
     await pgQuery(
       `UPDATE product_profiles SET angles = $1::jsonb, updated_at = NOW() WHERE id = $2`,
-      [JSON.stringify(MINERFORGE_ANGLES), product.id]
+      [JSON.stringify(merged), product.id]
     );
-    console.log(`[productProfiles] seedMinerAngles: wrote ${MINERFORGE_ANGLES.length} angles to product ${product.id}`);
+    console.log(`[productProfiles] seedMinerAngles: appended ${toAdd.length} new angle(s) to product ${product.id} (total: ${merged.length})`);
   } catch (err) {
     console.error('[productProfiles] seedMinerAngles error:', err.message);
   }
@@ -811,21 +825,30 @@ router.put('/:id/angles/:angleId', async (req, res) => {
 router.delete('/:id/angles/:angleId', async (req, res) => {
   try {
     await ensureTable();
-    const rows = await pgQuery(
-      `UPDATE product_profiles
-       SET angles = (
-         SELECT COALESCE(jsonb_agg(elem), '[]'::jsonb)
-         FROM jsonb_array_elements(angles) AS elem
-         WHERE elem->>'id' != $1
-       ),
-       updated_at = NOW()
-       WHERE id = $2 RETURNING *`,
-      [req.params.angleId, req.params.id]
+    const { id, angleId } = req.params;
+    // Fetch current angles first so we can verify the angle exists before updating
+    const fetchRows = await pgQuery(
+      `SELECT id, angles FROM product_profiles WHERE id = $1`,
+      [id]
     );
-    if (rows.length === 0) {
+    if (fetchRows.length === 0) {
       return res.status(404).json({ success: false, error: { message: 'Profile not found' } });
     }
-    return res.json({ success: true, data: parseRow(rows[0]) });
+    let existingAngles = fetchRows[0].angles;
+    if (typeof existingAngles === 'string') { try { existingAngles = JSON.parse(existingAngles); } catch { existingAngles = []; } }
+    if (!Array.isArray(existingAngles)) existingAngles = [];
+
+    const originalLength = existingAngles.length;
+    const updatedAngles = existingAngles.filter(a => String(a.id) !== String(angleId));
+    if (updatedAngles.length === originalLength) {
+      return res.status(404).json({ success: false, error: { message: `Angle ${angleId} not found` } });
+    }
+
+    const saveRows = await pgQuery(
+      `UPDATE product_profiles SET angles = $1::jsonb, updated_at = NOW() WHERE id = $2 RETURNING *`,
+      [JSON.stringify(updatedAngles), id]
+    );
+    return res.json({ success: true, data: parseRow(saveRows[0]) });
   } catch (err) {
     console.error('DELETE /product-profiles/:id/angles/:angleId error:', err);
     return res.status(500).json({ success: false, error: { message: err.message } });
@@ -873,6 +896,30 @@ router.post('/:id/ai-fill', async (req, res) => {
     const { url } = req.body;
     if (!url || !url.trim()) {
       return res.status(400).json({ success: false, error: { message: 'url is required' } });
+    }
+
+    // SSRF protection — only allow public HTTPS URLs
+    let parsedUrl;
+    try {
+      parsedUrl = new URL(url);
+    } catch {
+      return res.status(400).json({ success: false, error: { message: 'Invalid URL format' } });
+    }
+    if (parsedUrl.protocol !== 'https:') {
+      return res.status(400).json({ success: false, error: { message: 'Only HTTPS URLs are allowed' } });
+    }
+    // Block private IP ranges and localhost
+    const hostname = parsedUrl.hostname.toLowerCase();
+    if (
+      hostname === 'localhost' ||
+      hostname === '127.0.0.1' ||
+      hostname.startsWith('192.168.') ||
+      hostname.startsWith('10.') ||
+      hostname.startsWith('172.16.') ||
+      hostname.endsWith('.internal') ||
+      hostname.endsWith('.local')
+    ) {
+      return res.status(400).json({ success: false, error: { message: 'URL points to a private or internal address' } });
     }
 
     // Fetch the product page

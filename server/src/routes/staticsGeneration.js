@@ -808,17 +808,28 @@ router.post('/generate', authenticate, async (req, res) => {
 
     const RETRY_DELAYS = [0, 8000, 20000, 45000];
     const RETRYABLE_STATUSES = [429, 503, 529];
+    const CLAUDE_CALL_TIMEOUT_MS = 90000; // 90s — prevents hanging until the 8-min watchdog
     let claudeRes;
     for (let attempt = 0; attempt <= RETRY_DELAYS.length; attempt++) {
-      claudeRes = await fetch(CLAUDE_API_URL, {
-        method: 'POST',
-        headers: {
-          'x-api-key': ANTHROPIC_API_KEY,
-          'anthropic-version': '2023-06-01',
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(claudeBody),
-      });
+      const claudeAbortController = new AbortController();
+      const claudeTimeoutId = setTimeout(
+        () => claudeAbortController.abort(new Error('Claude call timed out after 90s')),
+        CLAUDE_CALL_TIMEOUT_MS
+      );
+      try {
+        claudeRes = await fetch(CLAUDE_API_URL, {
+          method: 'POST',
+          headers: {
+            'x-api-key': ANTHROPIC_API_KEY,
+            'anthropic-version': '2023-06-01',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(claudeBody),
+          signal: claudeAbortController.signal,
+        });
+      } finally {
+        clearTimeout(claudeTimeoutId);
+      }
 
       if (claudeRes.ok) break;
 
@@ -1106,24 +1117,34 @@ router.post('/generate', authenticate, async (req, res) => {
             const tGemini = Date.now();
             const attempts = [];
 
+            // For cross-niche: cache pass-1 result across retry attempts.
+            // Pass 1 (product swap) is expensive (~60s) and rarely fails — only
+            // pass 2 (text polish) needs to be retried. Caching pass-1 cuts
+            // worst-case 3-attempt cross-niche from 6 Gemini calls to 4.
+            let cachedPass1 = null;
+
             for (let attempt = 1; attempt <= MAX_GEN_ATTEMPTS; attempt++) {
               const tAttempt = Date.now();
               let result;
 
               if (isCrossNiche && pass1ProductImages.length >= 2) {
                 // ── TWO-PASS: cross-niche template adaptation ──────────────────
-                // Pass 1: Erase reference product, integrate our product
-                // Pass 2: Apply text swaps and atmosphere direction
-                console.log(`[staticsGeneration] Gemini ${r}: two-pass cross-niche "${refCategory}" — attempt ${attempt}/${MAX_GEN_ATTEMPTS}...`);
-                storeGeminiResult(earlyTaskId, { status: 'processing', progress: `Pass 1/2: Placing product (${r})...` });
-
+                // Pass 1: Erase reference product, integrate our product (cached after first run)
+                // Pass 2: Apply text swaps and atmosphere direction (retried on failure)
                 const pass1Prompt = buildProductSwapPrompt(claudeResult, product);
-                const pass1 = await editImage(pass1Prompt, pass1ProductImages, r);
-                console.log(`[staticsGeneration] ⏱ Gemini ${r} pass1 done in ${Date.now() - tAttempt}ms`);
 
-                storeGeminiResult(earlyTaskId, { status: 'processing', progress: `Pass 2/2: Applying copy (${r})...` });
+                if (!cachedPass1) {
+                  console.log(`[staticsGeneration] Gemini ${r}: two-pass cross-niche "${refCategory}" — attempt ${attempt}/${MAX_GEN_ATTEMPTS}, running pass 1...`);
+                  storeGeminiResult(earlyTaskId, { status: 'processing', progress: `Pass 1/2: Placing product (${r})...` });
+                  cachedPass1 = await editImage(pass1Prompt, pass1ProductImages, r);
+                  console.log(`[staticsGeneration] ⏱ Gemini ${r} pass1 done in ${Date.now() - tAttempt}ms (cached for retry)`);
+                } else {
+                  console.log(`[staticsGeneration] Gemini ${r}: two-pass cross-niche — attempt ${attempt}/${MAX_GEN_ATTEMPTS}, reusing cached pass 1`);
+                }
+
+                storeGeminiResult(earlyTaskId, { status: 'processing', progress: `Pass 2/2: Applying copy (${r}) attempt ${attempt}...` });
                 const pass2Prompt = buildTextPolishPrompt(claudeResult, swapPairs, product, layoutMap, angle_data || null, customPrompts);
-                const pass2InputImages = [{ base64: pass1.buffer.toString('base64'), mimeType: pass1.mimeType }];
+                const pass2InputImages = [{ base64: cachedPass1.buffer.toString('base64'), mimeType: cachedPass1.mimeType }];
                 result = await editImage(pass2Prompt, pass2InputImages, r);
                 console.log(`[staticsGeneration] ⏱ Gemini ${r} two-pass complete in ${Date.now() - tAttempt}ms`);
               } else {
@@ -1147,6 +1168,10 @@ router.post('/generate', authenticate, async (req, res) => {
                     result.mimeType,
                     claudeResult?.adapted_text || {},
                     product,
+                    // Pass angle-specific sticky note lines so the validator
+                    // catches Gemini grammar errors on handwritten elements
+                    // (e.g. "a apology" vs "an apology" on Apology angle).
+                    Array.isArray(angle_data?.sticky_note_text) ? angle_data.sticky_note_text : [],
                   );
                   console.log(`[text-validator] ${r} attempt ${attempt}: ${summarizeTextValidation(validation)}`);
                 } catch (valErr) {
@@ -1156,9 +1181,10 @@ router.post('/generate', authenticate, async (req, res) => {
               }
 
               // Product presence check for cross-niche templates — catch reference product bleed-through.
-              // Only runs when isCrossNiche AND text validation passed (don't double-penalize).
+              // Runs for ALL cross-niche attempts regardless of text validation outcome so bleed-through
+              // is never silently shipped alongside text errors.
               let productPresence = null;
-              if (isCrossNiche && validation.passed) {
+              if (isCrossNiche) {
                 try {
                   productPresence = await validateProductPresence(
                     result.buffer,
@@ -1321,22 +1347,23 @@ router.post('/generate', authenticate, async (req, res) => {
 
         if (tasks.length > 0) {
           console.log(`[staticsGeneration] Gemini tasks completed: ${tasks.map(t => `${t.ratio}=${t.taskId}`).join(', ')}`);
-          // Update earlyTaskId so the polling client gets the completed result
+
+          // Build a map of ratio → taskId for the completed result stored under earlyTaskId
+          const allRatioResults = tasks.map(t => ({
+            taskId: t.taskId,
+            ratio: t.ratio,
+            resultImageUrl: geminiResults.get(t.taskId)?.resultImageUrl || null,
+          }));
+
           const primaryResult = geminiResults.get(tasks[0].taskId);
-          if (primaryResult) {
-            storeGeminiResult(earlyTaskId, primaryResult);
-            console.log(`[staticsGeneration] earlyTaskId ${earlyTaskId} updated → completed (${tasks[0].taskId})`);
-          } else {
-            // Fallback: mark earlyTaskId completed with redirect to real taskId
-            storeGeminiResult(earlyTaskId, {
-              status: 'redirect',
-              realTaskId: tasks[0].taskId,
-              tasks,
-              claudeAnalysis: claudeResult,
-              swapPairs,
-            });
-            console.log(`[staticsGeneration] earlyTaskId ${earlyTaskId} updated → redirect to ${tasks[0].taskId}`);
-          }
+          storeGeminiResult(earlyTaskId, {
+            ...(primaryResult || {}),
+            status: 'completed',
+            tasks: allRatioResults,  // ← ALL ratio taskIds + URLs
+            claudeAnalysis: claudeResult || null,
+            swapPairs,
+          });
+          console.log(`[staticsGeneration] earlyTaskId ${earlyTaskId} updated → completed with ${tasks.length} ratio(s)`);
           return; // Exit background task — don't fall through to NanoBanana
         }
 
@@ -1536,6 +1563,7 @@ router.get('/status/:taskId', authenticate, async (req, res) => {
           status: geminiResult.status,
           successFlag: geminiResult.status === 'completed',
           resultImageUrl: geminiResult.resultImageUrl,
+          tasks: geminiResult.tasks || null,  // ← ALL ratio taskIds + URLs
           provider: geminiResult.provider,
           model: geminiResult.model,
           claudeAnalysis: geminiResult.claudeAnalysis || null,
