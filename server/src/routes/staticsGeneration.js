@@ -1015,7 +1015,7 @@ router.post('/generate', authenticate, async (req, res) => {
     // overlayText() step paints the exact adapted_text on top using real
     // fonts via satori/resvg + Sharp. Result: zero text errors by
     // construction. Controlled via env STATICS_TEXT_OVERLAY (default on).
-    const skipTextRendering = (process.env.STATICS_TEXT_OVERLAY || 'false').toLowerCase() !== 'false';
+    const skipTextRendering = (process.env.STATICS_TEXT_OVERLAY || 'true').toLowerCase() !== 'false';
     // Pass extra product count so prompt builder can calculate correct logo image indices
     claudeResult._extraProductCount = refHasProduct ? extraProductUrls.length : 0;
     claudeResult._refHasProduct = refHasProduct;
@@ -1255,9 +1255,20 @@ router.post('/generate', authenticate, async (req, res) => {
             if (skipTextRendering) {
               try {
                 const { overlayText } = await import('../utils/textOverlay.js');
+                // Merge sticky_note_text lines into swapPairs as synthetic entries
+                // so the overlay system positions and renders them on top of
+                // whatever (garbled) text Gemini placed on the sticky note.
+                const stickyLines = Array.isArray(angle_data?.sticky_note_text)
+                  ? angle_data.sticky_note_text : [];
+                const stickyPairs = stickyLines.map((line, i) => ({
+                  original: '',
+                  adapted: line,
+                  field: `sticky_note_line_${i + 1}`,
+                }));
+                const allPairs = [...swapPairs, ...stickyPairs];
                 const composited = await overlayText(
                   result.buffer,
-                  swapPairs,
+                  allPairs,
                   layoutMap,
                   {
                     fonts: product.fonts || [],

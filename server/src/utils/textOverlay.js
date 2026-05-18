@@ -25,6 +25,18 @@ function parsePosition(positionString, imageWidth, imageHeight) {
     return { x: imageWidth / 2, y: imageHeight / 2 };
   }
 
+  // Sticky note lines: fixed positions in the lower-left quadrant.
+  // x is hard-left (8% from edge); y is pre-spread so lines don't collide.
+  const stickyMatch = positionString.match(/^__sticky_line_(\d+)$/);
+  if (stickyMatch) {
+    const lineIndex = parseInt(stickyMatch[1], 10); // 0-based
+    const yRatios = [0.54, 0.62, 0.70, 0.78];
+    return {
+      x: Math.round(imageWidth * 0.08),
+      y: Math.round(imageHeight * (yRatios[lineIndex] ?? 0.80)),
+    };
+  }
+
   const pos = positionString.toLowerCase();
 
   // ── Y-axis (vertical) ──
@@ -52,6 +64,9 @@ function parsePosition(positionString, imageWidth, imageHeight) {
   if (/below\s*center|lower\s*center/i.test(pos)) yRatio = 0.65;
   if (/very\s*top/i.test(pos)) yRatio = 0.05;
   if (/very\s*bottom/i.test(pos)) yRatio = 0.95;
+  // Sticky note stacked lines — explicit vertical offsets
+  if (/lower\s*left/i.test(pos)) yRatio = 0.58;
+  if (/bottom\s*area/i.test(pos)) yRatio = 0.72;
 
   // ── X-axis (horizontal) ──
   let xRatio = 0.5; // default: centered
@@ -205,7 +220,8 @@ function buildTextSvg(width, height, textElements, bgColor = null) {
       svgContent += `<rect x="${rectX}" y="${rectY}" width="${Math.round(estimatedWidth)}" height="${Math.round(blockHeight)}" fill="${bgColor}" rx="4" ry="4"/>`;
     }
 
-    svgContent += `<text x="${x}" y="${startY}" font-family="${escapeXml(el.fontFamily)}" font-size="${el.fontSize}" font-weight="${el.fontWeight}" fill="${el.color}" text-anchor="${anchor}" dominant-baseline="auto" stroke="${strokeColor}" stroke-width="${strokeWidth}" paint-order="stroke">`;
+    const fontStyleAttr = el.fontStyle ? ` font-style="${el.fontStyle}"` : '';
+    svgContent += `<text x="${x}" y="${startY}" font-family="${escapeXml(el.fontFamily)}" font-size="${el.fontSize}" font-weight="${el.fontWeight}"${fontStyleAttr} fill="${el.color}" text-anchor="${anchor}" dominant-baseline="auto" stroke="${strokeColor}" stroke-width="${strokeWidth}" paint-order="stroke">`;
 
     for (let i = 0; i < el.lines.length; i++) {
       if (i === 0) {
@@ -347,15 +363,19 @@ export async function overlayText(imageBuffer, swapPairs, layoutMap, options = {
     const { x, y } = parsePosition(positionStr, width, height);
     const lines = wrapText(adaptedText, fontSize, width);
 
+    // Sticky note lines get handwriting-style treatment: italic serif, dark ink,
+    // smaller than headline copy, hard left-aligned inside the sticky note area.
+    const isStickyLine = pair.field.startsWith('sticky_note_line_');
     svgElements.push({
       x,
       y,
       lines,
-      fontSize,
-      fontWeight,
-      fontFamily: defaultFont,
-      color: textColor,
-      alignment,
+      fontSize: isStickyLine ? Math.round(height * 0.028) : fontSize,
+      fontWeight: isStickyLine ? 'normal' : fontWeight,
+      fontFamily: isStickyLine ? "Georgia, 'Times New Roman', serif" : defaultFont,
+      fontStyle: isStickyLine ? 'italic' : 'normal',
+      color: isStickyLine ? '#1a1a1a' : textColor,
+      alignment: isStickyLine ? 'left' : alignment,
       field: pair.field,
     });
 
@@ -564,6 +584,13 @@ function getDefaultPosition(field) {
     case 'bullets': return 'center, left';
     case 'other_text': return 'bottom third, centered';
     case 'disclaimer': return 'very bottom, centered';
+    // Sticky note lines — use the __sticky_line_N token so parsePosition
+    // returns hard-coded x/y coords in the lower-left quadrant, pre-spread
+    // so they never collide with each other or trigger the nudge loop.
+    case 'sticky_note_line_1': return '__sticky_line_0';
+    case 'sticky_note_line_2': return '__sticky_line_1';
+    case 'sticky_note_line_3': return '__sticky_line_2';
+    case 'sticky_note_line_4': return '__sticky_line_3';
     default: return 'center of canvas, centered';
   }
 }
