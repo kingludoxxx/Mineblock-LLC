@@ -11,6 +11,7 @@
         "seed": "node server/seeds/run.js",
         "build": "cd client && npm run build && node scripts/setup-ytdlp.js",
         "sync:lasso": "node server/scripts/sync-lasso.mjs",
+        "postinstall": "npx playwright install chromium",
         "test": "echo \"Error: no test specified\" && exit 1"
     },
     "keywords": [],
