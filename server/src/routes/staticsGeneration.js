@@ -374,6 +374,18 @@ setInterval(async () => {
   }
 }, RECONCILE_INTERVAL_MS).unref?.();
 
+// ── Playwright Diagnostic ──────────────────────────────────────────────────
+router.get('/playwright-test', authenticate, async (req, res) => {
+  try {
+    const { renderDocument } = await import('../services/playwrightRenderer.js');
+    const fakeClaude = { adapted_text: { headline: 'PLAYWRIGHT TEST', body: 'Chromium is working.', cta: 'Verified' } };
+    const buf = await renderDocument(fakeClaude, { name: 'Test' }, null, null, { width: 400, height: 400 });
+    res.json({ success: true, bufferBytes: buf.length, message: 'Playwright Chromium OK' });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message, stack: err.stack?.split('\n').slice(0,5).join(' | ') });
+  }
+});
+
 // ── Meta App Diagnostic & Live Mode Toggle ──
 router.get('/meta-app-diagnose', authenticate, async (req, res) => {
   try {
