@@ -1462,11 +1462,14 @@ export default function StaticsGeneration() {
 
     let queued = 0;
     let failed = 0;
+    const submitted = []; // collect { angleObj, taskId } so we can poll+save in background
+    const refTemplateId = references[0]?.id;
+    const isTemplateUUID = typeof refTemplateId === 'string' && refTemplateId.includes('-');
+    const currentRef = references[references.length - 1] || references[0];
+
     for (const angleObj of productAngles) {
       try {
-        const refTemplateId = references[0]?.id;
-        const isTemplateUUID = typeof refTemplateId === 'string' && refTemplateId.includes('-');
-        await api.post('/statics-generation/generate', {
+        const resp = await api.post('/statics-generation/generate', {
           reference_image_url: resolvedReferenceUrl,
           template_id: isTemplateUUID ? refTemplateId : undefined,
           product: {
@@ -1483,6 +1486,9 @@ export default function StaticsGeneration() {
           angle: angleObj.name,
           angle_data: angleObj,
         });
+        const genData = resp.data?.data || resp.data;
+        const taskId = genData?.taskId;
+        if (taskId) submitted.push({ angleObj, taskId });
         queued++;
         // Small delay between submissions to avoid overwhelming the pipeline
         await new Promise(r => setTimeout(r, 400));
@@ -1495,10 +1501,65 @@ export default function StaticsGeneration() {
     if (failed > 0) {
       addToast(`Queued ${queued}/${productAngles.length} angles — ${failed} failed to submit`, 'warning', 8000);
     } else {
-      addToast(`All ${queued} angles queued — switch to Pipeline to track progress`, 'success', 8000);
+      addToast(`All ${queued} angles queued — generating & saving in background`, 'success', 8000);
     }
-    // Refresh pipeline to show new generating cards
+    // Refresh pipeline shortly after submission
     setTimeout(() => fetchCreatives(true), 1500);
+
+    // ── Background: poll each gen ID and save to DB when complete ──────────
+    // This runs fire-and-forget so the UI stays responsive immediately.
+    const groupId = crypto.randomUUID();
+    const capturedProductId = selectedProductId;
+    const capturedProductName = productName;
+    const capturedRefUrl = currentRef?.image_url || currentRef?.thumbnail || currentRef?.url || resolvedReferenceUrl;
+    const capturedRefName = currentRef?.name || 'Reference';
+
+    submitted.forEach(({ angleObj, taskId }) => {
+      (async () => {
+        try {
+          // Poll until the server signals the image is ready
+          let imageUrl = null;
+          let claudeAnalysis = null;
+          let qualityWarning = null;
+          for (let i = 0; i < 120; i++) {
+            const delay = i < 10 ? 2000 : (i < 60 ? 4000 : 6000);
+            await new Promise(r => setTimeout(r, delay));
+            try {
+              const statusRes = await api.get(`/statics-generation/status/${taskId}`);
+              const sd = statusRes.data?.data || statusRes.data;
+              if (sd?.resultImageUrl) {
+                imageUrl = sd.resultImageUrl;
+                claudeAnalysis = sd.claudeAnalysis || null;
+                qualityWarning = sd.quality_warning || null;
+                break;
+              }
+              if (sd?.status === 'failed' || (sd?.error && sd.status !== 'processing')) break;
+            } catch { /* transient network error — keep polling */ }
+          }
+          if (!imageUrl) return; // generation failed or timed out
+
+          // Save creative to DB so it appears in the Pipeline
+          await api.post('/statics-generation/creatives', {
+            product_id: capturedProductId || null,
+            product_name: capturedProductName,
+            image_url: imageUrl,
+            angle: angleObj.name || null,
+            aspect_ratio: '1:1',
+            group_id: groupId,
+            generation_task_id: taskId,
+            claude_analysis: claudeAnalysis,
+            quality_warning: qualityWarning || undefined,
+            reference_thumbnail: capturedRefUrl,
+            reference_name: capturedRefName,
+            pipeline: 'standard',
+          });
+          // Refresh to surface the new card in the Pipeline
+          fetchCreatives(true);
+        } catch (e) {
+          console.error(`[generateAll] Failed to save ${angleObj.name}:`, e.message);
+        }
+      })();
+    });
   };
 
   // =========================================================================
