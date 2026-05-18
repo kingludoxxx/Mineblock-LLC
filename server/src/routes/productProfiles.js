@@ -247,6 +247,11 @@ const MINERFORGE_ANGLES = [
       'You plug me in once and I never stop trying',
     ],
     banned_phrases: ['buy now', 'incredible opportunity', 'amazing results', 'you will love', 'everyone is talking about'],
+    sticky_note_text: [
+      'I try 144 times a day.',
+      'Solo. No pool. No split.',
+      'Full reward. Your wallet.',
+    ],
     created_at: new Date().toISOString(),
   },
   {
