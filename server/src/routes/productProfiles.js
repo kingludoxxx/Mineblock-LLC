@@ -42,6 +42,11 @@ const MINERFORGE_ANGLES = [
       'Real mining vs screen animation.',
     ],
     banned_phrases: ['trust us', 'best miner', 'buy now', 'limited time offer', 'join thousands'],
+    sticky_note_text: [
+      'stop trusting their dashboard.',
+      'check the blockchain yourself.',
+      'real attempts. real blocks.',
+    ],
     created_at: new Date().toISOString(),
   },
   {
@@ -75,6 +80,11 @@ const MINERFORGE_ANGLES = [
       'Pull up any block explorer right now',
     ],
     banned_phrases: ['you should trust', 'our company', 'we promise', 'guaranteed results', 'everyone is doing it'],
+    sticky_note_text: [
+      'I checked Block 891,612 myself.',
+      'Solo mined. One wallet. Full reward.',
+      'This $69 device did that.',
+    ],
     created_at: new Date().toISOString(),
   },
   {
@@ -111,6 +121,11 @@ const MINERFORGE_ANGLES = [
       'You never touch it again',
     ],
     banned_phrases: ['get rich quick', 'easy money', 'guaranteed win', 'you will definitely', 'passive income opportunity'],
+    sticky_note_text: [
+      'he forgot it was even running.',
+      'one Sunday: 3.125 Bitcoin.',
+      'straight to his wallet.',
+    ],
     created_at: new Date().toISOString(),
   },
   {
@@ -145,6 +160,11 @@ const MINERFORGE_ANGLES = [
       'The proof is on the blockchain. Not in the comments.',
     ],
     banned_phrases: ['actually...', 'let me explain', 'you are wrong because', 'statistics show', 'many experts'],
+    sticky_note_text: [
+      'they said I\'d never mine anything with that.',
+      'Still here. Still mining.',
+      'Check the ledger.',
+    ],
     created_at: new Date().toISOString(),
   },
   {
@@ -258,6 +278,11 @@ const MINERFORGE_ANGLES = [
       'The price just dropped',
     ],
     banned_phrases: ['buy now or miss out', 'selling fast', 'only a few left', 'last chance', 'limited supply', 'act now'],
+    sticky_note_text: [
+      'this $69 device just hit a block.',
+      'no pool. no fees. Use code MINER10.',
+      'straight to my wallet.',
+    ],
     created_at: new Date().toISOString(),
   },
   {
@@ -290,6 +315,11 @@ const MINERFORGE_ANGLES = [
       'While supplies last',
     ],
     banned_phrases: ['only X left', 'X people viewing', 'ends in', 'countdown', 'flash sale ends', 'you will regret', 'FOMO'],
+    sticky_note_text: [
+      '3.125 BTC per block. Right now.',
+      'Block reward halves. Not if. When.',
+      'Mine now or mine at half.',
+    ],
     created_at: new Date().toISOString(),
   },
 ];
@@ -403,17 +433,30 @@ async function seedMinerAngles() {
     const existingIds = new Set(existing.map(a => String(a.id)));
     const toAdd = MINERFORGE_ANGLES.filter(a => !existingIds.has(String(a.id)));
 
-    if (toAdd.length === 0) {
-      console.log(`[productProfiles] seedMinerAngles: product ${product.id} already has all ${existing.length} angles — skipping`);
+    // Patch additive-only fields (sticky_note_text) onto existing angles that lack them.
+    // This is safe: we only set the field if the DB angle doesn't have it yet.
+    let patchCount = 0;
+    const patchedExisting = existing.map(dbAngle => {
+      if (dbAngle.sticky_note_text) return dbAngle; // already set — never overwrite
+      const seedAngle = MINERFORGE_ANGLES.find(s => String(s.id) === String(dbAngle.id));
+      if (seedAngle?.sticky_note_text) {
+        patchCount++;
+        return { ...dbAngle, sticky_note_text: seedAngle.sticky_note_text };
+      }
+      return dbAngle;
+    });
+
+    if (toAdd.length === 0 && patchCount === 0) {
+      console.log(`[productProfiles] seedMinerAngles: product ${product.id} already has all ${existing.length} angles with full fields — skipping`);
       return;
     }
 
-    const merged = [...existing, ...toAdd];
+    const merged = [...patchedExisting, ...toAdd];
     await pgQuery(
       `UPDATE product_profiles SET angles = $1::jsonb, updated_at = NOW() WHERE id = $2`,
       [JSON.stringify(merged), product.id]
     );
-    console.log(`[productProfiles] seedMinerAngles: appended ${toAdd.length} new angle(s) to product ${product.id} (total: ${merged.length})`);
+    console.log(`[productProfiles] seedMinerAngles: appended ${toAdd.length} angle(s), patched ${patchCount} existing angle(s) for product ${product.id} (total: ${merged.length})`);
   } catch (err) {
     console.error('[productProfiles] seedMinerAngles error:', err.message);
   }

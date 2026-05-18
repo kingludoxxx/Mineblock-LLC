@@ -976,6 +976,25 @@ ${templateData.deep_analysis.adaptation_instructions?.common_failure_modes?.leng
     ? `\n\n🎨 ANGLE SCENE DIRECTION — "${rawAngleName}":\nThe TEXT SWAPS above already carry the angle's copy. Your visual job: adjust the BACKGROUND ATMOSPHERE of the ad to match the angle's emotional world. Keep the EXACT same layout, zones, and product position — only shift the background mood/environment.\n${angleSceneDirection}\nDo NOT change: text positions, product size/position, badge/CTA zones, overall layout structure. Only the background scene and atmosphere should reflect this angle.`
     : '';
 
+  // Sticky note / handwritten element text enforcement
+  // When an angle has exact handwritten lines (e.g. Apology sticky note), inject them
+  // directly into the Gemini prompt so they are rendered character-perfect.
+  const _stickyLines = Array.isArray(angleData?.sticky_note_text) ? angleData.sticky_note_text : [];
+  const stickyNoteSection = _stickyLines.length > 0
+    ? `\n\n🔴 HANDWRITTEN STICKY NOTE TEXT (MANDATORY — character-perfect):
+The sticky note / handwritten paper element MUST contain EXACTLY these lines — nothing more, nothing less:
+${_stickyLines.map((l, i) => `  Line ${i + 1}: "${l}"`).join('\n')}
+
+Render each word spelled exactly as above. Word-by-word:
+${_stickyLines.map(l => `  ${l.split(' ').map(w => `[${w}]`).join(' ')}`).join('\n')}
+
+🚫 FORBIDDEN spelling errors (these exact mistakes have been seen before — do NOT repeat them):
+  • "a apology" — WRONG. Must be "an apology".
+  • "I is lower" — WRONG. Must be "It is lower".
+  • Any truncated or abbreviated version of the lines above.
+Every character in every line must exactly match what is listed. Check each word individually before rendering.`
+    : '';
+
   // ── P1.1: If skipTextRendering=true, instruct the model to produce a
   // TEXT-FREE image (no headlines, body copy, badges, CTAs, prices). The
   // overlayText() function in server/src/utils/textOverlay.js will composite
@@ -1022,7 +1041,7 @@ ${swapSectionFinal || '(no text changes)'}${bannedWords}
 LAYOUT — preserve exactly:
 - Keep all text positions, badge zones, CTA zones, product zone, and colors as in reference${visualLine}
 - Spell every word correctly with proper spacing
-- PRODUCT LABEL: Copy the product image (FIRST image) label EXACTLY — do NOT redesign or add text to packaging${angleSceneSection}${brandColorHint}${productContext}${co.absoluteRules ? `\n${co.absoluteRules}` : ''}`;
+- PRODUCT LABEL: Copy the product image (FIRST image) label EXACTLY — do NOT redesign or add text to packaging${angleSceneSection}${stickyNoteSection}${brandColorHint}${productContext}${co.absoluteRules ? `\n${co.absoluteRules}` : ''}`;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1161,6 +1180,22 @@ export function buildTextPolishPrompt(claudeResult, swapPairs, product, layoutMa
     ? `\n\n🎨 BACKGROUND ATMOSPHERE — "${rawAngleName}":\nShift the BACKGROUND only to match this angle's emotional world. Keep ALL text positions, product position, and layout structure IDENTICAL.\n${angleSceneDirection}`
     : '';
 
+  // Sticky note / handwritten element text enforcement (same as Pass 1)
+  const _stickyLinesP2 = Array.isArray(angleData?.sticky_note_text) ? angleData.sticky_note_text : [];
+  const stickyNoteSectionP2 = _stickyLinesP2.length > 0
+    ? `\n\n🔴 HANDWRITTEN STICKY NOTE TEXT (MANDATORY — character-perfect):
+The sticky note / handwritten paper element MUST contain EXACTLY these lines — nothing more, nothing less:
+${_stickyLinesP2.map((l, i) => `  Line ${i + 1}: "${l}"`).join('\n')}
+
+Render each word spelled exactly as above. Word-by-word:
+${_stickyLinesP2.map(l => `  ${l.split(' ').map(w => `[${w}]`).join(' ')}`).join('\n')}
+
+🚫 FORBIDDEN spelling errors (must NOT appear):
+  • "a apology" — WRONG. Must be "an apology".
+  • "I is lower" — WRONG. Must be "It is lower".
+  • Any truncated or abbreviated version of the lines above.`
+    : '';
+
   return `Apply text replacements and atmosphere to this image. The product is already correctly placed — do NOT touch it.
 
 🔴 RULES:
@@ -1175,7 +1210,7 @@ ${swapSectionFinal || '(no text changes)'}${bannedWords}
 
 LAYOUT — preserve exactly:
 - All text positions, badge zones, CTA zones, colors, overall composition${visualLine}
-- Spell every word correctly with proper spacing${angleSceneSection}${brandColorHint}${productContext}${co.absoluteRules ? `\n${co.absoluteRules}` : ''}`;
+- Spell every word correctly with proper spacing${angleSceneSection}${stickyNoteSectionP2}${brandColorHint}${productContext}${co.absoluteRules ? `\n${co.absoluteRules}` : ''}`;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
