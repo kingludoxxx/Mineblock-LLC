@@ -92,16 +92,24 @@ function calculateFontSize(hierarchy, role, imageHeight) {
   // CTA gets its own size
   if (roleLower === 'cta') return Math.round(imageHeight * 0.04);
 
+  // Body copy: smaller to allow multiple lines without overflow
+  if (roleLower === 'body') return Math.round(imageHeight * 0.026);
+
+  // Bullets: slightly smaller than body so they stack cleanly
+  if (roleLower === 'bullet' || roleLower === 'bullets') return Math.round(imageHeight * 0.024);
+
   // Badge / stat / disclaimer / small elements
   if (['badge', 'stat_label', 'stat_value', 'guarantee', 'disclaimer', 'other'].includes(roleLower)) {
-    return Math.round(imageHeight * 0.035);
+    return Math.round(imageHeight * 0.032);
   }
 
   // Hierarchy-based sizing
   const h = parseInt(hierarchy, 10) || 3;
   if (h === 1) return Math.round(imageHeight * 0.065);
   if (h === 2) return Math.round(imageHeight * 0.045);
-  return Math.round(imageHeight * 0.035);
+  // H3 and below — check role for body-like fields
+  if (roleLower === 'body' || roleLower === 'bullet') return Math.round(imageHeight * 0.026);
+  return Math.round(imageHeight * 0.033);
 }
 
 /**
@@ -355,13 +363,19 @@ export async function overlayText(imageBuffer, swapPairs, layoutMap, options = {
 
     const hierarchy = layoutEl?.hierarchy || (pair.field === 'headline' ? 1 : pair.field === 'subheadline' ? 2 : 3);
     const role = layoutEl?.role || pair.field.replace(/\[\d+\]$/, '');
-    const alignment = layoutEl?.alignment || 'center';
+    // Fix 6: bullets and body copy are left-aligned for readability; everything else uses layout map alignment
+    const isBulletField = pair.field.startsWith('bullets[') || role === 'bullet' || role === 'body';
+    const alignment = isBulletField ? 'left' : (layoutEl?.alignment || 'center');
     const positionStr = layoutEl?.position || getDefaultPosition(pair.field);
 
     const fontSize = calculateFontSize(hierarchy, role, height);
     const fontWeight = getFontWeight(hierarchy, role);
     const { x, y } = parsePosition(positionStr, width, height);
-    const lines = wrapText(adaptedText, fontSize, width);
+    // Fix 6: prefix bullets with em-dash for visual clarity
+    const displayText = isBulletField && !adaptedText.startsWith('—') && !adaptedText.startsWith('-')
+      ? `— ${adaptedText}`
+      : adaptedText;
+    const lines = wrapText(displayText, fontSize, width);
 
     // Sticky note lines get handwriting-style treatment: italic serif, dark ink,
     // smaller than headline copy, hard left-aligned inside the sticky note area.

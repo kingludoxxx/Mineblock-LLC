@@ -741,13 +741,72 @@ router.post('/generate', authenticate, async (req, res) => {
   // ── Run the full pipeline in the background ──────────────────────────
   setImmediate(async () => {
   try {
-    const { reference_image_url, product, angle, angle_data, ratio, template_id } = req.body;
+    const { reference_image_url, angle, angle_data, ratio, template_id } = req.body;
+    let product = req.body.product;
+
+    // ── Fix 5: Re-fetch product from DB to guarantee fresh, complete data ─
+    // Client state can be stale (long-open tab, cached profile). DB is authoritative.
+    const productDbId = req.body.product_id || product?.id;
+    if (productDbId) {
+      try {
+        const prodRows = await pgQuery('SELECT * FROM product_profiles WHERE id = $1', [productDbId]);
+        if (prodRows.length > 0) {
+          const p = prodRows[0];
+          // Build a complete, fresh profile from DB — overrides any client-sent stale data.
+          // We keep client-sent product_image_url / logos / brand_colors (not in DB).
+          const freshProfile = {
+            oneliner: p.oneliner || undefined,
+            tagline: p.tagline || undefined,
+            customerAvatar: p.customer_avatar || undefined,
+            customerFrustration: p.customer_frustration || undefined,
+            customerDream: p.customer_dream || undefined,
+            bigPromise: p.big_promise || undefined,
+            mechanism: p.mechanism || undefined,
+            differentiator: p.differentiator || undefined,
+            voice: p.voice || undefined,
+            guarantee: p.guarantee || undefined,
+            benefits: p.benefits || undefined,
+            painPoints: p.pain_points || undefined,
+            commonObjections: p.common_objections || undefined,
+            winningAngles: p.winning_angles || undefined,
+            customAngles: p.custom_angles_text || undefined,
+            competitiveEdge: p.competitive_edge || undefined,
+            offerDetails: p.offer_details || undefined,
+            maxDiscount: p.max_discount || undefined,
+            discountCodes: p.discount_codes || undefined,
+            bundleVariants: p.bundle_variants || undefined,
+            complianceRestrictions: p.compliance_restrictions || undefined,
+            notes: p.notes || undefined,
+            targetDemographics: p.target_demographics || undefined,
+            category: p.category || undefined,
+            productType: p.product_type || undefined,
+            productUrl: p.product_url || undefined,
+            unitDetails: p.unit_details || undefined,
+            shortName: p.short_name || undefined,
+            offers: p.offers?.length > 0 ? p.offers : undefined,
+          };
+          // Remove undefined keys
+          Object.keys(freshProfile).forEach(k => freshProfile[k] === undefined && delete freshProfile[k]);
+
+          product = {
+            ...product,
+            name: p.name || product.name,
+            description: p.description || product.description,
+            price: p.price || product.price,
+            profile: freshProfile,
+          };
+          console.log(`[staticsGeneration] ✅ DB re-fetch: "${p.name}" — ${Object.keys(freshProfile).length} profile fields (was ${Object.keys(product?.profile || {}).length} from client)`);
+        }
+      } catch (dbErr) {
+        console.warn(`[staticsGeneration] ⚠️ DB re-fetch failed (using client data):`, dbErr.message);
+      }
+    }
 
     // Log product context for debugging copy quality
     const profileFields = product.profile ? Object.keys(product.profile).filter(k => product.profile[k]) : [];
     console.log(`[staticsGeneration] Product: "${product.name}" | Price: ${product.price || 'N/A'} | Angle: ${angle_data?.name || angle || 'none'} | Profile fields: [${profileFields.join(', ')}] (${profileFields.length} fields)`);
     if (profileFields.length === 0) {
-      console.warn(`[staticsGeneration] ⚠️ No product profile fields sent! Copy will lack product context.`);
+      console.warn(`[staticsGeneration] ⚠️ No product profile fields — copy will lack product context. Send product_id in request body to enable DB re-fetch.`);
     }
 
     // ── Load custom prompt overrides (fall back to defaults if none saved) ──
@@ -1055,6 +1114,84 @@ router.post('/generate', authenticate, async (req, res) => {
     // Determine provider: default to gemini, fallback to nanobanana
     const provider = req.body.provider || 'gemini';
     console.log(`[staticsGeneration] Provider: ${provider}, Generating ${ratiosToGenerate.length} ratio(s): ${ratiosToGenerate.join(', ')}`);
+
+    // ── Fix 1: PLAYWRIGHT PATH — document/text-background archetypes ──────
+    // For templates where the background IS text (OFFICIAL APOLOGY STATEMENT,
+    // OFFICIAL CORRECTION NOTICE, listicle docs), Gemini OCR-hallucinates body
+    // copy. Bypass Gemini entirely: use Playwright to render a clean HTML/CSS
+    // document at exact pixel dimensions. Sharp composites the brand logo after.
+    const isDocumentTemplate =
+      layoutMap?.archetype?.toLowerCase().includes('document') ||
+      layoutMap?.background?.type?.toLowerCase() === 'text' ||
+      (templateData?.deep_analysis?.template_type?.toLowerCase() || '').includes('document');
+
+    if (isDocumentTemplate) {
+      console.log(`[staticsGeneration] 📄 Document archetype detected (archetype="${layoutMap?.archetype}") — routing to Playwright renderer (skipping Gemini)`);
+      try {
+        const { renderDocument } = await import('../services/playwrightRenderer.js');
+        const RATIO_DIMS = { '1:1': { width: 1080, height: 1080 }, '4:5': { width: 1080, height: 1350 }, '9:16': { width: 1080, height: 1920 } };
+
+        const ratioResults = await Promise.allSettled(
+          ratiosToGenerate.map(async (r) => {
+            const dims = RATIO_DIMS[r] || { width: 1080, height: 1080 };
+            const pngBuffer = await renderDocument(claudeResult, product, angle_data || null, layoutMap, dims);
+
+            let finalBuffer = pngBuffer;
+            // Apply brand logo watermark (same as Gemini path)
+            if (!hasCompetitorLogo && logoUrls.length > 0) {
+              finalBuffer = await compositeLogoWithSharp(finalBuffer, logoUrls[0]);
+            }
+
+            let resultImageUrl;
+            if (isR2Configured()) {
+              const r2Key = `statics-playwright/${crypto.randomUUID()}.png`;
+              resultImageUrl = await uploadBuffer(finalBuffer, r2Key, 'image/png');
+            } else {
+              const tmpId = await storeTempImage(finalBuffer, 'image/png');
+              const srvUrl = process.env.RENDER_EXTERNAL_URL || `http://localhost:${process.env.PORT || 3000}`;
+              resultImageUrl = `${srvUrl}/api/v1/statics-generation/tmp-img/${tmpId}`;
+            }
+
+            const visionWarning = await runVisionAudit(finalBuffer, 'image/png', product.price, product.profile?.maxDiscount);
+            const taskId = `playwright-${crypto.randomUUID()}`;
+            storeGeminiResult(taskId, {
+              status: 'completed',
+              resultImageUrl,
+              provider: 'playwright',
+              model: 'playwright-chromium',
+              claudeAnalysis: claudeResult || null,
+              quality_warning: visionWarning || null,
+            });
+            console.log(`[staticsGeneration] ✅ Playwright ${r}: ${taskId}`);
+            return { taskId, ratio: r };
+          })
+        );
+
+        const tasks = ratioResults.filter(r => r.status === 'fulfilled').map(r => r.value);
+        ratioResults.filter(r => r.status === 'rejected').forEach((r, i) =>
+          console.error(`[staticsGeneration] Playwright ${ratiosToGenerate[i]} failed: ${r.reason?.message}`)
+        );
+
+        if (tasks.length > 0) {
+          const allRatioResults = tasks.map(t => ({
+            taskId: t.taskId, ratio: t.ratio,
+            resultImageUrl: geminiResults.get(t.taskId)?.resultImageUrl || null,
+          }));
+          storeGeminiResult(earlyTaskId, {
+            status: 'completed',
+            tasks: allRatioResults,
+            provider: 'playwright',
+            claudeAnalysis: claudeResult || null,
+            swapPairs,
+          });
+          console.log(`[staticsGeneration] earlyTaskId ${earlyTaskId} → completed (Playwright, ${tasks.length} ratio(s))`);
+          return;
+        }
+        console.warn(`[staticsGeneration] Playwright failed all ratios — falling through to Gemini`);
+      } catch (pwErr) {
+        console.error(`[staticsGeneration] Playwright path failed — falling through to Gemini: ${pwErr.message}`);
+      }
+    }
 
     // ── GEMINI PATH: Direct image editing via Gemini 3.1 Flash ──
     if (provider === 'gemini' && isGeminiConfigured()) {

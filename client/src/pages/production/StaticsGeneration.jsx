@@ -1274,7 +1274,9 @@ export default function StaticsGeneration() {
       const response = await api.post('/statics-generation/generate', {
         reference_image_url: resolvedReferenceUrl,
         template_id: isTemplateUUID ? refTemplateId : undefined,
+        product_id: selectedProductRef.current?.id || selectedProductId || undefined,
         product: {
+          id: selectedProductRef.current?.id || selectedProductId || undefined,
           name: productName,
           description: productDescription || undefined,
           price: productPrice || undefined,
@@ -1478,7 +1480,9 @@ export default function StaticsGeneration() {
         const resp = await api.post('/statics-generation/generate', {
           reference_image_url: resolvedReferenceUrl,
           template_id: isTemplateUUID ? refTemplateId : undefined,
+          product_id: full?.id || selectedProductId || undefined,
           product: {
+            id: full?.id || selectedProductId || undefined,
             name: productName,
             description: productDescription || undefined,
             price: productPrice || undefined,

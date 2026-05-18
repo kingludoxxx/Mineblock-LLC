@@ -302,6 +302,10 @@ IMPORTANT: Follow the adaptation_instructions closely. Pay special attention to:
       if (Array.isArray(angleData.banned_phrases) && angleData.banned_phrases.length > 0) {
         parts.push(`\nBANNED FOR THIS ANGLE: ${angleData.banned_phrases.join(', ')}`);
       }
+      // Fix 2: inject sticky_note_text into Claude so body copy reinforces (not contradicts) the handwritten note
+      if (Array.isArray(angleData.sticky_note_text) && angleData.sticky_note_text.length > 0) {
+        parts.push(`\nSTICKY NOTE TEXT — these EXACT lines appear as handwritten text on the final image (composited by our typography system). Your body copy, bullets, and supporting elements MUST reinforce these lines — never contradict them:\n${angleData.sticky_note_text.map(l => `  "${l}"`).join('\n')}\nWrite copy that builds up to and supports these handwritten lines as the emotional close.`);
+      }
       parts.push(`\nCRITICAL: Every headline, bullet, and hook you write must execute this angle. Do NOT default to what the reference template was saying — use the brief above as your primary creative direction.`);
       parts.push(`${'═'.repeat(67)}\n`);
       return parts.join('\n');
@@ -959,9 +963,16 @@ ${templateData.deep_analysis.adaptation_instructions?.common_failure_modes?.leng
     profile.discountCodes && `Discount code: ${profile.discountCodes}`,
     profile.maxDiscount && `Max discount %: ${profile.maxDiscount} — ONLY valid discount; never write a higher %`,
     profile.complianceRestrictions && `🚫 NEVER claim: ${profile.complianceRestrictions.slice(0, 120)}`,
+    // Fix 4: expanded product context so Gemini makes visually relevant background/atmosphere choices
+    profile.customerAvatar && `Target customer: ${profile.customerAvatar.slice(0, 150)}`,
+    profile.mechanism && `How it works: ${profile.mechanism.slice(0, 150)}`,
+    profile.bigPromise && `Core promise: ${profile.bigPromise.slice(0, 150)}`,
+    Array.isArray(profile.benefits) && profile.benefits.length > 0
+      && `Key benefits (use for background atmosphere only — do NOT write new copy from these): ${profile.benefits.slice(0, 4).map(b => typeof b === 'object' ? (b.text || b.name || String(b)) : b).join(' | ')}`,
+    profile.differentiator && `What makes it different: ${profile.differentiator.slice(0, 150)}`,
   ].filter(Boolean);
   const productContext = productContextLines.length > 0
-    ? `\n\nPRICE ANCHORS (do NOT use to write new copy — TEXT SWAPS above are the only copy; these numbers exist solely to prevent you inventing wrong prices or discounts):\n${productContextLines.map(l => `- ${l}`).join('\n')}`
+    ? `\n\nPRODUCT CONTEXT (do NOT use to write new copy — TEXT SWAPS above are the only copy; use price/discount lines to avoid inventing wrong numbers, and avatar/mechanism/benefits lines to inform background atmosphere and visual choices only):\n${productContextLines.map(l => `- ${l}`).join('\n')}`
     : '';
 
   // Brand colors for visual consistency
