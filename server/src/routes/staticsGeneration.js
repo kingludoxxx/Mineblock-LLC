@@ -1120,10 +1120,28 @@ router.post('/generate', authenticate, async (req, res) => {
     // OFFICIAL CORRECTION NOTICE, listicle docs), Gemini OCR-hallucinates body
     // copy. Bypass Gemini entirely: use Playwright to render a clean HTML/CSS
     // document at exact pixel dimensions. Sharp composites the brand logo after.
+
+    // Hardcoded list of confirmed document-style template IDs that lack archetype
+    // metadata in the DB. Add here whenever a template is confirmed text-background.
+    const KNOWN_DOCUMENT_TEMPLATE_IDS = new Set([
+      '9247a5c9-1445-4ed9-abc5-4bfcdf185c88', // OFFICIAL APOLOGY STATEMENT (Rosabella ref)
+    ]);
+
+    // Heuristic: text-only (no product) + very long swap text = letter-style document.
+    // Social ads: ~200–500 chars total. Document ads: 2000+ chars.
+    const totalSwapTextLength = swapPairs.reduce((sum, p) => sum + (p.adapted || p.original || '').length, 0);
+    const isLongTextOnlyTemplate = !refHasProduct && totalSwapTextLength > 2000;
+
     const isDocumentTemplate =
+      KNOWN_DOCUMENT_TEMPLATE_IDS.has(template_id) ||
+      isLongTextOnlyTemplate ||
       layoutMap?.archetype?.toLowerCase().includes('document') ||
       layoutMap?.background?.type?.toLowerCase() === 'text' ||
       (templateData?.deep_analysis?.template_type?.toLowerCase() || '').includes('document');
+
+    if (isDocumentTemplate && !KNOWN_DOCUMENT_TEMPLATE_IDS.has(template_id) && isLongTextOnlyTemplate) {
+      console.log(`[staticsGeneration] 📄 Document detected via heuristic: text-only template + ${totalSwapTextLength} swap chars`);
+    }
 
     if (isDocumentTemplate) {
       console.log(`[staticsGeneration] 📄 Document archetype detected (archetype="${layoutMap?.archetype}") — routing to Playwright renderer (skipping Gemini)`);
