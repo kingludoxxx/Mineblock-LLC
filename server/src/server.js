@@ -13,10 +13,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // ── Playwright browser path — must point inside project dir so Render deploys it ──
 // Default (/opt/render/.cache/…) is build-time only and NOT available at runtime.
+// process.cwd() = project root in both build and runtime on Render.
 if (!process.env.PLAYWRIGHT_BROWSERS_PATH) {
-  const projectRoot = path.resolve(__dirname, '../../..');
-  process.env.PLAYWRIGHT_BROWSERS_PATH = path.join(projectRoot, 'playwright-browsers');
-  console.log(`[server] PLAYWRIGHT_BROWSERS_PATH set to: ${process.env.PLAYWRIGHT_BROWSERS_PATH}`);
+  process.env.PLAYWRIGHT_BROWSERS_PATH = path.join(process.cwd(), 'playwright-browsers');
+  console.log(`[server] PLAYWRIGHT_BROWSERS_PATH auto-set to: ${process.env.PLAYWRIGHT_BROWSERS_PATH}`);
 }
 
 // ---------------------------------------------------------------------------
