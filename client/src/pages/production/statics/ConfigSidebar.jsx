@@ -49,6 +49,17 @@ export function ConfigSidebar({
 
   const canGenerate = selectedProduct && references.length > 0 && !generating;
 
+  // Compute a human-readable reason why the Generate button is disabled
+  const disabledReason = canGenerate
+    ? null
+    : generating
+      ? 'Generation in progress...'
+      : !selectedProduct
+        ? 'Select a product first'
+        : references.length === 0
+          ? 'Select a template first'
+          : null;
+
   // -- Drag & drop handlers --------------------------------------------------
 
   const handleDrop = useCallback(
@@ -271,6 +282,10 @@ export function ConfigSidebar({
             </>
           )}
         </button>
+        {/* Explain why the button is disabled so users know what's missing */}
+        {disabledReason && (
+          <p className="text-center text-[11px] text-zinc-600 mt-1">{disabledReason}</p>
+        )}
         {onAddToQueue && (
           <button
             type="button"

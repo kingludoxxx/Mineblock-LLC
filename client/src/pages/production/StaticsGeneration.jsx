@@ -1360,7 +1360,13 @@ export default function StaticsGeneration() {
         throw new Error(failedTasks.join('; ') || 'All generation tasks failed');
       }
       if (failedTasks.length > 0) {
-        addToast(`Warning: ${failedTasks.length} ratio(s) failed — ${failedTasks.join(', ')}`, 'warning', 8000);
+        const total = tasks.length;
+        const succeeded = completedTasks.length;
+        addToast(
+          `${succeeded} of ${total} ratio${total !== 1 ? 's' : ''} generated successfully (${failedTasks.length} failed: ${failedTasks.join(', ')})`,
+          'warning',
+          10000,
+        );
       }
 
       // Step 3: Save all creatives with shared group

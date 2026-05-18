@@ -1025,12 +1025,17 @@ router.post('/generate', authenticate, async (req, res) => {
     // Gemini-specific prompt: identical except product rule tells model to render naturally, not copy-paste
     const geminiPrompt = buildNanoBananaPrompt(claudeResult, swapPairs, product, geminiLogoCount, customPrompts, layoutMap, logoBackgroundTone, skipTextRendering, templateData, angle_data || null, true, hasCompetitorLogo);
 
-    // Cross-niche detection: reference product is from a different category than our product
+    // Cross-niche detection: reference product is from a different category than our product.
+    // Use tight crypto/mining-specific keywords only — broad terms like "tech", "device",
+    // "electronic", "computer" caused false negatives when Claude returned categories like
+    // "tech supplement" or "electronic health device" for clearly non-mining products.
     const refCategory = claudeResult.reference_product_category || '';
-    const isCrossNiche = refHasProduct && refCategory &&
-      !/(miner|mining|crypto|bitcoin|hardware|tech|device|chip|asic|electronic|computer|gpu|blockchain)/i.test(refCategory);
+    const MINING_NICHE_PATTERN = /\b(miner|mining|crypto|bitcoin|asic|blockchain|gpu\s*mining|hash\s*rate|crypto\s*hardware|bitcoin\s*miner)\b/i;
+    const isCrossNiche = refHasProduct && refCategory && !MINING_NICHE_PATTERN.test(refCategory);
     if (isCrossNiche) {
       console.log(`[staticsGeneration] 🔀 Cross-niche detected: reference is "${refCategory}" — will use two-pass generation`);
+    } else if (refHasProduct && refCategory) {
+      console.log(`[staticsGeneration] Same-niche detected: reference is "${refCategory}" — single-pass`);
     }
 
     // Send: product images (only if ref has product), then logos (competitor-slot only), then reference ad (last)
