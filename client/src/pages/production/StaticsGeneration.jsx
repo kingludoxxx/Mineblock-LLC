@@ -1928,9 +1928,17 @@ export default function StaticsGeneration() {
     setTemplatesLoading(true);
     try {
       const res = await api.get('/statics-templates');
-      setTemplates(res.data?.data || res.data || []);
+      const data = res.data?.data || res.data || [];
+      setTemplates(data);
+      // Only mark as fetched if we actually got data — on server cold-start
+      // the first request can 500, leaving templates empty forever because
+      // templatesFetched.current was already set to true.
+      if (Array.isArray(data) && data.length > 0) {
+        templatesFetched.current = true;
+      }
     } catch {
-      // silently fail
+      // silently fail — templatesFetched.current stays false so next
+      // interaction retries the fetch
     } finally {
       setTemplatesLoading(false);
     }
@@ -2053,11 +2061,12 @@ export default function StaticsGeneration() {
   const templatesFetched = useRef(false);
   const creativesFetched = useRef(false);
 
-  // Prefetch templates on mount so the library modal opens instantly
+  // Prefetch templates on mount so the library modal opens instantly.
+  // templatesFetched.current is set inside fetchTemplates only on success,
+  // so a cold-start 500 will be retried on next tab switch or modal open.
   useEffect(() => {
     if (!templatesFetched.current) {
       fetchTemplates();
-      templatesFetched.current = true;
     }
   }, []);
 
@@ -2070,8 +2079,7 @@ export default function StaticsGeneration() {
       }
     } else if (activeTab === 'library') {
       if (!templatesFetched.current) {
-        fetchTemplates();
-        templatesFetched.current = true;
+        fetchTemplates(); // ref is set inside on success
       }
     } else if (activeTab === 'generated') {
       if (!creativesFetched.current) {
