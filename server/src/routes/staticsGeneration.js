@@ -829,19 +829,25 @@ router.post('/generate', authenticate, async (req, res) => {
     // ── Load cached layout map + deep analysis if template-based ──────
     let layoutMap = null;
     let templateData = null;
+    let dbIsDocumentTemplate = null; // from migration 034 classification column
     if (template_id) {
       try {
         const rows = await pgQuery(
-          `SELECT metadata, deep_analysis FROM statics_templates WHERE id = $1`,
+          `SELECT metadata, deep_analysis, is_document_template, archetype FROM statics_templates WHERE id = $1`,
           [template_id]
         );
         const meta = rows[0]?.metadata;
         layoutMap = (typeof meta === 'string' ? JSON.parse(meta) : meta)?.layout_map || null;
+        dbIsDocumentTemplate = rows[0]?.is_document_template ?? null; // NULL = unclassified
+        const dbArchetype = rows[0]?.archetype;
         const rawDeep = rows[0]?.deep_analysis;
         const deepAnalysis = typeof rawDeep === 'string' ? JSON.parse(rawDeep) : rawDeep;
         if (deepAnalysis) {
           templateData = { deep_analysis: deepAnalysis };
           console.log(`[staticsGeneration] ✅ Template ${template_id} has deep_analysis — injecting into prompts`);
+        }
+        if (dbIsDocumentTemplate !== null) {
+          console.log(`[staticsGeneration] 📋 DB classification: is_document_template=${dbIsDocumentTemplate} archetype=${dbArchetype ?? 'null'}`);
         }
         if (layoutMap) {
           console.log(`[staticsGeneration] ✅ Using cached layout map for template ${template_id} (archetype: ${layoutMap.archetype})`);
@@ -1135,8 +1141,12 @@ router.post('/generate', authenticate, async (req, res) => {
 
     // Hardcoded list of confirmed document-style template IDs that lack archetype
     // metadata in the DB. Add here whenever a template is confirmed text-background.
+    // TODO: replace with DB is_document_template flag once classification job runs (P1b).
     const KNOWN_DOCUMENT_TEMPLATE_IDS = new Set([
       '9247a5c9-1445-4ed9-abc5-4bfcdf185c88', // OFFICIAL APOLOGY STATEMENT (Rosabella ref)
+      '4897d3c0-c557-4d42-8c37-cb88c24349aa', // Bold Claim / document-style (confirmed hallucination 2026-05-19)
+      '52378b84-e04d-4277-916f-32a06f99417b', // Problem + Solution / document-style (confirmed hallucination 2026-05-19)
+      '8cf2cdec-d373-4eea-a87a-12fad9b0ff49', // Social Proof / document-style (confirmed hallucination 2026-05-19)
     ]);
 
     // Heuristic: text-only (no product) + very long swap text = letter-style document.
@@ -1144,12 +1154,17 @@ router.post('/generate', authenticate, async (req, res) => {
     const totalSwapTextLength = swapPairs.reduce((sum, p) => sum + (p.adapted || p.original || '').length, 0);
     const isLongTextOnlyTemplate = !refHasProduct && totalSwapTextLength > 2000;
 
+    // DB flag (migration 034) is authoritative when set. Falls back to heuristics for
+    // unclassified templates (dbIsDocumentTemplate === null).
     const isDocumentTemplate =
-      KNOWN_DOCUMENT_TEMPLATE_IDS.has(template_id) ||
-      isLongTextOnlyTemplate ||
-      layoutMap?.archetype?.toLowerCase().includes('document') ||
-      layoutMap?.background?.type?.toLowerCase() === 'text' ||
-      (templateData?.deep_analysis?.template_type?.toLowerCase() || '').includes('document');
+      dbIsDocumentTemplate === true ||                                        // DB classification (authoritative)
+      (dbIsDocumentTemplate === null && (                                     // unclassified — use heuristics
+        KNOWN_DOCUMENT_TEMPLATE_IDS.has(template_id) ||
+        isLongTextOnlyTemplate ||
+        layoutMap?.archetype?.toLowerCase().includes('document') ||
+        layoutMap?.background?.type?.toLowerCase() === 'text' ||
+        (templateData?.deep_analysis?.template_type?.toLowerCase() || '').includes('document')
+      ));
 
     if (isDocumentTemplate && !KNOWN_DOCUMENT_TEMPLATE_IDS.has(template_id) && isLongTextOnlyTemplate) {
       console.log(`[staticsGeneration] 📄 Document detected via heuristic: text-only template + ${totalSwapTextLength} swap chars`);

@@ -59,12 +59,21 @@ function buildHtml(fields, product, dims) {
   // Scale font sizes relative to image width (base 1080px)
   const scale = dims.width / 1080;
 
-  const headlinePx    = Math.round(52 * scale);
-  const subheadPx     = Math.round(28 * scale);
-  const bodyPx        = Math.round(22 * scale);
-  const bulletPx      = Math.round(20 * scale);
-  const badgePx       = Math.round(18 * scale);
-  const ctaPx         = Math.round(26 * scale);
+  // Aspect ratio: portrait formats (4:5, 9:16) get tighter fonts + more line-height
+  // so the same body copy fills the taller frame naturally instead of leaving blank space.
+  const aspectRatio = dims.height / dims.width; // 1:1→1.0, 4:5→1.25, 9:16→1.78
+  // Compress fonts slightly for tall formats so more lines are visible
+  const densityFactor = aspectRatio > 1 ? Math.max(0.78, 1 / Math.sqrt(aspectRatio)) : 1;
+  // Expand line-height for tall formats to fill vertical space with existing text
+  const bodyLineHeight  = +(1.7 + Math.max(0, (aspectRatio - 1) * 0.65)).toFixed(2); // 1:1→1.7, 4:5→2.0, 9:16→2.2
+  const paragraphGapPx  = Math.round(20 * scale * (1 + Math.max(0, aspectRatio - 1) * 0.8));
+
+  const headlinePx    = Math.round(52 * scale * densityFactor);
+  const subheadPx     = Math.round(28 * scale * densityFactor);
+  const bodyPx        = Math.round(22 * scale * densityFactor);
+  const bulletPx      = Math.round(20 * scale * densityFactor);
+  const badgePx       = Math.round(18 * scale * densityFactor);
+  const ctaPx         = Math.round(26 * scale * densityFactor);
   const paddingPx     = Math.round(80 * scale);
 
   const bulletItems = bullets.map(b =>
@@ -94,12 +103,20 @@ function buildHtml(fields, product, dims) {
 
   .page {
     width: ${dims.width}px;
-    min-height: ${dims.height}px;
+    height: ${dims.height}px;
     display: flex;
     flex-direction: column;
     justify-content: space-between;
     padding: ${paddingPx}px;
     background: #ffffff;
+  }
+
+  .content {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    padding-bottom: ${paragraphGapPx}px;
   }
 
   .top-rule {
@@ -140,9 +157,9 @@ function buildHtml(fields, product, dims) {
   .body {
     font-family: Georgia, 'Times New Roman', Times, serif;
     font-size: ${bodyPx}px;
-    line-height: 1.7;
+    line-height: ${bodyLineHeight};
     color: #222222;
-    margin-bottom: ${Math.round(24 * scale)}px;
+    margin-bottom: ${paragraphGapPx}px;
   }
 
   .bullet-list {
