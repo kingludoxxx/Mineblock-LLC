@@ -13,6 +13,7 @@ import {
   isMetaAdsConfigured, createAdSet, createFlexibleAdCreative, createAd,
   uploadAdImageFromUrl, diagnoseMetaApp, switchAppToLiveMode
 } from '../services/metaAdsApi.js';
+import { sendSlackAlert } from '../utils/slackAlert.js';
 
 const router = Router();
 
@@ -182,6 +183,69 @@ function storeGeminiResult(taskId, result) {
   }
   geminiResults.set(taskId, result);
   setTimeout(() => geminiResults.delete(taskId), GEMINI_RESULT_TTL);
+}
+
+// ── P6: Generation monitoring ──────────────────────────────────────────────────
+// Rate-limit Slack quality alerts: max 1 per 30 minutes to avoid flooding.
+let lastQualityAlertAt = 0;
+const QUALITY_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
+
+/**
+ * Log a generation event to DB (fire-and-forget — never throws).
+ * Also sends Slack alerts on errors and (rate-limited) quality warnings.
+ */
+async function logGenerationEvent(event) {
+  const {
+    template_id, product_id, product_name, angle, provider,
+    ratios, duration_ms, claude_ms, status, error_message, quality_warning, retry_count,
+  } = event;
+
+  // ── DB log (non-blocking) ──
+  pgQuery(
+    `INSERT INTO statics_generation_events
+       (template_id, product_id, product_name, angle, provider,
+        ratios, duration_ms, claude_ms, status, error_message, quality_warning, retry_count)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+    [
+      template_id || null, product_id || null, product_name || null, angle || null,
+      provider || null,
+      ratios ? ratios : null,
+      duration_ms || null, claude_ms || null,
+      status, error_message || null, quality_warning || null,
+      retry_count || 0,
+    ]
+  ).catch(err => console.warn('[gen-monitor] DB log failed (non-blocking):', err.message));
+
+  // ── Slack: errors ──
+  if (status === 'error' && error_message) {
+    sendSlackAlert(`Generation failed: ${error_message}`, {
+      level: 'error',
+      source: 'statics-generation',
+      fields: {
+        Product: product_name || '—',
+        Angle: angle || '—',
+        Provider: provider || '—',
+        Duration: duration_ms ? `${(duration_ms / 1000).toFixed(1)}s` : '—',
+      },
+    }).catch(() => {}); // truly fire-and-forget
+  }
+
+  // ── Slack: quality warnings (rate-limited) ──
+  if (quality_warning && status !== 'error') {
+    const now = Date.now();
+    if (now - lastQualityAlertAt > QUALITY_ALERT_COOLDOWN_MS) {
+      lastQualityAlertAt = now;
+      sendSlackAlert(`Quality warning on generated ad`, {
+        level: 'warn',
+        source: 'statics-generation',
+        fields: {
+          Product: product_name || '—',
+          Angle: angle || '—',
+          Warning: quality_warning.slice(0, 200),
+        },
+      }).catch(() => {});
+    }
+  }
 }
 
 // ── Programmatic logo compositing via sharp (replaces Gemini watermark placement) ──
@@ -981,7 +1045,8 @@ router.post('/generate', authenticate, async (req, res) => {
     }
 
     const claudeData = await claudeRes.json();
-    console.log(`[staticsGeneration] ⏱ Claude finished in ${Date.now() - t0}ms`);
+    const claudeMs = Date.now() - t0; // P6: capture for monitoring
+    console.log(`[staticsGeneration] ⏱ Claude finished in ${claudeMs}ms`);
     storeGeminiResult(earlyTaskId, { status: 'processing', progress: 'Building image prompt...' });
     const rawText = claudeData.content?.[0]?.text;
     if (!rawText) throw new Error('Empty response from Claude');
@@ -1287,12 +1352,27 @@ router.post('/generate', authenticate, async (req, res) => {
             taskId: t.taskId, ratio: t.ratio,
             resultImageUrl: geminiResults.get(t.taskId)?.resultImageUrl || null,
           }));
+          // P6: collect any quality warnings from ratio tasks
+          const firstWarning = tasks.map(t => geminiResults.get(t.taskId)?.quality_warning).filter(Boolean)[0] || null;
           storeGeminiResult(earlyTaskId, {
             status: 'completed',
             tasks: allRatioResults,
             provider: 'playwright',
             claudeAnalysis: claudeResult || null,
             swapPairs,
+          });
+          // P6: log success event
+          logGenerationEvent({
+            template_id: template_id || null,
+            product_id: product?.id || null,
+            product_name: product?.name || null,
+            angle: angle || null,
+            provider: 'playwright',
+            ratios: tasks.map(t => t.ratio),
+            duration_ms: Date.now() - t0,
+            claude_ms: claudeMs || null,
+            status: 'success',
+            quality_warning: firstWarning,
           });
           console.log(`[staticsGeneration] earlyTaskId ${earlyTaskId} → completed (Playwright, ${tasks.length} ratio(s))`);
           return;
@@ -1628,6 +1708,27 @@ router.post('/generate', authenticate, async (req, res) => {
             claudeAnalysis: claudeResult || null,
             swapPairs,
           });
+
+          // P6: log success event
+          const combinedQualityWarning = tasks.map(t => geminiResults.get(t.taskId)?.quality_warning).filter(Boolean)[0] || null;
+          const totalRetries = tasks.reduce((sum, t) => {
+            const r = geminiResults.get(t.taskId);
+            return sum + (r?.textValidation?.attempts > 1 ? r.textValidation.attempts - 1 : 0);
+          }, 0);
+          logGenerationEvent({
+            template_id: template_id || null,
+            product_id: product?.id || null,
+            product_name: product?.name || null,
+            angle: angle || null,
+            provider: 'gemini',
+            ratios: tasks.map(t => t.ratio),
+            duration_ms: Date.now() - t0,
+            claude_ms: claudeMs || null,
+            status: ratioResults.some(r => r.status === 'rejected') ? 'partial' : 'success',
+            quality_warning: combinedQualityWarning,
+            retry_count: totalRetries,
+          });
+
           console.log(`[staticsGeneration] earlyTaskId ${earlyTaskId} updated → completed with ${tasks.length} ratio(s)`);
           return; // Exit background task — don't fall through to NanoBanana
         }
@@ -1748,6 +1849,19 @@ router.post('/generate', authenticate, async (req, res) => {
   } catch (err) {
     console.error('[staticsGeneration] /generate background error:', err);
     storeGeminiResult(earlyTaskId, { status: 'error', error: err.message });
+    // P6: log error event
+    logGenerationEvent({
+      template_id: template_id || null,
+      product_id: product?.id || null,
+      product_name: product?.name || null,
+      angle: angle || null,
+      provider: provider || 'unknown',
+      ratios: ratiosToGenerate || [],
+      duration_ms: Date.now() - t0,
+      claude_ms: typeof claudeMs !== 'undefined' ? claudeMs : null,
+      status: 'error',
+      error_message: err.message,
+    });
   } finally {
     clearTimeout(watchdog);
   }
@@ -3982,6 +4096,86 @@ router.get('/analytics/by-angle', authenticate, async (_req, res) => {
     }));
 
     res.json({ success: true, data, period_days: 90 });
+  } catch (err) {
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// P6: Generation health dashboard
+// GET /monitoring/health
+// Returns last 24h stats: error rate, quality warning rate, avg duration,
+// provider split, most recent error.
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/monitoring/health', authenticate, async (_req, res) => {
+  try {
+    // Check table exists first (migration 035 may not have run yet)
+    const tableCheck = await pgQuery(
+      `SELECT EXISTS (
+         SELECT FROM information_schema.tables
+         WHERE table_name = 'statics_generation_events'
+       ) AS exists`
+    ).catch(() => [{ exists: false }]);
+    if (!tableCheck[0]?.exists) {
+      return res.json({ success: true, data: { status: 'pending_migration', message: 'Migration 035 not yet applied' } });
+    }
+
+    const [summary, byProvider, recentErrors, recentWarnings] = await Promise.all([
+      pgQuery(`
+        SELECT
+          COUNT(*)::int                                             AS total,
+          COUNT(*) FILTER (WHERE status = 'error')::int           AS errors,
+          COUNT(*) FILTER (WHERE quality_warning IS NOT NULL)::int AS warnings,
+          COUNT(*) FILTER (WHERE status = 'success')::int         AS successes,
+          ROUND(AVG(duration_ms))::int                            AS avg_duration_ms,
+          ROUND(AVG(claude_ms))::int                              AS avg_claude_ms,
+          ROUND(AVG(retry_count), 2)                              AS avg_retries
+        FROM statics_generation_events
+        WHERE created_at >= NOW() - INTERVAL '24 hours'
+      `),
+      pgQuery(`
+        SELECT provider, COUNT(*)::int AS count,
+          ROUND(AVG(duration_ms))::int AS avg_ms
+        FROM statics_generation_events
+        WHERE created_at >= NOW() - INTERVAL '24 hours'
+        GROUP BY provider ORDER BY count DESC
+      `),
+      pgQuery(`
+        SELECT created_at, error_message, product_name, angle, provider
+        FROM statics_generation_events
+        WHERE status = 'error' AND created_at >= NOW() - INTERVAL '24 hours'
+        ORDER BY created_at DESC LIMIT 5
+      `),
+      pgQuery(`
+        SELECT created_at, quality_warning, product_name, angle
+        FROM statics_generation_events
+        WHERE quality_warning IS NOT NULL AND created_at >= NOW() - INTERVAL '24 hours'
+        ORDER BY created_at DESC LIMIT 5
+      `),
+    ]);
+
+    const s = summary[0] || {};
+    const errorRate = s.total > 0 ? Math.round((s.errors / s.total) * 100) : 0;
+    const warnRate  = s.total > 0 ? Math.round((s.warnings / s.total) * 100) : 0;
+
+    res.json({
+      success: true,
+      data: {
+        period: '24h',
+        total_generations: s.total || 0,
+        successes: s.successes || 0,
+        errors: s.errors || 0,
+        quality_warnings: s.warnings || 0,
+        error_rate_pct: errorRate,
+        warning_rate_pct: warnRate,
+        avg_duration_ms: s.avg_duration_ms || null,
+        avg_claude_ms: s.avg_claude_ms || null,
+        avg_retries: parseFloat(s.avg_retries) || 0,
+        by_provider: byProvider,
+        recent_errors: recentErrors,
+        recent_warnings: recentWarnings,
+      },
+    });
   } catch (err) {
     res.status(500).json({ success: false, error: { message: err.message } });
   }
