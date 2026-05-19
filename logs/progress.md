@@ -1424,3 +1424,43 @@ OUTPUT: MEMORY.md now 24303 bytes (was 25762). All other memory files (user_prof
 DECISIONS: DECISION MADE — did NOT update project_mineblock.md or project_active_work.md despite scheduled-task instructions to "update memory files", because (a) these files are already 25K+ tokens (over per-read limit) and (b) there is no new information since #724's sync. Adding more would only worsen the bloat. The size-trim of MEMORY.md was the only genuinely needed change.
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-05-19 07:26
+TASK: Statics generation 6.5→9.5 improvement — P1–P6 full implementation (commits 1bbe384, 2d54814, 05d3654)
+BUILT:
+  P1a — KNOWN_DOCUMENT_TEMPLATE_IDS expanded to 4 confirmed document templates. DB SELECT
+  on generate endpoint now fetches is_document_template + archetype; DB flag used as
+  authoritative source, heuristic as fallback.
+  P1b — Migration 034: is_document_template BOOLEAN, archetype VARCHAR(64), angle_tags TEXT[],
+  classification_method, classified_at on statics_templates. Seeds 4 known doc templates.
+  3 indexes (document partial, GIN angle_tags, unclassified partial).
+  P1c — server/scripts/classify-templates.mjs: one-time async job (Claude Haiku vision,
+  batches 10, 500ms delay). Classifies is_document_template / archetype / angle_tags.
+  Heuristic fallback. Usage: node server/scripts/classify-templates.mjs [--dry-run]
+  P2 — Expanded runVisionAudit() 3-section check: numeric rules, copy legibility, image
+  integrity. quality_warning stored in spy_creatives (ALTER TABLE ADD COLUMN). Orange ⚠️
+  badge on creative card + Quality Warning banner in CreativeDetailModal.
+  P3b — Parallel pre-fetch: Promise.all() for getCustomStaticsPrompts() +
+  fetchTemplateDataForGen() + fetchAndShrinkRefImage() saves ~500-1500ms per generation.
+  P4 — Playwright layout fix for 4:5 / 9:16: densityFactor compresses fonts on tall
+  formats; expanded bodyLineHeight; scaled paragraphGapPx; .page fixed height; .content
+  flex space-between.
+  P5 — TemplateSelectModal: ANGLE_TO_TAG_MAP + isAngleCompatible(). Compatible templates
+  sorted to top. Amber ⭐ Match badge + border on compatible cards. "Recommended for [angle]"
+  label. Uncategorized excluded from All view. Graceful degradation pre-classify.
+  P6 — Migration 035: statics_generation_events table. logGenerationEvent() non-blocking
+  helper hooked into Playwright + Gemini + catch. Slack error alert + rate-limited quality
+  alert (1/30min). GET /monitoring/health: 24h stats, by_provider, recent errors/warnings.
+TESTED:
+  Monitoring endpoint: POST /auth/login → GET /monitoring/health → 200 {"period":"24h",
+  "total_generations":0,...}. Migration 035 clean. Render deploy dep-d860vtu8bjmc73c7k73g
+  on commit 05d36541 → status: "live" finishedAt 07:25:46Z.
+  /playwright-test confirmed Chromium OK ({"success":true,"bufferBytes":5239}).
+OUTPUT: 3 commits pushed + live. P1–P6 all deployed. Health endpoint returns correct structure.
+DECISIONS:
+  DECISION MADE — quality_warning non-blocking, never retries generation, only flags.
+  DECISION MADE — Slack quality warning rate-limited 1/30min (prevent batch spam).
+  DECISION MADE — classify-templates.mjs manual run only (costs ~$0.10 API; run once).
+STATUS: COMPLETE
+---

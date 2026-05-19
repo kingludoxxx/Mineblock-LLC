@@ -441,7 +441,7 @@ COPY QUALITY SELF-CHECK (run this mentally before returning):
 5. ENERGY CHECK: Does the energy match the reference? Aggressive original = aggressive new copy. Calm original = calm new copy.
 6. ELEMENT COUNT CHECK: Same number of headlines, bullets, badges, stats as original. Don't add or remove.
 7. ⚠️ REFERENCE CONTAMINATION CHECK (MOST CRITICAL): Re-read EVERY adapted text. Does ANY word, phrase, or sentence STRUCTURE come from the reference ad? You should have written 100% fresh copy. If you see anything that looks like a modified version of the reference text, you FAILED. Delete it and write new copy from PRODUCT CONTEXT. Common failure: keeping the reference's sentence structure and just swapping nouns. "Real [X] shots w/o the [Y]" is a COPIED STRUCTURE even if the nouns changed.
-8. SPELLING & GRAMMAR CHECK: Every word must be spelled correctly. ALL text MUST be in ENGLISH.
+8. SPELLING & GRAMMAR CHECK: Read every single word in your output character-by-character before finalizing. These EXACT misspellings have appeared in previous generations and MUST NOT appear: "blockchalain" (→blockchain), "fincle" (→single), "simualed" (→simulated), "guarentee" (→guarantee), "experiance" (→experience), "minnig" (→mining), "reawrd" (→reward), "yoru" (→your), "teh" (→the), "recieve" (→receive). If you spot ANY misspelling, fix it immediately. ALL text MUST be in ENGLISH.
 9. BENEFIT CHECK: Does every bullet/stat state a benefit, not a spec? "144 attempts daily" = SPEC → "144 daily chances at $300K" = BENEFIT.
 10. ⚠️ CHARACTER COUNT CHECK: For EVERY element, count chars and compare to original slot size. Stay within ±20%. Short text renders perfectly; long text gets garbled. When in doubt, SHORTER.
 11. COMPLETE THOUGHT CHECK: Does every text end as a complete thought? "Crypto feels too" = INCOMPLETE → "No middleman fees" = COMPLETE.
@@ -727,35 +727,35 @@ export function buildSwapPairs(originalText, adaptedText, productName = '') {
 const ANGLE_SCENE_MAP = [
   {
     match: /anti.?fake|competitor.?callout/i,
-    scene: 'Dark tech-lab atmosphere. A screen or display in the background shows blockchain data / transaction ledger rows (no specific coins). Scientific, evidence-forward composition. Subtle blue-green data glow on background surfaces. Cool contrast between real product and a blurred/faded generic competitor device silhouette if space allows.',
+    scene: 'Dark tech-lab atmosphere with precision lighting. A curved monitor or display in the background shows a blockchain transaction ledger — rows of alphanumeric hashes, block heights, timestamps (no specific coin names). Scientific, evidence-forward composition. Deep navy-to-black gradient background with subtle blue-green data glow reflecting off surfaces. The product is sharply lit with a single overhead key light creating clean shadows. Cool, analytical, factual — the visual equivalent of showing receipts. If space allows, a blurred-out generic competitor device silhouette fades into the background at 30% opacity to contrast with the crisp product.',
   },
   {
     match: /skeptic.?to.?believer|blockchain.?proof/i,
-    scene: 'A desk or workspace background with a laptop or monitor showing a block-explorer interface (generic blockchain rows, no coin names). Cool blue digital tones. The scene feels like a private discovery moment — someone doing their own research. Analytical, deliberate, calm.',
+    scene: 'A wooden desk workspace — warm oak surface, natural side-light from an unseen window. A laptop or monitor in the background shows a block explorer interface: readable block height numbers (e.g. "Block #891,612"), transaction hash rows, timestamp column, reward column showing "3.125 BTC" — specific and legible, not blurred. A smartphone nearby shows a wallet notification. The scene feels like a private discovery moment: someone alone at their desk, doing their own research, finding the proof they needed. Cool daylight tones, analytical calm. The product sits center-left, connected via USB to the laptop.',
   },
   {
     match: /accidental.?winner|passive.?success/i,
-    scene: 'Cozy home environment — living room shelf, TV stand, home-office desk corner. Soft warm ambient light. The device is casually placed, not center-stage hero. Background shows normal home life: books, plants, soft furnishings. The scene communicates "set it and forget it" calm, not a flashy tech lab.',
+    scene: 'Cozy living room or home-office shelf — soft warm ambient lamp light, slightly warm color temperature. Bookshelves, a plant, a framed photo out of focus in the background. The product is casually placed on a shelf or side table, NOT the hero — it is one object among normal home life. The scene communicates "set it and forget it": this device has been quietly running while life happens around it. No lab equipment, no tech-dramatic lighting. Relaxed, domestic, real.',
   },
   {
     match: /hater.?deflection/i,
-    scene: 'Bold, confident dark background — deep charcoal or navy. The product sits front and center as the undeniable protagonist. Background may suggest a stat counter or tally display (abstract, not literal numbers). High contrast, unapologetic. The composition feels like "proof speaks louder than comments."',
+    scene: 'Bold, high-contrast dark background — deep charcoal or near-black with a single warm spotlight effect illuminating the product from above. The product is the sole, undeniable protagonist of the frame. Background suggestion: abstract upward-trending data line or tally-mark graphic at low opacity (20%), like a silent scoreboard. High contrast between bright product surface and dark surround. The composition feels unapologetic — "the results are already in." No clutter. No soft elements. Stark and definitive.',
   },
   {
     match: /apology|false.?confession/i,
-    scene: 'Clean, minimal, light or neutral background. No clutter, no hype elements. Simple, honest composition. White or very light grey background preferred. The scene feels like a direct, eye-level conversation — nothing to hide, everything transparent.',
+    scene: 'Clean, minimal, pure white or very light warm grey background. No gradients, no tech elements, no clutter. The product sits directly on a flat white surface with a soft natural shadow beneath it. Overhead or slight-angle softbox lighting — the same light used for product shots in honest editorial photography. The scene communicates full transparency: nothing hidden, nothing to hide. Like a product photo for a business that respects its customers enough to show them exactly what they are buying.',
   },
   {
     match: /ai.?chip|mechanism.?explainer|pov/i,
-    scene: 'Circuit board pattern or dark navy/black tech background with subtle PCB trace lines. The scene communicates engineering precision and mechanical reliability. Cool dark tones, possibly with a faint grid or chip-die pattern. The device is the only organic element in an otherwise technical environment.',
+    scene: 'Extreme close-up PCB and circuit-board atmosphere. Deep navy or black background with faint PCB trace lines, solder points, and copper pathway patterns as a subtle texture. The device is lit with a cool blue-white rim light that highlights its circuit-board visible areas. Background may include a faint hexagonal chip-die grid pattern or neural-network node illustration at very low opacity. The scene communicates engineering precision and internal mechanical intelligence — this is what the hardware looks like from the inside out.',
   },
   {
     match: /promo|deal|discount|limited.?time/i,
-    scene: 'Clean product-showcase environment with a hint of promotional energy — subtle warm amber or gold gradient behind the product, suggesting value and celebration. Price or offer elements feel natural in this setting. Not garish or sale-rack — premium promotional.',
+    scene: 'Clean product-hero setup with a hint of celebration — warm amber or gold gradient background, subtly brightening behind the product. The product is on a pristine white or light-grey surface with a soft shadow. Background atmosphere suggests value without screaming "sale rack" — think premium retail display, not clearance bin. Clean negative space around the product for text zones. Lighting: two-point product photography setup with slightly warm fill light.',
   },
   {
     match: /urgency|scarcity|last.?chance|almost.?gone/i,
-    scene: 'Dark background with a focused beam of light or spotlight effect on the product. The atmosphere is tense, action-ready. Deep charcoal, near-black, with a single warm or amber accent source. The composition communicates "this window closes — act now." No clutter; stark and decisive.',
+    scene: 'Dark, dramatic background — deep charcoal or navy with a tight spotlight beam hitting the product from directly above. The light falloff is sharp: bright product, immediately dark surround. The atmosphere is tense and decisive — this window closes. A very subtle warm amber rim light on one side of the product creates a sense of heat or urgency without being garish. Composition is stark and uncluttered. The single product under the spotlight communicates scarcity without needing to say it.',
   },
 ];
 
@@ -1421,5 +1421,150 @@ DO NOT ALTER:
 - Spell every preserved word exactly as shown in the reference.
 
 Output: same aspect ratio and composition as the reference, same or higher resolution. Result should look like a clean A/B variant of the reference — same structure, one isolated change.`;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DOCUMENT ARCHETYPE: Dedicated Claude prompt for long-form document-style ads
+// Used when isDocumentTemplate === true. No image analysis needed — generates
+// structured copy for Playwright HTML renderer from scratch.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function buildDocumentClaudePrompt(product, angle, customOverrides = null, layoutMap = null, templateData = null, angleData = null) {
+  const profile = product.profile || {};
+
+  if (profile.maxDiscount) profile.maxDiscount = sanitizeMaxDiscount(profile.maxDiscount);
+
+  const price = product.price;
+
+  const contextLines = [
+    `Product Name: ${product.name}`,
+    price && `Price: ${price}`,
+    product.description && `Description: ${product.description}`,
+    profile.tagline && `Tagline: ${profile.tagline}`,
+    profile.oneliner && `One-liner: ${profile.oneliner}`,
+    profile.bigPromise && `Core Promise: ${profile.bigPromise}`,
+    profile.mechanism && `How It Works: ${profile.mechanism}`,
+    profile.differentiator && `Why It's Different: ${profile.differentiator}`,
+    Array.isArray(profile.benefits) && profile.benefits.length > 0
+      && `Key Benefits: ${profile.benefits.map(b => typeof b === 'object' ? (b.text || b.name || String(b)) : b).join(', ')}`,
+    profile.painPoints && `Customer Pain Points: ${profile.painPoints}`,
+    profile.customerAvatar && `Target Customer: ${profile.customerAvatar}`,
+    profile.customerFrustration && `Customer Frustration: ${profile.customerFrustration}`,
+    profile.customerDream && `Dream Outcome: ${profile.customerDream}`,
+    profile.voice && `Brand Voice/Tone: ${profile.voice}`,
+    profile.guarantee && `Guarantee: ${profile.guarantee}`,
+    profile.offerDetails && `Offer Details: ${profile.offerDetails}`,
+    profile.discountCodes && `Discount Code: ${profile.discountCodes}`,
+    profile.maxDiscount && `Max Discount %: ${profile.maxDiscount}`,
+    profile.complianceRestrictions && `NEVER CLAIM: ${profile.complianceRestrictions}`,
+  ].filter(Boolean).map(l => `- ${l}`).join('\n');
+
+  const mandatoryRules = [
+    price && `PRICE: The ONLY valid price is ${price}. Never invent, change, or omit it.`,
+    profile.discountCodes && `DISCOUNT CODE: Use ONLY "${profile.discountCodes}". Never invent codes.`,
+    profile.maxDiscount && `MAX DISCOUNT: ${profile.maxDiscount} — use ONLY for price/discount context. NEVER as reward share or earnings percentage.`,
+    `REWARD % IS ALWAYS 100%: Solo mining means the user keeps 100% of every block reward. Never write any reward-share % other than 100%. Always "100%" or "full block reward".`,
+    `NO FABRICATED SOCIAL PROOF: Never invent review counts, user counts, star ratings, or any numeric social-proof claim.`,
+    `NO FABRICATED STATISTICS: Never invent study results, efficacy percentages, retention figures, or clinical claims.`,
+    `NO FABRICATED SCARCITY: Never invent stock counts, units remaining, or countdown timers.`,
+    profile.complianceRestrictions && `COMPLIANCE — NEVER CLAIM: ${profile.complianceRestrictions}`,
+    `NO AI CLICHÉS: Never use "game-changer", "revolutionary", "cutting-edge", "seamlessly", "elevate", "unlock your potential", "transform your", "leverage", "empower", "delve into", "journey".`,
+    `PERFECT SPELLING — READ EVERY WORD: After writing, go back and read each word character-by-character. These exact errors MUST NOT appear: "blockchalain"→"blockchain", "fincle"→"single", "simualed"→"simulated", "guarentee"→"guarantee", "experiance"→"experience", "minnig"→"mining", "reawrd"→"reward". Fix any spelling error before returning JSON.`,
+    `GRAMMATICAL ENGLISH ONLY: Every sentence must be grammatically complete and logical. Read each sentence aloud mentally before finalizing.`,
+  ].filter(Boolean).map(l => `⚠️ ${l}`).join('\n');
+
+  const angleSection = (() => {
+    if (angleData && typeof angleData === 'object' && angleData.name) {
+      const parts = [
+        `\n\n${'━'.repeat(60)}`,
+        `🎯 DOCUMENT ANGLE: "${angleData.name}"${angleData.funnel_stage ? ` [${angleData.funnel_stage} funnel]` : ''}`,
+        `${'━'.repeat(60)}`,
+      ];
+      if (angleData.lead_with) parts.push(`LEAD WITH:\n${angleData.lead_with}`);
+      if (angleData.copy_directives || angleData.hook_strategy) {
+        parts.push(`COPYWRITING APPROACH:\n${angleData.copy_directives || angleData.hook_strategy}`);
+      }
+      if (angleData.tone) parts.push(`TONE: ${angleData.tone}`);
+      if (Array.isArray(angleData.required_elements) && angleData.required_elements.length > 0) {
+        parts.push(`REQUIRED ELEMENTS:\n${angleData.required_elements.map(e => `- ${e}`).join('\n')}`);
+      }
+      if (Array.isArray(angleData.sticky_note_text) && angleData.sticky_note_text.length > 0) {
+        parts.push(`HANDWRITTEN NOTE TEXT (your body copy must build toward and support these lines):\n${angleData.sticky_note_text.map(l => `  "${l}"`).join('\n')}`);
+      }
+      parts.push(`${'━'.repeat(60)}\n`);
+      return parts.join('\n');
+    }
+    return angle ? `\n\n🎯 DOCUMENT ANGLE: "${angle}"\n` : '';
+  })();
+
+  return `You are writing copy for a DOCUMENT-STYLE static ad for ${product.name}. This ad renders as a clean white typographic document — like a formal letter, official statement, or direct-response print ad. No product images. Only text, rendered by a professional HTML/CSS layout engine.${angleSection}
+YOUR JOB:
+Write compelling, perfectly spelled, grammatically correct document copy. Every word matters — this is the complete text of a full-page ad.
+
+PRODUCT CONTEXT:
+${contextLines}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🔴 MANDATORY RULES — VIOLATION = FAILURE (read before writing anything):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+${mandatoryRules}
+
+COPY STRUCTURE:
+
+HEADLINE (5-10 words, uppercase):
+The core proposition or angle hook. Punchy, specific, immediately interesting.
+Good examples:
+- "THE SOLO BITCOIN MINER THAT COSTS $1/MONTH TO RUN"
+- "WE NEED TO COME CLEAN ABOUT BITCOIN MINING FEES"
+- "EVERY MINING POOL IS TAKING MONEY THAT IS YOURS"
+- "ONE DEVICE. ONE WALLET. 100% OF THE REWARD."
+
+SUBHEADLINE (10-25 words, one complete sentence):
+Amplifies the headline with context or the "why this matters" bridge.
+
+BODY COPY (2-4 short paragraphs, 100-250 words TOTAL):
+- Each paragraph: 2-4 sentences. Short sentences. Clear language.
+- USE CONCRETE SPECIFICS: actual price, wattage, block reward, mining frequency, guarantee period from the product context above.
+- Address the customer's real frustration, then offer the honest solution.
+- Write like a confident founder speaking directly to a skeptical customer.
+- Each paragraph advances an argument: Opening claim → Problem → Solution → Proof → Invitation.
+- ZERO vague benefit-speak. "Better results" = WRONG. "$1/month in electricity" = RIGHT.
+- NO paragraph breaks represented as literal "\\n\\n" in the string — write actual paragraph text separated by real newlines in the JSON string value.
+
+BULLETS (2-4 items, under 15 words each):
+Specific, concrete proof points or key benefits.
+BAD: "Innovative technology for better mining results"
+GOOD: "Attempts a block 144 times daily — 144 chances at the full reward"
+
+BADGES (1-3 items, under 8 words each):
+Short credibility or offer badges matching ACTUAL product offer.
+Examples: "30-Day Money-Back Guarantee", "Free Shipping Included", "2-Year Warranty".
+Leave as empty array [] if no valid badges exist in product context.
+
+CTA (5-12 words):
+Simple, direct action.
+Examples: "Try it risk-free — 30-day money-back guarantee." or "Order at ${price ? `${price} — free shipping included.` : 'mineblock.co'}"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+QUALITY GATE — verify each item before returning JSON:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. SPELLING: Read every word character-by-character. Is every word spelled correctly in English?
+2. GRAMMAR: Does every sentence form a complete, logical thought?
+3. SPECIFICITY: Is every claim backed by a specific number from the product context?
+4. ANGLE: Does the headline immediately execute the "${angleData?.name || angle || 'document'}" angle?
+5. NO AI LANGUAGE: Scan for banned words (game-changer, revolutionary, cutting-edge, seamlessly). Remove any found.
+6. NO FABRICATION: Any invented social proof, statistics, or offer structures not in product context? Remove.
+7. PRICE: Is the price exactly ${price || 'as specified in product context'}? No other price appears anywhere?
+8. LENGTH: Is body copy between 100-250 words? Is each bullet under 15 words?
+
+Return ONLY valid JSON (no markdown, no code fences):
+{
+  "headline": "SHORT BOLD HEADLINE IN CAPS — 5-10 words",
+  "subheadline": "One sentence subheadline that amplifies the headline — 10-25 words",
+  "body": "Full body copy here. Write 2-4 short paragraphs. Separate paragraphs with a blank line (\\n\\n in JSON). Total 100-250 words. Perfectly spelled. Grammatically correct.",
+  "bullets": ["First specific proof point under 15 words", "Second specific proof point"],
+  "badges": ["Badge matching real product offer"],
+  "cta": "Direct call to action 5-12 words"
+}`;
 }
 

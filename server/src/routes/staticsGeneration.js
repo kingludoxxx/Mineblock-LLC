@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { buildClaudePrompt, buildNanoBananaPrompt, buildSwapPairs, buildLayoutAnalysisPrompt, buildIterationPrompt, buildIterationNanoBananaPrompt, buildProductSwapPrompt, buildTextPolishPrompt } from '../utils/staticsPrompts.js';
+import { buildClaudePrompt, buildDocumentClaudePrompt, buildNanoBananaPrompt, buildSwapPairs, buildLayoutAnalysisPrompt, buildIterationPrompt, buildIterationNanoBananaPrompt, buildProductSwapPrompt, buildTextPolishPrompt } from '../utils/staticsPrompts.js';
 import { overlayText } from '../utils/textOverlay.js';
 import { pgQuery } from '../db/pg.js';
 import { authenticate } from '../middleware/auth.js';
@@ -14,6 +14,16 @@ import {
   uploadAdImageFromUrl, diagnoseMetaApp, switchAppToLiveMode
 } from '../services/metaAdsApi.js';
 import { sendSlackAlert } from '../utils/slackAlert.js';
+
+// Confirmed document-archetype template IDs — route to Playwright instead of Gemini.
+// Add IDs here whenever a template is confirmed to be text-background (garbles via Gemini).
+// Authoritative source will be DB is_document_template flag once migration 034 runs.
+const KNOWN_DOCUMENT_TEMPLATE_IDS = new Set([
+  '9247a5c9-1445-4ed9-abc5-4bfcdf185c88', // OFFICIAL APOLOGY STATEMENT (Rosabella ref)
+  '4897d3c0-c557-4d42-8c37-cb88c24349aa', // Bold Claim / document-style (confirmed hallucination 2026-05-19)
+  '52378b84-e04d-4277-916f-32a06f99417b', // Problem + Solution / document-style (confirmed hallucination 2026-05-19)
+  '8cf2cdec-d373-4eea-a87a-12fad9b0ff49', // Social Proof / document-style (confirmed hallucination 2026-05-19)
+]);
 
 const router = Router();
 
@@ -634,6 +644,14 @@ async function runVisionAudit(buffer, mimeType, expectedPrice, expectedMaxDiscou
       const expectedHeadline = String(parsedAdapted.headline).slice(0, 60);
       copyRules.push(`main headline should read approximately: "${expectedHeadline}..." — flag if it is garbled, misspelled, or replaced with completely different text`);
     }
+    if (parsedAdapted.body) {
+      const expectedBodyStart = String(parsedAdapted.body).slice(0, 80);
+      copyRules.push(`body text should begin with approximately: "${expectedBodyStart}..." — flag if garbled, contains nonsense words, obvious misspellings (e.g. "blockchalain", "simualed", "fincle"), or doesn't form coherent English sentences`);
+    }
+    if (Array.isArray(parsedAdapted.bullets) && parsedAdapted.bullets.length > 0) {
+      const firstBullet = String(parsedAdapted.bullets[0]).slice(0, 60);
+      copyRules.push(`first bullet point should read approximately: "${firstBullet}" — flag if garbled or contains obvious spelling errors`);
+    }
 
     const prompt = `You are a quality assurance auditor for cryptocurrency mining advertisement images.
 
@@ -991,6 +1009,139 @@ router.post('/generate', authenticate, async (req, res) => {
     const hasCustomOverrides = !!(customPrompts?.claudeAnalysis?.headlineRules || customPrompts?.claudeAnalysis?.productIdentity || customPrompts?.claudeAnalysis?.bannedPhrases);
     console.log(`[staticsGeneration] Custom prompt overrides: ${hasCustomOverrides ? 'YES (custom prompts from DB)' : 'NO (using defaults)'}`);
 
+    // Shared retry/timeout constants used by both the early document path and the main Claude call
+    const RETRY_DELAYS = [0, 8000, 20000, 45000];
+    const RETRYABLE_STATUSES = [429, 503, 529];
+    const CLAUDE_CALL_TIMEOUT_MS = 90000; // 90s — prevents hanging until the 8-min watchdog
+
+    // ── Early document template detection (runs before Claude call) ──────
+    // For document-archetype templates, Claude does NOT need to see the reference
+    // image. We use buildDocumentClaudePrompt (structured long-form copy) instead
+    // of buildClaudePrompt (short-form image-ad slots). The garbled output seen
+    // previously (e.g. "blockchalain", "simualed") was caused by using the wrong
+    // prompt type for these templates.
+    {
+      const isDocumentTemplateEarly =
+        dbIsDocumentTemplate === true ||
+        (dbIsDocumentTemplate === null && (
+          KNOWN_DOCUMENT_TEMPLATE_IDS.has(template_id) ||
+          layoutMap?.archetype?.toLowerCase().includes('document') ||
+          layoutMap?.background?.type?.toLowerCase() === 'text' ||
+          (templateData?.deep_analysis?.template_type?.toLowerCase() || '').includes('document')
+        ));
+
+      if (isDocumentTemplateEarly) {
+        console.log(`[staticsGeneration] 📄 Document template detected early (id=${template_id}, dbFlag=${dbIsDocumentTemplate}) — using buildDocumentClaudePrompt`);
+        storeGeminiResult(earlyTaskId, { status: 'processing', progress: 'Writing document copy...' });
+
+        const t0doc = Date.now();
+        const docPromptText = buildDocumentClaudePrompt(product, angle, customPrompts, layoutMap, templateData, angle_data || null);
+        const docClaudeBody = {
+          model: 'claude-sonnet-4-6',
+          max_tokens: 2000,
+          temperature: 0.3,
+          messages: [{ role: 'user', content: [{ type: 'text', text: docPromptText }] }],
+        };
+
+        let docClaudeRes;
+        for (let attempt = 0; attempt <= RETRY_DELAYS.length; attempt++) {
+          const ctrl = new AbortController();
+          const tid = setTimeout(() => ctrl.abort(new Error('Claude document call timed out')), CLAUDE_CALL_TIMEOUT_MS);
+          try {
+            docClaudeRes = await fetch(CLAUDE_API_URL, {
+              method: 'POST',
+              headers: { 'x-api-key': ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' },
+              body: JSON.stringify(docClaudeBody),
+              signal: ctrl.signal,
+            });
+          } finally { clearTimeout(tid); }
+          if (docClaudeRes.ok) break;
+          if (!RETRYABLE_STATUSES.includes(docClaudeRes.status) || attempt === RETRY_DELAYS.length) {
+            const errText = await docClaudeRes.text();
+            throw new Error(`Claude document API error ${docClaudeRes.status}: ${errText.slice(0, 300)}`);
+          }
+          if (RETRY_DELAYS[attempt] > 0) await sleep(RETRY_DELAYS[attempt]);
+        }
+
+        const docData = await docClaudeRes.json();
+        const docClaudeMs = Date.now() - t0doc;
+        const docRaw = docData.content?.[0]?.text;
+        if (!docRaw) throw new Error('Empty response from Claude document call');
+        const docJsonMatch = docRaw.match(/\{[\s\S]*\}/);
+        if (!docJsonMatch) throw new Error('Could not parse JSON from Claude document response');
+        let docAdaptedText;
+        try { docAdaptedText = JSON.parse(docJsonMatch[0]); }
+        catch { docAdaptedText = JSON.parse(docJsonMatch[0].replace(/,\s*([}\]])/g, '$1')); }
+
+        console.log(`[staticsGeneration] 📄 Document copy ready — headline: "${(docAdaptedText.headline || '').slice(0, 60)}", body length: ${(docAdaptedText.body || '').length} chars`);
+
+        const docClaudeResult = {
+          adapted_text: docAdaptedText,
+          original_text: {},
+          product_count: 0,
+          has_competitor_logo: false,
+          _refHasProduct: false,
+        };
+
+        try {
+          const { renderDocument } = await import('../services/playwrightRenderer.js');
+          const DOC_RATIO_DIMS = { '1:1': { width: 1080, height: 1080 }, '4:5': { width: 1080, height: 1350 }, '9:16': { width: 1080, height: 1920 } };
+          const docRatiosToGenerate = ['1:1', '4:5', '9:16'];
+
+          const docLogoRaw = product.logo_url || (Array.isArray(product.logos) ? product.logos[0] : null) || null;
+          const docLogoUrl = docLogoRaw ? await ensureHttpUrlGlobal(docLogoRaw, 'doc-logo') : null;
+
+          const docRatioResults = await Promise.allSettled(
+            docRatiosToGenerate.map(async (r) => {
+              const dims = DOC_RATIO_DIMS[r] || { width: 1080, height: 1080 };
+              let pngBuf = await renderDocument(docClaudeResult, product, angle_data || null, layoutMap, dims);
+              if (docLogoUrl) pngBuf = await compositeLogoWithSharp(pngBuf, docLogoUrl);
+              let resultImageUrl;
+              if (isR2Configured()) {
+                resultImageUrl = await uploadBuffer(pngBuf, `statics-playwright/${crypto.randomUUID()}.png`, 'image/png');
+              } else {
+                const tmpId = await storeTempImage(pngBuf, 'image/png');
+                resultImageUrl = `${process.env.RENDER_EXTERNAL_URL || `http://localhost:${process.env.PORT || 3000}`}/api/v1/statics-generation/tmp-img/${tmpId}`;
+              }
+              const visionWarning = await runVisionAudit(pngBuf, 'image/png', product.price, product.profile?.maxDiscount, docAdaptedText, product.name);
+              const taskId = `playwright-${crypto.randomUUID()}`;
+              storeGeminiResult(taskId, { status: 'completed', resultImageUrl, provider: 'playwright', model: 'playwright-chromium', claudeAnalysis: docClaudeResult, quality_warning: visionWarning || null });
+              console.log(`[staticsGeneration] 📄 Playwright ${r}: ${taskId}`);
+              return { taskId, ratio: r };
+            })
+          );
+
+          const docTasks = docRatioResults.filter(r => r.status === 'fulfilled').map(r => r.value);
+          docRatioResults.filter(r => r.status === 'rejected').forEach((r, i) =>
+            console.error(`[staticsGeneration] 📄 Playwright ${docRatiosToGenerate[i]} failed: ${r.reason?.message}`)
+          );
+
+          if (docTasks.length > 0) {
+            const allDocRatios = docTasks.map(t => ({
+              taskId: t.taskId, ratio: t.ratio,
+              resultImageUrl: geminiResults.get(t.taskId)?.resultImageUrl || null,
+            }));
+            const docFirstWarning = docTasks.map(t => geminiResults.get(t.taskId)?.quality_warning).filter(Boolean)[0] || null;
+            storeGeminiResult(earlyTaskId, { status: 'completed', tasks: allDocRatios, provider: 'playwright', claudeAnalysis: docClaudeResult, swapPairs: [] });
+            logGenerationEvent({
+              template_id: template_id || null, product_id: product?.id || null,
+              product_name: product?.name || null, angle: angle || null,
+              provider: 'playwright', ratios: docTasks.map(t => t.ratio),
+              duration_ms: Date.now() - t0doc, claude_ms: docClaudeMs,
+              status: 'success', quality_warning: docFirstWarning,
+            });
+            console.log(`[staticsGeneration] 📄 Document generation complete — ${docTasks.length} ratios, ${docClaudeMs}ms Claude`);
+          }
+        } catch (docPwErr) {
+          console.error(`[staticsGeneration] 📄 Playwright document render failed: ${docPwErr.message}`);
+          storeGeminiResult(earlyTaskId, { status: 'error', error: `Document render failed: ${docPwErr.message}` });
+        }
+        clearTimeout(watchdog);
+        return;
+      }
+    }
+    // ── End early document template branch ─────────────────────────────────
+
     // ── Step B: Call Claude to analyze the reference ad ─────────────────
     const t0 = Date.now();
     const claudeBody = {
@@ -1008,9 +1159,6 @@ router.post('/generate', authenticate, async (req, res) => {
       ],
     };
 
-    const RETRY_DELAYS = [0, 8000, 20000, 45000];
-    const RETRYABLE_STATUSES = [429, 503, 529];
-    const CLAUDE_CALL_TIMEOUT_MS = 90000; // 90s — prevents hanging until the 8-min watchdog
     let claudeRes;
     for (let attempt = 0; attempt <= RETRY_DELAYS.length; attempt++) {
       const claudeAbortController = new AbortController();
@@ -1265,15 +1413,7 @@ router.post('/generate', authenticate, async (req, res) => {
     // copy. Bypass Gemini entirely: use Playwright to render a clean HTML/CSS
     // document at exact pixel dimensions. Sharp composites the brand logo after.
 
-    // Hardcoded list of confirmed document-style template IDs that lack archetype
-    // metadata in the DB. Add here whenever a template is confirmed text-background.
-    // TODO: replace with DB is_document_template flag once classification job runs (P1b).
-    const KNOWN_DOCUMENT_TEMPLATE_IDS = new Set([
-      '9247a5c9-1445-4ed9-abc5-4bfcdf185c88', // OFFICIAL APOLOGY STATEMENT (Rosabella ref)
-      '4897d3c0-c557-4d42-8c37-cb88c24349aa', // Bold Claim / document-style (confirmed hallucination 2026-05-19)
-      '52378b84-e04d-4277-916f-32a06f99417b', // Problem + Solution / document-style (confirmed hallucination 2026-05-19)
-      '8cf2cdec-d373-4eea-a87a-12fad9b0ff49', // Social Proof / document-style (confirmed hallucination 2026-05-19)
-    ]);
+    // KNOWN_DOCUMENT_TEMPLATE_IDS is defined at module scope (see top of file).
 
     // Heuristic: text-only (no product) + very long swap text = letter-style document.
     // Social ads: ~200–500 chars total. Document ads: 2000+ chars.
