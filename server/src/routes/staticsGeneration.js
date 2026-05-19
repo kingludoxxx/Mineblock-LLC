@@ -524,36 +524,76 @@ async function shrinkForClaude(base64, mediaType) {
 }
 
 /**
- * Fix C: Post-generation Claude Vision audit.
- * Extracts all prices/percentages from the generated image and flags mismatches
- * against the expected product values before the image reaches the review queue.
- * Returns a warning string if mismatches found, null if clean or on error.
+ * P2: Post-generation Claude Vision audit.
+ * Checks the generated image for:
+ *   1. Price / percentage drift (e.g. "58%" instead of "100%")
+ *   2. Product name presence — is it visible anywhere in the ad?
+ *   3. Headline legibility — does the top headline match the expected copy?
+ *   4. Blank / corrupted image detection
+ *
+ * Returns a warning string if issues are found, null if clean or on error.
+ * Non-blocking: any failure silently returns null so generation always ships.
+ *
+ * @param {Buffer} buffer         - Final image buffer (post logo composite)
+ * @param {string} mimeType       - e.g. 'image/png'
+ * @param {string} expectedPrice  - Product retail price (e.g. '$59.99')
+ * @param {string} expectedMaxDiscount - Product max discount (e.g. '20%')
+ * @param {object} adaptedText    - Claude's adapted_text: { headline, subheadline, body, cta, ... }
+ * @param {string} productName    - Product name to verify presence of
  */
-async function runVisionAudit(buffer, mimeType, expectedPrice, expectedMaxDiscount) {
+async function runVisionAudit(buffer, mimeType, expectedPrice, expectedMaxDiscount, adaptedText, productName) {
   if (!ANTHROPIC_API_KEY) return null;
   try {
     const b64raw = buffer.toString('base64');
     const { base64, mediaType } = await shrinkForClaude(b64raw, mimeType);
 
-    const expectedList = [];
-    if (expectedPrice) expectedList.push(`product price: ${expectedPrice}`);
+    // ── Section 1: Numeric rules (price + percentage compliance) ──
+    const numericRules = [];
+    if (expectedPrice) numericRules.push(`product price must be exactly: ${expectedPrice}`);
     if (expectedMaxDiscount) {
       const pctMatch = String(expectedMaxDiscount).match(/(\d+(?:\.\d+)?)\s*%/);
-      if (pctMatch) expectedList.push(`max discount: ${pctMatch[1]}% (never use in reward/earnings slot — that must always say 100%)`);
+      if (pctMatch) numericRules.push(`max discount: ${pctMatch[1]}% (never use in reward/earnings slot — that must always say 100%)`);
     }
-    expectedList.push('reward/earnings share percentage: 100%');
+    numericRules.push('reward/earnings share percentage: 100% (flag if any different number appears in an earnings/reward context)');
 
-    const prompt = `You are a compliance auditor for direct-response cryptocurrency mining ad images.
+    // ── Section 2: Copy legibility rules ──
+    const copyRules = [];
+    const parsedAdapted = typeof adaptedText === 'string'
+      ? (() => { try { return JSON.parse(adaptedText); } catch { return {}; } })()
+      : (adaptedText || {});
 
-List every price ($X.XX), percentage (X%), and monetary value visible anywhere in this image — headline, body, badges, fine print, everywhere.
+    if (productName) {
+      copyRules.push(`product name "${productName}" should appear somewhere in the ad (check headline, body, badges)`);
+    }
+    if (parsedAdapted.headline) {
+      // Only check first 60 chars to avoid over-matching on long copy
+      const expectedHeadline = String(parsedAdapted.headline).slice(0, 60);
+      copyRules.push(`main headline should read approximately: "${expectedHeadline}..." — flag if it is garbled, misspelled, or replaced with completely different text`);
+    }
 
-Then check each value against these expected rules:
-${expectedList.map((e, i) => `${i + 1}. ${e}`).join('\n')}
+    const prompt = `You are a quality assurance auditor for cryptocurrency mining advertisement images.
+
+TASK 1 — Numeric compliance:
+List every price ($X.XX), percentage (X%), and monetary value visible anywhere in this image.
+Check each against these rules:
+${numericRules.map((r, i) => `${i + 1}. ${r}`).join('\n')}
+
+TASK 2 — Copy legibility:
+Check whether the following expected copy elements are present and readable:
+${copyRules.length > 0 ? copyRules.map((r, i) => `${i + 1}. ${r}`).join('\n') : '(no copy rules to check)'}
+
+TASK 3 — Image integrity:
+Flag if the image appears blank, mostly white/black, or severely corrupted.
 
 Return ONLY valid JSON, no markdown:
-{"found": ["$59.99", "100%", ...], "mismatches": ["found '58%' in reward slot but expected 100%", ...]}
+{
+  "found_values": ["$59.99", "100%"],
+  "mismatches": ["found '58%' in reward slot but expected 100%"],
+  "copy_issues": ["product name not visible anywhere", "headline appears garbled: 'Mn1e bLcock' instead of 'Mine Bitcoin'"],
+  "integrity_ok": true
+}
 
-If no mismatches return: {"found": [...], "mismatches": []}`;
+If no issues: set mismatches=[], copy_issues=[], integrity_ok=true`;
 
     const resp = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -564,7 +604,7 @@ If no mismatches return: {"found": [...], "mismatches": []}`;
       },
       body: JSON.stringify({
         model: 'claude-haiku-4-5-20251001',
-        max_tokens: 500,
+        max_tokens: 600,
         messages: [{ role: 'user', content: [
           { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } },
           { type: 'text', text: prompt },
@@ -581,12 +621,19 @@ If no mismatches return: {"found": [...], "mismatches": []}`;
     const jsonMatch = raw.match(/\{[\s\S]*\}/);
     if (!jsonMatch) return null;
     const result = JSON.parse(jsonMatch[0]);
-    if (result.mismatches?.length > 0) {
-      const summary = result.mismatches.join('; ');
-      console.warn(`[vision-audit] ⚠️ Price/percentage mismatches detected: ${summary}`);
-      return `Vision audit flagged: ${summary}`;
+
+    const allIssues = [
+      ...(result.mismatches || []),
+      ...(result.copy_issues || []),
+      ...(!result.integrity_ok ? ['Image appears blank or corrupted'] : []),
+    ].filter(Boolean);
+
+    if (allIssues.length > 0) {
+      const summary = allIssues.join('; ');
+      console.warn(`[vision-audit] ⚠️ Issues detected: ${summary}`);
+      return `Vision audit: ${summary}`;
     }
-    console.log(`[vision-audit] ✅ All values correct: ${(result.found || []).join(', ')}`);
+    console.log(`[vision-audit] ✅ Clean — values: ${(result.found_values || []).join(', ')}`);
     return null;
   } catch (err) {
     console.warn(`[vision-audit] Failed (non-blocking): ${err.message}`);
@@ -1197,7 +1244,11 @@ router.post('/generate', authenticate, async (req, res) => {
               resultImageUrl = `${srvUrl}/api/v1/statics-generation/tmp-img/${tmpId}`;
             }
 
-            const visionWarning = await runVisionAudit(finalBuffer, 'image/png', product.price, product.profile?.maxDiscount);
+            const visionWarning = await runVisionAudit(
+              finalBuffer, 'image/png',
+              product.price, product.profile?.maxDiscount,
+              claudeResult?.adapted_text, product.name,
+            );
             const taskId = `playwright-${crypto.randomUUID()}`;
             storeGeminiResult(taskId, {
               status: 'completed',
@@ -1494,12 +1545,14 @@ router.post('/generate', authenticate, async (req, res) => {
               resultImageUrl = `${srvUrl}/api/v1/statics-generation/tmp-img/${tmpId}`;
             }
 
-            // Fix C: post-generation vision audit — catch price/percentage drift before review queue
+            // P2: post-generation vision audit — catch price/copy drift before review queue
             const visionWarning = await runVisionAudit(
               finalBuffer,
               finalMimeType,
               product.price,
               product.profile?.maxDiscount,
+              claudeResult?.adapted_text,
+              product.name,
             );
             const textWarning = validation && !validation.passed ? summarizeTextValidation(validation) : null;
             // Surface product presence failure in the warning shown to reviewers
@@ -2390,6 +2443,9 @@ async function ensureCreativesTable() {
   await pgQuery('ALTER TABLE spy_creatives ADD COLUMN IF NOT EXISTS iteration_change_description TEXT').catch(() => {});
   await pgQuery(`CREATE INDEX IF NOT EXISTS idx_spy_creatives_parent_ref ON spy_creatives(parent_creative_id_ref)`).catch(() => {});
 
+  // ── Quality gate ──
+  await pgQuery('ALTER TABLE spy_creatives ADD COLUMN IF NOT EXISTS quality_warning TEXT').catch(() => {});
+
   // ── Multi-ratio group tracking ──
   await pgQuery('ALTER TABLE spy_creatives ADD COLUMN IF NOT EXISTS group_id UUID').catch(() => {});
   await pgQuery(`CREATE INDEX IF NOT EXISTS idx_spy_creatives_group_id ON spy_creatives(group_id)`).catch(() => {});
@@ -2439,7 +2495,7 @@ router.get('/creatives', authenticate, async (req, res) => {
   try {
     await ensureCreativesTable();
     const { product_id, status, pipeline = 'standard' } = req.query;
-    let query = "SELECT id, product_id, product_name, image_url, thumbnail_url, source_label, angle, archetype, aspect_ratio, status, reference_thumbnail, reference_name, parent_creative_id, pipeline, copy_set_id, meta_ad_ids, meta_image_hash, generated_copy, parent_creative_id_ref, parent_im_number, im_number, iteration_change_description, created_at FROM spy_creatives WHERE pipeline = $1";
+    let query = "SELECT id, product_id, product_name, image_url, thumbnail_url, source_label, angle, archetype, aspect_ratio, status, reference_thumbnail, reference_name, parent_creative_id, pipeline, copy_set_id, meta_ad_ids, meta_image_hash, generated_copy, parent_creative_id_ref, parent_im_number, im_number, iteration_change_description, quality_warning, created_at FROM spy_creatives WHERE pipeline = $1";
     const params = [pipeline];
     let idx = 2;
 
@@ -2873,7 +2929,7 @@ router.post('/creatives', authenticate, async (req, res) => {
       reference_template_id, reference_name, reference_thumbnail, adapted_text,
       claude_analysis, swap_pairs, generation_prompt, generation_task_id,
       source_label, pipeline, status = 'review',
-      group_id,
+      group_id, quality_warning,
     } = req.body;
 
     if (!image_url) return res.status(400).json({ success: false, error: { message: 'image_url is required' } });
@@ -2912,8 +2968,9 @@ router.post('/creatives', authenticate, async (req, res) => {
         (product_id, product_name, angle, aspect_ratio, image_url,
          reference_image_id, source_label, reference_name, reference_thumbnail,
          adapted_text, claude_analysis, swap_pairs, generation_prompt,
-         generation_task_id, pipeline, status, group_id, generated_copy, copy_set_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+         generation_task_id, pipeline, status, group_id, generated_copy, copy_set_id,
+         quality_warning)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
        RETURNING *`,
       [
         product_id || null,
@@ -2935,6 +2992,7 @@ router.post('/creatives', authenticate, async (req, res) => {
         group_id || null,
         generatedCopy ? JSON.stringify(generatedCopy) : null,
         matchedCopySetId,
+        quality_warning || null,
       ]
     );
     const savedCreative = rows[0];

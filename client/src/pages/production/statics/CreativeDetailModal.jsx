@@ -331,6 +331,14 @@ export function CreativeDetailModal({
           </div>
 
           <div className="flex-1 p-5 space-y-6 overflow-y-auto">
+            {/* P2: Quality warning banner */}
+            {creative.quality_warning && (
+              <div className="bg-orange-500/10 border border-orange-500/30 rounded-xl p-3">
+                <p className="text-[10px] font-semibold text-orange-400 uppercase tracking-wide mb-1">Quality Warning</p>
+                <p className="text-[11px] text-orange-300 leading-relaxed">{creative.quality_warning}</p>
+              </div>
+            )}
+
             {/* Product */}
             <div>
               <SectionLabel>Product</SectionLabel>
