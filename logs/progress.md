@@ -1464,3 +1464,39 @@ DECISIONS:
   DECISION MADE — classify-templates.mjs manual run only (costs ~$0.10 API; run once).
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-05-19 08:55
+TASK: Angle atmosphere fix + classify-all endpoint (commits b0ae7d8, a3a0d9e)
+BUILT:
+  b0ae7d8 — Root-cause fix for all 8 angles producing near-identical images.
+  ANGLE_SCENE_MAP entries were being injected at the end of rule #5 after the phrase
+  "Keep EXACT same positions, zones..." — Gemini treated layout-preservation as higher
+  priority and ignored the atmospheric direction entirely. Fix: created atmosphereMission
+  block injected BEFORE the strict rules list with "🔴 PRIMARY VISUAL MISSION" framing
+  and "Do NOT replicate the reference background. You MUST create a FRESH scene..." language.
+  Rule #5 updated to refer to the atmosphere defined above. angleSceneSection variable
+  (used in non-skipTextRendering path) unchanged.
+
+  a3a0d9e — POST /templates/classify-all and GET /templates/classify-all/status endpoints.
+  classifyOneTemplate() runs Claude Haiku vision against template image_url, falls back
+  to name/category heuristic on failure. Batches 10 concurrent calls, 500ms delay between
+  batches. Writes is_document_template, archetype, angle_tags, classification_method,
+  classified_at per template. Follows same async pattern as /templates/analyze-all.
+  After migration 034 auto-runs on next deploy, call POST /templates/classify-all once
+  to tag all ~1,738 templates.
+
+TESTED:
+  b0ae7d8 — Render deploy dep-d8628jbtqb8s73ebl69g → status: "live" finishedAt 08:52:40Z.
+  Server boot will auto-run migration 034 (is_document_template + archetype + angle_tags
+  + classification_method + classified_at columns + seeds 4 known doc templates + 3 indexes).
+  a3a0d9e — pushed, deploy dep-d862... queued. Syntax check: endpoint wiring follows
+  identical pattern to analyzeAllProgress / analyze-all (same file).
+OUTPUT: 2 commits pushed, angle atmosphere deploy confirmed live.
+DECISIONS:
+  DECISION MADE — classify-all as HTTP endpoint (not startup job) to avoid running on
+  every deploy. One manual hit post-migration activates full classification pipeline.
+  DECISION MADE — Render DB unreachable from local (SSL termination, not IP block).
+  Migration 034 runs via server.js auto-migration runner at first boot in Render env.
+STATUS: COMPLETE
+---

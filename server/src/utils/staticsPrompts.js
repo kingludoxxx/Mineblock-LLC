@@ -934,8 +934,8 @@ ${templateData.deep_analysis.adaptation_instructions?.common_failure_modes?.leng
 
   const productRule = (hasProductInReference && productImagesSent)
     ? (isGemini
-        ? `Use the product in the FIRST image as a visual reference — study its shape, color, screen, and key physical details. Then render it photorealistically integrated into the ad scene: natural lighting, correct perspective, seamlessly placed. Do NOT paste the product photo directly. Generate a fresh, realistic depiction of the product that fits the ad's atmosphere.`
-        : `Copy the EXACT product from FIRST image — same shape, colors, screen, details. Do NOT generate your own version.`)
+        ? `Use the product in the FIRST image as a visual reference — study its shape, color, screen, and key physical details. Then render it photorealistically integrated into the ad scene: natural lighting, correct perspective, seamlessly placed. Do NOT paste the product photo directly. Generate a fresh, realistic depiction of the product that fits the ad's atmosphere. 🚫 NEVER show the product inside retail packaging, boxes, or containers — show the standalone device only.`
+        : `Copy the EXACT product from FIRST image — same shape, colors, screen, details. Do NOT generate your own version. 🚫 Show the standalone device ONLY — never inside a box or retail packaging.`)
     : `This is a TEXT-ONLY ad. Do NOT add any product photo, device image, or physical object. The output must contain ONLY text and profile elements — ZERO product images.`;
 
   const logoToneNote = logoBackgroundTone === 'dark' ? ' Use WHITE version (dark bg).' : logoBackgroundTone === 'light' ? ' Use BLACK version (light bg).' : '';

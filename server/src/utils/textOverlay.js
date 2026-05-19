@@ -208,7 +208,11 @@ function buildTextSvg(width, height, textElements, bgColor = null) {
 
     // Offset first tspan by negative half of total block height for vertical centering
     const totalLines = el.lines.length;
-    const lineHeight = el.fontSize * 1.2;
+    // Bullets and body copy get 1.8× line-height for readable vertical spacing;
+    // headlines/badges/CTAs use 1.2× (tighter, matches layout map intent).
+    const isBulletLike = el.field?.startsWith('bullets[') || el.field === 'body' ||
+      el.field?.startsWith('sticky_note_line_');
+    const lineHeight = el.fontSize * (isBulletLike ? 1.8 : 1.2);
     const blockHalfHeight = (totalLines * lineHeight) / 2;
     const startY = el.y - blockHalfHeight + el.fontSize * 0.5;
 
@@ -521,7 +525,9 @@ async function blurTextRegions(baseBuffer, svgElements, width, height) {
   const boxes = [];
   for (const el of svgElements) {
     const totalLines = el.lines.length;
-    const lineHeight = el.fontSize * 1.2;
+    const isBulletLike = el.field?.startsWith('bullets[') || el.field === 'body' ||
+      el.field?.startsWith('sticky_note_line_');
+    const lineHeight = el.fontSize * (isBulletLike ? 1.8 : 1.2);
     const blockH = totalLines * lineHeight + el.fontSize * 0.6;
 
     const maxChars = Math.max(...el.lines.map(l => l.length));
