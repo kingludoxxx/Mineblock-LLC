@@ -72,6 +72,30 @@ const ANGLE_CATEGORY_MAP = [
   { pattern: /headline|attention|hook/i, category: 'Headline' },
 ];
 
+// P5: Map angle names → DB angle_tag keys (mirrors server/scripts/classify-templates.mjs ARCHETYPE_ANGLE_TAGS)
+// Determines which angle_tag to look for in template.angle_tags[]
+const ANGLE_TO_TAG_MAP = [
+  { pattern: /apolog/i, tag: 'apology' },
+  { pattern: /anti.?fake|fake|scam/i, tag: 'anti_fake' },
+  { pattern: /skeptic|doubt|trust|fear/i, tag: 'skeptic' },
+  { pattern: /winner|accidental|luck/i, tag: 'accidental_winner' },
+  { pattern: /hater|deflect|defend/i, tag: 'hater_deflection' },
+  { pattern: /ai.?chip|chip|tech/i, tag: 'ai_chip_pov' },
+  { pattern: /promo|discount|sale|offer/i, tag: 'promo' },
+  { pattern: /urgenc|urgent|deadline|limited/i, tag: 'urgency' },
+  { pattern: /social.?proof|testimonial|review/i, tag: 'social_proof' },
+  { pattern: /blockchain|proof|verif/i, tag: 'blockchain_proof' },
+  { pattern: /bold.?claim|claim|big/i, tag: 'bold_claim' },
+];
+
+function angleToTag(angle) {
+  if (!angle) return null;
+  for (const { pattern, tag } of ANGLE_TO_TAG_MAP) {
+    if (pattern.test(angle)) return tag;
+  }
+  return null;
+}
+
 function angleToCategoryHint(angle) {
   if (!angle) return null;
   for (const { pattern, category } of ANGLE_CATEGORY_MAP) {
@@ -80,10 +104,23 @@ function angleToCategoryHint(angle) {
   return null;
 }
 
+/** Returns true if this template has angle_tags and the active angle tag is among them */
+function isAngleCompatible(template, angleTag) {
+  if (!angleTag) return false;
+  const tags = template.angle_tags;
+  if (!tags || !Array.isArray(tags) || tags.length === 0) return false;
+  return tags.includes(angleTag);
+}
+
 export function TemplateSelectModal({ isOpen, onClose, onSelect, templates = [], angle }) {
   const [search, setSearch] = useState('');
   const [activeCategory, setActiveCategory] = useState('all');
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+
+  // P5: derive the DB angle_tag key for the current angle
+  const activeAngleTag = angleToTag(angle);
+  // Count how many templates have angle_tags (classification job has run)
+  const angleTagsAvailable = templates.some(t => Array.isArray(t.angle_tags) && t.angle_tags.length > 0);
 
   // Reset state when modal opens — pre-select category if angle hint matches
   useEffect(() => {
@@ -125,12 +162,18 @@ export function TemplateSelectModal({ isOpen, onClose, onSelect, templates = [],
     return counts;
   }, [templates]);
 
-  // Filtered templates
+  // Filtered + sorted templates
+  // P5: When angle_tags are available and an angle is active, sort compatible templates first.
   const filtered = useMemo(() => {
     let list = templates;
-    if (activeCategory !== 'all') {
+
+    // Exclude Uncategorized from default view (only show if explicitly selected)
+    if (activeCategory === 'all') {
+      list = list.filter((t) => (t.category || 'Uncategorized') !== 'Uncategorized');
+    } else {
       list = list.filter((t) => (t.category || 'Uncategorized') === activeCategory);
     }
+
     if (search.trim()) {
       const q = search.trim().toLowerCase();
       list = list.filter(
@@ -140,8 +183,18 @@ export function TemplateSelectModal({ isOpen, onClose, onSelect, templates = [],
           (t.category || '').toLowerCase().includes(q),
       );
     }
+
+    // P5: Sort angle-compatible templates first (only when angle_tags have been classified)
+    if (activeAngleTag && angleTagsAvailable) {
+      list = [...list].sort((a, b) => {
+        const aMatch = isAngleCompatible(a, activeAngleTag) ? 0 : 1;
+        const bMatch = isAngleCompatible(b, activeAngleTag) ? 0 : 1;
+        return aMatch - bMatch;
+      });
+    }
+
     return list;
-  }, [templates, activeCategory, search]);
+  }, [templates, activeCategory, search, activeAngleTag, angleTagsAvailable]);
 
   const handleSelect = useCallback(
     (template) => {
@@ -240,39 +293,63 @@ export function TemplateSelectModal({ isOpen, onClose, onSelect, templates = [],
                 </div>
               ) : (
                 <>
+                  {/* P5: "Recommended" section label when angle_tags are available */}
+                  {activeAngleTag && angleTagsAvailable && (() => {
+                    const compatibleCount = filtered.filter(t => isAngleCompatible(t, activeAngleTag)).length;
+                    if (compatibleCount === 0) return null;
+                    return (
+                      <div className="flex items-center gap-2 mb-3 pt-1">
+                        <span className="text-xs font-semibold text-amber-400">⭐ {compatibleCount} recommended for {angle}</span>
+                        <div className="flex-1 h-px bg-amber-500/20" />
+                      </div>
+                    );
+                  })()}
                   <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
-                    {filtered.slice(0, visibleCount).map((template) => (
-                      <button
-                        key={template.id || template.name}
-                        onClick={() => handleSelect(template)}
-                        className="group relative rounded-xl overflow-hidden border border-white/[0.06] bg-white/[0.02] hover:border-accent/40 hover:bg-white/[0.04] transition-all cursor-pointer focus:outline-none focus:ring-1 focus:ring-accent/50"
-                      >
-                        <div className="aspect-[4/5] w-full bg-white/[0.03]">
-                          {template.image_url || template.thumbnail_url ? (
-                            <img
-                              src={template.image_url || template.thumbnail_url}
-                              alt={template.name || template.title || 'Template'}
-                              className="w-full h-full object-cover group-hover:scale-[1.02] transition-transform duration-200"
-                              loading="lazy"
-                              onError={(e) => {
-                                e.target.style.display = 'none';
-                              }}
-                            />
-                          ) : (
-                            <div className="w-full h-full flex items-center justify-center text-slate-700">
-                              <LayoutGrid className="w-8 h-8" />
+                    {filtered.slice(0, visibleCount).map((template) => {
+                      const isRecommended = isAngleCompatible(template, activeAngleTag);
+                      return (
+                        <button
+                          key={template.id || template.name}
+                          onClick={() => handleSelect(template)}
+                          className={`group relative rounded-xl overflow-hidden border bg-white/[0.02] hover:bg-white/[0.04] transition-all cursor-pointer focus:outline-none focus:ring-1 focus:ring-accent/50 ${
+                            isRecommended
+                              ? 'border-amber-500/40 hover:border-amber-400/60 ring-1 ring-amber-500/20'
+                              : 'border-white/[0.06] hover:border-accent/40'
+                          }`}
+                        >
+                          <div className="aspect-[4/5] w-full bg-white/[0.03] relative">
+                            {template.image_url || template.thumbnail_url ? (
+                              <img
+                                src={template.image_url || template.thumbnail_url}
+                                alt={template.name || template.title || 'Template'}
+                                className="w-full h-full object-cover group-hover:scale-[1.02] transition-transform duration-200"
+                                loading="lazy"
+                                onError={(e) => {
+                                  e.target.style.display = 'none';
+                                }}
+                              />
+                            ) : (
+                              <div className="w-full h-full flex items-center justify-center text-slate-700">
+                                <LayoutGrid className="w-8 h-8" />
+                              </div>
+                            )}
+                            {/* P5: Recommended star badge */}
+                            {isRecommended && (
+                              <div className="absolute top-1.5 left-1.5 bg-amber-500/90 backdrop-blur-sm rounded-full px-1.5 py-0.5 flex items-center gap-1">
+                                <span className="text-[9px] font-bold text-white">⭐ Match</span>
+                              </div>
+                            )}
+                          </div>
+                          {(template.name || template.title) && (
+                            <div className="px-2.5 py-2 border-t border-white/[0.04]">
+                              <span className="text-xs text-slate-400 truncate block">
+                                {template.name || template.title}
+                              </span>
                             </div>
                           )}
-                        </div>
-                        {(template.name || template.title) && (
-                          <div className="px-2.5 py-2 border-t border-white/[0.04]">
-                            <span className="text-xs text-slate-400 truncate block">
-                              {template.name || template.title}
-                            </span>
-                          </div>
-                        )}
-                      </button>
-                    ))}
+                        </button>
+                      );
+                    })}
                   </div>
                   {filtered.length > visibleCount && (
                     <ScrollSentinel onVisible={() => setVisibleCount((c) => c + PAGE_SIZE)} />
