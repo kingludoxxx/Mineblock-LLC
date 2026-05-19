@@ -4485,6 +4485,153 @@ router.get('/repair-thumbnails', authenticate, async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Template classification endpoints
+// POST /templates/classify-all  — classify unclassified templates via Claude Vision
+// GET  /templates/classify-all/status — check progress
+// ─────────────────────────────────────────────────────────────────────────────
+
+let classifyAllProgress = { running: false, total: 0, completed: 0, failed: 0, doc: 0, img: 0, startedAt: null };
+
+const CLASSIFY_PROMPT = `You are classifying advertisement templates to determine their rendering strategy.
+
+Look at this ad template image and answer in JSON:
+
+1. is_document_template: Is the background primarily TEXT (letter, apology, correction notice, editorial, document with paragraphs)? TRUE. Or primarily an IMAGE/product-photo/graphical-design? FALSE.
+
+2. archetype: Best single category from: document | testimonial | problem_solution | bold_claim | before_after | urgency | us_vs_them | social_proof | native | meme | google_search | apple_notes | statistics | feature_benefit | headline | other
+
+3. angle_tags: 2-4 compatible ad angles from: apology | anti_fake | skeptic | accidental_winner | hater_deflection | ai_chip_pov | promo | urgency | social_proof | blockchain_proof | bold_claim
+
+Respond ONLY with valid JSON:
+{"is_document_template":true/false,"archetype":"...","angle_tags":["..."],"confidence":"high|medium|low","reasoning":"one sentence"}`;
+
+async function classifyOneTemplate(template) {
+  const { id, name, category, image_url } = template;
+  // Heuristic fallback (no image or Claude Vision fails)
+  function heuristic() {
+    const n = (name || '').toLowerCase();
+    const c = (category || '').toLowerCase();
+    const isDoc = c.includes('apolog') || n.includes('apolog') || c.includes('correction') ||
+      n.includes('statement') || n.includes('letter') || n.includes('official') || n.includes('editorial');
+    const archetype = c.includes('testimonial') ? 'testimonial' : c.includes('social proof') ? 'social_proof' :
+      c.includes('problem') ? 'problem_solution' : c.includes('bold') ? 'bold_claim' :
+      c.includes('urgency') ? 'urgency' : c.includes('vs') || c.includes('them') ? 'us_vs_them' :
+      c.includes('before') ? 'before_after' : c.includes('native') ? 'native' :
+      c.includes('meme') ? 'meme' : c.includes('google') ? 'google_search' :
+      c.includes('apple') ? 'apple_notes' : c.includes('statistic') ? 'statistics' :
+      c.includes('feature') ? 'feature_benefit' : isDoc ? 'document' : 'other';
+    const tagMap = {
+      document:['apology','anti_fake','skeptic','hater_deflection'], testimonial:['social_proof','skeptic','accidental_winner'],
+      problem_solution:['skeptic','anti_fake','urgency'], bold_claim:['anti_fake','ai_chip_pov','skeptic'],
+      before_after:['skeptic','accidental_winner'], urgency:['urgency','promo'], us_vs_them:['anti_fake','hater_deflection'],
+      social_proof:['social_proof','accidental_winner'], native:['skeptic','apology','ai_chip_pov'],
+      meme:['hater_deflection','accidental_winner'], google_search:['skeptic','anti_fake'],
+      apple_notes:['apology','skeptic','accidental_winner'], statistics:['ai_chip_pov','skeptic','blockchain_proof'],
+      feature_benefit:['ai_chip_pov','promo','urgency'], headline:['bold_claim','urgency','promo'],
+    };
+    return { id, is_document_template: isDoc, archetype, angle_tags: tagMap[archetype] || [], classification_method: 'heuristic' };
+  }
+
+  if (!image_url || !image_url.startsWith('http')) return heuristic();
+
+  try {
+    const payload = {
+      model: 'claude-haiku-4-5', max_tokens: 300,
+      messages: [{ role: 'user', content: [
+        { type: 'image', source: { type: 'url', url: image_url } },
+        { type: 'text', text: CLASSIFY_PROMPT }
+      ]}]
+    };
+    const r = await fetch(CLAUDE_API_URL, {
+      method: 'POST',
+      headers: { 'x-api-key': ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(20000),
+    });
+    if (!r.ok) throw new Error(`Claude ${r.status}`);
+    const data = await r.json();
+    const text = data.content?.[0]?.text?.trim() || '';
+    const m = text.match(/\{[\s\S]*\}/);
+    if (!m) throw new Error('No JSON');
+    const p = JSON.parse(m[0]);
+    return {
+      id,
+      is_document_template: p.is_document_template === true,
+      archetype: p.archetype || 'other',
+      angle_tags: Array.isArray(p.angle_tags) ? p.angle_tags : [],
+      classification_method: 'claude_vision',
+    };
+  } catch (err) {
+    console.warn(`[classify-all] Vision failed ${id.slice(0,8)} (${(name||'').slice(0,25)}): ${err.message}`);
+    return heuristic();
+  }
+}
+
+router.post('/templates/classify-all', authenticate, async (req, res) => {
+  try {
+    if (classifyAllProgress.running) {
+      return res.json({ success: true, message: `Already running: ${classifyAllProgress.completed}/${classifyAllProgress.total}`, progress: classifyAllProgress });
+    }
+
+    // Only classify templates that don't have classification yet
+    const rows = await pgQuery(
+      `SELECT id, name, category, image_url FROM statics_templates
+       WHERE is_hidden = false AND is_document_template IS NULL ORDER BY id`,
+      []
+    );
+    if (rows.length === 0) {
+      return res.json({ success: true, queued: 0, message: 'All templates already classified' });
+    }
+
+    classifyAllProgress = { running: true, total: rows.length, completed: 0, failed: 0, doc: 0, img: 0, startedAt: new Date().toISOString() };
+    res.json({ success: true, queued: rows.length, message: `Classification started for ${rows.length} unclassified templates` });
+
+    // Background — batches of 10 concurrent
+    (async () => {
+      console.log(`[classify-all] Starting: ${rows.length} templates, batches of 10`);
+      for (let i = 0; i < rows.length; i += 10) {
+        const batch = rows.slice(i, i + 10);
+        const results = await Promise.allSettled(batch.map(classifyOneTemplate));
+        for (const r of results) {
+          if (r.status === 'fulfilled') {
+            const v = r.value;
+            try {
+              await pgQuery(
+                `UPDATE statics_templates SET
+                   is_document_template = $1, archetype = $2, angle_tags = $3,
+                   classification_method = $4, classified_at = NOW()
+                 WHERE id = $5`,
+                [v.is_document_template, v.archetype, v.angle_tags, v.classification_method, v.id]
+              );
+              classifyAllProgress.completed++;
+              if (v.is_document_template) classifyAllProgress.doc++; else classifyAllProgress.img++;
+            } catch (dbErr) {
+              classifyAllProgress.failed++;
+              console.error(`[classify-all] DB write failed ${r.value?.id}: ${dbErr.message}`);
+            }
+          } else {
+            classifyAllProgress.failed++;
+          }
+        }
+        if ((i / 10) % 5 === 0) {
+          console.log(`[classify-all] Progress: ${classifyAllProgress.completed + classifyAllProgress.failed}/${rows.length} (📄${classifyAllProgress.doc} doc, 🖼️${classifyAllProgress.img} img, ❌${classifyAllProgress.failed} err)`);
+        }
+        if (i + 10 < rows.length) await new Promise(r => setTimeout(r, 500));
+      }
+      console.log(`[classify-all] Done: ${classifyAllProgress.completed}/${rows.length} (📄${classifyAllProgress.doc} doc, 🖼️${classifyAllProgress.img} img, ❌${classifyAllProgress.failed} err)`);
+      classifyAllProgress.running = false;
+    })();
+  } catch (err) {
+    classifyAllProgress.running = false;
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+router.get('/templates/classify-all/status', authenticate, async (_req, res) => {
+  res.json({ success: true, progress: classifyAllProgress });
+});
+
 export { getCustomStaticsPrompts, getDefaultStaticsPrompts };
 
 export default router;
