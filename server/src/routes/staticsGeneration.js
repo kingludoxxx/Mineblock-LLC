@@ -868,50 +868,64 @@ router.post('/generate', authenticate, async (req, res) => {
       console.warn(`[staticsGeneration] ⚠️ No product profile fields — copy will lack product context. Send product_id in request body to enable DB re-fetch.`);
     }
 
-    // ── Load custom prompt overrides (fall back to defaults if none saved) ──
-    const customPrompts = await getCustomStaticsPrompts() || getDefaultStaticsPrompts();
-    const hasCustomOverrides = !!(customPrompts?.claudeAnalysis?.headlineRules || customPrompts?.claudeAnalysis?.productIdentity || customPrompts?.claudeAnalysis?.bannedPhrases);
-    console.log(`[staticsGeneration] Custom prompt overrides: ${hasCustomOverrides ? 'YES (custom prompts from DB)' : 'NO (using defaults)'}`);
+    // ── P3b: Parallel pre-fetch — custom prompts + template data + reference image ──
+    // All three are independent and previously ran sequentially, adding 3-8s of dead wait.
+    // Run them concurrently; proceed once all three resolve.
 
-    // ── Load cached layout map + deep analysis if template-based ──────
-    let layoutMap = null;
-    let templateData = null;
-    let dbIsDocumentTemplate = null; // from migration 034 classification column
-    if (template_id) {
+    async function fetchTemplateDataForGen(tmplId, refUrl) {
+      if (!tmplId) return { layoutMap: null, templateData: null, dbIsDocumentTemplate: null };
       try {
         const rows = await pgQuery(
           `SELECT metadata, deep_analysis, is_document_template, archetype FROM statics_templates WHERE id = $1`,
-          [template_id]
+          [tmplId]
         );
         const meta = rows[0]?.metadata;
-        layoutMap = (typeof meta === 'string' ? JSON.parse(meta) : meta)?.layout_map || null;
-        dbIsDocumentTemplate = rows[0]?.is_document_template ?? null; // NULL = unclassified
-        const dbArchetype = rows[0]?.archetype;
+        const lm = (typeof meta === 'string' ? JSON.parse(meta) : meta)?.layout_map || null;
+        const didt = rows[0]?.is_document_template ?? null;
+        const dbArch = rows[0]?.archetype;
         const rawDeep = rows[0]?.deep_analysis;
         const deepAnalysis = typeof rawDeep === 'string' ? JSON.parse(rawDeep) : rawDeep;
-        if (deepAnalysis) {
-          templateData = { deep_analysis: deepAnalysis };
-          console.log(`[staticsGeneration] ✅ Template ${template_id} has deep_analysis — injecting into prompts`);
-        }
-        if (dbIsDocumentTemplate !== null) {
-          console.log(`[staticsGeneration] 📋 DB classification: is_document_template=${dbIsDocumentTemplate} archetype=${dbArchetype ?? 'null'}`);
-        }
-        if (layoutMap) {
-          console.log(`[staticsGeneration] ✅ Using cached layout map for template ${template_id} (archetype: ${layoutMap.archetype})`);
+        const td = deepAnalysis ? { deep_analysis: deepAnalysis } : null;
+
+        if (td) console.log(`[staticsGeneration] ✅ Template ${tmplId} has deep_analysis — injecting into prompts`);
+        if (didt !== null) console.log(`[staticsGeneration] 📋 DB classification: is_document_template=${didt} archetype=${dbArch ?? 'null'}`);
+
+        // Auto-analyze layout if not cached
+        let finalLm = lm;
+        if (finalLm) {
+          console.log(`[staticsGeneration] ✅ Using cached layout map for template ${tmplId} (archetype: ${finalLm.archetype})`);
         } else {
-          console.log(`[staticsGeneration] Template ${template_id} has no layout map — running layout analysis first`);
-          // Auto-analyze the template on first use
-          layoutMap = await analyzeAndCacheLayout(template_id, reference_image_url);
+          console.log(`[staticsGeneration] Template ${tmplId} has no layout map — running layout analysis first`);
+          finalLm = await analyzeAndCacheLayout(tmplId, refUrl);
         }
+
+        return { layoutMap: finalLm, templateData: td, dbIsDocumentTemplate: didt };
       } catch (err) {
-        console.warn(`[staticsGeneration] Layout map fetch/analysis failed for ${template_id}:`, err.message);
+        console.warn(`[staticsGeneration] Layout map fetch/analysis failed for ${tmplId}:`, err.message);
+        return { layoutMap: null, templateData: null, dbIsDocumentTemplate: null };
       }
     }
 
-    // ── Step A: Resolve reference image to base64 ──────────────────────
-    const { base64: rawBase64, mediaType: rawMediaType } = await resolveImage(reference_image_url);
-    // Shrink to stay under Claude's 5 MB hard limit (large reference images caused silent failures)
-    const { base64, mediaType } = await shrinkForClaude(rawBase64, rawMediaType);
+    async function fetchAndShrinkRefImage(refUrl) {
+      const { base64: rawBase64, mediaType: rawMediaType } = await resolveImage(refUrl);
+      return shrinkForClaude(rawBase64, rawMediaType);
+    }
+
+    const tPrefetch = Date.now();
+    const [
+      customPromptsRaw,
+      { layoutMap, templateData, dbIsDocumentTemplate },
+      { base64, mediaType },
+    ] = await Promise.all([
+      getCustomStaticsPrompts(),
+      fetchTemplateDataForGen(template_id, reference_image_url),
+      fetchAndShrinkRefImage(reference_image_url),
+    ]);
+    const customPrompts = customPromptsRaw || getDefaultStaticsPrompts();
+    console.log(`[staticsGeneration] ⏱ Parallel pre-fetch done in ${Date.now() - tPrefetch}ms`);
+
+    const hasCustomOverrides = !!(customPrompts?.claudeAnalysis?.headlineRules || customPrompts?.claudeAnalysis?.productIdentity || customPrompts?.claudeAnalysis?.bannedPhrases);
+    console.log(`[staticsGeneration] Custom prompt overrides: ${hasCustomOverrides ? 'YES (custom prompts from DB)' : 'NO (using defaults)'}`);
 
     // ── Step B: Call Claude to analyze the reference ad ─────────────────
     const t0 = Date.now();
