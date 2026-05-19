@@ -1025,14 +1025,19 @@ Every character in every line must exactly match what is listed. Check each word
 
   if (skipTextRendering) {
     const hasAngleScene = !!angleSceneDirection;
-    return `The LAST image is a structural reference — use its LAYOUT only. Produce a text-free version with our product.${crossNicheBlock}${templateIntelligence}
+    // Atmosphere mission block — placed BEFORE the rules so Gemini reads it first.
+    // This is the primary creative differentiation between angles; must not be buried.
+    const atmosphereMission = hasAngleScene
+      ? `\n\n🔴 PRIMARY VISUAL MISSION — "${rawAngleName}" ATMOSPHERE:\nDo NOT replicate the reference image's background. You MUST create a FRESH scene that matches this angle's emotional world. This is your most important creative task — every angle must produce a visually distinct image:\n${angleSceneDirection}\nLayout constraint: text-region positions, product zone, and badge zones stay identical to reference. ONLY the background scene and atmosphere changes.`
+      : '';
+    return `The LAST image is a structural reference — use its LAYOUT only. Produce a text-free version with our product.${crossNicheBlock}${templateIntelligence}${atmosphereMission}
 
 🔴 STRICT RULES:
 1. 🔴 PRODUCT: ${productRule}${hasProductInReference ? ` Orientation: ${claudeResult.product_orientation || 'front-facing'}.${productRulesSection}` : ''} 🚫 LOGO-ON-PRODUCT: NEVER place anything ON the product device surface.
 2. 🔴 ZERO TEXT — ERASE EVERYTHING: Output must contain ZERO rendered text — no headlines, subheadlines, body, prices, sale banners ("MARCH SALE", "40% OFF", "SPRING DEAL"), date text, promo codes, CTAs, badges, fine print, logo-with-text, decorative labels, UI strings, or ANY character visible in the reference. This includes text printed on backgrounds, promotional overlays, and sticker-style text elements. Leave every text region as a flat solid-color block matching the surrounding background tone. Our typography system composites the correct copy on top. When in doubt whether something is text — DON'T render it.
 3. 🚫 STRIP ALL THIRD-PARTY BRAND ELEMENTS: Remove every logo, wordmark, emblem, or brand mark from a different company. Replace with clean solid-color fill matching background.${logoRule}
 4. ${characterRules}
-5. Layout: Keep EXACT same positions, zones, product placement, and text-region shapes.${hasAngleScene ? ` Background atmosphere: follow ANGLE SCENE DIRECTION below.` : ` Keep the same background colors and overall composition.`} ONLY change: (a) product → ours, (b) erase all text, (c) strip third-party brands.${angleSceneSection}
+5. Layout: Keep EXACT same text-region positions, badge zones, and product placement.${!hasAngleScene ? ` Keep the same background colors and overall composition.` : ''} ONLY change: (a) product → ours, (b) erase all text, (c) strip third-party brands, (d) apply the angle atmosphere defined above.
 6. PRODUCT LABEL: Copy the product image (FIRST image) EXACTLY — do NOT modify packaging.${brandColorHint}${productContext}${co.absoluteRules ? `\n${co.absoluteRules}` : ''}
 
 CRITICAL: zero rendered text. When in doubt whether something is text — DON'T render it. Our overlay system adds all copy with pixel-perfect typography.`;
