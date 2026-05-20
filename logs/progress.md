@@ -1,6 +1,98 @@
 # Progress Log
 
 ---
+TIMESTAMP: 2026-05-20 14:30
+TASK: Phase 3+4 — Dual Gemini product images + Playwright comparison renderer
+BUILT: Two new functions added to server/src/services/playwrightRenderer.js: (1) buildComparisonHtml(options, dims) — internal helper that generates a full HTML/CSS comparison ad layout (black bg, white card, headline bar, two equal columns, VS badge, green/red bullet icons, proportional scaling via dims.width/1080). (2) renderComparison(options, dims) — exported Playwright render function that launches Chromium headless, sets the HTML, screenshots at exact dims, and returns a PNG buffer. Follows the same pattern as renderDocument(). In server/src/routes/staticsGeneration.js: (1) Added buildComparisonConfig to the existing staticsPrompts.js import line. (2) Inserted a new routing block immediately after the existing isComparisonTemplate log line (before document template detection). The block: fetches the product image as base64, calls editImage() twice in parallel (LEFT=clean premium studio shot, RIGHT=degraded knockoff), parses adapted_text bullets/headline/cta, splits bullets into left/right sides (pipe-split or half-half), calls renderComparison() for each of the 3 ratios via Promise.allSettled, applies logo watermark via compositeLogoWithSharp, stores results via storeGeminiResult/storeTempImage or R2, runs runVisionAudit, fires logGenerationEvent, and returns early. Wrapped in try/catch so any failure falls through to the normal Gemini path.
+TESTED: node --check on both files. playwrightRenderer.js: PASS. staticsGeneration.js: PASS. Grep confirmed buildComparisonConfig is imported at line 2 and renderComparison is dynamic-imported inside the comparison block. Cannot live-test Gemini + Playwright here (no API keys/Chromium in this environment) — production live-verify required.
+OUTPUT: node --check output: "PASS: playwrightRenderer.js" and "PASS: staticsGeneration.js". Both files pass syntax validation. Import lines confirmed correct via grep.
+DECISIONS: (1) fetchProductBase64 defined as a local async function inside the comparison block rather than hoisting to module scope — consistent with the existing fetchImageAsBase64 pattern inside the Gemini block. (2) Both Gemini calls use '1:1' ratio since they are product-image generations (not ratio-specific edits) — the Playwright render handles all 3 output ratios. (3) If both Gemini calls fail the block throws and falls through to normal Gemini path. If only one fails, placeholder empty-string base64 is used and the HTML renders the CSS placeholder div instead of an img tag. (4) RATIO_DIMS declared locally inside the comparison block (same pattern as document path). (5) buildComparisonConfig imported statically at top of file (not dynamic import) since it's always available. DECISION MADE.
+STATUS: COMPLETE
+---
+TIMESTAMP: 2026-05-20 01:20
+TASK: Fix dbArch ReferenceError crashing all comparison template generations (5efe72f)
+BUILT: fetchTemplateDataForGen() declared `dbArch` as a local variable but never returned it.
+  The outer scope used `dbArch` in `isComparisonTemplate` detection, causing a ReferenceError
+  at runtime ("Generation failed for all: dbArch is not defined"). Also added `name` to the
+  SELECT query so templateData.name is populated for the name-based comparison detection in
+  staticsPrompts.js. Fix: (1) SELECT adds `name` column; (2) td object includes `name`; (3)
+  return includes `dbArch`; (4) catch return includes `dbArch: null`; (5) destructuring at
+  Promise.all call site adds `dbArch`.
+TESTED: Triggered live generation on Konvert 3131 → got "dbArch is not defined" error →
+  traced to scope bug → fixed all three call sites → committed 5efe72f → deployed to Render.
+OUTPUT: Commit 5efe72f pushed. Deploy monitoring started. Re-test pending after deploy lands.
+DECISIONS: NONE
+STATUS: COMPLETE (pending live re-verify after deploy)
+---
+
+---
+TIMESTAMP: 2026-05-20 00:42
+TASK: Fix comparison template failures — brand strip, zero-text, comparison archetype (7559536)
+BUILT:
+  Root cause analysis of Konvert 3131 failure (ButcherBox steak kept in output, BUTCHERBOX
+  logo not stripped, "Blockboain" spelling, right column still showing food):
+  1. Gemini had zero instruction about the RIGHT column — kept reference's right product (steak)
+  2. Brand names embedded in column headers not called out explicitly in brand-strip rule
+  3. Zero-text rule didn't list column header text / product label text as text to erase
+  4. No "comparison" archetype existed — template classified as generic image ad
+
+  staticsPrompts.js:
+  - isComparisonTemplate detection: matches template name (konvert, vs, versus, compare,
+    cancel) and layoutMap.archetype === 'comparison'
+  - comparisonBlock: injected BEFORE all rules. Explicitly tells Gemini:
+    LEFT = our product (BitAxe), erase column header brand names;
+    RIGHT = cheap generic competitor miner (NOT food/meat/supplements);
+    VS badge = keep as-is; zero food/meat products in either column
+  - crossNicheBlock simplified for comparison templates (comparisonBlock handles columns)
+  - Rule 2 (zero-text) strengthened: now explicitly lists column header labels, brand names
+    in layout zones, checklist row text, product name labels
+  - Rule 3 (brand strip) strengthened: explicitly calls out embedded brand names in column
+    headers (BUTCHERBOX-style food/supplement brands); "if uncertain — ERASE IT"
+  - Injected comparisonBlock into both skipTextRendering and non-skipTextRendering paths
+
+  staticsGeneration.js:
+  - CLASSIFY_PROMPT: added 'comparison' archetype with description
+  - classifyOneTemplate heuristic: detects by name (konvert, vs, versus, compare, cancel)
+  - isComparisonTemplate flag at generation time with log line for verification
+
+TESTED: node --check passes on both files. Committed 7559536, pushed, deploy building.
+OUTPUT: deploy dep-d86g6n0k1i2s73d4bf8g build_in_progress at 00:42 UTC.
+DECISIONS:
+  - Comparison templates still use Gemini (not Playwright) for now — prompt improvements
+    are the fastest fix; Playwright comparison renderer is next step (2-3 days)
+  - RIGHT column competitor defaults to "cheap USB miner / AliExpress-style device" for
+    mining category. When a proper competitor image library exists, this will be replaced
+    with real competitor product photos.
+STATUS: COMPLETE (pending live deploy + regen verification on Konvert 3131)
+
+---
+TIMESTAMP: 2026-05-19 21:00
+TASK: Template classification — classify-all 1835 templates (POST /templates/classify-all)
+BUILT: Triggered the classify-all endpoint (commit a3a0d9e) which Haiku-classifies all
+  statics_templates rows with is_document_template IS NULL. Runs 10 concurrent Claude Haiku
+  vision calls per batch with 500ms throttle between batches. Writes is_document_template,
+  archetype, classification_method, classified_at to each row. Falls back to heuristic on
+  vision failure (name contains 'doc'/'form'/'letter', or text_zones > 3).
+TESTED:
+  - Run 1 (instance h5g2h, old deploy): Started 20:40:00 UTC. Reached 1560/1835 before
+    SIGTERM at 20:48:22 UTC (killed by GEMINI_API_KEY_2 env-var redeploy). 3 vision failures
+    (test-form, COUNT_CHECK, Test — blank/test templates) fell back to heuristic. 0 errors.
+  - Run 2 (instance l69h9, new deploy): Started 20:58:13 UTC. Completed 275/275 at
+    20:59:39 UTC. 0 errors. Status endpoint confirmed: running=false, completed=275, failed=0.
+OUTPUT:
+  All 1835 templates classified:
+  - 33 document templates (📄) — routed to Playwright
+  - 1802 image templates (🖼️) — routed to Gemini
+  - 0 errors across both runs
+  P5 Match badge now active (template picker has angle_tags for compatibility filtering).
+DECISIONS:
+  - GEMINI_API_KEY_2 added as env var (AIzaSyDzAVZKQM8-Xcyj0249QOkFnQ_0RE8IH6Y) — 2/3 keys
+    now set, async rotation at 2× quota. GEMINI_API_KEY_3 still pending.
+  - Hard page reload required after deploy to clear stale hanging connections (22MB +
+    11MB page-load queries blocked connection pool for 8 min post-deploy).
+STATUS: COMPLETE
+
+---
 TIMESTAMP: 2026-05-18 21:20
 TASK: 6-layer statics generation quality improvement (commit 62ad046)
 BUILT:
