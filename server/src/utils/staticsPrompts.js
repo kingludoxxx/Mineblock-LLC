@@ -1019,8 +1019,41 @@ Every character in every line must exactly match what is listed. Check each word
   const isCrossNicheProduct = hasProductInReference && refCategory &&
     !/(miner|mining|crypto|bitcoin|hardware|tech|device|chip|asic|electronic|computer|gpu|blockchain)/i.test(refCategory);
 
+  // Comparison template detection — two-column "us vs them" / "X is cancelled" layouts
+  // These have LEFT column (our product) + VS badge + RIGHT column (competitor product).
+  // Gemini needs explicit instruction for BOTH columns or it keeps the reference's right-side product.
+  const isComparisonTemplate =
+    /\b(konvert|versus|compare|comparison)\b/i.test(templateData?.name || '') ||
+    /\bvs\b/i.test(templateData?.name || '') ||
+    layoutMap?.archetype === 'comparison' ||
+    (templateData?.deep_analysis?.template_type || '').toLowerCase().includes('compar') ||
+    (templateData?.deep_analysis?.template_type || '').toLowerCase().includes('vs') ||
+    (templateData?.deep_analysis?.template_type || '').toLowerCase().includes('cancel');
+
+  const comparisonBlock = isComparisonTemplate
+    ? `\n\n🔴 COMPARISON TEMPLATE — TWO-COLUMN LAYOUT (EXECUTE THIS BEFORE ANYTHING ELSE):
+This is a split "us vs them" ad with a LEFT column and a RIGHT column separated by a VS badge.
+
+LEFT COLUMN — OUR PRODUCT:
+• Product image: replace with the ${product.name} from the FIRST input image (photorealistic, natural lighting, same zone/scale)
+• Column header text area: COMPLETELY ERASE any brand name, logo, or product label text in the left header — paint solid fill matching that zone's background color. Leave blank. Text is added programmatically.
+• Do NOT carry through "BUTCHERBOX", any food brand, supplement brand, clothing brand, or ANY non-mining brand name
+
+RIGHT COLUMN — COMPETITOR PRODUCT:
+• The right column MUST show a cheap generic competitor product from OUR product category (Bitcoin miners), NOT whatever product the reference shows
+• For Bitcoin/crypto miners: render a cheap, generic, no-brand USB mining device or AliExpress-style gadget — looks low-quality, plain, generic
+• Column header text area: COMPLETELY ERASE all text in the right column header — paint solid fill matching that zone's background color. Leave blank.
+• 🚫 ZERO food products, steaks, supplements, clothing, or any non-mining item on the right side
+
+VS BADGE: Keep the center VS divider/badge exactly — same position, size, style.
+🚫 ABSOLUTE RULE: Both columns must contain mining hardware ONLY. No food. No meat. No supplements.`
+    : '';
+
   const crossNicheBlock = isCrossNicheProduct
-    ? `\n\n🚨 MANDATORY FIRST STEP — PRODUCT SWAP (do this before anything else):\nThe reference contains a "${refCategory}" product. THIS PRODUCT MUST NOT APPEAR in your output.\nExecute in this exact order:\n1. LOCATE the "${refCategory}" in the reference image\n2. COMPLETELY ERASE it — paint over it with background fill matching the surrounding area (seamless, no visible ghost or outline)\n3. PLACE the "${product.name}" hardware (from FIRST input image) in that zone:\n   — Match the same position and approximate scale as what was erased\n   — Study the shape, screen/display, ports, and physical details from FIRST image\n   — Render photorealistically: correct perspective, natural lighting matching the scene\n   — Generate a fresh realistic depiction — do NOT paste the photo directly\nCRITICAL: Zero trace of "${refCategory}" product anywhere in the final output.`
+    ? (isComparisonTemplate
+        // For comparison templates the comparisonBlock already handles both columns — just add the ban
+        ? `\n\n🚨 CROSS-NICHE REFERENCE DETECTED: The reference contains "${refCategory}" products. NONE of these must appear in the output — not in the left column, not in the right column, not in the background. Both columns must show mining hardware only.`
+        : `\n\n🚨 MANDATORY FIRST STEP — PRODUCT SWAP (do this before anything else):\nThe reference contains a "${refCategory}" product. THIS PRODUCT MUST NOT APPEAR in your output.\nExecute in this exact order:\n1. LOCATE the "${refCategory}" in the reference image\n2. COMPLETELY ERASE it — paint over it with background fill matching the surrounding area (seamless, no visible ghost or outline)\n3. PLACE the "${product.name}" hardware (from FIRST input image) in that zone:\n   — Match the same position and approximate scale as what was erased\n   — Study the shape, screen/display, ports, and physical details from FIRST image\n   — Render photorealistically: correct perspective, natural lighting matching the scene\n   — Generate a fresh realistic depiction — do NOT paste the photo directly\nCRITICAL: Zero trace of "${refCategory}" product anywhere in the final output.`)
     : '';
 
   if (skipTextRendering) {
@@ -1030,20 +1063,20 @@ Every character in every line must exactly match what is listed. Check each word
     const atmosphereMission = hasAngleScene
       ? `\n\n🔴 PRIMARY VISUAL MISSION — "${rawAngleName}" ATMOSPHERE:\nDo NOT replicate the reference image's background. You MUST create a FRESH scene that matches this angle's emotional world. This is your most important creative task — every angle must produce a visually distinct image:\n${angleSceneDirection}\nLayout constraint: text-region positions, product zone, and badge zones stay identical to reference. ONLY the background scene and atmosphere changes.`
       : '';
-    return `The LAST image is a structural reference — use its LAYOUT only. Produce a text-free version with our product.${crossNicheBlock}${templateIntelligence}${atmosphereMission}
+    return `The LAST image is a structural reference — use its LAYOUT only. Produce a text-free version with our product.${comparisonBlock}${crossNicheBlock}${templateIntelligence}${atmosphereMission}
 
 🔴 STRICT RULES:
 1. 🔴 PRODUCT: ${productRule}${hasProductInReference ? ` Orientation: ${claudeResult.product_orientation || 'front-facing'}.${productRulesSection}` : ''} 🚫 LOGO-ON-PRODUCT: NEVER place anything ON the product device surface.
-2. 🔴 ZERO TEXT — ERASE EVERYTHING: Output must contain ZERO rendered text — no headlines, subheadlines, body, prices, sale banners ("MARCH SALE", "40% OFF", "SPRING DEAL"), date text, promo codes, CTAs, badges, fine print, logo-with-text, decorative labels, UI strings, or ANY character visible in the reference. This includes text printed on backgrounds, promotional overlays, and sticker-style text elements. Leave every text region as a flat solid-color block matching the surrounding background tone. Our typography system composites the correct copy on top. When in doubt whether something is text — DON'T render it.
-3. 🚫 STRIP ALL THIRD-PARTY BRAND ELEMENTS: Remove every logo, wordmark, emblem, or brand mark from a different company. Replace with clean solid-color fill matching background.${logoRule}
+2. 🔴 ZERO TEXT — ERASE ABSOLUTELY EVERYTHING: Output must contain ZERO rendered text of any kind. This means: headlines, subheadlines, body copy, prices, sale banners, date text, promo codes, CTAs, badges, fine print, logo-with-text, decorative labels, UI strings, column header labels, product name labels, brand names embedded in layout zones (e.g. "BUTCHERBOX", "Grocery Store X"), checklist row text, footnotes, watermarks — EVERY visible character. Paint over each text zone with a flat solid-color block matching the surrounding background tone. Our typography system composites the correct copy on top afterward. When in doubt whether something is text — ERASE IT.
+3. 🚫 STRIP ALL THIRD-PARTY BRAND ELEMENTS — MANDATORY: Remove EVERY logo, wordmark, emblem, brand name, or brand identifier from any company other than ours. This explicitly includes: (a) brand names embedded in column headers or product label zones (any food brand, supplement brand, clothing brand, grocery brand visible in the reference); (b) logos integrated into layout areas; (c) product names/labels from other brands printed anywhere in the image. Replace every instance with clean solid-color fill matching the surrounding background. If you are uncertain whether something is a brand element — ERASE IT.${logoRule}
 4. ${characterRules}
 5. Layout: Keep EXACT same text-region positions, badge zones, and product placement.${!hasAngleScene ? ` Keep the same background colors and overall composition.` : ''} ONLY change: (a) product → ours, (b) erase all text, (c) strip third-party brands, (d) apply the angle atmosphere defined above.
 6. PRODUCT LABEL: Copy the product image (FIRST image) EXACTLY — do NOT modify packaging.${brandColorHint}${productContext}${co.absoluteRules ? `\n${co.absoluteRules}` : ''}
 
-CRITICAL: zero rendered text. When in doubt whether something is text — DON'T render it. Our overlay system adds all copy with pixel-perfect typography.`;
+CRITICAL: zero rendered text anywhere. Zero third-party brands anywhere. Our overlay system adds all copy with pixel-perfect typography after generation.`;
   }
 
-  return `The LAST image is a structural reference — use its layout for our product.${crossNicheBlock}${templateIntelligence}
+  return `The LAST image is a structural reference — use its layout for our product.${comparisonBlock}${crossNicheBlock}${templateIntelligence}
 
 🔴 RULES IN PRIORITY ORDER:
 1. 🔴 PRODUCT: ${productRule}${hasProductInReference ? ` Orientation: ${claudeResult.product_orientation || 'front-facing'}.${productRulesSection}` : ''} 🚫 LOGO-ON-PRODUCT: NEVER place any logo, text, badge, or watermark ON TOP OF the physical product device. Device surface must be completely clean.${logoRule}

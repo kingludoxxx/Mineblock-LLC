@@ -1420,6 +1420,19 @@ router.post('/generate', authenticate, async (req, res) => {
     const totalSwapTextLength = swapPairs.reduce((sum, p) => sum + (p.adapted || p.original || '').length, 0);
     const isLongTextOnlyTemplate = !refHasProduct && totalSwapTextLength > 2000;
 
+    // Comparison template detection — two-column "X is cancelled" / "us vs them product" layouts
+    // These need special Gemini prompting (both columns handled explicitly).
+    // Eventually will route to a dedicated Playwright comparison renderer.
+    const isComparisonTemplate =
+      dbArch === 'comparison' ||
+      /\b(konvert|versus|compare|comparison)\b/i.test(templateData?.name || '') ||
+      /\bvs\b/i.test(templateData?.name || '') ||
+      (templateData?.deep_analysis?.template_type || '').toLowerCase().includes('compar');
+
+    if (isComparisonTemplate) {
+      console.log(`[staticsGeneration] 🆚 Comparison template detected (name="${templateData?.name}" archetype="${dbArch}") — using enhanced two-column Gemini prompt`);
+    }
+
     // DB flag (migration 034) is authoritative when set. Falls back to heuristics for
     // unclassified templates (dbIsDocumentTemplate === null).
     const isDocumentTemplate =
@@ -4499,7 +4512,8 @@ Look at this ad template image and answer in JSON:
 
 1. is_document_template: Is the background primarily TEXT (letter, apology, correction notice, editorial, document with paragraphs)? TRUE. Or primarily an IMAGE/product-photo/graphical-design? FALSE.
 
-2. archetype: Best single category from: document | testimonial | problem_solution | bold_claim | before_after | urgency | us_vs_them | social_proof | native | meme | google_search | apple_notes | statistics | feature_benefit | headline | other
+2. archetype: Best single category from: document | comparison | testimonial | problem_solution | bold_claim | before_after | urgency | us_vs_them | social_proof | native | meme | google_search | apple_notes | statistics | feature_benefit | headline | other
+   NOTE: "comparison" = two-column layout with VS badge, left product vs right product (e.g. "X is CANCELED", "Ours vs Theirs"). These are distinct from us_vs_them text ads.
 
 3. angle_tags: 2-4 compatible ad angles from: apology | anti_fake | skeptic | accidental_winner | hater_deflection | ai_chip_pov | promo | urgency | social_proof | blockchain_proof | bold_claim
 
@@ -4514,7 +4528,12 @@ async function classifyOneTemplate(template) {
     const c = (category || '').toLowerCase();
     const isDoc = c.includes('apolog') || n.includes('apolog') || c.includes('correction') ||
       n.includes('statement') || n.includes('letter') || n.includes('official') || n.includes('editorial');
-    const archetype = c.includes('testimonial') ? 'testimonial' : c.includes('social proof') ? 'social_proof' :
+    // Comparison templates: two-column layouts with VS badge (e.g. "Konvert", "X is CANCELED")
+    const isComparison = n.includes('konvert') || n.includes(' vs ') || n.includes('versus') ||
+      n.includes('compare') || n.includes('comparison') || n.includes('cancel') ||
+      c.includes('comparison') || c.includes('konvert');
+    const archetype = isComparison ? 'comparison' :
+      c.includes('testimonial') ? 'testimonial' : c.includes('social proof') ? 'social_proof' :
       c.includes('problem') ? 'problem_solution' : c.includes('bold') ? 'bold_claim' :
       c.includes('urgency') ? 'urgency' : c.includes('vs') || c.includes('them') ? 'us_vs_them' :
       c.includes('before') ? 'before_after' : c.includes('native') ? 'native' :
