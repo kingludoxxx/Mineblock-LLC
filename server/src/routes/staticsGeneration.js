@@ -958,16 +958,18 @@ router.post('/generate', authenticate, async (req, res) => {
       if (!tmplId) return { layoutMap: null, templateData: null, dbIsDocumentTemplate: null };
       try {
         const rows = await pgQuery(
-          `SELECT metadata, deep_analysis, is_document_template, archetype FROM statics_templates WHERE id = $1`,
+          `SELECT name, metadata, deep_analysis, is_document_template, archetype FROM statics_templates WHERE id = $1`,
           [tmplId]
         );
         const meta = rows[0]?.metadata;
         const lm = (typeof meta === 'string' ? JSON.parse(meta) : meta)?.layout_map || null;
         const didt = rows[0]?.is_document_template ?? null;
-        const dbArch = rows[0]?.archetype;
+        const dbArch = rows[0]?.archetype ?? null;
         const rawDeep = rows[0]?.deep_analysis;
         const deepAnalysis = typeof rawDeep === 'string' ? JSON.parse(rawDeep) : rawDeep;
-        const td = deepAnalysis ? { deep_analysis: deepAnalysis } : null;
+        const td = deepAnalysis
+          ? { deep_analysis: deepAnalysis, name: rows[0]?.name }
+          : (rows[0]?.name ? { name: rows[0]?.name } : null);
 
         if (td) console.log(`[staticsGeneration] ✅ Template ${tmplId} has deep_analysis — injecting into prompts`);
         if (didt !== null) console.log(`[staticsGeneration] 📋 DB classification: is_document_template=${didt} archetype=${dbArch ?? 'null'}`);
@@ -981,10 +983,10 @@ router.post('/generate', authenticate, async (req, res) => {
           finalLm = await analyzeAndCacheLayout(tmplId, refUrl);
         }
 
-        return { layoutMap: finalLm, templateData: td, dbIsDocumentTemplate: didt };
+        return { layoutMap: finalLm, templateData: td, dbIsDocumentTemplate: didt, dbArch };
       } catch (err) {
         console.warn(`[staticsGeneration] Layout map fetch/analysis failed for ${tmplId}:`, err.message);
-        return { layoutMap: null, templateData: null, dbIsDocumentTemplate: null };
+        return { layoutMap: null, templateData: null, dbIsDocumentTemplate: null, dbArch: null };
       }
     }
 
@@ -996,7 +998,7 @@ router.post('/generate', authenticate, async (req, res) => {
     const tPrefetch = Date.now();
     const [
       customPromptsRaw,
-      { layoutMap, templateData, dbIsDocumentTemplate },
+      { layoutMap, templateData, dbIsDocumentTemplate, dbArch },
       { base64, mediaType },
     ] = await Promise.all([
       getCustomStaticsPrompts(),
