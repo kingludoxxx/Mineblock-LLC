@@ -506,10 +506,17 @@ async function ensureHttpUrlGlobal(url, label = 'img') {
   const m = url.match(/^data:(image\/[^;]+);base64,(.+)$/);
   if (!m) return url;
   const buf = Buffer.from(m[2], 'base64');
-  if (isR2Configured()) {
+
+  // Try R2 first if configured AND we have a public URL set up.
+  // If R2_PUBLIC_URL is missing, uploadBuffer returns `r2://bucket/key` which
+  // is NOT fetchable by external services (Kie.ai rejects with
+  // "image_urls file type not supported"). Fall back to tmp-img in that case.
+  if (isR2Configured() && process.env.R2_PUBLIC_URL) {
     const ext = m[1].includes('png') ? 'png' : 'jpg';
     const key = `statics-${label}/${crypto.randomUUID()}.${ext}`;
-    return await uploadBuffer(buf, key, m[1]);
+    const r2Url = await uploadBuffer(buf, key, m[1]);
+    if (r2Url.startsWith('http')) return r2Url;
+    console.warn(`[ensureHttpUrlGlobal] R2 returned non-HTTP url "${r2Url.slice(0,30)}..." — falling back to tmp-img`);
   }
   const id = await storeTempImage(buf, m[1]);
   return `${GLOBAL_SERVER_URL}/api/v1/statics-generation/tmp-img/${id}`;
@@ -2962,8 +2969,12 @@ router.post('/regenerate-broken-previews', authenticate, async (req, res) => {
           };
           if (!product.product_image_url) throw new Error('no product_image_url');
 
-          // 2. Resolve product to HTTP URL (R2-uploaded data URI)
+          // 2. Resolve product to HTTP URL (R2-uploaded data URI or tmp-img fallback)
           const productHttpUrl = await ensureHttpUrlGlobal(product.product_image_url, 'rgn-product');
+          if (!productHttpUrl || !productHttpUrl.startsWith('http')) {
+            throw new Error(`productHttpUrl is not fetchable: "${(productHttpUrl||'').slice(0,40)}..."`);
+          }
+          console.log(`${tag} productHttpUrl=${productHttpUrl.slice(0,80)}`);
 
           // 3. Step 1: Claude analysis
           const { base64: refB64, mediaType: refMt } = await resolveImage(row.reference_thumbnail);
