@@ -12,8 +12,11 @@
 const NANOBANANA_API_KEY = process.env.NANOBANANA_API_KEY || '';
 const NB_BASE            = 'https://api.kie.ai/api/v1/jobs';
 
-const DEFAULT_MAX_POLLS     = 60;
-const DEFAULT_POLL_INTERVAL = 5000;
+// NB image gen typically takes 15-30s. Polling at 5s wastes up to 5s of wall
+// time per ratio. Drop to 2s for snappier completion. Total max wait stays
+// generous: 90 polls × 2s = 3 min ceiling.
+const DEFAULT_MAX_POLLS     = 90;
+const DEFAULT_POLL_INTERVAL = 2000;
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
