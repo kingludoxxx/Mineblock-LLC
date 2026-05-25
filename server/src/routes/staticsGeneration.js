@@ -33,7 +33,27 @@ import {
 import { pgQuery } from '../db/pg.js';
 import { authenticate } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/rbac.js';
-import { uploadBuffer, isR2Configured } from '../services/r2.js';
+import { uploadBuffer, uploadFromUrl, isR2Configured } from '../services/r2.js';
+
+/**
+ * NanoBanana returns a tempfile.aiquickdraw.com URL that expires after a few
+ * hours. We must persist every result to R2 immediately, otherwise launched
+ * creatives go black in the UI once Kie.ai purges the file.
+ */
+async function persistNanoBananaImage(tempUrl, prefix = 'statics-nb') {
+  if (!tempUrl) return tempUrl;
+  if (!isR2Configured()) {
+    console.warn('[persistNbImage] R2 not configured — keeping temp URL (will expire!)');
+    return tempUrl;
+  }
+  try {
+    const { url } = await uploadFromUrl(tempUrl, prefix);
+    return url;
+  } catch (err) {
+    console.warn(`[persistNbImage] R2 upload failed (${err.message}) — falling back to temp URL`);
+    return tempUrl;
+  }
+}
 import { submitToNanoBanana, pollNanoBanana } from '../services/imageGeneration.js';
 import crypto from 'crypto';
 import { analyzeTemplate, analyzeTemplateFast } from '../utils/templateAnalysis.js';
@@ -913,8 +933,9 @@ router.post('/generate', authenticate, async (req, res) => {
         const ratioStart = Date.now();
         const nbTaskId = await submitToNanoBanana(nbPrompt, [productHttpUrl], r);
         console.log(`[staticsGeneration] NanoBanana ${r} submitted: ${nbTaskId}`);
-        const resultImageUrl = await pollNanoBanana(nbTaskId);
-        console.log(`[staticsGeneration] ⏱ NanoBanana ${r} done in ${Date.now() - ratioStart}ms`);
+        const tempUrl = await pollNanoBanana(nbTaskId);
+        const resultImageUrl = await persistNanoBananaImage(tempUrl, `statics-generated/${r}`);
+        console.log(`[staticsGeneration] ⏱ NanoBanana ${r} done in ${Date.now() - ratioStart}ms (persisted: ${resultImageUrl !== tempUrl ? 'R2' : 'temp'})`);
 
         const childTaskId = `nb-${crypto.randomUUID()}`;
         storeTaskResult(childTaskId, {
@@ -1295,7 +1316,8 @@ router.post('/iterate/:creativeId', authenticate, async (req, res) => {
           if (!productHttpUrl) throw new Error('Iteration requires product.product_image_url — none available');
           const nbPrompt = buildNanoBananaImagePrompt(claudeResult, product, customPrompts.nanobanana_image);
           const nbTaskId = await submitToNanoBanana(nbPrompt, [productHttpUrl], '4:5');
-          const generatedUrl = await pollNanoBanana(nbTaskId);
+          const tempUrl = await pollNanoBanana(nbTaskId);
+          const generatedUrl = await persistNanoBananaImage(tempUrl, 'statics-iterations');
 
           // Step B3: write result back to spy_creatives row
           await pgQuery(`
