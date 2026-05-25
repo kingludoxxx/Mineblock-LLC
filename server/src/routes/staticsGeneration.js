@@ -2887,6 +2887,138 @@ router.get('/repair-thumbnails', authenticate, async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────
+// Regenerate-broken-previews
+//
+// Last-resort fallback for creatives whose image_url is dead and Meta CDN
+// can't recover them (image hash purged on Meta side, or never had a hash).
+// We have `reference_thumbnail + angle + product_id` → enough to re-run the
+// 3-step pipeline and produce a fresh preview. The Meta ad itself is not
+// touched — we only refresh the local preview thumbnail.
+// ─────────────────────────────────────────────────────────────────────────
+router.post('/regenerate-broken-previews', authenticate, async (req, res) => {
+  try {
+    await ensureCreativesTable();
+    const broken = await pgQuery(`
+      SELECT id, product_id, angle, reference_thumbnail, aspect_ratio, status
+      FROM spy_creatives
+      WHERE (
+        image_url LIKE '%tempfile%' OR image_url LIKE '%/tmp-img/%' OR
+        image_url LIKE '%aiquickdraw%' OR image_url IS NULL OR image_url = ''
+      )
+      AND reference_thumbnail IS NOT NULL
+      AND reference_thumbnail != ''
+      AND product_id IS NOT NULL
+      ORDER BY status, updated_at DESC
+    `);
+
+    // Respond immediately — pipeline runs in background
+    res.json({ success: true, data: { queued: broken.length, message: `Regenerating ${broken.length} broken preview(s) in background. Refresh the pipeline view in ~2-3 min.` } });
+    if (broken.length === 0) return;
+
+    setImmediate(async () => {
+      const customPrompts = (await getCustomStaticsPrompts().catch(() => null)) || getDefaultStaticsPrompts();
+
+      // Concurrency limiter — 4 at a time to avoid API rate limits
+      const CONCURRENCY = 4;
+      let cursor = 0;
+      let succeeded = 0, failed = 0;
+
+      async function processOne(row) {
+        const tag = `[rgn ${row.id.slice(0,8)}]`;
+        try {
+          // 1. Load product
+          const prodRows = await pgQuery('SELECT * FROM product_profiles WHERE id = $1', [row.product_id]);
+          if (prodRows.length === 0) throw new Error(`product_id ${row.product_id} not found`);
+          const p = prodRows[0];
+          const product = {
+            id: p.id, name: p.name, price: p.price, description: p.description,
+            product_image_url: (p.product_images && p.product_images[0]) || null,
+            profile: {
+              oneliner: p.oneliner, tagline: p.tagline, big_promise: p.big_promise,
+              differentiator: p.differentiator, unique_mechanism: p.mechanism, voice: p.voice,
+              key_benefits: p.benefits, pain_points: p.pain_points,
+              target_demographics: p.target_demographics, target_audience: p.customer_avatar,
+              customer: p.customer_avatar, winning_angles: p.winning_angles,
+              objections: p.common_objections, offer_hook: p.offer_details,
+              pricing: p.price, compliance: p.compliance_restrictions,
+            },
+          };
+          if (!product.product_image_url) throw new Error('no product_image_url');
+
+          // 2. Resolve product to HTTP URL (R2-uploaded data URI)
+          const productHttpUrl = await ensureHttpUrlGlobal(product.product_image_url, 'rgn-product');
+
+          // 3. Step 1: Claude analysis
+          const { base64: refB64, mediaType: refMt } = await resolveImage(row.reference_thumbnail);
+          const promptText = buildClaudeAnalysisPrompt(
+            product, row.angle || '', customPrompts.claude_analysis,
+            { PRODUCT_IMAGE_NOTE: '\n\nA second image is attached: this is OUR product. Render it precisely as shown.' }
+          );
+          const content = [
+            { type: 'text', text: promptText },
+            { type: 'image', source: { type: 'base64', media_type: refMt, data: refB64 } },
+          ];
+          try {
+            const { base64: pB64, mediaType: pMt } = await resolveImage(productHttpUrl);
+            content.push({ type: 'image', source: { type: 'base64', media_type: pMt, data: pB64 } });
+          } catch {}
+
+          const cr = await fetch(CLAUDE_API_URL, {
+            method: 'POST',
+            headers: { 'x-api-key': ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+            body: JSON.stringify({ model: CLAUDE_MODEL, max_tokens: 2000, messages: [{ role: 'user', content }] }),
+          });
+          if (!cr.ok) throw new Error(`Claude ${cr.status}: ${(await cr.text()).slice(0,200)}`);
+          const cd = await cr.json();
+          const raw = cd.content?.[0]?.text || '';
+          const m = raw.match(/\{[\s\S]*\}/);
+          if (!m) throw new Error('Claude returned no JSON');
+          let claudeResult;
+          try { claudeResult = JSON.parse(m[0]); }
+          catch { claudeResult = JSON.parse(m[0].replace(/,\s*([}\]])/g, '$1')); }
+
+          // 4. Step 2: NanoBanana with ONLY product image
+          const nbPrompt = buildNanoBananaImagePrompt(claudeResult, product, customPrompts.nanobanana_image);
+          const ratio = row.aspect_ratio || '4:5';
+          const nbTaskId = await submitToNanoBanana(nbPrompt, [productHttpUrl], ratio);
+          const tempUrl = await pollNanoBanana(nbTaskId);
+          const persisted = await persistNanoBananaImage(tempUrl, 'statics-recovered');
+
+          // 5. Write back to spy_creatives
+          await pgQuery(
+            `UPDATE spy_creatives
+             SET image_url = $1, thumbnail_url = $1,
+                 claude_analysis = $2::jsonb, adapted_text = $3::jsonb,
+                 updated_at = NOW()
+             WHERE id = $4`,
+            [persisted, JSON.stringify(claudeResult), JSON.stringify(claudeResult.adapted_text || {}), row.id]
+          );
+          succeeded++;
+          console.log(`${tag} ✅ → ${persisted.slice(0,80)}`);
+        } catch (err) {
+          failed++;
+          console.error(`${tag} ❌ ${err.message}`);
+        }
+      }
+
+      // Concurrency-limited loop
+      async function worker() {
+        while (true) {
+          const i = cursor++;
+          if (i >= broken.length) return;
+          await processOne(broken[i]);
+        }
+      }
+      await Promise.all(Array.from({ length: CONCURRENCY }, () => worker()));
+      console.log(`[regenerate-broken-previews] DONE — ${succeeded} succeeded, ${failed} failed of ${broken.length}`);
+    });
+  } catch (err) {
+    console.error('[staticsGeneration] /regenerate-broken-previews error:', err);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────
 // Template classification (Haiku vision)
 // ─────────────────────────────────────────────────────────────────────────
 
