@@ -2764,19 +2764,42 @@ router.get('/repair-thumbnails', authenticate, async (req, res) => {
     const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN || '';
     const META_GRAPH_URL = 'https://graph.facebook.com/v21.0';
 
+    // Match every URL type that can go stale:
+    //   - tempfile.aiquickdraw.com         → Kie.ai temp URLs that expire after a few hours
+    //   - /tmp-img/                        → our own in-memory store (wiped on every server restart)
+    //   - NULL / empty                     → never had one
+    // For each row we look up the Meta CDN URL by meta_image_hash.
     const stale = await pgQuery(
       `SELECT c.id, c.image_url, c.meta_image_hash, l.ad_account_id
        FROM spy_creatives c
        LEFT JOIN statics_launches l ON l.creative_id = c.id
        WHERE c.status = 'launched'
-         AND (c.image_url LIKE '%tempfile%' OR c.image_url IS NULL OR c.image_url = '')
+         AND (
+           c.image_url LIKE '%tempfile%'
+           OR c.image_url LIKE '%/tmp-img/%'
+           OR c.image_url LIKE '%aiquickdraw%'
+           OR c.image_url IS NULL
+           OR c.image_url = ''
+         )
          AND c.meta_image_hash IS NOT NULL
          AND c.meta_image_hash != ''
        ORDER BY c.id`
     );
 
+    // Count creatives that cannot be repaired (no meta_image_hash) — visibility only.
+    const unrepairableRows = await pgQuery(
+      `SELECT COUNT(*)::int AS n FROM spy_creatives
+       WHERE status = 'launched'
+         AND (
+           image_url LIKE '%tempfile%' OR image_url LIKE '%/tmp-img/%' OR
+           image_url LIKE '%aiquickdraw%' OR image_url IS NULL OR image_url = ''
+         )
+         AND (meta_image_hash IS NULL OR meta_image_hash = '')`
+    );
+    const unrepairable = unrepairableRows[0]?.n || 0;
+
     if (stale.length === 0) {
-      return res.json({ success: true, data: { repaired: 0, skipped: 0, message: 'No stale thumbnails found' } });
+      return res.json({ success: true, data: { repaired: 0, skipped: 0, unrepairable, message: `No repairable thumbnails. ${unrepairable} launched creative(s) have stale URLs but no meta_image_hash — those cannot be recovered.` } });
     }
 
     console.log(`[repair-thumbnails] Found ${stale.length} stale launched thumbnails to repair`);
@@ -2849,10 +2872,10 @@ router.get('/repair-thumbnails', authenticate, async (req, res) => {
     const noAccount = stale.filter(r => !r.ad_account_id && !(process.env.META_AD_ACCOUNT_IDS || '').split(',')[0]);
     skipped += noAccount.length;
 
-    console.log(`[repair-thumbnails] Done — repaired: ${repaired}, skipped: ${skipped}`);
+    console.log(`[repair-thumbnails] Done — repaired: ${repaired}, skipped: ${skipped}, unrepairable: ${unrepairable}`);
     res.json({
       success: true,
-      data: { found: stale.length, repaired, skipped, errors: errors.length > 0 ? errors : undefined },
+      data: { found: stale.length, repaired, skipped, unrepairable, errors: errors.length > 0 ? errors : undefined },
     });
   } catch (err) {
     console.error('[staticsGeneration] /repair-thumbnails error:', err);
