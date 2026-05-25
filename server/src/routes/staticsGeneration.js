@@ -10,9 +10,11 @@
 //
 // DECISIONS made during rewrite (#5):
 //   - Iteration routes (/iterations, /iterate/:creativeId, /iterate/:batchId/status)
-//     return 501 Not Implemented during the pipeline rewrite. Route paths are
-//     preserved so the frontend won't 404. Re-implement on top of the 3-step
-//     pipeline in a follow-up task.
+//     re-implemented on the new 3-prompt pipeline:
+//       /iterations  → winners SQL (no AI)
+//       /iterate     → spawns N background variations (Claude + NanoBanana per variation),
+//                       writes results back to spy_creatives rows keyed by batch_id
+//       /iterate/:id/status → polls those rows
 //   - Provider is hardcoded to 'nanobanana'. Gemini path deleted entirely.
 //   - quality_warning column kept in INSERT shape but always written as null
 //     from the new flow (column still exists in DB).
@@ -1033,20 +1035,325 @@ router.get('/status/:taskId', authenticate, async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────
-// ITERATIONS — temporarily disabled during pipeline rewrite (#5)
-// Routes preserved so frontend won't 404.
+// ITERATIONS — re-implemented on the 3-prompt pipeline.
+//   GET  /iterations                  → winners from creative_analysis
+//   POST /iterate/:creativeId         → spawn N background NanoBanana variations
+//   GET  /iterate/:batchId/status     → poll the spawned batch
 // ─────────────────────────────────────────────────────────────────────────
 
-router.get('/iterations', authenticate, (_req, res) => {
-  res.status(501).json({ success: false, error: 'Iteration system temporarily disabled during pipeline rewrite' });
+const WINNER_MIN_SPEND = 50;
+const WINNER_MIN_ROAS  = 1.5;
+
+// Variation tweaks — injected into each iteration's Claude analysis to bias
+// the AI toward a different emotional/structural angle while keeping the
+// proven hook and product intact.
+const VARIATION_TWEAKS = [
+  'Test a sharper, more direct emotional hook in the headline (same angle, stronger language).',
+  'Test a punchier subheadline + tighter bullets (same story, fewer words).',
+  'Test a more curiosity-driven headline (lead with a question or contrarian claim).',
+  'Test a stronger urgency / scarcity framing in the copy.',
+  'Test a more specific number / proof point in the headline (replace abstract claims with concrete data).',
+];
+
+/**
+ * Allocate the next IM sequence number (atomic, single-row-locked).
+ */
+async function assignNextImNumber() {
+  const rows = await pgQuery(`
+    UPDATE statics_im_counter
+    SET next_number = next_number + 1
+    WHERE id = 1
+    RETURNING next_number - 1 AS assigned
+  `);
+  if (!rows || rows.length === 0) {
+    throw new Error('statics_im_counter row missing — bootstrap failed');
+  }
+  return rows[0].assigned;
+}
+
+router.get('/iterations', authenticate, async (req, res) => {
+  try {
+    await ensureCreativesTable();
+    const minSpend   = parseFloat(req.query.minSpend)  || WINNER_MIN_SPEND;
+    const minRoas    = parseFloat(req.query.minRoas)   || WINNER_MIN_ROAS;
+    const windowDays = parseInt(req.query.windowDays)  || 30;
+
+    const rows = await pgQuery(`
+      WITH agg AS (
+        SELECT
+          ca.creative_id,
+          SUM(ca.spend) AS spend,
+          SUM(ca.revenue) AS revenue,
+          SUM(ca.purchases) AS purchases,
+          SUM(ca.impressions) AS impressions,
+          SUM(ca.clicks) AS clicks,
+          MAX(ca.synced_at) AS latest_synced_at,
+          MAX(ca.iterated_at) AS iterated_at
+        FROM creative_analysis ca
+        WHERE ca.type = 'image'
+          AND ca.synced_at >= NOW() - ($1 || ' days')::INTERVAL
+        GROUP BY ca.creative_id
+      ),
+      best_hook AS (
+        SELECT DISTINCT ON (ca.creative_id)
+          ca.creative_id, ca.ad_name, ca.hook_id, ca.avatar, ca.angle, ca.editor,
+          ca.week, ca.thumbnail_url, ca.meta_ad_id, ca.roas AS hook_roas,
+          ca.cpa AS hook_cpa, ca.ctr AS hook_ctr, ca.spend AS hook_spend
+        FROM creative_analysis ca
+        WHERE ca.type = 'image' AND ca.thumbnail_url IS NOT NULL
+        ORDER BY ca.creative_id, ca.spend DESC
+      )
+      SELECT
+        agg.creative_id,
+        agg.spend::FLOAT AS spend,
+        agg.revenue::FLOAT AS revenue,
+        (CASE WHEN agg.spend > 0 THEN (agg.revenue / agg.spend)::FLOAT ELSE 0 END) AS roas,
+        (CASE WHEN agg.purchases > 0 THEN (agg.spend / agg.purchases)::FLOAT ELSE 0 END) AS cpa,
+        agg.purchases, agg.impressions::BIGINT AS impressions, agg.clicks::BIGINT AS clicks,
+        agg.latest_synced_at, agg.iterated_at,
+        bh.ad_name, bh.hook_id, bh.avatar, bh.angle, bh.editor, bh.week,
+        bh.thumbnail_url, bh.meta_ad_id, bh.hook_roas::FLOAT AS best_hook_roas,
+        bh.hook_cpa::FLOAT AS best_hook_cpa, bh.hook_ctr::FLOAT AS best_hook_ctr,
+        (SELECT COUNT(*) FROM spy_creatives WHERE parent_creative_id_ref = agg.creative_id) AS iteration_count
+      FROM agg
+      JOIN best_hook bh ON bh.creative_id = agg.creative_id
+      WHERE agg.spend >= $2
+        AND (CASE WHEN agg.spend > 0 THEN agg.revenue / agg.spend ELSE 0 END) >= $3
+      ORDER BY (CASE WHEN agg.spend > 0 THEN agg.revenue / agg.spend ELSE 0 END) DESC, agg.spend DESC
+    `, [String(windowDays), minSpend, minRoas]);
+
+    res.json({
+      success: true,
+      data: {
+        winners: rows,
+        filters: { minSpend, minRoas, windowDays },
+        count: rows.length,
+      },
+    });
+  } catch (err) {
+    console.error('[iterations] GET /iterations error:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
-router.post('/iterate/:creativeId', authenticate, (_req, res) => {
-  res.status(501).json({ success: false, error: 'Iteration system temporarily disabled during pipeline rewrite' });
+router.post('/iterate/:creativeId', authenticate, async (req, res) => {
+  try {
+    await ensureCreativesTable();
+    const parentCreativeId = req.params.creativeId;
+    const variations = Math.max(1, Math.min(5, parseInt(req.body.variations) || 3));
+    const productId = req.body.productId || null;
+
+    // Load parent creative
+    const parentRows = await pgQuery(`
+      SELECT DISTINCT ON (creative_id)
+        creative_id, ad_name, avatar, angle, editor, week, thumbnail_url, meta_ad_id,
+        spend, roas, cpa, ctr
+      FROM creative_analysis
+      WHERE creative_id = $1 AND type = 'image' AND thumbnail_url IS NOT NULL
+      ORDER BY creative_id, spend DESC
+      LIMIT 1
+    `, [parentCreativeId]);
+    if (parentRows.length === 0) {
+      return res.status(404).json({ success: false, error: `No image creative found for ${parentCreativeId}` });
+    }
+    const parent = parentRows[0];
+    const parentImMatch = String(parent.creative_id).match(/^IM(\d+)$/);
+    const parentImNumber = parentImMatch ? parseInt(parentImMatch[1]) : null;
+
+    // Load product (or use Miner Forge Pro defaults)
+    let product = { id: productId, name: 'Miner Forge Pro', profile: {} };
+    if (productId) {
+      const prodRows = await pgQuery('SELECT * FROM product_profiles WHERE id = $1', [productId]);
+      if (prodRows.length > 0) {
+        const p = prodRows[0];
+        product = {
+          id: p.id, name: p.name, price: p.price, description: p.description,
+          product_image_url: (p.product_images && p.product_images[0]) || null,
+          profile: {
+            oneliner: p.oneliner, tagline: p.tagline, big_promise: p.big_promise,
+            differentiator: p.differentiator, unique_mechanism: p.mechanism, voice: p.voice,
+            key_benefits: p.benefits, pain_points: p.pain_points, target_demographics: p.target_demographics,
+            target_audience: p.customer_avatar, customer: p.customer_avatar,
+            winning_angles: p.winning_angles, objections: p.common_objections,
+            offer_hook: p.offer_details, pricing: p.price, compliance: p.compliance_restrictions,
+          },
+        };
+      }
+    }
+
+    // Pre-allocate spy_creatives rows + assign IM numbers
+    const batchId = crypto.randomUUID();
+    const createdRows = [];
+    for (let i = 0; i < variations; i++) {
+      const imNum = await assignNextImNumber();
+      const sourceLabel = `IM${imNum} - IT - ${parent.creative_id}`;
+      const row = await pgQuery(`
+        INSERT INTO spy_creatives
+          (pipeline, product_id, product_name, status, aspect_ratio,
+           source_label, reference_name, reference_thumbnail, angle,
+           parent_creative_id_ref, parent_im_number, im_number, batch_id, batch_position)
+        VALUES ('iteration', $1, $2, 'generating', '4:5',
+                $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        RETURNING id, im_number, source_label
+      `, [
+        productId, product.name, sourceLabel, parent.ad_name, parent.thumbnail_url,
+        parent.angle, parent.creative_id, parentImNumber, imNum, batchId, i + 1,
+      ]);
+      createdRows.push(row[0]);
+    }
+
+    // Mark parent as iterated (UI "last iterated" timestamp)
+    await pgQuery(
+      `UPDATE creative_analysis SET iterated_at = NOW() WHERE creative_id = $1`,
+      [parent.creative_id]
+    );
+
+    // Respond immediately — pipeline runs in background
+    res.json({
+      success: true,
+      data: {
+        batchId, parentCreativeId: parent.creative_id, parentImNumber, variations,
+        creatives: createdRows.map(r => ({
+          id: r.id, im_number: r.im_number, source_label: r.source_label, status: 'generating',
+        })),
+      },
+    });
+
+    // ── Background pipeline: refresh Meta URL → upload parent → N parallel variations ──
+    setImmediate(async () => {
+      console.log(`[iterations] batch ${batchId} | parent=${parent.creative_id} | variations=${variations}`);
+
+      // Step A: get a stable HTTP URL for the parent image (Meta URLs expire after ~24h)
+      let refImgUrl = parent.thumbnail_url;
+      try {
+        const probe = await fetch(refImgUrl, { method: 'HEAD' }).catch(() => null);
+        if ((!probe || !probe.ok) && parent.meta_ad_id && process.env.META_ACCESS_TOKEN) {
+          console.log(`[iterations] batch ${batchId} | Meta URL stale, refreshing ad ${parent.meta_ad_id}`);
+          const refreshRes = await fetch(
+            `https://graph.facebook.com/v23.0/${parent.meta_ad_id}?fields=creative{image_url,thumbnail_url}&access_token=${process.env.META_ACCESS_TOKEN}`
+          );
+          if (refreshRes.ok) {
+            const rData = await refreshRes.json();
+            const newUrl = rData.creative?.image_url || rData.creative?.thumbnail_url;
+            if (newUrl) {
+              refImgUrl = newUrl;
+              await pgQuery(`UPDATE creative_analysis SET thumbnail_url = $1 WHERE creative_id = $2`, [newUrl, parent.creative_id]).catch(() => {});
+            }
+          }
+        }
+      } catch (e) {
+        console.warn(`[iterations] batch ${batchId} | Meta URL refresh probe failed (continuing with stored URL): ${e.message}`);
+      }
+
+      const customPrompts = (await getCustomStaticsPrompts().catch(() => null)) || getDefaultStaticsPrompts();
+      const productHttpUrl = product.product_image_url
+        ? await ensureHttpUrlGlobal(product.product_image_url, 'iter-product').catch(() => null)
+        : null;
+
+      // Step B: process each variation in parallel
+      await Promise.allSettled(createdRows.map(async (childRow, idx) => {
+        const variationLabel = VARIATION_TWEAKS[idx % VARIATION_TWEAKS.length];
+        const variationAngle = `${parent.angle || 'Winner iteration'} — ${variationLabel}`;
+        const tagPrefix = `[iter ${batchId.slice(0,8)} ${idx+1}/${variations}]`;
+        try {
+          // Step B1: Claude analysis on the parent ad image
+          const { base64: refBase64, mediaType: refMediaType } = await resolveImage(refImgUrl);
+          const promptText = buildClaudeAnalysisPrompt(
+            product, variationAngle, customPrompts.claude_analysis,
+            { PRODUCT_IMAGE_NOTE: productHttpUrl ? '\n\nA second image is attached: this is OUR product. Render it precisely as shown.' : '' }
+          );
+
+          const userContent = [{ type: 'text', text: promptText }, { type: 'image', source: { type: 'base64', media_type: refMediaType, data: refBase64 } }];
+          if (productHttpUrl && productHttpUrl.startsWith('http')) {
+            try {
+              const { base64: pBase64, mediaType: pMediaType } = await resolveImage(productHttpUrl);
+              userContent.push({ type: 'image', source: { type: 'base64', media_type: pMediaType, data: pBase64 } });
+            } catch (e) { console.warn(`${tagPrefix} product image attach failed: ${e.message}`); }
+          }
+
+          const claudeRes = await fetch('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers: { 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+            body: JSON.stringify({ model: 'claude-opus-4-5', max_tokens: 3000, messages: [{ role: 'user', content: userContent }] }),
+          });
+          if (!claudeRes.ok) {
+            const errText = await claudeRes.text();
+            throw new Error(`Claude ${claudeRes.status}: ${errText.slice(0,250)}`);
+          }
+          const claudeData = await claudeRes.json();
+          const rawText = claudeData.content?.[0]?.text || '';
+          const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+          if (!jsonMatch) throw new Error('Claude returned no JSON object');
+          let claudeResult;
+          try { claudeResult = JSON.parse(jsonMatch[0]); }
+          catch {
+            const fixable = jsonMatch[0].replace(/,\s*([}\]])/g, '$1');
+            claudeResult = JSON.parse(fixable);
+          }
+
+          // Step B2: NanoBanana with ONLY the product image (per architecture)
+          if (!productHttpUrl) throw new Error('Iteration requires product.product_image_url — none available');
+          const nbPrompt = buildNanoBananaImagePrompt(claudeResult, product, customPrompts.nanobanana_image);
+          const nbTaskId = await submitToNanoBanana(nbPrompt, [productHttpUrl], '4:5');
+          const generatedUrl = await pollNanoBanana(nbTaskId);
+
+          // Step B3: write result back to spy_creatives row
+          await pgQuery(`
+            UPDATE spy_creatives
+            SET status = 'review',
+                image_url = $1,
+                thumbnail_url = $1,
+                claude_analysis = $2::jsonb,
+                adapted_text = $3::jsonb,
+                iteration_change_description = $4,
+                updated_at = NOW()
+            WHERE id = $5
+          `, [generatedUrl, JSON.stringify(claudeResult), JSON.stringify(claudeResult.adapted_text || {}), variationLabel, childRow.id]);
+          console.log(`${tagPrefix} ✅ done → ${generatedUrl.slice(0,80)}`);
+        } catch (err) {
+          console.error(`${tagPrefix} failed: ${err.message}`);
+          await pgQuery(
+            `UPDATE spy_creatives SET status = 'rejected', review_notes = $1, updated_at = NOW() WHERE id = $2`,
+            [`Iteration failed: ${err.message}`.slice(0, 500), childRow.id]
+          ).catch(() => {});
+        }
+      }));
+      console.log(`[iterations] batch ${batchId} ✅ complete`);
+    });
+  } catch (err) {
+    console.error('[iterations] POST /iterate error:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
-router.get('/iterate/:batchId/status', authenticate, (_req, res) => {
-  res.status(501).json({ success: false, error: 'Iteration system temporarily disabled during pipeline rewrite' });
+router.get('/iterate/:batchId/status', authenticate, async (req, res) => {
+  try {
+    const { batchId } = req.params;
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(batchId)) {
+      return res.status(404).json({ success: false, error: 'Invalid batchId format' });
+    }
+    const rows = await pgQuery(
+      `SELECT id, im_number, parent_creative_id_ref, status, image_url, thumbnail_url,
+              source_label, iteration_change_description, review_notes, updated_at
+       FROM spy_creatives
+       WHERE batch_id = $1
+       ORDER BY batch_position ASC`,
+      [batchId]
+    );
+    res.json({
+      success: true,
+      data: {
+        batchId,
+        count: rows.length,
+        complete: rows.filter(r => r.status === 'review').length,
+        failed:   rows.filter(r => r.status === 'rejected').length,
+        pending:  rows.filter(r => r.status === 'generating').length,
+        creatives: rows,
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 // ─────────────────────────────────────────────────────────────────────────
