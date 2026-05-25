@@ -2898,10 +2898,18 @@ router.get('/repair-thumbnails', authenticate, async (req, res) => {
 router.post('/regenerate-broken-previews', authenticate, async (req, res) => {
   try {
     await ensureCreativesTable();
+    // Default scope: visible pipeline statuses only (matches the Kanban columns).
+    // Caller can override by passing { statuses: [...] } to include rejected/generating etc.
+    const DEFAULT_STATUSES = ['launched', 'ready', 'approved', 'review'];
+    const statuses = (Array.isArray(req.body?.statuses) && req.body.statuses.length > 0)
+      ? req.body.statuses
+      : DEFAULT_STATUSES;
+
     const broken = await pgQuery(`
       SELECT id, product_id, angle, reference_thumbnail, aspect_ratio, status
       FROM spy_creatives
-      WHERE (
+      WHERE status = ANY($1::text[])
+      AND (
         image_url LIKE '%tempfile%' OR image_url LIKE '%/tmp-img/%' OR
         image_url LIKE '%aiquickdraw%' OR image_url IS NULL OR image_url = ''
       )
@@ -2909,10 +2917,19 @@ router.post('/regenerate-broken-previews', authenticate, async (req, res) => {
       AND reference_thumbnail != ''
       AND product_id IS NOT NULL
       ORDER BY status, updated_at DESC
-    `);
+    `, [statuses]);
 
     // Respond immediately — pipeline runs in background
-    res.json({ success: true, data: { queued: broken.length, message: `Regenerating ${broken.length} broken preview(s) in background. Refresh the pipeline view in ~2-3 min.` } });
+    const eta = Math.ceil((broken.length * 25) / 4 / 60); // ~25s each, 4 workers, in minutes
+    res.json({
+      success: true,
+      data: {
+        queued: broken.length,
+        scopedStatuses: statuses,
+        eta_min: eta,
+        message: `Regenerating ${broken.length} broken preview(s) in background (statuses=[${statuses.join(',')}]). ETA ~${eta} min at concurrency=4.`,
+      },
+    });
     if (broken.length === 0) return;
 
     setImmediate(async () => {
