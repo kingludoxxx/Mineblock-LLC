@@ -4,31 +4,36 @@ import { X, Loader2, RotateCcw, Check, AlertCircle } from 'lucide-react';
 import api from '../../../services/api';
 
 // ---------------------------------------------------------------------------
-// Constants
+// 3-prompt architecture (migration 036)
+//
+// Pipeline:
+//   1. claude_analysis   — Claude sees ref + product, emits JSON brief
+//   2. nanobanana_image  — NanoBanana sees only product image, generates ad
+//   3. ai_adjustment     — Claude turns freeform correction into NB regen prompt
+//
+// Each prompt is a single editable template with {{VAR}} interpolation.
 // ---------------------------------------------------------------------------
 
 const TABS = [
-  { key: 'claudeAnalysis', label: 'Claude Analysis' },
-  { key: 'nanoBanana', label: 'Image Generation' },
+  {
+    key: 'claude_analysis',
+    label: '① Claude Analysis',
+    summary: 'Step 1 — Sent to Claude with the reference ad image (+ product image if available). Claude extracts the layout and adapts the text for your product.',
+    vars: '{{PRODUCT_NAME}} {{PRODUCT_PRICE}} {{PRODUCT_DESCRIPTION}} {{ANGLE}} {{BRAND_VOICE}} {{CUSTOMER}} {{BIG_PROMISE}} {{DIFFERENTIATOR}} {{UNIQUE_MECHANISM}} {{KEY_BENEFITS}} {{TARGET_AUDIENCE}} {{PAIN_POINTS}} {{INGREDIENTS}} {{WINNING_ANGLES}} {{OBJECTIONS}} {{OFFER_HOOK}} {{PRICING}} {{COMPLIANCE}} {{PRODUCT_IMAGE_NOTE}}',
+  },
+  {
+    key: 'nanobanana_image',
+    label: '② NanoBanana Image',
+    summary: 'Step 2 — Sent to NanoBanana with the product image as the sole visual reference. Built from Claude\'s analysis output.',
+    vars: '{{PRODUCT_NAME}} {{PRODUCT_INSTRUCTION}} {{PRODUCT_RULE}} {{VISUAL_CHANGES}} {{TEXT_SWAPS}} {{PEOPLE_COUNT}} {{CHARACTER_ADAPTATION}}',
+  },
+  {
+    key: 'ai_adjustment',
+    label: '③ AI Adjustment',
+    summary: 'Optional Step — Sent to Claude when user clicks "Regenerate with Correction". Claude turns the user\'s freeform correction into a precise NanoBanana instruction.',
+    vars: '{{PRODUCT_NAME}} {{ANGLE}} {{ADAPTED_HEADLINE}} {{ADAPTED_CTA}} {{PEOPLE_COUNT}} {{USER_CORRECTION}}',
+  },
 ];
-
-const FIELD_CONFIG = {
-  claudeAnalysis: [
-    { key: 'productIdentity', label: 'Product Identity', type: 'textarea', placeholder: 'Product identity description...' },
-    { key: 'headlineRules', label: 'Headline Rules', type: 'textarea', placeholder: 'Rules for headline generation...' },
-    { key: 'headlineExamples', label: 'Headline Examples', type: 'textarea', placeholder: 'Example headlines for inspiration...' },
-    { key: 'pricingRules', label: 'Pricing Rules', type: 'textarea', placeholder: 'Pricing constraints...' },
-    { key: 'formulaPreservation', label: 'Formula Preservation', type: 'textarea', placeholder: 'Rules for preserving copywriting formulas...' },
-    { key: 'crossNicheAdaptation', label: 'Cross-Niche Adaptation', type: 'textarea', placeholder: 'Rules for adapting across product niches...' },
-    { key: 'visualAdaptation', label: 'Visual Adaptation', type: 'textarea', placeholder: 'How to map visual elements to your product...' },
-    { key: 'bannedPhrases', label: 'Banned Phrases', type: 'input', placeholder: 'Comma-separated banned phrases...' },
-  ],
-  nanoBanana: [
-    { key: 'productRules', label: 'Product Replacement Rules', type: 'textarea', placeholder: 'Product replacement rules...' },
-    { key: 'textRules', label: 'Text Rendering Rules', type: 'textarea', placeholder: 'Text rendering rules...' },
-    { key: 'absoluteRules', label: 'Absolute Rules / Constraints', type: 'textarea', placeholder: 'Absolute rules/constraints...' },
-  ],
-};
 
 // ---------------------------------------------------------------------------
 // Toast
@@ -62,11 +67,11 @@ function Toast({ type, message, onDismiss }) {
 }
 
 // ---------------------------------------------------------------------------
-// StaticsSettingsModal
+// StaticsSettingsModal — 3 prompts, one large textarea per tab
 // ---------------------------------------------------------------------------
 
 export function StaticsSettingsModal({ isOpen, onClose }) {
-  const [activeTab, setActiveTab] = useState('claudeAnalysis');
+  const [activeTab, setActiveTab] = useState('claude_analysis');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [defaults, setDefaults] = useState({});
@@ -78,15 +83,13 @@ export function StaticsSettingsModal({ isOpen, onClose }) {
     setLoading(true);
     try {
       const { data } = await api.get('/statics-generation/settings/prompts');
-      setDefaults(data.defaults || {});
-      // Merge: use custom values where they exist, otherwise defaults
+      const defs = data?.defaults || {};
+      const cur = data?.current || {};
+      setDefaults(defs);
+      // Merge: current > defaults > empty string
       const merged = {};
-      for (const section of Object.keys(FIELD_CONFIG)) {
-        merged[section] = {};
-        for (const field of FIELD_CONFIG[section]) {
-          merged[section][field.key] =
-            data.custom?.[section]?.[field.key] ?? data.defaults?.[section]?.[field.key] ?? '';
-        }
+      for (const tab of TABS) {
+        merged[tab.key] = cur[tab.key] ?? defs[tab.key] ?? '';
       }
       setValues(merged);
     } catch (err) {
@@ -104,26 +107,26 @@ export function StaticsSettingsModal({ isOpen, onClose }) {
   }, [isOpen, fetchSettings]);
 
   // ---- Handlers ----
-  const handleChange = (section, key, value) => {
-    setValues((prev) => ({
-      ...prev,
-      [section]: { ...prev[section], [key]: value },
-    }));
+  const handleChange = (key, value) => {
+    setValues((prev) => ({ ...prev, [key]: value }));
   };
 
-  const handleResetField = (section, key) => {
-    const defaultVal = defaults?.[section]?.[key] ?? '';
-    handleChange(section, key, defaultVal);
+  const handleResetField = (key) => {
+    const defaultVal = defaults?.[key] ?? '';
+    handleChange(key, defaultVal);
   };
 
   const handleSave = async () => {
     setSaving(true);
     try {
-      await api.put('/statics-generation/settings/prompts', { prompts: values });
-      setToast({ type: 'success', message: 'Settings saved successfully' });
+      // New backend expects { prompts: { claude_analysis, nanobanana_image, ai_adjustment } }
+      const payload = { prompts: values };
+      await api.put('/statics-generation/settings/prompts', payload);
+      setToast({ type: 'success', message: 'Prompts saved successfully' });
     } catch (err) {
-      console.error('Failed to save settings:', err);
-      setToast({ type: 'error', message: 'Failed to save settings' });
+      console.error('Failed to save prompts:', err);
+      const msg = err?.response?.data?.error || err?.message || 'Failed to save prompts';
+      setToast({ type: 'error', message: msg });
     } finally {
       setSaving(false);
     }
@@ -133,23 +136,23 @@ export function StaticsSettingsModal({ isOpen, onClose }) {
     try {
       await api.post('/statics-generation/settings/prompts/reset');
       await fetchSettings();
-      setToast({ type: 'success', message: 'All prompts reset to defaults' });
+      setToast({ type: 'success', message: 'All 3 prompts reset to defaults' });
     } catch (err) {
-      console.error('Failed to reset settings:', err);
-      setToast({ type: 'error', message: 'Failed to reset settings' });
+      console.error('Failed to reset prompts:', err);
+      setToast({ type: 'error', message: 'Failed to reset prompts' });
     }
   };
 
-  const isFieldCustom = (section, key) => {
-    const current = values?.[section]?.[key] ?? '';
-    const def = defaults?.[section]?.[key] ?? '';
+  const isFieldCustom = (key) => {
+    const current = values?.[key] ?? '';
+    const def = defaults?.[key] ?? '';
     return current !== def;
   };
 
   // ---- Don't render if closed ----
   if (!isOpen) return null;
 
-  const fields = FIELD_CONFIG[activeTab] || [];
+  const tab = TABS.find((t) => t.key === activeTab) || TABS[0];
 
   return createPortal(
     <>
@@ -157,10 +160,13 @@ export function StaticsSettingsModal({ isOpen, onClose }) {
       <div className="fixed inset-0 bg-black/70 z-[9998]" onClick={onClose} />
 
       {/* Slide-over panel */}
-      <div className="fixed inset-y-0 right-0 w-full max-w-2xl bg-bg-card border-l border-border-subtle z-[9999] flex flex-col animate-slide-in-right">
+      <div className="fixed inset-y-0 right-0 w-full max-w-3xl bg-bg-card border-l border-border-subtle z-[9999] flex flex-col animate-slide-in-right">
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-border-subtle shrink-0">
-          <h2 className="text-base font-semibold text-text-primary">Prompt &amp; Logic Settings</h2>
+          <div>
+            <h2 className="text-base font-semibold text-text-primary">Pipeline Prompt Settings</h2>
+            <p className="text-xs text-text-muted mt-0.5">Edit the 3 prompts that drive the entire static-ad pipeline</p>
+          </div>
           <button
             onClick={onClose}
             className="p-1.5 rounded-lg text-text-muted hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer"
@@ -171,63 +177,64 @@ export function StaticsSettingsModal({ isOpen, onClose }) {
 
         {/* Tabs */}
         <div className="flex items-center gap-1 px-6 pt-4 pb-2 shrink-0">
-          {TABS.map((tab) => (
+          {TABS.map((t) => (
             <button
-              key={tab.key}
+              key={t.key}
               type="button"
-              onClick={() => setActiveTab(tab.key)}
+              onClick={() => setActiveTab(t.key)}
               className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors cursor-pointer ${
-                activeTab === tab.key
+                activeTab === t.key
                   ? 'bg-accent/15 text-accent-text'
                   : 'text-text-muted hover:text-text-primary hover:bg-bg-hover'
               }`}
             >
-              {tab.label}
+              {t.label}
             </button>
           ))}
         </div>
 
-        {/* Content */}
-        <div className="flex-1 overflow-y-auto px-6 py-4 space-y-5">
+        {/* Step description + available vars */}
+        {!loading && (
+          <div className="px-6 pb-3 shrink-0">
+            <p className="text-xs text-text-muted leading-relaxed">{tab.summary}</p>
+            <p className="text-[11px] text-text-faint mt-1.5 font-mono break-words">
+              Available variables: {tab.vars}
+            </p>
+          </div>
+        )}
+
+        {/* Content — single big textarea per tab */}
+        <div className="flex-1 overflow-y-auto px-6 pb-4">
           {loading ? (
             <div className="flex items-center justify-center py-20">
               <Loader2 className="w-6 h-6 animate-spin text-accent" />
             </div>
           ) : (
-            fields.map((field) => (
-              <div key={field.key}>
-                <div className="flex items-center justify-between mb-1.5">
-                  <label className="text-xs text-text-muted block">{field.label}</label>
-                  {isFieldCustom(activeTab, field.key) && (
-                    <button
-                      type="button"
-                      onClick={() => handleResetField(activeTab, field.key)}
-                      className="flex items-center gap-1 text-xs text-red-400 hover:text-red-300 transition-colors cursor-pointer"
-                    >
-                      <RotateCcw className="w-3 h-3" />
-                      Reset to Default
-                    </button>
-                  )}
-                </div>
-                {field.type === 'textarea' ? (
-                  <textarea
-                    value={values?.[activeTab]?.[field.key] ?? ''}
-                    onChange={(e) => handleChange(activeTab, field.key, e.target.value)}
-                    placeholder={field.placeholder}
-                    rows={6}
-                    className="w-full bg-bg-main border border-border-default rounded-lg px-3 py-2.5 text-sm text-text-primary font-mono placeholder:text-text-faint resize-y focus:outline-none focus:border-accent/30 transition-colors"
-                  />
-                ) : (
-                  <input
-                    type="text"
-                    value={values?.[activeTab]?.[field.key] ?? ''}
-                    onChange={(e) => handleChange(activeTab, field.key, e.target.value)}
-                    placeholder={field.placeholder}
-                    className="w-full bg-bg-main border border-border-default rounded-lg px-3 py-2.5 text-sm text-text-primary placeholder:text-text-faint focus:outline-none focus:border-accent/30 transition-colors"
-                  />
+            <div>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="text-xs text-text-muted block">Prompt template</label>
+                {isFieldCustom(activeTab) && (
+                  <button
+                    type="button"
+                    onClick={() => handleResetField(activeTab)}
+                    className="flex items-center gap-1 text-xs text-red-400 hover:text-red-300 transition-colors cursor-pointer"
+                  >
+                    <RotateCcw className="w-3 h-3" />
+                    Reset to Default
+                  </button>
                 )}
               </div>
-            ))
+              <textarea
+                value={values?.[activeTab] ?? ''}
+                onChange={(e) => handleChange(activeTab, e.target.value)}
+                placeholder="Prompt template with {{VARIABLE}} markers..."
+                rows={22}
+                className="w-full bg-bg-main border border-border-default rounded-lg px-3 py-2.5 text-[13px] text-text-primary font-mono placeholder:text-text-faint resize-y focus:outline-none focus:border-accent/30 transition-colors leading-relaxed"
+              />
+              <p className="text-[11px] text-text-faint mt-2">
+                Use <span className="font-mono text-text-muted">{'{{VARIABLE}}'}</span> syntax for dynamic values. Unknown variables are replaced with an empty string.
+              </p>
+            </div>
           )}
         </div>
 
@@ -240,7 +247,7 @@ export function StaticsSettingsModal({ isOpen, onClose }) {
               className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium border border-red-500/40 text-red-400 hover:bg-red-500/10 transition-colors cursor-pointer"
             >
               <RotateCcw className="w-4 h-4" />
-              Reset All to Defaults
+              Reset All 3 Prompts
             </button>
             <button
               type="button"
