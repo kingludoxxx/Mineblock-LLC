@@ -767,67 +767,6 @@ function getAngleSceneDirection(angleName) {
   return null;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// COMPARISON CONFIG BUILDER
-// Reads product profile + template deep_analysis + angle data to determine:
-//   - What type of comparison this is (knockoff, category, feature)
-//   - Visual briefs for each column (left = ours, right = competitor)
-//   - Right-column header label
-// Used by buildNanoBananaPrompt to produce semantic, context-aware column instructions.
-// ─────────────────────────────────────────────────────────────────────────────
-export function buildComparisonConfig(product, templateData, angleData) {
-  const deepAnalysis = templateData?.deep_analysis || {};
-  const templateType = (deepAnalysis.template_type || '').toLowerCase();
-  const templateName = (templateData?.name || '').toLowerCase();
-  const angleName = (angleData?.name || '').toLowerCase();
-  const angleDesc = (angleData?.description || angleData?.angle_description || '').toLowerCase();
-  const productName = product?.name || 'our product';
-  const productCategory = (product?.profile?.categoryLabel || product?.profile?.category || 'Bitcoin Miner').toLowerCase();
-  const isMiner = /miner|mining|bitcoin|asic|crypto/i.test(productCategory + ' ' + productName);
-
-  // Determine comparison type from template name and angle
-  const isKnockoff = /knock.?off|fake|counterfeit|copy|imitation|clone|bootleg/i.test(templateName + ' ' + angleName + ' ' + angleDesc);
-  const isCancel = /cancel|versus|vs\b|anti.fake|callout|competitor/i.test(templateName + ' ' + angleName);
-  const isUsThem = /us.?vs|our.?vs|original/i.test(templateName + ' ' + angleName + ' ' + angleDesc);
-
-  // Derive what the right-column product should be visually
-  // Rule: the competitor should be the SAME product category but visually degraded
-  // (same form factor = more believable comparison than a completely different product type)
-  let rightProductDescription;
-  let rightColumnHeader;
-  let leftProductDescription;
-  let comparisonType;
-
-  if (isMiner) {
-    leftProductDescription = `Show the ${productName} exactly as in the product photo — sharp, bright, high-resolution LCD display glowing, all ports and physical details crisp and clear. Premium feel.`;
-
-    if (isKnockoff || isCancel || isUsThem) {
-      // Knockoff/cancel/us-vs-them: right side = similar form factor but degraded
-      comparisonType = 'knockoff';
-      rightProductDescription = `Render a Bitcoin ASIC miner that is visually SIMILAR in form factor and dimensions to the ${productName} — same rough shape and size category — but with these clear degradation signals: slightly out-of-focus/blurry rendering, desaturated muted gray-black color palette, dull plastic housing with visible seams, black or blank screen (no display glow), no visible brand name, no ports clearly defined, cheap AliExpress-gadget aesthetic. The visual similarity to the left column is intentional — it makes the quality gap obvious. DO NOT render a USB stick or a completely different device shape.`;
-      rightColumnHeader = `Knockoff ${isMiner ? 'Miner' : 'Product'}`;
-    } else {
-      // Generic comparison: right side = cheap USB miner
-      comparisonType = 'category';
-      rightProductDescription = `Render a cheap, generic, no-brand USB mining dongle or low-end ASIC miner — low-quality plastic, no display, generic shape, AliExpress aesthetic. Looks cheap and fake next to the ${productName}.`;
-      rightColumnHeader = 'Generic Miner';
-    }
-  } else {
-    // Non-miner product — generic degraded version
-    comparisonType = 'generic';
-    leftProductDescription = `Show the ${productName} exactly as in the product photo — premium, sharp, well-lit.`;
-    rightProductDescription = `Render a visually similar but clearly inferior version of the ${productName} category product — same rough form factor but degraded: blurry, gray/desaturated, cheap-looking materials, no brand markings.`;
-    rightColumnHeader = 'Knockoff';
-  }
-
-  return {
-    comparisonType,
-    leftProductDescription,
-    rightProductDescription,
-    rightColumnHeader,
-  };
-}
-
 export function buildNanoBananaPrompt(claudeResult, swapPairs, product, logoCount = 0, customOverrides = null, layoutMap = null, logoBackgroundTone = null, skipTextRendering = false, templateData = null, angleData = null, isGemini = false, hasCompetitorLogo = false) {
   const {
     people_count, product_count, adapted_audience,
@@ -1091,46 +1030,23 @@ Every character in every line must exactly match what is listed. Check each word
     (templateData?.deep_analysis?.template_type || '').toLowerCase().includes('vs') ||
     (templateData?.deep_analysis?.template_type || '').toLowerCase().includes('cancel');
 
-  // Build semantic comparison config — drives per-column visual briefs
-  const comparisonConfig = isComparisonTemplate
-    ? buildComparisonConfig(product, templateData, angleData)
-    : null;
-
   const comparisonBlock = isComparisonTemplate
     ? `\n\n🔴 COMPARISON TEMPLATE — TWO-COLUMN LAYOUT (EXECUTE THIS BEFORE ANYTHING ELSE):
-This is a split "us vs them" ad with a LEFT column (our product, the REAL/AUTHENTIC one) and a RIGHT column (cheap knockoff/competitor) separated by a center VS badge.
+This is a split "us vs them" ad with a LEFT column and a RIGHT column separated by a VS badge.
 
-━━━ LEFT COLUMN — "${product.name}" (OUR PRODUCT) ━━━
-PRODUCT IMAGE:
-• Render the ${product.name} from the FIRST input image — photorealistic, natural lighting, same zone and scale as the left column product zone
-• Show it clean, sharp, well-lit, premium feel — this is the REAL product
-• ${comparisonConfig?.leftProductDescription || `Show the exact device with all its features clearly visible`}
+LEFT COLUMN — OUR PRODUCT:
+• Product image: replace with the ${product.name} from the FIRST input image (photorealistic, natural lighting, same zone/scale)
+• Column header text area: COMPLETELY ERASE any brand name, logo, or product label text in the left header — paint solid fill matching that zone's background color. Leave blank. Text is added programmatically.
+• Do NOT carry through "BUTCHERBOX", any food brand, supplement brand, clothing brand, or ANY non-mining brand name
 
-COLUMN HEADER TEXT — MANDATORY REPLACEMENT:
-• ERASE every character currently in the left column header text zone (no matter what it says — "BUTCHERBOX", any food name, any brand, any product label, anything)
-• Write this text in the left column header zone: "${product.name}"
-• Use the same font style, weight, and color as the rest of the column header styling
-• The left column header MUST say "${product.name}" and NOTHING else
+RIGHT COLUMN — COMPETITOR PRODUCT:
+• The right column MUST show a cheap generic competitor product from OUR product category (Bitcoin miners), NOT whatever product the reference shows
+• For Bitcoin/crypto miners: render a cheap, generic, no-brand USB mining device or AliExpress-style gadget — looks low-quality, plain, generic
+• Column header text area: COMPLETELY ERASE all text in the right column header — paint solid fill matching that zone's background color. Leave blank.
+• 🚫 ZERO food products, steaks, supplements, clothing, or any non-mining item on the right side
 
-━━━ RIGHT COLUMN — COMPETITOR (FAKE / KNOCKOFF) ━━━
-PRODUCT IMAGE:
-• ${comparisonConfig?.rightProductDescription || `Render a cheap, generic, no-brand Bitcoin ASIC miner — similar form factor to the ${product.name} but visually degraded: slightly blurry, desaturated gray tones, dull plastic housing, no glowing display, no visible quality signals. Same rough dimensions and shape category as the left product, but looks low-quality and fake.`}
-• 🚫 DO NOT render food, meat, steaks, supplements, groceries, clothing, or ANY non-mining product on the right side
-• The right column product MUST be a mining device (degraded/knockoff version)
-
-COLUMN HEADER TEXT — MANDATORY REPLACEMENT:
-• ERASE every character currently in the right column header text zone
-• Write this text in the right column header zone: "${comparisonConfig?.rightColumnHeader || 'Knockoff Miner'}"
-• Use the same font style and color as the existing column header styling
-
-━━━ BOTH COLUMNS — ABSOLUTE TEXT RULES ━━━
-• EVERY piece of text that existed in the reference image inside the column areas: ERASE IT
-• "BUTCHERBOX" → ERASE. "Grass-Fed" → ERASE. "Ribeyes" → ERASE. Any food word → ERASE
-• Any checklist row labels from the reference → ERASE (our text compositor adds them back)
-• The ONLY text you may write: "${product.name}" in the left header, "${comparisonConfig?.rightColumnHeader || 'Knockoff Miner'}" in the right header
-
-VS BADGE: Keep the center VS divider/badge exactly — same position, size, style, color.
-🚫 ABSOLUTE RULE: Both product image zones must contain mining hardware ONLY. Zero food. Zero meat. Zero supplements. Zero non-mining items.`
+VS BADGE: Keep the center VS divider/badge exactly — same position, size, style.
+🚫 ABSOLUTE RULE: Both columns must contain mining hardware ONLY. No food. No meat. No supplements.`
     : '';
 
   const crossNicheBlock = isCrossNicheProduct
