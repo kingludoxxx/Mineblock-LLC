@@ -498,6 +498,27 @@ async function shrinkForClaude(base64, mediaType) {
   return { base64: scaled.toString('base64'), mediaType: 'image/jpeg' };
 }
 
+/**
+ * Pull the first product image (data URI) from a product_profiles row.
+ * Handles both: (a) JSONB column auto-parsed to JS array by `pg`, and
+ * (b) TEXT column that comes back as a JSON-encoded string.
+ * Returns null if no image is found.
+ */
+function firstProductImageFromRow(p) {
+  let pi = p?.product_images;
+  if (!pi) return null;
+  if (typeof pi === 'string') {
+    // TEXT column with JSON content — must parse
+    try { pi = JSON.parse(pi); } catch { return null; }
+  }
+  if (Array.isArray(pi) && pi.length > 0) {
+    const first = pi[0];
+    if (typeof first === 'string' && first.length > 10) return first;
+    if (first && typeof first === 'object' && first.url) return first.url;
+  }
+  return null;
+}
+
 async function ensureHttpUrlGlobal(url, label = 'img') {
   const GLOBAL_SERVER_URL = process.env.RENDER_EXTERNAL_URL || `http://localhost:${process.env.PORT || 3000}`;
   if (!url) return url;
@@ -1199,7 +1220,7 @@ router.post('/iterate/:creativeId', authenticate, async (req, res) => {
         const p = prodRows[0];
         product = {
           id: p.id, name: p.name, price: p.price, description: p.description,
-          product_image_url: (p.product_images && p.product_images[0]) || null,
+          product_image_url: firstProductImageFromRow(p),
           profile: {
             oneliner: p.oneliner, tagline: p.tagline, big_promise: p.big_promise,
             differentiator: p.differentiator, unique_mechanism: p.mechanism, voice: p.voice,
@@ -2956,7 +2977,7 @@ router.post('/regenerate-broken-previews', authenticate, async (req, res) => {
           const p = prodRows[0];
           const product = {
             id: p.id, name: p.name, price: p.price, description: p.description,
-            product_image_url: (p.product_images && p.product_images[0]) || null,
+            product_image_url: firstProductImageFromRow(p),
             profile: {
               oneliner: p.oneliner, tagline: p.tagline, big_promise: p.big_promise,
               differentiator: p.differentiator, unique_mechanism: p.mechanism, voice: p.voice,
