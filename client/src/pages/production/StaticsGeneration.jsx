@@ -720,78 +720,81 @@ function AngleAnalytics() {
 // ---------------------------------------------------------------------------
 
 function StaticsSettingsInline() {
-  const [activeSection, setActiveSection] = useState('claudeAnalysis');
+  // 3-prompt architecture (migration 036) — same shape as StaticsSettingsModal
+  const SECTIONS = [
+    {
+      key: 'claude_analysis',
+      label: '① Claude Analysis',
+      icon: Brain,
+      desc: 'Step 1 — Claude sees ref + product, emits JSON brief',
+      vars: '{{PRODUCT_NAME}} {{PRODUCT_PRICE}} {{PRODUCT_DESCRIPTION}} {{ANGLE}} {{BRAND_VOICE}} {{CUSTOMER}} {{BIG_PROMISE}} {{DIFFERENTIATOR}} {{UNIQUE_MECHANISM}} {{KEY_BENEFITS}} {{TARGET_AUDIENCE}} {{PAIN_POINTS}} {{INGREDIENTS}} {{WINNING_ANGLES}} {{OBJECTIONS}} {{OFFER_HOOK}} {{PRICING}} {{COMPLIANCE}} {{PRODUCT_IMAGE_NOTE}}',
+    },
+    {
+      key: 'nanobanana_image',
+      label: '② NanoBanana Image',
+      icon: ImagePlus,
+      desc: 'Step 2 — NanoBanana sees only product image, generates ad from Claude\'s brief',
+      vars: '{{PRODUCT_NAME}} {{PRODUCT_INSTRUCTION}} {{PRODUCT_RULE}} {{VISUAL_CHANGES}} {{TEXT_SWAPS}} {{PEOPLE_COUNT}} {{CHARACTER_ADAPTATION}}',
+    },
+    {
+      key: 'ai_adjustment',
+      label: '③ AI Adjustment',
+      icon: Brain,
+      desc: 'Optional Step — Claude turns user\'s freeform correction into a precise NanoBanana regen prompt',
+      vars: '{{PRODUCT_NAME}} {{ANGLE}} {{ADAPTED_HEADLINE}} {{ADAPTED_CTA}} {{PEOPLE_COUNT}} {{USER_CORRECTION}}',
+    },
+  ];
+
+  const [activeSection, setActiveSection] = useState('claude_analysis');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [defaults, setDefaults] = useState({});
   const [values, setValues] = useState({});
   const [toast, setToast] = useState(null);
 
-  const SECTIONS = [
-    { key: 'claudeAnalysis', label: 'Claude Analysis', icon: Brain },
-    { key: 'nanoBanana', label: 'Image Generation', icon: ImagePlus },
-  ];
-
-  const FIELDS = {
-    claudeAnalysis: [
-      { key: 'productIdentity', label: 'Product Identity', desc: 'How the AI understands your product' },
-      { key: 'headlineRules', label: 'Headline Rules', desc: 'Rules for adapting headlines' },
-      { key: 'headlineExamples', label: 'Headline Examples', desc: 'Example headlines for reference' },
-      { key: 'pricingRules', label: 'Pricing Rules', desc: 'Pricing constraints and formats' },
-      { key: 'formulaPreservation', label: 'Formula Preservation', desc: 'How to preserve copywriting formulas' },
-      { key: 'crossNicheAdaptation', label: 'Cross-Niche Adaptation', desc: 'Rules for adapting across product niches' },
-      { key: 'visualAdaptation', label: 'Visual Adaptation', desc: 'How to map visual elements to your product' },
-      { key: 'bannedPhrases', label: 'Banned Phrases', desc: 'Phrases the AI must never use in copy' },
-    ],
-    nanoBanana: [
-      { key: 'productRules', label: 'Product Replacement Rules', desc: 'How to swap product imagery' },
-      { key: 'textRules', label: 'Text Rendering Rules', desc: 'Typography and text placement rules' },
-      { key: 'absoluteRules', label: 'Absolute Constraints', desc: 'Hard rules that cannot be broken' },
-    ],
-  };
-
   useEffect(() => {
     (async () => {
       setLoading(true);
       try {
         const { data } = await api.get('/statics-generation/settings/prompts');
-        setDefaults(data.defaults || {});
+        const defs = data?.defaults || {};
+        const cur = data?.current || {};
+        setDefaults(defs);
         const merged = {};
-        for (const section of Object.keys(FIELDS)) {
-          merged[section] = {};
-          for (const field of FIELDS[section]) {
-            merged[section][field.key] = data.custom?.[section]?.[field.key] ?? data.defaults?.[section]?.[field.key] ?? '';
-          }
+        for (const s of SECTIONS) {
+          merged[s.key] = cur[s.key] ?? defs[s.key] ?? '';
         }
         setValues(merged);
       } catch (err) {
-        console.error('Failed to load settings:', err);
+        console.error('Failed to load prompts:', err);
       } finally {
         setLoading(false);
       }
     })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const handleChange = (section, key, value) => {
-    setValues(prev => ({ ...prev, [section]: { ...prev[section], [key]: value } }));
+  const handleChange = (key, value) => {
+    setValues(prev => ({ ...prev, [key]: value }));
   };
 
-  const isFieldCustom = (section, key) => {
-    return (values?.[section]?.[key] ?? '') !== (defaults?.[section]?.[key] ?? '');
+  const isFieldCustom = (key) => {
+    return (values?.[key] ?? '') !== (defaults?.[key] ?? '');
   };
 
-  const handleResetField = (section, key) => {
-    handleChange(section, key, defaults?.[section]?.[key] ?? '');
+  const handleResetField = (key) => {
+    handleChange(key, defaults?.[key] ?? '');
   };
 
   const handleSave = async () => {
     setSaving(true);
     try {
       await api.put('/statics-generation/settings/prompts', { prompts: values });
-      setToast({ type: 'success', message: 'Settings saved' });
+      setToast({ type: 'success', message: 'Prompts saved' });
       setTimeout(() => setToast(null), 3000);
-    } catch {
-      setToast({ type: 'error', message: 'Failed to save' });
+    } catch (err) {
+      const msg = err?.response?.data?.error?.message || err?.message || 'Failed to save';
+      setToast({ type: 'error', message: msg });
       setTimeout(() => setToast(null), 3000);
     } finally {
       setSaving(false);
@@ -802,16 +805,12 @@ function StaticsSettingsInline() {
     try {
       await api.post('/statics-generation/settings/prompts/reset');
       const { data } = await api.get('/statics-generation/settings/prompts');
-      setDefaults(data.defaults || {});
+      const defs = data?.defaults || {};
+      setDefaults(defs);
       const merged = {};
-      for (const section of Object.keys(FIELDS)) {
-        merged[section] = {};
-        for (const field of FIELDS[section]) {
-          merged[section][field.key] = data.defaults?.[section]?.[field.key] ?? '';
-        }
-      }
+      for (const s of SECTIONS) merged[s.key] = defs[s.key] ?? '';
       setValues(merged);
-      setToast({ type: 'success', message: 'All prompts reset to defaults' });
+      setToast({ type: 'success', message: 'All 3 prompts reset to defaults' });
       setTimeout(() => setToast(null), 3000);
     } catch {
       setToast({ type: 'error', message: 'Failed to reset' });
@@ -819,7 +818,7 @@ function StaticsSettingsInline() {
     }
   };
 
-  const fields = FIELDS[activeSection] || [];
+  const section = SECTIONS.find(s => s.key === activeSection) || SECTIONS[0];
 
   if (loading) {
     return (
@@ -832,7 +831,7 @@ function StaticsSettingsInline() {
   return (
     <div className="space-y-4">
       {/* Section tabs */}
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 flex-wrap">
         {SECTIONS.map(s => {
           const Icon = s.icon;
           const isActive = activeSection === s.key;
@@ -854,34 +853,39 @@ function StaticsSettingsInline() {
         })}
       </div>
 
-      {/* Fields */}
-      <div className="space-y-4">
-        {fields.map(field => (
-          <div key={field.key} className="bg-bg-card border border-border-default rounded-xl p-4">
-            <div className="flex items-center justify-between mb-2">
-              <div>
-                <h3 className="text-sm font-medium text-text-primary">{field.label}</h3>
-                <p className="text-xs text-text-faint mt-0.5">{field.desc}</p>
-              </div>
-              {isFieldCustom(activeSection, field.key) && (
-                <button
-                  type="button"
-                  onClick={() => handleResetField(activeSection, field.key)}
-                  className="flex items-center gap-1 text-xs text-red-400 hover:text-red-300 transition-colors cursor-pointer"
-                >
-                  <RotateCcw className="w-3 h-3" />
-                  Reset
-                </button>
-              )}
-            </div>
-            <textarea
-              value={values?.[activeSection]?.[field.key] ?? ''}
-              onChange={(e) => handleChange(activeSection, field.key, e.target.value)}
-              rows={5}
-              className="w-full bg-bg-main border border-border-default rounded-lg px-3 py-2.5 text-sm text-text-primary font-mono placeholder:text-text-faint resize-y focus:outline-none focus:border-accent/30 transition-colors"
-            />
-          </div>
-        ))}
+      {/* Step description + variables */}
+      <div className="bg-bg-card border border-border-default rounded-xl p-4">
+        <p className="text-xs text-text-muted leading-relaxed">{section.desc}</p>
+        <p className="text-[11px] text-text-faint mt-1.5 font-mono break-words">
+          Available variables: {section.vars}
+        </p>
+      </div>
+
+      {/* Single textarea per prompt */}
+      <div className="bg-bg-card border border-border-default rounded-xl p-4">
+        <div className="flex items-center justify-between mb-2">
+          <h3 className="text-sm font-medium text-text-primary">Prompt template</h3>
+          {isFieldCustom(activeSection) && (
+            <button
+              type="button"
+              onClick={() => handleResetField(activeSection)}
+              className="flex items-center gap-1 text-xs text-red-400 hover:text-red-300 transition-colors cursor-pointer"
+            >
+              <RotateCcw className="w-3 h-3" />
+              Reset to Default
+            </button>
+          )}
+        </div>
+        <textarea
+          value={values?.[activeSection] ?? ''}
+          onChange={(e) => handleChange(activeSection, e.target.value)}
+          placeholder="Prompt template with {{VARIABLE}} markers..."
+          rows={20}
+          className="w-full bg-bg-main border border-border-default rounded-lg px-3 py-2.5 text-[13px] text-text-primary font-mono placeholder:text-text-faint resize-y focus:outline-none focus:border-accent/30 transition-colors leading-relaxed"
+        />
+        <p className="text-[11px] text-text-faint mt-2">
+          Use <span className="font-mono text-text-muted">{'{{VARIABLE}}'}</span> syntax for dynamic values. Unknown variables are replaced with empty string.
+        </p>
       </div>
 
       {/* Actions bar */}
@@ -892,7 +896,7 @@ function StaticsSettingsInline() {
           className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium border border-red-500/30 text-red-400 hover:bg-red-500/10 transition-colors cursor-pointer"
         >
           <RotateCcw className="w-4 h-4" />
-          Reset All
+          Reset All 3 Prompts
         </button>
         <button
           type="button"
