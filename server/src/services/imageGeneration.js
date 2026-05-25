@@ -67,9 +67,19 @@ export async function resolveImage(referenceImageUrl) {
  * @param {string}   resolution — '1K' | '2K' (default '1K')
  * @returns {string} taskId for polling
  */
+// Kie.ai accepts these aspect-ratio strings for google/nano-banana-edit.
+// Any unrecognized value (e.g. 'all', '1080x1080', undefined) is normalized to '1:1'
+// to prevent 500 "image_size is not within the range of allowed options" errors.
+const NB_VALID_RATIOS = new Set(['1:1', '4:5', '9:16', '16:9', '3:2', '2:3', 'auto']);
+
 export async function submitToNanoBanana(prompt, imageUrls, ratio = '4:5', resolution = '1K') {
   if (!NANOBANANA_API_KEY) {
     throw new Error('NANOBANANA_API_KEY is not configured');
+  }
+
+  const imageSize = NB_VALID_RATIOS.has(ratio) ? ratio : '1:1';
+  if (imageSize !== ratio) {
+    console.warn(`[NanoBanana] Unsupported image_size "${ratio}" — falling back to "1:1"`);
   }
 
   const nbRes = await fetch(`${NB_BASE}/createTask`, {
@@ -83,7 +93,7 @@ export async function submitToNanoBanana(prompt, imageUrls, ratio = '4:5', resol
       input: {
         prompt,
         image_urls: imageUrls,
-        image_size: ratio,
+        image_size: imageSize,
         output_format: 'png',
       },
     }),

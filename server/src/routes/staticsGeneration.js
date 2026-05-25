@@ -901,7 +901,10 @@ router.post('/generate', authenticate, async (req, res) => {
       const nbPrompt = buildNanoBananaImagePrompt(claudeResult, product, customPrompts.nanobanana_image);
       console.log(`[staticsGeneration] NanoBanana prompt (${nbPrompt.length} chars):\n${nbPrompt.slice(0, 800)}${nbPrompt.length > 800 ? '...[truncated]' : ''}`);
 
-      const ratiosToGenerate = ratio ? [ratio] : ['1:1', '4:5', '9:16'];
+      // 'all' (the UI default for "generate every aspect ratio") expands to the
+      // canonical 3. Falsy or 'all' → 3 ratios. Any specific ratio → just that one.
+      const ALL_RATIOS = ['1:1', '4:5', '9:16'];
+      const ratiosToGenerate = (!ratio || ratio === 'all') ? ALL_RATIOS : [ratio];
       storeTaskResult(earlyTaskId, { status: 'processing', progress: `Generating ${ratiosToGenerate.length} ratio(s)...` });
 
       async function runOneRatio(r) {
