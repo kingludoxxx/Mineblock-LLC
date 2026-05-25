@@ -1500,3 +1500,22 @@ DECISIONS:
   Migration 034 runs via server.js auto-migration runner at first boot in Render env.
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-05-24 22:18
+TASK: #5 — Rewrite staticsGeneration.js to 3-prompt architecture
+BUILT: Replaced server/src/routes/staticsGeneration.js (4658 lines → 2680 lines, -42%). New file uses the 3-prompt pipeline from migration 036: Step 1 Claude (claude-opus-4-5) analyzes ref + product, Step 2 NanoBanana (google/nano-banana-edit via Kie.ai) generates the ad with ONLY the product image as input, Step 3 (/creatives/:id/ai-adjust) routes user correction through Claude → NanoBanana editing the CURRENT generated image. All 41 frontend routes preserved at the same paths. Removed: Gemini path (editImage / isGeminiConfigured / GEMINI_EDIT_MODEL), Playwright document renderer + KNOWN_DOCUMENT_TEMPLATE_IDS, dual-Gemini comparison block, cross-niche two-pass logic (buildProductSwapPrompt + buildTextPolishPrompt + isCrossNiche), runVisionAudit + quality_warning Slack on rate (warnings always written null from new code), compositeLogoWithSharp, text overlay compositor + textOverlayContexts Map, sticky-note compositor, validateGenerationText / validateProductPresence, adaptedTextSanitizer call, productImageSelector auto-selection, generationValidator post-save validation, iteration logic (iterations routes return 501). Settings endpoints (GET/PUT/reset /settings/prompts) now operate on the new 3-key JSON shape (claude_analysis / nanobanana_image / ai_adjustment). getCustomStaticsPrompts() falls back to defaults when DB row is missing or has legacy shape. Defaults are hardcoded into getDefaultStaticsPrompts() verbatim from migration 036.
+TESTED: `node --check server/src/routes/staticsGeneration.js` → exit 0 (SYNTAX_OK). `grep -c '^router\\.'` → 42 lines (41 route handlers + 1 router.use middleware), matches expected route count. All exported names preserved (getCustomStaticsPrompts, getDefaultStaticsPrompts, default router). Backwards-compat aliases (geminiResults, storeGeminiResult) kept so any leftover internal references don't break. Edge cases handled: missing product_image_url throws clear error; multi-ratio Promise.allSettled keeps successful ratios; watchdog still fires at 8min; task-result TTL preserved; legacy { claudeAnalysis, nanoBanana } DB shape detected and falls back to defaults with warning.
+OUTPUT: New file 2680 lines (down from 4658). node --check exit 0. 41 routes preserved.
+DECISIONS:
+  - DECISION MADE: Iteration routes (/iterations, /iterate/:creativeId, /iterate/:batchId/status) return 501 Not Implemented during the rewrite rather than being simplified into the new flow. Reasoning: they depend on creative_analysis winner-detection + IM number assignment + parent linkage which is independent of the prompt architecture and would have doubled the rewrite scope. Route paths preserved so the frontend won't 404.
+  - DECISION MADE: Removed the Playwright doc renderer and the `/playwright-test` endpoint body (kept the path as a no-op stub returning success message) since the entire Playwright doc/comparison path is being deleted per the architecture brief.
+  - DECISION MADE: NanoBanana receives ONLY the product image (never the reference image) — matches friend's tool architecture and prevents reference-image bleed-through. Composition is reconstructed from Claude's textual description.
+  - DECISION MADE: For ai-adjust, NanoBanana receives the CURRENT generated image (not the product) — friend's tool architecture: adjustment edits the existing output rather than re-generating from scratch.
+  - DECISION MADE: Hardcoded provider='nanobanana' everywhere (no more provider switching). req.body.provider is ignored.
+  - DECISION MADE: quality_warning column still written but always null from new code (column kept in INSERT shape for backwards compatibility with existing DB schema and frontend).
+  - DECISION MADE: Backwards-compat aliases `geminiResults` / `storeGeminiResult` kept in case any other in-file callsite was missed.
+  - DECISION MADE: `/settings/prompts` GET response includes both `current` (new) and `custom` (legacy field name) so older frontend builds still see the data.
+  - PENDING: Live-verify on Konvert 3131 (task #8). Code is deployable but not yet exercised against a real Render deploy.
+STATUS: COMPLETE
+---

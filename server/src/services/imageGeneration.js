@@ -1,12 +1,17 @@
-import { buildClaudePrompt, buildNanoBananaPrompt as _buildNBPrompt, buildSwapPairs as _buildSwapPairs } from '../utils/staticsPrompts.js';
-import { uploadBuffer, isR2Configured } from './r2.js';
-import crypto from 'crypto';
+// ─────────────────────────────────────────────────────────────────────────────
+// imageGeneration — thin NanoBanana (Kie.ai) client
+//
+// After migration 036 the full pipeline orchestration lives in
+// routes/staticsGeneration.js. This file now exports ONLY the NanoBanana
+// submit/poll helpers (used by both staticsGeneration.js and any future
+// callers). Old wrappers (analyzeWithClaude, buildSwapPairs,
+// buildNanoBananaPrompt, generateFullPipeline) were removed because they
+// depended on prompt builders that no longer exist.
+// ─────────────────────────────────────────────────────────────────────────────
 
-const ANTHROPIC_API_KEY  = process.env.ANTHROPIC_API_KEY || '';
 const NANOBANANA_API_KEY = process.env.NANOBANANA_API_KEY || '';
+const NB_BASE            = 'https://api.kie.ai/api/v1/jobs';
 
-const NB_BASE        = 'https://api.kie.ai/api/v1/jobs';
-const CLAUDE_API_URL = 'https://api.anthropic.com/v1/messages';
 const DEFAULT_MAX_POLLS     = 60;
 const DEFAULT_POLL_INTERVAL = 5000;
 
@@ -26,6 +31,8 @@ function detectMime(buf) {
 
 /**
  * Resolve a reference image (URL or data-URI) into { base64, mediaType, isUrl }.
+ * Kept for backwards-compat with callers that import from here. New code
+ * should prefer the shared helper in utils/imageHelpers.js.
  */
 export async function resolveImage(referenceImageUrl) {
   if (referenceImageUrl.startsWith('data:image')) {
@@ -34,7 +41,6 @@ export async function resolveImage(referenceImageUrl) {
     return { base64: match[2], mediaType: match[1], isUrl: false };
   }
 
-  // Relative paths (e.g. /static-templates/...) need a base URL for Node fetch
   let fetchUrl = referenceImageUrl;
   if (referenceImageUrl.startsWith('/')) {
     const base = process.env.RENDER_EXTERNAL_URL || `http://localhost:${process.env.PORT || 3000}`;
@@ -48,89 +54,24 @@ export async function resolveImage(referenceImageUrl) {
   return { base64: buf.toString('base64'), mediaType, isUrl: true };
 }
 
-// ── Exported service functions ─────────────────────────────────────────
-
-/**
- * Call Claude with vision to analyze a reference ad image and generate adapted copy.
- * @param {string} imageBase64 - Base64-encoded image data
- * @param {string} mediaType   - MIME type (image/jpeg, image/png, image/webp)
- * @param {object} product     - Product object with name, description, price, profile, etc.
- * @param {string} angle       - Marketing angle (optional)
- * @param {string} refineFeedback - Additional feedback for refinement (optional, prepended to prompt)
- * @returns {object} Parsed JSON result with original_text, adapted_text, people_count, visual_adaptations, etc.
- */
-export async function analyzeWithClaude(imageBase64, mediaType, product, angle, refineFeedback) {
-  let promptText = buildClaudePrompt(product, angle);
-  if (refineFeedback) {
-    promptText = `REFINEMENT FEEDBACK: ${refineFeedback}\n\n${promptText}`;
-  }
-
-  const claudeBody = {
-    model: 'claude-sonnet-4-20250514',
-    max_tokens: 3000,
-    messages: [{
-      role: 'user',
-      content: [
-        { type: 'text', text: promptText },
-        { type: 'image', source: { type: 'base64', media_type: mediaType, data: imageBase64 } },
-      ],
-    }],
-  };
-
-  const claudeRes = await fetch(CLAUDE_API_URL, {
-    method: 'POST',
-    headers: {
-      'x-api-key': ANTHROPIC_API_KEY,
-      'anthropic-version': '2023-06-01',
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(claudeBody),
-  });
-
-  if (!claudeRes.ok) {
-    const errText = await claudeRes.text();
-    throw new Error(`Claude API error ${claudeRes.status}: ${errText}`);
-  }
-
-  const claudeData = await claudeRes.json();
-  const rawText = claudeData.content?.[0]?.text;
-  if (!rawText) throw new Error('Empty response from Claude');
-
-  const jsonMatch = rawText.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) throw new Error('Could not parse JSON from Claude response');
-
-  try {
-    return JSON.parse(jsonMatch[0]);
-  } catch (parseErr) {
-    throw new Error(`Failed to parse Claude JSON: ${parseErr.message}`);
-  }
-}
-
-/**
- * Compare original vs adapted text fields and create swap pairs array.
- * Re-exports the logic from staticsPrompts.js for convenience.
- */
-export function buildSwapPairs(originalText, adaptedText, productName = '') {
-  return _buildSwapPairs(originalText, adaptedText, productName);
-}
-
-/**
- * Build the NanoBanana generation prompt.
- * Re-exports the logic from staticsPrompts.js for convenience.
- */
-export function buildNanoBananaPrompt(claudeResult, swapPairs, product) {
-  return _buildNBPrompt(claudeResult, swapPairs, product);
-}
+// ── NanoBanana (Kie.ai) ────────────────────────────────────────────────
 
 /**
  * Submit a generation request to NanoBanana.
- * @param {string} prompt     - The generation prompt
- * @param {string[]} imageUrls - Array of image URLs [product_image, reference_image]
- * @param {string} ratio      - Aspect ratio (default '4:5')
- * @param {string} resolution - Output resolution (default '1K')
- * @returns {string} taskId
+ * @param {string}   prompt     — final prompt text
+ * @param {string[]} imageUrls  — input image URLs (per friend's tool architecture,
+ *                                this should be ONLY the product image for /generate,
+ *                                or ONLY the current generated image for /ai-adjust;
+ *                                never include the reference template)
+ * @param {string}   ratio      — '1:1' | '4:5' | '9:16' etc
+ * @param {string}   resolution — '1K' | '2K' (default '1K')
+ * @returns {string} taskId for polling
  */
 export async function submitToNanoBanana(prompt, imageUrls, ratio = '4:5', resolution = '1K') {
+  if (!NANOBANANA_API_KEY) {
+    throw new Error('NANOBANANA_API_KEY is not configured');
+  }
+
   const nbRes = await fetch(`${NB_BASE}/createTask`, {
     method: 'POST',
     headers: {
@@ -150,20 +91,17 @@ export async function submitToNanoBanana(prompt, imageUrls, ratio = '4:5', resol
 
   if (!nbRes.ok) {
     const errText = await nbRes.text();
-    throw new Error(`NanoBanana submit error ${nbRes.status}: ${errText}`);
+    throw new Error(`NanoBanana submit error ${nbRes.status}: ${errText.slice(0, 400)}`);
   }
 
   const nbData = await nbRes.json();
   const taskId = nbData.data?.taskId || nbData.taskId;
-  if (!taskId) throw new Error(`No taskId returned from NanoBanana: ${JSON.stringify(nbData)}`);
+  if (!taskId) throw new Error(`No taskId returned from NanoBanana: ${JSON.stringify(nbData).slice(0, 300)}`);
   return taskId;
 }
 
 /**
  * Poll NanoBanana for task completion.
- * @param {string} taskId       - The task ID to poll
- * @param {number} maxPolls     - Maximum number of polls (default 60)
- * @param {number} pollInterval - Milliseconds between polls (default 5000)
  * @returns {string} resultImageUrl
  */
 export async function pollNanoBanana(taskId, maxPolls = DEFAULT_MAX_POLLS, pollInterval = DEFAULT_POLL_INTERVAL) {
@@ -187,7 +125,6 @@ export async function pollNanoBanana(taskId, maxPolls = DEFAULT_MAX_POLLS, pollI
         const resultObj = typeof record.resultJson === 'string' ? JSON.parse(record.resultJson) : record.resultJson;
         imageUrl = resultObj?.resultUrls?.[0];
       } catch {}
-      // Fallback to old format fields
       if (!imageUrl) imageUrl = record.resultImageUrl || data.resultImageUrl;
       if (!imageUrl) throw new Error('NanoBanana completed but no result image URL found');
       return imageUrl;
@@ -198,70 +135,12 @@ export async function pollNanoBanana(taskId, maxPolls = DEFAULT_MAX_POLLS, pollI
     // state === 'waiting' | 'queuing' | 'generating' -> still pending
   }
 
-  throw new Error('NanoBanana generation timed out after polling');
+  throw new Error(`NanoBanana generation timed out after ${maxPolls} polls × ${pollInterval}ms`);
 }
 
 /**
- * Orchestrate the full image generation pipeline:
- *   resolve image -> Claude analysis -> swap pairs -> NanoBanana submit -> poll -> result
- *
- * @param {string} referenceImageUrl - URL or data-URI of the reference ad
- * @param {object} product           - Product object (must include product_image_url)
- * @param {string} angle             - Marketing angle (optional)
- * @param {string} ratio             - Aspect ratio (default '4:5')
- * @returns {object} { generated_image_url, adapted_text, original_text, swap_pairs, people_count, product_count, visual_adaptations, adapted_audience }
+ * Configuration check used by callers to decide whether NanoBanana is available.
  */
-export async function generateFullPipeline(referenceImageUrl, product, angle, ratio = '4:5') {
-  // Step A: Resolve reference image
-  const { base64, mediaType, isUrl } = await resolveImage(referenceImageUrl);
-
-  // Step B: Claude analysis
-  const claudeResult = await analyzeWithClaude(base64, mediaType, product, angle);
-
-  // Step C: Build swap pairs
-  const swapPairs = buildSwapPairs(claudeResult.original_text, claudeResult.adapted_text, product.name);
-
-  // Upload base64 images to R2 (or skip if not configured — caller's route
-  // provides a temp-image fallback in that case).
-  let finalReferenceUrl = referenceImageUrl;
-  if (!isUrl && isR2Configured()) {
-    const buf = Buffer.from(base64, 'base64');
-    const ext = mediaType.includes('png') ? 'png' : 'jpg';
-    const key = `statics-refs/${crypto.randomUUID()}.${ext}`;
-    finalReferenceUrl = await uploadBuffer(buf, key, mediaType);
-    console.log(`[imageGeneration] Uploaded base64 reference to R2: ${finalReferenceUrl}`);
-  } else if (!isUrl) {
-    throw new Error('Cannot convert base64 reference to URL — R2 not configured and no fallback available in service layer. Use the route endpoint instead.');
-  }
-
-  let finalProductUrl = product.product_image_url;
-  if (finalProductUrl?.startsWith('data:image') && isR2Configured()) {
-    const pMatch = finalProductUrl.match(/^data:(image\/[^;]+);base64,(.+)$/);
-    if (pMatch) {
-      const pBuf = Buffer.from(pMatch[2], 'base64');
-      const pExt = pMatch[1].includes('png') ? 'png' : 'jpg';
-      const pKey = `statics-products/${crypto.randomUUID()}.${pExt}`;
-      finalProductUrl = await uploadBuffer(pBuf, pKey, pMatch[1]);
-    }
-  }
-
-  // Step D: Submit to NanoBanana
-  const nbPrompt = buildNanoBananaPrompt(claudeResult, swapPairs, product);
-  const imageUrls = [finalProductUrl, finalReferenceUrl];
-  const taskId = await submitToNanoBanana(nbPrompt, imageUrls, ratio);
-
-  // Step E: Poll for completion
-  const generatedImageUrl = await pollNanoBanana(taskId);
-
-  // Step F: Return result
-  return {
-    generated_image_url: generatedImageUrl,
-    adapted_text: claudeResult.adapted_text,
-    original_text: claudeResult.original_text,
-    swap_pairs: swapPairs,
-    people_count: claudeResult.people_count,
-    product_count: claudeResult.product_count,
-    visual_adaptations: claudeResult.visual_adaptations,
-    adapted_audience: claudeResult.adapted_audience,
-  };
+export function isNanoBananaConfigured() {
+  return Boolean(NANOBANANA_API_KEY);
 }
