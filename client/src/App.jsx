@@ -48,6 +48,8 @@ import StaticsGenerationPage from './pages/production/StaticsGenerationPage';
 import BriefPipeline from './pages/production/BriefPipeline';
 import AdsLauncherPage from './pages/production/AdsLauncherPage';
 import LanguagesPipeline from './pages/production/LanguagesPipeline';
+import BrandSpyPage from './pages/production/BrandSpyPage';
+import BrandSpyDetailPage from './pages/production/BrandSpyDetailPage';
 
 // Performance
 import AttributionPage from './pages/performance/AttributionPage';
@@ -136,6 +138,8 @@ export default function App() {
           <Route path="brief-pipeline" element={<PageGate permission="brief-pipeline:access"><BriefPipeline /></PageGate>} />
           <Route path="ads-launcher" element={<PageGate permission="ads-launcher:access"><AdsLauncherPage /></PageGate>} />
           <Route path="languages-pipeline" element={<PageGate permission="languages-pipeline:access"><LanguagesPipeline /></PageGate>} />
+          <Route path="brand-spy" element={<PageGate permission="brand-spy:access"><BrandSpyPage /></PageGate>} />
+          <Route path="brand-spy/:id" element={<PageGate permission="brand-spy:access"><BrandSpyDetailPage /></PageGate>} />
 
           {/* Performance */}
           <Route path="creative-analysis" element={<PageGate permission="creative-analysis:access"><CreativeAnalysisPage /></PageGate>} />

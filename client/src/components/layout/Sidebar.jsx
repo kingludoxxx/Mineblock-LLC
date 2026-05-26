@@ -40,6 +40,7 @@ import {
   FileText,
   Rocket,
   Globe,
+  ScanSearch,
   // Performance icons
   Target,
   Activity,
@@ -72,6 +73,7 @@ const navGroups = [
       { to: '/app/brief-pipeline', icon: FileText, label: 'Brief Pipeline', permission: 'brief-pipeline:access' },
       { to: '/app/ads-launcher', icon: Rocket, label: 'Ads Launcher', permission: 'ads-launcher:access' },
       { to: '/app/languages-pipeline', icon: Globe, label: 'Languages Pipeline', permission: 'languages-pipeline:access' },
+      { to: '/app/brand-spy', icon: ScanSearch, label: 'Brand Spy', permission: 'brand-spy:access' },
     ],
   },
   {
@@ -192,11 +194,9 @@ export default function Sidebar() {
       {/* Nav groups */}
       <nav className="flex-1 overflow-y-auto px-2 py-2 space-y-0.5">
         {navGroups.map((group) => {
-          // Filter items by permission — hide items the user cannot access
           const visibleItems = group.items.filter(
             (item) => !item.permission || hasPermission(item.permission)
           );
-          // Hide the entire group if no items are visible
           if (visibleItems.length === 0) return null;
           const GroupIcon = group.icon;
           const isExpanded = expandedGroups[group.label];

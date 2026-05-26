@@ -22,6 +22,7 @@ import shopifyWebhookRoutes from './routes/shopifyWebhook.js';
 import departmentRegistry from './departments/registry.js';
 import briefPipelineRouter from './routes/briefPipeline.js';
 import salesToolsRouter from './routes/salesTools.js';
+import brandSpyRouter from './routes/brandSpy.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -82,6 +83,9 @@ mountRoutes(app);
 
 app.use('/api/v1/brief-pipeline', briefPipelineRouter);
 app.use(salesToolsRouter);
+
+// Brand Spy proxy — forwards to brand-spy-api.onrender.com
+app.use('/api/v1/brand-spy', brandSpyRouter);
 
 // Mount department modules
 app.use('/api/v1/departments/modules', departmentRegistry.getRouter());
