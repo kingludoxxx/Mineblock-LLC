@@ -422,8 +422,20 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
     }
   }
 
-  // Phase 1: keyword search; kicks off Phase 2 per page as pages are discovered
-  console.log(`[brand-spy] phase-1: keyword search for "${domain}" (US)`);
+  // Phase 1a: active-only pass — captures every currently running ad regardless of
+  // impression rank. This is the critical pass for matching Meta's "active ads" count.
+  console.log(`[brand-spy] phase-1a: active-only keyword search for "${domain}" (US)`);
+  for await (const batch of sc.iterateAdsByDomain({ domain, status: 'ACTIVE', country: 'US' })) {
+    creditsUsed += 1;
+    const { d, u } = await upsertAdBatch(brandId, batch, pageCache);
+    discovered += d; updated += u;
+    launchNewPages();
+  }
+  console.log(`[brand-spy] phase-1a done: ${discovered} new, ${updated} updated, ${pageCache.size} pages, ${creditsUsed} credits`);
+
+  // Phase 1b: all-status pass — discovers historical inactive ads and any pages not
+  // yet found by the active-only pass (sorts by total_impressions, capped at 50 pages).
+  console.log(`[brand-spy] phase-1b: all-status keyword search for "${domain}" (US)`);
   for await (const batch of sc.iterateAdsByDomain({ domain, status: 'ALL', country: 'US' })) {
     creditsUsed += 1;
     const { d, u } = await upsertAdBatch(brandId, batch, pageCache);
