@@ -115,6 +115,8 @@ export async function scoreBrand(brandId) {
       const hist = historical.get(r.adArchiveId) ?? { d3: null, d7: null, d21: null };
       const velocity = computeVelocity({ currentRank: r.rank, rank7d: hist.d7, rank21d: hist.d21 });
 
+      const tierScore = r.rank !== null ? (r.poolSize - r.rank + 1) : null;
+
       await client.query(
         `UPDATE brand_spy.ads SET
            current_rank    = $2::integer,
@@ -123,12 +125,12 @@ export async function scoreBrand(brandId) {
            rank_21d        = $5,
            velocity_7d     = $6,
            velocity_21d    = $7,
-           pool_size       = $8,
+           pool_size       = $8::integer,
            tier            = $9,
-           tier_score      = CASE WHEN $2::integer IS NULL THEN NULL ELSE ($8::numeric - $2::numeric + 1) END,
+           tier_score      = $10,
            tier_updated_at = NOW()
          WHERE id = $1`,
-        [r.id, r.rank, hist.d3, hist.d7, hist.d21, velocity.velocity7d, velocity.velocity21d, r.poolSize, r.tier],
+        [r.id, r.rank, hist.d3, hist.d7, hist.d21, velocity.velocity7d, velocity.velocity21d, r.poolSize, r.tier, tierScore],
       );
 
       if (r.rank !== null && r.tier !== null) {
