@@ -294,7 +294,7 @@ async function upsertBrandPage(brandId, metaPageId, pageName, profilePic) {
   return rows[0].id;
 }
 
-const PHASE2_CONCURRENCY = 3;
+const PHASE2_CONCURRENCY = 8;
 const AD_COLS = 20;
 
 function extractDomain(url) {
@@ -477,6 +477,39 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
     launchNewPages();
   }
   console.log(`[brand-spy] phase-1 done: ${discovered} new, ${updated} updated, ${pageCache.size} pages, ${creditsUsed} credits`);
+
+  // Phase 1c: keyword searches for cross-domains already in DB.
+  // Complements Phase 3 (company-name search) by finding FB pages that advertise
+  // using cross-domain URLs regardless of their company name. Runs in parallel with
+  // Phase 2 (which was already launched above) — total time = max(Phase2, Phase1c).
+  const { rows: xDomainRows } = await query(
+    `SELECT DISTINCT lower(split_part(regexp_replace(link_url, '^https?://(www\\.)?', ''), '/', 1)) AS d
+       FROM brand_spy.ads
+      WHERE brand_id = $1 AND link_url IS NOT NULL AND link_url <> ''`,
+    [brandId],
+  );
+  const xDomainsForSearch = xDomainRows
+    .map(r => r.d)
+    .filter(d => d && d !== domain && !d.endsWith('.' + domain));
+
+  if (xDomainsForSearch.length > 0) {
+    console.log(`[brand-spy] phase-1c: keyword search for cross-domains [${xDomainsForSearch.join(', ')}]`);
+    for (const xDomain of xDomainsForSearch) {
+      for await (const batch of sc.iterateAdsByDomain({ domain: xDomain, status: 'ACTIVE', country: 'US' })) {
+        creditsUsed += 1;
+        const { d, u } = await upsertAdBatch(brandId, batch, pageCache);
+        discovered += d; updated += u;
+        launchNewPages(); // kick off Phase 2 for any newly discovered pages
+      }
+      for await (const batch of sc.iterateAdsByDomain({ domain: xDomain, status: 'ALL', country: 'US' })) {
+        creditsUsed += 1;
+        const { d, u } = await upsertAdBatch(brandId, batch, pageCache);
+        discovered += d; updated += u;
+        launchNewPages();
+      }
+    }
+    console.log(`[brand-spy] phase-1c done: ${discovered} new, ${updated} updated, ${pageCache.size} pages, ${creditsUsed} credits`);
+  }
 
   // Await all Phase 2 workers (already running concurrently since Phase 1).
   // NOTE: we intentionally do NOT flush counters here (removed onPhase1Done mid-scrape
