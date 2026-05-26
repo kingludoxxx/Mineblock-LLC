@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
-import { ArrowLeft, ExternalLink, RefreshCw, X, ChevronDown } from 'lucide-react';
+import { ArrowLeft, ExternalLink, RefreshCw, X } from 'lucide-react';
 
 const TIER_COLORS = {
   BANGER: 'bg-rose-500/15 text-rose-400 border-rose-500/30',
@@ -14,7 +14,9 @@ const TIER_ICONS = { BANGER: '🔥', CHAMP: '🏆' };
 
 export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
   const [brand, setBrand] = useState(null);
+  const [brandError, setBrandError] = useState(null);
   const [ads, setAds] = useState([]);
+  const [adsError, setAdsError] = useState(null);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [sort, setSort] = useState('rank_asc');
@@ -22,23 +24,34 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
   const [loading, setLoading] = useState(true);
   const [selectedAd, setSelectedAd] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [refreshError, setRefreshError] = useState(null);
   const PAGE_SIZE = 24;
 
   useEffect(() => {
     fetch(`${apiBaseUrl}/brands/${brandId}`)
-      .then(r => r.json())
-      .then(d => setBrand(d.brand))
-      .catch(console.error);
+      .then(r => {
+        if (!r.ok) throw new Error(`Brand not found (${r.status})`);
+        return r.json();
+      })
+      .then(d => {
+        if (!d.brand) throw new Error('Brand not found');
+        setBrand(d.brand);
+      })
+      .catch(e => setBrandError(e.message));
   }, [apiBaseUrl, brandId]);
 
   const loadAds = useCallback(async () => {
     setLoading(true);
+    setAdsError(null);
     try {
       const params = new URLSearchParams({ page: String(page), pageSize: String(PAGE_SIZE), sort, tier: tierFilter });
       const res = await fetch(`${apiBaseUrl}/brands/${brandId}/ads?${params}`);
+      if (!res.ok) throw new Error(`Failed to load ads (${res.status})`);
       const data = await res.json();
       setAds(data.ads || []);
       setTotal(data.total || 0);
+    } catch (e) {
+      setAdsError(e.message);
     } finally { setLoading(false); }
   }, [apiBaseUrl, brandId, page, sort, tierFilter]);
 
@@ -46,14 +59,26 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
 
   const handleRefresh = async () => {
     setRefreshing(true);
+    setRefreshError(null);
     try {
       await fetch(`${apiBaseUrl}/brands/${brandId}/scrape`, { method: 'POST' });
       const res = await fetch(`${apiBaseUrl}/brands/${brandId}`);
       const data = await res.json();
-      setBrand(data.brand);
+      if (data.brand) setBrand(data.brand);
       await loadAds();
+    } catch (e) {
+      setRefreshError(e.message);
     } finally { setRefreshing(false); }
   };
+
+  if (brandError) return (
+    <div className="space-y-4">
+      <button onClick={onBack} className="flex items-center gap-1.5 text-sm text-text-muted hover:text-text-primary transition-colors">
+        <ArrowLeft className="w-4 h-4" /> Brand Spy
+      </button>
+      <div className="flex items-center justify-center py-20 text-red-400 text-sm">{brandError}</div>
+    </div>
+  );
 
   if (!brand) return (
     <div className="flex items-center justify-center py-20 text-text-faint text-sm">Loading...</div>
@@ -71,12 +96,17 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
       </button>
 
       {/* Header */}
+      {refreshError && (
+        <div className="text-xs text-red-400 bg-red-400/10 border border-red-400/20 rounded-lg px-3 py-2">{refreshError}</div>
+      )}
       <div className="flex items-start justify-between gap-4">
         <div className="flex items-center gap-3">
-          <div className="relative w-11 h-11 rounded-xl bg-bg-elevated border border-border-default flex items-center justify-center text-base font-bold text-text-muted shrink-0">
+          <div className="relative w-11 h-11 rounded-xl bg-bg-elevated border border-border-default flex items-center justify-center text-base font-bold text-text-muted shrink-0 overflow-hidden">
             {brand.domain.charAt(0).toUpperCase()}
+            <BrandLogo domain={brand.domain} />
             <span className={`absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full ring-2 ring-bg-main ${
-              brand.status === 'ACTIVE' ? 'bg-emerald-400' : 'bg-zinc-600'
+              brand.status === 'ACTIVE' ? 'bg-emerald-400' :
+              brand.status === 'NOISY'  ? 'bg-amber-400' : 'bg-zinc-600'
             }`} />
           </div>
           <div>
@@ -121,12 +151,12 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
         ) : (
           <>
             {t.banger > 0 && <span className="text-[10px] font-medium px-2 py-0.5 rounded border bg-rose-500/10 text-rose-400 border-rose-500/20">🔥 {t.banger}</span>}
-            <span className="text-[10px] font-medium px-2 py-0.5 rounded border bg-amber-500/10 text-amber-400 border-amber-500/20">🏆 {t.champ}</span>
-            <span className="text-[10px] font-medium px-2 py-0.5 rounded border bg-emerald-500/10 text-emerald-400 border-emerald-500/20">A {t.a}</span>
-            <span className="text-[10px] font-medium px-2 py-0.5 rounded border bg-sky-500/10 text-sky-400 border-sky-500/20">B {t.b}</span>
-            <span className="text-[10px] font-medium px-2 py-0.5 rounded border bg-zinc-700/40 text-zinc-400 border-zinc-700">C {t.c}</span>
-            <span className="text-[10px] font-medium px-2 py-0.5 rounded border bg-bg-elevated text-text-faint border-border-default">MID {t.low}</span>
-            <span className="text-[10px] font-medium px-2 py-0.5 rounded border bg-bg-card text-text-faint border-border-subtle">TEST {t.test}</span>
+            {t.champ  > 0 && <span className="text-[10px] font-medium px-2 py-0.5 rounded border bg-amber-500/10 text-amber-400 border-amber-500/20">🏆 {t.champ}</span>}
+            {t.a      > 0 && <span className="text-[10px] font-medium px-2 py-0.5 rounded border bg-emerald-500/10 text-emerald-400 border-emerald-500/20">A {t.a}</span>}
+            {t.b      > 0 && <span className="text-[10px] font-medium px-2 py-0.5 rounded border bg-sky-500/10 text-sky-400 border-sky-500/20">B {t.b}</span>}
+            {t.c      > 0 && <span className="text-[10px] font-medium px-2 py-0.5 rounded border bg-zinc-700/40 text-zinc-400 border-zinc-700">C {t.c}</span>}
+            {t.low    > 0 && <span className="text-[10px] font-medium px-2 py-0.5 rounded border bg-bg-elevated text-text-faint border-border-default">MID {t.low}</span>}
+            {t.test   > 0 && <span className="text-[10px] font-medium px-2 py-0.5 rounded border bg-bg-card text-text-faint border-border-subtle">TEST {t.test}</span>}
           </>
         )}
       </div>
@@ -176,6 +206,8 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
       {/* Ads */}
       {loading ? (
         <div className="flex items-center justify-center py-16 text-text-faint text-sm">Loading ads...</div>
+      ) : adsError ? (
+        <div className="flex items-center justify-center py-16 text-red-400 text-sm">{adsError}</div>
       ) : ads.length === 0 ? (
         <div className="flex items-center justify-center py-16 text-text-faint text-sm">
           {tierFilter === 'ALL' ? 'No ads tracked yet — click Refresh.' : `No ${tierFilter} ads.`}
@@ -205,6 +237,26 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
 
       {selectedAd && <IntelDrawer ad={selectedAd} onClose={() => setSelectedAd(null)} />}
     </div>
+  );
+}
+
+function BrandLogo({ domain }) {
+  const [src, setSrc] = useState(`https://logo.clearbit.com/${domain}`);
+  const [failed, setFailed] = useState(false);
+  if (failed) return null;
+  return (
+    <img
+      src={src}
+      alt=""
+      className="absolute inset-0 w-full h-full object-contain p-1"
+      onError={() => {
+        if (src.includes('clearbit')) {
+          setSrc(`https://www.google.com/s2/favicons?domain=${domain}&sz=64`);
+        } else {
+          setFailed(true);
+        }
+      }}
+    />
   );
 }
 
