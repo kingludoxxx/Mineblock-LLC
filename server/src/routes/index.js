@@ -18,6 +18,7 @@ import videoAdsLauncherRoutes from './videoAdsLauncher.js';
 import teamRoutes from './team.js';
 import languagesPipelineRoutes from './languagesPipeline.js';
 import adsReportingRoutes from './adsReporting.js';
+import brandSpyRoutes from './brandSpy.js';
 
 const mountRoutes = (app) => {
   app.use('/api/v1/users', userRoutes);
@@ -40,6 +41,7 @@ const mountRoutes = (app) => {
   app.use('/api/v1/video-ads-launcher', videoAdsLauncherRoutes);
   app.use('/api/v1/languages-pipeline', languagesPipelineRoutes);
   app.use('/api/v1/ads-reporting', adsReportingRoutes);
+  app.use('/api/v1/brand-spy', brandSpyRoutes);
 };
 
 export default mountRoutes;

@@ -1,39 +1,163 @@
 /**
- * Brand Spy proxy route
- * Forwards all /api/v1/brand-spy/* requests to the brand-spy-api service.
- * Keeps the frontend on a single origin — no CORS issues.
- * Uses Node 18+ native fetch (no extra dependency needed).
- *
- * NOTE: Express 5 changed wildcard syntax. '/*' is invalid — must use '/{*splat}'
+ * Brand Spy — Express router
+ * Mounted at /api/v1/brand-spy
  */
-import express from 'express';
 
-const router = express.Router();
+import { Router } from 'express';
+import {
+  listBrands,
+  getBrandExpanded,
+  createBrand,
+  deleteBrand,
+  listAds,
+  getAdDetail,
+  getAdTierCounts,
+} from '../db/brandSpyDb.js';
+import { runBrandScrape, scrapeAllInBackground } from '../workers/brandSpyWorker.js';
+import { getScrapeCreatorsClient } from '../services/scrapeCreators.js';
 
-const BRAND_SPY_API = process.env.BRAND_SPY_API_URL || 'https://brand-spy-api.onrender.com';
+const router = Router();
 
-router.all('/{*splat}', async (req, res) => {
+function normalizeDomain(input) {
+  if (!input) return null;
+  const trimmed = input.trim();
+  if (!trimmed) return null;
+  if (/^\d{6,}$/.test(trimmed)) return trimmed;
+  let cleaned = trimmed.toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '');
+  if (cleaned.startsWith('facebook.com/') || cleaned.startsWith('fb.com/')) {
+    return cleaned.replace(/\/$/, '');
+  }
+  cleaned = cleaned.split('/')[0].split('?')[0].split('#')[0];
+  return cleaned || null;
+}
+
+function parseFollowInput(body) {
+  if (body.bulk?.length) return body.bulk;
+  if (body.domain || body.metaPageUrl || body.pageId) {
+    return [{ domain: body.domain, metaPageUrl: body.metaPageUrl, pageId: body.pageId }];
+  }
+  return [];
+}
+
+// GET /brands
+router.get('/brands', async (req, res, next) => {
   try {
-    const url = `${BRAND_SPY_API}/api/brand-spy${req.path}`;
-    const queryString = new URLSearchParams(req.query).toString();
-    const fullUrl = queryString ? `${url}?${queryString}` : url;
+    const brands = await listBrands(null);
+    res.json({ brands });
+  } catch (err) { next(err); }
+});
 
-    const options = {
-      method: req.method,
-      headers: { 'Content-Type': 'application/json' },
+// GET /brands/:id
+router.get('/brands/:id', async (req, res, next) => {
+  try {
+    const brand = await getBrandExpanded(req.params.id);
+    if (!brand) return res.status(404).json({ error: 'Brand not found' });
+    res.json({ brand });
+  } catch (err) { next(err); }
+});
+
+// GET /brands/:id/ads
+router.get('/brands/:id/ads', async (req, res, next) => {
+  try {
+    const q = {
+      page:     req.query.page     ? Math.max(1, parseInt(String(req.query.page), 10) || 1) : 1,
+      pageSize: req.query.pageSize ? parseInt(String(req.query.pageSize), 10) || undefined : undefined,
+      sort:     req.query.sort     ? String(req.query.sort)   : 'rank_asc',
+      tier:     req.query.tier     ? String(req.query.tier)   : 'ALL',
+      format:   req.query.format   ? String(req.query.format) : undefined,
     };
+    const result = await listAds(req.params.id, q);
+    res.json(result);
+  } catch (err) { next(err); }
+});
 
-    if (['POST', 'PUT', 'PATCH'].includes(req.method) && req.body) {
-      options.body = JSON.stringify(req.body);
+// GET /brands/:id/tier-counts
+router.get('/brands/:id/tier-counts', async (req, res, next) => {
+  try {
+    const counts = await getAdTierCounts(req.params.id);
+    res.json({ counts });
+  } catch (err) { next(err); }
+});
+
+// POST /brands/scrape-all — MUST be before /:id/scrape to avoid route conflict
+router.post('/brands/scrape-all', async (req, res, next) => {
+  try {
+    const brands = await listBrands(null);
+    scrapeAllInBackground(brands.map((b) => b.id)).catch((err) =>
+      console.error('[brand-spy] scrape-all failed:', err),
+    );
+    res.status(202).json({ queued: brands.length });
+  } catch (err) { next(err); }
+});
+
+// POST /brands
+router.post('/brands', async (req, res, next) => {
+  try {
+    const inputs = parseFollowInput(req.body);
+    if (!inputs.length) return res.status(400).json({ error: 'No domains or pages provided.' });
+
+    const warnings = [];
+    const createdBrands = [];
+
+    for (const input of inputs) {
+      try {
+        const domain = normalizeDomain(input.domain ?? input.metaPageUrl ?? input.pageId ?? '');
+        if (!domain) { warnings.push(`Could not parse: ${JSON.stringify(input)}`); continue; }
+        const brand = await createBrand({ domain, workspaceId: null, ownerUserId: null });
+        createdBrands.push(brand);
+      } catch (err) {
+        warnings.push(`Failed to follow ${input.domain ?? input.metaPageUrl}: ${err.message ?? 'unknown'}`);
+      }
     }
 
-    const upstream = await fetch(fullUrl, options);
-    const data = await upstream.json().catch(() => ({}));
-    res.status(upstream.status).json(data);
-  } catch (err) {
-    console.error('[brand-spy proxy]', err);
-    res.status(502).json({ error: 'Brand Spy service unavailable' });
-  }
+    for (const brand of createdBrands) {
+      runBrandScrape({ brandId: brand.id, trigger: 'FOLLOW' }).catch((err) =>
+        console.error(`[brand-spy] background scrape failed for ${brand.id}:`, err),
+      );
+    }
+
+    res.status(201).json({ brands: createdBrands, warnings });
+  } catch (err) { next(err); }
+});
+
+// POST /brands/:id/scrape
+router.post('/brands/:id/scrape', async (req, res, next) => {
+  try {
+    const result = await runBrandScrape({ brandId: req.params.id, trigger: 'MANUAL' });
+    res.json({ result });
+  } catch (err) { next(err); }
+});
+
+// DELETE /brands/:id
+router.delete('/brands/:id', async (req, res, next) => {
+  try {
+    const ok = await deleteBrand(req.params.id);
+    if (!ok) return res.status(404).json({ error: 'Brand not found' });
+    res.status(204).end();
+  } catch (err) { next(err); }
+});
+
+// GET /ads/:id
+router.get('/ads/:id', async (req, res, next) => {
+  try {
+    const ad = await getAdDetail(req.params.id);
+    if (!ad) return res.status(404).json({ error: 'Ad not found' });
+    res.json({ ad });
+  } catch (err) { next(err); }
+});
+
+// GET /credits
+router.get('/credits', async (_req, res, next) => {
+  try {
+    const sc = getScrapeCreatorsClient();
+    const balance = await sc.getCreditBalance();
+    res.json(balance);
+  } catch (err) { next(err); }
+});
+
+router.use((err, _req, res, _next) => {
+  console.error('[brand-spy]', err);
+  res.status(500).json({ error: err.message || 'Internal error' });
 });
 
 export default router;
