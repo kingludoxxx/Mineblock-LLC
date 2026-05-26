@@ -428,7 +428,7 @@ function IntelDrawer({ ad, onClose }) {
               ))}
             </div>
             <a
-              href={`https://www.facebook.com/ads/library/?id=${ad.adArchiveId}`}
+              href={`https://www.facebook.com/ads/library/?active_status=all&ad_type=all&country=US&id=${ad.adArchiveId}`}
               target="_blank" rel="noreferrer"
               className="mt-3 inline-flex items-center gap-1 text-xs text-amber-400/80 hover:text-amber-300"
             >

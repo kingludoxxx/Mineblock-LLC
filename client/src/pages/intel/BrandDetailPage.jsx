@@ -355,7 +355,7 @@ function IntelligenceDrawer({ ad, onClose }) {
               <dt className="text-text-muted">Archive ID</dt><dd className="text-text-primary font-mono text-[10px] break-all">{ad.adArchiveId}</dd>
             </dl>
             <a
-              href={`https://www.facebook.com/ads/library/?id=${ad.adArchiveId}`}
+              href={`https://www.facebook.com/ads/library/?active_status=all&ad_type=all&country=US&id=${ad.adArchiveId}`}
               target="_blank"
               rel="noreferrer"
               className="text-xs text-amber-300/80 hover:text-amber-300 mt-3 inline-flex items-center gap-1"
