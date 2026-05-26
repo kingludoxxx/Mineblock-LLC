@@ -3,6 +3,8 @@
  * Forwards all /api/v1/brand-spy/* requests to the brand-spy-api service.
  * Keeps the frontend on a single origin — no CORS issues.
  * Uses Node 18+ native fetch (no extra dependency needed).
+ *
+ * NOTE: Express 5 changed wildcard syntax. '/*' is invalid — must use '/{*splat}'
  */
 import express from 'express';
 
@@ -10,7 +12,7 @@ const router = express.Router();
 
 const BRAND_SPY_API = process.env.BRAND_SPY_API_URL || 'https://brand-spy-api.onrender.com';
 
-router.all('/*', async (req, res) => {
+router.all('/{*splat}', async (req, res) => {
   try {
     const url = `${BRAND_SPY_API}/api/brand-spy${req.path}`;
     const queryString = new URLSearchParams(req.query).toString();
