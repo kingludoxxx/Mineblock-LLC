@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, useCallback } from 'react';
+import { Search, RefreshCw, Plus, X, ChevronDown, ChevronRight, ExternalLink } from 'lucide-react';
 
 export default function BrandSpyFollowing({ apiBaseUrl, onBrandClick }) {
   const [brands, setBrands] = useState([]);
@@ -63,32 +64,35 @@ export default function BrandSpyFollowing({ apiBaseUrl, onBrandClick }) {
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
+      {/* Header */}
       <div className="flex items-start justify-between">
         <div>
-          <h1 className="text-xl font-bold text-text-primary">Brand Spy</h1>
-          <p className="text-sm text-text-muted mt-1">
-            {brands.length} brands &middot; {stats.totalPages} tracked pages &middot; {fmtCount(stats.activeAds)} active ads
+          <h1 className="text-xl font-semibold text-white">Brand Spy</h1>
+          <p className="text-sm text-text-muted mt-0.5">
+            {brands.length} brands &middot; {stats.totalPages} pages &middot; {fmtCount(stats.activeAds)} active ads
           </p>
         </div>
         <div className="flex items-center gap-2">
           <button
             onClick={handleScrapeAll}
             disabled={scrapingAll || brands.length === 0}
-            className="flex items-center gap-2 px-3 py-2 text-sm rounded-lg bg-bg-elevated border border-border-default hover:bg-bg-hover disabled:opacity-50 text-text-primary transition-colors cursor-pointer"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg bg-bg-elevated border border-border-default hover:bg-bg-hover disabled:opacity-40 text-text-primary transition-colors"
           >
-            <span className={scrapingAll ? 'animate-spin inline-block' : ''}>&#8635;</span>
+            <RefreshCw className={`w-3.5 h-3.5 ${scrapingAll ? 'animate-spin' : ''}`} />
             Scrape All
           </button>
           <button
             onClick={() => setShowFollowModal(true)}
-            className="flex items-center gap-2 px-3 py-2 text-sm rounded-lg bg-accent text-white hover:bg-accent/90 transition-colors cursor-pointer"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg bg-accent text-white hover:bg-accent/90 transition-colors"
           >
-            + Follow Brand
+            <Plus className="w-3.5 h-3.5" />
+            Follow Brand
           </button>
         </div>
       </div>
 
+      {/* Follow modal */}
       {showFollowModal && (
         <FollowPanel
           apiBaseUrl={apiBaseUrl}
@@ -97,22 +101,23 @@ export default function BrandSpyFollowing({ apiBaseUrl, onBrandClick }) {
         />
       )}
 
+      {/* Search + sort */}
       {!showFollowModal && (
         <div className="flex items-center gap-3">
-          <div className="relative flex-1 max-w-lg">
-            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-text-faint text-sm">&#128269;</span>
+          <div className="relative flex-1 max-w-md">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-faint" />
             <input
               type="text"
               value={searchTerm}
               onChange={e => setSearchTerm(e.target.value)}
               placeholder="Search by domain or page name..."
-              className="w-full pl-9 pr-4 py-2.5 text-sm bg-bg-elevated border border-border-default rounded-lg text-text-primary placeholder:text-text-faint focus:outline-none focus:border-accent transition-colors"
+              className="w-full pl-9 pr-3 py-2 text-sm bg-bg-elevated border border-border-default rounded-lg text-text-primary placeholder:text-text-faint focus:outline-none focus:border-accent transition-colors"
             />
           </div>
           <select
             value={sort}
             onChange={e => setSort(e.target.value)}
-            className="text-xs bg-bg-elevated border border-border-default rounded-lg px-2 py-2 text-text-muted focus:outline-none"
+            className="text-xs bg-bg-elevated border border-border-default rounded-lg px-2.5 py-2 text-text-muted focus:outline-none cursor-pointer"
           >
             <option value="active_desc">↓ Active ads</option>
             <option value="active_asc">↑ Active ads</option>
@@ -121,16 +126,25 @@ export default function BrandSpyFollowing({ apiBaseUrl, onBrandClick }) {
         </div>
       )}
 
+      {/* Brand list */}
       {loading ? (
-        <div className="text-text-faint text-sm py-12 text-center">Loading...</div>
+        <div className="flex items-center justify-center py-20 text-text-faint text-sm">Loading...</div>
       ) : error ? (
-        <div className="text-red-400 text-sm py-12 text-center">{error}</div>
+        <div className="flex items-center justify-center py-20 text-red-400 text-sm">{error}</div>
       ) : visible.length === 0 ? (
-        <div className="text-text-faint text-sm py-12 text-center">
-          {brands.length === 0 ? 'No brands followed yet. Click "+ Follow Brand" to start.' : 'No matches.'}
+        <div className="flex flex-col items-center justify-center py-20 text-text-faint">
+          <p className="text-sm">{brands.length === 0 ? 'No brands followed yet.' : 'No matches.'}</p>
+          {brands.length === 0 && (
+            <button
+              onClick={() => setShowFollowModal(true)}
+              className="mt-3 text-sm text-accent hover:underline"
+            >
+              + Follow your first brand
+            </button>
+          )}
         </div>
       ) : (
-        <div className="space-y-2">
+        <div className="space-y-1.5">
           {visible.map(brand => (
             <BrandRow
               key={brand.id}
@@ -166,127 +180,97 @@ function BrandRow({ brand, apiBaseUrl, onOpen, onScrape, onDelete }) {
     }
   };
 
-  const handleScrape = async () => {
+  const handleScrape = async (e) => {
+    e.stopPropagation();
     setScraping(true);
-    try { await onScrape(); }
-    finally { setScraping(false); }
+    try { await onScrape(); } finally { setScraping(false); }
   };
 
   const t = brand.tierBreakdown || {};
 
   return (
-    <div className="bg-bg-card border border-border-subtle rounded-xl hover:border-border-default transition-colors">
+    <div className="bg-bg-card border border-border-subtle rounded-xl overflow-hidden hover:border-border-default transition-colors">
       <div className="flex items-center gap-3 px-4 py-3">
         {/* Avatar */}
-        <div className="relative w-9 h-9 rounded-lg bg-bg-elevated border border-border-default flex items-center justify-center text-sm font-bold text-text-muted shrink-0">
+        <div className="relative w-8 h-8 rounded-lg bg-bg-elevated border border-border-default flex items-center justify-center text-xs font-bold text-text-muted shrink-0">
           {brand.domain.charAt(0).toUpperCase()}
-          {brand.status === 'ACTIVE' && <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-emerald-400 rounded-full ring-2 ring-bg-card" />}
-          {brand.status === 'NOISY' && <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-amber-400 rounded-full ring-2 ring-bg-card" />}
+          <span className={`absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full ring-2 ring-bg-card ${
+            brand.status === 'ACTIVE' ? 'bg-emerald-400' :
+            brand.status === 'NOISY' ? 'bg-amber-400' : 'bg-zinc-600'
+          }`} />
         </div>
 
         {/* Domain */}
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-1.5">
-            {/* FIX: only make it a button if onOpen is provided, otherwise just text */}
             {onOpen ? (
-              <button
-                onClick={onOpen}
-                className="text-sm font-medium text-text-primary hover:text-accent transition-colors truncate cursor-pointer"
-              >
+              <button onClick={onOpen} className="text-sm font-medium text-text-primary hover:text-accent transition-colors truncate">
                 {brand.domain}
               </button>
             ) : (
               <span className="text-sm font-medium text-text-primary truncate">{brand.domain}</span>
             )}
-            <a href={`https://${brand.domain}`} target="_blank" rel="noreferrer" className="text-text-faint hover:text-text-muted" onClick={e => e.stopPropagation()}>
-              <span className="text-xs">&#8599;</span>
+            <a href={`https://${brand.domain}`} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} className="text-text-faint hover:text-text-muted shrink-0">
+              <ExternalLink className="w-3 h-3" />
             </a>
           </div>
-          <div className="text-xs text-text-faint">{brand.pagesCount} pages</div>
+          <p className="text-xs text-text-faint">{brand.pagesCount} pages</p>
         </div>
 
-        {/* Tier chips - FIX: use actual unicode, not HTML entities in JS expressions */}
-        <div className="flex items-center gap-1 text-[10px] font-medium">
-          {t.banger > 0 && (
-            <span className="px-1.5 py-0.5 rounded border bg-rose-500/10 text-rose-400 border-rose-500/20">
-              🔥 {t.banger}
-            </span>
-          )}
-          {t.champ !== null && t.champ !== undefined && (
-            <span className="px-1.5 py-0.5 rounded border bg-amber-500/10 text-amber-400 border-amber-500/20">
-              🏆 {t.champ}
-            </span>
-          )}
-          {t.a !== null && t.a !== undefined && (
-            <span className="px-1.5 py-0.5 rounded border bg-emerald-500/10 text-emerald-400 border-emerald-500/20">A {t.a}</span>
-          )}
-          {t.b !== null && t.b !== undefined && (
-            <span className="px-1.5 py-0.5 rounded border bg-sky-500/10 text-sky-400 border-sky-500/20">B {t.b}</span>
-          )}
-          {t.c !== null && t.c !== undefined && (
-            <span className="text-text-faint px-1">C {t.c}</span>
-          )}
+        {/* Tier chips */}
+        <div className="hidden sm:flex items-center gap-1">
+          {t.banger > 0 && <TierChip label={`🔥 ${t.banger}`} cls="bg-rose-500/10 text-rose-400 border-rose-500/20" />}
+          {t.champ != null && <TierChip label={`🏆 ${t.champ}`} cls="bg-amber-500/10 text-amber-400 border-amber-500/20" />}
+          {t.a != null && <TierChip label={`A ${t.a}`} cls="bg-emerald-500/10 text-emerald-400 border-emerald-500/20" />}
+          {t.b != null && <TierChip label={`B ${t.b}`} cls="bg-sky-500/10 text-sky-400 border-sky-500/20" />}
+          {t.c != null && <span className="text-[10px] text-text-faint px-1">C {t.c}</span>}
         </div>
 
         {/* Counts */}
-        <div className="text-right min-w-[80px]">
-          <div className="text-sm font-semibold text-text-primary">{fmtCount(brand.totalAdsCount)}</div>
-          <div className="text-xs text-emerald-400">{fmtCount(brand.activeAdsCount)} active</div>
-          <div className="text-[10px] text-text-faint">{relTime(brand.lastScrapedAt)}</div>
+        <div className="text-right shrink-0">
+          <p className="text-sm font-semibold text-text-primary tabular-nums">{fmtCount(brand.totalAdsCount)}</p>
+          <p className="text-xs text-emerald-400 tabular-nums">{fmtCount(brand.activeAdsCount)} active</p>
+          <p className="text-[10px] text-text-faint">{relTime(brand.lastScrapedAt)}</p>
         </div>
 
         {/* Actions */}
-        <button
-          onClick={e => { e.stopPropagation(); handleScrape(); }}
-          disabled={scraping}
-          className="p-1.5 text-text-faint hover:text-text-primary disabled:opacity-50 transition-colors cursor-pointer"
-          title="Refresh"
-        >
-          <span className={`text-xs inline-block ${scraping ? 'animate-spin' : ''}`}>&#8635;</span>
-        </button>
-        <button
-          onClick={e => { e.stopPropagation(); onDelete(); }}
-          className="p-1.5 text-text-faint hover:text-red-400 transition-colors cursor-pointer"
-          title="Stop tracking"
-        >
-          <span className="text-xs">&#128465;</span>
-        </button>
-        {onOpen && (
-          <button
-            onClick={e => { e.stopPropagation(); onOpen(); }}
-            className="p-1.5 text-text-faint hover:text-text-primary transition-colors cursor-pointer"
-            title="Open detail"
-          >
-            <span className="text-xs">&#8250;</span>
+        <div className="flex items-center gap-0.5 shrink-0">
+          <button onClick={handleScrape} disabled={scraping} className="p-1.5 rounded-md text-text-faint hover:text-text-primary hover:bg-bg-hover disabled:opacity-40 transition-colors" title="Refresh">
+            <RefreshCw className={`w-3.5 h-3.5 ${scraping ? 'animate-spin' : ''}`} />
           </button>
-        )}
-        <button
-          onClick={handleExpand}
-          className="p-1.5 text-text-faint hover:text-text-primary transition-colors cursor-pointer"
-          title={expanded ? 'Collapse' : 'Expand'}
-        >
-          <span className={`text-xs inline-block transition-transform ${expanded ? 'rotate-90' : ''}`}>&#8964;</span>
-        </button>
+          <button onClick={e => { e.stopPropagation(); onDelete(); }} className="p-1.5 rounded-md text-text-faint hover:text-red-400 hover:bg-bg-hover transition-colors" title="Stop tracking">
+            <X className="w-3.5 h-3.5" />
+          </button>
+          {onOpen && (
+            <button onClick={e => { e.stopPropagation(); onOpen(); }} className="p-1.5 rounded-md text-text-faint hover:text-text-primary hover:bg-bg-hover transition-colors" title="Open detail">
+              <ChevronRight className="w-3.5 h-3.5" />
+            </button>
+          )}
+          <button onClick={handleExpand} className="p-1.5 rounded-md text-text-faint hover:text-text-primary hover:bg-bg-hover transition-colors" title={expanded ? 'Collapse' : 'Expand'}>
+            <ChevronDown className={`w-3.5 h-3.5 transition-transform ${expanded ? 'rotate-180' : ''}`} />
+          </button>
+        </div>
       </div>
 
+      {/* Expanded */}
       {expanded && (
-        <div className="border-t border-border-subtle px-4 py-3">
+        <div className="border-t border-border-subtle bg-bg-main px-4 py-3 space-y-3">
           {loadingDetails ? (
             <p className="text-xs text-text-faint">Loading...</p>
           ) : !details ? (
             <p className="text-xs text-text-faint">Failed to load details.</p>
           ) : (
-            <div className="space-y-3">
+            <>
               {details.pages?.length > 0 && (
                 <div>
-                  <p className="text-[10px] uppercase tracking-wider text-text-faint mb-1">Tracked Pages</p>
+                  <p className="text-[10px] uppercase tracking-wider text-text-faint mb-2">Tracked Pages</p>
                   <div className="space-y-1">
                     {details.pages.map(p => (
-                      <div key={p.id} className="flex items-center text-xs">
-                        <span className="flex-1 text-text-primary">{p.pageName}</span>
-                        <span className="text-text-faint font-mono text-[10px] mr-4">{p.metaPageId}</span>
-                        <span className="text-text-faint">{fmtCount(p.totalAdsCount)}</span>
-                        <span className="text-emerald-400 ml-2">&#9679; {fmtCount(p.activeAdsCount)}</span>
+                      <div key={p.id} className="flex items-center gap-3 text-xs py-0.5">
+                        <span className="flex-1 text-text-primary truncate">{p.pageName}</span>
+                        <span className="text-text-faint font-mono text-[10px] hidden md:block">{p.metaPageId}</span>
+                        <span className="text-text-faint tabular-nums">{fmtCount(p.totalAdsCount)}</span>
+                        <span className="text-emerald-400 tabular-nums w-16 text-right">● {fmtCount(p.activeAdsCount)}</span>
                       </div>
                     ))}
                   </div>
@@ -294,28 +278,30 @@ function BrandRow({ brand, apiBaseUrl, onOpen, onScrape, onDelete }) {
               )}
               {details.domains?.length > 0 && (
                 <div>
-                  <p className="text-[10px] uppercase tracking-wider text-text-faint mb-1">&#127760; Advertised Domains</p>
+                  <p className="text-[10px] uppercase tracking-wider text-text-faint mb-2">Advertised Domains</p>
                   <div className="space-y-1">
                     {details.domains.map(d => (
-                      <div key={d.id} className="flex items-center text-xs">
-                        <a href={`https://${d.domain}`} target="_blank" rel="noreferrer" className="flex-1 text-amber-400/80 hover:text-amber-300">
-                          {d.domain}
-                        </a>
-                        {d.isPrimary && (
-                          <span className="text-[9px] px-1.5 py-0.5 bg-bg-elevated text-text-faint rounded mr-2">primary</span>
-                        )}
-                        <span className="text-text-faint">{fmtCount(d.totalAdsCount)}</span>
-                        <span className="text-emerald-400 ml-2">&#9679; {fmtCount(d.activeAdsCount)}</span>
+                      <div key={d.id} className="flex items-center gap-3 text-xs py-0.5">
+                        <a href={`https://${d.domain}`} target="_blank" rel="noreferrer" className="flex-1 text-amber-400/80 hover:text-amber-300 truncate">{d.domain}</a>
+                        {d.isPrimary && <span className="text-[9px] px-1.5 py-0.5 bg-bg-elevated text-text-faint rounded border border-border-subtle">primary</span>}
+                        <span className="text-text-faint tabular-nums">{fmtCount(d.totalAdsCount)}</span>
+                        <span className="text-emerald-400 tabular-nums w-16 text-right">● {fmtCount(d.activeAdsCount)}</span>
                       </div>
                     ))}
                   </div>
                 </div>
               )}
-            </div>
+            </>
           )}
         </div>
       )}
     </div>
+  );
+}
+
+function TierChip({ label, cls }) {
+  return (
+    <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded border ${cls}`}>{label}</span>
   );
 }
 
@@ -348,14 +334,14 @@ function FollowPanel({ apiBaseUrl, onClose, onAdded }) {
   };
 
   return (
-    <div className="p-4 bg-bg-elevated border border-border-default rounded-xl">
+    <div className="bg-bg-elevated border border-border-default rounded-xl p-4">
       <div className="flex items-center justify-between mb-3">
-        <div className="flex bg-bg-card rounded-lg p-0.5 border border-border-subtle">
+        <div className="flex bg-bg-card rounded-lg p-0.5 border border-border-subtle gap-0.5">
           {['single', 'bulk'].map(m => (
             <button
               key={m}
               onClick={() => setMode(m)}
-              className={`px-3 py-1 text-xs rounded-md transition-colors cursor-pointer capitalize ${
+              className={`px-3 py-1 text-xs rounded-md capitalize transition-colors ${
                 mode === m ? 'bg-accent text-white' : 'text-text-muted hover:text-text-primary'
               }`}
             >
@@ -363,7 +349,9 @@ function FollowPanel({ apiBaseUrl, onClose, onAdded }) {
             </button>
           ))}
         </div>
-        <button onClick={onClose} className="text-text-faint hover:text-text-primary text-sm cursor-pointer">&#10005;</button>
+        <button onClick={onClose} className="p-1 rounded-md text-text-faint hover:text-text-primary hover:bg-bg-hover transition-colors">
+          <X className="w-4 h-4" />
+        </button>
       </div>
       <div className="flex gap-2">
         {mode === 'single' ? (
@@ -373,8 +361,8 @@ function FollowPanel({ apiBaseUrl, onClose, onAdded }) {
             value={value}
             onChange={e => setValue(e.target.value)}
             onKeyDown={e => e.key === 'Enter' && value.trim() && submit()}
-            placeholder="Enter domain (e.g. im8health.com) or Facebook page URL"
-            className="flex-1 px-3 py-2 text-sm bg-bg-card border border-border-default rounded-lg text-text-primary placeholder:text-text-faint focus:outline-none focus:border-accent"
+            placeholder="e.g. im8health.com or facebook.com/im8health"
+            className="flex-1 px-3 py-2 text-sm bg-bg-card border border-border-default rounded-lg text-text-primary placeholder:text-text-faint focus:outline-none focus:border-accent transition-colors"
           />
         ) : (
           <textarea
@@ -382,22 +370,20 @@ function FollowPanel({ apiBaseUrl, onClose, onAdded }) {
             value={value}
             onChange={e => setValue(e.target.value)}
             placeholder="One per line: domain or Facebook page URL"
-            rows={4}
-            className="flex-1 px-3 py-2 text-sm bg-bg-card border border-border-default rounded-lg text-text-primary placeholder:text-text-faint focus:outline-none focus:border-accent resize-none"
+            rows={3}
+            className="flex-1 px-3 py-2 text-sm bg-bg-card border border-border-default rounded-lg text-text-primary placeholder:text-text-faint focus:outline-none focus:border-accent transition-colors resize-none"
           />
         )}
         <button
           onClick={submit}
           disabled={submitting || !value.trim()}
-          className="px-4 py-2 text-sm bg-accent text-white rounded-lg disabled:opacity-50 hover:bg-accent/90 self-start cursor-pointer"
+          className="px-4 py-2 text-sm bg-accent text-white rounded-lg disabled:opacity-40 hover:bg-accent/90 self-start transition-colors"
         >
           {submitting ? 'Adding...' : 'Add'}
         </button>
       </div>
-      <p className="text-xs text-text-faint mt-2">
-        Paste a domain, Facebook page URL, or Ad Library link. We&apos;ll find all associated pages automatically.
-      </p>
-      {error && <p className="text-xs text-red-400 mt-2">{error}</p>}
+      <p className="text-xs text-text-faint mt-2">Paste a domain, Facebook page URL, or Ad Library link.</p>
+      {error && <p className="text-xs text-red-400 mt-1.5">{error}</p>}
     </div>
   );
 }

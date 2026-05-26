@@ -1,4 +1,16 @@
 import { useEffect, useState, useCallback } from 'react';
+import { ArrowLeft, ExternalLink, RefreshCw, X, ChevronDown } from 'lucide-react';
+
+const TIER_COLORS = {
+  BANGER: 'bg-rose-500/15 text-rose-400 border-rose-500/30',
+  CHAMP: 'bg-amber-500/15 text-amber-400 border-amber-500/30',
+  A: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30',
+  B: 'bg-sky-500/15 text-sky-400 border-sky-500/30',
+  C: 'bg-zinc-700/40 text-zinc-400 border-zinc-700',
+  MID: 'bg-bg-elevated text-text-faint border-border-default',
+  TEST: 'bg-bg-card text-text-faint border-border-subtle',
+};
+const TIER_ICONS = { BANGER: '🔥', CHAMP: '🏆' };
 
 export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
   const [brand, setBrand] = useState(null);
@@ -36,110 +48,100 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
     setRefreshing(true);
     try {
       await fetch(`${apiBaseUrl}/brands/${brandId}/scrape`, { method: 'POST' });
-      const [brandRes] = await Promise.all([
-        fetch(`${apiBaseUrl}/brands/${brandId}`).then(r => r.json()),
-      ]);
-      setBrand(brandRes.brand);
+      const res = await fetch(`${apiBaseUrl}/brands/${brandId}`);
+      const data = await res.json();
+      setBrand(data.brand);
       await loadAds();
     } finally { setRefreshing(false); }
   };
 
-  if (!brand) return <div className="text-text-faint text-sm p-8">Loading...</div>;
+  if (!brand) return (
+    <div className="flex items-center justify-center py-20 text-text-faint text-sm">Loading...</div>
+  );
 
   const totalPages = Math.ceil(total / PAGE_SIZE);
   const t = brand.tierBreakdown || {};
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
       {/* Breadcrumb */}
-      <div className="flex items-center gap-2 text-sm text-text-faint">
-        <button onClick={onBack} className="hover:text-text-primary transition-colors cursor-pointer">&#8592; Brand Spy</button>
-        <span>/</span>
-        <span className="text-text-primary">{brand.domain}</span>
-      </div>
+      <button onClick={onBack} className="flex items-center gap-1.5 text-sm text-text-muted hover:text-text-primary transition-colors">
+        <ArrowLeft className="w-4 h-4" />
+        Brand Spy
+      </button>
 
       {/* Header */}
-      <div className="flex items-start justify-between">
+      <div className="flex items-start justify-between gap-4">
         <div className="flex items-center gap-3">
-          <div className="relative w-12 h-12 rounded-xl bg-bg-elevated border border-border-default flex items-center justify-center text-lg font-bold text-text-muted">
+          <div className="relative w-11 h-11 rounded-xl bg-bg-elevated border border-border-default flex items-center justify-center text-base font-bold text-text-muted shrink-0">
             {brand.domain.charAt(0).toUpperCase()}
-            {brand.status === 'ACTIVE' && <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 bg-emerald-400 rounded-full ring-2 ring-bg-card" />}
+            <span className={`absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full ring-2 ring-bg-main ${
+              brand.status === 'ACTIVE' ? 'bg-emerald-400' : 'bg-zinc-600'
+            }`} />
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <h1 className="text-xl font-bold text-text-primary">{brand.domain}</h1>
-              <a href={`https://${brand.domain}`} target="_blank" rel="noreferrer" className="text-text-faint hover:text-text-muted text-xs">&#8599;</a>
-              <span className={`text-[10px] px-2 py-0.5 rounded uppercase tracking-wider border ${
+              <h1 className="text-xl font-semibold text-white">{brand.domain}</h1>
+              <a href={`https://${brand.domain}`} target="_blank" rel="noreferrer" className="text-text-faint hover:text-text-muted">
+                <ExternalLink className="w-3.5 h-3.5" />
+              </a>
+              <span className={`text-[10px] px-2 py-0.5 rounded border uppercase tracking-wide ${
                 brand.status === 'ACTIVE' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' :
                 brand.status === 'NOISY' ? 'bg-amber-500/10 text-amber-400 border-amber-500/20' :
                 'bg-bg-elevated text-text-faint border-border-default'
               }`}>{brand.status}</span>
             </div>
             <p className="text-xs text-text-faint mt-0.5">
-              {brand.pagesCount} pages &middot; {brand.domainsCount} domains &middot; last scraped {relTime(brand.lastScrapedAt)}
+              {brand.pagesCount} pages &middot; {brand.domainsCount} domains &middot; scraped {relTime(brand.lastScrapedAt)}
             </p>
           </div>
         </div>
         <button
           onClick={handleRefresh}
           disabled={refreshing}
-          className="flex items-center gap-2 px-3 py-2 text-sm rounded-lg bg-bg-elevated border border-border-default hover:bg-bg-hover disabled:opacity-50 text-text-primary transition-colors cursor-pointer"
+          className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg bg-bg-elevated border border-border-default hover:bg-bg-hover disabled:opacity-40 text-text-primary transition-colors shrink-0"
         >
-          <span className={refreshing ? 'animate-spin inline-block' : ''}>&#8635;</span> Refresh
+          <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
+          Refresh
         </button>
       </div>
 
       {/* Metric cards */}
       <div className="grid grid-cols-3 gap-3">
-        <div className="bg-bg-card border border-border-subtle rounded-xl p-4">
-          <p className="text-[10px] uppercase tracking-wider text-text-faint">Active Ads</p>
-          <p className="text-2xl font-semibold text-emerald-400 mt-1">{fmtCount(brand.activeAdsCount)}</p>
-        </div>
-        <div className="bg-bg-card border border-border-subtle rounded-xl p-4">
-          <p className="text-[10px] uppercase tracking-wider text-text-faint">Pages</p>
-          <p className="text-2xl font-semibold text-text-primary mt-1">{brand.pagesCount}</p>
-        </div>
-        <div className="bg-bg-card border border-border-subtle rounded-xl p-4">
-          <p className="text-[10px] uppercase tracking-wider text-text-faint">Domains</p>
-          <p className="text-2xl font-semibold text-text-primary mt-1">{brand.domainsCount}</p>
-        </div>
+        <MetricCard label="Active Ads" value={fmtCount(brand.activeAdsCount)} accent />
+        <MetricCard label="Pages" value={String(brand.pagesCount)} />
+        <MetricCard label="Domains" value={String(brand.domainsCount)} />
       </div>
 
       {/* Tier strip */}
       <div className="flex items-center gap-2 flex-wrap">
-        <span className="text-[10px] uppercase tracking-wider text-text-faint">Tier Breakdown</span>
-        {t.champ === null || t.champ === undefined ? (
+        <span className="text-[10px] uppercase tracking-wider text-text-faint">Tiers</span>
+        {t.champ == null ? (
           <span className="text-xs text-text-faint">Scoring pending — click Refresh</span>
         ) : (
           <>
-            {t.banger > 0 && (
-              <span className="text-[10px] font-medium px-2 py-1 rounded border bg-rose-500/10 text-rose-400 border-rose-500/20">
-                🔥 {t.banger}
-              </span>
-            )}
-            <span className="text-[10px] font-medium px-2 py-1 rounded border bg-amber-500/10 text-amber-400 border-amber-500/20">
-              🏆 {t.champ}
-            </span>
-            <span className="text-[10px] font-medium px-2 py-1 rounded border bg-emerald-500/10 text-emerald-400 border-emerald-500/20">A {t.a}</span>
-            <span className="text-[10px] font-medium px-2 py-1 rounded border bg-sky-500/10 text-sky-400 border-sky-500/20">B {t.b}</span>
-            <span className="text-[10px] font-medium px-2 py-1 rounded border bg-zinc-700/30 text-text-muted border-zinc-700">C {t.c}</span>
-            <span className="text-[10px] font-medium px-2 py-1 rounded border bg-bg-elevated text-text-faint border-border-default">MID {t.low}</span>
-            <span className="text-[10px] font-medium px-2 py-1 rounded border bg-bg-card text-text-faint border-border-subtle">TEST {t.test}</span>
+            {t.banger > 0 && <span className="text-[10px] font-medium px-2 py-0.5 rounded border bg-rose-500/10 text-rose-400 border-rose-500/20">🔥 {t.banger}</span>}
+            <span className="text-[10px] font-medium px-2 py-0.5 rounded border bg-amber-500/10 text-amber-400 border-amber-500/20">🏆 {t.champ}</span>
+            <span className="text-[10px] font-medium px-2 py-0.5 rounded border bg-emerald-500/10 text-emerald-400 border-emerald-500/20">A {t.a}</span>
+            <span className="text-[10px] font-medium px-2 py-0.5 rounded border bg-sky-500/10 text-sky-400 border-sky-500/20">B {t.b}</span>
+            <span className="text-[10px] font-medium px-2 py-0.5 rounded border bg-zinc-700/40 text-zinc-400 border-zinc-700">C {t.c}</span>
+            <span className="text-[10px] font-medium px-2 py-0.5 rounded border bg-bg-elevated text-text-faint border-border-default">MID {t.low}</span>
+            <span className="text-[10px] font-medium px-2 py-0.5 rounded border bg-bg-card text-text-faint border-border-subtle">TEST {t.test}</span>
           </>
         )}
       </div>
 
       {/* Filter + sort */}
       <div className="flex items-center justify-between gap-3 flex-wrap">
-        <div className="flex items-center gap-1.5 flex-wrap">
+        <div className="flex items-center gap-1 flex-wrap">
           {['ALL','BANGER','CHAMP','A','B','C','MID','TEST'].map(f => (
             <button
               key={f}
               onClick={() => { setTierFilter(f); setPage(1); }}
-              className={`px-2.5 py-1 text-[11px] rounded-lg border font-medium transition-colors cursor-pointer ${
+              className={`px-2.5 py-1 text-xs rounded-lg border font-medium transition-colors ${
                 tierFilter === f
-                  ? 'bg-text-primary text-bg-card border-text-primary'
-                  : 'bg-bg-elevated text-text-muted border-border-default hover:border-border-default hover:text-text-primary'
+                  ? 'bg-accent text-white border-accent'
+                  : 'bg-bg-elevated text-text-muted border-border-default hover:text-text-primary hover:border-border-hover'
               }`}
             >
               {f}
@@ -149,57 +151,52 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
         <select
           value={sort}
           onChange={e => { setSort(e.target.value); setPage(1); }}
-          className="text-xs bg-bg-elevated border border-border-default rounded-lg px-2 py-1.5 text-text-muted focus:outline-none"
+          className="text-xs bg-bg-elevated border border-border-default rounded-lg px-2.5 py-1.5 text-text-muted focus:outline-none cursor-pointer"
         >
           <option value="rank_asc">Top rank</option>
-          <option value="velocity_7d_desc">Climbing (7D)</option>
+          <option value="velocity_7d_desc">Climbing fast</option>
           <option value="active_days_desc">Longest running</option>
           <option value="first_seen_desc">Newest</option>
         </select>
       </div>
 
       {/* Column headers */}
-      <div className="hidden lg:grid grid-cols-[56px_1fr_56px_56px_56px_64px_64px_72px_56px_56px] gap-2 px-3 py-2 text-[10px] uppercase tracking-wider text-text-faint border-b border-border-subtle">
-        <div></div>
-        <div>Ad</div>
-        <div className="text-center" title="Where this ad ranked ~21 days ago">21D</div>
-        <div className="text-center" title="Where this ad ranked ~7 days ago">7D</div>
-        <div className="text-center" title="Where this ad ranked ~3 days ago">3D</div>
-        <div className="text-center font-semibold text-text-muted" title="Current rank by impressions — the live score">NOW</div>
-        <div className="text-center text-emerald-500/80" title="Days the ad has been running. 30+ = proven winner">ACTIVE</div>
-        <div className="text-center" title="Tier grade">TIER</div>
-        <div className="text-center" title="Rank positions moved in 7 days">V7D</div>
-        <div className="text-center" title="Rank positions moved in 21 days">V21D</div>
+      <div className="hidden lg:grid grid-cols-[48px_1fr_52px_52px_52px_60px_60px_68px_52px_52px] gap-2 px-3 pb-1 text-[10px] uppercase tracking-wider text-text-faint border-b border-border-subtle">
+        <div /><div>Ad</div>
+        <div className="text-center">21D</div>
+        <div className="text-center">7D</div>
+        <div className="text-center">3D</div>
+        <div className="text-center font-semibold text-text-muted">NOW</div>
+        <div className="text-center text-emerald-500/70">ACTIVE</div>
+        <div className="text-center">TIER</div>
+        <div className="text-center">V7D</div>
+        <div className="text-center">V21D</div>
       </div>
 
+      {/* Ads */}
       {loading ? (
-        <div className="text-text-faint text-sm py-12 text-center">Loading ads...</div>
+        <div className="flex items-center justify-center py-16 text-text-faint text-sm">Loading ads...</div>
       ) : ads.length === 0 ? (
-        <div className="text-text-faint text-sm py-12 text-center">
-          {tierFilter === 'ALL' ? 'No ads tracked yet — click Refresh to pull from Meta.' : `No ${tierFilter} ads.`}
+        <div className="flex items-center justify-center py-16 text-text-faint text-sm">
+          {tierFilter === 'ALL' ? 'No ads tracked yet — click Refresh.' : `No ${tierFilter} ads.`}
         </div>
       ) : (
-        <div>
-          {ads.map(ad => <AdRow key={ad.id} ad={ad} onClick={() => setSelectedAd(ad)} />)}
+        <div className="rounded-xl border border-border-subtle overflow-hidden">
+          {ads.map((ad, i) => <AdRow key={ad.id} ad={ad} onClick={() => setSelectedAd(ad)} last={i === ads.length - 1} />)}
         </div>
       )}
 
+      {/* Pagination */}
       {totalPages > 1 && (
-        <div className="flex items-center justify-between text-sm">
-          <span className="text-text-faint">{total.toLocaleString()} ads &middot; page {page} of {totalPages}</span>
+        <div className="flex items-center justify-between text-sm pt-1">
+          <span className="text-text-faint text-xs">{total.toLocaleString()} ads &middot; page {page} of {totalPages}</span>
           <div className="flex gap-2">
-            <button
-              onClick={() => setPage(p => Math.max(1, p - 1))}
-              disabled={page === 1}
-              className="px-3 py-1.5 rounded-lg bg-bg-elevated border border-border-default disabled:opacity-40 hover:bg-bg-hover text-text-primary cursor-pointer"
-            >
+            <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1}
+              className="px-3 py-1.5 text-xs rounded-lg bg-bg-elevated border border-border-default disabled:opacity-40 hover:bg-bg-hover text-text-primary transition-colors">
               &larr; Prev
             </button>
-            <button
-              onClick={() => setPage(p => Math.min(totalPages, p + 1))}
-              disabled={page >= totalPages}
-              className="px-3 py-1.5 rounded-lg bg-bg-elevated border border-border-default disabled:opacity-40 hover:bg-bg-hover text-text-primary cursor-pointer"
-            >
+            <button onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page >= totalPages}
+              className="px-3 py-1.5 text-xs rounded-lg bg-bg-elevated border border-border-default disabled:opacity-40 hover:bg-bg-hover text-text-primary transition-colors">
               Next &rarr;
             </button>
           </div>
@@ -211,159 +208,143 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
   );
 }
 
-const TIER_COLORS = {
-  BANGER: 'bg-rose-500/15 text-rose-400 border-rose-500/30',
-  CHAMP:  'bg-amber-500/15 text-amber-400 border-amber-500/30',
-  A:      'bg-emerald-500/15 text-emerald-400 border-emerald-500/30',
-  B:      'bg-sky-500/15 text-sky-400 border-sky-500/30',
-  C:      'bg-zinc-700/30 text-text-muted border-zinc-700',
-  MID:    'bg-bg-elevated text-text-faint border-border-default',
-  TEST:   'bg-bg-card text-text-faint border-border-subtle',
-};
-
-const TIER_ICONS = { BANGER: '🔥', CHAMP: '🏆' };
-
-function AdRow({ ad, onClick }) {
+function MetricCard({ label, value, accent }) {
   return (
-    <div
-      onClick={onClick}
-      className="grid grid-cols-[56px_1fr] lg:grid-cols-[56px_1fr_56px_56px_56px_64px_64px_72px_56px_56px] gap-2 px-3 py-3 items-center border-b border-border-subtle hover:bg-bg-elevated cursor-pointer transition-colors"
-    >
-      <div className="w-12 h-12 rounded-lg bg-bg-elevated border border-border-subtle overflow-hidden flex items-center justify-center">
-        {ad.thumbnailUrl
-          ? <img src={ad.thumbnailUrl} alt="" className="w-full h-full object-cover" />
-          : <span className="text-text-faint text-[10px]">{ad.displayFormat || '?'}</span>}
-      </div>
-
-      <div className="min-w-0">
-        <div className="text-sm text-text-primary truncate">
-          {ad.headline || ad.bodyText?.slice(0, 60) || ad.adArchiveId}
-        </div>
-        <div className="text-[11px] text-text-faint flex items-center gap-2 mt-0.5">
-          {ad.pageName && <span>{ad.pageName}</span>}
-          {ad.displayFormat && (
-            <span className="px-1 py-0.5 rounded bg-bg-elevated text-[9px] uppercase">{ad.displayFormat}</span>
-          )}
-          {ad.collationCount > 1 && <span className="text-text-faint">&times;{ad.collationCount}</span>}
-        </div>
-      </div>
-
-      <div className="hidden lg:block text-center text-xs text-text-faint font-mono">{ad.rank21d ?? '—'}</div>
-      <div className="hidden lg:block text-center text-xs text-text-faint font-mono">{ad.rank7d ?? '—'}</div>
-      <div className="hidden lg:block text-center text-xs text-text-faint font-mono">{ad.rank3d ?? '—'}</div>
-      <div className="hidden lg:block text-center text-xs text-text-primary font-semibold font-mono">{ad.currentRank ?? '—'}</div>
-      <div className="hidden lg:block text-center text-xs">
-        {ad.activeDays !== null && ad.activeDays !== undefined ? (
-          <span className={ad.activeDays >= 30 ? 'text-emerald-400 font-semibold' : 'text-text-primary'}>
-            {ad.activeDays}d
-          </span>
-        ) : '—'}
-      </div>
-      <div className="hidden lg:block text-center">
-        {ad.tier ? (
-          <span className={`text-[10px] px-1.5 py-0.5 rounded border font-semibold ${TIER_COLORS[ad.tier] || ''}`}>
-            {TIER_ICONS[ad.tier] ? `${TIER_ICONS[ad.tier]} ` : ''}{ad.tier}
-          </span>
-        ) : '—'}
-      </div>
-      <div className="hidden lg:block text-center text-xs">
-        <VelCell value={ad.velocity7d} days={ad.activeDays} win={7} />
-      </div>
-      <div className="hidden lg:block text-center text-xs">
-        <VelCell value={ad.velocity21d} days={ad.activeDays} win={21} />
-      </div>
+    <div className="bg-bg-card border border-border-subtle rounded-xl p-4">
+      <p className="text-[10px] uppercase tracking-wider text-text-faint">{label}</p>
+      <p className={`text-2xl font-semibold mt-1 ${accent ? 'text-emerald-400' : 'text-white'}`}>{value}</p>
     </div>
   );
 }
 
+function AdRow({ ad, onClick, last }) {
+  return (
+    <div
+      onClick={onClick}
+      className={`grid grid-cols-[48px_1fr] lg:grid-cols-[48px_1fr_52px_52px_52px_60px_60px_68px_52px_52px] gap-2 px-3 py-2.5 items-center hover:bg-bg-elevated cursor-pointer transition-colors ${
+        !last ? 'border-b border-border-subtle' : ''
+      }`}
+    >
+      <div className="w-10 h-10 rounded-lg bg-bg-elevated border border-border-subtle overflow-hidden flex items-center justify-center shrink-0">
+        {ad.thumbnailUrl
+          ? <img src={ad.thumbnailUrl} alt="" className="w-full h-full object-cover" />
+          : <span className="text-text-faint text-[9px]">{ad.displayFormat || '?'}</span>}
+      </div>
+      <div className="min-w-0">
+        <p className="text-sm text-text-primary truncate">{ad.headline || ad.bodyText?.slice(0, 60) || ad.adArchiveId}</p>
+        <div className="flex items-center gap-2 mt-0.5">
+          {ad.pageName && <span className="text-[11px] text-text-faint truncate">{ad.pageName}</span>}
+          {ad.displayFormat && <span className="text-[9px] px-1 py-0.5 rounded bg-bg-elevated text-text-faint uppercase shrink-0">{ad.displayFormat}</span>}
+        </div>
+      </div>
+      <RankCell value={ad.rank21d} />
+      <RankCell value={ad.rank7d} />
+      <RankCell value={ad.rank3d} />
+      <RankCell value={ad.currentRank} bold />
+      <div className="hidden lg:flex justify-center">
+        {ad.activeDays != null
+          ? <span className={`text-xs tabular-nums ${ad.activeDays >= 30 ? 'text-emerald-400 font-semibold' : 'text-text-primary'}`}>{ad.activeDays}d</span>
+          : <span className="text-text-faint text-xs">—</span>}
+      </div>
+      <div className="hidden lg:flex justify-center">
+        {ad.tier ? (
+          <span className={`text-[10px] px-1.5 py-0.5 rounded border font-medium ${TIER_COLORS[ad.tier] || ''}`}>
+            {TIER_ICONS[ad.tier] ? `${TIER_ICONS[ad.tier]} ` : ''}{ad.tier}
+          </span>
+        ) : <span className="text-text-faint text-xs">—</span>}
+      </div>
+      <VelCell value={ad.velocity7d} days={ad.activeDays} win={7} />
+      <VelCell value={ad.velocity21d} days={ad.activeDays} win={21} />
+    </div>
+  );
+}
+
+function RankCell({ value, bold }) {
+  if (!value && value !== 0) return <div className="hidden lg:flex justify-center text-xs text-text-faint">—</div>;
+  return <div className={`hidden lg:flex justify-center text-xs font-mono tabular-nums ${bold ? 'text-white font-semibold' : 'text-text-faint'}`}>{value}</div>;
+}
+
 function VelCell({ value, days, win }) {
   if (value === null || value === undefined) {
-    if (days !== null && days !== undefined && days < win) {
-      return <span className="text-sky-400 font-semibold text-[10px]">NEW</span>;
-    }
-    return <span className="text-text-faint">—</span>;
+    if (days != null && days < win) return <div className="hidden lg:flex justify-center text-[10px] text-sky-400 font-semibold">NEW</div>;
+    return <div className="hidden lg:flex justify-center text-xs text-text-faint">—</div>;
   }
-  if (value > 0) return <span className="text-emerald-400 font-medium">+{value}↑</span>;
-  if (value < 0) return <span className="text-rose-400 font-medium">{value}↓</span>;
-  return <span className="text-text-faint">0</span>;
+  if (value > 0) return <div className="hidden lg:flex justify-center text-xs text-emerald-400 font-medium">+{value}↑</div>;
+  if (value < 0) return <div className="hidden lg:flex justify-center text-xs text-rose-400 font-medium">{value}↓</div>;
+  return <div className="hidden lg:flex justify-center text-xs text-text-faint">0</div>;
 }
 
 function IntelDrawer({ ad, onClose }) {
   useEffect(() => {
-    const h = (e) => e.key === 'Escape' && onClose();
+    const h = e => e.key === 'Escape' && onClose();
     window.addEventListener('keydown', h);
     return () => window.removeEventListener('keydown', h);
   }, [onClose]);
 
-  const detailFields = [
-    ['Page', ad.pageName],
-    ['Format', ad.displayFormat],
-    ['Variants', ad.collationCount || '1'],
-    ['Status', ad.isActive ? 'Running' : 'Ended'],
-    ['Started', ad.startDate ? new Date(ad.startDate).toLocaleDateString() : '—'],
-    ['Platforms', ad.publisherPlatforms?.join(', ') || '—'],
-  ];
-
   return (
     <>
-      <div className="fixed inset-0 bg-black/60 z-40" onClick={onClose} />
-      <div className="fixed top-0 right-0 bottom-0 w-full max-w-lg bg-bg-card border-l border-border-default z-50 overflow-y-auto">
-        <div className="sticky top-0 bg-bg-card border-b border-border-subtle px-5 py-4 flex items-center justify-between">
+      <div className="fixed inset-0 bg-black/50 z-40" onClick={onClose} />
+      <div className="fixed top-0 right-0 bottom-0 w-full max-w-md bg-bg-card border-l border-border-default z-50 overflow-y-auto flex flex-col">
+        <div className="sticky top-0 bg-bg-card border-b border-border-subtle px-5 py-3.5 flex items-center justify-between shrink-0">
           <div className="flex items-center gap-2">
             {ad.tier && (
-              <span className="text-xs font-semibold px-2 py-0.5 rounded border bg-bg-elevated text-text-primary border-border-default">
+              <span className={`text-xs font-semibold px-2 py-0.5 rounded border ${TIER_COLORS[ad.tier] || ''}`}>
                 {TIER_ICONS[ad.tier] ? `${TIER_ICONS[ad.tier]} ` : ''}{ad.tier}
               </span>
             )}
             {ad.currentRank && <span className="text-xs text-text-faint">Rank #{ad.currentRank}</span>}
           </div>
-          <button onClick={onClose} className="text-text-faint hover:text-text-primary text-lg cursor-pointer">&#10005;</button>
+          <button onClick={onClose} className="p-1 rounded-md text-text-faint hover:text-text-primary hover:bg-bg-hover transition-colors">
+            <X className="w-4 h-4" />
+          </button>
         </div>
-        <div className="p-5 space-y-5">
+
+        <div className="p-5 space-y-4 flex-1">
+          {/* Creative */}
           <div className="rounded-xl overflow-hidden bg-bg-elevated border border-border-subtle">
             {ad.videoUrl ? (
-              <video src={ad.videoUrl} controls poster={ad.thumbnailUrl} className="w-full max-h-80 object-contain" />
+              <video src={ad.videoUrl} controls poster={ad.thumbnailUrl} className="w-full max-h-72 object-contain" />
             ) : ad.thumbnailUrl ? (
-              <img src={ad.thumbnailUrl} alt="" className="w-full max-h-80 object-contain" />
+              <img src={ad.thumbnailUrl} alt="" className="w-full max-h-72 object-contain" />
             ) : (
               <div className="aspect-video flex items-center justify-center text-text-faint text-sm">No preview</div>
             )}
           </div>
 
-          <div className="grid grid-cols-4 gap-2 text-center">
+          {/* Rank grid */}
+          <div className="grid grid-cols-4 gap-2">
             {[['21D', ad.rank21d], ['7D', ad.rank7d], ['3D', ad.rank3d], ['NOW', ad.currentRank]].map(([l, v]) => (
-              <div key={l} className="bg-bg-elevated border border-border-subtle rounded-lg py-2 px-1">
-                <div className="text-[9px] uppercase tracking-wider text-text-faint">{l}</div>
-                <div className="text-sm font-mono text-text-primary font-semibold mt-0.5">{v ?? '—'}</div>
+              <div key={l} className="bg-bg-elevated border border-border-subtle rounded-lg py-2 text-center">
+                <p className="text-[9px] uppercase tracking-wider text-text-faint">{l}</p>
+                <p className="text-sm font-mono font-semibold text-white mt-0.5">{v ?? '—'}</p>
               </div>
             ))}
           </div>
 
-          <div className="grid grid-cols-3 gap-2 text-center">
-            <div className="bg-bg-elevated border border-border-subtle rounded-lg py-2">
-              <div className="text-[9px] uppercase tracking-wider text-text-faint">Active</div>
-              <div className={`text-sm font-mono mt-0.5 ${ad.activeDays >= 30 ? 'text-emerald-400 font-semibold' : 'text-text-primary'}`}>
-                {ad.activeDays !== null && ad.activeDays !== undefined ? `${ad.activeDays}d` : '—'}
-              </div>
+          <div className="grid grid-cols-3 gap-2">
+            <div className="bg-bg-elevated border border-border-subtle rounded-lg py-2 text-center">
+              <p className="text-[9px] uppercase tracking-wider text-text-faint">Active</p>
+              <p className={`text-sm font-mono mt-0.5 ${ad.activeDays >= 30 ? 'text-emerald-400 font-semibold' : 'text-white'}`}>
+                {ad.activeDays != null ? `${ad.activeDays}d` : '—'}
+              </p>
             </div>
-            <div className="bg-bg-elevated border border-border-subtle rounded-lg py-2">
-              <div className="text-[9px] uppercase tracking-wider text-text-faint">V7D</div>
-              <div className="text-sm font-mono mt-0.5">
-                <VelCell value={ad.velocity7d} days={ad.activeDays} win={7} />
+            {[['V7D', ad.velocity7d, ad.activeDays, 7], ['V21D', ad.velocity21d, ad.activeDays, 21]].map(([l, v, d, w]) => (
+              <div key={l} className="bg-bg-elevated border border-border-subtle rounded-lg py-2 text-center">
+                <p className="text-[9px] uppercase tracking-wider text-text-faint">{l}</p>
+                <div className="text-sm font-mono mt-0.5">
+                  {v == null ? (d != null && d < w ? <span className="text-sky-400 font-semibold text-xs">NEW</span> : <span className="text-text-faint">—</span>)
+                    : v > 0 ? <span className="text-emerald-400">+{v}↑</span>
+                    : v < 0 ? <span className="text-rose-400">{v}↓</span>
+                    : <span className="text-text-faint">0</span>}
+                </div>
               </div>
-            </div>
-            <div className="bg-bg-elevated border border-border-subtle rounded-lg py-2">
-              <div className="text-[9px] uppercase tracking-wider text-text-faint">V21D</div>
-              <div className="text-sm font-mono mt-0.5">
-                <VelCell value={ad.velocity21d} days={ad.activeDays} win={21} />
-              </div>
-            </div>
+            ))}
           </div>
 
           {(ad.headline || ad.bodyText) && (
             <div>
               <p className="text-[10px] uppercase tracking-wider text-text-faint mb-1.5">Copy</p>
-              {ad.headline && <p className="text-sm font-medium text-text-primary">{ad.headline}</p>}
+              {ad.headline && <p className="text-sm font-medium text-white">{ad.headline}</p>}
               {ad.bodyText && <p className="text-sm text-text-muted mt-1 whitespace-pre-wrap">{ad.bodyText}</p>}
             </div>
           )}
@@ -382,9 +363,12 @@ function IntelDrawer({ ad, onClose }) {
 
           <div>
             <p className="text-[10px] uppercase tracking-wider text-text-faint mb-1.5">Details</p>
-            {/* FIX: use a proper list, not Fragment with keys */}
-            <div className="grid grid-cols-2 gap-y-1.5 text-xs">
-              {detailFields.map(([l, v]) => (
+            <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
+              {[['Page', ad.pageName], ['Format', ad.displayFormat], ['Variants', ad.collationCount || '1'],
+                ['Status', ad.isActive ? 'Running' : 'Ended'],
+                ['Started', ad.startDate ? new Date(ad.startDate).toLocaleDateString() : '—'],
+                ['Platforms', ad.publisherPlatforms?.join(', ') || '—']
+              ].map(([l, v]) => (
                 <div key={l} className="contents">
                   <span className="text-text-faint">{l}</span>
                   <span className="text-text-primary">{v || '—'}</span>
@@ -393,11 +377,10 @@ function IntelDrawer({ ad, onClose }) {
             </div>
             <a
               href={`https://www.facebook.com/ads/library/?id=${ad.adArchiveId}`}
-              target="_blank"
-              rel="noreferrer"
-              className="text-xs text-amber-400/80 hover:text-amber-300 mt-3 inline-flex items-center gap-1"
+              target="_blank" rel="noreferrer"
+              className="mt-3 inline-flex items-center gap-1 text-xs text-amber-400/80 hover:text-amber-300"
             >
-              View on Meta Ad Library &#8599;
+              View on Meta Ad Library <ExternalLink className="w-3 h-3" />
             </a>
           </div>
         </div>

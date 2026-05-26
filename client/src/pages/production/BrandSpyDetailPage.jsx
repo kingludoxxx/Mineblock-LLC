@@ -5,10 +5,12 @@ export default function BrandSpyDetailPage() {
   const { id } = useParams();
   const navigate = useNavigate();
   return (
-    <BrandDetail
-      apiBaseUrl="/api/v1/brand-spy"
-      brandId={id}
-      onBack={() => navigate('/app/brand-spy')}
-    />
+    <div className="p-6 max-w-6xl">
+      <BrandDetail
+        apiBaseUrl="/api/v1/brand-spy"
+        brandId={id}
+        onBack={() => navigate('/app/brand-spy')}
+      />
+    </div>
   );
 }
