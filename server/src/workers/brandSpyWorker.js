@@ -450,19 +450,37 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
   );
 
   if (toExpand.length > 0) {
-    console.log(`[brand-spy] phase-3: cross-domain expansion for [${toExpand.join(', ')}]`);
+    // Keyword search doesn't work for cross-domains — the domain only appears in the
+    // destination URL, not in ad text, so Meta's keyword index doesn't find it.
+    // Instead: searchCompanies by name → find their pages → Phase 2 scrape (US filter).
+    console.log(`[brand-spy] phase-3: company search for [${toExpand.join(', ')}]`);
     for (const xDomain of toExpand) {
-      // Use country:ALL here — Phase 3 goal is page discovery, not ad filtering.
-      // Phase 2 (already running with country:US) handles the US-only constraint.
-      // Searching with US would miss pages whose ads aren't indexed under US targeting.
-      for await (const batch of sc.iterateAdsByDomain({ domain: xDomain, status: 'ALL', country: 'ALL', maxPages: 5 })) {
+      // Strip TLD: 'dailynationalnews.com' → 'dailynationalnews'
+      const companyName = xDomain.replace(/\.[a-z]{2,}(\.[a-z]{2})?$/, '');
+      let result;
+      try {
+        result = await sc.searchCompanies(companyName);
         creditsUsed += 1;
-        const { d, u } = await upsertAdBatch(brandId, batch, pageCache);
-        discovered += d; updated += u;
-        launchNewPages(); // any newly found pages get Phase 2 scraped (with US filter)
+      } catch (err) {
+        console.error(`[brand-spy] phase-3 company search failed for "${companyName}":`, err.message);
+        continue;
+      }
+      // Handle various response shapes from the API
+      const pages = result?.results ?? result?.data ?? result?.companies ?? [];
+      console.log(`[brand-spy] phase-3: "${companyName}" → ${pages.length} pages`);
+      for (const page of pages.slice(0, 5)) { // cap at 5 per domain to avoid credit blowout
+        const metaPageId = String(page.page_id ?? page.id ?? page.pageId ?? '');
+        if (!metaPageId || p2Launched.has(metaPageId)) continue;
+        if (!pageCache.has(metaPageId)) {
+          const pageName = page.page_name ?? page.name ?? page.pageName ?? null;
+          const brandPageId = await upsertBrandPage(brandId, metaPageId, pageName, null);
+          pageCache.set(metaPageId, brandPageId);
+        }
+        p2Launched.add(metaPageId);
+        p2Promises.push(runPhase2Page(metaPageId)); // Phase 2 runs with country:US
       }
     }
-    // Await any Phase 2 workers kicked off by Phase 3
+    // Await Phase 2 workers kicked off by Phase 3
     await Promise.all(p2Promises);
     console.log(`[brand-spy] phase-3 done: total ${discovered} new, ${updated} updated, ${creditsUsed} credits`);
   }
