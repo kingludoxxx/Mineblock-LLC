@@ -452,11 +452,14 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
   if (toExpand.length > 0) {
     console.log(`[brand-spy] phase-3: cross-domain expansion for [${toExpand.join(', ')}]`);
     for (const xDomain of toExpand) {
-      for await (const batch of sc.iterateAdsByDomain({ domain: xDomain, status: 'ALL', country: 'US', maxPages: 5 })) {
+      // Use country:ALL here — Phase 3 goal is page discovery, not ad filtering.
+      // Phase 2 (already running with country:US) handles the US-only constraint.
+      // Searching with US would miss pages whose ads aren't indexed under US targeting.
+      for await (const batch of sc.iterateAdsByDomain({ domain: xDomain, status: 'ALL', country: 'ALL', maxPages: 5 })) {
         creditsUsed += 1;
         const { d, u } = await upsertAdBatch(brandId, batch, pageCache);
         discovered += d; updated += u;
-        launchNewPages(); // any newly found pages get Phase 2 scraped too
+        launchNewPages(); // any newly found pages get Phase 2 scraped (with US filter)
       }
     }
     // Await any Phase 2 workers kicked off by Phase 3
