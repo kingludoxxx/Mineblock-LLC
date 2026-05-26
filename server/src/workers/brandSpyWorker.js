@@ -387,6 +387,19 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
   const p2Promises   = [];
   const crossDomains = new Set(); // link_url domains seen in Phase 2 ads
 
+  // Pre-populate pageCache from DB so Phase 2 covers ALL known pages, not just
+  // those discovered by the current Phase 1 keyword search. Without this, brands
+  // like thegreatproject.com whose keyword search only finds 1 page per run would
+  // miss the other 15 stored pages — and their active ads — every scrape.
+  const { rows: existingPages } = await query(
+    `SELECT meta_page_id, id FROM brand_spy.brand_pages WHERE brand_id = $1`,
+    [brandId],
+  );
+  for (const row of existingPages) {
+    if (row.meta_page_id) pageCache.set(row.meta_page_id, row.id);
+  }
+  console.log(`[brand-spy] pre-loaded ${existingPages.length} known pages for "${domain}"`);
+
   // Semaphore: cap Phase 2 at PHASE2_CONCURRENCY concurrent page scrapes
   let activeP2 = 0;
   const waiters = [];
@@ -429,6 +442,10 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
       }
     }
   }
+
+  // Launch Phase 2 for all pre-loaded known pages immediately (in parallel with Phase 1).
+  // New pages discovered by Phase 1 are also launched via launchNewPages() below.
+  launchNewPages();
 
   // Phase 1a: active-only pass — captures every currently running ad regardless of
   // impression rank. This is the critical pass for matching Meta's "active ads" count.
