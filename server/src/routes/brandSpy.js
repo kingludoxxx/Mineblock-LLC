@@ -155,21 +155,6 @@ router.get('/credits', async (_req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// GET /debug-page-count?pageId=...&status=ACTIVE — count ads for a page directly
-router.get('/debug-page-count', async (req, res, next) => {
-  try {
-    const sc = getScrapeCreatorsClient();
-    const pageId = String(req.query.pageId || '157248587465107'); // USA Ready Families
-    const status = String(req.query.status || 'ACTIVE');
-    let total = 0, pages = 0;
-    for await (const batch of sc.iterateCompanyAds({ pageId, status, country: 'ALL', maxPages: 50 })) {
-      total += batch.length;
-      pages += 1;
-    }
-    res.json({ pageId, status, total, pages });
-  } catch (err) { next(err); }
-});
-
 router.use((err, _req, res, _next) => {
   console.error('[brand-spy]', err);
   res.status(500).json({ error: err.message || 'Internal error' });

@@ -402,9 +402,17 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
   async function runPhase2Page(metaPageId) {
     await acquireP2();
     try {
-      for await (const batch of sc.iterateCompanyAds({ pageId: metaPageId, status: 'ALL', country: 'ALL', maxPages: 20 })) {
+      // Two passes: ACTIVE first (ensures all currently running ads are captured with
+      // correct is_active=true even if ALL-pass paginates past them), then ALL for
+      // historical/inactive ads. maxPages:100 handles large pages like USA Ready Families
+      // which has 291 active across 28 pages — the old cap of 20 cut off ~80 active ads.
+      for await (const batch of sc.iterateCompanyAds({ pageId: metaPageId, status: 'ACTIVE', country: 'ALL', maxPages: 100 })) {
         creditsUsed += 1;
-        // Pass crossDomains so Phase 2 ads' link_url domains are collected
+        const { d, u } = await upsertAdBatch(brandId, batch, pageCache, metaPageId, crossDomains);
+        discovered += d; updated += u;
+      }
+      for await (const batch of sc.iterateCompanyAds({ pageId: metaPageId, status: 'ALL', country: 'ALL', maxPages: 100 })) {
+        creditsUsed += 1;
         const { d, u } = await upsertAdBatch(brandId, batch, pageCache, metaPageId, crossDomains);
         discovered += d; updated += u;
       }
