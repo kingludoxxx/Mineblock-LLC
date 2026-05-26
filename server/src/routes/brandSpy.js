@@ -1,11 +1,10 @@
 /**
  * Brand Spy proxy route
  * Forwards all /api/v1/brand-spy/* requests to the brand-spy-api service.
- * This keeps the frontend talking to a single origin (the dashboard server)
- * and avoids CORS issues.
+ * Keeps the frontend on a single origin — no CORS issues.
+ * Uses Node 18+ native fetch (no extra dependency needed).
  */
 import express from 'express';
-import fetch from 'node-fetch';
 
 const router = express.Router();
 
