@@ -211,17 +211,12 @@ function BrandRow({ brand, onOpen, onScrape, onDelete }) {
 
   return (
     <div className="flex items-center gap-3 px-4 py-3 bg-bg-card border border-border-subtle rounded-xl hover:border-border-default transition-colors group">
-      {/* Avatar: favicon over letter fallback */}
+      {/* Avatar: Clearbit logo → Google favicon → letter fallback */}
       <div className="relative w-9 h-9 rounded-lg bg-bg-elevated border border-border-default flex items-center justify-center shrink-0 overflow-hidden">
         <span className="text-xs font-bold text-text-muted select-none">
           {brand.domain.charAt(0).toUpperCase()}
         </span>
-        <img
-          src={`https://www.google.com/s2/favicons?domain=${brand.domain}&sz=64`}
-          alt=""
-          className="absolute inset-0 w-full h-full object-contain p-1.5"
-          onError={e => { e.target.style.display = 'none'; }}
-        />
+        <BrandLogo domain={brand.domain} />
         <span className={`absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full ring-2 ring-bg-card ${
           brand.status === 'ACTIVE' ? 'bg-emerald-400' :
           brand.status === 'NOISY' ? 'bg-amber-400' : 'bg-zinc-600'
@@ -299,6 +294,28 @@ function BrandRow({ brand, onOpen, onScrape, onDelete }) {
         )}
       </div>
     </div>
+  );
+}
+
+function BrandLogo({ domain }) {
+  const [src, setSrc] = useState(`https://logo.clearbit.com/${domain}`);
+  const [failed, setFailed] = useState(false);
+
+  if (failed) return null;
+
+  return (
+    <img
+      src={src}
+      alt=""
+      className="absolute inset-0 w-full h-full object-contain p-1"
+      onError={() => {
+        if (src.includes('clearbit')) {
+          setSrc(`https://www.google.com/s2/favicons?domain=${domain}&sz=64`);
+        } else {
+          setFailed(true);
+        }
+      }}
+    />
   );
 }
 
