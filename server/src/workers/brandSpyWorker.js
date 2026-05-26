@@ -364,7 +364,7 @@ async function upsertAdBatch(brandId, ads, pageCache, pageIdFallback = null, cro
          collation_id, collation_count, raw_snapshot
        ) VALUES ${placeholders}
        ON CONFLICT (brand_id, ad_archive_id) DO UPDATE SET
-         is_active         = EXCLUDED.is_active,
+         is_active         = (brand_spy.ads.is_active OR EXCLUDED.is_active),
          end_date          = EXCLUDED.end_date,
          total_active_time = EXCLUDED.total_active_time,
          active_days       = EXCLUDED.active_days,
