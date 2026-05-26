@@ -155,16 +155,6 @@ router.get('/credits', async (_req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// GET /debug-company-search?q=... — temporary diagnostic endpoint
-router.get('/debug-company-search', async (req, res, next) => {
-  try {
-    const sc = getScrapeCreatorsClient();
-    const q = String(req.query.q || 'dailynationalnews');
-    const result = await sc.searchCompanies(q);
-    res.json({ query: q, rawResult: result });
-  } catch (err) { next(err); }
-});
-
 router.use((err, _req, res, _next) => {
   console.error('[brand-spy]', err);
   res.status(500).json({ error: err.message || 'Internal error' });

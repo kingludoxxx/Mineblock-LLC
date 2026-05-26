@@ -475,8 +475,9 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
         console.error(`[brand-spy] phase-3 company search failed for "${companyName}":`, err.message);
         continue;
       }
-      // Handle various response shapes from the API
-      const pages = result?.results ?? result?.data ?? result?.companies ?? [];
+      // Handle various response shapes from the API.
+      // The search/companies endpoint returns { searchResults: [...] } (same key as search/ads).
+      const pages = result?.searchResults ?? result?.results ?? result?.data ?? result?.companies ?? [];
       console.log(`[brand-spy] phase-3: "${companyName}" → ${pages.length} pages`);
       for (const page of pages.slice(0, 5)) { // cap at 5 per domain to avoid credit blowout
         const metaPageId = String(page.page_id ?? page.id ?? page.pageId ?? '');
