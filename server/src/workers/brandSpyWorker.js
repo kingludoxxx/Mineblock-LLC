@@ -478,10 +478,11 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
   }
   console.log(`[brand-spy] phase-1 done: ${discovered} new, ${updated} updated, ${pageCache.size} pages, ${creditsUsed} credits`);
 
-  // Flush counters so UI shows Phase 1 results while Phase 2 is still running
-  await onPhase1Done?.();
-
-  // Await all Phase 2 workers (already running concurrently since Phase 1)
+  // Await all Phase 2 workers (already running concurrently since Phase 1).
+  // NOTE: we intentionally do NOT flush counters here (removed onPhase1Done mid-scrape
+  // call) because the is_active reset at scrape-start zeros all ads — a mid-Phase-2
+  // recompute would write 0 or a partial count to the brands table, which the UI
+  // would then display as "0 active". Counters are flushed once at the very end.
   await Promise.all(p2Promises);
   console.log(`[brand-spy] phase-2 done: ${discovered} new, ${updated} updated, ${pageCache.size} pages, ${creditsUsed} credits`);
 
