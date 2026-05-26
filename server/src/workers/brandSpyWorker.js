@@ -290,74 +290,99 @@ async function upsertBrandPage(brandId, metaPageId, pageName, profilePic) {
   return rows[0].id;
 }
 
+async function upsertAdBatch(brandId, ads, pageCache, pageIdFallback = null) {
+  let discovered = 0;
+  let updated = 0;
+  await withTransaction(async (client) => {
+    for (const ad of ads) {
+      const metaPageId = String(ad.page_id ?? ad.meta_page_id ?? pageIdFallback ?? '');
+      const pageName   = ad.page_name ?? null;
+      const profilePic = ad.snapshot?.page_profile_picture_url ?? null;
+
+      let brandPageId = pageCache.get(metaPageId) ?? null;
+      if (metaPageId && !brandPageId) {
+        brandPageId = await upsertBrandPage(brandId, metaPageId, pageName, profilePic);
+        pageCache.set(metaPageId, brandPageId);
+      }
+
+      const startDate  = ad.start_date ? new Date(ad.start_date * 1000) : null;
+      const endDate    = ad.end_date   ? new Date(ad.end_date   * 1000) : null;
+      const activeDays = computeActiveDays(startDate, endDate, ad.is_active);
+
+      const res = await client.query(
+        `INSERT INTO brand_spy.ads (
+           brand_id, brand_page_id, ad_archive_id, meta_page_id,
+           is_active, start_date, end_date, total_active_time, active_days,
+           display_format, cta_text, cta_type, headline, body_text,
+           link_url, caption, publisher_platforms,
+           collation_id, collation_count, raw_snapshot
+         ) VALUES (
+           $1, $2, $3, $4,
+           $5, $6, $7, $8, $9,
+           $10, $11, $12, $13, $14,
+           $15, $16, $17,
+           $18, $19, $20
+         )
+         ON CONFLICT (brand_id, ad_archive_id) DO UPDATE SET
+           is_active         = EXCLUDED.is_active,
+           end_date          = EXCLUDED.end_date,
+           total_active_time = EXCLUDED.total_active_time,
+           active_days       = EXCLUDED.active_days,
+           last_seen_at      = NOW(),
+           raw_snapshot      = EXCLUDED.raw_snapshot
+         RETURNING (xmax = 0) AS inserted`,
+        [
+          brandId, brandPageId, ad.ad_archive_id, metaPageId,
+          ad.is_active ?? false, startDate, endDate, ad.total_active_time ?? null, activeDays,
+          ad.snapshot?.display_format ?? null,
+          ad.snapshot?.cta_text ?? null,
+          ad.snapshot?.cta_type ?? null,
+          ad.snapshot?.title ?? null,
+          ad.snapshot?.body?.text ?? null,
+          ad.snapshot?.link_url ?? null,
+          ad.snapshot?.caption ?? null,
+          ad.publisher_platform ?? [],
+          ad.collation_id ?? null,
+          ad.collation_count ?? null,
+          ad.snapshot ?? null,
+        ],
+      );
+      if (res.rows[0]?.inserted) discovered += 1;
+      else updated += 1;
+    }
+  });
+  return { d: discovered, u: updated };
+}
+
 async function scrapeAdsByDomain(brandId, domain, sc) {
   let discovered = 0;
   let updated = 0;
   let creditsUsed = 0;
   const pageCache = new Map(); // metaPageId → brandPageId (UUID)
 
-  for await (const batch of sc.iterateAdsByDomain({ domain, status: 'ALL' })) {
+  // Phase 1: keyword search — catches all subdomains (try.domain.com, shop.domain.com etc.)
+  console.log(`[brand-spy] phase-1: keyword search for "${domain}" (US)`);
+  for await (const batch of sc.iterateAdsByDomain({ domain, status: 'ALL', country: 'US' })) {
     creditsUsed += 1;
-
-    await withTransaction(async (client) => {
-      for (const ad of batch) {
-        const metaPageId = String(ad.page_id ?? ad.meta_page_id ?? '');
-        const pageName   = ad.page_name ?? null;
-        const profilePic = ad.snapshot?.page_profile_picture_url ?? null;
-
-        let brandPageId = pageCache.get(metaPageId) ?? null;
-        if (metaPageId && !brandPageId) {
-          brandPageId = await upsertBrandPage(brandId, metaPageId, pageName, profilePic);
-          pageCache.set(metaPageId, brandPageId);
-        }
-
-        const startDate  = ad.start_date ? new Date(ad.start_date * 1000) : null;
-        const endDate    = ad.end_date   ? new Date(ad.end_date   * 1000) : null;
-        const activeDays = computeActiveDays(startDate, endDate, ad.is_active);
-
-        const res = await client.query(
-          `INSERT INTO brand_spy.ads (
-             brand_id, brand_page_id, ad_archive_id, meta_page_id,
-             is_active, start_date, end_date, total_active_time, active_days,
-             display_format, cta_text, cta_type, headline, body_text,
-             link_url, caption, publisher_platforms,
-             collation_id, collation_count, raw_snapshot
-           ) VALUES (
-             $1, $2, $3, $4,
-             $5, $6, $7, $8, $9,
-             $10, $11, $12, $13, $14,
-             $15, $16, $17,
-             $18, $19, $20
-           )
-           ON CONFLICT (brand_id, ad_archive_id) DO UPDATE SET
-             is_active         = EXCLUDED.is_active,
-             end_date          = EXCLUDED.end_date,
-             total_active_time = EXCLUDED.total_active_time,
-             active_days       = EXCLUDED.active_days,
-             last_seen_at      = NOW(),
-             raw_snapshot      = EXCLUDED.raw_snapshot
-           RETURNING (xmax = 0) AS inserted`,
-          [
-            brandId, brandPageId, ad.ad_archive_id, metaPageId,
-            ad.is_active ?? false, startDate, endDate, ad.total_active_time ?? null, activeDays,
-            ad.snapshot?.display_format ?? null,
-            ad.snapshot?.cta_text ?? null,
-            ad.snapshot?.cta_type ?? null,
-            ad.snapshot?.title ?? null,
-            ad.snapshot?.body?.text ?? null,
-            ad.snapshot?.link_url ?? null,
-            ad.snapshot?.caption ?? null,
-            ad.publisher_platform ?? [],
-            ad.collation_id ?? null,
-            ad.collation_count ?? null,
-            ad.snapshot ?? null,
-          ],
-        );
-        if (res.rows[0]?.inserted) discovered += 1;
-        else updated += 1;
-      }
-    });
+    const { d, u } = await upsertAdBatch(brandId, batch, pageCache);
+    discovered += d;
+    updated += u;
   }
+  console.log(`[brand-spy] phase-1 done: ${discovered} new, ${updated} updated, ${pageCache.size} pages, ${creditsUsed} credits`);
+
+  // Phase 2: full per-page scrape — captures cross-domain ads (e.g. dailynationalnews)
+  // run by the same pages discovered in phase 1
+  const pageIds = [...pageCache.keys()].filter(Boolean);
+  console.log(`[brand-spy] phase-2: scraping ${pageIds.length} pages for cross-domain ads`);
+  for (const metaPageId of pageIds) {
+    for await (const batch of sc.iterateCompanyAds({ pageId: metaPageId, status: 'ALL', country: 'US', maxPages: 20 })) {
+      creditsUsed += 1;
+      const { d, u } = await upsertAdBatch(brandId, batch, pageCache, metaPageId);
+      discovered += d;
+      updated += u;
+    }
+  }
+  console.log(`[brand-spy] phase-2 done: total ${discovered} new, ${updated} updated, ${creditsUsed} credits`);
 
   return { discovered, updated, creditsUsed };
 }

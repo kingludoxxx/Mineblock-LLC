@@ -61,8 +61,8 @@ export class ScrapeCreatorsClient {
     do {
       const resp = await this._request('GET', '/facebook/adLibrary/search/ads', {
         query: domain,
-        search_type: 'keyword_exact_phrase',
-        country: country ?? 'ALL',
+        search_type: 'keyword_unordered',
+        country: country ?? 'US',
         status: status ?? 'ALL',
         sort_by: 'total_impressions',
         ...(cursor ? { cursor } : {}),
