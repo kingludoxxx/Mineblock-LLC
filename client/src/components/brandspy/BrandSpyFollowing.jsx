@@ -29,12 +29,13 @@ export default function BrandSpyFollowing({ apiBaseUrl, onBrandClick }) {
     totalAds: brands.reduce((s, b) => s + (b.totalAdsCount || 0), 0),
     activeAds: brands.reduce((s, b) => s + (b.activeAdsCount || 0), 0),
     totalPages: brands.reduce((s, b) => s + (b.pagesCount || 0), 0),
-    lastScraped: brands.map(b => b.lastScrapedAt).filter(Boolean).sort().reverse()[0],
   }), [brands]);
 
   const visible = useMemo(() => {
     const q = searchTerm.trim().toLowerCase();
-    const filtered = q ? brands.filter(b => b.domain.toLowerCase().includes(q) || b.displayName?.toLowerCase().includes(q)) : brands;
+    const filtered = q
+      ? brands.filter(b => b.domain.toLowerCase().includes(q) || b.displayName?.toLowerCase().includes(q))
+      : brands;
     return [...filtered].sort((a, b) => {
       if (sort === 'active_asc') return (a.activeAdsCount || 0) - (b.activeAdsCount || 0);
       if (sort === 'total_desc') return (b.totalAdsCount || 0) - (a.totalAdsCount || 0);
@@ -63,7 +64,6 @@ export default function BrandSpyFollowing({ apiBaseUrl, onBrandClick }) {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
       <div className="flex items-start justify-between">
         <div>
           <h1 className="text-xl font-bold text-text-primary">Brand Spy</h1>
@@ -89,12 +89,14 @@ export default function BrandSpyFollowing({ apiBaseUrl, onBrandClick }) {
         </div>
       </div>
 
-      {/* Follow modal */}
       {showFollowModal && (
-        <FollowPanel apiBaseUrl={apiBaseUrl} onClose={() => setShowFollowModal(false)} onAdded={() => { setShowFollowModal(false); fetchBrands(); }} />
+        <FollowPanel
+          apiBaseUrl={apiBaseUrl}
+          onClose={() => setShowFollowModal(false)}
+          onAdded={() => { setShowFollowModal(false); fetchBrands(); }}
+        />
       )}
 
-      {/* Search + sort */}
       {!showFollowModal && (
         <div className="flex items-center gap-3">
           <div className="relative flex-1 max-w-lg">
@@ -112,14 +114,13 @@ export default function BrandSpyFollowing({ apiBaseUrl, onBrandClick }) {
             onChange={e => setSort(e.target.value)}
             className="text-xs bg-bg-elevated border border-border-default rounded-lg px-2 py-2 text-text-muted focus:outline-none"
           >
-            <option value="active_desc">&darr; Active ads</option>
-            <option value="active_asc">&uarr; Active ads</option>
-            <option value="total_desc">&darr; Total ads</option>
+            <option value="active_desc">↓ Active ads</option>
+            <option value="active_asc">↑ Active ads</option>
+            <option value="total_desc">↓ Total ads</option>
           </select>
         </div>
       )}
 
-      {/* Brand list */}
       {loading ? (
         <div className="text-text-faint text-sm py-12 text-center">Loading...</div>
       ) : error ? (
@@ -135,7 +136,7 @@ export default function BrandSpyFollowing({ apiBaseUrl, onBrandClick }) {
               key={brand.id}
               brand={brand}
               apiBaseUrl={apiBaseUrl}
-              onOpen={onBrandClick ? () => onBrandClick(brand.id) : undefined}
+              onOpen={onBrandClick ? () => onBrandClick(brand.id) : null}
               onScrape={() => handleScrapeOne(brand.id)}
               onDelete={() => handleDelete(brand.id)}
             />
@@ -150,6 +151,7 @@ function BrandRow({ brand, apiBaseUrl, onOpen, onScrape, onDelete }) {
   const [expanded, setExpanded] = useState(false);
   const [details, setDetails] = useState(null);
   const [loadingDetails, setLoadingDetails] = useState(false);
+  const [scraping, setScraping] = useState(false);
 
   const handleExpand = async () => {
     const next = !expanded;
@@ -164,6 +166,12 @@ function BrandRow({ brand, apiBaseUrl, onOpen, onScrape, onDelete }) {
     }
   };
 
+  const handleScrape = async () => {
+    setScraping(true);
+    try { await onScrape(); }
+    finally { setScraping(false); }
+  };
+
   const t = brand.tierBreakdown || {};
 
   return (
@@ -176,15 +184,20 @@ function BrandRow({ brand, apiBaseUrl, onOpen, onScrape, onDelete }) {
           {brand.status === 'NOISY' && <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-amber-400 rounded-full ring-2 ring-bg-card" />}
         </div>
 
-        {/* Domain + pages */}
+        {/* Domain */}
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-1.5">
-            <button
-              onClick={onOpen}
-              className="text-sm font-medium text-text-primary hover:text-accent transition-colors truncate cursor-pointer"
-            >
-              {brand.domain}
-            </button>
+            {/* FIX: only make it a button if onOpen is provided, otherwise just text */}
+            {onOpen ? (
+              <button
+                onClick={onOpen}
+                className="text-sm font-medium text-text-primary hover:text-accent transition-colors truncate cursor-pointer"
+              >
+                {brand.domain}
+              </button>
+            ) : (
+              <span className="text-sm font-medium text-text-primary truncate">{brand.domain}</span>
+            )}
             <a href={`https://${brand.domain}`} target="_blank" rel="noreferrer" className="text-text-faint hover:text-text-muted" onClick={e => e.stopPropagation()}>
               <span className="text-xs">&#8599;</span>
             </a>
@@ -192,13 +205,27 @@ function BrandRow({ brand, apiBaseUrl, onOpen, onScrape, onDelete }) {
           <div className="text-xs text-text-faint">{brand.pagesCount} pages</div>
         </div>
 
-        {/* Tier chips */}
+        {/* Tier chips - FIX: use actual unicode, not HTML entities in JS expressions */}
         <div className="flex items-center gap-1 text-[10px] font-medium">
-          {t.banger > 0 && <span className="px-1.5 py-0.5 rounded border bg-rose-500/10 text-rose-400 border-rose-500/20">&#128293; {t.banger}</span>}
-          {t.champ !== null && <span className="px-1.5 py-0.5 rounded border bg-amber-500/10 text-amber-400 border-amber-500/20">&#127942; {t.champ}</span>}
-          {t.a !== null && <span className="px-1.5 py-0.5 rounded border bg-emerald-500/10 text-emerald-400 border-emerald-500/20">A {t.a}</span>}
-          {t.b !== null && <span className="px-1.5 py-0.5 rounded border bg-sky-500/10 text-sky-400 border-sky-500/20">B {t.b}</span>}
-          {t.c !== null && <span className="text-text-faint px-1">C {t.c}</span>}
+          {t.banger > 0 && (
+            <span className="px-1.5 py-0.5 rounded border bg-rose-500/10 text-rose-400 border-rose-500/20">
+              🔥 {t.banger}
+            </span>
+          )}
+          {t.champ !== null && t.champ !== undefined && (
+            <span className="px-1.5 py-0.5 rounded border bg-amber-500/10 text-amber-400 border-amber-500/20">
+              🏆 {t.champ}
+            </span>
+          )}
+          {t.a !== null && t.a !== undefined && (
+            <span className="px-1.5 py-0.5 rounded border bg-emerald-500/10 text-emerald-400 border-emerald-500/20">A {t.a}</span>
+          )}
+          {t.b !== null && t.b !== undefined && (
+            <span className="px-1.5 py-0.5 rounded border bg-sky-500/10 text-sky-400 border-sky-500/20">B {t.b}</span>
+          )}
+          {t.c !== null && t.c !== undefined && (
+            <span className="text-text-faint px-1">C {t.c}</span>
+          )}
         </div>
 
         {/* Counts */}
@@ -209,23 +236,39 @@ function BrandRow({ brand, apiBaseUrl, onOpen, onScrape, onDelete }) {
         </div>
 
         {/* Actions */}
-        <button onClick={e => { e.stopPropagation(); onScrape(); }} className="p-1.5 text-text-faint hover:text-text-primary transition-colors cursor-pointer" title="Refresh">
-          <span className="text-xs">&#8635;</span>
+        <button
+          onClick={e => { e.stopPropagation(); handleScrape(); }}
+          disabled={scraping}
+          className="p-1.5 text-text-faint hover:text-text-primary disabled:opacity-50 transition-colors cursor-pointer"
+          title="Refresh"
+        >
+          <span className={`text-xs inline-block ${scraping ? 'animate-spin' : ''}`}>&#8635;</span>
         </button>
-        <button onClick={e => { e.stopPropagation(); onDelete(); }} className="p-1.5 text-text-faint hover:text-red-400 transition-colors cursor-pointer" title="Stop tracking">
+        <button
+          onClick={e => { e.stopPropagation(); onDelete(); }}
+          className="p-1.5 text-text-faint hover:text-red-400 transition-colors cursor-pointer"
+          title="Stop tracking"
+        >
           <span className="text-xs">&#128465;</span>
         </button>
         {onOpen && (
-          <button onClick={e => { e.stopPropagation(); onOpen(); }} className="p-1.5 text-text-faint hover:text-text-primary transition-colors cursor-pointer" title="Open detail">
+          <button
+            onClick={e => { e.stopPropagation(); onOpen(); }}
+            className="p-1.5 text-text-faint hover:text-text-primary transition-colors cursor-pointer"
+            title="Open detail"
+          >
             <span className="text-xs">&#8250;</span>
           </button>
         )}
-        <button onClick={handleExpand} className="p-1.5 text-text-faint hover:text-text-primary transition-colors cursor-pointer" title={expanded ? 'Collapse' : 'Expand'}>
+        <button
+          onClick={handleExpand}
+          className="p-1.5 text-text-faint hover:text-text-primary transition-colors cursor-pointer"
+          title={expanded ? 'Collapse' : 'Expand'}
+        >
           <span className={`text-xs inline-block transition-transform ${expanded ? 'rotate-90' : ''}`}>&#8964;</span>
         </button>
       </div>
 
-      {/* Expanded body */}
       {expanded && (
         <div className="border-t border-border-subtle px-4 py-3">
           {loadingDetails ? (
@@ -255,8 +298,12 @@ function BrandRow({ brand, apiBaseUrl, onOpen, onScrape, onDelete }) {
                   <div className="space-y-1">
                     {details.domains.map(d => (
                       <div key={d.id} className="flex items-center text-xs">
-                        <a href={`https://${d.domain}`} target="_blank" rel="noreferrer" className="flex-1 text-amber-400/80 hover:text-amber-300">{d.domain}</a>
-                        {d.isPrimary && <span className="text-[9px] px-1.5 py-0.5 bg-bg-elevated text-text-faint rounded mr-2">primary</span>}
+                        <a href={`https://${d.domain}`} target="_blank" rel="noreferrer" className="flex-1 text-amber-400/80 hover:text-amber-300">
+                          {d.domain}
+                        </a>
+                        {d.isPrimary && (
+                          <span className="text-[9px] px-1.5 py-0.5 bg-bg-elevated text-text-faint rounded mr-2">primary</span>
+                        )}
                         <span className="text-text-faint">{fmtCount(d.totalAdsCount)}</span>
                         <span className="text-emerald-400 ml-2">&#9679; {fmtCount(d.activeAdsCount)}</span>
                       </div>
@@ -283,7 +330,7 @@ function FollowPanel({ apiBaseUrl, onClose, onAdded }) {
     setSubmitting(true);
     try {
       const body = mode === 'single'
-        ? { domain: value }
+        ? { domain: value.trim() }
         : { bulk: value.split(/[\n,]/).map(s => s.trim()).filter(Boolean).map(domain => ({ domain })) };
       const res = await fetch(`${apiBaseUrl}/brands`, {
         method: 'POST',
@@ -305,8 +352,13 @@ function FollowPanel({ apiBaseUrl, onClose, onAdded }) {
       <div className="flex items-center justify-between mb-3">
         <div className="flex bg-bg-card rounded-lg p-0.5 border border-border-subtle">
           {['single', 'bulk'].map(m => (
-            <button key={m} onClick={() => setMode(m)}
-              className={`px-3 py-1 text-xs rounded-md transition-colors cursor-pointer capitalize ${mode === m ? 'bg-accent text-white' : 'text-text-muted hover:text-text-primary'}`}>
+            <button
+              key={m}
+              onClick={() => setMode(m)}
+              className={`px-3 py-1 text-xs rounded-md transition-colors cursor-pointer capitalize ${
+                mode === m ? 'bg-accent text-white' : 'text-text-muted hover:text-text-primary'
+              }`}
+            >
               {m}
             </button>
           ))}
@@ -342,7 +394,9 @@ function FollowPanel({ apiBaseUrl, onClose, onAdded }) {
           {submitting ? 'Adding...' : 'Add'}
         </button>
       </div>
-      <p className="text-xs text-text-faint mt-2">Paste a domain, Facebook page URL, or Ad Library link. We'll find all associated pages automatically.</p>
+      <p className="text-xs text-text-faint mt-2">
+        Paste a domain, Facebook page URL, or Ad Library link. We&apos;ll find all associated pages automatically.
+      </p>
       {error && <p className="text-xs text-red-400 mt-2">{error}</p>}
     </div>
   );
