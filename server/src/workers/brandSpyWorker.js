@@ -256,7 +256,7 @@ export async function runBrandScrape({ brandId, trigger, client: scClient }) {
       [brand.id],
     );
 
-    return { jobId, status: 'DONE', pagesDiscovered, adsDiscovered: stats.discovered, adsUpdated: stats.updated, creditsUsed, phase3Debug: stats.phase3Debug };
+    return { jobId, status: 'DONE', pagesDiscovered, adsDiscovered: stats.discovered, adsUpdated: stats.updated, creditsUsed };
   } catch (err) {
     const message =
       err instanceof ScrapeCreatorsError ? `${err.code}: ${err.message}`
@@ -386,7 +386,6 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
   const p2Launched   = new Set(); // pages already queued for Phase 2
   const p2Promises   = [];
   const crossDomains = new Set(); // link_url domains seen in Phase 2 ads
-  const phase3Debug  = []; // temporary debug: what Phase 3 found
 
   // Semaphore: cap Phase 2 at PHASE2_CONCURRENCY concurrent page scrapes
   let activeP2 = 0;
@@ -479,15 +478,10 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
       // Handle various response shapes from the API.
       // The search/companies endpoint returns { searchResults: [...] } (same key as search/ads).
       const pages = result?.searchResults ?? result?.results ?? result?.data ?? result?.companies ?? [];
-      console.log(`[brand-spy] phase-3: "${companyName}" → ${pages.length} pages (result keys: ${Object.keys(result||{}).join(',')})`);
-      phase3Debug.push({ companyName, resultKeys: Object.keys(result || {}), pagesFound: pages.length });
+      console.log(`[brand-spy] phase-3: "${companyName}" → ${pages.length} pages`);
       for (const page of pages.slice(0, 5)) { // cap at 5 per domain to avoid credit blowout
         const metaPageId = String(page.page_id ?? page.id ?? page.pageId ?? '');
-        const alreadyLaunched = p2Launched.has(metaPageId);
-        console.log(`[brand-spy] phase-3:   page ${metaPageId} (${page.name ?? page.page_name}) alreadyLaunched=${alreadyLaunched}`);
-        phase3Debug[phase3Debug.length - 1].pages = phase3Debug[phase3Debug.length - 1].pages || [];
-        phase3Debug[phase3Debug.length - 1].pages.push({ metaPageId, name: page.name ?? page.page_name, alreadyLaunched });
-        if (!metaPageId || alreadyLaunched) continue;
+        if (!metaPageId || p2Launched.has(metaPageId)) continue;
         if (!pageCache.has(metaPageId)) {
           const pageName = page.page_name ?? page.name ?? page.pageName ?? null;
           const brandPageId = await upsertBrandPage(brandId, metaPageId, pageName, null);
@@ -502,7 +496,7 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
     console.log(`[brand-spy] phase-3 done: total ${discovered} new, ${updated} updated, ${creditsUsed} credits`);
   }
 
-  return { discovered, updated, creditsUsed, phase3Debug };
+  return { discovered, updated, creditsUsed };
 }
 
 function computeActiveDays(start, end, isActive) {
