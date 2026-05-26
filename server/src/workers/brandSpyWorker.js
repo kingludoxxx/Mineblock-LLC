@@ -294,7 +294,7 @@ async function upsertBrandPage(brandId, metaPageId, pageName, profilePic) {
   return rows[0].id;
 }
 
-const PHASE2_CONCURRENCY = 8;
+const PHASE2_CONCURRENCY = 5;
 const AD_COLS = 20;
 
 function extractDomain(url) {
