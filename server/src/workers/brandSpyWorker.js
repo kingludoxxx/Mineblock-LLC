@@ -388,6 +388,7 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
   const pageCache    = new Map(); // metaPageId → brandPageId (UUID)
   const p2Launched   = new Set(); // pages already queued for Phase 2
   const p2Promises   = [];
+  let p2Blocked      = false;     // set true on first Phase 2 failure to fast-skip remainder
   const crossDomains = new Set(); // link_url domains seen in Phase 2 ads
 
   // Reset all ads to is_active=false at the start of each scrape so the current
@@ -426,6 +427,14 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
   async function runPhase2Page(metaPageId) {
     await acquireP2();
     try {
+      // Fast-fail: if any previous Phase 2 page was rate-limited (e.g. HTTP 431 from
+      // ScrapeCreators /company/ads), skip remaining pages immediately without making
+      // any API calls. Without this, each queued page would time-out (~90s × 3 retries)
+      // before giving up, turning 27 pages into a ~40-minute stall.
+      if (p2Blocked) {
+        console.warn(`[brand-spy] phase-2 page ${metaPageId} skipped (endpoint blocked)`);
+        return;
+      }
       // Two passes per page:
       // ACTIVE/US: matches Meta Ad Library "United States + Active" filter — this is the
       //   source of truth for is_active. country:US ensures we don't count non-US campaigns.
@@ -444,8 +453,9 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
     } catch (p2Err) {
       // Phase 2 failures (e.g. 431 rate-limit from ScrapeCreators /company/ads endpoint)
       // are non-fatal. Phase 1 keyword searches already capture active ad counts accurately.
-      // Log the error but let the scrape complete with Phase 1 data intact.
-      console.warn(`[brand-spy] phase-2 page ${metaPageId} skipped: ${p2Err.message}`);
+      // Set p2Blocked so all remaining queued workers skip immediately rather than timing out.
+      p2Blocked = true;
+      console.warn(`[brand-spy] phase-2 blocked after page ${metaPageId}: ${p2Err.message} — remaining pages will be skipped`);
     } finally {
       releaseP2();
     }
