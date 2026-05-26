@@ -496,6 +496,40 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
   }
   console.log(`[brand-spy] phase-1 done: ${discovered} new, ${updated} updated, ${pageCache.size} pages, ${creditsUsed} credits`);
 
+  // Phase 1.5: company-name fallback when domain keyword search finds nothing.
+  // Some brands use landing-page prefixes (try-, get-, go-, use-, my-, app-) so their
+  // ads don't link directly to the tracked domain. Strip the prefix and search by company
+  // name to find their Facebook pages, then hand them off to Phase 2.
+  if (pageCache.size === 0) {
+    const domainWithoutTld = domain.replace(/\.[a-z]{2,}(\.[a-z]{2})?$/, ''); // 'try-forge.com' → 'try-forge'
+    const prefixStripped   = domainWithoutTld.replace(/^(try|get|go|use|my|app|join|start|meet|buy|shop|learn|discover|find|check|see|view|read|watch|play|run|do|sign|login|log|access|enter|open|visit|click|grab|claim|unlock|activate|register|book|order|launch|explore|try|beta|new|now|the|a|an)-/, ''); // 'try-forge' → 'forge'
+    const candidates = [...new Set([domainWithoutTld, prefixStripped].filter(c => c && c.length > 2))];
+    console.log(`[brand-spy] phase-1.5: no pages found via keyword — trying company-name search for [${candidates.join(', ')}]`);
+    for (const name of candidates) {
+      let result;
+      try {
+        result = await sc.searchCompanies(name);
+        creditsUsed += 1;
+      } catch (err) {
+        console.error(`[brand-spy] phase-1.5 company search failed for "${name}":`, err.message);
+        continue;
+      }
+      const pages = result?.searchResults ?? result?.results ?? result?.data ?? result?.companies ?? [];
+      console.log(`[brand-spy] phase-1.5: "${name}" → ${pages.length} pages found`);
+      for (const page of pages.slice(0, 5)) {
+        const metaPageId = String(page.page_id ?? page.id ?? page.pageId ?? '');
+        if (!metaPageId || p2Launched.has(metaPageId)) continue;
+        const pageName   = page.page_name ?? page.name ?? page.pageName ?? null;
+        const brandPageId = await upsertBrandPage(brandId, metaPageId, pageName, null);
+        pageCache.set(metaPageId, brandPageId);
+        p2Launched.add(metaPageId);
+        p2Promises.push(runPhase2Page(metaPageId));
+      }
+      if (pageCache.size > 0) break; // found pages — no need to try remaining candidates
+    }
+    console.log(`[brand-spy] phase-1.5 done: ${pageCache.size} pages found`);
+  }
+
   // Phase 1c: keyword searches for cross-domains already in DB.
   // Complements Phase 3 (company-name search) by finding FB pages that advertise
   // using cross-domain URLs regardless of their company name. Runs in parallel with
