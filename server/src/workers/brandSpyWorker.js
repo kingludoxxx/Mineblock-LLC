@@ -415,16 +415,17 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
   async function runPhase2Page(metaPageId) {
     await acquireP2();
     try {
-      // Two passes: ACTIVE first (ensures all currently running ads are captured with
-      // correct is_active=true even if ALL-pass paginates past them), then ALL for
-      // historical/inactive ads. maxPages:100 handles large pages like USA Ready Families
-      // which has 291 active across 28 pages — the old cap of 20 cut off ~80 active ads.
-      for await (const batch of sc.iterateCompanyAds({ pageId: metaPageId, status: 'ACTIVE', country: 'ALL', maxPages: 100 })) {
+      // Two passes per page:
+      // ACTIVE/US: matches Meta Ad Library "United States + Active" filter — this is the
+      //   source of truth for is_active. country:US ensures we don't count non-US campaigns.
+      // ALL/US: historical inactive ads, same US scope. OR-semantics in UPSERT means
+      //   is_active can only go true→true or false→true, never true→false.
+      for await (const batch of sc.iterateCompanyAds({ pageId: metaPageId, status: 'ACTIVE', country: 'US', maxPages: 100 })) {
         creditsUsed += 1;
         const { d, u } = await upsertAdBatch(brandId, batch, pageCache, metaPageId, crossDomains);
         discovered += d; updated += u;
       }
-      for await (const batch of sc.iterateCompanyAds({ pageId: metaPageId, status: 'ALL', country: 'ALL', maxPages: 100 })) {
+      for await (const batch of sc.iterateCompanyAds({ pageId: metaPageId, status: 'ALL', country: 'US', maxPages: 100 })) {
         creditsUsed += 1;
         const { d, u } = await upsertAdBatch(brandId, batch, pageCache, metaPageId, crossDomains);
         discovered += d; updated += u;
