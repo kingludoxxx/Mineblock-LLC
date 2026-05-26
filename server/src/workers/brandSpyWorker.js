@@ -441,6 +441,11 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
         const { d, u } = await upsertAdBatch(brandId, batch, pageCache, metaPageId, crossDomains);
         discovered += d; updated += u;
       }
+    } catch (p2Err) {
+      // Phase 2 failures (e.g. 431 rate-limit from ScrapeCreators /company/ads endpoint)
+      // are non-fatal. Phase 1 keyword searches already capture active ad counts accurately.
+      // Log the error but let the scrape complete with Phase 1 data intact.
+      console.warn(`[brand-spy] phase-2 page ${metaPageId} skipped: ${p2Err.message}`);
     } finally {
       releaseP2();
     }
