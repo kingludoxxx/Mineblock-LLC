@@ -387,6 +387,14 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
   const p2Promises   = [];
   const crossDomains = new Set(); // link_url domains seen in Phase 2 ads
 
+  // Reset all ads to is_active=false at the start of each scrape so the current
+  // run reflects Meta's live state. OR-semantics in UPSERT then let the ACTIVE
+  // passes re-mark the correct ones true within this run. Without the reset, ads
+  // marked active by a previous run (e.g. with country:ALL) would be permanently
+  // locked active by OR logic even after we switch to country:US.
+  await query(`UPDATE brand_spy.ads SET is_active = FALSE WHERE brand_id = $1`, [brandId]);
+  console.log(`[brand-spy] reset is_active=false for "${domain}"`);
+
   // Pre-populate pageCache from DB so Phase 2 covers ALL known pages, not just
   // those discovered by the current Phase 1 keyword search. Without this, brands
   // like thegreatproject.com whose keyword search only finds 1 page per run would
