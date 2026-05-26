@@ -440,9 +440,19 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
   console.log(`[brand-spy] phase-2 done: ${discovered} new, ${updated} updated, ${pageCache.size} pages, ${creditsUsed} credits`);
 
   // Phase 3: cross-domain expansion
-  // Phase 2 may have found ads linking to OTHER domains (e.g. dailynationalnews.com)
-  // run by pages that DON'T appear in Phase 1's domain search.
-  // Search those domains now to pull in their remaining ads + pages.
+  // Query the DB for all distinct link_url domains stored so far — this is more
+  // reliable than reading from the live API response, which may use different field
+  // names across endpoints (search/ads vs company/ads).
+  const { rows: domainRows } = await query(
+    `SELECT DISTINCT lower(split_part(regexp_replace(link_url, '^https?://(www\\.)?', ''), '/', 1)) AS d
+       FROM brand_spy.ads
+      WHERE brand_id = $1 AND link_url IS NOT NULL AND link_url <> ''`,
+    [brandId],
+  );
+  for (const { d } of domainRows) {
+    if (d) crossDomains.add(d);
+  }
+
   const toExpand = [...crossDomains].filter(d =>
     d &&
     d !== domain &&
