@@ -297,7 +297,14 @@ async function upsertBrandPage(brandId, metaPageId, pageName, profilePic) {
 const PHASE2_CONCURRENCY = 3;
 const AD_COLS = 20;
 
-async function upsertAdBatch(brandId, ads, pageCache, pageIdFallback = null) {
+function extractDomain(url) {
+  if (!url) return null;
+  const m = url.replace(/^https?:\/\/(www\.)?/, '').match(/^([^/?# ]+)/);
+  return m ? m[1].toLowerCase() : null;
+}
+
+// crossDomains: optional Set — collects link_url domains seen in this batch
+async function upsertAdBatch(brandId, ads, pageCache, pageIdFallback = null, crossDomains = null) {
   if (!ads.length) return { d: 0, u: 0 };
 
   // Resolve page IDs (may upsert new pages) before entering bulk transaction
@@ -306,6 +313,11 @@ async function upsertAdBatch(brandId, ads, pageCache, pageIdFallback = null) {
     const metaPageId = String(ad.page_id ?? ad.meta_page_id ?? pageIdFallback ?? '');
     const pageName   = ad.page_name ?? null;
     const profilePic = ad.snapshot?.page_profile_picture_url ?? null;
+
+    if (crossDomains) {
+      const d = extractDomain(ad.snapshot?.link_url ?? null);
+      if (d) crossDomains.add(d);
+    }
 
     let brandPageId = pageCache.get(metaPageId) ?? null;
     if (metaPageId && !brandPageId) {
@@ -370,9 +382,10 @@ async function upsertAdBatch(brandId, ads, pageCache, pageIdFallback = null) {
 
 async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
   let discovered = 0, updated = 0, creditsUsed = 0;
-  const pageCache  = new Map(); // metaPageId → brandPageId (UUID)
-  const p2Launched = new Set(); // pages already queued for Phase 2
-  const p2Promises = [];
+  const pageCache    = new Map(); // metaPageId → brandPageId (UUID)
+  const p2Launched   = new Set(); // pages already queued for Phase 2
+  const p2Promises   = [];
+  const crossDomains = new Set(); // link_url domains seen in Phase 2 ads
 
   // Semaphore: cap Phase 2 at PHASE2_CONCURRENCY concurrent page scrapes
   let activeP2 = 0;
@@ -391,7 +404,8 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
     try {
       for await (const batch of sc.iterateCompanyAds({ pageId: metaPageId, status: 'ALL', country: 'US', maxPages: 20 })) {
         creditsUsed += 1;
-        const { d, u } = await upsertAdBatch(brandId, batch, pageCache, metaPageId);
+        // Pass crossDomains so Phase 2 ads' link_url domains are collected
+        const { d, u } = await upsertAdBatch(brandId, batch, pageCache, metaPageId, crossDomains);
         discovered += d; updated += u;
       }
     } finally {
@@ -423,7 +437,32 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
 
   // Await all Phase 2 workers (already running concurrently since Phase 1)
   await Promise.all(p2Promises);
-  console.log(`[brand-spy] phase-2 done: total ${discovered} new, ${updated} updated, ${creditsUsed} credits`);
+  console.log(`[brand-spy] phase-2 done: ${discovered} new, ${updated} updated, ${pageCache.size} pages, ${creditsUsed} credits`);
+
+  // Phase 3: cross-domain expansion
+  // Phase 2 may have found ads linking to OTHER domains (e.g. dailynationalnews.com)
+  // run by pages that DON'T appear in Phase 1's domain search.
+  // Search those domains now to pull in their remaining ads + pages.
+  const toExpand = [...crossDomains].filter(d =>
+    d &&
+    d !== domain &&
+    !d.endsWith('.' + domain), // skip subdomains of primary already covered
+  );
+
+  if (toExpand.length > 0) {
+    console.log(`[brand-spy] phase-3: cross-domain expansion for [${toExpand.join(', ')}]`);
+    for (const xDomain of toExpand) {
+      for await (const batch of sc.iterateAdsByDomain({ domain: xDomain, status: 'ALL', country: 'US', maxPages: 5 })) {
+        creditsUsed += 1;
+        const { d, u } = await upsertAdBatch(brandId, batch, pageCache);
+        discovered += d; updated += u;
+        launchNewPages(); // any newly found pages get Phase 2 scraped too
+      }
+    }
+    // Await any Phase 2 workers kicked off by Phase 3
+    await Promise.all(p2Promises);
+    console.log(`[brand-spy] phase-3 done: total ${discovered} new, ${updated} updated, ${creditsUsed} credits`);
+  }
 
   return { discovered, updated, creditsUsed };
 }
