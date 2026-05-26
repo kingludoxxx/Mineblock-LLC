@@ -53,6 +53,27 @@ export class ScrapeCreatorsClient {
     } while (cursor && fetched < cap);
   }
 
+  async *iterateAdsByDomain({ domain, status, country, maxPages }) {
+    const cap = maxPages ?? 50;
+    let cursor = null;
+    let fetched = 0;
+
+    do {
+      const resp = await this._request('GET', '/facebook/adLibrary/search/ads', {
+        query: domain,
+        search_type: 'keyword_exact_phrase',
+        country: country ?? 'ALL',
+        status: status ?? 'ALL',
+        sort_by: 'total_impressions',
+        ...(cursor ? { cursor } : {}),
+      });
+
+      if (resp.searchResults?.length) yield resp.searchResults;
+      cursor = resp.cursor ?? null;
+      fetched += 1;
+    } while (cursor && fetched < cap);
+  }
+
   async getCreditBalance() {
     return this._request('GET', '/account/credit-balance');
   }

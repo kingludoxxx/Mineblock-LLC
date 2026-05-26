@@ -193,9 +193,6 @@ async function loadHistoricalRanks(client, brandId) {
 // Scrape worker
 // ---------------------------------------------------------------------------
 
-const CONFIDENCE_THRESHOLD = 0.4;
-const NOISY_THRESHOLD = 0.5;
-
 export async function runBrandScrape({ brandId, trigger, client: scClient }) {
   const sc = scClient ?? getScrapeCreatorsClient();
 
@@ -222,29 +219,14 @@ export async function runBrandScrape({ brandId, trigger, client: scClient }) {
   const onCredits = (delta) => { creditsUsed += delta; };
 
   try {
-    const existingPages = await query(
-      `SELECT meta_page_id FROM brand_spy.brand_pages WHERE brand_id = $1`,
+    const stats = await scrapeAdsByDomain(brand.id, brand.domain, sc);
+    onCredits(stats.creditsUsed);
+
+    const pagesRes = await query(
+      `SELECT COUNT(*) AS count FROM brand_spy.brand_pages WHERE brand_id = $1`,
       [brand.id],
     );
-
-    let pagesDiscovered = 0;
-    if (existingPages.rows.length === 0) {
-      pagesDiscovered = await discoverPages(brand, sc, onCredits);
-    }
-
-    const allPages = await query(
-      `SELECT id, meta_page_id FROM brand_spy.brand_pages WHERE brand_id = $1`,
-      [brand.id],
-    );
-
-    let adsDiscovered = 0;
-    let adsUpdated = 0;
-    for (const page of allPages.rows) {
-      const stats = await scrapeAdsForPage(brand.id, page.id, page.meta_page_id, sc);
-      adsDiscovered += stats.discovered;
-      adsUpdated += stats.updated;
-      onCredits(stats.creditsUsed);
-    }
+    const pagesDiscovered = parseInt(pagesRes.rows[0].count, 10);
 
     await recomputeBrandCounters(brand.id);
     await recomputeDomainRollup(brand.id);
@@ -261,7 +243,7 @@ export async function runBrandScrape({ brandId, trigger, client: scClient }) {
           SET status = 'DONE', finished_at = NOW(),
               pages_discovered = $2, ads_discovered = $3, ads_updated = $4, credits_used = $5
         WHERE id = $1`,
-      [jobId, pagesDiscovered, adsDiscovered, adsUpdated, creditsUsed],
+      [jobId, pagesDiscovered, stats.discovered, stats.updated, creditsUsed],
     );
     await query(
       `UPDATE brand_spy.brands
@@ -270,7 +252,7 @@ export async function runBrandScrape({ brandId, trigger, client: scClient }) {
       [brand.id],
     );
 
-    return { jobId, status: 'DONE', pagesDiscovered, adsDiscovered, adsUpdated, creditsUsed };
+    return { jobId, status: 'DONE', pagesDiscovered, adsDiscovered: stats.discovered, adsUpdated: stats.updated, creditsUsed };
   } catch (err) {
     const message =
       err instanceof ScrapeCreatorsError ? `${err.code}: ${err.message}`
@@ -291,144 +273,93 @@ export async function runBrandScrape({ brandId, trigger, client: scClient }) {
 }
 
 // ---------------------------------------------------------------------------
-// Page discovery
+// Domain-based ad scraping
 // ---------------------------------------------------------------------------
 
-async function discoverPages(brand, sc, onCredits) {
-  const queryTerm = brand.display_name ?? extractBrandLabel(brand.domain);
-  const resp = await sc.searchCompanies(queryTerm);
-  onCredits(1);
-
-  if (!resp.searchResults?.length) {
-    await query(`UPDATE brand_spy.brands SET status = 'NOISY' WHERE id = $1`, [brand.id]);
-    return 0;
-  }
-
-  let inserted = 0;
-  let bestConfidence = 0;
-
-  for (const result of resp.searchResults) {
-    const confidence = scoreMatch(queryTerm, result.name, result.page_alias);
-    if (confidence < CONFIDENCE_THRESHOLD) continue;
-    bestConfidence = Math.max(bestConfidence, confidence);
-
-    await query(
-      `INSERT INTO brand_spy.brand_pages (brand_id, meta_page_id, page_name, page_profile_pic, match_confidence)
-       VALUES ($1, $2, $3, $4, $5)
-       ON CONFLICT (brand_id, meta_page_id) DO UPDATE SET
-         page_name = EXCLUDED.page_name,
-         page_profile_pic = COALESCE(EXCLUDED.page_profile_pic, brand_spy.brand_pages.page_profile_pic),
-         match_confidence = GREATEST(brand_spy.brand_pages.match_confidence, EXCLUDED.match_confidence),
-         last_seen_at = NOW()`,
-      [brand.id, result.page_id, result.name, result.image_uri ?? null, confidence],
-    );
-    inserted += 1;
-  }
-
-  if (bestConfidence < NOISY_THRESHOLD) {
-    await query(`UPDATE brand_spy.brands SET status = 'NOISY' WHERE id = $1`, [brand.id]);
-  }
-  return inserted;
+async function upsertBrandPage(brandId, metaPageId, pageName, profilePic) {
+  const { rows } = await query(
+    `INSERT INTO brand_spy.brand_pages (brand_id, meta_page_id, page_name, page_profile_pic)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (brand_id, meta_page_id) DO UPDATE SET
+       page_name        = COALESCE(EXCLUDED.page_name, brand_spy.brand_pages.page_name),
+       page_profile_pic = COALESCE(EXCLUDED.page_profile_pic, brand_spy.brand_pages.page_profile_pic),
+       last_seen_at     = NOW()
+     RETURNING id`,
+    [brandId, metaPageId, pageName ?? metaPageId, profilePic ?? null],
+  );
+  return rows[0].id;
 }
 
-function extractBrandLabel(domain) {
-  const cleaned = domain.toLowerCase().replace(/^(https?:\/\/)?(www\.)?/, '');
-  const host = cleaned.split('/')[0];
-  const parts = host.split('.');
-  if (parts.length < 2) return host;
-  return parts[parts.length - 2];
-}
-
-function scoreMatch(q, name, alias) {
-  const qNorm = q.toLowerCase().replace(/[^a-z0-9]/g, '');
-  const candidates = [name, alias ?? '']
-    .filter(Boolean)
-    .map((s) => s.toLowerCase().replace(/[^a-z0-9]/g, ''));
-
-  let best = 0;
-  for (const c of candidates) {
-    if (!c) continue;
-    if (c === qNorm) return 1.0;
-    if (c.includes(qNorm) || qNorm.includes(c)) {
-      const ratio = Math.min(c.length, qNorm.length) / Math.max(c.length, qNorm.length);
-      best = Math.max(best, ratio);
-    }
-  }
-  return best;
-}
-
-// ---------------------------------------------------------------------------
-// Ad scraping
-// ---------------------------------------------------------------------------
-
-async function scrapeAdsForPage(brandId, brandPageId, metaPageId, sc) {
+async function scrapeAdsByDomain(brandId, domain, sc) {
   let discovered = 0;
   let updated = 0;
   let creditsUsed = 0;
+  const pageCache = new Map(); // metaPageId → brandPageId (UUID)
 
-  for await (const batch of sc.iterateCompanyAds({ pageId: metaPageId, status: 'ALL' })) {
+  for await (const batch of sc.iterateAdsByDomain({ domain, status: 'ALL' })) {
     creditsUsed += 1;
-    const result = await upsertAdsBatch(brandId, brandPageId, metaPageId, batch);
-    discovered += result.inserted;
-    updated += result.updated;
+
+    await withTransaction(async (client) => {
+      for (const ad of batch) {
+        const metaPageId = String(ad.page_id ?? ad.meta_page_id ?? '');
+        const pageName   = ad.page_name ?? null;
+        const profilePic = ad.snapshot?.page_profile_picture_url ?? null;
+
+        let brandPageId = pageCache.get(metaPageId) ?? null;
+        if (metaPageId && !brandPageId) {
+          brandPageId = await upsertBrandPage(brandId, metaPageId, pageName, profilePic);
+          pageCache.set(metaPageId, brandPageId);
+        }
+
+        const startDate  = ad.start_date ? new Date(ad.start_date * 1000) : null;
+        const endDate    = ad.end_date   ? new Date(ad.end_date   * 1000) : null;
+        const activeDays = computeActiveDays(startDate, endDate, ad.is_active);
+
+        const res = await client.query(
+          `INSERT INTO brand_spy.ads (
+             brand_id, brand_page_id, ad_archive_id, meta_page_id,
+             is_active, start_date, end_date, total_active_time, active_days,
+             display_format, cta_text, cta_type, headline, body_text,
+             link_url, caption, publisher_platforms,
+             collation_id, collation_count, raw_snapshot
+           ) VALUES (
+             $1, $2, $3, $4,
+             $5, $6, $7, $8, $9,
+             $10, $11, $12, $13, $14,
+             $15, $16, $17,
+             $18, $19, $20
+           )
+           ON CONFLICT (brand_id, ad_archive_id) DO UPDATE SET
+             is_active         = EXCLUDED.is_active,
+             end_date          = EXCLUDED.end_date,
+             total_active_time = EXCLUDED.total_active_time,
+             active_days       = EXCLUDED.active_days,
+             last_seen_at      = NOW(),
+             raw_snapshot      = EXCLUDED.raw_snapshot
+           RETURNING (xmax = 0) AS inserted`,
+          [
+            brandId, brandPageId, ad.ad_archive_id, metaPageId,
+            ad.is_active ?? false, startDate, endDate, ad.total_active_time ?? null, activeDays,
+            ad.snapshot?.display_format ?? null,
+            ad.snapshot?.cta_text ?? null,
+            ad.snapshot?.cta_type ?? null,
+            ad.snapshot?.title ?? null,
+            ad.snapshot?.body?.text ?? null,
+            ad.snapshot?.link_url ?? null,
+            ad.snapshot?.caption ?? null,
+            ad.publisher_platform ?? [],
+            ad.collation_id ?? null,
+            ad.collation_count ?? null,
+            ad.snapshot ?? null,
+          ],
+        );
+        if (res.rows[0]?.inserted) discovered += 1;
+        else updated += 1;
+      }
+    });
   }
+
   return { discovered, updated, creditsUsed };
-}
-
-async function upsertAdsBatch(brandId, brandPageId, metaPageId, ads) {
-  let inserted = 0;
-  let updated = 0;
-
-  await withTransaction(async (client) => {
-    for (const ad of ads) {
-      const startDate = ad.start_date ? new Date(ad.start_date * 1000) : null;
-      const endDate   = ad.end_date   ? new Date(ad.end_date   * 1000) : null;
-      const activeDays = computeActiveDays(startDate, endDate, ad.is_active);
-
-      const res = await client.query(
-        `INSERT INTO brand_spy.ads (
-           brand_id, brand_page_id, ad_archive_id, meta_page_id,
-           is_active, start_date, end_date, total_active_time, active_days,
-           display_format, cta_text, cta_type, headline, body_text,
-           link_url, caption, publisher_platforms,
-           collation_id, collation_count, raw_snapshot
-         ) VALUES (
-           $1, $2, $3, $4,
-           $5, $6, $7, $8, $9,
-           $10, $11, $12, $13, $14,
-           $15, $16, $17,
-           $18, $19, $20
-         )
-         ON CONFLICT (brand_id, ad_archive_id) DO UPDATE SET
-           is_active = EXCLUDED.is_active,
-           end_date = EXCLUDED.end_date,
-           total_active_time = EXCLUDED.total_active_time,
-           active_days = EXCLUDED.active_days,
-           last_seen_at = NOW(),
-           raw_snapshot = EXCLUDED.raw_snapshot
-         RETURNING (xmax = 0) AS inserted`,
-        [
-          brandId, brandPageId, ad.ad_archive_id, metaPageId,
-          ad.is_active, startDate, endDate, ad.total_active_time, activeDays,
-          ad.snapshot?.display_format ?? null,
-          ad.snapshot?.cta_text ?? null,
-          ad.snapshot?.cta_type ?? null,
-          ad.snapshot?.title ?? null,
-          ad.snapshot?.body?.text ?? null,
-          ad.snapshot?.link_url ?? null,
-          ad.snapshot?.caption ?? null,
-          ad.publisher_platform ?? [],
-          ad.collation_id,
-          ad.collation_count,
-          ad.snapshot ?? null,
-        ],
-      );
-      if (res.rows[0]?.inserted) inserted += 1;
-      else updated += 1;
-    }
-  });
-
-  return { inserted, updated };
 }
 
 function computeActiveDays(start, end, isActive) {
