@@ -117,7 +117,7 @@ export async function scoreBrand(brandId) {
 
       await client.query(
         `UPDATE brand_spy.ads SET
-           current_rank    = $2,
+           current_rank    = $2::integer,
            rank_3d         = $3,
            rank_7d         = $4,
            rank_21d        = $5,
@@ -125,7 +125,7 @@ export async function scoreBrand(brandId) {
            velocity_21d    = $7,
            pool_size       = $8,
            tier            = $9,
-           tier_score      = CASE WHEN $2 IS NULL THEN NULL ELSE ($8::numeric - $2 + 1) END,
+           tier_score      = CASE WHEN $2::integer IS NULL THEN NULL ELSE ($8::numeric - $2::numeric + 1) END,
            tier_updated_at = NOW()
          WHERE id = $1`,
         [r.id, r.rank, hist.d3, hist.d7, hist.d21, velocity.velocity7d, velocity.velocity21d, r.poolSize, r.tier],
@@ -172,10 +172,10 @@ async function loadHistoricalRanks(client, brandId) {
       `SELECT DISTINCT ON (ad_archive_id) ad_archive_id, rank
          FROM brand_spy.ad_rank_snapshots
         WHERE brand_id = $1
-          AND snapshot_at BETWEEN NOW() - ($3 || ' days')::INTERVAL
-                              AND NOW() - ($2 || ' days')::INTERVAL
+          AND snapshot_at BETWEEN NOW() - ($3::text || ' days')::INTERVAL
+                              AND NOW() - ($2::text || ' days')::INTERVAL
         ORDER BY ad_archive_id,
-                 ABS(EXTRACT(EPOCH FROM (NOW() - snapshot_at - ($2 || ' days')::INTERVAL)))`,
+                 ABS(EXTRACT(EPOCH FROM (NOW() - snapshot_at - ($2::text || ' days')::INTERVAL)))`,
       [brandId, w.centerDays.toString(), upper.toString()],
     );
     for (const row of rows) {
