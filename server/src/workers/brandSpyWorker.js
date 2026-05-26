@@ -402,7 +402,7 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
   async function runPhase2Page(metaPageId) {
     await acquireP2();
     try {
-      for await (const batch of sc.iterateCompanyAds({ pageId: metaPageId, status: 'ALL', country: 'US', maxPages: 20 })) {
+      for await (const batch of sc.iterateCompanyAds({ pageId: metaPageId, status: 'ALL', country: 'ALL', maxPages: 20 })) {
         creditsUsed += 1;
         // Pass crossDomains so Phase 2 ads' link_url domains are collected
         const { d, u } = await upsertAdBatch(brandId, batch, pageCache, metaPageId, crossDomains);
