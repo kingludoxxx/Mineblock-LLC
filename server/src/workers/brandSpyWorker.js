@@ -294,7 +294,10 @@ async function upsertBrandPage(brandId, metaPageId, pageName, profilePic) {
   return rows[0].id;
 }
 
-const PHASE2_CONCURRENCY = 5;
+// ScrapeCreators returns HTTP 431 when >1 concurrent request hits /company/ads
+// from the same API key. Keep Phase 2 strictly sequential (1 page at a time).
+// Phase 1 runs a separate connection concurrently — so max 2 in-flight at once.
+const PHASE2_CONCURRENCY = 1;
 const AD_COLS = 20;
 
 function extractDomain(url) {
