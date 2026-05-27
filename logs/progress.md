@@ -1,6 +1,14 @@
 # Progress Log
 
 ---
+TIMESTAMP: 2026-05-27 21:05
+TASK: Brand Spy — Inline video player + full audit (commit db58e82)
+BUILT: Replaced window.open() in AdCard with a full inline video player matching the Atria reference. Clicking play now plays the video directly inside the card thumbnail area without navigating away. New state: playing, paused, currentTime, duration, muted with a videoRef. Controls bar: progress range input, play/pause toggle, time display (0:00 / 0:00), volume mute/unmute, fullscreen button — all with stopPropagation so clicking controls doesn't open IntelDrawer. Format/tier badges hidden while playing to not obstruct controls. Autoplay via useEffect after playing state sets true. Imports added: Pause, Volume2, VolumeX, Maximize2 from lucide-react.
+TESTED: (1) Vite build clean — 2464 modules, 0 errors. (2) Full API audit — all 4 brands, all 4 sort modes, tier filter, time filter (7d/30d/all), page filter, pagination, intel endpoint, credits, 404 error handling, days=0 edge case. (3) All velocity columns populated across all 4 brands (r3/r7/r21/v7/v21 non-null). (4) Deploy live on srv-d6qavvf5gffc73em69n0 (commit db58e82). Known issue: norseorganics status=ERROR from deadlock during concurrent auto-scrape+running-earthbreeze overlap — data intact (active=1289), self-heals on next scrape.
+OUTPUT: 14/15 tests PASS. 1 known issue (deadlock / norseorganics ERROR status, pre-existing issue from concurrent scrape triggers). Inline video deployed.
+DECISIONS: Hid format/tier badges during playback to keep controls visible. Used native <video> with custom control overlay rather than a third-party player — zero deps. DECISION MADE.
+STATUS: COMPLETE
+---
 TIMESTAMP: 2026-05-27 20:40
 TASK: Brand Spy — Fix velocity columns (rank_3d/rank_7d/rank_21d/velocity_7d/velocity_21d) null across all brands
 BUILT: Root cause identified and fixed in two parts. (1) Window bounds bug (commit 7aa97f1): loadHistoricalRanks() windows had halfWidthDays < centerDays, so lower = center - halfWidth > 0. With all brands added today, all snapshots <24h old, nothing fell in the window (d3 required 1-5 day old, d7 3-11 days, d21 11-31 days). Fix: halfWidthDays = centerDays → lower = max(0, 0) = 0 for all windows, so the query matches any snapshot from 0-6 days ago (d3), 0-14 days (d7), 0-42 days (d21). (2) Deploy timing gap: the fix was committed at 20:11Z UTC but Render deploy took ~4 minutes. norseorganics (20:14Z), thegreatproject (19:23Z) scraped BEFORE fix was live; earthbreeze (20:18Z) scraped AFTER → only earthbreeze had velocity. Resolution: triggered manual rescrapes for norseorganics, try-forge, thegreatproject. All three completed DONE and velocity populated. Deployed and removed temporary debug endpoint (commit eb4fdee).
