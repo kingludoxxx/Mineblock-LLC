@@ -1,6 +1,16 @@
 # Progress Log
 
 ---
+TIMESTAMP: 2026-05-27 18:30
+TASK: Brand Spy — Three-bug fix arc to make tier scoring fully operational (commits 2667a5d + cb1b304, plus earlier 99d75ca)
+BUILT: Fixed three compounding bugs that prevented tier scoring from working on large brands like norseorganics.co (1289 active ads):
+  (1) NUMERIC(6,3) overflow — tier_score column max was 999.999 but tierScore = poolSize - rank + 1 = 1289 for top-ranked ad. Migration 045 widens column to INTEGER. Updated bulk UPDATE cast from ::numeric to ::integer in brandSpyWorker.js. (2) Deadlock — scrapeAllInBackground had CONCURRENCY=3; multiple brands' scoreBrand transactions deadlocked on shared B-tree index pages. Fixed by reducing CONCURRENCY to 1 (serial scraping) and adding 3-attempt deadlock retry with 2s/4s exponential backoff around scoreBrand call (error code 40P01). (3) Error overwrite — success-path final UPDATE SET last_scrape_error = NULL was clobbering any error scoreBrand had just written. Fixed in commit 99d75ca by tracking scoreBrandError variable and passing it into the final UPDATE.
+TESTED: norseorganics.co scrape completed DONE at 2026-05-27T18:18:30Z with 1289 active ads and full tier breakdown (banger=39 / champ=90 / a=194 / b=322 / c=322 / low=194 / test=128, total=1289 matching active count). lastScrapeError=null. All 4 brands verified: norseorganics.co DONE, try-forge.com DONE, thegreatproject.com DONE, earthbreeze.com RUNNING (in-progress scrape, previous tiers valid). Zero errors across all completed brands.
+OUTPUT: norseorganics.co: status=DONE active=1289 tiers={banger:39,champ:90,a:194,b:322,c:322,low:194,test:128} error=null. try-forge.com: status=DONE active=432 error=null tiers populated. thegreatproject.com: status=DONE active=313 error=null tiers populated. earthbreeze.com: status=RUNNING (scrape in progress), existing tiers valid.
+DECISIONS: CONCURRENCY reduced from 3 to 1 — conservative choice to eliminate inter-brand deadlocks entirely. Deadlock retry (3 attempts, 2s/4s backoff) kept as safety net for any future concurrent access. Both measures needed: CONCURRENCY=1 prevents inter-brand deadlocks, retry handles any edge case where two requests hit the same brand simultaneously.
+STATUS: COMPLETE
+
+---
 TIMESTAMP: 2026-05-27 05:10
 TASK: Brand Spy — Fix ACTIVE days column tracking (commits 7b9d4b5 + 4b16c52)
 BUILT: Exposed total_active_time (Facebook's own cumulative active-seconds field)
