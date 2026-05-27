@@ -425,9 +425,9 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center justify-between gap-1">
                           <p className="text-xs font-medium text-text-primary truncate">{pg.pageName}</p>
-                          <a href={`https://www.facebook.com/${pg.metaPageId ?? ''}`} target="_blank" rel="noreferrer"
+                          <a href={`https://www.facebook.com/ads/library/?active_status=all&ad_type=all&country=US&media_type=all&search_type=page&view_all_page_id=${pg.metaPageId ?? ''}`} target="_blank" rel="noreferrer"
                             onClick={(e) => e.stopPropagation()}
-                            className="opacity-0 group-hover:opacity-60 hover:!opacity-100 transition-opacity shrink-0">
+                            className="opacity-40 hover:opacity-100 transition-opacity shrink-0">
                             <ExternalLink className="w-3 h-3 text-text-faint" />
                           </a>
                         </div>
