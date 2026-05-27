@@ -1305,6 +1305,73 @@ router.post('/frame-rescue-stray-project/:strayProjectId', async (req, res) => {
   }
 });
 
+// Fee breakdown — reads from the whop_payment_fees table that the kpiSystem
+// cron populates (one row per Whop payment with whop/processing/other/lasso
+// fee splits already calculated). No auth so we can hit it directly.
+router.get('/fees-breakdown', async (req, res) => {
+  try {
+    // Three time windows: 7d, 30d, all-time
+    const windows = [
+      { name: 'last_7_days',  sql: "paid_at >= NOW() - INTERVAL '7 days'" },
+      { name: 'last_30_days', sql: "paid_at >= NOW() - INTERVAL '30 days'" },
+      { name: 'last_90_days', sql: "paid_at >= NOW() - INTERVAL '90 days'" },
+      { name: 'all_time',     sql: "1=1" },
+    ];
+    const summary = {};
+    for (const w of windows) {
+      const rows = await pgQuery(`
+        SELECT
+          COUNT(*)::int AS payments,
+          ROUND(COALESCE(SUM(payment_amount), 0)::numeric, 2) AS gross_revenue,
+          ROUND(COALESCE(SUM(total_fees),       0)::numeric, 2) AS total_fees,
+          ROUND(COALESCE(SUM(whop_fees),        0)::numeric, 2) AS whop_fees,
+          ROUND(COALESCE(SUM(processing_fees),  0)::numeric, 2) AS processing_fees,
+          ROUND(COALESCE(SUM(other_fees),       0)::numeric, 2) AS other_fees,
+          ROUND(COALESCE(SUM(lasso_fees),       0)::numeric, 2) AS lasso_fees,
+          TO_CHAR(MIN(paid_at AT TIME ZONE 'UTC'), 'YYYY-MM-DD') AS earliest,
+          TO_CHAR(MAX(paid_at AT TIME ZONE 'UTC'), 'YYYY-MM-DD') AS latest
+        FROM whop_payment_fees WHERE ${w.sql}
+      `);
+      const r = rows[0] || {};
+      const gross = parseFloat(r.gross_revenue || 0);
+      summary[w.name] = {
+        payments: r.payments || 0,
+        gross_revenue: gross,
+        total_fees: parseFloat(r.total_fees || 0),
+        effective_rate_pct: gross > 0 ? Math.round(parseFloat(r.total_fees) / gross * 10000) / 100 : 0,
+        breakdown: {
+          whop_fees:       parseFloat(r.whop_fees || 0),
+          processing_fees: parseFloat(r.processing_fees || 0),
+          other_fees:      parseFloat(r.other_fees || 0),
+          lasso_fees:      parseFloat(r.lasso_fees || 0),
+        },
+        date_range: { earliest: r.earliest, latest: r.latest },
+      };
+    }
+
+    // Fee type breakdown for all-time (parses fee_details JSON)
+    const detailRows = await pgQuery(`
+      SELECT fee_details FROM whop_payment_fees WHERE fee_details IS NOT NULL
+    `);
+    const byType = {};
+    for (const row of detailRows) {
+      const details = typeof row.fee_details === 'string' ? JSON.parse(row.fee_details) : (row.fee_details || []);
+      for (const fee of (details || [])) {
+        if (!byType[fee.type]) byType[fee.type] = { type: fee.type, name: fee.name, total: 0, count: 0 };
+        byType[fee.type].total += fee.amount || 0;
+        byType[fee.type].count++;
+      }
+    }
+    const fee_type_breakdown_all_time = Object.values(byType)
+      .map(f => ({ name: f.name, type: f.type, total: Math.round(f.total * 100) / 100, count: f.count }))
+      .sort((a, b) => b.total - a.total);
+
+    res.json({ summary, fee_type_breakdown_all_time });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // One-shot HubSpot owners list — used to find owner IDs for round-robin agents.
 // Returns id, email, firstName, lastName for every active owner.
 router.get('/hubspot-owners', async (req, res) => {
