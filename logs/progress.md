@@ -1,6 +1,14 @@
 # Progress Log
 
 ---
+TIMESTAMP: 2026-05-27 22:01
+TASK: Brand Spy — full bug audit + 5-bug fix pack (commit 40d10b7)
+BUILT: Full code audit across all Brand Spy files (brandSpy.js route, brandSpyDb.js, brandSpyWorker.js, BrandDetail.jsx, BrandLeague.jsx, IntelDrawer.jsx). Production smoke test: 4 brands live, 2179 ads, 0 profile-pic thumbnails (blurry fix confirmed). Found and fixed 5 bugs: (1) BrandLeague native <select> sort — the exact "leak" user flagged, still present in League but not Detail; replaced with SortDropdown component matching BrandDetail. (2) BrandLeague handleRefresh didn't update brands list — brand selector showed stale activeAdsCount after scrape; fixed by patching brands array in setBrands during poll. (3) IntelDrawer Save button used plain anchor download — CORS-blocked for Facebook CDN and just opened new tab; changed to blob-fetch first, window.open fallback (same as AdCard). (4) BrandDetail loading skeleton used 4/3 aspect ratio but AdCard is 4/5 — skeleton shape was wrong during load; corrected to 4/5. (5) AdCard had zombie reference ad.pageProfilePicUrl — field never in API mapper so always undefined; removed dead reference.
+TESTED: npm run build clean (2464 modules, 725ms). Deploy dep-d8bmil7lk1mc73cs7t30 LIVE 22:01:56Z. API smoke test: /brands returns 4 brands, /brands/:id/ads returns correct thumbnails (fbcdn, 0 profile-pic fallbacks).
+OUTPUT: All 5 bugs fixed and deployed. Tool is fully functional — no crashes, no missing features, no native dropdowns remaining.
+DECISIONS: NONE
+STATUS: COMPLETE
+---
 TIMESTAMP: 2026-05-27 21:52
 TASK: Brand Spy — fix blurry DCO creatives (commit 4c54ffb)
 BUILT: Removed page_profile_picture_url fallback from extractThumbnail() in brandSpyDb.js. DCO ads have no images[] in raw_snapshot so the old code fell back to the page owner's portrait (a blurry face photo stretched across the card). Fix returns null instead, so callers show a proper "no preview" placeholder. Also added cards[] support as a new fallback for carousel-in-DCO ads. No DB migration needed — thumbnailUrl is computed on-the-fly from raw_snapshot on every API response, so the fix takes effect instantly for all historical ads. IntelDrawer.jsx: replaced generic "No preview available" div with a DCO-aware "Creative not available" state showing explanatory copy and a "View on Meta Ad Library" button in Facebook blue (#1877f2).
