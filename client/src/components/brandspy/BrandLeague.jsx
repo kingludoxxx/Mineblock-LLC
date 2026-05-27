@@ -91,6 +91,14 @@ function fmtLaunch(iso) {
   });
 }
 
+// Live active-days: for still-running ads compute from today so the value
+// never goes stale between scrapes. Ended ads use the stored DB value.
+function liveActiveDays(ad) {
+  if (!ad.startDate) return ad.activeDays ?? null;
+  if (ad.isActive) return Math.floor((Date.now() - new Date(ad.startDate).getTime()) / 86400000);
+  return ad.activeDays ?? null;
+}
+
 function rankDisplay(rank, poolSize) {
   if (rank == null) return '—';
   if (!poolSize) return String(rank);
@@ -875,9 +883,9 @@ function AdTableRow({ ad, rowNum, onSelect, visibleCols }) {
       {/* ACTIVE */}
       {visibleCols.active && (
         <td className="px-2 py-2 text-center" style={{ width: 60 }}>
-          {ad.activeDays != null
-            ? <span className={`text-xs tabular-nums ${ad.activeDays >= 30 ? 'text-emerald-400 font-semibold' : 'text-text-primary'}`}>{ad.activeDays}d</span>
-            : <span className="text-text-faint text-xs">—</span>}
+          {(() => { const d = liveActiveDays(ad); return d != null
+            ? <span className={`text-xs tabular-nums ${d >= 30 ? 'text-emerald-400 font-semibold' : 'text-text-primary'}`}>{d}d</span>
+            : <span className="text-text-faint text-xs">—</span>; })()}
         </td>
       )}
 
@@ -900,14 +908,14 @@ function AdTableRow({ ad, rowNum, onSelect, visibleCols }) {
       {/* V7D */}
       {visibleCols.v7d && (
         <td className="px-2 py-2 text-center" style={{ width: 60 }}>
-          <VelocityCell value={ad.velocity7d} days={ad.activeDays} win={7} />
+          <VelocityCell value={ad.velocity7d} days={liveActiveDays(ad)} win={7} />
         </td>
       )}
 
       {/* V21D */}
       {visibleCols.v21d && (
         <td className="px-2 py-2 text-center" style={{ width: 60 }}>
-          <VelocityCell value={ad.velocity21d} days={ad.activeDays} win={21} />
+          <VelocityCell value={ad.velocity21d} days={liveActiveDays(ad)} win={21} />
         </td>
       )}
     </tr>

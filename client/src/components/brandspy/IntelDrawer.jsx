@@ -175,6 +175,12 @@ function RankHistoryCard({ label, value }) {
 // Main IntelDrawer
 // ---------------------------------------------------------------------------
 
+function liveActiveDays(ad) {
+  if (!ad.startDate) return ad.activeDays ?? null;
+  if (ad.isActive) return Math.floor((Date.now() - new Date(ad.startDate).getTime()) / 86400000);
+  return ad.activeDays ?? null;
+}
+
 export default function IntelDrawer({ ad, brand, onClose }) {
   // ESC to close
   useEffect(() => {
@@ -188,6 +194,7 @@ export default function IntelDrawer({ ad, brand, onClose }) {
   if (!ad) return null;
 
   const pages = brand?.pages ?? [];
+  const activeDays = liveActiveDays(ad);
   const quality = computeQuality(ad);
   const momentum = computeMomentum(ad.velocity7d, ad.velocity21d);
   const pct7d  = velocityPct(ad.velocity7d,  ad.currentRank);
@@ -259,8 +266,8 @@ export default function IntelDrawer({ ad, brand, onClose }) {
                     {ad.startDate && (
                       <> · Launched {new Date(ad.startDate).toISOString().split('T')[0]}</>
                     )}
-                    {ad.activeDays != null && (
-                      <> · <span className="text-emerald-400 font-medium">{ad.activeDays}d active</span></>
+                    {activeDays != null && (
+                      <> · <span className="text-emerald-400 font-medium">{activeDays}d active</span></>
                     )}
                   </p>
                 </div>
@@ -441,8 +448,8 @@ export default function IntelDrawer({ ad, brand, onClose }) {
 
                 {/* ACTIVE days */}
                 <SignalMetricCard label="Active">
-                  <p className={`text-2xl font-bold leading-none ${(ad.activeDays ?? 0) >= 30 ? 'text-emerald-400' : 'text-white'}`}>
-                    {ad.activeDays != null ? `${ad.activeDays}d` : '—'}
+                  <p className={`text-2xl font-bold leading-none ${(activeDays ?? 0) >= 30 ? 'text-emerald-400' : 'text-white'}`}>
+                    {activeDays != null ? `${activeDays}d` : '—'}
                   </p>
                 </SignalMetricCard>
               </div>
