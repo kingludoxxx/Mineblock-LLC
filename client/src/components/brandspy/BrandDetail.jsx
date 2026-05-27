@@ -859,6 +859,7 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
   // Overview-dashboard side data (brand-wide media mix + aggregation totals)
   const [formatCounts, setFormatCounts] = useState(null);
   const [aggCounts, setAggCounts]       = useState(null);
+  const [intelExpanded, setIntelExpanded] = useState(false);
   // Drawer
   const [selectedAd, setSelectedAd]     = useState(null);
 
@@ -1183,15 +1184,15 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
               />
             </div>
 
-            {/* Unified dashboard card — PestLab-style compact layout. */}
-            <div className="rounded-xl border border-border-subtle bg-bg-elevated px-4 py-3.5 space-y-3.5">
+            {/* Unified dashboard card — compact PestLab layout */}
+            <div className="rounded-xl border border-border-subtle bg-bg-elevated px-4 py-3 space-y-3">
               {/* Summary text */}
               {(() => {
                 const tf = TIME_FILTERS.find((f) => f.value === timeFilter);
                 const label = tf?.value === 'all' ? null : tf?.label;
                 return (
-                  <p className="text-[13px] text-text-muted leading-snug">
-                    <span className="text-xl font-bold text-text-primary tabular-nums">{total.toLocaleString()}</span>
+                  <p className="text-[12px] text-text-muted leading-snug">
+                    <span className="text-lg font-bold text-text-primary tabular-nums">{total.toLocaleString()}</span>
                     {' '}<span className="text-text-muted">ads</span>{' '}
                     {label
                       ? <>were launched in the <span className="text-text-primary font-medium">last {label}</span></>
@@ -1207,10 +1208,9 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
                 );
               })()}
 
-              {/* Two-column grid inside the same card */}
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                {/* LEFT — Media mix + 4 mini stat boxes */}
-                <div className="space-y-3">
+              {/* Left: media mix + 4 mini stat boxes — full width when intel collapsed */}
+              <div className={intelExpanded ? 'grid grid-cols-1 lg:grid-cols-2 gap-4' : ''}>
+                <div className="space-y-2.5">
                   <MediaMixBar counts={formatCounts} />
 
                   <div className="grid grid-cols-4 gap-1.5">
@@ -1234,11 +1234,26 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
                   </div>
                 </div>
 
-                {/* RIGHT — AI Brand Intel */}
-                <div className="lg:border-l lg:border-border-subtle/50 lg:pl-4">
-                  <IntelPanel intel={intel} intelLoading={intelLoading} intelError={intelError} onRetry={loadIntel} />
-                </div>
+                {/* Right: AI Brand Intel — only mounted when expanded */}
+                {intelExpanded && (
+                  <div className="lg:border-l lg:border-border-subtle/50 lg:pl-4">
+                    <IntelPanel intel={intel} intelLoading={intelLoading} intelError={intelError} onRetry={loadIntel} />
+                  </div>
+                )}
               </div>
+
+              {/* AI Intel trigger row — full width, click to expand/collapse */}
+              <button
+                onClick={() => setIntelExpanded((v) => !v)}
+                className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md border border-border-subtle bg-bg-card hover:bg-bg-hover hover:border-white/15 transition-colors text-left group">
+                <Sparkles className="w-3 h-3 text-zinc-500 shrink-0" />
+                <span className="text-[11px] font-semibold text-text-primary">AI Brand Intel</span>
+                <span className="text-[9px] text-text-faint">via Claude Haiku</span>
+                <span className="text-[10px] text-text-faint ml-auto">
+                  {intelLoading ? 'Analyzing…' : intelExpanded ? 'Hide' : 'Expand'}
+                </span>
+                <ChevronDown className={`w-3.5 h-3.5 text-text-faint transition-transform ${intelExpanded ? 'rotate-180' : ''}`} />
+              </button>
             </div>
 
             {/* Count + sort — "1421 Ads" header above grid */}
