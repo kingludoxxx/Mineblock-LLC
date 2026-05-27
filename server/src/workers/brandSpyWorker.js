@@ -326,9 +326,17 @@ export async function runBrandScrape({ brandId, trigger, client: scClient }) {
     await recomputePageRollup(brand.id);
 
     try {
+      console.log(`[brand-spy] scoreBrand starting for ${brand.id} (${brand.domain})`);
       await scoreBrand(brand.id);
+      console.log(`[brand-spy] scoreBrand done for ${brand.id}`);
     } catch (scoreErr) {
-      console.error(`[brand-spy] tier scoring failed for ${brand.id}:`, scoreErr);
+      console.error(`[brand-spy] scoreBrand FAILED for ${brand.id}:`, scoreErr?.message, scoreErr?.stack);
+      // Surface the scoring error on the brand so it's visible without logs access.
+      // Stored temporarily in last_scrape_error — overwritten on next successful score.
+      await query(
+        `UPDATE brand_spy.brands SET last_scrape_error = $2 WHERE id = $1`,
+        [brand.id, `scoreBrand: ${scoreErr?.message ?? String(scoreErr)}`],
+      ).catch(() => {});
     }
 
     await query(
