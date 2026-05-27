@@ -12,6 +12,7 @@ import {
   listAds,
   getAdDetail,
   getAdTierCounts,
+  getAdFormatCounts,
   getBrandAggregations,
 } from '../db/brandSpyDb.js';
 import { runBrandScrape, scrapeAllInBackground, recoverStuckScrapes } from '../workers/brandSpyWorker.js';
@@ -82,6 +83,14 @@ router.get('/brands/:id/ads', async (req, res, next) => {
 router.get('/brands/:id/tier-counts', async (req, res, next) => {
   try {
     const counts = await getAdTierCounts(req.params.id);
+    res.json({ counts });
+  } catch (err) { next(err); }
+});
+
+// GET /brands/:id/format-counts — brand-wide media-mix counts
+router.get('/brands/:id/format-counts', async (req, res, next) => {
+  try {
+    const counts = await getAdFormatCounts(req.params.id);
     res.json({ counts });
   } catch (err) { next(err); }
 });

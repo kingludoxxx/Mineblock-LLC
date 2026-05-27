@@ -60,13 +60,17 @@ const TABS = [
   { id: 'landing',       label: 'Landing Pages' },
 ];
 
+// All intel pills are rendered in a single neutral gray. Per-category colors
+// were noisy and made the panel hard to scan; only the icon distinguishes
+// each row now.
+const INTEL_PILL_CLASS = 'bg-white/[0.04] text-text-muted border-white/[0.08]';
 const INTEL_CATS = [
-  { key: 'personas',  label: 'Personas',  color: 'bg-violet-500/15 text-violet-300 border-violet-500/25' },
-  { key: 'adAngles',  label: 'Ad Angles', color: 'bg-blue-500/15 text-blue-300 border-blue-500/25' },
-  { key: 'usps',      label: 'USPs',      color: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/25' },
-  { key: 'desires',   label: 'Desires',   color: 'bg-amber-500/15 text-amber-300 border-amber-500/25' },
-  { key: 'emotions',  label: 'Emotions',  color: 'bg-rose-500/15 text-rose-300 border-rose-500/25' },
-  { key: 'themes',    label: 'Themes',    color: 'bg-cyan-500/15 text-cyan-300 border-cyan-500/25' },
+  { key: 'personas',  label: 'Personas',  icon: '👤' },
+  { key: 'adAngles',  label: 'Ad angles', icon: '🎯' },
+  { key: 'usps',      label: 'USPs',      icon: '🚀' },
+  { key: 'desires',   label: 'Desires',   icon: '🔥' },
+  { key: 'emotions',  label: 'Emotions',  icon: '😀' },
+  { key: 'themes',    label: 'Themes',    icon: '🏷️' },
 ];
 
 const ALL_COLUMNS = [
@@ -537,46 +541,59 @@ function AdCard({ ad, brand, onOpenIntel }) {
 // MediaMixBar
 // ---------------------------------------------------------------------------
 
-function MediaMixBar({ ads }) {
-  const total    = ads.length;
-  if (!total) return null;
-  const videos   = ads.filter((a) => classifyAdFormat(a) === 'VIDEO').length;
-  const images   = ads.filter((a) => classifyAdFormat(a) === 'IMAGE').length;
-  const carousels = ads.filter((a) => classifyAdFormat(a) === 'CAROUSEL').length;
-  const vPct     = Math.round((videos   / total) * 100);
-  const iPct     = Math.round((images   / total) * 100);
-  const cPct     = Math.round((carousels / total) * 100);
+// counts shape: { VIDEO, IMAGE, CAROUSEL, OTHER, TOTAL }
+function MediaMixBar({ counts }) {
+  if (!counts || !counts.TOTAL) {
+    return (
+      <div className="space-y-2">
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] uppercase tracking-wider text-text-faint">Media mix</span>
+          <span className="text-[11px] text-text-faint ml-auto">Loading…</span>
+        </div>
+        <div className="h-2 rounded-full bg-bg-card animate-pulse" />
+      </div>
+    );
+  }
+  const total = counts.TOTAL;
+  const videos = counts.VIDEO;
+  const images = counts.IMAGE;
+  const carousels = counts.CAROUSEL;
+  const vPct = total ? (videos / total) * 100   : 0;
+  const iPct = total ? (images / total) * 100   : 0;
+  const cPct = total ? (carousels / total) * 100 : 0;
 
   return (
-    <div className="space-y-2">
-      <div className="flex items-center gap-4 flex-wrap">
-        <span className="text-[10px] uppercase tracking-wider text-text-faint">Media Mix</span>
-        <div className="flex items-center gap-1.5">
-          <span className="w-2 h-2 rounded-full bg-purple-400 shrink-0" />
-          <span className="text-[11px] text-text-muted">
-            <span className="text-white font-semibold">{videos}</span> Videos ({vPct}%)
-          </span>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <span className="w-2 h-2 rounded-full bg-sky-400 shrink-0" />
-          <span className="text-[11px] text-text-muted">
-            <span className="text-white font-semibold">{images}</span> Images ({iPct}%)
-          </span>
-        </div>
-        {carousels > 0 && (
-          <div className="flex items-center gap-1.5">
-            <span className="w-2 h-2 rounded-full bg-amber-400 shrink-0" />
-            <span className="text-[11px] text-text-muted">
-              <span className="text-white font-semibold">{carousels}</span> Carousels ({cPct}%)
-            </span>
-          </div>
-        )}
-        <span className="text-[11px] text-text-faint ml-auto">{total.toLocaleString()} ads</span>
+    <div className="space-y-2.5">
+      <div className="flex items-center gap-2">
+        <span className="text-[11px] uppercase tracking-wider text-text-faint font-medium">Media mix</span>
+        <span className="text-[11px] text-text-faint ml-auto tabular-nums">{total.toLocaleString()} ads</span>
       </div>
       <div className="h-2 rounded-full bg-bg-card flex overflow-hidden gap-px">
-        {vPct > 0  && <div className="h-full bg-purple-400/60 transition-all" style={{ width: `${vPct}%` }} />}
-        {iPct > 0  && <div className="h-full bg-sky-400/60 transition-all"    style={{ width: `${iPct}%` }} />}
-        {cPct > 0  && <div className="h-full bg-amber-400/60 transition-all"  style={{ width: `${cPct}%` }} />}
+        {vPct > 0 && <div className="h-full bg-emerald-400/70 transition-all" style={{ width: `${vPct}%` }} />}
+        {iPct > 0 && <div className="h-full bg-sky-400/70 transition-all"    style={{ width: `${iPct}%` }} />}
+        {cPct > 0 && <div className="h-full bg-amber-400/70 transition-all"  style={{ width: `${cPct}%` }} />}
+      </div>
+      <div className="space-y-1.5 pt-1">
+        <div className="flex items-center text-[12px]">
+          <span className="w-2 h-2 rounded-full bg-emerald-400 shrink-0 mr-2" />
+          <span className="text-text-muted">Video</span>
+          <span className="ml-auto tabular-nums text-text-faint">{videos.toLocaleString()} ads</span>
+          <span className="ml-3 text-white font-semibold tabular-nums w-12 text-right">{vPct.toFixed(1)}%</span>
+        </div>
+        <div className="flex items-center text-[12px]">
+          <span className="w-2 h-2 rounded-full bg-sky-400 shrink-0 mr-2" />
+          <span className="text-text-muted">Image</span>
+          <span className="ml-auto tabular-nums text-text-faint">{images.toLocaleString()} ads</span>
+          <span className="ml-3 text-white font-semibold tabular-nums w-12 text-right">{iPct.toFixed(1)}%</span>
+        </div>
+        {carousels > 0 && (
+          <div className="flex items-center text-[12px]">
+            <span className="w-2 h-2 rounded-full bg-amber-400 shrink-0 mr-2" />
+            <span className="text-text-muted">Carousel</span>
+            <span className="ml-auto tabular-nums text-text-faint">{carousels.toLocaleString()} ads</span>
+            <span className="ml-3 text-white font-semibold tabular-nums w-12 text-right">{cPct.toFixed(1)}%</span>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -587,38 +604,50 @@ function MediaMixBar({ ads }) {
 // ---------------------------------------------------------------------------
 
 function IntelPanel({ intel, intelLoading, intelError, onRetry }) {
+  const headerNode = (
+    <div className="flex items-center gap-2 mb-3">
+      <Sparkles className="w-3.5 h-3.5 text-zinc-500" />
+      <span className="text-sm font-semibold text-text-primary">AI Brand Intel</span>
+      <span className="text-[10px] text-text-faint ml-0.5">via Claude Haiku</span>
+    </div>
+  );
+
   if (intelLoading) {
     return (
-      <div className="space-y-2.5 py-1">
-        <div className="flex items-center gap-2">
-          <Sparkles className="w-3 h-3 text-zinc-600" />
-          <span className="text-sm font-semibold text-text-primary">AI Brand Intel</span>
-          <span className="text-[10px] text-text-faint ml-0.5">Analyzing ads…</span>
-        </div>
-        {INTEL_CATS.map((cat) => (
-          <div key={cat.key} className="flex items-start gap-4">
-            <span className="text-[10px] uppercase tracking-wider text-text-faint shrink-0 pt-0.5" style={{ width: 72 }}>{cat.label}</span>
-            <div className="flex flex-wrap gap-1.5 flex-1">
-              {[88, 128, 96, 112, 80, 120].map((w, i) => (
-                <div key={i} className="h-5 rounded-full bg-white/5 animate-pulse" style={{ width: w }} />
-              ))}
+      <div>
+        {headerNode}
+        <div className="divide-y" style={{ borderColor: 'rgba(255,255,255,0.04)' }}>
+          {INTEL_CATS.map((cat) => (
+            <div key={cat.key} className="flex items-center gap-3 py-2.5 border-b border-white/[0.04] last:border-b-0">
+              <div className="flex items-center gap-1.5 shrink-0" style={{ width: 130 }}>
+                <span className="text-sm leading-none">{cat.icon}</span>
+                <span className="text-[11px] uppercase tracking-wider text-text-faint">Top {cat.label.toLowerCase()}</span>
+              </div>
+              <div className="flex flex-wrap gap-1.5 flex-1">
+                {[88, 128, 96, 112, 80].map((w, i) => (
+                  <div key={i} className="h-5 rounded-full bg-white/5 animate-pulse" style={{ width: w }} />
+                ))}
+              </div>
             </div>
-          </div>
-        ))}
+          ))}
+        </div>
       </div>
     );
   }
 
   if (intelError) {
     return (
-      <div className="flex items-center justify-between py-1">
-        <div className="flex items-center gap-2">
-          <AlertCircle className="w-3.5 h-3.5 text-red-400 shrink-0" />
-          <span className="text-sm text-text-muted">Could not load AI intel — {intelError}</span>
+      <div>
+        {headerNode}
+        <div className="flex items-center justify-between py-1">
+          <div className="flex items-center gap-2">
+            <AlertCircle className="w-3.5 h-3.5 text-red-400 shrink-0" />
+            <span className="text-sm text-text-muted">Could not load AI intel — {intelError}</span>
+          </div>
+          <button onClick={onRetry} className="flex items-center gap-1.5 text-xs text-text-faint hover:text-text-primary transition-colors shrink-0 ml-4">
+            <RotateCcw className="w-3 h-3" /> Retry
+          </button>
         </div>
-        <button onClick={onRetry} className="flex items-center gap-1.5 text-xs text-text-faint hover:text-text-primary transition-colors shrink-0 ml-4">
-          <RotateCcw className="w-3 h-3" /> Retry
-        </button>
       </div>
     );
   }
@@ -627,35 +656,38 @@ function IntelPanel({ intel, intelLoading, intelError, onRetry }) {
 
   const hasData = INTEL_CATS.some((cat) => (intel[cat.key] ?? []).length > 0);
   if (!hasData) return (
-    <div className="flex items-center gap-2 py-1">
-      <Sparkles className="w-3 h-3 text-zinc-600" />
-      <span className="text-sm text-text-faint">No ad text to analyze yet.</span>
+    <div>
+      {headerNode}
+      <div className="flex items-center gap-2 py-1">
+        <span className="text-sm text-text-faint">No ad text to analyze yet.</span>
+      </div>
     </div>
   );
 
   return (
-    <div className="space-y-2 py-1">
-      <div className="flex items-center gap-2">
-        <Sparkles className="w-3 h-3 text-zinc-500" />
-        <span className="text-sm font-semibold text-text-primary">AI Brand Intel</span>
-        <span className="text-[10px] text-text-faint ml-0.5">via Claude Haiku</span>
-      </div>
-      {INTEL_CATS.map((cat) => {
-        const items = intel[cat.key] ?? [];
-        if (!items.length) return null;
-        return (
-          <div key={cat.key} className="flex items-start gap-4">
-            <span className="text-[10px] uppercase tracking-wider text-text-faint shrink-0 pt-0.5" style={{ width: 72 }}>{cat.label}</span>
-            <div className="flex flex-wrap gap-1.5 flex-1">
-              {items.map((item, i) => (
-                <span key={i} className={`text-[11px] px-2.5 py-0.5 rounded-full border leading-snug ${cat.color}`}>
-                  {item}
-                </span>
-              ))}
+    <div>
+      {headerNode}
+      <div>
+        {INTEL_CATS.map((cat) => {
+          const items = intel[cat.key] ?? [];
+          if (!items.length) return null;
+          return (
+            <div key={cat.key} className="flex items-start gap-3 py-2.5 border-b border-white/[0.04] last:border-b-0">
+              <div className="flex items-center gap-1.5 shrink-0 pt-1" style={{ width: 130 }}>
+                <span className="text-sm leading-none">{cat.icon}</span>
+                <span className="text-[11px] uppercase tracking-wider text-text-faint">Top {cat.label.toLowerCase()}</span>
+              </div>
+              <div className="flex flex-wrap gap-1.5 flex-1">
+                {items.map((item, i) => (
+                  <span key={i} className={`text-[11px] px-2.5 py-1 rounded-full border leading-snug ${INTEL_PILL_CLASS}`}>
+                    {item}
+                  </span>
+                ))}
+              </div>
             </div>
-          </div>
-        );
-      })}
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -731,6 +763,9 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
   const [intelLoading, setIntelLoading] = useState(false);
   const [intelError, setIntelError]     = useState(null);
   const [intelFetched, setIntelFetched] = useState(false);
+  // Overview-dashboard side data (brand-wide media mix + aggregation totals)
+  const [formatCounts, setFormatCounts] = useState(null);
+  const [aggCounts, setAggCounts]       = useState(null);
   // Drawer
   const [selectedAd, setSelectedAd]     = useState(null);
 
@@ -792,6 +827,37 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
       loadIntel();
     }
   }, [activeTab, intelFetched, intelLoading, loadIntel]);
+
+  // ---- Brand-wide media-mix counts (for the Overview Media-Mix card) ----
+  useEffect(() => {
+    if (activeTab !== 'overview' || !brandId) return;
+    let cancelled = false;
+    fetch(`${apiBaseUrl}/brands/${brandId}/format-counts`)
+      .then((r) => (r.ok ? r.json() : { counts: null }))
+      .then((d) => { if (!cancelled) setFormatCounts(d.counts ?? null); })
+      .catch(() => { if (!cancelled) setFormatCounts(null); });
+    return () => { cancelled = true; };
+  }, [apiBaseUrl, brandId, activeTab]);
+
+  // ---- Aggregation totals for the 4 mini stat boxes (Hooks/Ad copy/etc.) ----
+  useEffect(() => {
+    if (activeTab !== 'overview' || !brandId) return;
+    let cancelled = false;
+    const fetchTotal = (type) =>
+      fetch(`${apiBaseUrl}/brands/${brandId}/aggregations?type=${type}&limit=1`)
+        .then((r) => (r.ok ? r.json() : { total: 0 }))
+        .then((d) => d.total ?? 0)
+        .catch(() => 0);
+    Promise.all([
+      fetchTotal('hooks'),
+      fetchTotal('adcopy'),
+      fetchTotal('headlines'),
+      fetchTotal('landing'),
+    ]).then(([hooks, adcopy, headlines, landing]) => {
+      if (!cancelled) setAggCounts({ hooks, adcopy, headlines, landing });
+    });
+    return () => { cancelled = true; };
+  }, [apiBaseUrl, brandId, activeTab]);
 
   // ---- Open ad in IntelDrawer by ID (used by aggregation tabs) ----
   const openAdById = useCallback(async (adId) => {
@@ -1000,19 +1066,72 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
               ))}
             </div>
 
-            {/* Count + sort */}
+            {/* Summary banner — PestLab-style headline stat */}
+            {(() => {
+              const tf = TIME_FILTERS.find((f) => f.value === timeFilter);
+              const label = tf?.value === 'all' ? null : tf?.label;
+              return (
+                <div className="rounded-xl border border-border-subtle bg-bg-elevated px-5 py-4">
+                  <p className="text-text-muted leading-relaxed">
+                    <span className="text-3xl font-bold text-white tabular-nums">{total.toLocaleString()}</span>
+                    {' '}<span className="text-text-muted">ads</span>{' '}
+                    {label
+                      ? <>were launched in the <span className="text-white font-medium">last {label}</span></>
+                      : <>tracked across <span className="text-white font-medium">all time</span></>}
+                    {brand?.activeAdsCount != null && (
+                      <>{', including '}
+                        <span className="text-emerald-400 font-semibold tabular-nums">
+                          {(brand.activeAdsCount).toLocaleString()}
+                        </span> currently active</>
+                    )}
+                    .
+                  </p>
+                </div>
+              );
+            })()}
+
+            {/* Two-column dashboard: Media mix + mini-stats LEFT, AI Intel RIGHT */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              {/* LEFT — Media mix + 4 mini stat boxes */}
+              <div className="rounded-xl border border-border-subtle bg-bg-elevated p-5 space-y-5">
+                <MediaMixBar counts={formatCounts} />
+
+                <div className="grid grid-cols-4 gap-2">
+                  {[
+                    { label: 'Hooks',     value: aggCounts?.hooks,     tabId: 'hooks'     },
+                    { label: 'Ad copy',   value: aggCounts?.adcopy,    tabId: 'adcopy'    },
+                    { label: 'Headlines', value: aggCounts?.headlines, tabId: 'headlines' },
+                    { label: 'LPs',       value: aggCounts?.landing,   tabId: 'landing'   },
+                  ].map(({ label, value, tabId }) => (
+                    <button key={label}
+                      onClick={() => setActiveTab(tabId)}
+                      className="rounded-lg border border-border-subtle bg-bg-card hover:bg-bg-hover hover:border-white/15 transition-colors py-3 text-center group">
+                      <p className="text-xl font-bold text-white tabular-nums">
+                        {value == null ? '—' : (value >= 100 ? '99+' : value)}
+                      </p>
+                      <p className="text-[10px] uppercase tracking-wider text-text-faint mt-0.5 group-hover:text-text-muted transition-colors">
+                        {label}
+                      </p>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* RIGHT — AI Brand Intel */}
+              <div className="rounded-xl border border-border-subtle bg-bg-elevated p-5">
+                <IntelPanel intel={intel} intelLoading={intelLoading} intelError={intelError} onRetry={loadIntel} />
+              </div>
+            </div>
+
+            {/* Count + sort — "1421 Ads" header above grid */}
             {!adsLoading && total > 0 && (
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-text-faint">{total.toLocaleString()} ads</span>
+              <div className="flex items-center justify-between pt-2">
+                <span className="text-base font-semibold text-text-primary tabular-nums">
+                  {total.toLocaleString()} <span className="text-text-muted font-normal">Ads</span>
+                </span>
                 <SortDropdown value={sort} onChange={setSort} options={SORT_OPTIONS} />
               </div>
             )}
-
-            {/* Media mix */}
-            {!adsLoading && ads.length > 0 && <MediaMixBar ads={ads} />}
-
-            {/* AI Intel */}
-            <IntelPanel intel={intel} intelLoading={intelLoading} intelError={intelError} onRetry={loadIntel} />
 
             {/* Ad grid */}
             {adsLoading ? (

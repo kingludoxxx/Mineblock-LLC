@@ -312,6 +312,27 @@ export async function getAdDetail(adId) {
   return { ...mapAdListItem(rows[0]), rawSnapshot: rows[0].raw_snapshot };
 }
 
+export async function getAdFormatCounts(brandId) {
+  const { rows } = await query(
+    `SELECT display_format, is_active, COUNT(*) AS count
+       FROM brand_spy.ads
+      WHERE brand_id = $1
+      GROUP BY display_format, is_active`,
+    [brandId],
+  );
+  const out = { VIDEO: 0, IMAGE: 0, CAROUSEL: 0, OTHER: 0, TOTAL: 0, ACTIVE: 0 };
+  for (const r of rows) {
+    const n = parseInt(r.count, 10);
+    out.TOTAL += n;
+    if (r.is_active) out.ACTIVE += n;
+    if (r.display_format === 'VIDEO')         out.VIDEO    += n;
+    else if (r.display_format === 'IMAGE')    out.IMAGE    += n;
+    else if (r.display_format === 'CAROUSEL') out.CAROUSEL += n;
+    else                                      out.OTHER    += n;
+  }
+  return out;
+}
+
 export async function getAdTierCounts(brandId) {
   const { rows } = await query(
     `SELECT tier, is_active, COUNT(*) AS count
