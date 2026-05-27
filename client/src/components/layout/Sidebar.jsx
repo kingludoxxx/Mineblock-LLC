@@ -45,7 +45,7 @@ const navGroups = [
       { to: '/app/ads-launcher', icon: Rocket, label: 'Ads Launcher', permission: 'ads-launcher:access' },
       { to: '/app/languages-pipeline', icon: Globe, label: 'Languages Pipeline', permission: 'languages-pipeline:access' },
       // Brand Spy — no permission gate, always visible to logged-in users
-      { to: '/app/brand-spy', icon: ScanSearch, label: 'Brand Spy' },
+      { to: '/app/brand-spy', icon: ScanSearch, label: 'Brand Spy', end: true },
       { to: '/app/brand-spy/league', icon: Trophy, label: 'The League' },
     ],
   },
@@ -223,6 +223,7 @@ export default function Sidebar() {
                       <NavLink
                         key={item.to}
                         to={item.to}
+                        end={item.end ?? false}
                         className={({ isActive }) =>
                           `flex items-center gap-2.5 px-2.5 py-1.5 rounded-md text-sm transition-colors
                           ${isActive ? 'bg-bg-hover text-text-primary' : 'text-text-muted hover:text-text-primary hover:bg-bg-hover'}`
