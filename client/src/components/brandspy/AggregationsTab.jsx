@@ -205,7 +205,9 @@ export default function AggregationsTab({ apiBaseUrl, brandId, type, onOpenAd })
   const [total, setTotal]       = useState(0);
   const [loading, setLoading]   = useState(true);
   const [error, setError]       = useState(null);
-  const [activeOnly, setActiveOnly] = useState(true);
+  // Default OFF: brand.is_active state can be stale relative to brand.active_ads_count,
+  // so showing all variants is the safer default. User toggles on to narrow.
+  const [activeOnly, setActiveOnly] = useState(false);
   const [search, setSearch]     = useState('');
 
   const meta = TYPE_META[type];
@@ -313,8 +315,18 @@ export default function AggregationsTab({ apiBaseUrl, brandId, type, onOpenAd })
           </button>
         </div>
       ) : filtered.length === 0 ? (
-        <div className="flex flex-col items-center justify-center py-16 text-text-faint text-sm gap-2">
-          {q ? `No matches for "${search}".` : meta.emptyMsg}
+        <div className="flex flex-col items-center justify-center py-16 text-text-faint text-sm gap-3">
+          {q ? (
+            `No matches for "${search}".`
+          ) : activeOnly ? (
+            <>
+              <span>No <strong>active</strong> {meta.title.toLowerCase()} for this brand right now.</span>
+              <button onClick={() => setActiveOnly(false)}
+                className="text-xs px-3 py-1.5 rounded-lg bg-bg-elevated border border-border-default hover:bg-bg-hover text-text-primary transition-colors">
+                Show all ads (active + paused)
+              </button>
+            </>
+          ) : meta.emptyMsg}
         </div>
       ) : (
         <div className="flex flex-col gap-2">
