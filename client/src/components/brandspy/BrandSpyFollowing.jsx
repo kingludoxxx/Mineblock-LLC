@@ -61,7 +61,12 @@ export default function BrandSpyFollowing({ apiBaseUrl, onBrandClick }) {
 
   const handleDelete = async (id) => {
     if (!confirm('Stop tracking this brand?')) return;
-    await fetch(`${apiBaseUrl}/brands/${id}`, { method: 'DELETE' });
+    try {
+      const res = await fetch(`${apiBaseUrl}/brands/${id}`, { method: 'DELETE' });
+      if (!res.ok && res.status !== 404) throw new Error(`Delete failed (${res.status})`);
+    } catch (e) {
+      setError(e.message);
+    }
     fetchBrands();
   };
 

@@ -9,7 +9,7 @@
 
 import { useEffect, useState } from 'react';
 import {
-  X, ExternalLink, Copy, Download, RefreshCw, Flag, BarChart2,
+  X, ExternalLink, Copy, Download,
 } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
@@ -218,7 +218,16 @@ export default function IntelDrawer({ ad, brand, onClose }) {
   function handleSave() {
     const url = ad.videoUrl || ad.thumbnailUrl;
     if (!url) return;
-    window.open(url, '_blank');
+    // Use an anchor with download attribute to prompt save dialog.
+    // Falls back to new tab for cross-origin URLs the browser won't download.
+    const a = document.createElement('a');
+    a.href = url;
+    a.target = '_blank';
+    a.rel = 'noreferrer';
+    a.download = `ad-${ad.adArchiveId || 'creative'}${ad.videoUrl ? '.mp4' : '.jpg'}`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
   }
 
   // ---------------------------------------------------------------------------
@@ -396,16 +405,7 @@ export default function IntelDrawer({ ad, brand, onClose }) {
                 Signal
               </p>
               <div className="flex items-center gap-1">
-                {[Flag, RefreshCw, BarChart2].map((Icon, i) => (
-                  <button key={i} className="p-1.5 rounded-lg transition-colors"
-                    style={{ color: '#6b7280' }}
-                    onMouseEnter={e => e.currentTarget.style.color = '#fff'}
-                    onMouseLeave={e => e.currentTarget.style.color = '#6b7280'}
-                  >
-                    <Icon className="w-3.5 h-3.5" />
-                  </button>
-                ))}
-                <button onClick={onClose} className="p-1.5 rounded-lg transition-colors ml-1"
+                <button onClick={onClose} className="p-1.5 rounded-lg transition-colors"
                   style={{ color: '#6b7280' }}
                   onMouseEnter={e => e.currentTarget.style.color = '#fff'}
                   onMouseLeave={e => e.currentTarget.style.color = '#6b7280'}

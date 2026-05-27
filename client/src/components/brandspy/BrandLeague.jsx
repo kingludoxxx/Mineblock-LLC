@@ -500,7 +500,7 @@ export default function BrandLeague({ apiBaseUrl }) {
     return (
       <div className="flex-1 flex flex-col items-center justify-center gap-3 text-text-faint">
         <ScanSearch className="w-10 h-10 opacity-30" />
-        <p className="text-sm">No brands followed yet. Go to Brand Spy → Following to add one.</p>
+        <p className="text-sm">No brands followed yet. Go to <strong>Brand Spy</strong> in the sidebar to add one.</p>
       </div>
     );
   }

@@ -267,8 +267,10 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
     try {
       await fetch(`${apiBaseUrl}/brands/${brandId}/scrape`, { method: 'POST' });
       const r = await fetch(`${apiBaseUrl}/brands/${brandId}`);
-      const d = await r.json();
-      if (d.brand) setBrand(d.brand);
+      if (r.ok) {
+        const d = await r.json();
+        if (d.brand) setBrand(d.brand);
+      }
       await loadAds();
     } catch (e) { setRefreshError(e.message); }
     finally { setRefreshing(false); }
@@ -414,7 +416,7 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
                   </button>
                   {(brand?.pages ?? []).map((pg) => (
                     <button key={pg.id}
-                      onClick={() => { setPageFilter(pg.id); pagesDropdown.setOpen(false); setPage(1); setSelectedIds(new Set()); }}
+                      onClick={() => { setPageFilter(pg.id); pagesDropdown.setOpen(false); setPage(1); }}
                       className={`group flex items-center gap-2 p-2.5 rounded-lg border text-left transition-all ${
                         pageFilter === pg.id ? 'bg-white/5 border-white/10' : 'border-transparent hover:bg-white/5 hover:border-white/10'
                       }`}
