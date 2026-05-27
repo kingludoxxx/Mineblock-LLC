@@ -6,6 +6,7 @@ import {
   ScanSearch,
   Globe,
   X,
+  ExternalLink,
 } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
@@ -135,14 +136,15 @@ function BrandLogo({ domain }) {
   );
 }
 
-function PageAvatar({ page }) {
+function PageAvatar({ page, size = 28 }) {
   const [imgFailed, setImgFailed] = useState(false);
   if (page.pageProfilePic && !imgFailed) {
     return (
       <img
         src={page.pageProfilePic}
         alt=""
-        className="w-7 h-7 rounded-full object-cover shrink-0"
+        className="rounded-full object-cover shrink-0"
+        style={{ width: size, height: size }}
         onError={() => setImgFailed(true)}
       />
     );
@@ -157,7 +159,10 @@ function PageAvatar({ page }) {
   ];
   const color = colors[(page.pageName?.charCodeAt(0) ?? 0) % colors.length];
   return (
-    <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold shrink-0 ${color}`}>
+    <div
+      className={`rounded-full flex items-center justify-center font-bold shrink-0 ${color}`}
+      style={{ width: size, height: size, fontSize: Math.max(9, size * 0.36) }}
+    >
       {(page.pageName ?? '?').charAt(0).toUpperCase()}
     </div>
   );
@@ -183,6 +188,21 @@ function useDropdown() {
   }, [open]);
 
   return { open, setOpen, ref };
+}
+
+function RankWithDelta({ rank, poolSize, delta }) {
+  if (rank == null) return <span className="text-text-faint text-xs">—</span>;
+  const display = poolSize ? `${rank}/${poolSize}` : String(rank);
+  return (
+    <div className="flex flex-col items-center gap-0.5">
+      <span className="text-xs font-mono text-text-faint tabular-nums">{display}</span>
+      {delta != null && delta !== 0 && (
+        <span className={`text-[10px] font-medium tabular-nums ${delta > 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+          {delta > 0 ? `(+${delta})` : `(${delta})`}
+        </span>
+      )}
+    </div>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -395,7 +415,22 @@ export default function BrandLeague({ apiBaseUrl }) {
             onClick={() => brandDropdown.setOpen((o) => !o)}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-bg-elevated border border-border-default hover:bg-bg-hover text-text-primary text-xs font-medium transition-colors"
           >
-            {selectedBrand && <BrandLogo domain={selectedBrand.domain} />}
+            {/* Overlapping page avatars from brandDetail, or brand logo fallback */}
+            {brandDetail?.pages?.length > 0 ? (
+              <div className="flex -space-x-1.5 shrink-0">
+                {brandDetail.pages.slice(0, 5).map((pg, i) => (
+                  <div
+                    key={pg.id}
+                    className="relative rounded-full border-2 border-bg-card overflow-hidden shrink-0"
+                    style={{ width: 20, height: 20, zIndex: 5 - i }}
+                  >
+                    <PageAvatar page={pg} size={20} />
+                  </div>
+                ))}
+              </div>
+            ) : selectedBrand ? (
+              <BrandLogo domain={selectedBrand.domain} />
+            ) : null}
             <span className="uppercase tracking-wide">
               {selectedBrand
                 ? `${selectedBrand.domain} · ${selectedBrand.pagesCount} pages · ${selectedBrand.activeAdsCount} active`
@@ -452,28 +487,60 @@ export default function BrandLeague({ apiBaseUrl }) {
           </button>
 
           {pagesDropdown.open && (
-            <div className="absolute top-full left-0 mt-1 w-64 bg-bg-card border border-border-default rounded-lg shadow-xl z-50 overflow-hidden">
-              <div className="max-h-64 overflow-y-auto">
+            <div
+              className="absolute top-full left-0 mt-1 rounded-xl shadow-2xl z-50 p-3"
+              style={{ width: 580, background: '#1c1c1e', border: '1px solid #2a2a2a' }}
+            >
+              <div className="grid grid-cols-3 gap-1.5 max-h-80 overflow-y-auto">
+                {/* All Pages tile */}
                 <button
                   onClick={() => handleSelectPage(null)}
-                  className={`w-full flex items-center gap-2.5 px-3 py-2 hover:bg-bg-elevated text-left transition-colors ${
-                    !pageFilter ? 'bg-bg-elevated' : ''
+                  className={`flex items-center gap-2 p-2.5 rounded-lg border text-left transition-all ${
+                    !pageFilter
+                      ? 'bg-white/5 border-white/10'
+                      : 'border-transparent hover:bg-white/5 hover:border-white/10'
                   }`}
                 >
-                  <span className="text-sm text-text-primary">All Pages</span>
+                  <div className="w-9 h-9 rounded-full bg-bg-elevated border border-border-default flex items-center justify-center shrink-0">
+                    <ScanSearch className="w-4 h-4 text-text-faint" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-medium text-text-primary">All Pages</p>
+                    <div className="flex items-center gap-1 mt-0.5">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
+                      <span className="text-[11px] text-text-faint">{selectedBrand?.activeAdsCount} active</span>
+                    </div>
+                  </div>
                 </button>
+
                 {(brandDetail?.pages ?? []).map((pg) => (
                   <button
                     key={pg.id}
                     onClick={() => handleSelectPage(pg.id)}
-                    className={`w-full flex items-center gap-2.5 px-3 py-2 hover:bg-bg-elevated text-left transition-colors ${
-                      pageFilter === pg.id ? 'bg-bg-elevated' : ''
+                    className={`group flex items-center gap-2 p-2.5 rounded-lg border text-left transition-all ${
+                      pageFilter === pg.id
+                        ? 'bg-white/5 border-white/10'
+                        : 'border-transparent hover:bg-white/5 hover:border-white/10'
                     }`}
                   >
-                    <PageAvatar page={pg} />
+                    <PageAvatar page={pg} size={36} />
                     <div className="min-w-0 flex-1">
-                      <p className="text-sm text-text-primary truncate">{pg.pageName}</p>
-                      <p className="text-[11px] text-text-faint">{pg.activeAdsCount} active</p>
+                      <div className="flex items-center justify-between gap-1">
+                        <p className="text-xs font-medium text-text-primary truncate">{pg.pageName}</p>
+                        <a
+                          href={`https://www.facebook.com/${pg.metaPageId ?? ''}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          className="opacity-0 group-hover:opacity-60 hover:!opacity-100 transition-opacity shrink-0"
+                        >
+                          <ExternalLink className="w-3 h-3 text-text-faint" />
+                        </a>
+                      </div>
+                      <div className="flex items-center gap-1 mt-0.5">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
+                        <span className="text-[11px] text-text-faint">{pg.activeAdsCount} active</span>
+                      </div>
                     </div>
                   </button>
                 ))}
@@ -752,6 +819,7 @@ export default function BrandLeague({ apiBaseUrl }) {
 // ---------------------------------------------------------------------------
 
 function AdTableRow({ ad, rowNum, selected, onToggle, visibleCols }) {
+  const delta3d = (ad.rank3d != null && ad.currentRank != null) ? ad.rank3d - ad.currentRank : null;
   return (
     <tr className={`border-b border-border-subtle hover:bg-bg-elevated transition-colors ${selected ? 'bg-accent/5' : ''}`}>
       {/* Checkbox */}
@@ -769,7 +837,7 @@ function AdTableRow({ ad, rowNum, selected, onToggle, visibleCols }) {
       {/* # */}
       {visibleCols.num && (
         <td className="px-2 py-2 text-right text-[11px] text-text-faint tabular-nums w-9">
-          {rowNum}
+          #{rowNum}
         </td>
       )}
 
@@ -834,22 +902,22 @@ function AdTableRow({ ad, rowNum, selected, onToggle, visibleCols }) {
 
       {/* 21D */}
       {visibleCols.rank21d && (
-        <td className="px-2 py-2 text-center text-xs font-mono text-text-faint tabular-nums" style={{ width: 70 }}>
-          {rankDisplay(ad.rank21d, ad.poolSize)}
+        <td className="px-2 py-2 text-center" style={{ width: 70 }}>
+          <RankWithDelta rank={ad.rank21d} poolSize={ad.poolSize} delta={ad.velocity21d} />
         </td>
       )}
 
       {/* 7D */}
       {visibleCols.rank7d && (
-        <td className="px-2 py-2 text-center text-xs font-mono text-text-faint tabular-nums" style={{ width: 70 }}>
-          {rankDisplay(ad.rank7d, ad.poolSize)}
+        <td className="px-2 py-2 text-center" style={{ width: 70 }}>
+          <RankWithDelta rank={ad.rank7d} poolSize={ad.poolSize} delta={ad.velocity7d} />
         </td>
       )}
 
       {/* 3D */}
       {visibleCols.rank3d && (
-        <td className="px-2 py-2 text-center text-xs font-mono text-text-faint tabular-nums" style={{ width: 70 }}>
-          {rankDisplay(ad.rank3d, ad.poolSize)}
+        <td className="px-2 py-2 text-center" style={{ width: 70 }}>
+          <RankWithDelta rank={ad.rank3d} poolSize={ad.poolSize} delta={delta3d} />
         </td>
       )}
 
@@ -857,7 +925,9 @@ function AdTableRow({ ad, rowNum, selected, onToggle, visibleCols }) {
       {visibleCols.now && (
         <td className="px-2 py-2 text-center bg-bg-hover/40" style={{ width: 70 }}>
           <span className="text-xs font-semibold font-mono text-white tabular-nums">
-            {rankDisplay(ad.currentRank, ad.poolSize)}
+            {ad.currentRank != null
+              ? (ad.poolSize ? `${ad.currentRank}/${ad.poolSize}` : String(ad.currentRank))
+              : '—'}
           </span>
         </td>
       )}

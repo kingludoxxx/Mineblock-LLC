@@ -5,7 +5,7 @@ export default function BrandSpyDetailPage() {
   const { id } = useParams();
   const navigate = useNavigate();
   return (
-    <div className="p-6 max-w-6xl">
+    <div className="h-full flex flex-col overflow-hidden">
       <BrandDetail
         apiBaseUrl="/api/v1/brand-spy"
         brandId={id}
