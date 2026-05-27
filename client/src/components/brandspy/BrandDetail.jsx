@@ -734,7 +734,6 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
   // Drawer
   const [selectedAd, setSelectedAd]     = useState(null);
 
-  const ovPagesDropdown   = useDropdown(); // Overview tab pages
   const intPagesDropdown  = useDropdown(); // Intelligence tab pages
   const intColsDropdown   = useDropdown(); // Intelligence tab columns
 
@@ -853,7 +852,6 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
   const toggleCol  = (key) => setVisibleCols((prev) => ({ ...prev, [key]: !prev[key] }));
   const t          = brand?.tierBreakdown ?? {};
 
-  const selectedOvPage  = brand?.pages?.find((p) => p.id === pageFilter) ?? null;
   const selectedIntPage = brand?.pages?.find((p) => p.id === pageFilter) ?? null;
 
   // ---- Error state ----
@@ -986,83 +984,20 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
         {activeTab === 'overview' && (
           <div className="flex-1 flex flex-col min-h-0 px-5 pt-4 pb-6 space-y-4">
 
-            {/* Controls row */}
-            <div className="flex items-center justify-between gap-3 flex-wrap">
-              {/* Time filters */}
-              <div className="flex items-center gap-1">
-                {TIME_FILTERS.map((tf) => (
-                  <button key={tf.value} onClick={() => setTimeFilter(tf.value)}
-                    className={`px-3 py-1.5 text-xs rounded-lg font-medium transition-colors ${
-                      timeFilter === tf.value
-                        ? 'bg-white/10 text-white border border-white/20'
-                        : 'bg-bg-elevated text-text-faint border border-border-subtle hover:text-text-muted'
-                    }`}>
-                    {tf.label}
-                  </button>
-                ))}
-              </div>
-
-              {/* Right controls */}
-              <div className="flex items-center gap-2 flex-wrap">
-                {/* Pages dropdown */}
-                <div className="relative" ref={ovPagesDropdown.ref}>
-                  <button onClick={() => ovPagesDropdown.setOpen((o) => !o)}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-bg-elevated border border-border-default hover:bg-bg-hover text-xs transition-colors">
-                    <span className="text-text-muted">{selectedOvPage ? selectedOvPage.pageName : 'All Pages'}</span>
-                    {pageFilter && (
-                      <span onClick={(e) => { e.stopPropagation(); setPageFilter(null); }}
-                        className="text-text-faint hover:text-text-primary cursor-pointer ml-0.5">×</span>
-                    )}
-                    <ChevronDown className="w-3 h-3 text-text-faint" />
-                  </button>
-                  {ovPagesDropdown.open && (
-                    <div className="absolute top-full right-0 mt-1 rounded-xl shadow-2xl z-50 p-2"
-                      style={{ width: 440, background: '#1c1c1e', border: '1px solid #2a2a2a' }}>
-                      <div className="grid grid-cols-2 gap-1.5 max-h-72 overflow-y-auto">
-                        <button onClick={() => { setPageFilter(null); ovPagesDropdown.setOpen(false); setPage(1); }}
-                          className={`flex items-center gap-2 p-2.5 rounded-lg border text-left transition-all ${!pageFilter ? 'bg-white/5 border-white/10' : 'border-transparent hover:bg-white/5'}`}>
-                          <div className="w-8 h-8 rounded-full bg-bg-elevated border border-border-default flex items-center justify-center shrink-0">
-                            <ScanSearch className="w-3.5 h-3.5 text-text-faint" />
-                          </div>
-                          <div>
-                            <p className="text-xs font-medium text-text-primary">All Pages</p>
-                            <p className="text-[11px] text-text-faint">{brand?.activeAdsCount} active</p>
-                          </div>
-                        </button>
-                        {(brand?.pages ?? []).map((pg) => (
-                          <button key={pg.id} onClick={() => { setPageFilter(pg.id); ovPagesDropdown.setOpen(false); setPage(1); }}
-                            className={`group flex items-center gap-2 p-2.5 rounded-lg border text-left transition-all ${pageFilter === pg.id ? 'bg-white/5 border-white/10' : 'border-transparent hover:bg-white/5'}`}>
-                            <PageAvatar page={pg} size={32} />
-                            <div className="min-w-0 flex-1">
-                              <div className="flex items-center justify-between gap-1">
-                                <p className="text-xs font-medium text-text-primary truncate">{pg.pageName}</p>
-                                <a href={`https://www.facebook.com/ads/library/?active_status=all&ad_type=all&country=US&media_type=all&search_type=page&view_all_page_id=${pg.metaPageId ?? ''}`}
-                                  target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}
-                                  className="opacity-40 hover:opacity-100 transition-opacity shrink-0">
-                                  <ExternalLink className="w-3 h-3 text-text-faint" />
-                                </a>
-                              </div>
-                              <p className="text-[11px] text-text-faint">{pg.activeAdsCount} active</p>
-                            </div>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                {/* Tier pills */}
-                <div className="flex items-center gap-1 flex-wrap">
-                  {TIER_FILTERS.map((f) => (
-                    <button key={f} onClick={() => setTierFilter(f)}
-                      className={`px-2 py-0.5 text-[10px] rounded border font-medium transition-colors ${
-                        tierFilter === f ? 'bg-accent text-white border-accent' : 'bg-bg-elevated text-text-faint border-border-default hover:text-text-primary'
-                      }`}>
-                      {TIER_LABELS[f]}
-                    </button>
-                  ))}
-                </div>
-              </div>
+            {/* Time filters — Overview tab keeps only the time window picker.
+                Pages dropdown + tier pills live in the Intelligence tab where
+                the league-style table view makes them useful. */}
+            <div className="flex items-center gap-1">
+              {TIME_FILTERS.map((tf) => (
+                <button key={tf.value} onClick={() => setTimeFilter(tf.value)}
+                  className={`px-3 py-1.5 text-xs rounded-lg font-medium transition-colors ${
+                    timeFilter === tf.value
+                      ? 'bg-white/10 text-white border border-white/20'
+                      : 'bg-bg-elevated text-text-faint border border-border-subtle hover:text-text-muted'
+                  }`}>
+                  {tf.label}
+                </button>
+              ))}
             </div>
 
             {/* Count + sort */}
