@@ -237,16 +237,24 @@ export async function scoreBrand(brandId) {
 async function loadHistoricalRanks(client, brandId) {
   const result = new Map();
   // Snapshot windows for historical rank lookup.
-  // halfWidthDays controls how wide a band we search around centerDays.
-  // Wider windows let the tool start showing values sooner after first scrape:
-  //   d3  → window 1–5 days ago  (shows after ~1 day of snapshots)
-  //   d7  → window 3–11 days ago (shows after ~3 days of snapshots)
-  //   d21 → window 11–31 days ago (shows after ~11 days of snapshots)
-  // The ORDER BY clause still picks the snapshot CLOSEST to centerDays.
+  // halfWidthDays = centerDays so lower = max(0, center-half) = 0 for all windows.
+  // This means the query searches from NOW() back to upper days ago, and the
+  // ORDER BY picks whichever snapshot is CLOSEST to centerDays.
+  //
+  // Behaviour over time:
+  //   Day 0 (just started): all three windows find the same "oldest available"
+  //     snapshot (from the previous scrape run, minutes/hours ago). d3=d7=d21
+  //     all show the same prior rank → velocity reflects change since last scrape.
+  //   Day 3+:  d3 finds a genuine ~3-day-old snapshot; d7/d21 still use best available.
+  //   Day 7+:  d3 finds 3-day, d7 finds 7-day; d21 uses best available.
+  //   Day 21+: all three find their ideal historical snapshots.
+  //
+  // This ensures velocity columns are ALWAYS populated after at least two scrapes,
+  // and progressively improve in accuracy as more snapshot history accumulates.
   const windows = [
-    { key: 'd3',  centerDays: 3,  halfWidthDays: 2 },
-    { key: 'd7',  centerDays: 7,  halfWidthDays: 4 },
-    { key: 'd21', centerDays: 21, halfWidthDays: 10 },
+    { key: 'd3',  centerDays: 3,  halfWidthDays: 3  },  // 0–6 days ago
+    { key: 'd7',  centerDays: 7,  halfWidthDays: 7  },  // 0–14 days ago
+    { key: 'd21', centerDays: 21, halfWidthDays: 21 },  // 0–42 days ago
   ];
 
   for (const w of windows) {
