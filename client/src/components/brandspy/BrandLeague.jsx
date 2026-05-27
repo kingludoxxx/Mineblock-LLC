@@ -91,12 +91,16 @@ function fmtLaunch(iso) {
   });
 }
 
-// Live active-days: prefer Facebook's total_active_time (seconds → days).
-// Falls back to stored activeDays. startDate from ScrapeCreators is the
-// batch snapshot date, not the actual launch date — do NOT use it.
+// Live active-days: compute from startDate at render so it never goes stale
+// between scrapes. Ended ads use stored activeDays (their duration is fixed).
+// totalActiveTime (seconds) used as a floor — handles paused/resumed ads.
 function liveActiveDays(ad) {
-  if (ad.totalActiveTime != null) return Math.floor(ad.totalActiveTime / 86400);
-  return ad.activeDays ?? null;
+  const tatDays = ad.totalActiveTime != null ? Math.floor(ad.totalActiveTime / 86400) : null;
+  if (ad.startDate && ad.isActive) {
+    const fromStart = Math.max(0, Math.floor((Date.now() - new Date(ad.startDate).getTime()) / 86400000));
+    return tatDays != null ? Math.max(fromStart, tatDays) : fromStart;
+  }
+  return tatDays ?? ad.activeDays ?? null;
 }
 
 function rankDisplay(rank, poolSize) {

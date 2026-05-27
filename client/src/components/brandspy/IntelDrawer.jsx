@@ -176,8 +176,12 @@ function RankHistoryCard({ label, value }) {
 // ---------------------------------------------------------------------------
 
 function liveActiveDays(ad) {
-  if (ad.totalActiveTime != null) return Math.floor(ad.totalActiveTime / 86400);
-  return ad.activeDays ?? null;
+  const tatDays = ad.totalActiveTime != null ? Math.floor(ad.totalActiveTime / 86400) : null;
+  if (ad.startDate && ad.isActive) {
+    const fromStart = Math.max(0, Math.floor((Date.now() - new Date(ad.startDate).getTime()) / 86400000));
+    return tatDays != null ? Math.max(fromStart, tatDays) : fromStart;
+  }
+  return tatDays ?? ad.activeDays ?? null;
 }
 
 export default function IntelDrawer({ ad, brand, onClose }) {
