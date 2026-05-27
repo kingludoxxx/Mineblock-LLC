@@ -592,6 +592,56 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
   }
   console.log(`[brand-spy] phase-1 done: ${discovered} new, ${updated} updated, ${pageCache.size} pages, ${creditsUsed} credits`);
 
+  // Phase 1d: rootFragment keyword search — catches ads whose link_url uses a subdomain
+  // (e.g. shop.try-forge.com, secure.try-forge.com) that do NOT match the full domain
+  // "try-forge.com" used in Phase 1a/b.
+  //
+  // WHY NEEDED: ScrapeCreators stores and matches the full hostname of each ad's
+  // link_url. "try-forge.com" and "shop.try-forge.com" are indexed as separate domains;
+  // a keyword_exact_phrase search for "try-forge.com" returns 0 results for a brand
+  // whose ads all land on subdomains.  Searching the rootFragment "try-forge" (without
+  // TLD) matches any URL containing that string, including all subdomains.
+  //
+  // SAFETY: before adding any page to pageCache, the batch is filtered to only ads
+  // whose link_url contains rootFragment.  This prevents pages that mention "try-forge"
+  // in ad copy (but link to a different domain) from being added.  Only pages that
+  // actually advertise to try-forge.com URLs are enqueued for Phase 2.
+  //
+  // SKIP if rootFragment is too short (< 5 chars) — generic fragments cause too much
+  // noise (e.g. "fit", "go", "app").
+  if (rootFragment.length >= 5) {
+    const p1dBefore = pageCache.size;
+    let p1dDiscovered = 0, p1dUpdated = 0;
+    console.log(`[brand-spy] phase-1d: rootFragment search for "${rootFragment}" (US active)`);
+    for await (const batch of sc.iterateAdsByDomain({ domain: rootFragment, status: 'ACTIVE', country: 'US' })) {
+      creditsUsed += 1;
+      const filtered = batch.filter((ad) => {
+        const url = (ad.snapshot?.link_url ?? ad.link_url ?? '').toLowerCase();
+        return url.includes(rootFragment.toLowerCase());
+      });
+      if (filtered.length > 0) {
+        const { d, u } = await upsertAdBatch(brandId, filtered, pageCache, null, crossDomains, pageNameCache);
+        p1dDiscovered += d; p1dUpdated += u;
+        launchNewPages();
+      }
+    }
+    console.log(`[brand-spy] phase-1d: rootFragment search for "${rootFragment}" (US all-status)`);
+    for await (const batch of sc.iterateAdsByDomain({ domain: rootFragment, status: 'ALL', country: 'US' })) {
+      creditsUsed += 1;
+      const filtered = batch.filter((ad) => {
+        const url = (ad.snapshot?.link_url ?? ad.link_url ?? '').toLowerCase();
+        return url.includes(rootFragment.toLowerCase());
+      });
+      if (filtered.length > 0) {
+        const { d, u } = await upsertAdBatch(brandId, filtered, pageCache, null, crossDomains, pageNameCache);
+        p1dDiscovered += d; p1dUpdated += u;
+        launchNewPages();
+      }
+    }
+    console.log(`[brand-spy] phase-1d done: ${p1dDiscovered} new, ${p1dUpdated} updated, ${pageCache.size - p1dBefore} new pages`);
+    discovered += p1dDiscovered; updated += p1dUpdated;
+  }
+
   // Phase 1.5: company-name search — always runs to discover FB pages not found via
   // domain keyword search (common when brands use subdomains, redirect URLs, or
   // tracking domains as ad destinations).
