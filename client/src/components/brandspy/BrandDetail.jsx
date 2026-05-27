@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import {
-  ArrowLeft, ExternalLink, RefreshCw, Play,
+  ArrowLeft, ExternalLink, RefreshCw, Play, Pause,
+  Volume2, VolumeX, Maximize2,
   ChevronDown, Settings2, Globe, ScanSearch,
   Sparkles, AlertCircle, RotateCcw,
 } from 'lucide-react';
@@ -248,18 +249,73 @@ function VelocityCell({ value, days, win }) {
 }
 
 // ---------------------------------------------------------------------------
-// AdCard — Overview grid card
+// AdCard — Overview grid card with inline video player
 // ---------------------------------------------------------------------------
 
-function AdCard({ ad, onOpenIntel }) {
-  const [imgFailed, setImgFailed] = useState(false);
-  const fmt  = classifyAdFormat(ad);
-  const days = liveActiveDays(ad);
-  const hookText = ad.headline || (ad.bodyText ? ad.bodyText.slice(0, 120) : null) || '(No text)';
+function fmtTime(s) {
+  if (!isFinite(s) || s < 0) return '0:00';
+  const m   = Math.floor(s / 60);
+  const sec = Math.floor(s % 60);
+  return `${m}:${sec.toString().padStart(2, '0')}`;
+}
 
-  const handlePlay = (e) => {
+function AdCard({ ad, onOpenIntel }) {
+  const [imgFailed,   setImgFailed]   = useState(false);
+  const [playing,     setPlaying]     = useState(false);
+  const [paused,      setPaused]      = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration,    setDuration]    = useState(0);
+  const [muted,       setMuted]       = useState(false);
+  const videoRef = useRef(null);
+
+  const fmt      = classifyAdFormat(ad);
+  const days     = liveActiveDays(ad);
+  const hookText = ad.headline || (ad.bodyText ? ad.bodyText.slice(0, 120) : null) || '(No text)';
+  const hasVideo = fmt === 'VIDEO' && !!ad.videoUrl;
+
+  // Autoplay when playing state turns true
+  useEffect(() => {
+    if (playing && videoRef.current) {
+      videoRef.current.play().catch(() => {});
+    }
+  }, [playing]);
+
+  const handlePlayClick = (e) => {
     e.stopPropagation();
-    if (ad.videoUrl) window.open(ad.videoUrl, '_blank', 'noopener,noreferrer');
+    if (!hasVideo) return;
+    setPlaying(true);
+    setPaused(false);
+  };
+
+  const togglePlayPause = (e) => {
+    e.stopPropagation();
+    const v = videoRef.current;
+    if (!v) return;
+    if (v.paused) { v.play(); setPaused(false); }
+    else          { v.pause(); setPaused(true); }
+  };
+
+  const handleSeek = (e) => {
+    e.stopPropagation();
+    const val = Number(e.target.value);
+    if (videoRef.current) videoRef.current.currentTime = val;
+    setCurrentTime(val);
+  };
+
+  const toggleMute = (e) => {
+    e.stopPropagation();
+    const v = videoRef.current;
+    if (!v) return;
+    v.muted = !v.muted;
+    setMuted(v.muted);
+  };
+
+  const handleFullscreen = (e) => {
+    e.stopPropagation();
+    const v = videoRef.current;
+    if (!v) return;
+    if (v.requestFullscreen)       v.requestFullscreen();
+    else if (v.webkitRequestFullscreen) v.webkitRequestFullscreen();
   };
 
   return (
@@ -267,44 +323,110 @@ function AdCard({ ad, onOpenIntel }) {
       onClick={() => onOpenIntel(ad)}
       className="group relative flex flex-col bg-bg-elevated border border-border-subtle rounded-xl overflow-hidden cursor-pointer hover:border-white/20 transition-all hover:shadow-xl"
     >
-      {/* Thumbnail area */}
+      {/* ── Thumbnail / Inline Video ── */}
       <div className="relative bg-zinc-950 shrink-0" style={{ aspectRatio: '4/3' }}>
-        {ad.thumbnailUrl && !imgFailed ? (
-          <img src={ad.thumbnailUrl} alt="" className="w-full h-full object-cover"
-            onError={() => setImgFailed(true)} />
+
+        {playing && ad.videoUrl ? (
+          /* ── PLAYING: inline video + Atria-style controls ── */
+          <>
+            <video
+              ref={videoRef}
+              src={ad.videoUrl}
+              className="w-full h-full object-contain bg-black"
+              onClick={(e) => e.stopPropagation()}
+              onTimeUpdate={() => setCurrentTime(videoRef.current?.currentTime ?? 0)}
+              onLoadedMetadata={() => setDuration(videoRef.current?.duration ?? 0)}
+              onEnded={() => setPaused(true)}
+              onPlay={() => setPaused(false)}
+              onPause={() => setPaused(true)}
+            />
+
+            {/* Controls overlay */}
+            <div
+              className="absolute bottom-0 left-0 right-0 z-30 px-2 pt-6 pb-2 flex flex-col gap-1.5"
+              style={{ background: 'linear-gradient(to top, rgba(0,0,0,0.88) 0%, rgba(0,0,0,0.3) 70%, transparent 100%)' }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* Progress bar */}
+              <input
+                type="range" min={0} max={duration || 100} step={0.1} value={currentTime}
+                onChange={handleSeek}
+                className="w-full h-1 cursor-pointer rounded-full appearance-none bg-white/20"
+                style={{ accentColor: 'white' }}
+              />
+              {/* Controls row */}
+              <div className="flex items-center gap-2">
+                <button onClick={togglePlayPause}
+                  className="text-white hover:text-white/70 transition-colors shrink-0">
+                  {paused
+                    ? <Play    className="w-3.5 h-3.5" fill="white" />
+                    : <Pause   className="w-3.5 h-3.5" fill="white" />}
+                </button>
+                <span className="text-[10px] text-white/60 font-mono tabular-nums leading-none">
+                  {fmtTime(currentTime)} / {fmtTime(duration)}
+                </span>
+                <div className="flex-1" />
+                <button onClick={toggleMute}
+                  className="text-white/60 hover:text-white transition-colors shrink-0">
+                  {muted ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
+                </button>
+                <button onClick={handleFullscreen}
+                  className="text-white/60 hover:text-white transition-colors shrink-0">
+                  <Maximize2 className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+          </>
         ) : (
-          <div className="w-full h-full flex items-center justify-center">
-            <span className="text-text-faint text-[11px] uppercase tracking-widest opacity-40">{fmt}</span>
+          /* ── NOT PLAYING: thumbnail ── */
+          <>
+            {ad.thumbnailUrl && !imgFailed ? (
+              <img src={ad.thumbnailUrl} alt="" className="w-full h-full object-cover"
+                onError={() => setImgFailed(true)} />
+            ) : (
+              <div className="w-full h-full flex items-center justify-center">
+                <span className="text-text-faint text-[11px] uppercase tracking-widest opacity-40">{fmt}</span>
+              </div>
+            )}
+
+            {/* Hover tint */}
+            <div className="absolute inset-0 bg-black/15 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none" />
+
+            {/* Play button — only for video ads */}
+            {hasVideo && (
+              <button onClick={handlePlayClick}
+                className="absolute inset-0 flex items-center justify-center z-10"
+                title="Play inline">
+                <div className="w-12 h-12 rounded-full bg-black/60 backdrop-blur-sm flex items-center justify-center border border-white/20 group-hover:scale-110 transition-transform">
+                  <Play className="w-5 h-5 text-white ml-0.5" fill="white" />
+                </div>
+              </button>
+            )}
+
+            {/* Date range gradient overlay */}
+            <div className="absolute bottom-0 left-0 right-0 px-2 py-2 bg-gradient-to-t from-black/80 via-black/40 to-transparent pointer-events-none z-20">
+              <p className="text-[10px] text-white/75 font-mono">
+                {fmtDateRange(ad.startDate, ad.endDate, ad.isActive)}
+              </p>
+            </div>
+          </>
+        )}
+
+        {/* Format badge — top left (hidden while playing to not obstruct controls) */}
+        {!playing && (
+          <div className="absolute top-2 left-2 z-20 pointer-events-none">
+            <span className={`text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded-md border backdrop-blur-sm ${
+              fmt === 'VIDEO'    ? 'bg-purple-900/70 text-purple-300 border-purple-500/30' :
+              fmt === 'CAROUSEL' ? 'bg-amber-900/70 text-amber-300 border-amber-500/30' :
+                                   'bg-sky-900/70 text-sky-300 border-sky-500/30'
+            }`}>
+              {fmt === 'VIDEO' ? '▶ VIDEO' : fmt === 'CAROUSEL' ? '⊞ CAROUSEL' : '🖼 IMAGE'}
+            </span>
           </div>
         )}
 
-        {/* Hover overlay */}
-        <div className="absolute inset-0 bg-black/15 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none" />
-
-        {/* Play button */}
-        {fmt === 'VIDEO' && ad.videoUrl && (
-          <button onClick={handlePlay}
-            className="absolute inset-0 flex items-center justify-center z-10"
-            title="Play video">
-            <div className="w-12 h-12 rounded-full bg-black/60 backdrop-blur-sm flex items-center justify-center border border-white/20 transition-transform group-hover:scale-110">
-              <Play className="w-5 h-5 text-white ml-0.5" fill="white" />
-            </div>
-          </button>
-        )}
-
-        {/* Format badge — top left */}
-        <div className="absolute top-2 left-2 z-20 pointer-events-none">
-          <span className={`text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded-md border backdrop-blur-sm ${
-            fmt === 'VIDEO'    ? 'bg-purple-900/70 text-purple-300 border-purple-500/30' :
-            fmt === 'CAROUSEL' ? 'bg-amber-900/70 text-amber-300 border-amber-500/30' :
-                                 'bg-sky-900/70 text-sky-300 border-sky-500/30'
-          }`}>
-            {fmt === 'VIDEO' ? '▶ VIDEO' : fmt === 'CAROUSEL' ? '⊞ CAROUSEL' : '🖼 IMAGE'}
-          </span>
-        </div>
-
         {/* Tier badge — top right */}
-        {ad.tier && (
+        {ad.tier && !playing && (
           <div className="absolute top-2 right-2 z-20 pointer-events-none">
             <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-md border backdrop-blur-sm ${TIER_COLORS[ad.tier] ?? ''}`}
               title={TIER_TOOLTIPS[ad.tier]}>
@@ -312,16 +434,9 @@ function AdCard({ ad, onOpenIntel }) {
             </span>
           </div>
         )}
-
-        {/* Date range gradient overlay */}
-        <div className="absolute bottom-0 left-0 right-0 px-2 py-2 bg-gradient-to-t from-black/80 via-black/40 to-transparent pointer-events-none z-20">
-          <p className="text-[10px] text-white/75 font-mono">
-            {fmtDateRange(ad.startDate, ad.endDate, ad.isActive)}
-          </p>
-        </div>
       </div>
 
-      {/* Text area */}
+      {/* ── Text area ── */}
       <div className="p-3 flex flex-col gap-1.5 flex-1">
         <p className="text-[12px] text-text-primary leading-relaxed line-clamp-2">{hookText}</p>
         <div className="flex items-center justify-between gap-2 mt-auto">
