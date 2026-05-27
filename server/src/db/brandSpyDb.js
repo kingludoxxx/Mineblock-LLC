@@ -232,6 +232,11 @@ export async function listAds(brandId, q) {
     params.push(q.brandPageId);
   }
 
+  if (q.minStartDate) {
+    where.push(`a.start_date >= $${p++}`);
+    params.push(q.minStartDate);
+  }
+
   let orderBy;
   switch (sort) {
     case 'velocity_7d_desc':

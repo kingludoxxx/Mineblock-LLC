@@ -59,13 +59,17 @@ router.get('/brands/:id', async (req, res, next) => {
 // GET /brands/:id/ads
 router.get('/brands/:id/ads', async (req, res, next) => {
   try {
+    const days = req.query.days ? parseInt(String(req.query.days), 10) : null;
     const q = {
-      page:        req.query.page        ? Math.max(1, parseInt(String(req.query.page), 10) || 1) : 1,
-      pageSize:    req.query.pageSize    ? parseInt(String(req.query.pageSize), 10) || undefined : undefined,
-      sort:        req.query.sort        ? String(req.query.sort)        : 'rank_asc',
-      tier:        req.query.tier        ? String(req.query.tier)        : 'ALL',
-      format:      req.query.format      ? String(req.query.format)      : undefined,
-      brandPageId: req.query.brandPageId ? String(req.query.brandPageId) : undefined,
+      page:         req.query.page        ? Math.max(1, parseInt(String(req.query.page), 10) || 1) : 1,
+      pageSize:     req.query.pageSize    ? parseInt(String(req.query.pageSize), 10) || undefined : undefined,
+      sort:         req.query.sort        ? String(req.query.sort)        : 'rank_asc',
+      tier:         req.query.tier        ? String(req.query.tier)        : 'ALL',
+      format:       req.query.format      ? String(req.query.format)      : undefined,
+      brandPageId:  req.query.brandPageId ? String(req.query.brandPageId) : undefined,
+      minStartDate: (days && days > 0)
+        ? new Date(Date.now() - days * 86400000).toISOString()
+        : undefined,
     };
     const result = await listAds(req.params.id, q);
     res.json(result);
@@ -135,6 +139,79 @@ router.delete('/brands/:id', async (req, res, next) => {
     const ok = await deleteBrand(req.params.id);
     if (!ok) return res.status(404).json({ error: 'Brand not found' });
     res.status(204).end();
+  } catch (err) { next(err); }
+});
+
+// GET /brands/:id/intel — AI analysis of top active ads
+router.get('/brands/:id/intel', async (req, res, next) => {
+  try {
+    const brand = await getBrandExpanded(req.params.id);
+    if (!brand) return res.status(404).json({ error: 'Brand not found' });
+
+    const adsResult = await listAds(req.params.id, {
+      page: 1, pageSize: 60, sort: 'rank_asc', tier: 'ALL',
+    });
+    const activeAds = adsResult.ads.filter((a) => a.isActive);
+    const adsToAnalyze = activeAds.length ? activeAds : adsResult.ads;
+
+    if (!adsToAnalyze.length) {
+      return res.json({ personas: [], adAngles: [], usps: [], desires: [], emotions: [], themes: [] });
+    }
+
+    const adsData = adsToAnalyze
+      .slice(0, 60)
+      .map((a) => ({
+        headline: a.headline ?? null,
+        body: a.bodyText ? a.bodyText.slice(0, 200) : null,
+      }))
+      .filter((a) => a.headline || a.body);
+
+    if (!adsData.length) {
+      return res.json({ personas: [], adAngles: [], usps: [], desires: [], emotions: [], themes: [] });
+    }
+
+    const { default: Anthropic } = await import('@anthropic-ai/sdk');
+    const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+
+    const message = await client.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 1200,
+      messages: [{
+        role: 'user',
+        content: `Analyze these ${adsData.length} Facebook ads from the brand "${brand.domain}" and identify patterns. Return ONLY a valid JSON object with exactly these 6 keys (no other text, no markdown, no explanation):
+{
+  "personas": ["5 to 7 specific target audience personas, e.g. Health-conscious moms 28-40"],
+  "adAngles": ["5 to 7 creative angles or hooks used, e.g. Before and after transformation"],
+  "usps": ["5 to 7 unique selling propositions highlighted, e.g. Clinically tested formula"],
+  "desires": ["5 to 7 core desires being addressed, e.g. Want visible results fast"],
+  "emotions": ["5 to 7 emotions being triggered, e.g. Fear of missing out"],
+  "themes": ["5 to 7 recurring creative themes, e.g. Natural ingredients"]
+}
+
+Ads data:
+${JSON.stringify(adsData)}`,
+      }],
+    });
+
+    const rawText = message.content[0]?.text ?? '';
+    let intel;
+    try {
+      const match = rawText.match(/\{[\s\S]*\}/);
+      if (!match) throw new Error('No JSON in response');
+      intel = JSON.parse(match[0]);
+    } catch (parseErr) {
+      console.error('[brand-spy] intel parse error:', parseErr.message, 'raw:', rawText.slice(0, 300));
+      return res.status(500).json({ error: 'Failed to parse AI response' });
+    }
+
+    res.json({
+      personas:  Array.isArray(intel.personas)  ? intel.personas  : [],
+      adAngles:  Array.isArray(intel.adAngles)  ? intel.adAngles  : [],
+      usps:      Array.isArray(intel.usps)      ? intel.usps      : [],
+      desires:   Array.isArray(intel.desires)   ? intel.desires   : [],
+      emotions:  Array.isArray(intel.emotions)  ? intel.emotions  : [],
+      themes:    Array.isArray(intel.themes)    ? intel.themes    : [],
+    });
   } catch (err) { next(err); }
 });
 
