@@ -231,13 +231,14 @@ export async function listAds(brandId, q) {
   }
 
   // status filter — "Active"/"Inactive" Status dropdown in the UI.
-  // Uses a freshness heuristic (last_seen_at within 5 days AND no end_date) so
-  // it stays useful even when the worker's is_active flag is stale (separate
-  // worker bug). Strict is_active is fine when the worker is healthy.
+  // Uses last_seen_at freshness as the source of truth: if we saw the ad in
+  // the ad-library within the last 2 days we treat it as active, regardless
+  // of the is_active flag or end_date (both of which the worker is currently
+  // flipping spuriously — tracked separately).
   if (q.status === 'ACTIVE') {
-    where.push(`(a.is_active = TRUE OR (a.last_seen_at >= NOW() - INTERVAL '5 days' AND a.end_date IS NULL))`);
+    where.push(`(a.is_active = TRUE OR a.last_seen_at >= NOW() - INTERVAL '2 days')`);
   } else if (q.status === 'INACTIVE') {
-    where.push(`(a.is_active = FALSE AND (a.last_seen_at < NOW() - INTERVAL '5 days' OR a.end_date IS NOT NULL))`);
+    where.push(`(a.is_active = FALSE AND a.last_seen_at < NOW() - INTERVAL '2 days')`);
   }
 
   if (q.format) {

@@ -725,18 +725,17 @@ function IntelPanel({ intel, intelLoading, intelError, onRetry }) {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// "Currently active" heuristic — used for the green dot indicator.
-// Mirrors the backend status='ACTIVE' SQL clause so the filter and the dot
-// agree. Treats an ad as active if either:
-//   - the is_active flag is true, OR
-//   - we've seen it in the last 5 days AND there's no end_date
-// (This stays correct even when the worker's is_active flag is stale.)
+// "Currently active" heuristic — used for the green dot indicator. Mirrors
+// the backend status='ACTIVE' SQL clause so the filter and the dot agree.
+// Active = is_active flag is true OR we saw it in the ad-library within the
+// last 2 days. (The worker is currently flipping both is_active and end_date
+// spuriously — separate task — so freshness is the most reliable signal.)
 // ---------------------------------------------------------------------------
 function isAdActive(ad) {
   if (ad?.isActive === true) return true;
-  if (!ad?.lastSeenAt || ad?.endDate) return false;
+  if (!ad?.lastSeenAt) return false;
   const ageMs = Date.now() - new Date(ad.lastSeenAt).getTime();
-  return ageMs <= 5 * 86400000;
+  return ageMs <= 2 * 86400000;
 }
 
 // FilterDropdown — checkbox-style picker for Format / Status. Single-select
