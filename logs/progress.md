@@ -1,6 +1,24 @@
 # Progress Log
 
 ---
+TIMESTAMP: 2026-05-27 21:43
+TASK: Brand Spy — card ••• menu, sort dropdown, Atria intel panel (commit 96af5b4)
+BUILT: (1) AdCard redesigned to match reference: page avatar + name header row, green-dot status + date line, body text, portrait 4/5 thumbnail, footer with domain/headline/CTA. MoreHorizontal ••• menu with three actions: Ad details (opens IntelDrawer), Copy link (copies Meta Ad Library URL to clipboard, 2s feedback), Download (fetch video blob → save .mp4, fallback window.open for CORS-blocked CDNs). (2) IntelPanel: removed card border/background, Sparkles icon 4→3px zinc-500 (gray), category label fixed-width 72px left column, tags unchanged with colors — matches Atria full-width row layout. (3) SortDropdown custom component replaces native <select> everywhere: "Sort: X ▼" text button with chevron, dark dropdown, four options. Native select removed from Overview toolbar. Sort moved to count row above ad grid ("2.2K ads  Sort: Top rank ▼"). Intelligence tab also updated to SortDropdown.
+TESTED: Build clean (2464 modules, 0 errors, 1.06s). Deploy dep-d8bma2ul51nc738l92mg LIVE 21:43:38Z on srv-d6qavvf5gffc73em69n0. API unchanged — all 4 brands DONE, no server-side changes.
+OUTPUT: Deploy live. All 4 changes shipped: ••• menu, Download/Copy, sort dropdown, Atria intel panel.
+DECISIONS: Copy link copies Meta Ad Library URL (https://www.facebook.com/ads/library/?id=X) rather than raw video URL — more useful and shareable. Download only shown for VIDEO ads. DECISION MADE.
+STATUS: COMPLETE
+
+---
+TIMESTAMP: 2026-05-27 21:45
+TASK: Brand Spy — 30-bug quality pass (commit 28cb292)
+BUILT: Full production-quality audit and fix pass across 5 files (brandSpyWorker.js, brandSpy.js routes, BrandDetail.jsx, BrandLeague.jsx, IntelDrawer.jsx). Critical fixes: (1) Chunked bulk UPDATE in scoreBrand() into 500-row batches (10 cols × 500 = 5,000 params/batch) — prevents PostgreSQL 65,535-parameter crash on brands with >6,553 ads. (2) ON CONFLICT DO NOTHING on ad_rank_snapshots INSERT — prevents duplicate-key errors on deadlock retry. (3) shutdownRequested guard before is_active reset — prevents SIGTERM mid-boot from zeroing all active flags. (4) POST /brands/:id/scrape rewritten as fire-and-forget 202 — eliminates Render 30s timeout → INTERRUPTED → boot recovery loop. (5) Negative/zero days param validation (days=-1 now treated as null/unfiltered). (6) handleRefresh now polls lastScrapeStatus every 2s until DONE (5-min deadline), surfaces errors via refreshError state, resets intelFetched=false so intel re-analyzes fresh ads. (7) BrandLeague refreshError state + error banner. (8) velocityPct formula fixed: use max(currentRank, prevRank) as denominator for symmetric ± percentages. (9) Word-boundary truncation via truncateAtWord() — no more mid-word cuts. (10) Hardcoded null 90D/30D rank history cards removed from IntelDrawer.
+TESTED: Production verification on https://mineblock-dashboard.onrender.com/api/v1/brand-spy: (1) GET /brands → 4 brands all DONE, norseorganics=1289/earthbreeze=918/try-forge=479/thegreatproject=313 active. (2) POST /brands/:id/scrape → HTTP 202 + {"queued":true} immediately (fire-and-forget confirmed, norseorganics flipped to RUNNING in background). (3) GET /ads?days=-1 → total=2179 same as no-filter (negative days → null). (4) GET /ads?days=999 → total=2179 same as no-filter. (5) GET /ads?tier=BANGER → total=39, all BANGER tier. (6) GET /ads?sort=first_seen_desc → ordered by firstSeenAt descending. (7) GET /brands/:id/intel → 6 categories, 6 items each (try-forge: aging women personas, beef tallow themes). (8) GET /brands/00000000-.../intel → {"error":"Brand not found"} 404.
+OUTPUT: 8/8 production checks PASS. All critical fixes live. Deploy dep-d8bm34t7vvec73fo2nig LIVE at 21:28:40Z on srv-d6qavvf5gffc73em69n0.
+DECISIONS: Chunked at 500 rows (not 1000) to stay well under the 65,535-param PostgreSQL limit at 10 cols/row. ON CONFLICT DO NOTHING preferred over DO UPDATE to avoid clobbering historical snapshots. DECISION MADE.
+STATUS: COMPLETE
+
+---
 TIMESTAMP: 2026-05-27 21:05
 TASK: Brand Spy — Inline video player + full audit (commit db58e82)
 BUILT: Replaced window.open() in AdCard with a full inline video player matching the Atria reference. Clicking play now plays the video directly inside the card thumbnail area without navigating away. New state: playing, paused, currentTime, duration, muted with a videoRef. Controls bar: progress range input, play/pause toggle, time display (0:00 / 0:00), volume mute/unmute, fullscreen button — all with stopPropagation so clicking controls doesn't open IntelDrawer. Format/tier badges hidden while playing to not obstruct controls. Autoplay via useEffect after playing state sets true. Imports added: Pause, Volume2, VolumeX, Maximize2 from lucide-react.
