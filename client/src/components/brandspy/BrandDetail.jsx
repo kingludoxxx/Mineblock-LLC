@@ -72,11 +72,7 @@ function fmtLaunch(iso) {
 }
 
 function liveActiveDays(ad) {
-  if (ad.totalActiveTime != null) return ad.totalActiveTime;
-  if (ad.startDate && ad.isActive) {
-    const days = Math.floor((Date.now() - new Date(ad.startDate).getTime()) / 86400000);
-    if (days >= 0) return days;
-  }
+  if (ad.totalActiveTime != null) return Math.floor(ad.totalActiveTime / 86400);
   return ad.activeDays ?? null;
 }
 

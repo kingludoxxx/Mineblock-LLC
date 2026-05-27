@@ -91,14 +91,11 @@ function fmtLaunch(iso) {
   });
 }
 
-// Live active-days: prefer Facebook's own cumulative total_active_time count
-// (most reliable). Falls back to start_date math, then stored activeDays.
+// Live active-days: prefer Facebook's total_active_time (seconds → days).
+// Falls back to stored activeDays. startDate from ScrapeCreators is the
+// batch snapshot date, not the actual launch date — do NOT use it.
 function liveActiveDays(ad) {
-  if (ad.totalActiveTime != null) return ad.totalActiveTime;
-  if (ad.startDate && ad.isActive) {
-    const days = Math.floor((Date.now() - new Date(ad.startDate).getTime()) / 86400000);
-    if (days >= 0) return days;
-  }
+  if (ad.totalActiveTime != null) return Math.floor(ad.totalActiveTime / 86400);
   return ad.activeDays ?? null;
 }
 
