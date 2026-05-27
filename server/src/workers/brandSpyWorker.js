@@ -594,13 +594,27 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
 
   // Phase 1.5: company-name search — always runs to discover FB pages not found via
   // domain keyword search (common when brands use subdomains, redirect URLs, or
-  // tracking domains as ad destinations). Relevance scoring prevents false additions.
+  // tracking domains as ad destinations).
+  //
+  // IMPORTANT: we search only the FULL domain name (e.g. "try-forge"), NOT a
+  // prefix-stripped variant (e.g. "forge"). Generic fragments like "forge" match
+  // completely unrelated companies (Forge of Empires, Forge Men, Forgeurban…) and
+  // cause Phase 2 to store their ads under the wrong brand.
+  //
+  // Relevance check uses normalised comparison so "Try Forge" matches "try-forge"
+  // and "TryForge" matches "try-forge" regardless of hyphens/spaces.
   {
     const domainWithoutTld = domain.replace(/\.[a-z]{2,}(\.[a-z]{2})?$/, ''); // 'try-forge.com' → 'try-forge'
-    const prefixStripped   = domainWithoutTld.replace(/^(try|get|go|use|my|app|join|start|meet|buy|shop|learn|discover|find|check|see|view|read|watch|play|run|do|sign|login|log|access|enter|open|visit|click|grab|claim|unlock|activate|register|book|order|launch|explore|try|beta|new|now|the|a|an)-/, ''); // 'try-forge' → 'forge'
-    const candidates = [...new Set([domainWithoutTld, prefixStripped].filter(c => c && c.length > 2))];
+    // Use only the exact brand name — no prefix-stripped variants.
+    const candidates = [domainWithoutTld].filter(c => c && c.length > 2);
     const pageSizeBefore = pageCache.size;
     console.log(`[brand-spy] phase-1.5: company-name search for [${candidates.join(', ')}] (${pageSizeBefore} pages known)`);
+
+    // Normalised comparison: strip hyphens/underscores/spaces so "try-forge",
+    // "try forge", "TryForge" all resolve to the same canonical token.
+    const normalise = (s) => (s ?? '').toLowerCase().replace(/[-_\s]+/g, '');
+    const normKeyword = normalise(domainWithoutTld);
+
     for (const name of candidates) {
       let result;
       try {
@@ -612,18 +626,16 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
       }
       const pages = result?.searchResults ?? result?.results ?? result?.data ?? result?.companies ?? [];
       console.log(`[brand-spy] phase-1.5: "${name}" → ${pages.length} pages found`);
-      const brandKeywords = [domainWithoutTld, prefixStripped].filter(k => k && k.length > 2);
       let addedFromThisSearch = 0;
       for (const page of pages.slice(0, 10)) {
         const metaPageId = String(page.page_id ?? page.id ?? page.pageId ?? '');
         if (!metaPageId || p2Launched.has(metaPageId)) continue;
         const pageName = page.page_name ?? page.name ?? page.pageName ?? null;
-        // Relevance check: skip if we already have pages AND this page name doesn't
-        // contain a brand keyword (avoids adding unrelated companies).
-        const nameMatches = brandKeywords.some(k =>
-          (pageName ?? '').toLowerCase().includes(k.toLowerCase()),
-        );
-        if (pageCache.size > 0 && !nameMatches) continue;
+        // Strict relevance: page name must contain the normalised brand keyword.
+        // This is always enforced (not gated on pageCache.size) to prevent adding
+        // unrelated companies even when Phase 1 found zero pages.
+        const nameMatches = normalise(pageName).includes(normKeyword);
+        if (!nameMatches) continue;
         const brandPageId = await upsertBrandPage(brandId, metaPageId, pageName, null);
         pageCache.set(metaPageId, brandPageId);
         if (pageName) pageNameCache.set(metaPageId, pageName);
@@ -632,7 +644,6 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
         addedFromThisSearch++;
       }
       console.log(`[brand-spy] phase-1.5: "${name}" added ${addedFromThisSearch} pages`);
-      if (pageCache.size > 0 && addedFromThisSearch === 0) break; // no relevant pages found
     }
     console.log(`[brand-spy] phase-1.5 done: ${pageCache.size} pages total`);
   }
