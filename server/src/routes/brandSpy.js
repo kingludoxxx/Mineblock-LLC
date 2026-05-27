@@ -215,6 +215,38 @@ ${JSON.stringify(adsData)}`,
   } catch (err) { next(err); }
 });
 
+// GET /debug/snapshots/:id — temporary diagnostic
+router.get('/debug/snapshots/:id', async (req, res, next) => {
+  try {
+    const { query: pgQuery } = await import('../config/db.js');
+    const { rows: countRows } = await pgQuery(
+      `SELECT COUNT(*) AS total,
+              MIN(snapshot_at) AS oldest,
+              MAX(snapshot_at) AS newest
+         FROM brand_spy.ad_rank_snapshots
+        WHERE brand_id = $1`,
+      [req.params.id],
+    );
+    const { rows: recentRows } = await pgQuery(
+      `SELECT ad_archive_id, rank, snapshot_at
+         FROM brand_spy.ad_rank_snapshots
+        WHERE brand_id = $1
+        ORDER BY snapshot_at DESC
+        LIMIT 5`,
+      [req.params.id],
+    );
+    // Test the exact d3 query
+    const { rows: d3Rows } = await pgQuery(
+      `SELECT COUNT(*) AS cnt FROM brand_spy.ad_rank_snapshots
+        WHERE brand_id = $1
+          AND snapshot_at BETWEEN NOW() - '6 days'::INTERVAL
+                              AND NOW() - '0 days'::INTERVAL`,
+      [req.params.id],
+    );
+    res.json({ count: countRows[0], recent: recentRows, d3WindowCount: d3Rows[0].cnt });
+  } catch (err) { next(err); }
+});
+
 // GET /ads/:id
 router.get('/ads/:id', async (req, res, next) => {
   try {
