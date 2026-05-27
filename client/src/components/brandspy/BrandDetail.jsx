@@ -591,35 +591,35 @@ function MediaMixBar({ counts }) {
   const cPct = total ? (carousels / total) * 100 : 0;
 
   return (
-    <div className="space-y-2.5">
+    <div className="space-y-1.5">
       <div className="flex items-center gap-2">
-        <span className="text-[11px] uppercase tracking-wider text-text-faint font-medium">Media mix</span>
-        <span className="text-[11px] text-text-faint ml-auto tabular-nums">{total.toLocaleString()} ads</span>
+        <span className="text-[10px] uppercase tracking-wider text-text-faint font-medium">Media mix</span>
+        <span className="text-[10px] text-text-faint ml-auto tabular-nums">{total.toLocaleString()} ads</span>
       </div>
-      <div className="h-2 rounded-full bg-white/[0.04] flex overflow-hidden gap-px">
+      <div className="h-1.5 rounded-full bg-white/[0.04] flex overflow-hidden gap-px">
         {vPct > 0 && <div className="h-full bg-white/55 transition-all" style={{ width: `${vPct}%` }} />}
         {iPct > 0 && <div className="h-full bg-white/30 transition-all" style={{ width: `${iPct}%` }} />}
         {cPct > 0 && <div className="h-full bg-white/15 transition-all" style={{ width: `${cPct}%` }} />}
       </div>
-      <div className="space-y-1.5 pt-1">
-        <div className="flex items-center text-[12px]">
-          <span className="w-2 h-2 rounded-full bg-white/55 shrink-0 mr-2" />
+      <div className="space-y-0.5 pt-0.5">
+        <div className="flex items-center text-[11px]">
+          <span className="w-1.5 h-1.5 rounded-full bg-white/55 shrink-0 mr-1.5" />
           <span className="text-text-muted">Video</span>
           <span className="ml-auto tabular-nums text-text-faint">{videos.toLocaleString()} ads</span>
-          <span className="ml-3 text-text-primary font-semibold tabular-nums w-12 text-right">{vPct.toFixed(1)}%</span>
+          <span className="ml-2.5 text-text-primary font-semibold tabular-nums w-11 text-right">{vPct.toFixed(1)}%</span>
         </div>
-        <div className="flex items-center text-[12px]">
-          <span className="w-2 h-2 rounded-full bg-white/30 shrink-0 mr-2" />
+        <div className="flex items-center text-[11px]">
+          <span className="w-1.5 h-1.5 rounded-full bg-white/30 shrink-0 mr-1.5" />
           <span className="text-text-muted">Image</span>
           <span className="ml-auto tabular-nums text-text-faint">{images.toLocaleString()} ads</span>
-          <span className="ml-3 text-text-primary font-semibold tabular-nums w-12 text-right">{iPct.toFixed(1)}%</span>
+          <span className="ml-2.5 text-text-primary font-semibold tabular-nums w-11 text-right">{iPct.toFixed(1)}%</span>
         </div>
         {carousels > 0 && (
-          <div className="flex items-center text-[12px]">
-            <span className="w-2 h-2 rounded-full bg-white/15 shrink-0 mr-2" />
+          <div className="flex items-center text-[11px]">
+            <span className="w-1.5 h-1.5 rounded-full bg-white/15 shrink-0 mr-1.5" />
             <span className="text-text-muted">Carousel</span>
             <span className="ml-auto tabular-nums text-text-faint">{carousels.toLocaleString()} ads</span>
-            <span className="ml-3 text-text-primary font-semibold tabular-nums w-12 text-right">{cPct.toFixed(1)}%</span>
+            <span className="ml-2.5 text-text-primary font-semibold tabular-nums w-11 text-right">{cPct.toFixed(1)}%</span>
           </div>
         )}
       </div>
@@ -633,10 +633,10 @@ function MediaMixBar({ counts }) {
 
 function IntelPanel({ intel, intelLoading, intelError, onRetry }) {
   const headerNode = (
-    <div className="flex items-center gap-2 mb-3">
-      <Sparkles className="w-3.5 h-3.5 text-zinc-500" />
-      <span className="text-sm font-semibold text-text-primary">AI Brand Intel</span>
-      <span className="text-[10px] text-text-faint ml-0.5">via Claude Haiku</span>
+    <div className="flex items-center gap-1.5 mb-1.5">
+      <Sparkles className="w-3 h-3 text-zinc-500" />
+      <span className="text-[12px] font-semibold text-text-primary">AI Brand Intel</span>
+      <span className="text-[9px] text-text-faint ml-0.5">via Claude Haiku</span>
     </div>
   );
 
@@ -644,16 +644,16 @@ function IntelPanel({ intel, intelLoading, intelError, onRetry }) {
     return (
       <div>
         {headerNode}
-        <div className="divide-y" style={{ borderColor: 'rgba(255,255,255,0.04)' }}>
+        <div>
           {INTEL_CATS.map((cat) => (
-            <div key={cat.key} className="flex items-center gap-3 py-2.5 border-b border-white/[0.04] last:border-b-0">
-              <div className="flex items-center gap-1.5 shrink-0" style={{ width: 130 }}>
-                <span className="text-sm leading-none">{cat.icon}</span>
-                <span className="text-[11px] uppercase tracking-wider text-text-faint">Top {cat.label.toLowerCase()}</span>
+            <div key={cat.key} className="flex items-center gap-2 py-1.5 border-b border-white/[0.04] last:border-b-0">
+              <div className="flex items-center gap-1.5 shrink-0" style={{ width: 110 }}>
+                <span className="text-[11px] leading-none">{cat.icon}</span>
+                <span className="text-[9px] uppercase tracking-wider text-text-faint">Top {cat.label.toLowerCase()}</span>
               </div>
-              <div className="flex flex-wrap gap-1.5 flex-1">
+              <div className="flex flex-wrap gap-1 flex-1">
                 {[88, 128, 96, 112, 80].map((w, i) => (
-                  <div key={i} className="h-5 rounded-full bg-white/5 animate-pulse" style={{ width: w }} />
+                  <div key={i} className="h-4 rounded-full bg-white/5 animate-pulse" style={{ width: w }} />
                 ))}
               </div>
             </div>
@@ -700,14 +700,14 @@ function IntelPanel({ intel, intelLoading, intelError, onRetry }) {
           const items = intel[cat.key] ?? [];
           if (!items.length) return null;
           return (
-            <div key={cat.key} className="flex items-start gap-3 py-2.5 border-b border-white/[0.04] last:border-b-0">
-              <div className="flex items-center gap-1.5 shrink-0 pt-1" style={{ width: 130 }}>
-                <span className="text-sm leading-none">{cat.icon}</span>
-                <span className="text-[11px] uppercase tracking-wider text-text-faint">Top {cat.label.toLowerCase()}</span>
+            <div key={cat.key} className="flex items-start gap-2 py-1.5 border-b border-white/[0.04] last:border-b-0">
+              <div className="flex items-center gap-1.5 shrink-0 pt-0.5" style={{ width: 110 }}>
+                <span className="text-[11px] leading-none">{cat.icon}</span>
+                <span className="text-[9px] uppercase tracking-wider text-text-faint">Top {cat.label.toLowerCase()}</span>
               </div>
-              <div className="flex flex-wrap gap-1.5 flex-1">
+              <div className="flex flex-wrap gap-1 flex-1">
                 {items.map((item, i) => (
-                  <span key={i} className={`text-[11px] px-2.5 py-1 rounded-full border leading-snug ${INTEL_PILL_CLASS}`}>
+                  <span key={i} className={`text-[10px] px-1.5 py-0.5 rounded border leading-snug ${INTEL_PILL_CLASS}`}>
                     {item}
                   </span>
                 ))}
@@ -1183,17 +1183,15 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
               />
             </div>
 
-            {/* Unified dashboard card — PestLab-style layout. Summary text at
-                top, then a two-column grid: media mix + mini-stats on the left,
-                AI Brand Intel on the right. All in one wrapper card. */}
-            <div className="rounded-xl border border-border-subtle bg-bg-elevated p-5 space-y-5">
+            {/* Unified dashboard card — PestLab-style compact layout. */}
+            <div className="rounded-xl border border-border-subtle bg-bg-elevated px-4 py-3.5 space-y-3.5">
               {/* Summary text */}
               {(() => {
                 const tf = TIME_FILTERS.find((f) => f.value === timeFilter);
                 const label = tf?.value === 'all' ? null : tf?.label;
                 return (
-                  <p className="text-text-muted leading-relaxed">
-                    <span className="text-3xl font-bold text-text-primary tabular-nums">{total.toLocaleString()}</span>
+                  <p className="text-[13px] text-text-muted leading-snug">
+                    <span className="text-xl font-bold text-text-primary tabular-nums">{total.toLocaleString()}</span>
                     {' '}<span className="text-text-muted">ads</span>{' '}
                     {label
                       ? <>were launched in the <span className="text-text-primary font-medium">last {label}</span></>
@@ -1210,12 +1208,12 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
               })()}
 
               {/* Two-column grid inside the same card */}
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 pt-1">
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                 {/* LEFT — Media mix + 4 mini stat boxes */}
-                <div className="space-y-5">
+                <div className="space-y-3">
                   <MediaMixBar counts={formatCounts} />
 
-                  <div className="grid grid-cols-4 gap-2">
+                  <div className="grid grid-cols-4 gap-1.5">
                     {[
                       { label: 'Hooks',     value: aggCounts?.hooks,     tabId: 'hooks'     },
                       { label: 'Ad copy',   value: aggCounts?.adcopy,    tabId: 'adcopy'    },
@@ -1224,11 +1222,11 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
                     ].map(({ label, value, tabId }) => (
                       <button key={label}
                         onClick={() => setActiveTab(tabId)}
-                        className="rounded-lg border border-border-subtle bg-bg-card hover:bg-bg-hover hover:border-white/15 transition-colors py-3 text-center group">
-                        <p className="text-xl font-bold text-text-primary tabular-nums">
+                        className="rounded-md border border-border-subtle bg-bg-card hover:bg-bg-hover hover:border-white/15 transition-colors py-1.5 px-2 text-center group">
+                        <p className="text-[15px] font-bold text-text-primary tabular-nums leading-none">
                           {value == null ? '—' : (value >= 100 ? '99+' : value)}
                         </p>
-                        <p className="text-[10px] uppercase tracking-wider text-text-faint mt-0.5 group-hover:text-text-muted transition-colors">
+                        <p className="text-[9px] uppercase tracking-wider text-text-faint mt-1 group-hover:text-text-muted transition-colors">
                           {label}
                         </p>
                       </button>
@@ -1237,7 +1235,7 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
                 </div>
 
                 {/* RIGHT — AI Brand Intel */}
-                <div className="lg:border-l lg:border-border-subtle/50 lg:pl-6">
+                <div className="lg:border-l lg:border-border-subtle/50 lg:pl-4">
                   <IntelPanel intel={intel} intelLoading={intelLoading} intelError={intelError} onRetry={loadIntel} />
                 </div>
               </div>
