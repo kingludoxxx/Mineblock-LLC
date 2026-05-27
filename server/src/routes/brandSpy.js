@@ -147,6 +147,15 @@ router.get('/ads/:id', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// GET /debug-ad/:archiveId — temporary: inspect raw ScrapeCreators single-ad response
+router.get('/debug-ad/:archiveId', async (req, res, next) => {
+  try {
+    const sc = getScrapeCreatorsClient();
+    const raw = await sc.getAdLibraryDetail(req.params.archiveId);
+    res.json(raw);
+  } catch (err) { next(err); }
+});
+
 // GET /credits
 router.get('/credits', async (_req, res, next) => {
   try {

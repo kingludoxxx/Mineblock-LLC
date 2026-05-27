@@ -34,6 +34,10 @@ export class ScrapeCreatorsClient {
     return this._request('GET', '/facebook/adLibrary/search/companies', { query: q });
   }
 
+  async getAdLibraryDetail(adArchiveId) {
+    return this._request('GET', '/facebook/adLibrary/ad', { id: adArchiveId });
+  }
+
   async *iterateCompanyAds({ pageId, country, status, maxPages }) {
     const cap = maxPages ?? 30;
     let cursor = null;
