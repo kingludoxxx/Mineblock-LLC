@@ -85,7 +85,7 @@ const ALL_COLUMNS = [
   { key: 'v21d',    label: 'V21D',   locked: false, width: 60 },
 ];
 
-const PAGE_SIZE_GRID  = 30;
+const PAGE_SIZE_GRID  = 48;
 const PAGE_SIZE_TABLE = 50;
 
 // ---------------------------------------------------------------------------
@@ -368,17 +368,17 @@ function AdCard({ ad, brand, onOpenIntel }) {
   return (
     <div
       onClick={() => onOpenIntel(ad)}
-      className="group flex flex-col bg-bg-elevated border border-border-subtle rounded-xl overflow-hidden cursor-pointer hover:border-white/20 transition-all hover:shadow-xl"
+      className="group flex flex-col bg-bg-elevated border border-border-subtle rounded-lg overflow-hidden cursor-pointer hover:border-white/20 transition-all hover:shadow-lg"
     >
       {/* ── Page header ── */}
-      <div className="flex items-center gap-2 px-3 pt-3 pb-2 shrink-0" onClick={(e) => e.stopPropagation()}>
-        <PageAvatar page={pageAvatar} size={26} />
-        <span className="text-[12px] font-semibold text-text-primary flex-1 truncate min-w-0">{pageName}</span>
+      <div className="flex items-center gap-1.5 px-2 pt-2 pb-1.5 shrink-0" onClick={(e) => e.stopPropagation()}>
+        <PageAvatar page={pageAvatar} size={20} />
+        <span className="text-[11px] font-semibold text-text-primary flex-1 truncate min-w-0">{pageName}</span>
         {/* ••• menu */}
         <div className="relative shrink-0" ref={menuRef}>
           <button
             onClick={(e) => { e.stopPropagation(); setMenuOpen((o) => !o); }}
-            className="w-7 h-7 flex items-center justify-center rounded-lg text-text-faint hover:text-text-primary hover:bg-white/5 transition-colors">
+            className="w-6 h-6 flex items-center justify-center rounded-md text-text-faint hover:text-text-primary hover:bg-white/5 transition-colors">
             <MoreHorizontal className="w-4 h-4" />
           </button>
           {menuOpen && (
@@ -409,8 +409,8 @@ function AdCard({ ad, brand, onOpenIntel }) {
       </div>
 
       {/* ── Status + date ── */}
-      <div className="px-3 pb-1.5 shrink-0" onClick={(e) => e.stopPropagation()}>
-        <p className="text-[11px] flex items-center gap-1.5 text-text-faint">
+      <div className="px-2 pb-1 shrink-0" onClick={(e) => e.stopPropagation()}>
+        <p className="text-[10px] flex items-center gap-1 text-text-faint">
           <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${ad.isActive ? 'bg-emerald-400' : 'bg-zinc-600'}`} />
           {fmtLaunch(ad.startDate)} – {ad.isActive ? 'Present' : (ad.endDate ? fmtLaunch(ad.endDate) : '?')}
         </p>
@@ -418,8 +418,8 @@ function AdCard({ ad, brand, onOpenIntel }) {
 
       {/* ── Body text ── */}
       {hookText && (
-        <div className="px-3 pb-2 shrink-0" onClick={(e) => e.stopPropagation()}>
-          <p className="text-[12px] text-text-muted leading-relaxed line-clamp-2">{hookText}</p>
+        <div className="px-2 pb-1.5 shrink-0" onClick={(e) => e.stopPropagation()}>
+          <p className="text-[11px] text-text-muted leading-snug line-clamp-1">{hookText}</p>
         </div>
       )}
 
@@ -482,8 +482,8 @@ function AdCard({ ad, brand, onOpenIntel }) {
             {hasVideo && (
               <button onClick={handlePlayClick}
                 className="absolute inset-0 flex items-center justify-center z-10" title="Play inline">
-                <div className="w-12 h-12 rounded-full bg-black/60 backdrop-blur-sm flex items-center justify-center border border-white/20 group-hover:scale-110 transition-transform">
-                  <Play className="w-5 h-5 text-white ml-0.5" fill="white" />
+                <div className="w-9 h-9 rounded-full bg-black/60 backdrop-blur-sm flex items-center justify-center border border-white/20 group-hover:scale-110 transition-transform">
+                  <Play className="w-4 h-4 text-white ml-0.5" fill="white" />
                 </div>
               </button>
             )}
@@ -514,19 +514,15 @@ function AdCard({ ad, brand, onOpenIntel }) {
       </div>
 
       {/* ── Footer ── */}
-      <div className="px-3 py-2.5 shrink-0" onClick={(e) => e.stopPropagation()}>
-        <p className="text-[10px] text-text-faint truncate">{brand?.domain ?? ''}</p>
-        {ad.headline && (
-          <p className="text-[12px] text-text-primary font-medium line-clamp-1 mt-0.5">{ad.headline}</p>
-        )}
-        <div className="flex items-center justify-between gap-2 mt-1.5">
+      <div className="px-2 py-1.5 shrink-0" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between gap-1.5">
           {ad.ctaText && (
-            <span className="text-[11px] px-2.5 py-0.5 rounded border border-border-default bg-bg-card text-text-muted whitespace-nowrap">
+            <span className="text-[10px] px-2 py-0.5 rounded border border-border-default bg-bg-card text-text-muted whitespace-nowrap truncate min-w-0">
               {ad.ctaText}
             </span>
           )}
           {days != null && (
-            <span className={`text-[11px] font-semibold tabular-nums ml-auto shrink-0 ${days >= 30 ? 'text-emerald-400' : 'text-text-faint'}`}>
+            <span className={`text-[10px] font-semibold tabular-nums ml-auto shrink-0 ${days >= 30 ? 'text-emerald-400' : 'text-text-faint'}`}>
               {days}d
             </span>
           )}
@@ -1071,13 +1067,13 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
 
             {/* Ad grid */}
             {adsLoading ? (
-              <div className="grid grid-cols-3 gap-4">
-                {Array.from({ length: 9 }).map((_, i) => (
+              <div className="grid grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7 gap-2">
+                {Array.from({ length: 16 }).map((_, i) => (
                   <div key={i} className="rounded-xl border border-border-subtle overflow-hidden animate-pulse">
                     <div className="bg-white/5" style={{ aspectRatio: '4/5' }} />
-                    <div className="p-3 space-y-2">
-                      <div className="h-3 bg-white/5 rounded" />
-                      <div className="h-3 bg-white/5 rounded w-2/3" />
+                    <div className="p-2 space-y-1.5">
+                      <div className="h-2.5 bg-white/5 rounded" />
+                      <div className="h-2.5 bg-white/5 rounded w-2/3" />
                     </div>
                   </div>
                 ))}
@@ -1090,7 +1086,7 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
               </div>
             ) : (
               <>
-                <div className="grid grid-cols-3 gap-4">
+                <div className="grid grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7 gap-2">
                   {ads.map((ad) => <AdCard key={ad.id} ad={ad} brand={brand} onOpenIntel={setSelectedAd} />)}
                 </div>
                 {totalPages > 1 && (
