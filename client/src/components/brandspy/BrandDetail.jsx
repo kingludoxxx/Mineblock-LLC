@@ -4,6 +4,7 @@ import {
   Volume2, VolumeX, Maximize2,
   ChevronDown, Settings2, Globe, ScanSearch,
   Sparkles, AlertCircle, RotateCcw,
+  MoreHorizontal, Info, Copy, Download,
 } from 'lucide-react';
 import IntelDrawer from './IntelDrawer';
 
@@ -249,7 +250,7 @@ function VelocityCell({ value, days, win }) {
 }
 
 // ---------------------------------------------------------------------------
-// AdCard — Overview grid card with inline video player
+// AdCard — card with page header, ••• menu, inline video player
 // ---------------------------------------------------------------------------
 
 function fmtTime(s) {
@@ -259,32 +260,79 @@ function fmtTime(s) {
   return `${m}:${sec.toString().padStart(2, '0')}`;
 }
 
-function AdCard({ ad, onOpenIntel }) {
+function AdCard({ ad, brand, onOpenIntel }) {
   const [imgFailed,   setImgFailed]   = useState(false);
   const [playing,     setPlaying]     = useState(false);
   const [paused,      setPaused]      = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration,    setDuration]    = useState(0);
   const [muted,       setMuted]       = useState(false);
+  const [menuOpen,    setMenuOpen]    = useState(false);
+  const [copied,      setCopied]      = useState(false);
+  const [downloading, setDownloading] = useState(false);
   const videoRef = useRef(null);
+  const menuRef  = useRef(null);
 
   const fmt      = classifyAdFormat(ad);
   const days     = liveActiveDays(ad);
-  const hookText = ad.headline || (ad.bodyText ? ad.bodyText.slice(0, 120) : null) || '(No text)';
   const hasVideo = fmt === 'VIDEO' && !!ad.videoUrl;
+  const hookText = ad.headline || (ad.bodyText ? ad.bodyText.slice(0, 120) : null) || '';
 
-  // Autoplay when playing state turns true
+  // Resolve page info for header
+  const page       = brand?.pages?.find((p) => p.id === ad.brandPageId) ?? null;
+  const pageName   = ad.pageName ?? page?.pageName ?? brand?.domain ?? '';
+  const pageAvatar = { pageName, pageProfilePic: page?.pageProfilePic ?? ad.pageProfilePicUrl ?? null };
+
+  // Autoplay when playing flips on
   useEffect(() => {
-    if (playing && videoRef.current) {
-      videoRef.current.play().catch(() => {});
-    }
+    if (playing && videoRef.current) videoRef.current.play().catch(() => {});
   }, [playing]);
+
+  // Close ••• menu on outside click
+  useEffect(() => {
+    if (!menuOpen) return;
+    const h = (e) => { if (menuRef.current && !menuRef.current.contains(e.target)) setMenuOpen(false); };
+    document.addEventListener('mousedown', h);
+    return () => document.removeEventListener('mousedown', h);
+  }, [menuOpen]);
+
+  const adLibUrl = ad.adArchiveId
+    ? `https://www.facebook.com/ads/library/?id=${ad.adArchiveId}`
+    : null;
+
+  const handleCopyLink = async (e) => {
+    e.stopPropagation();
+    try { await navigator.clipboard.writeText(adLibUrl || ad.videoUrl || ''); } catch {}
+    setCopied(true);
+    setMenuOpen(false);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleDownload = async (e) => {
+    e.stopPropagation();
+    setMenuOpen(false);
+    if (!ad.videoUrl) return;
+    setDownloading(true);
+    try {
+      const res  = await fetch(ad.videoUrl);
+      const blob = await res.blob();
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement('a');
+      a.href = url; a.download = `${ad.adArchiveId || 'ad'}.mp4`;
+      document.body.appendChild(a); a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch {
+      window.open(ad.videoUrl, '_blank');
+    } finally {
+      setDownloading(false);
+    }
+  };
 
   const handlePlayClick = (e) => {
     e.stopPropagation();
     if (!hasVideo) return;
-    setPlaying(true);
-    setPaused(false);
+    setPlaying(true); setPaused(false);
   };
 
   const togglePlayPause = (e) => {
@@ -306,28 +354,79 @@ function AdCard({ ad, onOpenIntel }) {
     e.stopPropagation();
     const v = videoRef.current;
     if (!v) return;
-    v.muted = !v.muted;
-    setMuted(v.muted);
+    v.muted = !v.muted; setMuted(v.muted);
   };
 
   const handleFullscreen = (e) => {
     e.stopPropagation();
     const v = videoRef.current;
     if (!v) return;
-    if (v.requestFullscreen)       v.requestFullscreen();
+    if (v.requestFullscreen) v.requestFullscreen();
     else if (v.webkitRequestFullscreen) v.webkitRequestFullscreen();
   };
 
   return (
     <div
       onClick={() => onOpenIntel(ad)}
-      className="group relative flex flex-col bg-bg-elevated border border-border-subtle rounded-xl overflow-hidden cursor-pointer hover:border-white/20 transition-all hover:shadow-xl"
+      className="group flex flex-col bg-bg-elevated border border-border-subtle rounded-xl overflow-hidden cursor-pointer hover:border-white/20 transition-all hover:shadow-xl"
     >
+      {/* ── Page header ── */}
+      <div className="flex items-center gap-2 px-3 pt-3 pb-2 shrink-0" onClick={(e) => e.stopPropagation()}>
+        <PageAvatar page={pageAvatar} size={26} />
+        <span className="text-[12px] font-semibold text-text-primary flex-1 truncate min-w-0">{pageName}</span>
+        {/* ••• menu */}
+        <div className="relative shrink-0" ref={menuRef}>
+          <button
+            onClick={(e) => { e.stopPropagation(); setMenuOpen((o) => !o); }}
+            className="w-7 h-7 flex items-center justify-center rounded-lg text-text-faint hover:text-text-primary hover:bg-white/5 transition-colors">
+            <MoreHorizontal className="w-4 h-4" />
+          </button>
+          {menuOpen && (
+            <div
+              className="absolute right-0 top-full mt-1 w-40 rounded-xl shadow-2xl z-[60] overflow-hidden py-1"
+              style={{ background: '#1e1e1e', border: '1px solid #303030' }}>
+              <button
+                onClick={(e) => { e.stopPropagation(); onOpenIntel(ad); setMenuOpen(false); }}
+                className="w-full flex items-center gap-2.5 px-3.5 py-2 text-[13px] text-text-muted hover:bg-white/5 hover:text-text-primary text-left transition-colors">
+                <Info className="w-3.5 h-3.5 shrink-0" /> Ad details
+              </button>
+              <button
+                onClick={handleCopyLink}
+                className="w-full flex items-center gap-2.5 px-3.5 py-2 text-[13px] text-text-muted hover:bg-white/5 hover:text-text-primary text-left transition-colors">
+                <Copy className="w-3.5 h-3.5 shrink-0" /> {copied ? 'Copied!' : 'Copy link'}
+              </button>
+              {hasVideo && (
+                <button
+                  onClick={handleDownload}
+                  disabled={downloading}
+                  className="w-full flex items-center gap-2.5 px-3.5 py-2 text-[13px] text-text-muted hover:bg-white/5 hover:text-text-primary text-left transition-colors disabled:opacity-50">
+                  <Download className="w-3.5 h-3.5 shrink-0" /> {downloading ? 'Downloading…' : 'Download'}
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ── Status + date ── */}
+      <div className="px-3 pb-1.5 shrink-0" onClick={(e) => e.stopPropagation()}>
+        <p className="text-[11px] flex items-center gap-1.5 text-text-faint">
+          <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${ad.isActive ? 'bg-emerald-400' : 'bg-zinc-600'}`} />
+          {fmtLaunch(ad.startDate)} – {ad.isActive ? 'Present' : (ad.endDate ? fmtLaunch(ad.endDate) : '?')}
+        </p>
+      </div>
+
+      {/* ── Body text ── */}
+      {hookText && (
+        <div className="px-3 pb-2 shrink-0" onClick={(e) => e.stopPropagation()}>
+          <p className="text-[12px] text-text-muted leading-relaxed line-clamp-2">{hookText}</p>
+        </div>
+      )}
+
       {/* ── Thumbnail / Inline Video ── */}
-      <div className="relative bg-zinc-950 shrink-0" style={{ aspectRatio: '4/3' }}>
+      <div className="relative bg-zinc-950 shrink-0" style={{ aspectRatio: '4/5' }}>
 
         {playing && ad.videoUrl ? (
-          /* ── PLAYING: inline video + Atria-style controls ── */
           <>
             <video
               ref={videoRef}
@@ -340,45 +439,36 @@ function AdCard({ ad, onOpenIntel }) {
               onPlay={() => setPaused(false)}
               onPause={() => setPaused(true)}
             />
-
             {/* Controls overlay */}
             <div
               className="absolute bottom-0 left-0 right-0 z-30 px-2 pt-6 pb-2 flex flex-col gap-1.5"
               style={{ background: 'linear-gradient(to top, rgba(0,0,0,0.88) 0%, rgba(0,0,0,0.3) 70%, transparent 100%)' }}
               onClick={(e) => e.stopPropagation()}
             >
-              {/* Progress bar */}
               <input
                 type="range" min={0} max={duration || 100} step={0.1} value={currentTime}
                 onChange={handleSeek}
                 className="w-full h-1 cursor-pointer rounded-full appearance-none bg-white/20"
                 style={{ accentColor: 'white' }}
               />
-              {/* Controls row */}
               <div className="flex items-center gap-2">
-                <button onClick={togglePlayPause}
-                  className="text-white hover:text-white/70 transition-colors shrink-0">
-                  {paused
-                    ? <Play    className="w-3.5 h-3.5" fill="white" />
-                    : <Pause   className="w-3.5 h-3.5" fill="white" />}
+                <button onClick={togglePlayPause} className="text-white hover:text-white/70 transition-colors shrink-0">
+                  {paused ? <Play className="w-3.5 h-3.5" fill="white" /> : <Pause className="w-3.5 h-3.5" fill="white" />}
                 </button>
                 <span className="text-[10px] text-white/60 font-mono tabular-nums leading-none">
                   {fmtTime(currentTime)} / {fmtTime(duration)}
                 </span>
                 <div className="flex-1" />
-                <button onClick={toggleMute}
-                  className="text-white/60 hover:text-white transition-colors shrink-0">
+                <button onClick={toggleMute} className="text-white/60 hover:text-white transition-colors shrink-0">
                   {muted ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
                 </button>
-                <button onClick={handleFullscreen}
-                  className="text-white/60 hover:text-white transition-colors shrink-0">
+                <button onClick={handleFullscreen} className="text-white/60 hover:text-white transition-colors shrink-0">
                   <Maximize2 className="w-3.5 h-3.5" />
                 </button>
               </div>
             </div>
           </>
         ) : (
-          /* ── NOT PLAYING: thumbnail ── */
           <>
             {ad.thumbnailUrl && !imgFailed ? (
               <img src={ad.thumbnailUrl} alt="" className="w-full h-full object-cover"
@@ -388,31 +478,19 @@ function AdCard({ ad, onOpenIntel }) {
                 <span className="text-text-faint text-[11px] uppercase tracking-widest opacity-40">{fmt}</span>
               </div>
             )}
-
-            {/* Hover tint */}
             <div className="absolute inset-0 bg-black/15 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none" />
-
-            {/* Play button — only for video ads */}
             {hasVideo && (
               <button onClick={handlePlayClick}
-                className="absolute inset-0 flex items-center justify-center z-10"
-                title="Play inline">
+                className="absolute inset-0 flex items-center justify-center z-10" title="Play inline">
                 <div className="w-12 h-12 rounded-full bg-black/60 backdrop-blur-sm flex items-center justify-center border border-white/20 group-hover:scale-110 transition-transform">
                   <Play className="w-5 h-5 text-white ml-0.5" fill="white" />
                 </div>
               </button>
             )}
-
-            {/* Date range gradient overlay */}
-            <div className="absolute bottom-0 left-0 right-0 px-2 py-2 bg-gradient-to-t from-black/80 via-black/40 to-transparent pointer-events-none z-20">
-              <p className="text-[10px] text-white/75 font-mono">
-                {fmtDateRange(ad.startDate, ad.endDate, ad.isActive)}
-              </p>
-            </div>
           </>
         )}
 
-        {/* Format badge — top left (hidden while playing to not obstruct controls) */}
+        {/* Format badge — top left */}
         {!playing && (
           <div className="absolute top-2 left-2 z-20 pointer-events-none">
             <span className={`text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded-md border backdrop-blur-sm ${
@@ -424,7 +502,6 @@ function AdCard({ ad, onOpenIntel }) {
             </span>
           </div>
         )}
-
         {/* Tier badge — top right */}
         {ad.tier && !playing && (
           <div className="absolute top-2 right-2 z-20 pointer-events-none">
@@ -436,18 +513,20 @@ function AdCard({ ad, onOpenIntel }) {
         )}
       </div>
 
-      {/* ── Text area ── */}
-      <div className="p-3 flex flex-col gap-1.5 flex-1">
-        <p className="text-[12px] text-text-primary leading-relaxed line-clamp-2">{hookText}</p>
-        <div className="flex items-center justify-between gap-2 mt-auto">
-          <div className="flex items-center gap-1.5 min-w-0">
-            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${ad.isActive ? 'bg-emerald-400' : 'bg-zinc-600'}`} />
-            {ad.ctaText && (
-              <span className="text-[10px] text-text-faint truncate">{ad.ctaText}</span>
-            )}
-          </div>
+      {/* ── Footer ── */}
+      <div className="px-3 py-2.5 shrink-0" onClick={(e) => e.stopPropagation()}>
+        <p className="text-[10px] text-text-faint truncate">{brand?.domain ?? ''}</p>
+        {ad.headline && (
+          <p className="text-[12px] text-text-primary font-medium line-clamp-1 mt-0.5">{ad.headline}</p>
+        )}
+        <div className="flex items-center justify-between gap-2 mt-1.5">
+          {ad.ctaText && (
+            <span className="text-[11px] px-2.5 py-0.5 rounded border border-border-default bg-bg-card text-text-muted whitespace-nowrap">
+              {ad.ctaText}
+            </span>
+          )}
           {days != null && (
-            <span className={`text-[11px] font-semibold shrink-0 tabular-nums ${days >= 30 ? 'text-emerald-400' : 'text-text-faint'}`}>
+            <span className={`text-[11px] font-semibold tabular-nums ml-auto shrink-0 ${days >= 30 ? 'text-emerald-400' : 'text-text-faint'}`}>
               {days}d
             </span>
           )}
@@ -507,23 +586,23 @@ function MediaMixBar({ ads }) {
 }
 
 // ---------------------------------------------------------------------------
-// IntelPanel — AI analysis tags
+// IntelPanel — AI analysis tags (Atria-style: full-width, no card border)
 // ---------------------------------------------------------------------------
 
 function IntelPanel({ intel, intelLoading, intelError, onRetry }) {
   if (intelLoading) {
     return (
-      <div className="rounded-xl border border-border-subtle p-4 space-y-3" style={{ background: 'rgba(255,255,255,0.015)' }}>
-        <div className="flex items-center gap-2 mb-1">
-          <Sparkles className="w-4 h-4 text-violet-400 animate-pulse" />
+      <div className="space-y-2.5 py-1">
+        <div className="flex items-center gap-2">
+          <Sparkles className="w-3 h-3 text-zinc-600" />
           <span className="text-sm font-semibold text-text-primary">AI Brand Intel</span>
-          <span className="text-[10px] text-text-faint">Analyzing ads…</span>
+          <span className="text-[10px] text-text-faint ml-0.5">Analyzing ads…</span>
         </div>
         {INTEL_CATS.map((cat) => (
-          <div key={cat.key} className="flex items-start gap-3">
-            <span className="text-[10px] uppercase tracking-wider text-text-faint w-20 shrink-0 pt-1">{cat.label}</span>
+          <div key={cat.key} className="flex items-start gap-4">
+            <span className="text-[10px] uppercase tracking-wider text-text-faint shrink-0 pt-0.5" style={{ width: 72 }}>{cat.label}</span>
             <div className="flex flex-wrap gap-1.5 flex-1">
-              {[90, 130, 100, 110, 80].map((w, i) => (
+              {[88, 128, 96, 112, 80, 120].map((w, i) => (
                 <div key={i} className="h-5 rounded-full bg-white/5 animate-pulse" style={{ width: w }} />
               ))}
             </div>
@@ -535,9 +614,9 @@ function IntelPanel({ intel, intelLoading, intelError, onRetry }) {
 
   if (intelError) {
     return (
-      <div className="rounded-xl border border-red-500/20 p-4 flex items-center justify-between" style={{ background: 'rgba(255,255,255,0.015)' }}>
+      <div className="flex items-center justify-between py-1">
         <div className="flex items-center gap-2">
-          <AlertCircle className="w-4 h-4 text-red-400 shrink-0" />
+          <AlertCircle className="w-3.5 h-3.5 text-red-400 shrink-0" />
           <span className="text-sm text-text-muted">Could not load AI intel — {intelError}</span>
         </div>
         <button onClick={onRetry} className="flex items-center gap-1.5 text-xs text-text-faint hover:text-text-primary transition-colors shrink-0 ml-4">
@@ -550,28 +629,26 @@ function IntelPanel({ intel, intelLoading, intelError, onRetry }) {
   if (!intel) return null;
 
   const hasData = INTEL_CATS.some((cat) => (intel[cat.key] ?? []).length > 0);
-  if (!hasData) {
-    return (
-      <div className="rounded-xl border border-border-subtle p-4 flex items-center gap-2" style={{ background: 'rgba(255,255,255,0.015)' }}>
-        <Sparkles className="w-4 h-4 text-text-faint opacity-50" />
-        <span className="text-sm text-text-faint">No ad text to analyze yet.</span>
-      </div>
-    );
-  }
+  if (!hasData) return (
+    <div className="flex items-center gap-2 py-1">
+      <Sparkles className="w-3 h-3 text-zinc-600" />
+      <span className="text-sm text-text-faint">No ad text to analyze yet.</span>
+    </div>
+  );
 
   return (
-    <div className="rounded-xl border border-border-subtle p-4 space-y-3" style={{ background: 'rgba(255,255,255,0.015)' }}>
-      <div className="flex items-center gap-2 mb-1">
-        <Sparkles className="w-4 h-4 text-violet-400" />
+    <div className="space-y-2 py-1">
+      <div className="flex items-center gap-2">
+        <Sparkles className="w-3 h-3 text-zinc-500" />
         <span className="text-sm font-semibold text-text-primary">AI Brand Intel</span>
-        <span className="text-[10px] text-text-faint">via Claude Haiku</span>
+        <span className="text-[10px] text-text-faint ml-0.5">via Claude Haiku</span>
       </div>
       {INTEL_CATS.map((cat) => {
         const items = intel[cat.key] ?? [];
         if (!items.length) return null;
         return (
-          <div key={cat.key} className="flex items-start gap-3">
-            <span className="text-[10px] uppercase tracking-wider text-text-faint w-20 shrink-0 pt-1">{cat.label}</span>
+          <div key={cat.key} className="flex items-start gap-4">
+            <span className="text-[10px] uppercase tracking-wider text-text-faint shrink-0 pt-0.5" style={{ width: 72 }}>{cat.label}</span>
             <div className="flex flex-wrap gap-1.5 flex-1">
               {items.map((item, i) => (
                 <span key={i} className={`text-[11px] px-2.5 py-0.5 rounded-full border leading-snug ${cat.color}`}>
@@ -582,6 +659,43 @@ function IntelPanel({ intel, intelLoading, intelError, onRetry }) {
           </div>
         );
       })}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// SortDropdown — custom "Sort: X ▼" styled dropdown
+// ---------------------------------------------------------------------------
+
+function SortDropdown({ value, onChange, options }) {
+  const { open, setOpen, ref } = useDropdown();
+  const current = options.find((o) => o.value === value);
+  return (
+    <div className="relative text-xs" ref={ref}>
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="flex items-center gap-1.5 text-text-muted hover:text-text-primary transition-colors">
+        <span className="text-text-faint">Sort:</span>
+        <span className="font-medium text-text-primary">{current?.label ?? value}</span>
+        <ChevronDown className={`w-3 h-3 text-text-faint transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full mt-1.5 w-44 rounded-xl shadow-2xl z-50 overflow-hidden py-1"
+          style={{ background: '#1e1e1e', border: '1px solid #303030' }}>
+          {options.map((opt) => (
+            <button
+              key={opt.value}
+              onClick={() => { onChange(opt.value); setOpen(false); }}
+              className={`w-full text-left px-4 py-2 text-[13px] transition-colors ${
+                opt.value === value
+                  ? 'text-white bg-white/5'
+                  : 'text-text-muted hover:bg-white/5 hover:text-white'
+              }`}>
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -927,12 +1041,6 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
                   )}
                 </div>
 
-                {/* Sort */}
-                <select value={sort} onChange={(e) => setSort(e.target.value)}
-                  className="text-xs bg-bg-elevated border border-border-default rounded-lg px-2.5 py-1.5 text-text-muted focus:outline-none cursor-pointer">
-                  {SORT_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-                </select>
-
                 {/* Tier pills */}
                 <div className="flex items-center gap-1 flex-wrap">
                   {TIER_FILTERS.map((f) => (
@@ -946,6 +1054,14 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
                 </div>
               </div>
             </div>
+
+            {/* Count + sort */}
+            {!adsLoading && total > 0 && (
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-text-faint">{total.toLocaleString()} ads</span>
+                <SortDropdown value={sort} onChange={setSort} options={SORT_OPTIONS} />
+              </div>
+            )}
 
             {/* Media mix */}
             {!adsLoading && ads.length > 0 && <MediaMixBar ads={ads} />}
@@ -975,7 +1091,7 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
             ) : (
               <>
                 <div className="grid grid-cols-3 gap-4">
-                  {ads.map((ad) => <AdCard key={ad.id} ad={ad} onOpenIntel={setSelectedAd} />)}
+                  {ads.map((ad) => <AdCard key={ad.id} ad={ad} brand={brand} onOpenIntel={setSelectedAd} />)}
                 </div>
                 {totalPages > 1 && (
                   <div className="flex items-center justify-between pt-2">
@@ -1062,10 +1178,7 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
               <div className="flex-1" />
 
               {/* Sort */}
-              <select value={sort} onChange={(e) => setSort(e.target.value)}
-                className="text-xs bg-bg-elevated border border-border-default rounded-lg px-2.5 py-1.5 text-text-muted focus:outline-none cursor-pointer">
-                {SORT_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-              </select>
+              <SortDropdown value={sort} onChange={setSort} options={SORT_OPTIONS} />
 
               {/* Columns toggle */}
               <div className="relative" ref={intColsDropdown.ref}>
