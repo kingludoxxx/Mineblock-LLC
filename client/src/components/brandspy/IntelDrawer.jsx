@@ -1,6 +1,7 @@
 /**
  * IntelDrawer — full-detail modal for a single ad.
- * Opens when clicking any row in BrandLeague or BrandDetail.
+ * Opens when clicking any card in BrandDetail (Overview grid or
+ * Intelligence table) or any aggregation row.
  *
  * Layout (reference screenshot):
  *  Left  ~55%  — Facebook-style ad preview (profile, body copy, creative)
@@ -187,6 +188,16 @@ function RankHistoryCard({ label, value }) {
 // ---------------------------------------------------------------------------
 // Main IntelDrawer
 // ---------------------------------------------------------------------------
+
+// Currently-active heuristic — kept in sync with BrandDetail.isAdActive and
+// the backend status=ACTIVE SQL clause. is_active flag is unreliable while
+// the worker spuriously flips it; last_seen_at within 2 days is the source
+// of truth for "we just saw this ad in the ad library".
+function isAdActive(ad) {
+  if (ad?.isActive === true) return true;
+  if (!ad?.lastSeenAt) return false;
+  return Date.now() - new Date(ad.lastSeenAt).getTime() <= 2 * 86400000;
+}
 
 function liveActiveDays(ad) {
   // Three signals, pick the highest:
@@ -500,12 +511,17 @@ export default function IntelDrawer({ ad, brand, onClose }) {
 
                 {/* STATUS */}
                 <SignalMetricCard label="Status">
-                  <div className="flex items-center gap-1.5">
-                    <span className={`w-2 h-2 rounded-full shrink-0 ${ad.isActive ? 'bg-emerald-400' : 'bg-zinc-500'}`} />
-                    <span className={`text-sm font-semibold ${ad.isActive ? 'text-emerald-400' : 'text-text-faint'}`}>
-                      {ad.isActive ? 'Active' : 'Ended'}
-                    </span>
-                  </div>
+                  {(() => {
+                    const active = isAdActive(ad);
+                    return (
+                      <div className="flex items-center gap-1.5">
+                        <span className={`w-2 h-2 rounded-full shrink-0 ${active ? 'bg-emerald-400' : 'bg-zinc-500'}`} />
+                        <span className={`text-sm font-semibold ${active ? 'text-emerald-400' : 'text-text-faint'}`}>
+                          {active ? 'Active' : 'Ended'}
+                        </span>
+                      </div>
+                    );
+                  })()}
                 </SignalMetricCard>
 
                 {/* ACTIVE days */}
