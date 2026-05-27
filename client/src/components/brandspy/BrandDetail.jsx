@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import {
   ArrowLeft, ExternalLink, RefreshCw,
-  ChevronDown, Settings2, Globe, ScanSearch, X,
+  ChevronDown, Settings2, Globe, ScanSearch,
 } from 'lucide-react';
 import IntelDrawer from './IntelDrawer';
 
@@ -41,7 +41,6 @@ const SORT_OPTIONS = [
 ];
 
 const ALL_COLUMNS = [
-  { key: 'checkbox', label: '',       locked: true,  width: 36 },
   { key: 'num',      label: '#',      locked: true,  width: 42 },
   { key: 'ad',       label: 'AD',     locked: true,  width: 280 },
   { key: 'page',     label: 'PAGE',   locked: false, width: 150 },
@@ -186,7 +185,6 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
   const [sort, setSort]               = useState('rank_asc');
   const [tierFilter, setTierFilter]   = useState('ALL');
   const [pageFilter, setPageFilter]   = useState(null); // brand_page_id UUID or null
-  const [selectedIds, setSelectedIds] = useState(new Set());
   const [selectedAd, setSelectedAd] = useState(null);
   const [visibleCols, setVisibleCols] = useState(() => {
     const init = {};
@@ -240,9 +238,6 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
   };
 
   const totalPages = Math.ceil(total / PAGE_SIZE);
-  const allSelected = ads.length > 0 && ads.every((a) => selectedIds.has(a.id));
-  const toggleSelectAll = () => setSelectedIds(allSelected ? new Set() : new Set(ads.map((a) => a.id)));
-  const toggleRow = (id) => setSelectedIds((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const toggleCol = (key) => setVisibleCols((prev) => ({ ...prev, [key]: !prev[key] }));
 
   const selectedPageObj = brand?.pages?.find((p) => p.id === pageFilter) ?? null;
@@ -439,7 +434,7 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
             </button>
             {columnsDropdown.open && (
               <div className="absolute top-full right-0 mt-1 w-44 bg-bg-card border border-border-default rounded-lg shadow-xl z-50 p-2 space-y-0.5">
-                {ALL_COLUMNS.filter((c) => c.key !== 'checkbox' && c.key !== 'num').map((c) => (
+                {ALL_COLUMNS.filter((c) => c.key !== 'num').map((c) => (
                   <label key={c.key} className={`flex items-center gap-2 px-2 py-1 rounded text-xs cursor-pointer hover:bg-bg-elevated transition-colors ${c.locked ? 'opacity-50 cursor-not-allowed' : ''}`}>
                     <input type="checkbox" checked={visibleCols[c.key]} disabled={c.locked}
                       onChange={() => !c.locked && toggleCol(c.key)} className="accent-accent" />
@@ -465,7 +460,6 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
             <table className="min-w-[1300px] w-full border-collapse">
               <thead className="sticky top-[45px] z-10 bg-bg-elevated">
                 <tr>
-                  {col('checkbox') && <th style={{ width: 36 }} className="px-2 py-2.5"><input type="checkbox" checked={allSelected} onChange={toggleSelectAll} className="accent-accent" /></th>}
                   {col('num')     && <th style={{ width: 42 }} className="px-2 py-2.5 text-right text-[10px] uppercase tracking-wider text-text-faint font-normal">#</th>}
                   {col('ad')      && <th style={{ width: 280 }} className="px-3 py-2.5 text-left text-[10px] uppercase tracking-wider text-text-faint font-normal">AD</th>}
                   {col('page')    && <th style={{ width: 150 }} className="px-3 py-2.5 text-left text-[10px] uppercase tracking-wider text-text-faint font-normal">PAGE</th>}
@@ -488,8 +482,6 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
                     key={ad.id}
                     ad={ad}
                     rowNum={(page - 1) * PAGE_SIZE + i + 1}
-                    selected={selectedIds.has(ad.id)}
-                    onToggle={() => toggleRow(ad.id)}
                     onSelect={() => setSelectedAd(ad)}
                     col={col}
                   />
@@ -502,39 +494,17 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
 
       {/* Bottom bar */}
       <div className="shrink-0 border-t border-border-subtle bg-bg-card px-4 py-2 flex items-center justify-between gap-3">
-        {selectedIds.size > 0 ? (
-          <>
-            <span className="text-xs text-text-muted">{selectedIds.size} selected</span>
-            <div className="flex items-center gap-2 flex-1 justify-end">
-              <button onClick={() => setSelectedIds(new Set())}
-                className="flex items-center gap-1 px-2.5 py-1.5 text-xs rounded-lg bg-bg-elevated border border-border-default hover:bg-bg-hover text-text-muted transition-colors">
-                <X className="w-3 h-3" /> Clear
-              </button>
-              <button onClick={() => alert('Coming soon')}
-                className="px-3 py-1.5 text-xs rounded-lg bg-accent border border-accent hover:opacity-90 text-white font-medium transition-opacity">
-                Static Ads
-              </button>
-              <button onClick={() => alert('Coming soon')}
-                className="px-3 py-1.5 text-xs rounded-lg bg-accent border border-accent hover:opacity-90 text-white font-medium transition-opacity">
-                Ad Scripts
-              </button>
-            </div>
-          </>
-        ) : (
-          <>
-            <span className="text-[11px] text-text-faint">{total.toLocaleString()} ads · page {page} of {Math.max(1, totalPages)}</span>
-            <div className="flex items-center gap-2">
-              <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1}
-                className="px-3 py-1 text-xs rounded-lg bg-bg-elevated border border-border-default disabled:opacity-40 hover:bg-bg-hover text-text-primary transition-colors">
-                ← Prev
-              </button>
-              <button onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page >= totalPages}
-                className="px-3 py-1 text-xs rounded-lg bg-bg-elevated border border-border-default disabled:opacity-40 hover:bg-bg-hover text-text-primary transition-colors">
-                Next →
-              </button>
-            </div>
-          </>
-        )}
+        <span className="text-[11px] text-text-faint">{total.toLocaleString()} ads · page {page} of {Math.max(1, totalPages)}</span>
+        <div className="flex items-center gap-2">
+          <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1}
+            className="px-3 py-1 text-xs rounded-lg bg-bg-elevated border border-border-default disabled:opacity-40 hover:bg-bg-hover text-text-primary transition-colors">
+            ← Prev
+          </button>
+          <button onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page >= totalPages}
+            className="px-3 py-1 text-xs rounded-lg bg-bg-elevated border border-border-default disabled:opacity-40 hover:bg-bg-hover text-text-primary transition-colors">
+            Next →
+          </button>
+        </div>
       </div>
       {selectedAd && (
         <IntelDrawer
@@ -551,19 +521,14 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
 // Table row
 // ---------------------------------------------------------------------------
 
-function DetailAdRow({ ad, rowNum, selected, onToggle, onSelect, col }) {
+function DetailAdRow({ ad, rowNum, onSelect, col }) {
   const delta3d = (ad.rank3d != null && ad.currentRank != null) ? ad.rank3d - ad.currentRank : null;
 
   return (
     <tr
-      className={`border-b border-border-subtle hover:bg-bg-elevated transition-colors cursor-pointer ${selected ? 'bg-accent/5' : ''}`}
+      className="border-b border-border-subtle hover:bg-bg-elevated transition-colors cursor-pointer"
       onClick={onSelect}
     >
-      {col('checkbox') && (
-        <td className="px-2 py-2 w-9" onClick={(e) => e.stopPropagation()}>
-          <input type="checkbox" checked={selected} onChange={onToggle} className="accent-accent" />
-        </td>
-      )}
       {col('num') && (
         <td className="px-2 py-2 text-right text-[11px] text-text-faint tabular-nums">#{rowNum}</td>
       )}
