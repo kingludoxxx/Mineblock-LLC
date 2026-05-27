@@ -219,31 +219,53 @@ ${JSON.stringify(adsData)}`,
 router.get('/debug/snapshots/:id', async (req, res, next) => {
   try {
     const { query: pgQuery } = await import('../config/db.js');
+    const id = req.params.id;
+
     const { rows: countRows } = await pgQuery(
-      `SELECT COUNT(*) AS total,
-              MIN(snapshot_at) AS oldest,
-              MAX(snapshot_at) AS newest
-         FROM brand_spy.ad_rank_snapshots
-        WHERE brand_id = $1`,
-      [req.params.id],
+      `SELECT COUNT(*) AS total, MIN(snapshot_at) AS oldest, MAX(snapshot_at) AS newest
+         FROM brand_spy.ad_rank_snapshots WHERE brand_id = $1`,
+      [id],
     );
-    const { rows: recentRows } = await pgQuery(
-      `SELECT ad_archive_id, rank, snapshot_at
+
+    // Distinct timestamps (scrape run times)
+    const { rows: runRows } = await pgQuery(
+      `SELECT DISTINCT DATE_TRUNC('minute', snapshot_at) AS run_time, COUNT(*) AS ads
+         FROM brand_spy.ad_rank_snapshots WHERE brand_id = $1
+         GROUP BY DATE_TRUNC('minute', snapshot_at)
+         ORDER BY run_time DESC LIMIT 10`,
+      [id],
+    );
+
+    // Run the EXACT d3 DISTINCT ON query used by loadHistoricalRanks
+    const lower = '0', upper = '6', center = '3';
+    const { rows: d3Sample } = await pgQuery(
+      `SELECT DISTINCT ON (ad_archive_id) ad_archive_id, rank, snapshot_at
          FROM brand_spy.ad_rank_snapshots
         WHERE brand_id = $1
-        ORDER BY snapshot_at DESC
+          AND snapshot_at BETWEEN NOW() - ($3::text || ' days')::INTERVAL
+                              AND NOW() - ($2::text || ' days')::INTERVAL
+        ORDER BY ad_archive_id,
+                 ABS(EXTRACT(EPOCH FROM (NOW() - snapshot_at - ($4::text || ' days')::INTERVAL)))
         LIMIT 5`,
-      [req.params.id],
+      [id, lower, upper, center],
     );
-    // Test the exact d3 query
-    const { rows: d3Rows } = await pgQuery(
-      `SELECT COUNT(*) AS cnt FROM brand_spy.ad_rank_snapshots
-        WHERE brand_id = $1
-          AND snapshot_at BETWEEN NOW() - '6 days'::INTERVAL
-                              AND NOW() - '0 days'::INTERVAL`,
-      [req.params.id],
+
+    // Check current rank_3d value in ads table for a sample ad
+    const { rows: adsCheck } = await pgQuery(
+      `SELECT ad_archive_id, current_rank, rank_3d, rank_7d, rank_21d, velocity_7d, velocity_21d
+         FROM brand_spy.ads
+        WHERE brand_id = $1 AND current_rank IS NOT NULL
+        ORDER BY current_rank ASC LIMIT 3`,
+      [id],
     );
-    res.json({ count: countRows[0], recent: recentRows, d3WindowCount: d3Rows[0].cnt });
+
+    res.json({
+      snapshotCount: countRows[0],
+      scrapeRuns: runRows,
+      d3QuerySampleRows: d3Sample.length,
+      d3QuerySample: d3Sample,
+      adsVelocitySample: adsCheck,
+    });
   } catch (err) { next(err); }
 });
 
