@@ -219,7 +219,7 @@ export default function BrandLeague({ apiBaseUrl }) {
   const [brandDetail, setBrandDetail] = useState(null); // includes pages
   const [ads, setAds] = useState([]);
   const [total, setTotal] = useState(0);
-  const [adsLoading, setAdsLoading] = useState(false);
+  const [adsLoading, setAdsLoading] = useState(true);
   const [adsError, setAdsError] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -331,6 +331,12 @@ export default function BrandLeague({ apiBaseUrl }) {
     setRefreshing(true);
     try {
       await fetch(`${apiBaseUrl}/brands/${selectedBrand.id}/scrape`, { method: 'POST' });
+      // Re-fetch brand detail (pages + counts) so selector stays fresh
+      const r = await fetch(`${apiBaseUrl}/brands/${selectedBrand.id}`);
+      if (r.ok) {
+        const d = await r.json();
+        if (d.brand) setBrandDetail(d.brand);
+      }
       await loadAds();
     } catch (_) {
       // silently ignore scrape trigger errors; ads may still reload
