@@ -339,8 +339,9 @@ export default function IntelDrawer({ ad, brand, onClose }) {
               </div>
             )}
 
-            {/* Creative */}
-            <div className="flex-1 relative mx-5 mb-0 rounded-xl overflow-hidden" style={{ minHeight: 200, background: '#0d0d0f', border: '1px solid #2a2a2a' }}>
+            {/* Creative — container shrink-wraps to the image/video so no dark
+                letterbox space appears around the actual creative. */}
+            <div className="relative mx-5 mb-0 rounded-xl overflow-hidden" style={{ border: '1px solid #2a2a2a' }}>
               {/* Format badge */}
               {ad.displayFormat && (
                 <div className="absolute top-3 left-3 z-10 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider"
@@ -359,27 +360,29 @@ export default function IntelDrawer({ ad, brand, onClose }) {
                 Save
               </button>
 
-              {/* Media */}
+              {/* Media — block + w-full + max-h:70vh sizes the element to the
+                  image's natural aspect inside the panel without letterboxing.
+                  The container shrink-wraps because there's no flex-1 / min-h. */}
               {ad.videoUrl ? (
                 <video
                   src={ad.videoUrl}
                   poster={ad.thumbnailUrl ?? undefined}
                   controls
-                  className="w-full h-full object-contain"
-                  style={{ maxHeight: 440 }}
+                  className="block w-full"
+                  style={{ maxHeight: '70vh', background: '#000' }}
                 />
               ) : ad.thumbnailUrl ? (
                 <img
                   src={ad.thumbnailUrl}
                   alt=""
-                  className="w-full object-contain"
-                  style={{ maxHeight: 440 }}
+                  className="block w-full"
+                  style={{ maxHeight: '70vh', objectFit: 'contain' }}
                 />
               ) : (
                 /* No creative stored (common for DCO/collation ads — each variant
                    has its own image that isn't captured in the snapshot).
                    Point users to Meta Ad Library to see the actual creative. */
-                <div className="w-full flex flex-col items-center justify-center gap-3 py-14">
+                <div className="w-full flex flex-col items-center justify-center gap-3 py-14" style={{ background: '#0d0d0f' }}>
                   <p className="text-sm font-medium" style={{ color: '#6b7280' }}>Creative not available</p>
                   <p className="text-xs text-center max-w-[220px]" style={{ color: '#4b5563' }}>
                     This ad has multiple variants (DCO). View the full creative on Meta Ad Library.
