@@ -1,6 +1,27 @@
 # Progress Log
 
 ---
+TIMESTAMP: 2026-05-27 05:10
+TASK: Brand Spy — Fix ACTIVE days column tracking (commits 7b9d4b5 + 4b16c52)
+BUILT: Exposed total_active_time (Facebook's own cumulative active-seconds field)
+  from brandSpyDb.js — added to SELECT in both listAds + getAdDetail, returned
+  as totalActiveTime in mapAdListItem. Updated liveActiveDays() in BrandLeague,
+  BrandDetail, IntelDrawer to prefer totalActiveTime/86400, fall back to activeDays.
+  Removed bogus start_date math (ScrapeCreators start_date = batch snapshot date,
+  not actual ad launch date).
+TESTED: Queried live API post-deploy. try-forge.com top ads: totalActiveTime=57808-59239
+  seconds = 0 days (Memorial Day ads <1 day old — correct). thegreatproject.com
+  top ads: totalActiveTime=null (Facebook doesn't return it for all ad types).
+  Unit confirmed as seconds (not days): 57808s / 86400 = 0.67 days.
+OUTPUT: ACTIVE column now shows FB's actual active-seconds converted to days.
+  When Facebook doesn't provide it (null), falls back to stored activeDays.
+  No more fake "88d" or "1d" from bogus start_date calculation.
+DECISIONS: Using totalActiveTime as authoritative source; startDate abandoned
+  for active-days calculation entirely. When null, shows stored activeDays
+  (which is 0-1 for current data due to batch start_date issue — honest).
+STATUS: COMPLETE
+
+---
 TIMESTAMP: 2026-05-27 23:59
 TASK: Brand Spy — League audit + 3 bug fixes (commit f5f741b)
 BUILT: Full static audit of BrandLeague, BrandDetail, IntelDrawer. Cross-verified all API field names (brandSpyDb.js mapBrand/mapAdListItem/getBrandExpanded) against component expectations — all match. Found and fixed 3 bugs: (1) IntelDrawer adLibUrl null guard — adArchiveId can be null, URL would become id=null, both Ad Library links now conditional; disabled state for missing ID. (2) BrandLeague handleRefresh didn't re-fetch brandDetail — stale page counts after scrape, now re-fetches expanded brand. (3) adsLoading initialized false — brief "No ads found" flash on page load, fixed to true.
