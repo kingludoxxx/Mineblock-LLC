@@ -435,8 +435,8 @@ function AdCard({ ad, brand, onOpenIntel }) {
       {/* ── Status + date ── */}
       <div className="px-2 pb-1 shrink-0" onClick={(e) => e.stopPropagation()}>
         <p className="text-[10px] flex items-center gap-1 text-text-faint">
-          <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${ad.isActive ? 'bg-emerald-400' : 'bg-zinc-600'}`} />
-          {fmtLaunch(ad.startDate)} – {ad.isActive ? 'Present' : (ad.endDate ? fmtLaunch(ad.endDate) : '?')}
+          <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${isAdActive(ad) ? 'bg-emerald-400' : 'bg-zinc-600'}`} />
+          {fmtLaunch(ad.startDate)} – {isAdActive(ad) ? 'Present' : (ad.endDate ? fmtLaunch(ad.endDate) : '?')}
         </p>
       </div>
 
@@ -516,7 +516,7 @@ function AdCard({ ad, brand, onOpenIntel }) {
 
         {/* Format badge — top left */}
         {!playing && (
-          <div className="absolute top-2 left-2 z-20 pointer-events-none">
+          <div className="absolute top-2 left-2 z-20 pointer-events-none flex items-center gap-1.5">
             <span className={`text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded-md border backdrop-blur-sm ${
               fmt === 'VIDEO'    ? 'bg-purple-900/70 text-purple-300 border-purple-500/30' :
               fmt === 'CAROUSEL' ? 'bg-amber-900/70 text-amber-300 border-amber-500/30' :
@@ -524,6 +524,13 @@ function AdCard({ ad, brand, onOpenIntel }) {
             }`}>
               {fmt === 'VIDEO' ? '▶ VIDEO' : fmt === 'CAROUSEL' ? '⊞ CAROUSEL' : '🖼 IMAGE'}
             </span>
+            {/* Green dot when the ad is currently active (uses freshness heuristic) */}
+            {isAdActive(ad) && (
+              <span className="relative flex items-center justify-center" title="Active">
+                <span className="absolute w-2.5 h-2.5 rounded-full bg-emerald-400 opacity-60 animate-ping" />
+                <span className="relative w-2 h-2 rounded-full bg-emerald-400 ring-2 ring-black/40" />
+              </span>
+            )}
           </div>
         )}
         {/* Tier badge — top right */}
@@ -561,12 +568,14 @@ function AdCard({ ad, brand, onOpenIntel }) {
 // ---------------------------------------------------------------------------
 
 // counts shape: { VIDEO, IMAGE, CAROUSEL, OTHER, TOTAL }
+// Uniform gray styling — bar segments distinguished by lightness only,
+// not hue (matches PestLab's reference and the user's "all gray" preference).
 function MediaMixBar({ counts }) {
   if (!counts || !counts.TOTAL) {
     return (
       <div className="space-y-2">
         <div className="flex items-center gap-2">
-          <span className="text-[10px] uppercase tracking-wider text-text-faint">Media mix</span>
+          <span className="text-[11px] uppercase tracking-wider text-text-faint font-medium">Media mix</span>
           <span className="text-[11px] text-text-faint ml-auto">Loading…</span>
         </div>
         <div className="h-2 rounded-full bg-bg-card animate-pulse" />
@@ -577,8 +586,8 @@ function MediaMixBar({ counts }) {
   const videos = counts.VIDEO;
   const images = counts.IMAGE;
   const carousels = counts.CAROUSEL;
-  const vPct = total ? (videos / total) * 100   : 0;
-  const iPct = total ? (images / total) * 100   : 0;
+  const vPct = total ? (videos / total) * 100    : 0;
+  const iPct = total ? (images / total) * 100    : 0;
   const cPct = total ? (carousels / total) * 100 : 0;
 
   return (
@@ -587,30 +596,30 @@ function MediaMixBar({ counts }) {
         <span className="text-[11px] uppercase tracking-wider text-text-faint font-medium">Media mix</span>
         <span className="text-[11px] text-text-faint ml-auto tabular-nums">{total.toLocaleString()} ads</span>
       </div>
-      <div className="h-2 rounded-full bg-bg-card flex overflow-hidden gap-px">
-        {vPct > 0 && <div className="h-full bg-emerald-400/70 transition-all" style={{ width: `${vPct}%` }} />}
-        {iPct > 0 && <div className="h-full bg-sky-400/70 transition-all"    style={{ width: `${iPct}%` }} />}
-        {cPct > 0 && <div className="h-full bg-amber-400/70 transition-all"  style={{ width: `${cPct}%` }} />}
+      <div className="h-2 rounded-full bg-white/[0.04] flex overflow-hidden gap-px">
+        {vPct > 0 && <div className="h-full bg-white/55 transition-all" style={{ width: `${vPct}%` }} />}
+        {iPct > 0 && <div className="h-full bg-white/30 transition-all" style={{ width: `${iPct}%` }} />}
+        {cPct > 0 && <div className="h-full bg-white/15 transition-all" style={{ width: `${cPct}%` }} />}
       </div>
       <div className="space-y-1.5 pt-1">
         <div className="flex items-center text-[12px]">
-          <span className="w-2 h-2 rounded-full bg-emerald-400 shrink-0 mr-2" />
+          <span className="w-2 h-2 rounded-full bg-white/55 shrink-0 mr-2" />
           <span className="text-text-muted">Video</span>
           <span className="ml-auto tabular-nums text-text-faint">{videos.toLocaleString()} ads</span>
-          <span className="ml-3 text-white font-semibold tabular-nums w-12 text-right">{vPct.toFixed(1)}%</span>
+          <span className="ml-3 text-text-primary font-semibold tabular-nums w-12 text-right">{vPct.toFixed(1)}%</span>
         </div>
         <div className="flex items-center text-[12px]">
-          <span className="w-2 h-2 rounded-full bg-sky-400 shrink-0 mr-2" />
+          <span className="w-2 h-2 rounded-full bg-white/30 shrink-0 mr-2" />
           <span className="text-text-muted">Image</span>
           <span className="ml-auto tabular-nums text-text-faint">{images.toLocaleString()} ads</span>
-          <span className="ml-3 text-white font-semibold tabular-nums w-12 text-right">{iPct.toFixed(1)}%</span>
+          <span className="ml-3 text-text-primary font-semibold tabular-nums w-12 text-right">{iPct.toFixed(1)}%</span>
         </div>
         {carousels > 0 && (
           <div className="flex items-center text-[12px]">
-            <span className="w-2 h-2 rounded-full bg-amber-400 shrink-0 mr-2" />
+            <span className="w-2 h-2 rounded-full bg-white/15 shrink-0 mr-2" />
             <span className="text-text-muted">Carousel</span>
             <span className="ml-auto tabular-nums text-text-faint">{carousels.toLocaleString()} ads</span>
-            <span className="ml-3 text-white font-semibold tabular-nums w-12 text-right">{cPct.toFixed(1)}%</span>
+            <span className="ml-3 text-text-primary font-semibold tabular-nums w-12 text-right">{cPct.toFixed(1)}%</span>
           </div>
         )}
       </div>
@@ -715,6 +724,70 @@ function IntelPanel({ intel, intelLoading, intelError, onRetry }) {
 // SortDropdown — custom "Sort: X ▼" styled dropdown
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// "Currently active" heuristic — used for the green dot indicator.
+// Mirrors the backend status='ACTIVE' SQL clause so the filter and the dot
+// agree. Treats an ad as active if either:
+//   - the is_active flag is true, OR
+//   - we've seen it in the last 5 days AND there's no end_date
+// (This stays correct even when the worker's is_active flag is stale.)
+// ---------------------------------------------------------------------------
+function isAdActive(ad) {
+  if (ad?.isActive === true) return true;
+  if (!ad?.lastSeenAt || ad?.endDate) return false;
+  const ageMs = Date.now() - new Date(ad.lastSeenAt).getTime();
+  return ageMs <= 5 * 86400000;
+}
+
+// FilterDropdown — checkbox-style picker for Format / Status. Single-select
+// for now; "Clear" deselects. Closed-state shows current selection or label.
+function FilterDropdown({ label, value, onChange, options }) {
+  const { open, setOpen, ref } = useDropdown();
+  const current = options.find((o) => o.value === value);
+  return (
+    <div className="relative" ref={ref}>
+      <button onClick={() => setOpen((o) => !o)}
+        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs transition-colors ${
+          value
+            ? 'bg-white/10 text-white border-white/20'
+            : 'bg-bg-elevated text-text-muted border-border-default hover:bg-bg-hover'
+        }`}>
+        <span>{current?.label ?? label}</span>
+        <ChevronDown className={`w-3 h-3 transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+      {open && (
+        <div className="absolute top-full left-0 mt-1.5 w-44 rounded-xl shadow-2xl z-50 overflow-hidden py-1"
+          style={{ background: '#1e1e1e', border: '1px solid #303030' }}>
+          {options.map((opt) => {
+            const selected = opt.value === value;
+            return (
+              <button key={opt.value}
+                onClick={() => { onChange(selected ? null : opt.value); setOpen(false); }}
+                className="w-full flex items-center gap-2.5 px-3.5 py-2 text-[13px] text-text-muted hover:bg-white/5 hover:text-text-primary text-left transition-colors">
+                <span className={`w-3.5 h-3.5 rounded border flex items-center justify-center shrink-0 ${
+                  selected ? 'bg-white border-white' : 'border-text-faint'
+                }`}>
+                  {selected && <span className="text-[10px] text-black font-bold leading-none">✓</span>}
+                </span>
+                {opt.label}
+              </button>
+            );
+          })}
+          {value && (
+            <>
+              <div className="h-px bg-white/[0.06] my-1" />
+              <button onClick={() => { onChange(null); setOpen(false); }}
+                className="w-full px-3.5 py-1.5 text-[12px] text-text-faint hover:text-text-primary text-center transition-colors">
+                Clear
+              </button>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SortDropdown({ value, onChange, options }) {
   const { open, setOpen, ref } = useDropdown();
   const current = options.find((o) => o.value === value);
@@ -770,6 +843,8 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
   const [tierFilter, setTierFilter]     = useState('ALL');
   const [pageFilter, setPageFilter]     = useState(null);
   const [timeFilter, setTimeFilter]     = useState('all');
+  const [formatFilter, setFormatFilter] = useState(null);    // 'VIDEO' | 'IMAGE' | 'CAROUSEL' | null
+  const [statusFilter, setStatusFilter] = useState(null);    // 'ACTIVE' | 'INACTIVE' | null
   // UI
   const [activeTab, setActiveTab]       = useState('overview');
   const [visibleCols, setVisibleCols]   = useState(() => {
@@ -809,6 +884,8 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
       const params = new URLSearchParams({ page: String(page), pageSize: String(ps), sort, tier: tierFilter });
       if (pageFilter) params.set('brandPageId', pageFilter);
       if (activeTab === 'overview' && timeFilter !== 'all') params.set('days', timeFilter);
+      if (formatFilter) params.set('format', formatFilter);
+      if (statusFilter) params.set('status', statusFilter);
       const res  = await fetch(`${apiBaseUrl}/brands/${brandId}/ads?${params}`);
       if (!res.ok) throw new Error(`Failed (${res.status})`);
       const data = await res.json();
@@ -819,10 +896,10 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
     } finally {
       setAdsLoading(false);
     }
-  }, [apiBaseUrl, brandId, page, sort, tierFilter, pageFilter, timeFilter, activeTab]);
+  }, [apiBaseUrl, brandId, page, sort, tierFilter, pageFilter, timeFilter, formatFilter, statusFilter, activeTab]);
 
   useEffect(() => { loadAds(); }, [loadAds]);
-  useEffect(() => { setPage(1); }, [tierFilter, pageFilter, sort, timeFilter, activeTab]);
+  useEffect(() => { setPage(1); }, [tierFilter, pageFilter, sort, timeFilter, formatFilter, statusFilter, activeTab]);
 
   // ---- Load intel (lazy) ----
   const loadIntel = useCallback(async () => {
@@ -1069,76 +1146,101 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
         {activeTab === 'overview' && (
           <div className="flex-1 flex flex-col min-h-0 px-5 pt-4 pb-6 space-y-4">
 
-            {/* Time filters — Overview tab keeps only the time window picker.
-                Pages dropdown + tier pills live in the Intelligence tab where
-                the league-style table view makes them useful. */}
-            <div className="flex items-center gap-1">
-              {TIME_FILTERS.map((tf) => (
-                <button key={tf.value} onClick={() => setTimeFilter(tf.value)}
-                  className={`px-3 py-1.5 text-xs rounded-lg font-medium transition-colors ${
-                    timeFilter === tf.value
-                      ? 'bg-white/10 text-white border border-white/20'
-                      : 'bg-bg-elevated text-text-faint border border-border-subtle hover:text-text-muted'
-                  }`}>
-                  {tf.label}
-                </button>
-              ))}
+            {/* Filter bar — time-window pills + Format + Status (Overview only) */}
+            <div className="flex items-center gap-3 flex-wrap">
+              {/* Time window pills */}
+              <div className="flex items-center gap-1">
+                {TIME_FILTERS.map((tf) => (
+                  <button key={tf.value} onClick={() => setTimeFilter(tf.value)}
+                    className={`px-3 py-1.5 text-xs rounded-lg font-medium transition-colors ${
+                      timeFilter === tf.value
+                        ? 'bg-white/10 text-white border border-white/20'
+                        : 'bg-bg-elevated text-text-faint border border-border-subtle hover:text-text-muted'
+                    }`}>
+                    {tf.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Format + Status filters */}
+              <FilterDropdown
+                label="Format"
+                value={formatFilter}
+                onChange={setFormatFilter}
+                options={[
+                  { value: 'VIDEO',    label: 'Video' },
+                  { value: 'IMAGE',    label: 'Image' },
+                  { value: 'CAROUSEL', label: 'Carousel' },
+                ]}
+              />
+              <FilterDropdown
+                label="Status"
+                value={statusFilter}
+                onChange={setStatusFilter}
+                options={[
+                  { value: 'ACTIVE',   label: 'Active' },
+                  { value: 'INACTIVE', label: 'Inactive' },
+                ]}
+              />
             </div>
 
-            {/* Summary banner — PestLab-style headline stat */}
-            {(() => {
-              const tf = TIME_FILTERS.find((f) => f.value === timeFilter);
-              const label = tf?.value === 'all' ? null : tf?.label;
-              return (
-                <div className="rounded-xl border border-border-subtle bg-bg-elevated px-5 py-4">
+            {/* Unified dashboard card — PestLab-style layout. Summary text at
+                top, then a two-column grid: media mix + mini-stats on the left,
+                AI Brand Intel on the right. All in one wrapper card. */}
+            <div className="rounded-xl border border-border-subtle bg-bg-elevated p-5 space-y-5">
+              {/* Summary text */}
+              {(() => {
+                const tf = TIME_FILTERS.find((f) => f.value === timeFilter);
+                const label = tf?.value === 'all' ? null : tf?.label;
+                return (
                   <p className="text-text-muted leading-relaxed">
-                    <span className="text-3xl font-bold text-white tabular-nums">{total.toLocaleString()}</span>
+                    <span className="text-3xl font-bold text-text-primary tabular-nums">{total.toLocaleString()}</span>
                     {' '}<span className="text-text-muted">ads</span>{' '}
                     {label
-                      ? <>were launched in the <span className="text-white font-medium">last {label}</span></>
-                      : <>tracked across <span className="text-white font-medium">all time</span></>}
+                      ? <>were launched in the <span className="text-text-primary font-medium">last {label}</span></>
+                      : <>tracked across <span className="text-text-primary font-medium">all time</span></>}
                     {brand?.activeAdsCount != null && (
                       <>{', including '}
-                        <span className="text-emerald-400 font-semibold tabular-nums">
+                        <span className="text-text-primary font-semibold tabular-nums">
                           {(brand.activeAdsCount).toLocaleString()}
                         </span> currently active</>
                     )}
                     .
                   </p>
+                );
+              })()}
+
+              {/* Two-column grid inside the same card */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 pt-1">
+                {/* LEFT — Media mix + 4 mini stat boxes */}
+                <div className="space-y-5">
+                  <MediaMixBar counts={formatCounts} />
+
+                  <div className="grid grid-cols-4 gap-2">
+                    {[
+                      { label: 'Hooks',     value: aggCounts?.hooks,     tabId: 'hooks'     },
+                      { label: 'Ad copy',   value: aggCounts?.adcopy,    tabId: 'adcopy'    },
+                      { label: 'Headlines', value: aggCounts?.headlines, tabId: 'headlines' },
+                      { label: 'LPs',       value: aggCounts?.landing,   tabId: 'landing'   },
+                    ].map(({ label, value, tabId }) => (
+                      <button key={label}
+                        onClick={() => setActiveTab(tabId)}
+                        className="rounded-lg border border-border-subtle bg-bg-card hover:bg-bg-hover hover:border-white/15 transition-colors py-3 text-center group">
+                        <p className="text-xl font-bold text-text-primary tabular-nums">
+                          {value == null ? '—' : (value >= 100 ? '99+' : value)}
+                        </p>
+                        <p className="text-[10px] uppercase tracking-wider text-text-faint mt-0.5 group-hover:text-text-muted transition-colors">
+                          {label}
+                        </p>
+                      </button>
+                    ))}
+                  </div>
                 </div>
-              );
-            })()}
 
-            {/* Two-column dashboard: Media mix + mini-stats LEFT, AI Intel RIGHT */}
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-              {/* LEFT — Media mix + 4 mini stat boxes */}
-              <div className="rounded-xl border border-border-subtle bg-bg-elevated p-5 space-y-5">
-                <MediaMixBar counts={formatCounts} />
-
-                <div className="grid grid-cols-4 gap-2">
-                  {[
-                    { label: 'Hooks',     value: aggCounts?.hooks,     tabId: 'hooks'     },
-                    { label: 'Ad copy',   value: aggCounts?.adcopy,    tabId: 'adcopy'    },
-                    { label: 'Headlines', value: aggCounts?.headlines, tabId: 'headlines' },
-                    { label: 'LPs',       value: aggCounts?.landing,   tabId: 'landing'   },
-                  ].map(({ label, value, tabId }) => (
-                    <button key={label}
-                      onClick={() => setActiveTab(tabId)}
-                      className="rounded-lg border border-border-subtle bg-bg-card hover:bg-bg-hover hover:border-white/15 transition-colors py-3 text-center group">
-                      <p className="text-xl font-bold text-white tabular-nums">
-                        {value == null ? '—' : (value >= 100 ? '99+' : value)}
-                      </p>
-                      <p className="text-[10px] uppercase tracking-wider text-text-faint mt-0.5 group-hover:text-text-muted transition-colors">
-                        {label}
-                      </p>
-                    </button>
-                  ))}
+                {/* RIGHT — AI Brand Intel */}
+                <div className="lg:border-l lg:border-border-subtle/50 lg:pl-6">
+                  <IntelPanel intel={intel} intelLoading={intelLoading} intelError={intelError} onRetry={loadIntel} />
                 </div>
-              </div>
-
-              {/* RIGHT — AI Brand Intel */}
-              <div className="rounded-xl border border-border-subtle bg-bg-elevated p-5">
-                <IntelPanel intel={intel} intelLoading={intelLoading} intelError={intelError} onRetry={loadIntel} />
               </div>
             </div>
 

@@ -69,6 +69,7 @@ router.get('/brands/:id/ads', async (req, res, next) => {
       sort:         req.query.sort        ? String(req.query.sort)        : 'rank_asc',
       tier:         req.query.tier        ? String(req.query.tier)        : 'ALL',
       format:       req.query.format      ? String(req.query.format)      : undefined,
+      status:       req.query.status      ? String(req.query.status)      : undefined,
       brandPageId:  req.query.brandPageId ? String(req.query.brandPageId) : undefined,
       minStartDate: (days && days > 0)
         ? new Date(Date.now() - days * 86400000).toISOString()
