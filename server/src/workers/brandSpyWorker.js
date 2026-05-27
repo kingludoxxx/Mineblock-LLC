@@ -469,6 +469,10 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
     if (row.page_name) pageNameCache.set(row.meta_page_id, row.page_name);
   }
   console.log(`[brand-spy] pre-loaded ${pageCache.size} known pages for "${domain}" (skipped ${skippedMetaPages} Meta platform pages)`);
+  // Snapshot the pages known at scrape-start so Phase 2 can skip the expensive
+  // ALL-status pass for them (their history is already in the DB). Only newly-
+  // discovered pages (added during Phase 1) need a full ALL pass.
+  const knownPageIds = new Set(pageCache.keys());
 
   // Pre-load all known domains (subdomains + cross-domains) from previous scrapes.
   // This allows Phase 1c to search subdomains discovered in earlier runs without
@@ -525,11 +529,8 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
         console.log(`[brand-spy] phase-2 page ${metaPageId} ("${pageName}") — Meta platform page, filtering to "${rootFragment}" ads only`);
       }
 
-      // Two passes per page:
-      // ACTIVE/US: matches Meta Ad Library "United States + Active" filter — this is the
-      //   source of truth for is_active. country:US ensures we don't count non-US campaigns.
-      // ALL/US: historical inactive ads, same US scope. OR-semantics in UPSERT means
-      //   is_active can only go true→true or false→true, never true→false.
+      // ACTIVE/US pass: always run — source of truth for is_active. Marks all currently
+      // running ads true (everything else stays false from the reset at scrape-start).
       for await (const batch of sc.iterateCompanyAds({ pageId: metaPageId, status: 'ACTIVE', country: 'US', maxPages: 100 })) {
         creditsUsed += 1;
         const filtered = filterBatch(batch);
@@ -538,12 +539,21 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
           discovered += d; updated += u;
         }
       }
-      for await (const batch of sc.iterateCompanyAds({ pageId: metaPageId, status: 'ALL', country: 'US', maxPages: 100 })) {
-        creditsUsed += 1;
-        const filtered = filterBatch(batch);
-        if (filtered.length > 0) {
-          const { d, u } = await upsertAdBatch(brandId, filtered, pageCache, metaPageId, crossDomains, pageNameCache);
-          discovered += d; updated += u;
+
+      // ALL/US pass: only run for pages discovered THIS run (not pre-loaded from DB).
+      // Pre-known pages already have their full history in the DB — the ALL pass would
+      // just re-iterate the same records (~half of Phase 2 time). New pages need it to
+      // build their initial history. OR-semantics in UPSERT: is_active can only go
+      // false→true within a run, never true→false.
+      const isKnownPage = knownPageIds.has(metaPageId);
+      if (!isKnownPage) {
+        for await (const batch of sc.iterateCompanyAds({ pageId: metaPageId, status: 'ALL', country: 'US', maxPages: 100 })) {
+          creditsUsed += 1;
+          const filtered = filterBatch(batch);
+          if (filtered.length > 0) {
+            const { d, u } = await upsertAdBatch(brandId, filtered, pageCache, metaPageId, crossDomains, pageNameCache);
+            discovered += d; updated += u;
+          }
         }
       }
     } catch (p2Err) {
@@ -612,9 +622,13 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
   if (rootFragment.length >= 5) {
     const p1dBefore = pageCache.size;
     const p1dIsFirstScrape = (p1dBefore === 0); // no pre-loaded pages → first discovery run
+    // On re-scrapes, cap Phase 1d at 3 cursor pages — enough to surface any new pages
+    // from the top impressions results without iterating the full 460-ad history.
+    // Full iteration only needed on first discovery (no pages known yet).
+    const p1dMaxPages = p1dIsFirstScrape ? 50 : 3;
     let p1dDiscovered = 0, p1dUpdated = 0, p1dNewPages = 0;
-    console.log(`[brand-spy] phase-1d: rootFragment search for "${rootFragment}" (US active)`);
-    for await (const batch of sc.iterateAdsByDomain({ domain: rootFragment, status: 'ACTIVE', country: 'US' })) {
+    console.log(`[brand-spy] phase-1d: rootFragment search for "${rootFragment}" (US active, maxPages=${p1dMaxPages})`);
+    for await (const batch of sc.iterateAdsByDomain({ domain: rootFragment, status: 'ACTIVE', country: 'US', maxPages: p1dMaxPages })) {
       creditsUsed += 1;
       const filtered = batch.filter((ad) => {
         const url = (ad.snapshot?.link_url ?? ad.link_url ?? '').toLowerCase();
