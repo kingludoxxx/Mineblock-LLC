@@ -13,7 +13,7 @@ import {
   getAdDetail,
   getAdTierCounts,
 } from '../db/brandSpyDb.js';
-import { runBrandScrape, scrapeAllInBackground } from '../workers/brandSpyWorker.js';
+import { runBrandScrape, scrapeAllInBackground, recoverStuckScrapes } from '../workers/brandSpyWorker.js';
 import { getScrapeCreatorsClient } from '../services/scrapeCreators.js';
 
 const router = Router();
@@ -172,7 +172,7 @@ function scheduleDailyScrape() {
 
   const runScrapeAll = async () => {
     try {
-      const brands = await listBrands();
+      const brands = await listBrands(null);
       if (!brands.length) return;
       console.log(`[brand-spy] auto-scrape: starting ${brands.length} brand(s)`);
       await scrapeAllInBackground(brands.map((b) => b.id));
@@ -182,12 +182,30 @@ function scheduleDailyScrape() {
     }
   };
 
+  // Boot recovery: immediately re-scrape any brand left in RUNNING or INTERRUPTED
+  // state by a previous deploy that killed an in-flight scrape. These brands have
+  // stale is_active=false flags and their active_ads_count was never updated.
+  // Runs immediately on boot (no delay) so recovery starts before the regular 5-min scrape.
+  recoverStuckScrapes()
+    .then((stuckIds) => {
+      if (stuckIds.length > 0) {
+        console.log(`[brand-spy] boot recovery: launching scrape for ${stuckIds.length} brand(s)`);
+        scrapeAllInBackground(stuckIds).catch((err) =>
+          console.error('[brand-spy] recovery scrape failed:', err),
+        );
+      } else {
+        console.log('[brand-spy] boot recovery: no stuck brands found');
+      }
+    })
+    .catch((err) => console.error('[brand-spy] boot recovery check failed:', err.message));
+
+  // Regular auto-scrape: 5 min after boot (give server time to settle), then every 24h.
   setTimeout(() => {
     runScrapeAll();
     setInterval(runScrapeAll, INTERVAL_MS);
   }, BOOT_DELAY_MS);
 
-  console.log('[brand-spy] Daily auto-scrape scheduled (boot +5min, then every 24h)');
+  console.log('[brand-spy] auto-scrape scheduled (boot +5min, then every 24h); recovery check running immediately');
 }
 
 scheduleDailyScrape();

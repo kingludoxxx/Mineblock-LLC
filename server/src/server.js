@@ -8,6 +8,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { hashPassword } from './utils/hash.js';
+import { requestShutdown } from './workers/brandSpyWorker.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -146,6 +147,7 @@ const start = async () => {
   // Graceful shutdown
   const shutdown = async (signal) => {
     logger.info(`${signal} received — shutting down gracefully`);
+    requestShutdown(); // signal in-flight brand scrapes to stop after current API call
     server.close(async () => {
       logger.info('HTTP server closed');
       try { await pool.end(); logger.info('pg Pool drained'); } catch (e) { logger.error('pg Pool drain error:', e.message); }

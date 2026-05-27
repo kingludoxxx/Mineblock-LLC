@@ -7,6 +7,57 @@ import { withTransaction, recomputeBrandCounters } from '../db/brandSpyDb.js';
 import { getScrapeCreatorsClient, ScrapeCreatorsError } from '../services/scrapeCreators.js';
 
 // ---------------------------------------------------------------------------
+// Resilience: per-brand scrape lock + graceful-shutdown coordination
+// ---------------------------------------------------------------------------
+
+// Tracks which brands have a scrape in progress within this process.
+// Prevents a cron/auto-scrape from racing with a manual scrape on the same
+// brand — both would reset is_active at the start, producing wrong counts.
+const activeScrapes = new Set();
+
+// Set to true when SIGTERM is received so in-flight scrapes can bail out
+// cleanly after their current API call rather than being hard-killed mid-reset.
+let shutdownRequested = false;
+
+/** Signal from server.js: a deploy is happening, wrap up current phases ASAP. */
+export function requestShutdown() {
+  shutdownRequested = true;
+  console.log('[brand-spy] shutdown requested — in-flight scrapes will stop after current phase');
+}
+
+/**
+ * Called on every server boot.
+ * Finds brands left in RUNNING or INTERRUPTED state by a previous deploy that
+ * killed a scrape mid-flight, resets their status to PENDING, and returns their
+ * IDs so the caller can re-queue them immediately.
+ */
+export async function recoverStuckScrapes() {
+  try {
+    const { rows } = await query(
+      `SELECT id FROM brand_spy.brands WHERE last_scrape_status IN ('RUNNING', 'INTERRUPTED')`,
+    );
+    if (!rows.length) return [];
+    const ids = rows.map((r) => r.id);
+    console.log(`[brand-spy] boot recovery: ${ids.length} brand(s) stuck — re-queuing: ${ids.join(', ')}`);
+    await query(
+      `UPDATE brand_spy.brands SET last_scrape_status = 'PENDING', last_scrape_error = NULL
+       WHERE id = ANY($1::uuid[])`,
+      [ids],
+    );
+    // Also close any dangling RUNNING scrape_jobs so the log stays clean.
+    await query(
+      `UPDATE brand_spy.scrape_jobs SET status = 'INTERRUPTED', finished_at = NOW()
+       WHERE brand_id = ANY($1::uuid[]) AND status = 'RUNNING'`,
+      [ids],
+    );
+    return ids;
+  } catch (err) {
+    console.error('[brand-spy] boot recovery failed:', err.message);
+    return [];
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Tier engine (pure functions)
 // ---------------------------------------------------------------------------
 
@@ -201,6 +252,14 @@ async function loadHistoricalRanks(client, brandId) {
 // ---------------------------------------------------------------------------
 
 export async function runBrandScrape({ brandId, trigger, client: scClient }) {
+  // Guard: skip duplicate concurrent scrapes on the same brand.
+  if (activeScrapes.has(brandId)) {
+    console.log(`[brand-spy] scrape for ${brandId} already running — skipping (trigger: ${trigger})`);
+    return { jobId: null, status: 'SKIPPED', pagesDiscovered: 0, adsDiscovered: 0, adsUpdated: 0, creditsUsed: 0 };
+  }
+  activeScrapes.add(brandId);
+  try {
+
   const sc = scClient ?? getScrapeCreatorsClient();
 
   const brandRow = await query(
@@ -265,21 +324,28 @@ export async function runBrandScrape({ brandId, trigger, client: scClient }) {
 
     return { jobId, status: 'DONE', pagesDiscovered, adsDiscovered: stats.discovered, adsUpdated: stats.updated, creditsUsed };
   } catch (err) {
-    const message =
-      err instanceof ScrapeCreatorsError ? `${err.code}: ${err.message}`
+    const isShutdown  = err?.isShutdown === true;
+    const jobStatus   = isShutdown ? 'INTERRUPTED' : 'ERROR';
+    const message     = isShutdown
+      ? 'Server shutdown during scrape'
+      : err instanceof ScrapeCreatorsError ? `${err.code}: ${err.message}`
         : err instanceof Error ? err.message
         : 'Unknown error';
 
     await query(
-      `UPDATE brand_spy.scrape_jobs SET status = 'ERROR', finished_at = NOW(), error_message = $2, credits_used = $3 WHERE id = $1`,
-      [jobId, message, creditsUsed],
+      `UPDATE brand_spy.scrape_jobs SET status = $2, finished_at = NOW(), error_message = $3, credits_used = $4 WHERE id = $1`,
+      [jobId, jobStatus, message, creditsUsed],
     );
     await query(
-      `UPDATE brand_spy.brands SET last_scrape_status = 'ERROR', last_scrape_error = $2 WHERE id = $1`,
-      [brand.id, message],
+      `UPDATE brand_spy.brands SET last_scrape_status = $2, last_scrape_error = $3 WHERE id = $1`,
+      [brand.id, jobStatus, isShutdown ? null : message],
     );
 
-    return { jobId, status: 'ERROR', pagesDiscovered: 0, adsDiscovered: 0, adsUpdated: 0, creditsUsed, errorMessage: message };
+    return { jobId, status: jobStatus, pagesDiscovered: 0, adsDiscovered: 0, adsUpdated: 0, creditsUsed, errorMessage: message };
+  }
+
+  } finally {
+    activeScrapes.delete(brandId);
   }
 }
 
@@ -526,8 +592,8 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
       // ScrapeCreators /company/ads), skip remaining pages immediately without making
       // any API calls. Without this, each queued page would time-out (~90s × 3 retries)
       // before giving up, turning 27 pages into a ~40-minute stall.
-      if (p2Blocked) {
-        console.warn(`[brand-spy] phase-2 page ${metaPageId} skipped (endpoint blocked)`);
+      if (p2Blocked || shutdownRequested) {
+        console.warn(`[brand-spy] phase-2 page ${metaPageId} skipped (${shutdownRequested ? 'shutdown' : 'endpoint blocked'})`);
         return;
       }
 
@@ -618,6 +684,7 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
     launchNewPages();
   }
   console.log(`[brand-spy] phase-1a done: ${discovered} new, ${updated} updated, ${pageCache.size} pages, ${creditsUsed} credits`);
+  if (shutdownRequested) { p2Blocked = true; throw Object.assign(new Error('Shutdown requested after phase-1a'), { isShutdown: true }); }
 
   // Phase 1b: all-status pass — discovers historical inactive ads and any pages not
   // yet found by the active-only pass (sorts by total_impressions, capped at 50 pages).
@@ -629,6 +696,7 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
     launchNewPages();
   }
   console.log(`[brand-spy] phase-1 done: ${discovered} new, ${updated} updated, ${pageCache.size} pages, ${creditsUsed} credits`);
+  if (shutdownRequested) { p2Blocked = true; throw Object.assign(new Error('Shutdown requested after phase-1b'), { isShutdown: true }); }
 
   // Phase 1d: rootFragment keyword search — catches ads whose link_url uses a subdomain
   // (e.g. shop.try-forge.com, secure.try-forge.com) that do NOT match the full domain
@@ -694,6 +762,7 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
     console.log(`[brand-spy] phase-1d done: ${p1dDiscovered} new, ${p1dUpdated} updated, ${pageCache.size - p1dBefore} new pages`);
     discovered += p1dDiscovered; updated += p1dUpdated;
   }
+  if (shutdownRequested) { p2Blocked = true; throw Object.assign(new Error('Shutdown requested after phase-1d'), { isShutdown: true }); }
 
   // Phase 1.5: company-name search — always runs to discover FB pages not found via
   // domain keyword search (common when brands use subdomains, redirect URLs, or
@@ -755,6 +824,7 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
     }
     console.log(`[brand-spy] phase-1.5 done: ${pageCache.size} pages total`);
   }
+  if (shutdownRequested) { p2Blocked = true; throw Object.assign(new Error('Shutdown requested after phase-1.5'), { isShutdown: true }); }
 
   // Phase 1c: keyword searches for known SUBDOMAINS of the primary domain.
   // SKIP when Phase 1d ran (rootFragment.length >= 5): Phase 1d already searches
