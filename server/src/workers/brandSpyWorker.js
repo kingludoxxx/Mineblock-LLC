@@ -305,10 +305,10 @@ async function upsertBrandDomain(brandId, domain, domainType) {
   );
 }
 
-// ScrapeCreators returns HTTP 431 when >1 concurrent request hits /company/ads
-// from the same API key. Keep Phase 2 strictly sequential (1 page at a time).
-// Phase 1 runs a separate connection concurrently — so max 2 in-flight at once.
-const PHASE2_CONCURRENCY = 1;
+// Phase 2 concurrency: how many FB pages to scrape in parallel.
+// ScrapeCreators' /company/ads is rate-limited per API key; set to 5 so
+// N pages run simultaneously. p2Blocked fast-fails all workers on first 431.
+const PHASE2_CONCURRENCY = 5;
 const AD_COLS = 20;
 
 // Meta's own platform pages appear in Phase 1 keyword results because some brands
@@ -611,7 +611,8 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
   // noise (e.g. "fit", "go", "app").
   if (rootFragment.length >= 5) {
     const p1dBefore = pageCache.size;
-    let p1dDiscovered = 0, p1dUpdated = 0;
+    const p1dIsFirstScrape = (p1dBefore === 0); // no pre-loaded pages → first discovery run
+    let p1dDiscovered = 0, p1dUpdated = 0, p1dNewPages = 0;
     console.log(`[brand-spy] phase-1d: rootFragment search for "${rootFragment}" (US active)`);
     for await (const batch of sc.iterateAdsByDomain({ domain: rootFragment, status: 'ACTIVE', country: 'US' })) {
       creditsUsed += 1;
@@ -625,18 +626,28 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
         launchNewPages();
       }
     }
-    console.log(`[brand-spy] phase-1d: rootFragment search for "${rootFragment}" (US all-status)`);
-    for await (const batch of sc.iterateAdsByDomain({ domain: rootFragment, status: 'ALL', country: 'US' })) {
-      creditsUsed += 1;
-      const filtered = batch.filter((ad) => {
-        const url = (ad.snapshot?.link_url ?? ad.link_url ?? '').toLowerCase();
-        return url.includes(rootFragment.toLowerCase());
-      });
-      if (filtered.length > 0) {
-        const { d, u } = await upsertAdBatch(brandId, filtered, pageCache, null, crossDomains, pageNameCache);
-        p1dDiscovered += d; p1dUpdated += u;
-        launchNewPages();
+    p1dNewPages = pageCache.size - p1dBefore;
+
+    // ALL-status pass: only run on first scrape (pages unknown) or when ACTIVE just
+    // found new pages (brand has grown). On re-scrapes with known pages, Phase 2's
+    // ALL-status pass already covers historical inactive ads per page — the ALL pass
+    // here would just re-iterate the same ads and waste ~50s.
+    if (p1dIsFirstScrape || p1dNewPages > 0) {
+      console.log(`[brand-spy] phase-1d: rootFragment search for "${rootFragment}" (US all-status)`);
+      for await (const batch of sc.iterateAdsByDomain({ domain: rootFragment, status: 'ALL', country: 'US' })) {
+        creditsUsed += 1;
+        const filtered = batch.filter((ad) => {
+          const url = (ad.snapshot?.link_url ?? ad.link_url ?? '').toLowerCase();
+          return url.includes(rootFragment.toLowerCase());
+        });
+        if (filtered.length > 0) {
+          const { d, u } = await upsertAdBatch(brandId, filtered, pageCache, null, crossDomains, pageNameCache);
+          p1dDiscovered += d; p1dUpdated += u;
+          launchNewPages();
+        }
       }
+    } else {
+      console.log(`[brand-spy] phase-1d: skipping ALL pass (${p1dBefore} pages pre-loaded, no new pages found)`);
     }
     console.log(`[brand-spy] phase-1d done: ${p1dDiscovered} new, ${p1dUpdated} updated, ${pageCache.size - p1dBefore} new pages`);
     discovered += p1dDiscovered; updated += p1dUpdated;
@@ -704,26 +715,23 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
   }
 
   // Phase 1c: keyword searches for known SUBDOMAINS of the primary domain.
-  // A subdomain search (shop.try-forge.com) is needed because /search/ads?domain=try-forge.com
-  // may only match ads whose link_url contains exactly try-forge.com, not subdomains.
-  // We use pre-loaded subdomains from brand_domains table so previously-discovered
-  // subdomains are searched on every subsequent scrape.
-  // NOTE: We search subdomains only, NOT arbitrary cross-domains.  Phase 2 on Meta
-  // platform pages (Instagram for Business, etc.) stores ads for hundreds of brands,
-  // polluting the link_url domain list with unrelated entries.  Expanding Phase 1c to
-  // all cross-domains causes a runaway cascade into irrelevant pages.
+  // SKIP when Phase 1d ran (rootFragment.length >= 5): Phase 1d already searches
+  // the rootFragment which matches all subdomain URLs, making per-subdomain searches
+  // redundant.  Phase 1c only runs when Phase 1d is skipped (rootFragment too short,
+  // e.g. "go", "fit") where explicit subdomain searches are the only coverage.
   const subdomainsToSearch = knownSubdomains.filter(d =>
     d && d !== domain && d.endsWith('.' + domain),
   );
+  const phase1dRan = rootFragment.length >= 5;
 
-  if (subdomainsToSearch.length > 0) {
+  if (subdomainsToSearch.length > 0 && !phase1dRan) {
     console.log(`[brand-spy] phase-1c: keyword search for subdomains [${subdomainsToSearch.join(', ')}]`);
     for (const subDomain of subdomainsToSearch) {
       for await (const batch of sc.iterateAdsByDomain({ domain: subDomain, status: 'ACTIVE', country: 'US' })) {
         creditsUsed += 1;
         const { d, u } = await upsertAdBatch(brandId, batch, pageCache, null, crossDomains, pageNameCache);
         discovered += d; updated += u;
-        launchNewPages(); // kick off Phase 2 for any newly discovered pages
+        launchNewPages();
       }
       for await (const batch of sc.iterateAdsByDomain({ domain: subDomain, status: 'ALL', country: 'US' })) {
         creditsUsed += 1;
@@ -733,6 +741,8 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
       }
     }
     console.log(`[brand-spy] phase-1c done: ${discovered} new, ${updated} updated, ${pageCache.size} pages, ${creditsUsed} credits`);
+  } else if (subdomainsToSearch.length > 0 && phase1dRan) {
+    console.log(`[brand-spy] phase-1c: skipped (Phase 1d rootFragment search already covers subdomains)`);
   }
 
   // Await all Phase 2 workers (already running concurrently since Phase 1).
