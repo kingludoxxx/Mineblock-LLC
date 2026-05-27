@@ -1,6 +1,15 @@
 # Progress Log
 
 ---
+TIMESTAMP: 2026-05-27 22:38
+TASK: Brand Spy — ship 4 stub tabs + BrandLeague search (commits 016967d, 8a72952)
+BUILT: Added GET /brands/:id/aggregations?type=hooks|adcopy|headlines|landing endpoint backed by new getBrandAggregations() DB fn that groups ads by (a) first-line "hook" up to 100 chars, (b) full body text, (c) raw headline, or (d) normalized landing URL (host+path, querystring stripped). Returns per-group: count, activeCount, tier breakdown, max active days, top-ranked ad id, thumbnail. Created shared AggregationsTab.jsx component used by all 4 tabs in BrandDetail — header with title/subtitle/count, Active-only toggle (defaults OFF — see decision), search input, RotateCcw reload. Each row shows rank #, optional thumbnail, primary text with highlight on search matches, secondary preview (headline↔body cross-ref), tier dots, longest-run badge, CTA badge. Click row → fetches ad detail via new openAdById and opens IntelDrawer. Replaced the 4-tab "Coming soon" stub in BrandDetail with AggregationsTab instances. BrandLeague brand-selector dropdown gained a search input (autofocus, filters domains live, resets on close), width 72→80, empty-state copy.
+TESTED: Endpoint probed live with all 4 types against all 4 brands. norseorganics returns: hooks total=204, headlines total=142, landing total=35. Sample landing #1: norseorganics.co/pages/stop-acne-teens (364 ads), #2 stop-acne (288). Headlines top: "#1 Teen Acne Fix" (152 uses). Caught issue: activeOnly=1 returned 0 across all brands because brand.is_active column is currently stale vs brand.activeAdsCount — followed up with default-OFF + empty-state nudge fix and spawned separate task to fix the staleness root cause in brandSpyWorker.
+OUTPUT: 3 deploys LIVE — dep-d8bn1m28qa3s73aamnpg (22:33:57Z aggregations endpoint + tabs + BrandLeague search), dep-d8bn3msvikkc7387j3mg (22:38:09Z activeOnly default-OFF fix). 4/4 tabs functional with real data. API health unchanged.
+DECISIONS: (1) Default activeOnly OFF on aggregations tabs because brand.is_active is stale in prod; data is more useful all-included. (2) Spawned separate task for the staleness root cause rather than fixing both in same session — it's a worker-pipeline bug, not a tabs bug. (3) Stored hook key max 100 chars (trim+collapse-whitespace) and require >=8 chars to skip noise. (4) Landing URL grouping normalizes host (lowercase, strip www) and strips trailing slash + entire query string to merge tracking-tag variants of the same page.
+STATUS: COMPLETE
+
+---
 TIMESTAMP: 2026-05-27 22:09
 TASK: Brand Spy — compact ad grid, Atria parity (commit 0ee411e)
 BUILT: Switched overview grid from 3 large columns to 4-7 responsive columns (grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7, gap-2). PAGE_SIZE_GRID 30→48. AdCard: all padding tightened (px-3→px-2, pt-3→pt-2), avatar 26→20px, page name 12→11px, date 11→10px, body text line-clamp-2→line-clamp-1 + leading-snug, footer simplified (removed domain/headline lines, kept CTA + days), play button w-12→w-9, card border-radius rounded-xl→rounded-lg. Skeleton updated to 16 placeholders matching new grid.
