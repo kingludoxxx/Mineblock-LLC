@@ -147,6 +147,8 @@ export async function scoreBrand(brandId) {
       [brandId],
     );
 
+    if (!adsRes.rows.length) return { poolSize: 0, tierBreakdown: {}, snapshotsWritten: 0 };
+
     const ads = adsRes.rows.map((r) => ({
       id: r.id,
       adArchiveId: r.ad_archive_id,
@@ -161,37 +163,58 @@ export async function scoreBrand(brandId) {
 
     const historical = await loadHistoricalRanks(client, brandId);
 
-    let snapshotsWritten = 0;
-    for (const r of ranked) {
+    // ---------------------------------------------------------------------------
+    // Bulk UPDATE ads (replaces N individual queries with 1 round-trip).
+    // Old N+1 pattern caused connection timeouts for brands with 2000+ ads.
+    // ---------------------------------------------------------------------------
+    const AD_UPDATE_COLS = 10; // id, cr, r3, r7, r21, v7d, v21d, ps, tier, ts
+    const updatePlaceholders = ranked.map((_, i) => {
+      const b = i * AD_UPDATE_COLS + 1;
+      return `($${b}::uuid,$${b+1}::integer,$${b+2}::integer,$${b+3}::integer,$${b+4}::integer,$${b+5}::integer,$${b+6}::integer,$${b+7}::integer,$${b+8}::text,$${b+9}::numeric)`;
+    });
+    const updateParams = ranked.flatMap((r) => {
       const hist = historical.get(r.adArchiveId) ?? { d3: null, d7: null, d21: null };
-      const velocity = computeVelocity({ currentRank: r.rank, rank7d: hist.d7, rank21d: hist.d21 });
-
+      const { velocity7d, velocity21d } = computeVelocity({ currentRank: r.rank, rank7d: hist.d7, rank21d: hist.d21 });
       const tierScore = r.rank !== null ? (r.poolSize - r.rank + 1) : null;
+      return [r.id, r.rank, hist.d3, hist.d7, hist.d21, velocity7d, velocity21d, r.poolSize, r.tier, tierScore];
+    });
 
+    await client.query(
+      `UPDATE brand_spy.ads AS a SET
+         current_rank    = v.cr,
+         rank_3d         = v.r3,
+         rank_7d         = v.r7,
+         rank_21d        = v.r21,
+         velocity_7d     = v.v7d,
+         velocity_21d    = v.v21d,
+         pool_size       = v.ps,
+         tier            = v.tier,
+         tier_score      = v.ts,
+         tier_updated_at = NOW()
+       FROM (VALUES ${updatePlaceholders.join(',')})
+         AS v(id, cr, r3, r7, r21, v7d, v21d, ps, tier, ts)
+       WHERE a.id = v.id`,
+      updateParams,
+    );
+
+    // ---------------------------------------------------------------------------
+    // Bulk INSERT snapshots (active ads with assigned tiers only).
+    // ---------------------------------------------------------------------------
+    const snapshotRows = ranked.filter((r) => r.rank !== null && r.tier !== null);
+    let snapshotsWritten = 0;
+    if (snapshotRows.length > 0) {
+      const SNAP_COLS = 6; // brandId, adId, archiveId, rank, poolSize, tier
+      const snapPlaceholders = snapshotRows.map((_, i) => {
+        const b = i * SNAP_COLS + 1;
+        return `($${b}::uuid,$${b+1}::uuid,$${b+2},$${b+3}::integer,$${b+4}::integer,$${b+5}::text,TRUE)`;
+      });
+      const snapParams = snapshotRows.flatMap((r) => [brandId, r.id, r.adArchiveId, r.rank, r.poolSize, r.tier]);
       await client.query(
-        `UPDATE brand_spy.ads SET
-           current_rank    = $2::integer,
-           rank_3d         = $3,
-           rank_7d         = $4,
-           rank_21d        = $5,
-           velocity_7d     = $6,
-           velocity_21d    = $7,
-           pool_size       = $8::integer,
-           tier            = $9,
-           tier_score      = $10,
-           tier_updated_at = NOW()
-         WHERE id = $1`,
-        [r.id, r.rank, hist.d3, hist.d7, hist.d21, velocity.velocity7d, velocity.velocity21d, r.poolSize, r.tier, tierScore],
+        `INSERT INTO brand_spy.ad_rank_snapshots (brand_id, ad_id, ad_archive_id, rank, pool_size, tier, is_active)
+         VALUES ${snapPlaceholders.join(',')}`,
+        snapParams,
       );
-
-      if (r.rank !== null && r.tier !== null) {
-        await client.query(
-          `INSERT INTO brand_spy.ad_rank_snapshots (brand_id, ad_id, ad_archive_id, rank, pool_size, tier, is_active)
-           VALUES ($1, $2, $3, $4, $5, $6, TRUE)`,
-          [brandId, r.id, r.adArchiveId, r.rank, r.poolSize, r.tier],
-        );
-        snapshotsWritten += 1;
-      }
+      snapshotsWritten = snapshotRows.length;
     }
 
     await client.query(
