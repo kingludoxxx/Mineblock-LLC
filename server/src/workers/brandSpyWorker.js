@@ -328,7 +328,23 @@ export async function runBrandScrape({ brandId, trigger, client: scClient }) {
     let scoreBrandError = null;
     try {
       console.log(`[brand-spy] scoreBrand starting for ${brand.id} (${brand.domain})`);
-      await scoreBrand(brand.id);
+      // Retry on deadlock (40P01) — can occur when concurrent brand scrapes contend on
+      // shared B-tree index pages. Back off exponentially between attempts.
+      const MAX_SCORE_RETRIES = 3;
+      for (let attempt = 1; attempt <= MAX_SCORE_RETRIES; attempt++) {
+        try {
+          await scoreBrand(brand.id);
+          break; // success
+        } catch (scoreErr) {
+          if (scoreErr?.code === '40P01' && attempt < MAX_SCORE_RETRIES) {
+            const backoffMs = attempt * 2000;
+            console.warn(`[brand-spy] scoreBrand deadlock for ${brand.id}, retry ${attempt}/${MAX_SCORE_RETRIES} in ${backoffMs}ms`);
+            await new Promise((r) => setTimeout(r, backoffMs));
+          } else {
+            throw scoreErr;
+          }
+        }
+      }
       console.log(`[brand-spy] scoreBrand done for ${brand.id}`);
     } catch (scoreErr) {
       scoreBrandError = `scoreBrand: ${scoreErr?.message ?? String(scoreErr)}`;
@@ -1010,7 +1026,11 @@ async function recomputeDomainRollup(brandId, primaryDomain) {
 // ---------------------------------------------------------------------------
 
 export async function scrapeAllInBackground(brandIds) {
-  const CONCURRENCY = 3;
+  // Concurrency 1: scrape brands serially to avoid inter-brand deadlocks.
+  // scoreBrand holds long-running transactions that contend on shared B-tree
+  // index pages when multiple brands run concurrently — serialising eliminates this.
+  // Per-brand Phase 2 still uses PHASE2_CONCURRENCY=5 for internal parallelism.
+  const CONCURRENCY = 1;
   const queue = [...brandIds];
   async function worker() {
     while (queue.length) {
