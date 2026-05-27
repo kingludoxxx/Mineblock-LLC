@@ -1,6 +1,14 @@
 # Progress Log
 
 ---
+TIMESTAMP: 2026-05-27 22:09
+TASK: Brand Spy — compact ad grid, Atria parity (commit 0ee411e)
+BUILT: Switched overview grid from 3 large columns to 4-7 responsive columns (grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7, gap-2). PAGE_SIZE_GRID 30→48. AdCard: all padding tightened (px-3→px-2, pt-3→pt-2), avatar 26→20px, page name 12→11px, date 11→10px, body text line-clamp-2→line-clamp-1 + leading-snug, footer simplified (removed domain/headline lines, kept CTA + days), play button w-12→w-9, card border-radius rounded-xl→rounded-lg. Skeleton updated to 16 placeholders matching new grid.
+TESTED: Deploy dep-d8bmlri8qa3s73aaf5eg LIVE 22:08:46Z. API health check: 4 brands, norseorganics.co 1289 active — confirmed healthy post-deploy.
+OUTPUT: Grid now shows ~5-6 compact cards per row on standard desktop, matching Atria reference density. All 48 ads load per page vs 30 before.
+DECISIONS: Removed domain name and headline from footer to keep compact cards scannable — these are visible on click via IntelDrawer.
+STATUS: COMPLETE
+---
 TIMESTAMP: 2026-05-27 22:01
 TASK: Brand Spy — full bug audit + 5-bug fix pack (commit 40d10b7)
 BUILT: Full code audit across all Brand Spy files (brandSpy.js route, brandSpyDb.js, brandSpyWorker.js, BrandDetail.jsx, BrandLeague.jsx, IntelDrawer.jsx). Production smoke test: 4 brands live, 2179 ads, 0 profile-pic thumbnails (blurry fix confirmed). Found and fixed 5 bugs: (1) BrandLeague native <select> sort — the exact "leak" user flagged, still present in League but not Detail; replaced with SortDropdown component matching BrandDetail. (2) BrandLeague handleRefresh didn't update brands list — brand selector showed stale activeAdsCount after scrape; fixed by patching brands array in setBrands during poll. (3) IntelDrawer Save button used plain anchor download — CORS-blocked for Facebook CDN and just opened new tab; changed to blob-fetch first, window.open fallback (same as AdCard). (4) BrandDetail loading skeleton used 4/3 aspect ratio but AdCard is 4/5 — skeleton shape was wrong during load; corrected to 4/5. (5) AdCard had zombie reference ad.pageProfilePicUrl — field never in API mapper so always undefined; removed dead reference.
