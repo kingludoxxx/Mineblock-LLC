@@ -513,17 +513,22 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
       const pageName = pageNameCache.get(metaPageId) ?? null;
       const isMetaPage = isMetaPlatformPage(pageName);
 
-      // Meta platform pages (Instagram for Business, Instagram, Creators, etc.) run ads
-      // for hundreds of brands simultaneously. Scraping them without a domain filter would
-      // store thousands of irrelevant ads under this brand's ID, inflating active counts
-      // and causing Phase 3 to cascade to unrelated pages. Filter their batches so we
-      // only store ads whose link_url contains the brand's root fragment.
-      const filterBatch = isMetaPage
-        ? (batch) => batch.filter((ad) => {
-            const url = ad.snapshot?.link_url ?? '';
-            return url.includes(rootFragment);
-          })
-        : (batch) => batch;
+      // Apply rootFragment link_url filter to ALL Phase 2 pages — not just Meta platform
+      // pages. Pages like "USA Ready Families" run ads for multiple brands simultaneously
+      // (thegreatproject.com AND tonicgympro.com). Without filtering, ALL their ads get
+      // stored under this brand's ID, inflating active counts, polluting brand_domains
+      // with unrelated domains, and triggering Phase 2 cascades on the wrong pages.
+      //
+      // Meta platform pages (Instagram for Business, etc.): strict — require link_url.
+      //   No link_url on a Meta platform ad = system/promo content, exclude it.
+      // Regular brand pages: allow ads with no link_url (benefit of the doubt — they were
+      //   discovered because the page runs this brand's ads, so unlabelled ads are likely
+      //   brand-related). Ads WITH a link_url must still contain rootFragment.
+      const filterBatch = (batch) => batch.filter((ad) => {
+        const url = (ad.snapshot?.link_url ?? '').toLowerCase();
+        if (!url) return !isMetaPage;
+        return url.includes(rootFragment.toLowerCase());
+      });
 
       if (isMetaPage) {
         console.log(`[brand-spy] phase-2 page ${metaPageId} ("${pageName}") — Meta platform page, filtering to "${rootFragment}" ads only`);
