@@ -259,12 +259,23 @@ router.get('/debug/snapshots/:id', async (req, res, next) => {
       [id],
     );
 
+    // Check if top-ranked ads have ANY snapshots at all
+    const topArchiveIds = adsCheck.map((r) => r.ad_archive_id);
+    const { rows: topAdsSnapshotCheck } = topArchiveIds.length ? await pgQuery(
+      `SELECT ad_archive_id, COUNT(*) AS snap_count, MIN(rank) AS min_rank, MAX(rank) AS max_rank
+         FROM brand_spy.ad_rank_snapshots
+        WHERE brand_id = $1 AND ad_archive_id = ANY($2::text[])
+        GROUP BY ad_archive_id`,
+      [id, topArchiveIds],
+    ) : { rows: [] };
+
     res.json({
       snapshotCount: countRows[0],
       scrapeRuns: runRows,
       d3QuerySampleRows: d3Sample.length,
       d3QuerySample: d3Sample,
       adsVelocitySample: adsCheck,
+      topAdsSnapshotCheck,
     });
   } catch (err) { next(err); }
 });
