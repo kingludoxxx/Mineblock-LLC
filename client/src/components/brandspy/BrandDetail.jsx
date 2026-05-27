@@ -121,12 +121,31 @@ function fmtDateRange(startDate, endDate, isActive) {
 }
 
 function liveActiveDays(ad) {
-  const tatDays = ad.totalActiveTime != null ? Math.floor(ad.totalActiveTime / 86400) : null;
-  if (ad.startDate && ad.isActive) {
-    const fromStart = Math.max(0, Math.floor((Date.now() - new Date(ad.startDate).getTime()) / 86400000));
-    return tatDays != null ? Math.max(fromStart, tatDays) : fromStart;
+  // Three signals, pick the highest:
+  //   1. totalActiveTime (seconds, from upstream API)
+  //   2. activeDays (whole-day count, from upstream API)
+  //   3. date-range: startDate → end-marker, where end-marker is now (active),
+  //      endDate (ended w/ date), or lastSeenAt (ended, no end date)
+  // Falling back through all three means we don't render "0d" just because
+  // the brand.is_active flag is stale (separate worker bug) — we still have
+  // startDate + lastSeenAt to reason about.
+  const tatDays  = ad.totalActiveTime != null ? Math.floor(ad.totalActiveTime / 86400) : null;
+  const apiDays  = ad.activeDays != null ? ad.activeDays : null;
+
+  let rangeDays = null;
+  if (ad.startDate) {
+    const startMs = new Date(ad.startDate).getTime();
+    let endMs = null;
+    if (ad.isActive)        endMs = Date.now();
+    else if (ad.endDate)    endMs = new Date(ad.endDate).getTime();
+    else if (ad.lastSeenAt) endMs = new Date(ad.lastSeenAt).getTime();
+    if (endMs != null && endMs > startMs) {
+      rangeDays = Math.floor((endMs - startMs) / 86400000);
+    }
   }
-  return tatDays ?? ad.activeDays ?? null;
+
+  const candidates = [tatDays, apiDays, rangeDays].filter((v) => v != null && v > 0);
+  return candidates.length ? Math.max(...candidates) : null;
 }
 
 function relTime(iso) {
