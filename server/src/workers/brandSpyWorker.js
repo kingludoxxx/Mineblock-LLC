@@ -162,10 +162,17 @@ export async function scoreBrand(brandId) {
 
 async function loadHistoricalRanks(client, brandId) {
   const result = new Map();
+  // Snapshot windows for historical rank lookup.
+  // halfWidthDays controls how wide a band we search around centerDays.
+  // Wider windows let the tool start showing values sooner after first scrape:
+  //   d3  → window 1–5 days ago  (shows after ~1 day of snapshots)
+  //   d7  → window 3–11 days ago (shows after ~3 days of snapshots)
+  //   d21 → window 11–31 days ago (shows after ~11 days of snapshots)
+  // The ORDER BY clause still picks the snapshot CLOSEST to centerDays.
   const windows = [
-    { key: 'd3',  centerDays: 3,  halfWidthDays: 1 },
-    { key: 'd7',  centerDays: 7,  halfWidthDays: 2 },
-    { key: 'd21', centerDays: 21, halfWidthDays: 4 },
+    { key: 'd3',  centerDays: 3,  halfWidthDays: 2 },
+    { key: 'd7',  centerDays: 7,  halfWidthDays: 4 },
+    { key: 'd21', centerDays: 21, halfWidthDays: 10 },
   ];
 
   for (const w of windows) {

@@ -588,9 +588,21 @@ function DetailAdRow({ ad, rowNum, onSelect, col }) {
       )}
       {col('page') && (
         <td className="px-3 py-2" style={{ width: 150 }}>
-          <div className="flex items-center gap-1.5 min-w-0">
+          <div className="flex items-center gap-1.5 min-w-0 group">
             <Globe className="w-3 h-3 text-text-faint shrink-0" />
-            <span className="text-xs text-text-muted truncate">{ad.pageName ?? '—'}</span>
+            <span className="text-xs text-text-muted truncate flex-1 min-w-0">{ad.pageName ?? '—'}</span>
+            {ad.metaPageId && (
+              <a
+                href={`https://www.facebook.com/ads/library/?active_status=all&ad_type=all&country=US&media_type=all&search_type=page&view_all_page_id=${ad.metaPageId}`}
+                target="_blank"
+                rel="noreferrer"
+                onClick={(e) => e.stopPropagation()}
+                className="opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity shrink-0"
+                title="View on Facebook Ad Library"
+              >
+                <ExternalLink className="w-3 h-3 text-text-faint" />
+              </a>
+            )}
           </div>
         </td>
       )}

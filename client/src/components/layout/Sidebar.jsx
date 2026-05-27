@@ -20,6 +20,7 @@ import {
   Rocket,
   Globe,
   ScanSearch,
+  Trophy,
   DollarSign,
   UsersRound,
   Shield,
@@ -44,14 +45,8 @@ const navGroups = [
       { to: '/app/ads-launcher', icon: Rocket, label: 'Ads Launcher', permission: 'ads-launcher:access' },
       { to: '/app/languages-pipeline', icon: Globe, label: 'Languages Pipeline', permission: 'languages-pipeline:access' },
       // Brand Spy — no permission gate, always visible to logged-in users
-      {
-        icon: ScanSearch,
-        label: 'Brand Spy',
-        children: [
-          { to: '/app/brand-spy', label: 'Following', end: true },
-          { to: '/app/brand-spy/league', label: 'League' },
-        ],
-      },
+      { to: '/app/brand-spy', icon: ScanSearch, label: 'Brand Spy' },
+      { to: '/app/brand-spy/league', icon: Trophy, label: 'The League' },
     ],
   },
   {

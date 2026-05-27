@@ -275,7 +275,10 @@ const COL_TOOLTIPS = {
     <>
       <p className="text-xs font-bold text-white mb-1">7-Day Rank</p>
       <p className="text-[11px] leading-relaxed" style={{ color: '#9ca3af' }}>
-        Rank 7 days ago. Delta shows movement vs current rank — useful for spotting short-term momentum.
+        Where this ad ranked{' '}
+        <span className="text-white font-medium">~7 days ago</span>{' '}
+        based on the closest refresh snapshot.
+        Climbing from 90D → 21D → 7D → NOW signals the brand is scaling up.
       </p>
     </>
   ),
@@ -301,8 +304,9 @@ const COL_TOOLTIPS = {
     <>
       <p className="text-xs font-bold text-white mb-1">Velocity 21D</p>
       <p className="text-[11px] leading-relaxed" style={{ color: '#9ca3af' }}>
-        Rank change over 21 days. Combines with 7D velocity to calculate{' '}
-        <span className="text-white font-medium">Momentum</span> in the ad detail view.
+        How many rank positions this ad moved in the last 21 days.
+        Same logic as V7D but over a longer window — better for spotting sustained scaling vs short spikes.
+        Shows <span className="text-sky-400 font-semibold">NEW</span> for ads less than 21 days old.
       </p>
     </>
   ),
@@ -924,9 +928,21 @@ function AdTableRow({ ad, rowNum, onSelect, visibleCols }) {
       {/* PAGE */}
       {visibleCols.page && (
         <td className="px-3 py-2" style={{ width: 150 }}>
-          <div className="flex items-center gap-1.5 min-w-0">
+          <div className="flex items-center gap-1.5 min-w-0 group">
             <Globe className="w-3 h-3 text-text-faint shrink-0" />
-            <span className="text-xs text-text-muted truncate">{ad.pageName ?? '—'}</span>
+            <span className="text-xs text-text-muted truncate flex-1 min-w-0">{ad.pageName ?? '—'}</span>
+            {ad.metaPageId && (
+              <a
+                href={`https://www.facebook.com/ads/library/?active_status=all&ad_type=all&country=US&media_type=all&search_type=page&view_all_page_id=${ad.metaPageId}`}
+                target="_blank"
+                rel="noreferrer"
+                onClick={(e) => e.stopPropagation()}
+                className="opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity shrink-0"
+                title="View on Facebook Ad Library"
+              >
+                <ExternalLink className="w-3 h-3 text-text-faint" />
+              </a>
+            )}
           </div>
         </td>
       )}
