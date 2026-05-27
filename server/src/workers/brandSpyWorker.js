@@ -250,6 +250,11 @@ async function loadHistoricalRanks(client, brandId) {
   ];
 
   for (const w of windows) {
+    // lower = center - halfWidth (e.g. 3-2=1 for d3) — the most-recent end of the window.
+    // upper = center + halfWidth (e.g. 3+2=5 for d3) — the oldest end of the window.
+    // Bug fix: was passing centerDays as $2 (newer bound) instead of lower, which made
+    // the actual range center→upper (3-5d) instead of lower→upper (1-5d) as intended.
+    const lower = Math.max(0, w.centerDays - w.halfWidthDays);
     const upper = w.centerDays + w.halfWidthDays;
     const { rows } = await client.query(
       `SELECT DISTINCT ON (ad_archive_id) ad_archive_id, rank
@@ -258,8 +263,8 @@ async function loadHistoricalRanks(client, brandId) {
           AND snapshot_at BETWEEN NOW() - ($3::text || ' days')::INTERVAL
                               AND NOW() - ($2::text || ' days')::INTERVAL
         ORDER BY ad_archive_id,
-                 ABS(EXTRACT(EPOCH FROM (NOW() - snapshot_at - ($2::text || ' days')::INTERVAL)))`,
-      [brandId, w.centerDays.toString(), upper.toString()],
+                 ABS(EXTRACT(EPOCH FROM (NOW() - snapshot_at - ($4::text || ' days')::INTERVAL)))`,
+      [brandId, lower.toString(), upper.toString(), w.centerDays.toString()],
     );
     for (const row of rows) {
       const existing = result.get(row.ad_archive_id) ?? { d3: null, d7: null, d21: null };
