@@ -60,11 +60,12 @@ router.get('/brands/:id', async (req, res, next) => {
 router.get('/brands/:id/ads', async (req, res, next) => {
   try {
     const q = {
-      page:     req.query.page     ? Math.max(1, parseInt(String(req.query.page), 10) || 1) : 1,
-      pageSize: req.query.pageSize ? parseInt(String(req.query.pageSize), 10) || undefined : undefined,
-      sort:     req.query.sort     ? String(req.query.sort)   : 'rank_asc',
-      tier:     req.query.tier     ? String(req.query.tier)   : 'ALL',
-      format:   req.query.format   ? String(req.query.format) : undefined,
+      page:        req.query.page        ? Math.max(1, parseInt(String(req.query.page), 10) || 1) : 1,
+      pageSize:    req.query.pageSize    ? parseInt(String(req.query.pageSize), 10) || undefined : undefined,
+      sort:        req.query.sort        ? String(req.query.sort)        : 'rank_asc',
+      tier:        req.query.tier        ? String(req.query.tier)        : 'ALL',
+      format:      req.query.format      ? String(req.query.format)      : undefined,
+      brandPageId: req.query.brandPageId ? String(req.query.brandPageId) : undefined,
     };
     const result = await listAds(req.params.id, q);
     res.json(result);

@@ -1,0 +1,905 @@
+import { useEffect, useRef, useState, useCallback } from 'react';
+import {
+  ChevronDown,
+  RefreshCw,
+  Columns3,
+  ScanSearch,
+  Globe,
+  X,
+} from 'lucide-react';
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+const PAGE_SIZE = 50;
+
+const TIER_COLORS = {
+  BANGER: 'bg-rose-500/15 text-rose-400 border-rose-500/30',
+  CHAMP:  'bg-amber-500/15 text-amber-400 border-amber-500/30',
+  A:      'bg-emerald-500/15 text-emerald-400 border-emerald-500/30',
+  B:      'bg-sky-500/15 text-sky-400 border-sky-500/30',
+  C:      'bg-zinc-700/40 text-zinc-400 border-zinc-700',
+  MID:    'bg-bg-elevated text-text-faint border-border-default',
+  TEST:   'bg-bg-card text-text-faint border-border-subtle',
+};
+
+const TIER_ICONS = { BANGER: '🔥', CHAMP: '🏆' };
+
+const TIER_TOOLTIPS = {
+  BANGER: '🔥 BANGER — Top 3% in active < 10 days',
+  CHAMP:  '🏆 CHAMP — Top 10%',
+  A:      'A — Top 25%',
+  B:      'B — Top 50%',
+  C:      'C — Top 75%',
+  MID:    'MID — Bottom 25%',
+  TEST:   'TEST — Bottom 10%',
+};
+
+const TIER_FILTERS = ['ALL', 'BANGER', 'CHAMP', 'A', 'B', 'C', 'MID', 'TEST'];
+
+const TIER_LABELS = {
+  ALL:    'ALL',
+  BANGER: '🔥 BANGER',
+  CHAMP:  '🏆 CHAMP',
+  A:      'A',
+  B:      'B',
+  C:      'C',
+  MID:    'MID',
+  TEST:   'TEST',
+};
+
+const SORT_OPTIONS = [
+  { value: 'rank_asc',         label: 'Top rank' },
+  { value: 'velocity_7d_desc', label: 'Climbing fast' },
+  { value: 'active_days_desc', label: 'Longest running' },
+  { value: 'first_seen_desc',  label: 'Newest' },
+];
+
+// All columns with optional toggle support
+const ALL_COLUMNS = [
+  { key: 'checkbox',  label: '',        locked: true,  width: 36 },
+  { key: 'num',       label: '#',       locked: true,  width: 36 },
+  { key: 'ad',        label: 'AD',      locked: true,  width: 280 },
+  { key: 'page',      label: 'PAGE',    locked: false, width: 150 },
+  { key: 'launch',    label: 'LAUNCH',  locked: false, width: 80 },
+  { key: 'status',    label: 'STATUS',  locked: false, width: 60 },
+  { key: 'format',    label: 'FORMAT',  locked: false, width: 70 },
+  { key: 'rank21d',   label: '21D',     locked: false, width: 70 },
+  { key: 'rank7d',    label: '7D',      locked: false, width: 70 },
+  { key: 'rank3d',    label: '3D',      locked: false, width: 70 },
+  { key: 'now',       label: 'NOW',     locked: true,  width: 70 },
+  { key: 'active',    label: 'ACTIVE',  locked: false, width: 60 },
+  { key: 'tier',      label: 'TIER',    locked: true,  width: 90 },
+  { key: 'v7d',       label: 'V7D',     locked: false, width: 60 },
+  { key: 'v21d',      label: 'V21D',    locked: false, width: 60 },
+];
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function fmtLaunch(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  const now = new Date();
+  const sameYear = d.getFullYear() === now.getFullYear();
+  return d.toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    ...(sameYear ? {} : { year: '2-digit' }),
+  });
+}
+
+function rankDisplay(rank, poolSize) {
+  if (rank == null) return '—';
+  if (!poolSize) return String(rank);
+  return `${rank}/${poolSize}`;
+}
+
+function VelocityCell({ value, days, win }) {
+  if (value === null || value === undefined) {
+    if (days != null && days < win) {
+      return <span className="text-sky-400 font-semibold text-[11px]">NEW</span>;
+    }
+    return <span className="text-text-faint text-xs">—</span>;
+  }
+  if (value > 0) return <span className="text-emerald-400 text-xs font-medium">+{value}↑</span>;
+  if (value < 0) return <span className="text-rose-400 text-xs font-medium">{value}↓</span>;
+  return <span className="text-text-faint text-xs">=</span>;
+}
+
+function BrandLogo({ domain }) {
+  const [src, setSrc] = useState(`https://logo.clearbit.com/${domain}`);
+  const [failed, setFailed] = useState(false);
+  if (failed) {
+    return (
+      <div className="w-6 h-6 rounded bg-bg-elevated border border-border-subtle flex items-center justify-center text-[10px] font-bold text-text-faint shrink-0">
+        {domain.charAt(0).toUpperCase()}
+      </div>
+    );
+  }
+  return (
+    <img
+      src={src}
+      alt=""
+      className="w-6 h-6 rounded object-contain shrink-0"
+      onError={() => {
+        if (src.includes('clearbit')) {
+          setSrc(`https://www.google.com/s2/favicons?domain=${domain}&sz=32`);
+        } else {
+          setFailed(true);
+        }
+      }}
+    />
+  );
+}
+
+function PageAvatar({ page }) {
+  const [imgFailed, setImgFailed] = useState(false);
+  if (page.pageProfilePic && !imgFailed) {
+    return (
+      <img
+        src={page.pageProfilePic}
+        alt=""
+        className="w-7 h-7 rounded-full object-cover shrink-0"
+        onError={() => setImgFailed(true)}
+      />
+    );
+  }
+  // colored letter avatar
+  const colors = [
+    'bg-violet-500/20 text-violet-400',
+    'bg-sky-500/20 text-sky-400',
+    'bg-emerald-500/20 text-emerald-400',
+    'bg-amber-500/20 text-amber-400',
+    'bg-rose-500/20 text-rose-400',
+  ];
+  const color = colors[(page.pageName?.charCodeAt(0) ?? 0) % colors.length];
+  return (
+    <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold shrink-0 ${color}`}>
+      {(page.pageName ?? '?').charAt(0).toUpperCase()}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Dropdown hook — close on outside click
+// ---------------------------------------------------------------------------
+
+function useDropdown() {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function handler(e) {
+      if (ref.current && !ref.current.contains(e.target)) {
+        setOpen(false);
+      }
+    }
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [open]);
+
+  return { open, setOpen, ref };
+}
+
+// ---------------------------------------------------------------------------
+// Main component
+// ---------------------------------------------------------------------------
+
+export default function BrandLeague({ apiBaseUrl }) {
+  // Data state
+  const [brands, setBrands] = useState([]);
+  const [brandsError, setBrandsError] = useState(null);
+  const [brandsLoading, setBrandsLoading] = useState(true);
+  const [selectedBrand, setSelectedBrand] = useState(null);
+  const [brandDetail, setBrandDetail] = useState(null); // includes pages
+  const [ads, setAds] = useState([]);
+  const [total, setTotal] = useState(0);
+  const [adsLoading, setAdsLoading] = useState(false);
+  const [adsError, setAdsError] = useState(null);
+  const [refreshing, setRefreshing] = useState(false);
+
+  // Filters / pagination
+  const [page, setPage] = useState(1);
+  const [sort, setSort] = useState('rank_asc');
+  const [tierFilter, setTierFilter] = useState('ALL');
+  const [pageFilter, setPageFilter] = useState(null); // brand_page_id or null
+
+  // Selection
+  const [selectedIds, setSelectedIds] = useState(new Set());
+
+  // Visible columns
+  const [visibleCols, setVisibleCols] = useState(() => {
+    const init = {};
+    ALL_COLUMNS.forEach((c) => { init[c.key] = true; });
+    return init;
+  });
+
+  // Dropdowns
+  const brandDropdown  = useDropdown();
+  const pagesDropdown  = useDropdown();
+  const columnsDropdown = useDropdown();
+
+  // ---------------------------------------------------------------------------
+  // Load brands on mount
+  // ---------------------------------------------------------------------------
+  useEffect(() => {
+    setBrandsLoading(true);
+    setBrandsError(null);
+    fetch(`${apiBaseUrl}/brands`)
+      .then((r) => {
+        if (!r.ok) throw new Error(`Failed to load brands (${r.status})`);
+        return r.json();
+      })
+      .then((d) => {
+        const list = d.brands ?? [];
+        setBrands(list);
+        if (list.length > 0) setSelectedBrand(list[0]);
+      })
+      .catch((e) => setBrandsError(e.message))
+      .finally(() => setBrandsLoading(false));
+  }, [apiBaseUrl]);
+
+  // ---------------------------------------------------------------------------
+  // Load brand detail (pages) when brand changes
+  // ---------------------------------------------------------------------------
+  useEffect(() => {
+    if (!selectedBrand) { setBrandDetail(null); return; }
+    fetch(`${apiBaseUrl}/brands/${selectedBrand.id}`)
+      .then((r) => r.json())
+      .then((d) => setBrandDetail(d.brand ?? null))
+      .catch(() => setBrandDetail(null));
+  }, [apiBaseUrl, selectedBrand]);
+
+  // ---------------------------------------------------------------------------
+  // Load ads
+  // ---------------------------------------------------------------------------
+  const loadAds = useCallback(async () => {
+    if (!selectedBrand) return;
+    setAdsLoading(true);
+    setAdsError(null);
+    try {
+      const params = new URLSearchParams({
+        page: String(page),
+        pageSize: String(PAGE_SIZE),
+        sort,
+        tier: tierFilter,
+      });
+      if (pageFilter) params.set('brandPageId', pageFilter);
+      const res = await fetch(`${apiBaseUrl}/brands/${selectedBrand.id}/ads?${params}`);
+      if (!res.ok) throw new Error(`Failed to load ads (${res.status})`);
+      const data = await res.json();
+      setAds(data.ads ?? []);
+      setTotal(data.total ?? 0);
+    } catch (e) {
+      setAdsError(e.message);
+    } finally {
+      setAdsLoading(false);
+    }
+  }, [apiBaseUrl, selectedBrand, page, sort, tierFilter, pageFilter]);
+
+  useEffect(() => { loadAds(); }, [loadAds]);
+
+  // Reset page when filters change
+  useEffect(() => { setPage(1); }, [selectedBrand, tierFilter, pageFilter, sort]);
+
+  // ---------------------------------------------------------------------------
+  // Actions
+  // ---------------------------------------------------------------------------
+  function handleSelectBrand(brand) {
+    setSelectedBrand(brand);
+    setPageFilter(null);
+    setSelectedIds(new Set());
+    brandDropdown.setOpen(false);
+  }
+
+  function handleSelectPage(pageId) {
+    setPageFilter(pageId);
+    setSelectedIds(new Set());
+    pagesDropdown.setOpen(false);
+  }
+
+  async function handleRefresh() {
+    if (!selectedBrand || refreshing) return;
+    setRefreshing(true);
+    try {
+      await fetch(`${apiBaseUrl}/brands/${selectedBrand.id}/scrape`, { method: 'POST' });
+      await loadAds();
+    } catch (_) {
+      // silently ignore scrape trigger errors; ads may still reload
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Row selection
+  // ---------------------------------------------------------------------------
+  const totalPages = Math.ceil(total / PAGE_SIZE);
+  const allSelected = ads.length > 0 && ads.every((a) => selectedIds.has(a.id));
+
+  function toggleSelectAll() {
+    if (allSelected) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(ads.map((a) => a.id)));
+    }
+  }
+
+  function toggleRow(id) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Column visibility toggle
+  // ---------------------------------------------------------------------------
+  function toggleCol(key) {
+    setVisibleCols((prev) => ({ ...prev, [key]: !prev[key] }));
+  }
+
+  const visibleColDefs = ALL_COLUMNS.filter((c) => visibleCols[c.key]);
+
+  // ---------------------------------------------------------------------------
+  // Selected page name for display
+  // ---------------------------------------------------------------------------
+  const selectedPageObj = brandDetail?.pages?.find((p) => p.id === pageFilter) ?? null;
+
+  // ---------------------------------------------------------------------------
+  // Empty / error states
+  // ---------------------------------------------------------------------------
+  if (brandsLoading) {
+    return (
+      <div className="flex-1 flex items-center justify-center text-text-faint text-sm">
+        Loading brands...
+      </div>
+    );
+  }
+
+  if (brandsError) {
+    return (
+      <div className="flex-1 flex items-center justify-center text-red-400 text-sm">
+        {brandsError}
+      </div>
+    );
+  }
+
+  if (brands.length === 0) {
+    return (
+      <div className="flex-1 flex flex-col items-center justify-center gap-3 text-text-faint">
+        <ScanSearch className="w-10 h-10 opacity-30" />
+        <p className="text-sm">No brands followed yet. Go to Brand Spy → Following to add one.</p>
+      </div>
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Render
+  // ---------------------------------------------------------------------------
+  return (
+    <div className="h-full flex flex-col overflow-hidden">
+      {/* ------------------------------------------------------------------ */}
+      {/* Toolbar */}
+      {/* ------------------------------------------------------------------ */}
+      <div className="shrink-0 flex items-center gap-2 px-4 py-2.5 border-b border-border-subtle bg-bg-card flex-wrap">
+
+        {/* Brand selector */}
+        <div className="relative" ref={brandDropdown.ref}>
+          <button
+            onClick={() => brandDropdown.setOpen((o) => !o)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-bg-elevated border border-border-default hover:bg-bg-hover text-text-primary text-xs font-medium transition-colors"
+          >
+            {selectedBrand && <BrandLogo domain={selectedBrand.domain} />}
+            <span className="uppercase tracking-wide">
+              {selectedBrand
+                ? `${selectedBrand.domain} · ${selectedBrand.pagesCount} pages · ${selectedBrand.activeAdsCount} active`
+                : 'Select brand'}
+            </span>
+            <ChevronDown className="w-3 h-3 text-text-faint" />
+          </button>
+
+          {brandDropdown.open && (
+            <div className="absolute top-full left-0 mt-1 w-72 bg-bg-card border border-border-default rounded-lg shadow-xl z-50 overflow-hidden">
+              <div className="max-h-64 overflow-y-auto">
+                {brands.map((b) => (
+                  <button
+                    key={b.id}
+                    onClick={() => handleSelectBrand(b)}
+                    className="w-full flex items-center gap-2.5 px-3 py-2 hover:bg-bg-elevated text-left transition-colors"
+                  >
+                    <BrandLogo domain={b.domain} />
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm text-text-primary truncate">{b.domain}</p>
+                      <p className="text-[11px] text-text-faint">
+                        {b.pagesCount} pages · {b.activeAdsCount} active
+                      </p>
+                    </div>
+                    {selectedBrand?.id === b.id && (
+                      <span className="text-accent text-xs">✓</span>
+                    )}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Pages filter */}
+        <div className="relative" ref={pagesDropdown.ref}>
+          <button
+            onClick={() => pagesDropdown.setOpen((o) => !o)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-bg-elevated border border-border-default hover:bg-bg-hover text-text-primary text-xs transition-colors"
+          >
+            <span className="text-text-muted">
+              {selectedPageObj ? selectedPageObj.pageName : 'All Pages'}
+            </span>
+            {pageFilter && (
+              <span
+                onClick={(e) => { e.stopPropagation(); setPageFilter(null); }}
+                className="ml-1 text-text-faint hover:text-text-primary cursor-pointer"
+                title="Clear page filter"
+              >
+                ×
+              </span>
+            )}
+            <ChevronDown className="w-3 h-3 text-text-faint" />
+          </button>
+
+          {pagesDropdown.open && (
+            <div className="absolute top-full left-0 mt-1 w-64 bg-bg-card border border-border-default rounded-lg shadow-xl z-50 overflow-hidden">
+              <div className="max-h-64 overflow-y-auto">
+                <button
+                  onClick={() => handleSelectPage(null)}
+                  className={`w-full flex items-center gap-2.5 px-3 py-2 hover:bg-bg-elevated text-left transition-colors ${
+                    !pageFilter ? 'bg-bg-elevated' : ''
+                  }`}
+                >
+                  <span className="text-sm text-text-primary">All Pages</span>
+                </button>
+                {(brandDetail?.pages ?? []).map((pg) => (
+                  <button
+                    key={pg.id}
+                    onClick={() => handleSelectPage(pg.id)}
+                    className={`w-full flex items-center gap-2.5 px-3 py-2 hover:bg-bg-elevated text-left transition-colors ${
+                      pageFilter === pg.id ? 'bg-bg-elevated' : ''
+                    }`}
+                  >
+                    <PageAvatar page={pg} />
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm text-text-primary truncate">{pg.pageName}</p>
+                      <p className="text-[11px] text-text-faint">{pg.activeAdsCount} active</p>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Tier filter pills */}
+        <div className="flex items-center gap-1 flex-wrap">
+          {TIER_FILTERS.map((f) => (
+            <button
+              key={f}
+              onClick={() => setTierFilter(f)}
+              className={`px-2 py-0.5 text-[11px] rounded border font-medium transition-colors ${
+                tierFilter === f
+                  ? 'bg-accent text-white border-accent'
+                  : 'bg-bg-elevated text-text-muted border-border-default hover:text-text-primary'
+              }`}
+            >
+              {TIER_LABELS[f]}
+            </button>
+          ))}
+        </div>
+
+        <div className="flex-1" />
+
+        {/* Sort */}
+        <select
+          value={sort}
+          onChange={(e) => setSort(e.target.value)}
+          className="text-xs bg-bg-elevated border border-border-default rounded-lg px-2.5 py-1.5 text-text-muted focus:outline-none cursor-pointer"
+        >
+          {SORT_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>{o.label}</option>
+          ))}
+        </select>
+
+        {/* Refresh */}
+        <button
+          onClick={handleRefresh}
+          disabled={refreshing}
+          title="Refresh ads"
+          className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-bg-elevated border border-border-default hover:bg-bg-hover disabled:opacity-40 text-text-primary text-xs transition-colors"
+        >
+          <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
+        </button>
+
+        {/* Columns toggle */}
+        <div className="relative" ref={columnsDropdown.ref}>
+          <button
+            onClick={() => columnsDropdown.setOpen((o) => !o)}
+            title="Toggle columns"
+            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-bg-elevated border border-border-default hover:bg-bg-hover text-text-primary text-xs transition-colors"
+          >
+            <Columns3 className="w-3.5 h-3.5" />
+          </button>
+
+          {columnsDropdown.open && (
+            <div className="absolute top-full right-0 mt-1 w-44 bg-bg-card border border-border-default rounded-lg shadow-xl z-50 p-2 space-y-0.5">
+              {ALL_COLUMNS.filter((c) => c.key !== 'checkbox' && c.key !== 'num').map((c) => (
+                <label
+                  key={c.key}
+                  className={`flex items-center gap-2 px-2 py-1 rounded text-xs cursor-pointer hover:bg-bg-elevated transition-colors ${
+                    c.locked ? 'opacity-50 cursor-not-allowed' : ''
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={visibleCols[c.key]}
+                    disabled={c.locked}
+                    onChange={() => !c.locked && toggleCol(c.key)}
+                    className="accent-accent"
+                  />
+                  <span className="text-text-muted">{c.label || c.key.toUpperCase()}</span>
+                </label>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ------------------------------------------------------------------ */}
+      {/* Table area */}
+      {/* ------------------------------------------------------------------ */}
+      <div className="flex-1 overflow-auto">
+        {adsLoading ? (
+          <div className="flex items-center justify-center py-20 text-text-faint text-sm">
+            Loading ads...
+          </div>
+        ) : adsError ? (
+          <div className="flex items-center justify-center py-20 text-red-400 text-sm">
+            {adsError}
+          </div>
+        ) : ads.length === 0 ? (
+          <div className="flex items-center justify-center py-20 text-text-faint text-sm">
+            No ads found — click Refresh.
+          </div>
+        ) : (
+          <table className="min-w-[1300px] w-full border-collapse">
+            <thead className="sticky top-0 z-10 bg-bg-elevated">
+              <tr>
+                {/* Checkbox header */}
+                {visibleCols.checkbox && (
+                  <th style={{ width: 36 }} className="px-2 py-2 text-left">
+                    <input
+                      type="checkbox"
+                      checked={allSelected}
+                      onChange={toggleSelectAll}
+                      className="accent-accent"
+                    />
+                  </th>
+                )}
+                {/* # */}
+                {visibleCols.num && (
+                  <th style={{ width: 36 }} className="px-2 py-2 text-right text-[10px] uppercase tracking-wider text-text-faint font-normal">
+                    #
+                  </th>
+                )}
+                {/* AD */}
+                {visibleCols.ad && (
+                  <th style={{ width: 280 }} className="px-3 py-2 text-left text-[10px] uppercase tracking-wider text-text-faint font-normal">
+                    AD
+                  </th>
+                )}
+                {/* PAGE */}
+                {visibleCols.page && (
+                  <th style={{ width: 150 }} className="px-3 py-2 text-left text-[10px] uppercase tracking-wider text-text-faint font-normal">
+                    PAGE
+                  </th>
+                )}
+                {/* LAUNCH */}
+                {visibleCols.launch && (
+                  <th style={{ width: 80 }} className="px-2 py-2 text-center text-[10px] uppercase tracking-wider text-text-faint font-normal">
+                    LAUNCH
+                  </th>
+                )}
+                {/* STATUS */}
+                {visibleCols.status && (
+                  <th style={{ width: 60 }} className="px-2 py-2 text-center text-[10px] uppercase tracking-wider text-text-faint font-normal">
+                    STATUS
+                  </th>
+                )}
+                {/* FORMAT */}
+                {visibleCols.format && (
+                  <th style={{ width: 70 }} className="px-2 py-2 text-center text-[10px] uppercase tracking-wider text-text-faint font-normal">
+                    FORMAT
+                  </th>
+                )}
+                {/* 21D */}
+                {visibleCols.rank21d && (
+                  <th style={{ width: 70 }} className="px-2 py-2 text-center text-[10px] uppercase tracking-wider text-text-faint font-normal">
+                    21D
+                  </th>
+                )}
+                {/* 7D */}
+                {visibleCols.rank7d && (
+                  <th style={{ width: 70 }} className="px-2 py-2 text-center text-[10px] uppercase tracking-wider text-text-faint font-normal">
+                    7D
+                  </th>
+                )}
+                {/* 3D */}
+                {visibleCols.rank3d && (
+                  <th style={{ width: 70 }} className="px-2 py-2 text-center text-[10px] uppercase tracking-wider text-text-faint font-normal">
+                    3D
+                  </th>
+                )}
+                {/* NOW — locked, highlighted */}
+                {visibleCols.now && (
+                  <th style={{ width: 70 }} className="px-2 py-2 text-center text-[10px] uppercase tracking-wider text-text-muted font-semibold bg-bg-hover">
+                    NOW
+                  </th>
+                )}
+                {/* ACTIVE */}
+                {visibleCols.active && (
+                  <th style={{ width: 60 }} className="px-2 py-2 text-center text-[10px] uppercase tracking-wider text-text-faint font-normal">
+                    ACTIVE
+                  </th>
+                )}
+                {/* TIER — locked */}
+                {visibleCols.tier && (
+                  <th style={{ width: 90 }} className="px-2 py-2 text-center text-[10px] uppercase tracking-wider text-text-faint font-normal">
+                    TIER
+                  </th>
+                )}
+                {/* V7D */}
+                {visibleCols.v7d && (
+                  <th style={{ width: 60 }} className="px-2 py-2 text-center text-[10px] uppercase tracking-wider text-text-faint font-normal">
+                    V7D
+                  </th>
+                )}
+                {/* V21D */}
+                {visibleCols.v21d && (
+                  <th style={{ width: 60 }} className="px-2 py-2 text-center text-[10px] uppercase tracking-wider text-text-faint font-normal">
+                    V21D
+                  </th>
+                )}
+              </tr>
+            </thead>
+            <tbody>
+              {ads.map((ad, i) => (
+                <AdTableRow
+                  key={ad.id}
+                  ad={ad}
+                  rowNum={(page - 1) * PAGE_SIZE + i + 1}
+                  selected={selectedIds.has(ad.id)}
+                  onToggle={() => toggleRow(ad.id)}
+                  visibleCols={visibleCols}
+                />
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {/* ------------------------------------------------------------------ */}
+      {/* Bottom bar: bulk actions or pagination */}
+      {/* ------------------------------------------------------------------ */}
+      <div className="shrink-0 border-t border-border-subtle bg-bg-card px-4 py-2 flex items-center justify-between gap-3">
+        {selectedIds.size > 0 ? (
+          // Bulk action bar
+          <>
+            <span className="text-xs text-text-muted">{selectedIds.size} selected</span>
+            <div className="flex items-center gap-2 flex-1 justify-end">
+              <button
+                onClick={() => setSelectedIds(new Set())}
+                className="flex items-center gap-1 px-2.5 py-1.5 text-xs rounded-lg bg-bg-elevated border border-border-default hover:bg-bg-hover text-text-muted transition-colors"
+              >
+                <X className="w-3 h-3" /> Clear
+              </button>
+              <button
+                onClick={() => alert('Coming soon')}
+                className="px-3 py-1.5 text-xs rounded-lg bg-accent border border-accent hover:opacity-90 text-white font-medium transition-opacity"
+              >
+                Static Ads
+              </button>
+              <button
+                onClick={() => alert('Coming soon')}
+                className="px-3 py-1.5 text-xs rounded-lg bg-accent border border-accent hover:opacity-90 text-white font-medium transition-opacity"
+              >
+                Ad Scripts
+              </button>
+            </div>
+          </>
+        ) : (
+          // Pagination
+          <>
+            <span className="text-[11px] text-text-faint">
+              {total.toLocaleString()} ads · page {page} of {Math.max(1, totalPages)}
+            </span>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                disabled={page === 1}
+                className="px-3 py-1 text-xs rounded-lg bg-bg-elevated border border-border-default disabled:opacity-40 hover:bg-bg-hover text-text-primary transition-colors"
+              >
+                ← Prev
+              </button>
+              <button
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                disabled={page >= totalPages}
+                className="px-3 py-1 text-xs rounded-lg bg-bg-elevated border border-border-default disabled:opacity-40 hover:bg-bg-hover text-text-primary transition-colors"
+              >
+                Next →
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Table row
+// ---------------------------------------------------------------------------
+
+function AdTableRow({ ad, rowNum, selected, onToggle, visibleCols }) {
+  return (
+    <tr className={`border-b border-border-subtle hover:bg-bg-elevated transition-colors ${selected ? 'bg-accent/5' : ''}`}>
+      {/* Checkbox */}
+      {visibleCols.checkbox && (
+        <td className="px-2 py-2 w-9">
+          <input
+            type="checkbox"
+            checked={selected}
+            onChange={onToggle}
+            className="accent-accent"
+          />
+        </td>
+      )}
+
+      {/* # */}
+      {visibleCols.num && (
+        <td className="px-2 py-2 text-right text-[11px] text-text-faint tabular-nums w-9">
+          {rowNum}
+        </td>
+      )}
+
+      {/* AD */}
+      {visibleCols.ad && (
+        <td className="px-3 py-2" style={{ width: 280 }}>
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="w-10 h-10 rounded-lg bg-bg-elevated border border-border-subtle overflow-hidden flex items-center justify-center shrink-0">
+              {ad.thumbnailUrl
+                ? <img src={ad.thumbnailUrl} alt="" className="w-full h-full object-cover" />
+                : <span className="text-text-faint text-[9px] uppercase">{ad.displayFormat || '?'}</span>}
+            </div>
+            <div className="min-w-0">
+              <p className="text-sm text-text-primary truncate leading-snug">
+                {ad.headline || ad.bodyText?.slice(0, 60) || ad.adArchiveId}
+              </p>
+              {ad.pageName && (
+                <p className="text-[11px] text-text-faint truncate mt-0.5">{ad.pageName}</p>
+              )}
+            </div>
+          </div>
+        </td>
+      )}
+
+      {/* PAGE */}
+      {visibleCols.page && (
+        <td className="px-3 py-2" style={{ width: 150 }}>
+          <div className="flex items-center gap-1.5 min-w-0">
+            <Globe className="w-3 h-3 text-text-faint shrink-0" />
+            <span className="text-xs text-text-muted truncate">{ad.pageName ?? '—'}</span>
+          </div>
+        </td>
+      )}
+
+      {/* LAUNCH */}
+      {visibleCols.launch && (
+        <td className="px-2 py-2 text-center" style={{ width: 80 }}>
+          <span className="text-xs text-text-faint tabular-nums">{fmtLaunch(ad.startDate)}</span>
+        </td>
+      )}
+
+      {/* STATUS */}
+      {visibleCols.status && (
+        <td className="px-2 py-2 text-center" style={{ width: 60 }}>
+          <div className="flex items-center justify-center gap-1">
+            <span className={`w-1.5 h-1.5 rounded-full ${ad.isActive ? 'bg-emerald-400' : 'bg-zinc-600'}`} />
+            <span className={`text-[11px] ${ad.isActive ? 'text-emerald-400' : 'text-text-faint'}`}>
+              {ad.isActive ? 'LIVE' : 'OFF'}
+            </span>
+          </div>
+        </td>
+      )}
+
+      {/* FORMAT */}
+      {visibleCols.format && (
+        <td className="px-2 py-2 text-center" style={{ width: 70 }}>
+          {ad.displayFormat
+            ? <span className="text-[10px] px-1.5 py-0.5 rounded bg-bg-elevated text-text-faint uppercase border border-border-subtle">{ad.displayFormat}</span>
+            : <span className="text-text-faint text-xs">—</span>}
+        </td>
+      )}
+
+      {/* 21D */}
+      {visibleCols.rank21d && (
+        <td className="px-2 py-2 text-center text-xs font-mono text-text-faint tabular-nums" style={{ width: 70 }}>
+          {rankDisplay(ad.rank21d, ad.poolSize)}
+        </td>
+      )}
+
+      {/* 7D */}
+      {visibleCols.rank7d && (
+        <td className="px-2 py-2 text-center text-xs font-mono text-text-faint tabular-nums" style={{ width: 70 }}>
+          {rankDisplay(ad.rank7d, ad.poolSize)}
+        </td>
+      )}
+
+      {/* 3D */}
+      {visibleCols.rank3d && (
+        <td className="px-2 py-2 text-center text-xs font-mono text-text-faint tabular-nums" style={{ width: 70 }}>
+          {rankDisplay(ad.rank3d, ad.poolSize)}
+        </td>
+      )}
+
+      {/* NOW — highlighted */}
+      {visibleCols.now && (
+        <td className="px-2 py-2 text-center bg-bg-hover/40" style={{ width: 70 }}>
+          <span className="text-xs font-semibold font-mono text-white tabular-nums">
+            {rankDisplay(ad.currentRank, ad.poolSize)}
+          </span>
+        </td>
+      )}
+
+      {/* ACTIVE */}
+      {visibleCols.active && (
+        <td className="px-2 py-2 text-center" style={{ width: 60 }}>
+          {ad.activeDays != null
+            ? <span className={`text-xs tabular-nums ${ad.activeDays >= 30 ? 'text-emerald-400 font-semibold' : 'text-text-primary'}`}>{ad.activeDays}d</span>
+            : <span className="text-text-faint text-xs">—</span>}
+        </td>
+      )}
+
+      {/* TIER */}
+      {visibleCols.tier && (
+        <td className="px-2 py-2 text-center" style={{ width: 90 }}>
+          {ad.tier
+            ? (
+              <span
+                className={`text-[10px] px-1.5 py-0.5 rounded border font-medium ${TIER_COLORS[ad.tier] ?? ''}`}
+                title={TIER_TOOLTIPS[ad.tier] ?? ad.tier}
+              >
+                {TIER_ICONS[ad.tier] ? `${TIER_ICONS[ad.tier]} ` : ''}{ad.tier}
+              </span>
+            )
+            : <span className="text-text-faint text-xs">—</span>}
+        </td>
+      )}
+
+      {/* V7D */}
+      {visibleCols.v7d && (
+        <td className="px-2 py-2 text-center" style={{ width: 60 }}>
+          <VelocityCell value={ad.velocity7d} days={ad.activeDays} win={7} />
+        </td>
+      )}
+
+      {/* V21D */}
+      {visibleCols.v21d && (
+        <td className="px-2 py-2 text-center" style={{ width: 60 }}>
+          <VelocityCell value={ad.velocity21d} days={ad.activeDays} win={21} />
+        </td>
+      )}
+    </tr>
+  );
+}

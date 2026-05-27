@@ -226,6 +226,11 @@ export async function listAds(brandId, q) {
     params.push(q.format);
   }
 
+  if (q.brandPageId) {
+    where.push(`a.brand_page_id = $${p++}`);
+    params.push(q.brandPageId);
+  }
+
   let orderBy;
   switch (sort) {
     case 'velocity_7d_desc':
