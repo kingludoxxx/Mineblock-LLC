@@ -1,6 +1,14 @@
 # Progress Log
 
 ---
+TIMESTAMP: 2026-05-27 21:52
+TASK: Brand Spy — fix blurry DCO creatives (commit 4c54ffb)
+BUILT: Removed page_profile_picture_url fallback from extractThumbnail() in brandSpyDb.js. DCO ads have no images[] in raw_snapshot so the old code fell back to the page owner's portrait (a blurry face photo stretched across the card). Fix returns null instead, so callers show a proper "no preview" placeholder. Also added cards[] support as a new fallback for carousel-in-DCO ads. No DB migration needed — thumbnailUrl is computed on-the-fly from raw_snapshot on every API response, so the fix takes effect instantly for all historical ads. IntelDrawer.jsx: replaced generic "No preview available" div with a DCO-aware "Creative not available" state showing explanatory copy and a "View on Meta Ad Library" button in Facebook blue (#1877f2).
+TESTED: Build clean (2464 modules, 745ms). Deploy dep-d8bmebe47okc73duumqg LIVE 21:52:56Z on srv-d6qavvf5gffc73em69n0. Edge case: ads with images[] present are unaffected (extractThumbnail short-circuits before reaching the removed fallback). Cards with neither images nor videos now return null → frontend shows placeholder instead of blurry portrait.
+OUTPUT: Deploy status: live. Commit 4c54ffb pushed to main at 21:50:33Z. Previous blurry-portrait issue resolved server-side with zero migration cost.
+DECISIONS: Chose to return null (show placeholder) rather than any fallback image for DCO ads — consistent with the NOTE comment already in the file documenting why profile_picture_url is wrong. Did not add a stored thumbnailUrl column to avoid a migration.
+STATUS: COMPLETE
+---
 TIMESTAMP: 2026-05-27 21:43
 TASK: Brand Spy — card ••• menu, sort dropdown, Atria intel panel (commit 96af5b4)
 BUILT: (1) AdCard redesigned to match reference: page avatar + name header row, green-dot status + date line, body text, portrait 4/5 thumbnail, footer with domain/headline/CTA. MoreHorizontal ••• menu with three actions: Ad details (opens IntelDrawer), Copy link (copies Meta Ad Library URL to clipboard, 2s feedback), Download (fetch video blob → save .mp4, fallback window.open for CORS-blocked CDNs). (2) IntelPanel: removed card border/background, Sparkles icon 4→3px zinc-500 (gray), category label fixed-width 72px left column, tags unchanged with colors — matches Atria full-width row layout. (3) SortDropdown custom component replaces native <select> everywhere: "Sort: X ▼" text button with chevron, dark dropdown, four options. Native select removed from Overview toolbar. Sort moved to count row above ad grid ("2.2K ads  Sort: Top rank ▼"). Intelligence tab also updated to SortDropdown.
