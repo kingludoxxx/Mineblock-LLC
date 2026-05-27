@@ -20,7 +20,6 @@ import {
   Rocket,
   Globe,
   ScanSearch,
-  Trophy,
   DollarSign,
   UsersRound,
   Shield,
@@ -46,7 +45,6 @@ const navGroups = [
       { to: '/app/languages-pipeline', icon: Globe, label: 'Languages Pipeline', permission: 'languages-pipeline:access' },
       // Brand Spy — no permission gate, always visible to logged-in users
       { to: '/app/brand-spy', icon: ScanSearch, label: 'Brand Spy', end: true },
-      { to: '/app/brand-spy/league', icon: Trophy, label: 'The League' },
     ],
   },
   {

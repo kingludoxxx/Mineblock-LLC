@@ -432,8 +432,8 @@ function AdCard({ ad, brand, onOpenIntel }) {
             <video
               ref={videoRef}
               src={ad.videoUrl}
-              className="w-full h-full object-contain bg-black"
-              onClick={(e) => e.stopPropagation()}
+              className="w-full h-full object-contain bg-black cursor-pointer"
+              onClick={togglePlayPause}
               onTimeUpdate={() => setCurrentTime(videoRef.current?.currentTime ?? 0)}
               onLoadedMetadata={() => setDuration(videoRef.current?.duration ?? 0)}
               onEnded={() => setPaused(true)}
