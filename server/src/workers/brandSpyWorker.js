@@ -345,6 +345,20 @@ function extractDomain(url) {
   return m ? m[1].toLowerCase() : null;
 }
 
+// Returns true if link_url's hostname is exactly the primary domain OR a direct subdomain.
+// e.g. primaryDomain='thegreatproject.com':
+//   try.thegreatproject.com  → true  (subdomain)
+//   thegreatproject.com      → true  (exact)
+//   thegreatprojects.com     → false (different SLD — different company)
+//   try-melina.com           → false (unrelated)
+// String-contains would wrongly match 'thegreatprojects.com' for rootFragment 'thegreatproject'.
+// Hostname comparison enforces a hard domain boundary.
+function linkBelongsToBrand(url, primaryDomain) {
+  const host = extractDomain(url);
+  if (!host) return false;
+  return host === primaryDomain || host.endsWith('.' + primaryDomain);
+}
+
 // crossDomains: optional Set — collects link_url domains seen in this batch
 // pageNameCache: optional Map — populated with metaPageId → pageName for Phase 2 filtering
 async function upsertAdBatch(brandId, ads, pageCache, pageIdFallback = null, crossDomains = null, pageNameCache = null) {
@@ -513,21 +527,23 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
       const pageName = pageNameCache.get(metaPageId) ?? null;
       const isMetaPage = isMetaPlatformPage(pageName);
 
-      // Apply rootFragment link_url filter to ALL Phase 2 pages — not just Meta platform
-      // pages. Pages like "USA Ready Families" run ads for multiple brands simultaneously
-      // (thegreatproject.com AND tonicgympro.com). Without filtering, ALL their ads get
-      // stored under this brand's ID, inflating active counts, polluting brand_domains
-      // with unrelated domains, and triggering Phase 2 cascades on the wrong pages.
+      // Apply strict domain filter to ALL Phase 2 pages.
+      // Uses linkBelongsToBrand() — exact hostname match (hostname === domain OR
+      // hostname.endsWith('.'+domain)) — NOT string-contains on rootFragment.
+      // String-contains wrongly matches sibling domains: searching 'thegreatproject'
+      // would include ads from 'thegreatprojects.com' (a different company).
+      // Hostname boundary check excludes those while still accepting all subdomains
+      // (try.thegreatproject.com, shop.try-forge.com, secure.try-forge.com, etc.).
       //
       // Meta platform pages (Instagram for Business, etc.): strict — require link_url.
       //   No link_url on a Meta platform ad = system/promo content, exclude it.
       // Regular brand pages: allow ads with no link_url (benefit of the doubt — they were
       //   discovered because the page runs this brand's ads, so unlabelled ads are likely
-      //   brand-related). Ads WITH a link_url must still contain rootFragment.
+      //   brand-related). Ads WITH a link_url must pass linkBelongsToBrand.
       const filterBatch = (batch) => batch.filter((ad) => {
-        const url = (ad.snapshot?.link_url ?? '').toLowerCase();
+        const url = ad.snapshot?.link_url ?? '';
         if (!url) return !isMetaPage;
-        return url.includes(rootFragment.toLowerCase());
+        return linkBelongsToBrand(url, domain);
       });
 
       if (isMetaPage) {
@@ -636,8 +652,8 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
     for await (const batch of sc.iterateAdsByDomain({ domain: rootFragment, status: 'ACTIVE', country: 'US', maxPages: p1dMaxPages })) {
       creditsUsed += 1;
       const filtered = batch.filter((ad) => {
-        const url = (ad.snapshot?.link_url ?? ad.link_url ?? '').toLowerCase();
-        return url.includes(rootFragment.toLowerCase());
+        const url = ad.snapshot?.link_url ?? ad.link_url ?? '';
+        return linkBelongsToBrand(url, domain);
       });
       if (filtered.length > 0) {
         const { d, u } = await upsertAdBatch(brandId, filtered, pageCache, null, crossDomains, pageNameCache);
@@ -656,8 +672,8 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
       for await (const batch of sc.iterateAdsByDomain({ domain: rootFragment, status: 'ALL', country: 'US' })) {
         creditsUsed += 1;
         const filtered = batch.filter((ad) => {
-          const url = (ad.snapshot?.link_url ?? ad.link_url ?? '').toLowerCase();
-          return url.includes(rootFragment.toLowerCase());
+          const url = ad.snapshot?.link_url ?? ad.link_url ?? '';
+          return linkBelongsToBrand(url, domain);
         });
         if (filtered.length > 0) {
           const { d, u } = await upsertAdBatch(brandId, filtered, pageCache, null, crossDomains, pageNameCache);
