@@ -161,4 +161,35 @@ router.use((err, _req, res, _next) => {
   res.status(500).json({ error: err.message || 'Internal error' });
 });
 
+// ---------------------------------------------------------------------------
+// Daily auto-scrape scheduler
+// Runs once 5 minutes after boot, then every 24 hours.
+// Mirrors the standalone brand-spy-daily-scrape cron job.
+// ---------------------------------------------------------------------------
+function scheduleDailyScrape() {
+  const INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
+  const BOOT_DELAY_MS = 5 * 60 * 1000;     // 5 min — let the server fully settle
+
+  const runScrapeAll = async () => {
+    try {
+      const brands = await listBrands();
+      if (!brands.length) return;
+      console.log(`[brand-spy] auto-scrape: starting ${brands.length} brand(s)`);
+      await scrapeAllInBackground(brands.map((b) => b.id));
+      console.log(`[brand-spy] auto-scrape: complete`);
+    } catch (err) {
+      console.error('[brand-spy] auto-scrape error:', err.message);
+    }
+  };
+
+  setTimeout(() => {
+    runScrapeAll();
+    setInterval(runScrapeAll, INTERVAL_MS);
+  }, BOOT_DELAY_MS);
+
+  console.log('[brand-spy] Daily auto-scrape scheduled (boot +5min, then every 24h)');
+}
+
+scheduleDailyScrape();
+
 export default router;
