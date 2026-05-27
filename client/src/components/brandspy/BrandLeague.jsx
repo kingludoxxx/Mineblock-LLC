@@ -8,6 +8,7 @@ import {
   X,
   ExternalLink,
 } from 'lucide-react';
+import IntelDrawer from './IntelDrawer';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -230,6 +231,9 @@ export default function BrandLeague({ apiBaseUrl }) {
 
   // Selection
   const [selectedIds, setSelectedIds] = useState(new Set());
+
+  // IntelDrawer
+  const [selectedAd, setSelectedAd] = useState(null);
 
   // Visible columns
   const [visibleCols, setVisibleCols] = useState(() => {
@@ -748,6 +752,7 @@ export default function BrandLeague({ apiBaseUrl }) {
                   rowNum={(page - 1) * PAGE_SIZE + i + 1}
                   selected={selectedIds.has(ad.id)}
                   onToggle={() => toggleRow(ad.id)}
+                  onSelect={() => setSelectedAd(ad)}
                   visibleCols={visibleCols}
                 />
               ))}
@@ -810,6 +815,14 @@ export default function BrandLeague({ apiBaseUrl }) {
           </>
         )}
       </div>
+
+      {selectedAd && (
+        <IntelDrawer
+          ad={selectedAd}
+          brand={brandDetail}
+          onClose={() => setSelectedAd(null)}
+        />
+      )}
     </div>
   );
 }
@@ -818,13 +831,16 @@ export default function BrandLeague({ apiBaseUrl }) {
 // Table row
 // ---------------------------------------------------------------------------
 
-function AdTableRow({ ad, rowNum, selected, onToggle, visibleCols }) {
+function AdTableRow({ ad, rowNum, selected, onToggle, onSelect, visibleCols }) {
   const delta3d = (ad.rank3d != null && ad.currentRank != null) ? ad.rank3d - ad.currentRank : null;
   return (
-    <tr className={`border-b border-border-subtle hover:bg-bg-elevated transition-colors ${selected ? 'bg-accent/5' : ''}`}>
+    <tr
+      className={`border-b border-border-subtle hover:bg-bg-elevated transition-colors cursor-pointer ${selected ? 'bg-accent/5' : ''}`}
+      onClick={onSelect}
+    >
       {/* Checkbox */}
       {visibleCols.checkbox && (
-        <td className="px-2 py-2 w-9">
+        <td className="px-2 py-2 w-9" onClick={(e) => e.stopPropagation()}>
           <input
             type="checkbox"
             checked={selected}

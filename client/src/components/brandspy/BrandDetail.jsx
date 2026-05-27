@@ -3,6 +3,7 @@ import {
   ArrowLeft, ExternalLink, RefreshCw,
   ChevronDown, Settings2, Globe, ScanSearch, X,
 } from 'lucide-react';
+import IntelDrawer from './IntelDrawer';
 
 // ---------------------------------------------------------------------------
 // Constants (same as BrandLeague)
@@ -186,6 +187,7 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
   const [tierFilter, setTierFilter]   = useState('ALL');
   const [pageFilter, setPageFilter]   = useState(null); // brand_page_id UUID or null
   const [selectedIds, setSelectedIds] = useState(new Set());
+  const [selectedAd, setSelectedAd] = useState(null);
   const [visibleCols, setVisibleCols] = useState(() => {
     const init = {};
     ALL_COLUMNS.forEach((c) => { init[c.key] = true; });
@@ -488,6 +490,7 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
                     rowNum={(page - 1) * PAGE_SIZE + i + 1}
                     selected={selectedIds.has(ad.id)}
                     onToggle={() => toggleRow(ad.id)}
+                    onSelect={() => setSelectedAd(ad)}
                     col={col}
                   />
                 ))}
@@ -533,6 +536,13 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
           </>
         )}
       </div>
+      {selectedAd && (
+        <IntelDrawer
+          ad={selectedAd}
+          brand={brand}
+          onClose={() => setSelectedAd(null)}
+        />
+      )}
     </div>
   );
 }
@@ -541,13 +551,18 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
 // Table row
 // ---------------------------------------------------------------------------
 
-function DetailAdRow({ ad, rowNum, selected, onToggle, col }) {
+function DetailAdRow({ ad, rowNum, selected, onToggle, onSelect, col }) {
   const delta3d = (ad.rank3d != null && ad.currentRank != null) ? ad.rank3d - ad.currentRank : null;
 
   return (
-    <tr className={`border-b border-border-subtle hover:bg-bg-elevated transition-colors ${selected ? 'bg-accent/5' : ''}`}>
+    <tr
+      className={`border-b border-border-subtle hover:bg-bg-elevated transition-colors cursor-pointer ${selected ? 'bg-accent/5' : ''}`}
+      onClick={onSelect}
+    >
       {col('checkbox') && (
-        <td className="px-2 py-2 w-9"><input type="checkbox" checked={selected} onChange={onToggle} className="accent-accent" /></td>
+        <td className="px-2 py-2 w-9" onClick={(e) => e.stopPropagation()}>
+          <input type="checkbox" checked={selected} onChange={onToggle} className="accent-accent" />
+        </td>
       )}
       {col('num') && (
         <td className="px-2 py-2 text-right text-[11px] text-text-faint tabular-nums">#{rowNum}</td>
