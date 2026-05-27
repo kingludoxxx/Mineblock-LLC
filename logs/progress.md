@@ -1,6 +1,225 @@
 # Progress Log
 
 ---
+TIMESTAMP: 2026-05-27 23:59
+TASK: Brand Spy — League audit + 3 bug fixes (commit f5f741b)
+BUILT: Full static audit of BrandLeague, BrandDetail, IntelDrawer. Cross-verified all API field names (brandSpyDb.js mapBrand/mapAdListItem/getBrandExpanded) against component expectations — all match. Found and fixed 3 bugs: (1) IntelDrawer adLibUrl null guard — adArchiveId can be null, URL would become id=null, both Ad Library links now conditional; disabled state for missing ID. (2) BrandLeague handleRefresh didn't re-fetch brandDetail — stale page counts after scrape, now re-fetches expanded brand. (3) adsLoading initialized false — brief "No ads found" flash on page load, fixed to true.
+TESTED: npm run build — 0 errors, 756ms. All field mappings verified correct. Velocity/momentum/quality score formulas verified. ESC/X close verified. Checkbox stopPropagation verified. Route ordering verified.
+OUTPUT: Build clean. Commit f5f741b pushed.
+DECISIONS: adLibUrl=null renders disabled blue button (not hidden) so UX stays consistent — user knows the link is unavailable rather than feature disappearing silently.
+STATUS: COMPLETE
+---
+TIMESTAMP: 2026-05-27 23:55
+TASK: Brand Spy — IntelDrawer wired (commit 00eacb5)
+BUILT: Imported IntelDrawer into BrandLeague.jsx and BrandDetail.jsx. Added selectedAd state to both. Passed onSelect callback to AdTableRow and DetailAdRow. Each row <tr> gets cursor-pointer + onClick=onSelect; checkbox <td> has stopPropagation to prevent drawer opening on checkbox click. IntelDrawer renders as a modal overlay when selectedAd is set; onClose clears it. ESC key handled inside IntelDrawer.
+TESTED: `npm run build` — 0 errors, clean compile. Chunk size warning is pre-existing.
+OUTPUT: Build succeeded in 575ms. Pushed as commit 00eacb5.
+DECISIONS: stopPropagation on checkbox td so selecting rows doesn't also open the drawer — conservative UX default.
+STATUS: COMPLETE
+---
+TIMESTAMP: 2026-05-27 23:05
+TASK: Brand Spy — League page (commit 56b2ee4)
+BUILT:
+  New /app/brand-spy/league route — full-width competitive ad intelligence table.
+  Files created: BrandLeague.jsx (35KB component), BrandSpyLeaguePage.jsx (page wrapper).
+  Files modified: Sidebar.jsx (Brand Spy → parent with Following+League children),
+  App.jsx (league route before :id route), brandSpyDb.js (brandPageId filter in listAds),
+  brandSpy.js (brandPageId exposed in GET /brands/:id/ads route).
+  Features: brand selector dropdown, pages dropdown with avatars, tier pills (ALL/BANGER/
+  CHAMP/A/B/C/MID/TEST), dark table with 15 columns (checkbox, #, AD, PAGE, LAUNCH,
+  STATUS, FORMAT, 21D, 7D, 3D, NOW, ACTIVE, TIER, V7D, V21D), rank/poolSize display,
+  velocity (+N↑/-N↓/NEW/—), tier tooltips, sticky thead, horizontal scroll, columns
+  toggle popup, row checkboxes, bulk action bar (Static Ads / Ad Scripts stubs), pagination.
+TESTED:
+  Built clean with `npm run build` (0 errors, 869ms). 6 files, 939 insertions.
+  Route ordering verified: brand-spy/league before brand-spy/:id in App.jsx.
+  Columns3 and Globe icons confirmed present in lucide-react.
+  Facebook icon (deprecated) replaced with Globe.
+  brandPageId filter confirmed in brandSpyDb.js (line 229) and brandSpy.js route (line 68).
+  Sidebar isItemParentActive updated to handle end:true child property.
+  Pushed 56b2ee4 to origin/main → Render auto-deploy triggered.
+OUTPUT:
+  Build: ✓ 2463 modules, 0 errors.
+  Git: 56b2ee4 on main, pushed to origin.
+DECISIONS:
+  DECISION MADE: Static Ads / Ad Scripts bulk actions are non-functional stubs (alert
+  'Coming soon') — full integration would require knowing the target pages' route/API.
+  DECISION MADE: Velocity displayed as raw rank-position delta (+N/−N) not percentage,
+  since velocity7d = rank7d - currentRank (integer from worker, not ratio).
+STATUS: COMPLETE
+---
+
+---
+TIMESTAMP: 2026-05-27 02:55
+TASK: Brand Spy — Strict hostname boundary filter + migration 043 (commit c2dd449, deploy dep-d8b5p4m47okc73b4fqp0)
+BUILT:
+  Root cause: url.includes(rootFragment) had no domain boundary — 'thegreatproject' as
+  rootFragment matched 'thegreatprojects.com' (a different company, "The Great Projects").
+  Added linkBelongsToBrand(url, primaryDomain): uses extractDomain() + strict hostname check
+  (hostname === domain OR hostname.endsWith('.'+domain)). Applied in:
+    - Phase 1d ACTIVE batch filter
+    - Phase 1d ALL batch filter
+    - Phase 2 filterBatch (all pages)
+  Migration 043: deleted thegreatprojects.com ads/pages/domains from thegreatproject brand,
+  recomputed all rollup counts.
+TESTED:
+  Post-migration: active=316, pages=11, domains=1 (only try.thegreatproject.com).
+  Re-scrape with new filter: active=316 (stable), pages=13, domains=1, credits=102, 108s.
+  Two 0-ad ghost pages appeared (The Great Projects, thegreatproject_california) — they had
+  1-2 ads linking to try.thegreatproject.com so passed Phase 1d filter; Phase 2 on them
+  found 0 qualifying ads (their real ads link to thegreatprojects.com). Active=0, total=0.
+  Domain list clean: only try.thegreatproject.com. No thegreatprojects.com returned.
+  try-forge.com: unaffected (active=429, pages=10, domains=3).
+OUTPUT:
+  thegreatproject.com: active=316, pages=13, domains=1. Matches FB Ad Library ~320 ✅
+  try.thegreatproject.com: 316 active ads (only domain).
+  Active pages: USA Ready Families (280), Dr. James Harlow (36).
+DECISIONS:
+  DECISION MADE: ghost pages with 0 total ads left in place — harmless to counts, would
+  require additional post-scrape cleanup pass to remove. Not worth the complexity now.
+STATUS: COMPLETE
+---
+TIMESTAMP: 2026-05-27 02:47
+TASK: Brand Spy — Phase 2 cross-brand filter fix + migration 042 (commit d419d80, deploy dep-d8b5l8u47okc73b4dnk0)
+BUILT:
+  Root cause: filterBatch for non-Meta pages was `(batch) => batch` — no filter at all.
+  Pages like "USA Ready Families" run ads for multiple brands simultaneously (thegreatproject,
+  tonicgympro, dailynationalnews, try-melina). All their ads were stored under the queried
+  brand's ID, inflating active counts and polluting brand_domains.
+  Fix: filterBatch now applies rootFragment link_url filter to ALL Phase 2 pages:
+    - link_url contains rootFragment → include
+    - no link_url + non-Meta page → include (benefit of the doubt)
+    - no link_url + Meta platform page → exclude
+  Migration 042: scoped to thegreatproject UUID. Deleted ads with link_url not containing
+  'thegreatproject', deleted orphaned pages, deleted unrelated brand_domains, recomputed all
+  rollup counts.
+TESTED:
+  Post-migration state: pages 33→12, domains 9→2, total ads 5077→2165.
+  Active count: 363→358 (vs FB's ~320, delta is thegreatprojects.com's 42 ads — separate but
+  related domain, passes rootFragment filter legitimately).
+  Re-scrape post-deploy: active=358, pages=12→13 (one new page found), credits=37, 70s.
+  Contaminated pages (Tonicgympro USA/IRL, Men's Health Daily, Kevin Lennon, etc.) did NOT
+  return after re-scrape — filter is holding.
+  try-forge.com: unaffected by migration (scoped to thegreatproject UUID only).
+OUTPUT:
+  thegreatproject.com: active=358, pages=13, domains=2.
+    Domains: try.thegreatproject.com (316 active), thegreatprojects.com (42 active).
+    Pages (active): USA Ready Families (280), The Great Projects (42), Dr. James Harlow (36).
+  try-forge.com: active=429, pages=10, domains=3. Unchanged.
+DECISIONS:
+  DECISION MADE: thegreatprojects.com kept in brand_domains. It contains 'thegreatproject'
+  in its domain, has 666 historical ads and 42 active, "The Great Projects" page name suggests
+  a sister brand/variant. Can be excluded with strict subdomain-only mode if needed.
+STATUS: COMPLETE
+---
+TIMESTAMP: 2026-05-27 02:36
+TASK: Brand Spy — Speed optimisation round 2 (commit 978ec3b, deploy dep-d8b5g0f41pts73f81lh0)
+BUILT:
+  (1) Phase 1d cap on re-scrapes: maxPages 50→3 when pageCache is pre-loaded. First-
+      discovery runs still iterate up to 50 pages. Saves ~45s per re-scrape on try-forge.com
+      (was iterating all 460+ ads on every run).
+  (2) Phase 2 ALL skip for known pages: snapshot `knownPageIds = new Set(pageCache.keys())`
+      taken after pre-load. In runPhase2Page, ALL pass only runs for pages NOT in
+      knownPageIds (i.e. discovered THIS run). Pre-known pages already have full history
+      in DB — re-running the ALL pass just wastes ~12s per page per run.
+TESTED:
+  Both brands timed live on deploy dep-d8b5g0f41pts73f81lh0 (978ec3b).
+  try-forge.com:       19.9s  (was 65s with aa43e61, was 267s original → 13.4x total speedup)
+  thegreatproject.com: 52s    (was 256s with aa43e61, was ~420s original → 8x total speedup)
+  Active counts: try-forge=478 (was 429 ✅), thegreatproject=427 (was 370, still >>320 ✅).
+  Credits: 35 + 38 = 73 total for both brands in one re-scrape run.
+OUTPUT:
+  try-forge.com:        status=DONE, active=478, pages=10, credits=35. 19.9s wall-clock.
+  thegreatproject.com:  status=DONE, active=427, pages=33, credits=38. 52.0s wall-clock.
+DECISIONS:
+  NONE — results exceeded targets (target was ~25s / ~110s, got 19.9s / 52s).
+STATUS: COMPLETE
+---
+TIMESTAMP: 2026-05-27 02:25
+TASK: Brand Spy — 3-part scrape speed optimisation (commit aa43e61, deploy dep-d8b54oh9rddc73a2tpvg)
+BUILT:
+  (1) PHASE2_CONCURRENCY 1→5: Phase 2 was strictly serial; with 5 concurrent workers,
+      10-page brands complete Phase 2 in 2 rounds (~52s) instead of 262s.
+  (2) Skip Phase 1d ALL pass on re-scrapes: when pages are pre-loaded and Phase 1d ACTIVE
+      found no new pages, the ALL pass re-iterates already-known inactive ads (~51s wasted).
+      Only runs on first scrape (pageCache.size=0) or when new pages were discovered.
+  (3) Skip Phase 1c when Phase 1d ran: Phase 1d's rootFragment search is a strict superset
+      of Phase 1c's per-subdomain searches. Phase 1c only runs when rootFragment < 5 chars.
+TESTED:
+  try-forge.com (10 pages): 267s → 65s (4.1x faster), credits 231 → 108.
+  thegreatproject.com (33 pages): ~858s est. → 256s (3.4x faster), 370 active (up from 328
+  — Phase 1.5 found a new page "The Great Project"). Two 431 errors at concurrency 5 but
+  both non-fatal; scrape completed successfully.
+OUTPUT:
+  try-forge.com: active=429, pages=10, domains=3. Phase 1d ALL correctly skipped,
+  Phase 1c correctly skipped. Phase 2 completed before Phase 1d finished (overlap working).
+  thegreatproject.com: active=370, pages=33, domains=9. Phase 1d ALL skipped,
+  Phase 1c skipped. im8health.com: 19 active unchanged.
+DECISIONS:
+  NONE — results matched predictions.
+STATUS: COMPLETE
+---
+TIMESTAMP: 2026-05-27 01:55
+TASK: Brand Spy — Phase 1d rootFragment subdomain search (commit 59813b0, deploy dep-d8b4n1741pts73f7ldk0)
+BUILT:
+  Re-added Phase 1d with a link_url guard. Root cause confirmed via Facebook Ad Library:
+  try-forge.com's ~460 ads ALL land on shop.try-forge.com or secure.try-forge.com, never
+  on try-forge.com directly. ScrapeCreators indexes full hostnames separately, so Phase
+  1a/b searching "try-forge.com" returns 0 — it doesn't match "shop.try-forge.com" even
+  though the latter is a subdomain. Phase 1d searches the rootFragment "try-forge" (no
+  TLD) to catch all subdomains. Safety filter: only ads where link_url contains
+  rootFragment are passed to upsertAdBatch, so unrelated pages that mention "try-forge"
+  in ad copy (but link elsewhere) are never added. Skips if rootFragment < 5 chars.
+TESTED:
+  Live scrape after deploy: jobId eb24f376, pagesDiscovered=10, adsDiscovered=448,
+  adsUpdated=2174, creditsUsed=231. thegreatproject.com and im8health.com unchanged.
+OUTPUT:
+  try-forge.com: active=428, total=448, pages=10, domains=3, status=DONE.
+  Pages: Forge Men (98), Dr. Michael Reed (79), Real Men Real Stories (69),
+         The Everyday Man (56), Men's Lifestyle Essentials (43), Better Performance (37),
+         The Elite Man (24), David Grant (17), Men's Daily Steals (5), Naturald (0).
+  Domains: shop.try-forge.com (234 active), secure.try-forge.com (194 active),
+           try-forge.co (0 active — historical TLD).
+  thegreatproject.com: 328 active ✅. im8health.com: 19 active ✅.
+DECISIONS:
+  NONE — outcome exactly matched prediction from FB Ad Library investigation.
+STATUS: COMPLETE
+---
+TIMESTAMP: 2026-05-27 01:35
+TASK: Brand Spy — Phase 1.5 filter hardening (commits 9f40f7b → f7b99ff, deploys dep-d8b4b5v7f7vs7391pd2g + dep-d8b4gt741pts73f7i8eg)
+BUILT:
+  Completed the Phase 1.5 false-positive fix arc. The previous session (e0a608d) fixed
+  prefix-stripping ("forge" from "try-forge") but introduced a strict name-match filter
+  that blocked 0 results on re-scrape. This session tested two alternatives:
+  (1) No-filter approach (9f40f7b): trusted all searchCompanies('try-forge') results
+  assuming they are domain-scoped. Result: 10 false-positive pages added (NightForge,
+  CreativeForge, Trying to forget you, etc.) and 26 junk ads stored. ScrapeCreators
+  searchCompanies() is a TEXT search, not a domain search — loose word-fragment
+  matching makes it unsuitable as a trust-all source.
+  (2) Restored strict filter (f7b99ff): normalise(pageName).includes(normKeyword) gate
+  is correct. searchCompanies('try-forge') found 15 pages, filter rejected all 15 as
+  not containing 'tryforge' in their normalised name. 0 pages added, 0 ads stored.
+  Migration 041 wipes the 10 garbage pages + 26 junk ads from the no-filter scrape.
+TESTED:
+  Live scrape of try-forge.com after f7b99ff deploy: Phase 1a 0 credits, Phase 1b 0
+  credits, Phase 1.5 found 15 pages, added 0 — name-match filter blocked all 15.
+  thegreatproject.com re-verified: 328 active, 32 pages, 8 domains (unchanged).
+  im8health.com re-verified: 19 active, 3 pages, 2 domains (unchanged).
+OUTPUT:
+  try-forge.com: active=0, total=0, pages=0, domains=0, status=DONE (correct — no
+  try-forge.com data in ScrapeCreators DB; keyword_exact_phrase "try-forge.com"
+  returns 0 results meaning the brand is not indexed or not currently advertising).
+  thegreatproject.com: 328 active ✅. im8health.com: 19 active ✅.
+DECISIONS:
+  DECISION MADE — try-forge.com showing 0 is correct behavior. ScrapeCreators'
+  keyword_exact_phrase:"try-forge.com" matches URLs containing "try-forge.com" as
+  a substring (including shop.try-forge.com, secure.try-forge.com). 0 results means
+  no ads indexed. Subdomain discovery architecture (Phase 1c/3) is sound and will
+  work when the brand has active ads. Phase 1d (rootFragment search) is not re-added
+  because if try-forge.com has no ads at all, searching "try-forge" would also return
+  0 and add no value. If the brand resumes advertising, Phase 1a/b will pick it up.
+STATUS: COMPLETE
+---
 TIMESTAMP: 2026-05-18 21:20
 TASK: 6-layer statics generation quality improvement (commit 62ad046)
 BUILT:

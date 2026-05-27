@@ -91,11 +91,14 @@ function fmtLaunch(iso) {
   });
 }
 
-// Live active-days: for still-running ads compute from today so the value
-// never goes stale between scrapes. Ended ads use the stored DB value.
+// Live active-days: prefer Facebook's own cumulative total_active_time count
+// (most reliable). Falls back to start_date math, then stored activeDays.
 function liveActiveDays(ad) {
-  if (!ad.startDate) return ad.activeDays ?? null;
-  if (ad.isActive) return Math.floor((Date.now() - new Date(ad.startDate).getTime()) / 86400000);
+  if (ad.totalActiveTime != null) return ad.totalActiveTime;
+  if (ad.startDate && ad.isActive) {
+    const days = Math.floor((Date.now() - new Date(ad.startDate).getTime()) / 86400000);
+    if (days >= 0) return days;
+  }
   return ad.activeDays ?? null;
 }
 

@@ -176,8 +176,11 @@ function RankHistoryCard({ label, value }) {
 // ---------------------------------------------------------------------------
 
 function liveActiveDays(ad) {
-  if (!ad.startDate) return ad.activeDays ?? null;
-  if (ad.isActive) return Math.floor((Date.now() - new Date(ad.startDate).getTime()) / 86400000);
+  if (ad.totalActiveTime != null) return ad.totalActiveTime;
+  if (ad.startDate && ad.isActive) {
+    const days = Math.floor((Date.now() - new Date(ad.startDate).getTime()) / 86400000);
+    if (days >= 0) return days;
+  }
   return ad.activeDays ?? null;
 }
 
