@@ -386,6 +386,7 @@ async function upsertAdBatch(brandId, ads, pageCache, pageIdFallback = null, cro
       pageNameCache.set(metaPageId, pageName);
     }
 
+    if (rows.length === 0) console.log('[brand-spy] AD_FIELD_KEYS:', Object.keys(ad).join(', '));
     const startDate  = ad.start_date ? new Date(ad.start_date * 1000) : null;
     const endDate    = ad.end_date   ? new Date(ad.end_date   * 1000) : null;
     const activeDays = computeActiveDays(startDate, endDate, ad.is_active);
