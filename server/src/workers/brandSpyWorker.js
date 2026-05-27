@@ -170,7 +170,7 @@ export async function scoreBrand(brandId) {
     const AD_UPDATE_COLS = 10; // id, cr, r3, r7, r21, v7d, v21d, ps, tier, ts
     const updatePlaceholders = ranked.map((_, i) => {
       const b = i * AD_UPDATE_COLS + 1;
-      return `($${b}::uuid,$${b+1}::integer,$${b+2}::integer,$${b+3}::integer,$${b+4}::integer,$${b+5}::integer,$${b+6}::integer,$${b+7}::integer,$${b+8}::text,$${b+9}::numeric)`;
+      return `($${b}::uuid,$${b+1}::integer,$${b+2}::integer,$${b+3}::integer,$${b+4}::integer,$${b+5}::integer,$${b+6}::integer,$${b+7}::integer,$${b+8}::text,$${b+9}::integer)`;
     });
     const updateParams = ranked.flatMap((r) => {
       const hist = historical.get(r.adArchiveId) ?? { d3: null, d7: null, d21: null };
