@@ -311,6 +311,34 @@ async function upsertBrandDomain(brandId, domain, domainType) {
 const PHASE2_CONCURRENCY = 1;
 const AD_COLS = 20;
 
+// Meta's own platform pages appear in Phase 1 keyword results because some brands
+// advertise through them (no dedicated FB page). Phase 2 scraping these pages returns
+// ALL their ads (for hundreds of brands), not just the target brand's ads. To avoid
+// storing irrelevant ads, Phase 2 filters batches from these pages to only include
+// ads whose link_url contains the brand's root fragment.
+const META_PLATFORM_PAGE_NAMES_LOWER = new Set([
+  'instagram for business',
+  'instagram',
+  'facebook',
+  'facebook for business',
+  'creators',
+  'meta',
+  'meta for business',
+  'facebook ads',
+  'whatsapp business',
+  'messenger',
+  'reels',
+]);
+
+function isMetaPlatformPage(pageName) {
+  if (!pageName) return false;
+  const lower = pageName.toLowerCase().trim();
+  if (META_PLATFORM_PAGE_NAMES_LOWER.has(lower)) return true;
+  // Catch variants like "Instagram - Online Business" or "Reels Maker for Instagram"
+  if (lower.startsWith('instagram') || lower.startsWith('facebook') || lower.startsWith('meta ')) return true;
+  return false;
+}
+
 function extractDomain(url) {
   if (!url) return null;
   const m = url.replace(/^https?:\/\/(www\.)?/, '').match(/^([^/?# ]+)/);
@@ -318,7 +346,8 @@ function extractDomain(url) {
 }
 
 // crossDomains: optional Set — collects link_url domains seen in this batch
-async function upsertAdBatch(brandId, ads, pageCache, pageIdFallback = null, crossDomains = null) {
+// pageNameCache: optional Map — populated with metaPageId → pageName for Phase 2 filtering
+async function upsertAdBatch(brandId, ads, pageCache, pageIdFallback = null, crossDomains = null, pageNameCache = null) {
   if (!ads.length) return { d: 0, u: 0 };
 
   // Resolve page IDs (may upsert new pages) before entering bulk transaction
@@ -337,6 +366,10 @@ async function upsertAdBatch(brandId, ads, pageCache, pageIdFallback = null, cro
     if (metaPageId && !brandPageId) {
       brandPageId = await upsertBrandPage(brandId, metaPageId, pageName, profilePic);
       pageCache.set(metaPageId, brandPageId);
+    }
+    // Populate page name cache so Phase 2 can identify Meta platform pages
+    if (metaPageId && pageName && pageNameCache && !pageNameCache.has(metaPageId)) {
+      pageNameCache.set(metaPageId, pageName);
     }
 
     const startDate  = ad.start_date ? new Date(ad.start_date * 1000) : null;
@@ -396,11 +429,16 @@ async function upsertAdBatch(brandId, ads, pageCache, pageIdFallback = null, cro
 
 async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
   let discovered = 0, updated = 0, creditsUsed = 0;
-  const pageCache    = new Map(); // metaPageId → brandPageId (UUID)
-  const p2Launched   = new Set(); // pages already queued for Phase 2
-  const p2Promises   = [];
-  let p2Blocked      = false;     // set true on first Phase 2 failure to fast-skip remainder
-  const crossDomains = new Set(); // link_url domains seen in Phase 2 ads
+  const pageCache     = new Map(); // metaPageId → brandPageId (UUID)
+  const pageNameCache = new Map(); // metaPageId → pageName (string) — needed for Phase 2 filtering
+  const p2Launched    = new Set(); // pages already queued for Phase 2
+  const p2Promises    = [];
+  let p2Blocked       = false;     // set true on first Phase 2 failure to fast-skip remainder
+  const crossDomains  = new Set(); // link_url domains seen in ads
+
+  // Root fragment for relevance filtering in Phase 2 Meta platform page scrapes.
+  // 'try-forge.com' → 'try-forge' so ads linking to shop.try-forge.com also match.
+  const rootFragment = domain.replace(/\.[a-z]{2,}(\.[a-z]{2,})?$/, '');
 
   // Reset all ads to is_active=false at the start of each scrape so the current
   // run reflects Meta's live state. OR-semantics in UPSERT then let the ACTIVE
@@ -414,14 +452,23 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
   // those discovered by the current Phase 1 keyword search. Without this, brands
   // like thegreatproject.com whose keyword search only finds 1 page per run would
   // miss the other 15 stored pages — and their active ads — every scrape.
+  // IMPORTANT: Skip Meta platform pages (Instagram for Business, Instagram, Creators, etc.)
+  // from pre-loading. Those pages advertise many brands — Phase 2 scraping them without
+  // a brand-domain filter would store thousands of irrelevant ads. They will still be
+  // discovered by Phase 1 keyword search if relevant, and Phase 2 handles them with
+  // link_url filtering when their page name is identified.
   const { rows: existingPages } = await query(
-    `SELECT meta_page_id, id FROM brand_spy.brand_pages WHERE brand_id = $1`,
+    `SELECT meta_page_id, id, page_name FROM brand_spy.brand_pages WHERE brand_id = $1`,
     [brandId],
   );
+  let skippedMetaPages = 0;
   for (const row of existingPages) {
-    if (row.meta_page_id) pageCache.set(row.meta_page_id, row.id);
+    if (!row.meta_page_id) continue;
+    if (isMetaPlatformPage(row.page_name)) { skippedMetaPages++; continue; }
+    pageCache.set(row.meta_page_id, row.id);
+    if (row.page_name) pageNameCache.set(row.meta_page_id, row.page_name);
   }
-  console.log(`[brand-spy] pre-loaded ${existingPages.length} known pages for "${domain}"`);
+  console.log(`[brand-spy] pre-loaded ${pageCache.size} known pages for "${domain}" (skipped ${skippedMetaPages} Meta platform pages)`);
 
   // Pre-load all known domains (subdomains + cross-domains) from previous scrapes.
   // This allows Phase 1c to search subdomains discovered in earlier runs without
@@ -430,10 +477,9 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
     `SELECT domain, domain_type FROM brand_spy.brand_domains WHERE brand_id = $1`,
     [brandId],
   );
-  const knownSubdomains   = knownDomainRows.filter(r => r.domain_type === 'subdomain').map(r => r.domain);
-  const knownCrossDomains = knownDomainRows.filter(r => r.domain_type === 'cross').map(r => r.domain);
-  if (knownSubdomains.length > 0 || knownCrossDomains.length > 0) {
-    console.log(`[brand-spy] pre-loaded ${knownSubdomains.length} subdomains, ${knownCrossDomains.length} cross-domains for "${domain}"`);
+  const knownSubdomains = knownDomainRows.filter(r => r.domain_type === 'subdomain').map(r => r.domain);
+  if (knownSubdomains.length > 0) {
+    console.log(`[brand-spy] pre-loaded ${knownSubdomains.length} known subdomains for "${domain}"`);
   }
 
   // Semaphore: cap Phase 2 at PHASE2_CONCURRENCY concurrent page scrapes
@@ -459,6 +505,26 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
         console.warn(`[brand-spy] phase-2 page ${metaPageId} skipped (endpoint blocked)`);
         return;
       }
+
+      const pageName = pageNameCache.get(metaPageId) ?? null;
+      const isMetaPage = isMetaPlatformPage(pageName);
+
+      // Meta platform pages (Instagram for Business, Instagram, Creators, etc.) run ads
+      // for hundreds of brands simultaneously. Scraping them without a domain filter would
+      // store thousands of irrelevant ads under this brand's ID, inflating active counts
+      // and causing Phase 3 to cascade to unrelated pages. Filter their batches so we
+      // only store ads whose link_url contains the brand's root fragment.
+      const filterBatch = isMetaPage
+        ? (batch) => batch.filter((ad) => {
+            const url = ad.snapshot?.link_url ?? '';
+            return url.includes(rootFragment);
+          })
+        : (batch) => batch;
+
+      if (isMetaPage) {
+        console.log(`[brand-spy] phase-2 page ${metaPageId} ("${pageName}") — Meta platform page, filtering to "${rootFragment}" ads only`);
+      }
+
       // Two passes per page:
       // ACTIVE/US: matches Meta Ad Library "United States + Active" filter — this is the
       //   source of truth for is_active. country:US ensures we don't count non-US campaigns.
@@ -466,13 +532,19 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
       //   is_active can only go true→true or false→true, never true→false.
       for await (const batch of sc.iterateCompanyAds({ pageId: metaPageId, status: 'ACTIVE', country: 'US', maxPages: 100 })) {
         creditsUsed += 1;
-        const { d, u } = await upsertAdBatch(brandId, batch, pageCache, metaPageId, crossDomains);
-        discovered += d; updated += u;
+        const filtered = filterBatch(batch);
+        if (filtered.length > 0) {
+          const { d, u } = await upsertAdBatch(brandId, filtered, pageCache, metaPageId, crossDomains, pageNameCache);
+          discovered += d; updated += u;
+        }
       }
       for await (const batch of sc.iterateCompanyAds({ pageId: metaPageId, status: 'ALL', country: 'US', maxPages: 100 })) {
         creditsUsed += 1;
-        const { d, u } = await upsertAdBatch(brandId, batch, pageCache, metaPageId, crossDomains);
-        discovered += d; updated += u;
+        const filtered = filterBatch(batch);
+        if (filtered.length > 0) {
+          const { d, u } = await upsertAdBatch(brandId, filtered, pageCache, metaPageId, crossDomains, pageNameCache);
+          discovered += d; updated += u;
+        }
       }
     } catch (p2Err) {
       // Phase 2 failures (e.g. 431 rate-limit from ScrapeCreators /company/ads endpoint)
@@ -503,7 +575,7 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
   console.log(`[brand-spy] phase-1a: active-only keyword search for "${domain}" (US)`);
   for await (const batch of sc.iterateAdsByDomain({ domain, status: 'ACTIVE', country: 'US' })) {
     creditsUsed += 1;
-    const { d, u } = await upsertAdBatch(brandId, batch, pageCache, null, crossDomains);
+    const { d, u } = await upsertAdBatch(brandId, batch, pageCache, null, crossDomains, pageNameCache);
     discovered += d; updated += u;
     launchNewPages();
   }
@@ -514,32 +586,11 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
   console.log(`[brand-spy] phase-1b: all-status keyword search for "${domain}" (US)`);
   for await (const batch of sc.iterateAdsByDomain({ domain, status: 'ALL', country: 'US' })) {
     creditsUsed += 1;
-    const { d, u } = await upsertAdBatch(brandId, batch, pageCache, null, crossDomains);
+    const { d, u } = await upsertAdBatch(brandId, batch, pageCache, null, crossDomains, pageNameCache);
     discovered += d; updated += u;
     launchNewPages();
   }
   console.log(`[brand-spy] phase-1 done: ${discovered} new, ${updated} updated, ${pageCache.size} pages, ${creditsUsed} credits`);
-
-  // Phase 1d: root-fragment search — strip TLD and search for the bare fragment.
-  // 'try-forge.com' → search for 'try-forge' matches try-forge.com, shop.try-forge.com,
-  // secure.try-forge.com, try-forge.co.uk, etc. in one pass.
-  const rootFragment = domain.replace(/\.[a-z]{2,}(\.[a-z]{2,})?$/, ''); // 'try-forge.com' → 'try-forge'
-  if (rootFragment && rootFragment !== domain && rootFragment.length >= 3) {
-    console.log(`[brand-spy] phase-1d: root-fragment search for "${rootFragment}" (catches all subdomains)`);
-    for await (const batch of sc.iterateAdsByDomain({ domain: rootFragment, status: 'ACTIVE', country: 'US' })) {
-      creditsUsed += 1;
-      const { d, u } = await upsertAdBatch(brandId, batch, pageCache, null, crossDomains);
-      discovered += d; updated += u;
-      launchNewPages();
-    }
-    for await (const batch of sc.iterateAdsByDomain({ domain: rootFragment, status: 'ALL', country: 'US' })) {
-      creditsUsed += 1;
-      const { d, u } = await upsertAdBatch(brandId, batch, pageCache, null, crossDomains);
-      discovered += d; updated += u;
-      launchNewPages();
-    }
-    console.log(`[brand-spy] phase-1d done: ${discovered} new, ${updated} updated, ${pageCache.size} pages, ${creditsUsed} credits`);
-  }
 
   // Phase 1.5: company-name search — always runs to discover FB pages not found via
   // domain keyword search (common when brands use subdomains, redirect URLs, or
@@ -575,6 +626,7 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
         if (pageCache.size > 0 && !nameMatches) continue;
         const brandPageId = await upsertBrandPage(brandId, metaPageId, pageName, null);
         pageCache.set(metaPageId, brandPageId);
+        if (pageName) pageNameCache.set(metaPageId, pageName);
         p2Launched.add(metaPageId);
         p2Promises.push(runPhase2Page(metaPageId));
         addedFromThisSearch++;
@@ -585,37 +637,31 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
     console.log(`[brand-spy] phase-1.5 done: ${pageCache.size} pages total`);
   }
 
-  // Phase 1c: keyword searches for cross-domains already in DB.
-  // Complements Phase 3 (company-name search) by finding FB pages that advertise
-  // using cross-domain URLs regardless of their company name. Runs in parallel with
-  // Phase 2 (which was already launched above) — total time = max(Phase2, Phase1c).
-  const { rows: xDomainRows } = await query(
-    `SELECT DISTINCT lower(split_part(regexp_replace(link_url, '^https?://(www\\.)?', ''), '/', 1)) AS d
-       FROM brand_spy.ads
-      WHERE brand_id = $1 AND link_url IS NOT NULL AND link_url <> ''`,
-    [brandId],
-  );
-  // Merge live discoveries with pre-loaded known domains (from brand_domains table).
-  // This ensures subdomains/cross-domains found in previous runs are searched even
-  // on the first pass of a new run (before Phase 2 re-discovers them).
-  const liveXDomains = xDomainRows.map(r => r.d).filter(Boolean);
-  const allKnownDomains = new Set([...liveXDomains, ...knownSubdomains, ...knownCrossDomains]);
-  const xDomainsForSearch = [...allKnownDomains].filter(d =>
-    d && d !== domain && !d.endsWith('.' + domain),
+  // Phase 1c: keyword searches for known SUBDOMAINS of the primary domain.
+  // A subdomain search (shop.try-forge.com) is needed because /search/ads?domain=try-forge.com
+  // may only match ads whose link_url contains exactly try-forge.com, not subdomains.
+  // We use pre-loaded subdomains from brand_domains table so previously-discovered
+  // subdomains are searched on every subsequent scrape.
+  // NOTE: We search subdomains only, NOT arbitrary cross-domains.  Phase 2 on Meta
+  // platform pages (Instagram for Business, etc.) stores ads for hundreds of brands,
+  // polluting the link_url domain list with unrelated entries.  Expanding Phase 1c to
+  // all cross-domains causes a runaway cascade into irrelevant pages.
+  const subdomainsToSearch = knownSubdomains.filter(d =>
+    d && d !== domain && d.endsWith('.' + domain),
   );
 
-  if (xDomainsForSearch.length > 0) {
-    console.log(`[brand-spy] phase-1c: keyword search for cross-domains [${xDomainsForSearch.join(', ')}]`);
-    for (const xDomain of xDomainsForSearch) {
-      for await (const batch of sc.iterateAdsByDomain({ domain: xDomain, status: 'ACTIVE', country: 'US' })) {
+  if (subdomainsToSearch.length > 0) {
+    console.log(`[brand-spy] phase-1c: keyword search for subdomains [${subdomainsToSearch.join(', ')}]`);
+    for (const subDomain of subdomainsToSearch) {
+      for await (const batch of sc.iterateAdsByDomain({ domain: subDomain, status: 'ACTIVE', country: 'US' })) {
         creditsUsed += 1;
-        const { d, u } = await upsertAdBatch(brandId, batch, pageCache, null, crossDomains);
+        const { d, u } = await upsertAdBatch(brandId, batch, pageCache, null, crossDomains, pageNameCache);
         discovered += d; updated += u;
         launchNewPages(); // kick off Phase 2 for any newly discovered pages
       }
-      for await (const batch of sc.iterateAdsByDomain({ domain: xDomain, status: 'ALL', country: 'US' })) {
+      for await (const batch of sc.iterateAdsByDomain({ domain: subDomain, status: 'ALL', country: 'US' })) {
         creditsUsed += 1;
-        const { d, u } = await upsertAdBatch(brandId, batch, pageCache, null, crossDomains);
+        const { d, u } = await upsertAdBatch(brandId, batch, pageCache, null, crossDomains, pageNameCache);
         discovered += d; updated += u;
         launchNewPages();
       }
@@ -631,59 +677,35 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
   await Promise.all(p2Promises);
   console.log(`[brand-spy] phase-2 done: ${discovered} new, ${updated} updated, ${pageCache.size} pages, ${creditsUsed} credits`);
 
-  // Phase 3: cross-domain expansion
-  // Query the DB for all distinct link_url domains stored so far — this is more
-  // reliable than reading from the live API response, which may use different field
-  // names across endpoints (search/ads vs company/ads).
-  const { rows: domainRows } = await query(
-    `SELECT DISTINCT lower(split_part(regexp_replace(link_url, '^https?://(www\\.)?', ''), '/', 1)) AS d
-       FROM brand_spy.ads
-      WHERE brand_id = $1 AND link_url IS NOT NULL AND link_url <> ''`,
-    [brandId],
-  );
-  for (const { d } of domainRows) {
-    if (d) crossDomains.add(d);
-  }
-
-  const toExpand = [...crossDomains].filter(d =>
-    d &&
-    d !== domain &&
-    !d.endsWith('.' + domain), // skip subdomains of primary already covered
+  // Phase 3: subdomain keyword search for subdomains discovered in this run.
+  // After Phase 2 finishes, crossDomains contains all link_url domains seen in ads.
+  // We search for TRUE SUBDOMAINS of the primary domain (*.primary-domain.com) that
+  // were just discovered this run and not yet covered by Phase 1c.
+  // NOTE: We restrict to subdomains ONLY. Expanding to arbitrary cross-domains (e.g.
+  // balearicpostcards.com, blinkit.com) causes a runaway cascade: Phase 2 on Meta
+  // platform pages stores ads for hundreds of brands, their link_urls pollute
+  // crossDomains, and Phase 3 then finds and scrapes all those unrelated pages.
+  const newSubdomains = [...crossDomains].filter(d =>
+    d && d !== domain && d.endsWith('.' + domain) && !subdomainsToSearch.includes(d),
   );
 
-  if (toExpand.length > 0) {
-    // Keyword search doesn't work for cross-domains — the domain only appears in the
-    // destination URL, not in ad text, so Meta's keyword index doesn't find it.
-    // Instead: searchCompanies by name → find their pages → Phase 2 scrape (US filter).
-    console.log(`[brand-spy] phase-3: company search for [${toExpand.join(', ')}]`);
-    for (const xDomain of toExpand) {
-      // Strip TLD: 'dailynationalnews.com' → 'dailynationalnews'
-      const companyName = xDomain.replace(/\.[a-z]{2,}(\.[a-z]{2})?$/, '');
-      let result;
-      try {
-        result = await sc.searchCompanies(companyName);
+  if (newSubdomains.length > 0) {
+    console.log(`[brand-spy] phase-3: keyword search for newly-discovered subdomains [${newSubdomains.join(', ')}]`);
+    for (const subDomain of newSubdomains) {
+      for await (const batch of sc.iterateAdsByDomain({ domain: subDomain, status: 'ACTIVE', country: 'US' })) {
         creditsUsed += 1;
-      } catch (err) {
-        console.error(`[brand-spy] phase-3 company search failed for "${companyName}":`, err.message);
-        continue;
+        const { d, u } = await upsertAdBatch(brandId, batch, pageCache, null, crossDomains, pageNameCache);
+        discovered += d; updated += u;
+        launchNewPages();
       }
-      // Handle various response shapes from the API.
-      // The search/companies endpoint returns { searchResults: [...] } (same key as search/ads).
-      const pages = result?.searchResults ?? result?.results ?? result?.data ?? result?.companies ?? [];
-      console.log(`[brand-spy] phase-3: "${companyName}" → ${pages.length} pages`);
-      for (const page of pages.slice(0, 5)) { // cap at 5 per domain to avoid credit blowout
-        const metaPageId = String(page.page_id ?? page.id ?? page.pageId ?? '');
-        if (!metaPageId || p2Launched.has(metaPageId)) continue;
-        if (!pageCache.has(metaPageId)) {
-          const pageName = page.page_name ?? page.name ?? page.pageName ?? null;
-          const brandPageId = await upsertBrandPage(brandId, metaPageId, pageName, null);
-          pageCache.set(metaPageId, brandPageId);
-        }
-        p2Launched.add(metaPageId);
-        p2Promises.push(runPhase2Page(metaPageId)); // Phase 2 runs with country:US
+      for await (const batch of sc.iterateAdsByDomain({ domain: subDomain, status: 'ALL', country: 'US' })) {
+        creditsUsed += 1;
+        const { d, u } = await upsertAdBatch(brandId, batch, pageCache, null, crossDomains, pageNameCache);
+        discovered += d; updated += u;
+        launchNewPages();
       }
     }
-    // Await Phase 2 workers kicked off by Phase 3
+    // Await Phase 2 workers kicked off by Phase 3 subdomain pages
     await Promise.all(p2Promises);
     console.log(`[brand-spy] phase-3 done: total ${discovered} new, ${updated} updated, ${creditsUsed} credits`);
   }
