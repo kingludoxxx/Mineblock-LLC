@@ -56,10 +56,18 @@ function mapBrand(row) {
 
 function extractThumbnail(raw) {
   if (!raw) return null;
+  // Video preview (for VIDEO/mixed ads)
   if (raw.videos?.[0]?.video_preview_image_url) return raw.videos[0].video_preview_image_url;
-  if (raw.images?.[0]?.resized_image_url) return raw.images[0].resized_image_url;
-  if (raw.images?.[0]?.original_image_url) return raw.images[0].original_image_url;
-  return raw.page_profile_picture_url ?? null;
+  // Direct images array (IMAGE, DCO with creatives)
+  if (raw.images?.[0]?.resized_image_url)   return raw.images[0].resized_image_url;
+  if (raw.images?.[0]?.original_image_url)  return raw.images[0].original_image_url;
+  // Carousel cards
+  if (raw.cards?.[0]?.resized_image_url)    return raw.cards[0].resized_image_url;
+  if (raw.cards?.[0]?.original_image_url)   return raw.cards[0].original_image_url;
+  // NOTE: do NOT fall back to page_profile_picture_url — that is the page
+  // owner's avatar, not the ad creative. Return null so callers show a
+  // proper "no preview" placeholder instead of a blurry portrait.
+  return null;
 }
 
 function extractVideo(raw) {

@@ -357,7 +357,7 @@ export default function IntelDrawer({ ad, brand, onClose }) {
               {ad.videoUrl ? (
                 <video
                   src={ad.videoUrl}
-                  poster={ad.thumbnailUrl}
+                  poster={ad.thumbnailUrl ?? undefined}
                   controls
                   className="w-full h-full object-contain"
                   style={{ maxHeight: 440 }}
@@ -370,8 +370,26 @@ export default function IntelDrawer({ ad, brand, onClose }) {
                   style={{ maxHeight: 440 }}
                 />
               ) : (
-                <div className="w-full h-48 flex items-center justify-center text-text-faint text-sm">
-                  No preview available
+                /* No creative stored (common for DCO/collation ads — each variant
+                   has its own image that isn't captured in the snapshot).
+                   Point users to Meta Ad Library to see the actual creative. */
+                <div className="w-full flex flex-col items-center justify-center gap-3 py-14">
+                  <p className="text-sm font-medium" style={{ color: '#6b7280' }}>Creative not available</p>
+                  <p className="text-xs text-center max-w-[220px]" style={{ color: '#4b5563' }}>
+                    This ad has multiple variants (DCO). View the full creative on Meta Ad Library.
+                  </p>
+                  {adLibUrl && (
+                    <a
+                      href={adLibUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-medium mt-1"
+                      style={{ background: '#1877f2', color: '#fff' }}
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" />
+                      View on Meta Ad Library
+                    </a>
+                  )}
                 </div>
               )}
             </div>
