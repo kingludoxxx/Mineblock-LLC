@@ -197,6 +197,113 @@ function useDropdown() {
   return { open, setOpen, ref };
 }
 
+// ---------------------------------------------------------------------------
+// Column header tooltip
+// ---------------------------------------------------------------------------
+
+function ColInfo({ children }) {
+  const [show, setShow] = useState(false);
+  return (
+    <span
+      className="relative inline-flex items-center"
+      onMouseEnter={() => setShow(true)}
+      onMouseLeave={() => setShow(false)}
+    >
+      <span className="text-[9px] leading-none cursor-default select-none ml-0.5"
+        style={{ color: show ? '#9ca3af' : '#4b5563' }}>ⓘ</span>
+      {show && (
+        <div
+          className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-64 rounded-xl p-3.5 shadow-2xl pointer-events-none z-50 text-left normal-case tracking-normal font-normal"
+          style={{ background: '#1c1c1e', border: '1px solid #2a2a2a' }}
+        >
+          {children}
+        </div>
+      )}
+    </span>
+  );
+}
+
+// Tooltip content definitions
+const COL_TOOLTIPS = {
+  now: (
+    <>
+      <p className="text-xs font-bold text-white mb-1">Current Rank</p>
+      <p className="text-[11px] leading-relaxed" style={{ color: '#9ca3af' }}>
+        Where this ad ranks <span className="text-white font-medium">right now</span> in the active pool.
+        Format is <span className="text-white font-medium">rank / pool size</span>. Lower rank = stronger ad.
+      </p>
+    </>
+  ),
+  active: (
+    <>
+      <p className="text-xs font-bold text-white mb-1">Active Days</p>
+      <p className="text-[11px] leading-relaxed" style={{ color: '#9ca3af' }}>
+        How many days this ad has been running since it launched. Like counting how old the ad is.
+        Ads running for{' '}
+        <span style={{ color: '#f59e0b' }} className="font-semibold">30+ days</span>
+        {' '}are usually proven winners the brand keeps spending on because they work.
+      </p>
+    </>
+  ),
+  tier: (
+    <>
+      <p className="text-xs font-bold text-white mb-1">Creative Tier</p>
+      <p className="text-[11px] leading-relaxed" style={{ color: '#9ca3af' }}>
+        Strength classification based on rank percentile.{' '}
+        <span className="text-rose-400 font-semibold">🔥 BANGER</span> = top 3% under 10 days ·{' '}
+        <span className="text-amber-400 font-semibold">🏆 CHAMP</span> = top 10% ·{' '}
+        <span className="text-emerald-400 font-semibold">A</span> = top 25% ·{' '}
+        <span className="text-sky-400 font-semibold">B</span> = top 50%.
+      </p>
+    </>
+  ),
+  rank21d: (
+    <>
+      <p className="text-xs font-bold text-white mb-1">21-Day Rank</p>
+      <p className="text-[11px] leading-relaxed" style={{ color: '#9ca3af' }}>
+        Rank 21 days ago. Delta below shows improvement{' '}
+        <span className="text-emerald-400 font-semibold">(+N)</span> or drop{' '}
+        <span className="text-rose-400 font-semibold">(-N)</span> vs current rank.
+      </p>
+    </>
+  ),
+  rank7d: (
+    <>
+      <p className="text-xs font-bold text-white mb-1">7-Day Rank</p>
+      <p className="text-[11px] leading-relaxed" style={{ color: '#9ca3af' }}>
+        Rank 7 days ago. Delta shows movement vs current rank — useful for spotting short-term momentum.
+      </p>
+    </>
+  ),
+  rank3d: (
+    <>
+      <p className="text-xs font-bold text-white mb-1">3-Day Rank</p>
+      <p className="text-[11px] leading-relaxed" style={{ color: '#9ca3af' }}>
+        Rank 3 days ago. Closest window to now — shows very recent acceleration or stalling.
+      </p>
+    </>
+  ),
+  v7d: (
+    <>
+      <p className="text-xs font-bold text-white mb-1">Velocity 7D</p>
+      <p className="text-[11px] leading-relaxed" style={{ color: '#9ca3af' }}>
+        How much the rank changed over the last 7 days.{' '}
+        <span className="text-emerald-400 font-semibold">+N↑</span> = climbing (rank improved) ·{' '}
+        <span className="text-rose-400 font-semibold">-N↓</span> = falling.
+      </p>
+    </>
+  ),
+  v21d: (
+    <>
+      <p className="text-xs font-bold text-white mb-1">Velocity 21D</p>
+      <p className="text-[11px] leading-relaxed" style={{ color: '#9ca3af' }}>
+        Rank change over 21 days. Combines with 7D velocity to calculate{' '}
+        <span className="text-white font-medium">Momentum</span> in the ad detail view.
+      </p>
+    </>
+  ),
+};
+
 function RankWithDelta({ rank, poolSize, delta }) {
   if (rank == null) return <span className="text-text-faint text-xs">—</span>;
   const display = poolSize ? `${rank}/${poolSize}` : String(rank);
@@ -673,49 +780,49 @@ export default function BrandLeague({ apiBaseUrl }) {
                 {/* 21D */}
                 {visibleCols.rank21d && (
                   <th style={{ width: 70 }} className="px-2 py-2 text-center text-[10px] uppercase tracking-wider text-text-faint font-normal">
-                    21D
+                    <span className="inline-flex items-center gap-0.5">21D<ColInfo>{COL_TOOLTIPS.rank21d}</ColInfo></span>
                   </th>
                 )}
                 {/* 7D */}
                 {visibleCols.rank7d && (
                   <th style={{ width: 70 }} className="px-2 py-2 text-center text-[10px] uppercase tracking-wider text-text-faint font-normal">
-                    7D
+                    <span className="inline-flex items-center gap-0.5">7D<ColInfo>{COL_TOOLTIPS.rank7d}</ColInfo></span>
                   </th>
                 )}
                 {/* 3D */}
                 {visibleCols.rank3d && (
                   <th style={{ width: 70 }} className="px-2 py-2 text-center text-[10px] uppercase tracking-wider text-text-faint font-normal">
-                    3D
+                    <span className="inline-flex items-center gap-0.5">3D<ColInfo>{COL_TOOLTIPS.rank3d}</ColInfo></span>
                   </th>
                 )}
                 {/* NOW — locked, highlighted */}
                 {visibleCols.now && (
                   <th style={{ width: 70 }} className="px-2 py-2 text-center text-[10px] uppercase tracking-wider text-text-muted font-semibold bg-bg-hover">
-                    NOW
+                    <span className="inline-flex items-center gap-0.5">NOW<ColInfo>{COL_TOOLTIPS.now}</ColInfo></span>
                   </th>
                 )}
                 {/* ACTIVE */}
                 {visibleCols.active && (
                   <th style={{ width: 60 }} className="px-2 py-2 text-center text-[10px] uppercase tracking-wider text-text-faint font-normal">
-                    ACTIVE
+                    <span className="inline-flex items-center gap-0.5">ACTIVE<ColInfo>{COL_TOOLTIPS.active}</ColInfo></span>
                   </th>
                 )}
                 {/* TIER — locked */}
                 {visibleCols.tier && (
                   <th style={{ width: 90 }} className="px-2 py-2 text-center text-[10px] uppercase tracking-wider text-text-faint font-normal">
-                    TIER
+                    <span className="inline-flex items-center gap-0.5">TIER<ColInfo>{COL_TOOLTIPS.tier}</ColInfo></span>
                   </th>
                 )}
                 {/* V7D */}
                 {visibleCols.v7d && (
                   <th style={{ width: 60 }} className="px-2 py-2 text-center text-[10px] uppercase tracking-wider text-text-faint font-normal">
-                    V7D
+                    <span className="inline-flex items-center gap-0.5">V7D<ColInfo>{COL_TOOLTIPS.v7d}</ColInfo></span>
                   </th>
                 )}
                 {/* V21D */}
                 {visibleCols.v21d && (
                   <th style={{ width: 60 }} className="px-2 py-2 text-center text-[10px] uppercase tracking-wider text-text-faint font-normal">
-                    V21D
+                    <span className="inline-flex items-center gap-0.5">V21D<ColInfo>{COL_TOOLTIPS.v21d}</ColInfo></span>
                   </th>
                 )}
               </tr>
