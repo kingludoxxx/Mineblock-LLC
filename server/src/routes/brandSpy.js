@@ -12,6 +12,7 @@ import {
   listAds,
   getAdDetail,
   getAdTierCounts,
+  getBrandAggregations,
 } from '../db/brandSpyDb.js';
 import { runBrandScrape, scrapeAllInBackground, recoverStuckScrapes } from '../workers/brandSpyWorker.js';
 import { getScrapeCreatorsClient } from '../services/scrapeCreators.js';
@@ -82,6 +83,24 @@ router.get('/brands/:id/tier-counts', async (req, res, next) => {
   try {
     const counts = await getAdTierCounts(req.params.id);
     res.json({ counts });
+  } catch (err) { next(err); }
+});
+
+// GET /brands/:id/aggregations?type=hooks|adcopy|headlines|landing&activeOnly=1&limit=50
+// Groups the brand's ads by content pattern. Used by the Hooks / Ad Copy /
+// Headlines / Landing Pages tabs.
+const VALID_AGG_TYPES = new Set(['hooks', 'adcopy', 'headlines', 'landing']);
+router.get('/brands/:id/aggregations', async (req, res, next) => {
+  try {
+    const type = String(req.query.type ?? '');
+    if (!VALID_AGG_TYPES.has(type)) {
+      return res.status(400).json({ error: `Invalid type. Must be one of: ${[...VALID_AGG_TYPES].join(', ')}` });
+    }
+    const limitRaw = parseInt(String(req.query.limit ?? ''), 10);
+    const limit = (!isNaN(limitRaw) && limitRaw > 0 && limitRaw <= 200) ? limitRaw : 50;
+    const activeOnly = String(req.query.activeOnly ?? '') === '1';
+    const result = await getBrandAggregations(req.params.id, type, { limit, activeOnly });
+    res.json(result);
   } catch (err) { next(err); }
 });
 

@@ -7,6 +7,7 @@ import {
   MoreHorizontal, Info, Copy, Download,
 } from 'lucide-react';
 import IntelDrawer from './IntelDrawer';
+import AggregationsTab from './AggregationsTab';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -793,6 +794,19 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
     }
   }, [activeTab, intelFetched, intelLoading, loadIntel]);
 
+  // ---- Open ad in IntelDrawer by ID (used by aggregation tabs) ----
+  const openAdById = useCallback(async (adId) => {
+    if (!adId) return;
+    try {
+      const res = await fetch(`${apiBaseUrl}/ads/${adId}`);
+      if (!res.ok) throw new Error(`Failed (${res.status})`);
+      const data = await res.json();
+      if (data.ad) setSelectedAd(data.ad);
+    } catch (e) {
+      console.error('[brand-spy] failed to load ad:', e);
+    }
+  }, [apiBaseUrl]);
+
   // ---- Refresh (re-scrape) ----
   // The scrape endpoint returns 202 immediately — poll brand status until the
   // background job finishes (lastScrapeStatus leaves 'RUNNING'), then reload
@@ -1249,14 +1263,19 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
         )}
 
         {/* ============================================================
-            COMING SOON stubs for other tabs
+            Aggregation tabs: Hooks / Ad Copy / Headlines / Landing Pages
         ============================================================ */}
-        {!['overview', 'intelligence'].includes(activeTab) && (
-          <div className="flex-1 flex flex-col items-center justify-center gap-3 p-12">
-            <Sparkles className="w-8 h-8 text-text-faint opacity-30" />
-            <p className="text-text-faint text-sm">Coming soon</p>
-            <p className="text-text-faint text-xs opacity-60">This tab will be available in a future update.</p>
-          </div>
+        {activeTab === 'hooks' && (
+          <AggregationsTab apiBaseUrl={apiBaseUrl} brandId={brandId} type="hooks" onOpenAd={openAdById} />
+        )}
+        {activeTab === 'adcopy' && (
+          <AggregationsTab apiBaseUrl={apiBaseUrl} brandId={brandId} type="adcopy" onOpenAd={openAdById} />
+        )}
+        {activeTab === 'headlines' && (
+          <AggregationsTab apiBaseUrl={apiBaseUrl} brandId={brandId} type="headlines" onOpenAd={openAdById} />
+        )}
+        {activeTab === 'landing' && (
+          <AggregationsTab apiBaseUrl={apiBaseUrl} brandId={brandId} type="landing" onOpenAd={openAdById} />
         )}
 
       </div>

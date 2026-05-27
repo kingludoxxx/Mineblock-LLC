@@ -327,3 +327,130 @@ export async function getAdTierCounts(brandId) {
   }
   return out;
 }
+
+// ---------------------------------------------------------------------------
+// Aggregations — for Hooks / Ad Copy / Headlines / Landing Pages tabs
+// ---------------------------------------------------------------------------
+
+// Normalize a "hook" = first 100 chars of body_text up to first newline.
+// For headlines, ad copy, landing — we group on the raw value.
+// Returns { items: [{ key, sample, count, activeCount, tierCounts, days, topAdId, sampleAdIds }], total }
+export async function getBrandAggregations(brandId, type, { limit = 50, activeOnly = false } = {}) {
+  // Pull all ads' content fields once — most brands have <2k ads, fits easily in mem.
+  const where = ['a.brand_id = $1'];
+  const params = [brandId];
+  if (activeOnly) where.push('a.is_active = TRUE');
+  const whereSql = where.join(' AND ');
+
+  const { rows } = await query(
+    `SELECT a.id, a.ad_archive_id, a.headline, a.body_text, a.link_url, a.cta_text,
+            a.tier, a.is_active, a.active_days, a.total_active_time,
+            a.display_format, a.current_rank, a.raw_snapshot
+       FROM brand_spy.ads a
+      WHERE ${whereSql}`,
+    params,
+  );
+
+  // Pick the key function for the requested type
+  function hookOf(ad) {
+    const src = ad.body_text || ad.headline || '';
+    if (!src) return null;
+    // First line only, then first ~100 chars, trimmed and collapsed-whitespace
+    const firstLine = src.split(/\r?\n/)[0].trim();
+    const collapsed = firstLine.replace(/\s+/g, ' ');
+    const out = collapsed.slice(0, 100);
+    return out.length >= 8 ? out : null;
+  }
+  function headlineOf(ad) {
+    const h = (ad.headline ?? '').trim();
+    return h.length >= 3 ? h : null;
+  }
+  function adCopyOf(ad) {
+    const b = (ad.body_text ?? '').trim();
+    if (b.length < 30) return null;
+    // Group on full text (collapsed whitespace)
+    return b.replace(/\s+/g, ' ');
+  }
+  function landingOf(ad) {
+    const u = (ad.link_url ?? '').trim();
+    if (!u) return null;
+    // Normalize: strip protocol, lowercase host, drop fbclid/utm/etc query params for grouping
+    try {
+      const url = new URL(u);
+      const host = url.host.toLowerCase().replace(/^www\./, '');
+      const path = url.pathname.replace(/\/+$/, '');
+      return `${host}${path}` || host;
+    } catch {
+      return u.slice(0, 160);
+    }
+  }
+
+  const keyFn = {
+    hooks:     hookOf,
+    headlines: headlineOf,
+    adcopy:    adCopyOf,
+    landing:   landingOf,
+  }[type];
+  if (!keyFn) throw new Error(`Unknown aggregation type: ${type}`);
+
+  // Group
+  const groups = new Map();
+  for (const r of rows) {
+    const key = keyFn(r);
+    if (!key) continue;
+    let g = groups.get(key);
+    if (!g) {
+      g = {
+        key,
+        sampleHeadline: null,
+        sampleBody: null,
+        sampleLink: null,
+        sampleCta: null,
+        count: 0,
+        activeCount: 0,
+        tierCounts: { BANGER: 0, CHAMP: 0, A: 0, B: 0, C: 0, MID: 0, TEST: 0 },
+        bestRank: null,
+        maxActiveDays: 0,
+        topAdId: null,
+        sampleAdIds: [],
+        thumbnailUrl: null,
+      };
+      groups.set(key, g);
+    }
+    g.count++;
+    if (r.is_active) g.activeCount++;
+    if (r.tier && g.tierCounts[r.tier] != null) g.tierCounts[r.tier]++;
+    const tatDays = r.total_active_time != null ? Math.floor(r.total_active_time / 86400) : 0;
+    const days = Math.max(r.active_days ?? 0, tatDays);
+    if (days > g.maxActiveDays) g.maxActiveDays = days;
+    // Track the "best" ad (lowest current_rank if present, else first active, else first)
+    const isBetter = (() => {
+      if (g.topAdId == null) return true;
+      // Prefer active + has rank
+      if (r.is_active && r.current_rank != null) {
+        if (g.bestRank == null) return true;
+        return r.current_rank < g.bestRank;
+      }
+      return false;
+    })();
+    if (isBetter) {
+      g.topAdId = r.id;
+      g.bestRank = r.current_rank;
+      g.sampleHeadline = r.headline ?? g.sampleHeadline;
+      g.sampleBody = r.body_text ?? g.sampleBody;
+      g.sampleLink = r.link_url ?? g.sampleLink;
+      g.sampleCta = r.cta_text ?? g.sampleCta;
+      g.thumbnailUrl = extractThumbnail(r.raw_snapshot);
+    }
+    if (g.sampleAdIds.length < 6) g.sampleAdIds.push(r.id);
+  }
+
+  // Sort by activeCount DESC, then maxActiveDays DESC, then count DESC
+  const items = Array.from(groups.values()).sort((a, b) => {
+    if (b.activeCount !== a.activeCount) return b.activeCount - a.activeCount;
+    if (b.maxActiveDays !== a.maxActiveDays) return b.maxActiveDays - a.maxActiveDays;
+    return b.count - a.count;
+  }).slice(0, limit);
+
+  return { items, total: groups.size };
+}

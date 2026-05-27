@@ -6,6 +6,7 @@ import {
   ScanSearch,
   Globe,
   ExternalLink,
+  Search,
 } from 'lucide-react';
 import IntelDrawer from './IntelDrawer';
 
@@ -403,6 +404,16 @@ export default function BrandLeague({ apiBaseUrl }) {
   const pagesDropdown  = useDropdown();
   const columnsDropdown = useDropdown();
 
+  // Brand-list search (filters the brand selector dropdown)
+  const [brandSearch, setBrandSearch] = useState('');
+  // Reset search whenever the dropdown closes so it reopens clean
+  useEffect(() => {
+    if (!brandDropdown.open) setBrandSearch('');
+  }, [brandDropdown.open]);
+  const filteredBrands = brandSearch.trim()
+    ? brands.filter((b) => b.domain.toLowerCase().includes(brandSearch.trim().toLowerCase()))
+    : brands;
+
   // ---------------------------------------------------------------------------
   // Load brands on mount
   // ---------------------------------------------------------------------------
@@ -614,26 +625,46 @@ export default function BrandLeague({ apiBaseUrl }) {
           </button>
 
           {brandDropdown.open && (
-            <div className="absolute top-full left-0 mt-1 w-72 bg-bg-card border border-border-default rounded-lg shadow-xl z-50 overflow-hidden">
+            <div className="absolute top-full left-0 mt-1 w-80 bg-bg-card border border-border-default rounded-lg shadow-xl z-50 overflow-hidden">
+              {/* Search */}
+              <div className="p-2 border-b border-border-subtle">
+                <div className="relative">
+                  <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-faint pointer-events-none" />
+                  <input
+                    type="text"
+                    value={brandSearch}
+                    onChange={(e) => setBrandSearch(e.target.value)}
+                    placeholder={`Search ${brands.length} brand${brands.length === 1 ? '' : 's'}…`}
+                    autoFocus
+                    className="w-full pl-8 pr-2.5 py-1.5 text-xs rounded-md bg-bg-elevated border border-border-default focus:border-white/20 focus:outline-none text-text-primary placeholder:text-text-faint transition-colors"
+                  />
+                </div>
+              </div>
               <div className="max-h-64 overflow-y-auto">
-                {brands.map((b) => (
-                  <button
-                    key={b.id}
-                    onClick={() => handleSelectBrand(b)}
-                    className="w-full flex items-center gap-2.5 px-3 py-2 hover:bg-bg-elevated text-left transition-colors"
-                  >
-                    <BrandLogo domain={b.domain} />
-                    <div className="min-w-0 flex-1">
-                      <p className="text-sm text-text-primary truncate">{b.domain}</p>
-                      <p className="text-[11px] text-text-faint">
-                        {b.pagesCount} pages · {b.activeAdsCount} active
-                      </p>
-                    </div>
-                    {selectedBrand?.id === b.id && (
-                      <span className="text-accent text-xs">✓</span>
-                    )}
-                  </button>
-                ))}
+                {filteredBrands.length === 0 ? (
+                  <div className="px-3 py-4 text-xs text-text-faint text-center">
+                    No brands match &ldquo;{brandSearch}&rdquo;.
+                  </div>
+                ) : (
+                  filteredBrands.map((b) => (
+                    <button
+                      key={b.id}
+                      onClick={() => handleSelectBrand(b)}
+                      className="w-full flex items-center gap-2.5 px-3 py-2 hover:bg-bg-elevated text-left transition-colors"
+                    >
+                      <BrandLogo domain={b.domain} />
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm text-text-primary truncate">{b.domain}</p>
+                        <p className="text-[11px] text-text-faint">
+                          {b.pagesCount} pages · {b.activeAdsCount} active
+                        </p>
+                      </div>
+                      {selectedBrand?.id === b.id && (
+                        <span className="text-accent text-xs">✓</span>
+                      )}
+                    </button>
+                  ))
+                )}
               </div>
             </div>
           )}
