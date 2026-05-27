@@ -228,19 +228,25 @@ export default function IntelDrawer({ ad, brand, onClose }) {
     setTimeout(() => setCopied(false), 2000);
   }
 
-  function handleSave() {
+  async function handleSave() {
     const url = ad.videoUrl || ad.thumbnailUrl;
     if (!url) return;
-    // Use an anchor with download attribute to prompt save dialog.
-    // Falls back to new tab for cross-origin URLs the browser won't download.
-    const a = document.createElement('a');
-    a.href = url;
-    a.target = '_blank';
-    a.rel = 'noreferrer';
-    a.download = `ad-${ad.adArchiveId || 'creative'}${ad.videoUrl ? '.mp4' : '.jpg'}`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
+    const ext = ad.videoUrl ? '.mp4' : '.jpg';
+    const filename = `ad-${ad.adArchiveId || 'creative'}${ext}`;
+    // Attempt blob fetch so the browser saves rather than navigating (handles CDN CORS).
+    // Fall back to window.open if fetch fails (CORS block, etc.).
+    try {
+      const res  = await fetch(url);
+      const blob = await res.blob();
+      const burl = URL.createObjectURL(blob);
+      const a    = document.createElement('a');
+      a.href = burl; a.download = filename;
+      document.body.appendChild(a); a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(burl), 1000);
+    } catch {
+      window.open(url, '_blank');
+    }
   }
 
   // ---------------------------------------------------------------------------

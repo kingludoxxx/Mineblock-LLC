@@ -281,7 +281,7 @@ function AdCard({ ad, brand, onOpenIntel }) {
   // Resolve page info for header
   const page       = brand?.pages?.find((p) => p.id === ad.brandPageId) ?? null;
   const pageName   = ad.pageName ?? page?.pageName ?? brand?.domain ?? '';
-  const pageAvatar = { pageName, pageProfilePic: page?.pageProfilePic ?? ad.pageProfilePicUrl ?? null };
+  const pageAvatar = { pageName, pageProfilePic: page?.pageProfilePic ?? null };
 
   // Autoplay when playing flips on
   useEffect(() => {
@@ -1074,7 +1074,7 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
               <div className="grid grid-cols-3 gap-4">
                 {Array.from({ length: 9 }).map((_, i) => (
                   <div key={i} className="rounded-xl border border-border-subtle overflow-hidden animate-pulse">
-                    <div className="bg-white/5" style={{ aspectRatio: '4/3' }} />
+                    <div className="bg-white/5" style={{ aspectRatio: '4/5' }} />
                     <div className="p-3 space-y-2">
                       <div className="h-3 bg-white/5 rounded" />
                       <div className="h-3 bg-white/5 rounded w-2/3" />

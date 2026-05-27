@@ -312,6 +312,43 @@ const COL_TOOLTIPS = {
   ),
 };
 
+// ---------------------------------------------------------------------------
+// SortDropdown — custom "Sort: X ▼" styled dropdown
+// ---------------------------------------------------------------------------
+
+function SortDropdown({ value, onChange, options }) {
+  const { open, setOpen, ref } = useDropdown();
+  const current = options.find((o) => o.value === value);
+  return (
+    <div className="relative text-xs" ref={ref}>
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="flex items-center gap-1.5 text-text-muted hover:text-text-primary transition-colors">
+        <span className="text-text-faint">Sort:</span>
+        <span className="font-medium text-text-primary">{current?.label ?? value}</span>
+        <ChevronDown className={`w-3 h-3 text-text-faint transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full mt-1.5 w-44 rounded-xl shadow-2xl z-50 overflow-hidden py-1"
+          style={{ background: '#1e1e1e', border: '1px solid #303030' }}>
+          {options.map((opt) => (
+            <button
+              key={opt.value}
+              onClick={() => { onChange(opt.value); setOpen(false); }}
+              className={`w-full text-left px-4 py-2 text-[13px] transition-colors ${
+                opt.value === value
+                  ? 'text-white bg-white/5'
+                  : 'text-text-muted hover:bg-white/5 hover:text-white'
+              }`}>
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function RankWithDelta({ rank, poolSize, delta }) {
   if (rank == null) return <span className="text-text-faint text-xs">—</span>;
   const display = poolSize ? `${rank}/${poolSize}` : String(rank);
@@ -469,6 +506,11 @@ export default function BrandLeague({ apiBaseUrl }) {
           const d = await r.json();
           if (d.brand) {
             setBrandDetail(d.brand);
+            // Also update the brands list so the brand selector shows fresh counts
+            setBrands((prev) => prev.map((b) => b.id === d.brand.id
+              ? { ...b, activeAdsCount: d.brand.activeAdsCount, totalAdsCount: d.brand.totalAdsCount }
+              : b,
+            ));
             if (d.brand.lastScrapeStatus !== 'RUNNING') break;
           }
         }
@@ -701,15 +743,7 @@ export default function BrandLeague({ apiBaseUrl }) {
         <div className="flex-1" />
 
         {/* Sort */}
-        <select
-          value={sort}
-          onChange={(e) => setSort(e.target.value)}
-          className="text-xs bg-bg-elevated border border-border-default rounded-lg px-2.5 py-1.5 text-text-muted focus:outline-none cursor-pointer"
-        >
-          {SORT_OPTIONS.map((o) => (
-            <option key={o.value} value={o.value}>{o.label}</option>
-          ))}
-        </select>
+        <SortDropdown value={sort} onChange={setSort} options={SORT_OPTIONS} />
 
         {/* Refresh */}
         <button
