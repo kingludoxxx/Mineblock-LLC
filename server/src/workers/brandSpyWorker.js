@@ -631,11 +631,14 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
         const metaPageId = String(page.page_id ?? page.id ?? page.pageId ?? '');
         if (!metaPageId || p2Launched.has(metaPageId)) continue;
         const pageName = page.page_name ?? page.name ?? page.pageName ?? null;
-        // Strict relevance: page name must contain the normalised brand keyword.
-        // This is always enforced (not gated on pageCache.size) to prevent adding
-        // unrelated companies even when Phase 1 found zero pages.
-        const nameMatches = normalise(pageName).includes(normKeyword);
-        if (!nameMatches) continue;
+        // No name-match filter here: we search the exact brand domain name ('try-forge'),
+        // not a generic fragment, so ScrapeCreators' results are domain-matched and
+        // can be trusted. A page like "Instagram for Business" that appears because
+        // it is genuinely associated with try-forge.com would be incorrectly rejected
+        // by a name filter (its name doesn't contain "try-forge").
+        // Any false-positive pages (wrong brand) are caught downstream: Phase 2
+        // filters Meta platform pages to only ads whose link_url contains the brand's
+        // root fragment, so irrelevant ads are never stored.
         const brandPageId = await upsertBrandPage(brandId, metaPageId, pageName, null);
         pageCache.set(metaPageId, brandPageId);
         if (pageName) pageNameCache.set(metaPageId, pageName);
