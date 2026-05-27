@@ -59,7 +59,8 @@ router.get('/brands/:id', async (req, res, next) => {
 // GET /brands/:id/ads
 router.get('/brands/:id/ads', async (req, res, next) => {
   try {
-    const days = req.query.days ? parseInt(String(req.query.days), 10) : null;
+    const daysRaw = req.query.days ? parseInt(String(req.query.days), 10) : null;
+    const days    = (daysRaw !== null && !isNaN(daysRaw) && daysRaw > 0) ? daysRaw : null;
     const q = {
       page:         req.query.page        ? Math.max(1, parseInt(String(req.query.page), 10) || 1) : 1,
       pageSize:     req.query.pageSize    ? parseInt(String(req.query.pageSize), 10) || undefined : undefined,
@@ -126,10 +127,16 @@ router.post('/brands', async (req, res, next) => {
 });
 
 // POST /brands/:id/scrape
+// Returns 202 immediately — fire-and-forget. The scrape runs in the background.
+// Clients should poll GET /brands/:id and check lastScrapeStatus !== 'RUNNING'.
 router.post('/brands/:id/scrape', async (req, res, next) => {
   try {
-    const result = await runBrandScrape({ brandId: req.params.id, trigger: 'MANUAL' });
-    res.json({ result });
+    const brand = await getBrandExpanded(req.params.id);
+    if (!brand) return res.status(404).json({ error: 'Brand not found' });
+    runBrandScrape({ brandId: req.params.id, trigger: 'MANUAL' }).catch((err) =>
+      console.error(`[brand-spy] manual scrape failed for ${req.params.id}:`, err),
+    );
+    res.status(202).json({ queued: true });
   } catch (err) { next(err); }
 });
 

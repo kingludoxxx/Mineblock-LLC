@@ -684,15 +684,38 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
   }, [activeTab, intelFetched, intelLoading, loadIntel]);
 
   // ---- Refresh (re-scrape) ----
+  // The scrape endpoint returns 202 immediately — poll brand status until the
+  // background job finishes (lastScrapeStatus leaves 'RUNNING'), then reload
+  // ads and reset AI intel so it re-analyzes the fresh ad set.
   const handleRefresh = async () => {
     if (refreshing) return;
     setRefreshing(true);
     setRefreshError(null);
     try {
-      await fetch(`${apiBaseUrl}/brands/${brandId}/scrape`, { method: 'POST' });
-      const r = await fetch(`${apiBaseUrl}/brands/${brandId}`);
-      if (r.ok) { const d = await r.json(); if (d.brand) setBrand(d.brand); }
+      const scrapeRes = await fetch(`${apiBaseUrl}/brands/${brandId}/scrape`, { method: 'POST' });
+      if (!scrapeRes.ok) {
+        const body = await scrapeRes.json().catch(() => ({}));
+        throw new Error(body.error || `Scrape trigger failed (${scrapeRes.status})`);
+      }
+
+      // Poll every 2s until not RUNNING (or 5-min timeout)
+      const deadline = Date.now() + 5 * 60 * 1000;
+      while (Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        const r = await fetch(`${apiBaseUrl}/brands/${brandId}`);
+        if (r.ok) {
+          const d = await r.json();
+          if (d.brand) {
+            setBrand(d.brand);
+            if (d.brand.lastScrapeStatus !== 'RUNNING') break;
+          }
+        }
+      }
+
       await loadAds();
+      // Reset intel so it re-analyzes the freshly-scraped ads
+      setIntelFetched(false);
+      setIntel(null);
     } catch (e) {
       setRefreshError(e.message);
     } finally {

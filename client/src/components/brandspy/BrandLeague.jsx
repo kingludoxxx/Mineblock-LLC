@@ -343,6 +343,7 @@ export default function BrandLeague({ apiBaseUrl }) {
   const [adsLoading, setAdsLoading] = useState(true);
   const [adsError, setAdsError] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [refreshError, setRefreshError] = useState(null);
 
   // Filters / pagination
   const [page, setPage] = useState(1);
@@ -391,9 +392,15 @@ export default function BrandLeague({ apiBaseUrl }) {
   useEffect(() => {
     if (!selectedBrand) { setBrandDetail(null); return; }
     fetch(`${apiBaseUrl}/brands/${selectedBrand.id}`)
-      .then((r) => r.json())
+      .then((r) => {
+        if (!r.ok) throw new Error(`Failed to load brand (${r.status})`);
+        return r.json();
+      })
       .then((d) => setBrandDetail(d.brand ?? null))
-      .catch(() => setBrandDetail(null));
+      .catch((e) => {
+        console.warn('[brand-spy] brand detail fetch failed:', e.message);
+        setBrandDetail(null);
+      });
   }, [apiBaseUrl, selectedBrand]);
 
   // ---------------------------------------------------------------------------
@@ -445,17 +452,31 @@ export default function BrandLeague({ apiBaseUrl }) {
   async function handleRefresh() {
     if (!selectedBrand || refreshing) return;
     setRefreshing(true);
+    setRefreshError(null);
     try {
-      await fetch(`${apiBaseUrl}/brands/${selectedBrand.id}/scrape`, { method: 'POST' });
-      // Re-fetch brand detail (pages + counts) so selector stays fresh
-      const r = await fetch(`${apiBaseUrl}/brands/${selectedBrand.id}`);
-      if (r.ok) {
-        const d = await r.json();
-        if (d.brand) setBrandDetail(d.brand);
+      const scrapeRes = await fetch(`${apiBaseUrl}/brands/${selectedBrand.id}/scrape`, { method: 'POST' });
+      if (!scrapeRes.ok) {
+        const body = await scrapeRes.json().catch(() => ({}));
+        throw new Error(body.error || `Scrape trigger failed (${scrapeRes.status})`);
       }
+
+      // Poll every 2s until scrape completes (max 5 min)
+      const deadline = Date.now() + 5 * 60 * 1000;
+      while (Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        const r = await fetch(`${apiBaseUrl}/brands/${selectedBrand.id}`);
+        if (r.ok) {
+          const d = await r.json();
+          if (d.brand) {
+            setBrandDetail(d.brand);
+            if (d.brand.lastScrapeStatus !== 'RUNNING') break;
+          }
+        }
+      }
+
       await loadAds();
-    } catch (_) {
-      // silently ignore scrape trigger errors; ads may still reload
+    } catch (e) {
+      setRefreshError(e.message);
     } finally {
       setRefreshing(false);
     }
@@ -513,6 +534,11 @@ export default function BrandLeague({ apiBaseUrl }) {
       {/* ------------------------------------------------------------------ */}
       {/* Toolbar */}
       {/* ------------------------------------------------------------------ */}
+      {refreshError && (
+        <div className="shrink-0 px-4 py-1.5 text-xs text-red-400 bg-red-400/10 border-b border-red-400/20">
+          {refreshError}
+        </div>
+      )}
       <div className="shrink-0 flex items-center gap-2 px-4 py-2.5 border-b border-border-subtle bg-bg-card flex-wrap">
 
         {/* Brand selector */}

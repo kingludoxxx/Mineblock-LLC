@@ -49,9 +49,13 @@ function fmtDate(iso) {
 
 function velocityPct(velocity, currentRank) {
   if (velocity == null || !currentRank) return null;
-  const prev = currentRank + velocity;
-  if (prev <= 0) return null;
-  return Math.round((velocity / prev) * 100);
+  const prev = currentRank + velocity; // rank before the change
+  if (prev <= 0 || currentRank <= 0) return null;
+  // Use the larger (worse) rank as denominator so +20 and -20 show the same
+  // absolute percentage — avoids the asymmetry where +20 from 50→30 shows +40%
+  // but -20 from 30→50 would show -200%.
+  const base = Math.max(currentRank, prev);
+  return Math.round((velocity / base) * 100);
 }
 
 function computeMomentum(v7d, v21d) {
@@ -133,6 +137,15 @@ function PageProfilePic({ ad, pages, size = 40 }) {
   );
 }
 
+function truncateAtWord(text, maxChars) {
+  if (text.length <= maxChars) return text;
+  const cut = text.slice(0, maxChars);
+  const lastSpace = cut.lastIndexOf(' ');
+  // Only snap to word boundary if the space is within the last 25% of the slice
+  // (avoids a very short truncation if the last word is long).
+  return lastSpace > maxChars * 0.75 ? cut.slice(0, lastSpace) : cut;
+}
+
 function ExpandableText({ text, maxChars = 200 }) {
   const [expanded, setExpanded] = useState(false);
   if (!text) return null;
@@ -140,7 +153,7 @@ function ExpandableText({ text, maxChars = 200 }) {
   return (
     <div>
       <p className="text-sm text-[#e4e6eb] leading-relaxed">
-        {expanded ? text : `${text.slice(0, maxChars)}...`}
+        {expanded ? text : `${truncateAtWord(text, maxChars)}…`}
         {' '}
         <button
           onClick={() => setExpanded(!expanded)}
@@ -531,8 +544,6 @@ export default function IntelDrawer({ ad, brand, onClose }) {
                   Rank History
                 </p>
                 <div className="flex gap-1.5">
-                  <RankHistoryCard label="90D" value={null} />
-                  <RankHistoryCard label="30D" value={null} />
                   <RankHistoryCard label="21D" value={ad.rank21d} />
                   <RankHistoryCard label="7D"  value={ad.rank7d} />
                   <RankHistoryCard label="3D"  value={ad.rank3d} />
