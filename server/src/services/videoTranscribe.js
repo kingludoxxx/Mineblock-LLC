@@ -82,7 +82,10 @@ export async function transcribeVideoUrl(videoUrl) {
   const form = new FormData();
   form.append('file', new Blob([buf], { type: contentType }), filename);
   form.append('model', WHISPER_MODEL);
-  form.append('response_format', 'text');
+  // verbose_json gives us segment-level timestamps so the UI can render a
+  // timestamped script (00:00 lead-in, 00:05 next line, …) like the Atria
+  // reference, rather than a single wall of text.
+  form.append('response_format', 'verbose_json');
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), WHISPER_TIMEOUT_MS);
@@ -108,10 +111,19 @@ export async function transcribeVideoUrl(videoUrl) {
     throw new Error(`Whisper API HTTP ${res.status}: ${detail.slice(0, 300)}`);
   }
 
-  // response_format=text returns the raw transcript, not JSON.
-  const transcript = (await res.text()).trim();
-  if (!transcript) {
+  // verbose_json returns { text, segments: [{ id, start, end, text, ... }] }
+  const payload = await res.json();
+  const text = (payload?.text ?? '').trim();
+  if (!text) {
     throw new Error('Whisper returned an empty transcript');
   }
-  return transcript;
+  // Keep only the fields the UI needs — start/end are seconds (float).
+  const segments = Array.isArray(payload.segments)
+    ? payload.segments.map((s) => ({
+        start: Number(s.start ?? 0),
+        end:   Number(s.end   ?? 0),
+        text:  String(s.text  ?? '').trim(),
+      })).filter((s) => s.text)
+    : [];
+  return { text, segments };
 }

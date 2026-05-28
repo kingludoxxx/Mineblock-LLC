@@ -371,7 +371,7 @@ export async function getAdDetail(adId) {
        a.tier, a.current_rank, a.rank_3d, a.rank_7d, a.rank_21d,
        a.velocity_7d, a.velocity_21d, a.pool_size,
        a.raw_snapshot, a.first_seen_at, a.last_seen_at,
-       a.transcript, a.transcript_at
+       a.transcript, a.transcript_segments, a.transcript_at
      FROM brand_spy.ads a
      LEFT JOIN brand_spy.brand_pages bp ON bp.id = a.brand_page_id
      WHERE a.id = $1`,
@@ -382,6 +382,7 @@ export async function getAdDetail(adId) {
     ...mapAdListItem(rows[0]),
     rawSnapshot: rows[0].raw_snapshot,
     transcript: rows[0].transcript ?? null,
+    transcriptSegments: rows[0].transcript_segments ?? null,
     transcriptAt: rows[0].transcript_at ? new Date(rows[0].transcript_at).toISOString() : null,
   };
 }

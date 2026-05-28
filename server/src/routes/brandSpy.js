@@ -322,7 +322,8 @@ router.post('/ads/:id/transcribe', async (req, res, next) => {
     if (ad.transcript) {
       return res.json({
         transcript: ad.transcript,
-        cached: true,
+        segments:   ad.transcriptSegments ?? [],
+        cached:     true,
         transcriptAt: ad.transcriptAt,
       });
     }
@@ -333,16 +334,17 @@ router.post('/ads/:id/transcribe', async (req, res, next) => {
       });
     }
 
-    const transcript = await transcribeVideoUrl(ad.videoUrl);
+    const { text, segments } = await transcribeVideoUrl(ad.videoUrl);
     const { rows } = await pgQuery(
       `UPDATE brand_spy.ads
-          SET transcript = $1, transcript_at = NOW()
-        WHERE id = $2
+          SET transcript = $1, transcript_segments = $2, transcript_at = NOW()
+        WHERE id = $3
         RETURNING transcript_at`,
-      [transcript, adId],
+      [text, JSON.stringify(segments), adId],
     );
     res.json({
-      transcript,
+      transcript: text,
+      segments,
       cached: false,
       transcriptAt: rows[0]?.transcript_at?.toISOString() ?? new Date().toISOString(),
     });

@@ -247,6 +247,16 @@ export default function IntelDrawer({
   pageMode = false,
   scriptPanelOpen = false,
   onScriptPanelToggle,
+  // When pageMode is true the page wrapper owns transcript state and
+  // passes the live values down via these `external*` props. The drawer
+  // then renders its in-panel "Transcribe script" card off those values
+  // instead of running its own fetch. In modal mode all externals are
+  // undefined and the drawer falls back to its self-managed state.
+  externalTranscript,
+  externalSegments,
+  externalTranscribing,
+  externalTranscriptError,
+  externalTranscriptCached,
 }) {
   // ESC to close
   useEffect(() => {
@@ -262,22 +272,51 @@ export default function IntelDrawer({
   // Transcribe state — when the user clicks "Transcribe", we POST to the
   // backend which downloads the video and runs OpenAI Whisper on it. Result
   // is cached in brand_spy.ads.transcript so subsequent clicks are instant.
-  const [transcript,      setTranscript]      = useState(null);
-  const [transcribing,    setTranscribing]    = useState(false);
-  const [transcriptError, setTranscriptError] = useState(null);
-  const [transcriptCached, setTranscriptCached] = useState(false);
+  const [internalTranscript,         setTranscript]         = useState(null);
+  const [internalTranscriptSegments, setTranscriptSegments] = useState(null);
+  const [internalTranscribing,       setTranscribing]       = useState(false);
+  const [internalTranscriptError,    setTranscriptError]    = useState(null);
+  const [internalTranscriptCached,   setTranscriptCached]   = useState(false);
+
+  // In pageMode the page wrapper owns the state — use the external props.
+  // In modal mode (or if the wrapper omitted them) fall back to internal.
+  const transcript        = externalTranscript        !== undefined ? externalTranscript        : internalTranscript;
+  const transcriptSegments = externalSegments        !== undefined ? externalSegments         : internalTranscriptSegments;
+  const transcribing      = externalTranscribing     !== undefined ? externalTranscribing     : internalTranscribing;
+  const transcriptError   = externalTranscriptError  !== undefined ? externalTranscriptError  : internalTranscriptError;
+  const transcriptCached  = externalTranscriptCached !== undefined ? externalTranscriptCached : internalTranscriptCached;
+
+  // Hydrate from ad.transcript if the backend already returned a cached
+  // transcript with getAdDetail — saves a click in pageMode where the page
+  // wrapper does that fetch on mount.
+  useEffect(() => {
+    if (ad?.transcript) {
+      setTranscript(ad.transcript);
+      setTranscriptSegments(Array.isArray(ad.transcriptSegments) ? ad.transcriptSegments : null);
+      setTranscriptCached(true);
+    }
+  }, [ad?.id, ad?.transcript, ad?.transcriptSegments]);
 
   // Reset transient state whenever the modal is opened on a different ad
   useEffect(() => {
     setVideoStarted(false);
     setTranscript(null);
+    setTranscriptSegments(null);
     setTranscribing(false);
     setTranscriptError(null);
     setTranscriptCached(false);
   }, [ad?.id]);
 
   async function handleTranscribe() {
-    if (!ad?.id || transcribing) return;
+    if (!ad?.id) return;
+    // In pageMode the page owns both the state and the fetch — just toggle
+    // the side panel open and let the wrapper do the work. The page's
+    // onScriptPanelToggle(true) callback triggers its own handleTranscribe.
+    if (pageMode) {
+      if (onScriptPanelToggle) onScriptPanelToggle(true);
+      return;
+    }
+    if (transcribing) return;
     setTranscribing(true);
     setTranscriptError(null);
     try {
@@ -288,6 +327,7 @@ export default function IntelDrawer({
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body.error || `Transcription failed (HTTP ${res.status})`);
       setTranscript(body.transcript || '');
+      setTranscriptSegments(Array.isArray(body.segments) ? body.segments : null);
       setTranscriptCached(!!body.cached);
     } catch (err) {
       setTranscriptError(err.message || 'Transcription failed');
@@ -452,34 +492,36 @@ export default function IntelDrawer({
                     style={{ maxHeight: '70vh', background: '#000' }}
                     onPlay={() => setVideoStarted(true)}
                   />
-                  {/* Transcribe pill — top-right corner, matches the Atria
-                      reference. Click downloads the video server-side and
-                      hands it to OpenAI Whisper; result cached in the DB so
-                      repeat clicks are free + instant. */}
-                  <button
-                    type="button"
-                    onClick={(e) => { e.stopPropagation(); handleTranscribe(); }}
-                    disabled={transcribing}
-                    className="absolute top-3 right-3 z-20 flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-opacity disabled:opacity-70"
-                    style={{
-                      background: '#f97316',   // orange-500 — matches reference
-                      color: '#fff',
-                      boxShadow: '0 2px 8px rgba(0,0,0,0.35)',
-                    }}
-                    title="Transcribe video with OpenAI Whisper"
-                  >
-                    {transcribing ? (
-                      <>
-                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                        Transcribing…
-                      </>
-                    ) : (
-                      <>
-                        <FileText className="w-3.5 h-3.5" />
-                        {transcript ? 'View Transcript' : 'Transcribe'}
-                      </>
-                    )}
-                  </button>
+                  {/* Transcribe pill — only rendered in modal mode. In
+                      pageMode the Atria-style "Transcribe script" card in
+                      the signal column is the primary trigger and opens
+                      the right-side Video Script panel. */}
+                  {!pageMode && (
+                    <button
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); handleTranscribe(); }}
+                      disabled={transcribing}
+                      className="absolute top-3 right-3 z-20 flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-opacity disabled:opacity-70"
+                      style={{
+                        background: '#f97316',
+                        color: '#fff',
+                        boxShadow: '0 2px 8px rgba(0,0,0,0.35)',
+                      }}
+                      title="Transcribe video with OpenAI Whisper"
+                    >
+                      {transcribing ? (
+                        <>
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          Transcribing…
+                        </>
+                      ) : (
+                        <>
+                          <FileText className="w-3.5 h-3.5" />
+                          {transcript ? 'View Transcript' : 'Transcribe'}
+                        </>
+                      )}
+                    </button>
+                  )}
                   {/* Play-button overlay — visible until the user starts
                       the video so they have a clear "this is playable"
                       affordance. Native controls take over after play. */}
@@ -537,9 +579,11 @@ export default function IntelDrawer({
               )}
             </div>
 
-            {/* Transcript panel — only rendered after the user clicks
-                Transcribe and we get a result back (or an error). */}
-            {ad.videoUrl && (transcript || transcriptError) && (
+            {/* Transcript panel below the creative — modal-only. The
+                pageMode route renders the transcript in a dedicated
+                right-side Video Script panel instead, so we skip this
+                block to avoid showing the same content twice. */}
+            {!pageMode && ad.videoUrl && (transcript || transcriptError) && (
               <div
                 className="mx-5 mt-3 rounded-xl px-4 py-3"
                 style={{ background: '#1a1a1c', border: '1px solid #2a2a2a' }}
@@ -626,7 +670,7 @@ export default function IntelDrawer({
           {/* ======================================================= */}
           <div
             className="flex flex-col overflow-y-auto"
-            style={{ width: '45%', background: '#161618' }}
+            style={{ width: pageMode ? '40%' : '45%', background: '#161618' }}
           >
             {/* SIGNAL header */}
             <div className="flex items-center justify-between px-5 pt-5 pb-4 shrink-0">
@@ -634,17 +678,73 @@ export default function IntelDrawer({
                 Signal
               </p>
               <div className="flex items-center gap-1">
-                <button onClick={onClose} className="p-1.5 rounded-lg transition-colors"
-                  style={{ color: '#6b7280' }}
-                  onMouseEnter={e => e.currentTarget.style.color = '#fff'}
-                  onMouseLeave={e => e.currentTarget.style.color = '#6b7280'}
-                >
-                  <X className="w-4 h-4" />
-                </button>
+                {/* In pageMode the page wrapper renders the chrome close; this
+                    in-panel × would just be a duplicate. */}
+                {!pageMode && (
+                  <button onClick={onClose} className="p-1.5 rounded-lg transition-colors"
+                    style={{ color: '#6b7280' }}
+                    onMouseEnter={e => e.currentTarget.style.color = '#fff'}
+                    onMouseLeave={e => e.currentTarget.style.color = '#6b7280'}
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                )}
               </div>
             </div>
 
             <div className="px-5 pb-5 space-y-3 flex-1">
+              {/* Atria-style "Atria AI" card — only in pageMode. Triggers the
+                  right-side Video Script panel. Disabled when the ad has no
+                  video URL (e.g. image / DCO with page-logo fallback). */}
+              {pageMode && (
+                <div
+                  className="rounded-xl p-3.5 flex flex-col gap-2.5"
+                  style={{ background: '#1c1c1f', border: '1px solid #2a2a2a' }}
+                >
+                  <div className="flex items-center justify-between">
+                    <p className="text-[11px] uppercase tracking-[0.15em] font-semibold" style={{ color: '#9ca3af' }}>
+                      Atria AI
+                    </p>
+                    <span className="text-[10px] text-zinc-500 tabular-nums">
+                      {ad.videoUrl ? 'whisper-1' : 'no video'}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!ad.videoUrl) return;
+                      handleTranscribe();
+                    }}
+                    disabled={!ad.videoUrl || transcribing}
+                    className="flex flex-col items-center justify-center gap-1.5 py-3 rounded-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                    style={{
+                      background: ad.videoUrl ? '#ffedd5' : '#2a2a2a',
+                      color: ad.videoUrl ? '#9a3412' : '#6b7280',
+                      border: ad.videoUrl ? '1px solid #fed7aa' : '1px solid #333',
+                    }}
+                    title={ad.videoUrl ? 'Transcribe with OpenAI Whisper' : 'This ad has no video to transcribe'}
+                  >
+                    {transcribing ? (
+                      <Loader2 className="w-5 h-5 animate-spin" />
+                    ) : (
+                      <FileText className="w-5 h-5" />
+                    )}
+                    <span className="text-xs font-semibold">
+                      {transcribing
+                        ? 'Transcribing…'
+                        : transcript
+                          ? 'View transcript'
+                          : 'Transcribe script'}
+                    </span>
+                  </button>
+                  {transcriptError && (
+                    <p className="text-[11px] text-rose-400 leading-snug">
+                      {transcriptError}
+                    </p>
+                  )}
+                </div>
+              )}
+
               {/* Metric cards row: RANK · TIER · STATUS · ACTIVE */}
               <div className="grid grid-cols-4 gap-2">
                 {/* RANK */}
