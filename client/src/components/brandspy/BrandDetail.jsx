@@ -433,9 +433,9 @@ function AdCard({ ad, brand, onOpenIntel }) {
       </div>
 
       {/* ── Status + date + days ── */}
-      <div className="px-2 pb-1 shrink-0" onClick={(e) => e.stopPropagation()}>
-        <p className="text-[10px] flex items-center gap-1 text-text-faint">
-          <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${isAdActive(ad) ? 'bg-emerald-400' : 'bg-zinc-600'}`} />
+      <div className="px-2 pb-1.5 shrink-0" onClick={(e) => e.stopPropagation()}>
+        <p className="text-[12px] flex items-center gap-1.5 text-text-faint">
+          <span className={`w-2 h-2 rounded-full shrink-0 ${isAdActive(ad) ? 'bg-emerald-400' : 'bg-zinc-600'}`} />
           <span className="truncate">{fmtLaunch(ad.startDate)} – {isAdActive(ad) ? 'Present' : (ad.endDate ? fmtLaunch(ad.endDate) : '?')}</span>
           {days != null && (
             <span className={`ml-auto tabular-nums shrink-0 ${days >= 30 ? 'text-emerald-400 font-semibold' : 'text-text-faint'}`}>
@@ -889,7 +889,6 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
   // Overview-dashboard side data (brand-wide media mix + aggregation totals)
   const [formatCounts, setFormatCounts] = useState(null);
   const [aggCounts, setAggCounts]       = useState(null);
-  const [intelExpanded, setIntelExpanded] = useState(false);
   // Drawer
   const [selectedAd, setSelectedAd]     = useState(null);
 
@@ -1238,12 +1237,15 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
                 );
               })()}
 
-              {/* Left: media mix + 4 mini stat boxes — full width when intel collapsed */}
-              <div className={intelExpanded ? 'grid grid-cols-1 lg:grid-cols-2 gap-4' : ''}>
-                <div className="space-y-2.5">
+              {/* Two-column grid — always both visible (Atria layout).
+                  LEFT: media mix + 4 mini stat boxes.
+                  RIGHT: AI Brand Intel (6 categories of pills). */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+                {/* LEFT */}
+                <div className="space-y-3">
                   <MediaMixBar counts={formatCounts} />
 
-                  <div className="grid grid-cols-4 gap-1.5">
+                  <div className="grid grid-cols-4 gap-2">
                     {[
                       { label: 'Hooks',     value: aggCounts?.hooks,     tabId: 'hooks'     },
                       { label: 'Ad copy',   value: aggCounts?.adcopy,    tabId: 'adcopy'    },
@@ -1252,11 +1254,11 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
                     ].map(({ label, value, tabId }) => (
                       <button key={label}
                         onClick={() => setActiveTab(tabId)}
-                        className="rounded-md border border-border-subtle bg-bg-card hover:bg-bg-hover hover:border-white/15 transition-colors py-1.5 px-2 text-center group">
-                        <p className="text-[15px] font-bold text-text-primary tabular-nums leading-none">
+                        className="rounded-md border border-border-subtle bg-bg-card hover:bg-bg-hover hover:border-white/15 transition-colors py-2 px-2 text-center group">
+                        <p className="text-[16px] font-bold text-text-primary tabular-nums leading-none">
                           {value == null ? '—' : (value >= 100 ? '99+' : value)}
                         </p>
-                        <p className="text-[9px] uppercase tracking-wider text-text-faint mt-1 group-hover:text-text-muted transition-colors">
+                        <p className="text-[10px] uppercase tracking-wider text-text-faint mt-1 group-hover:text-text-muted transition-colors">
                           {label}
                         </p>
                       </button>
@@ -1264,26 +1266,12 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
                   </div>
                 </div>
 
-                {/* Right: AI Brand Intel — only mounted when expanded */}
-                {intelExpanded && (
-                  <div className="lg:border-l lg:border-border-subtle/50 lg:pl-4">
-                    <IntelPanel intel={intel} intelLoading={intelLoading} intelError={intelError} onRetry={loadIntel} />
-                  </div>
-                )}
+                {/* RIGHT — always visible (no dropdown). The IntelPanel renders
+                    its own AI Brand Intel header internally. */}
+                <div className="lg:border-l lg:border-border-subtle/50 lg:pl-5">
+                  <IntelPanel intel={intel} intelLoading={intelLoading} intelError={intelError} onRetry={loadIntel} />
+                </div>
               </div>
-
-              {/* AI Intel trigger row — full width, click to expand/collapse */}
-              <button
-                onClick={() => setIntelExpanded((v) => !v)}
-                className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md border border-border-subtle bg-bg-card hover:bg-bg-hover hover:border-white/15 transition-colors text-left group">
-                <Sparkles className="w-3 h-3 text-zinc-500 shrink-0" />
-                <span className="text-[11px] font-semibold text-text-primary">AI Brand Intel</span>
-                <span className="text-[9px] text-text-faint">via Claude Haiku</span>
-                <span className="text-[10px] text-text-faint ml-auto">
-                  {intelLoading ? 'Analyzing…' : intelExpanded ? 'Hide' : 'Expand'}
-                </span>
-                <ChevronDown className={`w-3.5 h-3.5 text-text-faint transition-transform ${intelExpanded ? 'rotate-180' : ''}`} />
-              </button>
             </div>
 
             {/* Count + sort — "1421 Ads" header above grid */}
