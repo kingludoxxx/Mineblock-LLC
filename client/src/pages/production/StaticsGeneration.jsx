@@ -2466,6 +2466,49 @@ export default function StaticsGeneration() {
                     setReferencePreview(url);
                     setReferenceFile(null);
                   }}
+                  onAddSelectedToQueue={(picked) => {
+                    // Batch: each selected reference becomes its own queue item.
+                    // The existing queue runner picks them up sequentially.
+                    if (!selectedProductId) {
+                      addToast('Pick a product first before queueing references', 'error');
+                      return;
+                    }
+                    if (!Array.isArray(picked) || picked.length === 0) return;
+                    const newItems = picked.map((ref) => {
+                      const url = ref?.image_url || ref?.thumbnail_url || ref?.reference_thumbnail;
+                      if (!url) return null;
+                      return {
+                        id: crypto.randomUUID(),
+                        references: [{ url, label: ref.reference_name || ref.source_label || 'Reference' }],
+                        angle: marketingAngle,
+                        angleData: !customAngle && selectedAngleData ? selectedAngleData : null,
+                        customAngle: customAngle,
+                        productId: selectedProductId,
+                        productName: productName,
+                        productRef: selectedProductRef.current ? { ...selectedProductRef.current } : null,
+                        productDescription,
+                        productPrice,
+                        productImageUrl,
+                        aspectRatio,
+                        oneliner, customerAvatar, customerFrustration, customerDream,
+                        bigPromise, mechanism, differentiator, voice, guarantee,
+                        status: 'queued',
+                        result: null,
+                        error: null,
+                        createdAt: Date.now(),
+                      };
+                    }).filter(Boolean);
+                    if (newItems.length === 0) {
+                      addToast('Selected references had no usable image URL', 'error');
+                      return;
+                    }
+                    setQueue(prev => {
+                      const next = [...prev, ...newItems];
+                      queueRef.current = next;
+                      return next;
+                    });
+                    addToast(`Added ${newItems.length} reference${newItems.length > 1 ? 's' : ''} to queue`, 'info');
+                  }}
                   onStatusChange={async (id, newStatus) => {
                     try {
                       await api.patch(`/statics-generation/creatives/${id}/status`, { status: newStatus });

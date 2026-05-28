@@ -876,7 +876,7 @@ function LaunchedColumn({ column, items, onCardClick, onStatusChange }) {
 // Main PipelineView component
 // ---------------------------------------------------------------------------
 
-export function PipelineView({ creatives = [], onStatusChange, onAngleChange, onCardClick, onRegenerate, onRefresh, loading, onOpenTemplates, onOpenCopySets, queue = [], onRemoveFromQueue, productId = null, onSelectReference }) {
+export function PipelineView({ creatives = [], onStatusChange, onAngleChange, onCardClick, onRegenerate, onRefresh, loading, onOpenTemplates, onOpenCopySets, queue = [], onRemoveFromQueue, productId = null, onSelectReference, onAddSelectedToQueue }) {
   // Bucket creatives into columns by status
   const buckets = useMemo(() => {
     const map = { generating: [], review: [], ready: [], launched: [] };
@@ -1081,6 +1081,7 @@ export function PipelineView({ creatives = [], onStatusChange, onAngleChange, on
         <ReferenceColumn
           productId={productId}
           onSelectReference={onSelectReference}
+          onAddSelectedToQueue={onAddSelectedToQueue}
         />
 
         {/* Standard columns: generating, review */}

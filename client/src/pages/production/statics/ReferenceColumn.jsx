@@ -92,7 +92,7 @@ function ReferencePreviewModal({ item, onClose, onUse }) {
   );
 }
 
-function ReferenceCard({ item, onSelect, onDelete }) {
+function ReferenceCard({ item, onPreview, onDelete, isSelected, onToggleSelect }) {
   const src = SOURCE_BADGES[item.imported_from] || SOURCE_BADGES.upload;
   const meta = item.imported_metadata || {};
   const rightBadge = item.imported_from === 'league' && meta.tier
@@ -104,8 +104,10 @@ function ReferenceCard({ item, onSelect, onDelete }) {
   const thumb = item.thumbnail_url || item.image_url || item.reference_thumbnail;
   return (
     <div
-      className="group relative glass-card border border-white/[0.05] hover:border-white/[0.12] rounded-xl overflow-hidden transition-all cursor-pointer"
-      onClick={() => onSelect(item)}
+      className={`group relative glass-card border rounded-xl overflow-hidden transition-all cursor-pointer ${
+        isSelected ? 'border-emerald-400 ring-2 ring-emerald-400/40' : 'border-white/[0.05] hover:border-white/[0.12]'
+      }`}
+      onClick={() => onPreview(item)}
     >
       {thumb ? (
         <div className="relative aspect-[4/3] bg-black/40 overflow-hidden">
@@ -123,6 +125,18 @@ function ReferenceCard({ item, onSelect, onDelete }) {
               {rightBadge.text}
             </span>
           )}
+          {/* SELECT button — toggle multi-select for batch queueing */}
+          <button
+            onClick={(e) => { e.stopPropagation(); onToggleSelect(item); }}
+            className={`absolute bottom-2 left-2 inline-flex items-center gap-1 px-2 py-1 rounded text-[10px] font-mono font-bold uppercase tracking-wider transition-all cursor-pointer ${
+              isSelected
+                ? 'bg-emerald-500 text-black opacity-100'
+                : 'bg-emerald-500/80 hover:bg-emerald-500 text-black opacity-0 group-hover:opacity-100'
+            }`}
+            title={isSelected ? 'Click to deselect' : 'Select to add to queue'}
+          >
+            {isSelected ? '✓ Selected' : 'Select'}
+          </button>
           <button
             onClick={(e) => { e.stopPropagation(); onDelete(item); }}
             className="absolute bottom-2 right-2 p-1.5 bg-red-500/80 hover:bg-red-500 text-white rounded opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
@@ -142,7 +156,7 @@ function ReferenceCard({ item, onSelect, onDelete }) {
   );
 }
 
-export function ReferenceColumn({ productId, onSelectReference }) {
+export function ReferenceColumn({ productId, onSelectReference, onAddSelectedToQueue }) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -150,7 +164,23 @@ export function ReferenceColumn({ productId, onSelectReference }) {
   const [showMeta, setShowMeta] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [previewItem, setPreviewItem] = useState(null);
+  const [selectedIds, setSelectedIds] = useState(() => new Set());
   const fileInputRef = React.useRef(null);
+
+  const toggleSelect = (item) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(item.id)) next.delete(item.id); else next.add(item.id);
+      return next;
+    });
+  };
+  const clearSelection = () => setSelectedIds(new Set());
+  const handleAddSelected = () => {
+    const picked = items.filter(it => selectedIds.has(it.id));
+    if (picked.length === 0) return;
+    onAddSelectedToQueue?.(picked);
+    clearSelection();
+  };
 
   const handleFilePicked = async (e) => {
     const file = e.target.files?.[0];
@@ -253,6 +283,27 @@ export function ReferenceColumn({ productId, onSelectReference }) {
         </div>
       </div>
 
+      {/* Selection action bar — visible when ≥1 card is selected */}
+      {selectedIds.size > 0 && (
+        <div className="mb-3 px-1 flex items-center gap-2 bg-emerald-500/10 border border-emerald-500/40 rounded-lg p-2">
+          <span className="text-xs font-mono font-bold text-emerald-300 shrink-0">
+            {selectedIds.size} selected
+          </span>
+          <button
+            onClick={handleAddSelected}
+            className="flex-1 inline-flex items-center justify-center gap-1 h-8 rounded text-[11px] font-mono font-bold uppercase tracking-wider bg-emerald-500 hover:bg-emerald-400 text-black transition-colors cursor-pointer"
+          >
+            Add to Queue
+          </button>
+          <button
+            onClick={clearSelection}
+            className="px-2 h-8 rounded text-[10px] font-mono uppercase tracking-wider text-zinc-400 hover:text-white border border-white/[0.1] hover:border-white/[0.3] cursor-pointer"
+          >
+            Clear
+          </button>
+        </div>
+      )}
+
       {/* Source buttons row */}
       <div className="grid grid-cols-3 gap-2 mb-3 px-1">
         <button
@@ -304,7 +355,14 @@ export function ReferenceColumn({ productId, onSelectReference }) {
           </div>
         )}
         {items.map((it) => (
-          <ReferenceCard key={it.id} item={it} onSelect={handleSelect} onDelete={handleDelete} />
+          <ReferenceCard
+            key={it.id}
+            item={it}
+            onPreview={handleSelect}
+            onDelete={handleDelete}
+            isSelected={selectedIds.has(it.id)}
+            onToggleSelect={toggleSelect}
+          />
         ))}
       </div>
 
