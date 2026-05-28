@@ -510,36 +510,35 @@ export default function IntelDrawer({
                     style={{ maxHeight: '70vh', background: '#000' }}
                     onPlay={() => setVideoStarted(true)}
                   />
-                  {/* Transcribe pill — only rendered in modal mode. In
-                      pageMode the Atria-style "Transcribe script" card in
-                      the signal column is the primary trigger and opens
-                      the right-side Video Script panel. */}
-                  {!pageMode && (
-                    <button
-                      type="button"
-                      onClick={(e) => { e.stopPropagation(); handleTranscribe(); }}
-                      disabled={transcribing}
-                      className="absolute top-3 right-3 z-20 flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-opacity disabled:opacity-70"
-                      style={{
-                        background: '#f97316',
-                        color: '#fff',
-                        boxShadow: '0 2px 8px rgba(0,0,0,0.35)',
-                      }}
-                      title="Transcribe video with OpenAI Whisper"
-                    >
-                      {transcribing ? (
-                        <>
-                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                          Transcribing…
-                        </>
-                      ) : (
-                        <>
-                          <FileText className="w-3.5 h-3.5" />
-                          {transcript ? 'View Transcript' : 'Transcribe'}
-                        </>
-                      )}
-                    </button>
-                  )}
+                  {/* Transcribe pill — top-right of the video player, matches
+                      the Atria reference "Scripts ▼" placement. In modal mode
+                      this is the primary trigger; in pageMode it ALSO works
+                      (delegates to onScriptPanelToggle so the right-side
+                      Video Script panel opens with the transcript). */}
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); handleTranscribe(); }}
+                    disabled={transcribing}
+                    className="absolute top-3 right-3 z-20 flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-opacity disabled:opacity-70"
+                    style={{
+                      background: '#f97316',
+                      color: '#fff',
+                      boxShadow: '0 2px 8px rgba(0,0,0,0.35)',
+                    }}
+                    title="Transcribe video with OpenAI Whisper"
+                  >
+                    {transcribing ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        Transcribing…
+                      </>
+                    ) : (
+                      <>
+                        <FileText className="w-3.5 h-3.5" />
+                        {transcript ? 'View Transcript' : 'Transcribe'}
+                      </>
+                    )}
+                  </button>
                   {/* Play-button overlay — visible until the user starts
                       the video so they have a clear "this is playable"
                       affordance. Native controls take over after play. */}
