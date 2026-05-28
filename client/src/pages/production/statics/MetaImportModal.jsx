@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useMemo } from 'react';
+import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { X, Loader2, Search, RefreshCw, TrendingUp, Check, DollarSign } from 'lucide-react';
 import api from '../../../services/api';
@@ -20,6 +20,19 @@ function fmtMoney(n) {
   const num = Number(n) || 0;
   if (num >= 1000) return `$${(num / 1000).toFixed(1)}k`;
   return `$${num.toFixed(0)}`;
+}
+
+function timeAgo(iso) {
+  if (!iso) return '—';
+  const ms = Date.now() - new Date(iso).getTime();
+  if (ms < 0) return 'now';
+  const sec = Math.floor(ms / 1000);
+  if (sec < 60) return `${sec}s ago`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  return `${Math.floor(hr / 24)}d ago`;
 }
 
 function useDebounced(value, delay = 300) {
@@ -46,17 +59,70 @@ export function MetaImportModal({ onClose, onImported }) {
   const [error, setError] = useState(null);
   const [selected, setSelected] = useState(new Set());
   const [importing, setImporting] = useState(false);
+  const [syncStatus, setSyncStatus] = useState('idle'); // idle | pending | fresh
+  const [lastSync, setLastSync] = useState(null);
 
-  useEffect(() => {
-    api.get('/statics-generation/meta-ads/accounts')
-      .then(res => {
-        const list = res.data?.data || [];
-        setAccounts(list);
-        // Default: all selected.
-        setSelectedAccounts(new Set(list.map(a => a.ad_account_id)));
-      })
-      .catch(err => setError(err.response?.data?.error?.message || err.message));
+  const loadAccounts = useCallback(async () => {
+    try {
+      const res = await api.get('/statics-generation/meta-ads/accounts');
+      const list = res.data?.data || [];
+      setAccounts(list);
+      setSelectedAccounts(prev => prev.size === 0 ? new Set(list.map(a => a.ad_account_id)) : prev);
+      setSyncStatus(res.data?.synced || 'fresh');
+      setLastSync(res.data?.last_sync || null);
+      return res.data?.synced;
+    } catch (err) {
+      setError(err.response?.data?.error?.message || err.message);
+      return 'error';
+    }
   }, []);
+
+  // On open: load accounts once. If the backend reports 'pending' (a backfill
+  // or stale-data sync was kicked off), poll every 4s until it's fresh.
+  useEffect(() => {
+    let cancelled = false;
+    let pollTimer = null;
+    (async () => {
+      const status = await loadAccounts();
+      if (cancelled) return;
+      if (status === 'pending') {
+        const poll = async () => {
+          if (cancelled) return;
+          const s = await loadAccounts();
+          if (cancelled) return;
+          if (s === 'pending') {
+            pollTimer = setTimeout(poll, 4000);
+          } else {
+            // sync finished — refresh the ad grid too
+            loadAdsRef.current?.();
+          }
+        };
+        pollTimer = setTimeout(poll, 4000);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      if (pollTimer) clearTimeout(pollTimer);
+    };
+  }, [loadAccounts]);
+
+  // Explicit "Force refresh" — POST /meta-ads/refresh (awaits the sync), then
+  // reload both accounts and ads.
+  const forceRefresh = useCallback(async () => {
+    setSyncStatus('pending');
+    setError(null);
+    try {
+      await api.post('/statics-generation/meta-ads/refresh');
+    } catch (err) {
+      // Rate-limited or no CRON_SECRET — fall through and just reload anyway
+      console.warn('Refresh request rejected:', err.response?.data || err.message);
+    }
+    await loadAccounts();
+    loadAdsRef.current?.();
+  }, [loadAccounts]);
+
+  // forward-ref so loadAds (defined below) can be invoked from the open-effect
+  const loadAdsRef = useRef(null);
 
   const loadAds = useCallback(async () => {
     setLoadingAds(true);
@@ -83,6 +149,7 @@ export function MetaImportModal({ onClose, onImported }) {
   }, [selectedAccounts, status, windowDays, sort, minRoas, minSpend, debouncedSearch]);
 
   useEffect(() => { loadAds(); }, [loadAds]);
+  useEffect(() => { loadAdsRef.current = loadAds; }, [loadAds]);
 
   const toggleAccount = (id) => {
     setSelectedAccounts(prev => {
@@ -143,6 +210,16 @@ export function MetaImportModal({ onClose, onImported }) {
                 <DollarSign className="w-2.5 h-2.5" /> Triple Whale
               </span>
               <span className="text-[9px] font-mono uppercase bg-white/[0.04] border border-white/[0.08] text-zinc-300 px-1.5 py-0.5 rounded">Images Only</span>
+              {syncStatus === 'pending' && (
+                <span className="text-[9px] font-mono uppercase bg-amber-500/10 border border-amber-500/30 text-amber-300 px-1.5 py-0.5 rounded inline-flex items-center gap-1">
+                  <Loader2 className="w-2.5 h-2.5 animate-spin" /> Syncing
+                </span>
+              )}
+              {syncStatus !== 'pending' && lastSync && (
+                <span className="text-[9px] font-mono uppercase bg-white/[0.04] border border-white/[0.08] text-zinc-400 px-1.5 py-0.5 rounded" title={new Date(lastSync).toLocaleString()}>
+                  Synced {timeAgo(lastSync)}
+                </span>
+              )}
             </h2>
             <p className="text-xs text-zinc-400 mt-1 leading-relaxed max-w-2xl">
               Static creatives pulled from Triple Whale's attribution warehouse — true 7d_click revenue,
@@ -230,14 +307,17 @@ export function MetaImportModal({ onClose, onImported }) {
                 {SORTS.map(s => <option key={s.key} value={s.key}>{s.label} ↓</option>)}
               </select>
             </div>
-            {/* Refresh */}
+            {/* Refresh — forces a fresh TW sync upstream */}
             <div className="flex items-end">
               <button
-                onClick={loadAds}
-                disabled={loadingAds}
+                onClick={forceRefresh}
+                disabled={loadingAds || syncStatus === 'pending'}
+                title={lastSync ? `Last sync: ${new Date(lastSync).toLocaleString()}` : 'Force a fresh Triple Whale sync'}
                 className="w-full px-2 py-1 text-[10px] font-mono uppercase tracking-wider text-zinc-300 border border-white/[0.08] rounded hover:border-white/[0.2] disabled:opacity-40 cursor-pointer inline-flex items-center justify-center gap-1"
               >
-                {loadingAds ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />} Refresh
+                {(loadingAds || syncStatus === 'pending')
+                  ? <><Loader2 className="w-3 h-3 animate-spin" /> {syncStatus === 'pending' ? 'Syncing…' : 'Loading…'}</>
+                  : <><RefreshCw className="w-3 h-3" /> Refresh</>}
               </button>
             </div>
           </div>

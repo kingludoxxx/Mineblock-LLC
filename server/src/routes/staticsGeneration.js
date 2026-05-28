@@ -3468,6 +3468,72 @@ router.post('/league/import', authenticate, async (req, res) => {
   }
 });
 
+// ── TW sync trigger (internal) ────────────────────────────────────────────
+// Calls the analytics worktree's /sync-weekly endpoint with CRON_SECRET so the
+// Meta-import modal can force a fresh pull (or auto-trigger one when the table
+// has stale / pre-account-column rows). Fire-and-forget by default so the
+// caller doesn't block on TW's 10-30s round-trip.
+let _twSyncInFlight = false;
+let _twSyncLastFinishedAt = 0;
+const TW_SYNC_MIN_INTERVAL_MS = 60 * 1000; // never trigger more than once a minute
+async function triggerTWSync({ awaitResult = false } = {}) {
+  if (_twSyncInFlight) return { triggered: false, reason: 'already_in_flight' };
+  if (Date.now() - _twSyncLastFinishedAt < TW_SYNC_MIN_INTERVAL_MS) {
+    return { triggered: false, reason: 'rate_limited' };
+  }
+  const secret = process.env.CRON_SECRET;
+  if (!secret) {
+    console.warn('[meta-ads/refresh] CRON_SECRET not set — cannot trigger /sync-weekly');
+    return { triggered: false, reason: 'no_cron_secret' };
+  }
+  const base = process.env.RENDER_EXTERNAL_URL || `http://localhost:${process.env.PORT || 3000}`;
+  const url = `${base}/api/v1/creative-analysis/sync-weekly`;
+  _twSyncInFlight = true;
+  const work = (async () => {
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-cron-secret': secret },
+        signal: AbortSignal.timeout(60_000),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        console.warn(`[meta-ads/refresh] TW sync ${res.status}: ${JSON.stringify(body).slice(0, 200)}`);
+        return { ok: false, status: res.status, body };
+      }
+      // Bust the column cache so freshly-added columns surface on next request
+      _caColsCache = null;
+      console.log(`[meta-ads/refresh] TW sync OK: ${JSON.stringify(body?.data || body).slice(0, 200)}`);
+      return { ok: true, body };
+    } catch (err) {
+      console.error('[meta-ads/refresh] TW sync error:', err.message);
+      return { ok: false, error: err.message };
+    } finally {
+      _twSyncLastFinishedAt = Date.now();
+      _twSyncInFlight = false;
+    }
+  })();
+  if (awaitResult) {
+    const result = await work;
+    return { triggered: true, ...result };
+  }
+  // fire-and-forget
+  work.catch(() => {}); // swallow — already logged
+  return { triggered: true, async: true };
+}
+
+// POST /meta-ads/refresh — frontend "Refresh" button. Awaits sync so the
+// caller gets fresh data, but rate-limited to once per minute.
+router.post('/meta-ads/refresh', authenticate, async (_req, res) => {
+  try {
+    const result = await triggerTWSync({ awaitResult: true });
+    res.json({ success: true, data: result });
+  } catch (err) {
+    console.error('[meta-ads/refresh] error:', err);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
 // 4. GET /meta-ads/accounts — distinct accounts that have spent on STATIC ads
 // in the last 30 days. The creative_analysis schema uses `type` ('image') and
 // may or may not carry account fields (depends on the TW sync the analytics
@@ -3498,8 +3564,10 @@ router.get('/meta-ads/accounts', authenticate, async (_req, res) => {
                   : cols.has('account_name') ? 'account_name'
                   : null;
     if (!idCol || !nameCol) {
-      // Schema doesn't carry account info yet — return one synthetic bucket
-      // so the UI still renders a pill instead of an empty modal.
+      // Schema doesn't carry account info yet — fire the TW sync (it will run
+      // the table-migration step in ensureTable and add the columns), then
+      // return one synthetic bucket so the UI still renders a pill.
+      triggerTWSync({ awaitResult: false }).catch(() => {});
       const fallback = await pgQuery(`
         SELECT COALESCE(SUM(spend), 0)::FLOAT AS spend_30d
         FROM creative_analysis
@@ -3508,7 +3576,8 @@ router.get('/meta-ads/accounts', authenticate, async (_req, res) => {
       return res.json({
         success: true,
         data: [{ ad_account_id: 'all', ad_account_name: 'All accounts', spend_30d: fallback[0]?.spend_30d || 0 }],
-        note: 'creative_analysis has no account columns',
+        note: 'creative_analysis has no account columns — sync triggered',
+        synced: 'pending',
       });
     }
 
@@ -3524,7 +3593,35 @@ router.get('/meta-ads/accounts', authenticate, async (_req, res) => {
       GROUP BY ${idCol}, ${nameCol}
       ORDER BY spend_30d DESC NULLS LAST
     `);
-    res.json({ success: true, data: rows });
+
+    // Backfill / freshness auto-trigger:
+    // (a) if rows exist but none are tagged with an account, the schema is new
+    //     and prior syncs predate the account columns — kick a sync to backfill;
+    // (b) otherwise, if the most-recent synced_at is older than 30 min, refresh
+    //     in the background so the modal feels live.
+    const meta = await pgQuery(`
+      SELECT
+        COUNT(*) FILTER (WHERE synced_at >= NOW() - INTERVAL '30 days' AND type = 'image') AS image_rows,
+        COUNT(${idCol}) FILTER (WHERE synced_at >= NOW() - INTERVAL '30 days' AND type = 'image') AS account_rows,
+        MAX(synced_at) AS last_sync
+      FROM creative_analysis
+    `);
+    const m = meta[0] || {};
+    const needsBackfill = Number(m.image_rows || 0) > 0 && Number(m.account_rows || 0) === 0;
+    const lastSyncMs = m.last_sync ? new Date(m.last_sync).getTime() : 0;
+    const isStale = lastSyncMs > 0 && (Date.now() - lastSyncMs) > 30 * 60 * 1000;
+    let syncStatus = 'fresh';
+    if (needsBackfill || isStale) {
+      const t = await triggerTWSync({ awaitResult: false });
+      syncStatus = t.triggered ? 'pending' : t.reason || 'skipped';
+    }
+
+    res.json({
+      success: true,
+      data: rows,
+      synced: syncStatus,
+      last_sync: m.last_sync || null,
+    });
   } catch (err) {
     console.error('[meta-ads/accounts] error:', err);
     res.status(500).json({ success: false, error: { message: err.message } });
