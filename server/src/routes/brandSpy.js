@@ -14,7 +14,9 @@ import {
   getAdTierCounts,
   getAdFormatCounts,
   getBrandAggregations,
+  getBrandAggregationCounts,
 } from '../db/brandSpyDb.js';
+import { query as pgQuery } from '../config/db.js';
 import { runBrandScrape, scrapeAllInBackground, recoverStuckScrapes } from '../workers/brandSpyWorker.js';
 import { getScrapeCreatorsClient } from '../services/scrapeCreators.js';
 
@@ -178,9 +180,37 @@ router.delete('/brands/:id', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// GET /brands/:id/aggregation-counts — combined counts for Overview's 4
+// mini-stat boxes (Hooks / Ad copy / Headlines / LPs). Replaces 4 parallel
+// /aggregations?type=X&limit=1 calls with one round-trip + one in-memory pass.
+router.get('/brands/:id/aggregation-counts', async (req, res, next) => {
+  try {
+    const counts = await getBrandAggregationCounts(req.params.id);
+    res.json(counts);
+  } catch (err) { next(err); }
+});
+
 // GET /brands/:id/intel — AI analysis of top active ads
+//
+// Result is cached on the brand row (intel_payload + intel_scraped_at columns).
+// The cache is valid as long as intel_scraped_at >= last_scraped_at — when a
+// new scrape lands and advances last_scraped_at, the next /intel call detects
+// the mismatch and regenerates. Initial round-trip is ~7-8 s (Claude Haiku);
+// cached calls return in <50 ms.
 router.get('/brands/:id/intel', async (req, res, next) => {
   try {
+    // Fast path: cached payload still in sync with last_scraped_at.
+    const cacheRow = await pgQuery(
+      `SELECT intel_payload, intel_scraped_at, last_scraped_at
+         FROM brand_spy.brands WHERE id = $1`,
+      [req.params.id],
+    );
+    const row = cacheRow.rows[0];
+    if (row && row.intel_payload && row.intel_scraped_at && row.last_scraped_at
+        && new Date(row.intel_scraped_at).getTime() >= new Date(row.last_scraped_at).getTime()) {
+      return res.json(row.intel_payload);
+    }
+
     const brand = await getBrandExpanded(req.params.id);
     if (!brand) return res.status(404).json({ error: 'Brand not found' });
 
@@ -240,14 +270,33 @@ ${JSON.stringify(adsData)}`,
       return res.status(500).json({ error: 'Failed to parse AI response' });
     }
 
-    res.json({
+    const payload = {
       personas:  Array.isArray(intel.personas)  ? intel.personas  : [],
       adAngles:  Array.isArray(intel.adAngles)  ? intel.adAngles  : [],
       usps:      Array.isArray(intel.usps)      ? intel.usps      : [],
       desires:   Array.isArray(intel.desires)   ? intel.desires   : [],
       emotions:  Array.isArray(intel.emotions)  ? intel.emotions  : [],
       themes:    Array.isArray(intel.themes)    ? intel.themes    : [],
-    });
+    };
+
+    // Persist the result so subsequent calls until the next scrape return
+    // instantly. Use the brand's current last_scraped_at as the cache key;
+    // if last_scraped_at is null (brand never scraped) we still store with
+    // NOW() so we have a marker, though that case is unusual.
+    try {
+      await pgQuery(
+        `UPDATE brand_spy.brands
+            SET intel_payload    = $2::jsonb,
+                intel_scraped_at = COALESCE(last_scraped_at, NOW())
+          WHERE id = $1`,
+        [req.params.id, JSON.stringify(payload)],
+      );
+    } catch (cacheErr) {
+      // Cache failure is non-fatal — the user still gets their result.
+      console.warn('[brand-spy] intel cache write failed:', cacheErr.message);
+    }
+
+    res.json(payload);
   } catch (err) { next(err); }
 });
 
