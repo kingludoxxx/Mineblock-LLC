@@ -36,20 +36,45 @@ import { uploadBuffer, uploadFromUrl, isR2Configured } from '../services/r2.js';
 
 /**
  * NanoBanana returns a tempfile.aiquickdraw.com URL that expires after a few
- * hours. We must persist every result to R2 immediately, otherwise launched
- * creatives go black in the UI once Kie.ai purges the file.
+ * hours. We persist the result so it survives forever:
+ *
+ *   Tier 1 — R2 with public domain (best, true permanent URL)
+ *            Only works if R2_PUBLIC_URL env is set. We try it first.
+ *   Tier 2 — Our own DB-backed /tmp-img/ proxy
+ *            Downloads the bytes, INSERTs into image_store (Postgres),
+ *            returns ${SERVER}/api/v1/statics-generation/tmp-img/{id}.
+ *            That endpoint always serves from the DB (image_store survives
+ *            server restarts AND tempfile expiry). This is the path used
+ *            today since R2_PUBLIC_URL is unset.
+ *   Tier 3 — Last-ditch: return the temp URL unchanged. UI cards will go
+ *            black in ~3h. Logged loudly.
  */
 async function persistNanoBananaImage(tempUrl, prefix = 'statics-nb') {
   if (!tempUrl) return tempUrl;
-  if (!isR2Configured()) {
-    console.warn('[persistNbImage] R2 not configured — keeping temp URL (will expire!)');
-    return tempUrl;
+
+  // Tier 1: R2 (only if public URL is set — otherwise uploadBuffer returns r2://
+  // which isn't fetchable by Meta / browsers).
+  if (isR2Configured() && process.env.R2_PUBLIC_URL) {
+    try {
+      const { url } = await uploadFromUrl(tempUrl, prefix);
+      if (url && url.startsWith('http')) return url;
+    } catch (err) {
+      console.warn(`[persistNbImage] R2 upload failed (${err.message}) — falling back to DB-backed proxy`);
+    }
   }
+
+  // Tier 2: DB-backed proxy. Download once, store in image_store, hand back
+  // our own /tmp-img/<id> URL. Permanent across restarts and CDN purges.
   try {
-    const { url } = await uploadFromUrl(tempUrl, prefix);
-    return url;
+    const r = await fetch(tempUrl, { signal: AbortSignal.timeout(30000) });
+    if (!r.ok) throw new Error(`download failed: ${r.status}`);
+    const buf = Buffer.from(await r.arrayBuffer());
+    const mime = r.headers.get('content-type') || detectMime(buf) || 'image/png';
+    const id = await storeTempImage(buf, mime);
+    const srv = process.env.RENDER_EXTERNAL_URL || `http://localhost:${process.env.PORT || 3000}`;
+    return `${srv}/api/v1/statics-generation/tmp-img/${id}`;
   } catch (err) {
-    console.warn(`[persistNbImage] R2 upload failed (${err.message}) — falling back to temp URL`);
+    console.error(`[persistNbImage] DB-proxy persist failed (${err.message}) — returning temp URL (will expire!)`);
     return tempUrl;
   }
 }
