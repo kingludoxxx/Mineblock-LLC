@@ -5931,6 +5931,70 @@ function renderTemplate(tpl, vars) {
   });
 }
 
+// Fallback analyzer using OpenAI GPT-4o multimodal. Used when Gemini is
+// unavailable (revoked key, quota-zero project, model deprecated, etc.).
+//
+// Limitation: GPT-4o doesn't accept raw video — we pass the thumbnail +
+// the Whisper transcript. Script-based analysis (hooks, persuasion engine,
+// triggers, weaknesses, how-to-beat) is equally good; the visual section
+// is limited to what one frame reveals (palette, scene_type, on-screen
+// captions, single-frame composition). The UI surfaces the provider so
+// the operator knows what visual depth they got.
+async function analyzeWithOpenAIVision(thumbnailUrl, transcript, promptText) {
+  const OPENAI_KEY = process.env.OPENAI_API_KEY;
+  if (!OPENAI_KEY) throw new Error('OPENAI_API_KEY not configured');
+
+  // Adapt the prompt: tell the model it has 1 frame + transcript (not whole video).
+  const adaptedPrompt = `${promptText}
+
+NOTE FOR THIS RUN: You do NOT have access to the full video. You have:
+  - ONE thumbnail frame (attached)
+  - The full Whisper transcript (already embedded above)
+
+Fill the visual.* fields based on what one frame reveals (scene_type,
+captions visible in this frame, palette, setting). Set visual.cuts_count
+to null since you cannot count cuts from a single frame. Speaker count
+should be the number of distinct on-screen speakers in this frame, with
+the caveat that voiceover speakers may not appear. Fill every other field
+fully from the transcript as if it were a full-video analysis.`;
+
+  const content = [
+    { type: 'text', text: adaptedPrompt },
+  ];
+  if (thumbnailUrl) {
+    content.push({ type: 'image_url', image_url: { url: thumbnailUrl, detail: 'high' } });
+  }
+
+  console.log(`[BriefPipeline:analyze] OpenAI fallback — thumbnail=${thumbnailUrl ? 'yes' : 'NO'}, transcript=${transcript?.length || 0} chars`);
+
+  const res = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${OPENAI_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: 'gpt-4o',
+      messages: [{ role: 'user', content }],
+      max_tokens: 4096,
+      temperature: 0.3,
+      response_format: { type: 'json_object' },
+    }),
+    signal: AbortSignal.timeout(180_000),
+  });
+
+  if (!res.ok) {
+    const txt = await res.text();
+    throw new Error(`OpenAI fallback failed: HTTP ${res.status} — ${txt.slice(0, 300)}`);
+  }
+  const data = await res.json();
+  const text = data.choices?.[0]?.message?.content || '';
+  if (!text) throw new Error('OpenAI fallback returned empty response');
+  const json = extractJsonObject(text);
+  if (!json) throw new Error('OpenAI fallback response not JSON-parseable');
+  return { json, model: data.model || 'gpt-4o' };
+}
+
 // Run Gemini against the whole video with a JSON-output prompt.
 // Returns { json, model } on success — throws on hard failure.
 async function analyzeWholeVideoWithGemini(mediaUrl, promptText) {
@@ -6108,17 +6172,38 @@ router.post('/references/:id/analyze', authenticate, async (req, res) => {
 
     const refForPrompt = mapReferenceRow(ref);
     const promptText = await buildReferenceAnalyzerPrompt(refForPrompt);
-    let result;
+
+    // Primary: Gemini whole-video. Fallback: OpenAI thumbnail+transcript.
+    let result = null;
+    let provider = null;
+    let geminiError = null;
     try {
       result = await analyzeWholeVideoWithGemini(ref.video_url, promptText);
+      provider = 'gemini';
     } catch (err) {
-      // Persist the error so the UI can surface it
-      await pgQuery(
-        `UPDATE brief_pipeline_references SET analysis_error = $1, updated_at = NOW() WHERE id = $2`,
-        [err.message?.slice(0, 1000) || 'unknown error', req.params.id]
-      );
-      throw err;
+      geminiError = err.message;
+      console.warn(`[BriefPipeline:analyze] Gemini failed, trying OpenAI fallback: ${err.message}`);
+      try {
+        result = await analyzeWithOpenAIVision(
+          ref.thumbnail_url || null,
+          ref.transcript || '',
+          promptText,
+        );
+        provider = 'openai-fallback';
+      } catch (fallbackErr) {
+        const combined = `Gemini: ${geminiError} || OpenAI fallback: ${fallbackErr.message}`;
+        await pgQuery(
+          `UPDATE brief_pipeline_references SET analysis_error = $1, updated_at = NOW() WHERE id = $2`,
+          [combined.slice(0, 1000), req.params.id]
+        );
+        throw new Error(combined);
+      }
     }
+
+    // Annotate which provider produced this analysis so the UI can show the
+    // depth/limitation accurately. Stored inline in the JSONB so it survives
+    // GETs without a schema migration.
+    const annotated = { ...result.json, _provider: provider, _model: result.model };
 
     await pgQuery(
       `UPDATE brief_pipeline_references
@@ -6128,15 +6213,16 @@ router.post('/references/:id/analyze', authenticate, async (req, res) => {
               analysis_error = NULL,
               updated_at = NOW()
         WHERE id = $3`,
-      [JSON.stringify(result.json), result.model, req.params.id]
+      [JSON.stringify(annotated), result.model, req.params.id]
     );
 
     res.json({
       success: true,
       cached: false,
-      analysis: result.json,
+      analysis: annotated,
       analyzedAt: new Date().toISOString(),
       analysisModel: result.model,
+      provider,
     });
   } catch (err) {
     console.error('[BriefPipeline] POST /references/:id/analyze error:', err.message);

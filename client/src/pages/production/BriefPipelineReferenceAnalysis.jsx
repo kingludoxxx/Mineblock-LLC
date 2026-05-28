@@ -235,6 +235,15 @@ export default function BriefPipelineReferenceAnalysis() {
                     <span>{reference.analysisModel}</span>
                   </>
                 )}
+                {reference.analysis?._provider === 'openai-fallback' && (
+                  <>
+                    <span className="text-zinc-700">·</span>
+                    <span className="inline-flex items-center gap-1 text-amber-400/80" title="OpenAI fallback used — visual analysis is limited to the thumbnail; script analysis is full-depth.">
+                      <AlertCircle className="w-2.5 h-2.5" />
+                      thumbnail-only visual
+                    </span>
+                  </>
+                )}
               </div>
             </div>
           </div>
