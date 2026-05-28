@@ -350,11 +350,17 @@ router.get('/brands/:id/_diag/league-vs-fb', validateUuidParam('id'), async (req
     const maxPages = Math.min(5, Math.max(1, parseInt(String(req.query.pages ?? '3'), 10) || 3));
 
     // Pull FB Ad Library's impression-sorted list.
+    // The worker's Phase 1d uses the domain with the TLD stripped as the
+    // search keyword ('thegreatproject' not 'thegreatproject.com'), because
+    // ad link_urls rarely contain ".com" inside FB's search index. Mirror
+    // that here so we compare against the same population the league was
+    // built from.
+    const rootFragment = brand.domain.replace(/\.[a-z]{2,}(\.[a-z]{2,})?$/, '');
     const sc = getScrapeCreatorsClient();
     const fbOrdered = []; // each entry: { adArchiveId, headline, bodyText, isActive, linkUrl }
     try {
       for await (const batch of sc.iterateAdsByDomain({
-        domain: brand.domain,
+        domain: rootFragment,
         status: 'ACTIVE',
         country: 'US',
         maxPages,
