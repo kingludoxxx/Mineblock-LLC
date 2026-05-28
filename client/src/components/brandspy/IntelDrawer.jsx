@@ -8,9 +8,9 @@
  *  Right ~45%  — SIGNAL panel (rank, tier, velocity, momentum, history)
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
-  X, ExternalLink, Copy, Download,
+  X, ExternalLink, Copy, Download, Play,
 } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
@@ -235,7 +235,14 @@ export default function IntelDrawer({ ad, brand, onClose }) {
     return () => window.removeEventListener('keydown', h);
   }, [onClose]);
 
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied]           = useState(false);
+  const [videoStarted, setVideoStarted] = useState(false);
+  const videoRef = useRef(null);
+
+  // Reset video-overlay state whenever the modal is opened on a different ad
+  useEffect(() => {
+    setVideoStarted(false);
+  }, [ad?.id]);
 
   if (!ad) return null;
 
@@ -386,13 +393,41 @@ export default function IntelDrawer({ ad, brand, onClose }) {
                   image's natural aspect inside the panel without letterboxing.
                   The container shrink-wraps because there's no flex-1 / min-h. */}
               {ad.videoUrl ? (
-                <video
-                  src={ad.videoUrl}
-                  poster={ad.thumbnailUrl ?? undefined}
-                  controls
-                  className="block w-full"
-                  style={{ maxHeight: '70vh', background: '#000' }}
-                />
+                <div className="relative">
+                  <video
+                    ref={videoRef}
+                    src={ad.videoUrl}
+                    poster={ad.thumbnailUrl ?? undefined}
+                    controls
+                    className="block w-full"
+                    style={{ maxHeight: '70vh', background: '#000' }}
+                    onPlay={() => setVideoStarted(true)}
+                  />
+                  {/* Play-button overlay — visible until the user starts
+                      the video so they have a clear "this is playable"
+                      affordance. Native controls take over after play. */}
+                  {!videoStarted && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const v = videoRef.current;
+                        if (v) {
+                          v.play().catch(() => {});
+                          setVideoStarted(true);
+                        }
+                      }}
+                      className="absolute inset-0 flex items-center justify-center transition-opacity hover:bg-black/15"
+                      title="Play video"
+                    >
+                      <div
+                        className="w-16 h-16 rounded-full flex items-center justify-center backdrop-blur-sm transition-transform hover:scale-110"
+                        style={{ background: 'rgba(0,0,0,0.65)', border: '2px solid rgba(255,255,255,0.25)' }}
+                      >
+                        <Play className="w-7 h-7 text-white ml-1" fill="white" />
+                      </div>
+                    </button>
+                  )}
+                </div>
               ) : ad.thumbnailUrl ? (
                 <img
                   src={ad.thumbnailUrl}
