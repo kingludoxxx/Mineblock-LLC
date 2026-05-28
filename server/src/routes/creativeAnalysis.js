@@ -14,13 +14,16 @@ import { getEditorNames } from '../utils/clickupEditors.js';
 // ─────────────────────────────────────────────────────────────────────────
 function detectAngleFromName(name) {
   if (!name) return null;
-  const n = name.toLowerCase();
-  if (/retarget|\brt[-_ ]|\bret[-_ ]|warm.?audience|bofu|abandoned|cart/i.test(n)) return 'Retargeting';
-  if (/prospect|\btof[-_ ]|cold.?audience/i.test(n)) return 'Prospecting';
-  if (/lookalike|\blal[-_ ]|\blla[-_ ]/i.test(n)) return 'Lookalike';
-  if (/scarcity/i.test(n)) return 'Scarcity';
-  if (/urgency/i.test(n)) return 'Urgency';
-  if (/social.?proof|testimonial/i.test(n)) return 'Social Proof';
+  // /i flag already lowercases — no need for an extra .toLowerCase() (audit smell).
+  // All alternatives are anchored with \b or in word-pairs so substrings like
+  // "Descartes", "CartoonStyle", "MiniCart" no longer false-match "Retargeting".
+  // The previous version's bare `abandoned|cart` was the bug.
+  if (/\b(retarget(?:ing)?|rt[-_]|warm[-_ ]?audience|bofu|abandoned[-_ ]cart|cart[-_ ]abandon(?:er)?|cart[-_ ]abandoners?)\b/i.test(name)) return 'Retargeting';
+  if (/\b(prospect(?:ing)?|tof[-_]|cold[-_ ]?audience)\b/i.test(name)) return 'Prospecting';
+  if (/\b(lookalike|lal[-_]|lla[-_])\b/i.test(name)) return 'Lookalike';
+  if (/\bscarcity\b/i.test(name)) return 'Scarcity';
+  if (/\burgency\b/i.test(name)) return 'Urgency';
+  if (/\b(social[-_ ]?proof|testimonial)\b/i.test(name)) return 'Social Proof';
   return null;
 }
 
@@ -36,9 +39,13 @@ function getCurrentWeekCode() {
 function buildAutoIdentity(rawName) {
   const name = (rawName || '').trim() || 'unnamed';
   const hash = crypto.createHash('sha1').update(name).digest('hex').slice(0, 8).toUpperCase();
+  // Prefix `NX-` (NameXtract) is chosen because the parser cannot emit hyphens
+  // in segment-derived IDs, so synthetic IDs are guaranteed not to collide with
+  // any IM/B/AUTOxxx legacy creative_id, even if a hand-typed name happened to
+  // start with "AUTO". Also impossible for parseAdName to derive an NX-prefix.
   return {
     ad_name: name,
-    creative_id: `AUTO${hash}`,
+    creative_id: `NX-${hash}`,
     hook_id: 'H1',
     type: 'image', // assume image; corrected post-sync if Meta lookup reveals otherwise
     avatar: null,
