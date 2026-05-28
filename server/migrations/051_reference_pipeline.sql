@@ -44,3 +44,22 @@ CREATE INDEX IF NOT EXISTS idx_spy_creatives_reference
 -- generating from a reference) — drop the NOT NULL on product_id so the
 -- League/Meta INSERTs don't crash.
 ALTER TABLE spy_creatives ALTER COLUMN product_id DROP NOT NULL;
+
+-- 7. Dedicated dedup column. postgres.js returns JSONB via `unsafe()` as a
+-- string scalar, so `imported_metadata->>'ad_archive_id'` returns NULL — a
+-- top-level text column dodges the whole quoting/escaping problem.
+ALTER TABLE spy_creatives ADD COLUMN IF NOT EXISTS external_ref_key TEXT;
+CREATE INDEX IF NOT EXISTS idx_spy_creatives_external_ref_key
+  ON spy_creatives (imported_from, external_ref_key)
+  WHERE external_ref_key IS NOT NULL;
+
+-- Backfill external_ref_key from imported_metadata for any rows imported
+-- before this column existed. Substring extraction works whether the JSONB
+-- is stored as an object or a string scalar (postgres.js quirk).
+UPDATE spy_creatives
+SET external_ref_key = SUBSTRING(imported_metadata::text FROM '"ad_archive_id":\s*"([^"]+)"')
+WHERE imported_from = 'league' AND external_ref_key IS NULL;
+
+UPDATE spy_creatives
+SET external_ref_key = SUBSTRING(imported_metadata::text FROM '"meta_ad_id":\s*"([^"]+)"')
+WHERE imported_from = 'meta' AND external_ref_key IS NULL;

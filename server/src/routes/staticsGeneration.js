@@ -1476,6 +1476,11 @@ async function ensureCreativesTable() {
   await pgQuery(`CREATE INDEX IF NOT EXISTS idx_spy_creatives_reference ON spy_creatives (is_reference, imported_from, created_at DESC) WHERE is_reference`).catch(() => {});
   // Reference rows have no owning product → drop NOT NULL on product_id.
   await pgQuery('ALTER TABLE spy_creatives ALTER COLUMN product_id DROP NOT NULL').catch(() => {});
+  await pgQuery('ALTER TABLE spy_creatives ADD COLUMN IF NOT EXISTS external_ref_key TEXT').catch(() => {});
+  await pgQuery(`CREATE INDEX IF NOT EXISTS idx_spy_creatives_external_ref_key ON spy_creatives (imported_from, external_ref_key) WHERE external_ref_key IS NOT NULL`).catch(() => {});
+  // Backfill external_ref_key for rows imported before this column existed.
+  await pgQuery(`UPDATE spy_creatives SET external_ref_key = SUBSTRING(imported_metadata::text FROM '"ad_archive_id":\\s*"([^"]+)"') WHERE imported_from = 'league' AND external_ref_key IS NULL`).catch(() => {});
+  await pgQuery(`UPDATE spy_creatives SET external_ref_key = SUBSTRING(imported_metadata::text FROM '"meta_ad_id":\\s*"([^"]+)"') WHERE imported_from = 'meta' AND external_ref_key IS NULL`).catch(() => {});
   await pgQuery('ALTER TABLE spy_creatives ADD COLUMN IF NOT EXISTS group_id UUID').catch(() => {});
   await pgQuery(`CREATE INDEX IF NOT EXISTS idx_spy_creatives_group_id ON spy_creatives(group_id)`).catch(() => {});
   await pgQuery(`CREATE UNIQUE INDEX IF NOT EXISTS idx_spy_creatives_im_number ON spy_creatives(im_number) WHERE im_number IS NOT NULL`).catch(() => {});
@@ -3357,7 +3362,7 @@ router.get('/league/ads', authenticate, async (req, res) => {
         EXISTS (
           SELECT 1 FROM spy_creatives sc
           WHERE sc.imported_from = 'league'
-            AND sc.imported_metadata::text LIKE '%"ad_archive_id":"' || a.ad_archive_id || '"%'
+            AND sc.external_ref_key = a.ad_archive_id
         ) AS already_imported
       FROM brand_spy.ads a
       WHERE ${where.join(' AND ')}
@@ -3397,15 +3402,12 @@ router.post('/league/import', authenticate, async (req, res) => {
     let imported = 0;
     let skipped = 0;
     for (const ad of adRows) {
-      // Skip if this ad_archive_id was already imported.
-      // postgres.js returns JSONB as TEXT via .unsafe(), and the `::jsonb` cast
-      // on INSERT can land the value as a JSONB string scalar rather than an
-      // object, breaking `->>`. Match via raw text containment to dodge both.
+      // Skip if this ad_archive_id was already imported (top-level text column
+      // dedup, indexed on (imported_from, external_ref_key)).
       const existing = await pgQuery(
         `SELECT 1 FROM spy_creatives
-         WHERE imported_from = 'league'
-           AND imported_metadata::text LIKE $1 LIMIT 1`,
-        [`%"ad_archive_id":"${ad.ad_archive_id}"%`]
+         WHERE imported_from = 'league' AND external_ref_key = $1 LIMIT 1`,
+        [String(ad.ad_archive_id)]
       );
       if (existing.length > 0) {
         skipped++;
@@ -3426,10 +3428,12 @@ router.post('/league/import', authenticate, async (req, res) => {
       };
       await pgQuery(`
         INSERT INTO spy_creatives
-          (pipeline, status, is_reference, imported_from, image_url, thumbnail_url,
-           source_label, reference_name, reference_thumbnail, imported_metadata, aspect_ratio)
-        VALUES ('standard', 'ready', TRUE, 'league', $1, $1, $2, $2, $1, $3::jsonb, $4)
-      `, [ad.image_url, brandName, JSON.stringify(meta), pickAspectRatio(ad.display_format)]);
+          (pipeline, status, is_reference, imported_from, external_ref_key,
+           image_url, thumbnail_url, source_label, reference_name,
+           reference_thumbnail, imported_metadata, aspect_ratio)
+        VALUES ('standard', 'ready', TRUE, 'league', $5,
+                $1, $1, $2, $2, $1, $3::jsonb, $4)
+      `, [ad.image_url, brandName, JSON.stringify(meta), pickAspectRatio(ad.display_format), String(ad.ad_archive_id)]);
       imported++;
     }
 
@@ -3585,7 +3589,7 @@ router.get('/meta-ads/ads', authenticate, async (req, res) => {
         EXISTS (
           SELECT 1 FROM spy_creatives sc
           WHERE sc.imported_from = 'meta'
-            AND sc.imported_metadata::text LIKE '%"meta_ad_id":"' || latest.meta_ad_id || '"%'
+            AND sc.external_ref_key = latest.meta_ad_id
         ) AS already_imported
       FROM agg
       JOIN latest USING (creative_id)
@@ -3656,9 +3660,8 @@ router.post('/meta-ads/import', authenticate, async (req, res) => {
       if (r.meta_ad_id) {
         const exists = await pgQuery(
           `SELECT 1 FROM spy_creatives
-           WHERE imported_from = 'meta'
-             AND imported_metadata::text LIKE $1 LIMIT 1`,
-          [`%"meta_ad_id":"${r.meta_ad_id}"%`]
+           WHERE imported_from = 'meta' AND external_ref_key = $1 LIMIT 1`,
+          [String(r.meta_ad_id)]
         );
         if (exists.length > 0) {
           skipped++;
@@ -3674,10 +3677,12 @@ router.post('/meta-ads/import', authenticate, async (req, res) => {
       };
       await pgQuery(`
         INSERT INTO spy_creatives
-          (pipeline, status, is_reference, imported_from, image_url, thumbnail_url,
-           source_label, reference_name, reference_thumbnail, angle, imported_metadata, aspect_ratio)
-        VALUES ('standard', 'ready', TRUE, 'meta', $1, $1, $2, $3, $1, $4, $5::jsonb, '4:5')
-      `, [r.thumbnail_url, sourceLabel, r.creative_id, r.angle || null, JSON.stringify(meta)]);
+          (pipeline, status, is_reference, imported_from, external_ref_key,
+           image_url, thumbnail_url, source_label, reference_name,
+           reference_thumbnail, angle, imported_metadata, aspect_ratio)
+        VALUES ('standard', 'ready', TRUE, 'meta', $6,
+                $1, $1, $2, $3, $1, $4, $5::jsonb, '4:5')
+      `, [r.thumbnail_url, sourceLabel, r.creative_id, r.angle || null, JSON.stringify(meta), String(r.meta_ad_id || r.creative_id)]);
       imported++;
     }
 
