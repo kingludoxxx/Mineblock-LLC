@@ -73,9 +73,19 @@ export async function recoverStuckScrapes() {
 // and AT MOST 10 days old (the "explosive growth" definition). Ads under
 // 3 days that rank top-3% fall through to CHAMP/A — they're still flagged
 // as fast climbers via velocity, but can't claim BANGER until sustained.
-const BANGER_MIN_AGE_DAYS = 3;
-const BANGER_AGE_DAYS     = 10;
-const BANGER_PERCENTILE   = 0.03;
+// BANGER tier — the recent ad that's scaling fastest.
+// We compute the BANGER percentile INSIDE the recent-age window rather than
+// against the whole pool. Previously a brand whose top 3% by impressions
+// were all 80+ day-old ads literally couldn't crown a BANGER, no matter how
+// well a 5-day-old ad performed. The new rule: among ads aged
+// [MIN_AGE, MAX_AGE), the top BANGER_PERCENTILE_OF_WINDOW are BANGERs.
+const BANGER_MIN_AGE_DAYS         = 3;
+const BANGER_AGE_DAYS             = 14;
+const BANGER_PERCENTILE_OF_WINDOW = 0.20;
+// Legacy whole-pool cap kept as a sanity ceiling so a tiny age window with
+// only 1 ad doesn't auto-crown a TEST-tier ad as BANGER. An ad must STILL
+// be in the top 10% of all active ads by impressions to qualify.
+const BANGER_PERCENTILE   = 0.10;
 const CHAMP_PERCENTILE  = 0.10;
 const A_PERCENTILE      = 0.25;
 const B_PERCENTILE      = 0.50;
@@ -105,7 +115,28 @@ function rankAndTier(ads) {
   const bEnd      = Math.max(aEnd,    Math.ceil(poolSize * B_PERCENTILE));
   const cEnd      = Math.max(bEnd,    Math.ceil(poolSize * C_PERCENTILE));
   const midEnd    = Math.max(cEnd,    Math.ceil(poolSize * MID_PERCENTILE));
-  const bangerCut = Math.max(1, Math.ceil(poolSize * BANGER_PERCENTILE));
+  const bangerWholeCap = Math.max(1, Math.ceil(poolSize * BANGER_PERCENTILE));
+
+  // BANGER eligibility within the recent-age window. Without this, a brand
+  // dominated by old top-impression ads literally couldn't crown a BANGER
+  // because no fresh ad cracks the global top 3%.
+  const ageWindow = active.filter(isBangerAgeEligible);
+  ageWindow.sort((a, b) => (a.impressionRank ?? Infinity) - (b.impressionRank ?? Infinity));
+  // (ad → impressionRank not assigned yet; sort by meta_rank order — index
+  //  in the parent `active` array is already that order.)
+  const bangerWindowCap = Math.max(1, Math.ceil(ageWindow.length * BANGER_PERCENTILE_OF_WINDOW));
+  const bangerIds = new Set();
+  let bangerCount = 0;
+  for (const ad of active) {
+    if (!isBangerAgeEligible(ad)) continue;
+    // active is in meta_rank order, so iterating it gives ad-order asc.
+    // First N age-eligible ads up to bangerWindowCap AND inside global top 10%.
+    if (bangerCount >= bangerWindowCap) break;
+    const impressionRankApprox = active.indexOf(ad) + 1;
+    if (impressionRankApprox > bangerWholeCap) continue;
+    bangerIds.add(ad.adArchiveId ?? ad.id);
+    bangerCount++;
+  }
 
   // Step 1 — Assign each active ad an *impression rank* (idx+1 after the
   // SQL ORDER BY meta_rank ASC). This is the percentile basis for the
@@ -113,7 +144,7 @@ function rankAndTier(ads) {
   const withTier = active.map((ad, idx) => {
     const impressionRank = idx + 1;
     let tier;
-    if (impressionRank <= bangerCut && isBanger(ad))  tier = 'BANGER';
+    if (bangerIds.has(ad.adArchiveId ?? ad.id))       tier = 'BANGER';
     else if (impressionRank <= champEnd)              tier = 'CHAMP';
     else if (impressionRank <= aEnd)                  tier = 'A';
     else if (impressionRank <= bEnd)                  tier = 'B';
@@ -143,12 +174,14 @@ function rankAndTier(ads) {
   return [...ranked, ...inactive.map((a) => ({ ...a, rank: null, poolSize, tier: null }))];
 }
 
-function isBanger(ad) {
+function isBangerAgeEligible(ad) {
   return ad.activeDays !== null
     && ad.activeDays >= BANGER_MIN_AGE_DAYS
     && ad.activeDays <  BANGER_AGE_DAYS
     && ad.isActive;
 }
+// Backwards-compat shim — the pool=1 fast path still asks "is this a banger?".
+function isBanger(ad) { return isBangerAgeEligible(ad); }
 
 function summarizeTiers(ranked) {
   const out = { banger: 0, champ: 0, a: 0, b: 0, c: 0, mid: 0, test: 0 };
@@ -166,10 +199,21 @@ function summarizeTiers(ranked) {
   return out;
 }
 
-function computeVelocity({ currentRank, rank7d, rank21d }) {
+function computeVelocity({ currentRank, rank7d, rank21d, activeDays }) {
+  // Velocity is meaningless when the ad is younger than the lookback window
+  // — there's no rank to compare against because the ad didn't exist N days
+  // ago. The historical snapshot table may still have a row (e.g. inserted
+  // at first-seen) but it doesn't represent a real position.
+  const ageDays = activeDays ?? null;
   return {
-    velocity7d:  currentRank !== null && rank7d  !== null ? rank7d  - currentRank : null,
-    velocity21d: currentRank !== null && rank21d !== null ? rank21d - currentRank : null,
+    velocity7d:
+      currentRank !== null && rank7d !== null && (ageDays === null || ageDays >= 7)
+        ? rank7d - currentRank
+        : null,
+    velocity21d:
+      currentRank !== null && rank21d !== null && (ageDays === null || ageDays >= 21)
+        ? rank21d - currentRank
+        : null,
   };
 }
 
@@ -225,7 +269,12 @@ export async function scoreBrand(brandId) {
     // Pre-compute all param rows so we can slice them cleanly per chunk.
     const updateRows = ranked.map((r) => {
       const hist = historical.get(r.adArchiveId) ?? { d3: null, d7: null, d21: null };
-      const { velocity7d, velocity21d } = computeVelocity({ currentRank: r.rank, rank7d: hist.d7, rank21d: hist.d21 });
+      const { velocity7d, velocity21d } = computeVelocity({
+        currentRank: r.rank,
+        rank7d:  hist.d7,
+        rank21d: hist.d21,
+        activeDays: r.activeDays,
+      });
       const tierScore = r.rank !== null ? (r.poolSize - r.rank + 1) : null;
       return [r.id, r.rank, hist.d3, hist.d7, hist.d21, velocity7d, velocity21d, r.poolSize, r.tier, tierScore];
     });
@@ -608,13 +657,21 @@ async function upsertAdBatch(brandId, ads, pageCache, pageIdFallback = null, cro
     }
 
     const startDate  = ad.start_date ? new Date(ad.start_date * 1000) : null;
-    const endDate    = ad.end_date   ? new Date(ad.end_date   * 1000) : null;
-    const activeDays = computeActiveDays(startDate, endDate, ad.is_active);
+    // Meta returns `end_date` for ACTIVE ads too — usually a sentinel matching
+    // the scrape day or the ad's scheduled stop time. For our model
+    // `end_date` should only be set when the ad has actually ended; an
+    // ACTIVE ad has no end yet. Force NULL when active so the UI's
+    // "Oct 24, 2024 — May 27, 2026" range doesn't render a fake end day.
+    const isActive   = !!ad.is_active;
+    const endDate    = isActive
+      ? null
+      : (ad.end_date ? new Date(ad.end_date * 1000) : null);
+    const activeDays = computeActiveDays(startDate, endDate, isActive);
     const metaRank   = (metaRankStart != null) ? (metaRankStart + i) : null;
 
     rows.push([
       brandId, brandPageId, ad.ad_archive_id, metaPageId,
-      ad.is_active ?? false, startDate, endDate, ad.total_active_time ?? null, activeDays,
+      isActive, startDate, endDate, ad.total_active_time ?? null, activeDays,
       ad.snapshot?.display_format ?? null,
       ad.snapshot?.cta_text       ?? null,
       ad.snapshot?.cta_type       ?? null,
@@ -649,10 +706,20 @@ async function upsertAdBatch(brandId, ads, pageCache, pageIdFallback = null, cro
        ) VALUES ${placeholders}
        ON CONFLICT (brand_id, ad_archive_id) DO UPDATE SET
          is_active         = EXCLUDED.is_active,
-         end_date          = EXCLUDED.end_date,
+         -- end_date only moves forward — once an ad ends, keep that date.
+         -- For ads that are still active we already wrote NULL above; this
+         -- COALESCE keeps a previously recorded end_date from being wiped
+         -- if the scraper sees the ad flip back to active.
+         end_date          = COALESCE(EXCLUDED.end_date, brand_spy.ads.end_date),
          total_active_time = EXCLUDED.total_active_time,
          active_days       = EXCLUDED.active_days,
-         last_seen_at      = NOW(),
+         -- Only refresh last_seen_at when we observe the ad serving. Pulsing
+         -- it on inactive scrapes makes any "last_seen >= now() - 2 days"
+         -- freshness heuristic match every ad we ever scraped.
+         last_seen_at      = CASE
+                               WHEN EXCLUDED.is_active THEN NOW()
+                               ELSE brand_spy.ads.last_seen_at
+                             END,
          raw_snapshot      = EXCLUDED.raw_snapshot,
          meta_rank         = COALESCE(EXCLUDED.meta_rank, brand_spy.ads.meta_rank)
        RETURNING (xmax = 0) AS inserted`,

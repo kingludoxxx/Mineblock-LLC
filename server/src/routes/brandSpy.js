@@ -23,6 +23,30 @@ import { transcribeVideoUrl } from '../services/videoTranscribe.js';
 
 const router = Router();
 
+// RFC4122 UUID v1-v5. Used to reject malformed :id params before they hit
+// Postgres (where they'd otherwise throw a raw `invalid input syntax for
+// type uuid` 500 with the value echoed back).
+const UUID_RX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function validateUuidParam(name) {
+  return (req, res, next) => {
+    const v = req.params[name];
+    if (!v || !UUID_RX.test(v)) {
+      return res.status(400).json({
+        error: `Invalid ${name}: expected UUID`,
+      });
+    }
+    next();
+  };
+}
+
+// In-process mutex for concurrent transcribe-on-same-ad. Without this, two
+// parallel POSTs to /ads/:id/transcribe both miss the cache, both pay
+// OpenAI, and the second UPDATE overwrites the first with identical data.
+// The set holds adId strings currently in-flight; a second caller awaits
+// the first's promise instead of re-running.
+const transcribeInFlight = new Map(); // adId → Promise<{transcript, segments, cached, transcriptAt}>
+
 function normalizeDomain(input) {
   if (!input) return null;
   const trimmed = input.trim();
@@ -53,7 +77,7 @@ router.get('/brands', async (req, res, next) => {
 });
 
 // GET /brands/:id
-router.get('/brands/:id', async (req, res, next) => {
+router.get('/brands/:id', validateUuidParam('id'), async (req, res, next) => {
   try {
     const brand = await getBrandExpanded(req.params.id);
     if (!brand) return res.status(404).json({ error: 'Brand not found' });
@@ -62,7 +86,7 @@ router.get('/brands/:id', async (req, res, next) => {
 });
 
 // GET /brands/:id/ads
-router.get('/brands/:id/ads', async (req, res, next) => {
+router.get('/brands/:id/ads', validateUuidParam('id'), async (req, res, next) => {
   try {
     const daysRaw = req.query.days ? parseInt(String(req.query.days), 10) : null;
     const days    = (daysRaw !== null && !isNaN(daysRaw) && daysRaw > 0) ? daysRaw : null;
@@ -84,7 +108,7 @@ router.get('/brands/:id/ads', async (req, res, next) => {
 });
 
 // GET /brands/:id/tier-counts
-router.get('/brands/:id/tier-counts', async (req, res, next) => {
+router.get('/brands/:id/tier-counts', validateUuidParam('id'), async (req, res, next) => {
   try {
     const counts = await getAdTierCounts(req.params.id);
     res.json({ counts });
@@ -92,7 +116,7 @@ router.get('/brands/:id/tier-counts', async (req, res, next) => {
 });
 
 // GET /brands/:id/format-counts — brand-wide media-mix counts
-router.get('/brands/:id/format-counts', async (req, res, next) => {
+router.get('/brands/:id/format-counts', validateUuidParam('id'), async (req, res, next) => {
   try {
     const counts = await getAdFormatCounts(req.params.id);
     res.json({ counts });
@@ -103,7 +127,7 @@ router.get('/brands/:id/format-counts', async (req, res, next) => {
 // Groups the brand's ads by content pattern. Used by the Hooks / Ad Copy /
 // Headlines / Landing Pages tabs.
 const VALID_AGG_TYPES = new Set(['hooks', 'adcopy', 'headlines', 'landing']);
-router.get('/brands/:id/aggregations', async (req, res, next) => {
+router.get('/brands/:id/aggregations', validateUuidParam('id'), async (req, res, next) => {
   try {
     const type = String(req.query.type ?? '');
     if (!VALID_AGG_TYPES.has(type)) {
@@ -161,7 +185,7 @@ router.post('/brands', async (req, res, next) => {
 // POST /brands/:id/scrape
 // Returns 202 immediately — fire-and-forget. The scrape runs in the background.
 // Clients should poll GET /brands/:id and check lastScrapeStatus !== 'RUNNING'.
-router.post('/brands/:id/scrape', async (req, res, next) => {
+router.post('/brands/:id/scrape', validateUuidParam('id'), async (req, res, next) => {
   try {
     const brand = await getBrandExpanded(req.params.id);
     if (!brand) return res.status(404).json({ error: 'Brand not found' });
@@ -173,7 +197,7 @@ router.post('/brands/:id/scrape', async (req, res, next) => {
 });
 
 // DELETE /brands/:id
-router.delete('/brands/:id', async (req, res, next) => {
+router.delete('/brands/:id', validateUuidParam('id'), async (req, res, next) => {
   try {
     const ok = await deleteBrand(req.params.id);
     if (!ok) return res.status(404).json({ error: 'Brand not found' });
@@ -184,7 +208,7 @@ router.delete('/brands/:id', async (req, res, next) => {
 // GET /brands/:id/aggregation-counts — combined counts for Overview's 4
 // mini-stat boxes (Hooks / Ad copy / Headlines / LPs). Replaces 4 parallel
 // /aggregations?type=X&limit=1 calls with one round-trip + one in-memory pass.
-router.get('/brands/:id/aggregation-counts', async (req, res, next) => {
+router.get('/brands/:id/aggregation-counts', validateUuidParam('id'), async (req, res, next) => {
   try {
     const counts = await getBrandAggregationCounts(req.params.id);
     res.json(counts);
@@ -198,7 +222,7 @@ router.get('/brands/:id/aggregation-counts', async (req, res, next) => {
 // new scrape lands and advances last_scraped_at, the next /intel call detects
 // the mismatch and regenerates. Initial round-trip is ~7-8 s (Claude Haiku);
 // cached calls return in <50 ms.
-router.get('/brands/:id/intel', async (req, res, next) => {
+router.get('/brands/:id/intel', validateUuidParam('id'), async (req, res, next) => {
   try {
     // Fast path: cached payload still in sync with last_scraped_at.
     const cacheRow = await pgQuery(
@@ -302,7 +326,7 @@ ${JSON.stringify(adsData)}`,
 });
 
 // GET /ads/:id
-router.get('/ads/:id', async (req, res, next) => {
+router.get('/ads/:id', validateUuidParam('id'), async (req, res, next) => {
   try {
     const ad = await getAdDetail(req.params.id);
     if (!ad) return res.status(404).json({ error: 'Ad not found' });
@@ -310,10 +334,10 @@ router.get('/ads/:id', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// POST /ads/:id/transcribe — Whisper transcript with DB cache.
-// Returns { transcript, cached, transcriptAt } where `cached: true` means the
-// stored transcript was returned without hitting OpenAI again.
-router.post('/ads/:id/transcribe', async (req, res, next) => {
+// POST /ads/:id/transcribe — Whisper transcript with DB cache + mutex.
+// Returns { transcript, segments, cached, transcriptAt }. `cached: true`
+// means we returned a previously stored transcript without hitting OpenAI.
+router.post('/ads/:id/transcribe', validateUuidParam('id'), async (req, res, next) => {
   try {
     const adId = req.params.id;
     const ad = await getAdDetail(adId);
@@ -334,20 +358,33 @@ router.post('/ads/:id/transcribe', async (req, res, next) => {
       });
     }
 
-    const { text, segments } = await transcribeVideoUrl(ad.videoUrl);
-    const { rows } = await pgQuery(
-      `UPDATE brand_spy.ads
-          SET transcript = $1, transcript_segments = $2, transcript_at = NOW()
-        WHERE id = $3
-        RETURNING transcript_at`,
-      [text, JSON.stringify(segments), adId],
-    );
-    res.json({
-      transcript: text,
-      segments,
-      cached: false,
-      transcriptAt: rows[0]?.transcript_at?.toISOString() ?? new Date().toISOString(),
-    });
+    // Mutex — if another request is already transcribing this ad, await it
+    // instead of starting a duplicate Whisper call.
+    let inflight = transcribeInFlight.get(adId);
+    if (!inflight) {
+      inflight = (async () => {
+        const { text, segments } = await transcribeVideoUrl(ad.videoUrl);
+        const { rows } = await pgQuery(
+          `UPDATE brand_spy.ads
+              SET transcript = $1, transcript_segments = $2, transcript_at = NOW()
+            WHERE id = $3
+            RETURNING transcript_at`,
+          [text, JSON.stringify(segments), adId],
+        );
+        return {
+          transcript: text,
+          segments,
+          cached: false,
+          transcriptAt: rows[0]?.transcript_at?.toISOString() ?? new Date().toISOString(),
+        };
+      })().finally(() => transcribeInFlight.delete(adId));
+      transcribeInFlight.set(adId, inflight);
+    }
+    const result = await inflight;
+    // Callers piggybacked on an in-flight request still see cached:false (we
+    // did pay OpenAI for it — once — and they're getting the fresh result),
+    // but the second physical caller didn't trigger a second Whisper call.
+    res.json(result);
   } catch (err) { next(err); }
 });
 

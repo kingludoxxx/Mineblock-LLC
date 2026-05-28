@@ -29,10 +29,22 @@ export async function withTransaction(fn) {
 // ---------------------------------------------------------------------------
 
 function mapBrand(row) {
+  // The DB doesn't store a human-readable brand name; derive one from the
+  // best signal we have so the UI never renders blank labels.
+  //   1. display_name if explicitly set
+  //   2. first page name (joined separately via getBrandExpanded)
+  //   3. primary domain stripped of its TLD ("norseorganics.co" → "Norse Organics")
+  const titleCaseFromDomain = (d) => {
+    if (!d) return null;
+    const base = d.replace(/^www\./, '').split('.')[0];
+    return base.replace(/[-_]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+  };
+  const fallbackName = row.display_name || row.first_page_name || titleCaseFromDomain(row.domain);
   return {
     id: row.id,
     domain: row.domain,
-    displayName: row.display_name,
+    name: fallbackName,             // canonical name field for the UI
+    displayName: fallbackName,      // legacy alias — keep until callers migrate
     status: row.status,
     activeAdsCount: Number(row.active_ads_count),
     totalAdsCount: Number(row.total_ads_count),
@@ -44,12 +56,14 @@ function mapBrand(row) {
       a: row.tier_a_count,
       b: row.tier_b_count,
       c: row.tier_c_count,
-      low: row.tier_low_count,
+      mid: row.tier_low_count,      // canonical key — column is named tier_low_count for legacy
+      low: row.tier_low_count,      // keep old key one release for any caller still reading it
       test: row.tier_test_count,
     },
     lastScrapedAt: row.last_scraped_at ? new Date(row.last_scraped_at).toISOString() : null,
     lastScrapeStatus: row.last_scrape_status ?? null,
     lastScrapeError: row.last_scrape_error,
+    intelScrapedAt: row.intel_scraped_at ? new Date(row.intel_scraped_at).toISOString() : null,
     createdAt: new Date(row.created_at).toISOString(),
   };
 }
@@ -101,6 +115,7 @@ function mapAdListItem(row) {
     brandId: row.brand_id,
     brandPageId: row.brand_page_id,
     pageName: row.page_name,
+    metaRank: row.meta_rank ?? null,
     metaPageId: row.meta_page_id,
     isActive: row.is_active,
     startDate: row.start_date ? new Date(row.start_date).toISOString() : null,
@@ -146,18 +161,38 @@ function mapAdListItem(row) {
 // ---------------------------------------------------------------------------
 
 export async function listBrands(workspaceId) {
+  // LEFT JOIN brand_pages to pick the page with the highest ad count as the
+  // brand's display name. Some brands have no display_name set; falling back
+  // to "Norse Organics" beats falling back to "norseorganics.co".
   const { rows } = await query(
-    `SELECT * FROM brand_spy.brands
-     WHERE ($1::uuid IS NULL AND workspace_id IS NULL)
-        OR workspace_id = $1::uuid
-     ORDER BY active_ads_count DESC, created_at DESC`,
+    `SELECT b.*,
+            (SELECT bp.page_name
+               FROM brand_spy.brand_pages bp
+              WHERE bp.brand_id = b.id
+              ORDER BY (
+                SELECT COUNT(*) FROM brand_spy.ads a
+                 WHERE a.brand_page_id = bp.id
+              ) DESC NULLS LAST
+              LIMIT 1) AS first_page_name
+       FROM brand_spy.brands b
+      WHERE ($1::uuid IS NULL AND b.workspace_id IS NULL)
+         OR b.workspace_id = $1::uuid
+      ORDER BY b.active_ads_count DESC, b.created_at DESC`,
     [workspaceId],
   );
   return rows.map(mapBrand);
 }
 
 export async function getBrand(id) {
-  const { rows } = await query(`SELECT * FROM brand_spy.brands WHERE id = $1`, [id]);
+  const { rows } = await query(
+    `SELECT b.*,
+            (SELECT bp.page_name FROM brand_spy.brand_pages bp
+              WHERE bp.brand_id = b.id
+              ORDER BY (SELECT COUNT(*) FROM brand_spy.ads a WHERE a.brand_page_id = bp.id) DESC NULLS LAST
+              LIMIT 1) AS first_page_name
+       FROM brand_spy.brands b WHERE b.id = $1`,
+    [id],
+  );
   return rows[0] ? mapBrand(rows[0]) : null;
 }
 
@@ -167,10 +202,17 @@ export async function getBrandExpanded(id) {
 
   const [pagesRes, domainsRes] = await Promise.all([
     query(
-      `SELECT id, meta_page_id, page_name, page_profile_pic,
-              active_ads_count, total_ads_count, match_confidence, first_seen_at
-         FROM brand_spy.brand_pages WHERE brand_id = $1
-         ORDER BY active_ads_count DESC`,
+      // Compute live per-page ad counts via a join — the column-based
+      // active_ads_count was never being populated, so the UI dropdown
+      // had no way to show counts.
+      `SELECT bp.id, bp.meta_page_id, bp.page_name, bp.page_profile_pic,
+              bp.active_ads_count, bp.total_ads_count, bp.match_confidence, bp.first_seen_at,
+              (SELECT COUNT(*) FROM brand_spy.ads a
+                 WHERE a.brand_page_id = bp.id AND a.is_active = TRUE) AS live_active_ads,
+              (SELECT COUNT(*) FROM brand_spy.ads a
+                 WHERE a.brand_page_id = bp.id) AS live_total_ads
+         FROM brand_spy.brand_pages bp WHERE bp.brand_id = $1
+         ORDER BY live_active_ads DESC`,
       [id],
     ),
     query(
@@ -181,16 +223,23 @@ export async function getBrandExpanded(id) {
     ),
   ]);
 
-  const pages = pagesRes.rows.map((r) => ({
-    id: r.id,
-    metaPageId: r.meta_page_id,
-    pageName: r.page_name,
-    pageProfilePic: r.page_profile_pic,
-    activeAdsCount: Number(r.active_ads_count),
-    totalAdsCount: Number(r.total_ads_count),
-    matchConfidence: r.match_confidence !== null ? Number(r.match_confidence) : null,
-    firstSeenAt: new Date(r.first_seen_at).toISOString(),
-  }));
+  const pages = pagesRes.rows.map((r) => {
+    const live = Number(r.live_active_ads ?? 0);
+    const liveTotal = Number(r.live_total_ads ?? 0);
+    return {
+      id: r.id,
+      metaPageId: r.meta_page_id,
+      pageName: r.page_name,
+      pageProfilePic: r.page_profile_pic,
+      // Prefer the live computed counts (always current) over the column
+      // values (which the worker historically forgot to populate).
+      activeAdsCount: live || Number(r.active_ads_count) || 0,
+      totalAdsCount:  liveTotal || Number(r.total_ads_count) || 0,
+      adCount:        live || Number(r.active_ads_count) || 0,
+      matchConfidence: r.match_confidence !== null ? Number(r.match_confidence) : null,
+      firstSeenAt: new Date(r.first_seen_at).toISOString(),
+    };
+  });
 
   const domains = domainsRes.rows.map((r) => ({
     id: r.id,
@@ -259,20 +308,32 @@ export async function listAds(brandId, q) {
     }
   }
 
-  // status filter — "Active"/"Inactive" Status dropdown in the UI.
-  // Uses last_seen_at freshness as the source of truth: if we saw the ad in
-  // the ad-library within the last 2 days we treat it as active, regardless
-  // of the is_active flag or end_date (both of which the worker is currently
-  // flipping spuriously — tracked separately).
+  // status filter — Active / Inactive Status dropdown in the UI.
+  // Now that the worker no longer pulses last_seen_at on inactive scrapes
+  // (and stops stamping end_date on active ads), we can trust is_active as
+  // the single source of truth. The brand counter and this filter return
+  // the same number.
   if (q.status === 'ACTIVE') {
-    where.push(`(a.is_active = TRUE OR a.last_seen_at >= NOW() - INTERVAL '2 days')`);
+    where.push(`a.is_active = TRUE`);
   } else if (q.status === 'INACTIVE') {
-    where.push(`(a.is_active = FALSE AND a.last_seen_at < NOW() - INTERVAL '2 days')`);
+    where.push(`a.is_active = FALSE`);
   }
 
   if (q.format) {
-    where.push(`a.display_format = $${p++}`);
-    params.push(q.format);
+    // Accept both raw Meta formats (VIDEO/IMAGE/CAROUSEL/DCO/…) for legacy
+    // callers and the collapsed UI labels (VID/IMG) the API now returns.
+    // The UI dropdown is built from response values, so it can only show
+    // VID/IMG — translate those into a SQL clause that matches the
+    // underlying raw values.
+    const f = String(q.format).toUpperCase();
+    if (f === 'VID') {
+      where.push(`(a.display_format = 'VIDEO' OR (a.raw_snapshot->'videos' IS NOT NULL AND jsonb_array_length(a.raw_snapshot->'videos') > 0))`);
+    } else if (f === 'IMG') {
+      where.push(`NOT (a.display_format = 'VIDEO' OR (a.raw_snapshot->'videos' IS NOT NULL AND jsonb_array_length(a.raw_snapshot->'videos') > 0))`);
+    } else {
+      where.push(`a.display_format = $${p++}`);
+      params.push(f);
+    }
   }
 
   if (q.brandPageId) {
@@ -327,7 +388,7 @@ export async function listAds(brandId, q) {
        a.display_format, a.cta_text, a.cta_type, a.headline, a.body_text,
        a.link_url, a.caption, a.publisher_platforms,
        a.collation_id, a.collation_count,
-       a.tier, a.current_rank, a.rank_3d, a.rank_7d, a.rank_21d,
+       a.tier, a.current_rank, a.meta_rank, a.rank_3d, a.rank_7d, a.rank_21d,
        a.velocity_7d, a.velocity_21d, a.pool_size,
        COALESCE(
          a.raw_snapshot->'videos'->0->>'video_preview_image_url',
@@ -368,9 +429,23 @@ export async function getAdDetail(adId) {
        a.display_format, a.cta_text, a.cta_type, a.headline, a.body_text,
        a.link_url, a.caption, a.publisher_platforms,
        a.collation_id, a.collation_count,
-       a.tier, a.current_rank, a.rank_3d, a.rank_7d, a.rank_21d,
+       a.tier, a.current_rank, a.meta_rank, a.rank_3d, a.rank_7d, a.rank_21d,
        a.velocity_7d, a.velocity_21d, a.pool_size,
-       a.raw_snapshot, a.first_seen_at, a.last_seen_at,
+       -- Same SQL-side JSON extraction as listAds — keeps the response small.
+       -- The frontend uses thumbnailUrl + videoUrl, never raw_snapshot.
+       COALESCE(
+         a.raw_snapshot->'videos'->0->>'video_preview_image_url',
+         a.raw_snapshot->'images'->0->>'resized_image_url',
+         a.raw_snapshot->'images'->0->>'original_image_url',
+         a.raw_snapshot->'cards'->0->>'resized_image_url',
+         a.raw_snapshot->'cards'->0->>'original_image_url',
+         a.raw_snapshot->>'page_profile_picture_url'
+       ) AS thumbnail_url,
+       COALESCE(
+         a.raw_snapshot->'videos'->0->>'video_hd_url',
+         a.raw_snapshot->'videos'->0->>'video_sd_url'
+       ) AS video_url,
+       a.first_seen_at, a.last_seen_at,
        a.transcript, a.transcript_segments, a.transcript_at
      FROM brand_spy.ads a
      LEFT JOIN brand_spy.brand_pages bp ON bp.id = a.brand_page_id
@@ -380,7 +455,6 @@ export async function getAdDetail(adId) {
   if (!rows[0]) return null;
   return {
     ...mapAdListItem(rows[0]),
-    rawSnapshot: rows[0].raw_snapshot,
     transcript: rows[0].transcript ?? null,
     transcriptSegments: rows[0].transcript_segments ?? null,
     transcriptAt: rows[0].transcript_at ? new Date(rows[0].transcript_at).toISOString() : null,
@@ -388,19 +462,37 @@ export async function getAdDetail(adId) {
 }
 
 export async function getAdFormatCounts(brandId) {
+  // Group by "has-video" since that's the only thing the UI cares about:
+  // ads collapse to VID (has any video) or IMG (everything else, including
+  // DCO ads whose video variants live in raw_snapshot but no extracted
+  // video_url is materialized). Returns both the new collapsed counts and
+  // the legacy raw breakdown so older clients don't break.
   const { rows } = await query(
-    `SELECT display_format, is_active, COUNT(*) AS count
+    `SELECT
+       display_format,
+       (raw_snapshot->'videos' IS NOT NULL
+          AND jsonb_array_length(raw_snapshot->'videos') > 0) AS has_video,
+       is_active,
+       COUNT(*) AS count
        FROM brand_spy.ads
       WHERE brand_id = $1
-      GROUP BY display_format, is_active`,
+      GROUP BY display_format, has_video, is_active`,
     [brandId],
   );
-  const out = { VIDEO: 0, IMAGE: 0, CAROUSEL: 0, OTHER: 0, TOTAL: 0, ACTIVE: 0 };
+  const out = {
+    VID: 0, IMG: 0,                            // canonical UI buckets
+    VIDEO: 0, IMAGE: 0, CAROUSEL: 0, OTHER: 0, // legacy keys (kept for callers still reading them)
+    TOTAL: 0, ACTIVE: 0,
+  };
   for (const r of rows) {
     const n = parseInt(r.count, 10);
     out.TOTAL += n;
     if (r.is_active) out.ACTIVE += n;
-    if (r.display_format === 'VIDEO')         out.VIDEO    += n;
+    // Collapsed
+    if (r.display_format === 'VIDEO' || r.has_video) out.VID += n;
+    else                                              out.IMG += n;
+    // Legacy raw
+    if      (r.display_format === 'VIDEO')    out.VIDEO    += n;
     else if (r.display_format === 'IMAGE')    out.IMAGE    += n;
     else if (r.display_format === 'CAROUSEL') out.CAROUSEL += n;
     else                                      out.OTHER    += n;
