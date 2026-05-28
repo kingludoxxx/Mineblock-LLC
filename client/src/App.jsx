@@ -50,6 +50,7 @@ import AdsLauncherPage from './pages/production/AdsLauncherPage';
 import LanguagesPipeline from './pages/production/LanguagesPipeline';
 import BrandSpyPage from './pages/production/BrandSpyPage';
 import BrandSpyDetailPage from './pages/production/BrandSpyDetailPage';
+import BrandSpyAdDetailPage from './pages/production/BrandSpyAdDetailPage';
 import BrandSpyLeaguePage from './pages/production/BrandSpyLeaguePage';
 
 // Performance
@@ -142,6 +143,7 @@ export default function App() {
           <Route path="brand-spy" element={<PageGate permission="brand-spy:access"><BrandSpyPage /></PageGate>} />
           <Route path="brand-spy/league" element={<PageGate permission="brand-spy:access"><BrandSpyLeaguePage /></PageGate>} />
           <Route path="brand-spy/:id" element={<PageGate permission="brand-spy:access"><BrandSpyDetailPage /></PageGate>} />
+          <Route path="brand-spy/:brandId/ads/:adId" element={<PageGate permission="brand-spy:access"><BrandSpyAdDetailPage /></PageGate>} />
 
           {/* Performance */}
           <Route path="creative-analysis" element={<PageGate permission="creative-analysis:access"><CreativeAnalysisPage /></PageGate>} />

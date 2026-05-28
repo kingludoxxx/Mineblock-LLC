@@ -98,6 +98,7 @@ function mapAdListItem(row) {
   return {
     id: row.id,
     adArchiveId: row.ad_archive_id,
+    brandId: row.brand_id,
     brandPageId: row.brand_page_id,
     pageName: row.page_name,
     metaPageId: row.meta_page_id,
@@ -319,7 +320,7 @@ export async function listAds(brandId, q) {
   // for IntelDrawer's deep view.
   const dataRes = await query(
     `SELECT
-       a.id, a.ad_archive_id, a.brand_page_id,
+       a.id, a.ad_archive_id, a.brand_id, a.brand_page_id,
        bp.page_name,
        a.meta_page_id, a.is_active, a.start_date, a.end_date, a.active_days,
        a.total_active_time,
@@ -360,7 +361,7 @@ export async function listAds(brandId, q) {
 export async function getAdDetail(adId) {
   const { rows } = await query(
     `SELECT
-       a.id, a.ad_archive_id, a.brand_page_id,
+       a.id, a.ad_archive_id, a.brand_id, a.brand_page_id,
        bp.page_name,
        a.meta_page_id, a.is_active, a.start_date, a.end_date, a.active_days,
        a.total_active_time,

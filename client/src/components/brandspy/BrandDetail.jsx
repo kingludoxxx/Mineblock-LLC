@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   ArrowLeft, ExternalLink, RefreshCw, Play, Pause,
   Volume2, VolumeX, Maximize2,
@@ -7,7 +8,6 @@ import {
   MoreHorizontal, Info, Copy, Download,
   Video as VideoIcon, Image as ImageIcon, Columns as CarouselIcon,
 } from 'lucide-react';
-import IntelDrawer from './IntelDrawer';
 import AggregationsTab from './AggregationsTab';
 
 // ---------------------------------------------------------------------------
@@ -891,8 +891,13 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
   // Overview-dashboard side data (brand-wide media mix + aggregation totals)
   const [formatCounts, setFormatCounts] = useState(null);
   const [aggCounts, setAggCounts]       = useState(null);
-  // Drawer
-  const [selectedAd, setSelectedAd]     = useState(null);
+  // Ad detail navigation — replaces the old IntelDrawer modal with a full
+  // page route. openAd(ad) navigates to /app/brand-spy/:brandId/ads/:adId.
+  const navigate = useNavigate();
+  const openAd = useCallback((ad) => {
+    if (!ad?.id) return;
+    navigate(`/app/brand-spy/${brandId}/ads/${ad.id}`);
+  }, [navigate, brandId]);
 
   const intPagesDropdown  = useDropdown(); // Intelligence tab pages
   const intColsDropdown   = useDropdown(); // Intelligence tab columns
@@ -984,18 +989,12 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
     return () => { cancelled = true; };
   }, [apiBaseUrl, brandId, activeTab]);
 
-  // ---- Open ad in IntelDrawer by ID (used by aggregation tabs) ----
-  const openAdById = useCallback(async (adId) => {
+  // ---- Open ad detail page by ID (used by aggregation tabs) ----
+  // Aggregation rows pass an adId; we now route directly to the page.
+  const openAdById = useCallback((adId) => {
     if (!adId) return;
-    try {
-      const res = await fetch(`${apiBaseUrl}/ads/${adId}`);
-      if (!res.ok) throw new Error(`Failed (${res.status})`);
-      const data = await res.json();
-      if (data.ad) setSelectedAd(data.ad);
-    } catch (e) {
-      console.error('[brand-spy] failed to load ad:', e);
-    }
-  }, [apiBaseUrl]);
+    navigate(`/app/brand-spy/${brandId}/ads/${adId}`);
+  }, [navigate, brandId]);
 
   // ---- Refresh (re-scrape) ----
   // The scrape endpoint returns 202 immediately — poll brand status until the
@@ -1303,7 +1302,7 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
             ) : (
               <>
                 <div className="grid items-start grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7 gap-2">
-                  {ads.map((ad) => <AdCard key={ad.id} ad={ad} brand={brand} onOpenIntel={setSelectedAd} />)}
+                  {ads.map((ad) => <AdCard key={ad.id} ad={ad} brand={brand} onOpenIntel={openAd} />)}
                 </div>
                 {totalPages > 1 && (
                   <div className="flex items-center justify-between pt-2">
@@ -1444,7 +1443,7 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
                   </thead>
                   <tbody>
                     {ads.map((ad, i) => (
-                      <DetailAdRow key={ad.id} ad={ad} rowNum={(page - 1) * PAGE_SIZE_TABLE + i + 1} onSelect={() => setSelectedAd(ad)} col={col} />
+                      <DetailAdRow key={ad.id} ad={ad} rowNum={(page - 1) * PAGE_SIZE_TABLE + i + 1} onSelect={() => openAd(ad)} col={col} />
                     ))}
                   </tbody>
                 </table>
@@ -1482,10 +1481,10 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
 
       </div>
 
-      {/* IntelDrawer */}
-      {selectedAd && (
-        <IntelDrawer ad={selectedAd} brand={brand} onClose={() => setSelectedAd(null)} />
-      )}
+      {/* Ad detail now lives at /app/brand-spy/:brandId/ads/:adId — see
+          BrandSpyAdDetailPage. The drawer modal is no longer mounted from
+          here; AdCard's onOpenIntel + DetailAdRow's onSelect call openAd(ad)
+          which routes to the page. */}
     </div>
   );
 }

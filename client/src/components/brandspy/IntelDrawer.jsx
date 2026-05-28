@@ -227,7 +227,27 @@ function liveActiveDays(ad) {
   return candidates.length ? Math.max(...candidates) : null;
 }
 
-export default function IntelDrawer({ ad, brand, onClose }) {
+/**
+ * @param {object}  props
+ * @param {object}  props.ad      Ad detail (from getAdDetail / listAds).
+ * @param {object}  props.brand   Owning brand record (provides pages[] for profile pics).
+ * @param {() => void} props.onClose
+ * @param {boolean} [props.pageMode=false]
+ *   false → renders as a centered modal with backdrop (original UX).
+ *   true  → renders inline as a full-viewport page; caller owns the chrome,
+ *           the backdrop is skipped, sizing fills the parent.
+ * @param {boolean} [props.scriptPanelOpen=false]
+ *   When pageMode is true, controls whether the right-side Video Script
+ *   panel is visible. Click "Transcribe script" to open. Owned by the
+ *   page wrapper so the route can persist the state across re-renders.
+ * @param {(open: boolean) => void} [props.onScriptPanelToggle]
+ */
+export default function IntelDrawer({
+  ad, brand, onClose,
+  pageMode = false,
+  scriptPanelOpen = false,
+  onScriptPanelToggle,
+}) {
   // ESC to close
   useEffect(() => {
     const h = (e) => { if (e.key === 'Escape') onClose(); };
@@ -326,26 +346,18 @@ export default function IntelDrawer({ ad, brand, onClose }) {
   // ---------------------------------------------------------------------------
   // Render
   // ---------------------------------------------------------------------------
-  return (
-    <>
-      {/* Backdrop */}
-      <div
-        className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm"
-        onClick={onClose}
-      />
+  // Outer chrome: in modal mode we render a backdrop + centered card; in page
+  // mode we just render the inner panel filling its parent (the page route
+  // owns the chrome around it).
+  const innerStyle = pageMode
+    ? { background: '#161618', minHeight: 0, height: '100%' }
+    : { maxWidth: 1080, maxHeight: '88vh', background: '#161618', border: '1px solid #2a2a2a' };
+  const innerClass = pageMode
+    ? 'relative flex w-full rounded-none overflow-hidden'
+    : 'pointer-events-auto relative flex w-full rounded-2xl overflow-hidden shadow-2xl';
 
-      {/* Modal container */}
-      <div className="fixed inset-0 z-50 flex items-center justify-center p-4 pointer-events-none">
-        <div
-          className="pointer-events-auto relative flex w-full rounded-2xl overflow-hidden shadow-2xl"
-          style={{
-            maxWidth: 1080,
-            maxHeight: '88vh',
-            background: '#161618',
-            border: '1px solid #2a2a2a',
-          }}
-          onClick={(e) => e.stopPropagation()}
-        >
+  const content = (
+    <div className={innerClass} style={innerStyle} onClick={(e) => e.stopPropagation()}>
 
           {/* ======================================================= */}
           {/* LEFT PANEL — Ad Preview                                   */}
@@ -814,7 +826,24 @@ export default function IntelDrawer({ ad, brand, onClose }) {
               )}
             </div>
           </div>
-        </div>
+    </div>
+  );
+
+  if (pageMode) {
+    // Page route owns its own chrome; we just render the inner panel.
+    return content;
+  }
+
+  return (
+    <>
+      {/* Backdrop */}
+      <div
+        className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm"
+        onClick={onClose}
+      />
+      {/* Modal container */}
+      <div className="fixed inset-0 z-50 flex items-center justify-center p-4 pointer-events-none">
+        {content}
       </div>
     </>
   );

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   ChevronDown,
   RefreshCw,
@@ -8,7 +9,6 @@ import {
   ExternalLink,
   Search,
 } from 'lucide-react';
-import IntelDrawer from './IntelDrawer';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -389,8 +389,13 @@ export default function BrandLeague({ apiBaseUrl }) {
   const [tierFilter, setTierFilter] = useState('ALL');
   const [pageFilter, setPageFilter] = useState(null); // brand_page_id or null
 
-  // IntelDrawer
-  const [selectedAd, setSelectedAd] = useState(null);
+  // Ad-detail navigation — clicking a row routes to the page instead of
+  // opening a modal. The brandId on the ad row drives the URL.
+  const navigate = useNavigate();
+  const openAd = useCallback((ad) => {
+    if (!ad?.id || !ad?.brandId) return;
+    navigate(`/app/brand-spy/${ad.brandId}/ads/${ad.id}`);
+  }, [navigate]);
 
   // Visible columns
   const [visibleCols, setVisibleCols] = useState(() => {
@@ -932,7 +937,7 @@ export default function BrandLeague({ apiBaseUrl }) {
                   key={ad.id}
                   ad={ad}
                   rowNum={(page - 1) * PAGE_SIZE + i + 1}
-                  onSelect={() => setSelectedAd(ad)}
+                  onSelect={() => openAd(ad)}
                   visibleCols={visibleCols}
                 />
               ))}
@@ -966,13 +971,9 @@ export default function BrandLeague({ apiBaseUrl }) {
         </div>
       </div>
 
-      {selectedAd && (
-        <IntelDrawer
-          ad={selectedAd}
-          brand={brandDetail}
-          onClose={() => setSelectedAd(null)}
-        />
-      )}
+      {/* Ad detail lives at /app/brand-spy/:brandId/ads/:adId now —
+          BrandSpyAdDetailPage. The modal mount was removed; row clicks
+          call openAd(ad) which routes to the page. */}
     </div>
   );
 }
