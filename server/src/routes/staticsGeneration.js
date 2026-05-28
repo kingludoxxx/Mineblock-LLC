@@ -1389,6 +1389,10 @@ router.get('/iterate/:batchId/status', authenticate, async (req, res) => {
 let crTableReady = false;
 async function ensureCreativesTable() {
   if (crTableReady) return;
+  // Only the cheap, idempotent CREATE TABLE IF NOT EXISTS skeletons run here.
+  // All ALTER COLUMN / ADD COLUMN / CREATE INDEX / backfill statements live
+  // in migration 053_consolidate_statics_columns.sql so the first request
+  // after a redeploy doesn't pay a 3-8s schema-migration tax.
   await pgQuery(`
     CREATE TABLE IF NOT EXISTS spy_creatives (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -1425,39 +1429,6 @@ async function ensureCreativesTable() {
       updated_at TIMESTAMPTZ DEFAULT NOW()
     )
   `);
-  await pgQuery('ALTER TABLE spy_creatives ADD COLUMN IF NOT EXISTS product_name TEXT').catch(() => {});
-  await pgQuery('ALTER TABLE spy_creatives ADD COLUMN IF NOT EXISTS reference_thumbnail TEXT').catch(() => {});
-  await pgQuery('ALTER TABLE spy_creatives ADD COLUMN IF NOT EXISTS reference_name TEXT').catch(() => {});
-  await pgQuery(`CREATE INDEX IF NOT EXISTS idx_spy_creatives_pipeline ON spy_creatives(pipeline)`).catch(() => {});
-  await pgQuery(`CREATE INDEX IF NOT EXISTS idx_spy_creatives_status ON spy_creatives(status)`).catch(() => {});
-  await pgQuery(`CREATE INDEX IF NOT EXISTS idx_spy_creatives_product_id ON spy_creatives(product_id)`).catch(() => {});
-  await pgQuery(`CREATE INDEX IF NOT EXISTS idx_spy_creatives_created ON spy_creatives(created_at DESC)`).catch(() => {});
-  await pgQuery(`CREATE INDEX IF NOT EXISTS idx_spy_creatives_parent_id ON spy_creatives(parent_creative_id)`).catch(() => {});
-  await pgQuery('ALTER TABLE spy_creatives ADD COLUMN IF NOT EXISTS copy_set_id UUID').catch(() => {});
-  await pgQuery('ALTER TABLE spy_creatives ADD COLUMN IF NOT EXISTS meta_ad_ids JSONB DEFAULT \'[]\'').catch(() => {});
-  await pgQuery('ALTER TABLE spy_creatives ADD COLUMN IF NOT EXISTS meta_image_hash TEXT').catch(() => {});
-  await pgQuery('ALTER TABLE spy_creatives ADD COLUMN IF NOT EXISTS generated_copy JSONB').catch(() => {});
-  await pgQuery('ALTER TABLE spy_creatives ADD COLUMN IF NOT EXISTS parent_creative_id_ref TEXT').catch(() => {});
-  await pgQuery('ALTER TABLE spy_creatives ADD COLUMN IF NOT EXISTS parent_im_number INTEGER').catch(() => {});
-  await pgQuery('ALTER TABLE spy_creatives ADD COLUMN IF NOT EXISTS im_number INTEGER').catch(() => {});
-  await pgQuery('ALTER TABLE spy_creatives ADD COLUMN IF NOT EXISTS iteration_change_description TEXT').catch(() => {});
-  await pgQuery(`CREATE INDEX IF NOT EXISTS idx_spy_creatives_parent_ref ON spy_creatives(parent_creative_id_ref)`).catch(() => {});
-  await pgQuery('ALTER TABLE spy_creatives ADD COLUMN IF NOT EXISTS quality_warning TEXT').catch(() => {});
-  await pgQuery('ALTER TABLE spy_creatives ADD COLUMN IF NOT EXISTS imported_from TEXT').catch(() => {});
-  await pgQuery('ALTER TABLE spy_creatives ADD COLUMN IF NOT EXISTS imported_metadata JSONB').catch(() => {});
-  await pgQuery('ALTER TABLE spy_creatives ADD COLUMN IF NOT EXISTS is_reference BOOLEAN DEFAULT FALSE').catch(() => {});
-  await pgQuery(`CREATE INDEX IF NOT EXISTS idx_spy_creatives_reference ON spy_creatives (is_reference, imported_from, created_at DESC) WHERE is_reference`).catch(() => {});
-  // Reference rows have no owning product → drop NOT NULL on product_id.
-  await pgQuery('ALTER TABLE spy_creatives ALTER COLUMN product_id DROP NOT NULL').catch(() => {});
-  await pgQuery('ALTER TABLE spy_creatives ADD COLUMN IF NOT EXISTS external_ref_key TEXT').catch(() => {});
-  await pgQuery(`CREATE INDEX IF NOT EXISTS idx_spy_creatives_external_ref_key ON spy_creatives (imported_from, external_ref_key) WHERE external_ref_key IS NOT NULL`).catch(() => {});
-  // Backfill external_ref_key for rows imported before this column existed.
-  await pgQuery(`UPDATE spy_creatives SET external_ref_key = SUBSTRING(imported_metadata::text FROM '"ad_archive_id":\\s*"([^"]+)"') WHERE imported_from = 'league' AND external_ref_key IS NULL`).catch(() => {});
-  await pgQuery(`UPDATE spy_creatives SET external_ref_key = SUBSTRING(imported_metadata::text FROM '"meta_ad_id":\\s*"([^"]+)"') WHERE imported_from = 'meta' AND external_ref_key IS NULL`).catch(() => {});
-  await pgQuery('ALTER TABLE spy_creatives ADD COLUMN IF NOT EXISTS group_id UUID').catch(() => {});
-  await pgQuery(`CREATE INDEX IF NOT EXISTS idx_spy_creatives_group_id ON spy_creatives(group_id)`).catch(() => {});
-  await pgQuery(`CREATE UNIQUE INDEX IF NOT EXISTS idx_spy_creatives_im_number ON spy_creatives(im_number) WHERE im_number IS NOT NULL`).catch(() => {});
-  await pgQuery('ALTER TABLE creative_analysis ADD COLUMN IF NOT EXISTS iterated_at TIMESTAMPTZ').catch(() => {});
 
   await pgQuery(`CREATE TABLE IF NOT EXISTS statics_im_counter (
     id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
@@ -1482,14 +1453,6 @@ async function ensureCreativesTable() {
     ad_name TEXT, adset_name TEXT, page_id TEXT, page_name TEXT, batch_number INTEGER,
     status TEXT DEFAULT 'pending', error_message TEXT, launched_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT NOW()
   )`).catch(() => {});
-
-  const baseUrl = process.env.RENDER_EXTERNAL_URL;
-  if (baseUrl) {
-    await pgQuery(
-      `UPDATE spy_creatives SET reference_thumbnail = $1 || reference_thumbnail WHERE reference_thumbnail LIKE '/%'`,
-      [baseUrl]
-    ).catch(() => {});
-  }
 
   crTableReady = true;
 }
