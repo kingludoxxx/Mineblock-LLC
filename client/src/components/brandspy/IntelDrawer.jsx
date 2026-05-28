@@ -307,6 +307,24 @@ export default function IntelDrawer({
     setTranscriptCached(false);
   }, [ad?.id]);
 
+  // VideoScriptPanel dispatches 'brand-spy:seek-video' when a timestamped
+  // segment is clicked. Forward to the local <video> element so the panel
+  // doubles as a video chapter navigator.
+  useEffect(() => {
+    const handler = (e) => {
+      const seconds = Number(e?.detail?.seconds);
+      const v = videoRef.current;
+      if (!v || !Number.isFinite(seconds)) return;
+      try {
+        v.currentTime = seconds;
+        v.play().catch(() => {});
+        setVideoStarted(true);
+      } catch { /* ignore seek failures */ }
+    };
+    document.addEventListener('brand-spy:seek-video', handler);
+    return () => document.removeEventListener('brand-spy:seek-video', handler);
+  }, []);
+
   async function handleTranscribe() {
     if (!ad?.id) return;
     // In pageMode the page owns both the state and the fetch — just toggle

@@ -107,7 +107,20 @@ export default function VideoScriptPanel({
               Video 1
             </p>
             {segments.map((seg, idx) => (
-              <div key={idx} className="flex gap-3 items-start">
+              <button
+                key={idx}
+                type="button"
+                onClick={() => {
+                  // Cross-component seek without prop-drilling a video ref.
+                  // IntelDrawer listens for this event and forwards to its
+                  // <video> element. Falls through silently if no video.
+                  document.dispatchEvent(new CustomEvent('brand-spy:seek-video', {
+                    detail: { seconds: seg.start },
+                  }));
+                }}
+                className="w-full flex gap-3 items-start text-left rounded px-1 py-0.5 -mx-1 -my-0.5 hover:bg-zinc-800/60 transition-colors"
+                title={`Jump to ${formatTimestamp(seg.start)}`}
+              >
                 <span
                   className="text-[11px] font-medium tabular-nums shrink-0 mt-0.5"
                   style={{ color: '#f97316', minWidth: 32 }}
@@ -117,7 +130,7 @@ export default function VideoScriptPanel({
                 <p className="text-[13px] text-zinc-200 leading-snug flex-1">
                   {seg.text}
                 </p>
-              </div>
+              </button>
             ))}
           </div>
         ) : transcript ? (
