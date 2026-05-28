@@ -25,7 +25,7 @@ import { ReferenceColumn } from './ReferenceColumn';
 // Constants
 // ---------------------------------------------------------------------------
 
-const ADSET_SIZE = 3; // 3 creatives = 1 complete ad set
+const ADSET_SIZE = 6; // 6 creatives = 1 complete ad set (Ludo's spec — was 3)
 
 const COLUMNS = [
   {
