@@ -432,11 +432,16 @@ function AdCard({ ad, brand, onOpenIntel }) {
         </div>
       </div>
 
-      {/* ── Status + date ── */}
+      {/* ── Status + date + days ── */}
       <div className="px-2 pb-1 shrink-0" onClick={(e) => e.stopPropagation()}>
         <p className="text-[10px] flex items-center gap-1 text-text-faint">
           <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${isAdActive(ad) ? 'bg-emerald-400' : 'bg-zinc-600'}`} />
-          {fmtLaunch(ad.startDate)} – {isAdActive(ad) ? 'Present' : (ad.endDate ? fmtLaunch(ad.endDate) : '?')}
+          <span className="truncate">{fmtLaunch(ad.startDate)} – {isAdActive(ad) ? 'Present' : (ad.endDate ? fmtLaunch(ad.endDate) : '?')}</span>
+          {days != null && (
+            <span className={`ml-auto tabular-nums shrink-0 ${days >= 30 ? 'text-emerald-400 font-semibold' : 'text-text-faint'}`}>
+              {days}d
+            </span>
+          )}
         </p>
       </div>
 
@@ -544,21 +549,46 @@ function AdCard({ ad, brand, onOpenIntel }) {
         )}
       </div>
 
-      {/* ── Footer ── */}
-      <div className="px-2 py-1.5 shrink-0" onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center justify-between gap-1.5">
-          {ad.ctaText && (
-            <span className="text-[10px] px-2 py-0.5 rounded border border-border-default bg-bg-card text-text-muted whitespace-nowrap truncate min-w-0">
-              {ad.ctaText}
-            </span>
-          )}
-          {days != null && (
-            <span className={`text-[10px] font-semibold tabular-nums ml-auto shrink-0 ${days >= 30 ? 'text-emerald-400' : 'text-text-faint'}`}>
-              {days}d
-            </span>
-          )}
+      {/* ── Footer — Facebook-style link-preview card
+            Matches how Meta renders the destination card under an ad:
+              hostname (small gray) / headline (bold) / caption (small)
+              + CTA button on the right.
+            Pulls hostname from ad.linkUrl, headline from ad.headline,
+            caption from ad.caption or first emoji-line of bodyText. */}
+      {(ad.headline || ad.linkUrl || ad.caption || ad.ctaText) && (
+        <div className="px-2 py-1.5 shrink-0 border-t border-border-subtle bg-bg-card/50"
+             onClick={(e) => e.stopPropagation()}>
+          <div className="flex items-center gap-2">
+            <div className="min-w-0 flex-1">
+              {ad.linkUrl && (
+                <p className="text-[9px] text-text-faint truncate lowercase">
+                  {(() => {
+                    try {
+                      return new URL(ad.linkUrl.startsWith('http') ? ad.linkUrl : `https://${ad.linkUrl}`)
+                        .hostname.replace(/^www\./, '');
+                    } catch { return ad.linkUrl.split('/')[0]; }
+                  })()}
+                </p>
+              )}
+              {ad.headline && (
+                <p className="text-[11px] font-semibold text-text-primary truncate leading-tight mt-0.5">
+                  {ad.headline}
+                </p>
+              )}
+              {ad.caption && (
+                <p className="text-[10px] text-text-faint truncate leading-tight mt-0.5">
+                  {ad.caption}
+                </p>
+              )}
+            </div>
+            {ad.ctaText && (
+              <span className="shrink-0 text-[10px] font-medium px-2 py-1 rounded border border-border-default bg-bg-elevated text-text-primary whitespace-nowrap">
+                {ad.ctaText}
+              </span>
+            )}
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }
