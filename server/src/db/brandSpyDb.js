@@ -263,22 +263,11 @@ export async function listAds(brandId, q) {
     params.push(q.minStartDate);
   }
 
-  // Tier-priority CASE: BANGER > CHAMP > A > B > C > MID > TEST. Used by the
-  // default sort so the league surfaces the strongest tier first, then the
-  // strongest impression rank within each tier — matching the intuition that
-  // BANGER (young + top impressions) is a stronger signal than a long-running
-  // CHAMP, even if their absolute impression rank is similar.
-  const TIER_PRIORITY = `CASE a.tier
-      WHEN 'BANGER' THEN 1
-      WHEN 'CHAMP'  THEN 2
-      WHEN 'A'      THEN 3
-      WHEN 'B'      THEN 4
-      WHEN 'C'      THEN 5
-      WHEN 'MID'    THEN 6
-      WHEN 'TEST'   THEN 7
-      ELSE 8
-    END`;
-
+  // Default sort uses current_rank, which scoreBrand now writes as the
+  // tier-priority league rank (BANGERs get ranks 1..N first, then CHAMPs
+  // continue from N+1, then A, B, C, MID, TEST). So sorting by current_rank
+  // ASC gives the right league order: strongest tier first, best impressions
+  // within each tier.
   let orderBy;
   switch (sort) {
     case 'velocity_7d_desc':
@@ -291,7 +280,7 @@ export async function listAds(brandId, q) {
       orderBy = 'a.is_active DESC, a.first_seen_at DESC';
       break;
     default:
-      orderBy = `a.is_active DESC, ${TIER_PRIORITY} ASC, a.current_rank ASC NULLS LAST, a.first_seen_at DESC`;
+      orderBy = 'a.is_active DESC, a.current_rank ASC NULLS LAST, a.first_seen_at DESC';
   }
 
   const whereClause = where.join(' AND ');

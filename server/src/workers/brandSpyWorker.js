@@ -82,6 +82,9 @@ const B_PERCENTILE      = 0.50;
 const C_PERCENTILE      = 0.75;
 const MID_PERCENTILE    = 0.90;
 
+// Tier-priority used for the final league-rank ordering. Lower = better.
+const TIER_PRIORITY = { BANGER: 1, CHAMP: 2, A: 3, B: 4, C: 5, MID: 6, TEST: 7 };
+
 function rankAndTier(ads) {
   const active   = ads.filter((a) => a.isActive);
   const inactive = ads.filter((a) => !a.isActive);
@@ -104,18 +107,38 @@ function rankAndTier(ads) {
   const midEnd    = Math.max(cEnd,    Math.ceil(poolSize * MID_PERCENTILE));
   const bangerCut = Math.max(1, Math.ceil(poolSize * BANGER_PERCENTILE));
 
-  const ranked = active.map((ad, idx) => {
-    const rank = idx + 1;
+  // Step 1 — Assign each active ad an *impression rank* (idx+1 after the
+  // SQL ORDER BY meta_rank ASC). This is the percentile basis for the
+  // tier label below; it is NOT what we display as the user-facing rank.
+  const withTier = active.map((ad, idx) => {
+    const impressionRank = idx + 1;
     let tier;
-    if (rank <= bangerCut && isBanger(ad))  tier = 'BANGER';
-    else if (rank <= champEnd)              tier = 'CHAMP';
-    else if (rank <= aEnd)                  tier = 'A';
-    else if (rank <= bEnd)                  tier = 'B';
-    else if (rank <= cEnd)                  tier = 'C';
-    else if (rank <= midEnd)                tier = 'MID';
-    else                                    tier = 'TEST';
-    return { ...ad, rank, poolSize, tier };
+    if (impressionRank <= bangerCut && isBanger(ad))  tier = 'BANGER';
+    else if (impressionRank <= champEnd)              tier = 'CHAMP';
+    else if (impressionRank <= aEnd)                  tier = 'A';
+    else if (impressionRank <= bEnd)                  tier = 'B';
+    else if (impressionRank <= cEnd)                  tier = 'C';
+    else if (impressionRank <= midEnd)                tier = 'MID';
+    else                                              tier = 'TEST';
+    return { ...ad, impressionRank, tier };
   });
+
+  // Step 2 — Re-order by tier priority (BANGER first, then CHAMP, then A,
+  // B, C, MID, TEST). Within each tier, keep the impression-rank order
+  // (best impressions of that tier first). Assign the displayed `rank` as
+  // the position in this league-ordered array.
+  withTier.sort((a, b) => {
+    const ta = TIER_PRIORITY[a.tier] ?? 99;
+    const tb = TIER_PRIORITY[b.tier] ?? 99;
+    if (ta !== tb) return ta - tb;
+    return a.impressionRank - b.impressionRank;
+  });
+
+  const ranked = withTier.map((ad, idx) => ({
+    ...ad,
+    rank: idx + 1,
+    poolSize,
+  }));
 
   return [...ranked, ...inactive.map((a) => ({ ...a, rank: null, poolSize, tier: null }))];
 }
