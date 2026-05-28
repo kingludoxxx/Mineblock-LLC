@@ -516,9 +516,24 @@ function AdCard({ ad, brand, onOpenIntel }) {
               <img src={ad.thumbnailUrl} alt=""
                 className={`w-full h-full ${ad.isDco ? 'object-contain p-6 bg-zinc-900' : 'object-cover'}`}
                 onError={() => setImgFailed(true)} />
+            ) : pageAvatar.pageProfilePic ? (
+              // Final fallback — when the ad has no thumbnail AND no logo
+              // came back from the snapshot, use the page profile pic from
+              // the brand.pages list. Without this DCO ads whose Meta page
+              // logo URL expired show up as a giant black box that reads
+              // like dead space between rows.
+              <div className="w-full h-full flex items-center justify-center bg-zinc-900">
+                <img src={pageAvatar.pageProfilePic} alt=""
+                  className="max-w-[60%] max-h-[60%] object-contain rounded-full opacity-90" />
+              </div>
             ) : (
-              <div className="w-full h-full flex items-center justify-center">
-                <span className="text-text-faint text-[11px] uppercase tracking-widest opacity-40">{fmt}</span>
+              // Last-ditch — gradient + brand initial. Better than pitch black.
+              <div className="w-full h-full flex flex-col items-center justify-center gap-2"
+                style={{ background: 'linear-gradient(135deg, #1a1a1f 0%, #0f0f12 100%)' }}>
+                <div className="w-10 h-10 rounded-full flex items-center justify-center font-bold text-zinc-400 bg-white/[0.04] border border-white/10">
+                  {(pageName || '?').charAt(0).toUpperCase()}
+                </div>
+                <span className="text-text-faint text-[10px] uppercase tracking-widest opacity-50">{fmt}</span>
               </div>
             )}
             <div className="absolute inset-0 bg-black/15 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none" />
