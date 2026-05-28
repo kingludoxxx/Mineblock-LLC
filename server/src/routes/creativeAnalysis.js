@@ -110,6 +110,11 @@ const META_GRAPH_URL = 'https://graph.facebook.com/v21.0';
 let tableReady = false; // cache ensureTable so it only runs once
 let twKnownRevCol = null; // cache discovered TW column names across requests — cleared on deploy
 let twKnownPurCol = null;
+// Account-column discovery (2026-05-28). Tri-state:
+//   null    → not yet attempted this process
+//   {idCol, nameCol} → both columns found, use these names
+//   false   → tried, neither variant worked; skip in future queries
+let twKnownAccountCols = null;
 
 // Server-side cache for /data-by-date results (avoids repeated TW API calls)
 const dataByDateCache = new Map(); // key: "startDate|endDate" → { data, timestamp }
@@ -554,30 +559,89 @@ async function fetchTripleWhaleAds(startDate, endDate) {
     return { ok: true, rows };
   }
 
+  // Attempt to re-run the working query with account columns added.
+  // Returns the new rows on success, null on failure (caller falls back to non-account rows).
+  // Caches the discovery result so we only probe once per process lifetime.
+  async function tryAccountUpgrade({ revenueCol, purchaseCol }) {
+    if (twKnownAccountCols === false) return null; // already proved unsupported
+    if (twKnownAccountCols && twKnownAccountCols.idCol) {
+      // already proved supported — run with cached col names
+      const variants = [twKnownAccountCols];
+      return await runWithAccountVariants(variants, { revenueCol, purchaseCol });
+    }
+    // First-time discovery: try most-likely TW column name pairs
+    const variants = [
+      { idCol: 'ad_account_id',  nameCol: 'ad_account_name'  },
+      { idCol: 'account_id',     nameCol: 'account_name'     },
+    ];
+    const rows = await runWithAccountVariants(variants, { revenueCol, purchaseCol });
+    if (rows) return rows;
+    // Nothing worked — remember and stop probing
+    twKnownAccountCols = false;
+    console.warn('[Creative Analysis] TW account-column discovery failed — falling back to per-ad rows without account attribution');
+    return null;
+  }
+
+  async function runWithAccountVariants(variants, { revenueCol, purchaseCol }) {
+    const revRef = revenueCol.includes(' ') ? `\`${revenueCol}\`` : revenueCol;
+    const purPart = purchaseCol
+      ? `, SUM(${purchaseCol.includes(' ') ? `\`${purchaseCol}\`` : purchaseCol}) as total_purchases`
+      : '';
+    for (const v of variants) {
+      const sql = `
+        SELECT ${v.idCol} as ad_account_id, ${v.nameCol} as ad_account_name,
+               ad_name, SUM(spend) as total_spend, SUM(${revRef}) as total_revenue${purPart},
+               SUM(impressions) as total_impressions, SUM(clicks) as total_clicks
+        FROM pixel_joined_tvf
+        WHERE event_date BETWEEN @startDate AND @endDate
+        GROUP BY ad_name, ${v.idCol}, ${v.nameCol}
+        HAVING SUM(spend) > 0.01
+        ORDER BY SUM(spend) DESC
+        LIMIT 2000
+      `;
+      const result = await twQuery(sql);
+      if (result.fatal) return null;
+      if (result.ok) {
+        twKnownAccountCols = v;
+        console.log(`[Creative Analysis] TW account columns discovered: id="${v.idCol}", name="${v.nameCol}", rows=${result.rows.length}`);
+        return result.rows;
+      }
+      console.warn(`[Creative Analysis] TW account variant "${v.idCol}" failed: ${result.errorText}`);
+    }
+    return null;
+  }
+
   // Try cached column combo first (skip discovery on repeat calls)
   if (twKnownRevCol) {
     const revRef = twKnownRevCol.includes(' ') ? `\`${twKnownRevCol}\`` : twKnownRevCol;
     const purPart = twKnownPurCol
       ? `, SUM(${twKnownPurCol.includes(' ') ? `\`${twKnownPurCol}\`` : twKnownPurCol}) as total_purchases`
       : '';
+    const acctSelect = (twKnownAccountCols && twKnownAccountCols.idCol)
+      ? `${twKnownAccountCols.idCol} as ad_account_id, ${twKnownAccountCols.nameCol} as ad_account_name, `
+      : '';
+    const acctGroup = (twKnownAccountCols && twKnownAccountCols.idCol)
+      ? `, ${twKnownAccountCols.idCol}, ${twKnownAccountCols.nameCol}`
+      : '';
     const cachedSql = `
-      SELECT ad_name, SUM(spend) as total_spend, SUM(${revRef}) as total_revenue${purPart},
+      SELECT ${acctSelect}ad_name, SUM(spend) as total_spend, SUM(${revRef}) as total_revenue${purPart},
              SUM(impressions) as total_impressions, SUM(clicks) as total_clicks
       FROM pixel_joined_tvf
       WHERE event_date BETWEEN @startDate AND @endDate
-      GROUP BY ad_name
+      GROUP BY ad_name${acctGroup}
       HAVING SUM(spend) > 0.01
       ORDER BY SUM(spend) DESC
       LIMIT 2000
     `;
     const cachedResult = await twQuery(cachedSql);
     if (cachedResult.ok) {
-      console.log(`[Creative Analysis] TW query OK (cached cols) — revenue="${twKnownRevCol}", purchases="${twKnownPurCol || 'none'}", attribution="${TW_ATTRIBUTION_MODEL}", rows=${cachedResult.rows.length}`);
+      console.log(`[Creative Analysis] TW query OK (cached cols) — revenue="${twKnownRevCol}", purchases="${twKnownPurCol || 'none'}", account="${twKnownAccountCols?.idCol || 'none'}", attribution="${TW_ATTRIBUTION_MODEL}", rows=${cachedResult.rows.length}`);
       return cachedResult.rows;
     }
     // Cached combo failed — clear cache and fall through to discovery
     twKnownRevCol = null;
     twKnownPurCol = null;
+    twKnownAccountCols = null;
   }
 
   // Column discovery: try configured column first, then fallbacks
@@ -620,6 +684,15 @@ async function fetchTripleWhaleAds(startDate, endDate) {
           console.log(`[Creative Analysis] TW query OK — revenue="${revenueCol}", purchases="${purchaseCol}", attribution="${TW_ATTRIBUTION_MODEL}", rows=${pResult.rows.length}`);
           twKnownRevCol = revenueCol;
           twKnownPurCol = purchaseCol;
+          // Try to upgrade to per-account query (account-column discovery).
+          // Falls back to current rows silently if no variant works.
+          const acctRows = await tryAccountUpgrade({ revenueCol, purchaseCol });
+          if (acctRows) {
+            if (acctRows.length >= 2000) {
+              console.warn('[Creative Analysis] WARNING: TW query hit 2000 row limit — some ads may be missing');
+            }
+            return acctRows;
+          }
           if (pResult.rows.length >= 2000) {
             console.warn('[Creative Analysis] WARNING: TW query hit 2000 row limit — some ads may be missing');
           }
@@ -627,10 +700,12 @@ async function fetchTripleWhaleAds(startDate, endDate) {
         }
         console.warn(`[Creative Analysis] TW purchase column "${purchaseCol}" failed: ${pResult.errorText}`);
       }
-      // No purchase column worked — return the revenue-only result
+      // No purchase column worked — try account upgrade on revenue-only, then return whichever we got
       console.warn('[Creative Analysis] WARNING: No purchase column available. Purchases will be 0.');
       twKnownRevCol = revenueCol;
       twKnownPurCol = null;
+      const acctRows = await tryAccountUpgrade({ revenueCol, purchaseCol: null });
+      if (acctRows) return acctRows;
       return revenueOnlyRows;
     }
     console.warn(`[Creative Analysis] TW revenue column "${revenueCol}" failed: ${result.errorText}`);
@@ -710,6 +785,11 @@ async function ensureTable() {
         -- Naming-agnostic sync (2026-05-28): ads whose name does not match the
         -- IM/B parser get synthetic creative_ids and are flagged here.
         ALTER TABLE creative_analysis ADD COLUMN IF NOT EXISTS auto_detected BOOLEAN NOT NULL DEFAULT FALSE;
+        -- Per-account attribution (2026-05-28): track which Meta ad account each
+        -- creative comes from so /meta-ads/accounts can render a real picker
+        -- instead of collapsing to the single "All accounts" pill.
+        ALTER TABLE creative_analysis ADD COLUMN IF NOT EXISTS ad_account_id TEXT;
+        ALTER TABLE creative_analysis ADD COLUMN IF NOT EXISTS ad_account_name TEXT;
 
         -- Add indexes for common query patterns
         CREATE INDEX IF NOT EXISTS idx_ca_week_spend ON creative_analysis (week, spend DESC);
@@ -719,6 +799,8 @@ async function ensureTable() {
         CREATE INDEX IF NOT EXISTS idx_ca_creative_week ON creative_analysis (creative_id, week);
         -- Index for thumbnail lookup
         CREATE INDEX IF NOT EXISTS idx_ca_creative_synced ON creative_analysis (creative_id, synced_at DESC NULLS LAST);
+        -- Index for /meta-ads/accounts account picker queries
+        CREATE INDEX IF NOT EXISTS idx_ca_account_id ON creative_analysis (ad_account_id) WHERE ad_account_id IS NOT NULL;
       EXCEPTION WHEN OTHERS THEN
         -- Ignore migration errors (e.g. duplicate data blocking unique constraint)
         RAISE NOTICE 'Migration warning: %', SQLERRM;
@@ -784,6 +866,13 @@ async function syncData({ periodWeek, startDate, endDate }) {
       continue;
     }
 
+    // Per-account attribution: the upgraded TW query GROUPs BY (ad_name, account).
+    // We keep the dedup key as (creative_id, hook_id) to match the DB UNIQUE
+    // constraint — if the same ad ran in two accounts this week, the row gets
+    // tagged with the top-spend account. /meta-ads/accounts gets distinct values
+    // across all rows so multi-account brands still get a real picker.
+    const acctId   = ad.ad_account_id   != null ? String(ad.ad_account_id)   : null;
+    const acctName = ad.ad_account_name != null ? String(ad.ad_account_name) : null;
     const key = `${parsed.creative_id}|${parsed.hook_id}`;
     const spend = Number(ad.total_spend) || 0;
     const revenue = Number(ad.total_revenue) || 0;
@@ -807,6 +896,8 @@ async function syncData({ periodWeek, startDate, endDate }) {
         if (parsed.angle)  existing.angle = parsed.angle;
         if (parsed.format) existing.format = parsed.format;
         if (parsed.editor) existing.editor = parsed.editor;
+        if (acctId)        existing.ad_account_id   = acctId;
+        if (acctName)      existing.ad_account_name = acctName;
       }
     } else {
       aggregated.set(key, {
@@ -819,6 +910,8 @@ async function syncData({ periodWeek, startDate, endDate }) {
         format: parsed.format,
         editor: parsed.editor,
         auto_detected: parsed.auto_detected === true,
+        ad_account_id: acctId,
+        ad_account_name: acctName,
         spend,
         revenue,
         purchases,
@@ -847,8 +940,9 @@ async function syncData({ periodWeek, startDate, endDate }) {
         `INSERT INTO creative_analysis
            (ad_name, creative_id, hook_id, type, avatar, angle, format, editor, week,
             spend, revenue, purchases, impressions, clicks,
-            roas, cpa, cpm, aov, cpc, ctr, auto_detected, synced_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21, NOW())
+            roas, cpa, cpm, aov, cpc, ctr, auto_detected,
+            ad_account_id, ad_account_name, synced_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23, NOW())
          ON CONFLICT (creative_id, hook_id, week)
          DO UPDATE SET
            ad_name = EXCLUDED.ad_name,
@@ -869,6 +963,8 @@ async function syncData({ periodWeek, startDate, endDate }) {
            cpc = EXCLUDED.cpc,
            ctr = EXCLUDED.ctr,
            auto_detected = EXCLUDED.auto_detected,
+           ad_account_id   = COALESCE(EXCLUDED.ad_account_id,   creative_analysis.ad_account_id),
+           ad_account_name = COALESCE(EXCLUDED.ad_account_name, creative_analysis.ad_account_name),
            synced_at = NOW()`,
         [
           entry.ad_name,
@@ -892,6 +988,8 @@ async function syncData({ periodWeek, startDate, endDate }) {
           metrics.cpc,
           metrics.ctr,
           entry.auto_detected === true,
+          entry.ad_account_id || null,
+          entry.ad_account_name || null,
         ]
       );
       synced++;
