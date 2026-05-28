@@ -463,7 +463,7 @@ function AdSetGroupCard({ angle, creatives, isComplete, onLaunch, onCardClick, o
             Launch
           </button>
         ) : (
-          <span className="text-[11px] text-red-400/70 font-medium">
+          <span className="text-[11px] text-red-400/70 font-medium whitespace-nowrap shrink-0">
             Need {ADSET_SIZE - count} more
           </span>
         )}
