@@ -569,10 +569,21 @@ async function fetchTripleWhaleAds(startDate, endDate) {
       const variants = [twKnownAccountCols];
       return await runWithAccountVariants(variants, { revenueCol, purchaseCol });
     }
-    // First-time discovery: try most-likely TW column name pairs
+    // First-time discovery: try most-likely TW column name pairs in pixel_joined_tvf.
+    // Production probe (2026-05-28) showed `ad_account_id` doesn't exist but `account_id`
+    // does (only `account_name` is missing on that variant) — so id-only fallbacks below
+    // reuse the id as the display label so the picker at least renders a real pill.
     const variants = [
+      // id + name pairs (preferred)
       { idCol: 'ad_account_id',  nameCol: 'ad_account_name'  },
       { idCol: 'account_id',     nameCol: 'account_name'     },
+      { idCol: 'source_id',      nameCol: 'source_name'      },
+      { idCol: 'act_id',         nameCol: 'act_name'         },
+      { idCol: 'meta_account_id', nameCol: 'meta_account_name' },
+      // id-only fallbacks — name slot reuses id so picker still works
+      { idCol: 'account_id',     nameCol: 'account_id',     idOnly: true },
+      { idCol: 'source_id',      nameCol: 'source_id',      idOnly: true },
+      { idCol: 'ad_account_id',  nameCol: 'ad_account_id',  idOnly: true },
     ];
     const rows = await runWithAccountVariants(variants, { revenueCol, purchaseCol });
     if (rows) return rows;
@@ -588,13 +599,21 @@ async function fetchTripleWhaleAds(startDate, endDate) {
       ? `, SUM(${purchaseCol.includes(' ') ? `\`${purchaseCol}\`` : purchaseCol}) as total_purchases`
       : '';
     for (const v of variants) {
+      // id-only variants: select the id column once and alias it twice; only group by it once
+      const idOnly = v.idOnly === true;
+      const selectAcct = idOnly
+        ? `${v.idCol} as ad_account_id, ${v.idCol} as ad_account_name,`
+        : `${v.idCol} as ad_account_id, ${v.nameCol} as ad_account_name,`;
+      const groupAcct = idOnly
+        ? `, ${v.idCol}`
+        : `, ${v.idCol}, ${v.nameCol}`;
       const sql = `
-        SELECT ${v.idCol} as ad_account_id, ${v.nameCol} as ad_account_name,
+        SELECT ${selectAcct}
                ad_name, SUM(spend) as total_spend, SUM(${revRef}) as total_revenue${purPart},
                SUM(impressions) as total_impressions, SUM(clicks) as total_clicks
         FROM pixel_joined_tvf
         WHERE event_date BETWEEN @startDate AND @endDate
-        GROUP BY ad_name, ${v.idCol}, ${v.nameCol}
+        GROUP BY ad_name${groupAcct}
         HAVING SUM(spend) > 0.01
         ORDER BY SUM(spend) DESC
         LIMIT 2000
@@ -603,10 +622,10 @@ async function fetchTripleWhaleAds(startDate, endDate) {
       if (result.fatal) return null;
       if (result.ok) {
         twKnownAccountCols = v;
-        console.log(`[Creative Analysis] TW account columns discovered: id="${v.idCol}", name="${v.nameCol}", rows=${result.rows.length}`);
+        console.log(`[Creative Analysis] TW account columns discovered: id="${v.idCol}", name="${v.nameCol}"${idOnly ? ' (id-only)' : ''}, rows=${result.rows.length}`);
         return result.rows;
       }
-      console.warn(`[Creative Analysis] TW account variant "${v.idCol}" failed: ${result.errorText}`);
+      console.warn(`[Creative Analysis] TW account variant "${v.idCol}/${v.nameCol}"${idOnly ? ' (id-only)' : ''} failed: ${result.errorText}`);
     }
     return null;
   }
@@ -617,11 +636,16 @@ async function fetchTripleWhaleAds(startDate, endDate) {
     const purPart = twKnownPurCol
       ? `, SUM(${twKnownPurCol.includes(' ') ? `\`${twKnownPurCol}\`` : twKnownPurCol}) as total_purchases`
       : '';
+    const acctIdOnly = !!(twKnownAccountCols && twKnownAccountCols.idOnly);
     const acctSelect = (twKnownAccountCols && twKnownAccountCols.idCol)
-      ? `${twKnownAccountCols.idCol} as ad_account_id, ${twKnownAccountCols.nameCol} as ad_account_name, `
+      ? (acctIdOnly
+          ? `${twKnownAccountCols.idCol} as ad_account_id, ${twKnownAccountCols.idCol} as ad_account_name, `
+          : `${twKnownAccountCols.idCol} as ad_account_id, ${twKnownAccountCols.nameCol} as ad_account_name, `)
       : '';
     const acctGroup = (twKnownAccountCols && twKnownAccountCols.idCol)
-      ? `, ${twKnownAccountCols.idCol}, ${twKnownAccountCols.nameCol}`
+      ? (acctIdOnly
+          ? `, ${twKnownAccountCols.idCol}`
+          : `, ${twKnownAccountCols.idCol}, ${twKnownAccountCols.nameCol}`)
       : '';
     const cachedSql = `
       SELECT ${acctSelect}ad_name, SUM(spend) as total_spend, SUM(${revRef}) as total_revenue${purPart},
