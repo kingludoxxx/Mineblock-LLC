@@ -67,8 +67,14 @@ export async function recoverStuckScrapes() {
 // Tier engine (pure functions)
 // ---------------------------------------------------------------------------
 
-const BANGER_AGE_DAYS   = 10;
-const BANGER_PERCENTILE = 0.03;
+// BANGER tier window: ad must be at LEAST 3 days old (so we have multiple
+// scrape snapshots confirming it sustained top-3% rank, not a 1-day spike)
+// and AT MOST 10 days old (the "explosive growth" definition). Ads under
+// 3 days that rank top-3% fall through to CHAMP/A — they're still flagged
+// as fast climbers via velocity, but can't claim BANGER until sustained.
+const BANGER_MIN_AGE_DAYS = 3;
+const BANGER_AGE_DAYS     = 10;
+const BANGER_PERCENTILE   = 0.03;
 const CHAMP_PERCENTILE  = 0.10;
 const A_PERCENTILE      = 0.25;
 const B_PERCENTILE      = 0.50;
@@ -114,7 +120,10 @@ function rankAndTier(ads) {
 }
 
 function isBanger(ad) {
-  return ad.activeDays !== null && ad.activeDays < BANGER_AGE_DAYS && ad.isActive;
+  return ad.activeDays !== null
+    && ad.activeDays >= BANGER_MIN_AGE_DAYS
+    && ad.activeDays <  BANGER_AGE_DAYS
+    && ad.isActive;
 }
 
 function summarizeTiers(ranked) {
