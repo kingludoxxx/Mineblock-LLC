@@ -172,7 +172,7 @@ async function _doResetFailed(res) {
     console.log(`[staticsGeneration] reset-failed: reset ${all.length} creatives to ready (${result.length} rejected/error, ${staleResult.length} stale generating)`);
     res.json({ success: true, reset_count: all.length, creatives: all.map(r => ({ id: r.id, angle: r.angle, ratio: r.aspect_ratio, product: r.product_name })), diagnostic });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ success: false, error: { message: err.message } });
   }
 }
 
@@ -218,7 +218,7 @@ async function _doRegenerateReady(res) {
     console.log(`[regenerate-ready] triggered=${triggered.length}, skipped=${skipped.length}`);
     res.json({ success: true, triggered, skipped });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ success: false, error: { message: err.message } });
   }
 }
 
@@ -386,7 +386,7 @@ router.post('/reset-launched', authenticate, async (req, res) => {
     );
     res.json({ success: true, reset_count: result.length, creatives: result.map(r => ({ id: r.id, angle: r.angle })) });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ success: false, error: { message: err.message } });
   }
 });
 
@@ -402,7 +402,7 @@ router.post('/reset-generating', authenticate, async (req, res) => {
     console.log(`[staticsGeneration] Reset ${result.length} stuck generating creatives to ready`);
     res.json({ success: true, reset_count: result.length, creatives: result.map(r => ({ id: r.id, angle: r.angle, ratio: r.aspect_ratio, product: r.product_name })) });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ success: false, error: { message: err.message } });
   }
 });
 
@@ -429,20 +429,13 @@ setInterval(async () => {
   }
 }, RECONCILE_INTERVAL_MS).unref?.();
 
-// ── Playwright Diagnostic (legacy, kept for ops) ──
-router.get('/playwright-test', authenticate, async (req, res) => {
-  // Playwright path was removed in the 3-prompt rewrite. Endpoint preserved
-  // so existing monitoring/curl checks don't 404.
-  res.json({ success: true, message: 'Playwright path removed in 3-prompt rewrite — endpoint is a no-op stub' });
-});
-
 // ── Meta App Diagnostic & Live Mode Toggle ──
 router.get('/meta-app-diagnose', authenticate, async (req, res) => {
   try {
     const info = await diagnoseMetaApp();
     res.json({ success: true, data: info });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ success: false, error: { message: err.message } });
   }
 });
 
@@ -451,7 +444,7 @@ router.post('/meta-app-go-live', authenticate, async (req, res) => {
     const result = await switchAppToLiveMode();
     res.json({ success: true, data: result });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ success: false, error: { message: err.message } });
   }
 });
 
@@ -726,8 +719,8 @@ async function getCustomStaticsPrompts() {
 router.post('/generate', authenticate, async (req, res) => {
   const reqRefImage = req.body.reference_image_url;
   const reqProduct  = req.body.product;
-  if (!reqRefImage) return res.status(400).json({ success: false, error: 'reference_image_url is required' });
-  if (!reqProduct)  return res.status(400).json({ success: false, error: 'product is required' });
+  if (!reqRefImage) return res.status(400).json({ success: false, error: { message: 'reference_image_url is required' } });
+  if (!reqProduct)  return res.status(400).json({ success: false, error: { message: 'product is required' } });
 
   // Pre-allocate a taskId and respond IMMEDIATELY — avoids proxy-timeout 502s.
   const earlyTaskId = `gen-${crypto.randomUUID()}`;
@@ -1010,7 +1003,7 @@ router.post('/generate', authenticate, async (req, res) => {
 router.get('/status/:taskId', authenticate, async (req, res) => {
   try {
     const { taskId } = req.params;
-    if (!taskId) return res.status(400).json({ success: false, error: 'taskId is required' });
+    if (!taskId) return res.status(400).json({ success: false, error: { message: 'taskId is required' } });
 
     res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
     res.set('Pragma', 'no-cache');
@@ -1048,7 +1041,7 @@ router.get('/status/:taskId', authenticate, async (req, res) => {
     return res.json({ success: true, data: { taskId, status: 'failed', error: 'Unknown taskId' } });
   } catch (err) {
     console.error('[staticsGeneration] /status error:', err);
-    return res.status(500).json({ success: false, error: err.message });
+    return res.status(500).json({ success: false, error: { message: err.message } });
   }
 });
 
@@ -1150,7 +1143,7 @@ router.get('/iterations', authenticate, async (req, res) => {
     });
   } catch (err) {
     console.error('[iterations] GET /iterations error:', err);
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ success: false, error: { message: err.message } });
   }
 });
 
@@ -1172,7 +1165,7 @@ router.post('/iterate/:creativeId', authenticate, async (req, res) => {
       LIMIT 1
     `, [parentCreativeId]);
     if (parentRows.length === 0) {
-      return res.status(404).json({ success: false, error: `No image creative found for ${parentCreativeId}` });
+      return res.status(404).json({ success: false, error: { message: `No image creative found for ${parentCreativeId}` } });
     }
     const parent = parentRows[0];
     const parentImMatch = String(parent.creative_id).match(/^IM(\d+)$/);
@@ -1348,7 +1341,7 @@ router.post('/iterate/:creativeId', authenticate, async (req, res) => {
     });
   } catch (err) {
     console.error('[iterations] POST /iterate error:', err);
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ success: false, error: { message: err.message } });
   }
 });
 
@@ -1356,7 +1349,7 @@ router.get('/iterate/:batchId/status', authenticate, async (req, res) => {
   try {
     const { batchId } = req.params;
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(batchId)) {
-      return res.status(404).json({ success: false, error: 'Invalid batchId format' });
+      return res.status(404).json({ success: false, error: { message: 'Invalid batchId format' } });
     }
     const rows = await pgQuery(
       `SELECT id, im_number, parent_creative_id_ref, status, image_url, thumbnail_url,
@@ -1378,7 +1371,7 @@ router.get('/iterate/:batchId/status', authenticate, async (req, res) => {
       },
     });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ success: false, error: { message: err.message } });
   }
 });
 
