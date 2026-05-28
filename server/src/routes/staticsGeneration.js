@@ -3357,7 +3357,7 @@ router.get('/league/ads', authenticate, async (req, res) => {
         EXISTS (
           SELECT 1 FROM spy_creatives sc
           WHERE sc.imported_from = 'league'
-            AND sc.imported_metadata->>'ad_archive_id' = a.ad_archive_id
+            AND sc.imported_metadata::text LIKE '%"ad_archive_id":"' || a.ad_archive_id || '"%'
         ) AS already_imported
       FROM brand_spy.ads a
       WHERE ${where.join(' AND ')}
@@ -3398,9 +3398,14 @@ router.post('/league/import', authenticate, async (req, res) => {
     let skipped = 0;
     for (const ad of adRows) {
       // Skip if this ad_archive_id was already imported.
+      // postgres.js returns JSONB as TEXT via .unsafe(), and the `::jsonb` cast
+      // on INSERT can land the value as a JSONB string scalar rather than an
+      // object, breaking `->>`. Match via raw text containment to dodge both.
       const existing = await pgQuery(
-        `SELECT 1 FROM spy_creatives WHERE imported_from = 'league' AND imported_metadata->>'ad_archive_id' = $1 LIMIT 1`,
-        [ad.ad_archive_id]
+        `SELECT 1 FROM spy_creatives
+         WHERE imported_from = 'league'
+           AND imported_metadata::text LIKE $1 LIMIT 1`,
+        [`%"ad_archive_id":"${ad.ad_archive_id}"%`]
       );
       if (existing.length > 0) {
         skipped++;
@@ -3580,7 +3585,7 @@ router.get('/meta-ads/ads', authenticate, async (req, res) => {
         EXISTS (
           SELECT 1 FROM spy_creatives sc
           WHERE sc.imported_from = 'meta'
-            AND sc.imported_metadata->>'meta_ad_id' = latest.meta_ad_id
+            AND sc.imported_metadata::text LIKE '%"meta_ad_id":"' || latest.meta_ad_id || '"%'
         ) AS already_imported
       FROM agg
       JOIN latest USING (creative_id)
@@ -3650,8 +3655,10 @@ router.post('/meta-ads/import', authenticate, async (req, res) => {
       const r = rows[0];
       if (r.meta_ad_id) {
         const exists = await pgQuery(
-          `SELECT 1 FROM spy_creatives WHERE imported_from = 'meta' AND imported_metadata->>'meta_ad_id' = $1 LIMIT 1`,
-          [String(r.meta_ad_id)]
+          `SELECT 1 FROM spy_creatives
+           WHERE imported_from = 'meta'
+             AND imported_metadata::text LIKE $1 LIMIT 1`,
+          [`%"meta_ad_id":"${r.meta_ad_id}"%`]
         );
         if (exists.length > 0) {
           skipped++;
