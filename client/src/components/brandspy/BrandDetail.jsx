@@ -228,8 +228,12 @@ function ColInfo({ children }) {
       onMouseEnter={() => setShow(true)} onMouseLeave={() => setShow(false)}>
       <span className="text-[9px] leading-none cursor-default select-none ml-0.5"
         style={{ color: show ? '#9ca3af' : '#4b5563' }}>ⓘ</span>
+      {/* Tooltip renders BELOW the icon (top-full). The table header is
+          sticky at the top of the viewport, so a tooltip rendered above
+          (bottom-full) would extend into clipped space and never be seen.
+          Below the icon has plenty of room (the table body). */}
       {show && (
-        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-64 rounded-xl p-3.5 shadow-2xl pointer-events-none z-50 text-left normal-case tracking-normal font-normal"
+        <div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-64 rounded-xl p-3.5 shadow-2xl pointer-events-none z-50 text-left normal-case tracking-normal font-normal"
           style={{ background: '#1c1c1e', border: '1px solid #2a2a2a' }}>
           {children}
         </div>
@@ -905,6 +909,11 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
       if (activeTab === 'overview' && timeFilter !== 'all') params.set('days', timeFilter);
       if (formatFilter) params.set('format', formatFilter);
       if (statusFilter) params.set('status', statusFilter);
+      // Intelligence tab is the league — only active ads have a meaningful
+      // tier and rank, so always restrict to active there (overrides any
+      // statusFilter the user might have set, since the Intelligence
+      // toolbar doesn't expose it). Overview tab keeps the user's choice.
+      if (activeTab === 'intelligence') params.set('status', 'ACTIVE');
       const res  = await fetch(`${apiBaseUrl}/brands/${brandId}/ads?${params}`);
       if (!res.ok) throw new Error(`Failed (${res.status})`);
       const data = await res.json();
