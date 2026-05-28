@@ -24,7 +24,7 @@ function timeAgo(iso) {
   return `${d}d ago`;
 }
 
-function ReferencePreviewModal({ item, onClose, onUse }) {
+function ReferencePreviewModal({ item, onClose, onUse, isSelected, onToggleSelect }) {
   if (!item) return null;
   const fullImg = item.image_url || item.thumbnail_url || item.reference_thumbnail;
   const src = SOURCE_BADGES[item.imported_from] || SOURCE_BADGES.upload;
@@ -81,6 +81,15 @@ function ReferencePreviewModal({ item, onClose, onUse }) {
               onClick={onClose}
               className="px-4 py-2 text-xs font-mono uppercase tracking-wider text-zinc-300 border border-white/[0.08] rounded hover:border-white/[0.2] cursor-pointer"
             >Cancel</button>
+            {/* SELECT — toggle multi-select for batch generation */}
+            <button
+              onClick={() => { onToggleSelect?.(item); onClose(); }}
+              className={`px-4 py-2 text-xs font-mono uppercase tracking-wider rounded cursor-pointer font-bold transition-colors ${
+                isSelected
+                  ? 'bg-emerald-500 text-black hover:bg-emerald-400'
+                  : 'bg-emerald-500/80 text-black hover:bg-emerald-500'
+              }`}
+            >{isSelected ? '✓ Selected' : 'Select'}</button>
             <button
               onClick={onUse}
               className="px-4 py-2 text-xs font-mono uppercase tracking-wider text-black bg-[#d4b55a] hover:bg-[#e4c56a] rounded cursor-pointer font-bold"
@@ -292,8 +301,9 @@ export function ReferenceColumn({ productId, onSelectReference, onAddSelectedToQ
           <button
             onClick={handleAddSelected}
             className="flex-1 inline-flex items-center justify-center gap-1 h-8 rounded text-[11px] font-mono font-bold uppercase tracking-wider bg-emerald-500 hover:bg-emerald-400 text-black transition-colors cursor-pointer"
+            title="Add all selected references to the generation queue. The pipeline will produce one ad per reference using the current product + angle."
           >
-            Add to Queue
+            Generate ({selectedIds.size})
           </button>
           <button
             onClick={clearSelection}
@@ -382,6 +392,8 @@ export function ReferenceColumn({ productId, onSelectReference, onAddSelectedToQ
         item={previewItem}
         onClose={() => setPreviewItem(null)}
         onUse={handleUseReference}
+        isSelected={previewItem ? selectedIds.has(previewItem.id) : false}
+        onToggleSelect={toggleSelect}
       />
     </div>
   );
