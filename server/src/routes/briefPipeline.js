@@ -5950,8 +5950,9 @@ async function analyzeWholeVideoWithGemini(mediaUrl, promptText) {
   console.log(`[BriefPipeline:analyze] downloaded ${sizeMB.toFixed(1)}MB (${contentType})`);
 
   const mime = contentType.split(';')[0];
-  // Prefer 2.0-flash for multimodal; 1.5-flash as fallback.
-  const models = ['gemini-2.0-flash-001', 'gemini-1.5-flash'];
+  // 2.0-flash supports video; 1.5-flash is deprecated and returns 404 on most
+  // keys now (see transcription path) so we skip it here.
+  const models = ['gemini-2.0-flash-001', 'gemini-2.5-flash', 'gemini-2.0-flash'];
 
   let requestBody;
   if (sizeMB > 15) {
@@ -5965,7 +5966,6 @@ async function analyzeWholeVideoWithGemini(mediaUrl, promptText) {
       generationConfig: {
         maxOutputTokens: 8192,
         temperature: 0.3,
-        responseMimeType: 'application/json',
       },
     };
   } else {
@@ -5977,7 +5977,6 @@ async function analyzeWholeVideoWithGemini(mediaUrl, promptText) {
       generationConfig: {
         maxOutputTokens: 8192,
         temperature: 0.3,
-        responseMimeType: 'application/json',
       },
     };
   }
@@ -6003,7 +6002,7 @@ async function analyzeWholeVideoWithGemini(mediaUrl, promptText) {
         if (res.status === 404) { lastError = `${model}: 404`; break; }
         if (!res.ok) {
           const txt = await res.text();
-          lastError = `${model}: HTTP ${res.status} — ${txt.slice(0, 150)}`;
+          lastError = `${model}: HTTP ${res.status} — ${txt.slice(0, 400)}`;
           console.warn(`[BriefPipeline:analyze] ${model} failed: ${lastError}`);
           continue;
         }
