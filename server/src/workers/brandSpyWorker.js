@@ -706,11 +706,15 @@ async function upsertAdBatch(brandId, ads, pageCache, pageIdFallback = null, cro
        ) VALUES ${placeholders}
        ON CONFLICT (brand_id, ad_archive_id) DO UPDATE SET
          is_active         = EXCLUDED.is_active,
-         -- end_date only moves forward — once an ad ends, keep that date.
-         -- For ads that are still active we already wrote NULL above; this
-         -- COALESCE keeps a previously recorded end_date from being wiped
-         -- if the scraper sees the ad flip back to active.
-         end_date          = COALESCE(EXCLUDED.end_date, brand_spy.ads.end_date),
+         -- end_date semantics:
+         --   • Ad is currently active → end_date must be NULL. Explicitly
+         --     wipe any stale stamp the old worker left behind.
+         --   • Ad is currently inactive → take the new value if Meta gave
+         --     us one; otherwise keep what we already recorded.
+         end_date          = CASE
+                               WHEN EXCLUDED.is_active THEN NULL
+                               ELSE COALESCE(EXCLUDED.end_date, brand_spy.ads.end_date)
+                             END,
          total_active_time = EXCLUDED.total_active_time,
          active_days       = EXCLUDED.active_days,
          -- Only refresh last_seen_at when we observe the ad serving. Pulsing
