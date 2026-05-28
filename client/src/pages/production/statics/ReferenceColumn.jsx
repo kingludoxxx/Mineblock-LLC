@@ -302,28 +302,6 @@ export function ReferenceColumn({ productId, onSelectReference, onAddSelectedToQ
         </div>
       </div>
 
-      {/* Selection action bar — visible when ≥1 card is selected */}
-      {selectedIds.size > 0 && (
-        <div className="mb-3 px-1 flex items-center gap-2 bg-emerald-500/10 border border-emerald-500/40 rounded-lg p-2">
-          <span className="text-xs font-mono font-bold text-emerald-300 shrink-0">
-            {selectedIds.size} selected
-          </span>
-          <button
-            onClick={handleAddSelected}
-            className="flex-1 inline-flex items-center justify-center gap-1 h-8 rounded text-[11px] font-mono font-bold uppercase tracking-wider bg-emerald-500 hover:bg-emerald-400 text-black transition-colors cursor-pointer"
-            title="Add all selected references to the generation queue. The pipeline will produce one ad per reference using the current product + angle."
-          >
-            Generate ({selectedIds.size})
-          </button>
-          <button
-            onClick={clearSelection}
-            className="px-2 h-8 rounded text-[10px] font-mono uppercase tracking-wider text-zinc-400 hover:text-white border border-white/[0.1] hover:border-white/[0.3] cursor-pointer"
-          >
-            Clear
-          </button>
-        </div>
-      )}
-
       {/* Source buttons row */}
       <div className="grid grid-cols-3 gap-2 mb-3 px-1">
         <button
