@@ -20,6 +20,14 @@ const CLICKUP_LIST_ID      = '901518716584';
 const CLICKUP_TEAM_ID      = '90152075024';
 const CLICKUP_BRIEF_FIELD  = '62b61cc4-2d35-4dfc-86f4-a3913e2bbca3';
 
+// Payment fee deduction applied to TripleWhale gross revenue so the reported
+// ROAS / revenue / AOV reflect what we actually keep after Whop + Lasso fees.
+// 4.38% = 3.38% Whop platform (Stripe processing + Whop application fee, after
+// the 0.0% orchestration discount Whop granted us) + 1.00% Lasso CRM fee.
+// Update this single constant if the fee structure changes.
+const PAYMENT_FEE_RATE = 0.0438;
+const NET_REVENUE_MULTIPLIER = 1 - PAYMENT_FEE_RATE;
+
 const REV_COLS = [TW_REVENUE_COL, 'order_revenue', 'channel_reported_conversion_value'];
 const PUR_COLS = ['website_purchases', 'channel_reported_conversions'];
 const uniqueRevCols = [...new Set(REV_COLS)];
@@ -736,12 +744,15 @@ function buildReportRows(twResult, metaResult, clickupLinks) {
   const { links: metaLinks, created: metaCreated } = metaResult;
 
   const enriched = rows.map(r => {
-    const spend     = parseFloat(r.total_spend     || 0);
-    const revenue   = parseFloat(r.total_revenue   || 0);
-    const purchases = parseFloat(r.total_purchases || 0);
-    const roas      = spend > 0 ? +(revenue / spend).toFixed(2) : 0;
-    const cpa       = purchases > 0 ? +(spend / purchases).toFixed(2) : null;
-    const aov       = purchases > 0 ? +(revenue / purchases).toFixed(2) : null;
+    const spend       = parseFloat(r.total_spend     || 0);
+    const grossRev    = parseFloat(r.total_revenue   || 0);
+    // Net of payment fees (Whop platform 3.38% + Lasso 1% = 4.38%). This is
+    // what we actually receive — ROAS/AOV downstream are computed off this.
+    const revenue     = grossRev * NET_REVENUE_MULTIPLIER;
+    const purchases   = parseFloat(r.total_purchases || 0);
+    const roas        = spend > 0 ? +(revenue / spend).toFixed(2) : 0;
+    const cpa         = purchases > 0 ? +(spend / purchases).toFixed(2) : null;
+    const aov         = purchases > 0 ? +(revenue / purchases).toFixed(2) : null;
     // NVP = new-visitor-purchase rate = new_customer_orders / total_purchases × 100.
     // Only computed when the rich query ran AND there was at least 1 purchase.
     const nvp       = (r.total_new_customer_orders != null && purchases > 0)
@@ -1094,7 +1105,8 @@ router.get('/audit', async (req, res) => {
     const twResult = await fetchTwData(range.start, range.end);
     const all = twResult.rows.map(r => {
       const spend     = parseFloat(r.total_spend     || 0);
-      const revenue   = parseFloat(r.total_revenue   || 0);
+      const grossRev  = parseFloat(r.total_revenue   || 0);
+      const revenue   = grossRev * NET_REVENUE_MULTIPLIER;   // net of 4.38% payment fees
       const purchases = parseFloat(r.total_purchases || 0);
       const roas      = spend > 0 ? +(revenue / spend).toFixed(2) : 0;
       return {
