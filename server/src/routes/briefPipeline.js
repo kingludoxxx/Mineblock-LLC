@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { authenticate } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/rbac.js';
 import { pgQuery } from '../db/pg.js';
+import { transcribeVideoUrl } from '../services/videoTranscribe.js';
 import { getEditors, OWNER_ID } from '../utils/clickupEditors.js';
 import crypto from 'crypto';
 import { execFile } from 'child_process';
@@ -5612,6 +5613,378 @@ router.delete('/references/:id', authenticate, async (req, res) => {
 });
 
 // ============================================================================
+// ── Meta video imports (Triple Whale → Reference column) ────────────────────
+//
+// Mirrors staticsGeneration's /meta-ads/* but scoped to creative_type='video'
+// and writes into brief_pipeline_references with source='meta'. Transcription
+// is async — we kick it off in the background using the same yt-dlp +
+// Whisper/Gemini pipeline already proven by /generate-from-script.
+// ============================================================================
+
+// Cached columns lookup — creative_analysis schema evolves over time.
+let _bpCaCols = null;
+let _bpCaColsAt = 0;
+async function getCreativeAnalysisCols() {
+  if (_bpCaCols && Date.now() - _bpCaColsAt < 5 * 60_000) return _bpCaCols;
+  const rows = await pgQuery(
+    `SELECT column_name FROM information_schema.columns WHERE table_name = 'creative_analysis'`
+  );
+  _bpCaCols = new Set(rows.map(r => r.column_name));
+  _bpCaColsAt = Date.now();
+  return _bpCaCols;
+}
+
+// GET /meta-video-ads/accounts — list ad accounts that have at least one
+// active video creative in the chosen window. Lightweight; no joins.
+router.get('/meta-video-ads/accounts', authenticate, async (req, res) => {
+  try {
+    const cols = await getCreativeAnalysisCols();
+    const window = [7, 30, 90].includes(parseInt(req.query.window, 10)) ? parseInt(req.query.window, 10) : 30;
+    const idCol   = cols.has('ad_account_id')   ? 'ad_account_id'   : null;
+    const nameCol = cols.has('ad_account_name') ? 'ad_account_name'
+                  : cols.has('account_name')   ? 'account_name'
+                  : null;
+    if (!idCol) {
+      return res.json({ success: true, accounts: [], synced: 'no_account_column', last_sync: null });
+    }
+    const sql = `
+      SELECT
+        ${idCol}                                                  AS id,
+        ${nameCol ? `MAX(${nameCol})` : `MAX(${idCol})`}::text     AS name,
+        SUM(spend)::FLOAT                                         AS spend,
+        MAX(synced_at)                                            AS last_sync
+      FROM creative_analysis
+      WHERE creative_type = 'video'
+        AND synced_at >= NOW() - ($1 || ' days')::INTERVAL
+      GROUP BY ${idCol}
+      ORDER BY spend DESC NULLS LAST
+    `;
+    const rows = await pgQuery(sql, [String(window)]);
+    const lastSync = rows[0]?.last_sync ? new Date(rows[0].last_sync).toISOString() : null;
+    res.json({
+      success: true,
+      accounts: rows.map(r => ({
+        id:       String(r.id),
+        name:     r.name,
+        spend:    Number(r.spend) || 0,
+        last_sync: r.last_sync ? new Date(r.last_sync).toISOString() : null,
+      })),
+      last_sync: lastSync,
+    });
+  } catch (err) {
+    console.error('[BriefPipeline] /meta-video-ads/accounts error:', err.message);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// GET /meta-video-ads — list active video ads with filters.
+router.get('/meta-video-ads', authenticate, async (req, res) => {
+  try {
+    const cols = await getCreativeAnalysisCols();
+    const idCol   = cols.has('ad_account_id')   ? 'ad_account_id'   : null;
+    const nameCol = cols.has('ad_account_name') ? 'ad_account_name'
+                  : cols.has('account_name')   ? 'account_name'
+                  : null;
+    const hasStatus = cols.has('ad_status');
+
+    const accountsCsv = req.query.accounts ? String(req.query.accounts) : '';
+    const accounts = accountsCsv.split(',').map(a => a.trim()).filter(Boolean);
+    const status = String(req.query.status || 'active').toLowerCase();
+    const window = [7, 30, 90].includes(parseInt(req.query.window, 10)) ? parseInt(req.query.window, 10) : 30;
+    const sortKey = ['spend','revenue','roas','cpa','ctr','impressions'].includes(req.query.sort) ? req.query.sort : 'spend';
+    const minRoas = parseFloat(req.query.min_roas) || 0;
+    const minSpend = parseFloat(req.query.min_spend) || 0;
+    const search = req.query.search ? String(req.query.search).trim() : null;
+    const page  = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 20));
+    const offset = (page - 1) * limit;
+
+    const where = [`ca.creative_type = 'video'`, `ca.synced_at >= NOW() - ($1 || ' days')::INTERVAL`];
+    const params = [String(window)];
+
+    if (accounts.length > 0 && idCol) {
+      params.push(accounts);
+      where.push(`ca.${idCol} = ANY($${params.length}::text[])`);
+    }
+    if (status === 'active' && hasStatus) {
+      where.push(`ca.ad_status = 'active'`);
+    } else if (status === 'active+paused' && hasStatus) {
+      where.push(`ca.ad_status IN ('active', 'paused')`);
+    }
+    if (search) {
+      params.push(`%${search}%`);
+      const i = params.length;
+      where.push(`(ca.ad_name ILIKE $${i} OR ca.creative_id ILIKE $${i})`);
+    }
+
+    const accountIdSelect   = idCol   ? `ca.${idCol}`   : `'unknown'::text`;
+    const accountNameSelect = nameCol ? `ca.${nameCol}` : `'Unknown'::text`;
+    const autoDetectedSelect = cols.has('auto_detected') ? 'ca.auto_detected' : 'FALSE';
+
+    const sql = `
+      WITH agg AS (
+        SELECT
+          ca.creative_id,
+          SUM(ca.spend)::FLOAT       AS spend,
+          SUM(ca.revenue)::FLOAT     AS revenue,
+          SUM(ca.purchases)::FLOAT   AS purchases,
+          SUM(ca.impressions)::BIGINT AS impressions,
+          SUM(ca.clicks)::BIGINT      AS clicks,
+          MAX(ca.synced_at)          AS latest_synced_at,
+          MIN(ca.synced_at)          AS first_synced_at
+        FROM creative_analysis ca
+        WHERE ${where.join(' AND ')}
+        GROUP BY ca.creative_id
+      ),
+      latest AS (
+        SELECT DISTINCT ON (ca.creative_id)
+          ca.creative_id, ca.ad_name, ca.thumbnail_url, ca.meta_ad_id,
+          ca.angle, ca.hook_id, ca.creative_link, ca.ad_status,
+          ${autoDetectedSelect} AS auto_detected,
+          ${accountIdSelect}    AS ad_account_id,
+          ${accountNameSelect}  AS account_name
+        FROM creative_analysis ca
+        WHERE ${where.join(' AND ')}
+        ORDER BY ca.creative_id, ca.spend DESC NULLS LAST, ca.synced_at DESC
+      )
+      SELECT
+        agg.creative_id,
+        latest.ad_account_id,
+        latest.account_name,
+        latest.ad_name,
+        latest.thumbnail_url,
+        latest.meta_ad_id,
+        latest.ad_status,
+        latest.auto_detected,
+        latest.creative_link,
+        latest.angle,
+        agg.spend, agg.revenue, agg.purchases, agg.impressions, agg.clicks,
+        agg.latest_synced_at, agg.first_synced_at,
+        (CASE WHEN agg.spend > 0 THEN agg.revenue / agg.spend ELSE 0 END)::FLOAT AS roas,
+        (CASE WHEN agg.purchases > 0 THEN agg.spend / agg.purchases ELSE 0 END)::FLOAT AS cpa,
+        (CASE WHEN agg.impressions > 0 THEN agg.clicks::FLOAT / agg.impressions * 100 ELSE 0 END)::FLOAT AS ctr,
+        GREATEST(0, EXTRACT(DAY FROM (NOW() - agg.first_synced_at))::INTEGER) AS days_active,
+        EXISTS (
+          SELECT 1 FROM brief_pipeline_references bpr
+          WHERE bpr.source = 'meta'
+            AND bpr.ad_archive_id = COALESCE(latest.meta_ad_id, agg.creative_id)::text
+        ) AS already_imported,
+        COUNT(*) OVER () AS total_count
+      FROM agg
+      JOIN latest USING (creative_id)
+      WHERE agg.spend >= $${params.length + 1}
+        AND (CASE WHEN agg.spend > 0 THEN agg.revenue / agg.spend ELSE 0 END) >= $${params.length + 2}
+      ORDER BY
+        CASE $${params.length + 3}
+          WHEN 'spend'       THEN agg.spend
+          WHEN 'revenue'     THEN agg.revenue
+          WHEN 'roas'        THEN (CASE WHEN agg.spend > 0 THEN agg.revenue / agg.spend ELSE 0 END)
+          WHEN 'cpa'         THEN -1.0 * (CASE WHEN agg.purchases > 0 THEN agg.spend / agg.purchases ELSE 999999 END)
+          WHEN 'ctr'         THEN (CASE WHEN agg.impressions > 0 THEN agg.clicks::FLOAT / agg.impressions ELSE 0 END)
+          WHEN 'impressions' THEN agg.impressions::FLOAT
+        END DESC NULLS LAST
+      LIMIT $${params.length + 4} OFFSET $${params.length + 5}
+    `;
+    params.push(minSpend, minRoas, sortKey, limit, offset);
+    const rows = await pgQuery(sql, params);
+    const total = rows.length > 0 ? Number(rows[0].total_count) : 0;
+
+    const ads = rows.map(r => ({
+      creative_id:    r.creative_id,
+      ad_id:          r.meta_ad_id || r.creative_id,
+      ad_name:        r.ad_name,
+      account_id:     r.ad_account_id,
+      account_name:   r.account_name,
+      status:         (r.ad_status || 'active').toUpperCase(),
+      auto_detected:  r.auto_detected === true,
+      thumbnail_url:  r.thumbnail_url,
+      creative_link:  r.creative_link,
+      roas:           Number(r.roas) || 0,
+      spend:          Number(r.spend) || 0,
+      revenue:        Number(r.revenue) || 0,
+      cpa:            Number(r.cpa) || 0,
+      ctr:            Number(r.ctr) || 0,
+      impressions:    Number(r.impressions) || 0,
+      days_active:    Number(r.days_active) || 0,
+      already_imported: r.already_imported === true,
+    }));
+
+    res.json({ success: true, ads, total, page, limit });
+  } catch (err) {
+    console.error('[BriefPipeline] /meta-video-ads error:', err.message);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// POST /references/import-meta — bulk-create META-sourced references.
+// Transcription is fire-and-forget — the row lands immediately with
+// status='pending', and a background task fills transcript when extracted.
+router.post('/references/import-meta', authenticate, async (req, res) => {
+  try {
+    const { creativeIds } = req.body || {};
+    if (!Array.isArray(creativeIds) || creativeIds.length === 0) {
+      return res.status(400).json({ success: false, error: { message: 'creativeIds[] is required' } });
+    }
+    const cols = await getCreativeAnalysisCols();
+    const idCol   = cols.has('ad_account_id')   ? 'ad_account_id'   : null;
+    const nameCol = cols.has('ad_account_name') ? 'ad_account_name'
+                  : cols.has('account_name')   ? 'account_name'
+                  : null;
+    const accountIdSelect   = idCol   ? `ca.${idCol}`   : `'unknown'::text`;
+    const accountNameSelect = nameCol ? `ca.${nameCol}` : `'Unknown'::text`;
+
+    // Pull the highest-spend row per creative_id — that's the canonical record.
+    const rows = await pgQuery(
+      `SELECT DISTINCT ON (ca.creative_id)
+         ca.creative_id, ca.ad_name, ca.thumbnail_url, ca.meta_ad_id,
+         ca.creative_link, ca.angle, ca.synced_at,
+         ca.spend::FLOAT AS spend, ca.revenue::FLOAT AS revenue,
+         ca.roas::FLOAT AS roas, ca.cpa::FLOAT AS cpa, ca.ctr::FLOAT AS ctr,
+         ca.impressions::BIGINT AS impressions,
+         ${accountIdSelect}   AS ad_account_id,
+         ${accountNameSelect} AS account_name
+       FROM creative_analysis ca
+       WHERE ca.creative_id = ANY($1::text[])
+         AND ca.creative_type = 'video'
+       ORDER BY ca.creative_id, ca.spend DESC NULLS LAST`,
+      [creativeIds.map(String)]
+    );
+
+    const imported = [];
+    for (const r of rows) {
+      const extKey = String(r.meta_ad_id || r.creative_id);
+      const adLibraryUrl = r.meta_ad_id
+        ? `https://www.facebook.com/ads/library/?id=${r.meta_ad_id}`
+        : (r.creative_link || null);
+
+      const metaJson = {
+        ad_id:           r.meta_ad_id || r.creative_id,
+        creative_id:     r.creative_id,
+        account_id:      r.ad_account_id,
+        account_name:    r.account_name,
+        roas:            Number(r.roas) || 0,
+        spend:           Number(r.spend) || 0,
+        revenue:         Number(r.revenue) || 0,
+        cpa:             Number(r.cpa) || 0,
+        ctr:             Number(r.ctr) || 0,
+        impressions:     Number(r.impressions) || 0,
+        angle:           r.angle,
+        creative_link:   r.creative_link,
+        ad_library_url:  adLibraryUrl,
+        last_synced_at:  r.synced_at,
+      };
+
+      const inserted = await pgQuery(
+        `INSERT INTO brief_pipeline_references (
+           brand_spy_ad_id, ad_archive_id, brand_id, brand_name, tier,
+           video_url, thumbnail_url, headline, body_text, transcript, status,
+           source, imported_metadata
+         )
+         VALUES (NULL, $1, NULL, $2, 'OUR', NULL, $3, $4, NULL, NULL, 'pending', 'meta', $5)
+         ON CONFLICT (ad_archive_id) DO UPDATE SET
+           brand_name        = EXCLUDED.brand_name,
+           thumbnail_url     = COALESCE(EXCLUDED.thumbnail_url, brief_pipeline_references.thumbnail_url),
+           headline          = COALESCE(EXCLUDED.headline,      brief_pipeline_references.headline),
+           imported_metadata = EXCLUDED.imported_metadata,
+           updated_at        = NOW()
+         RETURNING id, status`,
+        [extKey, r.account_name || 'Triple Whale', r.thumbnail_url || null, r.ad_name || null, JSON.stringify(metaJson)]
+      );
+      const ref = inserted[0];
+      imported.push({ id: ref.id, ad_id: extKey, ad_name: r.ad_name, status: ref.status });
+
+      // Background transcription: extract video URL from the ad library page,
+      // then run Whisper (Gemini fallback for >25MB). Errors land in
+      // analysis_error so the UI can show them later.
+      if (adLibraryUrl) {
+        (async () => {
+          try {
+            const videoUrl = await extractVideoUrlWithYtdlp(adLibraryUrl);
+            if (!videoUrl) {
+              await pgQuery(
+                `UPDATE brief_pipeline_references
+                    SET analysis_error = $1, updated_at = NOW()
+                  WHERE id = $2 AND transcript IS NULL`,
+                ['Could not extract a direct video URL from the Facebook Ad Library page. Use the Upload button to paste the transcript manually.', ref.id]
+              );
+              return;
+            }
+            await pgQuery(
+              `UPDATE brief_pipeline_references SET video_url = $1, updated_at = NOW() WHERE id = $2`,
+              [videoUrl, ref.id]
+            );
+            const { text, segments } = await transcribeVideoUrl(videoUrl);
+            await pgQuery(
+              `UPDATE brief_pipeline_references
+                  SET transcript      = $1,
+                      transcript_at   = NOW(),
+                      status          = 'transcribed',
+                      analysis_error  = NULL,
+                      imported_metadata = jsonb_set(COALESCE(imported_metadata, '{}'::jsonb), '{transcript_segments}', $2::jsonb, true),
+                      updated_at      = NOW()
+                WHERE id = $3`,
+              [text, JSON.stringify(segments || []), ref.id]
+            );
+          } catch (err) {
+            console.error(`[BriefPipeline] async transcribe failed for ref ${ref.id}:`, err.message);
+            await pgQuery(
+              `UPDATE brief_pipeline_references
+                  SET analysis_error = $1, updated_at = NOW()
+                WHERE id = $2`,
+              [`Transcription failed: ${err.message?.slice(0, 600)}`, ref.id]
+            ).catch(() => {});
+          }
+        })();
+      }
+    }
+
+    res.json({ success: true, imported });
+  } catch (err) {
+    console.error('[BriefPipeline] /references/import-meta error:', err.message);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// POST /references/upload — manual paste (UPLOAD source).
+router.post('/references/upload', authenticate, async (req, res) => {
+  try {
+    const { rawScript, sourceUrl, brandName, headline, bodyText, thumbnailUrl } = req.body || {};
+    if (!rawScript || typeof rawScript !== 'string' || rawScript.trim().length < 20) {
+      return res.status(400).json({
+        success: false,
+        error: { message: 'rawScript is required and must be at least 20 characters' },
+      });
+    }
+    const extKey = `upload_${crypto.randomBytes(8).toString('hex')}`;
+    const meta = { sourceUrl: sourceUrl || null };
+
+    const inserted = await pgQuery(
+      `INSERT INTO brief_pipeline_references (
+         brand_spy_ad_id, ad_archive_id, brand_id, brand_name, tier,
+         video_url, thumbnail_url, headline, body_text, transcript, transcript_at,
+         status, source, imported_metadata
+       )
+       VALUES (NULL, $1, NULL, $2, 'UPLOAD', $3, $4, $5, $6, $7, NOW(), 'transcribed', 'upload', $8)
+       RETURNING *`,
+      [
+        extKey,
+        brandName || 'Pasted script',
+        sourceUrl || null,
+        thumbnailUrl || null,
+        headline || null,
+        bodyText || null,
+        rawScript.trim(),
+        JSON.stringify(meta),
+      ]
+    );
+    res.json({ success: true, reference: mapReferenceRowWithAnalysis(inserted[0]) });
+  } catch (err) {
+    console.error('[BriefPipeline] /references/upload error:', err.message);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// ============================================================================
 // ── League Prompts (3 user-editable JSON prompt slots) ──────────────────────
 //
 // Separate namespace from the existing 8-prompt `brief_pipeline_prompts`. The
@@ -6272,6 +6645,12 @@ function mapReferenceRowWithAnalysis(r) {
 
 function mapReferenceRow(r) {
   if (!r) return null;
+  // postgres.js returns JSONB as a string when written via JSON.stringify'd
+  // params (see also mapReferenceRowWithAnalysis for the analysis field).
+  let importedMetadata = r.imported_metadata;
+  if (typeof importedMetadata === 'string') {
+    try { importedMetadata = JSON.parse(importedMetadata); } catch { importedMetadata = null; }
+  }
   return {
     id: r.id,
     brandSpyAdId: r.brand_spy_ad_id,
@@ -6279,6 +6658,8 @@ function mapReferenceRow(r) {
     brandId: r.brand_id,
     brandName: r.brand_name,
     tier: r.tier,
+    source: r.source || 'league',
+    importedMetadata: importedMetadata || null,
     videoUrl: r.video_url || null,
     thumbnailUrl: r.thumbnail_url || null,
     headline: r.headline || null,
@@ -6287,6 +6668,7 @@ function mapReferenceRow(r) {
     transcriptAt: r.transcript_at ? new Date(r.transcript_at).toISOString() : null,
     status: r.status,
     generatedBriefId: r.generated_brief_id || null,
+    analysisError: r.analysis_error || null,
     createdAt: r.created_at ? new Date(r.created_at).toISOString() : null,
     updatedAt: r.updated_at ? new Date(r.updated_at).toISOString() : null,
   };
