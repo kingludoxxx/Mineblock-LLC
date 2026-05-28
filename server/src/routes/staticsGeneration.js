@@ -1559,6 +1559,42 @@ async function generateVariant(parent, newAspectRatio) {
   }
 }
 
+/**
+ * Auto-spawn a 9:16 variant for a parent creative being promoted to ready.
+ * Single source of truth — previously inlined in three places
+ * (PATCH /creatives/:id/status, PATCH /creatives/bulk-status, /regenerate-ready).
+ *
+ * Accepts either a row object (with id/aspect_ratio/parent_creative_id) or a
+ * UUID string (which is loaded from spy_creatives). No-ops when:
+ *   - the row is itself 9:16 (no resize needed)
+ *   - the row already has a parent (variants don't spawn variants)
+ *   - a 9:16 variant for this parent already exists
+ * Runs generateVariant in the background; caller does not await.
+ */
+async function autoSpawn916Variant(creativeOrId) {
+  try {
+    let creative = creativeOrId;
+    if (typeof creativeOrId === 'string') {
+      const rows = await pgQuery('SELECT * FROM spy_creatives WHERE id = $1', [creativeOrId]);
+      if (rows.length === 0) return;
+      creative = rows[0];
+    }
+    if (!creative) return;
+    if (creative.aspect_ratio === '9:16') return;
+    if (creative.parent_creative_id) return;
+    const existing = await pgQuery(
+      "SELECT 1 FROM spy_creatives WHERE parent_creative_id = $1 AND aspect_ratio = '9:16' LIMIT 1",
+      [creative.id]
+    );
+    if (existing.length > 0) return;
+    generateVariant(creative, '9:16').catch(err =>
+      console.error(`[autoSpawn916Variant] variant error for ${creative.id}:`, err.message)
+    );
+  } catch (err) {
+    console.warn(`[autoSpawn916Variant] failed for ${creativeOrId?.id || creativeOrId}:`, err.message);
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // Creatives CRUD
 // ─────────────────────────────────────────────────────────────────────────
@@ -1630,18 +1666,10 @@ router.patch('/creatives/:id/status', authenticate, async (req, res) => {
     if (rows.length === 0) return res.status(404).json({ success: false, error: { message: 'Creative not found' } });
     const creative = rows[0];
 
-    // Auto-generate 9:16 variant when a 4:5 creative is promoted to Ready (no parent).
-    if (status === 'ready' && creative.aspect_ratio !== '9:16' && !creative.parent_creative_id) {
-      const existingVariant = await pgQuery(
-        "SELECT id FROM spy_creatives WHERE parent_creative_id = $1 AND aspect_ratio = '9:16'",
-        [creative.id]
-      );
-      if (existingVariant.length === 0) {
-        console.log(`[staticsGeneration] Auto-generating 9:16 variant for ready creative ${creative.id}`);
-        generateVariant(creative, '9:16').catch(err =>
-          console.error('[staticsGeneration] Auto 9:16 variant error:', err.message)
-        );
-      }
+    // Auto-generate 9:16 variant when a 4:5 creative is promoted to Ready
+    // (helper: autoSpawn916Variant handles all early-return guards).
+    if (status === 'ready') {
+      autoSpawn916Variant(creative);
     }
 
     res.json({ success: true, data: creative });
