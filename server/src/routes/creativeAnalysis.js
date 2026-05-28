@@ -1,8 +1,54 @@
 import { Router } from 'express';
+import crypto from 'crypto';
 import { authenticate } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/rbac.js';
 import { pgQuery, pgDb } from '../db/pg.js';
 import { getEditorNames } from '../utils/clickupEditors.js';
+
+// ─────────────────────────────────────────────────────────────────────────
+// Naming-agnostic auto-identity (2026-05-28)
+//
+// When parseAdName can't extract IM/B-prefixed creative_id, we still want
+// the ad to sync. Build a stable synthetic identity from the ad_name hash
+// + a best-effort angle classification from common campaign keywords.
+// ─────────────────────────────────────────────────────────────────────────
+function detectAngleFromName(name) {
+  if (!name) return null;
+  const n = name.toLowerCase();
+  if (/retarget|\brt[-_ ]|\bret[-_ ]|warm.?audience|bofu|abandoned|cart/i.test(n)) return 'Retargeting';
+  if (/prospect|\btof[-_ ]|cold.?audience/i.test(n)) return 'Prospecting';
+  if (/lookalike|\blal[-_ ]|\blla[-_ ]/i.test(n)) return 'Lookalike';
+  if (/scarcity/i.test(n)) return 'Scarcity';
+  if (/urgency/i.test(n)) return 'Urgency';
+  if (/social.?proof|testimonial/i.test(n)) return 'Social Proof';
+  return null;
+}
+
+function getCurrentWeekCode() {
+  const d = new Date();
+  // ISO week calculation
+  d.setUTCDate(d.getUTCDate() + 4 - (d.getUTCDay() || 7));
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  const wk = Math.ceil(((d - yearStart) / 86400000 + 1) / 7);
+  return `WK${String(wk).padStart(2, '0')}_${d.getUTCFullYear()}`;
+}
+
+function buildAutoIdentity(rawName) {
+  const name = (rawName || '').trim() || 'unnamed';
+  const hash = crypto.createHash('sha1').update(name).digest('hex').slice(0, 8).toUpperCase();
+  return {
+    ad_name: name,
+    creative_id: `AUTO${hash}`,
+    hook_id: 'H1',
+    type: 'image', // assume image; corrected post-sync if Meta lookup reveals otherwise
+    avatar: null,
+    angle: detectAngleFromName(name) || 'Auto-detected',
+    format: null,
+    editor: null,
+    week: getCurrentWeekCode(),
+    auto_detected: true,
+  };
+}
 
 const router = Router();
 
@@ -192,10 +238,10 @@ function parseAdName(name) {
         if (spaceSegments.length >= 3) {
           segments = spaceSegments;
         } else {
-          return null;
+          return buildAutoIdentity(name); // naming-agnostic fallback (2026-05-28)
         }
       } else {
-        return null; // Not a parseable ad name — skip
+        return buildAutoIdentity(name); // naming-agnostic fallback (2026-05-28)
       }
     }
   }
@@ -365,7 +411,7 @@ function parseAdName(name) {
   // Determine type from creative ID prefix
   const type = creativeId && /^IM\d/i.test(creativeId) ? 'image' : 'video';
 
-  return { ad_name: name, creative_id: creativeId, hook_id: hookId, type, avatar: titleCase(avatar), angle: titleCase(angle), format: titleCase(format), editor: titleCase(editor), week };
+  return { ad_name: name, creative_id: creativeId, hook_id: hookId, type, avatar: titleCase(avatar), angle: titleCase(angle), format: titleCase(format), editor: titleCase(editor), week, auto_detected: false };
 }
 
 // ── Week / Date Helpers ─────────────────────────────────────────────
@@ -654,6 +700,9 @@ async function ensureTable() {
         ALTER TABLE creative_analysis ADD COLUMN IF NOT EXISTS thumbnail_url TEXT;
         ALTER TABLE creative_analysis ADD COLUMN IF NOT EXISTS video_url TEXT;
         ALTER TABLE creative_analysis ADD COLUMN IF NOT EXISTS meta_ad_id TEXT;
+        -- Naming-agnostic sync (2026-05-28): ads whose name does not match the
+        -- IM/B parser get synthetic creative_ids and are flagged here.
+        ALTER TABLE creative_analysis ADD COLUMN IF NOT EXISTS auto_detected BOOLEAN NOT NULL DEFAULT FALSE;
 
         -- Add indexes for common query patterns
         CREATE INDEX IF NOT EXISTS idx_ca_week_spend ON creative_analysis (week, spend DESC);
@@ -762,6 +811,7 @@ async function syncData({ periodWeek, startDate, endDate }) {
         angle: parsed.angle,
         format: parsed.format,
         editor: parsed.editor,
+        auto_detected: parsed.auto_detected === true,
         spend,
         revenue,
         purchases,
@@ -790,8 +840,8 @@ async function syncData({ periodWeek, startDate, endDate }) {
         `INSERT INTO creative_analysis
            (ad_name, creative_id, hook_id, type, avatar, angle, format, editor, week,
             spend, revenue, purchases, impressions, clicks,
-            roas, cpa, cpm, aov, cpc, ctr, synced_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20, NOW())
+            roas, cpa, cpm, aov, cpc, ctr, auto_detected, synced_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21, NOW())
          ON CONFLICT (creative_id, hook_id, week)
          DO UPDATE SET
            ad_name = EXCLUDED.ad_name,
@@ -811,6 +861,7 @@ async function syncData({ periodWeek, startDate, endDate }) {
            aov = EXCLUDED.aov,
            cpc = EXCLUDED.cpc,
            ctr = EXCLUDED.ctr,
+           auto_detected = EXCLUDED.auto_detected,
            synced_at = NOW()`,
         [
           entry.ad_name,
@@ -833,6 +884,7 @@ async function syncData({ periodWeek, startDate, endDate }) {
           metrics.aov,
           metrics.cpc,
           metrics.ctr,
+          entry.auto_detected === true,
         ]
       );
       synced++;
