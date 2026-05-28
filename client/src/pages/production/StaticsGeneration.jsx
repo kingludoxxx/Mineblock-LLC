@@ -78,7 +78,7 @@ function copyToClipboard(text) {
 // Constants
 // ---------------------------------------------------------------------------
 
-const STANDARD_CREATIVE_STATUSES = ['review', 'approved', 'queued', 'launched'];
+const STANDARD_CREATIVE_STATUSES = ['review', 'ready', 'queued', 'launched'];
 const ADVERTORIAL_STATUSES = ['draft', 'copy_review', 'copy_approved', 'images_pending', 'images_review', 'ready', 'queued', 'launched', 'archived'];
 
 const STATUS_COLORS = {
@@ -1915,7 +1915,6 @@ export default function StaticsGeneration() {
       const flat = [
         ...(pipeline.generating || []),
         ...(pipeline.review || []),
-        ...(pipeline.approved || []),
         ...(pipeline.ready || []),
         ...(pipeline.launched || []),
         ...variants,
@@ -1972,10 +1971,10 @@ export default function StaticsGeneration() {
 
   const handleApproveCreative = async (id) => {
     try {
-      await api.patch(`/statics-generation/creatives/${id}/status`, { status: 'approved' });
-      setCreatives((prev) => prev.map((c) => (c.id === id ? { ...c, status: 'approved' } : c)));
+      await api.patch(`/statics-generation/creatives/${id}/status`, { status: 'ready' });
+      setCreatives((prev) => prev.map((c) => (c.id === id ? { ...c, status: 'ready' } : c)));
     } catch {
-      addToast('Failed to approve creative', 'error');
+      addToast('Failed to mark creative as ready', 'error');
     }
   };
 
@@ -2460,12 +2459,19 @@ export default function StaticsGeneration() {
                   queue={queue}
                   onRemoveFromQueue={handleRemoveFromQueue}
                   productId={selectedProductId}
+                  onSelectReference={(item) => {
+                    const url = item?.image_url || item?.thumbnail_url || item?.reference_thumbnail;
+                    if (!url) return;
+                    setReferenceImageUrl(url);
+                    setReferencePreview(url);
+                    setReferenceFile(null);
+                  }}
                   onStatusChange={async (id, newStatus) => {
                     try {
                       await api.patch(`/statics-generation/creatives/${id}/status`, { status: newStatus });
                       setCreatives(prev => prev.map(c => c.id === id ? { ...c, status: newStatus } : c));
-                      // Refresh after approval to pick up auto-generated 9:16 variant
-                      if (newStatus === 'approved') setTimeout(() => fetchCreatives(), 3000);
+                      // Refresh after Ready to pick up auto-generated 9:16 variant
+                      if (newStatus === 'ready') setTimeout(() => fetchCreatives(), 3000);
                     } catch (err) {
                       console.error('[Pipeline] Status change failed:', err.message);
                     }
@@ -3102,12 +3108,12 @@ export default function StaticsGeneration() {
           onClose={() => setDetailModal(null)}
           onApprove={async (id) => {
             try {
-              await api.patch(`/statics-generation/creatives/${id}/status`, { status: 'approved' });
-              setCreatives(prev => prev.map(c => c.id === id ? { ...c, status: 'approved' } : c));
+              await api.patch(`/statics-generation/creatives/${id}/status`, { status: 'ready' });
+              setCreatives(prev => prev.map(c => c.id === id ? { ...c, status: 'ready' } : c));
               setDetailModal(null);
               // Refresh after a delay to pick up the auto-generated 9:16 variant
               setTimeout(() => fetchCreatives(), 3000);
-            } catch (err) { console.warn('[StaticsGeneration] approve failed:', err.message); }
+            } catch (err) { console.warn('[StaticsGeneration] mark ready failed:', err.message); }
           }}
           onReject={async (id) => {
             try {

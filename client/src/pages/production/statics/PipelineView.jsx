@@ -19,7 +19,7 @@ import {
   RotateCcw,
 } from 'lucide-react';
 import api from '../../../services/api';
-import { IterationsColumn } from './IterationsColumn';
+import { ReferenceColumn } from './ReferenceColumn';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -51,19 +51,6 @@ const COLUMNS = [
     badgeBg: 'bg-[#c9a84c]/10',
     badgeText: 'text-[#d4b55a]',
     badgeBorder: 'border-[#c9a84c]/25',
-    placeholder: null,
-    actionLabel: 'Approve',
-    nextStatus: 'approved',
-  },
-  {
-    key: 'approved',
-    label: 'Approved',
-    icon: CheckCircle2,
-    color: 'green',
-    iconClass: 'text-emerald-400 drop-shadow-[0_0_6px_rgba(16,185,129,0.5)]',
-    badgeBg: 'bg-emerald-500/10',
-    badgeText: 'text-emerald-400',
-    badgeBorder: 'border-emerald-500/25',
     placeholder: null,
     actionLabel: 'Ready',
     nextStatus: 'ready',
@@ -889,10 +876,10 @@ function LaunchedColumn({ column, items, onCardClick, onStatusChange }) {
 // Main PipelineView component
 // ---------------------------------------------------------------------------
 
-export function PipelineView({ creatives = [], onStatusChange, onAngleChange, onCardClick, onRegenerate, onRefresh, loading, onOpenTemplates, onOpenCopySets, queue = [], onRemoveFromQueue, productId = null }) {
+export function PipelineView({ creatives = [], onStatusChange, onAngleChange, onCardClick, onRegenerate, onRefresh, loading, onOpenTemplates, onOpenCopySets, queue = [], onRemoveFromQueue, productId = null, onSelectReference }) {
   // Bucket creatives into columns by status
   const buckets = useMemo(() => {
-    const map = { generating: [], review: [], approved: [], ready: [], launched: [] };
+    const map = { generating: [], review: [], ready: [], launched: [] };
     const STALE_GENERATING_MS = 7 * 60 * 1000; // 7 min
     const now = Date.now();
     for (const c of creatives) {
@@ -910,7 +897,9 @@ export function PipelineView({ creatives = [], onStatusChange, onAngleChange, on
         map.generating.push(c);
         continue;
       }
-      const status = c.status === 'queued' ? 'ready' : c.status;
+      // 'approved' is deprecated → fold into 'ready'. 'queued' also lives in Ready column.
+      let status = c.status;
+      if (status === 'queued' || status === 'approved') status = 'ready';
       const key = status in map ? status : 'review';
       map[key].push(c);
     }
@@ -1031,7 +1020,8 @@ export function PipelineView({ creatives = [], onStatusChange, onAngleChange, on
     }
   };
 
-  // Standard columns (generating, review, approved)
+  // Standard columns (generating, review). 'approved' is removed; Ready / Launched
+  // are still rendered separately below.
   const standardColumns = COLUMNS.filter(c => !['ready', 'launched'].includes(c.key));
   const readyColumn = COLUMNS.find(c => c.key === 'ready');
   const launchedColumn = COLUMNS.find(c => c.key === 'launched');
@@ -1087,13 +1077,13 @@ export function PipelineView({ creatives = [], onStatusChange, onAngleChange, on
 
       {/* Columns */}
       <div className="flex gap-6 flex-1 min-h-0 overflow-x-auto">
-        {/* Iterations column — pulls winners from creative_analysis, not spy_creatives */}
-        <IterationsColumn
+        {/* Reference column — reads spy_creatives WHERE is_reference, with League+Meta import modals. */}
+        <ReferenceColumn
           productId={productId}
-          onSubmitted={() => onRefresh?.()}
+          onSelectReference={onSelectReference}
         />
 
-        {/* Standard columns: generating, review, approved */}
+        {/* Standard columns: generating, review */}
         {standardColumns.map((col) => (
           <PipelineColumn
             key={col.key}

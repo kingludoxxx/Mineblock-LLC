@@ -1470,6 +1470,10 @@ async function ensureCreativesTable() {
   await pgQuery('ALTER TABLE spy_creatives ADD COLUMN IF NOT EXISTS iteration_change_description TEXT').catch(() => {});
   await pgQuery(`CREATE INDEX IF NOT EXISTS idx_spy_creatives_parent_ref ON spy_creatives(parent_creative_id_ref)`).catch(() => {});
   await pgQuery('ALTER TABLE spy_creatives ADD COLUMN IF NOT EXISTS quality_warning TEXT').catch(() => {});
+  await pgQuery('ALTER TABLE spy_creatives ADD COLUMN IF NOT EXISTS imported_from TEXT').catch(() => {});
+  await pgQuery('ALTER TABLE spy_creatives ADD COLUMN IF NOT EXISTS imported_metadata JSONB').catch(() => {});
+  await pgQuery('ALTER TABLE spy_creatives ADD COLUMN IF NOT EXISTS is_reference BOOLEAN DEFAULT FALSE').catch(() => {});
+  await pgQuery(`CREATE INDEX IF NOT EXISTS idx_spy_creatives_reference ON spy_creatives (is_reference, imported_from, created_at DESC) WHERE is_reference`).catch(() => {});
   await pgQuery('ALTER TABLE spy_creatives ADD COLUMN IF NOT EXISTS group_id UUID').catch(() => {});
   await pgQuery(`CREATE INDEX IF NOT EXISTS idx_spy_creatives_group_id ON spy_creatives(group_id)`).catch(() => {});
   await pgQuery(`CREATE UNIQUE INDEX IF NOT EXISTS idx_spy_creatives_im_number ON spy_creatives(im_number) WHERE im_number IS NOT NULL`).catch(() => {});
@@ -1672,7 +1676,14 @@ router.patch('/creatives/:id/status', authenticate, async (req, res) => {
   try {
     await ensureCreativesTable();
     const { status } = req.body;
-    const validStatuses = ['generating', 'review', 'approved', 'ready', 'queued', 'launching', 'launched', 'rejected', 'archived'];
+    // 'approved' is deprecated — the pipeline now jumps Review → Ready.
+    if (status === 'approved') {
+      return res.status(400).json({
+        success: false,
+        error: { message: 'approved is deprecated; use ready' },
+      });
+    }
+    const validStatuses = ['generating', 'review', 'ready', 'queued', 'launching', 'launched', 'rejected', 'archived'];
     if (!validStatuses.includes(status)) {
       return res.status(400).json({ success: false, error: { message: `Invalid status. Must be one of: ${validStatuses.join(', ')}` } });
     }
@@ -1683,13 +1694,14 @@ router.patch('/creatives/:id/status', authenticate, async (req, res) => {
     if (rows.length === 0) return res.status(404).json({ success: false, error: { message: 'Creative not found' } });
     const creative = rows[0];
 
-    if (status === 'approved' && creative.aspect_ratio !== '9:16' && !creative.parent_creative_id) {
+    // Auto-generate 9:16 variant when a 4:5 creative is promoted to Ready (no parent).
+    if (status === 'ready' && creative.aspect_ratio !== '9:16' && !creative.parent_creative_id) {
       const existingVariant = await pgQuery(
         "SELECT id FROM spy_creatives WHERE parent_creative_id = $1 AND aspect_ratio = '9:16'",
         [creative.id]
       );
       if (existingVariant.length === 0) {
-        console.log(`[staticsGeneration] Auto-generating 9:16 variant for approved creative ${creative.id}`);
+        console.log(`[staticsGeneration] Auto-generating 9:16 variant for ready creative ${creative.id}`);
         generateVariant(creative, '9:16').catch(err =>
           console.error('[staticsGeneration] Auto 9:16 variant error:', err.message)
         );
@@ -1746,7 +1758,7 @@ router.get('/creatives/pipeline', authenticate, async (req, res) => {
     await ensureCreativesTable();
     const { product_id } = req.query;
 
-    let query = "SELECT id, product_id, product_name, image_url, thumbnail_url, source_label, angle, archetype, aspect_ratio, status, reference_thumbnail, reference_name, parent_creative_id, pipeline, copy_set_id, meta_ad_ids, meta_image_hash, generated_copy, parent_creative_id_ref, parent_im_number, im_number, iteration_change_description, created_at FROM spy_creatives WHERE pipeline IN ('standard', 'iteration')";
+    let query = "SELECT id, product_id, product_name, image_url, thumbnail_url, source_label, angle, archetype, aspect_ratio, status, reference_thumbnail, reference_name, parent_creative_id, pipeline, copy_set_id, meta_ad_ids, meta_image_hash, generated_copy, parent_creative_id_ref, parent_im_number, im_number, iteration_change_description, created_at FROM spy_creatives WHERE pipeline IN ('standard', 'iteration') AND COALESCE(is_reference, false) = false";
     const params = [];
     if (product_id) {
       query += ' AND product_id = $1';
@@ -1756,13 +1768,18 @@ router.get('/creatives/pipeline', authenticate, async (req, res) => {
 
     const rows = await pgQuery(query, params);
 
-    const pipeline = { generating: [], review: [], approved: [], ready: [], launched: [] };
+    // 'approved' bucket is deprecated — rows that still have it (older data
+    // that escaped migration 051, e.g. inserted during the deploy window)
+    // are folded into 'ready'.
+    const pipeline = { generating: [], review: [], ready: [], launched: [] };
     const variants = [];
     for (const row of rows) {
       if (row.parent_creative_id && (row.status === 'generating' || row.status === 'rejected')) {
         variants.push(row);
       } else if (row.status === 'generating' && !row.parent_creative_id) {
         pipeline.generating.push(row);
+      } else if (row.status === 'approved') {
+        pipeline.ready.push(row);
       } else if (pipeline[row.status]) {
         pipeline[row.status].push(row);
       }
@@ -1797,7 +1814,6 @@ router.get('/creatives/pipeline', authenticate, async (req, res) => {
       counts: {
         generating: pipeline.generating.length,
         review: pipeline.review.length,
-        approved: pipeline.approved.length,
         ready: pipeline.ready.length,
         launched: pipeline.launched.length,
       },
@@ -3208,6 +3224,490 @@ router.post('/templates/classify-all', authenticate, async (req, res) => {
 
 router.get('/templates/classify-all/status', authenticate, async (_req, res) => {
   res.json({ success: true, progress: classifyAllProgress });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// REFERENCE PIPELINE — League (Brand Spy) + Meta (Triple Whale) imports
+//
+// All routes below READ from brand_spy.ads / brand_spy.brands /
+// spy_brand_follows / creative_analysis and WRITE reference rows into
+// spy_creatives (is_reference=true, status='ready').
+// ─────────────────────────────────────────────────────────────────────────
+
+// ── helpers ───────────────────────────────────────────────────────────────
+
+// brand_spy.ads stores the creative under raw_snapshot JSONB — the canonical
+// thumbnail-extraction lives in server/src/db/brandSpyDb.js. We re-use the
+// same JSON paths here so the imported reference thumbnail matches what the
+// Brand Spy UI shows.
+const BRAND_SPY_THUMB_SQL = `
+  COALESCE(
+    a.raw_snapshot->'videos'->0->>'video_preview_image_url',
+    a.raw_snapshot->'images'->0->>'resized_image_url',
+    a.raw_snapshot->'images'->0->>'original_image_url',
+    a.raw_snapshot->'cards'->0->>'resized_image_url',
+    a.raw_snapshot->'cards'->0->>'original_image_url',
+    a.raw_snapshot->>'page_profile_picture_url'
+  )
+`;
+
+function pickAspectRatio(displayFormat) {
+  const d = String(displayFormat || '').toUpperCase();
+  if (d.includes('SQUARE') || d === 'IMAGE_SQUARE' || d === '1:1') return '1:1';
+  return '4:5';
+}
+
+// 1. GET /league/brands — followed brands only, with their static-ad count.
+router.get('/league/brands', authenticate, async (_req, res) => {
+  try {
+    await ensureCreativesTable();
+    // spy_brand_follows.meta_page_id links to brand_spy.brand_pages.meta_page_id
+    // — we join through brand_pages to brands to surface only brands the user
+    // is actively following.
+    const rows = await pgQuery(`
+      SELECT
+        b.id,
+        b.display_name AS name,
+        b.domain,
+        COALESCE((
+          SELECT COUNT(*) FROM brand_spy.ads a
+          WHERE a.brand_id = b.id
+            AND a.is_active = TRUE
+            AND a.display_format ILIKE 'image%'
+        ), 0)::INTEGER AS static_count
+      FROM brand_spy.brands b
+      WHERE EXISTS (
+        SELECT 1
+        FROM spy_brand_follows sbf
+        JOIN brand_spy.brand_pages bp ON bp.meta_page_id = sbf.meta_page_id
+        WHERE bp.brand_id = b.id
+      )
+      ORDER BY b.display_name ASC NULLS LAST, b.domain ASC
+    `);
+    res.json({ success: true, data: rows });
+  } catch (err) {
+    console.error('[league/brands] error:', err);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// 2. GET /league/ads — list ads for a brand with tier / format / active filters.
+router.get('/league/ads', authenticate, async (req, res) => {
+  try {
+    await ensureCreativesTable();
+    const brandId = req.query.brand_id;
+    if (!brandId) {
+      return res.status(400).json({ success: false, error: { message: 'brand_id is required' } });
+    }
+    const tiersCsv = String(req.query.tiers || 'BANGER,CHAMP,A');
+    const tiers = tiersCsv.split(',').map(t => t.trim().toUpperCase()).filter(Boolean);
+    const format = String(req.query.format || 'IMAGE').toUpperCase();
+    const activeOnly = req.query.active_only === undefined ? true : String(req.query.active_only) !== 'false';
+    const search = req.query.search ? String(req.query.search).trim() : null;
+
+    const where = ['a.brand_id = $1'];
+    const params = [brandId];
+    if (tiers.length > 0) {
+      params.push(tiers);
+      where.push(`a.tier = ANY($${params.length}::text[])`);
+    }
+    if (format === 'IMAGE') {
+      where.push(`a.display_format ILIKE 'image%'`);
+    } else if (format === 'CAROUSEL') {
+      where.push(`a.display_format ILIKE 'carousel%'`);
+    } // ALL_STATIC → no display_format filter
+    if (activeOnly) {
+      where.push(`a.is_active = TRUE`);
+    }
+    if (search) {
+      params.push(`%${search}%`);
+      const i = params.length;
+      where.push(`(a.headline ILIKE $${i} OR a.body_text ILIKE $${i} OR a.caption ILIKE $${i})`);
+    }
+
+    const sql = `
+      SELECT
+        a.id, a.ad_archive_id, a.headline, a.body_text, a.display_format,
+        a.tier, a.tier_score, a.current_rank, a.is_active,
+        a.start_date, a.end_date, a.active_days,
+        ${BRAND_SPY_THUMB_SQL} AS image_url,
+        EXISTS (
+          SELECT 1 FROM spy_creatives sc
+          WHERE sc.imported_from = 'league'
+            AND sc.imported_metadata->>'ad_archive_id' = a.ad_archive_id
+        ) AS already_imported
+      FROM brand_spy.ads a
+      WHERE ${where.join(' AND ')}
+      ORDER BY a.tier_score DESC NULLS LAST, a.current_rank ASC NULLS LAST
+      LIMIT 500
+    `;
+    const rows = await pgQuery(sql, params);
+    res.json({ success: true, data: rows, count: rows.length });
+  } catch (err) {
+    console.error('[league/ads] error:', err);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// 3. POST /league/import — push selected Brand Spy ads into the Reference column.
+router.post('/league/import', authenticate, async (req, res) => {
+  try {
+    await ensureCreativesTable();
+    const { brand_id, ad_ids } = req.body || {};
+    if (!brand_id || !Array.isArray(ad_ids) || ad_ids.length === 0) {
+      return res.status(400).json({ success: false, error: { message: 'brand_id and ad_ids[] are required' } });
+    }
+
+    // Pull brand display name + each ad's full payload in one query.
+    const adRows = await pgQuery(`
+      SELECT
+        a.id, a.ad_archive_id, a.brand_id, a.headline, a.body_text, a.display_format,
+        a.tier, a.active_days, a.start_date, a.end_date,
+        ${BRAND_SPY_THUMB_SQL} AS image_url,
+        b.display_name AS brand_name,
+        b.domain AS brand_domain
+      FROM brand_spy.ads a
+      JOIN brand_spy.brands b ON b.id = a.brand_id
+      WHERE a.id = ANY($1::uuid[]) AND a.brand_id = $2
+    `, [ad_ids, brand_id]);
+
+    let imported = 0;
+    let skipped = 0;
+    for (const ad of adRows) {
+      // Skip if this ad_archive_id was already imported.
+      const existing = await pgQuery(
+        `SELECT 1 FROM spy_creatives WHERE imported_from = 'league' AND imported_metadata->>'ad_archive_id' = $1 LIMIT 1`,
+        [ad.ad_archive_id]
+      );
+      if (existing.length > 0) {
+        skipped++;
+        continue;
+      }
+      const brandName = ad.brand_name || ad.brand_domain || 'Unknown brand';
+      const meta = {
+        tier: ad.tier,
+        ad_archive_id: ad.ad_archive_id,
+        brand_id: ad.brand_id,
+        brand_name: brandName,
+        headline: ad.headline,
+        body_text: ad.body_text,
+        display_format: ad.display_format,
+        active_days: ad.active_days,
+        start_date: ad.start_date,
+        end_date: ad.end_date,
+      };
+      await pgQuery(`
+        INSERT INTO spy_creatives
+          (pipeline, status, is_reference, imported_from, image_url, thumbnail_url,
+           source_label, reference_name, reference_thumbnail, imported_metadata, aspect_ratio)
+        VALUES ('standard', 'ready', TRUE, 'league', $1, $1, $2, $2, $1, $3::jsonb, $4)
+      `, [ad.image_url, brandName, JSON.stringify(meta), pickAspectRatio(ad.display_format)]);
+      imported++;
+    }
+
+    res.json({
+      success: true,
+      data: { imported, skipped, skipped_reason: skipped ? 'already_imported' : null },
+    });
+  } catch (err) {
+    console.error('[league/import] error:', err);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// 4. GET /meta-ads/accounts — distinct accounts that have spent on STATIC ads
+// in the last 30 days. The creative_analysis schema uses `type` ('image') and
+// may or may not carry account fields (depends on the TW sync the analytics
+// worktree ships). We fall back to literals so the endpoint never breaks.
+router.get('/meta-ads/accounts', authenticate, async (_req, res) => {
+  try {
+    // Detect which columns exist on creative_analysis at runtime — the schema
+    // is owned by the analytics worktree and has drifted between syncs.
+    const colsRes = await pgQuery(`
+      SELECT column_name FROM information_schema.columns
+      WHERE table_name = 'creative_analysis'
+    `);
+    const cols = new Set(colsRes.map(r => r.column_name));
+    const idCol  = cols.has('ad_account_id') ? 'ad_account_id' : null;
+    const nameCol = cols.has('ad_account_name') ? 'ad_account_name'
+                  : cols.has('account_name') ? 'account_name'
+                  : null;
+    if (!idCol || !nameCol) {
+      // Schema doesn't carry account info yet — return one synthetic bucket
+      // so the UI still renders a pill instead of an empty modal.
+      const fallback = await pgQuery(`
+        SELECT COALESCE(SUM(spend), 0)::FLOAT AS spend_30d
+        FROM creative_analysis
+        WHERE synced_at >= NOW() - INTERVAL '30 days' AND type = 'image'
+      `);
+      return res.json({
+        success: true,
+        data: [{ ad_account_id: 'all', ad_account_name: 'All accounts', spend_30d: fallback[0]?.spend_30d || 0 }],
+        note: 'creative_analysis has no account columns',
+      });
+    }
+
+    const rows = await pgQuery(`
+      SELECT
+        ${idCol}   AS ad_account_id,
+        ${nameCol} AS ad_account_name,
+        SUM(spend)::FLOAT AS spend_30d
+      FROM creative_analysis
+      WHERE synced_at >= NOW() - INTERVAL '30 days'
+        AND type = 'image'
+        AND ${idCol} IS NOT NULL
+      GROUP BY ${idCol}, ${nameCol}
+      ORDER BY spend_30d DESC NULLS LAST
+    `);
+    res.json({ success: true, data: rows });
+  } catch (err) {
+    console.error('[meta-ads/accounts] error:', err);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// 5. GET /meta-ads/ads — aggregated TW image creatives, scoped/sorted/filtered.
+router.get('/meta-ads/ads', authenticate, async (req, res) => {
+  try {
+    const accountsCsv = req.query.accounts ? String(req.query.accounts) : '';
+    const accounts = accountsCsv.split(',').map(a => a.trim()).filter(Boolean);
+    const status = String(req.query.status || 'active').toLowerCase();
+    const windowRaw = parseInt(req.query.window, 10);
+    const window = [7, 30, 90].includes(windowRaw) ? windowRaw : 30;
+    const sortKey = ['spend', 'revenue', 'roas', 'cpa'].includes(req.query.sort) ? req.query.sort : 'spend';
+    const minRoas = parseFloat(req.query.min_roas) || 0;
+    const minSpend = parseFloat(req.query.min_spend) || 0;
+    const search = req.query.search ? String(req.query.search).trim() : null;
+
+    const colsRes = await pgQuery(`
+      SELECT column_name FROM information_schema.columns
+      WHERE table_name = 'creative_analysis'
+    `);
+    const cols = new Set(colsRes.map(r => r.column_name));
+    const idCol  = cols.has('ad_account_id') ? 'ad_account_id' : null;
+    const nameCol = cols.has('ad_account_name') ? 'ad_account_name'
+                  : cols.has('account_name') ? 'account_name'
+                  : null;
+    const hasStatus = cols.has('is_active') || cols.has('ad_status');
+
+    const where = [`ca.type = 'image'`, `ca.synced_at >= NOW() - ($1 || ' days')::INTERVAL`];
+    const params = [String(window)];
+
+    if (accounts.length > 0 && idCol) {
+      params.push(accounts);
+      where.push(`ca.${idCol} = ANY($${params.length}::text[])`);
+    }
+    if (status === 'active' && hasStatus) {
+      if (cols.has('is_active')) where.push(`ca.is_active = TRUE`);
+      else where.push(`ca.ad_status = 'active'`);
+    } else if (status === 'active+paused' && hasStatus) {
+      if (cols.has('is_active')) where.push(`(ca.is_active = TRUE OR ca.ad_status = 'paused')`);
+      else where.push(`ca.ad_status IN ('active', 'paused')`);
+    } // 'all' → no filter
+
+    if (search) {
+      params.push(`%${search}%`);
+      const i = params.length;
+      where.push(`(ca.ad_name ILIKE $${i} OR ca.creative_id ILIKE $${i})`);
+    }
+
+    const accountIdSelect   = idCol   ? `ca.${idCol}`   : `'unknown'::text`;
+    const accountNameSelect = nameCol ? `ca.${nameCol}` : `'Unknown'::text`;
+
+    // Aggregate per creative_id; the latest synced row supplies the metadata.
+    const sql = `
+      WITH agg AS (
+        SELECT
+          ca.creative_id,
+          SUM(ca.spend)::FLOAT       AS spend,
+          SUM(ca.revenue)::FLOAT     AS revenue,
+          SUM(ca.purchases)::FLOAT   AS purchases,
+          SUM(ca.impressions)::BIGINT AS impressions,
+          SUM(ca.clicks)::BIGINT      AS clicks,
+          MAX(ca.synced_at)          AS latest_synced_at
+        FROM creative_analysis ca
+        WHERE ${where.join(' AND ')}
+        GROUP BY ca.creative_id
+      ),
+      latest AS (
+        SELECT DISTINCT ON (ca.creative_id)
+          ca.creative_id, ca.ad_name, ca.thumbnail_url, ca.meta_ad_id, ca.angle, ca.hook_id, ca.week, ca.ctr,
+          ${accountIdSelect}   AS ad_account_id,
+          ${accountNameSelect} AS account_name
+        FROM creative_analysis ca
+        WHERE ${where.join(' AND ')}
+        ORDER BY ca.creative_id, ca.spend DESC NULLS LAST, ca.synced_at DESC
+      )
+      SELECT
+        agg.creative_id,
+        latest.ad_account_id,
+        latest.account_name,
+        latest.ad_name,
+        latest.thumbnail_url,
+        latest.meta_ad_id,
+        latest.angle,
+        latest.hook_id,
+        latest.week,
+        latest.ctr::FLOAT AS ctr,
+        agg.spend, agg.revenue, agg.purchases, agg.impressions, agg.clicks,
+        agg.latest_synced_at,
+        (CASE WHEN agg.spend > 0 THEN agg.revenue / agg.spend ELSE 0 END)::FLOAT AS roas,
+        (CASE WHEN agg.purchases > 0 THEN agg.spend / agg.purchases ELSE 0 END)::FLOAT AS cpa,
+        GREATEST(0, EXTRACT(DAY FROM (NOW() - agg.latest_synced_at))::INTEGER) AS days_active,
+        EXISTS (
+          SELECT 1 FROM spy_creatives sc
+          WHERE sc.imported_from = 'meta'
+            AND sc.imported_metadata->>'meta_ad_id' = latest.meta_ad_id
+        ) AS already_imported
+      FROM agg
+      JOIN latest USING (creative_id)
+      WHERE agg.spend >= $${params.length + 1}
+        AND (CASE WHEN agg.spend > 0 THEN agg.revenue / agg.spend ELSE 0 END) >= $${params.length + 2}
+      ORDER BY
+        CASE $${params.length + 3}
+          WHEN 'spend'   THEN agg.spend
+          WHEN 'revenue' THEN agg.revenue
+          WHEN 'roas'    THEN (CASE WHEN agg.spend > 0 THEN agg.revenue / agg.spend ELSE 0 END)
+          WHEN 'cpa'     THEN -1.0 * (CASE WHEN agg.purchases > 0 THEN agg.spend / agg.purchases ELSE 999999 END)
+        END DESC NULLS LAST
+      LIMIT 500
+    `;
+    params.push(minSpend, minRoas, sortKey);
+    const rows = await pgQuery(sql, params);
+    res.json({ success: true, data: rows, count: rows.length });
+  } catch (err) {
+    console.error('[meta-ads/ads] error:', err);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// 6. POST /meta-ads/import — push selected TW creatives into the Reference column.
+router.post('/meta-ads/import', authenticate, async (req, res) => {
+  try {
+    await ensureCreativesTable();
+    const { creative_ids } = req.body || {};
+    if (!Array.isArray(creative_ids) || creative_ids.length === 0) {
+      return res.status(400).json({ success: false, error: { message: 'creative_ids[] is required' } });
+    }
+
+    const colsRes = await pgQuery(`
+      SELECT column_name FROM information_schema.columns
+      WHERE table_name = 'creative_analysis'
+    `);
+    const cols = new Set(colsRes.map(r => r.column_name));
+    const idCol  = cols.has('ad_account_id') ? 'ad_account_id' : null;
+    const nameCol = cols.has('ad_account_name') ? 'ad_account_name'
+                  : cols.has('account_name') ? 'account_name'
+                  : null;
+    const accountIdSelect   = idCol   ? `ca.${idCol}`   : `'unknown'::text`;
+    const accountNameSelect = nameCol ? `ca.${nameCol}` : `'Unknown'::text`;
+
+    let imported = 0;
+    let skipped = 0;
+    for (const cid of creative_ids) {
+      // Pick the highest-spend row for this creative_id (matches /iterations logic).
+      const rows = await pgQuery(`
+        SELECT
+          ca.creative_id, ca.ad_name, ca.thumbnail_url, ca.meta_ad_id,
+          ca.angle, ca.hook_id, ca.week,
+          ca.spend::FLOAT AS spend, ca.revenue::FLOAT AS revenue,
+          ca.roas::FLOAT AS roas, ca.cpa::FLOAT AS cpa, ca.ctr::FLOAT AS ctr,
+          ca.impressions::BIGINT AS impressions, ca.synced_at,
+          ${accountIdSelect}   AS ad_account_id,
+          ${accountNameSelect} AS account_name
+        FROM creative_analysis ca
+        WHERE ca.creative_id = $1 AND ca.type = 'image' AND ca.thumbnail_url IS NOT NULL
+        ORDER BY ca.spend DESC NULLS LAST
+        LIMIT 1
+      `, [cid]);
+      if (rows.length === 0) {
+        skipped++;
+        continue;
+      }
+      const r = rows[0];
+      if (r.meta_ad_id) {
+        const exists = await pgQuery(
+          `SELECT 1 FROM spy_creatives WHERE imported_from = 'meta' AND imported_metadata->>'meta_ad_id' = $1 LIMIT 1`,
+          [String(r.meta_ad_id)]
+        );
+        if (exists.length > 0) {
+          skipped++;
+          continue;
+        }
+      }
+      const sourceLabel = `${r.account_name || 'TW'} / ${r.ad_name || r.creative_id}`;
+      const meta = {
+        ad_account_id: r.ad_account_id, account_name: r.account_name,
+        meta_ad_id: r.meta_ad_id, spend: r.spend, revenue: r.revenue,
+        roas: r.roas, cpa: r.cpa, ctr: r.ctr, impressions: r.impressions,
+        week: r.week, angle: r.angle, hook_id: r.hook_id, synced_at: r.synced_at,
+      };
+      await pgQuery(`
+        INSERT INTO spy_creatives
+          (pipeline, status, is_reference, imported_from, image_url, thumbnail_url,
+           source_label, reference_name, reference_thumbnail, angle, imported_metadata, aspect_ratio)
+        VALUES ('standard', 'ready', TRUE, 'meta', $1, $1, $2, $3, $1, $4, $5::jsonb, '4:5')
+      `, [r.thumbnail_url, sourceLabel, r.creative_id, r.angle || null, JSON.stringify(meta)]);
+      imported++;
+    }
+
+    res.json({
+      success: true,
+      data: { imported, skipped, skipped_reason: skipped ? 'already_imported' : null },
+    });
+  } catch (err) {
+    console.error('[meta-ads/import] error:', err);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// 7. GET /reference-ads — list reference creatives (optionally per product).
+router.get('/reference-ads', authenticate, async (req, res) => {
+  try {
+    await ensureCreativesTable();
+    const productId = req.query.product_id || null;
+    const where = ['is_reference = TRUE'];
+    const params = [];
+    if (productId) {
+      params.push(productId);
+      where.push(`product_id = $${params.length}`);
+    }
+    const rows = await pgQuery(`
+      SELECT id, product_id, image_url, thumbnail_url, source_label, reference_name,
+             reference_thumbnail, angle, aspect_ratio, status, pipeline,
+             imported_from, imported_metadata, created_at
+      FROM spy_creatives
+      WHERE ${where.join(' AND ')}
+      ORDER BY created_at DESC
+      LIMIT 500
+    `, params);
+    res.json({ success: true, data: rows, count: rows.length });
+  } catch (err) {
+    console.error('[reference-ads] GET error:', err);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// 8. DELETE /reference-ads/:id — remove a single reference row.
+router.delete('/reference-ads/:id', authenticate, async (req, res) => {
+  try {
+    await ensureCreativesTable();
+    // UUID validation guard — silently 404 instead of throwing a 500 on bad input.
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(req.params.id)) {
+      return res.status(404).json({ success: false, error: { message: 'Reference not found' } });
+    }
+    const rows = await pgQuery(
+      `DELETE FROM spy_creatives WHERE id = $1 AND is_reference = TRUE RETURNING id`,
+      [req.params.id]
+    );
+    if (rows.length === 0) {
+      return res.status(404).json({ success: false, error: { message: 'Reference not found' } });
+    }
+    res.json({ success: true, data: { id: rows[0].id } });
+  } catch (err) {
+    console.error('[reference-ads] DELETE error:', err);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
 });
 
 // Suppress unused-import warnings for helpers kept for future use
