@@ -718,6 +718,30 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
         return;
       }
 
+      // Dead-page skip: known pages that returned 0 active ads on the last
+      // Phase 2 ACTIVE check are re-checked once a week instead of every
+      // scrape. Saves ~1 credit per dead page per scrape (16-page brands
+      // with 10 dead pages → ~10 credits saved per re-scrape).
+      // Brand-new pages (added by Phase 1 during this run) have NULL
+      // last_active_check_at so this check naturally falls through.
+      if (knownPageIds.has(metaPageId)) {
+        const brandPageId = pageCache.get(metaPageId);
+        if (brandPageId) {
+          const { rows } = await query(
+            `SELECT active_ads_count, last_active_check_at
+               FROM brand_spy.brand_pages WHERE id = $1`,
+            [brandPageId],
+          );
+          const p = rows[0];
+          const fresh = p?.last_active_check_at
+            && (Date.now() - new Date(p.last_active_check_at).getTime()) < 6 * 86400000;
+          if (p && p.active_ads_count === 0 && fresh) {
+            console.log(`[brand-spy] phase-2 page ${metaPageId}: SKIP (dead — 0 active, last check < 6d ago)`);
+            return;
+          }
+        }
+      }
+
       const pageName = pageNameCache.get(metaPageId) ?? null;
       const isMetaPage = isMetaPlatformPage(pageName);
 
@@ -770,6 +794,17 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
             discovered += d; updated += u;
           }
         }
+      }
+
+      // Mark this page as freshly checked — drives the dead-page skip on the
+      // next scrape. Only updates on successful Phase 2 ACTIVE; failed pages
+      // (p2Blocked) leave last_active_check_at unchanged so they're retried.
+      const brandPageId = pageCache.get(metaPageId);
+      if (brandPageId) {
+        await query(
+          `UPDATE brand_spy.brand_pages SET last_active_check_at = NOW() WHERE id = $1`,
+          [brandPageId],
+        );
       }
     } catch (p2Err) {
       // Phase 2 failures (e.g. 431 rate-limit from ScrapeCreators /company/ads endpoint)
@@ -824,6 +859,38 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
     console.log(`[brand-spy] phase-1a/1b: skipped (${isFirstScrape ? 'Phase 1d covers it' : 're-scrape; per-page Phase 2 ACTIVE is sufficient'})`);
   }
 
+  // Phase 1d adaptive skip on re-scrape:
+  //
+  // Phase 1d's purpose on re-scrape is to discover NEW FB pages we don't yet
+  // know about. For a brand whose page set has been stable for 14+ days AND
+  // was scraped less than 23h ago, running 1d every refresh is wasted credits
+  // — the page set isn't changing. Skip it; the next auto-scrape (24h cadence)
+  // will re-probe.
+  //
+  // First-scrape never hits this branch (no known pages).
+  // The 23h gate ensures the daily auto-scrape always probes for new pages.
+  // The 14-day "stable" gate ensures we don't skip too aggressively on
+  // freshly-onboarded brands whose page set is still expanding.
+  let skipPhase1d = false;
+  if (!isFirstScrape) {
+    const { rows } = await query(
+      `SELECT
+         b.last_scraped_at,
+         (SELECT MAX(first_seen_at) FROM brand_spy.brand_pages WHERE brand_id = b.id) AS last_new_page_at
+       FROM brand_spy.brands b WHERE b.id = $1`,
+      [brandId],
+    );
+    const r = rows[0];
+    if (r?.last_scraped_at && r?.last_new_page_at) {
+      const hoursSinceScrape = (Date.now() - new Date(r.last_scraped_at).getTime()) / 3600000;
+      const daysSinceNewPage = (Date.now() - new Date(r.last_new_page_at).getTime()) / 86400000;
+      if (hoursSinceScrape < 23 && daysSinceNewPage > 14) {
+        skipPhase1d = true;
+        console.log(`[brand-spy] phase-1d: SKIP (page set stable for ${daysSinceNewPage.toFixed(0)}d, last scrape ${hoursSinceScrape.toFixed(1)}h ago — next auto-scrape will probe)`);
+      }
+    }
+  }
+
   // Phase 1d: rootFragment keyword search — catches ads whose link_url uses a subdomain
   // (e.g. shop.try-forge.com, secure.try-forge.com) that do NOT match the full domain
   // "try-forge.com" used in Phase 1a/b.
@@ -840,8 +907,9 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
   // actually advertise to try-forge.com URLs are enqueued for Phase 2.
   //
   // SKIP if rootFragment is too short (< 5 chars) — generic fragments cause too much
-  // noise (e.g. "fit", "go", "app").
-  if (rootFragment.length >= 5) {
+  // noise (e.g. "fit", "go", "app"). Also skip if the adaptive-skip flag above
+  // decided this brand's page set is stable enough to defer to the next auto-scrape.
+  if (rootFragment.length >= 5 && !skipPhase1d) {
     const p1dBefore = pageCache.size;
     const p1dIsFirstScrape = (p1dBefore === 0); // no pre-loaded pages → first discovery run
     // On re-scrapes, cap Phase 1d at 3 cursor pages — enough to surface any new pages
