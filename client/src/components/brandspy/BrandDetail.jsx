@@ -98,9 +98,12 @@ const PAGE_SIZE_TABLE = 50;
 // Helpers
 // ---------------------------------------------------------------------------
 
+// We display only two formats in the league: VID or IMG. The backend
+// (mapAdListItem) already collapses Meta's many native types (IMAGE/VIDEO/
+// CAROUSEL/DCO/DPA/etc.) into these two. videoUrl presence is the tie-breaker
+// the backend can't always know about for DCO ads.
 function classifyAdFormat(ad) {
-  if (ad.displayFormat === 'CAROUSEL') return 'CAROUSEL';
-  if (ad.displayFormat === 'VIDEO' || ad.videoUrl) return 'VIDEO';
+  if (ad.displayFormat === 'VID' || ad.videoUrl) return 'VIDEO';
   return 'IMAGE';
 }
 
@@ -511,7 +514,7 @@ function AdCard({ ad, brand, onOpenIntel }) {
               // logo sits centered with breathing room instead of being
               // cropped/stretched into the 4/5 box.
               <img src={ad.thumbnailUrl} alt=""
-                className={`w-full h-full ${ad.displayFormat === 'DCO' ? 'object-contain p-6 bg-zinc-900' : 'object-cover'}`}
+                className={`w-full h-full ${ad.isDco ? 'object-contain p-6 bg-zinc-900' : 'object-cover'}`}
                 onError={() => setImgFailed(true)} />
             ) : (
               <div className="w-full h-full flex items-center justify-center">

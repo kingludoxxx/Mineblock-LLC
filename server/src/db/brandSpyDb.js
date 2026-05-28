@@ -76,7 +76,25 @@ function extractVideo(raw) {
   return raw.videos?.[0]?.video_hd_url ?? raw.videos?.[0]?.video_sd_url ?? null;
 }
 
+// Collapse Meta's many format labels (IMAGE / VIDEO / CAROUSEL / DCO / DPA /
+// EVENT / etc.) down to the two we actually show in the league: VID or IMG.
+// Rules:
+//   • If Meta says VIDEO, or we have an extracted video URL, it's VID.
+//   • Everything else (IMAGE, CAROUSEL, DCO without a video variant, etc.)
+//     is IMG.
+//   • If we have no display_format at all and no video, return null and let
+//     the UI render an em-dash.
+function collapseDisplayFormat(raw, videoUrl) {
+  if (raw === 'VIDEO' || videoUrl) return 'VID';
+  if (raw) return 'IMG';
+  return null;
+}
+
 function mapAdListItem(row) {
+  const videoUrl = row.video_url !== undefined
+    ? (row.video_url ?? null)
+    : extractVideo(row.raw_snapshot);
+  const rawFormat = row.display_format;
   return {
     id: row.id,
     adArchiveId: row.ad_archive_id,
@@ -88,7 +106,11 @@ function mapAdListItem(row) {
     endDate: row.end_date ? new Date(row.end_date).toISOString() : null,
     activeDays: row.active_days,
     totalActiveTime: row.total_active_time ?? null,
-    displayFormat: row.display_format,
+    displayFormat: collapseDisplayFormat(rawFormat, videoUrl),
+    // DCO ads have no canonical creative — the thumbnail is the page logo
+    // fallback. Expose this so the UI can render with object-contain instead
+    // of object-cover (which would stretch the logo awkwardly).
+    isDco: rawFormat === 'DCO',
     ctaText: row.cta_text,
     ctaType: row.cta_type,
     headline: row.headline,
@@ -112,9 +134,7 @@ function mapAdListItem(row) {
     thumbnailUrl: row.thumbnail_url !== undefined
       ? (row.thumbnail_url ?? null)
       : extractThumbnail(row.raw_snapshot),
-    videoUrl: row.video_url !== undefined
-      ? (row.video_url ?? null)
-      : extractVideo(row.raw_snapshot),
+    videoUrl,
     firstSeenAt: new Date(row.first_seen_at).toISOString(),
     lastSeenAt: new Date(row.last_seen_at).toISOString(),
   };
