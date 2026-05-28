@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { X, Sparkles, Trash2, Clock, Trophy, Flame, Star, FileText, Play } from 'lucide-react';
+import { X, Sparkles, Trash2, Clock, Trophy, Flame, Star, FileText, Play, Eye } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 
 const TIER_META = {
   BANGER: { Icon: Flame,  label: 'Banger',  accent: 'text-zinc-200' },
@@ -22,6 +23,7 @@ function timeAgo(iso) {
 }
 
 export default function ReferencePreviewModal({ reference, open, onClose, onUseAsReference, onDelete }) {
+  const navigate = useNavigate();
   // Reset video error state whenever a new reference is opened — by keying
   // the state to reference?.id we get reset-on-change without the
   // setState-in-effect anti-pattern.
@@ -172,6 +174,15 @@ export default function ReferencePreviewModal({ reference, open, onClose, onUseA
             </button>
             <button
               type="button"
+              onClick={() => { onClose(); navigate(`/app/brief-pipeline/reference/${reference.id}`); }}
+              className="inline-flex items-center gap-2 px-3 py-2 text-[11px] font-mono font-semibold uppercase tracking-wider rounded-md border border-violet-500/40 bg-violet-500/15 text-violet-200 hover:bg-violet-500/20 hover:border-violet-500/60 transition-colors cursor-pointer"
+              title="Open full Gemini analysis — visual breakdown, narrative, weaknesses, how-to-beat"
+            >
+              <Eye className="w-3.5 h-3.5" />
+              Full Analysis
+            </button>
+            <button
+              type="button"
               onClick={() => { onUseAsReference(reference); onClose(); }}
               disabled={!hasTranscript}
               className="inline-flex items-center gap-2 px-4 py-2 text-xs font-mono font-semibold uppercase tracking-wider rounded-md transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
@@ -180,10 +191,10 @@ export default function ReferencePreviewModal({ reference, open, onClose, onUseA
                 color: '#111113',
                 boxShadow: '0 0 16px rgba(201,168,76,0.25)',
               } : { background: 'rgba(255,255,255,0.04)', color: '#52525b', border: '1px solid rgba(255,255,255,0.04)' }}
-              title={hasTranscript ? 'Use this transcript in the Script Generator' : 'Transcript required'}
+              title={hasTranscript ? 'Quick-prefill the Script Generator' : 'Transcript required'}
             >
               <Sparkles className="w-3.5 h-3.5" />
-              Use as Reference
+              Quick Use
             </button>
           </div>
         </div>

@@ -5814,6 +5814,348 @@ router.get('/product-context/:id', authenticate, async (req, res) => {
   }
 });
 
+// ============================================================================
+// ── Reference Analysis (whole-video Gemini pass) ───────────────────────────
+//
+// One call to Gemini Flash with the full video bytes → a structured JSON
+// breakdown matching the analysis page UI: visual setup, transcript-rooted
+// narrative beats (Hook / Problem / Agitation / Solution Intro / Proof Points
+// / CTA), why_it_works, psychological_triggers[], weaknesses[], how_to_beat_it.
+//
+// The product profile is injected so the analysis can comment on alignment
+// + flag compliance risks for the downstream Brief Generation step.
+// ============================================================================
+
+const DEFAULT_REFERENCE_ANALYZER_PROMPT = `You are a senior direct-response strategist and ad analyst. You will watch a competitor video ad in full (visuals + audio + transcript) and return a single, valid JSON object that breaks down WHY the ad works, what it does badly, and how to beat it.
+
+ANALYSIS DEPTH:
+- Watch the entire video. Use both the visual frame-by-frame composition AND the spoken script.
+- Be specific to THIS ad — never generic. Quote exact phrases from the transcript when relevant.
+- The output JSON powers a UI; matching the schema exactly is required.
+
+OUR PRODUCT — use this context to comment on alignment & compliance:
+{{PRODUCT_CONTEXT}}
+
+REFERENCE METADATA:
+Source: {{REFERENCE_SOURCE}}
+Brand: {{REFERENCE_BRAND}}
+Tier: {{REFERENCE_TIER}}
+Headline (if any): {{REFERENCE_HEADLINE}}
+
+KNOWN TRANSCRIPT (Whisper, may have artifacts):
+{{REFERENCE_TRANSCRIPT}}
+
+Return ONLY a JSON object with this exact shape (no markdown, no backticks, no commentary):
+{
+  "visual": {
+    "setting": "one-line description of the scene/backdrop (e.g. 'studio with plain white backdrop and wooden pedestals')",
+    "speaker_count": 1,
+    "speakers": [{ "role": "founder|spokesperson|customer|voiceover|actor", "voice": "male|female|mixed|other" }],
+    "cuts_count": 9,
+    "scene_type": "static talking head | UGC handheld | mashup | cartoon | screen recording | mixed",
+    "captions": ["3-7 of the most prominent on-screen text overlays as they appear"],
+    "color_palette": ["#hex", "#hex", "#hex", "#hex"],
+    "production_notes": "1-2 sentences on production quality, lighting, pacing of cuts"
+  },
+  "narrative_breakdown": {
+    "hook": {
+      "quote": "exact opening line from the transcript",
+      "analysis": "1-3 sentences: what the hook does, whether it creates curiosity/tension, scroll-stop mechanism"
+    },
+    "problem": {
+      "framed": true,
+      "analysis": "how the ad frames the problem — or explicitly say 'The ad does NOT frame a problem' and explain what it does instead"
+    },
+    "agitation": {
+      "used": true,
+      "analysis": "how the ad twists the knife / amplifies pain — or explicitly say 'Zero agitation' and explain"
+    },
+    "solution_intro": {
+      "analysis": "how the product is introduced as the answer, with the quoted positioning line"
+    },
+    "proof_points": [
+      { "quote": "exact phrase from transcript", "claim": "what is being claimed", "evidence_type": "demo|stat|testimonial|authority|comparison|blockchain|before-after|feature-list|other", "strength": "weak|medium|strong" }
+    ],
+    "cta": {
+      "quote": "exact CTA text — or 'No verbal CTA in the transcript' if absent",
+      "strength": "weak|medium|strong",
+      "analysis": "what the CTA does and what it lacks (urgency, scarcity, risk reversal, offer specifics)"
+    }
+  },
+  "why_it_works": "2-4 sentences on the core persuasion mechanism — authority transfer, identity reinforcement, origin halo, etc. Be specific to this ad. State whether this is cold-traffic or mid-funnel retention.",
+  "psychological_triggers": [
+    { "trigger": "Authority bias | Identity reinforcement | Social proof | Scarcity | Pattern interrupt | Origin halo | Loss aversion | Curiosity gap | etc.", "evidence": "exact transcript or visual evidence in 1-2 sentences", "strength": "weak|medium|strong" }
+  ],
+  "weaknesses": [
+    { "label": "Zero hook tension | No external proof | Features without emotional payoff | Missed objection handling | Weak CTA | etc.", "explanation": "1-2 sentences explaining why this is a weakness for direct-response performance" }
+  ],
+  "how_to_beat_it": "A single paragraph (4-7 sentences) describing concretely how to rewrite this ad to outperform it. Use the imperative voice (START with..., THEN..., INJECT..., CONNECT..., CLOSE with...). Reference our product's mechanism / offer / guarantee when relevant. This becomes the brief for the downstream adapter.",
+  "audience_alignment": {
+    "this_ad_targets": "specific audience description inferred from the ad",
+    "matches_our_audience": "yes | partial | no",
+    "reason": "one sentence — does this resonate with our customer avatar"
+  },
+  "compliance_risks": [
+    { "quote": "exact phrase from transcript that would violate our restrictions if cloned verbatim", "violates": "which compliance rule from the product profile", "rewrite_direction": "how the adapter should handle this" }
+  ],
+  "adaptation_confidence": "high | medium | low",
+  "adaptation_confidence_reason": "one sentence on why this reference is or isn't a strong fit to clone for our product"
+}
+
+RULES:
+- Output MUST be valid JSON only — no markdown, no backticks, no prose outside the JSON.
+- Quote the transcript verbatim where the schema says "exact".
+- Hex codes in color_palette MUST be 6-digit with leading #.
+- If the transcript field is empty or unavailable, infer from the audio you hear in the video.
+- Mark transcript artifacts ([unclear], [crosstalk]) verbatim — do not "clean up" the source.`;
+
+// Strip code fences / leading prose around a JSON object so brittle model
+// outputs still parse.
+function extractJsonObject(text) {
+  if (!text || typeof text !== 'string') return null;
+  let s = text.trim();
+  // Strip Markdown fences if present
+  s = s.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
+  // Find the first '{' and the matching final '}'
+  const start = s.indexOf('{');
+  const end = s.lastIndexOf('}');
+  if (start === -1 || end === -1 || end <= start) return null;
+  const slice = s.slice(start, end + 1);
+  try { return JSON.parse(slice); } catch { return null; }
+}
+
+function renderTemplate(tpl, vars) {
+  return tpl.replace(/\{\{\s*([A-Z_]+)\s*\}\}/g, (_, k) => {
+    const v = vars[k];
+    return v == null ? '' : String(v);
+  });
+}
+
+// Run Gemini against the whole video with a JSON-output prompt.
+// Returns { json, model } on success — throws on hard failure.
+async function analyzeWholeVideoWithGemini(mediaUrl, promptText) {
+  if (!GEMINI_API_KEY) throw new Error('GEMINI_API_KEY not configured');
+
+  console.log(`[BriefPipeline:analyze] downloading video: ${mediaUrl.slice(0, 80)}...`);
+  const mediaRes = await fetch(mediaUrl, {
+    headers: { 'User-Agent': 'Mozilla/5.0 (compatible; MineblockBot/1.0)' },
+    redirect: 'follow',
+    signal: AbortSignal.timeout(60_000),
+  });
+  if (!mediaRes.ok) throw new Error(`Failed to download video: HTTP ${mediaRes.status}`);
+
+  const buffer = Buffer.from(await mediaRes.arrayBuffer());
+  const contentType = mediaRes.headers.get('content-type') || 'video/mp4';
+  const sizeMB = buffer.length / 1024 / 1024;
+  console.log(`[BriefPipeline:analyze] downloaded ${sizeMB.toFixed(1)}MB (${contentType})`);
+
+  const mime = contentType.split(';')[0];
+  // Prefer 2.0-flash for multimodal; 1.5-flash as fallback.
+  const models = ['gemini-2.0-flash-001', 'gemini-1.5-flash'];
+
+  let requestBody;
+  if (sizeMB > 15) {
+    const fileUri = await uploadToGeminiFileApi(buffer, mime);
+    if (!fileUri) throw new Error('Gemini File API upload failed');
+    requestBody = {
+      contents: [{ parts: [
+        { fileData: { mimeType: mime, fileUri } },
+        { text: promptText },
+      ]}],
+      generationConfig: {
+        maxOutputTokens: 8192,
+        temperature: 0.3,
+        responseMimeType: 'application/json',
+      },
+    };
+  } else {
+    requestBody = {
+      contents: [{ parts: [
+        { inlineData: { mimeType: mime, data: buffer.toString('base64') } },
+        { text: promptText },
+      ]}],
+      generationConfig: {
+        maxOutputTokens: 8192,
+        temperature: 0.3,
+        responseMimeType: 'application/json',
+      },
+    };
+  }
+
+  // Same retry pattern as transcription — try every key/model.
+  let lastError = null;
+  for (const apiKey of (GEMINI_API_KEYS.length ? GEMINI_API_KEYS : [GEMINI_API_KEY])) {
+    if (!apiKey) continue;
+    for (const model of models) {
+      try {
+        const keyLabel = `key:${apiKey.slice(-4)}`;
+        console.log(`[BriefPipeline:analyze] trying Gemini ${model} (${keyLabel})`);
+        const res = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(requestBody),
+            signal: AbortSignal.timeout(180_000),
+          }
+        );
+        if (res.status === 429) { lastError = `${model}: 429`; continue; }
+        if (res.status === 404) { lastError = `${model}: 404`; break; }
+        if (!res.ok) {
+          const txt = await res.text();
+          lastError = `${model}: HTTP ${res.status} — ${txt.slice(0, 150)}`;
+          console.warn(`[BriefPipeline:analyze] ${model} failed: ${lastError}`);
+          continue;
+        }
+        const data = await res.json();
+        const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+        if (!text) { lastError = `${model}: empty response`; continue; }
+        const json = extractJsonObject(text);
+        if (!json) { lastError = `${model}: response not JSON-parseable`; continue; }
+        console.log(`[BriefPipeline:analyze] success via ${model} (${keyLabel})`);
+        return { json, model };
+      } catch (err) {
+        lastError = `${model}: ${err.message}`;
+        console.warn(`[BriefPipeline:analyze] ${model} error:`, err.message);
+      }
+    }
+  }
+  throw new Error(`Gemini analysis failed: ${lastError || 'unknown'}`);
+}
+
+// Build the prompt for a specific reference + product profile.
+async function buildReferenceAnalyzerPrompt(reference) {
+  // Allow operator override via League Prompts (key=videoAnalysis).
+  const saved = await getLeaguePrompts();
+  let template = DEFAULT_REFERENCE_ANALYZER_PROMPT;
+  try {
+    const customRaw = saved?.videoAnalysis?.json;
+    if (customRaw && customRaw.trim()) {
+      const obj = JSON.parse(customRaw);
+      // Accept either { user } string (preferred), or { system, user } shape
+      if (typeof obj?.user === 'string' && obj.user.trim()) template = obj.user;
+      else if (typeof obj?.prompt === 'string' && obj.prompt.trim()) template = obj.prompt;
+    }
+  } catch { /* keep default */ }
+
+  // Resolve product profile via the reference's brand (if matched in our
+  // product library) — for Brief Pipeline + League the user picks the product
+  // explicitly at generation time, so we pass an empty-ish profile here and
+  // let the analyzer comment on alignment generically.
+  const profile = await fetchProductProfile('MR'); // default to MinerForge until product is selected
+  const productContext = buildProductContextForBrief(profile);
+
+  const vars = {
+    PRODUCT_CONTEXT:      productContext,
+    REFERENCE_SOURCE:     'league',
+    REFERENCE_BRAND:      reference.brandName || reference.brand_name || '',
+    REFERENCE_TIER:       reference.tier || '',
+    REFERENCE_HEADLINE:   reference.headline || '',
+    REFERENCE_TRANSCRIPT: reference.transcript || '(no transcript on file — infer from the audio in the video)',
+  };
+  return renderTemplate(template, vars);
+}
+
+// GET /references/:id — full reference row + cached analysis
+router.get('/references/:id', authenticate, async (req, res) => {
+  if (!validateUuid(req, res)) return;
+  try {
+    const rows = await pgQuery(
+      `SELECT * FROM brief_pipeline_references WHERE id = $1`,
+      [req.params.id]
+    );
+    if (!rows.length) {
+      return res.status(404).json({ success: false, error: { message: 'Reference not found' } });
+    }
+    res.json({ success: true, reference: mapReferenceRowWithAnalysis(rows[0]) });
+  } catch (err) {
+    console.error('[BriefPipeline] GET /references/:id error:', err.message);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// POST /references/:id/analyze — run / re-run the Gemini whole-video analyzer.
+// Cached after first run; pass ?force=1 to bypass the cache.
+router.post('/references/:id/analyze', authenticate, async (req, res) => {
+  if (!validateUuid(req, res)) return;
+  try {
+    const force = String(req.query.force || '') === '1';
+    const rows = await pgQuery(
+      `SELECT * FROM brief_pipeline_references WHERE id = $1`,
+      [req.params.id]
+    );
+    if (!rows.length) {
+      return res.status(404).json({ success: false, error: { message: 'Reference not found' } });
+    }
+    const ref = rows[0];
+
+    // Cache hit
+    if (!force && ref.analysis) {
+      return res.json({
+        success: true,
+        cached: true,
+        analysis: ref.analysis,
+        analyzedAt: ref.analyzed_at ? new Date(ref.analyzed_at).toISOString() : null,
+        analysisModel: ref.analysis_model || null,
+      });
+    }
+
+    if (!ref.video_url) {
+      return res.status(400).json({
+        success: false,
+        error: { message: 'This reference has no video URL — cannot analyze.' },
+      });
+    }
+
+    const refForPrompt = mapReferenceRow(ref);
+    const promptText = await buildReferenceAnalyzerPrompt(refForPrompt);
+    let result;
+    try {
+      result = await analyzeWholeVideoWithGemini(ref.video_url, promptText);
+    } catch (err) {
+      // Persist the error so the UI can surface it
+      await pgQuery(
+        `UPDATE brief_pipeline_references SET analysis_error = $1, updated_at = NOW() WHERE id = $2`,
+        [err.message?.slice(0, 1000) || 'unknown error', req.params.id]
+      );
+      throw err;
+    }
+
+    await pgQuery(
+      `UPDATE brief_pipeline_references
+          SET analysis = $1,
+              analyzed_at = NOW(),
+              analysis_model = $2,
+              analysis_error = NULL,
+              updated_at = NOW()
+        WHERE id = $3`,
+      [JSON.stringify(result.json), result.model, req.params.id]
+    );
+
+    res.json({
+      success: true,
+      cached: false,
+      analysis: result.json,
+      analyzedAt: new Date().toISOString(),
+      analysisModel: result.model,
+    });
+  } catch (err) {
+    console.error('[BriefPipeline] POST /references/:id/analyze error:', err.message);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+function mapReferenceRowWithAnalysis(r) {
+  const base = mapReferenceRow(r);
+  return {
+    ...base,
+    analysis:      r.analysis || null,
+    analyzedAt:    r.analyzed_at ? new Date(r.analyzed_at).toISOString() : null,
+    analysisModel: r.analysis_model || null,
+    analysisError: r.analysis_error || null,
+  };
+}
+
 function mapReferenceRow(r) {
   if (!r) return null;
   return {
