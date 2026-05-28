@@ -3700,12 +3700,16 @@ router.post('/meta-ads/import', authenticate, async (req, res) => {
 router.get('/reference-ads', authenticate, async (req, res) => {
   try {
     await ensureCreativesTable();
+    // References are usable as templates across products — return:
+    //   (a) global references (product_id IS NULL), AND
+    //   (b) references tied to the requested product_id (if filter passed)
+    // This way an imported League/Meta ad is visible from any product's pipeline.
     const productId = req.query.product_id || null;
     const where = ['is_reference = TRUE'];
     const params = [];
     if (productId) {
       params.push(productId);
-      where.push(`product_id = $${params.length}`);
+      where.push(`(product_id = $${params.length} OR product_id IS NULL)`);
     }
     const rows = await pgQuery(`
       SELECT id, product_id, image_url, thumbnail_url, source_label, reference_name,
