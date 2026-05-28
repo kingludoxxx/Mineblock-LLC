@@ -6254,9 +6254,16 @@ router.post('/references/:id/analyze', authenticate, async (req, res) => {
 
 function mapReferenceRowWithAnalysis(r) {
   const base = mapReferenceRow(r);
+  // postgres.js returns JSONB as a string scalar when the column was written
+  // via INSERT ... VALUES($1) with a JSON.stringify'd argument. Parse here so
+  // the frontend gets a real object.
+  let analysis = r.analysis;
+  if (typeof analysis === 'string') {
+    try { analysis = JSON.parse(analysis); } catch { /* leave as-is */ }
+  }
   return {
     ...base,
-    analysis:      r.analysis || null,
+    analysis:      analysis || null,
     analyzedAt:    r.analyzed_at ? new Date(r.analyzed_at).toISOString() : null,
     analysisModel: r.analysis_model || null,
     analysisError: r.analysis_error || null,
