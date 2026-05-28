@@ -12,9 +12,9 @@ import {
 } from 'lucide-react';
 
 const TIER_META = {
-  BANGER: { Icon: Flame,  color: 'text-amber-400',  bg: 'bg-amber-500/10',  border: 'border-amber-500/30',  label: 'Banger' },
-  CHAMP:  { Icon: Trophy, color: 'text-yellow-400', bg: 'bg-yellow-500/10', border: 'border-yellow-500/30', label: 'Champ' },
-  A:      { Icon: Star,   color: 'text-sky-400',    bg: 'bg-sky-500/10',    border: 'border-sky-500/30',    label: 'A-Tier' },
+  BANGER: { Icon: Flame,  label: 'Banger' },
+  CHAMP:  { Icon: Trophy, label: 'Champ' },
+  A:      { Icon: Star,   label: 'A-Tier' },
 };
 
 function timeAgo(iso) {
@@ -31,9 +31,8 @@ function timeAgo(iso) {
   return `${d}d ago`;
 }
 
-export default function ReferenceCard({ reference, onGenerateFromReference, onDelete }) {
+export default function ReferenceCard({ reference, onPreview, onGenerateFromReference, onDelete }) {
   const [deleting, setDeleting] = useState(false);
-  const [confirmDelete, setConfirmDelete] = useState(false);
   const meta = TIER_META[reference.tier] || TIER_META.A;
   const { Icon: TierIcon } = meta;
   const hasTranscript = !!reference.transcript;
@@ -44,20 +43,20 @@ export default function ReferenceCard({ reference, onGenerateFromReference, onDe
     if (onGenerateFromReference) onGenerateFromReference(reference);
   };
 
+  // Single-click delete with optimistic UI (parent handles the API + re-add on error).
   const handleDelete = async (e) => {
     e.stopPropagation();
-    if (!confirmDelete) {
-      setConfirmDelete(true);
-      setTimeout(() => setConfirmDelete(false), 2500);
-      return;
-    }
+    if (deleting) return;
     setDeleting(true);
     try {
       if (onDelete) await onDelete(reference.id);
     } finally {
       setDeleting(false);
-      setConfirmDelete(false);
     }
+  };
+
+  const handleCardClick = () => {
+    if (onPreview) onPreview(reference);
   };
 
   const transcriptPreview = hasTranscript
@@ -65,9 +64,14 @@ export default function ReferenceCard({ reference, onGenerateFromReference, onDe
     : null;
 
   return (
-    <div className="group relative bg-white/[0.02] border border-white/[0.06] hover:border-violet-500/30 rounded-lg overflow-hidden transition-all duration-200 hover:bg-white/[0.03] hover:shadow-[0_0_18px_rgba(139,92,246,0.06)]">
-      {/* Thumbnail */}
-      <div className="relative aspect-[16/10] bg-black/40 overflow-hidden">
+    <div className="group relative bg-white/[0.02] border border-white/[0.06] hover:border-white/[0.12] rounded-lg overflow-hidden transition-all duration-200 hover:bg-white/[0.03]">
+      {/* Thumbnail — click to preview */}
+      <button
+        type="button"
+        onClick={handleCardClick}
+        className="block w-full relative aspect-[16/10] bg-black/40 overflow-hidden cursor-pointer text-left"
+        title="Click to preview video and transcript"
+      >
         {reference.thumbnailUrl ? (
           <img
             src={reference.thumbnailUrl}
@@ -80,31 +84,38 @@ export default function ReferenceCard({ reference, onGenerateFromReference, onDe
             <Play className="w-6 h-6 text-zinc-700" />
           </div>
         )}
+        {/* Play overlay on hover */}
+        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-colors flex items-center justify-center opacity-0 group-hover:opacity-100">
+          <div className="w-9 h-9 rounded-full bg-white/10 backdrop-blur-sm border border-white/20 flex items-center justify-center">
+            <Play className="w-4 h-4 text-white fill-white" />
+          </div>
+        </div>
         {/* Tier badge over thumbnail */}
         <div className="absolute top-2 left-2">
-          <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold uppercase tracking-wider border ${meta.bg} ${meta.border} ${meta.color} backdrop-blur-sm whitespace-nowrap`}>
+          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold uppercase tracking-wider border bg-black/60 backdrop-blur-sm border-white/[0.12] text-zinc-100 whitespace-nowrap">
             <TierIcon className="w-2.5 h-2.5" />
             {meta.label}
           </span>
         </div>
-        {/* Delete affordance — top-right, fades in on hover */}
-        <button
-          type="button"
-          onClick={handleDelete}
-          disabled={deleting}
-          className={`absolute top-2 right-2 p-1.5 rounded-md transition-all ${
-            confirmDelete
-              ? 'bg-red-500/20 border border-red-500/40 text-red-300 opacity-100'
-              : 'bg-black/60 border border-white/[0.08] text-zinc-400 hover:text-red-300 hover:bg-red-500/15 hover:border-red-500/30 opacity-0 group-hover:opacity-100'
-          } cursor-pointer disabled:opacity-40`}
-          title={confirmDelete ? 'Click again to confirm delete' : 'Delete reference'}
-        >
-          {deleting ? <Loader2 className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
-        </button>
-      </div>
+      </button>
 
-      {/* Body */}
-      <div className="p-3 space-y-2">
+      {/* Delete trash icon — separate from the card-click area, top-right of the card */}
+      <button
+        type="button"
+        onClick={handleDelete}
+        disabled={deleting}
+        className="absolute top-2 right-2 p-1.5 rounded-md bg-black/60 backdrop-blur-sm border border-white/[0.08] text-zinc-400 hover:text-red-300 hover:bg-red-500/15 hover:border-red-500/30 transition-all opacity-0 group-hover:opacity-100 cursor-pointer disabled:opacity-40 z-10"
+        title="Delete reference"
+      >
+        {deleting ? <Loader2 className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
+      </button>
+
+      {/* Body — also click to preview */}
+      <button
+        type="button"
+        onClick={handleCardClick}
+        className="block w-full text-left p-3 space-y-2 cursor-pointer"
+      >
         {/* Brand + age */}
         <div className="flex items-center justify-between gap-2">
           <div className="text-[10px] font-mono uppercase tracking-wider text-zinc-400 truncate">
@@ -127,25 +138,27 @@ export default function ReferenceCard({ reference, onGenerateFromReference, onDe
         <div className="text-[11px] leading-relaxed">
           {hasTranscript ? (
             <div className="flex items-start gap-1.5 text-zinc-500">
-              <FileText className="w-3 h-3 mt-0.5 text-violet-400/60 shrink-0" />
+              <FileText className="w-3 h-3 mt-0.5 text-zinc-500 shrink-0" />
               <span className="line-clamp-2 italic">{transcriptPreview}</span>
             </div>
           ) : (
             <div className="text-zinc-600 italic">No transcript yet</div>
           )}
         </div>
+      </button>
 
-        {/* Generate brief CTA */}
+      {/* Generate brief CTA — outside the click-to-preview region */}
+      <div className="px-3 pb-3">
         <button
           type="button"
           onClick={handleGenerate}
           disabled={!hasTranscript}
-          className="w-full inline-flex items-center justify-center gap-1.5 py-2 mt-1 rounded-md text-[11px] font-mono font-semibold uppercase tracking-wider transition-all cursor-pointer disabled:cursor-not-allowed"
+          className="w-full inline-flex items-center justify-center gap-1.5 py-2 rounded-md text-[11px] font-mono font-semibold uppercase tracking-wider transition-all cursor-pointer disabled:cursor-not-allowed"
           style={hasTranscript ? {
-            background: 'linear-gradient(135deg, rgba(139,92,246,0.16), rgba(167,139,250,0.08))',
-            border: '1px solid rgba(139,92,246,0.35)',
-            color: '#c4b5fd',
-            boxShadow: '0 0 12px rgba(139,92,246,0.08)',
+            background: 'linear-gradient(135deg, rgba(201,168,76,0.18), rgba(212,181,90,0.1))',
+            border: '1px solid rgba(201,168,76,0.4)',
+            color: '#e8d5a3',
+            boxShadow: '0 0 12px rgba(201,168,76,0.1)',
           } : {
             background: 'rgba(255,255,255,0.02)',
             border: '1px solid rgba(255,255,255,0.04)',

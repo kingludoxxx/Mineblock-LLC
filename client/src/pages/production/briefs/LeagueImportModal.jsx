@@ -15,37 +15,12 @@ import {
 } from 'lucide-react';
 import api from '../../../services/api';
 
+// Minimal, unified pill/badge styling — the tier icon + label
+// differentiates the three, not the color.
 const TIER_META = {
-  BANGER: {
-    label: 'Banger',
-    Icon: Flame,
-    color: 'text-amber-400',
-    bg: 'bg-amber-500/10',
-    border: 'border-amber-500/30',
-    activeBg: 'bg-amber-500/15',
-    activeBorder: 'border-amber-500/50',
-    activeText: 'text-amber-300',
-  },
-  CHAMP: {
-    label: 'Champ',
-    Icon: Trophy,
-    color: 'text-yellow-400',
-    bg: 'bg-yellow-500/10',
-    border: 'border-yellow-500/30',
-    activeBg: 'bg-yellow-500/15',
-    activeBorder: 'border-yellow-500/50',
-    activeText: 'text-yellow-300',
-  },
-  A: {
-    label: 'A-Tier',
-    Icon: Star,
-    color: 'text-sky-400',
-    bg: 'bg-sky-500/10',
-    border: 'border-sky-500/30',
-    activeBg: 'bg-sky-500/15',
-    activeBorder: 'border-sky-500/50',
-    activeText: 'text-sky-300',
-  },
+  BANGER: { label: 'Banger', Icon: Flame,  color: 'text-zinc-300' },
+  CHAMP:  { label: 'Champ',  Icon: Trophy, color: 'text-zinc-300' },
+  A:      { label: 'A-Tier', Icon: Star,   color: 'text-zinc-300' },
 };
 
 const TIER_ORDER = ['BANGER', 'CHAMP', 'A'];
@@ -53,12 +28,12 @@ const TIER_ORDER = ['BANGER', 'CHAMP', 'A'];
 function TierBadge({ tier, size = 'sm' }) {
   const meta = TIER_META[tier];
   if (!meta) return null;
-  const { Icon, color, bg, border, label } = meta;
+  const { Icon, color, label } = meta;
   const sizing = size === 'sm'
     ? 'text-[10px] px-1.5 py-0.5 gap-1'
     : 'text-xs px-2 py-1 gap-1.5';
   return (
-    <span className={`inline-flex items-center font-mono font-semibold uppercase tracking-wider rounded border ${bg} ${border} ${color} ${sizing} whitespace-nowrap`}>
+    <span className={`inline-flex items-center font-mono font-semibold uppercase tracking-wider rounded border bg-white/[0.04] border-white/[0.1] ${color} ${sizing} whitespace-nowrap`}>
       <Icon className={size === 'sm' ? 'w-2.5 h-2.5' : 'w-3 h-3'} />
       {label}
     </span>
@@ -422,7 +397,7 @@ export default function LeagueImportModal({ open, onClose, onImported }) {
                         <div className="p-3 text-xs text-red-400">{brandsError}</div>
                       ) : filteredBrands.length === 0 ? (
                         <div className="p-3 text-xs text-zinc-500 text-center">
-                          {brandSearch ? 'No matching brands' : 'No followed brands yet — follow a brand in Brand Spy first.'}
+                          {brandSearch ? 'No matching brands' : 'No active brands yet. Add brands to your Brand Spy library to populate this list.'}
                         </div>
                       ) : (
                         filteredBrands.map(b => {
@@ -476,7 +451,7 @@ export default function LeagueImportModal({ open, onClose, onImported }) {
                 )}
               </div>
 
-              {/* Tier filter pills */}
+              {/* Tier filter pills — unified minimal styling */}
               <div className="flex items-center gap-1.5">
                 {TIER_ORDER.map(t => {
                   const meta = TIER_META[t];
@@ -489,8 +464,8 @@ export default function LeagueImportModal({ open, onClose, onImported }) {
                       onClick={() => toggleTier(t)}
                       className={`flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md text-[11px] font-mono font-semibold uppercase tracking-wide border transition-all cursor-pointer ${
                         active
-                          ? `${meta.activeBg} ${meta.activeBorder} ${meta.activeText}`
-                          : 'bg-white/[0.02] border-white/[0.05] text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.04]'
+                          ? 'bg-white/[0.06] border-white/[0.15] text-white shadow-[inset_0_1px_0_0_rgba(255,255,255,0.04)]'
+                          : 'bg-white/[0.01] border-white/[0.04] text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.03] hover:border-white/[0.08]'
                       }`}
                     >
                       <Icon className="w-3 h-3" />
@@ -519,7 +494,9 @@ export default function LeagueImportModal({ open, onClose, onImported }) {
                 <div className="flex flex-col items-center justify-center py-12 text-center">
                   <VideoIcon className="w-8 h-8 text-zinc-700 mb-2" />
                   <div className="text-xs text-zinc-500">
-                    No video ads at the selected tiers for this brand.
+                    {!selectedBrandId
+                      ? 'Pick a brand from the dropdown above.'
+                      : 'No video ads at the selected tiers for this brand.'}
                   </div>
                 </div>
               )}

@@ -22,6 +22,7 @@ import WinnerCard from './briefs/WinnerCard';
 import ScriptGeneratorPanel from './briefs/ScriptGeneratorPanel';
 import GeneratedBriefCard from './briefs/GeneratedBriefCard';
 import ReferenceCard from './briefs/ReferenceCard';
+import ReferencePreviewModal from './briefs/ReferencePreviewModal';
 import LeagueImportModal from './briefs/LeagueImportModal';
 import BriefDetailModal from './briefs/BriefDetailModal';
 import WinnerDetailModal from './briefs/WinnerDetailModal';
@@ -108,10 +109,11 @@ export default function BriefPipeline() {
   const [selectedForLaunch, setSelectedForLaunch] = useState([]);
   const [launchModalOpen, setLaunchModalOpen] = useState(false);
   const [leagueImportOpen, setLeagueImportOpen] = useState(false);
+  const [previewReference, setPreviewReference] = useState(null);
 
   // Prefill state for the Script Generator panel — populated when the user
-  // clicks "Generate Brief" on a Reference card. The panel reads these as
-  // initialScript / initialMode / referenceLabel.
+  // imports a reference OR clicks "Generate Brief" / "Use as Reference".
+  // The panel reads these as initialScript / initialMode / referenceLabel.
   const [scriptPrefill, setScriptPrefill] = useState({ script: null, mode: null, label: null });
   const scriptGenSectionRef = useRef(null);
 
@@ -354,14 +356,24 @@ export default function BriefPipeline() {
   }, [fetchGenerated]);
 
   const handleDelete = useCallback(async (briefId) => {
+    if (!briefId || typeof briefId !== 'string') {
+      console.error('handleDelete called with invalid id:', briefId);
+      setError('Failed to delete brief: invalid ID.');
+      return;
+    }
+    // Optimistic remove — re-add on error
+    const prev = generated;
+    setGenerated(gs => gs.filter(g => g.id !== briefId));
     try {
       await api.delete(`/brief-pipeline/generated/${briefId}`);
       await fetchGenerated();
     } catch (err) {
       console.error('Delete failed:', err);
-      setError('Failed to delete brief.');
+      setGenerated(prev);
+      const apiMsg = err.response?.data?.error?.message || err.message;
+      setError(`Failed to delete brief: ${apiMsg || 'unknown error'}`);
     }
-  }, [fetchGenerated]);
+  }, [generated, fetchGenerated]);
 
   const handleSaveBrief = useCallback(async (briefId, updates) => {
     try {
@@ -446,9 +458,24 @@ export default function BriefPipeline() {
 
   // ── League / Reference handlers ────────────────────────────────────────
 
-  const handleLeagueImported = useCallback(async () => {
+  const applyReferencePrefill = useCallback((reference) => {
+    if (!reference?.transcript) return;
+    setScriptPrefill({
+      script: reference.transcript,
+      mode: 'clone',
+      label: `${reference.brandName} · ${reference.tier}`,
+    });
+    if (scriptGenSectionRef.current) {
+      scriptGenSectionRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }, []);
+
+  // After import: refresh refs AND auto-prefill the Script Generator so the
+  // banner appears immediately (and gets re-applied on each subsequent import).
+  const handleLeagueImported = useCallback(async (reference) => {
     await fetchReferences();
-  }, [fetchReferences]);
+    if (reference) applyReferencePrefill(reference);
+  }, [fetchReferences, applyReferencePrefill]);
 
   const handleDeleteReference = useCallback(async (refId) => {
     // Optimistic remove — re-add on error
@@ -459,7 +486,8 @@ export default function BriefPipeline() {
     } catch (err) {
       console.error('Delete reference failed:', err);
       setReferences(prev);
-      setError('Failed to delete reference.');
+      const apiMsg = err.response?.data?.error?.message || err.message;
+      setError(`Failed to delete reference: ${apiMsg || 'unknown error'}`);
     }
   }, [references]);
 
@@ -468,15 +496,11 @@ export default function BriefPipeline() {
       setError('This reference has no transcript yet — cannot generate.');
       return;
     }
-    setScriptPrefill({
-      script: reference.transcript,
-      mode: 'clone',
-      label: `${reference.brandName} · ${reference.tier}`,
-    });
-    // Scroll the script generator panel into view so the user sees the prefill.
-    if (scriptGenSectionRef.current) {
-      scriptGenSectionRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }
+    applyReferencePrefill(reference);
+  }, [applyReferencePrefill]);
+
+  const handlePreviewReference = useCallback((reference) => {
+    setPreviewReference(reference);
   }, []);
 
   const handleClearScriptPrefill = useCallback(() => {
@@ -874,6 +898,7 @@ export default function BriefPipeline() {
                               <div key={item.id}>
                                 <ReferenceCard
                                   reference={item}
+                                  onPreview={handlePreviewReference}
                                   onGenerateFromReference={handleGenerateFromReference}
                                   onDelete={handleDeleteReference}
                                 />
@@ -1050,6 +1075,15 @@ export default function BriefPipeline() {
         open={leagueImportOpen}
         onClose={() => setLeagueImportOpen(false)}
         onImported={handleLeagueImported}
+      />
+
+      {/* Reference preview lightbox — opens when a Reference card is clicked */}
+      <ReferencePreviewModal
+        open={!!previewReference}
+        reference={previewReference}
+        onClose={() => setPreviewReference(null)}
+        onUseAsReference={handleGenerateFromReference}
+        onDelete={handleDeleteReference}
       />
 
       {/* Launch Confirmation Modal */}
