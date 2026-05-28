@@ -1474,6 +1474,8 @@ async function ensureCreativesTable() {
   await pgQuery('ALTER TABLE spy_creatives ADD COLUMN IF NOT EXISTS imported_metadata JSONB').catch(() => {});
   await pgQuery('ALTER TABLE spy_creatives ADD COLUMN IF NOT EXISTS is_reference BOOLEAN DEFAULT FALSE').catch(() => {});
   await pgQuery(`CREATE INDEX IF NOT EXISTS idx_spy_creatives_reference ON spy_creatives (is_reference, imported_from, created_at DESC) WHERE is_reference`).catch(() => {});
+  // Reference rows have no owning product → drop NOT NULL on product_id.
+  await pgQuery('ALTER TABLE spy_creatives ALTER COLUMN product_id DROP NOT NULL').catch(() => {});
   await pgQuery('ALTER TABLE spy_creatives ADD COLUMN IF NOT EXISTS group_id UUID').catch(() => {});
   await pgQuery(`CREATE INDEX IF NOT EXISTS idx_spy_creatives_group_id ON spy_creatives(group_id)`).catch(() => {});
   await pgQuery(`CREATE UNIQUE INDEX IF NOT EXISTS idx_spy_creatives_im_number ON spy_creatives(im_number) WHERE im_number IS NOT NULL`).catch(() => {});
@@ -3261,10 +3263,10 @@ function pickAspectRatio(displayFormat) {
 router.get('/league/brands', authenticate, async (_req, res) => {
   try {
     await ensureCreativesTable();
-    // spy_brand_follows.meta_page_id links to brand_spy.brand_pages.meta_page_id
-    // — we join through brand_pages to brands to surface only brands the user
-    // is actively following.
-    const rows = await pgQuery(`
+    // Prefer followed brands (spy_brand_follows joined through brand_pages
+    // by meta_page_id). If the user hasn't followed anyone yet, fall back
+    // to every active Brand Spy brand so the import modal still works.
+    const followedSql = `
       SELECT
         b.id,
         b.display_name AS name,
@@ -3283,8 +3285,29 @@ router.get('/league/brands', authenticate, async (_req, res) => {
         WHERE bp.brand_id = b.id
       )
       ORDER BY b.display_name ASC NULLS LAST, b.domain ASC
-    `);
-    res.json({ success: true, data: rows });
+    `;
+    let rows = await pgQuery(followedSql);
+    let followed = true;
+    if (rows.length === 0) {
+      followed = false;
+      rows = await pgQuery(`
+        SELECT
+          b.id,
+          b.display_name AS name,
+          b.domain,
+          COALESCE((
+            SELECT COUNT(*) FROM brand_spy.ads a
+            WHERE a.brand_id = b.id
+              AND a.is_active = TRUE
+              AND a.display_format ILIKE 'image%'
+          ), 0)::INTEGER AS static_count
+        FROM brand_spy.brands b
+        WHERE b.status = 'ACTIVE'
+        ORDER BY static_count DESC, b.display_name ASC NULLS LAST, b.domain ASC
+        LIMIT 100
+      `);
+    }
+    res.json({ success: true, data: rows, followed });
   } catch (err) {
     console.error('[league/brands] error:', err);
     res.status(500).json({ success: false, error: { message: err.message } });

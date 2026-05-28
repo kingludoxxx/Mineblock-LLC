@@ -39,3 +39,8 @@ ALTER TABLE spy_creatives ADD COLUMN IF NOT EXISTS is_reference BOOLEAN DEFAULT 
 CREATE INDEX IF NOT EXISTS idx_spy_creatives_reference
   ON spy_creatives (is_reference, imported_from, created_at DESC)
   WHERE is_reference;
+
+-- 6. Reference rows have no owning product yet (the user assigns one when
+-- generating from a reference) — drop the NOT NULL on product_id so the
+-- League/Meta INSERTs don't crash.
+ALTER TABLE spy_creatives ALTER COLUMN product_id DROP NOT NULL;
