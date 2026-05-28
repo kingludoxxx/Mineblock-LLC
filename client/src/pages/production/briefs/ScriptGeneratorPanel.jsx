@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
-import { FileText, Video, Wand2, Loader2, Sparkles, ChevronDown, Trophy, X } from 'lucide-react';
+import { FileText, Video, Wand2, Loader2, Sparkles, ChevronDown, Trophy, X, Package, Check, AlertCircle } from 'lucide-react';
 import ProductSelector from '../../../components/ProductSelector';
+import api from '../../../services/api';
 
 const DEFAULT_ANGLES = ['Against competition', 'Lottery', 'BTC Made easy', 'Hidden opportunity', 'Scarcity', 'Breaking news', 'Pain Point', 'Social Proof', 'Before/After', 'Curiosity Hook', 'Direct Offer', 'Authority'];
 
@@ -40,6 +41,38 @@ export default function ScriptGeneratorPanel({
       setOutputMode(initialMode === 'clone' ? 'clone' : 'variants');
     }
   }, [initialScript, initialMode]);
+
+  // ── Product Library bridge ────────────────────────────────────────────
+  // When a product is selected, fetch the full profile from the Brief Pipeline
+  // bridge endpoint so we can show exactly what fields the prompts will see.
+  const [productContext, setProductContext] = useState(null); // { product, context, lineCount }
+  const [productContextLoading, setProductContextLoading] = useState(false);
+  const [productContextError, setProductContextError] = useState(null);
+  const [productContextExpanded, setProductContextExpanded] = useState(false);
+
+  useEffect(() => {
+    if (!selectedProduct?.id) {
+      setProductContext(null);
+      setProductContextError(null);
+      return;
+    }
+    let cancelled = false;
+    setProductContextLoading(true);
+    setProductContextError(null);
+    api.get(`/brief-pipeline/product-context/${selectedProduct.id}`)
+      .then((r) => {
+        if (cancelled) return;
+        setProductContext(r.data);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        const msg = err.response?.data?.error?.message || err.message;
+        setProductContextError(msg || 'Failed to load product context');
+        setProductContext(null);
+      })
+      .finally(() => { if (!cancelled) setProductContextLoading(false); });
+    return () => { cancelled = true; };
+  }, [selectedProduct?.id]);
 
   const hasInput = inputMode === 'text' ? scriptText.trim().length > 20 : scriptUrl.trim().length > 5;
 
@@ -186,6 +219,55 @@ export default function ScriptGeneratorPanel({
             onSelect={(p) => setSelectedProduct(p)}
             className="w-full"
           />
+
+          {/* Product Library status panel — shows what data the prompts will receive. */}
+          {selectedProduct?.id && (
+            <div className="rounded-md border border-white/[0.05] bg-white/[0.01] overflow-hidden">
+              <button
+                type="button"
+                onClick={() => setProductContextExpanded((v) => !v)}
+                className="w-full flex items-center justify-between gap-2 px-2.5 py-1.5 text-left hover:bg-white/[0.02] transition-colors cursor-pointer"
+              >
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <Package className="w-3 h-3 text-zinc-500 shrink-0" />
+                  <span className="text-[10px] font-mono uppercase tracking-wider text-zinc-500">
+                    Product Library
+                  </span>
+                  {productContextLoading ? (
+                    <span className="text-[10px] font-mono text-zinc-600 inline-flex items-center gap-1">
+                      <Loader2 className="w-2.5 h-2.5 animate-spin" />
+                      loading
+                    </span>
+                  ) : productContextError ? (
+                    <span className="text-[10px] font-mono text-red-400/80 inline-flex items-center gap-1">
+                      <AlertCircle className="w-2.5 h-2.5" />
+                      {productContextError.slice(0, 40)}
+                    </span>
+                  ) : productContext ? (
+                    <span className="text-[10px] font-mono text-emerald-400/80 inline-flex items-center gap-1">
+                      <Check className="w-2.5 h-2.5" />
+                      {productContext.lineCount} fields loaded
+                    </span>
+                  ) : null}
+                </div>
+                <ChevronDown
+                  className={`w-3 h-3 text-zinc-600 shrink-0 transition-transform ${productContextExpanded ? 'rotate-180' : ''}`}
+                />
+              </button>
+              {productContextExpanded && productContext && (
+                <div className="border-t border-white/[0.04] p-2.5 max-h-48 overflow-y-auto bg-black/30">
+                  <pre className="text-[10px] font-mono text-zinc-400 whitespace-pre-wrap leading-relaxed">
+                    {productContext.context}
+                  </pre>
+                </div>
+              )}
+              {productContextExpanded && !productContext && !productContextLoading && (
+                <div className="border-t border-white/[0.04] p-2.5 text-[10px] text-zinc-600 font-mono">
+                  No context loaded yet.
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         <div className="space-y-3">

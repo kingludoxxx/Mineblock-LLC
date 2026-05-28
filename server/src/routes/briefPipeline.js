@@ -3419,9 +3419,25 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
     const isCloneMode = mode === 'clone';
     console.log(`[BriefPipeline] ${isCloneMode ? 'FAST clone' : 'Variant'} mode — parsing script`);
     const { system: parseSystem, user: parseUser } = await buildScriptParserPrompt(rawScript, creativeId);
+    // Prefer fetching by explicit productId (set when the user picked a product
+    // in the ProductSelector). Falls back to product_code lookup for callers
+    // that don't have an id (e.g. detected-winner ClickUp flow).
+    const profilePromise = (async () => {
+      if (productId && /^\d+$/.test(String(productId))) {
+        const rows = await pgQuery(`SELECT * FROM product_profiles WHERE id = $1 LIMIT 1`, [Number(productId)]);
+        if (rows.length) {
+          const p = rows[0];
+          for (const f of ['product_images','logos','fonts','brand_colors','benefits','angles','scripts','offers']) {
+            if (p[f] && typeof p[f] === 'string') try { p[f] = JSON.parse(p[f]); } catch {}
+          }
+          return p;
+        }
+      }
+      return fetchProductProfile(productCode || 'MR');
+    })();
     const [parsedScriptRaw, productProfile] = await Promise.all([
       callClaude(parseSystem, parseUser, 2000, { fast: true }),
-      fetchProductProfile(productCode || 'MR'),
+      profilePromise,
     ]);
     let parsedScript = parsedScriptRaw;
     if (!parsedScript || (!parsedScript.hooks?.length && !parsedScript.body?.trim())) {
@@ -5591,6 +5607,209 @@ router.delete('/references/:id', authenticate, async (req, res) => {
     res.json({ success: true });
   } catch (err) {
     console.error('[BriefPipeline] DELETE /references/:id error:', err.message);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// ============================================================================
+// ── League Prompts (3 user-editable JSON prompt slots) ──────────────────────
+//
+// Separate namespace from the existing 8-prompt `brief_pipeline_prompts`. The
+// three slots here are the prompts the user is iterating on for the
+// League-driven flow:
+//   1. videoAnalysis     — full analysis of a chosen video reference
+//                          (League or a winning-script iteration).
+//   2. scriptAdaptation  — adapt a competitor script to OUR product.
+//   3. scriptIteration   — generate iterations of a winning script.
+//
+// Each slot holds a free-form JSON payload (the user owns the schema). The
+// UI ships an empty default and the user pastes their JSON; we store and
+// return it verbatim.
+// ============================================================================
+
+const LEAGUE_PROMPT_TYPES = [
+  {
+    key: 'videoAnalysis',
+    label: 'Video Analysis',
+    description: 'Full structural + emotional analysis of a chosen video reference (League ad or one of our winning iterations).',
+  },
+  {
+    key: 'scriptAdaptation',
+    label: 'Script Adaptation',
+    description: 'Adapt a competitor script to OUR product — preserving the proven beat structure while swapping product, mechanism, and proof points.',
+  },
+  {
+    key: 'scriptIteration',
+    label: 'Script Iteration',
+    description: 'Generate fresh iterations of one of OUR winning scripts (new hooks / body variants / angle pivots).',
+  },
+];
+
+const DEFAULT_LEAGUE_PROMPTS = {
+  videoAnalysis:    { json: '', notes: '' },
+  scriptAdaptation: { json: '', notes: '' },
+  scriptIteration:  { json: '', notes: '' },
+};
+
+let leaguePromptsCache = { data: null, timestamp: 0 };
+const LEAGUE_PROMPT_CACHE_TTL = 5 * 60 * 1000;
+
+async function getLeaguePrompts() {
+  if (leaguePromptsCache.data && Date.now() - leaguePromptsCache.timestamp < LEAGUE_PROMPT_CACHE_TTL) {
+    return leaguePromptsCache.data;
+  }
+  try {
+    const rows = await pgQuery(
+      `SELECT value FROM system_settings WHERE key = 'brief_pipeline_league_prompts'`
+    );
+    const v = rows.length
+      ? (typeof rows[0].value === 'string' ? JSON.parse(rows[0].value) : rows[0].value)
+      : null;
+    leaguePromptsCache = { data: v, timestamp: Date.now() };
+    return v;
+  } catch {
+    return null;
+  }
+}
+
+// GET /settings/league-prompts — return saved + defaults
+router.get('/settings/league-prompts', authenticate, async (_req, res) => {
+  try {
+    const saved = await getLeaguePrompts();
+    res.json({
+      success: true,
+      promptTypes: LEAGUE_PROMPT_TYPES,
+      defaults: DEFAULT_LEAGUE_PROMPTS,
+      prompts: saved || {},
+      hasCustom: !!saved,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// PUT /settings/league-prompts — save full or partial { prompts: { key: {json,notes}, ... } }
+router.put('/settings/league-prompts', authenticate, async (req, res) => {
+  try {
+    const { prompts } = req.body || {};
+    if (!prompts || typeof prompts !== 'object') {
+      return res.status(400).json({ success: false, error: { message: 'prompts object is required' } });
+    }
+    // Validate each provided slot — its `json` field must parse if non-empty
+    const validKeys = new Set(LEAGUE_PROMPT_TYPES.map(p => p.key));
+    const clean = {};
+    for (const [key, val] of Object.entries(prompts)) {
+      if (!validKeys.has(key)) continue;
+      const json = typeof val?.json === 'string' ? val.json : '';
+      const notes = typeof val?.notes === 'string' ? val.notes : '';
+      if (json.trim()) {
+        try { JSON.parse(json); } catch (e) {
+          return res.status(400).json({
+            success: false,
+            error: { message: `Prompt "${key}" has invalid JSON: ${e.message}` },
+          });
+        }
+      }
+      clean[key] = { json, notes };
+    }
+    // Merge with existing so callers can PUT partial updates
+    const existing = (await getLeaguePrompts()) || {};
+    const merged = { ...existing, ...clean };
+
+    await pgQuery(
+      `INSERT INTO system_settings (key, value, description)
+       VALUES ('brief_pipeline_league_prompts', $1, 'League-driven Brief Pipeline prompts (videoAnalysis / scriptAdaptation / scriptIteration)')
+       ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()`,
+      [JSON.stringify(merged)]
+    );
+    leaguePromptsCache = { data: merged, timestamp: Date.now() };
+    res.json({ success: true, prompts: merged });
+  } catch (err) {
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// POST /settings/league-prompts/reset — clear all 3 slots
+router.post('/settings/league-prompts/reset', authenticate, async (_req, res) => {
+  try {
+    await pgQuery(`DELETE FROM system_settings WHERE key = 'brief_pipeline_league_prompts'`);
+    leaguePromptsCache = { data: null, timestamp: 0 };
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// ============================================================================
+// ── Product Library bridge ──────────────────────────────────────────────────
+//
+// GET /product-context/:id — return everything the Brief Pipeline knows about
+// a given product (raw profile + the formatted context string the generators
+// inject as {{productContext}}). The frontend uses this to (a) confirm the
+// selected product is wired up, (b) show a field count, and (c) optionally
+// surface what fields will be available to the prompts at generation time.
+// ============================================================================
+
+router.get('/product-context/:id', authenticate, async (req, res) => {
+  try {
+    const idParam = req.params.id;
+    let profile = null;
+
+    // Allow numeric id OR product_code / short_name
+    if (/^\d+$/.test(idParam)) {
+      const rows = await pgQuery(`SELECT * FROM product_profiles WHERE id = $1 LIMIT 1`, [Number(idParam)]);
+      profile = rows[0] || null;
+    } else {
+      profile = await fetchProductProfile(idParam);
+    }
+
+    if (!profile) {
+      return res.status(404).json({ success: false, error: { message: 'Product not found' } });
+    }
+
+    // Reuse the canonical context builder so what we show here is byte-for-byte
+    // what the generators will receive.
+    const context = buildProductContextForBrief(profile);
+    const lineCount = context && context !== 'No product profile available.'
+      ? context.split('\n').filter(Boolean).length
+      : 0;
+
+    // Trim/normalize the raw profile for the UI — drop heavy JSONB blobs that
+    // would balloon the response and aren't useful for the panel display.
+    const summary = {
+      id: profile.id,
+      name: profile.name,
+      product_code: profile.product_code,
+      short_name: profile.short_name,
+      product_url: profile.product_url,
+      price: profile.price,
+      oneliner: profile.oneliner,
+      tagline: profile.tagline,
+      big_promise: profile.big_promise,
+      mechanism: profile.mechanism,
+      differentiator: profile.differentiator,
+      customer_avatar: profile.customer_avatar,
+      target_demographics: profile.target_demographics,
+      pain_points: profile.pain_points,
+      winning_angles: profile.winning_angles,
+      discount_codes: profile.discount_codes,
+      offer_details: profile.offer_details,
+      guarantee: profile.guarantee,
+      compliance_restrictions: profile.compliance_restrictions,
+      anglesCount: Array.isArray(profile.angles) ? profile.angles.length : 0,
+      scriptsCount: Array.isArray(profile.scripts) ? profile.scripts.length : 0,
+      benefitsCount: Array.isArray(profile.benefits) ? profile.benefits.length : 0,
+      updated_at: profile.updated_at,
+    };
+
+    res.json({
+      success: true,
+      product: summary,
+      context,
+      lineCount,
+    });
+  } catch (err) {
+    console.error('[BriefPipeline] GET /product-context/:id error:', err.message);
     res.status(500).json({ success: false, error: { message: err.message } });
   }
 });
