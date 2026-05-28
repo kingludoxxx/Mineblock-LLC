@@ -394,8 +394,9 @@ function AdCard({ ad, brand, onOpenIntel }) {
       onClick={() => onOpenIntel(ad)}
       className="group flex flex-col bg-bg-elevated border border-border-subtle rounded-lg overflow-hidden cursor-pointer hover:border-white/20 transition-all hover:shadow-lg"
     >
-      {/* ── Page header ── */}
-      <div className="flex items-center gap-1.5 px-2 pt-2 pb-1.5 shrink-0" onClick={(e) => e.stopPropagation()}>
+      {/* ── Page header ── (clicks bubble up to open IntelDrawer; ••• menu
+            and dropdown items stop propagation individually). */}
+      <div className="flex items-center gap-1.5 px-2 pt-2 pb-1.5 shrink-0">
         <PageAvatar page={pageAvatar} size={20} />
         <span className="text-[11px] font-semibold text-text-primary flex-1 truncate min-w-0">{pageName}</span>
         {/* ••• menu */}
@@ -432,8 +433,8 @@ function AdCard({ ad, brand, onOpenIntel }) {
         </div>
       </div>
 
-      {/* ── Status + date + days ── */}
-      <div className="px-2 pb-1.5 shrink-0" onClick={(e) => e.stopPropagation()}>
+      {/* ── Status + date + days ── (clicks bubble to open IntelDrawer) */}
+      <div className="px-2 pb-1.5 shrink-0">
         <p className="text-[12px] flex items-center gap-1.5 text-text-faint">
           <span className={`w-2 h-2 rounded-full shrink-0 ${isAdActive(ad) ? 'bg-emerald-400' : 'bg-zinc-600'}`} />
           <span className="truncate">{fmtLaunch(ad.startDate)} – {isAdActive(ad) ? 'Present' : (ad.endDate ? fmtLaunch(ad.endDate) : '?')}</span>
@@ -445,9 +446,9 @@ function AdCard({ ad, brand, onOpenIntel }) {
         </p>
       </div>
 
-      {/* ── Body text ── */}
+      {/* ── Body text ── (clicks bubble to open IntelDrawer) */}
       {hookText && (
-        <div className="px-2 pb-1.5 shrink-0" onClick={(e) => e.stopPropagation()}>
+        <div className="px-2 pb-1.5 shrink-0">
           <p className="text-[11px] text-text-muted leading-snug line-clamp-1">{hookText}</p>
         </div>
       )}
@@ -556,8 +557,7 @@ function AdCard({ ad, brand, onOpenIntel }) {
             Pulls hostname from ad.linkUrl, headline from ad.headline,
             caption from ad.caption or first emoji-line of bodyText. */}
       {(ad.headline || ad.linkUrl || ad.caption || ad.ctaText) && (
-        <div className="px-2 py-1.5 shrink-0 border-t border-border-subtle bg-bg-card/50"
-             onClick={(e) => e.stopPropagation()}>
+        <div className="px-2 py-1.5 shrink-0 border-t border-border-subtle bg-bg-card/50">
           <div className="flex items-center gap-2">
             <div className="min-w-0 flex-1">
               {ad.linkUrl && (
@@ -1286,7 +1286,7 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
 
             {/* Ad grid */}
             {adsLoading ? (
-              <div className="grid grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7 gap-2">
+              <div className="grid items-start grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7 gap-2">
                 {Array.from({ length: 16 }).map((_, i) => (
                   <div key={i} className="rounded-xl border border-border-subtle overflow-hidden animate-pulse">
                     <div className="bg-white/5" style={{ aspectRatio: '4/5' }} />
@@ -1305,7 +1305,7 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
               </div>
             ) : (
               <>
-                <div className="grid grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7 gap-2">
+                <div className="grid items-start grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7 gap-2">
                   {ads.map((ad) => <AdCard key={ad.id} ad={ad} brand={brand} onOpenIntel={setSelectedAd} />)}
                 </div>
                 {totalPages > 1 && (
