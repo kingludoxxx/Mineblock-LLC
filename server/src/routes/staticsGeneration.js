@@ -350,10 +350,11 @@ const MAX_TEMP_IMAGES = 200;
 // New behaviour:
 //   (a) Bump the safety TTL from 7 → 90 days so even references stay alive
 //       through long pipelines.
-//   (b) Exclude any image_store row still referenced by a live row
-//       (spy_creatives.image_url, spy_creatives.reference_thumbnail,
-//       statics_launches.thumbnail_url) so an active card NEVER loses its
-//       preview to GC again.
+//   (b) Exclude any image_store row still referenced by a live row in
+//       spy_creatives (image_url + reference_thumbnail). statics_launches
+//       points at the spy_creatives row via creative_id FK — the preview
+//       URL itself lives on spy_creatives.image_url, which the first guard
+//       already covers, so no separate check is needed.
 //   (c) Keep the cadence at 6h — table is tiny once the dead rows are gone.
 async function gcImageStoreOnce() {
   try {
@@ -364,10 +365,6 @@ async function gcImageStoreOnce() {
            SELECT 1 FROM spy_creatives c
             WHERE c.image_url           LIKE '%/tmp-img/' || s.id
                OR c.reference_thumbnail LIKE '%/tmp-img/' || s.id
-         )
-         AND NOT EXISTS (
-           SELECT 1 FROM statics_launches l
-            WHERE l.thumbnail_url LIKE '%/tmp-img/' || s.id
          )
        RETURNING id`,
       [], { timeout: 30000 }
