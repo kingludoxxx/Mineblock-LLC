@@ -296,7 +296,7 @@ export default function IntelDrawer({ ad, brand, onClose }) {
           className="pointer-events-auto relative flex w-full rounded-2xl overflow-hidden shadow-2xl"
           style={{
             maxWidth: 1080,
-            height: '88vh',
+            maxHeight: '88vh',
             background: '#161618',
             border: '1px solid #2a2a2a',
           }}
@@ -372,14 +372,6 @@ export default function IntelDrawer({ ad, brand, onClose }) {
             {/* Creative — container shrink-wraps to the image/video so no dark
                 letterbox space appears around the actual creative. */}
             <div className="relative mx-5 mb-0 rounded-xl overflow-hidden" style={{ border: '1px solid #2a2a2a' }}>
-              {/* Format badge */}
-              {ad.displayFormat && (
-                <div className="absolute top-3 left-3 z-10 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider"
-                  style={{ background: '#1877f2', color: '#fff' }}>
-                  {ad.displayFormat}
-                </div>
-              )}
-
               {/* Save button */}
               <button
                 onClick={handleSave}
@@ -453,10 +445,21 @@ export default function IntelDrawer({ ad, brand, onClose }) {
                   )}
                 </div>
                 {ad.ctaText && (
-                  <div className="shrink-0 ml-3 px-3 py-1.5 rounded-lg text-xs font-semibold"
-                    style={{ background: '#3a3b3c', color: '#e4e6eb' }}>
-                    {ad.ctaText}
-                  </div>
+                  ad.linkUrl ? (
+                    <a
+                      href={ad.linkUrl.startsWith('http') ? ad.linkUrl : `https://${ad.linkUrl}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="shrink-0 ml-3 px-3 py-1.5 rounded-lg text-xs font-semibold transition-opacity hover:opacity-80"
+                      style={{ background: '#3a3b3c', color: '#e4e6eb' }}>
+                      {ad.ctaText}
+                    </a>
+                  ) : (
+                    <div className="shrink-0 ml-3 px-3 py-1.5 rounded-lg text-xs font-semibold"
+                      style={{ background: '#3a3b3c', color: '#e4e6eb' }}>
+                      {ad.ctaText}
+                    </div>
+                  )
                 )}
               </div>
             )}

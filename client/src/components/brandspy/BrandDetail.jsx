@@ -521,23 +521,14 @@ function AdCard({ ad, brand, onOpenIntel }) {
           </>
         )}
 
-        {/* Format badge — top left */}
-        {!playing && (
-          <div className="absolute top-2 left-2 z-20 pointer-events-none flex items-center gap-1.5">
-            <span className={`text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded-md border backdrop-blur-sm ${
-              fmt === 'VIDEO'    ? 'bg-purple-900/70 text-purple-300 border-purple-500/30' :
-              fmt === 'CAROUSEL' ? 'bg-amber-900/70 text-amber-300 border-amber-500/30' :
-                                   'bg-sky-900/70 text-sky-300 border-sky-500/30'
-            }`}>
-              {fmt === 'VIDEO' ? '▶ VIDEO' : fmt === 'CAROUSEL' ? '⊞ CAROUSEL' : '🖼 IMAGE'}
+        {/* Active indicator only — format badge removed per request.
+            Visual format cue is the play overlay (videos) or its absence (images). */}
+        {!playing && isAdActive(ad) && (
+          <div className="absolute top-2 left-2 z-20 pointer-events-none flex items-center">
+            <span className="relative flex items-center justify-center" title="Active">
+              <span className="absolute w-3 h-3 rounded-full bg-emerald-400 opacity-60 animate-ping" />
+              <span className="relative w-2.5 h-2.5 rounded-full bg-emerald-400 ring-2 ring-black/40" />
             </span>
-            {/* Green dot when the ad is currently active (uses freshness heuristic) */}
-            {isAdActive(ad) && (
-              <span className="relative flex items-center justify-center" title="Active">
-                <span className="absolute w-2.5 h-2.5 rounded-full bg-emerald-400 opacity-60 animate-ping" />
-                <span className="relative w-2 h-2 rounded-full bg-emerald-400 ring-2 ring-black/40" />
-              </span>
-            )}
           </div>
         )}
         {/* Tier badge — top right */}
