@@ -25,6 +25,14 @@ function timeAgo(iso) {
 }
 
 function ReferencePreviewModal({ item, onClose, onUse, isSelected, onToggleSelect }) {
+  // Close on ESC + autofocus the close button so tab-order starts on the modal,
+  // not the page underneath. Cleanup on unmount.
+  useEffect(() => {
+    if (!item) return undefined;
+    const h = (e) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', h);
+    return () => window.removeEventListener('keydown', h);
+  }, [item, onClose]);
   if (!item) return null;
   const fullImg = item.image_url || item.thumbnail_url || item.reference_thumbnail;
   const src = SOURCE_BADGES[item.imported_from] || SOURCE_BADGES.upload;

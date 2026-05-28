@@ -3439,15 +3439,27 @@ router.post('/league/import', authenticate, async (req, res) => {
 // in the last 30 days. The creative_analysis schema uses `type` ('image') and
 // may or may not carry account fields (depends on the TW sync the analytics
 // worktree ships). We fall back to literals so the endpoint never breaks.
+
+// Cache the creative_analysis column set in module scope (5-min TTL). The schema
+// is owned by another worktree but barely changes; the previous code hit
+// information_schema 3-4× per modal page-load.
+const CA_COLS_TTL_MS = 5 * 60 * 1000;
+let _caColsCache = null; // { at: number, set: Set<string> }
+async function getCreativeAnalysisColumns() {
+  if (_caColsCache && (Date.now() - _caColsCache.at) < CA_COLS_TTL_MS) {
+    return _caColsCache.set;
+  }
+  const rows = await pgQuery(
+    `SELECT column_name FROM information_schema.columns WHERE table_name = 'creative_analysis'`
+  );
+  const set = new Set(rows.map(r => r.column_name));
+  _caColsCache = { at: Date.now(), set };
+  return set;
+}
+
 router.get('/meta-ads/accounts', authenticate, async (_req, res) => {
   try {
-    // Detect which columns exist on creative_analysis at runtime — the schema
-    // is owned by the analytics worktree and has drifted between syncs.
-    const colsRes = await pgQuery(`
-      SELECT column_name FROM information_schema.columns
-      WHERE table_name = 'creative_analysis'
-    `);
-    const cols = new Set(colsRes.map(r => r.column_name));
+    const cols = await getCreativeAnalysisColumns();
     const idCol  = cols.has('ad_account_id') ? 'ad_account_id' : null;
     const nameCol = cols.has('ad_account_name') ? 'ad_account_name'
                   : cols.has('account_name') ? 'account_name'
@@ -3499,11 +3511,7 @@ router.get('/meta-ads/ads', authenticate, async (req, res) => {
     const minSpend = parseFloat(req.query.min_spend) || 0;
     const search = req.query.search ? String(req.query.search).trim() : null;
 
-    const colsRes = await pgQuery(`
-      SELECT column_name FROM information_schema.columns
-      WHERE table_name = 'creative_analysis'
-    `);
-    const cols = new Set(colsRes.map(r => r.column_name));
+    const cols = await getCreativeAnalysisColumns();
     const idCol  = cols.has('ad_account_id') ? 'ad_account_id' : null;
     const nameCol = cols.has('ad_account_name') ? 'ad_account_name'
                   : cols.has('account_name') ? 'account_name'
@@ -3614,11 +3622,7 @@ router.post('/meta-ads/import', authenticate, async (req, res) => {
       return res.status(400).json({ success: false, error: { message: 'creative_ids[] is required' } });
     }
 
-    const colsRes = await pgQuery(`
-      SELECT column_name FROM information_schema.columns
-      WHERE table_name = 'creative_analysis'
-    `);
-    const cols = new Set(colsRes.map(r => r.column_name));
+    const cols = await getCreativeAnalysisColumns();
     const idCol  = cols.has('ad_account_id') ? 'ad_account_id' : null;
     const nameCol = cols.has('ad_account_name') ? 'ad_account_name'
                   : cols.has('account_name') ? 'account_name'
