@@ -5,6 +5,7 @@ import {
   ChevronDown, Settings2, Globe, ScanSearch,
   Sparkles, AlertCircle, RotateCcw,
   MoreHorizontal, Info, Copy, Download,
+  Video as VideoIcon, Image as ImageIcon, Columns as CarouselIcon,
 } from 'lucide-react';
 import IntelDrawer from './IntelDrawer';
 import AggregationsTab from './AggregationsTab';
@@ -598,17 +599,17 @@ function AdCard({ ad, brand, onOpenIntel }) {
 // ---------------------------------------------------------------------------
 
 // counts shape: { VIDEO, IMAGE, CAROUSEL, OTHER, TOTAL }
-// Uniform gray styling — bar segments distinguished by lightness only,
-// not hue (matches PestLab's reference and the user's "all gray" preference).
+// Atria-style card: bold title, colored bar, format rows with icon + dot.
+// Green/blue/amber palette so the densest format reads at a glance.
 function MediaMixBar({ counts }) {
   if (!counts || !counts.TOTAL) {
     return (
-      <div className="space-y-2">
-        <div className="flex items-center gap-2">
-          <span className="text-[11px] uppercase tracking-wider text-text-faint font-medium">Media mix</span>
-          <span className="text-[11px] text-text-faint ml-auto">Loading…</span>
+      <div className="rounded-xl border border-border-subtle bg-bg-card p-4 space-y-3">
+        <p className="text-[13px] font-semibold text-text-primary">Media mix</p>
+        <div className="h-2 rounded-full bg-white/[0.04] animate-pulse" />
+        <div className="space-y-2 pt-0.5">
+          {[0,1,2].map((i) => <div key={i} className="h-4 rounded bg-white/[0.04] animate-pulse" />)}
         </div>
-        <div className="h-2 rounded-full bg-bg-card animate-pulse" />
       </div>
     );
   }
@@ -620,38 +621,32 @@ function MediaMixBar({ counts }) {
   const iPct = total ? (images / total) * 100    : 0;
   const cPct = total ? (carousels / total) * 100 : 0;
 
+  const rows = [
+    { Icon: VideoIcon,    dot: 'bg-emerald-500', label: 'Video',    count: videos,    pct: vPct },
+    { Icon: ImageIcon,    dot: 'bg-sky-500',     label: 'Image',    count: images,    pct: iPct },
+    ...(carousels > 0
+      ? [{ Icon: CarouselIcon, dot: 'bg-amber-500', label: 'Carousel', count: carousels, pct: cPct }]
+      : []),
+  ];
+
   return (
-    <div className="space-y-1.5">
-      <div className="flex items-center gap-2">
-        <span className="text-[10px] uppercase tracking-wider text-text-faint font-medium">Media mix</span>
-        <span className="text-[10px] text-text-faint ml-auto tabular-nums">{total.toLocaleString()} ads</span>
+    <div className="rounded-xl border border-border-subtle bg-bg-card p-4 space-y-3">
+      <p className="text-[13px] font-semibold text-text-primary">Media mix</p>
+      <div className="h-2 rounded-full bg-white/[0.04] flex overflow-hidden gap-px">
+        {vPct > 0 && <div className="h-full bg-emerald-500 transition-all" style={{ width: `${vPct}%` }} />}
+        {iPct > 0 && <div className="h-full bg-sky-500     transition-all" style={{ width: `${iPct}%` }} />}
+        {cPct > 0 && <div className="h-full bg-amber-500   transition-all" style={{ width: `${cPct}%` }} />}
       </div>
-      <div className="h-1.5 rounded-full bg-white/[0.04] flex overflow-hidden gap-px">
-        {vPct > 0 && <div className="h-full bg-white/55 transition-all" style={{ width: `${vPct}%` }} />}
-        {iPct > 0 && <div className="h-full bg-white/30 transition-all" style={{ width: `${iPct}%` }} />}
-        {cPct > 0 && <div className="h-full bg-white/15 transition-all" style={{ width: `${cPct}%` }} />}
-      </div>
-      <div className="space-y-0.5 pt-0.5">
-        <div className="flex items-center text-[11px]">
-          <span className="w-1.5 h-1.5 rounded-full bg-white/55 shrink-0 mr-1.5" />
-          <span className="text-text-muted">Video</span>
-          <span className="ml-auto tabular-nums text-text-faint">{videos.toLocaleString()} ads</span>
-          <span className="ml-2.5 text-text-primary font-semibold tabular-nums w-11 text-right">{vPct.toFixed(1)}%</span>
-        </div>
-        <div className="flex items-center text-[11px]">
-          <span className="w-1.5 h-1.5 rounded-full bg-white/30 shrink-0 mr-1.5" />
-          <span className="text-text-muted">Image</span>
-          <span className="ml-auto tabular-nums text-text-faint">{images.toLocaleString()} ads</span>
-          <span className="ml-2.5 text-text-primary font-semibold tabular-nums w-11 text-right">{iPct.toFixed(1)}%</span>
-        </div>
-        {carousels > 0 && (
-          <div className="flex items-center text-[11px]">
-            <span className="w-1.5 h-1.5 rounded-full bg-white/15 shrink-0 mr-1.5" />
-            <span className="text-text-muted">Carousel</span>
-            <span className="ml-auto tabular-nums text-text-faint">{carousels.toLocaleString()} ads</span>
-            <span className="ml-2.5 text-text-primary font-semibold tabular-nums w-11 text-right">{cPct.toFixed(1)}%</span>
+      <div className="space-y-2 pt-0.5">
+        {rows.map(({ Icon, dot, label, count, pct }) => (
+          <div key={label} className="flex items-center gap-2 text-[13px]">
+            <span className={`w-2 h-2 rounded-full shrink-0 ${dot}`} />
+            <Icon className="w-4 h-4 text-text-faint shrink-0" />
+            <span className="text-text-primary">{label}</span>
+            <span className="ml-auto tabular-nums text-text-muted">{count.toLocaleString()} ads</span>
+            <span className="text-text-primary font-medium tabular-nums w-14 text-right">{pct.toFixed(1)}%</span>
           </div>
-        )}
+        ))}
       </div>
     </div>
   );
@@ -1213,38 +1208,36 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
               />
             </div>
 
-            {/* Unified dashboard card — compact PestLab layout */}
-            <div className="rounded-xl border border-border-subtle bg-bg-elevated px-4 py-3 space-y-3">
-              {/* Summary text */}
-              {(() => {
-                const tf = TIME_FILTERS.find((f) => f.value === timeFilter);
-                const label = tf?.value === 'all' ? null : tf?.label;
-                return (
-                  <p className="text-[12px] text-text-muted leading-snug">
-                    <span className="text-lg font-bold text-text-primary tabular-nums">{total.toLocaleString()}</span>
-                    {' '}<span className="text-text-muted">ads</span>{' '}
-                    {label
-                      ? <>were launched in the <span className="text-text-primary font-medium">last {label}</span></>
-                      : <>tracked across <span className="text-text-primary font-medium">all time</span></>}
-                    {brand?.activeAdsCount != null && (
-                      <>{', including '}
-                        <span className="text-text-primary font-semibold tabular-nums">
-                          {(brand.activeAdsCount).toLocaleString()}
-                        </span> currently active</>
-                    )}
-                    .
-                  </p>
-                );
-              })()}
+            {/* Summary text — plain line above the cards (Atria layout). */}
+            {(() => {
+              const tf = TIME_FILTERS.find((f) => f.value === timeFilter);
+              const label = tf?.value === 'all' ? null : tf?.label;
+              return (
+                <p className="text-[14px] text-text-muted leading-snug">
+                  <span className="text-xl font-bold text-text-primary tabular-nums">{total.toLocaleString()}</span>
+                  {' '}<span className="text-text-primary font-semibold">ads</span>{' '}
+                  {label
+                    ? <>were launched in the <span className="text-text-primary font-semibold">last {label}</span></>
+                    : <>tracked across <span className="text-text-primary font-semibold">all time</span></>}
+                  {brand?.activeAdsCount != null && (
+                    <>{', including '}
+                      <span className="text-text-primary font-semibold tabular-nums">
+                        {(brand.activeAdsCount).toLocaleString()}
+                      </span> currently active</>
+                  )}
+                  .
+                </p>
+              );
+            })()}
 
-              {/* Two-column grid — always both visible (Atria layout).
-                  LEFT: media mix + 4 mini stat boxes.
-                  RIGHT: AI Brand Intel (6 categories of pills). */}
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-                {/* LEFT */}
-                <div className="space-y-3">
-                  <MediaMixBar counts={formatCounts} />
+            {/* Two-column dashboard. LEFT = stacked Media-mix card + 4-stat
+                card. RIGHT = AI Brand Intel card. */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+              {/* LEFT column — two stacked cards */}
+              <div className="space-y-3">
+                <MediaMixBar counts={formatCounts} />
 
+                <div className="rounded-xl border border-border-subtle bg-bg-card p-4">
                   <div className="grid grid-cols-4 gap-2">
                     {[
                       { label: 'Hooks',     value: aggCounts?.hooks,     tabId: 'hooks'     },
@@ -1254,23 +1247,22 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
                     ].map(({ label, value, tabId }) => (
                       <button key={label}
                         onClick={() => setActiveTab(tabId)}
-                        className="rounded-md border border-border-subtle bg-bg-card hover:bg-bg-hover hover:border-white/15 transition-colors py-2 px-2 text-center group">
-                        <p className="text-[16px] font-bold text-text-primary tabular-nums leading-none">
+                        className="text-center group hover:bg-white/[0.02] rounded-md py-1 transition-colors">
+                        <p className="text-[20px] font-bold text-text-primary tabular-nums leading-none">
                           {value == null ? '—' : (value >= 100 ? '99+' : value)}
                         </p>
-                        <p className="text-[10px] uppercase tracking-wider text-text-faint mt-1 group-hover:text-text-muted transition-colors">
+                        <p className="text-[11px] text-text-muted mt-1.5 group-hover:text-text-primary transition-colors">
                           {label}
                         </p>
                       </button>
                     ))}
                   </div>
                 </div>
+              </div>
 
-                {/* RIGHT — always visible (no dropdown). The IntelPanel renders
-                    its own AI Brand Intel header internally. */}
-                <div className="lg:border-l lg:border-border-subtle/50 lg:pl-5">
-                  <IntelPanel intel={intel} intelLoading={intelLoading} intelError={intelError} onRetry={loadIntel} />
-                </div>
+              {/* RIGHT column — AI Brand Intel card */}
+              <div className="rounded-xl border border-border-subtle bg-bg-card p-4">
+                <IntelPanel intel={intel} intelLoading={intelLoading} intelError={intelError} onRetry={loadIntel} />
               </div>
             </div>
 
