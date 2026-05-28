@@ -523,12 +523,23 @@ function AdCard({ ad, brand, onOpenIntel }) {
             )}
             <div className="absolute inset-0 bg-black/15 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none" />
             {hasVideo && (
-              <button onClick={handlePlayClick}
-                className="absolute inset-0 flex items-center justify-center z-10" title="Play inline">
-                <div className="w-9 h-9 rounded-full bg-black/60 backdrop-blur-sm flex items-center justify-center border border-white/20 group-hover:scale-110 transition-transform">
+              // Wrapper is pointer-events-none so it doesn't swallow clicks
+              // on the rest of the thumbnail; only the inner Play circle
+              // captures clicks. Without this split the absolute-inset-0
+              // button covered the whole tile and intercepted every click
+              // (including stopping propagation), so the card's onClick
+              // never fired and users could never navigate to the detail
+              // page where the Transcribe widget lives.
+              <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10">
+                <button
+                  type="button"
+                  onClick={handlePlayClick}
+                  className="pointer-events-auto w-9 h-9 rounded-full bg-black/60 backdrop-blur-sm flex items-center justify-center border border-white/20 group-hover:scale-110 transition-transform"
+                  title="Play inline (or click outside to open detail)"
+                >
                   <Play className="w-4 h-4 text-white ml-0.5" fill="white" />
-                </div>
-              </button>
+                </button>
+              </div>
             )}
           </>
         )}
