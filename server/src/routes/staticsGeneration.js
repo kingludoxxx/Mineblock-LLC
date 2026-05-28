@@ -342,19 +342,46 @@ const MAX_TEMP_IMAGES = 200;
   }
 })();
 
-setInterval(async () => {
+// Reference-safe image_store GC.
+// Old behaviour was a flat 7-day DELETE, which orphaned every spy_creatives row
+// whose image_url pointed at /tmp-img/<id> once the id aged out — that's the
+// recurring "preview missing on ready-to-launch batch" bug.
+//
+// New behaviour:
+//   (a) Bump the safety TTL from 7 → 90 days so even references stay alive
+//       through long pipelines.
+//   (b) Exclude any image_store row still referenced by a live row
+//       (spy_creatives.image_url, spy_creatives.reference_thumbnail,
+//       statics_launches.thumbnail_url) so an active card NEVER loses its
+//       preview to GC again.
+//   (c) Keep the cadence at 6h — table is tiny once the dead rows are gone.
+async function gcImageStoreOnce() {
   try {
     const result = await pgQuery(
-      "DELETE FROM image_store WHERE created_at < NOW() - INTERVAL '7 days' RETURNING id",
+      `DELETE FROM image_store s
+       WHERE s.created_at < NOW() - INTERVAL '90 days'
+         AND NOT EXISTS (
+           SELECT 1 FROM spy_creatives c
+            WHERE c.image_url           LIKE '%/tmp-img/' || s.id
+               OR c.reference_thumbnail LIKE '%/tmp-img/' || s.id
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM statics_launches l
+            WHERE l.thumbnail_url LIKE '%/tmp-img/' || s.id
+         )
+       RETURNING id`,
       [], { timeout: 30000 }
     );
     if (result.length > 0) {
-      console.log(`[imageStore] Cleaned up ${result.length} expired images (>7 days old)`);
+      console.log(`[imageStore] GC: removed ${result.length} unreferenced rows older than 90d`);
     }
   } catch (err) {
-    console.warn('[imageStore] Cleanup failed:', err.message);
+    console.warn('[imageStore] GC failed:', err.message);
   }
-}, 6 * 60 * 60 * 1000);
+}
+setInterval(gcImageStoreOnce, 6 * 60 * 60 * 1000);
+// One pass at boot so old broken state heals immediately after the fix deploys.
+setTimeout(() => { gcImageStoreOnce().catch(() => {}); }, 30_000);
 
 async function storeTempImage(buf, contentType) {
   if (tempImages.size >= MAX_TEMP_IMAGES) {
@@ -1775,6 +1802,35 @@ router.get('/creatives/pipeline', authenticate, async (req, res) => {
       }
     }
 
+    // Auto-repair pass: if any visible card has a /tmp-img/<id> URL whose
+    // image_store row no longer exists (the recurring "preview missing" bug),
+    // fire-and-forget POST /regenerate-broken-previews with CRON_SECRET.
+    // Rate-limited to once per 30 min per process so polling never hammers NB.
+    try {
+      const brokenIds = [];
+      for (const bucket of ['ready', 'review', 'launched']) {
+        for (const c of pipeline[bucket]) {
+          const u = c.image_url || '';
+          const m = u.match(/\/tmp-img\/([a-f0-9-]+)/i);
+          if (m) brokenIds.push({ rowId: c.id, storeId: m[1] });
+        }
+      }
+      if (brokenIds.length > 0) {
+        const storeIds = brokenIds.map(b => b.storeId);
+        const alive = await pgQuery(
+          'SELECT id FROM image_store WHERE id = ANY($1::text[])',
+          [storeIds]
+        );
+        const aliveSet = new Set(alive.map(r => r.id));
+        const dead = brokenIds.filter(b => !aliveSet.has(b.storeId));
+        if (dead.length > 0) {
+          triggerBrokenPreviewRepair(dead.length).catch(() => {});
+        }
+      }
+    } catch (e) {
+      console.warn('[creatives/pipeline] auto-repair detection failed:', e.message);
+    }
+
     res.json({
       success: true,
       data: pipeline,
@@ -1791,6 +1847,38 @@ router.get('/creatives/pipeline', authenticate, async (req, res) => {
     res.status(500).json({ success: false, error: { message: err.message } });
   }
 });
+
+// Module-level rate-limit: one auto-repair request per process per 30 min.
+let _autoRepairLastAt = 0;
+let _autoRepairInFlight = false;
+const AUTO_REPAIR_MIN_INTERVAL_MS = 30 * 60 * 1000;
+async function triggerBrokenPreviewRepair(deadCount) {
+  if (_autoRepairInFlight) return;
+  if (Date.now() - _autoRepairLastAt < AUTO_REPAIR_MIN_INTERVAL_MS) return;
+  const secret = process.env.CRON_SECRET;
+  if (!secret) {
+    console.warn('[auto-repair] CRON_SECRET not set — skipping');
+    return;
+  }
+  _autoRepairInFlight = true;
+  console.log(`[auto-repair] ${deadCount} dead /tmp-img refs detected — triggering background regen`);
+  try {
+    const base = process.env.RENDER_EXTERNAL_URL || `http://localhost:${process.env.PORT || 3000}`;
+    const r = await fetch(`${base}/api/v1/statics-generation/regenerate-broken-previews`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-cron-secret': secret },
+      body: JSON.stringify({}),
+      signal: AbortSignal.timeout(15_000),
+    });
+    const body = await r.json().catch(() => ({}));
+    console.log(`[auto-repair] regen ${r.status}: queued=${body?.data?.queued} eta=${body?.data?.eta_min}min`);
+  } catch (err) {
+    console.warn('[auto-repair] regen kickoff failed:', err.message);
+  } finally {
+    _autoRepairLastAt = Date.now();
+    _autoRepairInFlight = false;
+  }
+}
 
 router.get('/creatives/:id', authenticate, async (req, res) => {
   try {
@@ -2940,7 +3028,14 @@ router.get('/repair-thumbnails', authenticate, async (req, res) => {
 // 3-step pipeline and produce a fresh preview. The Meta ad itself is not
 // touched — we only refresh the local preview thumbnail.
 // ─────────────────────────────────────────────────────────────────────────
-router.post('/regenerate-broken-previews', authenticate, async (req, res) => {
+router.post('/regenerate-broken-previews', async (req, res, next) => {
+  // CRON_SECRET fast-path lets internal triggers (/creatives/pipeline auto-fix)
+  // and Render Cron Jobs call this without a JWT.
+  const cronSecret = process.env.CRON_SECRET;
+  const provided   = req.headers['x-cron-secret'];
+  if (cronSecret && provided === cronSecret) return next();
+  return authenticate(req, res, next);
+}, async (req, res) => {
   try {
     await ensureCreativesTable();
     // Default scope: visible pipeline statuses only (matches the Kanban columns).
