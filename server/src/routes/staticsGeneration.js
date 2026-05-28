@@ -28,7 +28,6 @@ import {
   buildNanoBananaImagePrompt,
   buildAdjustmentPrompt,
   buildLayoutAnalysisPrompt,
-  interpolate,
 } from '../utils/staticsPrompts.js';
 import { pgQuery } from '../db/pg.js';
 import { authenticate } from '../middleware/auth.js';
@@ -217,10 +216,6 @@ function storeTaskResult(taskId, result) {
   taskResults.set(taskId, result);
   setTimeout(() => taskResults.delete(taskId), TASK_RESULT_TTL);
 }
-
-// Backwards-compat alias (some older code referenced storeGeminiResult / geminiResults)
-const geminiResults = taskResults;
-const storeGeminiResult = storeTaskResult;
 
 // ─────────────────────────────────────────────────────────────────────────
 // Generation monitoring (logGenerationEvent → statics_generation_events)
@@ -687,64 +682,10 @@ async function getCustomStaticsPrompts() {
 // Layout analysis (one-time per template, cached in DB) — kept for templates UI
 // ─────────────────────────────────────────────────────────────────────────
 
-async function analyzeAndCacheLayout(templateId, imageUrl) {
-  try {
-    const { base64, mediaType } = await resolveImage(imageUrl);
-    const promptText = buildLayoutAnalysisPrompt();
-
-    const res = await fetch(CLAUDE_API_URL, {
-      method: 'POST',
-      headers: {
-        'x-api-key': ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: CLAUDE_MODEL,
-        max_tokens: 1500,
-        messages: [{
-          role: 'user',
-          content: [
-            { type: 'text', text: promptText },
-            { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } },
-          ],
-        }],
-      }),
-    });
-
-    if (!res.ok) {
-      const errText = await res.text();
-      throw new Error(`Claude layout analysis error ${res.status}: ${errText.slice(0, 300)}`);
-    }
-
-    const data = await res.json();
-    const rawText = data.content?.[0]?.text;
-    if (!rawText) throw new Error('Empty response from Claude layout analysis');
-
-    const jsonMatch = rawText.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) throw new Error('No JSON in layout analysis response');
-
-    let layoutMap;
-    try { layoutMap = JSON.parse(jsonMatch[0]); }
-    catch { layoutMap = JSON.parse(jsonMatch[0].replace(/,\s*([}\]])/g, '$1')); }
-
-    await pgQuery(
-      `UPDATE statics_templates
-       SET metadata = jsonb_set(
-               CASE WHEN metadata IS NULL OR jsonb_typeof(metadata) != 'object' THEN '{}'::jsonb ELSE metadata END,
-               '{layout_map}', $1::jsonb),
-           updated_at = NOW()
-       WHERE id = $2`,
-      [JSON.stringify(layoutMap), templateId]
-    );
-
-    console.log(`[staticsGeneration] ✅ Layout map cached for template ${templateId} (archetype: ${layoutMap.archetype})`);
-    return layoutMap;
-  } catch (err) {
-    console.error(`[staticsGeneration] Layout analysis failed for template ${templateId}:`, err.message);
-    return null;
-  }
-}
+// (analyzeAndCacheLayout removed — dead code per 2026-05-28 audit. The
+//  layout-map caching path is no longer used by the 3-prompt pipeline; the
+//  exported buildLayoutAnalysisPrompt is still available for any future
+//  template-classification helper.)
 
 // ─────────────────────────────────────────────────────────────────────────
 // POST /generate — 3-step pipeline
@@ -1212,11 +1153,18 @@ router.post('/iterate/:creativeId', authenticate, async (req, res) => {
     const parentImMatch = String(parent.creative_id).match(/^IM(\d+)$/);
     const parentImNumber = parentImMatch ? parseInt(parentImMatch[1]) : null;
 
-    // Load product (or use Miner Forge Pro defaults)
-    let product = { id: productId, name: 'Miner Forge Pro', profile: {} };
-    if (productId) {
+    // productId is now required — silent default to "Miner Forge Pro" was a bug
+    // (would generate wrong-brand ads if caller forgot the param).
+    if (!productId) {
+      return res.status(400).json({ success: false, error: { message: 'productId is required' } });
+    }
+    let product = { id: productId, name: '', profile: {} };
+    {
       const prodRows = await pgQuery('SELECT * FROM product_profiles WHERE id = $1', [productId]);
-      if (prodRows.length > 0) {
+      if (prodRows.length === 0) {
+        return res.status(404).json({ success: false, error: { message: `product ${productId} not found` } });
+      }
+      {
         const p = prodRows[0];
         product = {
           id: p.id, name: p.name, price: p.price, description: p.description,
@@ -2773,7 +2721,12 @@ router.patch('/creatives/bulk-status', authenticate, async (req, res) => {
     if (!Array.isArray(ids) || ids.length === 0) {
       return res.status(400).json({ success: false, error: { message: 'ids must be a non-empty array' } });
     }
-    const validStatuses = ['review', 'approved', 'ready', 'rejected', 'archived'];
+    // 'approved' was deprecated in migration 051 — reject explicitly to match the
+    // single-creative PATCH endpoint's behavior. Use 'ready' instead.
+    if (status === 'approved') {
+      return res.status(400).json({ success: false, error: { message: "'approved' is deprecated; use 'ready'" } });
+    }
+    const validStatuses = ['review', 'ready', 'rejected', 'archived'];
     if (!validStatuses.includes(status)) {
       return res.status(400).json({ success: false, error: { message: `Invalid status: ${status}` } });
     }
@@ -2784,18 +2737,27 @@ router.patch('/creatives/bulk-status', authenticate, async (req, res) => {
       [status, ...ids]
     );
 
-    if (status === 'approved') {
-      for (const id of ids) {
-        const rows = await pgQuery(`SELECT * FROM spy_creatives WHERE id = $1`, [id]);
-        const creative = rows[0];
-        if (creative && creative.aspect_ratio !== '9:16' && !creative.parent_creative_id) {
-          const existing = await pgQuery(
-            "SELECT id FROM spy_creatives WHERE parent_creative_id = $1 AND aspect_ratio = '9:16'",
-            [id]
-          );
-          if (existing.length === 0) {
+    // Auto-spawn 9:16 variant on 'ready' (was 'approved' — moved per migration 051).
+    // Batched into a single SELECT (N+1 fix per audit perf finding).
+    if (status === 'ready') {
+      const rows = await pgQuery(
+        `SELECT id, aspect_ratio, parent_creative_id FROM spy_creatives WHERE id = ANY($1::uuid[])`,
+        [ids]
+      );
+      const parentsNeedingVariants = rows.filter(c =>
+        c.aspect_ratio !== '9:16' && !c.parent_creative_id
+      );
+      if (parentsNeedingVariants.length > 0) {
+        const parentIds = parentsNeedingVariants.map(c => c.id);
+        const existingVariants = await pgQuery(
+          `SELECT parent_creative_id FROM spy_creatives WHERE parent_creative_id = ANY($1::uuid[]) AND aspect_ratio = '9:16'`,
+          [parentIds]
+        );
+        const alreadyHasVariant = new Set(existingVariants.map(v => v.parent_creative_id));
+        for (const creative of parentsNeedingVariants) {
+          if (!alreadyHasVariant.has(creative.id)) {
             generateVariant(creative, '9:16').catch(err =>
-              console.error(`[bulkStatus] Auto 9:16 variant error for ${id}:`, err.message)
+              console.error(`[bulkStatus] Auto 9:16 variant error for ${creative.id}:`, err.message)
             );
           }
         }
@@ -2960,6 +2922,7 @@ router.post('/regenerate-broken-previews', authenticate, async (req, res) => {
       SELECT id, product_id, angle, reference_thumbnail, aspect_ratio, status
       FROM spy_creatives
       WHERE status = ANY($1::text[])
+      AND COALESCE(is_reference, FALSE) = FALSE  -- NEVER overwrite League/Meta/Upload reference rows
       AND (
         image_url LIKE '%tempfile%' OR image_url LIKE '%/tmp-img/%' OR
         image_url LIKE '%aiquickdraw%' OR image_url IS NULL OR image_url = ''
@@ -3785,10 +3748,6 @@ router.post('/reference-ads/upload', authenticate, async (req, res) => {
     res.status(500).json({ success: false, error: { message: err.message } });
   }
 });
-
-// Suppress unused-import warnings for helpers kept for future use
-void interpolate;
-void analyzeAndCacheLayout;
 
 export { getCustomStaticsPrompts, getDefaultStaticsPrompts };
 

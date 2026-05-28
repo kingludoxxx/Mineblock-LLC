@@ -3022,10 +3022,7 @@ export default function StaticsGeneration() {
           onAnalyzeTemplate={(template) => setAnalysisModalTemplate(template)}
           onAnalyzeAll={async () => {
             try {
-              const res = await api.post('/statics-generation/templates/analyze-all');
-              if (res.data?.success) {
-                console.log(res.data.message);
-              }
+              await api.post('/statics-generation/templates/analyze-all');
             } catch (err) {
               console.error('Analyze all failed:', err);
             }
