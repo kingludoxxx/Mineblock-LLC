@@ -33,12 +33,18 @@ export function requestShutdown() {
  */
 export async function recoverStuckScrapes() {
   try {
+    // Only recover brands stuck >2h. Without this guard, every deploy SIGTERMs
+    // an in-flight scrape and the next boot's recovery immediately re-runs it
+    // — burning credits on partial work the user is about to manually refresh
+    // anyway. 2h cooldown lets back-to-back deploys settle without re-scraping.
     const { rows } = await query(
-      `SELECT id FROM brand_spy.brands WHERE last_scrape_status IN ('RUNNING', 'INTERRUPTED')`,
+      `SELECT id FROM brand_spy.brands
+        WHERE last_scrape_status IN ('RUNNING', 'INTERRUPTED')
+          AND (last_scraped_at IS NULL OR last_scraped_at < NOW() - INTERVAL '2 hours')`,
     );
     if (!rows.length) return [];
     const ids = rows.map((r) => r.id);
-    console.log(`[brand-spy] boot recovery: ${ids.length} brand(s) stuck — re-queuing: ${ids.join(', ')}`);
+    console.log(`[brand-spy] boot recovery: ${ids.length} brand(s) stuck > 2h — re-queuing: ${ids.join(', ')}`);
     await query(
       `UPDATE brand_spy.brands SET last_scrape_status = 'PENDING', last_scrape_error = NULL
        WHERE id = ANY($1::uuid[])`,
@@ -312,6 +318,26 @@ export async function runBrandScrape({ brandId, trigger, client: scClient }) {
   try {
 
   const sc = scClient ?? getScrapeCreatorsClient();
+
+  // Pre-flight: refuse to start if the upstream account is already out of
+  // credits. Without this, runBrandScrape would burn the first 5-10 credits
+  // attempting Phase 1 calls before they fail with the "no credits" error.
+  // /account/credit-balance is itself free at ScrapeCreators.
+  try {
+    const balance = await sc.getCreditBalance();
+    const remaining = balance?.creditCount;
+    if (typeof remaining === 'number' && remaining <= 0) {
+      throw new ScrapeCreatorsError(
+        `Out of credits (balance: ${remaining}). Top up at https://app.scrapecreators.com to resume scraping.`,
+        402, 'NO_CREDITS', false,
+      );
+    }
+    console.log(`[brand-spy] pre-flight: ${remaining} credits remaining`);
+  } catch (e) {
+    if (e instanceof ScrapeCreatorsError && e.code === 'NO_CREDITS') throw e;
+    // Balance fetch failed for some other reason — proceed; real calls will surface the actual error
+    console.warn(`[brand-spy] pre-flight balance check failed, proceeding anyway: ${e.message}`);
+  }
 
   const brandRow = await query(
     `SELECT id, domain, display_name FROM brand_spy.brands WHERE id = $1`,
@@ -640,6 +666,22 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
   // discovered pages (added during Phase 1) need a full ALL pass.
   const knownPageIds = new Set(pageCache.keys());
 
+  // First-scrape vs re-scrape branch.
+  //
+  // First scrape (no pages yet): bootstrap full history. We need both the
+  //   ACTIVE and ALL passes across keyword search + per-page so the DB starts
+  //   with every ad the brand has ever run.
+  //
+  // Re-scrape (≥1 known page): the DB already holds history. All we need is
+  //   (a) refresh which ads are still active, and (b) discover any new pages.
+  //   Per-page ACTIVE pass on every known page is the ground truth for (a) and
+  //   automatically picks up newly-launched ads. Phase 1d ACTIVE with maxPages=3
+  //   handles (b) cheaply. Every other ALL-status pass would re-fetch data we
+  //   already have — pure waste. Gating those phases here cuts ~70% of credits
+  //   on the daily auto-scrape and the manual Refresh button.
+  const isFirstScrape = knownPageIds.size === 0;
+  console.log(`[brand-spy] ${isFirstScrape ? 'FIRST SCRAPE' : 'RE-SCRAPE'} for "${domain}" — ${knownPageIds.size} known pages`);
+
   // Pre-load all known domains (subdomains + cross-domains) from previous scrapes.
   // This allows Phase 1c to search subdomains discovered in earlier runs without
   // waiting for Phase 2 to re-discover them first.
@@ -753,29 +795,34 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
   // New pages discovered by Phase 1 are also launched via launchNewPages() below.
   launchNewPages();
 
-  // Phase 1a: active-only pass — captures every currently running ad regardless of
-  // impression rank. This is the critical pass for matching Meta's "active ads" count.
-  console.log(`[brand-spy] phase-1a: active-only keyword search for "${domain}" (US)`);
-  for await (const batch of sc.iterateAdsByDomain({ domain, status: 'ACTIVE', country: 'US' })) {
-    creditsUsed += 1;
-    const { d, u } = await upsertAdBatch(brandId, batch, pageCache, null, crossDomains, pageNameCache);
-    discovered += d; updated += u;
-    launchNewPages();
-  }
-  console.log(`[brand-spy] phase-1a done: ${discovered} new, ${updated} updated, ${pageCache.size} pages, ${creditsUsed} credits`);
-  if (shutdownRequested) { p2Blocked = true; throw Object.assign(new Error('Shutdown requested after phase-1a'), { isShutdown: true }); }
+  // Phase 1a/1b: keyword-search the full domain. ONLY runs on first scrape when
+  // Phase 1d (rootFragment) cannot run because rootFragment is too short
+  // (<5 chars, e.g. "fit", "go"). When Phase 1d does run it catches everything
+  // 1a/1b would, plus subdomain ads — so 1a/1b would be pure duplicate work.
+  // On re-scrapes we skip entirely; per-page Phase 2 ACTIVE refreshes is_active.
+  if (isFirstScrape && rootFragment.length < 5) {
+    console.log(`[brand-spy] phase-1a: active-only keyword search for "${domain}" (US) — rootFragment too short for Phase 1d`);
+    for await (const batch of sc.iterateAdsByDomain({ domain, status: 'ACTIVE', country: 'US' })) {
+      creditsUsed += 1;
+      const { d, u } = await upsertAdBatch(brandId, batch, pageCache, null, crossDomains, pageNameCache);
+      discovered += d; updated += u;
+      launchNewPages();
+    }
+    console.log(`[brand-spy] phase-1a done: ${discovered} new, ${updated} updated, ${pageCache.size} pages, ${creditsUsed} credits`);
+    if (shutdownRequested) { p2Blocked = true; throw Object.assign(new Error('Shutdown requested after phase-1a'), { isShutdown: true }); }
 
-  // Phase 1b: all-status pass — discovers historical inactive ads and any pages not
-  // yet found by the active-only pass (sorts by total_impressions, capped at 50 pages).
-  console.log(`[brand-spy] phase-1b: all-status keyword search for "${domain}" (US)`);
-  for await (const batch of sc.iterateAdsByDomain({ domain, status: 'ALL', country: 'US' })) {
-    creditsUsed += 1;
-    const { d, u } = await upsertAdBatch(brandId, batch, pageCache, null, crossDomains, pageNameCache);
-    discovered += d; updated += u;
-    launchNewPages();
+    console.log(`[brand-spy] phase-1b: all-status keyword search for "${domain}" (US)`);
+    for await (const batch of sc.iterateAdsByDomain({ domain, status: 'ALL', country: 'US' })) {
+      creditsUsed += 1;
+      const { d, u } = await upsertAdBatch(brandId, batch, pageCache, null, crossDomains, pageNameCache);
+      discovered += d; updated += u;
+      launchNewPages();
+    }
+    console.log(`[brand-spy] phase-1 done: ${discovered} new, ${updated} updated, ${pageCache.size} pages, ${creditsUsed} credits`);
+    if (shutdownRequested) { p2Blocked = true; throw Object.assign(new Error('Shutdown requested after phase-1b'), { isShutdown: true }); }
+  } else {
+    console.log(`[brand-spy] phase-1a/1b: skipped (${isFirstScrape ? 'Phase 1d covers it' : 're-scrape; per-page Phase 2 ACTIVE is sufficient'})`);
   }
-  console.log(`[brand-spy] phase-1 done: ${discovered} new, ${updated} updated, ${pageCache.size} pages, ${creditsUsed} credits`);
-  if (shutdownRequested) { p2Blocked = true; throw Object.assign(new Error('Shutdown requested after phase-1b'), { isShutdown: true }); }
 
   // Phase 1d: rootFragment keyword search — catches ads whose link_url uses a subdomain
   // (e.g. shop.try-forge.com, secure.try-forge.com) that do NOT match the full domain
@@ -843,9 +890,10 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
   }
   if (shutdownRequested) { p2Blocked = true; throw Object.assign(new Error('Shutdown requested after phase-1d'), { isShutdown: true }); }
 
-  // Phase 1.5: company-name search — always runs to discover FB pages not found via
-  // domain keyword search (common when brands use subdomains, redirect URLs, or
-  // tracking domains as ad destinations).
+  // Phase 1.5: company-name search — discovers FB pages not found via domain
+  // keyword search (common when brands use subdomains/redirect URLs). Only runs
+  // on first scrape: on re-scrapes we already know the pages and Phase 1d ACTIVE
+  // (maxPages=3) is enough to catch any newly-launched brand pages.
   //
   // IMPORTANT: we search only the FULL domain name (e.g. "try-forge"), NOT a
   // prefix-stripped variant (e.g. "forge"). Generic fragments like "forge" match
@@ -854,7 +902,7 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
   //
   // Relevance check uses normalised comparison so "Try Forge" matches "try-forge"
   // and "TryForge" matches "try-forge" regardless of hyphens/spaces.
-  {
+  if (isFirstScrape) {
     const domainWithoutTld = domain.replace(/\.[a-z]{2,}(\.[a-z]{2})?$/, ''); // 'try-forge.com' → 'try-forge'
     // Use only the exact brand name — no prefix-stripped variants.
     const candidates = [domainWithoutTld].filter(c => c && c.length > 2);
@@ -902,6 +950,8 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
       console.log(`[brand-spy] phase-1.5: "${name}" added ${addedFromThisSearch} pages`);
     }
     console.log(`[brand-spy] phase-1.5 done: ${pageCache.size} pages total`);
+  } else {
+    console.log(`[brand-spy] phase-1.5: skipped (re-scrape; Phase 1d ACTIVE handles new-page discovery)`);
   }
   if (shutdownRequested) { p2Blocked = true; throw Object.assign(new Error('Shutdown requested after phase-1.5'), { isShutdown: true }); }
 
@@ -965,11 +1015,16 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
         discovered += d; updated += u;
         launchNewPages();
       }
-      for await (const batch of sc.iterateAdsByDomain({ domain: subDomain, status: 'ALL', country: 'US' })) {
-        creditsUsed += 1;
-        const { d, u } = await upsertAdBatch(brandId, batch, pageCache, null, crossDomains, pageNameCache);
-        discovered += d; updated += u;
-        launchNewPages();
+      // ALL pass only on first scrape (bootstraps subdomain history).
+      // Re-scrapes already have the subdomain's history in the DB — the ACTIVE
+      // pass above + per-page Phase 2 ACTIVE on its FB pages is sufficient.
+      if (isFirstScrape) {
+        for await (const batch of sc.iterateAdsByDomain({ domain: subDomain, status: 'ALL', country: 'US' })) {
+          creditsUsed += 1;
+          const { d, u } = await upsertAdBatch(brandId, batch, pageCache, null, crossDomains, pageNameCache);
+          discovered += d; updated += u;
+          launchNewPages();
+        }
       }
     }
     // Await Phase 2 workers kicked off by Phase 3 subdomain pages
