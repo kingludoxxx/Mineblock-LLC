@@ -240,12 +240,14 @@ export function ReferenceColumn({ productId, onSelectReference, onAddSelectedToQ
   useEffect(() => { load(); }, [load]);
 
   const handleDelete = async (item) => {
-    if (!window.confirm(`Remove "${item.reference_name || item.source_label || 'this reference'}" from Reference?`)) return;
+    // Optimistic: drop from UI immediately, then fire DELETE.
+    // On error we re-fetch the full list so state stays accurate.
+    setItems(prev => prev.filter(i => i.id !== item.id));
     try {
       await api.delete(`/statics-generation/reference-ads/${item.id}`);
-      setItems(prev => prev.filter(i => i.id !== item.id));
     } catch (err) {
       setError(err.response?.data?.error?.message || 'Delete failed');
+      load(); // restore from server
     }
   };
 
