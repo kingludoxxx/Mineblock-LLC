@@ -2294,6 +2294,28 @@ router.post('/launch', authenticate, async (req, res) => {
     let pageIdx = 0;
     const processedGroupIds = new Set();
 
+    // Pre-fetch all legacy variants in one query (audit N+1 fix). Build a Map
+    // keyed by parent_creative_id so the per-creative loop is a cheap lookup
+    // instead of 1 SELECT per row.
+    const legacyVariantsByParent = new Map();
+    try {
+      const allVariants = await pgQuery(
+        `SELECT id, parent_creative_id, aspect_ratio, image_url, meta_image_hash
+           FROM spy_creatives
+          WHERE parent_creative_id = ANY($1::uuid[])
+            AND status IN ('approved', 'ready')
+            AND image_url IS NOT NULL`,
+        [creative_ids]
+      );
+      for (const v of allVariants) {
+        const arr = legacyVariantsByParent.get(v.parent_creative_id) || [];
+        arr.push(v);
+        legacyVariantsByParent.set(v.parent_creative_id, arr);
+      }
+    } catch (e) {
+      console.warn('[launch] pre-fetch of legacy variants failed (continuing without):', e.message);
+    }
+
     for (let i = 0; i < creatives.length; i++) {
       const creative = creatives[i];
 
@@ -2339,10 +2361,7 @@ router.post('/launch', authenticate, async (req, res) => {
           }
         }
 
-        const legacyVariants = await pgQuery(
-          "SELECT id, aspect_ratio, image_url, meta_image_hash FROM spy_creatives WHERE parent_creative_id = $1 AND status IN ('approved', 'ready') AND image_url IS NOT NULL",
-          [creative.id]
-        ).catch(() => []);
+        const legacyVariants = legacyVariantsByParent.get(creative.id) || [];
         for (const v of legacyVariants) {
           if (!ratioImages[v.aspect_ratio]) {
             ratioImages[v.aspect_ratio] = { id: v.id, image_url: v.image_url, meta_image_hash: v.meta_image_hash };
@@ -3387,17 +3406,28 @@ router.post('/league/import', authenticate, async (req, res) => {
       WHERE a.id = ANY($1::uuid[]) AND a.brand_id = $2
     `, [ad_ids, brand_id]);
 
-    let imported = 0;
+    // Batch dedup lookup (audit N+1 fix): one SELECT for all existing keys
+    // instead of one per ad.
+    const adKeys = adRows.map(ad => String(ad.ad_archive_id));
+    const existingRows = adKeys.length > 0
+      ? await pgQuery(
+          `SELECT external_ref_key FROM spy_creatives
+            WHERE imported_from = 'league' AND external_ref_key = ANY($1::text[])`,
+          [adKeys]
+        )
+      : [];
+    const alreadyImported = new Set(existingRows.map(r => r.external_ref_key));
+
+    // Build bulk INSERT payload, then ship in one round-trip via unnest().
+    // ON CONFLICT skips any race-condition dup that lands between SELECT and INSERT.
+    const insertImageUrls = [];
+    const insertSourceLabels = [];
+    const insertMetadataJson = [];
+    const insertAspectRatios = [];
+    const insertExternalKeys = [];
     let skipped = 0;
     for (const ad of adRows) {
-      // Skip if this ad_archive_id was already imported (top-level text column
-      // dedup, indexed on (imported_from, external_ref_key)).
-      const existing = await pgQuery(
-        `SELECT 1 FROM spy_creatives
-         WHERE imported_from = 'league' AND external_ref_key = $1 LIMIT 1`,
-        [String(ad.ad_archive_id)]
-      );
-      if (existing.length > 0) {
+      if (alreadyImported.has(String(ad.ad_archive_id))) {
         skipped++;
         continue;
       }
@@ -3414,15 +3444,30 @@ router.post('/league/import', authenticate, async (req, res) => {
         start_date: ad.start_date,
         end_date: ad.end_date,
       };
-      await pgQuery(`
+      insertImageUrls.push(ad.image_url);
+      insertSourceLabels.push(brandName);
+      insertMetadataJson.push(JSON.stringify(meta));
+      insertAspectRatios.push(pickAspectRatio(ad.display_format));
+      insertExternalKeys.push(String(ad.ad_archive_id));
+    }
+
+    let imported = 0;
+    if (insertImageUrls.length > 0) {
+      const insertedRows = await pgQuery(`
         INSERT INTO spy_creatives
           (pipeline, status, is_reference, imported_from, external_ref_key,
            image_url, thumbnail_url, source_label, reference_name,
            reference_thumbnail, imported_metadata, aspect_ratio)
-        VALUES ('standard', 'ready', TRUE, 'league', $5,
-                $1, $1, $2, $2, $1, $3::jsonb, $4)
-      `, [ad.image_url, brandName, JSON.stringify(meta), pickAspectRatio(ad.display_format), String(ad.ad_archive_id)]);
-      imported++;
+        SELECT 'standard', 'ready', TRUE, 'league',
+               t.external_ref_key,
+               t.image_url, t.image_url, t.source_label, t.source_label,
+               t.image_url, t.meta_json::jsonb, t.aspect_ratio
+          FROM unnest(
+            $1::text[], $2::text[], $3::text[], $4::text[], $5::text[]
+          ) AS t(image_url, source_label, meta_json, aspect_ratio, external_ref_key)
+        RETURNING id
+      `, [insertImageUrls, insertSourceLabels, insertMetadataJson, insertAspectRatios, insertExternalKeys]);
+      imported = insertedRows.length;
     }
 
     res.json({
@@ -3630,40 +3675,54 @@ router.post('/meta-ads/import', authenticate, async (req, res) => {
     const accountIdSelect   = idCol   ? `ca.${idCol}`   : `'unknown'::text`;
     const accountNameSelect = nameCol ? `ca.${nameCol}` : `'Unknown'::text`;
 
-    let imported = 0;
+    // Batched lookup (audit N+1 fix): one SELECT picks the highest-spend row
+    // per creative_id via DISTINCT ON instead of N round-trips.
+    const allRows = await pgQuery(`
+      SELECT DISTINCT ON (ca.creative_id)
+        ca.creative_id, ca.ad_name, ca.thumbnail_url, ca.meta_ad_id,
+        ca.angle, ca.hook_id, ca.week,
+        ca.spend::FLOAT AS spend, ca.revenue::FLOAT AS revenue,
+        ca.roas::FLOAT AS roas, ca.cpa::FLOAT AS cpa, ca.ctr::FLOAT AS ctr,
+        ca.impressions::BIGINT AS impressions, ca.synced_at,
+        ${accountIdSelect}   AS ad_account_id,
+        ${accountNameSelect} AS account_name
+      FROM creative_analysis ca
+      WHERE ca.creative_id = ANY($1::text[])
+        AND ca.type = 'image'
+        AND ca.thumbnail_url IS NOT NULL
+      ORDER BY ca.creative_id, ca.spend DESC NULLS LAST
+    `, [creative_ids.map(String)]);
+
+    // Batched dedup lookup against spy_creatives (relies on the
+    // (imported_from, external_ref_key) index from migration 051).
+    const candidateKeys = allRows
+      .map(r => String(r.meta_ad_id || r.creative_id))
+      .filter(Boolean);
+    const existingRows = candidateKeys.length > 0
+      ? await pgQuery(
+          `SELECT external_ref_key FROM spy_creatives
+            WHERE imported_from = 'meta' AND external_ref_key = ANY($1::text[])`,
+          [candidateKeys]
+        )
+      : [];
+    const alreadyImported = new Set(existingRows.map(x => x.external_ref_key));
+
+    // Build bulk-INSERT arrays.
+    const ins = {
+      imageUrl: [], sourceLabel: [], referenceName: [],
+      angle: [], metaJson: [], externalRefKey: [],
+    };
     let skipped = 0;
+    const seenInBatch = new Set();
     for (const cid of creative_ids) {
-      // Pick the highest-spend row for this creative_id (matches /iterations logic).
-      const rows = await pgQuery(`
-        SELECT
-          ca.creative_id, ca.ad_name, ca.thumbnail_url, ca.meta_ad_id,
-          ca.angle, ca.hook_id, ca.week,
-          ca.spend::FLOAT AS spend, ca.revenue::FLOAT AS revenue,
-          ca.roas::FLOAT AS roas, ca.cpa::FLOAT AS cpa, ca.ctr::FLOAT AS ctr,
-          ca.impressions::BIGINT AS impressions, ca.synced_at,
-          ${accountIdSelect}   AS ad_account_id,
-          ${accountNameSelect} AS account_name
-        FROM creative_analysis ca
-        WHERE ca.creative_id = $1 AND ca.type = 'image' AND ca.thumbnail_url IS NOT NULL
-        ORDER BY ca.spend DESC NULLS LAST
-        LIMIT 1
-      `, [cid]);
-      if (rows.length === 0) {
+      const r = allRows.find(x => x.creative_id === cid);
+      if (!r) { skipped++; continue; }
+      const extKey = String(r.meta_ad_id || r.creative_id);
+      if (alreadyImported.has(extKey) || seenInBatch.has(extKey)) {
         skipped++;
         continue;
       }
-      const r = rows[0];
-      if (r.meta_ad_id) {
-        const exists = await pgQuery(
-          `SELECT 1 FROM spy_creatives
-           WHERE imported_from = 'meta' AND external_ref_key = $1 LIMIT 1`,
-          [String(r.meta_ad_id)]
-        );
-        if (exists.length > 0) {
-          skipped++;
-          continue;
-        }
-      }
+      seenInBatch.add(extKey);
       const sourceLabel = `${r.account_name || 'TW'} / ${r.ad_name || r.creative_id}`;
       const meta = {
         ad_account_id: r.ad_account_id, account_name: r.account_name,
@@ -3671,15 +3730,31 @@ router.post('/meta-ads/import', authenticate, async (req, res) => {
         roas: r.roas, cpa: r.cpa, ctr: r.ctr, impressions: r.impressions,
         week: r.week, angle: r.angle, hook_id: r.hook_id, synced_at: r.synced_at,
       };
-      await pgQuery(`
+      ins.imageUrl.push(r.thumbnail_url);
+      ins.sourceLabel.push(sourceLabel);
+      ins.referenceName.push(r.creative_id);
+      ins.angle.push(r.angle || null);
+      ins.metaJson.push(JSON.stringify(meta));
+      ins.externalRefKey.push(extKey);
+    }
+
+    let imported = 0;
+    if (ins.imageUrl.length > 0) {
+      const insertedRows = await pgQuery(`
         INSERT INTO spy_creatives
           (pipeline, status, is_reference, imported_from, external_ref_key,
            image_url, thumbnail_url, source_label, reference_name,
            reference_thumbnail, angle, imported_metadata, aspect_ratio)
-        VALUES ('standard', 'ready', TRUE, 'meta', $6,
-                $1, $1, $2, $3, $1, $4, $5::jsonb, '4:5')
-      `, [r.thumbnail_url, sourceLabel, r.creative_id, r.angle || null, JSON.stringify(meta), String(r.meta_ad_id || r.creative_id)]);
-      imported++;
+        SELECT 'standard', 'ready', TRUE, 'meta',
+               t.external_ref_key,
+               t.image_url, t.image_url, t.source_label, t.reference_name,
+               t.image_url, t.angle, t.meta_json::jsonb, '4:5'
+          FROM unnest(
+            $1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[]
+          ) AS t(image_url, source_label, reference_name, angle, meta_json, external_ref_key)
+        RETURNING id
+      `, [ins.imageUrl, ins.sourceLabel, ins.referenceName, ins.angle, ins.metaJson, ins.externalRefKey]);
+      imported = insertedRows.length;
     }
 
     res.json({
