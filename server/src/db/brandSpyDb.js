@@ -64,9 +64,10 @@ function extractThumbnail(raw) {
   // Carousel cards
   if (raw.cards?.[0]?.resized_image_url)    return raw.cards[0].resized_image_url;
   if (raw.cards?.[0]?.original_image_url)   return raw.cards[0].original_image_url;
-  // NOTE: do NOT fall back to page_profile_picture_url — that is the page
-  // owner's avatar, not the ad creative. Return null so callers show a
-  // proper "no preview" placeholder instead of a blurry portrait.
+  // Last-resort DCO fallback: the page's profile picture. The frontend
+  // detects DCO ads and renders with object-contain so this doesn't get
+  // stretched as a full-bleed creative.
+  if (raw.page_profile_picture_url) return raw.page_profile_picture_url;
   return null;
 }
 
@@ -312,7 +313,13 @@ export async function listAds(brandId, q) {
          a.raw_snapshot->'images'->0->>'resized_image_url',
          a.raw_snapshot->'images'->0->>'original_image_url',
          a.raw_snapshot->'cards'->0->>'resized_image_url',
-         a.raw_snapshot->'cards'->0->>'original_image_url'
+         a.raw_snapshot->'cards'->0->>'original_image_url',
+         -- Last-resort DCO fallback: the page's profile picture. ScrapeCreators
+         -- doesn't return a canonical creative for DCO ads (multiple variants),
+         -- so the table cell would otherwise be empty. Page logo is at least a
+         -- brand-recognizable placeholder. Frontend uses object-contain for
+         -- DCO ads so the logo doesn't stretch awkwardly in the 4/5 AdCard box.
+         a.raw_snapshot->>'page_profile_picture_url'
        ) AS thumbnail_url,
        COALESCE(
          a.raw_snapshot->'videos'->0->>'video_hd_url',

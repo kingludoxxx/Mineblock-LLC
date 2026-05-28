@@ -506,7 +506,12 @@ function AdCard({ ad, brand, onOpenIntel }) {
         ) : (
           <>
             {ad.thumbnailUrl && !imgFailed ? (
-              <img src={ad.thumbnailUrl} alt="" className="w-full h-full object-cover"
+              // DCO ads have no real creative — the thumbnail comes from the
+              // page profile pic fallback. Render with object-contain so the
+              // logo sits centered with breathing room instead of being
+              // cropped/stretched into the 4/5 box.
+              <img src={ad.thumbnailUrl} alt=""
+                className={`w-full h-full ${ad.displayFormat === 'DCO' ? 'object-contain p-6 bg-zinc-900' : 'object-cover'}`}
                 onError={() => setImgFailed(true)} />
             ) : (
               <div className="w-full h-full flex items-center justify-center">
