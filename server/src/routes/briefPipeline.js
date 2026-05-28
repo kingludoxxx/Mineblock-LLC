@@ -5336,57 +5336,40 @@ router.get('/launch-history', authenticate, async (req, res) => {
 // listing brands/ads and persisting the user's selections.
 // ============================================================================
 
-// GET /league/brands — followed brands only, with per-tier VIDEO ad counts.
+// GET /league/brands — followed brands with per-tier VIDEO ad counts.
+//
+// "Followed" in the new Brand Spy workflow == any brand the user added
+// to brand_spy.brands (status='ACTIVE'). The older spy_brand_follows
+// table is unused here — entries in brand_spy.brands ARE the follow set.
 router.get('/league/brands', authenticate, async (_req, res) => {
   try {
     const rows = await pgQuery(`
+      WITH tier_counts AS (
+        SELECT
+          a.brand_id,
+          COUNT(*)                                          AS total_video_count,
+          COUNT(*) FILTER (WHERE a.tier = 'BANGER')         AS banger_count,
+          COUNT(*) FILTER (WHERE a.tier = 'CHAMP')          AS champ_count,
+          COUNT(*) FILTER (WHERE a.tier = 'A')              AS a_count
+        FROM brand_spy.ads a
+        WHERE a.is_active = TRUE
+          AND a.tier IN ('BANGER','CHAMP','A')
+          AND (a.display_format ILIKE 'video%'
+               OR (a.raw_snapshot->'videos'->0->>'video_hd_url') IS NOT NULL
+               OR (a.raw_snapshot->'videos'->0->>'video_sd_url') IS NOT NULL)
+        GROUP BY a.brand_id
+      )
       SELECT
         b.id,
         b.display_name AS name,
         b.domain,
-        COALESCE((
-          SELECT COUNT(*) FROM brand_spy.ads a
-          WHERE a.brand_id = b.id
-            AND a.is_active = TRUE
-            AND a.tier IN ('BANGER','CHAMP','A')
-            AND (a.display_format ILIKE 'video%'
-                 OR (a.raw_snapshot->'videos'->0->>'video_hd_url') IS NOT NULL
-                 OR (a.raw_snapshot->'videos'->0->>'video_sd_url') IS NOT NULL)
-        ), 0)::INTEGER AS total_video_count,
-        COALESCE((
-          SELECT COUNT(*) FROM brand_spy.ads a
-          WHERE a.brand_id = b.id
-            AND a.is_active = TRUE
-            AND a.tier = 'BANGER'
-            AND (a.display_format ILIKE 'video%'
-                 OR (a.raw_snapshot->'videos'->0->>'video_hd_url') IS NOT NULL
-                 OR (a.raw_snapshot->'videos'->0->>'video_sd_url') IS NOT NULL)
-        ), 0)::INTEGER AS banger_count,
-        COALESCE((
-          SELECT COUNT(*) FROM brand_spy.ads a
-          WHERE a.brand_id = b.id
-            AND a.is_active = TRUE
-            AND a.tier = 'CHAMP'
-            AND (a.display_format ILIKE 'video%'
-                 OR (a.raw_snapshot->'videos'->0->>'video_hd_url') IS NOT NULL
-                 OR (a.raw_snapshot->'videos'->0->>'video_sd_url') IS NOT NULL)
-        ), 0)::INTEGER AS champ_count,
-        COALESCE((
-          SELECT COUNT(*) FROM brand_spy.ads a
-          WHERE a.brand_id = b.id
-            AND a.is_active = TRUE
-            AND a.tier = 'A'
-            AND (a.display_format ILIKE 'video%'
-                 OR (a.raw_snapshot->'videos'->0->>'video_hd_url') IS NOT NULL
-                 OR (a.raw_snapshot->'videos'->0->>'video_sd_url') IS NOT NULL)
-        ), 0)::INTEGER AS a_count
+        COALESCE(tc.total_video_count, 0)::INTEGER AS total_video_count,
+        COALESCE(tc.banger_count, 0)::INTEGER      AS banger_count,
+        COALESCE(tc.champ_count, 0)::INTEGER       AS champ_count,
+        COALESCE(tc.a_count, 0)::INTEGER           AS a_count
       FROM brand_spy.brands b
-      WHERE EXISTS (
-        SELECT 1
-        FROM spy_brand_follows sbf
-        JOIN brand_spy.brand_pages bp ON bp.meta_page_id = sbf.meta_page_id
-        WHERE bp.brand_id = b.id
-      )
+      LEFT JOIN tier_counts tc ON tc.brand_id = b.id
+      WHERE b.status = 'ACTIVE'
       ORDER BY total_video_count DESC, b.display_name ASC NULLS LAST, b.domain ASC
     `);
     const brands = rows.map(r => ({
