@@ -19,6 +19,7 @@ import {
 import { query as pgQuery } from '../config/db.js';
 import { runBrandScrape, scrapeAllInBackground, recoverStuckScrapes } from '../workers/brandSpyWorker.js';
 import { getScrapeCreatorsClient } from '../services/scrapeCreators.js';
+import { transcribeVideoUrl } from '../services/videoTranscribe.js';
 
 const router = Router();
 
@@ -306,6 +307,45 @@ router.get('/ads/:id', async (req, res, next) => {
     const ad = await getAdDetail(req.params.id);
     if (!ad) return res.status(404).json({ error: 'Ad not found' });
     res.json({ ad });
+  } catch (err) { next(err); }
+});
+
+// POST /ads/:id/transcribe — Whisper transcript with DB cache.
+// Returns { transcript, cached, transcriptAt } where `cached: true` means the
+// stored transcript was returned without hitting OpenAI again.
+router.post('/ads/:id/transcribe', async (req, res, next) => {
+  try {
+    const adId = req.params.id;
+    const ad = await getAdDetail(adId);
+    if (!ad) return res.status(404).json({ error: 'Ad not found' });
+
+    if (ad.transcript) {
+      return res.json({
+        transcript: ad.transcript,
+        cached: true,
+        transcriptAt: ad.transcriptAt,
+      });
+    }
+    if (!ad.videoUrl) {
+      return res.status(400).json({
+        error: 'This ad has no video to transcribe',
+        reason: 'NO_VIDEO_URL',
+      });
+    }
+
+    const transcript = await transcribeVideoUrl(ad.videoUrl);
+    const { rows } = await pgQuery(
+      `UPDATE brand_spy.ads
+          SET transcript = $1, transcript_at = NOW()
+        WHERE id = $2
+        RETURNING transcript_at`,
+      [transcript, adId],
+    );
+    res.json({
+      transcript,
+      cached: false,
+      transcriptAt: rows[0]?.transcript_at?.toISOString() ?? new Date().toISOString(),
+    });
   } catch (err) { next(err); }
 });
 

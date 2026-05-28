@@ -10,7 +10,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import {
-  X, ExternalLink, Copy, Download, Play,
+  X, ExternalLink, Copy, Download, Play, FileText, Loader2,
 } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
@@ -239,10 +239,47 @@ export default function IntelDrawer({ ad, brand, onClose }) {
   const [videoStarted, setVideoStarted] = useState(false);
   const videoRef = useRef(null);
 
-  // Reset video-overlay state whenever the modal is opened on a different ad
+  // Transcribe state — when the user clicks "Transcribe", we POST to the
+  // backend which downloads the video and runs OpenAI Whisper on it. Result
+  // is cached in brand_spy.ads.transcript so subsequent clicks are instant.
+  const [transcript,      setTranscript]      = useState(null);
+  const [transcribing,    setTranscribing]    = useState(false);
+  const [transcriptError, setTranscriptError] = useState(null);
+  const [transcriptCached, setTranscriptCached] = useState(false);
+
+  // Reset transient state whenever the modal is opened on a different ad
   useEffect(() => {
     setVideoStarted(false);
+    setTranscript(null);
+    setTranscribing(false);
+    setTranscriptError(null);
+    setTranscriptCached(false);
   }, [ad?.id]);
+
+  async function handleTranscribe() {
+    if (!ad?.id || transcribing) return;
+    setTranscribing(true);
+    setTranscriptError(null);
+    try {
+      const res = await fetch(`/api/v1/brand-spy/ads/${ad.id}/transcribe`, {
+        method: 'POST',
+        credentials: 'include',
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || `Transcription failed (HTTP ${res.status})`);
+      setTranscript(body.transcript || '');
+      setTranscriptCached(!!body.cached);
+    } catch (err) {
+      setTranscriptError(err.message || 'Transcription failed');
+    } finally {
+      setTranscribing(false);
+    }
+  }
+
+  async function copyTranscript() {
+    if (!transcript) return;
+    await navigator.clipboard.writeText(transcript).catch(() => {});
+  }
 
   if (!ad) return null;
 
@@ -403,6 +440,34 @@ export default function IntelDrawer({ ad, brand, onClose }) {
                     style={{ maxHeight: '70vh', background: '#000' }}
                     onPlay={() => setVideoStarted(true)}
                   />
+                  {/* Transcribe pill — top-right corner, matches the Atria
+                      reference. Click downloads the video server-side and
+                      hands it to OpenAI Whisper; result cached in the DB so
+                      repeat clicks are free + instant. */}
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); handleTranscribe(); }}
+                    disabled={transcribing}
+                    className="absolute top-3 right-3 z-20 flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-opacity disabled:opacity-70"
+                    style={{
+                      background: '#f97316',   // orange-500 — matches reference
+                      color: '#fff',
+                      boxShadow: '0 2px 8px rgba(0,0,0,0.35)',
+                    }}
+                    title="Transcribe video with OpenAI Whisper"
+                  >
+                    {transcribing ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        Transcribing…
+                      </>
+                    ) : (
+                      <>
+                        <FileText className="w-3.5 h-3.5" />
+                        {transcript ? 'View Transcript' : 'Transcribe'}
+                      </>
+                    )}
+                  </button>
                   {/* Play-button overlay — visible until the user starts
                       the video so they have a clear "this is playable"
                       affordance. Native controls take over after play. */}
@@ -459,6 +524,50 @@ export default function IntelDrawer({ ad, brand, onClose }) {
                 </div>
               )}
             </div>
+
+            {/* Transcript panel — only rendered after the user clicks
+                Transcribe and we get a result back (or an error). */}
+            {ad.videoUrl && (transcript || transcriptError) && (
+              <div
+                className="mx-5 mt-3 rounded-xl px-4 py-3"
+                style={{ background: '#1a1a1c', border: '1px solid #2a2a2a' }}
+              >
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    <FileText className="w-3.5 h-3.5 text-orange-400" />
+                    <span className="text-xs font-semibold uppercase tracking-wider text-zinc-300">
+                      Transcript
+                    </span>
+                    {transcriptCached && (
+                      <span className="text-[10px] uppercase tracking-wider text-zinc-500">
+                        Cached
+                      </span>
+                    )}
+                  </div>
+                  {transcript && (
+                    <button
+                      onClick={copyTranscript}
+                      className="flex items-center gap-1 text-[11px] text-zinc-400 hover:text-zinc-200 transition-colors"
+                      title="Copy transcript"
+                    >
+                      <Copy className="w-3 h-3" /> Copy
+                    </button>
+                  )}
+                </div>
+                {transcriptError ? (
+                  <p className="text-xs text-rose-400 leading-relaxed">
+                    {transcriptError}
+                  </p>
+                ) : (
+                  <p
+                    className="text-sm text-zinc-200 leading-relaxed whitespace-pre-wrap"
+                    style={{ maxHeight: '24vh', overflowY: 'auto' }}
+                  >
+                    {transcript}
+                  </p>
+                )}
+              </div>
+            )}
 
             {/* Ad destination bar */}
             {(ad.linkUrl || ad.ctaText) && (
