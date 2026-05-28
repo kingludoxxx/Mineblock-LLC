@@ -940,10 +940,19 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
   if (rootFragment.length >= 5 && !skipPhase1d) {
     const p1dBefore = pageCache.size;
     const p1dIsFirstScrape = (p1dBefore === 0); // no pre-loaded pages → first discovery run
-    // On re-scrapes, cap Phase 1d at 3 cursor pages — enough to surface any new pages
-    // from the top impressions results without iterating the full 460-ad history.
-    // Full iteration only needed on first discovery (no pages known yet).
-    const p1dMaxPages = p1dIsFirstScrape ? 50 : 3;
+    // Phase 1d serves two purposes now:
+    //   1) Discover new FB pages (any cursor page surfaces those)
+    //   2) Capture meta_rank per ad — impression position in Meta's library.
+    //      Without this the league's lower tiers (A/B/C/MID/TEST) and the
+    //      V7D/V21D velocity columns degrade to longevity-based proxies for
+    //      ads outside the top-N. To rank the FULL active set by impressions
+    //      we need to walk enough cursor pages to cover every active ad.
+    //
+    // maxPages=30 captures the top ~900 ads by impressions per scrape —
+    // covers EarthBreeze (910 active), all of try-forge / pestlab /
+    // thegreatproject, and most of norseorganics (1289). First scrapes
+    // still use the wider 50 since they're bootstrapping history.
+    const p1dMaxPages = p1dIsFirstScrape ? 50 : 30;
     let p1dDiscovered = 0, p1dUpdated = 0, p1dNewPages = 0;
     // metaRankCursor tracks the running impression position across cursor pages.
     // ScrapeCreators returns results sorted by total_impressions DESC, so the
