@@ -56,22 +56,51 @@ export default function ScriptGeneratorPanel({
       setProductContextError(null);
       return;
     }
+    // Per-effect AbortController so React StrictMode's double-invoke + rapid
+    // product changes don't surface as "Network Error" (which is what axios
+    // throws when an in-flight XHR is cancelled by the next effect run).
+    const controller = new AbortController();
     let cancelled = false;
     setProductContextLoading(true);
     setProductContextError(null);
-    api.get(`/brief-pipeline/product-context/${selectedProduct.id}`)
-      .then((r) => {
+
+    const fetchContext = async (attempt = 1) => {
+      try {
+        const r = await api.get(
+          `/brief-pipeline/product-context/${selectedProduct.id}`,
+          { signal: controller.signal }
+        );
         if (cancelled) return;
         setProductContext(r.data);
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        const msg = err.response?.data?.error?.message || err.message;
-        setProductContextError(msg || 'Failed to load product context');
+      } catch (err) {
+        // Swallow cancellations — they're not real failures.
+        if (cancelled || controller.signal.aborted) return;
+        if (err.code === 'ERR_CANCELED' || err.name === 'CanceledError' || err.name === 'AbortError') return;
+
+        // One silent retry for transient network failures (Render cold-start
+        // race, proxy timeout, etc.). Most "Network Error" pops resolve here.
+        const isNetwork = !err.response;
+        if (isNetwork && attempt === 1) {
+          await new Promise((r) => setTimeout(r, 600));
+          if (cancelled) return;
+          return fetchContext(2);
+        }
+
+        const apiMsg = err.response?.data?.error?.message;
+        const status = err.response?.status;
+        const msg = apiMsg
+          ? apiMsg
+          : status
+            ? `HTTP ${status}`
+            : 'Couldn\'t reach the server';
+        setProductContextError(msg);
         setProductContext(null);
-      })
-      .finally(() => { if (!cancelled) setProductContextLoading(false); });
-    return () => { cancelled = true; };
+      } finally {
+        if (!cancelled) setProductContextLoading(false);
+      }
+    };
+    fetchContext();
+    return () => { cancelled = true; controller.abort(); };
   }, [selectedProduct?.id]);
 
   const hasInput = inputMode === 'text' ? scriptText.trim().length > 20 : scriptUrl.trim().length > 5;
