@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import {
-  Upload, Globe, TrendingUp, Loader2, RefreshCw, Trash2, ExternalLink,
+  Upload, Globe, TrendingUp, Loader2, RefreshCw, Trash2, ExternalLink, X,
 } from 'lucide-react';
 import api from '../../../services/api';
 import LeagueImportModal from './LeagueImportModal';
@@ -22,6 +22,74 @@ function timeAgo(iso) {
   if (hr < 24) return `${hr}h ago`;
   const d = Math.floor(hr / 24);
   return `${d}d ago`;
+}
+
+function ReferencePreviewModal({ item, onClose, onUse }) {
+  if (!item) return null;
+  const fullImg = item.image_url || item.thumbnail_url || item.reference_thumbnail;
+  const src = SOURCE_BADGES[item.imported_from] || SOURCE_BADGES.upload;
+  const meta = item.imported_metadata || {};
+  const title = item.reference_name || item.source_label || 'Reference';
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-sm p-6"
+      onClick={onClose}
+    >
+      <div
+        className="glass-card border border-white/10 rounded-xl max-w-3xl w-full max-h-[90vh] flex flex-col overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-3 border-b border-white/[0.06] shrink-0">
+          <div className="flex items-center gap-2 min-w-0">
+            <span className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded ${src.cls}`}>{src.label}</span>
+            <h3 className="text-sm font-mono text-white truncate" title={title}>{title}</h3>
+            {meta.tier && (
+              <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-emerald-500/90 text-black">{meta.tier}</span>
+            )}
+            {meta.roas != null && (
+              <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-emerald-500/90 text-black">
+                {Number(meta.roas).toFixed(2)}x ROAS
+              </span>
+            )}
+          </div>
+          <button onClick={onClose} className="text-zinc-400 hover:text-white p-1 cursor-pointer">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+        {/* Image */}
+        <div className="flex-1 overflow-auto p-4 flex items-center justify-center bg-black/40 min-h-[200px]">
+          {fullImg ? (
+            <img
+              src={fullImg}
+              alt={title}
+              className="max-w-full max-h-[60vh] object-contain rounded shadow-lg"
+              onError={(e) => { e.currentTarget.alt = 'Preview failed to load'; e.currentTarget.style.opacity = '0.3'; }}
+            />
+          ) : (
+            <div className="text-zinc-500 text-sm">No preview available</div>
+          )}
+        </div>
+        {/* Footer */}
+        <div className="flex items-center justify-between gap-3 px-5 py-3 border-t border-white/[0.06] shrink-0">
+          <div className="text-[10px] font-mono text-zinc-500 truncate flex-1">
+            {meta.headline && <span className="mr-3"><span className="text-zinc-300">{meta.headline.slice(0, 80)}</span></span>}
+            {timeAgo(item.created_at) && <span>imported {timeAgo(item.created_at)}</span>}
+          </div>
+          <div className="flex gap-2 shrink-0">
+            <button
+              onClick={onClose}
+              className="px-4 py-2 text-xs font-mono uppercase tracking-wider text-zinc-300 border border-white/[0.08] rounded hover:border-white/[0.2] cursor-pointer"
+            >Cancel</button>
+            <button
+              onClick={onUse}
+              className="px-4 py-2 text-xs font-mono uppercase tracking-wider text-black bg-[#d4b55a] hover:bg-[#e4c56a] rounded cursor-pointer font-bold"
+            >Use as Reference</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function ReferenceCard({ item, onSelect, onDelete }) {
@@ -81,6 +149,7 @@ export function ReferenceColumn({ productId, onSelectReference }) {
   const [showLeague, setShowLeague] = useState(false);
   const [showMeta, setShowMeta] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [previewItem, setPreviewItem] = useState(null);
   const fileInputRef = React.useRef(null);
 
   const handleFilePicked = async (e) => {
@@ -141,8 +210,15 @@ export function ReferenceColumn({ productId, onSelectReference }) {
     }
   };
 
+  // Card click → open preview modal (was: immediately select).
+  // Modal's "Use as Reference" button is what actually triggers selection.
   const handleSelect = (item) => {
-    onSelectReference?.(item);
+    setPreviewItem(item);
+  };
+  const handleUseReference = () => {
+    if (!previewItem) return;
+    onSelectReference?.(previewItem);
+    setPreviewItem(null);
   };
 
   return (
@@ -244,6 +320,11 @@ export function ReferenceColumn({ productId, onSelectReference }) {
           onImported={() => { setShowMeta(false); load(); }}
         />
       )}
+      <ReferencePreviewModal
+        item={previewItem}
+        onClose={() => setPreviewItem(null)}
+        onUse={handleUseReference}
+      />
     </div>
   );
 }
