@@ -270,8 +270,11 @@ export default function KpiSystem() {
     grossProfit: raw.grossProfit ?? raw.totalGrossProfit ?? 0,
     margin: raw.margin ?? raw.avgProfitMargin ?? raw.grossMargin ?? 0,
     totalFees: raw.totalFees ?? 0,
+    whopTotalFees: raw.whopTotalFees ?? ((raw.whopFees ?? 0) + (raw.processingFees ?? 0) + (raw.otherFees ?? 0)),
     whopFees: raw.whopFees ?? 0,
     processingFees: raw.processingFees ?? 0,
+    otherFees: raw.otherFees ?? 0,
+    lassoFees: raw.lassoFees ?? 0,
   };
 
   // ── Render ─────────────────────────────────────────────────────────────────
@@ -368,7 +371,7 @@ export default function KpiSystem() {
         )}
 
         {/* ── KPI Metric Cards ────────────────────────────────────────────── */}
-        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-4">
+        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-4">
           <MetricCard
             icon={DollarSign}
             label="Revenue"
@@ -410,10 +413,17 @@ export default function KpiSystem() {
           />
           <MetricCard
             icon={AlertTriangle}
-            label="Fees"
-            value={fmtMoney(metrics.totalFees)}
-            subtitle={metrics.totalFees > 0 ? `${((metrics.totalFees / (metrics.revenue || 1)) * 100).toFixed(1)}% of revenue` : undefined}
+            label="Whop Fees"
+            value={fmtMoney(metrics.whopTotalFees)}
+            subtitle={metrics.whopTotalFees > 0 ? `${((metrics.whopTotalFees / (metrics.revenue || 1)) * 100).toFixed(2)}% of revenue` : undefined}
             accentColor="bg-yellow-500/10"
+          />
+          <MetricCard
+            icon={AlertTriangle}
+            label="Lasso Fees"
+            value={fmtMoney(metrics.lassoFees)}
+            subtitle={metrics.lassoFees > 0 ? `${((metrics.lassoFees / (metrics.revenue || 1)) * 100).toFixed(2)}% of revenue` : undefined}
+            accentColor="bg-pink-500/10"
           />
           <div className={cardStyle}>
             <div className="flex items-center gap-2 mb-3">

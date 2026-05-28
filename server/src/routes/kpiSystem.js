@@ -116,8 +116,10 @@ router.get('/health/break-even', async (req, res) => {
         s.total_cogs::numeric AS cogs,
         s.total_shipping::numeric AS shipping,
         s.total_orders::int AS orders,
-        COALESCE((SELECT SUM(total_fees) FROM whop_payment_fees w
-                  WHERE DATE(w.paid_at AT TIME ZONE 'Europe/Berlin') = s.snapshot_date), 0)::numeric AS fees,
+        COALESCE((SELECT SUM(whop_fees + processing_fees + other_fees) FROM whop_payment_fees w
+                  WHERE DATE(w.paid_at AT TIME ZONE 'Europe/Berlin') = s.snapshot_date), 0)::numeric AS whop_fees,
+        COALESCE((SELECT SUM(lasso_fees) FROM whop_payment_fees w
+                  WHERE DATE(w.paid_at AT TIME ZONE 'Europe/Berlin') = s.snapshot_date), 0)::numeric AS lasso_fees,
         COALESCE((SELECT total_spend FROM meta_ad_spend_cache m
                   WHERE m.spend_date = s.snapshot_date), 0)::numeric AS ad_spend
       FROM daily_kpi_snapshots s
@@ -129,7 +131,9 @@ router.get('/health/break-even', async (req, res) => {
       const revenue = parseFloat(r.revenue) || 0;
       const cogs = parseFloat(r.cogs) || 0;
       const shipping = parseFloat(r.shipping) || 0;
-      const fees = parseFloat(r.fees) || 0;
+      const whopFees = parseFloat(r.whop_fees) || 0;
+      const lassoFees = parseFloat(r.lasso_fees) || 0;
+      const fees = whopFees + lassoFees;
       const adSpend = parseFloat(r.ad_spend) || 0;
       const orders = parseInt(r.orders) || 0;
       const variableCosts = cogs + shipping + fees;
@@ -144,6 +148,8 @@ router.get('/health/break-even', async (req, res) => {
         cogs: +cogs.toFixed(2),
         shipping: +shipping.toFixed(2),
         fees: +fees.toFixed(2),
+        whop_fees: +whopFees.toFixed(2),
+        lasso_fees: +lassoFees.toFixed(2),
         ad_spend: +adSpend.toFixed(2),
         orders,
         aov,
@@ -1537,11 +1543,16 @@ router.get('/home-dashboard', authenticate, async (req, res) => {
       fetchDailyAdSpend(startDate, endDate).catch(() => []),
     ]);
 
-    // Build fee lookup by date
+    // Build fee lookup by date — split Whop platform fees from Lasso fees
+    // (per business decision: "We count Lasso and Whop as two different things")
+    // Whop platform total = whop_fees (Whop's own pocket) + processing_fees (Stripe through Whop) + other_fees
+    // Lasso = lasso_fees (1% revenue share, separate vendor)
     const feeLookup = {};
     for (const r of feeRows) {
       const d = typeof r.fee_date === 'string' ? r.fee_date.slice(0, 10) : new Date(r.fee_date).toISOString().slice(0, 10);
-      feeLookup[d] = parseFloat(r.total_fees || 0);
+      const whopTotal = parseFloat(r.whop_fees || 0) + parseFloat(r.processing_fees || 0) + parseFloat(r.other_fees || 0);
+      const lasso = parseFloat(r.lasso_fees || 0);
+      feeLookup[d] = { whop: whopTotal, lasso, total: whopTotal + lasso };
     }
 
     // Build ad spend lookup: Meta first (fallback), then TripleWhale overwrites (primary)
@@ -1575,7 +1586,10 @@ router.get('/home-dashboard', authenticate, async (req, res) => {
       const revenue = s ? parseFloat(s.total_revenue || 0) : 0;
       const cogs = s ? parseFloat(s.total_cogs || 0) : 0;
       const shipping = s ? parseFloat(s.total_shipping || 0) : 0;
-      const fees = feeLookup[d] || 0;
+      const feeRow = feeLookup[d] || { whop: 0, lasso: 0, total: 0 };
+      const whopFees = feeRow.whop;
+      const lassoFees = feeRow.lasso;
+      const fees = feeRow.total;
       const orders = s ? parseInt(s.total_orders || 0) : 0;
       const refunds = s ? parseInt(s.refund_count || 0) : 0;
       const adSpend = spendLookup[d] || 0;
@@ -1608,7 +1622,7 @@ router.get('/home-dashboard', authenticate, async (req, res) => {
       const conversionRate = (clicks > 0 && orders > 0)
         ? Math.round((orders / clicks) * 10000) / 100
         : null;
-      return { date: d, revenue, twRevenue, adSpend, roas, breakEvenRoas, contributionMarginPct, orders, aov, costs, cogs, shipping, fees, profit, netMargin, conversionRate, clicks, refunds };
+      return { date: d, revenue, twRevenue, adSpend, roas, breakEvenRoas, contributionMarginPct, orders, aov, costs, cogs, shipping, fees, whopFees, lassoFees, profit, netMargin, conversionRate, clicks, refunds };
     }
 
     // Build daily metrics for the full fetched window
@@ -1632,6 +1646,8 @@ router.get('/home-dashboard', authenticate, async (req, res) => {
       const cogs = sum('cogs');
       const shipping = sum('shipping');
       const fees = sum('fees');
+      const whopFees = sum('whopFees');
+      const lassoFees = sum('lassoFees');
       const profit = revenue - costs;
       const netMargin = revenue > 0 ? Math.round((profit / revenue) * 10000) / 100 : 0;
       const aov = orders > 0 ? Math.round((revenue / orders) * 100) / 100 : 0;
@@ -1653,7 +1669,7 @@ router.get('/home-dashboard', authenticate, async (req, res) => {
       const totalClicks = days.reduce((s, d) => s + (d.clicks || 0), 0);
       const refunds = sum('refunds');
       const conversionRate = (totalClicks > 0 && orders > 0) ? Math.round((orders / totalClicks) * 10000) / 100 : null;
-      return { revenue, twRevenue, adSpend, roas, breakEvenRoas, contributionMarginPct, varCostPerOrder, orders, aov, costs, cogs, shipping, fees, profit, netMargin, conversionRate, refunds };
+      return { revenue, twRevenue, adSpend, roas, breakEvenRoas, contributionMarginPct, varCostPerOrder, orders, aov, costs, cogs, shipping, fees, whopFees, lassoFees, profit, netMargin, conversionRate, refunds };
     }
 
     // Current period = selected range
@@ -1766,6 +1782,9 @@ router.get('/dashboard', authenticate, async (req, res) => {
     const processingFees = parseFloat(feeRows[0]?.processing_fees || 0);
     const otherFees = parseFloat(feeRows[0]?.other_fees || 0);
     const lassoFees = parseFloat(feeRows[0]?.lasso_fees || 0);
+    // Whop platform total = everything that flows through Whop (their pocket + Stripe pass-through + other)
+    // Lasso is a separate vendor — counted on its own per business decision.
+    const whopTotalFees = whopFees + processingFees + otherFees;
 
     // Subtract fees from gross profit
     agg.grossProfit = agg.totalRevenue - agg.totalCogs - agg.totalShipping - totalFees;
@@ -1784,6 +1803,7 @@ router.get('/dashboard', authenticate, async (req, res) => {
         period, start, end,
         ...agg,
         totalFees: Math.round(totalFees * 100) / 100,
+        whopTotalFees: Math.round(whopTotalFees * 100) / 100,
         whopFees: Math.round(whopFees * 100) / 100,
         processingFees: Math.round(processingFees * 100) / 100,
         otherFees: Math.round(otherFees * 100) / 100,
