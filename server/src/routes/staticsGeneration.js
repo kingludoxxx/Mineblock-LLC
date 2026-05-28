@@ -3553,6 +3553,7 @@ router.get('/meta-ads/ads', authenticate, async (req, res) => {
       latest AS (
         SELECT DISTINCT ON (ca.creative_id)
           ca.creative_id, ca.ad_name, ca.thumbnail_url, ca.meta_ad_id, ca.angle, ca.hook_id, ca.week, ca.ctr,
+          ${cols.has('auto_detected') ? 'ca.auto_detected' : 'FALSE'} AS auto_detected,
           ${accountIdSelect}   AS ad_account_id,
           ${accountNameSelect} AS account_name
         FROM creative_analysis ca
@@ -3569,6 +3570,7 @@ router.get('/meta-ads/ads', authenticate, async (req, res) => {
         latest.angle,
         latest.hook_id,
         latest.week,
+        latest.auto_detected,
         latest.ctr::FLOAT AS ctr,
         agg.spend, agg.revenue, agg.purchases, agg.impressions, agg.clicks,
         agg.latest_synced_at,

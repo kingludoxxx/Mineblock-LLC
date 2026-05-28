@@ -311,6 +311,12 @@ export function MetaImportModal({ onClose, onImported }) {
                     <div className="w-full aspect-[4/5] bg-white/[0.02]" />
                   )}
                   <span className="absolute top-1.5 left-1.5 text-[9px] font-mono font-bold bg-emerald-500/90 text-black px-1.5 py-0.5 rounded">ACTIVE</span>
+                  {ad.auto_detected && (
+                    <span
+                      className="absolute top-1.5 left-[60px] text-[9px] font-mono font-bold bg-purple-500/90 text-white px-1.5 py-0.5 rounded"
+                      title="Auto-detected — ad name did not match our IM/B naming convention, metadata was inferred from keywords"
+                    >AUTO</span>
+                  )}
                   {disabled && (
                     <span className="absolute top-1.5 right-1.5 text-[9px] font-mono font-bold bg-zinc-700 text-zinc-200 px-1.5 py-0.5 rounded">IN LIB</span>
                   )}
