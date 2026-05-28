@@ -5961,11 +5961,33 @@ fully from the transcript as if it were a full-video analysis.`;
   const content = [
     { type: 'text', text: adaptedPrompt },
   ];
+
+  // Meta's fbcdn URLs reject OpenAI's image fetcher (they expire / require
+  // request-specific auth tokens). Download the thumbnail server-side and
+  // pass it as a base64 data URL so OpenAI never has to hit the CDN.
+  let thumbnailMode = 'none';
   if (thumbnailUrl) {
-    content.push({ type: 'image_url', image_url: { url: thumbnailUrl, detail: 'high' } });
+    try {
+      const imgRes = await fetch(thumbnailUrl, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; MineblockBot/1.0)' },
+        redirect: 'follow',
+        signal: AbortSignal.timeout(20_000),
+      });
+      if (imgRes.ok) {
+        const buf = Buffer.from(await imgRes.arrayBuffer());
+        const ct = (imgRes.headers.get('content-type') || 'image/jpeg').split(';')[0];
+        const dataUrl = `data:${ct};base64,${buf.toString('base64')}`;
+        content.push({ type: 'image_url', image_url: { url: dataUrl, detail: 'high' } });
+        thumbnailMode = 'inline-base64';
+      } else {
+        thumbnailMode = `download-failed-${imgRes.status}`;
+      }
+    } catch (e) {
+      thumbnailMode = `download-error: ${e.message?.slice(0, 80)}`;
+    }
   }
 
-  console.log(`[BriefPipeline:analyze] OpenAI fallback — thumbnail=${thumbnailUrl ? 'yes' : 'NO'}, transcript=${transcript?.length || 0} chars`);
+  console.log(`[BriefPipeline:analyze] OpenAI fallback — thumbnail=${thumbnailMode}, transcript=${transcript?.length || 0} chars`);
 
   const res = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
