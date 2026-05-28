@@ -4,7 +4,6 @@ import {
   Loader2,
   Sparkles,
   Trophy,
-  Rocket,
   CheckCircle2,
   ExternalLink,
   Settings2,
@@ -16,11 +15,14 @@ import {
   Zap,
   FileText,
   Package,
+  BookOpen,
 } from 'lucide-react';
 import api from '../../services/api';
 import WinnerCard from './briefs/WinnerCard';
 import ScriptGeneratorPanel from './briefs/ScriptGeneratorPanel';
 import GeneratedBriefCard from './briefs/GeneratedBriefCard';
+import ReferenceCard from './briefs/ReferenceCard';
+import LeagueImportModal from './briefs/LeagueImportModal';
 import BriefDetailModal from './briefs/BriefDetailModal';
 import WinnerDetailModal from './briefs/WinnerDetailModal';
 import PipelineSettingsModal from './briefs/PipelineSettingsModal';
@@ -32,6 +34,13 @@ import AdCopySetsManager from './briefs/AdCopySetsManager';
 // ---------------------------------------------------------------------------
 
 const PIPELINE_COLUMNS = [
+  {
+    key: 'reference',
+    label: 'Reference',
+    icon: BookOpen,
+    colorClass: 'text-violet-400 drop-shadow-[0_0_6px_rgba(167,139,250,0.5)]',
+    badgeClass: 'bg-violet-500/10 text-violet-400 border-violet-500/25',
+  },
   {
     key: 'generated',
     label: 'Generated',
@@ -46,13 +55,10 @@ const PIPELINE_COLUMNS = [
     colorClass: 'text-emerald-400 drop-shadow-[0_0_6px_rgba(16,185,129,0.5)]',
     badgeClass: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/25',
   },
-  {
-    key: 'pushed',
-    label: 'Pushed',
-    icon: Rocket,
-    colorClass: 'text-white drop-shadow-[0_0_6px_rgba(255,255,255,0.3)]',
-    badgeClass: 'bg-white/[0.06] text-white border-white/[0.1]',
-  },
+  // Note: the "Pushed" column was removed in the League → Brief Pipeline rollout.
+  // Briefs with status='pushed' in the DB now bucket into ready_to_launch so
+  // they remain visible. The POST /generated/:id/push backend route is kept
+  // for future auto-push-on-approve work.
   {
     key: 'ready_to_launch',
     label: 'Ready to Launch',
@@ -77,10 +83,13 @@ export default function BriefPipeline() {
   // Data
   const [winners, setWinners] = useState([]);
   const [generated, setGenerated] = useState([]);
+  const [references, setReferences] = useState([]);
 
   // Loading states
   const [loadingWinners, setLoadingWinners] = useState(false);
   const [loadingGenerated, setLoadingGenerated] = useState(false);
+  // eslint-disable-next-line no-unused-vars
+  const [loadingReferences, setLoadingReferences] = useState(false);
   const [detecting, setDetecting] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [generatingId, setGeneratingId] = useState(null);
@@ -98,6 +107,13 @@ export default function BriefPipeline() {
   const [launching, setLaunching] = useState(false);
   const [selectedForLaunch, setSelectedForLaunch] = useState([]);
   const [launchModalOpen, setLaunchModalOpen] = useState(false);
+  const [leagueImportOpen, setLeagueImportOpen] = useState(false);
+
+  // Prefill state for the Script Generator panel — populated when the user
+  // clicks "Generate Brief" on a Reference card. The panel reads these as
+  // initialScript / initialMode / referenceLabel.
+  const [scriptPrefill, setScriptPrefill] = useState({ script: null, mode: null, label: null });
+  const scriptGenSectionRef = useRef(null);
 
   // Refs for cleanup and double-click guards
   const abortRef = useRef(false);
@@ -151,11 +167,24 @@ export default function BriefPipeline() {
     }
   }, []);
 
+  const fetchReferences = useCallback(async () => {
+    setLoadingReferences(true);
+    try {
+      const { data } = await api.get('/brief-pipeline/references');
+      setReferences(data.references || []);
+    } catch (err) {
+      console.error('Failed to fetch references:', err);
+    } finally {
+      setLoadingReferences(false);
+    }
+  }, []);
+
   const refreshAll = useCallback(() => {
     fetchWinners();
     fetchGenerated();
     fetchLaunchTemplates();
-  }, [fetchWinners, fetchGenerated, fetchLaunchTemplates]);
+    fetchReferences();
+  }, [fetchWinners, fetchGenerated, fetchLaunchTemplates, fetchReferences]);
 
   useEffect(() => {
     refreshAll();
@@ -405,16 +434,6 @@ export default function BriefPipeline() {
     }
   }, [fetchGenerated, fetchWinners, pollGenerationStatus]);
 
-  const handlePush = useCallback(async (briefId) => {
-    try {
-      await api.post(`/brief-pipeline/generated/${briefId}/push`);
-      await fetchGenerated();
-    } catch (err) {
-      console.error('Push failed:', err);
-      setError('Failed to push brief to ClickUp.');
-    }
-  }, [fetchGenerated]);
-
   const handleMoveToReady = useCallback(async (briefId) => {
     try {
       await api.patch(`/brief-pipeline/generated/${briefId}`, { status: 'ready_to_launch' });
@@ -425,16 +444,57 @@ export default function BriefPipeline() {
     }
   }, [fetchGenerated]);
 
+  // ── League / Reference handlers ────────────────────────────────────────
+
+  const handleLeagueImported = useCallback(async () => {
+    await fetchReferences();
+  }, [fetchReferences]);
+
+  const handleDeleteReference = useCallback(async (refId) => {
+    // Optimistic remove — re-add on error
+    const prev = references;
+    setReferences(rs => rs.filter(r => r.id !== refId));
+    try {
+      await api.delete(`/brief-pipeline/references/${refId}`);
+    } catch (err) {
+      console.error('Delete reference failed:', err);
+      setReferences(prev);
+      setError('Failed to delete reference.');
+    }
+  }, [references]);
+
+  const handleGenerateFromReference = useCallback((reference) => {
+    if (!reference?.transcript) {
+      setError('This reference has no transcript yet — cannot generate.');
+      return;
+    }
+    setScriptPrefill({
+      script: reference.transcript,
+      mode: 'clone',
+      label: `${reference.brandName} · ${reference.tier}`,
+    });
+    // Scroll the script generator panel into view so the user sees the prefill.
+    if (scriptGenSectionRef.current) {
+      scriptGenSectionRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }, []);
+
+  const handleClearScriptPrefill = useCallback(() => {
+    setScriptPrefill({ script: null, mode: null, label: null });
+  }, []);
+
   // ---------------------------------------------------------------------------
   // Drag & Drop
   // ---------------------------------------------------------------------------
 
-  // Valid forward transitions (column key → allowed target columns)
+  // Valid forward transitions (column key → allowed target columns).
+  // The "pushed" column was removed from the UI; legacy in-DB pushed briefs
+  // now appear in ready_to_launch via the bucketize step below.
   const VALID_TRANSITIONS = {
-    generated:       ['approved', 'pushed', 'ready_to_launch'],
-    approved:        ['generated', 'pushed', 'ready_to_launch'],
-    pushed:          ['ready_to_launch'],
-    ready_to_launch: ['approved', 'pushed'],
+    reference:       [], // reference cards are not drag-targets
+    generated:       ['approved', 'ready_to_launch'],
+    approved:        ['generated', 'ready_to_launch'],
+    ready_to_launch: ['approved'],
     launched:        [],
   };
 
@@ -473,18 +533,12 @@ export default function BriefPipeline() {
       const statusMap = {
         generated: 'generated',
         approved: 'approved',
-        pushed: 'pushed',
         ready_to_launch: 'ready_to_launch',
       };
       const newStatus = statusMap[targetCol];
       if (!newStatus) return;
 
-      // Special: moving to 'pushed' triggers push to ClickUp
-      if (targetCol === 'pushed') {
-        await api.post(`/brief-pipeline/generated/${briefId}/push`);
-      } else {
-        await api.patch(`/brief-pipeline/generated/${briefId}`, { status: newStatus });
-      }
+      await api.patch(`/brief-pipeline/generated/${briefId}`, { status: newStatus });
       await fetchGenerated();
     } catch (err) {
       console.error('Drop failed:', err);
@@ -521,9 +575,11 @@ export default function BriefPipeline() {
   // ---------------------------------------------------------------------------
 
   const buckets = useMemo(() => {
-    const map = { detected: [], generated: [], approved: [], pushed: [], ready_to_launch: [], launched: [] };
+    const map = { detected: [], reference: [], generated: [], approved: [], ready_to_launch: [], launched: [] };
 
     for (const w of winners) map.detected.push(w);
+
+    for (const r of references) map.reference.push(r);
 
     for (const b of generated) {
       if (b.status === 'launched') {
@@ -533,7 +589,9 @@ export default function BriefPipeline() {
       } else if (b.status === 'launch_failed') {
         map.ready_to_launch.push(b); // show failed ones back in ready column
       } else if (b.status === 'pushed') {
-        map.pushed.push(b);
+        // The Pushed column was removed — legacy pushed briefs surface here
+        // so they remain visible until they get manually moved to launched.
+        map.ready_to_launch.push(b);
       } else if (b.status === 'approved') {
         map.approved.push(b);
       } else if (b.status !== 'rejected') {
@@ -542,7 +600,7 @@ export default function BriefPipeline() {
     }
 
     return map;
-  }, [winners, generated]);
+  }, [winners, generated, references]);
 
   // ---------------------------------------------------------------------------
   // Render
@@ -608,6 +666,18 @@ export default function BriefPipeline() {
 
             <button
               type="button"
+              onClick={() => setLeagueImportOpen(true)}
+              className="inline-flex items-center justify-center gap-2 rounded-lg text-xs font-medium transition-all h-8 px-3
+                         bg-violet-500/10 text-violet-300 hover:bg-violet-500/15 border border-violet-500/25 hover:border-violet-500/40
+                         shadow-[0_0_10px_rgba(139,92,246,0.08)] hover:shadow-[0_0_15px_rgba(139,92,246,0.15)]
+                         cursor-pointer font-mono tracking-wide uppercase"
+            >
+              <BookOpen className="w-3.5 h-3.5" />
+              Import from League
+            </button>
+
+            <button
+              type="button"
               onClick={() => { setEditingTemplate(null); setTemplateEditorOpen(true); }}
               className="inline-flex items-center justify-center gap-2 rounded-lg text-xs font-medium transition-all h-8 px-3
                          hover:bg-white/[0.05] text-zinc-400 hover:text-zinc-100 border border-transparent hover:border-white/[0.04]
@@ -659,7 +729,7 @@ export default function BriefPipeline() {
             <div className="absolute right-0 top-0 bottom-0 w-[1px] bg-gradient-to-b from-[#c9a84c]/15 via-transparent to-transparent" />
 
             {/* Script Generator header */}
-            <div className="p-4 border-b border-white/[0.04] flex items-center gap-2 text-[#e8d5a3] font-mono text-sm tracking-wide uppercase">
+            <div ref={scriptGenSectionRef} className="p-4 border-b border-white/[0.04] flex items-center gap-2 text-[#e8d5a3] font-mono text-sm tracking-wide uppercase">
               <Sparkles className="w-4 h-4 drop-shadow-[0_0_6px_rgba(201,168,76,0.6)]" />
               <span className="text-glow-gold">Script Generator</span>
             </div>
@@ -670,6 +740,10 @@ export default function BriefPipeline() {
                 onGenerated={handleGenerateFromScript}
                 generating={scriptGenerating}
                 generatingStep={scriptGenStep}
+                initialScript={scriptPrefill.script}
+                initialMode={scriptPrefill.mode}
+                referenceLabel={scriptPrefill.label}
+                onClearReference={handleClearScriptPrefill}
               />
             </div>
 
@@ -739,7 +813,8 @@ export default function BriefPipeline() {
                 const items = buckets[col.key];
                 const Icon = col.icon;
                 const isDropTarget = dragOverCol === col.key;
-                const isDroppable = col.key !== 'launched';
+                // Reference column and launched column are NOT drop targets.
+                const isDroppable = col.key !== 'launched' && col.key !== 'reference';
 
                 return (
                   <div
@@ -771,11 +846,41 @@ export default function BriefPipeline() {
                     {/* Card list */}
                     <div className="flex-1 overflow-y-auto space-y-4 pr-2 pb-4">
                       {items.length === 0 ? (
-                        <div className="flex items-center justify-center h-32">
-                          <p className="text-xs text-zinc-600 font-mono">No items</p>
-                        </div>
+                        col.key === 'reference' ? (
+                          <div className="flex flex-col items-center justify-center h-40 px-4 text-center">
+                            <BookOpen className="w-6 h-6 text-violet-400/40 mb-2" />
+                            <p className="text-xs text-zinc-500 font-mono mb-3">
+                              No references yet
+                            </p>
+                            <button
+                              type="button"
+                              onClick={() => setLeagueImportOpen(true)}
+                              className="text-[11px] font-mono uppercase tracking-wider px-3 py-1.5 rounded-md bg-violet-500/10 border border-violet-500/30 text-violet-300 hover:bg-violet-500/15 transition-colors cursor-pointer"
+                            >
+                              Import from League
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="flex items-center justify-center h-32">
+                            <p className="text-xs text-zinc-600 font-mono">No items</p>
+                          </div>
+                        )
                       ) : (
                         items.map((item) => {
+                          // Reference cards have their own renderer — no drag,
+                          // no shared brief card model.
+                          if (col.key === 'reference') {
+                            return (
+                              <div key={item.id}>
+                                <ReferenceCard
+                                  reference={item}
+                                  onGenerateFromReference={handleGenerateFromReference}
+                                  onDelete={handleDeleteReference}
+                                />
+                              </div>
+                            );
+                          }
+
                           const isDraggable = col.key !== 'launched';
                           const cardWrapper = (children) => isDraggable ? (
                             <div
@@ -807,19 +912,7 @@ export default function BriefPipeline() {
                                 brief={item}
                                 onClick={() => setDetailModal(item)}
                                 showActions="approved"
-                                onPush={() => handlePush(item.id)}
                                 onMoveToReady={() => handleMoveToReady(item.id)}
-                                onDelete={() => handleDelete(item.id)}
-                              />
-                            );
-                          }
-
-                          if (col.key === 'pushed') {
-                            return cardWrapper(
-                              <GeneratedBriefCard
-                                brief={item}
-                                onClick={() => setDetailModal(item)}
-                                showActions="pushed"
                                 onDelete={() => handleDelete(item.id)}
                               />
                             );
@@ -923,8 +1016,8 @@ export default function BriefPipeline() {
             handleReject(detailModal.id);
             setDetailModal(null);
           }}
-          onPush={() => {
-            handlePush(detailModal.id);
+          onMoveToReady={() => {
+            handleMoveToReady(detailModal.id);
             setDetailModal(null);
           }}
         />
@@ -950,6 +1043,13 @@ export default function BriefPipeline() {
         onClose={() => setCopySetsOpen(false)}
         productId={null}
         productName="All Products"
+      />
+
+      {/* League Import Modal */}
+      <LeagueImportModal
+        open={leagueImportOpen}
+        onClose={() => setLeagueImportOpen(false)}
+        onImported={handleLeagueImported}
       />
 
       {/* Launch Confirmation Modal */}

@@ -5326,6 +5326,314 @@ router.get('/launch-history', authenticate, async (req, res) => {
 // PATCH /generated/:id — update status (extended for launch statuses)
 // Already exists above, but we add ready_to_launch support
 
+// ============================================================================
+// ── League Import (Brand Spy → Brief Pipeline) ──────────────────────────────
+//
+// Pulls competitor video ads from brand_spy.ads (tier-filtered: BANGER, CHAMP,
+// A-tier only) so they can be transcribed and imported into the Reference
+// column as pre-generation material. Transcription itself reuses the existing
+// /api/v1/brand-spy/ads/:id/transcribe endpoint — these routes only handle
+// listing brands/ads and persisting the user's selections.
+// ============================================================================
+
+// GET /league/brands — followed brands only, with per-tier VIDEO ad counts.
+router.get('/league/brands', authenticate, async (_req, res) => {
+  try {
+    const rows = await pgQuery(`
+      SELECT
+        b.id,
+        b.display_name AS name,
+        b.domain,
+        COALESCE((
+          SELECT COUNT(*) FROM brand_spy.ads a
+          WHERE a.brand_id = b.id
+            AND a.is_active = TRUE
+            AND a.tier IN ('BANGER','CHAMP','A')
+            AND (a.display_format ILIKE 'video%'
+                 OR (a.raw_snapshot->'videos'->0->>'video_hd_url') IS NOT NULL
+                 OR (a.raw_snapshot->'videos'->0->>'video_sd_url') IS NOT NULL)
+        ), 0)::INTEGER AS total_video_count,
+        COALESCE((
+          SELECT COUNT(*) FROM brand_spy.ads a
+          WHERE a.brand_id = b.id
+            AND a.is_active = TRUE
+            AND a.tier = 'BANGER'
+            AND (a.display_format ILIKE 'video%'
+                 OR (a.raw_snapshot->'videos'->0->>'video_hd_url') IS NOT NULL
+                 OR (a.raw_snapshot->'videos'->0->>'video_sd_url') IS NOT NULL)
+        ), 0)::INTEGER AS banger_count,
+        COALESCE((
+          SELECT COUNT(*) FROM brand_spy.ads a
+          WHERE a.brand_id = b.id
+            AND a.is_active = TRUE
+            AND a.tier = 'CHAMP'
+            AND (a.display_format ILIKE 'video%'
+                 OR (a.raw_snapshot->'videos'->0->>'video_hd_url') IS NOT NULL
+                 OR (a.raw_snapshot->'videos'->0->>'video_sd_url') IS NOT NULL)
+        ), 0)::INTEGER AS champ_count,
+        COALESCE((
+          SELECT COUNT(*) FROM brand_spy.ads a
+          WHERE a.brand_id = b.id
+            AND a.is_active = TRUE
+            AND a.tier = 'A'
+            AND (a.display_format ILIKE 'video%'
+                 OR (a.raw_snapshot->'videos'->0->>'video_hd_url') IS NOT NULL
+                 OR (a.raw_snapshot->'videos'->0->>'video_sd_url') IS NOT NULL)
+        ), 0)::INTEGER AS a_count
+      FROM brand_spy.brands b
+      WHERE EXISTS (
+        SELECT 1
+        FROM spy_brand_follows sbf
+        JOIN brand_spy.brand_pages bp ON bp.meta_page_id = sbf.meta_page_id
+        WHERE bp.brand_id = b.id
+      )
+      ORDER BY total_video_count DESC, b.display_name ASC NULLS LAST, b.domain ASC
+    `);
+    const brands = rows.map(r => ({
+      id: r.id,
+      name: r.name,
+      domain: r.domain,
+      totalVideoCount: Number(r.total_video_count) || 0,
+      tierCounts: {
+        BANGER: Number(r.banger_count) || 0,
+        CHAMP:  Number(r.champ_count)  || 0,
+        A:      Number(r.a_count)      || 0,
+      },
+    }));
+    res.json({ success: true, brands });
+  } catch (err) {
+    console.error('[BriefPipeline] GET /league/brands error:', err.message);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// GET /league/ads — list VIDEO ads for a brand, tier-filtered.
+// Query params: brand_id (required), tiers (CSV, default BANGER,CHAMP,A),
+// page (default 1), limit (default 20).
+router.get('/league/ads', authenticate, async (req, res) => {
+  try {
+    const brandId = req.query.brand_id;
+    if (!brandId) {
+      return res.status(400).json({ success: false, error: { message: 'brand_id is required' } });
+    }
+    const tiersCsv = String(req.query.tiers || 'BANGER,CHAMP,A');
+    const tiers = tiersCsv
+      .split(',')
+      .map(t => t.trim().toUpperCase())
+      .filter(t => ['BANGER','CHAMP','A'].includes(t));
+    if (tiers.length === 0) {
+      return res.json({ success: true, ads: [], total: 0, page: 1, limit: 20 });
+    }
+    const page  = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 20));
+    const offset = (page - 1) * limit;
+
+    const params = [brandId, tiers, limit, offset];
+
+    const sql = `
+      SELECT
+        a.id,
+        a.ad_archive_id,
+        a.brand_id,
+        a.tier,
+        a.tier_score,
+        a.current_rank,
+        a.headline,
+        a.body_text,
+        a.display_format,
+        a.active_days,
+        a.is_active,
+        a.transcript,
+        a.transcript_at,
+        a.raw_snapshot->'videos'->0->>'video_hd_url' AS video_hd_url,
+        a.raw_snapshot->'videos'->0->>'video_sd_url' AS video_sd_url,
+        a.raw_snapshot->'videos'->0->>'video_preview_image_url' AS thumbnail_url,
+        EXISTS (
+          SELECT 1 FROM brief_pipeline_references bpr
+          WHERE bpr.ad_archive_id = a.ad_archive_id::text
+        ) AS already_imported,
+        COUNT(*) OVER () AS total_count
+      FROM brand_spy.ads a
+      WHERE a.brand_id = $1
+        AND a.is_active = TRUE
+        AND a.tier = ANY($2::text[])
+        AND (a.display_format ILIKE 'video%'
+             OR (a.raw_snapshot->'videos'->0->>'video_hd_url') IS NOT NULL
+             OR (a.raw_snapshot->'videos'->0->>'video_sd_url') IS NOT NULL)
+      ORDER BY a.tier_score DESC NULLS LAST, a.active_days DESC NULLS LAST
+      LIMIT $3 OFFSET $4
+    `;
+    const rows = await pgQuery(sql, params);
+    const total = rows.length > 0 ? Number(rows[0].total_count) : 0;
+    const ads = rows.map(r => ({
+      id: r.id,
+      adArchiveId: r.ad_archive_id,
+      brandId: r.brand_id,
+      tier: r.tier,
+      tierScore: r.tier_score,
+      currentRank: r.current_rank,
+      headline: r.headline,
+      bodyText: r.body_text,
+      displayFormat: r.display_format,
+      activeDays: r.active_days,
+      isActive: r.is_active,
+      transcript: r.transcript || null,
+      transcriptAt: r.transcript_at ? new Date(r.transcript_at).toISOString() : null,
+      videoUrl: r.video_hd_url || r.video_sd_url || null,
+      thumbnailUrl: r.thumbnail_url || null,
+      alreadyImported: r.already_imported === true,
+    }));
+    res.json({ success: true, ads, total, page, limit });
+  } catch (err) {
+    console.error('[BriefPipeline] GET /league/ads error:', err.message);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// POST /references — import a League ad into the Reference column.
+// Upserts on ad_archive_id (unique). Returns { reference, alreadyExists }.
+router.post('/references', authenticate, async (req, res) => {
+  try {
+    const {
+      brandSpyAdId,
+      adArchiveId,
+      brandId,
+      brandName,
+      tier,
+      videoUrl,
+      thumbnailUrl,
+      headline,
+      bodyText,
+      transcript,
+      transcriptAt,
+    } = req.body || {};
+
+    if (!brandSpyAdId || !adArchiveId || !brandId || !brandName || !tier) {
+      return res.status(400).json({
+        success: false,
+        error: { message: 'brandSpyAdId, adArchiveId, brandId, brandName, tier are required' },
+      });
+    }
+    if (!['BANGER', 'CHAMP', 'A'].includes(tier)) {
+      return res.status(400).json({
+        success: false,
+        error: { message: `Invalid tier "${tier}" — must be BANGER, CHAMP, or A` },
+      });
+    }
+
+    // Check if it already exists (so we can report alreadyExists: true)
+    const existing = await pgQuery(
+      `SELECT id FROM brief_pipeline_references WHERE ad_archive_id = $1`,
+      [String(adArchiveId)]
+    );
+    const alreadyExists = existing.length > 0;
+
+    const status = transcript ? 'transcribed' : 'pending';
+    const transcriptAtVal = transcript
+      ? (transcriptAt ? new Date(transcriptAt) : new Date())
+      : null;
+
+    const rows = await pgQuery(
+      `INSERT INTO brief_pipeline_references (
+         brand_spy_ad_id, ad_archive_id, brand_id, brand_name, tier,
+         video_url, thumbnail_url, headline, body_text,
+         transcript, transcript_at, status
+       )
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+       ON CONFLICT (ad_archive_id) DO UPDATE SET
+         brand_spy_ad_id = EXCLUDED.brand_spy_ad_id,
+         brand_id        = EXCLUDED.brand_id,
+         brand_name      = EXCLUDED.brand_name,
+         tier            = EXCLUDED.tier,
+         video_url       = COALESCE(EXCLUDED.video_url, brief_pipeline_references.video_url),
+         thumbnail_url   = COALESCE(EXCLUDED.thumbnail_url, brief_pipeline_references.thumbnail_url),
+         headline        = COALESCE(EXCLUDED.headline, brief_pipeline_references.headline),
+         body_text       = COALESCE(EXCLUDED.body_text, brief_pipeline_references.body_text),
+         transcript      = COALESCE(EXCLUDED.transcript, brief_pipeline_references.transcript),
+         transcript_at   = COALESCE(EXCLUDED.transcript_at, brief_pipeline_references.transcript_at),
+         status          = CASE
+                             WHEN EXCLUDED.transcript IS NOT NULL THEN 'transcribed'
+                             WHEN brief_pipeline_references.transcript IS NOT NULL THEN brief_pipeline_references.status
+                             ELSE 'pending'
+                           END,
+         updated_at      = NOW()
+       RETURNING *`,
+      [
+        brandSpyAdId,
+        String(adArchiveId),
+        brandId,
+        brandName,
+        tier,
+        videoUrl || null,
+        thumbnailUrl || null,
+        headline || null,
+        bodyText || null,
+        transcript || null,
+        transcriptAtVal,
+        status,
+      ]
+    );
+    const reference = mapReferenceRow(rows[0]);
+    res.json({ success: true, reference, alreadyExists });
+  } catch (err) {
+    console.error('[BriefPipeline] POST /references error:', err.message);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// GET /references — list all Reference column items, newest first.
+router.get('/references', authenticate, async (_req, res) => {
+  try {
+    const rows = await pgQuery(
+      `SELECT * FROM brief_pipeline_references ORDER BY created_at DESC`
+    );
+    res.json({ success: true, references: rows.map(mapReferenceRow) });
+  } catch (err) {
+    console.error('[BriefPipeline] GET /references error:', err.message);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// DELETE /references/:id
+router.delete('/references/:id', authenticate, async (req, res) => {
+  if (!validateUuid(req, res)) return;
+  try {
+    const rows = await pgQuery(
+      `DELETE FROM brief_pipeline_references WHERE id = $1 RETURNING id`,
+      [req.params.id]
+    );
+    if (rows.length === 0) {
+      return res.status(404).json({ success: false, error: { message: 'Reference not found' } });
+    }
+    res.json({ success: true });
+  } catch (err) {
+    console.error('[BriefPipeline] DELETE /references/:id error:', err.message);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+function mapReferenceRow(r) {
+  if (!r) return null;
+  return {
+    id: r.id,
+    brandSpyAdId: r.brand_spy_ad_id,
+    adArchiveId: r.ad_archive_id,
+    brandId: r.brand_id,
+    brandName: r.brand_name,
+    tier: r.tier,
+    videoUrl: r.video_url || null,
+    thumbnailUrl: r.thumbnail_url || null,
+    headline: r.headline || null,
+    bodyText: r.body_text || null,
+    transcript: r.transcript || null,
+    transcriptAt: r.transcript_at ? new Date(r.transcript_at).toISOString() : null,
+    status: r.status,
+    generatedBriefId: r.generated_brief_id || null,
+    createdAt: r.created_at ? new Date(r.created_at).toISOString() : null,
+    updatedAt: r.updated_at ? new Date(r.updated_at).toISOString() : null,
+  };
+}
+
 // ── Admin: Reset all winners back to detected ────────────────────────
 router.post('/admin/reset-winners', authenticate, async (_req, res) => {
   try {

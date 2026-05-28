@@ -14,6 +14,7 @@ import {
   Sparkles,
   Save,
   Rocket,
+  Send,
 } from 'lucide-react';
 import api from '../../../services/api';
 
@@ -63,7 +64,7 @@ export default function BriefDetailModal({
   onClose,
   onApprove,
   onReject,
-  onPush,
+  onMoveToReady,
   onSave,
   originalScript,
   originalRawScript,
@@ -471,16 +472,19 @@ export default function BriefDetailModal({
           {status === 'approved' && (
             <button
               type="button"
-              onClick={() => onPush?.(brief.id)}
+              onClick={() => onMoveToReady?.(brief.id)}
               className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg
-                         bg-white/[0.05] text-white hover:bg-white/[0.08] border border-white/[0.08] hover:border-white/[0.15]
+                         bg-blue-500/10 text-blue-400 hover:bg-blue-500/15 border border-blue-500/25 hover:border-blue-500/40
                          text-sm font-mono font-semibold uppercase tracking-wide transition-all cursor-pointer"
             >
-              <Rocket className="w-4 h-4" />
-              Push to ClickUp
+              <Send className="w-4 h-4" />
+              Move to Ready to Launch
             </button>
           )}
 
+          {/* Legacy: briefs with status='pushed' (from before the Pushed column
+              was removed) still get a "View in ClickUp" link if a ClickUp task
+              URL was saved. */}
           {status === 'pushed' && brief.clickup_task_url && (
             <a
               href={brief.clickup_task_url}
