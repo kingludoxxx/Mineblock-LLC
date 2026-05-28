@@ -1110,14 +1110,18 @@ function AdTableRow({ ad, rowNum, onSelect, visibleCols }) {
 
       {/* TIER */}
       {visibleCols.tier && (
-        <td className="px-2 py-2 text-center" style={{ width: 90 }}>
+        <td className="px-2 py-2 text-center" style={{ width: 96 }}>
           {ad.tier
             ? (
+              // inline-flex + whitespace-nowrap so the emoji + label stay on
+              // one line. With a plain inline-span the border would draw
+              // around each wrapped fragment, producing two stacked pills.
               <span
-                className={`text-[10px] px-1.5 py-0.5 rounded border font-medium ${TIER_COLORS[ad.tier] ?? ''}`}
+                className={`inline-flex items-center gap-1 whitespace-nowrap text-[10px] px-1.5 py-0.5 rounded border font-medium ${TIER_COLORS[ad.tier] ?? ''}`}
                 title={TIER_TOOLTIPS[ad.tier] ?? ad.tier}
               >
-                {TIER_ICONS[ad.tier] ? `${TIER_ICONS[ad.tier]} ` : ''}{ad.tier}
+                {TIER_ICONS[ad.tier] && <span aria-hidden>{TIER_ICONS[ad.tier]}</span>}
+                {ad.tier}
               </span>
             )
             : <span className="text-text-faint text-xs">—</span>}

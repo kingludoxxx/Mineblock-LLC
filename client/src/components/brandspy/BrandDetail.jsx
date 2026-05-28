@@ -576,9 +576,11 @@ function AdCard({ ad, brand, onOpenIntel }) {
             anything non-null on an OFF ad is from before the last reset. */}
         {ad.tier && ad.isActive && !playing && (
           <div className="absolute top-2 right-2 z-20 pointer-events-none">
-            <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-md border backdrop-blur-sm ${TIER_COLORS[ad.tier] ?? ''}`}
+            <span
+              className={`inline-flex items-center gap-1 whitespace-nowrap text-[9px] font-bold px-1.5 py-0.5 rounded-md border backdrop-blur-sm ${TIER_COLORS[ad.tier] ?? ''}`}
               title={TIER_TOOLTIPS[ad.tier]}>
-              {TIER_ICONS[ad.tier] ?? ''}{ad.tier}
+              {TIER_ICONS[ad.tier] && <span aria-hidden>{TIER_ICONS[ad.tier]}</span>}
+              {ad.tier}
             </span>
           </div>
         )}
@@ -1606,12 +1608,15 @@ function DetailAdRow({ ad, rowNum, onSelect, col }) {
         </td>
       )}
       {col('tier') && (
-        <td className="px-2 py-2 text-center" style={{ width: 90 }}>
+        <td className="px-2 py-2 text-center" style={{ width: 96 }}>
           {/* Only show tier for ads currently active. A tier on an OFF ad
               is stale data from before the last scrape's is_active reset. */}
           {ad.tier && ad.isActive
-            ? <span className={`text-[10px] px-1.5 py-0.5 rounded border font-medium ${TIER_COLORS[ad.tier] ?? ''}`} title={TIER_TOOLTIPS[ad.tier] ?? ad.tier}>
-                {TIER_ICONS[ad.tier] ? `${TIER_ICONS[ad.tier]} ` : ''}{ad.tier}
+            ? <span
+                className={`inline-flex items-center gap-1 whitespace-nowrap text-[10px] px-1.5 py-0.5 rounded border font-medium ${TIER_COLORS[ad.tier] ?? ''}`}
+                title={TIER_TOOLTIPS[ad.tier] ?? ad.tier}>
+                {TIER_ICONS[ad.tier] && <span aria-hidden>{TIER_ICONS[ad.tier]}</span>}
+                {ad.tier}
               </span>
             : <span className="text-text-faint text-xs">—</span>}
         </td>
