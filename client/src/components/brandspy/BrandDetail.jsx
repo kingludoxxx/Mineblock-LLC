@@ -542,6 +542,11 @@ function AdCard({ ad, brand, onOpenIntel }) {
         )}
       </div>
 
+      {/* Flexible spacer — absorbs any extra height when CSS grid stretches
+          this card to match a taller sibling, so the footer below stays
+          pinned to the bottom of the card and every card in a row aligns. */}
+      <div className="flex-1" />
+
       {/* ── Footer — Facebook-style link-preview card
             Matches how Meta renders the destination card under an ad:
               hostname (small gray) / headline (bold) / caption (small)
@@ -1262,7 +1267,7 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
 
             {/* Ad grid */}
             {adsLoading ? (
-              <div className="grid items-start grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7 gap-2">
+              <div className="grid grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7 gap-2">
                 {Array.from({ length: 16 }).map((_, i) => (
                   <div key={i} className="rounded-xl border border-border-subtle overflow-hidden animate-pulse">
                     <div className="bg-white/5" style={{ aspectRatio: '4/5' }} />
@@ -1281,7 +1286,7 @@ export default function BrandDetail({ apiBaseUrl, brandId, onBack }) {
               </div>
             ) : (
               <>
-                <div className="grid items-start grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7 gap-2">
+                <div className="grid grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7 gap-2">
                   {ads.map((ad) => <AdCard key={ad.id} ad={ad} brand={brand} onOpenIntel={setSelectedAd} />)}
                 </div>
                 {totalPages > 1 && (
