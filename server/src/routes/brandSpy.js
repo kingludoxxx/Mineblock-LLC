@@ -448,6 +448,169 @@ router.get('/brands/:id/_diag/league-vs-fb', validateUuidParam('id'), async (req
   } catch (err) { next(err); }
 });
 
+// GET /brands/:id/_diag/league-vs-fb-full
+//
+// Comprehensive validation: walks every known FB page for the brand and
+// fetches that page's live ad library (sorted by impressions). Diffs the
+// union against our full active set in DB. Surfaces:
+//   • ads FB shows but we don't have (scrape gaps)
+//   • ads we say "active" but FB no longer surfaces (stale is_active)
+//   • how every BANGER / CHAMP / A in our league shows up on FB
+//
+// Query params:
+//   • maxPagesPerFbPage — cursor-pages per FB page (default 2, max 5).
+//     Each = 1 ScrapeCreators credit. With 16 brand pages * 2 = 32 credits.
+//   • topBrandPages — limit how many FB pages to walk (default unlimited).
+router.get('/brands/:id/_diag/league-vs-fb-full', validateUuidParam('id'), async (req, res, next) => {
+  try {
+    const brand = await getBrandExpanded(req.params.id);
+    if (!brand) return res.status(404).json({ error: 'Brand not found' });
+
+    const maxPagesPerFb = Math.min(5, Math.max(1, parseInt(String(req.query.maxPagesPerFbPage ?? '2'), 10) || 2));
+    const topBrandPages = parseInt(String(req.query.topBrandPages ?? ''), 10);
+    const pages = (brand.pages ?? [])
+      .filter((p) => p.metaPageId)
+      .sort((a, b) => (b.adCount ?? 0) - (a.adCount ?? 0))
+      .slice(0, Number.isFinite(topBrandPages) && topBrandPages > 0 ? topBrandPages : 999);
+
+    const sc = getScrapeCreatorsClient();
+    const fbByArchive = new Map(); // ad_archive_id → { adArchiveId, pageId, pageName, isActive, headline, linkUrl, firstSeenFbIdx }
+    const fbPerPage = []; // [{ pageId, pageName, adsFetched, hasMore }]
+    let creditsUsed = 0;
+
+    for (const page of pages) {
+      let fetched = 0;
+      let hasMore = false;
+      try {
+        for await (const batch of sc.iterateCompanyAds({
+          pageId: page.metaPageId,
+          country: 'ALL',
+          status: 'ACTIVE',
+          maxPages: maxPagesPerFb,
+        })) {
+          creditsUsed += 1;
+          for (const ad of batch) {
+            const id = String(ad.ad_archive_id);
+            if (!fbByArchive.has(id)) {
+              fbByArchive.set(id, {
+                adArchiveId: id,
+                pageId:      page.metaPageId,
+                pageName:    ad.snapshot?.page_name ?? page.pageName,
+                isActive:    !!ad.is_active,
+                headline:    ad.snapshot?.title ?? null,
+                linkUrl:     ad.snapshot?.link_url ?? null,
+                firstSeenFbIdx: fbByArchive.size,
+              });
+            }
+            fetched += 1;
+          }
+        }
+      } catch (err) {
+        fbPerPage.push({ pageId: page.metaPageId, pageName: page.pageName, adsFetched: fetched, error: err.message });
+        continue;
+      }
+      fbPerPage.push({ pageId: page.metaPageId, pageName: page.pageName, adsFetched: fetched, hasMore });
+    }
+
+    // Pull our full active set for this brand (up to 500 — large brands need
+    // multiple pages but the cap covers thegreatproject's 313 in one shot).
+    const ours = await listAds(req.params.id, {
+      page: 1, pageSize: 100, sort: 'rank_asc', tier: 'ALL', status: 'ACTIVE',
+    });
+    // Pull additional pages if total exceeds 100.
+    const ourActive = [...ours.ads];
+    if (ours.total > 100) {
+      const pagesToFetch = Math.ceil(ours.total / 100);
+      for (let p = 2; p <= pagesToFetch && p <= 10; p++) {
+        const next = await listAds(req.params.id, {
+          page: p, pageSize: 100, sort: 'rank_asc', tier: 'ALL', status: 'ACTIVE',
+        });
+        ourActive.push(...next.ads);
+      }
+    }
+    const ourByArchive = new Map(ourActive.map((a) => [a.adArchiveId, a]));
+
+    const fbIds  = new Set(fbByArchive.keys());
+    const ourIds = new Set(ourByArchive.keys());
+
+    const overlap     = [...fbIds].filter((id) => ourIds.has(id));
+    const fbOnly      = [...fbIds].filter((id) => !ourIds.has(id));
+    const ourOnly     = [...ourIds].filter((id) => !fbIds.has(id));
+
+    // Tier histogram for OUR active set.
+    const tierTotals = {};
+    for (const a of ourActive) {
+      const t = a.tier ?? 'NULL';
+      tierTotals[t] = (tierTotals[t] ?? 0) + 1;
+    }
+
+    // Tier histogram for ourOnly (= what we think is active but FB doesn't surface).
+    const tierStale = {};
+    for (const id of ourOnly) {
+      const t = ourByArchive.get(id)?.tier ?? 'NULL';
+      tierStale[t] = (tierStale[t] ?? 0) + 1;
+    }
+
+    // Tier histogram for overlap (= what FB confirms).
+    const tierVerified = {};
+    for (const id of overlap) {
+      const t = ourByArchive.get(id)?.tier ?? 'NULL';
+      tierVerified[t] = (tierVerified[t] ?? 0) + 1;
+    }
+
+    // BANGER / CHAMP / A verification — exactly which of these tiers
+    // FB confirms as currently active.
+    const tierVerificationDetail = {};
+    for (const tier of ['BANGER', 'CHAMP', 'A']) {
+      const ads = ourActive.filter((a) => a.tier === tier);
+      const verified = ads.filter((a) => fbIds.has(a.adArchiveId));
+      tierVerificationDetail[tier] = {
+        total: ads.length,
+        verified: verified.length,
+        verifiedPct: ads.length ? +(100 * verified.length / ads.length).toFixed(1) : null,
+        unverifiedSample: ads
+          .filter((a) => !fbIds.has(a.adArchiveId))
+          .slice(0, 5)
+          .map((a) => ({
+            adArchiveId: a.adArchiveId,
+            currentRank: a.currentRank,
+            metaRank:    a.metaRank,
+            headline:    a.headline,
+            lastSeenAt:  a.lastSeenAt,
+            pageName:    a.pageName,
+          })),
+      };
+    }
+
+    res.json({
+      brand: { id: brand.id, name: brand.name, domain: brand.domain, pages: pages.length },
+      creditsUsed,
+      fbPerPage,
+      summary: {
+        fbActiveTotal:  fbIds.size,
+        ourActiveTotal: ourIds.size,
+        overlap:        overlap.length,
+        overlapPct:     fbIds.size ? +(100 * overlap.length / fbIds.size).toFixed(1) : null,
+        fbOnly:         fbOnly.length,    // we're missing these
+        ourOnly:        ourOnly.length,   // we say active, FB says no
+        tierTotals,
+        tierVerified,
+        tierStale,
+        tierVerificationDetail,
+      },
+      // Trimmed samples — full lists are huge for many-page brands.
+      fbOnlySample:  fbOnly.slice(0, 10).map((id) => fbByArchive.get(id)),
+      ourOnlySample: ourOnly.slice(0, 10).map((id) => {
+        const a = ourByArchive.get(id);
+        return a && {
+          adArchiveId: a.adArchiveId, currentRank: a.currentRank, metaRank: a.metaRank,
+          tier: a.tier, headline: a.headline, lastSeenAt: a.lastSeenAt, pageName: a.pageName,
+        };
+      }),
+    });
+  } catch (err) { next(err); }
+});
+
 // GET /ads/:id
 router.get('/ads/:id', validateUuidParam('id'), async (req, res, next) => {
   try {
