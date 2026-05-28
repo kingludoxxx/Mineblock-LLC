@@ -735,7 +735,9 @@ export default function LeagueImportModal({ open, onClose, onImported }) {
                       ? <span className="text-emerald-400">Imported into Reference column</span>
                       : importError
                         ? <span className="text-red-400">{importError}</span>
-                        : 'Transcript is required to enable import.'}
+                        : selectedAd.transcript
+                          ? <span className="text-violet-300/80">Ready to import</span>
+                          : 'Transcribe the video to enable import.'}
                   </div>
                   <button
                     type="button"
