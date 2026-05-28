@@ -12,7 +12,8 @@ import { getScrapeCreatorsClient, ScrapeCreatorsError } from '../services/scrape
 
 // Tracks which brands have a scrape in progress within this process.
 // Prevents a cron/auto-scrape from racing with a manual scrape on the same
-// brand — both would reset is_active at the start, producing wrong counts.
+// brand — concurrent runs would interleave is_active writes and produce
+// inconsistent end-of-scrape sweeps.
 const activeScrapes = new Set();
 
 // Set to true when SIGTERM is received so in-flight scrapes can bail out
@@ -155,10 +156,22 @@ function computeVelocity({ currentRank, rank7d, rank21d }) {
 
 export async function scoreBrand(brandId) {
   return withTransaction(async (client) => {
+    // Ranking signal: meta_rank ASC (Meta's impression rank — captured during
+    // Phase 1d from ScrapeCreators' sort_by=total_impressions results). Lower
+    // meta_rank = more impressions = better. Ads not seen in Phase 1d's
+    // top-90 window have NULL meta_rank and fall to the tail (NULLS LAST),
+    // ordered by total_active_time as a secondary signal.
+    //
+    // This is what makes BANGER actually work: it's "young ad already in the
+    // top X positions by impressions" — exactly what the Meta Ad Library
+    // surfaces when you sort by impressions DESC.
     const adsRes = await client.query(
       `SELECT id, ad_archive_id, is_active, start_date, active_days, total_active_time, last_seen_at
          FROM brand_spy.ads WHERE brand_id = $1
-         ORDER BY is_active DESC, total_active_time DESC NULLS LAST, last_seen_at DESC`,
+         ORDER BY is_active            DESC,
+                  meta_rank            ASC  NULLS LAST,
+                  total_active_time    DESC NULLS LAST,
+                  last_seen_at         DESC`,
       [brandId],
     );
 
@@ -490,7 +503,7 @@ async function upsertBrandDomain(brandId, domain, domainType) {
 // ScrapeCreators' /company/ads is rate-limited per API key; set to 5 so
 // N pages run simultaneously. p2Blocked fast-fails all workers on first 431.
 const PHASE2_CONCURRENCY = 5;
-const AD_COLS = 20;
+const AD_COLS = 21;  // 20 existing + meta_rank (impression position from Meta)
 
 // Meta's own platform pages appear in Phase 1 keyword results because some brands
 // advertise through them (no dedicated FB page). Phase 2 scraping these pages returns
@@ -542,12 +555,16 @@ function linkBelongsToBrand(url, primaryDomain) {
 
 // crossDomains: optional Set — collects link_url domains seen in this batch
 // pageNameCache: optional Map — populated with metaPageId → pageName for Phase 2 filtering
-async function upsertAdBatch(brandId, ads, pageCache, pageIdFallback = null, crossDomains = null, pageNameCache = null) {
+// metaRankStart: optional integer — if provided, each ad in `ads` gets a meta_rank
+//   value equal to metaRankStart + array index. ScrapeCreators returns ads sorted
+//   by total_impressions DESC, so this captures Meta's impression rank per brand.
+async function upsertAdBatch(brandId, ads, pageCache, pageIdFallback = null, crossDomains = null, pageNameCache = null, metaRankStart = null) {
   if (!ads.length) return { d: 0, u: 0 };
 
   // Resolve page IDs (may upsert new pages) before entering bulk transaction
   const rows = [];
-  for (const ad of ads) {
+  for (let i = 0; i < ads.length; i++) {
+    const ad = ads[i];
     const metaPageId = String(ad.page_id ?? ad.meta_page_id ?? pageIdFallback ?? '');
     const pageName   = ad.page_name ?? null;
     const profilePic = ad.snapshot?.page_profile_picture_url ?? null;
@@ -570,6 +587,7 @@ async function upsertAdBatch(brandId, ads, pageCache, pageIdFallback = null, cro
     const startDate  = ad.start_date ? new Date(ad.start_date * 1000) : null;
     const endDate    = ad.end_date   ? new Date(ad.end_date   * 1000) : null;
     const activeDays = computeActiveDays(startDate, endDate, ad.is_active);
+    const metaRank   = (metaRankStart != null) ? (metaRankStart + i) : null;
 
     rows.push([
       brandId, brandPageId, ad.ad_archive_id, metaPageId,
@@ -585,6 +603,7 @@ async function upsertAdBatch(brandId, ads, pageCache, pageIdFallback = null, cro
       ad.collation_id             ?? null,
       ad.collation_count          ?? null,
       ad.snapshot                 ?? null,
+      metaRank,
     ]);
   }
 
@@ -603,15 +622,16 @@ async function upsertAdBatch(brandId, ads, pageCache, pageIdFallback = null, cro
          is_active, start_date, end_date, total_active_time, active_days,
          display_format, cta_text, cta_type, headline, body_text,
          link_url, caption, publisher_platforms,
-         collation_id, collation_count, raw_snapshot
+         collation_id, collation_count, raw_snapshot, meta_rank
        ) VALUES ${placeholders}
        ON CONFLICT (brand_id, ad_archive_id) DO UPDATE SET
-         is_active         = (brand_spy.ads.is_active OR EXCLUDED.is_active),
+         is_active         = EXCLUDED.is_active,
          end_date          = EXCLUDED.end_date,
          total_active_time = EXCLUDED.total_active_time,
          active_days       = EXCLUDED.active_days,
          last_seen_at      = NOW(),
-         raw_snapshot      = EXCLUDED.raw_snapshot
+         raw_snapshot      = EXCLUDED.raw_snapshot,
+         meta_rank         = COALESCE(EXCLUDED.meta_rank, brand_spy.ads.meta_rank)
        RETURNING (xmax = 0) AS inserted`,
       rows.flat(),
     );
@@ -635,19 +655,17 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
   // 'try-forge.com' → 'try-forge' so ads linking to shop.try-forge.com also match.
   const rootFragment = domain.replace(/\.[a-z]{2,}(\.[a-z]{2,})?$/, '');
 
-  // Shutdown guard: if SIGTERM was received before we even started the reset,
-  // bail out immediately. Without this, a freshly-booted server that gets a
-  // SIGTERM right before scrapeAdsByDomain could zero all is_active flags and
-  // then die before the ACTIVE pass re-marks them — leaving the brand at 0 active.
+  // Shutdown guard: if SIGTERM was received before we even started, bail out.
   if (shutdownRequested) throw Object.assign(new Error('Shutdown requested before scrape start'), { isShutdown: true });
 
-  // Reset all ads to is_active=false at the start of each scrape so the current
-  // run reflects Meta's live state. OR-semantics in UPSERT then let the ACTIVE
-  // passes re-mark the correct ones true within this run. Without the reset, ads
-  // marked active by a previous run (e.g. with country:ALL) would be permanently
-  // locked active by OR logic even after we switch to country:US.
-  await query(`UPDATE brand_spy.ads SET is_active = FALSE WHERE brand_id = $1`, [brandId]);
-  console.log(`[brand-spy] reset is_active=false for "${domain}"`);
+  // Capture scrape start time from the DB clock so the end-of-scrape sweep can
+  // identify which ads were touched this run (every upsert sets last_seen_at = NOW()).
+  // Any ad with last_seen_at < scrapeStartedAt at the end was not seen → mark inactive.
+  // Deferred reset (instead of a pre-reset) means a mid-scrape failure preserves the
+  // previous run's is_active values rather than wiping them to FALSE and leaving the
+  // DB in a half-state with stale tier values.
+  const { rows: [{ now: scrapeStartedAt }] } = await query(`SELECT NOW() AS now`);
+  console.log(`[brand-spy] scrape start sentinel ${scrapeStartedAt.toISOString()} for "${domain}"`);
 
   // Pre-populate pageCache from DB so Phase 2 covers ALL known pages, not just
   // those discovered by the current Phase 1 keyword search. Without this, brands
@@ -778,7 +796,8 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
       }
 
       // ACTIVE/US pass: always run — source of truth for is_active. Marks all currently
-      // running ads true (everything else stays false from the reset at scrape-start).
+      // running ads true; any ad NOT seen this run is swept to false by the end-of-scrape
+      // deferred-reset (last_seen_at < scrapeStartedAt).
       for await (const batch of sc.iterateCompanyAds({ pageId: metaPageId, status: 'ACTIVE', country: 'US', maxPages: 100 })) {
         creditsUsed += 1;
         const filtered = filterBatch(batch);
@@ -791,8 +810,8 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
       // ALL/US pass: only run for pages discovered THIS run (not pre-loaded from DB).
       // Pre-known pages already have their full history in the DB — the ALL pass would
       // just re-iterate the same records (~half of Phase 2 time). New pages need it to
-      // build their initial history. OR-semantics in UPSERT: is_active can only go
-      // false→true within a run, never true→false.
+      // build their initial history. The ACTIVE pass above already wrote the correct
+      // is_active=TRUE for currently-live ads; ALL fills in the historical inactives.
       const isKnownPage = knownPageIds.has(metaPageId);
       if (!isKnownPage) {
         for await (const batch of sc.iterateCompanyAds({ pageId: metaPageId, status: 'ALL', country: 'US', maxPages: 100 })) {
@@ -926,6 +945,12 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
     // Full iteration only needed on first discovery (no pages known yet).
     const p1dMaxPages = p1dIsFirstScrape ? 50 : 3;
     let p1dDiscovered = 0, p1dUpdated = 0, p1dNewPages = 0;
+    // metaRankCursor tracks the running impression position across cursor pages.
+    // ScrapeCreators returns results sorted by total_impressions DESC, so the
+    // first ad in the first cursor page is impression rank 1 globally for
+    // this keyword search. We pass metaRankCursor to upsertAdBatch as the
+    // starting index — it assigns each ad's meta_rank within the batch.
+    let metaRankCursor = 1;
     console.log(`[brand-spy] phase-1d: rootFragment search for "${rootFragment}" (US active, maxPages=${p1dMaxPages})`);
     for await (const batch of sc.iterateAdsByDomain({ domain: rootFragment, status: 'ACTIVE', country: 'US', maxPages: p1dMaxPages })) {
       creditsUsed += 1;
@@ -934,10 +959,14 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
         return linkBelongsToBrand(url, domain);
       });
       if (filtered.length > 0) {
-        const { d, u } = await upsertAdBatch(brandId, filtered, pageCache, null, crossDomains, pageNameCache);
+        const { d, u } = await upsertAdBatch(brandId, filtered, pageCache, null, crossDomains, pageNameCache, metaRankCursor);
         p1dDiscovered += d; p1dUpdated += u;
         launchNewPages();
       }
+      // Advance the rank cursor by the FULL batch size (not just filtered),
+      // so an ad at position 30 (page 1, last slot) remains rank 30 even if
+      // earlier ads were filtered out as belonging to other brands.
+      metaRankCursor += batch.length;
     }
     p1dNewPages = pageCache.size - p1dBefore;
 
@@ -1065,9 +1094,9 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
 
   // Await all Phase 2 workers (already running concurrently since Phase 1).
   // NOTE: we intentionally do NOT flush counters here (removed onPhase1Done mid-scrape
-  // call) because the is_active reset at scrape-start zeros all ads — a mid-Phase-2
-  // recompute would write 0 or a partial count to the brands table, which the UI
-  // would then display as "0 active". Counters are flushed once at the very end.
+  // call). With deferred-reset, mid-scrape counts would still be partial — the sweep
+  // that marks not-seen ads inactive runs after Phase 3. Counters are flushed at the
+  // very end so the brands table never displays a transient partial total.
   await Promise.all(p2Promises);
   console.log(`[brand-spy] phase-2 done: ${discovered} new, ${updated} updated, ${pageCache.size} pages, ${creditsUsed} credits`);
 
@@ -1129,6 +1158,22 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
       console.warn(`[brand-spy] upsertBrandDomain failed for "${d}":`, err.message);
     }
   }
+
+  // Deferred is_active reset — runs only on success path (after every phase
+  // completed). Any ad whose last_seen_at is older than this scrape's start
+  // sentinel was not observed in this run by either Phase 1 (keyword) or
+  // Phase 2 (per-page ACTIVE), so it is no longer running. Marking it inactive
+  // here keeps scoreBrand's tier output in sync with is_active.
+  //
+  // If anything before this line threw (out-of-credits, network, SIGTERM,
+  // deadlock), this query is skipped and the DB keeps the previous run's
+  // is_active values intact — no more "OFF + TIER=BANGER" half-state.
+  const sweep = await query(
+    `UPDATE brand_spy.ads SET is_active = FALSE
+       WHERE brand_id = $1 AND is_active = TRUE AND last_seen_at < $2`,
+    [brandId, scrapeStartedAt],
+  );
+  console.log(`[brand-spy] end-of-scrape sweep: ${sweep.rowCount} ads marked inactive (last_seen_at < ${scrapeStartedAt.toISOString()})`);
 
   return { discovered, updated, creditsUsed };
 }
