@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import {
   Upload, Globe, TrendingUp, Loader2, RefreshCw, Trash2, ExternalLink,
 } from 'lucide-react';
@@ -80,7 +80,40 @@ export function ReferenceColumn({ productId, onSelectReference }) {
   const [error, setError] = useState(null);
   const [showLeague, setShowLeague] = useState(false);
   const [showMeta, setShowMeta] = useState(false);
-  const [showUploadHint, setShowUploadHint] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = React.useRef(null);
+
+  const handleFilePicked = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // reset so same file can be re-picked
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      setError('Please pick an image file (PNG, JPG, WebP).');
+      return;
+    }
+    if (file.size > 8 * 1024 * 1024) {
+      setError('Image must be under 8 MB.');
+      return;
+    }
+    setUploading(true); setError(null);
+    try {
+      const dataUri = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+      await api.post('/statics-generation/reference-ads/upload', {
+        image_data_uri: dataUri,
+        label: file.name.replace(/\.[^.]+$/, '').slice(0, 80) || 'Upload',
+      });
+      await load();
+    } catch (err) {
+      setError(err.response?.data?.error?.message || err.message || 'Upload failed');
+    } finally {
+      setUploading(false);
+    }
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -147,13 +180,21 @@ export function ReferenceColumn({ productId, onSelectReference }) {
       {/* Source buttons row */}
       <div className="grid grid-cols-3 gap-2 mb-3 px-1">
         <button
-          onClick={() => setShowUploadHint(true)}
-          className="inline-flex flex-col items-center justify-center gap-1 h-14 rounded-lg border border-white/[0.08] bg-white/[0.02] hover:border-white/[0.15] text-zinc-300 hover:text-white transition-colors cursor-pointer"
-          title="Upload"
+          onClick={() => fileInputRef.current?.click()}
+          disabled={uploading}
+          className="inline-flex flex-col items-center justify-center gap-1 h-14 rounded-lg border border-white/[0.08] bg-white/[0.02] hover:border-white/[0.15] text-zinc-300 hover:text-white transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+          title="Upload an image from disk"
         >
-          <Upload className="w-4 h-4" />
-          <span className="text-[9px] font-mono uppercase tracking-wider">Upload</span>
+          {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
+          <span className="text-[9px] font-mono uppercase tracking-wider">{uploading ? 'Uploading' : 'Upload'}</span>
         </button>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/png,image/jpeg,image/webp"
+          onChange={handleFilePicked}
+          className="hidden"
+        />
         <button
           onClick={() => setShowLeague(true)}
           className="inline-flex flex-col items-center justify-center gap-1 h-14 rounded-lg border border-[#c9a84c]/30 bg-[#c9a84c]/[0.08] hover:bg-[#c9a84c]/15 text-[#d4b55a] transition-colors cursor-pointer"
@@ -202,22 +243,6 @@ export function ReferenceColumn({ productId, onSelectReference }) {
           onClose={() => setShowMeta(false)}
           onImported={() => { setShowMeta(false); load(); }}
         />
-      )}
-      {showUploadHint && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={() => setShowUploadHint(false)}>
-          <div className="glass-card border border-white/10 rounded-xl max-w-sm p-6 mx-4" onClick={(e) => e.stopPropagation()}>
-            <h3 className="text-sm font-mono font-semibold text-white uppercase tracking-wider mb-3">Upload</h3>
-            <p className="text-xs text-zinc-400 leading-relaxed mb-4">
-              Direct upload coming soon. For now, use <strong className="text-[#d4b55a]">League</strong> to
-              import canonical-ranked Meta ads from followed brands, or <strong className="text-cyan-300">Meta</strong> to
-              pull from your own ad accounts via Triple Whale.
-            </p>
-            <button
-              onClick={() => setShowUploadHint(false)}
-              className="w-full px-3 py-2 text-xs font-mono uppercase tracking-wider text-zinc-300 border border-white/[0.08] rounded hover:border-white/[0.2] cursor-pointer"
-            >Got it</button>
-          </div>
-        </div>
       )}
     </div>
   );

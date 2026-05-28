@@ -324,8 +324,14 @@ export function MetaImportModal({ onClose, onImported }) {
                   <div className="p-2 space-y-1">
                     <div className="text-[10px] font-mono text-zinc-300 truncate" title={ad.account_name}>{ad.account_name}</div>
                     <div className="text-[10px] font-mono text-zinc-400 truncate" title={ad.ad_name}>{ad.ad_name || ad.creative_id}</div>
+                    {/* Top row: ROAS + Spend — the two most-important metrics, larger size */}
+                    <div className="flex items-baseline gap-2 mb-0.5">
+                      <span className={`text-[12px] font-mono font-bold ${Number(ad.roas) >= 2 ? 'text-emerald-400' : Number(ad.roas) >= 1 ? 'text-amber-400' : 'text-rose-400'}`}>
+                        {Number(ad.roas || 0).toFixed(2)}x ROAS
+                      </span>
+                      <span className="text-[10px] font-mono text-zinc-400">{fmtMoney(ad.spend)}</span>
+                    </div>
                     <div className="flex flex-wrap gap-x-2 text-[9px] font-mono text-zinc-500">
-                      <span className="text-emerald-400">{fmtMoney(ad.spend)}</span>
                       <span>Rev {fmtMoney(ad.revenue)}</span>
                       <span>CPA {fmtMoney(ad.cpa)}</span>
                       <span>CTR {Number(ad.ctr || 0).toFixed(1)}%</span>

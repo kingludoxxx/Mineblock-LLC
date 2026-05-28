@@ -3556,7 +3556,8 @@ router.get('/meta-ads/ads', authenticate, async (req, res) => {
           SUM(ca.purchases)::FLOAT   AS purchases,
           SUM(ca.impressions)::BIGINT AS impressions,
           SUM(ca.clicks)::BIGINT      AS clicks,
-          MAX(ca.synced_at)          AS latest_synced_at
+          MAX(ca.synced_at)          AS latest_synced_at,
+          MIN(ca.synced_at)          AS first_synced_at
         FROM creative_analysis ca
         WHERE ${where.join(' AND ')}
         GROUP BY ca.creative_id
@@ -3583,9 +3584,10 @@ router.get('/meta-ads/ads', authenticate, async (req, res) => {
         latest.ctr::FLOAT AS ctr,
         agg.spend, agg.revenue, agg.purchases, agg.impressions, agg.clicks,
         agg.latest_synced_at,
+        agg.first_synced_at,
         (CASE WHEN agg.spend > 0 THEN agg.revenue / agg.spend ELSE 0 END)::FLOAT AS roas,
         (CASE WHEN agg.purchases > 0 THEN agg.spend / agg.purchases ELSE 0 END)::FLOAT AS cpa,
-        GREATEST(0, EXTRACT(DAY FROM (NOW() - agg.latest_synced_at))::INTEGER) AS days_active,
+        GREATEST(0, EXTRACT(DAY FROM (NOW() - agg.first_synced_at))::INTEGER) AS days_active,
         EXISTS (
           SELECT 1 FROM spy_creatives sc
           WHERE sc.imported_from = 'meta'
@@ -3745,6 +3747,41 @@ router.delete('/reference-ads/:id', authenticate, async (req, res) => {
     res.json({ success: true, data: { id: rows[0].id } });
   } catch (err) {
     console.error('[reference-ads] DELETE error:', err);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// 9. POST /reference-ads/upload — upload an image file from disk as a reference.
+// Body: { image_data_uri: 'data:image/...;base64,...', label?: string, angle?: string }
+router.post('/reference-ads/upload', authenticate, async (req, res) => {
+  try {
+    await ensureCreativesTable();
+    const { image_data_uri: dataUri, label, angle } = req.body || {};
+    if (!dataUri || typeof dataUri !== 'string' || !dataUri.startsWith('data:image/')) {
+      return res.status(400).json({ success: false, error: { message: 'image_data_uri (data:image/...;base64,...) is required' } });
+    }
+    // Use the same helper /generate uses to convert data URIs into fetchable HTTPS URLs.
+    const httpUrl = await ensureHttpUrlGlobal(dataUri, 'reference-upload');
+    if (!httpUrl || !httpUrl.startsWith('http')) {
+      throw new Error(`Upload produced non-fetchable URL: ${(httpUrl || '').slice(0,40)}`);
+    }
+    const finalLabel = (label || 'Custom upload').slice(0, 200);
+    const rows = await pgQuery(
+      `INSERT INTO spy_creatives
+         (pipeline, status, is_reference, imported_from, imported_metadata, image_url,
+          thumbnail_url, source_label, reference_name, reference_thumbnail, angle, aspect_ratio)
+       VALUES ('standard', 'ready', TRUE, 'upload', $1::jsonb, $2, $2, $3, $3, $2, $4, '4:5')
+       RETURNING id, image_url, source_label, imported_from, created_at`,
+      [
+        JSON.stringify({ label: finalLabel, uploaded_at: new Date().toISOString() }),
+        httpUrl,
+        finalLabel,
+        angle || null,
+      ]
+    );
+    res.json({ success: true, data: rows[0] });
+  } catch (err) {
+    console.error('[reference-ads] UPLOAD error:', err);
     res.status(500).json({ success: false, error: { message: err.message } });
   }
 });
