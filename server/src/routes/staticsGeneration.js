@@ -232,6 +232,10 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const taskResults = new Map();
 const TASK_RESULT_TTL = 15 * 60 * 1000;
 const MAX_TASK_RESULTS = 200;
+// Watchdog timeout for in-flight /generate pipelines. If the pipeline hasn't
+// reported a result this long after the request, mark the task as error
+// instead of letting the UI spinner block forever.
+const WATCHDOG_MS = 8 * 60 * 1000;
 
 function storeTaskResult(taskId, result) {
   if (taskResults.size >= MAX_TASK_RESULTS) {
@@ -732,10 +736,10 @@ router.post('/generate', authenticate, async (req, res) => {
   const watchdog = setTimeout(() => {
     const cur = taskResults.get(earlyTaskId);
     if (cur && cur.status === 'processing') {
-      console.error(`[staticsGeneration] Watchdog fired for ${earlyTaskId} — still processing after 8m, marking as error`);
-      storeTaskResult(earlyTaskId, { status: 'error', error: 'Generation exceeded 8-minute limit (pipeline hang)' });
+      console.error(`[staticsGeneration] Watchdog fired for ${earlyTaskId} — still processing after ${WATCHDOG_MS / 60000}m, marking as error`);
+      storeTaskResult(earlyTaskId, { status: 'error', error: `Generation exceeded ${WATCHDOG_MS / 60000}-minute limit (pipeline hang)` });
     }
-  }, 8 * 60 * 1000);
+  }, WATCHDOG_MS);
 
   setImmediate(async () => {
     const pipelineStart = Date.now();
@@ -3752,6 +3756,11 @@ router.post('/meta-ads/import', authenticate, async (req, res) => {
 });
 
 // 7. GET /reference-ads — list reference creatives (optionally per product).
+// Cursor-paginated (audit found silent LIMIT 500 cap).
+//   ?product_id=X    optional product scope
+//   ?cursor=ISO8601  optional created_at cursor for next page (descending)
+// Returns: { data, has_more, next_cursor }
+const REFERENCE_PAGE_SIZE = 100;
 router.get('/reference-ads', authenticate, async (req, res) => {
   try {
     await ensureCreativesTable();
@@ -3760,12 +3769,18 @@ router.get('/reference-ads', authenticate, async (req, res) => {
     //   (b) references tied to the requested product_id (if filter passed)
     // This way an imported League/Meta ad is visible from any product's pipeline.
     const productId = req.query.product_id || null;
+    const cursor = req.query.cursor || null;
     const where = ['is_reference = TRUE'];
     const params = [];
     if (productId) {
       params.push(productId);
       where.push(`(product_id = $${params.length} OR product_id IS NULL)`);
     }
+    if (cursor) {
+      params.push(cursor);
+      where.push(`created_at < $${params.length}`);
+    }
+    // Fetch one extra row so we can set has_more without a COUNT.
     const rows = await pgQuery(`
       SELECT id, product_id, image_url, thumbnail_url, source_label, reference_name,
              reference_thumbnail, angle, aspect_ratio, status, pipeline,
@@ -3773,9 +3788,18 @@ router.get('/reference-ads', authenticate, async (req, res) => {
       FROM spy_creatives
       WHERE ${where.join(' AND ')}
       ORDER BY created_at DESC
-      LIMIT 500
+      LIMIT ${REFERENCE_PAGE_SIZE + 1}
     `, params);
-    res.json({ success: true, data: rows, count: rows.length });
+    const hasMore = rows.length > REFERENCE_PAGE_SIZE;
+    const page = hasMore ? rows.slice(0, REFERENCE_PAGE_SIZE) : rows;
+    const nextCursor = hasMore ? page[page.length - 1].created_at : null;
+    res.json({
+      success: true,
+      data: page,
+      count: page.length,
+      has_more: hasMore,
+      next_cursor: nextCursor,
+    });
   } catch (err) {
     console.error('[reference-ads] GET error:', err);
     res.status(500).json({ success: false, error: { message: err.message } });
