@@ -325,6 +325,123 @@ ${JSON.stringify(adsData)}`,
   } catch (err) { next(err); }
 });
 
+// GET /brands/:id/_diag/league-vs-fb
+//
+// One-shot verification: pulls the live impression-sorted Facebook Ad
+// Library list for the brand (via ScrapeCreators, the same source the
+// worker uses) and compares it to our stored league. Tells us whether
+// the ads we're labelling BANGER / CHAMP / A actually are the brand's
+// top-impression ads.
+//
+// Returns:
+//   • fbTopN   — first N ad_archive_ids in FB Ad Library's impression order
+//   • ourTopN  — our first N ads ordered by current_rank
+//   • overlap  — how many of FB's top N appear in our top N (and at what tier)
+//   • missing  — FB top N ad_archive_ids NOT in our DB at all
+//   • extras   — our top N ad_archive_ids that fell OUT of FB's top N
+//
+// Costs ~3 ScrapeCreators credits per call (capped at maxPages=3, ~90 ads).
+router.get('/brands/:id/_diag/league-vs-fb', validateUuidParam('id'), async (req, res, next) => {
+  try {
+    const brand = await getBrandExpanded(req.params.id);
+    if (!brand) return res.status(404).json({ error: 'Brand not found' });
+
+    const topN = Math.min(90, Math.max(5, parseInt(String(req.query.topN ?? '30'), 10) || 30));
+    const maxPages = Math.min(5, Math.max(1, parseInt(String(req.query.pages ?? '3'), 10) || 3));
+
+    // Pull FB Ad Library's impression-sorted list.
+    const sc = getScrapeCreatorsClient();
+    const fbOrdered = []; // each entry: { adArchiveId, headline, bodyText, isActive, linkUrl }
+    try {
+      for await (const batch of sc.iterateAdsByDomain({
+        domain: brand.domain,
+        status: 'ACTIVE',
+        country: 'US',
+        maxPages,
+      })) {
+        for (const ad of batch) {
+          fbOrdered.push({
+            adArchiveId: String(ad.ad_archive_id),
+            headline:    ad.snapshot?.title ?? null,
+            bodyText:    ad.snapshot?.body?.text ?? null,
+            isActive:    !!ad.is_active,
+            linkUrl:     ad.snapshot?.link_url ?? null,
+            pageName:    ad.snapshot?.page_name ?? null,
+          });
+          if (fbOrdered.length >= topN * 2) break;
+        }
+        if (fbOrdered.length >= topN * 2) break;
+      }
+    } catch (err) {
+      return res.status(502).json({ error: `ScrapeCreators failed: ${err.message}` });
+    }
+
+    // Our top-N from the same brand.
+    const ours = await listAds(req.params.id, {
+      page: 1, pageSize: topN, sort: 'rank_asc', tier: 'ALL', status: 'ACTIVE',
+    });
+    const ourTopN = ours.ads.map((a) => ({
+      adArchiveId: a.adArchiveId,
+      currentRank: a.currentRank,
+      metaRank:    a.metaRank,
+      tier:        a.tier,
+      headline:    a.headline,
+      isActive:    a.isActive,
+      pageName:    a.pageName,
+    }));
+
+    const fbTopN = fbOrdered.slice(0, topN);
+    const fbSet  = new Set(fbTopN.map((x) => x.adArchiveId));
+    const ourSet = new Set(ourTopN.map((x) => x.adArchiveId));
+
+    // Set-overlap analysis.
+    const inBoth   = [...fbSet].filter((id) => ourSet.has(id));
+    const missing  = fbTopN.filter((x) => !ourSet.has(x.adArchiveId));
+    const extras   = ourTopN.filter((x) => !fbSet.has(x.adArchiveId));
+
+    // Rank-correlation: for each ad that's in BOTH top-Ns, what's the
+    // |fb_position - our_position| delta? Lower = better alignment.
+    const positionDeltas = [];
+    for (const id of inBoth) {
+      const fbIdx  = fbTopN.findIndex((x) => x.adArchiveId === id);
+      const ourIdx = ourTopN.findIndex((x) => x.adArchiveId === id);
+      positionDeltas.push({ adArchiveId: id, fb: fbIdx + 1, ours: ourIdx + 1, delta: Math.abs(fbIdx - ourIdx) });
+    }
+    positionDeltas.sort((a, b) => b.delta - a.delta);
+
+    // Tier histogram for the ads that overlap.
+    const tierOfOverlap = {};
+    for (const id of inBoth) {
+      const ourAd = ourTopN.find((x) => x.adArchiveId === id);
+      const tier  = ourAd?.tier ?? 'NULL';
+      tierOfOverlap[tier] = (tierOfOverlap[tier] ?? 0) + 1;
+    }
+
+    const meanDelta = positionDeltas.length
+      ? positionDeltas.reduce((s, d) => s + d.delta, 0) / positionDeltas.length
+      : null;
+
+    res.json({
+      brand: { id: brand.id, name: brand.name, domain: brand.domain },
+      topN,
+      summary: {
+        fbCount: fbTopN.length,
+        ourCount: ourTopN.length,
+        overlap: inBoth.length,
+        overlapPct: fbTopN.length ? +(100 * inBoth.length / fbTopN.length).toFixed(1) : null,
+        missingFromOurDB: missing.filter((m) => !ours.ads.some((a) => a.adArchiveId === m.adArchiveId)).length,
+        meanPositionDelta: meanDelta,
+        tierOfOverlap,
+      },
+      fbTopN,
+      ourTopN,
+      positionDeltas,
+      missing,
+      extras,
+    });
+  } catch (err) { next(err); }
+});
+
 // GET /ads/:id
 router.get('/ads/:id', validateUuidParam('id'), async (req, res, next) => {
   try {
