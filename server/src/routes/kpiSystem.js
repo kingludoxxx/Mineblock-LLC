@@ -1437,14 +1437,23 @@ function parseCsvRow(line) {
 /**
  * Sellerboard reports dates as M/D/YYYY (US locale). Convert to ISO YYYY-MM-DD.
  * Returns null on parse failure rather than throwing — the sync loop logs + skips.
+ * Validates month (1-12), day (1-31), and year (>=2020, <=2100) so we never
+ * hand an out-of-range string like "2026-13-01" to Postgres (which would 500
+ * the upsert and abort the batch).
  */
 function parseSellerboardDate(s) {
   if (!s || typeof s !== 'string') return null;
   const m = s.trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
   if (!m) return null;
-  const mm = String(m[1]).padStart(2, '0');
-  const dd = String(m[2]).padStart(2, '0');
-  return `${m[3]}-${mm}-${dd}`;
+  const month = parseInt(m[1], 10);
+  const day = parseInt(m[2], 10);
+  const year = parseInt(m[3], 10);
+  if (month < 1 || month > 12) return null;
+  if (day < 1 || day > 31) return null;
+  if (year < 2020 || year > 2100) return null;
+  const mm = String(month).padStart(2, '0');
+  const dd = String(day).padStart(2, '0');
+  return `${year}-${mm}-${dd}`;
 }
 
 async function syncSellerboard() {
@@ -1454,12 +1463,34 @@ async function syncSellerboard() {
   try {
     await ensureTables();
 
-    const resp = await fetch(SELLERBOARD_FEED_URL, { redirect: 'follow' });
+    // Defensive timeout — Sellerboard's CDN can stall under load. Without
+    // an abort signal, fetch hangs forever and blocks the daily P&L cron.
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30_000);
+    let resp;
+    try {
+      resp = await fetch(SELLERBOARD_FEED_URL, {
+        redirect: 'follow',
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timeoutId);
+    }
     if (!resp.ok) {
       return { synced: 0, error: `Sellerboard feed HTTP ${resp.status}` };
     }
     const text = await resp.text();
     const cleaned = text.replace(/^﻿/, ''); // strip BOM
+
+    // Sniff response shape — if Sellerboard's auth token rotates or the
+    // feed config is deleted, the URL returns HTML (login page) with HTTP 200.
+    // Detect that explicitly rather than silently producing garbage rows.
+    if (/^\s*<(!doctype|html|head)/i.test(cleaned)) {
+      const msg = 'Sellerboard feed returned HTML — token likely expired or feed was deleted';
+      console.error('[Sellerboard]', msg);
+      return { synced: 0, error: msg };
+    }
+
     const lines = cleaned.split(/\r?\n/).filter(l => l.trim().length > 0);
     if (lines.length < 2) {
       console.warn('[Sellerboard] feed has no data rows');
