@@ -22,39 +22,6 @@ const __dirname = dirname(__filename);
 const YTDLP_PATH = join(__dirname, '..', '..', '..', 'bin', 'yt-dlp');
 
 const router = Router();
-
-// TEMP: no-auth diagnostic — placed before the global authenticate middleware
-// so we can verify which column (`type` vs `creative_type`) holds video rows.
-// Returns aggregate counts only, no row content. Remove once verified.
-router.get('/meta-video-ads/diag', async (req, res) => {
-  try {
-    const colsRows = await pgQuery(
-      `SELECT column_name FROM information_schema.columns WHERE table_name = 'creative_analysis' AND column_name IN ('type','creative_type','ad_account_id','ad_account_name','account_name','ad_status','meta_ad_id','ad_archive_url','synced_at')`
-    );
-    const cols = new Set(colsRows.map(r => r.column_name));
-    const out = { columns: Object.fromEntries(['type','creative_type','ad_account_id','ad_account_name','account_name','ad_status','meta_ad_id','ad_archive_url','synced_at'].map(c => [c, cols.has(c)])) };
-    if (cols.has('type')) {
-      const r = await pgQuery(`SELECT COUNT(*)::int AS total, COUNT(*) FILTER (WHERE synced_at >= NOW() - INTERVAL '30 days')::int AS in30d FROM creative_analysis WHERE type = 'video'`);
-      out.type_video = r[0];
-    }
-    if (cols.has('creative_type')) {
-      const r = await pgQuery(`SELECT COUNT(*)::int AS total, COUNT(*) FILTER (WHERE synced_at >= NOW() - INTERVAL '30 days')::int AS in30d FROM creative_analysis WHERE creative_type = 'video'`);
-      out.creative_type_video = r[0];
-    }
-    if (cols.has('type') && cols.has('ad_account_id')) {
-      const r = await pgQuery(`SELECT COUNT(DISTINCT ad_account_id)::int AS accts_30d FROM creative_analysis WHERE type = 'video' AND synced_at >= NOW() - INTERVAL '30 days'`);
-      out.accounts_30d_type = r[0].accts_30d;
-    }
-    if (cols.has('creative_type') && cols.has('ad_account_id')) {
-      const r = await pgQuery(`SELECT COUNT(DISTINCT ad_account_id)::int AS accts_30d FROM creative_analysis WHERE creative_type = 'video' AND synced_at >= NOW() - INTERVAL '30 days'`);
-      out.accounts_30d_creative_type = r[0].accts_30d;
-    }
-    res.json({ success: true, diag: out });
-  } catch (err) {
-    res.status(500).json({ success: false, error: { message: err.message } });
-  }
-});
-
 router.use(authenticate, requirePermission('brief-pipeline', 'access'));
 
 // ── Config ────────────────────────────────────────────────────────────
