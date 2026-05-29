@@ -32,7 +32,9 @@ const SORTS = [
 
 function timeAgo(iso) {
   if (!iso) return '';
-  const secs = Math.max(1, Math.round((Date.now() - new Date(iso).getTime()) / 1000));
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return '';
+  const secs = Math.max(1, Math.round((Date.now() - t) / 1000));
   if (secs < 60) return `${secs}s ago`;
   const m = Math.round(secs / 60); if (m < 60) return `${m}m ago`;
   const h = Math.round(m / 60);    if (h < 24) return `${h}h ago`;
@@ -73,20 +75,25 @@ export default function MetaVideoImportModal({ open, onClose, onImported }) {
   const [lastSync, setLastSync]       = useState(null);
 
   // UI
-  const [loading, setLoading]         = useState(false);
+  const [loading, setLoading]             = useState(false);
   const [accountsLoading, setAcctsLoading] = useState(false);
-  const [error, setError]             = useState(null);
-  const [importing, setImporting]     = useState(false);
-  const [importedIds, setImportedIds] = useState(new Set());
+  const [accountsError, setAccountsError] = useState(null);  // separate from ads error
+  const [error, setError]                 = useState(null);
+  const [importing, setImporting]         = useState(false);
+  const [importedIds, setImportedIds]     = useState(new Set());
   const [selectedAdIds, setSelectedAdIds] = useState(new Set());
 
-  const searchTimer = useRef(null);
+  const searchTimer  = useRef(null);
+  const roasTimer    = useRef(null);
+  const spendTimer   = useRef(null);
   const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [debouncedRoas,  setDebouncedRoas]  = useState('');
+  const [debouncedSpend, setDebouncedSpend] = useState('');
 
   // ── Fetchers ──────────────────────────────────────────────────────────
   const fetchAccounts = useCallback(async () => {
     setAcctsLoading(true);
-    setError(null);
+    setAccountsError(null);
     try {
       const { data } = await api.get('/brief-pipeline/meta-video-ads/accounts', {
         params: { window },
@@ -94,7 +101,7 @@ export default function MetaVideoImportModal({ open, onClose, onImported }) {
       setAccounts(data.accounts || []);
       setLastSync(data.last_sync || null);
     } catch (err) {
-      setError(err.response?.data?.error?.message || err.message || 'Failed to load accounts');
+      setAccountsError(err.response?.data?.error?.message || err.message || 'Failed to load accounts');
     } finally {
       setAcctsLoading(false);
     }
@@ -109,8 +116,8 @@ export default function MetaVideoImportModal({ open, onClose, onImported }) {
         status,
         window,
         sort,
-        min_roas: parseFloat(minRoas) || 0,
-        min_spend: parseFloat(minSpend) || 0,
+        min_roas: parseFloat(debouncedRoas) || 0,
+        min_spend: parseFloat(debouncedSpend) || 0,
         search: debouncedSearch || '',
         page: resetPage ? 1 : page,
         limit,
@@ -121,7 +128,7 @@ export default function MetaVideoImportModal({ open, onClose, onImported }) {
         setAds(list);
         setPage(1);
       } else {
-        setAds(prev => page === 1 ? list : [...prev, ...list]);
+        setAds(prev => [...prev, ...list]);
       }
       setTotal(data.total || 0);
     } catch (err) {
@@ -129,20 +136,34 @@ export default function MetaVideoImportModal({ open, onClose, onImported }) {
     } finally {
       setLoading(false);
     }
-  }, [selectedAccts, status, window, sort, minRoas, minSpend, debouncedSearch, page, limit]);
+  }, [selectedAccts, status, window, sort, debouncedRoas, debouncedSpend, debouncedSearch, page, limit]);
 
   // ── Effects ───────────────────────────────────────────────────────────
   useEffect(() => {
     if (!open) {
       setSelectedAdIds(new Set());
       setImportedIds(new Set());
+      setAds([]);
+      setTotal(0);
+      setPage(1);
       setSearch('');
       setDebouncedSearch('');
+      setDebouncedRoas('');
+      setDebouncedSpend('');
+      setError(null);
+      setAccountsError(null);
       return;
     }
     fetchAccounts();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
+
+  // Re-fetch accounts when window changes (spend totals are window-scoped)
+  useEffect(() => {
+    if (!open) return;
+    fetchAccounts();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [window]);
 
   // Debounce search
   useEffect(() => {
@@ -151,12 +172,32 @@ export default function MetaVideoImportModal({ open, onClose, onImported }) {
     return () => { if (searchTimer.current) clearTimeout(searchTimer.current); };
   }, [search]);
 
-  // Fetch ads when filters change
+  // Debounce minRoas / minSpend inputs (prevent a fetch per keystroke)
+  useEffect(() => {
+    if (roasTimer.current) clearTimeout(roasTimer.current);
+    roasTimer.current = setTimeout(() => setDebouncedRoas(minRoas), 400);
+    return () => { if (roasTimer.current) clearTimeout(roasTimer.current); };
+  }, [minRoas]);
+
+  useEffect(() => {
+    if (spendTimer.current) clearTimeout(spendTimer.current);
+    spendTimer.current = setTimeout(() => setDebouncedSpend(minSpend), 400);
+    return () => { if (spendTimer.current) clearTimeout(spendTimer.current); };
+  }, [minSpend]);
+
+  // Fetch ads when filters change (reset to page 1)
   useEffect(() => {
     if (!open) return;
     fetchAds(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, selectedAccts, status, window, sort, minRoas, minSpend, debouncedSearch]);
+  }, [open, selectedAccts, status, window, sort, debouncedRoas, debouncedSpend, debouncedSearch]);
+
+  // Fetch next page when page > 1 (load more)
+  useEffect(() => {
+    if (!open || page === 1) return;
+    fetchAds(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page]);
 
   // Escape closes
   useEffect(() => {
@@ -171,7 +212,9 @@ export default function MetaVideoImportModal({ open, onClose, onImported }) {
     setSelected(prev => {
       const next = new Set(prev);
       if (id === 'ALL') {
-        if (next.size > 0) next.clear();
+        // "All" = select all when none/some selected; clear when all selected
+        const allSel = accounts.length > 0 && accounts.every(a => next.has(a.id));
+        if (allSel) next.clear();
         else accounts.forEach(a => next.add(a.id));
       } else {
         if (next.has(id)) next.delete(id);
@@ -209,14 +252,17 @@ export default function MetaVideoImportModal({ open, onClose, onImported }) {
       const { data } = await api.post('/brief-pipeline/references/import-meta', {
         creativeIds: [...selectedAdIds],
       });
-      const newlyImported = new Set([...importedIds, ...(data.imported || []).map(x => {
+      const imported = data.imported || [];
+      const newlyImported = new Set([...importedIds, ...imported.map(x => {
         const ad = ads.find(a => a.ad_id === x.ad_id);
         return ad?.creative_id || x.ad_id;
       })]);
       setImportedIds(newlyImported);
       setSelectedAdIds(new Set());
-      if (onImported) onImported(data.imported || []);
-      setTimeout(() => onClose(), 600);
+      if (onImported) onImported(imported);
+      // Only close if at least one row was actually inserted
+      if (imported.length > 0) setTimeout(() => onClose(), 600);
+      else setError(`Import returned 0 results — no matching video rows found in the database`);
     } catch (err) {
       setError(err.response?.data?.error?.message || err.message || 'Import failed');
     } finally {
@@ -229,8 +275,8 @@ export default function MetaVideoImportModal({ open, onClose, onImported }) {
     await fetchAds(true);
   };
 
-  const filteredAccounts = useMemo(() => accounts, [accounts]);
-  const allSelected = filteredAccounts.length > 0 && filteredAccounts.every(a => selectedAccts.has(a.id));
+  const allSelected = accounts.length > 0 && accounts.every(a => selectedAccts.has(a.id));
+  const hasMore = ads.length < total;
 
   if (!open) return null;
 
@@ -297,7 +343,7 @@ export default function MetaVideoImportModal({ open, onClose, onImported }) {
               >
                 All
               </button>
-              {filteredAccounts.map(a => {
+              {accounts.map(a => {
                 const active = selectedAccts.has(a.id);
                 return (
                   <button
@@ -427,6 +473,12 @@ export default function MetaVideoImportModal({ open, onClose, onImported }) {
             </div>
           </div>
 
+          {accountsError && (
+            <div className="flex items-start gap-2 text-xs text-amber-300 bg-amber-500/10 border border-amber-500/25 rounded-md p-2.5">
+              <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+              <span>Accounts: {accountsError}</span>
+            </div>
+          )}
           {error && (
             <div className="flex items-start gap-2 text-xs text-red-300 bg-red-500/10 border border-red-500/25 rounded-md p-2.5">
               <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
@@ -490,7 +542,13 @@ export default function MetaVideoImportModal({ open, onClose, onImported }) {
                   >
                     {/* Status badges */}
                     <div className="absolute top-2 left-2 z-10 flex items-center gap-1">
-                      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-mono font-semibold uppercase tracking-wider bg-emerald-500/15 border border-emerald-500/40 text-emerald-300">
+                      <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-mono font-semibold uppercase tracking-wider border ${
+                        (ad.status || '').toLowerCase() === 'active'
+                          ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
+                          : (ad.status || '').toLowerCase() === 'paused'
+                            ? 'bg-amber-500/15 border-amber-500/40 text-amber-300'
+                            : 'bg-zinc-500/15 border-zinc-500/40 text-zinc-300'
+                      }`}>
                         {ad.status}
                       </span>
                       {ad.auto_detected && (
@@ -549,6 +607,24 @@ export default function MetaVideoImportModal({ open, onClose, onImported }) {
                   </button>
                 );
               })}
+            </div>
+          )}
+
+          {/* Load More */}
+          {hasMore && !loading && ads.length > 0 && (
+            <div className="flex justify-center pt-4 pb-2">
+              <button
+                type="button"
+                onClick={() => setPage(p => p + 1)}
+                className="px-4 py-2 text-[11px] font-mono uppercase tracking-wider rounded-md border border-white/[0.08] bg-white/[0.02] text-zinc-300 hover:bg-white/[0.04] transition-colors cursor-pointer"
+              >
+                Load More ({total - ads.length} remaining)
+              </button>
+            </div>
+          )}
+          {loading && ads.length > 0 && (
+            <div className="flex justify-center pt-4 pb-2">
+              <Loader2 className="w-4 h-4 animate-spin text-zinc-500" />
             </div>
           )}
         </div>

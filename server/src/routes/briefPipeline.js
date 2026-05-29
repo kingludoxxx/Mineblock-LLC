@@ -5803,7 +5803,7 @@ router.get('/meta-video-ads/accounts', authenticate, async (req, res) => {
         SUM(spend)::FLOAT                                         AS spend,
         MAX(synced_at)                                            AS last_sync
       FROM creative_analysis
-      WHERE creative_type = 'video'
+      WHERE type = 'video'
         AND synced_at >= NOW() - ($1 || ' days')::INTERVAL
       GROUP BY ${idCol}
       ORDER BY spend DESC NULLS LAST
