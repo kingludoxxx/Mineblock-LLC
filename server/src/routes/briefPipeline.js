@@ -24,6 +24,68 @@ const YTDLP_PATH = join(__dirname, '..', '..', '..', 'bin', 'yt-dlp');
 
 const router = Router();
 
+// TEMP — inspect the actual creative_analysis row for a problem creative_id
+// so we can see what video-related fields are populated (or not).
+router.get('/_ca-inspect', async (req, res) => {
+  try {
+    // Find columns in creative_analysis
+    const cols = await pgQuery(`
+      SELECT column_name FROM information_schema.columns
+      WHERE table_name='creative_analysis'
+        AND (column_name ILIKE '%url%' OR column_name ILIKE '%link%' OR column_name ILIKE '%video%' OR column_name ILIKE '%media%' OR column_name = 'meta_ad_id' OR column_name = 'ad_archive_id' OR column_name = 'thumbnail_url' OR column_name = 'creative_id')
+      ORDER BY column_name
+    `);
+    const colList = cols.map(c => c.column_name);
+
+    // Find the two problem rows by joining brief_pipeline_references to creative_analysis
+    const probe = await pgQuery(`
+      SELECT
+        bpr.id AS ref_id,
+        bpr.headline,
+        bpr.imported_metadata->>'creative_id' AS bpr_creative_id,
+        bpr.imported_metadata->>'ad_id' AS bpr_ad_id,
+        ca.creative_id, ca.meta_ad_id, ca.creative_link, ca.thumbnail_url, ca.ad_status, ca.synced_at,
+        to_jsonb(ca) AS full_row
+      FROM brief_pipeline_references bpr
+      LEFT JOIN creative_analysis ca
+        ON ca.creative_id = (bpr.imported_metadata->>'creative_id')
+      WHERE bpr.source='meta' AND (bpr.status='pending' OR bpr.analysis_error IS NOT NULL)
+      ORDER BY bpr.created_at DESC
+      LIMIT 5
+    `);
+
+    // For each row, list which video-URL-ish columns are non-null
+    const out = probe.map(r => {
+      const fr = typeof r.full_row === 'string' ? JSON.parse(r.full_row) : r.full_row;
+      const populated = {};
+      if (fr) {
+        for (const key of Object.keys(fr)) {
+          const v = fr[key];
+          if (v && (typeof v === 'string') && (key.match(/url|link|video|media/i) || key === 'thumbnail_url')) {
+            populated[key] = v.slice(0, 120);
+          }
+        }
+      }
+      return {
+        ref_id: r.ref_id,
+        name: r.headline,
+        bpr_creative_id: r.bpr_creative_id,
+        bpr_ad_id: r.bpr_ad_id,
+        ca_creative_id: r.creative_id,
+        ca_meta_ad_id: r.meta_ad_id,
+        ca_url_fields_populated: populated,
+        ca_synced_at: r.synced_at,
+      };
+    });
+
+    res.json({
+      success: true,
+      ca_video_url_columns: colList,
+      probe: out,
+    });
+  } catch (e) { res.status(500).json({ error: e.message, stack: e.stack?.slice(0, 500) }); }
+});
+
 // TEMP — inspect pending/errored META references so we can identify which
 // were imported before the transcript fix and need re-transcription. Remove
 // after the user confirms transcripts are working.
