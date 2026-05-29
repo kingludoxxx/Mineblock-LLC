@@ -94,6 +94,46 @@ const router = Router();
 // Public (no auth) — must be defined BEFORE router.use(authenticate)
 // ─────────────────────────────────────────────────────────────────────────
 
+// GET /r2-canary — unauthenticated probe that uploads a tiny test blob to R2
+// and returns the resulting public URL (or the error). Lets an external
+// operator verify R2 end-to-end without needing CRON_SECRET. Idempotent —
+// overwrites the same key on every call.
+//
+// On success body is { ok: true, url: "https://pub-xxx.r2.dev/r2-canary.txt",
+// configured: { account, accessKey, secret, publicUrl }, fetchable: true|false }.
+// fetchable is the result of HEADing the returned URL from the server (proves
+// the bucket is publicly accessible end-to-end).
+router.get('/r2-canary', async (_req, res) => {
+  const configured = {
+    account: !!process.env.R2_ACCOUNT_ID,
+    accessKey: !!process.env.R2_ACCESS_KEY_ID,
+    secret: !!process.env.R2_SECRET_ACCESS_KEY,
+    publicUrl: !!process.env.R2_PUBLIC_URL,
+  };
+  if (!process.env.R2_PUBLIC_URL || !isR2Configured()) {
+    return res.json({ ok: false, configured, error: 'R2 not fully configured' });
+  }
+  try {
+    const buf = Buffer.from('r2-canary ok @ ' + new Date().toISOString());
+    const url = await uploadBuffer(buf, 'r2-canary.txt', 'text/plain');
+    if (!url || !url.startsWith('http')) {
+      return res.json({ ok: false, configured, error: `uploadBuffer returned non-http: ${(url||'').slice(0,40)}` });
+    }
+    // Verify the URL is publicly fetchable
+    let fetchable = false, fetchStatus = null;
+    try {
+      const r = await fetch(url, { method: 'GET', signal: AbortSignal.timeout(10000) });
+      fetchStatus = r.status;
+      fetchable = r.ok;
+    } catch (e) {
+      fetchStatus = `fetch_error: ${e.message}`;
+    }
+    res.json({ ok: true, url, fetchable, fetchStatus, configured });
+  } catch (err) {
+    res.json({ ok: false, configured, error: err.message, errorCode: err.code, errorName: err.name });
+  }
+});
+
 router.get('/tmp-img/:id', async (req, res) => {
   // 1. Check in-memory cache first (fast path)
   const entry = tempImages.get(req.params.id);
@@ -459,6 +499,128 @@ async function backsyncDoomedUrls() {
 setInterval(() => { backsyncDoomedUrls().catch(() => {}); }, 10 * 60 * 1000);
 // First pass 60s after boot so any URL that's about to expire is captured.
 setTimeout(() => { backsyncDoomedUrls().catch(() => {}); }, 60_000);
+
+// ─────────────────────────────────────────────────────────────────────────
+// Boot-time image_store → R2 auto-migrator. Once R2_PUBLIC_URL is live and
+// the canary upload passes, this drains the entire image_store table in
+// 200-row chunks with 15s pauses between chunks. Idempotent + resumable
+// (uses image_store_migration tracking table). Stops cleanly when:
+//   - R2 is not configured (one-time log line, then no-op)
+//   - The canary upload fails (logs the error, then waits a full chunk
+//     interval before retrying — handles transient credential issues)
+//   - The image_store has nothing left to migrate
+// On each successful round we log a one-liner so an operator can tail logs.
+// ─────────────────────────────────────────────────────────────────────────
+let _bootMigratorStarted = false;
+async function bootR2Canary() {
+  if (!process.env.R2_PUBLIC_URL || !isR2Configured()) return { ok: false, why: 'not_configured' };
+  try {
+    const buf = Buffer.from('r2-canary boot @ ' + new Date().toISOString());
+    const url = await uploadBuffer(buf, 'r2-canary-boot.txt', 'text/plain');
+    if (!url || !url.startsWith('http')) return { ok: false, why: `non_http: ${(url||'').slice(0,40)}` };
+    return { ok: true, url };
+  } catch (err) {
+    return { ok: false, why: err.message };
+  }
+}
+
+async function bootMigratorChunk() {
+  if (!process.env.R2_PUBLIC_URL || !isR2Configured()) return { done: true, processed: 0 };
+
+  // Ensure tracking table
+  await pgQuery(`
+    CREATE TABLE IF NOT EXISTS image_store_migration (
+      id TEXT PRIMARY KEY,
+      r2_url TEXT NOT NULL,
+      migrated_at TIMESTAMPTZ DEFAULT NOW(),
+      spy_creatives_updated INT DEFAULT 0
+    )
+  `).catch(() => {});
+
+  const todo = await pgQuery(`
+    SELECT s.id, s.data, s.content_type
+    FROM image_store s
+    LEFT JOIN image_store_migration m ON m.id = s.id
+    WHERE m.id IS NULL
+    ORDER BY s.created_at ASC
+    LIMIT 200
+  `, [], { timeout: 30000 });
+
+  if (todo.length === 0) return { done: true, processed: 0 };
+
+  const srv = process.env.RENDER_EXTERNAL_URL || `http://localhost:${process.env.PORT || 3000}`;
+  const tmpImgPrefix = `${srv}/api/v1/statics-generation/tmp-img/`;
+  let ok = 0, fail = 0, rewriteTotal = 0;
+  const CONCURRENCY = 6;
+  let cursor = 0;
+
+  async function processOne(row) {
+    try {
+      const buf = Buffer.isBuffer(row.data) ? row.data : Buffer.from(row.data);
+      const ext = (row.content_type || '').includes('jpeg') || (row.content_type || '').includes('jpg') ? 'jpg' : 'png';
+      const key = `image-store-backfill/${row.id}.${ext}`;
+      const r2Url = await uploadBuffer(buf, key, row.content_type || 'image/png');
+      if (!r2Url || !r2Url.startsWith('http')) throw new Error('non-http url returned');
+      const oldUrl = `${tmpImgPrefix}${row.id}`;
+      const upd1 = await pgQuery('UPDATE spy_creatives SET image_url = $1 WHERE image_url = $2 RETURNING id', [r2Url, oldUrl]);
+      const upd2 = await pgQuery('UPDATE spy_creatives SET reference_thumbnail = $1 WHERE reference_thumbnail = $2 RETURNING id', [r2Url, oldUrl]);
+      const updates = upd1.length + upd2.length;
+      rewriteTotal += updates;
+      await pgQuery(
+        `INSERT INTO image_store_migration (id, r2_url, spy_creatives_updated)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (id) DO UPDATE SET r2_url = EXCLUDED.r2_url, migrated_at = NOW()`,
+        [row.id, r2Url, updates]
+      );
+      ok++;
+    } catch (err) {
+      fail++;
+      if (fail <= 3) console.error(`[migrate-r2-boot ${row.id.slice(0,8)}] ❌ ${err.message}`);
+    }
+  }
+
+  async function worker() {
+    while (true) {
+      const i = cursor++;
+      if (i >= todo.length) return;
+      await processOne(todo[i]);
+    }
+  }
+  await Promise.all(Array.from({ length: CONCURRENCY }, () => worker()));
+  console.log(`[migrate-r2-boot] chunk: ok=${ok} fail=${fail} rewrites=${rewriteTotal} (chunk size ${todo.length})`);
+  return { done: false, processed: todo.length, ok, fail, rewrites: rewriteTotal };
+}
+
+async function bootMigratorLoop() {
+  if (_bootMigratorStarted) return;
+  _bootMigratorStarted = true;
+  // Canary first
+  const c = await bootR2Canary();
+  if (!c.ok) {
+    console.warn(`[migrate-r2-boot] canary failed: ${c.why} — will retry in 5 min`);
+    setTimeout(() => { _bootMigratorStarted = false; bootMigratorLoop().catch(() => {}); }, 5 * 60 * 1000);
+    return;
+  }
+  console.log(`[migrate-r2-boot] canary OK → ${c.url}`);
+  // Drain in chunks
+  while (true) {
+    let r;
+    try { r = await bootMigratorChunk(); }
+    catch (err) {
+      console.error('[migrate-r2-boot] chunk error:', err.message);
+      await new Promise(rs => setTimeout(rs, 30_000));
+      continue;
+    }
+    if (r.done) {
+      console.log('[migrate-r2-boot] DONE — image_store fully migrated to R2');
+      return;
+    }
+    // 15s pause between chunks so we don't saturate R2/DB/the event loop
+    await new Promise(rs => setTimeout(rs, 15_000));
+  }
+}
+// Start 90s after boot so the deploy is fully warm before we start uploading.
+setTimeout(() => { bootMigratorLoop().catch(() => {}); }, 90_000);
 
 async function storeTempImage(buf, contentType) {
   if (tempImages.size >= MAX_TEMP_IMAGES) {
