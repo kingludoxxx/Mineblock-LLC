@@ -121,6 +121,12 @@ router.get('/tmp-img/:id', async (req, res) => {
   } catch (err) {
     console.warn('[tmp-img] DB lookup failed:', err.message);
   }
+  // Telemetry: log every miss with the id so we can correlate which
+  // spy_creatives rows just lost their preview. Sampled to 1/10 to keep
+  // logs sane under bot traffic.
+  if (Math.random() < 0.1) {
+    console.warn(`[tmp-img:404] id=${req.params.id} ua="${(req.headers['user-agent']||'').slice(0,60)}"`);
+  }
   return res.status(404).send('Expired or not found');
 });
 
@@ -379,6 +385,80 @@ async function gcImageStoreOnce() {
 setInterval(gcImageStoreOnce, 6 * 60 * 60 * 1000);
 // One pass at boot so old broken state heals immediately after the fix deploys.
 setTimeout(() => { gcImageStoreOnce().catch(() => {}); }, 30_000);
+
+// ─────────────────────────────────────────────────────────────────────────
+// Doomed-CDN-URL backsync sweeper. The structural "never again" guarantee.
+//
+// persistNanoBananaImage and the variant-spawn store have fallback paths
+// that write a raw 3-hour-expiring CDN URL to spy_creatives.image_url when
+// Tier 2 fails. This sweeper runs every 10 min, scans for those patterns,
+// fetches the URL while still alive, persists to image_store, and rewrites
+// the row to /tmp-img/<id>. Catches any leaked CDN URL automatically — even
+// from code paths we haven't audited.
+//
+// Patterns matched (covers every NB provider we've used):
+//   - tempfile.aiquickdraw.com (current kie.ai backing host)
+//   - cdn.kie.ai / kie.ai (legacy)
+//   - aiquickdraw.com (any subdomain)
+//   - file.kieai.app (alt CDN)
+//
+// Idempotent — only touches rows whose URL still 200s. Failed fetches are
+// left for /regenerate-broken-previews (Claude+NB regen path).
+const DOOMED_CDN_PATTERNS = [
+  '%tempfile.aiquickdraw.com%',
+  '%cdn.kie.ai%',
+  '%kie.ai/%',
+  '%aiquickdraw.com%',
+  '%file.kieai.app%',
+];
+let _backsyncInFlight = false;
+async function backsyncDoomedUrls() {
+  if (_backsyncInFlight) return;
+  _backsyncInFlight = true;
+  try {
+    const sql = `
+      SELECT id, image_url
+      FROM spy_creatives
+      WHERE image_url IS NOT NULL
+        AND COALESCE(is_reference, FALSE) = FALSE
+        AND (${DOOMED_CDN_PATTERNS.map((_, i) => `image_url LIKE $${i + 1}`).join(' OR ')})
+      ORDER BY updated_at DESC NULLS LAST, created_at DESC
+      LIMIT 100
+    `;
+    const rows = await pgQuery(sql, DOOMED_CDN_PATTERNS, { timeout: 15000 });
+    if (rows.length === 0) return;
+
+    let backed = 0, dead = 0;
+    const srv = process.env.RENDER_EXTERNAL_URL || `http://localhost:${process.env.PORT || 3000}`;
+    for (const row of rows) {
+      try {
+        const r = await fetch(row.image_url, { signal: AbortSignal.timeout(20000) });
+        if (!r.ok) { dead++; continue; }
+        const buf = Buffer.from(await r.arrayBuffer());
+        const mime = r.headers.get('content-type') || detectMime(buf) || 'image/png';
+        const newId = await storeTempImage(buf, mime);
+        const safeUrl = `${srv}/api/v1/statics-generation/tmp-img/${newId}`;
+        await pgQuery(
+          'UPDATE spy_creatives SET image_url = $1, updated_at = NOW() WHERE id = $2',
+          [safeUrl, row.id]
+        );
+        backed++;
+      } catch {
+        dead++;
+      }
+    }
+    if (backed > 0 || dead > 0) {
+      console.log(`[backsync] CDN-URL → tmp-img: backed=${backed} dead=${dead} (of ${rows.length} scanned)`);
+    }
+  } catch (err) {
+    console.warn('[backsync] sweep failed:', err.message);
+  } finally {
+    _backsyncInFlight = false;
+  }
+}
+setInterval(() => { backsyncDoomedUrls().catch(() => {}); }, 10 * 60 * 1000);
+// First pass 60s after boot so any URL that's about to expire is captured.
+setTimeout(() => { backsyncDoomedUrls().catch(() => {}); }, 60_000);
 
 async function storeTempImage(buf, contentType) {
   if (tempImages.size >= MAX_TEMP_IMAGES) {
@@ -1799,30 +1879,52 @@ router.get('/creatives/pipeline', authenticate, async (req, res) => {
       }
     }
 
-    // Auto-repair pass: if any visible card has a /tmp-img/<id> URL whose
-    // image_store row no longer exists (the recurring "preview missing" bug),
-    // fire-and-forget POST /regenerate-broken-previews with CRON_SECRET.
-    // Rate-limited to once per 30 min per process so polling never hammers NB.
+    // Auto-repair pass: detect every flavour of broken preview on a single
+    // load and kick the right healer for each.
+    //   Mode A — /tmp-img/<id> with no image_store row →  /regenerate-broken-previews
+    //   Mode B — kie.ai/tempfile CDN URL still on the row → backsync sweeper
+    //            handles this within 10 min, but kick it now if we see any.
+    //   Mode D — launched row whose image_url is unfetchable → /repair-thumbnails
+    //            (cheaper Meta-Graph re-fetch).
+    // Everything is fire-and-forget + rate-limited.
     try {
-      const brokenIds = [];
+      const tmpImgRefs = [];
+      let cdnLeakCount = 0;
+      let launchedSuspect = 0;
+      const CDN_PATTERNS = ['tempfile.aiquickdraw.com', 'cdn.kie.ai', 'aiquickdraw.com', 'file.kieai.app'];
       for (const bucket of ['ready', 'review', 'launched']) {
         for (const c of pipeline[bucket]) {
           const u = c.image_url || '';
+          if (!u) continue;
           const m = u.match(/\/tmp-img\/([a-f0-9-]+)/i);
-          if (m) brokenIds.push({ rowId: c.id, storeId: m[1] });
+          if (m) { tmpImgRefs.push({ rowId: c.id, storeId: m[1] }); continue; }
+          if (CDN_PATTERNS.some(p => u.includes(p))) cdnLeakCount++;
+          if (bucket === 'launched' && !u.startsWith('https://scontent') && !u.startsWith('https://platform-lookaside')) {
+            launchedSuspect++;
+          }
         }
       }
-      if (brokenIds.length > 0) {
-        const storeIds = brokenIds.map(b => b.storeId);
+      // Mode A check
+      if (tmpImgRefs.length > 0) {
+        const storeIds = tmpImgRefs.map(b => b.storeId);
         const alive = await pgQuery(
           'SELECT id FROM image_store WHERE id = ANY($1::text[])',
           [storeIds]
         );
         const aliveSet = new Set(alive.map(r => r.id));
-        const dead = brokenIds.filter(b => !aliveSet.has(b.storeId));
+        const dead = tmpImgRefs.filter(b => !aliveSet.has(b.storeId));
         if (dead.length > 0) {
           triggerBrokenPreviewRepair(dead.length).catch(() => {});
         }
+      }
+      // Mode B trigger: kick the backsync sweeper if any leaked CDN URLs are
+      // visible (don't wait for the 10-min interval).
+      if (cdnLeakCount > 0) {
+        backsyncDoomedUrls().catch(() => {});
+      }
+      // Mode D trigger: launched rows that don't look like Meta-CDN URLs.
+      if (launchedSuspect > 0) {
+        triggerLaunchedRepair(launchedSuspect).catch(() => {});
       }
     } catch (e) {
       console.warn('[creatives/pipeline] auto-repair detection failed:', e.message);
@@ -1848,7 +1950,36 @@ router.get('/creatives/pipeline', authenticate, async (req, res) => {
 // Module-level rate-limit: one auto-repair request per process per 30 min.
 let _autoRepairLastAt = 0;
 let _autoRepairInFlight = false;
+let _launchedRepairLastAt = 0;
+let _launchedRepairInFlight = false;
 const AUTO_REPAIR_MIN_INTERVAL_MS = 30 * 60 * 1000;
+
+// Mode D: launched rows whose Meta CDN URL has aged out. /repair-thumbnails
+// re-fetches via the Meta Graph API — much cheaper than NB regen.
+async function triggerLaunchedRepair(deadCount) {
+  if (_launchedRepairInFlight) return;
+  if (Date.now() - _launchedRepairLastAt < AUTO_REPAIR_MIN_INTERVAL_MS) return;
+  const secret = process.env.CRON_SECRET;
+  if (!secret) { console.warn('[auto-repair-launched] CRON_SECRET not set — skipping'); return; }
+  _launchedRepairInFlight = true;
+  console.log(`[auto-repair-launched] ${deadCount} suspect launched URLs detected — calling /repair-thumbnails`);
+  try {
+    const base = process.env.RENDER_EXTERNAL_URL || `http://localhost:${process.env.PORT || 3000}`;
+    const r = await fetch(`${base}/api/v1/statics-generation/repair-thumbnails`, {
+      method: 'GET',
+      headers: { 'x-cron-secret': secret },
+      signal: AbortSignal.timeout(60_000),
+    });
+    const body = await r.json().catch(() => ({}));
+    console.log(`[auto-repair-launched] ${r.status}: repaired=${body?.data?.repaired ?? '?'} skipped=${body?.data?.skipped ?? '?'} unrepairable=${body?.data?.unrepairable ?? '?'}`);
+  } catch (err) {
+    console.warn('[auto-repair-launched] kickoff failed:', err.message);
+  } finally {
+    _launchedRepairLastAt = Date.now();
+    _launchedRepairInFlight = false;
+  }
+}
+
 async function triggerBrokenPreviewRepair(deadCount) {
   if (_autoRepairInFlight) return;
   if (Date.now() - _autoRepairLastAt < AUTO_REPAIR_MIN_INTERVAL_MS) return;
@@ -2892,7 +3023,12 @@ router.patch('/creatives/bulk-status', authenticate, async (req, res) => {
 // Backfill launched thumbnails (Meta CDN repair)
 // ─────────────────────────────────────────────────────────────────────────
 
-router.get('/repair-thumbnails', authenticate, async (req, res) => {
+router.get('/repair-thumbnails', async (req, res, next) => {
+  const cronSecret = process.env.CRON_SECRET;
+  const provided   = req.headers['x-cron-secret'];
+  if (cronSecret && provided === cronSecret) return next();
+  return authenticate(req, res, next);
+}, async (req, res) => {
   try {
     const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN || '';
     const META_GRAPH_URL = 'https://graph.facebook.com/v21.0';
@@ -3025,6 +3161,99 @@ router.get('/repair-thumbnails', authenticate, async (req, res) => {
 // 3-step pipeline and produce a fresh preview. The Meta ad itself is not
 // touched — we only refresh the local preview thumbnail.
 // ─────────────────────────────────────────────────────────────────────────
+// GET /diagnose-previews — per-bucket / per-failure-mode count of broken cards.
+// Helps prove "zero broken previews" after the heal pass. Auth: JWT or CRON_SECRET.
+router.get('/diagnose-previews', async (req, res, next) => {
+  const cronSecret = process.env.CRON_SECRET;
+  const provided   = req.headers['x-cron-secret'];
+  if (cronSecret && provided === cronSecret) return next();
+  return authenticate(req, res, next);
+}, async (_req, res) => {
+  try {
+    const rows = await pgQuery(`
+      SELECT
+        CASE WHEN status = 'approved' THEN 'ready' ELSE status END AS bucket,
+        COUNT(*) FILTER (WHERE image_url IS NULL OR image_url = '')                       AS mode_c_empty,
+        COUNT(*) FILTER (WHERE image_url LIKE '%/tmp-img/%')                              AS tmp_img_total,
+        COUNT(*) FILTER (WHERE image_url LIKE '%tempfile.aiquickdraw.com%'
+                            OR image_url LIKE '%cdn.kie.ai%'
+                            OR image_url LIKE '%aiquickdraw.com%'
+                            OR image_url LIKE '%file.kieai.app%')                          AS mode_b_cdn,
+        COUNT(*) FILTER (WHERE image_url LIKE 'https://%' AND image_url NOT LIKE '%/tmp-img/%'
+                            AND image_url NOT LIKE '%tempfile.aiquickdraw.com%'
+                            AND image_url NOT LIKE '%cdn.kie.ai%'
+                            AND image_url NOT LIKE '%aiquickdraw.com%'
+                            AND image_url NOT LIKE '%file.kieai.app%')                      AS r2_or_meta,
+        COUNT(*)                                                                            AS total
+      FROM spy_creatives
+      WHERE status IN ('launched','ready','approved','review')
+        AND COALESCE(is_reference, FALSE) = FALSE
+      GROUP BY bucket
+      ORDER BY bucket
+    `);
+
+    // Mode A = /tmp-img/ pointing at image_store rows that are gone
+    const tmpImgIds = await pgQuery(`
+      SELECT regexp_replace(image_url, '.*/tmp-img/', '') AS sid
+      FROM spy_creatives
+      WHERE image_url LIKE '%/tmp-img/%'
+        AND status IN ('launched','ready','approved','review')
+        AND COALESCE(is_reference, FALSE) = FALSE
+    `);
+    let mode_a_dead = 0;
+    if (tmpImgIds.length > 0) {
+      const ids = tmpImgIds.map(r => r.sid);
+      const alive = await pgQuery('SELECT id FROM image_store WHERE id = ANY($1::text[])', [ids]);
+      const aliveSet = new Set(alive.map(r => r.id));
+      mode_a_dead = ids.filter(i => !aliveSet.has(i)).length;
+    }
+
+    res.json({
+      success: true,
+      data: {
+        per_bucket: rows,
+        mode_a_dead_tmp_img: mode_a_dead,
+        backsync_in_flight: _backsyncInFlight,
+        auto_repair_last_at: _autoRepairLastAt || null,
+      },
+    });
+  } catch (err) {
+    console.error('[diagnose-previews] error:', err);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// POST /heal-zombies — Mode C: cards with NULL/empty image_url AND no reference
+// to regenerate from get archived (status='error') so they don't pollute counts
+// or block the "Need N more" math. Auth: JWT or CRON_SECRET.
+router.post('/heal-zombies', async (req, res, next) => {
+  const cronSecret = process.env.CRON_SECRET;
+  const provided   = req.headers['x-cron-secret'];
+  if (cronSecret && provided === cronSecret) return next();
+  return authenticate(req, res, next);
+}, async (_req, res) => {
+  try {
+    const result = await pgQuery(`
+      UPDATE spy_creatives
+      SET status = 'error',
+          review_notes = COALESCE(review_notes, '') ||
+            CASE WHEN review_notes IS NULL OR review_notes = '' THEN '' ELSE ' | ' END ||
+            'auto-archived: no image and no reference to regenerate from',
+          updated_at = NOW()
+      WHERE (image_url IS NULL OR image_url = '')
+        AND (reference_thumbnail IS NULL OR reference_thumbnail = '')
+        AND status IN ('ready','approved','review','generating')
+        AND COALESCE(is_reference, FALSE) = FALSE
+      RETURNING id, angle, aspect_ratio
+    `);
+    console.log(`[heal-zombies] archived ${result.length} zombie creatives`);
+    res.json({ success: true, archived: result.length, rows: result });
+  } catch (err) {
+    console.error('[heal-zombies] error:', err);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
 router.post('/regenerate-broken-previews', async (req, res, next) => {
   // CRON_SECRET fast-path lets internal triggers (/creatives/pipeline auto-fix)
   // and Render Cron Jobs call this without a JWT.
