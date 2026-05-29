@@ -30,6 +30,92 @@ const YTDLP_PATH = join(__dirname, '..', '..', '..', 'bin', 'yt-dlp');
 
 const router = Router();
 
+// TEMP — operator test endpoint. Triggers Playwright extraction against
+// an FB Ad Library URL, returns the extracted CDN URL + timing. Remove
+// after the operator confirms Playwright extraction works on Render.
+router.get('/_test-extractor', async (req, res) => {
+  try {
+    const url = String(req.query.url || '');
+    if (!url) return res.status(400).json({ error: 'url query param required' });
+    const t0 = Date.now();
+    const videoUrl = await extractVideoUrlFromAdLibrary(url);
+    const elapsedMs = Date.now() - t0;
+    res.json({ success: !!videoUrl, videoUrl, elapsedMs, source: url });
+  } catch (e) {
+    res.status(500).json({ error: e.message, stack: e.stack?.slice(0, 400) });
+  }
+});
+
+// TEMP — re-run the full transcribe pipeline for a specific ref ID
+// without going through the authenticated retry endpoint. For operator
+// testing. Remove with _test-extractor.
+router.post('/_test-retry/:id', async (req, res) => {
+  try {
+    const refRows = await pgQuery(
+      `SELECT id, status, imported_metadata, source FROM brief_pipeline_references WHERE id = $1`,
+      [req.params.id]
+    );
+    if (!refRows.length) return res.status(404).json({ error: 'not found' });
+    const ref = refRows[0];
+    let md = ref.imported_metadata;
+    if (typeof md === 'string') { try { md = JSON.parse(md); } catch { md = {}; } }
+    const adLibraryUrl = md?.ad_library_url
+      || (md?.ad_id ? `https://www.facebook.com/ads/library/?id=${md.ad_id}` : null);
+    if (!adLibraryUrl) return res.status(400).json({ error: 'no ad library URL in metadata' });
+
+    await pgQuery(
+      `UPDATE brief_pipeline_references SET status='extracting', transcript=NULL,
+              transcript_at=NULL, analysis_error=NULL, video_url=NULL, updated_at=NOW()
+        WHERE id=$1`,
+      [ref.id]
+    );
+
+    // Fire the Playwright-first pipeline in the foreground so we can return timing.
+    const t0 = Date.now();
+    let videoUrl = await extractVideoUrlFromAdLibrary(adLibraryUrl);
+    const extractMs = Date.now() - t0;
+
+    if (!videoUrl) {
+      await pgQuery(
+        `UPDATE brief_pipeline_references SET status='error',
+                analysis_error='Playwright found no video on this ad library page (image / carousel ad).',
+                updated_at=NOW() WHERE id=$1`,
+        [ref.id]
+      );
+      return res.json({ success: false, extractMs, error: 'no video URL extracted' });
+    }
+
+    await pgQuery(
+      `UPDATE brief_pipeline_references SET video_url=$1, status='transcribing', updated_at=NOW() WHERE id=$2`,
+      [videoUrl, ref.id]
+    );
+
+    // Background the transcribe + don't block the response
+    (async () => {
+      try {
+        const { text, segments } = await transcribeVideoUrl(videoUrl);
+        await pgQuery(
+          `UPDATE brief_pipeline_references
+              SET transcript=$1, transcript_at=NOW(), status='transcribed',
+                  imported_metadata = jsonb_set(COALESCE(imported_metadata, '{}'::jsonb), '{transcript_segments}', $2::jsonb, true),
+                  updated_at=NOW()
+            WHERE id=$3`,
+          [text, JSON.stringify(segments || []), ref.id]
+        );
+      } catch (e) {
+        await pgQuery(
+          `UPDATE brief_pipeline_references SET status='error', analysis_error=$1, updated_at=NOW() WHERE id=$2`,
+          [`Transcribe failed after URL extraction: ${e.message?.slice(0, 600)}`, ref.id]
+        ).catch(() => {});
+      }
+    })();
+
+    res.json({ success: true, extractMs, videoUrl: videoUrl.slice(0, 100) + '...', message: 'extraction succeeded; transcription running in background' });
+  } catch (e) {
+    res.status(500).json({ error: e.message, stack: e.stack?.slice(0, 400) });
+  }
+});
+
 // ── Meta thumbnail proxy with R2 caching ──────────────────────────────
 // Placed BEFORE the global authenticate middleware because <img src> tags
 // can't carry JWTs. Safe to expose: thumbnails are non-sensitive, R2
