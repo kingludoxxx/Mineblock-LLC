@@ -268,6 +268,89 @@ async function _doRegenerateReady(res) {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// POST /repair-all-previews — ONE BUTTON to fix every broken preview.
+//
+// Runs the full triage in-process, synchronously, and returns per-mode counts:
+//   1. backsync   — Mode B: expired CDN URLs → R2 (or /tmp-img/ fallback)
+//   2. repair-thumbnails  — Mode D: launched ads via Meta Graph → R2 mirror
+//   3. regenerate-broken  — Mode A: dead /tmp-img/ refs → Claude+NB → R2
+//   4. heal-zombies       — Mode C: archive previews with no image AND no reference
+//
+// Auth: JWT or CRON_SECRET. Self-fetches sub-routes so each runs with the
+// caller's credentials. Bypasses the 30-min auto-trigger rate limit.
+//
+// MUST be defined BEFORE `router.use(authenticate)` below — the global auth
+// middleware would otherwise 401 every call before the per-route secret
+// check could run.
+// ─────────────────────────────────────────────────────────────────────────
+router.post('/repair-all-previews', async (req, res) => {
+  const cronSecret = process.env.CRON_SECRET;
+  const provided   = req.headers['x-cron-secret'];
+  const secretAuth = !!(cronSecret && provided === cronSecret);
+  if (secretAuth) return _doRepairAllPreviews(req, res, cronSecret);
+  return authenticate(req, res, () => _doRepairAllPreviews(req, res, null));
+});
+
+async function _doRepairAllPreviews(req, res, cronSecretForSubFetch) {
+  const base = process.env.RENDER_EXTERNAL_URL || `http://localhost:${process.env.PORT || 3000}`;
+  const t0 = Date.now();
+
+  // Forward the caller's auth on sub-route HTTP calls so existing
+  // route-level guards keep working without changes.
+  const authHeaders = {};
+  if (req.headers.authorization) authHeaders.authorization = req.headers.authorization;
+  if (cronSecretForSubFetch) authHeaders['x-cron-secret'] = cronSecretForSubFetch;
+
+  const result = { backsync: null, repair_thumbnails: null, regenerate_broken: null, heal_zombies: null };
+  const errors = [];
+
+  // 1. Backsync (in-process — no HTTP self-fetch needed)
+  try {
+    result.backsync = await backsyncDoomedUrls();
+  } catch (err) { errors.push(`backsync: ${err.message}`); }
+
+  // 2. Repair launched thumbnails via Meta Graph (HTTP self-fetch)
+  try {
+    const r = await fetch(`${base}/api/v1/statics-generation/repair-thumbnails`, {
+      method: 'GET', headers: authHeaders, signal: AbortSignal.timeout(180_000),
+    });
+    const body = await r.json().catch(() => ({}));
+    result.repair_thumbnails = body?.data || { error: `status ${r.status}` };
+  } catch (err) { errors.push(`repair-thumbnails: ${err.message}`); }
+
+  // 3. Regenerate truly-broken previews (Claude + NB → R2)
+  try {
+    const r = await fetch(`${base}/api/v1/statics-generation/regenerate-broken-previews`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders },
+      body: JSON.stringify({}),
+      signal: AbortSignal.timeout(15_000),
+    });
+    const body = await r.json().catch(() => ({}));
+    result.regenerate_broken = body?.data || { error: `status ${r.status}` };
+  } catch (err) { errors.push(`regenerate-broken: ${err.message}`); }
+
+  // 4. Heal zombies (archive previews with no image AND no reference)
+  try {
+    const r = await fetch(`${base}/api/v1/statics-generation/heal-zombies`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders },
+      body: JSON.stringify({}),
+      signal: AbortSignal.timeout(30_000),
+    });
+    const body = await r.json().catch(() => ({}));
+    result.heal_zombies = { archived: body?.archived ?? 0 };
+  } catch (err) { errors.push(`heal-zombies: ${err.message}`); }
+
+  const elapsed_ms = Date.now() - t0;
+  console.log(`[repair-all-previews] done in ${elapsed_ms}ms — backsync=${JSON.stringify(result.backsync)} repair=${JSON.stringify(result.repair_thumbnails)} regen=${JSON.stringify(result.regenerate_broken)} zombies=${JSON.stringify(result.heal_zombies)}`);
+  res.json({
+    success: errors.length === 0,
+    data: { ...result, elapsed_ms, errors: errors.length > 0 ? errors : undefined },
+  });
+}
+
 router.use(authenticate, requirePermission('statics-generation', 'access'));
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
@@ -3463,82 +3546,10 @@ router.post('/heal-zombies', async (req, res, next) => {
   }
 });
 
-// ─────────────────────────────────────────────────────────────────────────
-// POST /repair-all-previews — ONE BUTTON to fix every broken preview.
-//
-// Runs the full triage in-process, synchronously, and returns per-mode counts:
-//   1. backsync   — Mode B: expired CDN URLs → R2 (or /tmp-img/ fallback)
-//   2. repair-thumbnails  — Mode D: launched ads via Meta Graph → R2 mirror
-//   3. regenerate-broken  — Mode A: dead /tmp-img/ refs → Claude+NB → R2
-//   4. heal-zombies       — Mode C: archive previews with no image AND no reference
-//
-// Auth: JWT or CRON_SECRET. Self-fetches sub-routes so each runs with the
-// caller's credentials. Bypasses the 30-min auto-trigger rate limit.
-// ─────────────────────────────────────────────────────────────────────────
-router.post('/repair-all-previews', async (req, res, next) => {
-  const cronSecret = process.env.CRON_SECRET;
-  const provided   = req.headers['x-cron-secret'];
-  console.log(`[repair-all-previews/auth] env_set=${!!cronSecret} env_len=${(cronSecret||'').length} hdr_set=${!!provided} hdr_len=${(provided||'').length} match=${!!(cronSecret && provided === cronSecret)}`);
-  if (cronSecret && provided === cronSecret) return next();
-  return authenticate(req, res, next);
-}, async (req, res) => {
-  const base = process.env.RENDER_EXTERNAL_URL || `http://localhost:${process.env.PORT || 3000}`;
-  const t0 = Date.now();
-
-  // Forward the caller's auth on sub-route HTTP calls so existing
-  // route-level guards keep working without changes.
-  const authHeaders = {};
-  if (req.headers.authorization) authHeaders.authorization = req.headers.authorization;
-  if (cronSecret && provided === cronSecret) authHeaders['x-cron-secret'] = cronSecret;
-
-  const result = { backsync: null, repair_thumbnails: null, regenerate_broken: null, heal_zombies: null };
-  const errors = [];
-
-  // 1. Backsync (in-process — no HTTP self-fetch needed)
-  try {
-    result.backsync = await backsyncDoomedUrls();
-  } catch (err) { errors.push(`backsync: ${err.message}`); }
-
-  // 2. Repair launched thumbnails via Meta Graph (HTTP self-fetch)
-  try {
-    const r = await fetch(`${base}/api/v1/statics-generation/repair-thumbnails`, {
-      method: 'GET', headers: authHeaders, signal: AbortSignal.timeout(180_000),
-    });
-    const body = await r.json().catch(() => ({}));
-    result.repair_thumbnails = body?.data || { error: `status ${r.status}` };
-  } catch (err) { errors.push(`repair-thumbnails: ${err.message}`); }
-
-  // 3. Regenerate truly-broken previews (Claude + NB → R2)
-  try {
-    const r = await fetch(`${base}/api/v1/statics-generation/regenerate-broken-previews`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...authHeaders },
-      body: JSON.stringify({}),
-      signal: AbortSignal.timeout(15_000),
-    });
-    const body = await r.json().catch(() => ({}));
-    result.regenerate_broken = body?.data || { error: `status ${r.status}` };
-  } catch (err) { errors.push(`regenerate-broken: ${err.message}`); }
-
-  // 4. Heal zombies (archive previews with no image AND no reference)
-  try {
-    const r = await fetch(`${base}/api/v1/statics-generation/heal-zombies`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...authHeaders },
-      body: JSON.stringify({}),
-      signal: AbortSignal.timeout(30_000),
-    });
-    const body = await r.json().catch(() => ({}));
-    result.heal_zombies = { archived: body?.archived ?? 0 };
-  } catch (err) { errors.push(`heal-zombies: ${err.message}`); }
-
-  const elapsed_ms = Date.now() - t0;
-  console.log(`[repair-all-previews] done in ${elapsed_ms}ms — backsync=${JSON.stringify(result.backsync)} repair=${JSON.stringify(result.repair_thumbnails)} regen=${JSON.stringify(result.regenerate_broken)} zombies=${JSON.stringify(result.heal_zombies)}`);
-  res.json({
-    success: errors.length === 0,
-    data: { ...result, elapsed_ms, errors: errors.length > 0 ? errors : undefined },
-  });
-});
+// NOTE: /repair-all-previews moved to the public-routes section above
+// (before `router.use(authenticate, ...)`) so the per-route CRON_SECRET
+// check actually runs. Previously this route lived here and the global
+// authenticate middleware always 401'd before the secret check fired.
 
 // ─────────────────────────────────────────────────────────────────────────
 // POST /migrate-image-store-to-r2
