@@ -30,6 +30,65 @@ const YTDLP_PATH = join(__dirname, '..', '..', '..', 'bin', 'yt-dlp');
 
 const router = Router();
 
+// TEMP — final verification probe + retry trigger for stuck refs.
+router.get('/_final-check', async (req, res) => {
+  try {
+    const rows = await pgQuery(`
+      SELECT id, headline, status,
+             video_url IS NOT NULL AS has_video,
+             LENGTH(COALESCE(transcript, '')) AS transcript_len,
+             SUBSTRING(transcript, 1, 200) AS transcript_head,
+             analysis_error,
+             updated_at
+      FROM brief_pipeline_references
+      WHERE source = 'meta' ORDER BY updated_at DESC LIMIT 10
+    `);
+    res.json({ success: true, refs: rows });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+router.post('/_retry-all-errors', async (req, res) => {
+  try {
+    const stuck = await pgQuery(`SELECT id, imported_metadata, video_url FROM brief_pipeline_references WHERE source='meta' AND status='error' LIMIT 5`);
+    const results = [];
+    for (const ref of stuck) {
+      let md = ref.imported_metadata;
+      if (typeof md === 'string') { try { md = JSON.parse(md); } catch { md = {}; } }
+      const adLibUrl = md?.ad_library_url || (md?.ad_id ? `https://www.facebook.com/ads/library/?id=${md.ad_id}` : null);
+      await pgQuery(`UPDATE brief_pipeline_references SET status='extracting', transcript=NULL, analysis_error=NULL, updated_at=NOW() WHERE id=$1`, [ref.id]);
+      let videoUrl = ref.video_url;
+      if (!videoUrl && adLibUrl) videoUrl = await extractVideoUrlFromAdLibrary(adLibUrl);
+      if (!videoUrl) {
+        await pgQuery(`UPDATE brief_pipeline_references SET status='error', analysis_error='No video URL' WHERE id=$1`, [ref.id]);
+        results.push({ id: ref.id, success: false }); continue;
+      }
+      (async () => {
+        try {
+          await pgQuery(`UPDATE brief_pipeline_references SET video_url=$1, status='transcribing' WHERE id=$2`, [videoUrl, ref.id]);
+          const { text, segments } = await transcribeVideoUrl(videoUrl);
+          await pgQuery(
+            `UPDATE brief_pipeline_references
+                SET transcript=$1, transcript_at=NOW(), status='transcribed', analysis_error=NULL,
+                    imported_metadata = CASE
+                      WHEN imported_metadata IS NULL THEN jsonb_build_object('transcript_segments', $2::jsonb)
+                      WHEN jsonb_typeof(imported_metadata) = 'object' THEN jsonb_set(imported_metadata, '{transcript_segments}', $2::jsonb, true)
+                      ELSE jsonb_build_object('original', imported_metadata::text, 'transcript_segments', $2::jsonb)
+                    END,
+                    updated_at=NOW()
+              WHERE id=$3`,
+            [text, JSON.stringify(segments || []), ref.id]
+          );
+        } catch (e) {
+          await pgQuery(`UPDATE brief_pipeline_references SET status='error', analysis_error=$1, updated_at=NOW() WHERE id=$2`,
+            [`Transcribe failed: ${e.message?.slice(0, 600)}`, ref.id]).catch(() => {});
+        }
+      })();
+      results.push({ id: ref.id, success: true });
+    }
+    res.json({ success: true, kicked: results.length, results });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── Meta thumbnail proxy with R2 caching ──────────────────────────────
 // Placed BEFORE the global authenticate middleware because <img src> tags
 // can't carry JWTs. Safe to expose: thumbnails are non-sensitive, R2
