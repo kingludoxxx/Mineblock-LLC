@@ -11,7 +11,7 @@
         "seed": "node server/seeds/run.js",
         "build": "cd client && npm run build && node scripts/setup-ytdlp.js",
         "sync:lasso": "node server/scripts/sync-lasso.mjs",
-        "postinstall": "PLAYWRIGHT_BROWSERS_PATH=./playwright-browsers npx playwright install chromium",
+        "postinstall": "PLAYWRIGHT_BROWSERS_PATH=./playwright-browsers npx playwright install chromium chromium-headless-shell",
         "test": "echo \"Error: no test specified\" && exit 1"
     },
     "keywords": [],

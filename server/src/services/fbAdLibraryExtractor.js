@@ -47,10 +47,12 @@ function releaseSlot() {
 
 function ensureChromium() {
   try {
+    // Playwright 1.59 defaults headless to the chromium-headless-shell variant.
+    // Try both — install whatever's missing so launch() doesn't blow up.
     const exePath = chromium.executablePath();
     if (!existsSync(exePath)) {
-      console.log('[fbExtractor] Chromium binary missing — installing...');
-      execSync('npx playwright install chromium', { stdio: 'pipe' });
+      console.log(`[fbExtractor] Chromium binary missing at ${exePath} — installing both regular + headless-shell variants...`);
+      execSync('npx playwright install chromium chromium-headless-shell', { stdio: 'pipe' });
       console.log('[fbExtractor] Chromium installed.');
     }
   } catch (e) {
