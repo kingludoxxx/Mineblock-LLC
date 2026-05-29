@@ -4994,7 +4994,11 @@ async function analyzeWholeVideoWithGemini(mediaUrl, promptText) {
 }
 
 // Build the prompt for a specific reference + product profile.
-async function buildReferenceAnalyzerPrompt(reference) {
+// `productCode` should be the product the brief context is targeting —
+// defaults to 'MR' (MinerForge Pro) when callers don't pass one, but
+// callers SHOULD pass it so non-MR products don't get analyzed through
+// the MinerForge compliance lens.
+async function buildReferenceAnalyzerPrompt(reference, productCode = 'MR') {
   // Allow operator override via League Prompts (key=scriptAnalysis).
   const saved = await getLeaguePrompts();
   let template = DEFAULT_REFERENCE_ANALYZER_PROMPT;
@@ -5012,7 +5016,7 @@ async function buildReferenceAnalyzerPrompt(reference) {
   // product library) — for Brief Pipeline + League the user picks the product
   // explicitly at generation time, so we pass an empty-ish profile here and
   // let the analyzer comment on alignment generically.
-  const profile = await fetchProductProfile('MR'); // default to MinerForge until product is selected
+  const profile = await fetchProductProfile(productCode || 'MR');
   const productContext = buildProductContextForBrief(profile);
 
   const vars = {
@@ -5045,11 +5049,20 @@ router.get('/references/:id', authenticate, async (req, res) => {
 });
 
 // POST /references/:id/analyze — run / re-run the Gemini whole-video analyzer.
-// Cached after first run; pass ?force=1 to bypass the cache.
+// Cached after first run; pass ?force=1 to bypass the cache. Optionally accepts
+// ?productCode=XX or ?productId=N so the analyzer's compliance commentary is
+// scoped to the right product instead of defaulting to MinerForge.
 router.post('/references/:id/analyze', authenticate, async (req, res) => {
   if (!validateUuid(req, res)) return;
   try {
     const force = String(req.query.force || '') === '1';
+    // Resolve product code from query (?productCode=XX or ?productId=N) for
+    // the analyzer's product-aware compliance pass. Falls back to 'MR'.
+    let analyzerProductCode = req.query.productCode ? String(req.query.productCode) : null;
+    if (!analyzerProductCode && req.query.productId && /^\d+$/.test(String(req.query.productId))) {
+      const pp = await pgQuery(`SELECT product_code, short_name FROM product_profiles WHERE id = $1 LIMIT 1`, [Number(req.query.productId)]).catch(() => []);
+      analyzerProductCode = pp[0]?.product_code || pp[0]?.short_name || null;
+    }
     const rows = await pgQuery(
       `SELECT * FROM brief_pipeline_references WHERE id = $1`,
       [req.params.id]
@@ -5078,7 +5091,7 @@ router.post('/references/:id/analyze', authenticate, async (req, res) => {
     }
 
     const refForPrompt = mapReferenceRow(ref);
-    const promptText = await buildReferenceAnalyzerPrompt(refForPrompt);
+    const promptText = await buildReferenceAnalyzerPrompt(refForPrompt, analyzerProductCode);
 
     // Primary: Gemini whole-video. Fallback: OpenAI thumbnail+transcript.
     let result = null;

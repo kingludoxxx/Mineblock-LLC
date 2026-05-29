@@ -124,10 +124,16 @@ export default function PipelineSettingsModal({ open, onClose }) {
   const [leagueLoadedOnce, setLeagueLoadedOnce] = useState(false);
 
   // ── Fetch prompts on open ────────────────────────────────────────────
-  useEffect(() => {
-    if (!open) return;
-    loadPrompts();
-  }, [open]);
+  // Disabled 2026-05-29: the /settings/prompts route was removed in the
+  // legacy-cleanup pass and the 'prompts' tab is gone from the tab bar.
+  // The League Prompts tab loads its own data via a separate effect.
+  // Calling loadPrompts() here threw a 404 and surfaced a red error banner
+  // on every modal open. Hard-disable until / unless someone re-introduces
+  // a use for the old 8-prompt system.
+  // useEffect(() => {
+  //   if (!open) return;
+  //   loadPrompts();
+  // }, [open]);
 
   const loadPrompts = async () => {
     setLoading(true);

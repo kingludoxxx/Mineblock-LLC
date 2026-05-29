@@ -329,19 +329,23 @@ export default function BriefPipeline() {
       // (META source). Anything else would error 500 server-side.
       const sendMode = config.mode === 'iterate' ? 'iterate' : 'clone';
       const { data } = await api.post('/brief-pipeline/generate-from-script', {
-        script:        config.script,
-        url:           config.url,
-        productId:     config.productId,
-        productCode:   config.productCode,
-        angle:         config.angle,
-        mode:          sendMode,
-        numVariations: config.numVariations,
-        referenceId:   config.referenceId,
+        script:          config.script,
+        url:             config.url,
+        productId:       config.productId,
+        productCode:     config.productCode,
+        angle:           config.angle,
+        mode:            sendMode,
+        numVariations:   config.numVariations,
+        referenceId:     config.referenceId,
+        // Iterate-mode vector picker payload. Backend buildIterationPrompt
+        // expects [{ vector, target }] — Hooks / Format Swap / Avatar / etc.
+        // Undefined in clone mode (server ignores it).
+        vectorsSelected: config.vectorsSelected,
       });
 
       // Server responds immediately — poll for completion
       if (data.winner_id) {
-        setScriptGenStep('Running deep analysis (3 agents)...');
+        setScriptGenStep(stepMessages[1] || 'Working...');
         await pollGenerationStatus(data.winner_id, stepMessages, stepInterval, setScriptGenStep);
       }
 
