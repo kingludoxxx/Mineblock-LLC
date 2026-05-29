@@ -36,7 +36,7 @@ export default function ScriptGeneratorPanel({
   const [productList, setProductList] = useState([]);
   const [selectedAngle, setSelectedAngle] = useState(null);
   const [customAngle, setCustomAngle] = useState('');
-  const [outputMode, setOutputMode] = useState('variants');
+  const [outputMode, setOutputMode] = useState('clone');
   const [variantCount, setVariantCount] = useState(3);
   const [enhancing, setEnhancing] = useState(false);
   const [error, setError] = useState(null);
@@ -56,11 +56,9 @@ export default function ScriptGeneratorPanel({
       appliedModeRef.current = initialMode;
       // 'iterate' is its own mode (META source); fall through to clone or variants
       // for the existing LEAGUE / UPLOAD / manual flows.
-      setOutputMode(
-        initialMode === 'iterate' ? 'iterate'
-        : initialMode === 'clone'  ? 'clone'
-        : 'variants',
-      );
+      // Only 2 modes now: clone (default) + iterate (META source). Any
+      // legacy 'variants' value coming in from old state falls back to clone.
+      setOutputMode(initialMode === 'iterate' ? 'iterate' : 'clone');
     }
   }, [initialScript, initialMode]);
 
@@ -444,33 +442,6 @@ export default function ScriptGeneratorPanel({
         <div className="space-y-2">
           <button
             type="button"
-            onClick={() => setOutputMode('variants')}
-            className={`w-full text-left p-3 rounded-lg border transition-all duration-300 relative overflow-hidden cursor-pointer ${
-              outputMode === 'variants'
-                ? 'glass-card border-[#c9a84c]/20 shadow-[0_0_15px_rgba(201,168,76,0.04),inset_0_1px_0_0_rgba(255,255,255,0.04)]'
-                : 'bg-white/[0.01] border-white/[0.04] hover:border-white/[0.08] hover:bg-white/[0.02]'
-            }`}
-          >
-            {outputMode === 'variants' && (
-              <div className="absolute top-0 left-0 w-[2px] h-full bg-gradient-to-b from-[#c9a84c] to-[#e8d5a3] shadow-[0_0_8px_rgba(201,168,76,0.6)]" />
-            )}
-            <div className="flex items-center gap-3 mb-1">
-              <div className={`w-3.5 h-3.5 rounded-sm border flex items-center justify-center transition-colors ${
-                outputMode === 'variants' ? 'border-[#c9a84c] bg-[#c9a84c]/10' : 'border-zinc-700 bg-black/20'
-              }`}>
-                {outputMode === 'variants' && (
-                  <div className="w-1.5 h-1.5 rounded-sm bg-[#d4b55a] shadow-[0_0_4px_rgba(201,168,76,0.8)]" />
-                )}
-              </div>
-              <span className={`text-sm font-medium tracking-wide ${outputMode === 'variants' ? 'text-[#e8d5a3]' : 'text-zinc-300'}`}>
-                Generate Variants
-              </span>
-            </div>
-            <p className="text-xs text-zinc-500 pl-[26px]">Multiple versions across different conversion angles</p>
-          </button>
-
-          <button
-            type="button"
             onClick={() => setOutputMode('clone')}
             className={`w-full text-left p-3 rounded-lg border transition-all duration-300 relative overflow-hidden cursor-pointer ${
               outputMode === 'clone'
@@ -525,11 +496,9 @@ export default function ScriptGeneratorPanel({
           </button>
         </div>
 
-        {(outputMode === 'variants' || outputMode === 'iterate') && (
+        {outputMode === 'iterate' && (
           <div className="flex items-center gap-3 pt-2">
-            <span className="text-xs text-zinc-500 font-mono">
-              {outputMode === 'iterate' ? 'ITERATIONS:' : 'VARIANTS:'}
-            </span>
+            <span className="text-xs text-zinc-500 font-mono">ITERATIONS:</span>
             <div className="flex gap-1.5">
               {[2, 3, 4, 5].map((n) => (
                 <button
@@ -578,11 +547,7 @@ export default function ScriptGeneratorPanel({
         ) : (
           <>
             <Sparkles className="w-4 h-4" />
-            Generate {
-              outputMode === 'clone'   ? 'Clone'
-              : outputMode === 'iterate' ? `${variantCount} Iterations`
-              : `${variantCount} Variants`
-            }
+            Generate {outputMode === 'iterate' ? `${variantCount} Iterations` : 'Clone'}
           </>
         )}
       </button>
