@@ -353,9 +353,12 @@ export default function MetaVideoImportModal({ open, onClose, onImported }) {
                     className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-[10px] font-mono uppercase tracking-wider rounded-md border transition-colors cursor-pointer ${
                       active ? 'bg-sky-500/15 border-sky-500/40 text-sky-200' : 'bg-white/[0.02] border-white/[0.06] text-zinc-400 hover:bg-white/[0.04]'
                     }`}
-                    title={a.name}
+                    title={a.name || a.id}
                   >
-                    {a.name.length > 24 ? a.name.slice(0, 24) + '…' : a.name}
+                    {(() => {
+                      const label = a.name || a.id || 'Unknown';
+                      return label.length > 24 ? label.slice(0, 24) + '…' : label;
+                    })()}
                     {a.spend > 0 && (
                       <span className="text-[9px] text-zinc-500">{fmt$(a.spend)}</span>
                     )}

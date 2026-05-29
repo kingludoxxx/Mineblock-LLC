@@ -5799,7 +5799,7 @@ router.get('/meta-video-ads/accounts', authenticate, async (req, res) => {
     const sql = `
       SELECT
         ${idCol}                                                  AS id,
-        ${nameCol ? `MAX(${nameCol})` : `MAX(${idCol})`}::text     AS name,
+        COALESCE(${nameCol ? `MAX(${nameCol})` : 'NULL'}, MAX(${idCol}))::text AS name,
         SUM(spend)::FLOAT                                         AS spend,
         MAX(synced_at)                                            AS last_sync
       FROM creative_analysis
