@@ -10,6 +10,26 @@ const router = Router();
 // These use their own auth mechanisms (CRON_SECRET, SUPPLIER_SHARE_TOKEN).
 // They MUST be registered before router.use(authenticate,...) or they get 401.
 
+// GET /cron/sellerboard-sync — called by Render Cron Job, protected by CRON_SECRET.
+// Pulls the rolling 30d Amazon "Dashboard by day" CSV and upserts into
+// amazon_daily_kpis. Idempotent — safe to run hourly if desired.
+router.get('/cron/sellerboard-sync', async (req, res) => {
+  const secret = process.env.CRON_SECRET;
+  if (!secret || req.query.secret !== secret) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+  try {
+    const result = await syncSellerboard();
+    if (result.error) {
+      return res.status(500).json({ ok: false, ...result });
+    }
+    return res.json({ ok: true, ...result });
+  } catch (err) {
+    console.error('[Sellerboard cron] Error:', err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 // GET /cron/daily-pnl — called by Render Cron Job, protected by CRON_SECRET
 router.get('/cron/daily-pnl', async (req, res) => {
   const secret = process.env.CRON_SECRET;
@@ -247,6 +267,11 @@ const MIN_ORDER_NUMBER = 0; // Sync ALL orders
 const WHOP_API_TOKEN = process.env.WHOP_API_TOKEN || '';
 const WHOP_API_URL = 'https://api.whop.com/api';
 const WHOP_COMPANY_ID = 'biz_pkN7XmNrvouslh';
+
+// Sellerboard "Dashboard by day" CSV automation feed — pre-tokenised, single URL.
+// See migration 055. Timezone convention: Sellerboard reports Amazon's PST/PDT
+// day; we tag it to the same Berlin calendar date (~9h conceptual offset).
+const SELLERBOARD_FEED_URL = process.env.SELLERBOARD_FEED_URL || '';
 
 // Meta Ads API — primary source for ad spend
 const META_TOKEN = process.env.META_ACCESS_TOKEN || '';
@@ -636,6 +661,23 @@ async function ensureTables() {
     )
   `);
   await pgQuery('ALTER TABLE whop_payment_fees ADD COLUMN IF NOT EXISTS lasso_fees NUMERIC DEFAULT 0').catch(() => {});
+
+  // Amazon (Sellerboard) daily KPIs — see migration 055. Boot-safe DDL so the
+  // sync function can write even on a freshly-cloned environment.
+  await pgQuery(`
+    CREATE TABLE IF NOT EXISTS amazon_daily_kpis (
+      kpi_date         DATE PRIMARY KEY,
+      gross_sales      NUMERIC(12, 2) DEFAULT 0,
+      units            INTEGER DEFAULT 0,
+      orders           INTEGER DEFAULT 0,
+      ppc_spend        NUMERIC(12, 2) DEFAULT 0,
+      amazon_fees      NUMERIC(12, 2) DEFAULT 0,
+      refunds          INTEGER DEFAULT 0,
+      net_profit       NUMERIC(12, 2) DEFAULT 0,
+      raw_row          JSONB,
+      synced_at        TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
   await pgQuery('ALTER TABLE shopify_orders_cache ADD COLUMN IF NOT EXISTS refund_amount NUMERIC(10,2) DEFAULT 0').catch(() => {});
   await pgQuery('ALTER TABLE shopify_orders_cache ADD COLUMN IF NOT EXISTS refunded_at TIMESTAMPTZ').catch(() => {});
   // refunded_at backfill completed — actual Shopify refund dates are now stored
@@ -1357,6 +1399,155 @@ async function syncWhopFees(lookbackDays = 3) {
   }
 }
 
+// ── Sellerboard (Amazon) Sync ───────────────────────────────────────
+// Parses Sellerboard's "Dashboard by day" CSV automation feed.
+// CSV columns (29 total): Date, SalesOrganic, SalesPPC, SalesSponsoredProducts,
+//   SalesSponsoredDisplay, UnitsOrganic, UnitsPPC, UnitsSponsoredProducts,
+//   UnitsSponsoredDisplay, Orders, Refunds, PromoValue, SponsoredProducts,
+//   SponsoredDisplay, SponsoredBrands, SponsoredBrandsVideo, Google ads,
+//   Facebook ads, GiftWrap, Shipping, RefundCost, "Value of returned items",
+//   AmazonFees, EstimatedPayout, "Cost of Goods", GrossProfit, Expenses,
+//   NetProfit, Margin, "Real ACOS", Sessions, "Unit Session Percentage"
+// PPC spend columns are negative in the CSV (they're cost rows); we take abs.
+
+/**
+ * Minimal RFC-4180-ish CSV row parser. Handles quoted fields, escaped quotes,
+ * and BOM. Sellerboard's export is well-formed, but we're defensive.
+ */
+function parseCsvRow(line) {
+  const out = [];
+  let cur = '';
+  let inQ = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (inQ) {
+      if (ch === '"' && line[i + 1] === '"') { cur += '"'; i++; }
+      else if (ch === '"') { inQ = false; }
+      else { cur += ch; }
+    } else {
+      if (ch === '"') { inQ = true; }
+      else if (ch === ',') { out.push(cur); cur = ''; }
+      else { cur += ch; }
+    }
+  }
+  out.push(cur);
+  return out;
+}
+
+/**
+ * Sellerboard reports dates as M/D/YYYY (US locale). Convert to ISO YYYY-MM-DD.
+ * Returns null on parse failure rather than throwing — the sync loop logs + skips.
+ */
+function parseSellerboardDate(s) {
+  if (!s || typeof s !== 'string') return null;
+  const m = s.trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (!m) return null;
+  const mm = String(m[1]).padStart(2, '0');
+  const dd = String(m[2]).padStart(2, '0');
+  return `${m[3]}-${mm}-${dd}`;
+}
+
+async function syncSellerboard() {
+  if (!SELLERBOARD_FEED_URL) {
+    return { synced: 0, error: 'SELLERBOARD_FEED_URL not configured' };
+  }
+  try {
+    await ensureTables();
+
+    const resp = await fetch(SELLERBOARD_FEED_URL, { redirect: 'follow' });
+    if (!resp.ok) {
+      return { synced: 0, error: `Sellerboard feed HTTP ${resp.status}` };
+    }
+    const text = await resp.text();
+    const cleaned = text.replace(/^﻿/, ''); // strip BOM
+    const lines = cleaned.split(/\r?\n/).filter(l => l.trim().length > 0);
+    if (lines.length < 2) {
+      console.warn('[Sellerboard] feed has no data rows');
+      return { synced: 0, rows: 0 };
+    }
+
+    const headers = parseCsvRow(lines[0]).map(h => h.trim());
+    const idx = (name) => headers.indexOf(name);
+    const iDate = idx('Date');
+    const iSalesOrg = idx('SalesOrganic');
+    const iSalesPpc = idx('SalesPPC');
+    const iUnitsOrg = idx('UnitsOrganic');
+    const iUnitsPpc = idx('UnitsPPC');
+    const iOrders = idx('Orders');
+    const iRefunds = idx('Refunds');
+    const iSpProducts = idx('SponsoredProducts');
+    const iSpDisplay = idx('SponsoredDisplay');
+    const iSpBrands = idx('SponsoredBrands');
+    const iSpBrandsVideo = idx('SponsoredBrandsVideo');
+    const iAmazonFees = idx('AmazonFees');
+    const iNetProfit = idx('NetProfit');
+
+    if (iDate < 0 || iSalesOrg < 0 || iSalesPpc < 0 || iNetProfit < 0) {
+      const msg = `Sellerboard CSV missing required columns. Got: ${headers.join(', ')}`;
+      console.error('[Sellerboard]', msg);
+      return { synced: 0, error: msg };
+    }
+
+    const num = (s) => {
+      const n = parseFloat(s);
+      return Number.isFinite(n) ? n : 0;
+    };
+    const absNum = (s) => Math.abs(num(s));
+    const intNum = (s) => {
+      const n = parseInt(s, 10);
+      return Number.isFinite(n) ? n : 0;
+    };
+
+    let synced = 0;
+    let skipped = 0;
+    for (let li = 1; li < lines.length; li++) {
+      const cols = parseCsvRow(lines[li]);
+      const dateIso = parseSellerboardDate(cols[iDate]);
+      if (!dateIso) { skipped++; continue; }
+
+      const gross = num(cols[iSalesOrg]) + num(cols[iSalesPpc]);
+      const units = intNum(cols[iUnitsOrg]) + intNum(cols[iUnitsPpc]);
+      const orders = intNum(cols[iOrders]);
+      const ppc = absNum(cols[iSpProducts]) + absNum(cols[iSpDisplay])
+        + absNum(cols[iSpBrands]) + absNum(cols[iSpBrandsVideo]);
+      const fees = absNum(cols[iAmazonFees]);
+      const refunds = intNum(cols[iRefunds]);
+      const netProfit = num(cols[iNetProfit]);
+
+      // Preserve the full row for forensics in case Sellerboard adds a column
+      // or someone needs to backfill a recomputation.
+      const rawObj = {};
+      for (let h = 0; h < headers.length && h < cols.length; h++) {
+        rawObj[headers[h]] = cols[h];
+      }
+
+      await pgQuery(`
+        INSERT INTO amazon_daily_kpis (
+          kpi_date, gross_sales, units, orders, ppc_spend, amazon_fees,
+          refunds, net_profit, raw_row, synced_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+        ON CONFLICT (kpi_date) DO UPDATE SET
+          gross_sales = EXCLUDED.gross_sales,
+          units       = EXCLUDED.units,
+          orders      = EXCLUDED.orders,
+          ppc_spend   = EXCLUDED.ppc_spend,
+          amazon_fees = EXCLUDED.amazon_fees,
+          refunds     = EXCLUDED.refunds,
+          net_profit  = EXCLUDED.net_profit,
+          raw_row     = EXCLUDED.raw_row,
+          synced_at   = NOW()
+      `, [dateIso, gross, units, orders, ppc, fees, refunds, netProfit, JSON.stringify(rawObj)]);
+      synced++;
+    }
+
+    console.log(`[Sellerboard] synced ${synced} day-rows (skipped ${skipped})`);
+    return { synced, skipped, rows: lines.length - 1 };
+  } catch (err) {
+    console.error('[Sellerboard] sync error:', err.message);
+    return { synced: 0, error: err.message };
+  }
+}
+
 // ── Routes ──────────────────────────────────────────────────────────
 
 /** POST /sync — Pull Shopify orders, calculate costs, store KPIs */
@@ -1483,6 +1674,12 @@ router.post('/sync', authenticate, async (req, res) => {
       return { synced: 0, error: err.message };
     });
 
+    // Sync Amazon (Sellerboard) daily KPIs — single feed URL, rolling 30 days
+    const amazonResult = await syncSellerboard().catch(err => {
+      console.error('[KPI] Sellerboard sync error:', err.message);
+      return { synced: 0, error: err.message };
+    });
+
     const totalOrders = await pgQuery('SELECT COUNT(*) as count FROM shopify_orders_cache');
 
     if (fullSync) {
@@ -1497,6 +1694,7 @@ router.post('/sync', authenticate, async (req, res) => {
           totalCached: parseInt(totalOrders[0].count),
           incremental: !!sinceId,
           feesSynced: feeResult.synced || 0,
+          amazonDaysSynced: amazonResult.synced || 0,
         },
       });
     }
@@ -1535,12 +1733,13 @@ router.get('/home-dashboard', authenticate, async (req, res) => {
     const startDate = sd.toISOString().slice(0, 10);
     const endDate = rangeEnd;
 
-    // Parallel: snapshots, fees, Meta spend cache, TripleWhale fallback
-    const [snapshots, feeRows, metaSpendRows, twSpendRows] = await Promise.all([
+    // Parallel: snapshots, fees, Meta spend cache, TripleWhale fallback, Amazon (Sellerboard)
+    const [snapshots, feeRows, metaSpendRows, twSpendRows, amazonRows] = await Promise.all([
       pgQuery(`SELECT * FROM daily_kpi_snapshots WHERE snapshot_date BETWEEN $1 AND $2 ORDER BY snapshot_date`, [startDate, endDate]),
       pgQuery(`SELECT DATE(paid_at AT TIME ZONE 'Europe/Berlin') as fee_date, COALESCE(SUM(total_fees),0) as total_fees, COALESCE(SUM(whop_fees),0) as whop_fees, COALESCE(SUM(processing_fees),0) as processing_fees, COALESCE(SUM(other_fees),0) as other_fees, COALESCE(SUM(lasso_fees),0) as lasso_fees FROM whop_payment_fees WHERE DATE(paid_at AT TIME ZONE 'Europe/Berlin') BETWEEN $1 AND $2 GROUP BY DATE(paid_at AT TIME ZONE 'Europe/Berlin') ORDER BY fee_date`, [startDate, endDate]),
       pgQuery(`SELECT spend_date::text AS date, total_spend AS spend, total_clicks AS clicks, total_purchases AS meta_purchases FROM meta_ad_spend_cache WHERE spend_date BETWEEN $1 AND $2`, [startDate, endDate]),
       fetchDailyAdSpend(startDate, endDate).catch(() => []),
+      pgQuery(`SELECT kpi_date::text AS date, gross_sales, ppc_spend, orders, units FROM amazon_daily_kpis WHERE kpi_date BETWEEN $1 AND $2`, [startDate, endDate]).catch(() => []),
     ]);
 
     // Build fee lookup by date — split Whop platform fees from Lasso fees
@@ -1578,6 +1777,18 @@ router.get('/home-dashboard', authenticate, async (req, res) => {
     for (const s of snapshots) {
       const d = typeof s.snapshot_date === 'string' ? s.snapshot_date.slice(0, 10) : new Date(s.snapshot_date).toISOString().slice(0, 10);
       snapLookup[d] = s;
+    }
+
+    // Build Amazon lookup by Berlin-tagged date (see Option A timezone convention)
+    const amazonLookup = {};
+    for (const r of amazonRows) {
+      const d = typeof r.date === 'string' ? r.date.slice(0, 10) : new Date(r.date).toISOString().slice(0, 10);
+      amazonLookup[d] = {
+        revenue: parseFloat(r.gross_sales || 0),
+        ppc: parseFloat(r.ppc_spend || 0),
+        orders: parseInt(r.orders || 0),
+        units: parseInt(r.units || 0),
+      };
     }
 
     // Helper: build metrics object for a date
@@ -1622,7 +1833,21 @@ router.get('/home-dashboard', authenticate, async (req, res) => {
       const conversionRate = (clicks > 0 && orders > 0)
         ? Math.round((orders / clicks) * 10000) / 100
         : null;
-      return { date: d, revenue, twRevenue, adSpend, roas, breakEvenRoas, contributionMarginPct, orders, aov, costs, cogs, shipping, fees, whopFees, lassoFees, profit, netMargin, conversionRate, clicks, refunds };
+      // Amazon (Sellerboard) augmentation. amazonRevenue / amazonPpc are zero
+      // when SELLERBOARD_FEED_URL is unconfigured or no row exists for the day.
+      const az = amazonLookup[d] || { revenue: 0, ppc: 0, orders: 0, units: 0 };
+      const amazonRevenue = az.revenue;
+      const amazonPpc = az.ppc;
+      const revenueWithAmazon = revenue + amazonRevenue;
+      const adSpendWithAmazon = adSpend + amazonPpc;
+      // ROAS with Amazon — Option A: Meta + Amazon PPC in denominator.
+      const roasWithAmazon = adSpendWithAmazon > 0
+        ? Math.round((revenueWithAmazon / adSpendWithAmazon) * 100) / 100
+        : 0;
+      const pctAmazon = revenueWithAmazon > 0
+        ? Math.round((amazonRevenue / revenueWithAmazon) * 10000) / 100
+        : 0;
+      return { date: d, revenue, twRevenue, adSpend, roas, breakEvenRoas, contributionMarginPct, orders, aov, costs, cogs, shipping, fees, whopFees, lassoFees, profit, netMargin, conversionRate, clicks, refunds, amazonRevenue, amazonPpc, amazonOrders: az.orders, amazonUnits: az.units, revenueWithAmazon, adSpendWithAmazon, roasWithAmazon, pctAmazon };
     }
 
     // Build daily metrics for the full fetched window
@@ -1669,7 +1894,20 @@ router.get('/home-dashboard', authenticate, async (req, res) => {
       const totalClicks = days.reduce((s, d) => s + (d.clicks || 0), 0);
       const refunds = sum('refunds');
       const conversionRate = (totalClicks > 0 && orders > 0) ? Math.round((orders / totalClicks) * 10000) / 100 : null;
-      return { revenue, twRevenue, adSpend, roas, breakEvenRoas, contributionMarginPct, varCostPerOrder, orders, aov, costs, cogs, shipping, fees, whopFees, lassoFees, profit, netMargin, conversionRate, refunds };
+      // Amazon — sum across days, then recompute combined ROAS + % Amazon.
+      const amazonRevenue = sum('amazonRevenue');
+      const amazonPpc = sum('amazonPpc');
+      const amazonOrders = sum('amazonOrders');
+      const amazonUnits = sum('amazonUnits');
+      const revenueWithAmazon = revenue + amazonRevenue;
+      const adSpendWithAmazon = adSpend + amazonPpc;
+      const roasWithAmazon = adSpendWithAmazon > 0
+        ? Math.round((revenueWithAmazon / adSpendWithAmazon) * 100) / 100
+        : 0;
+      const pctAmazon = revenueWithAmazon > 0
+        ? Math.round((amazonRevenue / revenueWithAmazon) * 10000) / 100
+        : 0;
+      return { revenue, twRevenue, adSpend, roas, breakEvenRoas, contributionMarginPct, varCostPerOrder, orders, aov, costs, cogs, shipping, fees, whopFees, lassoFees, profit, netMargin, conversionRate, refunds, amazonRevenue, amazonPpc, amazonOrders, amazonUnits, revenueWithAmazon, adSpendWithAmazon, roasWithAmazon, pctAmazon };
     }
 
     // Current period = selected range
@@ -1786,6 +2024,25 @@ router.get('/dashboard', authenticate, async (req, res) => {
     // Lasso is a separate vendor — counted on its own per business decision.
     const whopTotalFees = whopFees + processingFees + otherFees;
 
+    // Amazon (Sellerboard) period totals — tagged to Berlin dates per Option A.
+    const amazonRows = await pgQuery(`
+      SELECT
+        COALESCE(SUM(gross_sales), 0) AS amazon_revenue,
+        COALESCE(SUM(ppc_spend), 0)   AS amazon_ppc,
+        COALESCE(SUM(orders), 0)      AS amazon_orders,
+        COALESCE(SUM(units), 0)       AS amazon_units,
+        COALESCE(SUM(net_profit), 0)  AS amazon_net_profit
+      FROM amazon_daily_kpis
+      WHERE kpi_date BETWEEN $1 AND $2
+    `, [start, end]).catch(() => [{}]);
+    const amazonRevenue = parseFloat(amazonRows[0]?.amazon_revenue || 0);
+    const amazonPpc = parseFloat(amazonRows[0]?.amazon_ppc || 0);
+    const amazonOrders = parseInt(amazonRows[0]?.amazon_orders || 0);
+    const amazonUnits = parseInt(amazonRows[0]?.amazon_units || 0);
+    // amazon_net_profit is overstated until Sellerboard COGS is configured —
+    // we surface it anyway so the UI can show a clear placeholder w/ warning.
+    const amazonNetProfit = parseFloat(amazonRows[0]?.amazon_net_profit || 0);
+
     // Subtract fees from gross profit
     agg.grossProfit = agg.totalRevenue - agg.totalCogs - agg.totalShipping - totalFees;
     agg.avgProfitMargin = agg.totalRevenue > 0 ? Math.round((agg.grossProfit / agg.totalRevenue) * 10000) / 100 : 0;
@@ -1808,6 +2065,19 @@ router.get('/dashboard', authenticate, async (req, res) => {
         processingFees: Math.round(processingFees * 100) / 100,
         otherFees: Math.round(otherFees * 100) / 100,
         lassoFees: Math.round(lassoFees * 100) / 100,
+        // Amazon (Sellerboard) — see migration 055. amazonNetProfit is overstated
+        // until COGS is configured in Sellerboard; the UI shows a warning chip.
+        amazonRevenue: Math.round(amazonRevenue * 100) / 100,
+        amazonPpc: Math.round(amazonPpc * 100) / 100,
+        amazonOrders,
+        amazonUnits,
+        amazonNetProfit: Math.round(amazonNetProfit * 100) / 100,
+        revenueWithAmazon: Math.round((agg.totalRevenue + amazonRevenue) * 100) / 100,
+        pctAmazon: agg.totalRevenue + amazonRevenue > 0
+          ? Math.round((amazonRevenue / (agg.totalRevenue + amazonRevenue)) * 10000) / 100
+          : 0,
+        // NB: roasWithAmazon is computed in /home-dashboard (where adSpend is in scope),
+        // not here. KpiDashboard.jsx reads /dashboard which has no ad-spend field anyway.
         topSku,
         days: snapshots.map(s => ({
           date: s.snapshot_date,
@@ -2475,6 +2745,17 @@ async function sendDailyPnlReport(dateStr, { force = false } = {}) {
     console.warn(`[Daily P&L] Meta spend sync failed, using cached data: ${syncErr.message}`);
   }
 
+  // Pull fresh Amazon data so the Slack message reflects today's Sellerboard feed.
+  // Skips silently if SELLERBOARD_FEED_URL not configured.
+  if (SELLERBOARD_FEED_URL) {
+    try {
+      await syncSellerboard();
+      console.log('[Daily P&L] Refreshed Sellerboard cache before generating report');
+    } catch (syncErr) {
+      console.warn(`[Daily P&L] Sellerboard sync failed, using cached data: ${syncErr.message}`);
+    }
+  }
+
   // Get snapshot for the date
   const snapRows = await pgQuery(
     'SELECT * FROM daily_kpi_snapshots WHERE snapshot_date = $1', [dateStr]
@@ -2485,6 +2766,14 @@ async function sendDailyPnlReport(dateStr, { force = false } = {}) {
     `SELECT COALESCE(SUM(total_fees),0) as total_fees
      FROM whop_payment_fees WHERE DATE(paid_at AT TIME ZONE 'Europe/Berlin') = $1`, [dateStr]
   );
+
+  // Get Amazon (Sellerboard) row for the date — tagged to matching Berlin
+  // calendar date per Option A timezone convention (see migration 055).
+  const amazonRows = await pgQuery(
+    `SELECT gross_sales, ppc_spend FROM amazon_daily_kpis WHERE kpi_date = $1`, [dateStr]
+  ).catch(() => []);
+  const amazonRevenue = parseFloat(amazonRows[0]?.gross_sales || 0);
+  const amazonPpc = parseFloat(amazonRows[0]?.ppc_spend || 0);
 
   // Get ad spend — TW is primary (all platforms), Meta is fallback (single platform)
   const metaCacheRows = await pgQuery(
@@ -2523,7 +2812,15 @@ async function sendDailyPnlReport(dateStr, { force = false } = {}) {
       return n < 0 ? `-$${str}` : `$${str}`;
     };
 
-    const msgText = [
+    // Combined-channel ROAS (Option A) — adds Amazon revenue & PPC to both sides.
+    // When SELLERBOARD_FEED_URL isn't configured these stay zero and the
+    // combined metrics equal the Shopify-only ones.
+    const revenueWithAmazon = revenue + amazonRevenue;
+    const adSpendWithAmazon = adSpend + amazonPpc;
+    const roasWithAmazon = adSpendWithAmazon > 0 ? (revenueWithAmazon / adSpendWithAmazon) : 0;
+    const pctAmazon = revenueWithAmazon > 0 ? (amazonRevenue / revenueWithAmazon) * 100 : 0;
+
+    const lines = [
       `*${displayDate}*`,
       `Revenue:  ${fmt(revenue)}`,
       `COGS:  ${fmt(cogs)}`,
@@ -2534,7 +2831,22 @@ async function sendDailyPnlReport(dateStr, { force = false } = {}) {
       `ROAS:  ${roas.toFixed(2)}x`,
       `Net Margin:  ${netMarginPct.toFixed(1)}%`,
       `Profit:  ${fmt(profit)}`,
-    ].join('\n');
+    ];
+
+    if (amazonRevenue > 0 || amazonPpc > 0) {
+      lines.push(
+        '',
+        ':package: *Amazon (Pacific Time day, tagged to this Berlin date)*',
+        `Amazon Revenue:  ${fmt(amazonRevenue)}  _(${pctAmazon.toFixed(1)}% of total)_`,
+        `Amazon PPC:  ${fmt(amazonPpc)}`,
+        '',
+        ':bar_chart: *Combined (Shopify + Amazon)*',
+        `Revenue w/ Amazon:  ${fmt(revenueWithAmazon)}`,
+        `ROAS w/ Amazon:  ${roasWithAmazon.toFixed(2)}x  _(Meta + Amazon PPC in denominator)_`,
+      );
+    }
+
+    const msgText = lines.join('\n');
 
     const profitEmoji = profit >= 0 ? ':chart_with_upwards_trend:' : ':chart_with_downwards_trend:';
     const marginColor = netMarginPct >= 15 ? '#10b981' : netMarginPct >= 0 ? '#f59e0b' : '#ef4444';

@@ -11,6 +11,7 @@ import {
   RefreshCw,
   Download,
   BarChart3,
+  ShoppingBag,
 } from 'lucide-react';
 import DatePicker from '../../components/ui/DatePicker';
 import { toLocalDateStr, todayLocalStr } from '../../utils/dateUtils';
@@ -242,6 +243,15 @@ export default function KpiDashboard() {
     processingFees: raw.processingFees ?? 0,
     otherFees: raw.otherFees ?? 0,
     lassoFees: raw.lassoFees ?? 0,
+    // Amazon (Sellerboard) — pulled from /dashboard. Zero when SELLERBOARD_FEED_URL
+    // is unconfigured on the server.
+    amazonRevenue: raw.amazonRevenue ?? 0,
+    amazonPpc: raw.amazonPpc ?? 0,
+    amazonOrders: raw.amazonOrders ?? 0,
+    amazonUnits: raw.amazonUnits ?? 0,
+    amazonNetProfit: raw.amazonNetProfit ?? 0,
+    revenueWithAmazon: raw.revenueWithAmazon ?? ((raw.revenue ?? raw.totalRevenue ?? 0) + (raw.amazonRevenue ?? 0)),
+    pctAmazon: raw.pctAmazon ?? 0,
   };
 
   // ── Render ─────────────────────────────────────────────────────────────────
@@ -402,6 +412,69 @@ export default function KpiDashboard() {
             )}
           </div>
         </div>
+
+        {/* ── Amazon (Sellerboard) Section ──────────────────────────────── */}
+        {/* Hidden entirely when no Amazon data exists for the period. */}
+        {(metrics.amazonRevenue > 0 || metrics.amazonPpc > 0) && (
+          <div className="space-y-3">
+            <div className="flex items-center gap-2 px-1">
+              <ShoppingBag size={14} className="text-orange-400" />
+              <h2 className="text-sm font-medium text-white">Amazon</h2>
+              <span className="text-[10px] text-[#666] uppercase tracking-wider">
+                Pacific Time day · tagged to Berlin calendar date
+              </span>
+              {metrics.amazonNetProfit === 0 && metrics.amazonRevenue > 0 && (
+                <span className="ml-auto text-[10px] text-yellow-400 bg-yellow-500/10 border border-yellow-500/20 rounded px-2 py-0.5">
+                  ⚠ COGS not configured in Sellerboard — profit hidden
+                </span>
+              )}
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-4">
+              <MetricCard
+                icon={ShoppingBag}
+                label="Amazon Revenue"
+                value={fmtMoney(metrics.amazonRevenue)}
+                subtitle={`${fmtInt(metrics.amazonOrders)} orders · ${fmtInt(metrics.amazonUnits)} units`}
+                accentColor="bg-orange-500/10"
+              />
+              <MetricCard
+                icon={AlertTriangle}
+                label="Amazon PPC"
+                value={fmtMoney(metrics.amazonPpc)}
+                subtitle={metrics.amazonRevenue > 0
+                  ? `${((metrics.amazonPpc / metrics.amazonRevenue) * 100).toFixed(1)}% ACOS`
+                  : undefined}
+                accentColor="bg-yellow-500/10"
+              />
+              <MetricCard
+                icon={DollarSign}
+                label="Revenue w/ Amazon"
+                value={fmtMoney(metrics.revenueWithAmazon)}
+                subtitle={`Shopify+Whop + Amazon`}
+                accentColor="bg-green-500/10"
+              />
+              <MetricCard
+                icon={BarChart3}
+                label="% Amazon of total"
+                value={`${(metrics.pctAmazon ?? 0).toFixed(1)}%`}
+                subtitle="Share of combined revenue"
+                accentColor="bg-purple-500/10"
+              />
+              <div className={cardStyle}>
+                <div className="flex items-center gap-2 mb-3">
+                  <div className="w-8 h-8 rounded-lg flex items-center justify-center bg-zinc-500/10">
+                    <Package size={16} className="text-zinc-400" />
+                  </div>
+                  <span className="text-[#888] text-sm">Amazon Profit</span>
+                </div>
+                <div className="text-2xl font-semibold text-zinc-500 mb-1">—</div>
+                <div className="text-[10px] text-zinc-500 mt-1">
+                  Pending Sellerboard COGS setup
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* ── Profit Trend Chart ──────────────────────────────────────────── */}
         {trends.length > 0 && (

@@ -16,6 +16,8 @@ import {
   ArrowDownRight,
   ChevronDown,
   Scale,
+  ShoppingBag,
+  PieChart,
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -58,6 +60,18 @@ const METRICS = [
   { key: 'netMargin',      label: 'Net Margin',       icon: Percent,       color: '#a855f7', format: 'pct' },
   { key: 'conversionRate', label: 'Conversion Rate',  icon: Target,        color: '#ec4899', format: 'pct' },
   { key: 'refunds',        label: 'Refunds',           icon: RotateCcw,     color: '#ef4444', format: 'int', invertColor: true },
+];
+
+// Amazon (Sellerboard) metric definitions — rendered as a separate row below
+// the main grid only when Amazon data is present for the selected period.
+// Backed by amazonRevenue / revenueWithAmazon / roasWithAmazon / pctAmazon
+// fields added to /home-dashboard in kpiSystem.js (migration 055).
+const AMAZON_METRICS = [
+  { key: 'amazonRevenue',     label: 'Amazon Sales',      icon: ShoppingBag,  color: '#f97316', format: 'moneyFull' },
+  { key: 'amazonPpc',         label: 'Amazon PPC',        icon: Megaphone,    color: '#eab308', format: 'moneyFull', invertColor: true },
+  { key: 'revenueWithAmazon', label: 'Revenue w/ Amazon', icon: DollarSign,   color: '#10b981', format: 'moneyFull' },
+  { key: 'roasWithAmazon',    label: 'ROAS w/ Amazon',    icon: TrendingUp,   color: '#3b82f6', format: 'roas' },
+  { key: 'pctAmazon',         label: '% Amazon of Total', icon: PieChart,     color: '#a855f7', format: 'pct' },
 ];
 
 const formatValue = (val, format) => {
@@ -740,6 +754,45 @@ export default function Dashboard() {
             />
           ))}
         </div>
+
+        {/* Amazon (Sellerboard) row — appears only when Amazon data is present.
+            PST day tagged to matching Berlin date (Option A timezone convention). */}
+        {!loading && (current.amazonRevenue > 0 || current.amazonPpc > 0) && (
+          <>
+            <div className="flex items-center gap-2 pt-2 px-1">
+              <ShoppingBag size={14} className="text-orange-400" />
+              <h2 className="text-xs font-medium text-white uppercase tracking-[0.15em]">
+                Amazon
+              </h2>
+              <span className="text-[10px] text-zinc-500">
+                Pacific Time day · tagged to Berlin date
+              </span>
+              {current.amazonRevenue > 0 && !(current.amazonRevenue - current.amazonPpc > 0) && (
+                <span className="ml-auto text-[10px] text-yellow-400 bg-yellow-500/10 border border-yellow-500/20 rounded px-2 py-0.5">
+                  ⚠ COGS not configured in Sellerboard — profit hidden
+                </span>
+              )}
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+              {AMAZON_METRICS.map((m, i) => (
+                <KpiCard
+                  key={m.key}
+                  label={m.label}
+                  value={current[m.key]}
+                  format={m.format}
+                  icon={m.icon}
+                  color={m.color}
+                  sparkData={sparklines}
+                  sparkKey={m.key}
+                  change={getChange(m.key)}
+                  invertColor={m.invertColor}
+                  loading={false}
+                  index={i + 11}
+                />
+              ))}
+            </div>
+          </>
+        )}
 
         {/* Profitability Health — Break-Even ROAS + AOV sensitivity */}
         <ProfitabilityPanel current={current} loading={loading} />
