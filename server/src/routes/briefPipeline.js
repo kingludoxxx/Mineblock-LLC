@@ -22,6 +22,24 @@ const __dirname = dirname(__filename);
 const YTDLP_PATH = join(__dirname, '..', '..', '..', 'bin', 'yt-dlp');
 
 const router = Router();
+
+// TEMP — inspect active-video account/thumbnail coverage so we wire fixes right.
+router.get('/meta-video-ads/health', async (req, res) => {
+  try {
+    const total  = await pgQuery(`SELECT COUNT(*)::int AS c FROM creative_analysis WHERE type='video' AND ad_status='active' AND synced_at >= NOW() - INTERVAL '30 days'`);
+    const noThumb = await pgQuery(`SELECT COUNT(*)::int AS c FROM creative_analysis WHERE type='video' AND ad_status='active' AND synced_at >= NOW() - INTERVAL '30 days' AND (thumbnail_url IS NULL OR thumbnail_url = '')`);
+    const byAcct = await pgQuery(`SELECT ad_account_id, COUNT(*)::int AS rows FROM creative_analysis WHERE type='video' AND ad_status='active' AND synced_at >= NOW() - INTERVAL '30 days' GROUP BY ad_account_id ORDER BY rows DESC`);
+    const sample = await pgQuery(`SELECT ad_name, thumbnail_url FROM creative_analysis WHERE type='video' AND ad_status='active' AND synced_at >= NOW() - INTERVAL '30 days' ORDER BY spend DESC NULLS LAST LIMIT 5`);
+    res.json({
+      success: true,
+      total_active_30d: total[0].c,
+      missing_thumbnail: noThumb[0].c,
+      by_account: byAcct,
+      sample_thumbnails: sample.map(r => ({ name: r.ad_name, thumb: r.thumbnail_url ? r.thumbnail_url.slice(0, 80) + '…' : null })),
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 router.use(authenticate, requirePermission('brief-pipeline', 'access'));
 
 // ── Config ────────────────────────────────────────────────────────────
