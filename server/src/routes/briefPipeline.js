@@ -30,51 +30,6 @@ const YTDLP_PATH = join(__dirname, '..', '..', '..', 'bin', 'yt-dlp');
 
 const router = Router();
 
-// TEMP — verify new Gemini key works on the silent-video edge case
-router.post('/_verify-gemini', async (req, res) => {
-  try {
-    const stuck = await pgQuery(`SELECT id, video_url, imported_metadata FROM brief_pipeline_references WHERE source='meta' AND status='error' LIMIT 5`);
-    const results = [];
-    for (const ref of stuck) {
-      let md = ref.imported_metadata;
-      if (typeof md === 'string') { try { md = JSON.parse(md); } catch { md = {}; } }
-      const adLibUrl = md?.ad_library_url || (md?.ad_id ? `https://www.facebook.com/ads/library/?id=${md.ad_id}` : null);
-      await pgQuery(`UPDATE brief_pipeline_references SET status='extracting', transcript=NULL, analysis_error=NULL, updated_at=NOW() WHERE id=$1`, [ref.id]);
-      let videoUrl = ref.video_url;
-      if (!videoUrl && adLibUrl) videoUrl = await extractVideoUrlFromAdLibrary(adLibUrl);
-      if (!videoUrl) { results.push({ id: ref.id, success: false, error: 'no URL' }); continue; }
-      (async () => {
-        try {
-          await pgQuery(`UPDATE brief_pipeline_references SET video_url=$1, status='transcribing' WHERE id=$2`, [videoUrl, ref.id]);
-          const { text, segments } = await transcribeVideoUrl(videoUrl);
-          await pgQuery(
-            `UPDATE brief_pipeline_references SET transcript=$1, transcript_at=NOW(), status='transcribed', analysis_error=NULL,
-                imported_metadata = CASE
-                  WHEN imported_metadata IS NULL THEN jsonb_build_object('transcript_segments', $2::jsonb)
-                  WHEN jsonb_typeof(imported_metadata) = 'object' THEN jsonb_set(imported_metadata, '{transcript_segments}', $2::jsonb, true)
-                  ELSE jsonb_build_object('original', imported_metadata::text, 'transcript_segments', $2::jsonb)
-                END,
-                updated_at=NOW() WHERE id=$3`,
-            [text, JSON.stringify(segments || []), ref.id]
-          );
-        } catch (e) {
-          await pgQuery(`UPDATE brief_pipeline_references SET status='error', analysis_error=$1, updated_at=NOW() WHERE id=$2`,
-            [`Transcribe failed: ${e.message?.slice(0, 600)}`, ref.id]).catch(() => {});
-        }
-      })();
-      results.push({ id: ref.id, success: true });
-    }
-    res.json({ success: true, kicked: results.length, results });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-router.get('/_verify-result', async (req, res) => {
-  try {
-    const rows = await pgQuery(`SELECT id, headline, status, LENGTH(COALESCE(transcript, '')) AS tlen, SUBSTRING(transcript, 1, 250) AS thead, analysis_error FROM brief_pipeline_references WHERE source='meta' ORDER BY updated_at DESC LIMIT 5`);
-    res.json({ success: true, refs: rows });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
 // ── Meta thumbnail proxy with R2 caching ──────────────────────────────
 // Placed BEFORE the global authenticate middleware because <img src> tags
 // can't carry JWTs. Safe to expose: thumbnails are non-sensitive, R2
