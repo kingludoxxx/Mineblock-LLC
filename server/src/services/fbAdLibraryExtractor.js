@@ -16,19 +16,37 @@
  * Crash recovery: if the browser dies, the next call relaunches it.
  */
 
-// Point Playwright at the build-time install location BEFORE importing the
-// browser module. Render's runtime start command doesn't carry forward the
-// PLAYWRIGHT_BROWSERS_PATH from build, so chromium.executablePath() defaults
-// to /opt/render/.cache/ms-playwright/ — which is empty. The postinstall
-// script puts the binaries at <repo>/playwright-browsers/.
 import path from 'node:path';
-import { existsSync } from 'node:fs';
-if (!process.env.PLAYWRIGHT_BROWSERS_PATH) {
-  process.env.PLAYWRIGHT_BROWSERS_PATH = path.join(process.cwd(), 'playwright-browsers');
-  console.log(`[fbExtractor] PLAYWRIGHT_BROWSERS_PATH set to ${process.env.PLAYWRIGHT_BROWSERS_PATH}`);
-}
+import { existsSync, readdirSync } from 'node:fs';
 import { chromium } from 'playwright';
 import { execSync } from 'node:child_process';
+
+// Find the actual chromium binary on disk. Render's build installs to
+// <repo>/playwright-browsers/ via postinstall PLAYWRIGHT_BROWSERS_PATH,
+// but the runtime start command doesn't propagate that env var, so
+// chromium.executablePath() returns the default /opt/render/.cache/...
+// path which is empty. We search both locations + Playwright's default.
+function findChromiumBinary() {
+  const candidates = [
+    path.join(process.cwd(), 'playwright-browsers'),
+    '/opt/render/project/src/playwright-browsers',
+    '/opt/render/.cache/ms-playwright',
+  ];
+  for (const baseDir of candidates) {
+    if (!existsSync(baseDir)) continue;
+    try {
+      const entries = readdirSync(baseDir);
+      // Find directory matching chromium-NNNN (NOT chromium_headless_shell-)
+      const chromiumDir = entries.find(e => /^chromium-\d+$/.test(e));
+      if (!chromiumDir) continue;
+      const fullPath = path.join(baseDir, chromiumDir, 'chrome-linux64', 'chrome');
+      if (existsSync(fullPath)) {
+        return fullPath;
+      }
+    } catch { /* keep searching */ }
+  }
+  return null;
+}
 
 // ── Warm browser singleton ────────────────────────────────────────────────
 let _browser = null;
@@ -55,41 +73,36 @@ function releaseSlot() {
   if (next) next();
 }
 
-// Compute the regular chromium executable path by replacing the
-// headless-shell components Playwright 1.59 returns by default.
-// We use the full chromium binary because chromium-headless-shell is
-// often missing from Render's build cache (silent install failure).
-function regularChromiumPath() {
-  const p = chromium.executablePath();
-  // Default headless-shell path looks like:
-  //   .../ms-playwright/chromium_headless_shell-XXXX/chrome-headless-shell-linux64/chrome-headless-shell
-  // Regular chromium path:
-  //   .../ms-playwright/chromium-XXXX/chrome-linux64/chrome
-  return p
-    .replace(/chromium_headless_shell-/g, 'chromium-')
-    .replace(/chrome-headless-shell-linux64/g, 'chrome-linux64')
-    .replace(/chrome-headless-shell$/, 'chrome');
-}
-
 function ensureChromium() {
   try {
-    const exePath = regularChromiumPath();
-    if (!existsSync(exePath)) {
-      console.log(`[fbExtractor] Regular Chromium missing at ${exePath} — installing...`);
-      execSync('npx playwright install chromium', { stdio: 'pipe' });
-      console.log('[fbExtractor] Chromium installed.');
-    } else {
-      console.log(`[fbExtractor] Regular Chromium found at ${exePath}`);
+    const found = findChromiumBinary();
+    if (found) {
+      console.log(`[fbExtractor] Chromium binary found at ${found}`);
+      return found;
     }
+    // Not found anywhere — install into the local cache location
+    console.log('[fbExtractor] Chromium binary not found in any expected location — installing...');
+    const localCache = path.join(process.cwd(), 'playwright-browsers');
+    execSync(`PLAYWRIGHT_BROWSERS_PATH=${localCache} npx playwright install chromium`, { stdio: 'pipe' });
+    const afterInstall = findChromiumBinary();
+    if (afterInstall) {
+      console.log(`[fbExtractor] Chromium installed at ${afterInstall}`);
+      return afterInstall;
+    }
+    console.warn('[fbExtractor] Chromium install completed but binary still not found');
+    return null;
   } catch (e) {
-    console.warn('[fbExtractor] ensureChromium check failed:', e.message);
+    console.warn('[fbExtractor] ensureChromium failed:', e.message);
+    return null;
   }
 }
 
 async function getBrowser() {
   if (_browser && _browser.isConnected()) return _browser;
-  ensureChromium();
-  const exePath = regularChromiumPath();
+  const exePath = ensureChromium();
+  if (!exePath) {
+    throw new Error('Chromium binary not available — install failed or wrong path');
+  }
   console.log(`[fbExtractor] Launching warm Chromium at ${exePath}...`);
   const t0 = Date.now();
   _browser = await chromium.launch({
