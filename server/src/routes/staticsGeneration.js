@@ -543,8 +543,8 @@ async function bootMigratorChunk() {
     LEFT JOIN image_store_migration m ON m.id = s.id
     WHERE m.id IS NULL
     ORDER BY s.created_at ASC
-    LIMIT 200
-  `, [], { timeout: 30000 });
+    LIMIT 50
+  `, [], { timeout: 120000 });
 
   if (todo.length === 0) return { done: true, processed: 0 };
 
