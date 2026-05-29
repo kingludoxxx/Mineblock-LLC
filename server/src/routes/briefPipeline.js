@@ -12,7 +12,7 @@ import { existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import {
-  getAdAccounts, getPages, getPixels, getCampaigns, getAdSets,
+  getAdAccounts, resolveAdAccountNames, getPages, getPixels, getCampaigns, getAdSets,
   getCustomAudiences, createAdSet, createFlexibleAdCreative, createAd,
   uploadAdImage, uploadAdVideo, uploadAdImageFromUrl, isMetaAdsConfigured, getAllAdAccountIds
 } from '../services/metaAdsApi.js';
@@ -5752,24 +5752,27 @@ router.get('/meta-video-ads/accounts', authenticate, async (req, res) => {
     `;
     const rows = await pgQuery(sql, [String(windowDays)]);
 
-    // Enrich with friendly names from Meta Graph API when possible. The TW
-    // sync rarely populates ad_account_name (97% NULL in production), so
-    // pulling fresh names from Meta gives the user a human-readable label.
-    let metaNames = {};
+    // Enrich with friendly names from Meta Graph API. Resolve EVERY account
+    // ID that TW reports — not just the ones in META_AD_ACCOUNT_IDS env.
+    // resolveAdAccountNames() handles bare numeric IDs (tries both raw and
+    // act_-prefixed forms) and caches results 1h to avoid hammering Graph
+    // on every modal open.
+    const allAcctIds = rows.map(r => String(r.id)).filter(Boolean);
+    let nameMap = new Map();
     try {
-      const metaAccts = await getAdAccounts();
-      for (const a of metaAccts || []) {
-        // Meta IDs sometimes come back as 'act_...' and sometimes bare digits
-        const id = String(a.id || '').replace(/^act_/i, '');
-        if (id && a.name) metaNames[id] = a.name;
-        if (a.id && a.name) metaNames[String(a.id)] = a.name;
-      }
+      nameMap = await resolveAdAccountNames(allAcctIds);
     } catch (e) {
-      console.warn('[BriefPipeline] getAdAccounts() failed (using TW names only):', e.message);
+      console.warn('[BriefPipeline] resolveAdAccountNames() failed (falling back to IDs):', e.message);
     }
     const friendly = (id, fallback) => {
-      const bare = String(id || '').replace(/^act_/i, '');
-      return metaNames[String(id)] || metaNames[bare] || fallback;
+      const raw = String(id || '');
+      const bare = raw.replace(/^act_/i, '');
+      // Try raw, bare, act_-prefixed. Then fall through to TW name, then ID label.
+      return nameMap.get(raw)
+          || nameMap.get(bare)
+          || nameMap.get(`act_${bare}`)
+          || (fallback && !/^(act_)?\d+$/i.test(fallback) ? fallback : null)
+          || `Account ${bare.slice(-6)}`;
     };
 
     const lastSync = rows[0]?.last_sync ? new Date(rows[0].last_sync).toISOString() : null;

@@ -200,6 +200,63 @@ export async function getAdAccounts() {
 }
 
 /**
+ * Resolve friendly names for an arbitrary list of Meta ad account IDs (NOT
+ * limited to META_AD_ACCOUNT_IDS env). Used by the Brief Pipeline META
+ * import to label accounts that TW knows about but aren't in our launch
+ * configuration. Handles bare numeric IDs by trying both bare and `act_`
+ * prefixed forms. Returns a Map<id, name> — accountId-keyed for both forms.
+ *
+ * Caches results for 1 hour to avoid hammering the Graph API on every page
+ * load. Tokens are unchanged so the cache is safe across requests.
+ */
+const _adAccountNameCache = new Map(); // id (any form) → { name, at }
+const AD_ACCT_NAME_TTL = 60 * 60 * 1000;
+export async function resolveAdAccountNames(accountIds) {
+  if (!Array.isArray(accountIds) || accountIds.length === 0) return new Map();
+  if (!META_ACCESS_TOKEN) return new Map();
+  const out = new Map();
+  const now = Date.now();
+  const toFetch = [];
+  for (const raw of accountIds) {
+    if (!raw) continue;
+    const key = String(raw);
+    const cached = _adAccountNameCache.get(key);
+    if (cached && now - cached.at < AD_ACCT_NAME_TTL) {
+      if (cached.name) out.set(key, cached.name);
+      continue;
+    }
+    toFetch.push(key);
+  }
+  // Resolve in parallel (small concurrency cap of 6 to be polite)
+  const lookupOne = async (rawId) => {
+    // Try the form provided first, then the act_-prefixed form for bare numerics
+    const candidates = [];
+    if (rawId.startsWith('act_')) candidates.push(rawId);
+    else { candidates.push(`act_${rawId}`); candidates.push(rawId); }
+    for (const id of candidates) {
+      try {
+        const res = await fetch(
+          `${META_GRAPH_URL}/${id}?fields=name,account_id,business_name&access_token=${META_ACCESS_TOKEN}`,
+          { signal: AbortSignal.timeout(8000) }
+        );
+        if (!res.ok) continue;
+        const data = await res.json();
+        const name = data.name || data.business_name || null;
+        if (name) {
+          _adAccountNameCache.set(rawId, { name, at: now });
+          out.set(rawId, name);
+          return;
+        }
+      } catch { /* try next candidate */ }
+    }
+    // Cache the miss too so we don't retry every page load for unknown IDs
+    _adAccountNameCache.set(rawId, { name: null, at: now });
+  };
+  await Promise.all(toFetch.map(lookupOne));
+  return out;
+}
+
+/**
  * Fetch Facebook Pages for an ad account
  */
 export async function getPages(adAccountId) {
