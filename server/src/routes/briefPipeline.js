@@ -1841,7 +1841,116 @@ async function buildIterationPrompt(parsedScript, productContext, performanceCon
   return { system: systemPrompt, user };
 }
 
-async function buildScriptClonePrompt(parsedScript, deepAnalysis, productContext) {
+// ───────────────────────────────────────────────────────────────────────────
+// scriptClone — the editable default lives in the league_prompts store so
+// the user can edit it via Settings → League Prompts. If empty, this baked
+// inline default runs. Template variables (ALL_CAPS in {{}}) are substituted
+// at call time. See buildScriptClonePrompt below for the substitution logic.
+// ───────────────────────────────────────────────────────────────────────────
+const DEFAULT_CLONE_PROMPT_SYSTEM = `You are a senior performance copywriter who clones winning ad scripts surgically. Your job is to preserve the persuasion architecture of a proven competitor script while swapping their product for ours. You think in terms of ARCHITECTURE (sequence, pacing, rhetorical devices, emotional beats) — not surface words. Every paragraph in the original maps to an equivalent paragraph in your clone. You write like a real media buyer who has spent millions: raw, direct, no marketing-speak, no AI tells, no filler. Contractions, fragments, real talk. If the original sounds like someone ranting on TikTok, your clone rants on TikTok. If it sounds like a calm authority, your clone is a calm authority. You NEVER soften, hedge, or add disclaimers the original didn't have. You NEVER invent claims unsupported by the product profile. You NEVER break the angle once it is selected — every sentence reinforces it.`;
+
+const DEFAULT_CLONE_PROMPT_USER = `# MISSION
+Clone the competitor script below for OUR product, preserving its narrative architecture exactly.
+
+# OUR PRODUCT (Product Library — use this as the single source of truth)
+{{PRODUCT_CONTEXT}}
+
+# AVAILABLE ANGLES FOR OUR PRODUCT
+{{ANGLES_LIST}}
+
+# SELECTED ANGLE
+angle_name: {{ANGLE_NAME}}
+angle_details:
+{{ANGLE_DETAILS}}
+
+# IF angle_name = "AUTO"
+Pick the single angle from the AVAILABLE ANGLES list that best fits the original script's emotional register and proof structure. State your pick + one-sentence reason in angle_used. Then write the clone using that angle's tone, lead_with concept, copy_directives, and required_elements as guidance.
+
+# IF angle_name is a specific angle
+Lock to it. Every hook must voice the angle. The body must weave it through every paragraph. Use the angle's tone, lead_with concept, and copy_directives. Avoid every banned_phrase. Steal headline_examples for inspiration only — never copy verbatim.
+
+# ORIGINAL COMPETITOR SCRIPT (clone this)
+hooks: {{ORIGINAL_HOOKS}}
+body: {{ORIGINAL_BODY}}
+cta: {{ORIGINAL_CTA}}
+
+# DEEP ANALYSIS OF THE ORIGINAL
+{{ANALYSIS_CONTEXT}}
+
+# CLONE RULES (non-negotiable)
+
+## 1. ARCHITECTURE PRESERVATION
+- Same number of body paragraphs / sections as original
+- Same rhetorical device at each structural position (apology, confession, contrarian claim, stat-drop, callout, etc.)
+- Same emotional escalation curve (e.g., calm → tension → reveal → relief → CTA)
+- Same pacing — short punchy sentences where original is punchy, flowing where original flows
+- Body word count must EQUAL the original OR be up to 10% SHORTER. NEVER longer than the original.
+
+## 2. PRODUCT SWAP (use Product Library only)
+- Every competitor product mention → swap to our product name from {{PRODUCT_CONTEXT}}
+- Every competitor benefit → find the equivalent in our benefits / big_promise / mechanism
+- Every competitor proof → swap to our proof points / differentiator / customer testimonials
+- Every competitor offer / price → swap to our offer_details / discount_codes / guarantee
+- If no equivalent exists in our library, use the closest field that serves the same persuasive purpose
+- NEVER leave any competitor name, feature, or claim in the final script
+- NEVER invent claims not supported by our Product Library
+- Respect compliance_restrictions from the Product Library — flag any borderline claims in compliance_notes
+
+## 3. ANGLE INFUSION
+- The selected angle is the lens through which the entire script reads
+- Open with the angle's lead_with concept (rephrased to match the original's opening rhythm)
+- The 5 hooks must each be a variation of the angle's hook_strategy applied to our product
+- Tone must match the angle's tone field
+- Treat the angle's required_elements as GUIDANCE, not a mandatory checklist. Hit as many as fit naturally in the original's structure. If a required element doesn't fit a short clone, skip it — don't shoehorn. Track what fit vs what didn't in the output.
+- Use the angle's copy_directives as a checklist — every directive must be visible in the output
+- NEVER use any phrase in the angle's banned_phrases list (this is a HARD ban)
+- If headline_examples exist, use them as energy reference only — paraphrase, do not copy
+
+## 4. VOICE LOCK (anti-AI)
+- Contractions: don't, can't, won't, it's, that's, here's — always
+- Sentence fragments where the original uses them
+- Speak to ONE person, never "audiences"
+- BANNED openers: "Imagine", "Picture this", "In a world where", "What if I told you", "Did you know"
+- BANNED transitions: "But here's the thing", "Now here's where it gets interesting", "And that's not all", "Let me explain"
+- BANNED softeners: "may", "might", "could potentially", "helps you to" (unless original used them)
+- Use natural verbal tics that match the original's register: "Look," / "Listen," / "Honestly," / "The truth is," / "Here's the deal"
+
+## 5. HOOK CLONING
+- Generate exactly 5 hooks
+- All 5 must share the original's hook framework AND the selected angle's hook_strategy
+- H1 = closest energy match to the original's strongest hook + angle infusion
+- H2 = same framework, different entry angle
+- H3 = same framework, different emotional texture
+- H4 = same framework, contrarian / inverted version (test against H1)
+- H5 = same framework, shortest punch version (under 8 words)
+- Each hook must read seamlessly into the body's first paragraph
+
+## 6. CTA CLONING
+- Match the original's CTA structure (urgency / curiosity / direct / soft)
+- Insert our offer_details, discount_codes, or guarantee — whichever the original used
+- If original CTA had a deadline, ours has a deadline (use any active promo from offer_details)
+- If original was "verify yourself" style and we have the blockchain mechanism, lean into verification
+
+# OUTPUT — return ONLY valid JSON, no markdown fences, no preamble:
+
+{
+  "hooks": [
+    { "id": "H1", "text": "...", "framework_used": "matches original", "angle_signal": "how this hook voices the selected angle", "maps_to_original": "which original hook this clones" },
+    { "id": "H2", "text": "...", "framework_used": "...", "angle_signal": "...", "maps_to_original": "..." },
+    { "id": "H3", "text": "...", "framework_used": "...", "angle_signal": "...", "maps_to_original": "..." },
+    { "id": "H4", "text": "...", "framework_used": "...", "angle_signal": "...", "maps_to_original": "..." },
+    { "id": "H5", "text": "...", "framework_used": "...", "angle_signal": "...", "maps_to_original": "..." }
+  ],
+  "body": "the full cloned body with natural paragraph breaks — same paragraph count as original, equal or up to 10% shorter",
+  "cta": "the cloned CTA",
+  "angle_used": { "name": "the angle name actually used", "reason": "one sentence — why this angle (only if AUTO was selected)", "required_elements_used": ["list of required_elements that fit naturally"], "required_elements_skipped": ["list of skipped + one-line reason for each"], "copy_directives_followed": ["list of directives visible in output"] },
+  "clone_fidelity": { "original_word_count": 0, "clone_word_count": 0, "original_sections": 0, "clone_sections": 0, "framework_match": "what structural elements were preserved", "product_swaps_made": "summary of competitor → our product replacements" },
+  "key_changes_from_original": "2-3 sentence summary of what's different and why",
+  "emotional_arc": "hook_emotion → middle_emotion → close_emotion (must match original's arc)",
+  "compliance_notes": "any claims that brush against compliance_restrictions, or 'clean' if none"
+}`;
+
+async function buildScriptClonePrompt(parsedScript, deepAnalysis, productContext, productProfile = null, angle = null) {
   const originalHooks = (parsedScript.hooks || [])
     .map(h => `${h.id}: ${h.text}`)
     .join('\n');
@@ -1887,276 +1996,85 @@ async function buildScriptClonePrompt(parsedScript, deepAnalysis, productContext
     ].filter(Boolean).join('\n');
   }
 
-  const system = `You are an expert direct-response copywriter and creative strategist specializing in Facebook UGC-style video ad scripts. You adapt proven script structures from high-converting reference ads into new product categories while preserving the exact beat sequence of the original.
+  // Build the analysis context block from the deep-analysis fields (if present)
+  const analysisContextLines = [];
+  if (sectionFlow)       analysisContextLines.push(`SECTION-BY-SECTION FLOW:\n${sectionFlow}`);
+  if (rhetoricalDevices) analysisContextLines.push(`RHETORICAL DEVICES: ${rhetoricalDevices}`);
+  if (hookFramework)     analysisContextLines.push(`HOOK FRAMEWORK: ${hookFramework}`);
+  if (pacingRhythm)      analysisContextLines.push(`PACING / RHYTHM: ${pacingRhythm}`);
+  if (signaturePhrases)  analysisContextLines.push(`SIGNATURE PHRASES: ${signaturePhrases}`);
+  if (emotionalArc)      analysisContextLines.push(`EMOTIONAL ARC: ${emotionalArc}`);
+  if (audienceContext)   analysisContextLines.push(`AUDIENCE:\n${audienceContext}`);
+  if (iterationRules?.must_keep?.length) analysisContextLines.push(`MUST KEEP: ${iterationRules.must_keep.join(' | ')}`);
+  if (iterationRules?.can_swap?.length)  analysisContextLines.push(`CAN SWAP: ${iterationRules.can_swap.join(' | ')}`);
+  if (iterationRules?.never_do?.length || iterationRules?.never_do)  analysisContextLines.push(`NEVER DO: ${Array.isArray(iterationRules.never_do) ? iterationRules.never_do.join(' | ') : iterationRules.never_do}`);
+  const analysisContext = analysisContextLines.join('\n\n') || '(no deep analysis available — use the original script and product context to reason about structure)';
 
-Your job is NOT to write new ads. Your job is to CLONE a proven ad script and adapt it for a different product. Preserve every structural and psychological element that makes the original convert.
+  // Resolve angle data from the product profile. The selected angle string
+  // (e.g. "Anti-Fake / Competitor Callout") is matched against profile.angles
+  // by name to pull the full hook_strategy / tone / copy_directives / etc.
+  let anglesArr = [];
+  if (productProfile?.angles) {
+    let a = productProfile.angles;
+    if (typeof a === 'string') { try { a = JSON.parse(a); } catch { a = []; } }
+    if (Array.isArray(a)) anglesArr = a;
+  }
+  const anglesList = anglesArr.length > 0
+    ? anglesArr.map(a => `- ${a.name} [${(a.funnel_stage || 'middle').toUpperCase()}]${a.tone ? ` — ${(a.tone || '').split('.')[0]}` : ''}`).join('\n')
+    : '(no angles defined in the Product Library — fall back to neutral tone)';
 
-You think like a performance creative strategist: winning ads work because of their STRUCTURE, PACING, EMOTIONAL FLOW, and FRAMEWORK. Not because of the specific product they sell. A winning format can be transplanted to any product if the adaptation is done with surgical precision.
-
-WRITING RULES:
-- You write like a real human speaking to camera. Warm, conversational, honest tone.
-- You NEVER sound like ChatGPT or a marketing agency. No filler phrases, no corporate jargon, no "imagine a world where", no "in today's fast-paced world"
-- You match the voice and energy of the original script exactly
-- Short punchy sentences when the original uses them. Long flowing paragraphs when the original uses those
-- You use the same level of aggression, the same register, the same "feel" as the original
-- You NEVER add disclaimers, hedging language, or soften the copy unless the original does the same
-
-FORMATTING RULES:
-- Never use em dashes (—) or hyphens (-) inside any copy. Use periods, line breaks, or rewrite sentence structure instead.
-- All pricing in USD
-- Never directly promise the viewer will win or earn money
-- Use distanced framing for all performance claims (e.g. "someone in the mining community", "results seen in the community")
-- Never attribute wins to a named customer or client of the product
-- Never invent product claims not supported by the product profile. If a beat in the reference uses a specific stat, study, or institution (e.g. "94% reduction", "Seoul National University") and the product profile has NO equivalent data, do NOT fabricate a replacement. Instead, replace that beat with a general credibility statement using real product data (e.g. units sold, community size, money-back guarantee). COMPLIANCE OVERRIDES BEAT-MAPPING — it is better to slightly weaken one beat than to invent false claims.
-- No discount codes in the script unless the product profile includes one
-- End cleanly at the product URL with no additional copy after it`;
-
-  const user = `# YOUR MISSION
-
-Adapt the following reference script into a new Facebook UGC-style video ad script for our product. Preserve the exact beat structure of the reference script beat by beat. Do not summarize or compress beats. Every beat in the reference must appear in the output in the same order.
-
-Replace the reference product's narrative, mechanism, and proof points with those of our product. Keep the tone conversational, warm, and direct. Write as if a real person is speaking to camera.
-
-When analyzing the reference script, extract only its emotional and structural logic. Ignore any category-specific framing, product type, or industry context. The goal is to transplant the persuasion architecture, not the subject matter. Always find the emotional function of each beat first, then express it through our product.
-
-# WHAT "1:1 CLONE" MEANS
-
-A 1:1 clone is NOT:
-- A summary of the original
-- An "inspired by" rewrite
-- A generic ad using similar themes
-
-A 1:1 clone IS:
-- The SAME number of sections in the SAME order
-- The SAME rhetorical devices at the SAME structural points
-- The SAME emotional beats hitting at the SAME moments
-- The SAME pacing and rhythm
-- The SAME hook framework
-- The SAME word count (±10% tolerance)
-- Every sentence maps to a sentence in the clone that serves the IDENTICAL PURPOSE
-
-The ONLY things that change:
-- Product name, features, and specific claims → swapped to OUR product
-- Competitor-specific details → replaced with equivalent details for our product
-- Exact phrasing → rephrased to avoid plagiarism (but same point, same energy, same purpose)
-
-# OUR PRODUCT — USE THIS CONTEXT TO ADAPT ALL PRODUCT REFERENCES
-${productContext}
-
-# ═══════════════════════════════════════════════════════════
-# ORIGINAL REFERENCE SCRIPT (THIS IS WHAT YOU ARE CLONING)
-# ═══════════════════════════════════════════════════════════
-
-## HOOKS (from the original):
-${originalHooks}
-
-## BODY (from the original):
-${parsedScript.body || '(no body parsed)'}
-
-## CTA (from the original):
-${parsedScript.cta || '(no CTA parsed)'}
-
-## FORMAT NOTES:
-${parsedScript.format_notes || 'N/A'}
-
-# ═══════════════════════════════════════════════════════════
-# DEEP ANALYSIS OF THE ORIGINAL (from 3 specialist agents)
-# ═══════════════════════════════════════════════════════════
-
-## SCRIPT DNA
-- Core Angle: ${scriptDna?.core_angle || 'N/A'}
-- Primary Emotion: ${scriptDna?.primary_emotion || 'N/A'}
-- Secondary Emotions: ${Array.isArray(scriptDna?.secondary_emotions) ? scriptDna.secondary_emotions.join(', ') : scriptDna?.secondary_emotions || 'N/A'}
-- Belief Shift: ${scriptDna?.belief_shift || 'N/A'}
-- Problem: ${scriptDna?.problem_presented || scriptDna?.problem || 'N/A'}
-- Solution: ${scriptDna?.solution_presented || scriptDna?.solution || 'N/A'}
-- Mechanism: ${scriptDna?.mechanism || 'N/A'}
-- Proof Type: ${scriptDna?.proof_type || 'N/A'}
-- Awareness Level: ${scriptDna?.audience_awareness_level || 'N/A'}
-- Why It Works: ${scriptDna?.why_it_works || 'N/A'}
-- What Would Break It: ${scriptDna?.what_would_break_it || 'N/A'}
-
-## STRUCTURAL SKELETON — YOUR CLONE MUST MATCH THIS EXACTLY
-- Hook Framework: ${hookFramework || 'N/A'}
-- Rhetorical Devices: ${rhetoricalDevices || 'N/A'}
-- Pacing/Rhythm: ${pacingRhythm || 'N/A'}
-- Signature Patterns (use EQUIVALENT patterns for our product): ${signaturePhrases || 'N/A'}
-
-Section-by-Section Flow (YOUR CLONE MUST FOLLOW THIS EXACT SEQUENCE):
-${sectionFlow || '  (no section breakdown available — mirror the original body paragraph by paragraph)'}
-
-## EMOTIONAL ARC — YOUR CLONE MUST HIT THESE SAME BEATS
-${emotionalArc || 'Mirror the emotional flow of the original'}
-
-## AUDIENCE PROFILE
-${audienceContext || 'Same audience as the original — adapt product references only'}
-
-## HOOK ANALYSIS
-${psychology?.hooks?.length ? psychology.hooks.map(h => `- "${h.text || ''}": ${h.hook_type || ''} — ${h.why_it_works || ''}`).join('\n') : (psychology?.hook_analysis?.length ? psychology.hook_analysis.map(h => `- "${h.exact_text || h.text || ''}": ${h.type || ''} — ${h.why_it_works || ''}`).join('\n') : 'N/A')}
-
-# ═══════════════════════════════════════════════════════════
-# BEAT STRUCTURE PRESERVATION (MOST CRITICAL INSTRUCTION)
-# ═══════════════════════════════════════════════════════════
-
-Before writing the script, silently read the full reference script and identify each distinct beat. Number them internally. For each beat, identify its emotional function first. Ask: what is this beat doing for the viewer? Is it creating tension, relieving tension, building credibility, lowering resistance, or driving action?
-
-Then express that same emotional function through our product. Do not merge beats. Do not skip beats. Do not add beats that are not present in the reference. The output must have the same number of beats as the reference in the same sequence.
-
-If a beat from the reference has no direct equivalent for our product, do not invent a claim. Find the closest truthful emotional equivalent and note the substitution in the beat mapping.
-
-# ═══════════════════════════════════════════════════════════
-# CLONE EXECUTION RULES
-# ═══════════════════════════════════════════════════════════
-
-## RULE 1: BEAT-BY-BEAT BODY MAPPING
-- Read the original body. Count every distinct beat/paragraph/section.
-- Your clone MUST have the same number of beats in the same order.
-- For each beat in the original, write a corresponding beat that:
-  → Serves the SAME emotional function
-  → Uses the SAME rhetorical device (if any)
-  → Hits the SAME emotional note
-  → Is roughly the SAME length (±15% words)
-  → Sits in the SAME position in the script
-
-## RULE 2: HOOK CLONING WITH PERSPECTIVE LOCK
-- Generate exactly 3 hooks.
-- All 3 hooks MUST use the SAME FRAMEWORK as the original hooks.
-- If original hooks are confession/apology → your hooks are confession/apology about OUR product
-- If original hooks are shocking stat → your hooks are shocking stat about OUR product
-- H1: Closest energy match to the original's strongest hook. Tightest clone.
-- H2: Same framework, slightly different angle of entry.
-- H3: Same framework, different emotional texture.
-
-ANTI-PLAGIARISM RULE: NONE of your 3 hooks may copy any sentence or phrase from the original script verbatim. Every hook must be REPHRASED in your own words while matching the original's energy, framework, and purpose. If your H1 is identical or near-identical to the original's first line, you have FAILED this rule. Same meaning, different words. No exceptions.
-
-PERSPECTIVE LOCK: Read the body script. Identify who is being spoken to and who is being spoken about. Every hook must use the exact same perspective, pronouns, and speaker frame as the first sentence of the body. If the body says "he'll have" and "he just plugs it in", the hook must speak to a second person about a third person. Never write a first-person hook if the body is in second person. Never write a self-buyer hook if the body is a gift-buyer script.
-
-TENSION MATCH: The hook must create a tension, curiosity, or emotion that the first sentence of the body directly resolves. Read the first sentence of the body. Ask: what question or feeling does this sentence satisfy? Write the hook to create exactly that question or feeling.
-
-ZERO BRIDGE NEEDED: After the hook plays, the first sentence of the body must be the natural next thing to say. There must be no gap, no gear shift, no tonal mismatch. Test each hook by reading it aloud followed immediately by the first sentence of the body. If it feels like two separate ads stitched together, rewrite it.
-
-ANGLE VARIETY: Each hook must use a meaningfully different angle. Do not write two hooks using the same angle. Surface-level rewords of the same idea are not acceptable.
-
-SCROLL STOP: The first two to four words of every hook must create an immediate reason to stop scrolling. Use a number, a direct address, a surprising claim, or a specific relatable scenario. Never open with a filler word, a generic greeting, or a weak setup.
-
-PRODUCT SPECIFICITY: Every hook MUST reference at least one concrete product detail from the PRODUCT CONTEXT — the product name, a specific price point, the unique mechanism, a key benefit, or the discount code. A hook that could apply to any product is a failed hook. Hooks like "This product changed everything" or "You need to see this" are BANNED. Be as specific as the original hooks are about THEIR product, but about OUR product.
-
-HOOK QUALITY GATE — MANDATORY CHECK:
-Every hook MUST pass ALL of these checks before output:
-1. LENGTH: Under 25 words ideal, hard ceiling 30 words. Any hook over 30 words is BODY TEXT — rewrite it shorter or split it. Count the words before outputting each hook.
-2. SCROLL-STOP: The first 4-5 words must create an immediate reason to stop scrolling.
-3. STANDALONE: Must make sense WITHOUT reading the body. If it only works as part of a paragraph, it is body text.
-4. NOT-BODY: A comparison ("X gives you Y, but this gives Z"), explanation, data point, or social proof statement is BODY TEXT, not a hook. Move it to the body.
-5. PATTERN INTERRUPT: Must interrupt the viewer's mental pattern — surprise, confusion, emotion, direct address, or bold claim.
-
-## RULE 3: PRODUCT SWAP PROTOCOL
-- Every mention of the competitor's product → replace with our product name and details
-- Every competitor benefit claim → find the EQUIVALENT benefit from our product profile and swap
-- Every competitor-specific proof point → replace with equivalent proof from our product
-- Every competitor price/offer → replace with our price/offer
-- If no equivalent exists, use the closest relevant feature that serves the same persuasive purpose
-- NEVER leave competitor references in the final script
-- NEVER invent claims not supported by the product profile
-
-## RULE 4: TONE LOCK
-- Read the original script out loud in your mind. Note the energy.
-- Your clone MUST match that exact energy.
-- If the original uses slang → use slang
-- If the original uses data → use data
-- If the original is raw and emotional → be raw and emotional
-- If the original is measured and authoritative → be measured and authoritative
-- NEVER default to "marketing copy" voice. NEVER.
-
-## RULE 5: LENGTH CONTROL
-- Count the words in the original body.
-- Your clone body must be within ±10% of that word count.
-- This is a HARD CONSTRAINT. Do not write a 200-word clone of a 500-word script.
-
-## RULE 6: ANTI-AI DETECTION
-- No sentences starting with "Imagine...", "Picture this...", "In a world where...", "What if I told you..."
-- No filler transitions: "But here's the thing", "Now here's where it gets interesting", "And that's not all"
-- No listicle formatting unless the original uses it
-- No over-explaining. If the original makes a bold claim and moves on, you make a bold claim and move on.
-- Use contractions: "don't", "can't", "won't", "it's", "that's", "here's"
-- Use sentence fragments where the original does
-- Never use em dashes (—) or hyphens (-) inside any copy
-- Write like you're talking to ONE person, not an audience
-
-## RULE 7: CTA CLONING
-- Match the CTA structure of the original
-- Swap product/link references to ours
-- End cleanly at the product URL with no additional copy after it
-
-## RULE 8: COMPLIANCE
-- Never directly promise the viewer will win or earn money
-- Use distanced framing for all performance claims
-- Never attribute wins to a named customer or client of the product
-- All pricing in USD
-- Never invent product claims not present in the product profile
-
-# ═══════════════════════════════════════════════════════════
-# OUTPUT FORMAT
-# ═══════════════════════════════════════════════════════════
-
-Return ONLY valid JSON, no markdown fences, no explanation:
-{
-  "hooks": [
-    {
-      "id": "H1",
-      "text": "the hook text. Closest clone of the original's strongest hook.",
-      "framework_used": "confession/pain/contrarian/etc. Must match original.",
-      "maps_to_original": "which original hook this clones",
-      "scroll_stop_reason": "why the first words stop the scroll",
-      "perspective_check": "confirms pronoun/speaker frame matches body opener"
-    },
-    {
-      "id": "H2",
-      "text": "second hook. Same framework, different entry angle.",
-      "framework_used": "same framework as H1",
-      "maps_to_original": "which original hook this clones",
-      "scroll_stop_reason": "why the first words stop the scroll",
-      "perspective_check": "confirms pronoun/speaker frame matches body opener"
-    },
-    {
-      "id": "H3",
-      "text": "third hook. Same framework, different emotional texture.",
-      "framework_used": "same framework as H1",
-      "maps_to_original": "which original hook this clones",
-      "scroll_stop_reason": "why the first words stop the scroll",
-      "perspective_check": "confirms pronoun/speaker frame matches body opener"
+  const angleName = angle && angle !== 'NA' ? angle : 'AUTO';
+  let angleDetails = '(none — angle is AUTO; pick from the list above)';
+  if (angleName !== 'AUTO') {
+    const match = anglesArr.find(a => (a.name || '').toLowerCase() === angleName.toLowerCase());
+    if (match) {
+      const lines = [];
+      if (match.funnel_stage)     lines.push(`funnel_stage: ${match.funnel_stage}`);
+      if (match.hook_strategy)    lines.push(`hook_strategy: ${match.hook_strategy}`);
+      if (match.lead_with)        lines.push(`lead_with: ${match.lead_with}`);
+      if (match.tone)             lines.push(`tone: ${match.tone}`);
+      if (match.copy_directives)  lines.push(`copy_directives:\n${match.copy_directives}`);
+      if (Array.isArray(match.required_elements) && match.required_elements.length) lines.push(`required_elements:\n- ${match.required_elements.join('\n- ')}`);
+      if (Array.isArray(match.headline_examples) && match.headline_examples.length) lines.push(`headline_examples:\n- ${match.headline_examples.join('\n- ')}`);
+      if (Array.isArray(match.banned_phrases) && match.banned_phrases.length) lines.push(`banned_phrases (HARD ban):\n- ${match.banned_phrases.join('\n- ')}`);
+      angleDetails = lines.join('\n');
+    } else {
+      angleDetails = `(angle name "${angleName}" not found in the Product Library — treat as a custom angle and reason from the name alone)`;
     }
-  ],
-  "body": "the full cloned body script. Must have same number of beats as original. Each beat maps 1:1. Use natural paragraph breaks (double newlines). No markdown formatting. No em dashes or hyphens.",
-  "cta": "the cloned call-to-action",
-  "word_count": 0,
-  "estimated_seconds": 0,
-  "clone_fidelity": {
-    "original_word_count": 0,
-    "clone_word_count": 0,
-    "original_sections": 0,
-    "clone_sections": 0,
-    "framework_match": "what framework was preserved",
-    "product_swaps_made": "brief list of what product references were changed"
-  },
-  "beat_mapping": [
-    {"beat": 1, "original": "what the original beat was", "clone": "what your clone beat is", "emotional_function": "what this beat does for the viewer", "substitution_note": "if any substitution was made and why, or null"}
-  ],
-  "key_adaptations": "2-3 sentences explaining what product-specific changes were made and why",
-  "emotional_arc": "hook_emotion → middle_emotion → close_emotion (must match original arc)"
-}`;
-
-  // Check for custom prompt overrides from settings
-  try {
-    const custom = await getCustomPrompts();
-    if (custom?.scriptClone) {
-      if (custom.scriptClone.system) return { system: custom.scriptClone.system, user };
-      if (custom.scriptClone.user) return { system, user: custom.scriptClone.user };
-    }
-  } catch (customErr) {
-    console.warn('[BriefPipeline] Custom prompt load error:', customErr.message);
   }
 
-  return { system, user };
+  // Load the editable scriptClone prompt from the league_prompts settings store.
+  // Falls back to the baked DEFAULT_CLONE_PROMPT_SYSTEM / DEFAULT_CLONE_PROMPT_USER.
+  let systemTemplate = DEFAULT_CLONE_PROMPT_SYSTEM;
+  let userTemplate   = DEFAULT_CLONE_PROMPT_USER;
+  try {
+    const saved = await getLeaguePrompts();
+    const raw = saved?.scriptClone?.json;
+    if (raw && raw.trim()) {
+      const obj = JSON.parse(raw);
+      if (typeof obj?.system === 'string' && obj.system.trim()) systemTemplate = obj.system;
+      if (typeof obj?.user   === 'string' && obj.user.trim())   userTemplate   = obj.user;
+    }
+  } catch (e) {
+    console.warn('[BriefPipeline] scriptClone league prompt load error — using default:', e.message);
+  }
+
+  const vars = {
+    PRODUCT_CONTEXT:  productContext || 'No product profile available.',
+    ORIGINAL_HOOKS:   originalHooks || '(no hooks parsed)',
+    ORIGINAL_BODY:    parsedScript?.body || '(empty body)',
+    ORIGINAL_CTA:     parsedScript?.cta || '(no CTA)',
+    ANALYSIS_CONTEXT: analysisContext,
+    ANGLE_NAME:       angleName,
+    ANGLE_DETAILS:    angleDetails,
+    ANGLES_LIST:      anglesList,
+  };
+  const substitute = (tpl) => Object.entries(vars).reduce(
+    (acc, [k, v]) => acc.replace(new RegExp(`\\{\\{\\s*${k}\\s*\\}\\}`, 'g'), String(v ?? '')),
+    tpl,
+  );
+
+  return { system: substitute(systemTemplate), user: substitute(userTemplate) };
 }
 
 // ---------------------------------------------------------------------------
@@ -3602,17 +3520,13 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
       // The clone prompt is self-contained — Claude analyzes structure inline
       // ═══════════════════════════════════════════════════
       console.log(`[BriefPipeline] Fast clone — skipping deep analysis, direct generation`);
-      const { system: cloneSystem, user: cloneUser } = await buildScriptClonePrompt(parsedScript, {}, productContext);
-      let enhancedCloneUser = cloneUser;
-      if (angle && angle !== 'NA') {
-        enhancedCloneUser += `\n\n# AD ANGLE — MANDATORY
-The selected ad angle is: "${angle}". This is NOT optional.
-- At least one hook MUST explicitly reference the "${angle}" concept
-- The body MUST weave the "${angle}" angle into the narrative — the reader should feel the "${angle}" framing throughout
-- If the angle is "Lottery", the script must reference lottery-like odds, jackpot thinking, or chance-based framing
-- If the angle is "Against competition", the script must call out competitors or inferior alternatives
-- The angle should be the LENS through which the entire script operates, not a footnote`;
-      }
+      // Angle now flows through the prompt template's {{ANGLE_NAME}} +
+      // {{ANGLE_DETAILS}} + {{ANGLES_LIST}} placeholders, sourced from
+      // productProfile.angles. No more hardcoded post-prompt appendix.
+      const { system: cloneSystem, user: cloneUser } = await buildScriptClonePrompt(
+        parsedScript, {}, productContext, productProfile, angle
+      );
+      const enhancedCloneUser = cloneUser;
 
       generationResults = [await (async () => {
         try {
@@ -6265,6 +6179,41 @@ async function getLeaguePrompts() {
     return null;
   }
 }
+
+// Boot-time seeder — populates the scriptClone slot with the baked default
+// the FIRST time the server runs, so the prompt shows up as editable in the
+// Settings → League Prompts UI. If the slot already has a saved prompt
+// (user has customised), we leave it alone. Idempotent + safe to re-run.
+async function seedDefaultLeaguePrompts() {
+  try {
+    const existing = (await getLeaguePrompts()) || {};
+    const needsScriptClone = !existing.scriptClone?.json || !existing.scriptClone.json.trim();
+    if (!needsScriptClone) return;
+    const seeded = {
+      ...existing,
+      scriptClone: {
+        json: JSON.stringify(
+          { system: DEFAULT_CLONE_PROMPT_SYSTEM, user: DEFAULT_CLONE_PROMPT_USER },
+          null,
+          2,
+        ),
+        notes: 'Default scriptClone prompt v1 — clones competitor narrative architecture into our product. Uses {{PRODUCT_CONTEXT}}, {{ANGLES_LIST}}, {{ANGLE_NAME}}, {{ANGLE_DETAILS}}, {{ORIGINAL_HOOKS}}, {{ORIGINAL_BODY}}, {{ORIGINAL_CTA}}, {{ANALYSIS_CONTEXT}} placeholders. Length: equal or up to 10% shorter than original. required_elements treated as guidance, not mandatory.',
+      },
+    };
+    await pgQuery(
+      `INSERT INTO system_settings (key, value, description)
+       VALUES ('brief_pipeline_league_prompts', $1, 'League-driven Brief Pipeline prompts (scriptAnalysis / scriptClone / scriptIteration)')
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
+      [JSON.stringify(seeded)]
+    );
+    leaguePromptsCache = { data: seeded, timestamp: Date.now() };
+    console.log('[BriefPipeline] Seeded scriptClone default into league_prompts');
+  } catch (err) {
+    console.warn('[BriefPipeline] seedDefaultLeaguePrompts failed:', err.message);
+  }
+}
+// Fire 5s post-boot so it doesn't race the migration runner.
+setTimeout(() => { seedDefaultLeaguePrompts(); }, 5000);
 
 // GET /settings/league-prompts — return saved + defaults
 router.get('/settings/league-prompts', authenticate, async (_req, res) => {
