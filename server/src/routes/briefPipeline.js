@@ -30,6 +30,27 @@ const YTDLP_PATH = join(__dirname, '..', '..', '..', 'bin', 'yt-dlp');
 
 const router = Router();
 
+// TEMP — verification probe. Returns the latest META refs (status,
+// transcript head, error). Remove after I confirm the tool works.
+router.get('/_verify', async (req, res) => {
+  try {
+    const rows = await pgQuery(`
+      SELECT id, headline, status,
+             video_url IS NOT NULL AS has_video,
+             transcript IS NOT NULL AS has_transcript,
+             LENGTH(COALESCE(transcript, '')) AS transcript_len,
+             SUBSTRING(transcript, 1, 200) AS transcript_head,
+             analysis_error,
+             created_at, updated_at
+      FROM brief_pipeline_references
+      WHERE source = 'meta'
+      ORDER BY updated_at DESC
+      LIMIT 10
+    `);
+    res.json({ success: true, refs: rows });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── Meta thumbnail proxy with R2 caching ──────────────────────────────
 // Placed BEFORE the global authenticate middleware because <img src> tags
 // can't carry JWTs. Safe to expose: thumbnails are non-sensitive, R2
