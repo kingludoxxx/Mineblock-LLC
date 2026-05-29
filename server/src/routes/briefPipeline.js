@@ -53,15 +53,12 @@ router.get('/_md-raw', async (req, res) => {
 // import path doesn't read).
 router.get('/_url-hunt', async (req, res) => {
   try {
-    const namePrefix = String(req.query.q || 'MR - B0003');
-    const rows = await pgQuery(`
-      SELECT creative_id, meta_ad_id, creative_link, video_url, thumbnail_url,
-             ad_name, ad_status, synced_at
-      FROM creative_analysis
-      WHERE type='video' AND ad_name ILIKE $1
-      ORDER BY synced_at DESC
-      LIMIT 5
-    `, [`%${namePrefix}%`]);
+    const adId = String(req.query.meta_ad_id || '');
+    const namePrefix = String(req.query.q || '');
+    if (!adId && !namePrefix) return res.status(400).json({ error: 'meta_ad_id or q required' });
+    const rows = adId
+      ? await pgQuery(`SELECT creative_id, meta_ad_id, creative_link, video_url, thumbnail_url, ad_name, ad_status, synced_at FROM creative_analysis WHERE type='video' AND meta_ad_id = $1 LIMIT 3`, [adId])
+      : await pgQuery(`SELECT creative_id, meta_ad_id, creative_link, video_url, thumbnail_url, ad_name, ad_status, synced_at FROM creative_analysis WHERE type='video' AND ad_name ILIKE $1 ORDER BY synced_at DESC LIMIT 5`, [`%${namePrefix}%`]);
     res.json({ success: true, count: rows.length, rows });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
