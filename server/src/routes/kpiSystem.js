@@ -2698,6 +2698,14 @@ async function autoSync() {
       await syncWhopFees().catch(err => console.error('[KPI] Fee sync error:', err.message));
       await syncMetaAdSpend().catch(err => console.error('[KPI] Meta spend sync error:', err.message));
     }
+
+    // Every 60th cycle (~60 min): sync Amazon (Sellerboard) daily KPIs.
+    // Hourly is plenty — the source data only updates once per Amazon day
+    // (Pacific Time) and the CSV is edge-cached by Sellerboard.
+    // Skipped silently if SELLERBOARD_FEED_URL not configured.
+    if (SELLERBOARD_FEED_URL && autoSyncCount % 60 === 0) {
+      await syncSellerboard().catch(err => console.error('[KPI] Sellerboard sync error:', err.message));
+    }
   } catch (err) {
     console.error('[KPI Auto-Sync] Error:', err.message);
   }
@@ -2730,6 +2738,11 @@ async function backfillRefundDates() {
 setTimeout(() => {
   backfillRefundDates().then(() => autoSync()).catch(() => {});
   syncMetaAdSpend().catch(() => {}); // Fetch Meta spend immediately on boot
+  // Fetch Amazon (Sellerboard) immediately on boot so the dashboard shows
+  // data on first load instead of waiting up to 60 min for the autoSync cycle.
+  if (SELLERBOARD_FEED_URL) {
+    syncSellerboard().catch((err) => console.error('[KPI] Boot Sellerboard sync error:', err.message));
+  }
   setInterval(() => autoSync().catch(() => {}), 60_000); // Every 60 seconds
 }, 30_000); // Start 30s after boot
 
