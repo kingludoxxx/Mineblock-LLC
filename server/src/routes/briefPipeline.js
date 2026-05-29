@@ -1772,45 +1772,192 @@ Return ONLY valid JSON:
 // 1:1 SCRIPT CLONE — Dedicated prompt for cloning competitor scripts
 // ---------------------------------------------------------------------------
 
-// Iteration prompt — generates fresh variants of OUR own winning ad without
-// swapping the product. Used by mode='iterate' on /generate-from-script when
-// the source reference is from META (our Triple Whale active ads).
-//
-// The OLD default was deleted per operator request (it was producing bad
-// iterations). A new v1 will be designed and pasted into the Settings →
-// League Prompts → scriptIteration slot. Until that's done, Iterate mode
-// throws a clear error pointing to the Settings panel instead of silently
-// running a bad prompt.
-const DEFAULT_ITERATION_PROMPT_USER = ''; // intentionally empty — see comment above
+// scriptIteration v1 — designed with operator 2026-05-29.
+// Pulls one or more controlled levers on a proven winner. Concept (angle),
+// product, mechanism, and CTA structure are LOCKED. Only the vectors the
+// user selects move. Every card = 1 body + 5 hooks + 1 CTA. Card output
+// carries a single what_changed string — no other metadata.
+const DEFAULT_ITERATION_PROMPT_SYSTEM = `You are a senior performance copywriter who iterates on PROVEN winning ad scripts. Your job is NOT to write new ads — it's to preserve the persuasion engine that's already converting and pull specific controlled levers so the user can read performance and know which lever lifted. You think in LEVERS, not REWRITES. Every iteration changes ONLY what the user explicitly selected — never more, never less. The angle stays. The product stays. The CTA structure stays. Everything else can move within the bounds of what the user requested. You write like a real performance media buyer: raw, direct, no marketing-speak, no AI tells, no filler. Contractions, fragments, real talk. You match the original script's voice exactly. You NEVER soften, hedge, add disclaimers, or invent claims not supported by the product profile.`;
 
-async function buildIterationPrompt(parsedScript, productContext, performanceContext, numVariations) {
-  const saved = await getLeaguePrompts();
-  let userTemplate = '';
-  let systemPrompt = '';
+const DEFAULT_ITERATION_PROMPT_USER = `# MISSION
+Generate {{NUM_VARIATIONS}} iteration cards of the winning script below. Each card pulls exactly the levers the user selected — nothing more.
+
+# OUR PRODUCT (Product Library — single source of truth)
+{{PRODUCT_CONTEXT}}
+
+# AVAILABLE FORMATS
+{{FORMATS_LIST}}
+
+# AVAILABLE AVATARS / POVs
+{{AVATARS_LIST}}
+
+# SELECTED ITERATION VECTORS (what the user wants to change)
+{{VECTORS_SELECTED}}
+
+# THE ORIGINAL WINNING SCRIPT
+{{REFERENCE_TRANSCRIPT}}
+
+# PERFORMANCE CONTEXT (why this is winning)
+{{PERFORMANCE_CONTEXT}}
+
+# LOCKED IDENTITY (NEVER change these in any iteration card)
+- Angle: {{ANGLE_LOCKED}} (preserved exactly — this is the proven concept)
+- Product, mechanism, big_promise: as defined in the Product Library
+- CTA structure: same urgency type / soft type / direct type as original
+
+If {{ANGLE_LOCKED}} is unknown, infer the angle from the original script and state your inference in the first card's what_changed field.
+
+# ITERATION RULES (non-negotiable)
+
+## 1. ONE CARD = 1 body + 5 hooks + 1 CTA
+This is the production unit. Every iteration card is a complete ad package.
+
+## 2. CHANGE ONLY WHAT WAS REQUESTED
+- If only Hooks is selected: body must be IDENTICAL to original. CTA identical. Only the 5 hooks change.
+- If Hooks + Avatar (POV X) is selected: change the hooks AND rewrite the body in POV X's voice. Don't touch length, format, proof, or anything else.
+- If Avatar alone is selected: rewrite body in the target POV. Hooks change only as needed to match new pronoun / voice. Length, proof, CTA structure stay.
+- If Format alone is selected: adapt body to the target format's pacing rules. Same beats, same proof, same CTA — just delivered in the new format's vehicle.
+- If Length Compression is selected: cut to the target ratio. Preserve every beat in the same order — just shorter.
+- If Proof Lead is selected: rotate which proof element leads. Body sequence stays. Only the proof opener changes.
+- If Opening 3s is selected: rewrite ONLY the first sentence of the body and adjust H1 to match. Everything from second 2 onwards is identical.
+- Multi-vector selection: stack the changes. NEVER touch a vector the user did not select.
+
+## 3. ANGLE LOCK (HARDEST CONSTRAINT)
+The angle is what makes this script win. It CANNOT change in any iteration. Every card must read the same angle as the original. If the original is Anti-Fake / Competitor Callout, every iteration is still Anti-Fake / Competitor Callout — just delivered differently.
+
+## 4. CARD DIFFERENTIATION (when N > 1)
+Every card must be MEANINGFULLY different from the others. Within the selected vectors:
+- Hooks-only: each card uses a different hook MECHANISM family (Card 1 = pain / fear hooks, Card 2 = contrarian hooks, Card 3 = curiosity hooks, Card 4 = social-proof hooks, Card 5 = authority hooks)
+- Format Swap (no secondary target specified): rotate through the available formats — one card per format
+- Format Swap (with secondary target locked): all cards stay in the locked format but vary body phrasing + hooks
+- Avatar Pivot (no secondary target): rotate through available avatars
+- Avatar Pivot (with secondary target locked): all cards stay in the locked avatar but vary phrasing
+- Length Compression: vary the compression ratio per card (e.g., Card 1 = 85%, Card 2 = 75%, Card 3 = 65%)
+- Proof Lead Swap: vary which proof leads per card
+Never produce two cards that read as the same iteration with synonym swaps.
+
+## 5. PRESERVATION DURING ITERATION
+When iterating on hooks only: body must be LITERALLY identical to original.
+When iterating on avatar / format / length / proof: body adapts BUT preserves the original beat sequence, the proof claims, the mechanism explanation, the CTA logic.
+Never introduce new claims or remove proof points unless the selected vector requires it.
+
+## 6. PERFORMANCE-AWARE ITERATION
+Use the PERFORMANCE CONTEXT block above to inform iteration choices:
+- High CTR but low conversion → don't iterate on hooks. Iterate on body / proof.
+- Low CTR but high conversion when watched → iterate on hooks aggressively.
+- Long watch time but low CTR → iterate on opening 3 seconds or hooks.
+- Short watch time → iterate on length compression or opening.
+
+## 7. VOICE LOCK (anti-AI)
+Match the original's voice exactly:
+- Contractions where original uses them
+- Sentence fragments where original uses them
+- BANNED openers: "Imagine", "Picture this", "In a world where", "What if I told you", "Did you know"
+- BANNED transitions: "But here's the thing", "Now here's where it gets interesting", "And that's not all", "Let me explain"
+- BANNED softeners: "may", "might", "could potentially", "helps you to" (unless original uses them)
+- Use real-person verbal tics where original uses them: "Look," / "Listen," / "Honestly," / "The truth is,"
+
+## 8. PRODUCT INTEGRITY
+Never introduce claims not supported by the Product Library. Never remove the mechanism or big_promise. Respect compliance_restrictions from the library — never make claims the product can't legally make.
+
+# OUTPUT — return ONLY valid JSON, no markdown fences, no preamble:
+
+{
+  "iterations": [
+    {
+      "what_changed": "one sentence — what's different vs the original (e.g. 'Founder POV with 5 fresh fear-trigger hooks; body adapted to first-person founder voice')",
+      "hooks": [
+        { "id": "H1", "text": "..." },
+        { "id": "H2", "text": "..." },
+        { "id": "H3", "text": "..." },
+        { "id": "H4", "text": "..." },
+        { "id": "H5", "text": "..." }
+      ],
+      "body": "the full body of this iteration card",
+      "cta": "the CTA — same structure as original, only wording adapts if needed"
+    }
+  ]
+}`;
+
+// Default formats + avatars used when the Product Library doesn't define them.
+// User can override per-product by adding formats[] + avatars[] arrays to
+// product_profiles, same pattern as angles[].
+const DEFAULT_FORMATS = [
+  { name: 'Mashup',             description: 'Edited cutdown of multiple clips' },
+  { name: 'Short Video',        description: 'Single-shot vertical ≤30s' },
+  { name: 'UGC Selfie',         description: 'Phone-camera testimonial style' },
+  { name: 'Studio Testimonial', description: 'Lit, framed, scripted testimonial' },
+  { name: 'Voiceover',          description: 'B-roll + scripted voiceover' },
+  { name: 'GIF',                description: 'Animated / GIF-style edit with overlays' },
+  { name: 'Cartoon',            description: '2D illustrated explainer style' },
+];
+const DEFAULT_AVATARS = [
+  { name: 'Founder POV',          description: 'First-person from the founder / CEO' },
+  { name: 'Customer Testimonial', description: 'Verified customer telling their story' },
+  { name: 'Skeptic-Converted',    description: 'Former doubter explaining what changed their mind' },
+  { name: 'Expert / Authority',   description: 'Industry expert or domain authority' },
+  { name: 'Creator (UGC)',        description: 'Paid creator delivering script in their voice' },
+];
+
+async function buildIterationPrompt(parsedScript, productContext, performanceContext, numVariations, productProfile = null, vectorsSelected = null, angleLocked = null) {
+  // Load saved prompt or fall back to baked v1 defaults.
+  let systemPrompt = DEFAULT_ITERATION_PROMPT_SYSTEM;
+  let userTemplate = DEFAULT_ITERATION_PROMPT_USER;
   try {
+    const saved = await getLeaguePrompts();
     const customRaw = saved?.scriptIteration?.json;
     if (customRaw && customRaw.trim()) {
       const obj = JSON.parse(customRaw);
       if (typeof obj?.user === 'string' && obj.user.trim())   userTemplate = obj.user;
       if (typeof obj?.system === 'string' && obj.system.trim()) systemPrompt = obj.system;
     }
-  } catch { /* keep empty */ }
-
-  if (!userTemplate.trim() || !systemPrompt.trim()) {
-    const err = new Error('No scriptIteration prompt is configured. Open Settings → League Prompts → scriptIteration and paste a JSON prompt before using Iterate mode.');
-    err.code = 'NO_ITERATION_PROMPT';
-    throw err;
+  } catch (e) {
+    console.warn('[BriefPipeline] scriptIteration league prompt load error — using v1 default:', e.message);
   }
 
+  // Build the transcript view of the source script
   const transcript = parsedScript?.body
     ? `${(parsedScript.hooks || []).map((h, i) => `[H${i+1}] ${h.text || h}`).join('\n')}\n\n${parsedScript.body}\n\n${parsedScript.cta || ''}`.trim()
     : (parsedScript?.rawScript || '');
+
+  // Resolve formats + avatars from Product Library, fall back to defaults.
+  const resolveArr = (raw, fallback) => {
+    let a = raw;
+    if (typeof a === 'string') { try { a = JSON.parse(a); } catch { a = null; } }
+    return Array.isArray(a) && a.length > 0 ? a : fallback;
+  };
+  const formats = resolveArr(productProfile?.formats, DEFAULT_FORMATS);
+  const avatars = resolveArr(productProfile?.avatars, DEFAULT_AVATARS);
+  const formatsList = formats.map(f => `- ${f.name}${f.description ? ` — ${f.description}` : ''}`).join('\n');
+  const avatarsList = avatars.map(a => `- ${a.name}${a.description ? ` — ${a.description}` : ''}`).join('\n');
+
+  // Build the SELECTED ITERATION VECTORS block. If nothing was passed, default
+  // to "Hooks Only" (the safest most common iteration) so the prompt always
+  // has a concrete instruction.
+  let vectorsBlock;
+  if (vectorsSelected && Array.isArray(vectorsSelected) && vectorsSelected.length > 0) {
+    vectorsBlock = vectorsSelected.map(v => {
+      if (typeof v === 'string') return `- ${v}`;
+      const lines = [`- ${v.vector || v.name || 'Unknown vector'}`];
+      if (v.target) lines.push(`  target: ${v.target}`);
+      if (v.notes)  lines.push(`  notes: ${v.notes}`);
+      return lines.join('\n');
+    }).join('\n');
+  } else {
+    vectorsBlock = '- Hooks (refresh the 5 hooks with different mechanism families; body identical)';
+  }
+
+  const angleLockedStr = angleLocked && angleLocked !== 'NA' ? angleLocked : '(unknown — infer from original script and state your inference)';
 
   const user = userTemplate
     .replace(/\{\{\s*REFERENCE_TRANSCRIPT\s*\}\}/g, transcript)
     .replace(/\{\{\s*PERFORMANCE_CONTEXT\s*\}\}/g, performanceContext || '(no live performance data attached)')
     .replace(/\{\{\s*PRODUCT_CONTEXT\s*\}\}/g, productContext || 'No product profile available.')
-    .replace(/\{\{\s*NUM_VARIATIONS\s*\}\}/g, String(numVariations || 3));
+    .replace(/\{\{\s*NUM_VARIATIONS\s*\}\}/g, String(numVariations || 3))
+    .replace(/\{\{\s*FORMATS_LIST\s*\}\}/g, formatsList)
+    .replace(/\{\{\s*AVATARS_LIST\s*\}\}/g, avatarsList)
+    .replace(/\{\{\s*VECTORS_SELECTED\s*\}\}/g, vectorsBlock)
+    .replace(/\{\{\s*ANGLE_LOCKED\s*\}\}/g, angleLockedStr);
 
   return { system: systemPrompt, user };
 }
@@ -3334,7 +3481,7 @@ router.post('/generate/:id', authenticate, async (req, res) => {
 router.post('/generate-from-script', authenticate, async (req, res) => {
   try {
     await ensureTables();
-    const { script, url, productId, productCode, angle, mode, numVariations = 3, referenceId } = req.body;
+    const { script, url, productId, productCode, angle, mode, numVariations = 3, referenceId, vectorsSelected } = req.body;
 
     let rawScript = script || '';
 
@@ -3458,12 +3605,32 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
       // our proof of what works). Performance context tells the model
       // WHY this version won so it can preserve the right elements.
       // ═══════════════════════════════════════════════════
-      console.log(`[BriefPipeline] Iterate mode — single-call generation of ${numVariations} variants`);
+      console.log(`[BriefPipeline] Iterate mode — single-call generation of ${numVariations} cards (vectors=${JSON.stringify(vectorsSelected || ['Hooks'])})`);
+      // Resolve the locked angle from the reference's imported_metadata if
+      // available — META references carry the angle the source ad was
+      // tagged with at sync time.
+      let resolvedAngleLocked = angle && angle !== 'NA' ? angle : null;
+      if (!resolvedAngleLocked && referenceId) {
+        try {
+          const refRows = await pgQuery(
+            `SELECT imported_metadata FROM brief_pipeline_references WHERE id = $1 LIMIT 1`,
+            [referenceId]
+          );
+          if (refRows.length && refRows[0].imported_metadata) {
+            let md = refRows[0].imported_metadata;
+            if (typeof md === 'string') { try { md = JSON.parse(md); } catch {} }
+            if (md?.angle) resolvedAngleLocked = md.angle;
+          }
+        } catch { /* fall through with null */ }
+      }
       const { system: iterSystem, user: iterUser } = await buildIterationPrompt(
         parsedScript,
         productContext,
         performanceContextStr,
         numVariations,
+        productProfile,
+        vectorsSelected,
+        resolvedAngleLocked,
       );
       const iterResult = await callClaude(iterSystem, iterUser, 6000);
       const variants = Array.isArray(iterResult?.iterations) ? iterResult.iterations : [];
@@ -6071,7 +6238,7 @@ async function seedDefaultLeaguePrompts() {
       if (!allowed.has(k)) delete existing[k];
     }
 
-    // 3) Seed scriptClone if empty.
+    // 3) Seed scriptClone if empty (v1 lives in DEFAULT_CLONE_PROMPT_*).
     if (!existing.scriptClone?.json || !existing.scriptClone.json.trim()) {
       existing.scriptClone = {
         json: JSON.stringify(
@@ -6083,9 +6250,25 @@ async function seedDefaultLeaguePrompts() {
       };
     }
 
-    // 4) Ensure scriptAnalysis + scriptIteration slots exist (empty = use inline default for analysis, error for iteration).
+    // 4) Force-overwrite scriptIteration with v1 if it doesn't already
+    //    contain the v1 signature. This kills any old / bad iteration prompt
+    //    one time, then leaves the slot alone on subsequent boots so user
+    //    edits stick.
+    const ITERATION_V1_SIGNATURE = 'ONE CARD = 1 body + 5 hooks';
+    const currentIter = existing.scriptIteration?.json || '';
+    if (!currentIter.includes(ITERATION_V1_SIGNATURE)) {
+      existing.scriptIteration = {
+        json: JSON.stringify(
+          { system: DEFAULT_ITERATION_PROMPT_SYSTEM, user: DEFAULT_ITERATION_PROMPT_USER },
+          null,
+          2,
+        ),
+        notes: 'scriptIteration v1 — iterates a proven winning script on selected vectors only (hooks / format / avatar / length / proof lead / opening 3s). Angle, product, mechanism, CTA structure are LOCKED. Every card = 1 body + 5 hooks + 1 CTA. Uses {{PRODUCT_CONTEXT}}, {{FORMATS_LIST}}, {{AVATARS_LIST}}, {{VECTORS_SELECTED}}, {{REFERENCE_TRANSCRIPT}}, {{PERFORMANCE_CONTEXT}}, {{ANGLE_LOCKED}}, {{NUM_VARIATIONS}} placeholders. Output carries only what_changed (one sentence per card) — no other metadata.',
+      };
+    }
+
+    // 5) Ensure scriptAnalysis slot exists (empty = use inline default).
     if (!existing.scriptAnalysis) existing.scriptAnalysis = { json: '', notes: 'scriptAnalysis — uses the inline DEFAULT_REFERENCE_ANALYZER_PROMPT until you paste a custom JSON here.' };
-    if (!existing.scriptIteration) existing.scriptIteration = { json: '', notes: 'scriptIteration — v1 prompt being designed. Until you save a JSON here, Iterate mode will throw a clear error.' };
 
     await pgQuery(
       `INSERT INTO system_settings (key, value, description)
