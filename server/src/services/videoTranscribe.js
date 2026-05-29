@@ -220,51 +220,65 @@ export async function transcribeVideoUrl(videoUrl) {
     contentType.includes('webm')  ? 'ad.webm' :
                                     'ad.mp4';
 
-  const form = new FormData();
-  form.append('file', new Blob([buf], { type: contentType }), filename);
-  form.append('model', WHISPER_MODEL);
-  // verbose_json gives us segment-level timestamps so the UI can render a
-  // timestamped script (00:00 lead-in, 00:05 next line, …) like the Atria
-  // reference, rather than a single wall of text.
-  form.append('response_format', 'verbose_json');
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), WHISPER_TIMEOUT_MS);
-  let res;
+  // Try Whisper first. On any failure (HTTP error, empty result, timeout),
+  // fall through to Gemini. Many FB ads are silent / GIF-with-no-audio /
+  // music-only — Whisper returns empty, but Gemini can read the visuals.
+  let whisperResult = null;
+  let whisperError = null;
   try {
-    res = await fetch(WHISPER_URL, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${apiKey}` },
-      body: form,
-      signal: controller.signal,
-    });
-  } catch (err) {
-    if (err.name === 'AbortError') {
-      throw new Error(`Whisper API timed out after ${WHISPER_TIMEOUT_MS / 1000}s`);
+    const form = new FormData();
+    form.append('file', new Blob([buf], { type: contentType }), filename);
+    form.append('model', WHISPER_MODEL);
+    form.append('response_format', 'verbose_json');
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), WHISPER_TIMEOUT_MS);
+    let res;
+    try {
+      res = await fetch(WHISPER_URL, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${apiKey}` },
+        body: form,
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timer);
     }
-    throw new Error(`Whisper API request failed: ${err.message}`);
-  } finally {
-    clearTimeout(timer);
+
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '');
+      throw new Error(`Whisper HTTP ${res.status}: ${detail.slice(0, 200)}`);
+    }
+    const payload = await res.json();
+    const text = (payload?.text ?? '').trim();
+    if (!text) {
+      throw new Error('empty transcript');
+    }
+    const segments = Array.isArray(payload.segments)
+      ? payload.segments.map((s) => ({
+          start: Number(s.start ?? 0),
+          end:   Number(s.end   ?? 0),
+          text:  String(s.text  ?? '').trim(),
+        })).filter((s) => s.text)
+      : [];
+    whisperResult = { text, segments };
+  } catch (err) {
+    whisperError = err.message || String(err);
+    console.warn(`[transcribe] Whisper failed (${whisperError}) — falling through to Gemini`);
   }
 
-  if (!res.ok) {
-    const detail = await res.text().catch(() => '');
-    throw new Error(`Whisper API HTTP ${res.status}: ${detail.slice(0, 300)}`);
-  }
+  if (whisperResult) return whisperResult;
 
-  // verbose_json returns { text, segments: [{ id, start, end, text, ... }] }
-  const payload = await res.json();
-  const text = (payload?.text ?? '').trim();
-  if (!text) {
-    throw new Error('Whisper returned an empty transcript');
+  // Gemini fallback (works for silent videos / music-only / unrecognized audio
+  // — Gemini reads the visuals + any OCR'd text + caption track).
+  const mime = contentType.split(';')[0] || 'video/mp4';
+  try {
+    const text = await transcribeBufferWithGemini(buf, mime);
+    if (!text || !text.trim()) {
+      throw new Error(`Gemini also returned empty (after Whisper: ${whisperError || 'unknown'})`);
+    }
+    return { text, segments: [] };
+  } catch (geminiErr) {
+    throw new Error(`Both transcribers failed — Whisper: ${whisperError}; Gemini: ${geminiErr.message}`);
   }
-  // Keep only the fields the UI needs — start/end are seconds (float).
-  const segments = Array.isArray(payload.segments)
-    ? payload.segments.map((s) => ({
-        start: Number(s.start ?? 0),
-        end:   Number(s.end   ?? 0),
-        text:  String(s.text  ?? '').trim(),
-      })).filter((s) => s.text)
-    : [];
-  return { text, segments };
 }
