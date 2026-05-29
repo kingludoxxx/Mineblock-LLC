@@ -312,13 +312,11 @@ export default function BriefPipeline() {
     setScriptGenStep('Extracting script...');
     let stepInterval;
     try {
-      const stepMessages = [
-        'Extracting script...',
-        'Running deep analysis (3 agents)...',
-        'Generating variations...',
-        'Scoring & validating...',
-        'Finalizing briefs...',
-      ];
+      // Mode-specific step messages. Variants pipeline was removed; only
+      // clone (single Claude call) and iterate (single Claude call) ship.
+      const stepMessages = config.mode === 'iterate'
+        ? ['Parsing winning script...', 'Generating iterations...', 'Finalizing cards...']
+        : ['Parsing competitor script...', 'Cloning into our product...', 'Finalizing card...'];
       let stepIdx = 0;
       stepInterval = setInterval(() => {
         if (abortRef.current) { clearInterval(stepInterval); return; }
@@ -327,15 +325,9 @@ export default function BriefPipeline() {
       }, 5000);
       stepIntervalsRef.current.push(stepInterval);
 
-      // mode === 'iterate' → META reference path (fresh hooks + body
-      // variants of OUR winning script, no product swap).
-      // mode === 'clone'   → LEAGUE / UPLOAD path (existing behavior).
-      // anything else      → existing 'variants' deep-analysis path.
-      const sendMode = config.mode === 'iterate'
-        ? 'iterate'
-        : config.mode === 'clone'
-          ? 'clone'
-          : 'variants';
+      // Only 2 modes survive: clone (LEAGUE / UPLOAD source) and iterate
+      // (META source). Anything else would error 500 server-side.
+      const sendMode = config.mode === 'iterate' ? 'iterate' : 'clone';
       const { data } = await api.post('/brief-pipeline/generate-from-script', {
         script:        config.script,
         url:           config.url,

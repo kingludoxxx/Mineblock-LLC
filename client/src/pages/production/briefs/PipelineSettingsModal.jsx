@@ -367,7 +367,11 @@ export default function PipelineSettingsModal({ open, onClose }) {
         <div className="flex border-b border-white/[0.06] px-6 shrink-0">
           {[
             { key: 'overview',       label: 'Pipeline Overview' },
-            { key: 'prompts',        label: 'Prompt Editor' },
+            // 'prompts' tab (old 8-prompt store) removed 2026-05-29 —
+            // the backend /settings/prompts routes were deleted and the
+            // scriptParser / variantsGenerator / scorer prompts that lived
+            // here are no longer reachable. League Prompts is the only
+            // user-editable prompt namespace now.
             { key: 'leaguePrompts',  label: 'League Prompts' },
           ].map((t) => (
             <button
