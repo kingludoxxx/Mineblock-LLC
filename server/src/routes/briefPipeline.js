@@ -5763,7 +5763,8 @@ router.delete('/references/:id', authenticate, async (req, res) => {
 // ============================================================================
 // ── Meta video imports (Triple Whale → Reference column) ────────────────────
 //
-// Mirrors staticsGeneration's /meta-ads/* but scoped to creative_type='video'
+// Mirrors staticsGeneration's /meta-ads/* but scoped to ca.type='video'
+// (the live data uses `type`, not the `creative_type` migration alias)
 // and writes into brief_pipeline_references with source='meta'. Transcription
 // is async — we kick it off in the background using the same yt-dlp +
 // Whisper/Gemini pipeline already proven by /generate-from-script.
@@ -5847,7 +5848,7 @@ router.get('/meta-video-ads', authenticate, async (req, res) => {
     const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 20));
     const offset = (page - 1) * limit;
 
-    const where = [`ca.creative_type = 'video'`, `ca.synced_at >= NOW() - ($1 || ' days')::INTERVAL`];
+    const where = [`ca.type = 'video'`, `ca.synced_at >= NOW() - ($1 || ' days')::INTERVAL`];
     const params = [String(window)];
 
     if (accounts.length > 0 && idCol) {
@@ -5993,7 +5994,7 @@ router.post('/references/import-meta', authenticate, async (req, res) => {
          ${accountNameSelect} AS account_name
        FROM creative_analysis ca
        WHERE ca.creative_id = ANY($1::text[])
-         AND ca.creative_type = 'video'
+         AND ca.type = 'video'
        ORDER BY ca.creative_id, ca.spend DESC NULLS LAST`,
       [creativeIds.map(String)]
     );
@@ -6089,6 +6090,36 @@ router.post('/references/import-meta', authenticate, async (req, res) => {
     res.json({ success: true, imported });
   } catch (err) {
     console.error('[BriefPipeline] /references/import-meta error:', err.message);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// POST /enhance-script — clean up raw pasted text for the Script Generator.
+// Replaces the never-implemented /magic-writer/enhance endpoint. Takes any
+// raw text (transcript dumps, hand-typed scripts, OCR output) and returns
+// the same content with grammar fixed, punctuation normalized, line breaks
+// preserved — voice / structure / claims kept verbatim.
+router.post('/enhance-script', authenticate, async (req, res) => {
+  try {
+    const { text } = req.body || {};
+    if (!text || typeof text !== 'string' || text.trim().length < 20) {
+      return res.status(400).json({
+        success: false,
+        error: { message: 'text is required and must be at least 20 characters' },
+      });
+    }
+    const system = 'You are a careful copy editor. You receive raw ad-script text — typo-ridden, missing punctuation, transcribed speech — and return the same script with: spelling fixed, punctuation normalized, sentence boundaries cleaned, run-ons broken, paragraph breaks preserved. You MUST NOT change the voice, the claims, the structure, or the meaning. You MUST NOT add new sentences. You MUST NOT remove specific numbers, brand names, or product mentions. If a phrase is intentional (slang, emphasis, deliberate fragmentation), keep it. Output ONLY the cleaned-up text — no preamble, no explanation, no quotes.';
+    const user = `# RAW SCRIPT\n${text}\n\n# OUTPUT\nReturn the cleaned-up version of the above, nothing else.`;
+    const enhanced = await callClaude(system, user, 4000, { fast: true, rawText: true });
+    if (!enhanced || typeof enhanced !== 'string' || enhanced.trim().length < 10) {
+      return res.status(502).json({
+        success: false,
+        error: { message: 'Enhancer returned an empty response — try again' },
+      });
+    }
+    res.json({ success: true, enhanced: enhanced.trim() });
+  } catch (err) {
+    console.error('[BriefPipeline] /enhance-script error:', err.message);
     res.status(500).json({ success: false, error: { message: err.message } });
   }
 });

@@ -131,21 +131,22 @@ export default function ScriptGeneratorPanel({
     }
   };
 
+  const [enhanceError, setEnhanceError] = useState(null);
   const handleEnhance = async () => {
     if (!scriptText.trim()) return;
     setEnhancing(true);
+    setEnhanceError(null);
     try {
-      const res = await fetch('/api/v1/magic-writer/enhance', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${localStorage.getItem('accessToken')}`,
-        },
-        body: JSON.stringify({ text: scriptText, type: 'script' }),
-      });
-      const data = await res.json();
-      if (data.enhanced) setScriptText(data.enhanced);
-    } catch { /* enhance is best-effort */ } finally {
+      const r = await api.post('/brief-pipeline/enhance-script', { text: scriptText });
+      if (r.data?.enhanced) {
+        setScriptText(r.data.enhanced);
+      } else {
+        setEnhanceError('Enhancer returned no text');
+      }
+    } catch (err) {
+      const msg = err.response?.data?.error?.message || err.message || 'Enhance failed';
+      setEnhanceError(msg);
+    } finally {
       setEnhancing(false);
     }
   };
@@ -212,24 +213,35 @@ export default function ScriptGeneratorPanel({
         </div>
 
         {inputMode === 'text' ? (
-          <div className="relative">
+          <div className="space-y-1.5">
             <textarea
               value={scriptText}
               onChange={(e) => setScriptText(e.target.value)}
               placeholder="Paste competitor copy, landing page text, article, ad, email..."
               className="w-full h-32 bg-white/[0.02] border border-white/[0.05] rounded-lg p-3 text-sm text-zinc-300 placeholder:text-zinc-600 focus:outline-none focus:ring-1 focus:ring-[#c9a84c]/30 focus:border-[#c9a84c]/20 resize-none transition-all shadow-[inset_0_1px_0_0_rgba(255,255,255,0.02)]"
             />
-            {scriptText.trim().length > 20 && (
-              <button
-                type="button"
-                onClick={handleEnhance}
-                disabled={enhancing}
-                className="absolute bottom-2 right-2 flex items-center gap-1 px-2 py-1 text-[10px] font-medium text-[#c9a84c] bg-[#c9a84c]/10 rounded border border-[#c9a84c]/20 hover:bg-[#c9a84c]/20 transition-colors cursor-pointer disabled:opacity-40"
-              >
-                {enhancing ? <Loader2 className="w-3 h-3 animate-spin" /> : <Wand2 className="w-3 h-3" />}
-                Enhance
-              </button>
-            )}
+            <div className="flex items-center justify-between gap-2 px-0.5">
+              <div className="text-[10px] font-mono text-zinc-600">
+                {scriptText.length > 0 && `${scriptText.length} chars · ${scriptText.trim().split(/\s+/).filter(Boolean).length} words`}
+              </div>
+              <div className="flex items-center gap-2">
+                {enhanceError && (
+                  <span className="text-[10px] font-mono text-red-400/80 max-w-[14rem] truncate" title={enhanceError}>
+                    {enhanceError}
+                  </span>
+                )}
+                <button
+                  type="button"
+                  onClick={handleEnhance}
+                  disabled={enhancing || scriptText.trim().length < 20}
+                  title={scriptText.trim().length < 20 ? 'Paste at least 20 characters first' : 'Clean up grammar/punctuation, preserve voice'}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[10px] font-mono uppercase tracking-wider rounded-md border border-[#c9a84c]/25 bg-[#c9a84c]/10 text-[#e8d5a3] hover:bg-[#c9a84c]/15 hover:border-[#c9a84c]/40 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  {enhancing ? <Loader2 className="w-3 h-3 animate-spin" /> : <Wand2 className="w-3 h-3" />}
+                  {enhancing ? 'Enhancing…' : 'Enhance'}
+                </button>
+              </div>
+            </div>
           </div>
         ) : (
           <input
@@ -254,6 +266,18 @@ export default function ScriptGeneratorPanel({
           <ProductSelector
             selectedId={selectedProduct?.id}
             onSelect={(p) => setSelectedProduct(p)}
+            onLoad={(list) => {
+              // Default to Miner Forge Pro on first load — that's our active
+              // brand. Falls back to the first product if MR isn't in the
+              // Product Library (e.g. fresh tenant). Only auto-selects when
+              // nothing is selected yet so user choices aren't clobbered.
+              if (selectedProduct) return;
+              const mr = list.find(p => (p.short_name || '').toUpperCase() === 'MR'
+                                     || (p.product_code || '').toUpperCase() === 'MR'
+                                     || (p.name || '').toLowerCase().includes('miner forge'));
+              const pick = mr || list[0];
+              if (pick) setSelectedProduct(pick);
+            }}
             className="w-full"
           />
 
