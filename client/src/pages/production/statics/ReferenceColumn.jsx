@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import {
-  Upload, Globe, TrendingUp, Loader2, RefreshCw, Trash2, ExternalLink, X,
+  Upload, Globe, TrendingUp, Loader2, RefreshCw, Trash2, ExternalLink, X, Sparkles, Check,
 } from 'lucide-react';
 import api from '../../../services/api';
 import LeagueImportModal from './LeagueImportModal';
@@ -111,7 +111,7 @@ function ReferencePreviewModal({ item, onClose, onUse, isSelected, onToggleSelec
   );
 }
 
-function ReferenceCard({ item, onPreview, onDelete, isSelected, onToggleSelect }) {
+function ReferenceCard({ item, onPreview, onDelete, isSelected, onToggleSelect, onAddToQueue }) {
   const src = SOURCE_BADGES[item.imported_from] || SOURCE_BADGES.upload;
   const meta = item.imported_metadata || {};
   const rightBadge = item.imported_from === 'league' && meta.tier
@@ -146,25 +146,48 @@ function ReferenceCard({ item, onPreview, onDelete, isSelected, onToggleSelect }
               {rightBadge.text}
             </span>
           )}
-          {/* SELECT button — toggle multi-select for batch queueing */}
-          <button
-            onClick={(e) => { e.stopPropagation(); onToggleSelect(item); }}
-            className={`absolute bottom-2 left-2 inline-flex items-center gap-1 px-2 py-1 rounded text-[10px] font-mono font-bold uppercase tracking-wider transition-all cursor-pointer ${
-              isSelected
-                ? 'bg-emerald-500 text-black opacity-100'
-                : 'bg-emerald-500/80 hover:bg-emerald-500 text-black opacity-0 group-hover:opacity-100'
-            }`}
-            title={isSelected ? 'Click to deselect' : 'Select to add to queue'}
-          >
-            {isSelected ? '✓ Selected' : 'Select'}
-          </button>
-          <button
-            onClick={(e) => { e.stopPropagation(); onDelete(item); }}
-            className="absolute bottom-2 right-2 p-1.5 bg-red-500/80 hover:bg-red-500 text-white rounded opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
-            title="Remove from reference"
-          >
-            <Trash2 className="w-3 h-3" />
-          </button>
+          {/* Action row — bottom of thumb. Two states:
+              - NOT selected: a subtle hover-revealed Select button + trash.
+              - SELECTED: minimal Selected pill + sparkle (Add to Queue) + red X (delete). */}
+          {isSelected ? (
+            <div className="absolute bottom-2 left-2 right-2 flex items-center gap-1.5">
+              <div className="flex-1 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-emerald-500/10 border border-emerald-400/30 text-emerald-300 text-[10px] font-mono uppercase tracking-wide">
+                <Check className="w-3 h-3" strokeWidth={2.5} />
+                <span>Selected</span>
+              </div>
+              <button
+                onClick={(e) => { e.stopPropagation(); onAddToQueue?.(item); }}
+                className="shrink-0 p-1.5 rounded-md bg-white/[0.06] border border-white/[0.08] hover:bg-violet-500/15 hover:border-violet-400/40 text-violet-300 hover:text-violet-200 transition-all cursor-pointer"
+                title="Add to queue"
+              >
+                <Sparkles className="w-3 h-3" />
+              </button>
+              <button
+                onClick={(e) => { e.stopPropagation(); onDelete(item); }}
+                className="shrink-0 p-1.5 rounded-md bg-white/[0.06] border border-white/[0.08] hover:bg-red-500/15 hover:border-red-400/40 text-red-300 hover:text-red-200 transition-all cursor-pointer"
+                title="Remove from library"
+              >
+                <X className="w-3 h-3" strokeWidth={2.5} />
+              </button>
+            </div>
+          ) : (
+            <>
+              <button
+                onClick={(e) => { e.stopPropagation(); onToggleSelect(item); }}
+                className="absolute bottom-2 left-2 inline-flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-mono font-bold uppercase tracking-wider bg-emerald-500/80 hover:bg-emerald-500 text-black opacity-0 group-hover:opacity-100 transition-all cursor-pointer"
+                title="Select to add to queue"
+              >
+                Select
+              </button>
+              <button
+                onClick={(e) => { e.stopPropagation(); onDelete(item); }}
+                className="absolute bottom-2 right-2 p-1.5 bg-red-500/80 hover:bg-red-500 text-white rounded-md opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
+                title="Remove from library"
+              >
+                <Trash2 className="w-3 h-3" />
+              </button>
+            </>
+          )}
         </div>
       ) : (
         <div className="aspect-[4/3] bg-white/[0.02] flex items-center justify-center text-zinc-600 text-xs">No preview</div>
@@ -373,6 +396,7 @@ export function ReferenceColumn({ productId, onSelectReference, onAddSelectedToQ
             onDelete={handleDelete}
             isSelected={selectedIds.has(it.id)}
             onToggleSelect={toggleSelect}
+            onAddToQueue={(item) => onAddSelectedToQueue?.([item])}
           />
         ))}
       </div>
