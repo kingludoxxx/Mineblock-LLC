@@ -2880,13 +2880,10 @@ async function sendDailyPnlReport(dateStr, { force = false } = {}) {
     if (amazonRevenue > 0 || amazonPpc > 0) {
       lines.push(
         '',
-        ':package: *Amazon (Pacific Time day, tagged to this Berlin date)*',
-        `Amazon Revenue:  ${fmt(amazonRevenue)}  _(${pctAmazon.toFixed(1)}% of total)_`,
+        `:package: Amazon Revenue:  ${fmt(amazonRevenue)} (${pctAmazon.toFixed(1)}%)`,
         `Amazon PPC:  ${fmt(amazonPpc)}`,
-        '',
-        ':bar_chart: *Combined (Shopify + Amazon)*',
-        `Revenue w/ Amazon:  ${fmt(revenueWithAmazon)}`,
-        `ROAS w/ Amazon:  ${roasWithAmazon.toFixed(2)}x  _(Meta + Amazon PPC in denominator)_`,
+        `:bar_chart: Revenue w/ Amazon:  ${fmt(revenueWithAmazon)}`,
+        `ROAS w/ Amazon:  ${roasWithAmazon.toFixed(2)}x`,
       );
     }
 
