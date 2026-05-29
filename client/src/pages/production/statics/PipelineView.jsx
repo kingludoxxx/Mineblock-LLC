@@ -17,6 +17,7 @@ import {
   Settings,
   Tag,
   RotateCcw,
+  Wrench,
 } from 'lucide-react';
 import api from '../../../services/api';
 import { ReferenceColumn } from './ReferenceColumn';
@@ -915,6 +916,8 @@ export function PipelineView({ creatives = [], onStatusChange, onAngleChange, on
   const [launchModalOpen, setLaunchModalOpen] = useState(false);
   const [pendingLaunch, setPendingLaunch] = useState(null); // { angle, creativeIds, isBulk, groups }
   const [selectedCopySetId, setSelectedCopySetId] = useState('');
+  const [repairing, setRepairing] = useState(false);
+  const [repairToast, setRepairToast] = useState(null); // { type: 'ok'|'err', text }
 
   // Fetch launch templates & copy sets
   const fetchLaunchData = useCallback(() => {
@@ -1052,6 +1055,39 @@ export function PipelineView({ creatives = [], onStatusChange, onAngleChange, on
             <Package className="w-3.5 h-3.5" />
             Copy Sets
           </button>
+          <button
+            type="button"
+            onClick={async () => {
+              if (repairing) return;
+              setRepairing(true);
+              setRepairToast(null);
+              try {
+                const { data } = await api.post('/statics-generation/repair-all-previews');
+                const r = data?.data || {};
+                const backed = r.backsync?.backed ?? 0;
+                const repaired = r.repair_thumbnails?.repaired ?? 0;
+                const regen = r.regenerate_broken?.queued ?? 0;
+                const zombies = r.heal_zombies?.archived ?? 0;
+                setRepairToast({
+                  type: 'ok',
+                  text: `Repair complete — backsync:${backed} meta-repair:${repaired} regen-queued:${regen} archived:${zombies}`,
+                });
+                onRefresh?.();
+              } catch (err) {
+                setRepairToast({ type: 'err', text: err?.response?.data?.error?.message || err.message || 'Repair failed' });
+              } finally {
+                setRepairing(false);
+              }
+            }}
+            disabled={repairing}
+            title="Re-persist all expired CDN URLs to R2, refetch launched ads from Meta Graph, regenerate dead previews, archive zombies"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-mono font-medium text-amber-300/80 uppercase tracking-wide
+                       bg-transparent border border-amber-400/[0.15] rounded-md
+                       hover:border-amber-400/[0.3] hover:text-amber-200 transition-all disabled:opacity-40 cursor-pointer"
+          >
+            {repairing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Wrench className="w-3.5 h-3.5" />}
+            Repair Previews
+          </button>
           <div className="h-4 w-px bg-white/[0.06]" />
           <button
             type="button"
@@ -1066,6 +1102,18 @@ export function PipelineView({ creatives = [], onStatusChange, onAngleChange, on
           </button>
         </div>
       </div>
+
+      {/* Repair toast */}
+      {repairToast && (
+        <div className={`mb-4 glass-card border rounded-lg px-4 py-2 flex items-center justify-between ${
+          repairToast.type === 'ok' ? 'border-emerald-500/20' : 'border-red-500/20'
+        }`}>
+          <span className={`text-xs ${repairToast.type === 'ok' ? 'text-emerald-300' : 'text-red-300'}`}>
+            {repairToast.text}
+          </span>
+          <button onClick={() => setRepairToast(null)} className="text-zinc-400 hover:text-zinc-200 text-xs cursor-pointer">Dismiss</button>
+        </div>
+      )}
 
       {/* Error toast */}
       {launchError && (

@@ -451,9 +451,41 @@ const DOOMED_CDN_PATTERNS = [
   '%aiquickdraw.com%',
   '%file.kieai.app%',
 ];
+// ─────────────────────────────────────────────────────────────────────────
+// Persist any doomed URL to a permanent home.
+// Tier 1: R2 (when configured) — permanent forever
+// Tier 2: /tmp-img/ DB-backed proxy — falls back if R2 fails
+// Returns: { url } on success or null if the source URL is already dead
+// ─────────────────────────────────────────────────────────────────────────
+async function persistAnyUrlToR2(srcUrl, r2Prefix = 'backsync') {
+  if (!srcUrl) return null;
+  const useR2 = isR2Configured() && process.env.R2_PUBLIC_URL;
+  // Tier 1: R2 — uploadFromUrl fetches+uploads atomically
+  if (useR2) {
+    try {
+      const { url } = await uploadFromUrl(srcUrl, r2Prefix);
+      if (url && url.startsWith('http')) return { url };
+    } catch (_err) {
+      // Fall through to Tier 2
+    }
+  }
+  // Tier 2: /tmp-img/ DB-backed (used when R2 not configured OR R2 upload failed)
+  try {
+    const r = await fetch(srcUrl, { signal: AbortSignal.timeout(20000) });
+    if (!r.ok) return null;
+    const buf = Buffer.from(await r.arrayBuffer());
+    const mime = r.headers.get('content-type') || detectMime(buf) || 'image/png';
+    const newId = await storeTempImage(buf, mime);
+    const srv = process.env.RENDER_EXTERNAL_URL || `http://localhost:${process.env.PORT || 3000}`;
+    return { url: `${srv}/api/v1/statics-generation/tmp-img/${newId}` };
+  } catch {
+    return null;
+  }
+}
+
 let _backsyncInFlight = false;
 async function backsyncDoomedUrls() {
-  if (_backsyncInFlight) return;
+  if (_backsyncInFlight) return { backed: 0, dead: 0, scanned: 0, skipped: 'in-flight' };
   _backsyncInFlight = true;
   try {
     const sql = `
@@ -463,40 +495,38 @@ async function backsyncDoomedUrls() {
         AND COALESCE(is_reference, FALSE) = FALSE
         AND (${DOOMED_CDN_PATTERNS.map((_, i) => `image_url LIKE $${i + 1}`).join(' OR ')})
       ORDER BY updated_at DESC NULLS LAST, created_at DESC
-      LIMIT 100
+      LIMIT 200
     `;
     const rows = await pgQuery(sql, DOOMED_CDN_PATTERNS, { timeout: 15000 });
-    if (rows.length === 0) return;
+    if (rows.length === 0) return { backed: 0, dead: 0, scanned: 0 };
 
     let backed = 0, dead = 0;
-    const srv = process.env.RENDER_EXTERNAL_URL || `http://localhost:${process.env.PORT || 3000}`;
+    const useR2 = isR2Configured() && process.env.R2_PUBLIC_URL;
     for (const row of rows) {
+      const persisted = await persistAnyUrlToR2(row.image_url, 'backsync-r2');
+      if (!persisted) { dead++; continue; }
       try {
-        const r = await fetch(row.image_url, { signal: AbortSignal.timeout(20000) });
-        if (!r.ok) { dead++; continue; }
-        const buf = Buffer.from(await r.arrayBuffer());
-        const mime = r.headers.get('content-type') || detectMime(buf) || 'image/png';
-        const newId = await storeTempImage(buf, mime);
-        const safeUrl = `${srv}/api/v1/statics-generation/tmp-img/${newId}`;
         await pgQuery(
           'UPDATE spy_creatives SET image_url = $1, updated_at = NOW() WHERE id = $2',
-          [safeUrl, row.id]
+          [persisted.url, row.id]
         );
         backed++;
-      } catch {
-        dead++;
-      }
+      } catch { dead++; }
     }
+    const target = useR2 ? 'R2' : 'tmp-img';
     if (backed > 0 || dead > 0) {
-      console.log(`[backsync] CDN-URL → tmp-img: backed=${backed} dead=${dead} (of ${rows.length} scanned)`);
+      console.log(`[backsync] CDN-URL → ${target}: backed=${backed} dead=${dead} (of ${rows.length} scanned)`);
     }
+    return { backed, dead, scanned: rows.length, target };
   } catch (err) {
     console.warn('[backsync] sweep failed:', err.message);
+    return { backed: 0, dead: 0, scanned: 0, error: err.message };
   } finally {
     _backsyncInFlight = false;
   }
 }
-setInterval(() => { backsyncDoomedUrls().catch(() => {}); }, 10 * 60 * 1000);
+// Tightened from 10 min → 5 min: with R2 target, this is now durable + low-cost.
+setInterval(() => { backsyncDoomedUrls().catch(() => {}); }, 5 * 60 * 1000);
 // First pass 60s after boot so any URL that's about to expire is captured.
 setTimeout(() => { backsyncDoomedUrls().catch(() => {}); }, 60_000);
 
@@ -3284,12 +3314,25 @@ router.get('/repair-thumbnails', async (req, res, next) => {
             skipped++;
             continue;
           }
+          // Mirror Meta CDN bytes to R2 so we don't re-break when Meta purges
+          // the CDN URL again. Fall back to storing the raw CDN URL if R2 fails
+          // (better than nothing for the next 24-72h).
+          let finalUrl = cdnUrl;
+          if (isR2Configured() && process.env.R2_PUBLIC_URL) {
+            try {
+              const { url: r2Url } = await uploadFromUrl(cdnUrl, 'meta-repair-r2');
+              if (r2Url && r2Url.startsWith('http')) finalUrl = r2Url;
+            } catch (mirrorErr) {
+              console.warn(`[repair-thumbnails] R2 mirror failed for ${row.id}: ${mirrorErr.message} — storing raw Meta CDN URL as fallback`);
+            }
+          }
           try {
             await pgQuery(
               `UPDATE spy_creatives SET image_url = $1, thumbnail_url = $1, updated_at = NOW() WHERE id = $2`,
-              [cdnUrl, row.id]
+              [finalUrl, row.id]
             );
-            console.log(`[repair-thumbnails] ✅ Repaired creative ${row.id} → ${cdnUrl.slice(0, 80)}`);
+            const tag = finalUrl === cdnUrl ? 'Meta-CDN' : 'R2-mirror';
+            console.log(`[repair-thumbnails] ✅ Repaired creative ${row.id} → ${tag} ${finalUrl.slice(0, 80)}`);
             repaired++;
           } catch (dbErr) {
             console.error(`[repair-thumbnails] DB update error for creative ${row.id}: ${dbErr.message}`);
@@ -3414,6 +3457,82 @@ router.post('/heal-zombies', async (req, res, next) => {
     console.error('[heal-zombies] error:', err);
     res.status(500).json({ success: false, error: { message: err.message } });
   }
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// POST /repair-all-previews — ONE BUTTON to fix every broken preview.
+//
+// Runs the full triage in-process, synchronously, and returns per-mode counts:
+//   1. backsync   — Mode B: expired CDN URLs → R2 (or /tmp-img/ fallback)
+//   2. repair-thumbnails  — Mode D: launched ads via Meta Graph → R2 mirror
+//   3. regenerate-broken  — Mode A: dead /tmp-img/ refs → Claude+NB → R2
+//   4. heal-zombies       — Mode C: archive previews with no image AND no reference
+//
+// Auth: JWT or CRON_SECRET. Self-fetches sub-routes so each runs with the
+// caller's credentials. Bypasses the 30-min auto-trigger rate limit.
+// ─────────────────────────────────────────────────────────────────────────
+router.post('/repair-all-previews', async (req, res, next) => {
+  const cronSecret = process.env.CRON_SECRET;
+  const provided   = req.headers['x-cron-secret'];
+  if (cronSecret && provided === cronSecret) return next();
+  return authenticate(req, res, next);
+}, async (req, res) => {
+  const base = process.env.RENDER_EXTERNAL_URL || `http://localhost:${process.env.PORT || 3000}`;
+  const t0 = Date.now();
+
+  // Forward the caller's auth on sub-route HTTP calls so existing
+  // route-level guards keep working without changes.
+  const authHeaders = {};
+  if (req.headers.authorization) authHeaders.authorization = req.headers.authorization;
+  if (cronSecret && provided === cronSecret) authHeaders['x-cron-secret'] = cronSecret;
+
+  const result = { backsync: null, repair_thumbnails: null, regenerate_broken: null, heal_zombies: null };
+  const errors = [];
+
+  // 1. Backsync (in-process — no HTTP self-fetch needed)
+  try {
+    result.backsync = await backsyncDoomedUrls();
+  } catch (err) { errors.push(`backsync: ${err.message}`); }
+
+  // 2. Repair launched thumbnails via Meta Graph (HTTP self-fetch)
+  try {
+    const r = await fetch(`${base}/api/v1/statics-generation/repair-thumbnails`, {
+      method: 'GET', headers: authHeaders, signal: AbortSignal.timeout(180_000),
+    });
+    const body = await r.json().catch(() => ({}));
+    result.repair_thumbnails = body?.data || { error: `status ${r.status}` };
+  } catch (err) { errors.push(`repair-thumbnails: ${err.message}`); }
+
+  // 3. Regenerate truly-broken previews (Claude + NB → R2)
+  try {
+    const r = await fetch(`${base}/api/v1/statics-generation/regenerate-broken-previews`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders },
+      body: JSON.stringify({}),
+      signal: AbortSignal.timeout(15_000),
+    });
+    const body = await r.json().catch(() => ({}));
+    result.regenerate_broken = body?.data || { error: `status ${r.status}` };
+  } catch (err) { errors.push(`regenerate-broken: ${err.message}`); }
+
+  // 4. Heal zombies (archive previews with no image AND no reference)
+  try {
+    const r = await fetch(`${base}/api/v1/statics-generation/heal-zombies`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders },
+      body: JSON.stringify({}),
+      signal: AbortSignal.timeout(30_000),
+    });
+    const body = await r.json().catch(() => ({}));
+    result.heal_zombies = { archived: body?.archived ?? 0 };
+  } catch (err) { errors.push(`heal-zombies: ${err.message}`); }
+
+  const elapsed_ms = Date.now() - t0;
+  console.log(`[repair-all-previews] done in ${elapsed_ms}ms — backsync=${JSON.stringify(result.backsync)} repair=${JSON.stringify(result.repair_thumbnails)} regen=${JSON.stringify(result.regenerate_broken)} zombies=${JSON.stringify(result.heal_zombies)}`);
+  res.json({
+    success: errors.length === 0,
+    data: { ...result, elapsed_ms, errors: errors.length > 0 ? errors : undefined },
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────
