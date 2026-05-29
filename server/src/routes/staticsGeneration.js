@@ -3254,6 +3254,193 @@ router.post('/heal-zombies', async (req, res, next) => {
   }
 });
 
+// ─────────────────────────────────────────────────────────────────────────
+// POST /migrate-image-store-to-r2
+//
+// One-shot backfill: upload every row in image_store to R2, rewrite every
+// spy_creatives.image_url / reference_thumbnail that points at the
+// corresponding /tmp-img/<id> to the new R2 URL. After 100% rewrite the
+// caller can TRUNCATE image_store safely.
+//
+// Idempotent + resumable: progress lives in image_store_migration. A
+// restart picks up where we left off; re-runs skip already-migrated rows.
+// CRON_SECRET-gated so it can be triggered from a terminal once R2 is hot.
+// Refuses to run unless R2_PUBLIC_URL is set (no point uploading if the
+// returned URL would be `r2://bucket/key` and unfetchable by browsers).
+//
+// Query: ?limit=N (default 500) — caps how many rows we process per run.
+//        ?dry=1 — preview counts without writing anything.
+// ─────────────────────────────────────────────────────────────────────────
+router.post('/migrate-image-store-to-r2', async (req, res, next) => {
+  const cronSecret = process.env.CRON_SECRET;
+  const provided   = req.headers['x-cron-secret'];
+  if (cronSecret && provided === cronSecret) return next();
+  return authenticate(req, res, next);
+}, async (req, res) => {
+  try {
+    if (!process.env.R2_PUBLIC_URL || !isR2Configured()) {
+      return res.status(412).json({
+        success: false,
+        error: { message: 'R2_PUBLIC_URL or R2 credentials not set — refusing to run; set the env vars then retry' },
+      });
+    }
+    const limit = Math.min(parseInt(req.query.limit, 10) || 500, 5000);
+    const dryRun = req.query.dry === '1' || req.body?.dry === true;
+
+    // Tracking table — tiny, just (image_store_id, r2_url, migrated_at)
+    await pgQuery(`
+      CREATE TABLE IF NOT EXISTS image_store_migration (
+        id TEXT PRIMARY KEY,
+        r2_url TEXT NOT NULL,
+        migrated_at TIMESTAMPTZ DEFAULT NOW(),
+        spy_creatives_updated INT DEFAULT 0
+      )
+    `).catch(() => {});
+
+    // Pick rows that still exist in image_store AND haven't been migrated yet
+    const todo = await pgQuery(`
+      SELECT s.id, s.data, s.content_type
+      FROM image_store s
+      LEFT JOIN image_store_migration m ON m.id = s.id
+      WHERE m.id IS NULL
+      ORDER BY s.created_at ASC
+      LIMIT $1
+    `, [limit], { timeout: 30000 });
+
+    if (todo.length === 0) {
+      // Final summary: how many spy_creatives rows still point at /tmp-img/
+      const remaining = await pgQuery(`
+        SELECT COUNT(*) AS n
+        FROM spy_creatives
+        WHERE image_url LIKE '%/tmp-img/%'
+          AND COALESCE(is_reference, FALSE) = FALSE
+      `);
+      const migrated = await pgQuery(`SELECT COUNT(*) AS n FROM image_store_migration`);
+      return res.json({
+        success: true,
+        data: {
+          message: 'Nothing left to migrate',
+          totalMigrated: Number(migrated[0]?.n || 0),
+          spyCreativesStillUsingTmpImg: Number(remaining[0]?.n || 0),
+        },
+      });
+    }
+
+    if (dryRun) {
+      return res.json({
+        success: true,
+        data: { dry_run: true, would_migrate: todo.length, sample_ids: todo.slice(0, 5).map(r => r.id) },
+      });
+    }
+
+    // Process now in background, respond immediately
+    const totalToProcess = todo.length;
+    const eta_min = Math.ceil(totalToProcess / 8 / 60);
+    res.json({
+      success: true,
+      data: {
+        started: true,
+        rowsScheduled: totalToProcess,
+        eta_min,
+        message: `Migrating ${totalToProcess} image_store rows → R2 in background (concurrency=8). ETA ~${eta_min} min.`,
+      },
+    });
+
+    setImmediate(async () => {
+      const srv = process.env.RENDER_EXTERNAL_URL || `http://localhost:${process.env.PORT || 3000}`;
+      const tmpImgPrefix = `${srv}/api/v1/statics-generation/tmp-img/`;
+      const CONCURRENCY = 8;
+      let cursor = 0, ok = 0, fail = 0, rewriteTotal = 0;
+
+      async function processOne(row) {
+        try {
+          const buf = Buffer.isBuffer(row.data) ? row.data : Buffer.from(row.data);
+          const ext = (row.content_type || '').includes('jpeg') || (row.content_type || '').includes('jpg') ? 'jpg' : 'png';
+          const key = `image-store-backfill/${row.id}.${ext}`;
+          const r2Url = await uploadBuffer(buf, key, row.content_type || 'image/png');
+          if (!r2Url || !r2Url.startsWith('http')) throw new Error(`uploadBuffer returned non-http: ${(r2Url||'').slice(0, 40)}`);
+
+          // Rewrite every spy_creatives reference to this image_store id
+          const oldUrl = `${tmpImgPrefix}${row.id}`;
+          const upd1 = await pgQuery(
+            'UPDATE spy_creatives SET image_url = $1 WHERE image_url = $2 RETURNING id',
+            [r2Url, oldUrl]
+          );
+          const upd2 = await pgQuery(
+            'UPDATE spy_creatives SET reference_thumbnail = $1 WHERE reference_thumbnail = $2 RETURNING id',
+            [r2Url, oldUrl]
+          );
+          const updates = upd1.length + upd2.length;
+          rewriteTotal += updates;
+
+          // Mark migrated
+          await pgQuery(
+            `INSERT INTO image_store_migration (id, r2_url, spy_creatives_updated)
+             VALUES ($1, $2, $3)
+             ON CONFLICT (id) DO UPDATE SET r2_url = EXCLUDED.r2_url, migrated_at = NOW()`,
+            [row.id, r2Url, updates]
+          );
+          ok++;
+        } catch (err) {
+          fail++;
+          console.error(`[migrate-r2 ${row.id.slice(0,8)}] ❌ ${err.message}`);
+        }
+      }
+
+      async function worker() {
+        while (true) {
+          const i = cursor++;
+          if (i >= todo.length) return;
+          await processOne(todo[i]);
+          if ((ok + fail) % 25 === 0) {
+            console.log(`[migrate-r2] progress: ok=${ok} fail=${fail} rewrites=${rewriteTotal} of ${todo.length}`);
+          }
+        }
+      }
+      await Promise.all(Array.from({ length: CONCURRENCY }, () => worker()));
+      console.log(`[migrate-r2] DONE batch: ok=${ok} fail=${fail} spy_creatives_rewrites=${rewriteTotal} (of ${todo.length})`);
+    });
+  } catch (err) {
+    console.error('[migrate-image-store-to-r2] error:', err);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// GET /migrate-image-store-to-r2/status — read-only progress check
+router.get('/migrate-image-store-to-r2/status', async (req, res, next) => {
+  const cronSecret = process.env.CRON_SECRET;
+  const provided   = req.headers['x-cron-secret'];
+  if (cronSecret && provided === cronSecret) return next();
+  return authenticate(req, res, next);
+}, async (_req, res) => {
+  try {
+    const tableCheck = await pgQuery(`SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'image_store_migration') AS exists`).catch(() => [{ exists: false }]);
+    if (!tableCheck[0]?.exists) {
+      return res.json({ success: true, data: { migrated: 0, image_store_remaining: 0, spy_creatives_still_tmp_img: 0 } });
+    }
+    const [migrated] = await pgQuery(`SELECT COUNT(*) AS n FROM image_store_migration`);
+    const [imageStoreCount] = await pgQuery(`SELECT COUNT(*) AS n FROM image_store`);
+    const [stillTmpImg] = await pgQuery(`
+      SELECT COUNT(*) AS n FROM spy_creatives
+      WHERE image_url LIKE '%/tmp-img/%' AND COALESCE(is_reference, FALSE) = FALSE
+    `);
+    res.json({
+      success: true,
+      data: {
+        migrated: Number(migrated.n || 0),
+        image_store_total: Number(imageStoreCount.n || 0),
+        image_store_remaining: Math.max(0, Number(imageStoreCount.n || 0) - Number(migrated.n || 0)),
+        spy_creatives_still_tmp_img: Number(stillTmpImg.n || 0),
+        r2_url_configured: !!process.env.R2_PUBLIC_URL,
+        r2_configured: isR2Configured(),
+      },
+    });
+  } catch (err) {
+    console.error('[migrate-image-store-to-r2/status] error:', err);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
 router.post('/regenerate-broken-previews', async (req, res, next) => {
   // CRON_SECRET fast-path lets internal triggers (/creatives/pipeline auto-fix)
   // and Render Cron Jobs call this without a JWT.
