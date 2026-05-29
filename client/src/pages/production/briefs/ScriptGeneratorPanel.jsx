@@ -19,6 +19,30 @@ const FUNNEL_ORDER = { top: 0, middle: 1, bottom: 2 };
 const FUNNEL_LABEL = { top: 'Top of Funnel', middle: 'Middle of Funnel', bottom: 'Bottom of Funnel' };
 const FUNNEL_COLOR = { top: 'text-emerald-400', middle: 'text-amber-400', bottom: 'text-sky-400' };
 
+// ── Iteration vectors ──────────────────────────────────────────────────
+// Each iteration card can pull one or more of these levers. Angle, product,
+// mechanism, and CTA structure are LOCKED — handled server-side. These are
+// the things the user CAN change.
+const ITERATION_VECTORS = [
+  { key: 'hooks',     label: 'Hooks',         description: 'Refresh the 5 hooks with different mechanism families' },
+  { key: 'format',    label: 'Format Swap',   description: 'Re-deliver the script in a different format vehicle' },
+  { key: 'avatar',    label: 'Avatar / POV',  description: 'Rewrite from a different speaker perspective' },
+  { key: 'length',    label: 'Length',        description: 'Compress to a tighter cut while preserving every beat' },
+  { key: 'proofLead', label: 'Proof Lead',    description: 'Rotate which proof element leads the body' },
+  { key: 'opening3s', label: 'Opening 3s',    description: 'Rewrite only the cold open + first hook to match' },
+];
+
+const DEFAULT_FORMATS = [
+  'Mashup', 'Short Video', 'UGC Selfie', 'Studio Testimonial', 'Voiceover', 'GIF', 'Cartoon',
+];
+const DEFAULT_AVATARS = [
+  'Founder POV', 'Customer Testimonial', 'Skeptic-Converted', 'Expert / Authority', 'Creator (UGC)',
+];
+const LENGTH_TARGETS  = ['Auto (vary)', '85% of original', '75% of original', '65% of original', '50% of original'];
+const PROOF_TARGETS   = ['Auto (rotate)', 'Data', 'Story', 'Comparison', 'Testimonial'];
+
+const VECTOR_LABEL = ITERATION_VECTORS.reduce((acc, v) => ({ ...acc, [v.key]: v.label }), {});
+
 export default function ScriptGeneratorPanel({
   onGenerated,
   generating,
@@ -38,6 +62,15 @@ export default function ScriptGeneratorPanel({
   const [customAngle, setCustomAngle] = useState('');
   const [outputMode, setOutputMode] = useState('clone');
   const [variantCount, setVariantCount] = useState(3);
+  // Iteration vectors — default is Hooks-only (safest most common iteration).
+  const [iterationVectors, setIterationVectors] = useState({
+    hooks:     { enabled: true,  target: null },
+    format:    { enabled: false, target: 'Auto (rotate)' },
+    avatar:    { enabled: false, target: 'Auto (rotate)' },
+    length:    { enabled: false, target: 'Auto (vary)' },
+    proofLead: { enabled: false, target: 'Auto (rotate)' },
+    opening3s: { enabled: false, target: null },
+  });
   const [enhancing, setEnhancing] = useState(false);
   const [error, setError] = useState(null);
 
@@ -140,6 +173,14 @@ export default function ScriptGeneratorPanel({
   }, [selectedProduct?.id]);
 
   const hasInput = inputMode === 'text' ? scriptText.trim().length > 20 : scriptUrl.trim().length > 5;
+  const hasAnyVectorSelected = Object.values(iterationVectors).some(v => v.enabled);
+  const canGenerate = hasInput && !generating && (outputMode !== 'iterate' || hasAnyVectorSelected);
+
+  // Compile the iteration vector selections into the array shape the
+  // backend's buildIterationPrompt expects: [{ vector, target, notes }].
+  const buildVectorsPayload = () => Object.entries(iterationVectors)
+    .filter(([, v]) => v.enabled)
+    .map(([k, v]) => ({ vector: VECTOR_LABEL[k], target: v.target || null }));
 
   const handleGenerate = async () => {
     if (!hasInput) return;
@@ -154,6 +195,8 @@ export default function ScriptGeneratorPanel({
         mode: outputMode,
         numVariations: variantCount,
         referenceId: initialReferenceId || null,
+        // Only send vectorsSelected on iterate mode — clone mode ignores it.
+        vectorsSelected: outputMode === 'iterate' ? buildVectorsPayload() : undefined,
       });
     } catch (err) {
       setError(err.message || 'Generation failed');
@@ -507,7 +550,7 @@ export default function ScriptGeneratorPanel({
                   onClick={() => setVariantCount(n)}
                   className={`w-8 h-8 rounded-md flex items-center justify-center text-xs font-mono font-medium transition-all duration-300 cursor-pointer ${
                     variantCount === n
-                      ? 'bg-[#c9a84c]/15 text-[#e8d5a3] border border-[#c9a84c]/35 shadow-[0_0_8px_rgba(201,168,76,0.12)]'
+                      ? 'bg-sky-500/15 text-sky-200 border border-sky-500/40 shadow-[0_0_8px_rgba(14,165,233,0.12)]'
                       : 'text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.04] border border-transparent'
                   }`}
                 >
@@ -518,6 +561,91 @@ export default function ScriptGeneratorPanel({
           </div>
         )}
       </div>
+
+      {/* Iteration vectors — only visible in Iterate mode */}
+      {outputMode === 'iterate' && (() => {
+        const formats = (productContext?.product?.formats?.length ? productContext.product.formats.map(f => f.name || f) : DEFAULT_FORMATS);
+        const avatars = (productContext?.product?.avatars?.length ? productContext.product.avatars.map(a => a.name || a) : DEFAULT_AVATARS);
+        const selectedCount = Object.values(iterationVectors).filter(v => v.enabled).length;
+        const toggleVector = (key) => setIterationVectors(prev => ({ ...prev, [key]: { ...prev[key], enabled: !prev[key].enabled } }));
+        const setTarget = (key, target) => setIterationVectors(prev => ({ ...prev, [key]: { ...prev[key], target } }));
+        const targetOptions = {
+          format:    ['Auto (rotate)', ...formats],
+          avatar:    ['Auto (rotate)', ...avatars],
+          length:    LENGTH_TARGETS,
+          proofLead: PROOF_TARGETS,
+        };
+        return (
+          <div className="space-y-3">
+            <div className="text-[10px] font-mono font-semibold text-zinc-500 uppercase tracking-[0.15em] flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="w-1 h-1 bg-sky-400/50 rounded-full" />
+                Iterate by
+              </div>
+              <span className={`text-[10px] font-mono ${selectedCount === 0 ? 'text-red-400' : selectedCount >= 4 ? 'text-amber-400' : 'text-zinc-600'}`}>
+                {selectedCount === 0 ? 'PICK AT LEAST ONE' : `${selectedCount} selected`}
+              </span>
+            </div>
+            <div className="space-y-1.5">
+              {ITERATION_VECTORS.map(v => {
+                const state = iterationVectors[v.key];
+                const showTarget = state.enabled && targetOptions[v.key];
+                return (
+                  <div key={v.key}>
+                    <button
+                      type="button"
+                      onClick={() => toggleVector(v.key)}
+                      className={`w-full flex items-start gap-3 p-2.5 rounded-md border transition-all cursor-pointer text-left ${
+                        state.enabled
+                          ? 'bg-sky-500/[0.04] border-sky-500/30'
+                          : 'bg-white/[0.01] border-white/[0.04] hover:border-white/[0.08]'
+                      }`}
+                    >
+                      <div className={`mt-0.5 w-3.5 h-3.5 rounded-sm border flex items-center justify-center shrink-0 transition-colors ${
+                        state.enabled ? 'border-sky-400 bg-sky-500/15' : 'border-zinc-700'
+                      }`}>
+                        {state.enabled && <div className="w-1.5 h-1.5 rounded-sm bg-sky-300" />}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className={`text-xs font-medium ${state.enabled ? 'text-sky-200' : 'text-zinc-300'}`}>
+                          {v.label}
+                        </div>
+                        <div className="text-[10px] text-zinc-500 leading-snug mt-0.5">
+                          {v.description}
+                        </div>
+                      </div>
+                    </button>
+                    {showTarget && (
+                      <div className="pl-[26px] pt-1.5">
+                        <select
+                          value={state.target || ''}
+                          onChange={(e) => setTarget(v.key, e.target.value)}
+                          className="w-full bg-[#0a0a0a] border border-sky-500/20 rounded-md px-2 py-1 text-[11px] font-mono text-zinc-300 focus:outline-none focus:border-sky-500/40 cursor-pointer appearance-none"
+                          style={{
+                            backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%2338bdf8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E")`,
+                            backgroundRepeat: 'no-repeat',
+                            backgroundPosition: 'right 0.5rem center',
+                            paddingRight: '1.5rem',
+                          }}
+                        >
+                          {targetOptions[v.key].map(opt => (
+                            <option key={opt} value={opt}>{opt}</option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            {selectedCount >= 4 && (
+              <div className="text-[10px] font-mono text-amber-300/80 bg-amber-500/10 border border-amber-500/25 rounded px-2.5 py-1.5 leading-snug">
+                ⚠ {selectedCount} vectors selected — closer to a new ad than an iteration. The more levers you pull at once, the harder it is to attribute lift to any one of them.
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       {/* Error */}
       {error && (
@@ -530,7 +658,7 @@ export default function ScriptGeneratorPanel({
       <button
         type="button"
         onClick={handleGenerate}
-        disabled={!hasInput || generating}
+        disabled={!canGenerate}
         className="w-full flex items-center justify-center gap-2 py-3 rounded-lg text-sm font-mono font-semibold tracking-wide uppercase transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
         style={{
           background: generating ? '#1a1710' : 'linear-gradient(135deg, #c9a84c, #d4b55a)',
