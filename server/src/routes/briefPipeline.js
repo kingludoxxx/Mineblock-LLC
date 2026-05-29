@@ -24,6 +24,45 @@ const YTDLP_PATH = join(__dirname, '..', '..', '..', 'bin', 'yt-dlp');
 
 const router = Router();
 
+// TEMP — inspect pending/errored META references so we can identify which
+// were imported before the transcript fix and need re-transcription. Remove
+// after the user confirms transcripts are working.
+router.get('/_refs-diag', async (req, res) => {
+  try {
+    const rows = await pgQuery(`
+      SELECT
+        id, headline, brand_name, status, analysis_error, video_url,
+        created_at, updated_at,
+        imported_metadata->>'creative_link' AS creative_link,
+        imported_metadata->>'ad_library_url' AS ad_library_url,
+        imported_metadata->>'ad_id' AS ad_id
+      FROM brief_pipeline_references
+      WHERE source = 'meta'
+        AND (status = 'pending' OR analysis_error IS NOT NULL OR transcript IS NULL)
+      ORDER BY created_at DESC
+      LIMIT 30
+    `);
+    res.json({
+      success: true,
+      count: rows.length,
+      refs: rows.map(r => ({
+        id: r.id,
+        name: r.headline,
+        status: r.status,
+        has_video_url: !!r.video_url,
+        creative_link_ext: r.creative_link ? (r.creative_link.match(/\.(mp4|webm|mov|m4v)/i)?.[1] || 'NOT_MP4') : 'NULL',
+        creative_link_head: r.creative_link ? r.creative_link.slice(0, 80) + '…' : null,
+        ad_library_url_ok: !!r.ad_library_url,
+        error: r.analysis_error,
+        old_error_format: !!r.analysis_error?.startsWith('Could not extract a direct video URL from the Facebook'),
+        new_error_format: !!r.analysis_error?.startsWith('Could not extract a direct video URL (tried'),
+        created_at: r.created_at,
+        updated_at: r.updated_at,
+      })),
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── Meta thumbnail proxy with R2 caching ──────────────────────────────
 // Placed BEFORE the global authenticate middleware because <img src> tags
 // can't carry JWTs. Safe to expose: thumbnails are non-sensitive, R2
