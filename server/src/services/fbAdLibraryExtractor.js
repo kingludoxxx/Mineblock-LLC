@@ -45,15 +45,31 @@ function releaseSlot() {
   if (next) next();
 }
 
+// Compute the regular chromium executable path by replacing the
+// headless-shell components Playwright 1.59 returns by default.
+// We use the full chromium binary because chromium-headless-shell is
+// often missing from Render's build cache (silent install failure).
+function regularChromiumPath() {
+  const p = chromium.executablePath();
+  // Default headless-shell path looks like:
+  //   .../ms-playwright/chromium_headless_shell-XXXX/chrome-headless-shell-linux64/chrome-headless-shell
+  // Regular chromium path:
+  //   .../ms-playwright/chromium-XXXX/chrome-linux64/chrome
+  return p
+    .replace(/chromium_headless_shell-/g, 'chromium-')
+    .replace(/chrome-headless-shell-linux64/g, 'chrome-linux64')
+    .replace(/chrome-headless-shell$/, 'chrome');
+}
+
 function ensureChromium() {
   try {
-    // Playwright 1.59 defaults headless to the chromium-headless-shell variant.
-    // Try both — install whatever's missing so launch() doesn't blow up.
-    const exePath = chromium.executablePath();
+    const exePath = regularChromiumPath();
     if (!existsSync(exePath)) {
-      console.log(`[fbExtractor] Chromium binary missing at ${exePath} — installing both regular + headless-shell variants...`);
-      execSync('npx playwright install chromium chromium-headless-shell', { stdio: 'pipe' });
+      console.log(`[fbExtractor] Regular Chromium missing at ${exePath} — installing...`);
+      execSync('npx playwright install chromium', { stdio: 'pipe' });
       console.log('[fbExtractor] Chromium installed.');
+    } else {
+      console.log(`[fbExtractor] Regular Chromium found at ${exePath}`);
     }
   } catch (e) {
     console.warn('[fbExtractor] ensureChromium check failed:', e.message);
@@ -63,9 +79,11 @@ function ensureChromium() {
 async function getBrowser() {
   if (_browser && _browser.isConnected()) return _browser;
   ensureChromium();
-  console.log('[fbExtractor] Launching warm Chromium instance...');
+  const exePath = regularChromiumPath();
+  console.log(`[fbExtractor] Launching warm Chromium at ${exePath}...`);
   const t0 = Date.now();
   _browser = await chromium.launch({
+    executablePath: exePath,
     headless: true,
     args: [
       '--no-sandbox',
