@@ -26,6 +26,46 @@ const router = Router();
 
 // TEMP — inspect the actual creative_analysis row for a problem creative_id
 // so we can see what video-related fields are populated (or not).
+// TEMP — dump raw imported_metadata + match against creative_analysis by NAME
+// since the creative_id lookup is failing.
+router.get('/_md-raw', async (req, res) => {
+  try {
+    const rows = await pgQuery(`
+      SELECT id, headline, imported_metadata, status, analysis_error
+      FROM brief_pipeline_references
+      WHERE source = 'meta' AND (status='pending' OR analysis_error IS NOT NULL)
+      ORDER BY created_at DESC LIMIT 5
+    `);
+    res.json({
+      success: true,
+      refs: rows.map(r => ({
+        id: r.id,
+        name: r.headline,
+        metadata_type: typeof r.imported_metadata,
+        metadata: typeof r.imported_metadata === 'string' ? JSON.parse(r.imported_metadata) : r.imported_metadata,
+      }))
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// TEMP — find the source creative_analysis row by ad name and report which
+// URL fields ARE populated (specifically: ca.video_url which the current
+// import path doesn't read).
+router.get('/_url-hunt', async (req, res) => {
+  try {
+    const namePrefix = String(req.query.q || 'MR - B0003');
+    const rows = await pgQuery(`
+      SELECT creative_id, meta_ad_id, creative_link, video_url, thumbnail_url,
+             ad_name, ad_status, synced_at
+      FROM creative_analysis
+      WHERE type='video' AND ad_name ILIKE $1
+      ORDER BY synced_at DESC
+      LIMIT 5
+    `, [`%${namePrefix}%`]);
+    res.json({ success: true, count: rows.length, rows });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 router.get('/_ca-inspect', async (req, res) => {
   try {
     // Find columns in creative_analysis
