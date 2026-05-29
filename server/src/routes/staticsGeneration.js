@@ -49,22 +49,40 @@ import { uploadBuffer, uploadFromUrl, isR2Configured } from '../services/r2.js';
  *   Tier 3 — Last-ditch: return the temp URL unchanged. UI cards will go
  *            black in ~3h. Logged loudly.
  */
+// Returns null when persistence fails — caller MUST treat null as "do not
+// write image_url to spy_creatives; mark the row rejected." This prevents
+// the historical leak where a dying kie.ai CDN URL was returned as a
+// "best effort" and then expired in ~3h, leaving a black placeholder forever.
 async function persistNanoBananaImage(tempUrl, prefix = 'statics-nb') {
-  if (!tempUrl) return tempUrl;
+  if (!tempUrl) return null;
 
-  // Tier 1: R2 (only if public URL is set — otherwise uploadBuffer returns r2://
-  // which isn't fetchable by Meta / browsers).
+  const RETRIES = 2; // → 3 attempts total
+
+  // Tier 1: R2 with retries + HEAD-verify. Skipped only in dev (no R2 creds).
   if (isR2Configured() && process.env.R2_PUBLIC_URL) {
-    try {
-      const { url } = await uploadFromUrl(tempUrl, prefix);
-      if (url && url.startsWith('http')) return url;
-    } catch (err) {
-      console.warn(`[persistNbImage] R2 upload failed (${err.message}) — falling back to DB-backed proxy`);
+    for (let attempt = 0; attempt <= RETRIES; attempt++) {
+      try {
+        const { url } = await uploadFromUrl(tempUrl, prefix);
+        if (!url || !url.startsWith('http')) throw new Error('uploadFromUrl returned non-http');
+        if (!(await urlIsHealthy(url))) throw new Error('R2 url failed HEAD check');
+        return url;
+      } catch (err) {
+        const backoff = 500 * Math.pow(2, attempt);
+        if (attempt < RETRIES) {
+          console.warn(`[persistNbImage] R2 attempt ${attempt + 1}/${RETRIES + 1} failed: ${err.message} — retrying in ${backoff}ms`);
+          await new Promise(r => setTimeout(r, backoff));
+        } else {
+          console.error(`[persistNbImage] R2 unavailable after ${RETRIES + 1} attempts: ${err.message}`);
+        }
+      }
     }
+    // R2 was supposed to work but all retries failed.
+    // Returning NULL is deliberate — DO NOT fall back to /tmp-img (DB-truncate
+    // killed every previous /tmp-img URL) or the raw CDN URL (expires in ~3h).
+    return null;
   }
 
-  // Tier 2: DB-backed proxy. Download once, store in image_store, hand back
-  // our own /tmp-img/<id> URL. Permanent across restarts and CDN purges.
+  // Tier 2 (dev only, R2 not configured): DB-backed /tmp-img store.
   try {
     const r = await fetch(tempUrl, { signal: AbortSignal.timeout(30000) });
     if (!r.ok) throw new Error(`download failed: ${r.status}`);
@@ -74,9 +92,36 @@ async function persistNanoBananaImage(tempUrl, prefix = 'statics-nb') {
     const srv = process.env.RENDER_EXTERNAL_URL || `http://localhost:${process.env.PORT || 3000}`;
     return `${srv}/api/v1/statics-generation/tmp-img/${id}`;
   } catch (err) {
-    console.error(`[persistNbImage] DB-proxy persist failed (${err.message}) — returning temp URL (will expire!)`);
-    return tempUrl;
+    console.error(`[persistNbImage] DB-proxy persist failed: ${err.message}`);
+    return null;
   }
+}
+
+// HEAD-fetch a URL with a short timeout, return true only if 2xx.
+async function urlIsHealthy(url, timeoutMs = 8000) {
+  if (!url || typeof url !== 'string' || !url.startsWith('http')) return false;
+  try {
+    const r = await fetch(url, { method: 'HEAD', signal: AbortSignal.timeout(timeoutMs) });
+    return r.ok;
+  } catch { return false; }
+}
+
+// Retry an async fn with exponential backoff. Used to wrap NanoBanana
+// submit + poll so transient errors don't kill a whole generation.
+async function withRetry(fn, label, maxAttempts = 3) {
+  let lastErr;
+  for (let i = 0; i < maxAttempts; i++) {
+    try { return await fn(); }
+    catch (err) {
+      lastErr = err;
+      if (i < maxAttempts - 1) {
+        const backoff = 1500 * Math.pow(2, i); // 1.5s, 3s, 6s
+        console.warn(`[${label}] attempt ${i + 1}/${maxAttempts} failed: ${err.message} — retrying in ${backoff}ms`);
+        await new Promise(r => setTimeout(r, backoff));
+      }
+    }
+  }
+  throw lastErr;
 }
 import { submitToNanoBanana, pollNanoBanana } from '../services/imageGeneration.js';
 import crypto from 'crypto';
@@ -751,6 +796,97 @@ async function bootMigratorLoop() {
 // Start 90s after boot so the deploy is fully warm before we start uploading.
 setTimeout(() => { bootMigratorLoop().catch(() => {}); }, 90_000);
 
+// ─────────────────────────────────────────────────────────────────────────
+// PREVIEW WATCHDOG — Part 2 of "fix broken previews once and for all"
+//
+// Every 10 min: scan recent (last 24h) creatives that look broken or
+// stuck, and self-heal them.
+//
+//   - Rows with no image_url + a reference_thumbnail + a product_id
+//       → kick /regenerate-broken-previews (regen via Claude+NB → R2)
+//   - Rows with no image_url + no reference (orphan)
+//       → archive with a clear note (operator can re-queue if intentional)
+//   - Rows stuck in 'generating' for > 15 min (NB call hung / lost)
+//       → kick regen if they have a reference, else archive
+//
+// Idempotent: regen helper queries fresh each run, already-fixed rows
+// fall out of the scan naturally. _watchdogInFlight stops overlapping runs.
+// ─────────────────────────────────────────────────────────────────────────
+let _watchdogInFlight = false;
+
+async function watchdogScan() {
+  if (_watchdogInFlight) {
+    console.log('[watchdog] previous run still in flight, skipping');
+    return;
+  }
+  _watchdogInFlight = true;
+  try {
+    const broken = await pgQuery(`
+      SELECT id, product_id, reference_thumbnail, aspect_ratio, status, created_at
+      FROM spy_creatives
+      WHERE status IN ('generating', 'review', 'approved', 'ready', 'launched')
+        AND COALESCE(is_reference, FALSE) = FALSE
+        AND created_at > NOW() - INTERVAL '24 hours'
+        AND (
+          image_url IS NULL OR image_url = ''
+          OR (status = 'generating' AND created_at < NOW() - INTERVAL '15 minutes')
+        )
+      ORDER BY created_at DESC
+      LIMIT 100
+    `);
+
+    if (broken.length === 0) return; // quiet — nothing to do
+
+    let regenerable = 0;
+    let archived = 0;
+
+    for (const row of broken) {
+      if (row.reference_thumbnail && row.product_id) {
+        regenerable++;
+      } else {
+        try {
+          await pgQuery(
+            `UPDATE spy_creatives
+             SET status = 'archived',
+                 review_notes = COALESCE(NULLIF(review_notes, ''), 'watchdog: no reference_thumbnail or product_id — cannot auto-regen'),
+                 updated_at = NOW()
+             WHERE id = $1 AND status != 'archived'`,
+            [row.id]
+          );
+          archived++;
+        } catch (err) {
+          console.warn(`[watchdog] archive failed for ${row.id}: ${err.message}`);
+        }
+      }
+    }
+
+    if (regenerable > 0) {
+      // Kick regen — it self-queries the broken set + processes with
+      // concurrency=4 via setImmediate. Fire and don't wait — the next
+      // watchdog tick will see the results.
+      const fakeReq = { body: {} };
+      const fakeRes = {
+        json: () => {},
+        status: () => ({ json: () => {} }),
+      };
+      _doRegenerateBrokenPreviews(fakeReq, fakeRes).catch(err =>
+        console.error(`[watchdog] regen kick failed: ${err.message}`)
+      );
+    }
+
+    console.log(`[watchdog] scanned=${broken.length} regenerable=${regenerable} archived=${archived}`);
+  } catch (err) {
+    console.error('[watchdog] scan failed:', err.message);
+  } finally {
+    _watchdogInFlight = false;
+  }
+}
+
+// First run 2 min after boot (lets bootMigratorLoop warm up first), then
+// every 10 min. Both timers survive process lifetime; no clearInterval needed.
+setTimeout(() => { watchdogScan().catch(() => {}); }, 120_000);
+setInterval(() => { watchdogScan().catch(() => {}); }, 10 * 60 * 1000);
+
 async function storeTempImage(buf, contentType) {
   if (tempImages.size >= MAX_TEMP_IMAGES) {
     const oldest = tempImages.keys().next().value;
@@ -1320,11 +1456,22 @@ router.post('/generate', authenticate, async (req, res) => {
 
       async function runOneRatio(r) {
         const ratioStart = Date.now();
-        const nbTaskId = await submitToNanoBanana(nbPrompt, [productHttpUrl], r);
+        const nbTaskId = await withRetry(
+          () => submitToNanoBanana(nbPrompt, [productHttpUrl], r),
+          `nb-submit ${r}`
+        );
         console.log(`[staticsGeneration] NanoBanana ${r} submitted: ${nbTaskId}`);
-        const tempUrl = await pollNanoBanana(nbTaskId);
+        const tempUrl = await withRetry(
+          () => pollNanoBanana(nbTaskId),
+          `nb-poll ${r}`
+        );
         const resultImageUrl = await persistNanoBananaImage(tempUrl, `statics-generated/${r}`);
-        console.log(`[staticsGeneration] ⏱ NanoBanana ${r} done in ${Date.now() - ratioStart}ms (persisted: ${resultImageUrl !== tempUrl ? 'R2' : 'temp'})`);
+        if (!resultImageUrl) {
+          // Refuse to write a dead URL. Throw so Promise.allSettled marks
+          // this ratio as failed; downstream callers handle partial-batch.
+          throw new Error(`persist failed for ${r} — refusing to write dying URL`);
+        }
+        console.log(`[staticsGeneration] ⏱ NanoBanana ${r} done in ${Date.now() - ratioStart}ms`);
 
         const childTaskId = `nb-${crypto.randomUUID()}`;
         storeTaskResult(childTaskId, {
@@ -1912,33 +2059,33 @@ async function generateVariant(parent, newAspectRatio) {
 
     const resizePrompt = `Seamlessly resize this ad image to ${newAspectRatio} aspect ratio. Keep ALL content identical — same text, same product, same layout, same colors, same style. Extend or adjust the background naturally to fill the new format.`;
 
-    const nbTaskId = await submitToNanoBanana(resizePrompt, [parentHttpUrl], newAspectRatio);
+    const nbTaskId = await withRetry(
+      () => submitToNanoBanana(resizePrompt, [parentHttpUrl], newAspectRatio),
+      `variant-submit ${child.id.slice(0,8)}`
+    );
     await pgQuery(
       "UPDATE spy_creatives SET generation_task_id = $1, updated_at = NOW() WHERE id = $2",
       [nbTaskId, child.id]
     );
 
-    const nbImageUrl = await pollNanoBanana(nbTaskId);
+    const nbImageUrl = await withRetry(
+      () => pollNanoBanana(nbTaskId),
+      `variant-poll ${child.id.slice(0,8)}`
+    );
 
-    // Permanently store the result (kie.ai URLs are short-lived)
-    let finalImageUrl = nbImageUrl;
-    try {
-      const imgFetch = await fetch(nbImageUrl, { signal: AbortSignal.timeout(30000) });
-      if (imgFetch.ok) {
-        const buf = Buffer.from(await imgFetch.arrayBuffer());
-        const mime = detectMime(buf);
-        if (isR2Configured()) {
-          const ext = mime.includes('png') ? 'png' : 'jpg';
-          finalImageUrl = await uploadBuffer(buf, `statics-variants/${crypto.randomUUID()}.${ext}`, mime);
-        } else {
-          const imgId = await storeTempImage(buf, mime);
-          const srvUrl = process.env.RENDER_EXTERNAL_URL || `http://localhost:${process.env.PORT || 3000}`;
-          finalImageUrl = `${srvUrl}/api/v1/statics-generation/tmp-img/${imgId}`;
-        }
-        console.log(`[staticsGeneration] Variant ${child.id} image stored permanently`);
-      }
-    } catch (storeErr) {
-      console.warn(`[staticsGeneration] Variant image store failed, using CDN URL: ${storeErr.message}`);
+    // Strict persist — returns null if R2 (or /tmp-img in dev) failed.
+    // We REFUSE to write a kie.ai/tempfile URL into spy_creatives because
+    // those expire in ~3h and become black placeholders the user can't
+    // recover from. Better to mark the row rejected so the watchdog (or
+    // the operator) can re-queue it cleanly.
+    const finalImageUrl = await persistNanoBananaImage(nbImageUrl, 'statics-variants');
+    if (!finalImageUrl) {
+      console.error(`[staticsGeneration] Variant ${child.id} (${newAspectRatio}) persist failed — marking rejected`);
+      await pgQuery(
+        "UPDATE spy_creatives SET status = 'rejected', review_notes = $1, updated_at = NOW() WHERE id = $2",
+        [`Variant persist failed: storage unavailable. Re-queue from the UI.`, child.id]
+      );
+      return;
     }
 
     await pgQuery(
@@ -1946,7 +2093,7 @@ async function generateVariant(parent, newAspectRatio) {
       [finalImageUrl, nbTaskId, child.id]
     );
 
-    console.log(`[staticsGeneration] Variant ${child.id} (${newAspectRatio}) resized successfully`);
+    console.log(`[staticsGeneration] Variant ${child.id} (${newAspectRatio}) resized + persisted`);
   } catch (err) {
     console.error(`[staticsGeneration] Variant resize failed:`, err.message);
     try {
