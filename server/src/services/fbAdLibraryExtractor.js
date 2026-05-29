@@ -16,8 +16,18 @@
  * Crash recovery: if the browser dies, the next call relaunches it.
  */
 
-import { chromium } from 'playwright';
+// Point Playwright at the build-time install location BEFORE importing the
+// browser module. Render's runtime start command doesn't carry forward the
+// PLAYWRIGHT_BROWSERS_PATH from build, so chromium.executablePath() defaults
+// to /opt/render/.cache/ms-playwright/ — which is empty. The postinstall
+// script puts the binaries at <repo>/playwright-browsers/.
+import path from 'node:path';
 import { existsSync } from 'node:fs';
+if (!process.env.PLAYWRIGHT_BROWSERS_PATH) {
+  process.env.PLAYWRIGHT_BROWSERS_PATH = path.join(process.cwd(), 'playwright-browsers');
+  console.log(`[fbExtractor] PLAYWRIGHT_BROWSERS_PATH set to ${process.env.PLAYWRIGHT_BROWSERS_PATH}`);
+}
+import { chromium } from 'playwright';
 import { execSync } from 'node:child_process';
 
 // ── Warm browser singleton ────────────────────────────────────────────────
