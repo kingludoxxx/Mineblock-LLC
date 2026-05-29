@@ -52,8 +52,13 @@ export default function ReferenceCard({ reference, onPreview, onGenerateFromRefe
   const meta = TIER_META[metaKey] || TIER_META.A;
   const { Icon: TierIcon } = meta;
   const hasTranscript = !!reference.transcript;
-  const isPending     = reference.status === 'pending';
-  const transcribeError = !hasTranscript && reference.analysisError;
+  // Granular progress states from the new Playwright + parallel pipeline.
+  // status: 'pending' | 'extracting' | 'transcribing' | 'transcribed' | 'error'
+  const isPending      = reference.status === 'pending';
+  const isExtracting   = reference.status === 'extracting';
+  const isTranscribing = reference.status === 'transcribing';
+  const isInProgress   = isPending || isExtracting || isTranscribing;
+  const transcribeError = !hasTranscript && reference.analysisError && !isInProgress;
   const md = reference.importedMetadata || {};
 
   const handleGenerate = (e) => {
@@ -217,8 +222,12 @@ export default function ReferenceCard({ reference, onPreview, onGenerateFromRefe
                 </button>
               )}
             </div>
+          ) : isExtracting ? (
+            <div className="text-violet-300/80 italic">Extracting video URL…</div>
+          ) : isTranscribing ? (
+            <div className="text-sky-300/80 italic">Transcribing video…</div>
           ) : isPending ? (
-            <div className="text-amber-300/80 italic">Transcribing video…</div>
+            <div className="text-amber-300/80 italic">Queued for transcription…</div>
           ) : (
             <div className="text-zinc-600 italic">No transcript yet</div>
           )}

@@ -183,7 +183,10 @@ export default function BriefPipeline() {
   // "Transcribing…" to "Generate Iterations" without a manual refresh.
   // Polls every 4s, stops as soon as no rows are pending.
   useEffect(() => {
-    const anyPending = references.some(r => r.status === 'pending');
+    // Poll while ANY reference is mid-pipeline: pending / extracting / transcribing.
+    const anyPending = references.some(r =>
+      r.status === 'pending' || r.status === 'extracting' || r.status === 'transcribing'
+    );
     if (!anyPending) return;
     const id = setInterval(fetchReferences, 4000);
     return () => clearInterval(id);
