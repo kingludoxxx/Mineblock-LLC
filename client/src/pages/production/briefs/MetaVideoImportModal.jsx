@@ -444,12 +444,30 @@ export default function MetaVideoImportModal({ open, onClose, onImported }) {
               ))}
             </div>
           ) : ads.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-16 text-center">
-              <VideoIcon className="w-8 h-8 text-zinc-700 mb-2" />
-              <div className="text-xs text-zinc-500">
-                No video ads match these filters.
+            // Distinguish "no data ever synced" from "filters returned 0"
+            (accounts.length === 0 && !accountsLoading) ? (
+              <div className="flex flex-col items-center justify-center py-16 text-center max-w-md mx-auto px-6">
+                <VideoIcon className="w-8 h-8 text-zinc-700 mb-3" />
+                <div className="text-sm text-zinc-300 font-medium mb-1.5">
+                  No video creatives synced from Triple Whale yet
+                </div>
+                <div className="text-xs text-zinc-500 leading-relaxed">
+                  Triple Whale is currently syncing only image creatives into
+                  Mineblock. Video sync needs to be enabled in your TW account
+                  settings before this list populates.
+                </div>
               </div>
-            </div>
+            ) : (
+              <div className="flex flex-col items-center justify-center py-16 text-center">
+                <VideoIcon className="w-8 h-8 text-zinc-700 mb-2" />
+                <div className="text-xs text-zinc-500">
+                  No video ads match these filters.
+                </div>
+                <div className="text-[10px] text-zinc-600 mt-1.5">
+                  Try widening the window, dropping ROAS ≥, or switching to Active + Paused.
+                </div>
+              </div>
+            )
           ) : (
             <div className="grid grid-cols-3 gap-4">
               {ads.map(ad => {

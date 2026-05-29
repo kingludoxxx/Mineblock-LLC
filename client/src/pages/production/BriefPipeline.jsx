@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { Link } from 'react-router-dom';
 import {
   RefreshCw,
   Loader2,
@@ -90,14 +91,9 @@ export default function BriefPipeline() {
   const [loadingGenerated, setLoadingGenerated] = useState(false);
   // eslint-disable-next-line no-unused-vars
   const [loadingReferences, setLoadingReferences] = useState(false);
-  // 'generating' state is reserved for the legacy /generate/:winnerId path
-  // (script-from-detected-winner). Keep the visual loader hooked up — the
-  // current script-from-text flow uses scriptGenerating below.
-  /* eslint-disable no-unused-vars */
-  const [generating, setGenerating]         = useState(false);
-  const [generatingId, setGeneratingId]     = useState(null);
-  const [generatingStep, setGeneratingStep] = useState('');
-  /* eslint-enable no-unused-vars */
+  // (Winning Ads sidebar removal: the legacy 'generating'/'generatingId'/
+  // 'generatingStep' state belonged to that path and is gone. The
+  // script-from-text flow uses 'scriptGenerating' below.)
 
   // UI state
   const [detailModal, setDetailModal] = useState(null);
@@ -181,6 +177,17 @@ export default function BriefPipeline() {
   useEffect(() => {
     refreshAll();
   }, [refreshAll]);
+
+  // Auto-poll references while any are in 'pending' state — META imports
+  // transcribe asynchronously, so the column needs to flip cards from
+  // "Transcribing…" to "Generate Iterations" without a manual refresh.
+  // Polls every 4s, stops as soon as no rows are pending.
+  useEffect(() => {
+    const anyPending = references.some(r => r.status === 'pending');
+    if (!anyPending) return;
+    const id = setInterval(fetchReferences, 4000);
+    return () => clearInterval(id);
+  }, [references, fetchReferences]);
 
   // ---------------------------------------------------------------------------
   // Actions
@@ -290,7 +297,7 @@ export default function BriefPipeline() {
       await api.patch(`/brief-pipeline/generated/${briefId}`, updates);
       await fetchGenerated();
       setDetailModal(prev => prev ? { ...prev, ...updates } : null);
-    } catch (err) {
+    } catch {
       setError('Failed to save brief changes.');
     }
   }, [fetchGenerated]);
@@ -729,12 +736,13 @@ export default function BriefPipeline() {
                       </div>
                       <div className="flex items-center gap-2">
                         {col.key === 'reference' && (
-                          <a
-                            href="/app/brand-spy"
+                          <Link
+                            to="/app/brand-spy"
                             className="text-[10px] font-mono uppercase tracking-wider text-zinc-500 hover:text-zinc-200 transition-colors inline-flex items-center gap-1"
+                            title="Open Brand Spy to follow more competitor brands"
                           >
                             Follow <ExternalLink className="w-2.5 h-2.5" />
-                          </a>
+                          </Link>
                         )}
                         <span className={`text-[10px] font-mono px-2 py-0.5 rounded border ${col.badgeClass}`}>
                           {items.length}
@@ -904,13 +912,13 @@ export default function BriefPipeline() {
         </div>
       )}
 
-      {/* Generating overlay */}
-      {generating && (
+      {/* Script-from-text generating overlay */}
+      {scriptGenerating && (
         <div className="fixed bottom-6 right-6 glass-card border border-white/[0.06] rounded-lg px-4 py-3 shadow-xl flex items-center gap-3 z-40">
           <Loader2 className="w-4 h-4 animate-spin text-[#c9a84c]" />
           <div>
             <p className="text-xs font-medium text-white font-mono">Generating briefs...</p>
-            <p className="text-[10px] text-zinc-500">{generatingStep}</p>
+            <p className="text-[10px] text-zinc-500">{scriptGenStep}</p>
           </div>
         </div>
       )}

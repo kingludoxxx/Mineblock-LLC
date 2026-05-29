@@ -26,6 +26,21 @@ import {
 } from 'lucide-react';
 import api from '../../services/api';
 
+// Source-driven header pill metadata. META + UPLOAD don't have a real tier,
+// so we surface their source identity in the same slot.
+const SOURCE_META = {
+  meta:   { label: 'Our Winner', color: '#7dd3fc', bg: 'rgba(14,165,233,0.18)', border: 'rgba(14,165,233,0.45)' },
+  upload: { label: 'Upload',     color: '#e4e4e7', bg: 'rgba(255,255,255,0.04)', border: 'rgba(255,255,255,0.12)' },
+};
+
+function fmt$(n) {
+  if (n == null) return '$0';
+  const abs = Math.abs(n);
+  if (abs >= 1000) return `$${(n / 1000).toFixed(1)}k`;
+  return `$${Math.round(n)}`;
+}
+function fmtRoas(n) { return `${(Number(n) || 0).toFixed(2)}×`; }
+
 const TIER_META = {
   BANGER: { Icon: Flame,  label: 'Banger' },
   CHAMP:  { Icon: Trophy, label: 'Champ' },
@@ -63,6 +78,15 @@ function SectionLabel({ icon: Icon, color, children }) {
   );
 }
 
+function PerfStat({ label, value }) {
+  return (
+    <div className="rounded-md bg-white/[0.02] border border-white/[0.04] px-2 py-1.5">
+      <div className="text-[9px] font-mono uppercase tracking-wider text-zinc-500">{label}</div>
+      <div className="text-xs font-mono text-zinc-100 mt-0.5">{value}</div>
+    </div>
+  );
+}
+
 function StrengthDot({ value }) {
   const v = String(value || '').toLowerCase();
   const color = v === 'strong' ? '#10b981' : v === 'medium' ? '#d4b55a' : v === 'weak' ? '#ef4444' : '#52525b';
@@ -93,7 +117,11 @@ export default function BriefPipelineReferenceAnalysis() {
 
   const [deleting, setDeleting] = useState(false);
 
+  const isMeta   = reference?.source === 'meta';
+  const isUpload = reference?.source === 'upload';
   const tierMeta = TIER_META[reference?.tier] || TIER_META.A;
+  const sourceMeta = isMeta ? SOURCE_META.meta : isUpload ? SOURCE_META.upload : null;
+  const perf       = reference?.importedMetadata || {};
 
   const fetchReference = useCallback(async () => {
     setLoadingRef(true);
@@ -214,10 +242,23 @@ export default function BriefPipelineReferenceAnalysis() {
             >
               <ArrowLeft className="w-4 h-4" />
             </Link>
-            <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded text-[10px] font-mono font-semibold uppercase tracking-wider border bg-white/[0.04] border-white/[0.1] text-zinc-200">
-              <tierMeta.Icon className="w-3 h-3" />
-              {tierMeta.label}
-            </span>
+            {sourceMeta ? (
+              <span
+                className="inline-flex items-center gap-1.5 px-2 py-1 rounded text-[10px] font-mono font-semibold uppercase tracking-wider border"
+                style={{ color: sourceMeta.color, background: sourceMeta.bg, borderColor: sourceMeta.border }}
+              >
+                {isMeta ? <Sparkles className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+                {sourceMeta.label}
+                {isMeta && perf.roas != null && (
+                  <span className="ml-1 text-[10px]">{fmtRoas(perf.roas)}</span>
+                )}
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded text-[10px] font-mono font-semibold uppercase tracking-wider border bg-white/[0.04] border-white/[0.1] text-zinc-200">
+                <tierMeta.Icon className="w-3 h-3" />
+                {tierMeta.label}
+              </span>
+            )}
             <div className="min-w-0">
               <div className="text-sm text-white font-medium truncate leading-tight">
                 {reference.headline || reference.brandName || 'Reference'}
@@ -311,6 +352,30 @@ export default function BriefPipelineReferenceAnalysis() {
                 </div>
               )}
             </div>
+
+            {/* Performance card — only for META refs (this is OUR winning ad) */}
+            {isMeta && perf && Object.keys(perf).length > 0 && (
+              <div
+                className="rounded-xl border p-4"
+                style={{ borderColor: 'rgba(14,165,233,0.25)', background: 'rgba(14,165,233,0.04)' }}
+              >
+                <SectionLabel icon={Sparkles} color="#7dd3fc">Performance</SectionLabel>
+                <div className="grid grid-cols-3 gap-3 text-xs">
+                  <PerfStat label="ROAS"        value={perf.roas != null ? fmtRoas(perf.roas) : '—'} />
+                  <PerfStat label="Spend"       value={perf.spend != null ? fmt$(perf.spend) : '—'} />
+                  <PerfStat label="Revenue"     value={perf.revenue != null ? fmt$(perf.revenue) : '—'} />
+                  <PerfStat label="CPA"         value={perf.cpa != null && perf.cpa > 0 ? fmt$(perf.cpa) : '—'} />
+                  <PerfStat label="CTR"         value={perf.ctr != null ? `${Number(perf.ctr).toFixed(1)}%` : '—'} />
+                  <PerfStat label="Impressions" value={perf.impressions != null ? Number(perf.impressions).toLocaleString() : '—'} />
+                </div>
+                {perf.account_name && (
+                  <div className="mt-3 pt-3 border-t border-white/[0.04] text-[10px] font-mono text-zinc-500">
+                    Account: <span className="text-zinc-300">{perf.account_name}</span>
+                    {perf.angle && <> · Angle: <span className="text-zinc-300">{perf.angle}</span></>}
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Analysis error banner */}
             {analysisError && (
@@ -522,7 +587,9 @@ export default function BriefPipelineReferenceAnalysis() {
 
             {analysis?.how_to_beat_it && (
               <div className="rounded-xl border border-emerald-500/25 bg-emerald-500/[0.04] p-4">
-                <SectionLabel icon={Target} color="#10b981">How To Beat It</SectionLabel>
+                <SectionLabel icon={Target} color="#10b981">
+                  {isMeta ? 'How To Iterate' : 'How To Beat It'}
+                </SectionLabel>
                 <p className="text-xs text-zinc-200 leading-relaxed">{analysis.how_to_beat_it}</p>
               </div>
             )}
@@ -530,7 +597,7 @@ export default function BriefPipelineReferenceAnalysis() {
             {analysis?.adaptation_confidence && (
               <div className="rounded-xl border border-white/[0.06] bg-white/[0.01] p-3">
                 <div className="flex items-center justify-between gap-2">
-                  <SectionLabel color="#9ca3af">Adaptation Fit</SectionLabel>
+                  <SectionLabel color="#9ca3af">{isMeta ? 'Iteration Fit' : 'Adaptation Fit'}</SectionLabel>
                   <span
                     className="text-[10px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded border"
                     style={{

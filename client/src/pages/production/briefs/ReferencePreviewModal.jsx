@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { X, Sparkles, Trash2, Clock, Trophy, Flame, Star, FileText, Play, Eye } from 'lucide-react';
+import { X, Sparkles, Trash2, Clock, Trophy, Flame, Star, FileText, Play, Eye, TrendingUp, Upload } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
 const TIER_META = {
@@ -7,6 +7,8 @@ const TIER_META = {
   CHAMP:  { Icon: Trophy, label: 'Champ',   accent: 'text-zinc-200' },
   A:      { Icon: Star,   label: 'A-Tier',  accent: 'text-zinc-200' },
 };
+
+function fmtRoas(n) { return `${(Number(n) || 0).toFixed(2)}×`; }
 
 function timeAgo(iso) {
   if (!iso) return '';
@@ -40,9 +42,12 @@ export default function ReferencePreviewModal({ reference, open, onClose, onUseA
 
   if (!open || !reference) return null;
 
+  const isMeta   = reference.source === 'meta';
+  const isUpload = reference.source === 'upload';
   const meta = TIER_META[reference.tier] || TIER_META.A;
   const { Icon: TierIcon } = meta;
   const hasTranscript = !!reference.transcript;
+  const md = reference.importedMetadata || {};
 
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 sm:p-6">
@@ -55,10 +60,26 @@ export default function ReferencePreviewModal({ reference, open, onClose, onUseA
         {/* Header */}
         <div className="h-14 border-b border-white/[0.06] flex items-center justify-between px-5 shrink-0">
           <div className="flex items-center gap-3 min-w-0">
-            <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded text-[10px] font-mono font-semibold uppercase tracking-wider border bg-white/[0.04] border-white/[0.1] text-zinc-200 whitespace-nowrap">
-              <TierIcon className="w-3 h-3" />
-              {meta.label}
-            </span>
+            {isMeta ? (
+              <span
+                className="inline-flex items-center gap-1.5 px-2 py-1 rounded text-[10px] font-mono font-semibold uppercase tracking-wider border whitespace-nowrap"
+                style={{ color: '#7dd3fc', background: 'rgba(14,165,233,0.18)', borderColor: 'rgba(14,165,233,0.45)' }}
+              >
+                <TrendingUp className="w-3 h-3" />
+                Our Winner
+                {md.roas != null && <span className="ml-1">{fmtRoas(md.roas)}</span>}
+              </span>
+            ) : isUpload ? (
+              <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded text-[10px] font-mono font-semibold uppercase tracking-wider border bg-white/[0.04] border-white/[0.12] text-zinc-200 whitespace-nowrap">
+                <Upload className="w-3 h-3" />
+                Upload
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded text-[10px] font-mono font-semibold uppercase tracking-wider border bg-white/[0.04] border-white/[0.1] text-zinc-200 whitespace-nowrap">
+                <TierIcon className="w-3 h-3" />
+                {meta.label}
+              </span>
+            )}
             <div className="min-w-0">
               {reference.headline && (
                 <div className="text-sm text-white truncate font-medium leading-snug">

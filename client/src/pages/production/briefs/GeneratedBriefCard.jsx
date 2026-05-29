@@ -18,7 +18,12 @@ function GeneratedBriefCard({ brief, onApprove, onReject, onMoveToReady, onDelet
 
   // Derive product and angle labels
   const productLabel = brief.product_code || brief.product_name || brief.parent_creative_id || 'Brief';
-  const angleLabel = brief.angle || brief.direction || null;
+  const isIteration = brief.iteration_mode === 'iterate' || brief.format === 'Iteration';
+  // For iterations the iteration_direction column carries the "Iteration 1 — fear-pivot: what changed"
+  // string. Strip the description after the colon for the pill; the full text shows in the detail modal.
+  const iterDir = brief.iteration_direction || brief.direction || null;
+  const iterPill = iterDir ? iterDir.split(':')[0].trim() : null;
+  const angleLabel = isIteration ? (iterPill || brief.angle || 'Iteration') : (brief.angle || brief.direction || null);
 
   return (
     <div className="animated-border-gradient rounded-xl">
@@ -35,15 +40,17 @@ function GeneratedBriefCard({ brief, onApprove, onReject, onMoveToReady, onDelet
             </span>
             {angleLabel && (
               <span className={`text-[9px] font-mono uppercase tracking-wider font-medium px-1.5 py-0.5 rounded border ${
-                showActions === 'generated'
-                  ? 'bg-[#c9a84c]/10 text-[#e8d5a3] border-[#c9a84c]/20'
-                  : showActions === 'approved'
-                    ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
-                    : showActions === 'ready_to_launch'
-                      ? 'bg-blue-500/10 text-blue-400 border-blue-500/20'
-                      : showActions === 'launched'
-                        ? 'bg-violet-500/10 text-violet-400 border-violet-500/20'
-                        : 'bg-white/[0.06] text-white border-white/[0.08]'
+                isIteration
+                  ? 'bg-sky-500/10 text-sky-300 border-sky-500/25'
+                  : showActions === 'generated'
+                    ? 'bg-[#c9a84c]/10 text-[#e8d5a3] border-[#c9a84c]/20'
+                    : showActions === 'approved'
+                      ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+                      : showActions === 'ready_to_launch'
+                        ? 'bg-blue-500/10 text-blue-400 border-blue-500/20'
+                        : showActions === 'launched'
+                          ? 'bg-violet-500/10 text-violet-400 border-violet-500/20'
+                          : 'bg-white/[0.06] text-white border-white/[0.08]'
               }`}>
                 {angleLabel}
               </span>

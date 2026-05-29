@@ -3578,6 +3578,12 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
       if (variants.length === 0) {
         throw new Error('Iteration prompt returned no variants. Check the scriptIteration JSON prompt slot if you customised it.');
       }
+      // Iterations are derivatives of an already-proven winning script.
+      // Scoring them against each other on novelty/aggression/coherence is
+      // measuring noise — they all share the same conversion engine. Persist
+      // null scores so the column sorts iterations after scored briefs
+      // (variants/clones get real scores; iterations get the iteration_label
+      // + what_changed as their identifying metadata).
       generationResults = variants.map((v, idx) => ({
         success: true,
         direction: { id: `iter-${idx + 1}`, name: v.iteration_label || `Iteration ${idx + 1}`, description: v.what_changed || '' },
@@ -3587,13 +3593,8 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
           cta:   v.cta || '',
           preservation_notes: v.preservation_notes || '',
         },
-        scores: {
-          novelty:    { score: 8 },
-          aggression: { score: 7 },
-          coherence:  { score: 9 },
-          verdict:    'STRONG',
-        },
-        overall: 8.3,
+        scores: { novelty: null, aggression: null, coherence: null, verdict: null },
+        overall: null,
       }));
     } else if (isCloneMode) {
       // ═══════════════════════════════════════════════════
@@ -3813,10 +3814,19 @@ The selected ad angle is: "${angle}". This is NOT optional.
           winner.id, creativeId, config.mode, 'medium',
           JSON.stringify(winAnalysis), JSON.stringify(generated.hooks), generated.body,
           `${direction.name}: ${direction.description}`,
-          scores.novelty?.score || 5, scores.aggression?.score || 5,
-          scores.coherence?.score || 5, overall,
-          scores.verdict || 'MAYBE', JSON.stringify(scores),
-          briefNumber, productCode || 'MR', angle || 'NA', 'Mashup',
+          // Iterate-mode briefs persist null scores intentionally (see
+          // iterate-mode dispatch above). Variants/clones get real numbers.
+          scores.novelty?.score    ?? null,
+          scores.aggression?.score ?? null,
+          scores.coherence?.score  ?? null,
+          overall ?? null,
+          scores.verdict || null,
+          JSON.stringify(scores),
+          briefNumber, productCode || 'MR',
+          // For iterate mode, the angle column carries the iteration_label
+          // so the column-card pill is meaningful (e.g. "Iteration 1 — pain-pivot").
+          isIterateMode ? (direction.name || 'Iteration') : (angle || 'NA'),
+          isIterateMode ? 'Iteration' : 'Mashup',
           'NA', 'Uly', 'Ludovico', 'NA', namingConvention,
         ], { timeout: 10000 });
         generatedBriefs.push({ ...inserted[0], scores, direction });
@@ -3879,7 +3889,7 @@ router.get('/generation-status/:winnerId', authenticate, async (req, res) => {
 
     // Generation done (status reverted to 'detected') — check for generated briefs
     const briefs = await pgQuery(
-      `SELECT * FROM brief_pipeline_generated WHERE winner_id = $1 ORDER BY rank ASC, overall_score DESC`,
+      `SELECT * FROM brief_pipeline_generated WHERE winner_id = $1 ORDER BY rank ASC NULLS LAST, overall_score DESC NULLS LAST`,
       [winnerId]
     );
 
@@ -3912,7 +3922,7 @@ router.get('/generated', authenticate, async (_req, res) => {
        FROM brief_pipeline_generated g
        LEFT JOIN brief_pipeline_winners w ON g.winner_id = w.id
        WHERE g.status != 'rejected'
-       ORDER BY g.overall_score DESC, g.created_at DESC`
+       ORDER BY g.overall_score DESC NULLS LAST, g.created_at DESC`
     );
     // Fix double-encoded JSONB fields
     for (const b of rows) {
