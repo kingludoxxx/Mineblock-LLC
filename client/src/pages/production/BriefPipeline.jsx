@@ -449,6 +449,17 @@ export default function BriefPipeline() {
     }
   }, [references]);
 
+  const handleRetryTranscribe = useCallback(async (refId) => {
+    try {
+      await api.post(`/brief-pipeline/references/${refId}/retry-transcribe`);
+      // Refresh references — the poll loop will catch the status flip
+      await fetchReferences();
+    } catch (err) {
+      const apiMsg = err.response?.data?.error?.message || err.message;
+      setError(`Retry failed: ${apiMsg || 'unknown error'}`);
+    }
+  }, [fetchReferences]);
+
   const handleGenerateFromReference = useCallback((reference) => {
     if (!reference?.transcript) {
       setError('This reference has no transcript yet — cannot generate.');
@@ -837,6 +848,7 @@ export default function BriefPipeline() {
                                   onPreview={handlePreviewReference}
                                   onGenerateFromReference={handleGenerateFromReference}
                                   onDelete={handleDeleteReference}
+                                  onRetryTranscribe={handleRetryTranscribe}
                                 />
                               </div>
                             );

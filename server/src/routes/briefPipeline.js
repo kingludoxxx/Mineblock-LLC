@@ -24,144 +24,6 @@ const YTDLP_PATH = join(__dirname, '..', '..', '..', 'bin', 'yt-dlp');
 
 const router = Router();
 
-// TEMP — inspect the actual creative_analysis row for a problem creative_id
-// so we can see what video-related fields are populated (or not).
-// TEMP — dump raw imported_metadata + match against creative_analysis by NAME
-// since the creative_id lookup is failing.
-router.get('/_md-raw', async (req, res) => {
-  try {
-    const rows = await pgQuery(`
-      SELECT id, headline, imported_metadata, status, analysis_error
-      FROM brief_pipeline_references
-      WHERE source = 'meta' AND (status='pending' OR analysis_error IS NOT NULL)
-      ORDER BY created_at DESC LIMIT 5
-    `);
-    res.json({
-      success: true,
-      refs: rows.map(r => ({
-        id: r.id,
-        name: r.headline,
-        metadata_type: typeof r.imported_metadata,
-        metadata: typeof r.imported_metadata === 'string' ? JSON.parse(r.imported_metadata) : r.imported_metadata,
-      }))
-    });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// TEMP — find the source creative_analysis row by ad name and report which
-// URL fields ARE populated (specifically: ca.video_url which the current
-// import path doesn't read).
-router.get('/_url-hunt', async (req, res) => {
-  try {
-    const adId = String(req.query.meta_ad_id || '');
-    const namePrefix = String(req.query.q || '');
-    if (!adId && !namePrefix) return res.status(400).json({ error: 'meta_ad_id or q required' });
-    const rows = adId
-      ? await pgQuery(`SELECT creative_id, meta_ad_id, creative_link, video_url, thumbnail_url, ad_name, ad_status, synced_at FROM creative_analysis WHERE type='video' AND meta_ad_id = $1 LIMIT 3`, [adId])
-      : await pgQuery(`SELECT creative_id, meta_ad_id, creative_link, video_url, thumbnail_url, ad_name, ad_status, synced_at FROM creative_analysis WHERE type='video' AND ad_name ILIKE $1 ORDER BY synced_at DESC LIMIT 5`, [`%${namePrefix}%`]);
-    res.json({ success: true, count: rows.length, rows });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-router.get('/_ca-inspect', async (req, res) => {
-  try {
-    // Find columns in creative_analysis
-    const cols = await pgQuery(`
-      SELECT column_name FROM information_schema.columns
-      WHERE table_name='creative_analysis'
-        AND (column_name ILIKE '%url%' OR column_name ILIKE '%link%' OR column_name ILIKE '%video%' OR column_name ILIKE '%media%' OR column_name = 'meta_ad_id' OR column_name = 'ad_archive_id' OR column_name = 'thumbnail_url' OR column_name = 'creative_id')
-      ORDER BY column_name
-    `);
-    const colList = cols.map(c => c.column_name);
-
-    // Find the two problem rows by joining brief_pipeline_references to creative_analysis
-    const probe = await pgQuery(`
-      SELECT
-        bpr.id AS ref_id,
-        bpr.headline,
-        bpr.imported_metadata->>'creative_id' AS bpr_creative_id,
-        bpr.imported_metadata->>'ad_id' AS bpr_ad_id,
-        ca.creative_id, ca.meta_ad_id, ca.creative_link, ca.thumbnail_url, ca.ad_status, ca.synced_at,
-        to_jsonb(ca) AS full_row
-      FROM brief_pipeline_references bpr
-      LEFT JOIN creative_analysis ca
-        ON ca.creative_id = (bpr.imported_metadata->>'creative_id')
-      WHERE bpr.source='meta' AND (bpr.status='pending' OR bpr.analysis_error IS NOT NULL)
-      ORDER BY bpr.created_at DESC
-      LIMIT 5
-    `);
-
-    // For each row, list which video-URL-ish columns are non-null
-    const out = probe.map(r => {
-      const fr = typeof r.full_row === 'string' ? JSON.parse(r.full_row) : r.full_row;
-      const populated = {};
-      if (fr) {
-        for (const key of Object.keys(fr)) {
-          const v = fr[key];
-          if (v && (typeof v === 'string') && (key.match(/url|link|video|media/i) || key === 'thumbnail_url')) {
-            populated[key] = v.slice(0, 120);
-          }
-        }
-      }
-      return {
-        ref_id: r.ref_id,
-        name: r.headline,
-        bpr_creative_id: r.bpr_creative_id,
-        bpr_ad_id: r.bpr_ad_id,
-        ca_creative_id: r.creative_id,
-        ca_meta_ad_id: r.meta_ad_id,
-        ca_url_fields_populated: populated,
-        ca_synced_at: r.synced_at,
-      };
-    });
-
-    res.json({
-      success: true,
-      ca_video_url_columns: colList,
-      probe: out,
-    });
-  } catch (e) { res.status(500).json({ error: e.message, stack: e.stack?.slice(0, 500) }); }
-});
-
-// TEMP — inspect pending/errored META references so we can identify which
-// were imported before the transcript fix and need re-transcription. Remove
-// after the user confirms transcripts are working.
-router.get('/_refs-diag', async (req, res) => {
-  try {
-    const rows = await pgQuery(`
-      SELECT
-        id, headline, brand_name, status, analysis_error, video_url,
-        created_at, updated_at,
-        imported_metadata->>'creative_link' AS creative_link,
-        imported_metadata->>'ad_library_url' AS ad_library_url,
-        imported_metadata->>'ad_id' AS ad_id
-      FROM brief_pipeline_references
-      WHERE source = 'meta'
-        AND (status = 'pending' OR analysis_error IS NOT NULL OR transcript IS NULL)
-      ORDER BY created_at DESC
-      LIMIT 30
-    `);
-    res.json({
-      success: true,
-      count: rows.length,
-      refs: rows.map(r => ({
-        id: r.id,
-        name: r.headline,
-        status: r.status,
-        has_video_url: !!r.video_url,
-        creative_link_ext: r.creative_link ? (r.creative_link.match(/\.(mp4|webm|mov|m4v)/i)?.[1] || 'NOT_MP4') : 'NULL',
-        creative_link_head: r.creative_link ? r.creative_link.slice(0, 80) + '…' : null,
-        ad_library_url_ok: !!r.ad_library_url,
-        error: r.analysis_error,
-        old_error_format: !!r.analysis_error?.startsWith('Could not extract a direct video URL from the Facebook'),
-        new_error_format: !!r.analysis_error?.startsWith('Could not extract a direct video URL (tried'),
-        created_at: r.created_at,
-        updated_at: r.updated_at,
-      })),
-    });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
 // ── Meta thumbnail proxy with R2 caching ──────────────────────────────
 // Placed BEFORE the global authenticate middleware because <img src> tags
 // can't carry JWTs. Safe to expose: thumbnails are non-sensitive, R2
@@ -4020,6 +3882,76 @@ router.get('/references', authenticate, async (_req, res) => {
   }
 });
 
+// POST /references/:id/retry-transcribe — re-run the background transcribe
+// job for a stuck reference (typically one where the original yt-dlp call
+// failed). Uses the latest source URLs from creative_analysis and the
+// robust extractScriptFromUrl fallback. Resets status to 'pending' first.
+router.post('/references/:id/retry-transcribe', authenticate, async (req, res) => {
+  if (!validateUuid(req, res)) return;
+  try {
+    const refRows = await pgQuery(
+      `SELECT id, status, imported_metadata, source FROM brief_pipeline_references WHERE id = $1`,
+      [req.params.id]
+    );
+    if (!refRows.length) return res.status(404).json({ success: false, error: { message: 'Reference not found' } });
+    const ref = refRows[0];
+    if (ref.source !== 'meta') {
+      return res.status(400).json({ success: false, error: { message: 'Retry-transcribe only applies to META references' } });
+    }
+    let md = ref.imported_metadata;
+    if (typeof md === 'string') { try { md = JSON.parse(md); } catch { md = {}; } }
+    const adLibraryUrl = md?.ad_library_url || (md?.ad_id ? `https://www.facebook.com/ads/library/?id=${md.ad_id}` : null);
+    if (!adLibraryUrl) {
+      return res.status(400).json({ success: false, error: { message: 'No ad library URL available for this reference — cannot retry. Use Upload to paste the script manually.' } });
+    }
+
+    // Clear stale state
+    await pgQuery(
+      `UPDATE brief_pipeline_references
+          SET status = 'pending', transcript = NULL, transcript_at = NULL,
+              analysis_error = NULL, video_url = NULL, updated_at = NOW()
+        WHERE id = $1`,
+      [ref.id]
+    );
+
+    // Kick off background retry using extractScriptFromUrl (Meta Graph API
+    // + multi-strategy yt-dlp + ad-copy metadata fallback).
+    (async () => {
+      try {
+        console.log(`[BriefPipeline] retry-transcribe ref ${ref.id}: extractScriptFromUrl`);
+        const text = await extractScriptFromUrl(adLibraryUrl);
+        if (text && text.trim().length > 30) {
+          await pgQuery(
+            `UPDATE brief_pipeline_references
+                SET transcript = $1, transcript_at = NOW(), status = 'transcribed',
+                    analysis_error = NULL, updated_at = NOW()
+              WHERE id = $2`,
+            [text.trim(), ref.id]
+          );
+        } else {
+          await pgQuery(
+            `UPDATE brief_pipeline_references
+                SET analysis_error = $1, updated_at = NOW()
+              WHERE id = $2`,
+            ['Retry exhausted all strategies — Meta\'s ad library page and TW direct URLs both came back empty. Use Upload to paste the script manually.', ref.id]
+          );
+        }
+      } catch (e) {
+        console.error(`[BriefPipeline] retry-transcribe ${ref.id} error:`, e.message);
+        await pgQuery(
+          `UPDATE brief_pipeline_references SET analysis_error = $1, updated_at = NOW() WHERE id = $2`,
+          [`Retry failed: ${e.message?.slice(0, 600)}`, ref.id]
+        ).catch(() => {});
+      }
+    })();
+
+    res.json({ success: true, message: 'Retry kicked off in the background — refresh the Reference column in ~30s.' });
+  } catch (err) {
+    console.error('[BriefPipeline] retry-transcribe error:', err.message);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
 // DELETE /references/:id
 router.delete('/references/:id', authenticate, async (req, res) => {
   if (!validateUuid(req, res)) return;
@@ -4309,7 +4241,7 @@ router.post('/references/import-meta', authenticate, async (req, res) => {
     const rows = await pgQuery(
       `SELECT DISTINCT ON (ca.creative_id)
          ca.creative_id, ca.ad_name, ca.thumbnail_url, ca.meta_ad_id,
-         ca.creative_link, ca.angle, ca.synced_at,
+         ca.creative_link, ca.video_url, ca.angle, ca.synced_at,
          ca.spend::FLOAT AS spend, ca.revenue::FLOAT AS revenue,
          ca.roas::FLOAT AS roas, ca.cpa::FLOAT AS cpa, ca.ctr::FLOAT AS ctr,
          ca.impressions::BIGINT AS impressions,
@@ -4409,50 +4341,82 @@ router.post('/references/import-meta', authenticate, async (req, res) => {
         })();
       }
 
-      // Background transcription. Try paths in order:
-      //   1. creative_link from TW (often a direct .mp4 / .webm URL — fastest)
-      //   2. yt-dlp on the FB Ad Library page (slow, sometimes fails on geo / page format)
-      // Errors land in analysis_error so the UI can show them later.
-      const directVideoCandidate = r.creative_link && /\.(mp4|webm|mov|m4v)(\?|$)/i.test(r.creative_link)
-        ? r.creative_link
-        : null;
+      // Background transcription. Try paths in order, cheapest first:
+      //   1. ca.video_url (direct CDN URL from TW — best, often missing)
+      //   2. ca.creative_link if it ends in .mp4 / .webm / .mov / .m4v
+      //   3. yt-dlp on the FB Ad Library page
+      //   4. extractScriptFromUrl on the ad library URL — uses Meta Graph
+      //      ads_archive API + multi-strategy yt-dlp + ad-copy metadata
+      //      fallback. Returns the TRANSCRIPT directly (skips a separate
+      //      transcribeVideoUrl call). Last resort because it's slowest.
+      const directVideoCandidate = r.video_url
+        || (r.creative_link && /\.(mp4|webm|mov|m4v)(\?|$)/i.test(r.creative_link) ? r.creative_link : null);
       if (directVideoCandidate || adLibraryUrl) {
         (async () => {
           try {
-            // Path 1: direct link from TW
+            // Paths 1 + 2 + 3: try to get a direct video URL
             let videoUrl = directVideoCandidate;
             if (videoUrl) {
-              console.log(`[BriefPipeline] transcribe ref ${ref.id}: using TW creative_link directly`);
+              console.log(`[BriefPipeline] transcribe ref ${ref.id}: direct video URL from TW (${r.video_url ? 'video_url' : 'creative_link'})`);
             }
-            // Path 2: yt-dlp the FB Ad Library page
             if (!videoUrl && adLibraryUrl) {
               console.log(`[BriefPipeline] transcribe ref ${ref.id}: yt-dlp on ad library page`);
               videoUrl = await extractVideoUrlWithYtdlp(adLibraryUrl);
             }
-            if (!videoUrl) {
+
+            if (videoUrl) {
+              await pgQuery(
+                `UPDATE brief_pipeline_references SET video_url = $1, updated_at = NOW() WHERE id = $2`,
+                [videoUrl, ref.id]
+              );
+              const { text, segments } = await transcribeVideoUrl(videoUrl);
               await pgQuery(
                 `UPDATE brief_pipeline_references
-                    SET analysis_error = $1, updated_at = NOW()
-                  WHERE id = $2 AND transcript IS NULL`,
-                ['Could not extract a direct video URL (tried TW creative link + FB Ad Library page). Use the Upload button to paste the transcript manually.', ref.id]
+                    SET transcript      = $1,
+                        transcript_at   = NOW(),
+                        status          = 'transcribed',
+                        analysis_error  = NULL,
+                        imported_metadata = jsonb_set(COALESCE(imported_metadata, '{}'::jsonb), '{transcript_segments}', $2::jsonb, true),
+                        updated_at      = NOW()
+                  WHERE id = $3`,
+                [text, JSON.stringify(segments || []), ref.id]
               );
               return;
             }
-            await pgQuery(
-              `UPDATE brief_pipeline_references SET video_url = $1, updated_at = NOW() WHERE id = $2`,
-              [videoUrl, ref.id]
-            );
-            const { text, segments } = await transcribeVideoUrl(videoUrl);
+
+            // Path 4: robust fallback via extractScriptFromUrl. It internally
+            // hits Meta Graph ads_archive to pull ad_snapshot_url + ad copy
+            // metadata, runs audio-only yt-dlp + Gemini, or falls back to ad
+            // copy text from metadata. Returns the transcript directly.
+            if (adLibraryUrl) {
+              console.log(`[BriefPipeline] transcribe ref ${ref.id}: extractScriptFromUrl fallback`);
+              try {
+                const text = await extractScriptFromUrl(adLibraryUrl);
+                if (text && text.trim().length > 30) {
+                  await pgQuery(
+                    `UPDATE brief_pipeline_references
+                        SET transcript      = $1,
+                            transcript_at   = NOW(),
+                            status          = 'transcribed',
+                            analysis_error  = NULL,
+                            updated_at      = NOW()
+                      WHERE id = $2`,
+                    [text.trim(), ref.id]
+                  );
+                  return;
+                }
+                console.warn(`[BriefPipeline] extractScriptFromUrl returned too-short text (${text?.length || 0} chars) for ref ${ref.id}`);
+              } catch (fallbackErr) {
+                console.warn(`[BriefPipeline] extractScriptFromUrl fallback failed for ref ${ref.id}:`, fallbackErr.message);
+              }
+            }
+
+            // All paths exhausted
             await pgQuery(
               `UPDATE brief_pipeline_references
-                  SET transcript      = $1,
-                      transcript_at   = NOW(),
-                      status          = 'transcribed',
-                      analysis_error  = NULL,
-                      imported_metadata = jsonb_set(COALESCE(imported_metadata, '{}'::jsonb), '{transcript_segments}', $2::jsonb, true),
-                      updated_at      = NOW()
-                WHERE id = $3`,
-              [text, JSON.stringify(segments || []), ref.id]
+                  SET analysis_error = $1, updated_at = NOW()
+                WHERE id = $2 AND transcript IS NULL`,
+              ['Could not auto-transcribe this ad — Meta\'s ad library page and TW direct URLs both came back empty. Use the Upload button below to paste the script manually.', ref.id]
             );
           } catch (err) {
             console.error(`[BriefPipeline] async transcribe failed for ref ${ref.id}:`, err.message);

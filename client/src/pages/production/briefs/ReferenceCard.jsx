@@ -43,7 +43,7 @@ function timeAgo(iso) {
   return `${d}d ago`;
 }
 
-export default function ReferenceCard({ reference, onPreview, onGenerateFromReference, onDelete }) {
+export default function ReferenceCard({ reference, onPreview, onGenerateFromReference, onDelete, onRetryTranscribe }) {
   const [deleting, setDeleting] = useState(false);
   const isMeta   = reference.source === 'meta';
   const isUpload = reference.source === 'upload';
@@ -205,7 +205,18 @@ export default function ReferenceCard({ reference, onPreview, onGenerateFromRefe
               <span className="line-clamp-2 italic">{transcriptPreview}</span>
             </div>
           ) : transcribeError ? (
-            <div className="text-red-400/80 italic line-clamp-2">{transcribeError}</div>
+            <div className="space-y-1.5">
+              <div className="text-red-400/80 italic line-clamp-2">{transcribeError}</div>
+              {onRetryTranscribe && (
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); onRetryTranscribe(reference.id); }}
+                  className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-mono uppercase tracking-wider rounded border border-amber-500/40 bg-amber-500/10 text-amber-300 hover:bg-amber-500/15 cursor-pointer"
+                >
+                  Retry transcribe
+                </button>
+              )}
+            </div>
           ) : isPending ? (
             <div className="text-amber-300/80 italic">Transcribing video…</div>
           ) : (
