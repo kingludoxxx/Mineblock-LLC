@@ -22,6 +22,31 @@ const __dirname = dirname(__filename);
 const YTDLP_PATH = join(__dirname, '..', '..', '..', 'bin', 'yt-dlp');
 
 const router = Router();
+
+// TEMP — read-only snapshot of both prompt stores so we can decide what
+// to keep before wiping. Remove once cleanup is done.
+router.get('/_prompts-snapshot', async (req, res) => {
+  try {
+    const oldRow = await pgQuery(`SELECT value FROM system_settings WHERE key = 'brief_pipeline_prompts'`);
+    const newRow = await pgQuery(`SELECT value FROM system_settings WHERE key = 'brief_pipeline_league_prompts'`);
+    const parse = (rows) => rows.length ? (typeof rows[0].value === 'string' ? JSON.parse(rows[0].value) : rows[0].value) : null;
+    const oldP = parse(oldRow), newP = parse(newRow);
+    res.json({
+      success: true,
+      old_brief_pipeline_prompts: oldP ? Object.keys(oldP).reduce((acc, k) => ({ ...acc, [k]: { hasContent: !!(oldP[k]?.user || oldP[k]?.system), length: JSON.stringify(oldP[k] || {}).length } }), {}) : null,
+      league_prompts: newP ? Object.keys(newP).reduce((acc, k) => ({
+        ...acc,
+        [k]: {
+          hasJson: !!(newP[k]?.json && newP[k].json.trim()),
+          notes:   newP[k]?.notes || '',
+          jsonLength: (newP[k]?.json || '').length,
+          jsonHead:   (newP[k]?.json || '').slice(0, 200),
+        }
+      }), {}) : null,
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 router.use(authenticate, requirePermission('brief-pipeline', 'access'));
 
 // ── Config ────────────────────────────────────────────────────────────
