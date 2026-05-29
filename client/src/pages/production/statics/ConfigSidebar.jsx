@@ -33,6 +33,7 @@ export function ConfigSidebar({
   customAngle,
   onCustomAngleChange,
   references,
+  referenceImageUrl,
   onOpenLibrary,
   onUploadReference,
   onRemoveReference,
@@ -47,7 +48,11 @@ export function ConfigSidebar({
   const fileInputRef = useRef(null);
   const [dragging, setDragging] = useState(false);
 
-  const canGenerate = selectedProduct && references.length > 0 && !generating;
+  // A reference is "picked" if EITHER the references array is populated
+  // (multi-ref / template flow) OR a single referenceImageUrl is set
+  // (single-pick from card Select or modal "Use as Reference").
+  const hasReference = references.length > 0 || !!referenceImageUrl;
+  const canGenerate = selectedProduct && hasReference && !generating;
 
   // Compute a human-readable reason why the Generate button is disabled
   const disabledReason = canGenerate
@@ -56,8 +61,8 @@ export function ConfigSidebar({
       ? 'Generation in progress...'
       : !selectedProduct
         ? 'Select a product first'
-        : references.length === 0
-          ? 'Select a template first'
+        : !hasReference
+          ? 'Select a reference first'
           : null;
 
   // -- Drag & drop handlers --------------------------------------------------

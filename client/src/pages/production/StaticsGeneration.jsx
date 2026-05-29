@@ -2257,6 +2257,7 @@ export default function StaticsGeneration() {
                   customAngle={customAngle}
                   onCustomAngleChange={setCustomAngle}
                   references={references}
+                  referenceImageUrl={referenceImageUrl}
                   onOpenLibrary={() => {
                     setTemplateModal(true);
                   }}
@@ -2460,7 +2461,14 @@ export default function StaticsGeneration() {
                   onRemoveFromQueue={handleRemoveFromQueue}
                   productId={selectedProductId}
                   onSelectReference={(item) => {
-                    const url = item?.image_url || item?.thumbnail_url || item?.reference_thumbnail;
+                    // null = "user deselected; clear active single reference"
+                    if (!item) {
+                      setReferenceImageUrl('');
+                      setReferencePreview(null);
+                      setReferenceFile(null);
+                      return;
+                    }
+                    const url = item.image_url || item.thumbnail_url || item.reference_thumbnail;
                     if (!url) return;
                     setReferenceImageUrl(url);
                     setReferencePreview(url);

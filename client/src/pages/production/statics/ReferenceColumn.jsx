@@ -191,7 +191,16 @@ export function ReferenceColumn({ productId, onSelectReference, onAddSelectedToQ
   const toggleSelect = (item) => {
     setSelectedIds(prev => {
       const next = new Set(prev);
-      if (next.has(item.id)) next.delete(item.id); else next.add(item.id);
+      const isAdding = !next.has(item.id);
+      if (isAdding) next.add(item.id); else next.delete(item.id);
+      // Also wire single-pick mode: when adding, mark this item as the active
+      // single reference so Generate Static / Add to Queue enable. When
+      // removing (and no other items remain selected), clear the active ref.
+      if (isAdding) {
+        onSelectReference?.(item);
+      } else if (next.size === 0) {
+        onSelectReference?.(null);
+      }
       return next;
     });
   };
