@@ -278,6 +278,7 @@ export default function MetaVideoImportModal({ open, onClose, onImported }) {
     try {
       const { data } = await api.post('/brief-pipeline/references/import-meta', {
         creativeIds: [...selectedAdIds],
+        window: windowDays,
       });
       const imported = data.imported || [];
       // Backend now returns creative_id explicitly in each import row, so
@@ -329,9 +330,6 @@ export default function MetaVideoImportModal({ open, onClose, onImported }) {
                 </h2>
                 <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-mono uppercase tracking-wider border border-sky-500/30 bg-sky-500/10 text-sky-300">
                   $ Triple Whale
-                </span>
-                <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-mono uppercase tracking-wider border border-white/[0.08] bg-white/[0.04] text-zinc-300">
-                  📹 Videos Only
                 </span>
                 {lastSync && (
                   <span className="text-[10px] font-mono text-zinc-500">
@@ -615,13 +613,10 @@ export default function MetaVideoImportModal({ open, onClose, onImported }) {
                           <LineChart className="w-2.5 h-2.5" />
                           {fmtRoas(ad.roas)}
                         </span>
-                        <span className="text-[10px] font-mono text-zinc-400">{fmt$(ad.spend)}</span>
+                        <span className="text-[10px] font-mono text-zinc-300">Spend {fmt$(ad.spend)}</span>
                       </div>
                       <div className="text-[9px] font-mono text-zinc-500">
-                        Rev {fmt$(ad.revenue)} · CPA {fmt$(ad.cpa)} · CTR {(ad.ctr || 0).toFixed(1)}%
-                      </div>
-                      <div className="text-[9px] font-mono text-zinc-600">
-                        {(ad.impressions || 0).toLocaleString()} imp · {ad.days_active}d
+                        CPA {fmt$(ad.cpa)} · CTR {(ad.ctr || 0).toFixed(1)}% · {ad.days_active}d
                       </div>
                     </div>
                   </button>

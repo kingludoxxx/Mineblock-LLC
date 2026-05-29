@@ -5939,10 +5939,11 @@ router.get('/meta-video-ads', authenticate, async (req, res) => {
 // status='pending', and a background task fills transcript when extracted.
 router.post('/references/import-meta', authenticate, async (req, res) => {
   try {
-    const { creativeIds } = req.body || {};
+    const { creativeIds, window } = req.body || {};
     if (!Array.isArray(creativeIds) || creativeIds.length === 0) {
       return res.status(400).json({ success: false, error: { message: 'creativeIds[] is required' } });
     }
+    const windowDays = [7, 30, 90].includes(parseInt(window, 10)) ? parseInt(window, 10) : 30;
     const cols = await getCreativeAnalysisCols();
     const idCol   = cols.has('ad_account_id')   ? 'ad_account_id'   : null;
     const nameCol = cols.has('ad_account_name') ? 'ad_account_name'
@@ -5990,6 +5991,10 @@ router.post('/references/import-meta', authenticate, async (req, res) => {
         creative_link:   r.creative_link,
         ad_library_url:  adLibraryUrl,
         last_synced_at:  r.synced_at,
+        // The user-chosen time window (in days) when they picked this ad
+        // from the modal. Drives the "(Nd)" suffix on the ReferenceCard
+        // performance strip so the operator knows whose ROAS this is.
+        window_days:     windowDays,
       };
 
       // Re-import semantics: if the row already exists, treat the new import
@@ -6022,19 +6027,32 @@ router.post('/references/import-meta', authenticate, async (req, res) => {
       const ref = inserted[0];
       imported.push({ id: ref.id, ad_id: extKey, creative_id: r.creative_id, meta_ad_id: r.meta_ad_id, ad_name: r.ad_name, status: ref.status, was_inserted: ref.was_inserted });
 
-      // Background transcription: extract video URL from the ad library page,
-      // then run Whisper (Gemini fallback for >25MB). Errors land in
-      // analysis_error so the UI can show them later.
-      if (adLibraryUrl) {
+      // Background transcription. Try paths in order:
+      //   1. creative_link from TW (often a direct .mp4 / .webm URL — fastest)
+      //   2. yt-dlp on the FB Ad Library page (slow, sometimes fails on geo / page format)
+      // Errors land in analysis_error so the UI can show them later.
+      const directVideoCandidate = r.creative_link && /\.(mp4|webm|mov|m4v)(\?|$)/i.test(r.creative_link)
+        ? r.creative_link
+        : null;
+      if (directVideoCandidate || adLibraryUrl) {
         (async () => {
           try {
-            const videoUrl = await extractVideoUrlWithYtdlp(adLibraryUrl);
+            // Path 1: direct link from TW
+            let videoUrl = directVideoCandidate;
+            if (videoUrl) {
+              console.log(`[BriefPipeline] transcribe ref ${ref.id}: using TW creative_link directly`);
+            }
+            // Path 2: yt-dlp the FB Ad Library page
+            if (!videoUrl && adLibraryUrl) {
+              console.log(`[BriefPipeline] transcribe ref ${ref.id}: yt-dlp on ad library page`);
+              videoUrl = await extractVideoUrlWithYtdlp(adLibraryUrl);
+            }
             if (!videoUrl) {
               await pgQuery(
                 `UPDATE brief_pipeline_references
                     SET analysis_error = $1, updated_at = NOW()
                   WHERE id = $2 AND transcript IS NULL`,
-                ['Could not extract a direct video URL from the Facebook Ad Library page. Use the Upload button to paste the transcript manually.', ref.id]
+                ['Could not extract a direct video URL (tried TW creative link + FB Ad Library page). Use the Upload button to paste the transcript manually.', ref.id]
               );
               return;
             }
@@ -6372,6 +6390,13 @@ router.get('/product-context/:id', authenticate, async (req, res) => {
     if (/^\d+$/.test(idParam)) {
       const rows = await pgQuery(`SELECT * FROM product_profiles WHERE id = $1 LIMIT 1`, [Number(idParam)]);
       profile = rows[0] || null;
+      // Parse JSONB fields — postgres.js may return them as strings depending
+      // on how they were written (JSON.stringify'd via param vs jsonb cast).
+      if (profile) {
+        for (const f of ['product_images', 'logos', 'fonts', 'brand_colors', 'benefits', 'angles', 'scripts', 'offers', 'formats', 'avatars']) {
+          if (profile[f] && typeof profile[f] === 'string') try { profile[f] = JSON.parse(profile[f]); } catch {}
+        }
+      }
     } else {
       profile = await fetchProductProfile(idParam);
     }

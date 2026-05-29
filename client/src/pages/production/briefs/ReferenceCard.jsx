@@ -186,12 +186,14 @@ export default function ReferenceCard({ reference, onPreview, onGenerateFromRefe
           </div>
         )}
 
-        {/* Meta performance strip */}
+        {/* Meta performance strip — Spend / CPA / ROAS scoped to the
+            time-window the user picked when importing (e.g. 7d / 30d / 90d). */}
         {isMeta && (
           <div className="text-[10px] font-mono text-zinc-500">
             {md.spend != null && <>Spend {fmt$(md.spend)} · </>}
             {md.cpa != null && md.cpa > 0 && <>CPA {fmt$(md.cpa)} · </>}
-            {md.impressions != null && <>{(md.impressions || 0).toLocaleString()} imp</>}
+            {md.roas != null && <>ROAS {(Number(md.roas) || 0).toFixed(2)}×</>}
+            {md.window_days != null && <span className="text-zinc-600 ml-1">({md.window_days}d)</span>}
           </div>
         )}
 
