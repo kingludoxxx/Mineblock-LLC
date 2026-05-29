@@ -3478,6 +3478,7 @@ router.post('/heal-zombies', async (req, res, next) => {
 router.post('/repair-all-previews', async (req, res, next) => {
   const cronSecret = process.env.CRON_SECRET;
   const provided   = req.headers['x-cron-secret'];
+  console.log(`[repair-all-previews/auth] env_set=${!!cronSecret} env_len=${(cronSecret||'').length} hdr_set=${!!provided} hdr_len=${(provided||'').length} match=${!!(cronSecret && provided === cronSecret)}`);
   if (cronSecret && provided === cronSecret) return next();
   return authenticate(req, res, next);
 }, async (req, res) => {
