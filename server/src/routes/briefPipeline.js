@@ -22,24 +22,6 @@ const __dirname = dirname(__filename);
 const YTDLP_PATH = join(__dirname, '..', '..', '..', 'bin', 'yt-dlp');
 
 const router = Router();
-
-// TEMP — inspect active-video account/thumbnail coverage so we wire fixes right.
-router.get('/meta-video-ads/health', async (req, res) => {
-  try {
-    const total  = await pgQuery(`SELECT COUNT(*)::int AS c FROM creative_analysis WHERE type='video' AND ad_status='active' AND synced_at >= NOW() - INTERVAL '30 days'`);
-    const noThumb = await pgQuery(`SELECT COUNT(*)::int AS c FROM creative_analysis WHERE type='video' AND ad_status='active' AND synced_at >= NOW() - INTERVAL '30 days' AND (thumbnail_url IS NULL OR thumbnail_url = '')`);
-    const byAcct = await pgQuery(`SELECT ad_account_id, COUNT(*)::int AS rows FROM creative_analysis WHERE type='video' AND ad_status='active' AND synced_at >= NOW() - INTERVAL '30 days' GROUP BY ad_account_id ORDER BY rows DESC`);
-    const sample = await pgQuery(`SELECT ad_name, thumbnail_url FROM creative_analysis WHERE type='video' AND ad_status='active' AND synced_at >= NOW() - INTERVAL '30 days' ORDER BY spend DESC NULLS LAST LIMIT 5`);
-    res.json({
-      success: true,
-      total_active_30d: total[0].c,
-      missing_thumbnail: noThumb[0].c,
-      by_account: byAcct,
-      sample_thumbnails: sample.map(r => ({ name: r.ad_name, thumb: r.thumbnail_url ? r.thumbnail_url.slice(0, 80) + '…' : null })),
-    });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
 router.use(authenticate, requirePermission('brief-pipeline', 'access'));
 
 // ── Config ────────────────────────────────────────────────────────────
@@ -5806,7 +5788,7 @@ async function getCreativeAnalysisCols() {
 router.get('/meta-video-ads/accounts', authenticate, async (req, res) => {
   try {
     const cols = await getCreativeAnalysisCols();
-    const window = [7, 30, 90].includes(parseInt(req.query.window, 10)) ? parseInt(req.query.window, 10) : 30;
+    const windowDays = [7, 30, 90].includes(parseInt(req.query.window, 10)) ? parseInt(req.query.window, 10) : 30;
     const idCol   = cols.has('ad_account_id')   ? 'ad_account_id'   : null;
     const nameCol = cols.has('ad_account_name') ? 'ad_account_name'
                   : cols.has('account_name')   ? 'account_name'
@@ -5814,6 +5796,9 @@ router.get('/meta-video-ads/accounts', authenticate, async (req, res) => {
     if (!idCol) {
       return res.json({ success: true, accounts: [], synced: 'no_account_column', last_sync: null });
     }
+    // Note: NULL ad_account_id rows are excluded from selectable accounts
+    // (they're not actionable — you can't filter by "no account"). They still
+    // get aggregated into the modal data, but don't surface as a pill.
     const sql = `
       SELECT
         ${idCol}                                                  AS id,
@@ -5822,17 +5807,39 @@ router.get('/meta-video-ads/accounts', authenticate, async (req, res) => {
         MAX(synced_at)                                            AS last_sync
       FROM creative_analysis
       WHERE type = 'video'
+        AND ${idCol} IS NOT NULL
         AND synced_at >= NOW() - ($1 || ' days')::INTERVAL
       GROUP BY ${idCol}
       ORDER BY spend DESC NULLS LAST
     `;
-    const rows = await pgQuery(sql, [String(window)]);
+    const rows = await pgQuery(sql, [String(windowDays)]);
+
+    // Enrich with friendly names from Meta Graph API when possible. The TW
+    // sync rarely populates ad_account_name (97% NULL in production), so
+    // pulling fresh names from Meta gives the user a human-readable label.
+    let metaNames = {};
+    try {
+      const metaAccts = await getAdAccounts();
+      for (const a of metaAccts || []) {
+        // Meta IDs sometimes come back as 'act_...' and sometimes bare digits
+        const id = String(a.id || '').replace(/^act_/i, '');
+        if (id && a.name) metaNames[id] = a.name;
+        if (a.id && a.name) metaNames[String(a.id)] = a.name;
+      }
+    } catch (e) {
+      console.warn('[BriefPipeline] getAdAccounts() failed (using TW names only):', e.message);
+    }
+    const friendly = (id, fallback) => {
+      const bare = String(id || '').replace(/^act_/i, '');
+      return metaNames[String(id)] || metaNames[bare] || fallback;
+    };
+
     const lastSync = rows[0]?.last_sync ? new Date(rows[0].last_sync).toISOString() : null;
     res.json({
       success: true,
       accounts: rows.map(r => ({
         id:       String(r.id),
-        name:     r.name,
+        name:     friendly(r.id, r.name),
         spend:    Number(r.spend) || 0,
         last_sync: r.last_sync ? new Date(r.last_sync).toISOString() : null,
       })),
@@ -5857,7 +5864,7 @@ router.get('/meta-video-ads', authenticate, async (req, res) => {
     const accountsCsv = req.query.accounts ? String(req.query.accounts) : '';
     const accounts = accountsCsv.split(',').map(a => a.trim()).filter(Boolean);
     const status = String(req.query.status || 'active').toLowerCase();
-    const window = [7, 30, 90].includes(parseInt(req.query.window, 10)) ? parseInt(req.query.window, 10) : 30;
+    const windowDays = [7, 30, 90].includes(parseInt(req.query.window, 10)) ? parseInt(req.query.window, 10) : 30;
     const sortKey = ['spend','revenue','roas','cpa','ctr','impressions'].includes(req.query.sort) ? req.query.sort : 'spend';
     const minRoas = parseFloat(req.query.min_roas) || 0;
     const minSpend = parseFloat(req.query.min_spend) || 0;
@@ -5866,8 +5873,11 @@ router.get('/meta-video-ads', authenticate, async (req, res) => {
     const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 20));
     const offset = (page - 1) * limit;
 
-    const where = [`ca.type = 'video'`, `ca.synced_at >= NOW() - ($1 || ' days')::INTERVAL`];
-    const params = [String(window)];
+    // Filter to ads WITH a thumbnail — Meta CDN URLs expire but having one
+    // means there's at least a chance of preview. NULL thumbnails always
+    // render as blank Play icons which is confusing in the import grid.
+    const where = [`ca.type = 'video'`, `ca.thumbnail_url IS NOT NULL`, `ca.thumbnail_url <> ''`, `ca.synced_at >= NOW() - ($1 || ' days')::INTERVAL`];
+    const params = [String(windowDays)];
 
     if (accounts.length > 0 && idCol) {
       params.push(accounts);

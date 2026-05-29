@@ -49,6 +49,33 @@ function fmt$(n) {
 }
 
 function fmtRoas(n) { return `${(n || 0).toFixed(2)}×`; }
+
+// Thumbnail cell that swaps to a Play-icon placeholder on image error
+// (Meta CDN URLs are time-limited and frequently 403/404 after a while).
+function ThumbCell({ ad }) {
+  const [errored, setErrored] = useState(false);
+  const showImg = ad.thumbnail_url && !errored;
+  return (
+    <div className="relative aspect-[9/12] bg-black/40 overflow-hidden">
+      {showImg ? (
+        <img
+          src={ad.thumbnail_url}
+          alt=""
+          className="w-full h-full object-cover"
+          onError={() => setErrored(true)}
+          loading="lazy"
+        />
+      ) : (
+        <div className="w-full h-full flex flex-col items-center justify-center px-3 text-center">
+          <Play className="w-6 h-6 text-zinc-700 mb-1.5" />
+          <div className="text-[9px] font-mono text-zinc-600">
+            {errored ? 'Preview expired' : 'No preview'}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 function roasColor(n) {
   if (n >= 2)    return { color: '#10b981', bg: 'rgba(16,185,129,0.1)',  border: 'rgba(16,185,129,0.3)' };
   if (n >= 1.5)  return { color: '#d4b55a', bg: 'rgba(201,168,76,0.1)',  border: 'rgba(201,168,76,0.3)' };
@@ -61,7 +88,7 @@ export default function MetaVideoImportModal({ open, onClose, onImported }) {
   const [accounts, setAccounts]       = useState([]);
   const [selectedAccts, setSelected]  = useState(new Set());
   const [status, setStatus]           = useState('active');
-  const [window, setWindow]           = useState(30);
+  const [windowDays, setWindow]           = useState(30);
   const [sort, setSort]               = useState('roas');
   const [minRoas, setMinRoas]         = useState('');
   const [minSpend, setMinSpend]       = useState('');
@@ -96,7 +123,7 @@ export default function MetaVideoImportModal({ open, onClose, onImported }) {
     setAccountsError(null);
     try {
       const { data } = await api.get('/brief-pipeline/meta-video-ads/accounts', {
-        params: { window },
+        params: { window: windowDays },
       });
       setAccounts(data.accounts || []);
       setLastSync(data.last_sync || null);
@@ -105,7 +132,7 @@ export default function MetaVideoImportModal({ open, onClose, onImported }) {
     } finally {
       setAcctsLoading(false);
     }
-  }, [window]);
+  }, [windowDays]);
 
   const fetchAds = useCallback(async (resetPage = false) => {
     setLoading(true);
@@ -114,7 +141,7 @@ export default function MetaVideoImportModal({ open, onClose, onImported }) {
       const params = {
         accounts: [...selectedAccts].join(','),
         status,
-        window,
+        window: windowDays,
         sort,
         min_roas: parseFloat(debouncedRoas) || 0,
         min_spend: parseFloat(debouncedSpend) || 0,
@@ -136,7 +163,7 @@ export default function MetaVideoImportModal({ open, onClose, onImported }) {
     } finally {
       setLoading(false);
     }
-  }, [selectedAccts, status, window, sort, debouncedRoas, debouncedSpend, debouncedSearch, page, limit]);
+  }, [selectedAccts, status, windowDays, sort, debouncedRoas, debouncedSpend, debouncedSearch, page, limit]);
 
   // ── Effects ───────────────────────────────────────────────────────────
   useEffect(() => {
@@ -158,12 +185,12 @@ export default function MetaVideoImportModal({ open, onClose, onImported }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
-  // Re-fetch accounts when window changes (spend totals are window-scoped)
+  // Re-fetch accounts when windowDays changes (spend totals are windowDays-scoped)
   useEffect(() => {
     if (!open) return;
     fetchAccounts();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [window]);
+  }, [windowDays]);
 
   // Debounce search
   useEffect(() => {
@@ -190,7 +217,7 @@ export default function MetaVideoImportModal({ open, onClose, onImported }) {
     if (!open) return;
     fetchAds(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, selectedAccts, status, window, sort, debouncedRoas, debouncedSpend, debouncedSearch]);
+  }, [open, selectedAccts, status, windowDays, sort, debouncedRoas, debouncedSpend, debouncedSearch]);
 
   // Fetch next page when page > 1 (load more)
   useEffect(() => {
@@ -399,7 +426,7 @@ export default function MetaVideoImportModal({ open, onClose, onImported }) {
                     type="button"
                     onClick={() => setWindow(w)}
                     className={`px-2.5 py-1 text-[10px] font-mono uppercase tracking-wider border transition-colors cursor-pointer first:rounded-l-md last:rounded-r-md ${
-                      window === w ? 'bg-sky-500/15 border-sky-500/40 text-sky-200' : 'bg-white/[0.02] border-white/[0.06] text-zinc-400 hover:bg-white/[0.04]'
+                      windowDays === w ? 'bg-sky-500/15 border-sky-500/40 text-sky-200' : 'bg-white/[0.02] border-white/[0.06] text-zinc-400 hover:bg-white/[0.04]'
                     }`}
                   >
                     {w}D
@@ -570,20 +597,7 @@ export default function MetaVideoImportModal({ open, onClose, onImported }) {
                     )}
 
                     {/* Thumbnail */}
-                    <div className="relative aspect-[9/12] bg-black/40 overflow-hidden">
-                      {ad.thumbnail_url ? (
-                        <img
-                          src={ad.thumbnail_url}
-                          alt=""
-                          className="w-full h-full object-cover"
-                          onError={(e) => { e.currentTarget.style.display = 'none'; }}
-                        />
-                      ) : (
-                        <div className="w-full h-full flex items-center justify-center">
-                          <Play className="w-6 h-6 text-zinc-700" />
-                        </div>
-                      )}
-                    </div>
+                    <ThumbCell ad={ad} />
 
                     {/* Footer */}
                     <div className="p-2.5 space-y-1.5">
