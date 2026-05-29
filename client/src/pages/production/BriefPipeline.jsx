@@ -3,7 +3,6 @@ import {
   RefreshCw,
   Loader2,
   Sparkles,
-  Trophy,
   CheckCircle2,
   ExternalLink,
   Settings2,
@@ -16,16 +15,18 @@ import {
   FileText,
   Package,
   BookOpen,
+  Upload,
+  TrendingUp,
 } from 'lucide-react';
 import api from '../../services/api';
-import WinnerCard from './briefs/WinnerCard';
 import ScriptGeneratorPanel from './briefs/ScriptGeneratorPanel';
 import GeneratedBriefCard from './briefs/GeneratedBriefCard';
 import ReferenceCard from './briefs/ReferenceCard';
 import ReferencePreviewModal from './briefs/ReferencePreviewModal';
 import LeagueImportModal from './briefs/LeagueImportModal';
+import MetaVideoImportModal from './briefs/MetaVideoImportModal';
+import ScriptUploadModal from './briefs/ScriptUploadModal';
 import BriefDetailModal from './briefs/BriefDetailModal';
-import WinnerDetailModal from './briefs/WinnerDetailModal';
 import PipelineSettingsModal from './briefs/PipelineSettingsModal';
 import LaunchTemplateEditor from './briefs/LaunchTemplateEditor';
 import AdCopySetsManager from './briefs/AdCopySetsManager';
@@ -82,23 +83,24 @@ const PIPELINE_COLUMNS = [
 
 export default function BriefPipeline() {
   // Data
-  const [winners, setWinners] = useState([]);
   const [generated, setGenerated] = useState([]);
   const [references, setReferences] = useState([]);
 
   // Loading states
-  const [loadingWinners, setLoadingWinners] = useState(false);
   const [loadingGenerated, setLoadingGenerated] = useState(false);
   // eslint-disable-next-line no-unused-vars
   const [loadingReferences, setLoadingReferences] = useState(false);
-  const [detecting, setDetecting] = useState(false);
-  const [generating, setGenerating] = useState(false);
-  const [generatingId, setGeneratingId] = useState(null);
+  // 'generating' state is reserved for the legacy /generate/:winnerId path
+  // (script-from-detected-winner). Keep the visual loader hooked up — the
+  // current script-from-text flow uses scriptGenerating below.
+  /* eslint-disable no-unused-vars */
+  const [generating, setGenerating]         = useState(false);
+  const [generatingId, setGeneratingId]     = useState(null);
   const [generatingStep, setGeneratingStep] = useState('');
+  /* eslint-enable no-unused-vars */
 
   // UI state
   const [detailModal, setDetailModal] = useState(null);
-  const [winnerDetail, setWinnerDetail] = useState(null);
   const [error, setError] = useState(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [templateEditorOpen, setTemplateEditorOpen] = useState(false);
@@ -109,6 +111,8 @@ export default function BriefPipeline() {
   const [selectedForLaunch, setSelectedForLaunch] = useState([]);
   const [launchModalOpen, setLaunchModalOpen] = useState(false);
   const [leagueImportOpen, setLeagueImportOpen] = useState(false);
+  const [metaImportOpen, setMetaImportOpen]     = useState(false);
+  const [uploadOpen, setUploadOpen]             = useState(false);
   const [previewReference, setPreviewReference] = useState(null);
 
   // Prefill state for the Script Generator panel — populated when the user
@@ -119,7 +123,6 @@ export default function BriefPipeline() {
 
   // Refs for cleanup and double-click guards
   const abortRef = useRef(false);
-  const generatingRef = useRef(false);
   const scriptGeneratingRef = useRef(false);
   const stepIntervalsRef = useRef([]);
 
@@ -135,18 +138,6 @@ export default function BriefPipeline() {
   // ---------------------------------------------------------------------------
   // Data fetching
   // ---------------------------------------------------------------------------
-
-  const fetchWinners = useCallback(async () => {
-    setLoadingWinners(true);
-    try {
-      const { data } = await api.get('/brief-pipeline/winners');
-      setWinners(data.winners || data || []);
-    } catch (err) {
-      console.error('Failed to fetch winners:', err);
-    } finally {
-      setLoadingWinners(false);
-    }
-  }, []);
 
   const fetchGenerated = useCallback(async () => {
     setLoadingGenerated(true);
@@ -182,11 +173,10 @@ export default function BriefPipeline() {
   }, []);
 
   const refreshAll = useCallback(() => {
-    fetchWinners();
     fetchGenerated();
     fetchLaunchTemplates();
     fetchReferences();
-  }, [fetchWinners, fetchGenerated, fetchLaunchTemplates, fetchReferences]);
+  }, [fetchGenerated, fetchLaunchTemplates, fetchReferences]);
 
   useEffect(() => {
     refreshAll();
@@ -195,34 +185,6 @@ export default function BriefPipeline() {
   // ---------------------------------------------------------------------------
   // Actions
   // ---------------------------------------------------------------------------
-
-  const handleViewWinner = useCallback(async (winner) => {
-    try {
-      const { data } = await api.get(`/brief-pipeline/winners/${winner.id}`);
-      setWinnerDetail(data.winner || data);
-    } catch (err) {
-      setWinnerDetail(winner);
-    }
-  }, []);
-
-  const handleDetect = useCallback(async () => {
-    setDetecting(true);
-    setError(null);
-    try {
-      const { data } = await api.post('/brief-pipeline/detect');
-      await fetchWinners();
-      // Background ClickUp enrichment runs server-side; auto-refresh after delay
-      if (data?.detected > 0) {
-        setTimeout(() => fetchWinners(), 15000);
-      }
-    } catch (err) {
-      console.error('Detection failed:', err);
-      const message = err.response?.data?.error?.message || 'Failed to detect winners';
-      setError(message);
-    } finally {
-      setDetecting(false);
-    }
-  }, [fetchWinners]);
 
   const pollGenerationStatus = useCallback(async (winnerId, stepMessages, stepInterval, setStepFn) => {
     const maxAttempts = 40; // 40 × 3s = 2 min max
@@ -284,58 +246,6 @@ export default function BriefPipeline() {
 
     return poll();
   }, []);
-
-  const handleGenerate = useCallback(async (winnerId, config) => {
-    if (generatingRef.current) return;
-    generatingRef.current = true;
-    setGenerating(true);
-    setGeneratingId(winnerId);
-    setGeneratingStep('Analyzing winning ad...');
-    let stepInterval;
-    try {
-      const stepMessages = [
-        'Analyzing winning ad...',
-        'Identifying iteration angles...',
-        'Generating brief variations...',
-        'Scoring & ranking output...',
-        'Finalizing briefs...',
-      ];
-      let stepIdx = 0;
-      stepInterval = setInterval(() => {
-        if (abortRef.current) { clearInterval(stepInterval); return; }
-        stepIdx = Math.min(stepIdx + 1, stepMessages.length - 1);
-        setGeneratingStep(stepMessages[stepIdx]);
-      }, 5000);
-      stepIntervalsRef.current.push(stepInterval);
-
-      const { data } = await api.post(`/brief-pipeline/generate/${winnerId}`, config || {});
-
-      // Server responds immediately — poll for completion
-      if (data.winner_id) {
-        setGeneratingStep('Identifying iteration angles...');
-        await pollGenerationStatus(data.winner_id, stepMessages, stepInterval, setGeneratingStep);
-      }
-
-      clearInterval(stepInterval);
-      if (!abortRef.current) {
-        await fetchGenerated();
-        await fetchWinners();
-      }
-    } catch (err) {
-      clearInterval(stepInterval);
-      if (!abortRef.current) {
-        console.error('Generate failed:', err);
-        setError(err.response?.data?.error?.message || err.message || 'Brief generation failed.');
-      }
-    } finally {
-      generatingRef.current = false;
-      if (!abortRef.current) {
-        setGenerating(false);
-        setGeneratingId(null);
-        setGeneratingStep('');
-      }
-    }
-  }, [fetchGenerated, fetchWinners, pollGenerationStatus]);
 
   const handleApprove = useCallback(async (briefId) => {
     try {
@@ -410,13 +320,24 @@ export default function BriefPipeline() {
       }, 5000);
       stepIntervalsRef.current.push(stepInterval);
 
+      // mode === 'iterate' → META reference path (fresh hooks + body
+      // variants of OUR winning script, no product swap).
+      // mode === 'clone'   → LEAGUE / UPLOAD path (existing behavior).
+      // anything else      → existing 'variants' deep-analysis path.
+      const sendMode = config.mode === 'iterate'
+        ? 'iterate'
+        : config.mode === 'clone'
+          ? 'clone'
+          : 'variants';
       const { data } = await api.post('/brief-pipeline/generate-from-script', {
-        script: config.script,
-        url: config.url,
-        productCode: config.productCode,
-        angle: config.angle,
-        mode: config.mode === 'clone' ? 'clone' : 'variants',
+        script:        config.script,
+        url:           config.url,
+        productId:     config.productId,
+        productCode:   config.productCode,
+        angle:         config.angle,
+        mode:          sendMode,
         numVariations: config.numVariations,
+        referenceId:   config.referenceId,
       });
 
       // Server responds immediately — poll for completion
@@ -428,7 +349,6 @@ export default function BriefPipeline() {
       clearInterval(stepInterval);
       if (!abortRef.current) {
         await fetchGenerated();
-        await fetchWinners();
       }
     } catch (err) {
       clearInterval(stepInterval);
@@ -444,7 +364,7 @@ export default function BriefPipeline() {
         setScriptGenStep('');
       }
     }
-  }, [fetchGenerated, fetchWinners, pollGenerationStatus]);
+  }, [fetchGenerated, pollGenerationStatus]);
 
   const handleMoveToReady = useCallback(async (briefId) => {
     try {
@@ -460,11 +380,20 @@ export default function BriefPipeline() {
 
   const applyReferencePrefill = useCallback((reference) => {
     if (!reference?.transcript) return;
+    // META references generate iterations; LEAGUE/UPLOAD use clone mode.
+    const mode = reference.source === 'meta' ? 'iterate' : 'clone';
+    const tierOrSource = reference.source === 'meta'
+      ? 'OUR WINNER'
+      : reference.source === 'upload'
+        ? 'UPLOAD'
+        : reference.tier;
     setScriptPrefill({
       script: reference.transcript,
-      mode: 'clone',
-      label: `${reference.brandName} · ${reference.tier}`,
+      mode,
+      referenceId: reference.id,
+      label: `${reference.brandName || 'Pasted'} · ${tierOrSource}`,
     });
+    // Old setScriptPrefill block below is replaced — drop the trailing one.
     if (scriptGenSectionRef.current) {
       scriptGenSectionRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
@@ -599,9 +528,7 @@ export default function BriefPipeline() {
   // ---------------------------------------------------------------------------
 
   const buckets = useMemo(() => {
-    const map = { detected: [], reference: [], generated: [], approved: [], ready_to_launch: [], launched: [] };
-
-    for (const w of winners) map.detected.push(w);
+    const map = { reference: [], generated: [], approved: [], ready_to_launch: [], launched: [] };
 
     for (const r of references) map.reference.push(r);
 
@@ -624,13 +551,13 @@ export default function BriefPipeline() {
     }
 
     return map;
-  }, [winners, generated, references]);
+  }, [generated, references]);
 
   // ---------------------------------------------------------------------------
   // Render
   // ---------------------------------------------------------------------------
 
-  const isLoading = loadingWinners || loadingGenerated;
+  const isLoading = loadingGenerated;
 
   return (
     <div className="flex flex-col min-h-screen bg-[#111113] text-zinc-100 overflow-hidden relative">
@@ -675,31 +602,6 @@ export default function BriefPipeline() {
           </div>
 
           <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={handleDetect}
-              disabled={detecting}
-              className="inline-flex items-center justify-center gap-2 rounded-lg text-xs font-medium transition-all h-8 px-3
-                         bg-[#c9a84c]/10 text-[#d4b55a] hover:bg-[#c9a84c]/20 border border-[#c9a84c]/25 hover:border-[#c9a84c]/40
-                         shadow-[0_0_10px_rgba(201,168,76,0.08)] hover:shadow-[0_0_15px_rgba(201,168,76,0.15)]
-                         disabled:opacity-40 cursor-pointer font-mono tracking-wide uppercase"
-            >
-              {detecting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trophy className="w-3.5 h-3.5" />}
-              Detect Winners
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setLeagueImportOpen(true)}
-              className="inline-flex items-center justify-center gap-2 rounded-lg text-xs font-medium transition-all h-8 px-3
-                         bg-violet-500/10 text-violet-300 hover:bg-violet-500/15 border border-violet-500/25 hover:border-violet-500/40
-                         shadow-[0_0_10px_rgba(139,92,246,0.08)] hover:shadow-[0_0_15px_rgba(139,92,246,0.15)]
-                         cursor-pointer font-mono tracking-wide uppercase"
-            >
-              <BookOpen className="w-3.5 h-3.5" />
-              Import from League
-            </button>
-
             <button
               type="button"
               onClick={() => { setEditingTemplate(null); setTemplateEditorOpen(true); }}
@@ -766,44 +668,12 @@ export default function BriefPipeline() {
                 generatingStep={scriptGenStep}
                 initialScript={scriptPrefill.script}
                 initialMode={scriptPrefill.mode}
+                initialReferenceId={scriptPrefill.referenceId}
                 referenceLabel={scriptPrefill.label}
                 onClearReference={handleClearScriptPrefill}
               />
             </div>
 
-            {/* Winning Ads section */}
-            <div className="mt-auto border-t border-white/[0.04] bg-black/20 flex flex-col flex-1">
-              <div className="p-4 flex items-center justify-between text-[#c9a84c]/80 font-mono text-xs tracking-wide uppercase">
-                <div className="flex items-center gap-2">
-                  <Trophy className="w-3.5 h-3.5" />
-                  Winning Ads
-                </div>
-                <span className="bg-[#c9a84c]/10 text-[#c9a84c]/80 px-2 py-0.5 rounded border border-[#c9a84c]/15">
-                  {buckets.detected.length}
-                </span>
-              </div>
-              <div className="px-4 pb-4 space-y-3 overflow-y-auto flex-1">
-                {buckets.detected.length === 0 ? (
-                  <div className="flex flex-col items-center justify-center text-center py-8">
-                    <div className="w-10 h-10 rounded-lg bg-white/[0.02] border border-white/[0.04] flex items-center justify-center mb-3 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.02)]">
-                      <Trophy className="w-4 h-4 text-zinc-700" />
-                    </div>
-                    <p className="text-[11px] text-zinc-600 font-mono leading-relaxed">
-                      NO WINNERS DETECTED<br />
-                      <span className="opacity-70">AWAITING AD ACCOUNT SYNC</span>
-                    </p>
-                  </div>
-                ) : (
-                  buckets.detected.map((item) => (
-                    <WinnerCard
-                      key={item.id}
-                      winner={item}
-                      onSelect={() => handleViewWinner(item)}
-                    />
-                  ))
-                )}
-              </div>
-            </div>
           </div>
 
           {/* Right — Pipeline columns */}
@@ -849,7 +719,7 @@ export default function BriefPipeline() {
                     onDrop={isDroppable ? (e) => handleDrop(e, col.key) : undefined}
                   >
                     {/* Column header */}
-                    <div className="flex items-center justify-between mb-4 pb-3 border-b border-white/[0.04] relative">
+                    <div className="flex items-center justify-between mb-3 pb-3 border-b border-white/[0.04] relative">
                       <div className="absolute bottom-0 left-0 w-1/3 h-[1px] bg-gradient-to-r from-current to-transparent opacity-30" />
                       <div className="flex items-center gap-2">
                         <Icon className={`w-4 h-4 ${col.colorClass}`} />
@@ -857,10 +727,53 @@ export default function BriefPipeline() {
                           {col.label}
                         </h3>
                       </div>
-                      <span className={`text-[10px] font-mono px-2 py-0.5 rounded border ${col.badgeClass}`}>
-                        {items.length}
-                      </span>
+                      <div className="flex items-center gap-2">
+                        {col.key === 'reference' && (
+                          <a
+                            href="/app/brand-spy"
+                            className="text-[10px] font-mono uppercase tracking-wider text-zinc-500 hover:text-zinc-200 transition-colors inline-flex items-center gap-1"
+                          >
+                            Follow <ExternalLink className="w-2.5 h-2.5" />
+                          </a>
+                        )}
+                        <span className={`text-[10px] font-mono px-2 py-0.5 rounded border ${col.badgeClass}`}>
+                          {items.length}
+                        </span>
+                      </div>
                     </div>
+
+                    {/* Reference source buttons — UPLOAD / LEAGUE / META */}
+                    {col.key === 'reference' && (
+                      <div className="grid grid-cols-3 gap-1.5 mb-4">
+                        <button
+                          type="button"
+                          onClick={() => setUploadOpen(true)}
+                          className="flex flex-col items-center gap-1 py-2.5 rounded-md border border-white/[0.06] bg-white/[0.02] text-zinc-300 hover:bg-white/[0.04] hover:border-white/[0.12] transition-colors cursor-pointer"
+                          title="Paste a script manually"
+                        >
+                          <Upload className="w-4 h-4" />
+                          <span className="text-[10px] font-mono uppercase tracking-wider">Upload</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setLeagueImportOpen(true)}
+                          className="flex flex-col items-center gap-1 py-2.5 rounded-md border border-[#c9a84c]/30 bg-[#c9a84c]/10 text-[#e8d5a3] hover:bg-[#c9a84c]/15 transition-colors cursor-pointer"
+                          title="Import competitor ads from The League"
+                        >
+                          <BookOpen className="w-4 h-4" />
+                          <span className="text-[10px] font-mono uppercase tracking-wider">League</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setMetaImportOpen(true)}
+                          className="flex flex-col items-center gap-1 py-2.5 rounded-md border border-sky-500/30 bg-sky-500/10 text-sky-300 hover:bg-sky-500/15 transition-colors cursor-pointer"
+                          title="Import our active video ads from Triple Whale"
+                        >
+                          <TrendingUp className="w-4 h-4" />
+                          <span className="text-[10px] font-mono uppercase tracking-wider">Meta</span>
+                        </button>
+                      </div>
+                    )}
 
                     {/* Dashed connector between columns */}
                     {colIdx < PIPELINE_COLUMNS.length - 1 && (
@@ -873,16 +786,9 @@ export default function BriefPipeline() {
                         col.key === 'reference' ? (
                           <div className="flex flex-col items-center justify-center h-40 px-4 text-center">
                             <BookOpen className="w-6 h-6 text-violet-400/40 mb-2" />
-                            <p className="text-xs text-zinc-500 font-mono mb-3">
-                              No references yet
+                            <p className="text-xs text-zinc-500 font-mono">
+                              Pick a source above
                             </p>
-                            <button
-                              type="button"
-                              onClick={() => setLeagueImportOpen(true)}
-                              className="text-[11px] font-mono uppercase tracking-wider px-3 py-1.5 rounded-md bg-violet-500/10 border border-violet-500/30 text-violet-300 hover:bg-violet-500/15 transition-colors cursor-pointer"
-                            >
-                              Import from League
-                            </button>
                           </div>
                         ) : (
                           <div className="flex items-center justify-center h-32">
@@ -1009,20 +915,6 @@ export default function BriefPipeline() {
         </div>
       )}
 
-      {/* Winner Detail Modal */}
-      {winnerDetail && (
-        <WinnerDetailModal
-          winner={winnerDetail}
-          isOpen={!!winnerDetail}
-          onClose={() => setWinnerDetail(null)}
-          onGenerate={(winnerId, config) => {
-            setWinnerDetail(null);
-            handleGenerate(winnerId, config);
-          }}
-          generating={generating}
-        />
-      )}
-
       {/* Brief Detail Modal */}
       {detailModal && (
         <BriefDetailModal
@@ -1075,6 +967,20 @@ export default function BriefPipeline() {
         open={leagueImportOpen}
         onClose={() => setLeagueImportOpen(false)}
         onImported={handleLeagueImported}
+      />
+
+      {/* Meta video import — our own active ads from Triple Whale */}
+      <MetaVideoImportModal
+        open={metaImportOpen}
+        onClose={() => setMetaImportOpen(false)}
+        onImported={async () => { await fetchReferences(); }}
+      />
+
+      {/* Upload — paste a script manually */}
+      <ScriptUploadModal
+        open={uploadOpen}
+        onClose={() => setUploadOpen(false)}
+        onImported={async () => { await fetchReferences(); }}
       />
 
       {/* Reference preview lightbox — opens when a Reference card is clicked */}

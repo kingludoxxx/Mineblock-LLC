@@ -9,13 +9,25 @@ import {
   FileText,
   Clock,
   Loader2,
+  Upload,
+  TrendingUp,
 } from 'lucide-react';
 
 const TIER_META = {
   BANGER: { Icon: Flame,  label: 'Banger' },
   CHAMP:  { Icon: Trophy, label: 'Champ' },
   A:      { Icon: Star,   label: 'A-Tier' },
+  OUR:    { Icon: TrendingUp, label: 'Our Winner' },
+  UPLOAD: { Icon: Upload, label: 'Upload' },
 };
+
+function fmtRoas(n) { return `${(Number(n) || 0).toFixed(2)}×`; }
+function fmt$(n) {
+  if (n == null) return '$0';
+  const abs = Math.abs(n);
+  if (abs >= 1000) return `$${(n / 1000).toFixed(1)}k`;
+  return `$${Math.round(n)}`;
+}
 
 function timeAgo(iso) {
   if (!iso) return '';
@@ -33,9 +45,16 @@ function timeAgo(iso) {
 
 export default function ReferenceCard({ reference, onPreview, onGenerateFromReference, onDelete }) {
   const [deleting, setDeleting] = useState(false);
-  const meta = TIER_META[reference.tier] || TIER_META.A;
+  const isMeta   = reference.source === 'meta';
+  const isUpload = reference.source === 'upload';
+  // Source overrides tier badge for META + UPLOAD rows.
+  const metaKey = isMeta ? 'OUR' : isUpload ? 'UPLOAD' : reference.tier;
+  const meta = TIER_META[metaKey] || TIER_META.A;
   const { Icon: TierIcon } = meta;
   const hasTranscript = !!reference.transcript;
+  const isPending     = reference.status === 'pending';
+  const transcribeError = !hasTranscript && reference.analysisError;
+  const md = reference.importedMetadata || {};
 
   const handleGenerate = (e) => {
     e.stopPropagation();
@@ -90,12 +109,45 @@ export default function ReferenceCard({ reference, onPreview, onGenerateFromRefe
             <Play className="w-4 h-4 text-white fill-white" />
           </div>
         </div>
-        {/* Tier badge over thumbnail */}
-        <div className="absolute top-2 left-2">
-          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold uppercase tracking-wider border bg-black/60 backdrop-blur-sm border-white/[0.12] text-zinc-100 whitespace-nowrap">
+        {/* Source/tier badge over thumbnail */}
+        <div className="absolute top-2 left-2 flex items-center gap-1">
+          <span
+            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold uppercase tracking-wider border backdrop-blur-sm whitespace-nowrap"
+            style={isMeta ? {
+              background: 'rgba(14,165,233,0.18)',
+              borderColor: 'rgba(14,165,233,0.45)',
+              color: '#7dd3fc',
+            } : isUpload ? {
+              background: 'rgba(0,0,0,0.6)',
+              borderColor: 'rgba(255,255,255,0.12)',
+              color: '#e4e4e7',
+            } : {
+              background: 'rgba(0,0,0,0.6)',
+              borderColor: 'rgba(255,255,255,0.12)',
+              color: '#f4f4f5',
+            }}
+          >
             <TierIcon className="w-2.5 h-2.5" />
             {meta.label}
           </span>
+          {isMeta && md.roas != null && (
+            <span
+              className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold backdrop-blur-sm whitespace-nowrap"
+              style={{
+                background: 'rgba(14,165,233,0.18)',
+                border: '1px solid rgba(14,165,233,0.45)',
+                color: '#7dd3fc',
+              }}
+            >
+              {fmtRoas(md.roas)}
+            </span>
+          )}
+          {isPending && (
+            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold uppercase tracking-wider bg-amber-500/15 border border-amber-500/40 text-amber-300 backdrop-blur-sm whitespace-nowrap">
+              <Loader2 className="w-2.5 h-2.5 animate-spin" />
+              Transcribing
+            </span>
+          )}
         </div>
       </button>
 
@@ -134,6 +186,15 @@ export default function ReferenceCard({ reference, onPreview, onGenerateFromRefe
           </div>
         )}
 
+        {/* Meta performance strip */}
+        {isMeta && (
+          <div className="text-[10px] font-mono text-zinc-500">
+            {md.spend != null && <>Spend {fmt$(md.spend)} · </>}
+            {md.cpa != null && md.cpa > 0 && <>CPA {fmt$(md.cpa)} · </>}
+            {md.impressions != null && <>{(md.impressions || 0).toLocaleString()} imp</>}
+          </div>
+        )}
+
         {/* Transcript preview */}
         <div className="text-[11px] leading-relaxed">
           {hasTranscript ? (
@@ -141,33 +202,46 @@ export default function ReferenceCard({ reference, onPreview, onGenerateFromRefe
               <FileText className="w-3 h-3 mt-0.5 text-zinc-500 shrink-0" />
               <span className="line-clamp-2 italic">{transcriptPreview}</span>
             </div>
+          ) : transcribeError ? (
+            <div className="text-red-400/80 italic line-clamp-2">{transcribeError}</div>
+          ) : isPending ? (
+            <div className="text-amber-300/80 italic">Transcribing video…</div>
           ) : (
             <div className="text-zinc-600 italic">No transcript yet</div>
           )}
         </div>
       </button>
 
-      {/* Generate brief CTA — outside the click-to-preview region */}
+      {/* CTA — Generate Iterations for META, Generate Brief for LEAGUE/UPLOAD */}
       <div className="px-3 pb-3">
         <button
           type="button"
           onClick={handleGenerate}
           disabled={!hasTranscript}
           className="w-full inline-flex items-center justify-center gap-1.5 py-2 rounded-md text-[11px] font-mono font-semibold uppercase tracking-wider transition-all cursor-pointer disabled:cursor-not-allowed"
-          style={hasTranscript ? {
+          style={hasTranscript ? (isMeta ? {
+            background: 'linear-gradient(135deg, rgba(14,165,233,0.20), rgba(56,189,248,0.10))',
+            border: '1px solid rgba(14,165,233,0.45)',
+            color: '#7dd3fc',
+            boxShadow: '0 0 12px rgba(14,165,233,0.12)',
+          } : {
             background: 'linear-gradient(135deg, rgba(201,168,76,0.18), rgba(212,181,90,0.1))',
             border: '1px solid rgba(201,168,76,0.4)',
             color: '#e8d5a3',
             boxShadow: '0 0 12px rgba(201,168,76,0.1)',
-          } : {
+          }) : {
             background: 'rgba(255,255,255,0.02)',
             border: '1px solid rgba(255,255,255,0.04)',
             color: '#52525b',
           }}
-          title={hasTranscript ? 'Open the brief generator with this transcript' : 'Transcript needed before generating'}
+          title={
+            hasTranscript
+              ? (isMeta ? 'Generate iterations of this winning ad' : 'Open the brief generator with this transcript')
+              : 'Transcript needed before generating'
+          }
         >
           <Sparkles className="w-3 h-3" />
-          {hasTranscript ? 'Generate Brief' : 'Awaiting transcript'}
+          {hasTranscript ? (isMeta ? 'Generate Iterations' : 'Generate Brief') : 'Awaiting transcript'}
         </button>
       </div>
     </div>

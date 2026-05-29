@@ -11,6 +11,7 @@ export default function ScriptGeneratorPanel({
   generatingStep,
   initialScript,
   initialMode,
+  initialReferenceId,
   referenceLabel,
   onClearReference,
 }) {
@@ -38,7 +39,13 @@ export default function ScriptGeneratorPanel({
     }
     if (initialMode && appliedModeRef.current !== initialMode) {
       appliedModeRef.current = initialMode;
-      setOutputMode(initialMode === 'clone' ? 'clone' : 'variants');
+      // 'iterate' is its own mode (META source); fall through to clone or variants
+      // for the existing LEAGUE / UPLOAD / manual flows.
+      setOutputMode(
+        initialMode === 'iterate' ? 'iterate'
+        : initialMode === 'clone'  ? 'clone'
+        : 'variants',
+      );
     }
   }, [initialScript, initialMode]);
 
@@ -117,6 +124,7 @@ export default function ScriptGeneratorPanel({
         angle: selectedAngle || customAngle || null,
         mode: outputMode,
         numVariations: variantCount,
+        referenceId: initialReferenceId || null,
       });
     } catch (err) {
       setError(err.message || 'Generation failed');
@@ -392,11 +400,41 @@ export default function ScriptGeneratorPanel({
             </div>
             <p className="text-xs text-zinc-500 pl-[26px]">Keeps structure word-for-word, swaps product & avatar</p>
           </button>
+
+          <button
+            type="button"
+            onClick={() => setOutputMode('iterate')}
+            className={`w-full text-left p-3 rounded-lg border transition-all duration-300 relative overflow-hidden cursor-pointer ${
+              outputMode === 'iterate'
+                ? 'glass-card border-sky-500/30 shadow-[0_0_15px_rgba(14,165,233,0.06),inset_0_1px_0_0_rgba(255,255,255,0.04)]'
+                : 'bg-white/[0.01] border-white/[0.04] hover:border-white/[0.08] hover:bg-white/[0.02]'
+            }`}
+            title="For META references — iterate OUR own winning script (no product swap)"
+          >
+            {outputMode === 'iterate' && (
+              <div className="absolute top-0 left-0 w-[2px] h-full bg-gradient-to-b from-sky-400 to-sky-300 shadow-[0_0_8px_rgba(14,165,233,0.6)]" />
+            )}
+            <div className="flex items-center gap-3 mb-1">
+              <div className={`w-3.5 h-3.5 rounded-sm border flex items-center justify-center transition-colors ${
+                outputMode === 'iterate' ? 'border-sky-400 bg-sky-500/15' : 'border-zinc-700 bg-black/20'
+              }`}>
+                {outputMode === 'iterate' && (
+                  <div className="w-1.5 h-1.5 rounded-sm bg-sky-300 shadow-[0_0_4px_rgba(14,165,233,0.8)]" />
+                )}
+              </div>
+              <span className={`text-sm font-medium tracking-wide ${outputMode === 'iterate' ? 'text-sky-200' : 'text-zinc-300'}`}>
+                Iterate Our Winner
+              </span>
+            </div>
+            <p className="text-xs text-zinc-500 pl-[26px]">Fresh hook + body variants of OUR winning script — no product swap</p>
+          </button>
         </div>
 
-        {outputMode === 'variants' && (
+        {(outputMode === 'variants' || outputMode === 'iterate') && (
           <div className="flex items-center gap-3 pt-2">
-            <span className="text-xs text-zinc-500 font-mono">VARIANTS:</span>
+            <span className="text-xs text-zinc-500 font-mono">
+              {outputMode === 'iterate' ? 'ITERATIONS:' : 'VARIANTS:'}
+            </span>
             <div className="flex gap-1.5">
               {[2, 3, 4, 5].map((n) => (
                 <button
@@ -445,7 +483,11 @@ export default function ScriptGeneratorPanel({
         ) : (
           <>
             <Sparkles className="w-4 h-4" />
-            Generate {outputMode === 'clone' ? 'Clone' : `${variantCount} Variants`}
+            Generate {
+              outputMode === 'clone'   ? 'Clone'
+              : outputMode === 'iterate' ? `${variantCount} Iterations`
+              : `${variantCount} Variants`
+            }
           </>
         )}
       </button>
