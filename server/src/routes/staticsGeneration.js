@@ -2071,57 +2071,9 @@ router.get('/creatives/pipeline', authenticate, async (req, res) => {
       }
     }
 
-    // Auto-repair pass: detect every flavour of broken preview on a single
-    // load and kick the right healer for each.
-    //   Mode A — /tmp-img/<id> with no image_store row →  /regenerate-broken-previews
-    //   Mode B — kie.ai/tempfile CDN URL still on the row → backsync sweeper
-    //            handles this within 10 min, but kick it now if we see any.
-    //   Mode D — launched row whose image_url is unfetchable → /repair-thumbnails
-    //            (cheaper Meta-Graph re-fetch).
-    // Everything is fire-and-forget + rate-limited.
-    try {
-      const tmpImgRefs = [];
-      let cdnLeakCount = 0;
-      let launchedSuspect = 0;
-      const CDN_PATTERNS = ['tempfile.aiquickdraw.com', 'cdn.kie.ai', 'aiquickdraw.com', 'file.kieai.app'];
-      for (const bucket of ['ready', 'review', 'launched']) {
-        for (const c of pipeline[bucket]) {
-          const u = c.image_url || '';
-          if (!u) continue;
-          const m = u.match(/\/tmp-img\/([a-f0-9-]+)/i);
-          if (m) { tmpImgRefs.push({ rowId: c.id, storeId: m[1] }); continue; }
-          if (CDN_PATTERNS.some(p => u.includes(p))) cdnLeakCount++;
-          if (bucket === 'launched' && !u.startsWith('https://scontent') && !u.startsWith('https://platform-lookaside')) {
-            launchedSuspect++;
-          }
-        }
-      }
-      // Mode A check
-      if (tmpImgRefs.length > 0) {
-        const storeIds = tmpImgRefs.map(b => b.storeId);
-        const alive = await pgQuery(
-          'SELECT id FROM image_store WHERE id = ANY($1::text[])',
-          [storeIds]
-        );
-        const aliveSet = new Set(alive.map(r => r.id));
-        const dead = tmpImgRefs.filter(b => !aliveSet.has(b.storeId));
-        if (dead.length > 0) {
-          triggerBrokenPreviewRepair(dead.length).catch(() => {});
-        }
-      }
-      // Mode B trigger: kick the backsync sweeper if any leaked CDN URLs are
-      // visible (don't wait for the 10-min interval).
-      if (cdnLeakCount > 0) {
-        backsyncDoomedUrls().catch(() => {});
-      }
-      // Mode D trigger: launched rows that don't look like Meta-CDN URLs.
-      if (launchedSuspect > 0) {
-        triggerLaunchedRepair(launchedSuspect).catch(() => {});
-      }
-    } catch (e) {
-      console.warn('[creatives/pipeline] auto-repair detection failed:', e.message);
-    }
-
+    // Ship the response FIRST. Auto-repair detection used to run before the
+    // response which added 200-800ms to every /creatives/pipeline call.
+    // Deferred to setImmediate so it doesn't block the wire.
     res.json({
       success: true,
       data: pipeline,
@@ -2132,6 +2084,58 @@ router.get('/creatives/pipeline', authenticate, async (req, res) => {
         ready: pipeline.ready.length,
         launched: pipeline.launched.length,
       },
+    });
+
+    // Auto-repair pass (deferred — runs AFTER response is on the wire):
+    //   Mode A — /tmp-img/<id> with no image_store row →  /regenerate-broken-previews
+    //   Mode B — kie.ai/tempfile CDN URL still on the row → backsync sweeper
+    //            handles this within 5 min, but kick it now if we see any.
+    //   Mode D — launched row whose image_url is unfetchable → /repair-thumbnails
+    //            (cheaper Meta-Graph re-fetch).
+    // Everything is fire-and-forget + rate-limited.
+    setImmediate(async () => {
+      try {
+        const tmpImgRefs = [];
+        let cdnLeakCount = 0;
+        let launchedSuspect = 0;
+        const CDN_PATTERNS = ['tempfile.aiquickdraw.com', 'cdn.kie.ai', 'aiquickdraw.com', 'file.kieai.app'];
+        for (const bucket of ['ready', 'review', 'launched']) {
+          for (const c of pipeline[bucket]) {
+            const u = c.image_url || '';
+            if (!u) continue;
+            const m = u.match(/\/tmp-img\/([a-f0-9-]+)/i);
+            if (m) { tmpImgRefs.push({ rowId: c.id, storeId: m[1] }); continue; }
+            if (CDN_PATTERNS.some(p => u.includes(p))) cdnLeakCount++;
+            if (bucket === 'launched' && !u.startsWith('https://scontent') && !u.startsWith('https://platform-lookaside')) {
+              launchedSuspect++;
+            }
+          }
+        }
+        // Mode A check
+        if (tmpImgRefs.length > 0) {
+          const storeIds = tmpImgRefs.map(b => b.storeId);
+          const alive = await pgQuery(
+            'SELECT id FROM image_store WHERE id = ANY($1::text[])',
+            [storeIds]
+          );
+          const aliveSet = new Set(alive.map(r => r.id));
+          const dead = tmpImgRefs.filter(b => !aliveSet.has(b.storeId));
+          if (dead.length > 0) {
+            triggerBrokenPreviewRepair(dead.length).catch(() => {});
+          }
+        }
+        // Mode B trigger: kick the backsync sweeper if any leaked CDN URLs are
+        // visible (don't wait for the 5-min interval).
+        if (cdnLeakCount > 0) {
+          backsyncDoomedUrls().catch(() => {});
+        }
+        // Mode D trigger: launched rows that don't look like Meta-CDN URLs.
+        if (launchedSuspect > 0) {
+          triggerLaunchedRepair(launchedSuspect).catch(() => {});
+        }
+      } catch (e) {
+        console.warn('[creatives/pipeline] deferred auto-repair detection failed:', e.message);
+      }
     });
   } catch (err) {
     console.error('[staticsGeneration] /creatives/pipeline error:', err);

@@ -222,6 +222,8 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, onRegener
             <img
               src={creative.reference_thumbnail}
               alt=""
+              loading="lazy"
+              decoding="async"
               className="absolute inset-0 w-full h-full object-cover opacity-40"
               onError={(e) => { e.target.style.display = 'none'; }}
             />
@@ -229,6 +231,8 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, onRegener
             <img
               src={creative.image_url}
               alt=""
+              loading="lazy"
+              decoding="async"
               className="absolute inset-0 w-full h-full object-cover opacity-90 group-hover:opacity-100 transition-opacity group-hover:scale-105 duration-500"
               onError={(e) => { e.target.style.display = 'none'; }}
             />
@@ -370,6 +374,8 @@ function AdSetThumb({ creative, onCardClick }) {
         <img
           src={creative.image_url}
           alt=""
+          loading="lazy"
+          decoding="async"
           className="absolute inset-0 w-full h-full object-cover opacity-90 group-hover:opacity-100 transition-opacity"
           onError={(e) => { e.target.style.display = 'none'; }}
         />
@@ -527,6 +533,8 @@ function LaunchedGroupCard({ angle, creatives, onCardClick, onReset }) {
                 <img
                   src={c.image_url}
                   alt=""
+                  loading="lazy"
+                  decoding="async"
                   className="absolute inset-0 w-full h-full object-cover opacity-90 group-hover:opacity-100 transition-opacity"
                   onError={(e) => { e.target.style.display = 'none'; }}
                 />
@@ -574,6 +582,8 @@ function QueueCard({ item, onRemove }) {
             <img
               src={refThumb}
               alt=""
+              loading="lazy"
+              decoding="async"
               className={`absolute inset-0 w-full h-full object-cover transition-opacity ${isGenerating ? 'opacity-40' : 'opacity-60'}`}
               onError={(e) => { e.target.style.display = 'none'; }}
             />

@@ -71,6 +71,8 @@ function ReferencePreviewModal({ item, onClose, onUse, isSelected, onToggleSelec
             <img
               src={fullImg}
               alt={title}
+              loading="lazy"
+              decoding="async"
               className="max-w-full max-h-[60vh] object-contain rounded shadow-lg"
               onError={(e) => { e.currentTarget.alt = 'Preview failed to load'; e.currentTarget.style.opacity = '0.3'; }}
             />
@@ -131,6 +133,8 @@ function ReferenceCard({ item, onPreview, onDelete, isSelected, onToggleSelect }
           <img
             src={thumb}
             alt={title}
+            loading="lazy"
+            decoding="async"
             className="w-full h-full object-cover opacity-90 group-hover:opacity-100 group-hover:scale-105 transition-all duration-500"
             onError={(e) => { e.currentTarget.style.opacity = '0.2'; }}
           />

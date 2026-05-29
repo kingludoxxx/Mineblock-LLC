@@ -113,6 +113,8 @@ function TemplateCard({ template, onView, onAnalyze, onDelete }) {
           <img
             src={template.image_url}
             alt={template.name || 'Reference Ad'}
+            loading="lazy"
+            decoding="async"
             className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
           />
         ) : (
@@ -327,6 +329,8 @@ function ReferenceLightbox({ template, onClose, onSelect, onAnalyze, onHide, onD
             <img
               src={template.image_url}
               alt={template.name || 'Reference Ad'}
+              loading="lazy"
+              decoding="async"
               className="max-w-full max-h-[75vh] rounded-lg object-contain"
             />
           ) : (
