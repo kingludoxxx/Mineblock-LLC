@@ -230,16 +230,20 @@ export default function ScriptGeneratorPanel({
         </div>
 
         {inputMode === 'text' ? (
-          <div className="space-y-1.5">
+          <div>
             <textarea
               value={scriptText}
               onChange={(e) => setScriptText(e.target.value)}
               placeholder="Paste competitor copy, landing page text, article, ad, email..."
-              className="w-full h-32 bg-white/[0.02] border border-white/[0.05] rounded-lg p-3 text-sm text-zinc-300 placeholder:text-zinc-600 focus:outline-none focus:ring-1 focus:ring-[#c9a84c]/30 focus:border-[#c9a84c]/20 resize-none transition-all shadow-[inset_0_1px_0_0_rgba(255,255,255,0.02)]"
+              className="w-full h-32 bg-white/[0.02] border border-white/[0.05] rounded-lg p-3 text-sm text-zinc-300 placeholder:text-zinc-600 focus:outline-none focus:ring-1 focus:ring-[#c9a84c]/30 focus:border-[#c9a84c]/20 resize-none transition-all shadow-[inset_0_1px_0_0_rgba(255,255,255,0.02)] block"
             />
-            <div className="flex items-center justify-between gap-2 px-0.5">
-              <div className="text-[10px] font-mono text-zinc-600">
-                {scriptText.length > 0 && `${scriptText.length} chars · ${scriptText.trim().split(/\s+/).filter(Boolean).length} words`}
+            {/* Dedicated action row — well below the textarea with its own card,
+                so the Enhance button never visually overlaps with scrolled text. */}
+            <div className="mt-3 flex items-center justify-between gap-2 px-3 py-2 rounded-md bg-white/[0.015] border border-white/[0.04]">
+              <div className="text-[10px] font-mono text-zinc-500">
+                {scriptText.length > 0
+                  ? `${scriptText.length} chars · ${scriptText.trim().split(/\s+/).filter(Boolean).length} words`
+                  : 'Paste at least 20 characters to enable Enhance'}
               </div>
               <div className="flex items-center gap-2">
                 {enhanceError && (
@@ -252,7 +256,7 @@ export default function ScriptGeneratorPanel({
                   onClick={handleEnhance}
                   disabled={enhancing || scriptText.trim().length < 20}
                   title={scriptText.trim().length < 20 ? 'Paste at least 20 characters first' : 'Clean up grammar/punctuation, preserve voice'}
-                  className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[10px] font-mono uppercase tracking-wider rounded-md border border-[#c9a84c]/25 bg-[#c9a84c]/10 text-[#e8d5a3] hover:bg-[#c9a84c]/15 hover:border-[#c9a84c]/40 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-mono uppercase tracking-wider rounded-md border border-[#c9a84c]/25 bg-[#c9a84c]/10 text-[#e8d5a3] hover:bg-[#c9a84c]/15 hover:border-[#c9a84c]/40 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   {enhancing ? <Loader2 className="w-3 h-3 animate-spin" /> : <Wand2 className="w-3 h-3" />}
                   {enhancing ? 'Enhancing…' : 'Enhance'}
