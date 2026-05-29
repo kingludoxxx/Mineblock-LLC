@@ -280,10 +280,13 @@ export default function MetaVideoImportModal({ open, onClose, onImported }) {
         creativeIds: [...selectedAdIds],
       });
       const imported = data.imported || [];
-      const newlyImported = new Set([...importedIds, ...imported.map(x => {
-        const ad = ads.find(a => a.ad_id === x.ad_id);
-        return ad?.creative_id || x.ad_id;
-      })]);
+      // Backend now returns creative_id explicitly in each import row, so
+      // we don't have to round-trip through `ads.find(...)` (which was
+      // unreliable when meta_ad_id was mixed-null across cards).
+      const newlyImported = new Set([
+        ...importedIds,
+        ...imported.map(x => x.creative_id || x.ad_id),
+      ]);
       setImportedIds(newlyImported);
       setSelectedAdIds(new Set());
       if (onImported) onImported(imported);

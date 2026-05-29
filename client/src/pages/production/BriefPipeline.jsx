@@ -413,6 +413,32 @@ export default function BriefPipeline() {
     if (reference) applyReferencePrefill(reference);
   }, [fetchReferences, applyReferencePrefill]);
 
+  // META imports start with status='pending' (transcription is async). Hold
+  // the reference id of the first imported row and apply the prefill as
+  // soon as the polling loop sees its transcript become available.
+  const [pendingMetaPrefillId, setPendingMetaPrefillId] = useState(null);
+  const handleMetaImported = useCallback(async (importedRows) => {
+    await fetchReferences();
+    // Scroll to the Script Generator so the user sees the import landing
+    if (scriptGenSectionRef.current) {
+      scriptGenSectionRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+    // Watch the first imported ref id. When its transcript completes, we
+    // auto-apply the prefill (mode='iterate' + label + script).
+    const firstId = importedRows?.[0]?.id;
+    if (firstId) setPendingMetaPrefillId(firstId);
+  }, [fetchReferences]);
+
+  // When the pending META ref's transcript finishes, apply the prefill once.
+  useEffect(() => {
+    if (!pendingMetaPrefillId) return;
+    const ref = references.find(r => r.id === pendingMetaPrefillId);
+    if (ref && ref.transcript) {
+      applyReferencePrefill(ref);
+      setPendingMetaPrefillId(null);
+    }
+  }, [pendingMetaPrefillId, references, applyReferencePrefill]);
+
   const handleDeleteReference = useCallback(async (refId) => {
     // Optimistic remove — re-add on error
     const prev = references;
@@ -981,7 +1007,7 @@ export default function BriefPipeline() {
       <MetaVideoImportModal
         open={metaImportOpen}
         onClose={() => setMetaImportOpen(false)}
-        onImported={async () => { await fetchReferences(); }}
+        onImported={handleMetaImported}
       />
 
       {/* Upload — paste a script manually */}

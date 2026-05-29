@@ -5944,7 +5944,10 @@ router.get('/meta-video-ads', authenticate, async (req, res) => {
         EXISTS (
           SELECT 1 FROM brief_pipeline_references bpr
           WHERE bpr.source = 'meta'
-            AND bpr.ad_archive_id = COALESCE(latest.meta_ad_id, agg.creative_id)::text
+            AND (
+              bpr.ad_archive_id = agg.creative_id::text
+              OR (latest.meta_ad_id IS NOT NULL AND bpr.ad_archive_id = latest.meta_ad_id::text)
+            )
         ) AS already_imported,
         COUNT(*) OVER () AS total_count
       FROM agg
@@ -6051,6 +6054,12 @@ router.post('/references/import-meta', authenticate, async (req, res) => {
         last_synced_at:  r.synced_at,
       };
 
+      // Re-import semantics: if the row already exists, treat the new import
+      // as an intentional refresh — wipe stale transcript / video_url /
+      // analysis_error and reset status to 'pending' so the background
+      // transcribe job re-runs against the fresh ad library URL. The
+      // RETURNING clause exposes (xmax = 0) so we know whether this was an
+      // INSERT (new) or an UPDATE (existing) and can branch accordingly.
       const inserted = await pgQuery(
         `INSERT INTO brief_pipeline_references (
            brand_spy_ad_id, ad_archive_id, brand_id, brand_name, tier,
@@ -6063,12 +6072,17 @@ router.post('/references/import-meta', authenticate, async (req, res) => {
            thumbnail_url     = COALESCE(EXCLUDED.thumbnail_url, brief_pipeline_references.thumbnail_url),
            headline          = COALESCE(EXCLUDED.headline,      brief_pipeline_references.headline),
            imported_metadata = EXCLUDED.imported_metadata,
+           video_url         = NULL,
+           transcript        = NULL,
+           transcript_at     = NULL,
+           analysis_error    = NULL,
+           status            = 'pending',
            updated_at        = NOW()
-         RETURNING id, status`,
+         RETURNING id, status, (xmax = 0) AS was_inserted`,
         [extKey, r.account_name || 'Triple Whale', r.thumbnail_url || null, r.ad_name || null, JSON.stringify(metaJson)]
       );
       const ref = inserted[0];
-      imported.push({ id: ref.id, ad_id: extKey, ad_name: r.ad_name, status: ref.status });
+      imported.push({ id: ref.id, ad_id: extKey, creative_id: r.creative_id, meta_ad_id: r.meta_ad_id, ad_name: r.ad_name, status: ref.status, was_inserted: ref.was_inserted });
 
       // Background transcription: extract video URL from the ad library page,
       // then run Whisper (Gemini fallback for >25MB). Errors land in
