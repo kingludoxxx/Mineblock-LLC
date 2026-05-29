@@ -15,11 +15,15 @@ import {
 } from 'lucide-react';
 import api from '../../../services/api';
 
-// Only active videos — paused/deleted ads are never useful for iteration.
+const STATUSES = [
+  { key: 'active',         label: 'Active' },
+  { key: 'active+paused',  label: 'Active + Paused' },
+  { key: 'all',            label: 'All' },
+];
 const WINDOWS = [7, 30, 90];
 const SORTS = [
-  { key: 'spend',       label: 'Spend ↓' },
   { key: 'roas',        label: 'ROAS ↓' },
+  { key: 'spend',       label: 'Spend ↓' },
   { key: 'revenue',     label: 'Revenue ↓' },
   { key: 'cpa',         label: 'CPA ↑' },
   { key: 'ctr',         label: 'CTR ↓' },
@@ -56,8 +60,9 @@ export default function MetaVideoImportModal({ open, onClose, onImported }) {
   // Filters
   const [accounts, setAccounts]       = useState([]);
   const [selectedAccts, setSelected]  = useState(new Set());
+  const [status, setStatus]           = useState('active');
   const [window, setWindow]           = useState(30);
-  const [sort, setSort]               = useState('spend');
+  const [sort, setSort]               = useState('roas');
   const [minRoas, setMinRoas]         = useState('');
   const [minSpend, setMinSpend]       = useState('');
   const [search, setSearch]           = useState('');
@@ -108,7 +113,7 @@ export default function MetaVideoImportModal({ open, onClose, onImported }) {
     try {
       const params = {
         accounts: [...selectedAccts].join(','),
-        status: 'active',
+        status,
         window,
         sort,
         min_roas: parseFloat(debouncedRoas) || 0,
@@ -131,7 +136,7 @@ export default function MetaVideoImportModal({ open, onClose, onImported }) {
     } finally {
       setLoading(false);
     }
-  }, [selectedAccts, window, sort, debouncedRoas, debouncedSpend, debouncedSearch, page, limit]);
+  }, [selectedAccts, status, window, sort, debouncedRoas, debouncedSpend, debouncedSearch, page, limit]);
 
   // ── Effects ───────────────────────────────────────────────────────────
   useEffect(() => {
@@ -185,7 +190,7 @@ export default function MetaVideoImportModal({ open, onClose, onImported }) {
     if (!open) return;
     fetchAds(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, selectedAccts, window, sort, debouncedRoas, debouncedSpend, debouncedSearch]);
+  }, [open, selectedAccts, status, window, sort, debouncedRoas, debouncedSpend, debouncedSearch]);
 
   // Fetch next page when page > 1 (load more)
   useEffect(() => {
@@ -362,6 +367,25 @@ export default function MetaVideoImportModal({ open, onClose, onImported }) {
 
           {/* Row of pill groups */}
           <div className="flex flex-wrap items-end gap-4">
+            {/* Status */}
+            <div>
+              <div className="text-[10px] font-mono uppercase tracking-[0.15em] text-zinc-500 mb-1">Status</div>
+              <div className="flex">
+                {STATUSES.map(s => (
+                  <button
+                    key={s.key}
+                    type="button"
+                    onClick={() => setStatus(s.key)}
+                    className={`px-2.5 py-1 text-[10px] font-mono uppercase tracking-wider border transition-colors cursor-pointer first:rounded-l-md last:rounded-r-md ${
+                      status === s.key ? 'bg-sky-500/15 border-sky-500/40 text-sky-200' : 'bg-white/[0.02] border-white/[0.06] text-zinc-400 hover:bg-white/[0.04]'
+                    }`}
+                  >
+                    {s.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
             {/* Window */}
             <div>
               <div className="text-[10px] font-mono uppercase tracking-[0.15em] text-zinc-500 mb-1">Window</div>
@@ -516,14 +540,23 @@ export default function MetaVideoImportModal({ open, onClose, onImported }) {
                           : 'border-white/[0.06] bg-white/[0.02] hover:border-white/[0.12] hover:bg-white/[0.04]'
                     }`}
                   >
-                    {/* AUTO badge only — all cards are active by definition */}
-                    {ad.auto_detected && (
-                      <div className="absolute top-2 left-2 z-10">
+                    {/* Status badges — only show if NOT active (active is implied) */}
+                    <div className="absolute top-2 left-2 z-10 flex items-center gap-1">
+                      {ad.status && ad.status.toLowerCase() !== 'active' && (
+                        <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-mono font-semibold uppercase tracking-wider border ${
+                          ad.status.toLowerCase() === 'paused'
+                            ? 'bg-amber-500/15 border-amber-500/40 text-amber-300'
+                            : 'bg-zinc-500/15 border-zinc-500/40 text-zinc-300'
+                        }`}>
+                          {ad.status}
+                        </span>
+                      )}
+                      {ad.auto_detected && (
                         <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-mono font-semibold uppercase tracking-wider bg-violet-500/15 border border-violet-500/40 text-violet-300">
                           Auto
                         </span>
-                      </div>
-                    )}
+                      )}
+                    </div>
 
                     {/* Imported overlay */}
                     {imported && (
