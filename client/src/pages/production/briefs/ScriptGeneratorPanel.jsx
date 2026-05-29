@@ -19,6 +19,7 @@ export default function ScriptGeneratorPanel({
   const [scriptText, setScriptText] = useState('');
   const [scriptUrl, setScriptUrl] = useState('');
   const [selectedProduct, setSelectedProduct] = useState(null);
+  const [productList, setProductList] = useState([]);
   const [selectedAngle, setSelectedAngle] = useState(null);
   const [customAngle, setCustomAngle] = useState('');
   const [outputMode, setOutputMode] = useState('variants');
@@ -48,6 +49,22 @@ export default function ScriptGeneratorPanel({
       );
     }
   }, [initialScript, initialMode]);
+
+  // ── MR (Miner Forge Pro) is the default product, always ───────────────
+  // Auto-snaps the selection back to MR whenever the field is empty AND
+  // the product list has loaded. Triggered on first load AND after the
+  // user clicks the X clear button — MR is sticky by design.
+  useEffect(() => {
+    if (selectedProduct) return;
+    if (!productList || productList.length === 0) return;
+    const mr = productList.find(p =>
+      (p.short_name || '').toUpperCase() === 'MR'
+      || (p.product_code || '').toUpperCase() === 'MR'
+      || (p.name || '').toLowerCase().includes('miner forge')
+    );
+    const pick = mr || productList[0];
+    if (pick) setSelectedProduct(pick);
+  }, [selectedProduct, productList]);
 
   // ── Product Library bridge ────────────────────────────────────────────
   // When a product is selected, fetch the full profile from the Brief Pipeline
@@ -266,18 +283,7 @@ export default function ScriptGeneratorPanel({
           <ProductSelector
             selectedId={selectedProduct?.id}
             onSelect={(p) => setSelectedProduct(p)}
-            onLoad={(list) => {
-              // Default to Miner Forge Pro on first load — that's our active
-              // brand. Falls back to the first product if MR isn't in the
-              // Product Library (e.g. fresh tenant). Only auto-selects when
-              // nothing is selected yet so user choices aren't clobbered.
-              if (selectedProduct) return;
-              const mr = list.find(p => (p.short_name || '').toUpperCase() === 'MR'
-                                     || (p.product_code || '').toUpperCase() === 'MR'
-                                     || (p.name || '').toLowerCase().includes('miner forge'));
-              const pick = mr || list[0];
-              if (pick) setSelectedProduct(pick);
-            }}
+            onLoad={(list) => setProductList(list || [])}
             className="w-full"
           />
 
