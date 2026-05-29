@@ -3,7 +3,21 @@ import { FileText, Video, Wand2, Loader2, Sparkles, ChevronDown, Trophy, X, Pack
 import ProductSelector from '../../../components/ProductSelector';
 import api from '../../../services/api';
 
-const DEFAULT_ANGLES = ['Against competition', 'Lottery', 'BTC Made easy', 'Hidden opportunity', 'Scarcity', 'Breaking news', 'Pain Point', 'Social Proof', 'Before/After', 'Curiosity Hook', 'Direct Offer', 'Authority'];
+// Fallback when the selected product has no angles in the Product Library.
+const FALLBACK_ANGLES = [
+  { name: 'Pain Point',       funnel_stage: 'top' },
+  { name: 'Curiosity Hook',   funnel_stage: 'top' },
+  { name: 'Breaking news',    funnel_stage: 'top' },
+  { name: 'Social Proof',     funnel_stage: 'middle' },
+  { name: 'Authority',        funnel_stage: 'middle' },
+  { name: 'Before/After',     funnel_stage: 'middle' },
+  { name: 'Direct Offer',     funnel_stage: 'bottom' },
+  { name: 'Scarcity',         funnel_stage: 'bottom' },
+];
+
+const FUNNEL_ORDER = { top: 0, middle: 1, bottom: 2 };
+const FUNNEL_LABEL = { top: 'Top of Funnel', middle: 'Middle of Funnel', bottom: 'Bottom of Funnel' };
+const FUNNEL_COLOR = { top: 'text-emerald-400', middle: 'text-amber-400', bottom: 'text-sky-400' };
 
 export default function ScriptGeneratorPanel({
   onGenerated,
@@ -342,34 +356,80 @@ export default function ScriptGeneratorPanel({
           )}
         </div>
 
-        <div className="space-y-3">
+        <div className="space-y-2">
           <div className="flex items-center justify-between">
             <label className="text-xs text-zinc-400 font-mono">
               Ad_Angle <span className="text-zinc-600 opacity-70">[OPTIONAL]</span>
             </label>
+            {productContext?.product?.angles?.length > 0 && (
+              <span className="text-[10px] font-mono text-zinc-500">
+                {productContext.product.angles.length} from {productContext.product.short_name || 'product'}
+              </span>
+            )}
           </div>
-          <div className="flex flex-wrap gap-2">
-            {DEFAULT_ANGLES.map((a) => (
-              <button
-                key={a}
-                type="button"
-                onClick={() => setSelectedAngle(selectedAngle === a ? null : a)}
-                className={`px-2.5 py-1 text-xs rounded-md border transition-all duration-300 cursor-pointer ${
-                  selectedAngle === a
-                    ? 'bg-[#c9a84c]/10 border-[#c9a84c]/30 text-[#e8d5a3] shadow-[0_0_8px_rgba(201,168,76,0.1)]'
-                    : 'bg-white/[0.02] border-white/[0.05] text-zinc-400 hover:border-white/[0.1] hover:text-zinc-200 hover:bg-white/[0.04]'
-                }`}
+          {(() => {
+            // Pull angles from the selected product. Fall back to a small
+            // generic list only if the product has none.
+            const raw = (productContext?.product?.angles && productContext.product.angles.length > 0)
+              ? productContext.product.angles
+              : FALLBACK_ANGLES;
+            // Group by funnel_stage so the dropdown reads top → middle → bottom.
+            const groups = raw.reduce((acc, a) => {
+              const stage = (a.funnel_stage || 'middle').toLowerCase();
+              if (!acc[stage]) acc[stage] = [];
+              acc[stage].push(a);
+              return acc;
+            }, {});
+            const stages = Object.keys(groups).sort((x, y) => (FUNNEL_ORDER[x] ?? 9) - (FUNNEL_ORDER[y] ?? 9));
+            return (
+              <select
+                value={selectedAngle || ''}
+                onChange={(e) => { setSelectedAngle(e.target.value || null); setCustomAngle(''); }}
+                className="w-full bg-[#0a0a0a] border border-white/[0.06] rounded-lg px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:ring-1 focus:ring-[#c9a84c]/30 focus:border-[#c9a84c]/30 cursor-pointer appearance-none transition-colors hover:border-white/[0.12]"
+                style={{
+                  backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23a1a1aa' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E")`,
+                  backgroundRepeat: 'no-repeat',
+                  backgroundPosition: 'right 0.75rem center',
+                  paddingRight: '2rem',
+                }}
               >
-                {a}
-              </button>
-            ))}
-          </div>
+                <option value="">— Let AI choose the best angle —</option>
+                {stages.map(stage => (
+                  <optgroup key={stage} label={FUNNEL_LABEL[stage] || stage.toUpperCase()}>
+                    {groups[stage].map((a, i) => (
+                      <option key={`${stage}-${i}`} value={a.name}>
+                        {a.name}
+                      </option>
+                    ))}
+                  </optgroup>
+                ))}
+              </select>
+            );
+          })()}
+          {selectedAngle && (() => {
+            // Show a tiny detail card with the angle's funnel stage + tone
+            // so the user knows what the prompt will instruct.
+            const all = productContext?.product?.angles?.length > 0
+              ? productContext.product.angles
+              : FALLBACK_ANGLES;
+            const a = all.find(x => x.name === selectedAngle);
+            if (!a) return null;
+            const stage = (a.funnel_stage || 'middle').toLowerCase();
+            return (
+              <div className="text-[10px] font-mono text-zinc-500 px-2 py-1.5 bg-white/[0.015] border border-white/[0.04] rounded">
+                <span className={`uppercase tracking-wider ${FUNNEL_COLOR[stage] || 'text-zinc-500'}`}>
+                  {FUNNEL_LABEL[stage] || stage}
+                </span>
+                {a.tone && <span className="text-zinc-600"> · {a.tone.split('.')[0].slice(0, 80)}{a.tone.length > 80 ? '…' : ''}</span>}
+              </div>
+            );
+          })()}
           <input
             type="text"
             value={customAngle}
             onChange={(e) => { setCustomAngle(e.target.value); setSelectedAngle(null); }}
-            placeholder="Custom angle... (or leave blank for AI)"
-            className="w-full bg-white/[0.02] border border-white/[0.05] rounded-lg p-2.5 text-sm text-zinc-300 placeholder:text-zinc-600 focus:outline-none focus:ring-1 focus:ring-[#c9a84c]/30 focus:border-[#c9a84c]/20 transition-all mt-1 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.02)]"
+            placeholder="Or type a custom angle..."
+            className="w-full bg-white/[0.02] border border-white/[0.05] rounded-lg p-2 text-sm text-zinc-300 placeholder:text-zinc-600 focus:outline-none focus:ring-1 focus:ring-[#c9a84c]/30 focus:border-[#c9a84c]/20 transition-all shadow-[inset_0_1px_0_0_rgba(255,255,255,0.02)]"
           />
         </div>
       </div>

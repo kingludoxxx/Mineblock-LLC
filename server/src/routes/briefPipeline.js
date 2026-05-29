@@ -22,19 +22,6 @@ const __dirname = dirname(__filename);
 const YTDLP_PATH = join(__dirname, '..', '..', '..', 'bin', 'yt-dlp');
 
 const router = Router();
-
-// TEMP: no-auth — inspect MR angles structure to wire the dropdown right.
-router.get('/meta-video-ads/angles-peek', async (req, res) => {
-  try {
-    const rows = await pgQuery(`SELECT id, name, short_name, angles, winning_angles, custom_angles_text FROM product_profiles WHERE short_name='MR' OR LOWER(name) LIKE '%miner forge%' LIMIT 1`);
-    if (!rows.length) return res.json({ success: false, error: 'No MR product' });
-    const p = rows[0];
-    let angles = p.angles;
-    if (typeof angles === 'string') { try { angles = JSON.parse(angles); } catch {} }
-    res.json({ success: true, product: { id: p.id, name: p.name, short_name: p.short_name }, angles, anglesIsArray: Array.isArray(angles), anglesLen: Array.isArray(angles) ? angles.length : null, winning_angles: p.winning_angles, custom_angles_text: p.custom_angles_text });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
 router.use(authenticate, requirePermission('brief-pipeline', 'access'));
 
 // ── Config ────────────────────────────────────────────────────────────
@@ -6361,6 +6348,9 @@ router.get('/product-context/:id', authenticate, async (req, res) => {
       offer_details: profile.offer_details,
       guarantee: profile.guarantee,
       compliance_restrictions: profile.compliance_restrictions,
+      // Full angles array — used by the Ad_Angle dropdown in Script Generator.
+      // Each angle is { id, name, funnel_stage, hook_strategy, lead_with, ... }.
+      angles: Array.isArray(profile.angles) ? profile.angles : [],
       anglesCount: Array.isArray(profile.angles) ? profile.angles.length : 0,
       scriptsCount: Array.isArray(profile.scripts) ? profile.scripts.length : 0,
       benefitsCount: Array.isArray(profile.benefits) ? profile.benefits.length : 0,
