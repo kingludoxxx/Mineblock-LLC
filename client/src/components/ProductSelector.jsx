@@ -9,7 +9,7 @@ function ProductThumb({ src }) {
   return <img src={src} alt="" className="w-6 h-6 rounded object-cover shrink-0" onError={() => setFailed(true)} />;
 }
 
-export default function ProductSelector({ selectedId, selectedProduct: selectedProductProp, onSelect, onLoad, className = '' }) {
+export default function ProductSelector({ selectedId, selectedProduct: selectedProductProp, onSelect, onLoad, className = '', allowClear = true }) {
   const [products, setProducts] = useState([]);
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -79,7 +79,7 @@ export default function ProductSelector({ selectedId, selectedProduct: selectedP
           )}
         </div>
         <div className="flex items-center gap-1 shrink-0">
-          {selected && (
+          {selected && allowClear && (
             <span
               role="button"
               tabIndex={0}

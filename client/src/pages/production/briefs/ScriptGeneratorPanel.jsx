@@ -284,6 +284,7 @@ export default function ScriptGeneratorPanel({
             selectedId={selectedProduct?.id}
             onSelect={(p) => setSelectedProduct(p)}
             onLoad={(list) => setProductList(list || [])}
+            allowClear={false}
             className="w-full"
           />
 
