@@ -182,20 +182,33 @@ export function getAllAdAccountIds() {
  * Fetch ad account details (name, currency, etc.)
  */
 export async function getAdAccounts() {
+  // DIAG (temp) — capture env-var state on each call so we can see if the
+  // server has the new credentials loaded after env-var update + restart.
+  console.log('[getAdAccounts] DIAG token_len=' + (META_ACCESS_TOKEN?.length || 0)
+    + ' token_prefix=' + (META_ACCESS_TOKEN?.slice(0, 12) || '')
+    + ' acct_ids=' + JSON.stringify(META_AD_ACCOUNT_IDS)
+    + ' graph_url=' + META_GRAPH_URL);
   const results = [];
   for (const accountId of META_AD_ACCOUNT_IDS) {
     try {
       const res = await fetch(
         `${META_GRAPH_URL}/${accountId}?fields=name,account_id,currency,account_status,business_name&access_token=${META_ACCESS_TOKEN}`
       );
+      console.log(`[getAdAccounts] DIAG ${accountId} → status=${res.status}`);
       if (res.ok) {
         const data = await res.json();
         results.push({ id: accountId, name: data.name || accountId, currency: data.currency, status: data.account_status, business_name: data.business_name });
+      } else {
+        // Capture the error body so we can see WHY Meta rejected the call
+        const errBody = await res.text().catch(() => '<read-failed>');
+        console.error(`[getAdAccounts] DIAG ${accountId} META ERROR ${res.status}: ${errBody.slice(0, 400)}`);
       }
     } catch (err) {
+      console.error(`[getAdAccounts] DIAG ${accountId} THROW: ${err?.message || err}`);
       results.push({ id: accountId, name: accountId, error: err.message });
     }
   }
+  console.log(`[getAdAccounts] DIAG returning ${results.length} accounts`);
   return results;
 }
 
