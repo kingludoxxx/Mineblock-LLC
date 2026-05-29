@@ -16,12 +16,82 @@ import {
   getCustomAudiences, createAdSet, createFlexibleAdCreative, createAd,
   uploadAdImage, uploadAdVideo, uploadAdImageFromUrl, isMetaAdsConfigured, getAllAdAccountIds
 } from '../services/metaAdsApi.js';
+import { uploadBuffer, isR2Configured } from '../services/r2.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const YTDLP_PATH = join(__dirname, '..', '..', '..', 'bin', 'yt-dlp');
 
 const router = Router();
+
+// ── Meta thumbnail proxy with R2 caching ──────────────────────────────
+// Placed BEFORE the global authenticate middleware because <img src> tags
+// can't carry JWTs. Safe to expose: thumbnails are non-sensitive, R2
+// public URLs are already world-readable, creative_ids are opaque enough
+// to discourage scraping.
+//
+// Flow:
+//   1. Compute deterministic R2 key: meta-thumbs/<creative_id>.jpg
+//   2. HEAD the R2 URL — if 200, 302 redirect, done.
+//   3. Cache miss: look up the freshest thumbnail_url from creative_analysis
+//      for this creative_id, fetch the bytes, upload to R2 with the
+//      deterministic key, then 302 redirect to the new R2 URL.
+//   4. Source fetch fails (URL expired): respond 410 Gone so the frontend
+//      ThumbCell can swap to its "Preview expired" placeholder.
+//
+// Net: every video thumbnail gets a PERMANENT URL after first view.
+// Browser caches the redirect, R2 caches the bytes. "Preview expired"
+// only renders if the source was already dead before we ever cached it.
+router.get('/meta-thumb/:creativeId', async (req, res) => {
+  try {
+    const creativeId = String(req.params.creativeId || '').replace(/[^a-zA-Z0-9_-]/g, '');
+    if (!creativeId) return res.status(400).send('Invalid creative_id');
+    if (!isR2Configured() || !process.env.R2_PUBLIC_URL) {
+      return res.status(503).send('R2 not configured');
+    }
+    const key = `meta-thumbs/${creativeId}.jpg`;
+    const r2Url = `${process.env.R2_PUBLIC_URL}/${key}`;
+
+    // Cache hit: serve directly from R2
+    try {
+      const head = await fetch(r2Url, { method: 'HEAD', signal: AbortSignal.timeout(4000) });
+      if (head.ok) {
+        res.setHeader('Cache-Control', 'public, max-age=86400');
+        return res.redirect(302, r2Url);
+      }
+    } catch { /* fall through to cache miss path */ }
+
+    // Cache miss: fetch source URL from creative_analysis and upload to R2.
+    const rows = await pgQuery(
+      `SELECT thumbnail_url FROM creative_analysis
+        WHERE creative_id = $1 AND type='video' AND thumbnail_url IS NOT NULL
+        ORDER BY synced_at DESC LIMIT 1`,
+      [creativeId]
+    );
+    const sourceUrl = rows[0]?.thumbnail_url;
+    if (!sourceUrl) return res.status(404).send('No thumbnail in database');
+
+    try {
+      const src = await fetch(sourceUrl, { signal: AbortSignal.timeout(10000) });
+      if (!src.ok) {
+        console.warn(`[meta-thumb] source fetch ${src.status} for ${creativeId}`);
+        return res.status(410).send('Source thumbnail expired');
+      }
+      const buffer = Buffer.from(await src.arrayBuffer());
+      const contentType = src.headers.get('content-type') || 'image/jpeg';
+      await uploadBuffer(buffer, key, contentType);
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+      return res.redirect(302, r2Url);
+    } catch (e) {
+      console.warn(`[meta-thumb] source fetch error for ${creativeId}:`, e.message);
+      return res.status(410).send('Source thumbnail expired');
+    }
+  } catch (err) {
+    console.error('[meta-thumb] handler error:', err.message);
+    res.status(500).send('Internal error');
+  }
+});
+
 router.use(authenticate, requirePermission('brief-pipeline', 'access'));
 
 // ── Config ────────────────────────────────────────────────────────────
@@ -5910,6 +5980,16 @@ router.get('/meta-video-ads', authenticate, async (req, res) => {
     const rows = await pgQuery(sql, params);
     const total = rows.length > 0 ? Number(rows[0].total_count) : 0;
 
+    // Rewrite thumbnail_url to point at our R2-cached proxy. Browser hits
+    // /api/v1/brief-pipeline/meta-thumb/<creative_id> → 302 to permanent
+    // R2 URL on cache hit, lazy-uploads on miss. Falls back to the raw
+    // CDN URL when R2 isn't configured (dev / local mode).
+    const proxyEnabled = isR2Configured() && !!process.env.R2_PUBLIC_URL;
+    const PROXY_PREFIX = '/api/v1/brief-pipeline/meta-thumb/';
+    const proxyThumb = (creativeId, rawUrl) => proxyEnabled
+      ? `${PROXY_PREFIX}${encodeURIComponent(creativeId)}`
+      : rawUrl;
+
     const ads = rows.map(r => ({
       creative_id:    r.creative_id,
       ad_id:          r.meta_ad_id || r.creative_id,
@@ -5918,7 +5998,7 @@ router.get('/meta-video-ads', authenticate, async (req, res) => {
       account_name:   r.account_name,
       status:         (r.ad_status || 'active').toUpperCase(),
       auto_detected:  r.auto_detected === true,
-      thumbnail_url:  r.thumbnail_url,
+      thumbnail_url:  proxyThumb(r.creative_id, r.thumbnail_url),
       creative_link:  r.creative_link,
       roas:           Number(r.roas) || 0,
       spend:          Number(r.spend) || 0,
@@ -6025,10 +6105,39 @@ router.post('/references/import-meta', authenticate, async (req, res) => {
            status            = 'pending',
            updated_at        = NOW()
          RETURNING id, status, (xmax = 0) AS was_inserted`,
-        [extKey, r.account_name || 'Triple Whale', r.thumbnail_url || null, r.ad_name || null, JSON.stringify(metaJson)]
+        // Store the proxy URL so the saved Reference card never breaks. The
+        // proxy is keyed on creative_id which is stable across re-syncs.
+        [
+          extKey,
+          r.account_name || 'Triple Whale',
+          (isR2Configured() && process.env.R2_PUBLIC_URL && r.thumbnail_url)
+            ? `/api/v1/brief-pipeline/meta-thumb/${encodeURIComponent(r.creative_id)}`
+            : (r.thumbnail_url || null),
+          r.ad_name || null,
+          JSON.stringify(metaJson),
+        ]
       );
       const ref = inserted[0];
       imported.push({ id: ref.id, ad_id: extKey, creative_id: r.creative_id, meta_ad_id: r.meta_ad_id, ad_name: r.ad_name, status: ref.status, was_inserted: ref.was_inserted });
+
+      // Fire-and-forget: warm the R2 cache for this thumbnail now so the
+      // very first time someone views the Reference card, R2 already has
+      // the bytes (no slow first-load + redirect). Cheap upload, ~50KB.
+      if (isR2Configured() && process.env.R2_PUBLIC_URL && r.thumbnail_url) {
+        (async () => {
+          try {
+            const key = `meta-thumbs/${r.creative_id}.jpg`;
+            const src = await fetch(r.thumbnail_url, { signal: AbortSignal.timeout(8000) });
+            if (src.ok) {
+              const buf = Buffer.from(await src.arrayBuffer());
+              await uploadBuffer(buf, key, src.headers.get('content-type') || 'image/jpeg');
+            }
+          } catch (e) {
+            // Swallow — proxy endpoint will re-try on first view
+            console.warn(`[import-meta] R2 thumb pre-cache failed for ${r.creative_id}:`, e.message);
+          }
+        })();
+      }
 
       // Background transcription. Try paths in order:
       //   1. creative_link from TW (often a direct .mp4 / .webm URL — fastest)
