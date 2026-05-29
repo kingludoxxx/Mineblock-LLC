@@ -30,42 +30,6 @@ const YTDLP_PATH = join(__dirname, '..', '..', '..', 'bin', 'yt-dlp');
 
 const router = Router();
 
-// TEMP — final Gemini-key verification
-router.post('/_gv', async (req, res) => {
-  try {
-    const stuck = await pgQuery(`SELECT id, video_url FROM brief_pipeline_references WHERE source='meta' AND status='error' LIMIT 3`);
-    for (const ref of stuck) {
-      if (!ref.video_url) continue;
-      await pgQuery(`UPDATE brief_pipeline_references SET status='transcribing', analysis_error=NULL, updated_at=NOW() WHERE id=$1`, [ref.id]);
-      (async () => {
-        try {
-          const { text, segments } = await transcribeVideoUrl(ref.video_url);
-          await pgQuery(
-            `UPDATE brief_pipeline_references SET transcript=$1, transcript_at=NOW(), status='transcribed', analysis_error=NULL,
-                imported_metadata = CASE
-                  WHEN imported_metadata IS NULL THEN jsonb_build_object('transcript_segments', $2::jsonb)
-                  WHEN jsonb_typeof(imported_metadata) = 'object' THEN jsonb_set(imported_metadata, '{transcript_segments}', $2::jsonb, true)
-                  ELSE jsonb_build_object('original', imported_metadata::text, 'transcript_segments', $2::jsonb)
-                END, updated_at=NOW() WHERE id=$3`,
-            [text, JSON.stringify(segments || []), ref.id]
-          );
-        } catch (e) {
-          await pgQuery(`UPDATE brief_pipeline_references SET status='error', analysis_error=$1, updated_at=NOW() WHERE id=$2`,
-            [`Transcribe failed: ${e.message?.slice(0, 600)}`, ref.id]).catch(() => {});
-        }
-      })();
-    }
-    res.json({ success: true, kicked: stuck.length });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-router.get('/_gvr', async (req, res) => {
-  try {
-    const r = await pgQuery(`SELECT id, status, LENGTH(COALESCE(transcript, '')) AS tlen, SUBSTRING(transcript, 1, 250) AS thead, analysis_error FROM brief_pipeline_references WHERE source='meta' ORDER BY updated_at DESC LIMIT 5`);
-    res.json({ success: true, refs: r });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
 // ── Meta thumbnail proxy with R2 caching ──────────────────────────────
 // Placed BEFORE the global authenticate middleware because <img src> tags
 // can't carry JWTs. Safe to expose: thumbnails are non-sensitive, R2
