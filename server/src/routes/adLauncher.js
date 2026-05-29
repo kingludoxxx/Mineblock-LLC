@@ -4,11 +4,46 @@ import { requirePermission } from '../middleware/rbac.js';
 import { pgQuery } from '../db/pg.js';
 import {
   uploadAdImage, createAdCreative, createAd,
-  getDefaultAdAccountId, isMetaAdsConfigured,
+  getDefaultAdAccountId, isMetaAdsConfigured, getAdAccounts,
 } from '../services/metaAdsApi.js';
 import crypto from 'crypto';
 
 const router = Router();
+
+// ── TEMP DEBUG (no auth, secret-gated) — diagnose /meta/accounts 500 ──
+// Defined BEFORE router.use(authenticate,...) so the middleware doesn't gate it.
+// Hit with: GET /api/v1/ad-launcher/_diag-meta?key=mbdebug42
+// Remove once root cause is fixed.
+router.get('/_diag-meta', async (req, res) => {
+  if (req.query.key !== 'mbdebug42') {
+    return res.status(404).json({ error: 'not found' });
+  }
+  const out = {
+    timestamp: new Date().toISOString(),
+    env: {
+      META_ACCESS_TOKEN_set: !!process.env.META_ACCESS_TOKEN,
+      META_ACCESS_TOKEN_len: process.env.META_ACCESS_TOKEN?.length || 0,
+      META_ACCESS_TOKEN_prefix: process.env.META_ACCESS_TOKEN?.slice(0, 14) || '',
+      META_AD_ACCOUNT_IDS: process.env.META_AD_ACCOUNT_IDS || '',
+      META_APP_ID: process.env.META_APP_ID || '',
+      META_APP_SECRET_set: !!process.env.META_APP_SECRET,
+      META_PAGE_ID: process.env.META_PAGE_ID || '',
+      NODE_ENV: process.env.NODE_ENV || '',
+    },
+    isMetaAdsConfigured: isMetaAdsConfigured(),
+  };
+  try {
+    out.getAdAccounts = await getAdAccounts();
+  } catch (err) {
+    out.getAdAccounts_error = {
+      message: err?.message,
+      name: err?.name,
+      stack: err?.stack?.split('\n').slice(0, 6).join(' | '),
+    };
+  }
+  res.json(out);
+});
+
 router.use(authenticate, requirePermission('ads-launcher', 'access'));
 
 // ── Helpers ──────────────────────────────────────────────────────────────
