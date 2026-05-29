@@ -22,31 +22,6 @@ const __dirname = dirname(__filename);
 const YTDLP_PATH = join(__dirname, '..', '..', '..', 'bin', 'yt-dlp');
 
 const router = Router();
-
-// TEMP — read-only snapshot of both prompt stores so we can decide what
-// to keep before wiping. Remove once cleanup is done.
-router.get('/_prompts-snapshot', async (req, res) => {
-  try {
-    const oldRow = await pgQuery(`SELECT value FROM system_settings WHERE key = 'brief_pipeline_prompts'`);
-    const newRow = await pgQuery(`SELECT value FROM system_settings WHERE key = 'brief_pipeline_league_prompts'`);
-    const parse = (rows) => rows.length ? (typeof rows[0].value === 'string' ? JSON.parse(rows[0].value) : rows[0].value) : null;
-    const oldP = parse(oldRow), newP = parse(newRow);
-    res.json({
-      success: true,
-      old_brief_pipeline_prompts: oldP ? Object.keys(oldP).reduce((acc, k) => ({ ...acc, [k]: { hasContent: !!(oldP[k]?.user || oldP[k]?.system), length: JSON.stringify(oldP[k] || {}).length } }), {}) : null,
-      league_prompts: newP ? Object.keys(newP).reduce((acc, k) => ({
-        ...acc,
-        [k]: {
-          hasJson: !!(newP[k]?.json && newP[k].json.trim()),
-          notes:   newP[k]?.notes || '',
-          jsonLength: (newP[k]?.json || '').length,
-          jsonHead:   (newP[k]?.json || '').slice(0, 200),
-        }
-      }), {}) : null,
-    });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
 router.use(authenticate, requirePermission('brief-pipeline', 'access'));
 
 // ── Config ────────────────────────────────────────────────────────────
@@ -1801,49 +1776,17 @@ Return ONLY valid JSON:
 // swapping the product. Used by mode='iterate' on /generate-from-script when
 // the source reference is from META (our Triple Whale active ads).
 //
-// Operator can override the prompt body via the League Prompts settings tab,
-// slot key = 'scriptIteration'. If empty, the inline DEFAULT below is used.
-const DEFAULT_ITERATION_PROMPT_USER = `You are a senior direct-response copywriter generating fresh ITERATIONS of one of our own winning video ad scripts. Your job is to preserve the persuasion architecture that's already proven to convert and generate {{NUM_VARIATIONS}} new hook + body variants that test new angles, new emotional pulls, or new opening tensions while keeping the winning skeleton intact.
-
-# OUR WINNING SCRIPT
-{{REFERENCE_TRANSCRIPT}}
-
-# PERFORMANCE DATA (why this won)
-{{PERFORMANCE_CONTEXT}}
-
-# OUR PRODUCT
-{{PRODUCT_CONTEXT}}
-
-# RULES
-- This is OUR script. Do NOT swap the product. Do NOT translate from a competitor.
-- Preserve: the beat sequence, the mechanism, the proof structure, the CTA shape, the voice/tone.
-- Vary: the hook angle, the opening tension, specific phrasings, emotional emphasis, proof framing.
-- Each variant must have 1 new body + 3 new hooks that all flow into that body.
-- Don't fabricate claims. Use only product-profile facts.
-- Output VALID JSON only — no markdown, no backticks, no commentary outside the JSON.
-
-# OUTPUT SCHEMA
-{
-  "iterations": [
-    {
-      "iteration_label": "Iteration 1 — <one-line angle change>",
-      "what_changed":    "1-2 sentences on what's varied vs the source script",
-      "hooks": [
-        { "id": "H1", "text": "...", "mechanism": "curiosity|warning|contrarian|shock|story|authority|social_proof|pattern_interrupt", "length": "short|medium|long" },
-        { "id": "H2", "text": "...", "mechanism": "...", "length": "..." },
-        { "id": "H3", "text": "...", "mechanism": "...", "length": "..." }
-      ],
-      "body": "the full body script — preserves the winning beat sequence with fresh phrasing",
-      "cta":  "the CTA — matches the winning script's CTA structure",
-      "preservation_notes": "which winning-script elements stayed identical"
-    }
-  ]
-}`;
+// The OLD default was deleted per operator request (it was producing bad
+// iterations). A new v1 will be designed and pasted into the Settings →
+// League Prompts → scriptIteration slot. Until that's done, Iterate mode
+// throws a clear error pointing to the Settings panel instead of silently
+// running a bad prompt.
+const DEFAULT_ITERATION_PROMPT_USER = ''; // intentionally empty — see comment above
 
 async function buildIterationPrompt(parsedScript, productContext, performanceContext, numVariations) {
   const saved = await getLeaguePrompts();
-  let userTemplate = DEFAULT_ITERATION_PROMPT_USER;
-  let systemPrompt = 'You are an elite direct-response copywriter and creative strategist. You produce iterations of winning scripts that preserve their proven persuasion engine while varying the surface for fresh creative testing. Output is always valid JSON.';
+  let userTemplate = '';
+  let systemPrompt = '';
   try {
     const customRaw = saved?.scriptIteration?.json;
     if (customRaw && customRaw.trim()) {
@@ -1851,7 +1794,13 @@ async function buildIterationPrompt(parsedScript, productContext, performanceCon
       if (typeof obj?.user === 'string' && obj.user.trim())   userTemplate = obj.user;
       if (typeof obj?.system === 'string' && obj.system.trim()) systemPrompt = obj.system;
     }
-  } catch { /* keep defaults */ }
+  } catch { /* keep empty */ }
+
+  if (!userTemplate.trim() || !systemPrompt.trim()) {
+    const err = new Error('No scriptIteration prompt is configured. Open Settings → League Prompts → scriptIteration and paste a JSON prompt before using Iterate mode.');
+    err.code = 'NO_ITERATION_PROMPT';
+    throw err;
+  }
 
   const transcript = parsedScript?.body
     ? `${(parsedScript.hooks || []).map((h, i) => `[H${i+1}] ${h.text || h}`).join('\n')}\n\n${parsedScript.body}\n\n${parsedScript.cta || ''}`.trim()
@@ -6162,26 +6111,26 @@ router.post('/references/upload', authenticate, async (req, res) => {
 
 const LEAGUE_PROMPT_TYPES = [
   {
-    key: 'videoAnalysis',
-    label: 'Video Analysis',
-    description: 'Full structural + emotional analysis of a chosen video reference (League ad or one of our winning iterations).',
+    key: 'scriptAnalysis',
+    label: 'Script Analysis',
+    description: 'Full structural + emotional analysis of a chosen video reference. Output powers the Reference Analysis page.',
   },
   {
-    key: 'scriptAdaptation',
-    label: 'Script Adaptation',
-    description: 'Adapt a competitor script to OUR product — preserving the proven beat structure while swapping product, mechanism, and proof points.',
+    key: 'scriptClone',
+    label: '1:1 Script Clone',
+    description: 'Clone a competitor script for OUR product — preserve narrative architecture, swap product + mechanism, infuse the selected angle.',
   },
   {
     key: 'scriptIteration',
     label: 'Script Iteration',
-    description: 'Generate fresh iterations of one of OUR winning scripts (new hooks / body variants / angle pivots).',
+    description: 'Generate fresh iterations of one of OUR winning scripts (new hooks / body variants / angle pivots) — no product swap.',
   },
 ];
 
 const DEFAULT_LEAGUE_PROMPTS = {
-  videoAnalysis:    { json: '', notes: '' },
-  scriptAdaptation: { json: '', notes: '' },
-  scriptIteration:  { json: '', notes: '' },
+  scriptAnalysis:  { json: '', notes: '' },
+  scriptClone:     { json: '', notes: '' },
+  scriptIteration: { json: '', notes: '' },
 };
 
 let leaguePromptsCache = { data: null, timestamp: 0 };
@@ -6205,34 +6154,64 @@ async function getLeaguePrompts() {
   }
 }
 
-// Boot-time seeder — populates the scriptClone slot with the baked default
-// the FIRST time the server runs, so the prompt shows up as editable in the
-// Settings → League Prompts UI. If the slot already has a saved prompt
-// (user has customised), we leave it alone. Idempotent + safe to re-run.
+// Boot-time prompt cleanup + seeder.
+//
+// State the operator asked for:
+//   - KEEP: scriptAnalysis (the new analysis JSON prompt — uses the inline
+//           DEFAULT_REFERENCE_ANALYZER_PROMPT until overridden via Settings)
+//   - KEEP: scriptClone   (the new v1 clone prompt designed above; seeded
+//           into the DB so it appears in the Settings UI as editable)
+//   - DELETE: every other old prompt — the legacy `brief_pipeline_prompts`
+//             system_setting row (8-prompt store, never used by League flow),
+//             and any stale entries in the league_prompts row outside the
+//             3 supported slot keys.
+//
+// Idempotent + safe to re-run. Runs 5s post-boot so it doesn't race the
+// migration runner.
 async function seedDefaultLeaguePrompts() {
   try {
+    // 1) Wipe the legacy 8-prompt store entirely.
+    await pgQuery(`DELETE FROM system_settings WHERE key = 'brief_pipeline_prompts'`).catch(() => {});
+
+    // 2) Read league_prompts, migrate legacy slot keys, prune unsupported keys.
     const existing = (await getLeaguePrompts()) || {};
-    const needsScriptClone = !existing.scriptClone?.json || !existing.scriptClone.json.trim();
-    if (!needsScriptClone) return;
-    const seeded = {
-      ...existing,
-      scriptClone: {
+    const allowed = new Set(['scriptAnalysis', 'scriptClone', 'scriptIteration']);
+
+    // Legacy slot rename: videoAnalysis → scriptAnalysis, scriptAdaptation → scriptClone.
+    if (existing.videoAnalysis && !existing.scriptAnalysis) {
+      existing.scriptAnalysis = existing.videoAnalysis;
+    }
+    if (existing.scriptAdaptation && !existing.scriptClone) {
+      existing.scriptClone = existing.scriptAdaptation;
+    }
+    for (const k of Object.keys(existing)) {
+      if (!allowed.has(k)) delete existing[k];
+    }
+
+    // 3) Seed scriptClone if empty.
+    if (!existing.scriptClone?.json || !existing.scriptClone.json.trim()) {
+      existing.scriptClone = {
         json: JSON.stringify(
           { system: DEFAULT_CLONE_PROMPT_SYSTEM, user: DEFAULT_CLONE_PROMPT_USER },
           null,
           2,
         ),
-        notes: 'Default scriptClone prompt v1 — clones competitor narrative architecture into our product. Uses {{PRODUCT_CONTEXT}}, {{ANGLES_LIST}}, {{ANGLE_NAME}}, {{ANGLE_DETAILS}}, {{ORIGINAL_HOOKS}}, {{ORIGINAL_BODY}}, {{ORIGINAL_CTA}}, {{ANALYSIS_CONTEXT}} placeholders. Length: equal or up to 10% shorter than original. required_elements treated as guidance, not mandatory.',
-      },
-    };
+        notes: 'scriptClone v1 — clones competitor narrative architecture into our product. Uses {{PRODUCT_CONTEXT}}, {{ANGLES_LIST}}, {{ANGLE_NAME}}, {{ANGLE_DETAILS}}, {{ORIGINAL_HOOKS}}, {{ORIGINAL_BODY}}, {{ORIGINAL_CTA}}, {{ANALYSIS_CONTEXT}} placeholders. Length: equal or up to 10% shorter than original. required_elements treated as guidance, not mandatory.',
+      };
+    }
+
+    // 4) Ensure scriptAnalysis + scriptIteration slots exist (empty = use inline default for analysis, error for iteration).
+    if (!existing.scriptAnalysis) existing.scriptAnalysis = { json: '', notes: 'scriptAnalysis — uses the inline DEFAULT_REFERENCE_ANALYZER_PROMPT until you paste a custom JSON here.' };
+    if (!existing.scriptIteration) existing.scriptIteration = { json: '', notes: 'scriptIteration — v1 prompt being designed. Until you save a JSON here, Iterate mode will throw a clear error.' };
+
     await pgQuery(
       `INSERT INTO system_settings (key, value, description)
-       VALUES ('brief_pipeline_league_prompts', $1, 'League-driven Brief Pipeline prompts (scriptAnalysis / scriptClone / scriptIteration)')
+       VALUES ('brief_pipeline_league_prompts', $1, 'Brief Pipeline prompts (scriptAnalysis / scriptClone / scriptIteration)')
        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
-      [JSON.stringify(seeded)]
+      [JSON.stringify(existing)]
     );
-    leaguePromptsCache = { data: seeded, timestamp: Date.now() };
-    console.log('[BriefPipeline] Seeded scriptClone default into league_prompts');
+    leaguePromptsCache = { data: existing, timestamp: Date.now() };
+    console.log('[BriefPipeline] Prompt cleanup + seed complete (scriptClone seeded; scriptAnalysis + scriptIteration slots ensured).');
   } catch (err) {
     console.warn('[BriefPipeline] seedDefaultLeaguePrompts failed:', err.message);
   }
@@ -6681,11 +6660,11 @@ async function analyzeWholeVideoWithGemini(mediaUrl, promptText) {
 
 // Build the prompt for a specific reference + product profile.
 async function buildReferenceAnalyzerPrompt(reference) {
-  // Allow operator override via League Prompts (key=videoAnalysis).
+  // Allow operator override via League Prompts (key=scriptAnalysis).
   const saved = await getLeaguePrompts();
   let template = DEFAULT_REFERENCE_ANALYZER_PROMPT;
   try {
-    const customRaw = saved?.videoAnalysis?.json;
+    const customRaw = saved?.scriptAnalysis?.json;
     if (customRaw && customRaw.trim()) {
       const obj = JSON.parse(customRaw);
       // Accept either { user } string (preferred), or { system, user } shape
