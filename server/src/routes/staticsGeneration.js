@@ -292,6 +292,22 @@ router.post('/repair-all-previews', async (req, res) => {
   return authenticate(req, res, () => _doRepairAllPreviews(req, res, null));
 });
 
+// GET /repair-thumbnails — sub-route called by /repair-all-previews; also
+// safe to call directly with CRON_SECRET. Body defined later in this file.
+router.get('/repair-thumbnails', async (req, res) => {
+  const cs = process.env.CRON_SECRET;
+  if (cs && req.headers['x-cron-secret'] === cs) return _doRepairThumbnails(req, res);
+  return authenticate(req, res, () => _doRepairThumbnails(req, res));
+});
+
+// POST /regenerate-broken-previews — sub-route of /repair-all-previews and
+// also called directly by /creatives/pipeline auto-fix triggers + crons.
+router.post('/regenerate-broken-previews', async (req, res) => {
+  const cs = process.env.CRON_SECRET;
+  if (cs && req.headers['x-cron-secret'] === cs) return _doRegenerateBrokenPreviews(req, res);
+  return authenticate(req, res, () => _doRegenerateBrokenPreviews(req, res));
+});
+
 async function _doRepairAllPreviews(req, res, cronSecretForSubFetch) {
   const base = process.env.RENDER_EXTERNAL_URL || `http://localhost:${process.env.PORT || 3000}`;
   const t0 = Date.now();
@@ -3302,12 +3318,9 @@ router.patch('/creatives/bulk-status', authenticate, async (req, res) => {
 // Backfill launched thumbnails (Meta CDN repair)
 // ─────────────────────────────────────────────────────────────────────────
 
-router.get('/repair-thumbnails', async (req, res, next) => {
-  const cronSecret = process.env.CRON_SECRET;
-  const provided   = req.headers['x-cron-secret'];
-  if (cronSecret && provided === cronSecret) return next();
-  return authenticate(req, res, next);
-}, async (req, res) => {
+// Body of /repair-thumbnails — route is REGISTERED above line 271 so its
+// CRON_SECRET check fires before the global authenticate middleware.
+async function _doRepairThumbnails(req, res) {
   try {
     const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN || '';
     const META_GRAPH_URL = 'https://graph.facebook.com/v21.0';
@@ -3442,7 +3455,7 @@ router.get('/repair-thumbnails', async (req, res, next) => {
     console.error('[staticsGeneration] /repair-thumbnails error:', err);
     res.status(500).json({ success: false, error: { message: err.message } });
   }
-});
+}
 
 // ─────────────────────────────────────────────────────────────────────────
 // Regenerate-broken-previews
@@ -3738,14 +3751,8 @@ router.get('/migrate-image-store-to-r2/status', async (req, res, next) => {
   }
 });
 
-router.post('/regenerate-broken-previews', async (req, res, next) => {
-  // CRON_SECRET fast-path lets internal triggers (/creatives/pipeline auto-fix)
-  // and Render Cron Jobs call this without a JWT.
-  const cronSecret = process.env.CRON_SECRET;
-  const provided   = req.headers['x-cron-secret'];
-  if (cronSecret && provided === cronSecret) return next();
-  return authenticate(req, res, next);
-}, async (req, res) => {
+// Body of /regenerate-broken-previews — route REGISTERED above line 271.
+async function _doRegenerateBrokenPreviews(req, res) {
   try {
     await ensureCreativesTable();
     // Default scope: visible pipeline statuses only (matches the Kanban columns).
@@ -3888,7 +3895,7 @@ router.post('/regenerate-broken-previews', async (req, res, next) => {
     console.error('[staticsGeneration] /regenerate-broken-previews error:', err);
     res.status(500).json({ success: false, error: { message: err.message } });
   }
-});
+}
 
 // ─────────────────────────────────────────────────────────────────────────
 // Template classification (Haiku vision)
