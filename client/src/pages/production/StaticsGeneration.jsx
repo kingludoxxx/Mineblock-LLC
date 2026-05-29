@@ -1599,11 +1599,21 @@ export default function StaticsGeneration() {
   // =========================================================================
 
   const handleAddToQueue = () => {
-    if (!selectedProductId || references.length === 0) return;
+    if (!selectedProductId) return;
+    // Accept EITHER references[] (multi-ref / upload / template) OR a single
+    // referenceImageUrl (card Select / modal Use as Reference). Mirrors the
+    // canGenerate gate in ConfigSidebar.
+    if (references.length === 0 && !referenceImageUrl) return;
+
+    // Build the queue item's references array. Prefer references[] when set;
+    // otherwise synthesize one entry from the single-pick referenceImageUrl.
+    const itemReferences = references.length > 0
+      ? references.map(r => ({ ...r }))
+      : [{ id: Date.now(), image_url: referenceImageUrl, thumbnail: referencePreview || referenceImageUrl, name: 'Reference' }];
 
     const item = {
       id: crypto.randomUUID(),
-      references: references.map(r => ({ ...r })),
+      references: itemReferences,
       angle: marketingAngle,
       angleData: !customAngle && selectedAngleData ? selectedAngleData : null,
       customAngle: customAngle,
