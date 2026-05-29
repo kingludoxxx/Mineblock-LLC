@@ -22,51 +22,6 @@ const __dirname = dirname(__filename);
 const YTDLP_PATH = join(__dirname, '..', '..', '..', 'bin', 'yt-dlp');
 
 const router = Router();
-
-// TEMP: no-auth — peek at top-5 active videos sorted by ROAS, the way the
-// modal would render them. Returns ad_name, account, spend, roas, ctr only.
-// Remove after verification.
-router.get('/meta-video-ads/peek', async (req, res) => {
-  try {
-    const rows = await pgQuery(`
-      WITH agg AS (
-        SELECT ca.creative_id,
-               SUM(ca.spend)::float AS spend,
-               SUM(ca.revenue)::float AS revenue,
-               SUM(ca.impressions)::bigint AS impressions,
-               SUM(ca.clicks)::bigint AS clicks
-        FROM creative_analysis ca
-        WHERE ca.type='video' AND ca.ad_status='active'
-          AND ca.synced_at >= NOW() - INTERVAL '30 days'
-        GROUP BY ca.creative_id
-        HAVING SUM(ca.spend) > 0
-      ),
-      latest AS (
-        SELECT DISTINCT ON (ca.creative_id) ca.creative_id, ca.ad_name, ca.ad_account_name, ca.thumbnail_url
-        FROM creative_analysis ca
-        WHERE ca.type='video' AND ca.ad_status='active'
-          AND ca.synced_at >= NOW() - INTERVAL '30 days'
-        ORDER BY ca.creative_id, ca.spend DESC NULLS LAST
-      )
-      SELECT
-        latest.ad_name,
-        latest.ad_account_name,
-        agg.spend::int AS spend,
-        agg.revenue::int AS revenue,
-        (CASE WHEN agg.spend > 0 THEN agg.revenue / agg.spend ELSE 0 END)::numeric(10,2) AS roas,
-        (CASE WHEN agg.impressions > 0 THEN agg.clicks::float / agg.impressions * 100 ELSE 0 END)::numeric(10,2) AS ctr,
-        agg.impressions::int AS impressions,
-        CASE WHEN latest.thumbnail_url IS NOT NULL THEN 'yes' ELSE 'no' END AS has_thumbnail
-      FROM agg JOIN latest USING (creative_id)
-      ORDER BY (CASE WHEN agg.spend > 0 THEN agg.revenue / agg.spend ELSE 0 END) DESC NULLS LAST
-      LIMIT 5
-    `);
-    res.json({ success: true, count: rows.length, top: rows });
-  } catch (err) {
-    res.status(500).json({ success: false, error: { message: err.message } });
-  }
-});
-
 router.use(authenticate, requirePermission('brief-pipeline', 'access'));
 
 // ── Config ────────────────────────────────────────────────────────────
