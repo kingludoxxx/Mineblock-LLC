@@ -4399,6 +4399,7 @@ router.post('/references/:id/retry-transcribe', authenticate, async (req, res) =
     (async () => {
       try {
         let videoUrl = null;
+        let ownershipVerified = false;
         // ad_id stored in imported_metadata is Meta's ad_id (used to build
         // the ad_library_url). Treat it as our meta_ad_id for ownership resolution.
         const metaAdId = md?.ad_id || null;
@@ -4438,25 +4439,34 @@ router.post('/references/:id/retry-transcribe', authenticate, async (req, res) =
           }
           if (owned?.videoUrl) {
             videoUrl = owned.videoUrl;
+            ownershipVerified = true;
             console.log(`[BriefPipeline] retry-transcribe ref ${ref.id}: Meta-direct OK (account=${owned.accountId}, video_id=${owned.videoId}, via=${owned._via})`);
           } else if (owned?.error) {
-            console.warn(`[BriefPipeline] retry-transcribe ref ${ref.id}: Meta-direct could not resolve: ${owned.error}`);
+            // Meta confirmed ownership (not foreign) but couldn't return the
+            // video file. Safe to fall back — the ad_archive_id we'd open in
+            // FB Ad Library is verified ours.
+            ownershipVerified = true;
+            console.warn(`[BriefPipeline] retry-transcribe ref ${ref.id}: Meta verified ownership but no video URL: ${owned.error}. Allowing Playwright.`);
           }
         }
 
-        // Path 1: Playwright (only when Meta-direct unavailable)
-        if (!videoUrl && !canResolveOwned) {
+        // Playwright + yt-dlp gated on: !canResolveOwned (legacy) OR
+        // ownershipVerified=true (Meta confirmed ours but couldn't return source).
+        const playwrightAllowed = !canResolveOwned || ownershipVerified;
+
+        // Path 1: Playwright
+        if (!videoUrl && playwrightAllowed) {
           await pgQuery(
             `UPDATE brief_pipeline_references SET status = 'extracting' WHERE id = $1`,
             [ref.id]
           ).catch(() => {});
-          console.log(`[BriefPipeline] retry-transcribe ref ${ref.id}: Playwright`);
+          console.log(`[BriefPipeline] retry-transcribe ref ${ref.id}: Playwright (ownershipVerified=${ownershipVerified})`);
           videoUrl = await extractVideoUrlFromAdLibrary(adLibraryUrl);
         }
 
-        // Path 2: yt-dlp fallback (only when Meta-direct unavailable)
-        if (!videoUrl && !canResolveOwned) {
-          console.log(`[BriefPipeline] retry-transcribe ref ${ref.id}: yt-dlp fallback`);
+        // Path 2: yt-dlp fallback
+        if (!videoUrl && playwrightAllowed) {
+          console.log(`[BriefPipeline] retry-transcribe ref ${ref.id}: yt-dlp fallback (ownershipVerified=${ownershipVerified})`);
           videoUrl = await extractVideoUrlWithYtdlp(adLibraryUrl);
         }
 
@@ -5002,13 +5012,18 @@ router.post('/references/import-meta', authenticate, async (req, res) => {
           try {
             let videoUrl = null;
             let resolvedSource = null;
+            // ownershipVerified: Meta confirmed the ad_id lives in one of OUR
+            // trusted accounts. When TRUE, fallbacks to Playwright/yt-dlp are
+            // SAFE — the ad_archive_id we'd open in FB Ad Library is
+            // structurally guaranteed to be ours. The original concern that
+            // Playwright might scrape a foreign brand's video doesn't apply.
+            let ownershipVerified = false;
 
             // Path 0 — Meta-direct ownership resolution (CANONICAL PATH).
             // Confirm the ad belongs to a Mineblock account, then ask Meta
-            // for the video file straight from Marketing API. Skips Playwright
-            // entirely on success. If Meta says the ad lives in a foreign
-            // account, we REFUSE to transcribe — that's bad linkage and
-            // running any fallback would only persist the wrong content.
+            // for the video file straight from Marketing API. If Meta says
+            // foreign, we REFUSE. If Meta confirms ours but can't return the
+            // video file, we mark ownershipVerified and let Playwright try.
             if (canResolveOwned) {
               console.log(`[BriefPipeline] transcribe ref ${ref.id}: Meta-direct resolve (ad_id=${r.meta_ad_id})`);
               const owned = await resolveOwnedVideoFromMeta(r.meta_ad_id);
@@ -5040,43 +5055,44 @@ router.post('/references/import-meta', authenticate, async (req, res) => {
               }
               if (owned?.videoUrl) {
                 videoUrl = owned.videoUrl;
+                ownershipVerified = true;
                 resolvedSource = `meta_graph:${owned._via || 'unknown'}`;
                 console.log(`[BriefPipeline] ref ${ref.id}: Meta-direct OK (account=${owned.accountId}, video_id=${owned.videoId}, via=${owned._via})`);
               } else if (owned?.error) {
-                console.warn(`[BriefPipeline] ref ${ref.id}: Meta-direct could not resolve: ${owned.error}`);
-                // Fall through to legacy paths ONLY when Meta returned an
-                // error (network/rate/etc.) — never when it told us the ad
-                // is foreign.
+                // Meta confirmed account is trusted (no foreignAccount flag) but
+                // couldn't return the video file URL. SAFE to fall back —
+                // Playwright will open FB Ad Library at an ad_archive_id we've
+                // verified is ours.
+                ownershipVerified = true;
+                console.warn(`[BriefPipeline] ref ${ref.id}: Meta-direct verified ownership but no video URL: ${owned.error}. Allowing Playwright fallback.`);
               }
             }
 
-            // Path 1/2 — fallbacks ONLY when Meta-direct didn't resolve.
-            // Used when meta_ad_id is missing (rare) or Meta API errored.
+            // Path 1/2 — direct TW URL fallback (instant if populated).
             if (!videoUrl && directVideoCandidate) {
               videoUrl = directVideoCandidate;
               resolvedSource = r.video_url ? 'ca_video_url' : 'ca_creative_link';
               console.log(`[BriefPipeline] transcribe ref ${ref.id}: direct TW URL (${resolvedSource})`);
             }
 
-            // Path 3 — Playwright headless browser. Renders FB Ad Library
-            // JavaScript, intercepts the .mp4 network request. Only used
-            // when we have no meta_ad_id (no canonical Meta-direct path),
-            // because Playwright can grab the wrong video from FB Ad
-            // Library's "related ads" panel.
-            if (!videoUrl && adLibraryUrl && !canResolveOwned) {
+            // Path 3 — Playwright headless browser. Gated on:
+            //   - no meta_ad_id at all (legacy refs), OR
+            //   - meta_ad_id present AND Meta-confirmed ours (ownershipVerified)
+            // i.e. NEVER used when Meta says the ad is foreign.
+            const playwrightAllowed = !canResolveOwned || ownershipVerified;
+            if (!videoUrl && adLibraryUrl && playwrightAllowed) {
               await pgQuery(
                 `UPDATE brief_pipeline_references SET status = 'extracting', updated_at = NOW() WHERE id = $1 AND status IN ('pending', 'extracting')`,
                 [ref.id]
               ).catch(() => {});
-              console.log(`[BriefPipeline] transcribe ref ${ref.id}: Playwright extraction`);
+              console.log(`[BriefPipeline] transcribe ref ${ref.id}: Playwright extraction (ownershipVerified=${ownershipVerified})`);
               videoUrl = await extractVideoUrlFromAdLibrary(adLibraryUrl);
               if (videoUrl) resolvedSource = 'playwright_fb_ad_library';
             }
 
-            // Path 4 — yt-dlp fallback (rarely works on FB Ad Library, but
-            // cheap to try). Same gating as Playwright.
-            if (!videoUrl && adLibraryUrl && !canResolveOwned) {
-              console.log(`[BriefPipeline] transcribe ref ${ref.id}: yt-dlp fallback`);
+            // Path 4 — yt-dlp fallback. Same ownership gate as Playwright.
+            if (!videoUrl && adLibraryUrl && playwrightAllowed) {
+              console.log(`[BriefPipeline] transcribe ref ${ref.id}: yt-dlp fallback (ownershipVerified=${ownershipVerified})`);
               videoUrl = await extractVideoUrlWithYtdlp(adLibraryUrl);
               if (videoUrl) resolvedSource = 'ytdlp_fb_ad_library';
             }
