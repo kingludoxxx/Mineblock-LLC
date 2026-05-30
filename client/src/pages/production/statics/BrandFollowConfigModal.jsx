@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
-  X, Loader2, RefreshCw, ChevronDown, ChevronUp, Search, Layers, Zap, Info,
+  X, Loader2, RefreshCw, ChevronDown, ChevronUp, Search, Layers, Zap, Info, Download,
 } from 'lucide-react';
 import api from '../../../services/api';
 
@@ -289,6 +289,11 @@ function BrandRow({ brand, expanded, onToggleExpand, onPatch, onSynced }) {
   const initial = (name || domain || '?').charAt(0).toUpperCase();
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  // Default count = projected (from top_pct math) clamped to active_image_count.
+  const defaultCount = Math.max(1, Math.min(projected_import_count || 5, active_image_count || 1));
+  const [importCount, setImportCount] = useState(defaultCount);
+  useEffect(() => { setImportCount(defaultCount); }, [defaultCount]);
 
   // Local "in-flight" copy so sliders feel responsive while the debounced
   // patch flies. Resets when config changes from the server.
@@ -309,17 +314,21 @@ function BrandRow({ brand, expanded, onToggleExpand, onPatch, onSynced }) {
     return () => clearTimeout(t);
   }, [localMaxLen, config.max_copy_length, onPatch]);
 
-  const handleSyncNow = async () => {
+  // Manual count-driven import. `count=null` falls back to the configured
+  // top_pct math (legacy behavior, kept for Import-all + auto-sync paths).
+  const handleSyncNow = async (count = null) => {
     if (syncing) return;
     setSyncing(true);
     setSyncMsg(null);
+    setPickerOpen(false);
     try {
-      const { data } = await api.post(`/statics-generation/league/brand-configs/${id}/sync`);
+      const body = count != null ? { count } : {};
+      const { data } = await api.post(`/statics-generation/league/brand-configs/${id}/sync`, body);
       const r = data?.data || {};
-      setSyncMsg(`Synced — ${r.imported || 0} imported, ${r.skipped || 0} already-in-lib`);
+      setSyncMsg(`Imported — ${r.imported || 0} new${r.skipped ? `, ${r.skipped} already in library` : ''}`);
       onSynced?.({ brandId: id, ...r });
     } catch (err) {
-      setSyncMsg(`Sync failed: ${err.response?.data?.error?.message || err.message}`);
+      setSyncMsg(`Import failed: ${err.response?.data?.error?.message || err.message}`);
     } finally {
       setSyncing(false);
     }
@@ -351,16 +360,52 @@ function BrandRow({ brand, expanded, onToggleExpand, onPatch, onSynced }) {
           </div>
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
-          <button
-            type="button"
-            onClick={handleSyncNow}
-            disabled={syncing}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-violet-500/15 border border-violet-400/30 hover:bg-violet-500/25 hover:border-violet-400/50 text-violet-200 text-[10px] font-mono font-semibold uppercase tracking-wide cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-            title="Import the top N% of this brand's static ads into the FROM LEAGUE column"
-          >
-            {syncing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
-            {syncing ? 'Importing…' : 'Import'}
-          </button>
+          {pickerOpen ? (
+            <div className="flex items-center gap-1.5 bg-violet-500/[0.06] border border-violet-400/40 rounded-md px-2 py-1">
+              <span className="text-[10px] font-mono text-violet-300 uppercase tracking-wide">Import</span>
+              <input
+                type="number"
+                min="1"
+                max={Math.max(1, active_image_count || 1)}
+                value={importCount}
+                onChange={(e) => {
+                  const n = parseInt(e.target.value, 10);
+                  if (Number.isFinite(n)) setImportCount(Math.max(1, Math.min(active_image_count || 999, n)));
+                }}
+                onKeyDown={(e) => { if (e.key === 'Enter') handleSyncNow(importCount); if (e.key === 'Escape') setPickerOpen(false); }}
+                autoFocus
+                className="w-16 px-1.5 py-0.5 rounded bg-black/40 border border-white/[0.1] text-zinc-100 text-[11px] font-mono text-center focus:outline-none focus:border-violet-400/60"
+              />
+              <span className="text-[10px] font-mono text-zinc-500">of {active_image_count}</span>
+              <button
+                type="button"
+                onClick={() => handleSyncNow(importCount)}
+                disabled={syncing}
+                className="ml-1 inline-flex items-center gap-1 px-2 py-1 rounded bg-violet-500/30 hover:bg-violet-500/50 text-violet-100 text-[10px] font-mono font-bold cursor-pointer disabled:opacity-40"
+              >
+                {syncing ? <Loader2 className="w-3 h-3 animate-spin" /> : 'Go'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setPickerOpen(false)}
+                className="p-0.5 rounded text-zinc-500 hover:text-zinc-200 cursor-pointer"
+                title="Cancel"
+              >
+                <X className="w-3 h-3" />
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setPickerOpen(true)}
+              disabled={syncing || (active_image_count || 0) === 0}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-violet-500/15 border border-violet-400/30 hover:bg-violet-500/25 hover:border-violet-400/50 text-violet-200 text-[10px] font-mono font-semibold uppercase tracking-wide cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              title="Pick how many static ads to import from this brand"
+            >
+              {syncing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+              {syncing ? 'Importing…' : 'Import'}
+            </button>
+          )}
           <button
             type="button"
             onClick={onToggleExpand}

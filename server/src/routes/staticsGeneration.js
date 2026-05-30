@@ -422,6 +422,53 @@ router.post('/meta-ads/repair-thumbnails', async (req, res) => {
   return authenticate(req, res, () => _doMetaAdsRepairThumbnails(req, res));
 });
 
+// ── League maintenance endpoints (CRON_SECRET) ──
+// Two surgical admin actions exposed for the operator without round-tripping
+// through the UI (they're one-shot operations). Both are CRON_SECRET-gated
+// and BELOW the global auth so the fast path fires.
+
+// POST /league/clear-imports — wipe all 'imported_from=league' rows that
+// haven't been approved/launched yet. Used after the operator decides the
+// auto-sync pulled too many references and they want a clean slate.
+router.post('/league/clear-imports', async (req, res) => {
+  const cs = process.env.CRON_SECRET;
+  if (!cs || req.headers['x-cron-secret'] !== cs) return res.status(401).json({ error: 'unauthorized' });
+  try {
+    // Only clear rows still in early statuses — never touch approved/launched.
+    const result = await pgQuery(
+      `DELETE FROM spy_creatives
+        WHERE imported_from = 'league'
+          AND status IN ('review', 'queued', 'generating', 'rejected', 'archived')
+        RETURNING id`,
+      []
+    );
+    return res.json({ success: true, deleted: result.length });
+  } catch (e) {
+    console.error('[league/clear-imports] error:', e);
+    return res.status(500).json({ success: false, error: { message: e.message } });
+  }
+});
+
+// POST /league/disable-all-auto-sync — flip auto_sync_enabled=false on every
+// existing league_brand_configs row.
+router.post('/league/disable-all-auto-sync', async (req, res) => {
+  const cs = process.env.CRON_SECRET;
+  if (!cs || req.headers['x-cron-secret'] !== cs) return res.status(401).json({ error: 'unauthorized' });
+  try {
+    const result = await pgQuery(
+      `UPDATE league_brand_configs
+          SET auto_sync_enabled = FALSE, updated_at = NOW()
+        WHERE auto_sync_enabled = TRUE
+        RETURNING brand_id`,
+      []
+    );
+    return res.json({ success: true, disabled: result.length });
+  } catch (e) {
+    console.error('[league/disable-all-auto-sync] error:', e);
+    return res.status(500).json({ success: false, error: { message: e.message } });
+  }
+});
+
 router.use(authenticate, requirePermission('statics-generation', 'access'));
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
@@ -4821,6 +4868,14 @@ router.post('/league/brand-configs/:brandId/sync', authenticate, async (req, res
     const { brandId } = req.params;
     if (!brandId) return res.status(400).json({ success: false, error: { message: 'brandId required' } });
 
+    // Manual count override — when the operator picks an exact number in
+    // the Import button's count picker, we use that instead of the
+    // configured top_pct math. Range-clamped 1..500. Body { count: N }.
+    const manualCountRaw = req.body?.count;
+    const manualCount = (manualCountRaw != null && Number.isFinite(Number(manualCountRaw)))
+      ? Math.max(1, Math.min(500, Math.floor(Number(manualCountRaw))))
+      : null;
+
     // Resolve current config (or defaults if no row yet).
     const cfgRows = await pgQuery('SELECT * FROM league_brand_configs WHERE brand_id = $1', [brandId]);
     const config = mergeBrandConfig(cfgRows[0]);
@@ -4860,9 +4915,12 @@ router.post('/league/brand-configs/:brandId/sync', authenticate, async (req, res
     `, params);
 
     const totalCandidates = candidates.length;
+    // Pick count: manual override wins if provided; otherwise top_pct math.
     const takeN = totalCandidates === 0
       ? 0
-      : Math.max(1, Math.ceil(totalCandidates * (config.top_pct / 100)));
+      : (manualCount != null
+          ? Math.min(manualCount, totalCandidates)
+          : Math.max(1, Math.ceil(totalCandidates * (config.top_pct / 100))));
     const picks = candidates.slice(0, takeN);
 
     if (picks.length === 0) {
