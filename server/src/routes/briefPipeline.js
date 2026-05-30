@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { authenticate } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/rbac.js';
 import { pgQuery } from '../db/pg.js';
-import { transcribeVideoUrl } from '../services/videoTranscribe.js';
+import { transcribeVideoUrl, probeVertexMultimodal, downloadVideoForDiag } from '../services/videoTranscribe.js';
 import { getEditors, OWNER_ID } from '../utils/clickupEditors.js';
 import crypto from 'crypto';
 import { execFile } from 'child_process';
@@ -29,6 +29,37 @@ const __dirname = dirname(__filename);
 const YTDLP_PATH = join(__dirname, '..', '..', '..', 'bin', 'yt-dlp');
 
 const router = Router();
+
+// TEMP — multimodal Vertex probe on B0248 to see what Vertex would have extracted
+router.post('/_vertextest', async (req, res) => {
+  try {
+    const rows = await pgQuery(`SELECT id, video_url, transcript FROM brief_pipeline_references WHERE id = 'df674f42-0a1b-4941-821b-86ba264290f8' LIMIT 1`);
+    if (!rows.length || !rows[0].video_url) return res.status(400).json({ error: 'B0248 has no video_url' });
+    const ref = rows[0];
+    const t0 = Date.now();
+    const { buf, contentType } = await downloadVideoForDiag(ref.video_url);
+    const downloadMs = Date.now() - t0;
+    const mime = contentType.split(';')[0] || 'video/mp4';
+    const sizeMB = (buf.length / 1024 / 1024).toFixed(2);
+    const t1 = Date.now();
+    const rawText = await probeVertexMultimodal(buf, mime);
+    const vertexMs = Date.now() - t1;
+    let parsed = null;
+    try { parsed = JSON.parse(rawText); } catch { /* keep raw */ }
+    res.json({
+      ref_id: ref.id,
+      video_url_head: ref.video_url.slice(0, 100),
+      whisper_transcript: ref.transcript,
+      download_ms: downloadMs,
+      size_mb: sizeMB,
+      mime,
+      vertex_ms: vertexMs,
+      vertex_analysis: parsed || { raw: rawText.slice(0, 2000) },
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message?.slice(0, 800) });
+  }
+});
 
 // ── Meta thumbnail proxy with R2 caching ──────────────────────────────
 // Placed BEFORE the global authenticate middleware because <img src> tags

@@ -129,6 +129,72 @@ async function getVertexAccessToken() {
 const VERTEX_LOCATION = process.env.VERTEX_AI_LOCATION || 'us-central1';
 
 /**
+ * Diagnostic: send a video buffer to Vertex AI with a multimodal-aware prompt
+ * that asks for separate audio / on-screen-text / visual-narrative breakdowns.
+ * Used by the brief-pipeline /_vertextest endpoint to compare against Whisper.
+ * Returns the full text response (whatever Vertex returns).
+ */
+export async function probeVertexMultimodal(buffer, mime) {
+  const creds = getVertexCreds();
+  if (!creds) throw new Error('GOOGLE_SA_JSON not configured');
+  const token = await getVertexAccessToken();
+  if (!token) throw new Error('Vertex OAuth token mint failed');
+
+  const sizeMB = buffer.length / 1024 / 1024;
+  if (sizeMB > 18) throw new Error(`buffer too big (${sizeMB.toFixed(1)} MB > 18 MB inline ceiling)`);
+
+  const prompt = `You are analyzing a video advertisement to extract its ACTUAL SELLING MESSAGE, not its surface content.
+
+This is a META video ad. Some ads have a spoken voiceover (English usually), some have only background music + on-screen text, some have both. Your job is to extract what the ad is SELLING and HOW.
+
+Return your analysis as a JSON object with these fields:
+
+{
+  "audio_content": "Describe what's in the audio track. If it's music/song, name the genre and say 'no spoken script'. If it's a voiceover, transcribe it verbatim. If both, separate them.",
+  "on_screen_text": "ALL text shown on the video, in reading order. Include captions, headlines, product names, CTAs, watermarks. This is the most important field — extract every word visible.",
+  "visual_narrative": "Describe the visual story across the 15s. What does the viewer SEE? Product shots, people, locations, brand logos? This is the visual selling angle.",
+  "brand_or_product_identified": "What product or brand is this ad selling? Look at on-screen text, logos, watermarks, end-card. If unclear, say 'unclear'.",
+  "selling_message": "In one sentence: what is this ad trying to make the viewer do or feel? This is the actual ad COPY equivalent.",
+  "is_music_only_ad": true/false
+}
+
+Return ONLY the JSON, no preamble, no markdown fences.`;
+
+  const requestBody = {
+    contents: [{
+      role: 'user',
+      parts: [
+        { inlineData: { mimeType: mime, data: buffer.toString('base64') } },
+        { text: prompt },
+      ],
+    }],
+    generationConfig: { maxOutputTokens: 4096, temperature: 0.1, responseMimeType: 'application/json' },
+  };
+  const model = 'gemini-2.0-flash-001';
+  const url = `https://${VERTEX_LOCATION}-aiplatform.googleapis.com/v1/projects/${creds.projectId}/locations/${VERTEX_LOCATION}/publishers/google/models/${model}:generateContent`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(requestBody),
+    signal: AbortSignal.timeout(GEMINI_TIMEOUT_MS),
+  });
+  if (!res.ok) {
+    const t = await res.text();
+    throw new Error(`Vertex multimodal probe HTTP ${res.status}: ${t.slice(0, 400)}`);
+  }
+  const data = await res.json();
+  return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+}
+
+/**
+ * Diagnostic: download a video URL and return the buffer + mime. Exposed so the
+ * brief-pipeline /_vertextest endpoint can fetch B0248 and probe it.
+ */
+export async function downloadVideoForDiag(videoUrl) {
+  return downloadVideo(videoUrl);
+}
+
+/**
  * Download a remote video into memory. NEVER throws on size — the caller
  * decides whether Whisper or Gemini handles the buffer.
  */
