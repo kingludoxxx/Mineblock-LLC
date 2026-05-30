@@ -249,6 +249,32 @@ router.get('/_contaminationaudit', async (_req, res) => {
   }
 });
 
+// /_purgeforeigntranscripts — TEMP: quarantines any active meta ref whose
+// transcript text contains a known foreign-brand callout. Returns the
+// rows that flipped. Public-read endpoint for verify-then-clean pattern.
+router.post('/_purgeforeigntranscripts', async (_req, res) => {
+  try {
+    const rows = await pgQuery(`
+      UPDATE brief_pipeline_references
+         SET is_quarantined = TRUE,
+             quarantine_reason = 'Auto-quarantine: transcript contains foreign-brand callout (ALDI/LIDL/WALMART/TESCO/COSTCO/CARREFOUR/KROGER/JD SPORTS/MARBLE BLAST/TRENITALIA/FRECCIA/NORSE ORGANIC/H&M/ZARA). Reference does not represent Mineblock content.',
+             quarantined_at = NOW(),
+             status = 'error',
+             analysis_error = COALESCE(analysis_error, 'Quarantined: foreign-brand transcript signal'),
+             updated_at = NOW()
+       WHERE source = 'meta'
+         AND COALESCE(is_quarantined,FALSE) = FALSE
+         AND transcript IS NOT NULL
+         AND transcript ~* '\\m(ALDI|LIDL|WALMART|TESCO|COSTCO|CARREFOUR|KROGER|JD\\s*SPORTS|MARBLE BLAST|TRENITALIA|FRECCIA|NORSE ORGANIC|H&M|ZARA)\\M'
+      RETURNING id, ad_archive_id, headline, LEFT(transcript, 120) AS transcript_head
+    `);
+    res.json({ success: true, purged_count: rows.length, purged: rows });
+  } catch (err) {
+    console.error('[BriefPipeline] /_purgeforeigntranscripts error:', err.message);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
 router.use(authenticate, requirePermission('brief-pipeline', 'access'));
 
 // ── Config ────────────────────────────────────────────────────────────
