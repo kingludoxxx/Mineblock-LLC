@@ -18,6 +18,7 @@ import {
   Tag,
   RotateCcw,
   Pencil,
+  Trash2,
 } from 'lucide-react';
 import api from '../../../services/api';
 import { ReferenceColumn } from './ReferenceColumn';
@@ -400,9 +401,24 @@ function EmptySlot() {
 // Ad Set Group Card (for Ready to Launch column)
 // ---------------------------------------------------------------------------
 
-function AdSetGroupCard({ angle, creatives, isComplete, onLaunch, onCardClick, onAngleChange }) {
+// Shared delete-group helper — only the parent rows; backend cascades to
+// children (parent_creative_id). Returns immediately on user-cancel.
+async function deleteCreativeGroup(creatives, label, onAfter) {
+  if (!creatives?.length) return;
+  const parents = creatives.filter(c => !c.parent_creative_id);
+  if (!window.confirm(`Delete ${parents.length} creative${parents.length === 1 ? '' : 's'} in "${label}"? This cannot be undone. (Live Meta ads keep running — pause them in Ads Manager separately.)`)) return;
+  try {
+    await Promise.all(parents.map(c => api.delete(`/statics-generation/creatives/${c.id}`).catch(() => null)));
+    onAfter?.();
+  } catch (err) {
+    alert(`Delete failed: ${err.response?.data?.error?.message || err.message}`);
+  }
+}
+
+function AdSetGroupCard({ angle, creatives, isComplete, onLaunch, onCardClick, onAngleChange, onRefresh }) {
   const count = creatives.length;
   const [dragOver, setDragOver] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   return (
     <div
@@ -452,20 +468,37 @@ function AdSetGroupCard({ angle, creatives, isComplete, onLaunch, onCardClick, o
             {count}/{ADSET_SIZE}
           </span>
         </div>
-        {isComplete ? (
+        <div className="flex items-center gap-1.5 shrink-0">
+          {isComplete ? (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onLaunch(angle, creatives); }}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-transparent border border-white/[0.08] rounded-lg hover:border-emerald-500/30 hover:text-emerald-300 transition-colors cursor-pointer"
+            >
+              <Rocket className="w-3 h-3" />
+              Launch
+            </button>
+          ) : (
+            <span className="text-[11px] text-red-400/70 font-medium whitespace-nowrap">
+              Need {ADSET_SIZE - count} more
+            </span>
+          )}
+          {/* Minimal delete — only the icon, no label */}
           <button
             type="button"
-            onClick={(e) => { e.stopPropagation(); onLaunch(angle, creatives); }}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-transparent border border-white/[0.08] rounded-lg hover:border-emerald-500/30 hover:text-emerald-300 transition-colors cursor-pointer"
+            disabled={deleting}
+            onClick={async (e) => {
+              e.stopPropagation();
+              setDeleting(true);
+              await deleteCreativeGroup(creatives, angle, onRefresh);
+              setDeleting(false);
+            }}
+            className="p-1 rounded text-zinc-600 hover:text-red-400 transition-colors cursor-pointer disabled:opacity-40"
+            title="Delete this batch"
           >
-            <Rocket className="w-3 h-3" />
-            Launch
+            <Trash2 className="w-3 h-3" />
           </button>
-        ) : (
-          <span className="text-[11px] text-red-400/70 font-medium whitespace-nowrap shrink-0">
-            Need {ADSET_SIZE - count} more
-          </span>
-        )}
+        </div>
       </div>
 
       {/* Creative grid */}
@@ -488,8 +521,9 @@ function AdSetGroupCard({ angle, creatives, isComplete, onLaunch, onCardClick, o
 // Launched group card
 // ---------------------------------------------------------------------------
 
-function LaunchedGroupCard({ angle, creatives, onCardClick, onReset }) {
+function LaunchedGroupCard({ angle, creatives, onCardClick, onReset, onRefresh }) {
   const count = creatives.length;
+  const [deleting, setDeleting] = useState(false);
   return (
     <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/[0.02] overflow-hidden">
       {/* Header */}
@@ -500,16 +534,31 @@ function LaunchedGroupCard({ angle, creatives, onCardClick, onReset }) {
             {count}
           </span>
         </div>
-        {onReset && (
+        <div className="flex items-center gap-1.5 shrink-0">
+          {onReset && (
+            <button
+              type="button"
+              onClick={() => onReset(creatives)}
+              className="p-1 rounded text-zinc-600 hover:text-zinc-400 transition-colors cursor-pointer"
+              title="Reset to ready"
+            >
+              <RotateCcw className="w-3 h-3" />
+            </button>
+          )}
           <button
             type="button"
-            onClick={() => onReset(creatives)}
-            className="text-zinc-600 hover:text-zinc-400 transition-colors cursor-pointer shrink-0"
-            title="Reset to ready"
+            disabled={deleting}
+            onClick={async () => {
+              setDeleting(true);
+              await deleteCreativeGroup(creatives, angle, onRefresh);
+              setDeleting(false);
+            }}
+            className="p-1 rounded text-zinc-600 hover:text-red-400 transition-colors cursor-pointer disabled:opacity-40"
+            title="Delete this batch (live Meta ads keep running)"
           >
-            <RotateCcw className="w-3 h-3" />
+            <Trash2 className="w-3 h-3" />
           </button>
-        )}
+        </div>
       </div>
 
       {/* Creative grid */}
@@ -706,7 +755,7 @@ function PipelineColumn({ column, items, onStatusChange, onCardClick, onRegenera
 // Ready to Launch column (grouped by angle)
 // ---------------------------------------------------------------------------
 
-function ReadyToLaunchColumn({ column, items, onCardClick, onLaunchGroup, onBulkLaunch, launchTemplates, selectedTemplateId, onSelectTemplate, onEditTemplate, copySets, selectedCopySetId, onSelectCopySet, onStatusChange, onAngleChange }) {
+function ReadyToLaunchColumn({ column, items, onCardClick, onLaunchGroup, onBulkLaunch, launchTemplates, selectedTemplateId, onSelectTemplate, onEditTemplate, copySets, selectedCopySetId, onSelectCopySet, onStatusChange, onAngleChange, onRefresh }) {
   const Icon = column.icon;
   const [dragOver, setDragOver] = useState(false);
 
@@ -828,6 +877,7 @@ function ReadyToLaunchColumn({ column, items, onCardClick, onLaunchGroup, onBulk
               onLaunch={onLaunchGroup}
               onCardClick={onCardClick}
               onAngleChange={onAngleChange}
+              onRefresh={onRefresh}
             />
           ))
         )}
@@ -840,7 +890,7 @@ function ReadyToLaunchColumn({ column, items, onCardClick, onLaunchGroup, onBulk
 // Launched column (grouped by angle)
 // ---------------------------------------------------------------------------
 
-function LaunchedColumn({ column, items, onCardClick, onStatusChange }) {
+function LaunchedColumn({ column, items, onCardClick, onStatusChange, onRefresh }) {
   const Icon = column.icon;
   const angleGroups = useMemo(() => groupByAdSet(items), [items]);
   const adSetCount = angleGroups.length;
@@ -880,7 +930,7 @@ function LaunchedColumn({ column, items, onCardClick, onStatusChange }) {
           </div>
         ) : (
           angleGroups.map(([angle, cs]) => (
-            <LaunchedGroupCard key={angle} angle={angle} creatives={cs} onCardClick={onCardClick} onReset={handleReset} />
+            <LaunchedGroupCard key={angle} angle={angle} creatives={cs} onCardClick={onCardClick} onReset={handleReset} onRefresh={onRefresh} />
           ))
         )}
       </div>
@@ -1149,6 +1199,7 @@ export function PipelineView({ creatives = [], onStatusChange, onAngleChange, on
           onSelectCopySet={setSelectedCopySetId}
           onStatusChange={handleStatusChange}
           onAngleChange={onAngleChange}
+          onRefresh={onRefresh}
         />
 
         {/* Launched column — grouped by angle */}
@@ -1157,6 +1208,7 @@ export function PipelineView({ creatives = [], onStatusChange, onAngleChange, on
           items={buckets.launched}
           onCardClick={onCardClick}
           onStatusChange={onStatusChange}
+          onRefresh={onRefresh}
         />
       </div>
 
