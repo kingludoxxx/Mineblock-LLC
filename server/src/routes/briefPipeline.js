@@ -31,6 +31,16 @@ const YTDLP_PATH = join(__dirname, '..', '..', '..', 'bin', 'yt-dlp');
 
 const router = Router();
 
+// TEMP — confirm the trusted-account allowlist is active (no IDs leaked)
+router.get('/_trusteddiag', (req, res) => {
+  res.json({
+    trusted_account_filter_active: TRUSTED_ACCOUNT_IDS_NORM.size > 0,
+    trusted_id_count: META_AD_ACCOUNT_IDS.length,
+    env_var: 'META_AD_ACCOUNT_IDS',
+    last_digits_sample: META_AD_ACCOUNT_IDS.slice(0, 3).map((id) => `…${String(id).slice(-4)}`),
+  });
+});
+
 // ── Brand mismatch guardrail ─────────────────────────────────────────────
 // When Vertex multimodal returns brand_or_product_identified that doesn't
 // match the brand implied by the reference's headline / product code, we
