@@ -204,6 +204,30 @@ function trustedAccountSqlClause(colExpr, paramIndexStart, params) {
   params.push(list);
   return `${colExpr} = ANY($${paramIndexStart}::text[])`;
 }
+
+// ── Static-ad exclusion ──────────────────────────────────────────────────
+// TripleWhale's `type='video'` classification is unreliable — static image
+// creatives (jpg/png banners with on-screen text) sometimes get tagged as
+// 'video'. We exclude them here with two layered checks:
+//   1. Mineblock naming convention: format slot "IMG" means static. Excludes
+//      "MR-Bxxxx-…-IMG-…", "MR - Bxxxx - … - IMG - …", and the
+//      "1080x1080"/"1080×1080" square-dimensions tail commonly attached to
+//      image creatives.
+//   2. Creative link points at an image file (jpg/jpeg/png/gif/webp/svg).
+//
+// Returns a SQL fragment that can be concatenated into a WHERE list.
+// `tablePrefix` is the alias used for creative_analysis (e.g. 'ca' or '').
+function staticAdExclusionClause(tablePrefix = 'ca') {
+  const p = tablePrefix ? `${tablePrefix}.` : '';
+  return `
+    (${p}ad_name IS NULL OR (
+      ${p}ad_name !~* '(^|\\s|-)IMG(\\s|-|$)'
+      AND ${p}ad_name NOT ILIKE '%1080x1080%'
+      AND ${p}ad_name NOT ILIKE '%1080×1080%'
+    ))
+    AND (${p}creative_link IS NULL OR ${p}creative_link !~* '\\.(jpg|jpeg|png|gif|webp|svg)([?#]|$)')
+  `.trim();
+}
 const META_GRAPH_URL = 'https://graph.facebook.com/v21.0';
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
 const CLAUDE_API_URL = 'https://api.anthropic.com/v1/messages';
@@ -4173,11 +4197,12 @@ router.get('/meta-video-ads/accounts', authenticate, async (req, res) => {
         COALESCE(${nameCol ? `MAX(${nameCol})` : 'NULL'}, MAX(${idCol}))::text AS name,
         SUM(spend)::FLOAT                                         AS spend,
         MAX(synced_at)                                            AS last_sync
-      FROM creative_analysis
-      WHERE type = 'video'
-        AND ${idCol} IS NOT NULL
-        AND synced_at >= NOW() - ($1 || ' days')::INTERVAL${trustedWhere}
-      GROUP BY ${idCol}
+      FROM creative_analysis ca
+      WHERE ca.type = 'video'
+        AND ca.${idCol} IS NOT NULL
+        AND ca.synced_at >= NOW() - ($1 || ' days')::INTERVAL${trustedWhere}
+        AND (${staticAdExclusionClause('ca')})
+      GROUP BY ca.${idCol}
       ORDER BY spend DESC NULLS LAST
     `;
     const rows = await pgQuery(sql, sqlParams);
@@ -4268,6 +4293,11 @@ router.get('/meta-video-ads', authenticate, async (req, res) => {
       params.push(accounts);
       where.push(`ca.${idCol} = ANY($${params.length}::text[])`);
     }
+
+    // HARD GUARDRAIL: exclude static image creatives ("study cards", banners,
+    // 1080×1080 squares) even if TripleWhale tagged them as type='video'.
+    // This is the dedicated VIDEO import — image ads belong elsewhere.
+    where.push(staticAdExclusionClause('ca'));
     if (status === 'active' && hasStatus) {
       where.push(`ca.ad_status = 'active'`);
     } else if (status === 'active+paused' && hasStatus) {
@@ -4434,6 +4464,7 @@ router.post('/references/import-meta', authenticate, async (req, res) => {
        FROM creative_analysis ca
        WHERE ca.creative_id = ANY($1::text[])
          AND ca.type = 'video'${importTrustedWhere}
+         AND (${staticAdExclusionClause('ca')})
        ORDER BY ca.creative_id, ca.spend DESC NULLS LAST`,
       importParams
     );
