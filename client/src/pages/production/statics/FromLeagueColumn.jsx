@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { Globe, Loader2, ChevronDown, ChevronUp, Sparkles } from 'lucide-react';
+import { Globe, Loader2, ChevronDown, ChevronUp, Sparkles, Settings } from 'lucide-react';
 import api from '../../../services/api';
+import { BrandFollowConfigModal } from './BrandFollowConfigModal';
 
 // localStorage key for brand-filter persistence (Q3 default: localStorage v1).
 const LS_KEY = 'mb.statics.fromLeague.brandFilter.v1';
@@ -121,6 +122,8 @@ export function FromLeagueColumn({ onUseAsReference }) {
     return `${selectedBrands.length} of ${brands.length}`;
   }, [selectedBrands, brands]);
 
+  const [configOpen, setConfigOpen] = useState(false);
+
   return (
     <div className="flex flex-col min-w-[260px] max-w-[340px] flex-1 relative h-full">
       {/* Header */}
@@ -134,7 +137,21 @@ export function FromLeagueColumn({ onUseAsReference }) {
             {visibleCount}
           </span>
         </div>
+        <button
+          type="button"
+          onClick={() => setConfigOpen(true)}
+          className="p-1 rounded-md text-zinc-500 hover:text-violet-300 hover:bg-violet-500/10 transition-colors cursor-pointer"
+          title="Brand Follow Config — per-brand import preferences"
+        >
+          <Settings className="w-3.5 h-3.5" />
+        </button>
       </div>
+
+      <BrandFollowConfigModal
+        isOpen={configOpen}
+        onClose={() => setConfigOpen(false)}
+        onSynced={() => { loadAds(); }}
+      />
 
       {/* Brand filter */}
       <div className="mb-3 px-1">
