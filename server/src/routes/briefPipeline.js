@@ -5239,6 +5239,73 @@ router.post('/_audit-all-meta-refs', async (req, res) => {
   }
 });
 
+// GET /_contaminationaudit — TEMP public-read endpoint to verify the
+// brief-pipeline contamination guard is doing its job. Returns ONLY
+// aggregate counts (no transcripts, no PII). To be removed after one
+// verification pass per the verify-then-clean pattern.
+router.get('/_contaminationaudit', async (_req, res) => {
+  try {
+    const refCounts = await pgQuery(`
+      SELECT source, COALESCE(is_quarantined,FALSE) AS quarantined, status, COUNT(*)::int AS n
+        FROM brief_pipeline_references
+       GROUP BY source, COALESCE(is_quarantined,FALSE), status
+       ORDER BY n DESC
+    `);
+    const caCounts = await pgQuery(`
+      SELECT
+        COUNT(*)::int AS total,
+        SUM(CASE WHEN meta_ad_id IS NOT NULL THEN 1 ELSE 0 END)::int AS with_meta_ad_id,
+        SUM(CASE WHEN COALESCE(is_linkage_quarantined,FALSE) THEN 1 ELSE 0 END)::int AS linkage_quarantined,
+        SUM(CASE WHEN meta_account_verified_at IS NOT NULL THEN 1 ELSE 0 END)::int AS verified_stamped,
+        SUM(CASE WHEN meta_account_verified_at >= NOW() - INTERVAL '7 days' THEN 1 ELSE 0 END)::int AS verified_fresh
+        FROM creative_analysis
+    `);
+    const dirty = await pgQuery(`
+      SELECT COUNT(*)::int AS n
+        FROM brief_pipeline_references
+       WHERE source = 'meta'
+         AND COALESCE(is_quarantined,FALSE) = FALSE
+         AND transcript IS NOT NULL
+         AND transcript ~* '\\m(ALDI|LIDL|WALMART|TESCO|COSTCO|CARREFOUR|KROGER|JD\\s*SPORTS|MARBLE BLAST|TRENITALIA|FRECCIA|NORSE ORGANIC|H&M|ZARA)\\M'
+    `);
+    const dirtyQuarantined = await pgQuery(`
+      SELECT COUNT(*)::int AS n
+        FROM brief_pipeline_references
+       WHERE source = 'meta'
+         AND COALESCE(is_quarantined,FALSE) = TRUE
+         AND transcript IS NOT NULL
+         AND transcript ~* '\\m(ALDI|LIDL|WALMART|TESCO|COSTCO|CARREFOUR|KROGER|JD\\s*SPORTS|MARBLE BLAST|TRENITALIA|FRECCIA|NORSE ORGANIC|H&M|ZARA)\\M'
+    `);
+    const accountAudit = await pgQuery(`
+      SELECT account_id, business_name, is_trusted, account_status,
+             verified_at, verification_error
+        FROM meta_account_audit
+       ORDER BY verified_at DESC NULLS LAST
+       LIMIT 20
+    `).catch(() => []);
+    res.json({
+      success: true,
+      brief_pipeline_references: refCounts,
+      creative_analysis_summary: caCounts[0] || {},
+      foreign_brand_transcripts: {
+        active_with_foreign_brand: dirty[0]?.n || 0,
+        quarantined_with_foreign_brand: dirtyQuarantined[0]?.n || 0,
+      },
+      meta_account_audit: accountAudit,
+      trusted_account_env: {
+        trusted_account_filter_active: TRUSTED_ACCOUNT_IDS_NORM.size > 0,
+        trusted_id_count: META_AD_ACCOUNT_IDS.length,
+        boot_audit_complete: _bootAuditComplete,
+        verified_trusted_set_size: _verifiedTrustedSet.size,
+        mineblock_business_id_set: !!MINEBLOCK_BUSINESS_ID,
+      },
+    });
+  } catch (err) {
+    console.error('[BriefPipeline] /_contaminationaudit error:', err.message);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
 // POST /enhance-script — clean up raw pasted text for the Script Generator.
 // Replaces the never-implemented /magic-writer/enhance endpoint. Takes any
 // raw text (transcript dumps, hand-typed scripts, OCR output) and returns
