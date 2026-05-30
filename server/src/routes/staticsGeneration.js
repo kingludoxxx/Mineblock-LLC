@@ -5219,23 +5219,17 @@ async function fetchTopAdsFromTW({ windowDays, attributionModel, accountIds = []
   //   • ad_name contains " IMG " token (format-slot convention)
   //   • ad_name contains "1080x1080" or "1080×1080" (square dims)
   // ClickHouse: match() for regex, ILIKE for substring.
-  // ClickHouse uses RE2 — broadened from \\bIMG\\b after operator-confirmed
-  // misses (IM112, IM104, MR-B0319-IT5, MR-B0319-VX). The real Mineblock
-  // static naming convention is one of:
-  //   • IMG token (legacy explicit IMG slot)
-  //   • IM\\d+    (image variant numbering — IM112, IM104, IM7)
-  //   • IT\\d+    (iteration — IT5, IT12, scopes both static AND video, but
-  //              video iterations rare enough that operator's QA will catch
-  //              and we can tighten if it bleeds)
-  //   • 1080x1080 / 1080×1080 (square dims tail)
-  // MR/VX tokens deliberately NOT included — they appear in both static
-  // and video creatives. If a static doesn't carry IMG/IM\\d+/IT\\d+/1080,
-  // the operator should add IM or IMG to the name (the same hygiene the
-  // brief-pipeline static-exclusion clause already assumes).
+  // ClickHouse RE2 — TIGHTENED to ZERO-video-leak after operator confirmed
+  // that IT\\d+ and IM\\d+ both appear in video ad names too (MR-B0129-IT3
+  // was a video; IM115/IM111 flagged as video). The only ad-name tokens
+  // that are reliably static-only:
+  //   • \\bIMG\\d*\\b — explicit IMG format slot (IMG, IMG2, IMG12)
+  //   • 1080x1080 / 1080×1080 — square dims tail
+  // Layer 2 (creative_analysis.type='image' join below) is the real
+  // safety net; this SQL layer is a cheap first cut.
   const STATIC_ONLY_CLAUSE = `
     (
-      match(ad_name, '\\\\b(IMG\\\\d*|IM\\\\d+)\\\\b')
-      OR match(ad_name, '\\\\bIT\\\\d+\\\\b')
+      match(ad_name, '\\\\bIMG\\\\d*\\\\b')
       OR ad_name ILIKE '%1080x1080%'
       OR ad_name ILIKE '%1080×1080%'
     )
@@ -5585,14 +5579,33 @@ router.get('/meta-ads/ads', authenticate, async (req, res) => {
           for (const m of metaRows) metaByName.set(m.ad_name, m);
         }
 
-        // Type filter is now applied UPSTREAM in fetchTopAdsFromTW's SQL via
-        // the STATIC_ONLY_CLAUSE (\\bIMG\\b token + 1080x1080 dims) — TW's
-        // own pixel_joined_tvf.type column is unreliable (brief-pipeline
-        // b14fa78 documented statics tagged as 'video'). So we MUST NOT
-        // re-filter post-fetch against creative_analysis.type — that would
-        // drop legitimate static ads whose creative_analysis row happens to
-        // carry a stale/wrong type. The SQL clause is the source of truth.
-        const typed = twRows;
+        // LAYER 2 (fail-closed) — defense-in-depth against the SQL clause's
+        // false positives. Mineblock ad-name tokens (IT\\d+, IM\\d+, MR, VX)
+        // appear in both static AND video creatives, so the upstream SQL
+        // filter alone CANNOT guarantee zero-video-leak. Require an explicit
+        // creative_analysis.type='image%' classification.
+        //
+        // Trade-off (operator's hard rule "NO VIDEOS allowed"):
+        //   • False positives (videos shown) — UNACCEPTABLE → reject
+        //   • False negatives (statics missing) — tolerable; operator can
+        //     opt into `?include_unclassified=true` to relax this layer,
+        //     or check creative_analysis sync lag for the missing ad
+        //
+        // Decision matrix per row:
+        //   creative_analysis.type ILIKE 'image%' → ACCEPT
+        //   creative_analysis.type ILIKE 'video%' → REJECT (definitely video)
+        //   creative_analysis.type is anything else / NULL / no row at all →
+        //     REJECT by default; ACCEPT when include_unclassified=true
+        const includeUnclassified = String(req.query.include_unclassified || 'false') === 'true';
+        const typed = twRows.filter(r => {
+          const m = metaByName.get(r.ad_name);
+          const t = m?.type ? String(m.type).toLowerCase() : null;
+          if (t && t.startsWith('image')) return true;
+          if (t && t.startsWith('video')) return false;
+          // Unknown/missing type → operator decides via the toggle.
+          return includeUnclassified;
+        });
+        const rejectedAsVideoCount = twRows.length - typed.length;
 
         const data = typed.map(r => {
           const m = metaByName.get(r.ad_name) || {};
@@ -5659,6 +5672,13 @@ router.get('/meta-ads/ads', authenticate, async (req, res) => {
           count: searched.length,
           source: 'tw',
           attribution: attribution || _TW_ATTRIBUTION_DEFAULT,
+          // Telemetry so the modal can show "X candidates filtered out as
+          // video / unclassified — flip the toggle to include them".
+          filter_stats: {
+            tw_returned: twRows.length,
+            rejected_unverified: rejectedAsVideoCount,
+            include_unclassified: includeUnclassified,
+          },
         });
       } catch (err) {
         console.warn(`[meta-ads/ads] TW direct failed (${err.message}) — falling back to cached query`);

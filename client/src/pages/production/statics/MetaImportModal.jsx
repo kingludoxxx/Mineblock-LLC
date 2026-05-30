@@ -63,6 +63,8 @@ export function MetaImportModal({ onClose, onImported }) {
   const [lastSync, setLastSync] = useState(null);
   const [type, setType] = useState('image'); // image | video | carousel | all
   const [freshness, setFreshness] = useState(null); // { last_sync_at, age_minutes, is_stale, row_count }
+  const [includeUnclassified, setIncludeUnclassified] = useState(false); // escape hatch for the fail-closed video filter
+  const [filterStats, setFilterStats] = useState(null); // { tw_returned, rejected_unverified, include_unclassified }
 
   const loadAccounts = useCallback(async () => {
     try {
@@ -141,6 +143,7 @@ export function MetaImportModal({ onClose, onImported }) {
             min_spend: minSpend,
             type,
             search: debouncedSearch || undefined,
+            include_unclassified: includeUnclassified || undefined,
           },
         }),
         // True freshness from creative_analysis itself (not "we just hit the
@@ -150,6 +153,7 @@ export function MetaImportModal({ onClose, onImported }) {
         }).catch(() => null),
       ]);
       setAds(adsRes.data?.data || []);
+      setFilterStats(adsRes.data?.filter_stats || null);
       setSelected(new Set());
       if (freshRes?.data?.data) setFreshness(freshRes.data.data);
     } catch (err) {
@@ -157,7 +161,7 @@ export function MetaImportModal({ onClose, onImported }) {
     } finally {
       setLoadingAds(false);
     }
-  }, [selectedAccounts, status, windowDays, sort, minRoas, minSpend, type, debouncedSearch]);
+  }, [selectedAccounts, status, windowDays, sort, minRoas, minSpend, type, debouncedSearch, includeUnclassified]);
 
   useEffect(() => { loadAds(); }, [loadAds]);
   useEffect(() => { loadAdsRef.current = loadAds; }, [loadAds]);
@@ -379,6 +383,28 @@ export function MetaImportModal({ onClose, onImported }) {
             </label>
           </div>
         </div>
+
+        {/* Filter telemetry — surfaces how many candidates the post-fetch
+            video-rejection layer dropped, with an opt-in to relax it. */}
+        {filterStats && filterStats.rejected_unverified > 0 && (
+          <div className="mx-5 mb-2 px-3 py-2 rounded bg-amber-500/10 border border-amber-400/30 text-[11px] font-mono text-amber-200 flex items-center justify-between gap-3">
+            <span>
+              <span className="font-bold">{filterStats.rejected_unverified}</span> ad{filterStats.rejected_unverified === 1 ? '' : 's'} hidden — TW returned them but we couldn't verify they're images. Toggle if you trust the source.
+            </span>
+            <button
+              type="button"
+              onClick={() => setIncludeUnclassified(v => !v)}
+              className={`shrink-0 px-2 py-1 rounded border text-[10px] uppercase tracking-wide cursor-pointer transition-colors ${
+                includeUnclassified
+                  ? 'bg-amber-500/30 border-amber-400/50 text-amber-100'
+                  : 'bg-white/[0.04] border-white/[0.15] text-zinc-300 hover:bg-white/[0.08]'
+              }`}
+              title="When ON, ads with no creative_analysis.type record are also shown. May leak videos."
+            >
+              {includeUnclassified ? 'Include unclassified · ON' : 'Include unclassified · OFF'}
+            </button>
+          </div>
+        )}
 
         {/* Grid */}
         <div className="flex-1 overflow-y-auto p-5">
