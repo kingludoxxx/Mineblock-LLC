@@ -1264,10 +1264,11 @@ router.post('/generate', authenticate, async (req, res) => {
   // If we only returned [earlyTask] the frontend would poll the parent
   // forever and never see the image URLs — the save step never fires.
   const earlyTaskId = `gen-${crypto.randomUUID()}`;
-  // Operator spec: each generation = ONE card with two dimensions, 1:1 + 9:16.
-  // 4:5 is intentionally dropped. The 9:16 will be saved as a child of the
-  // 1:1 parent on the frontend so the pipeline shows a single card per ref.
-  const ratiosForResponse = (!req.body.ratio || req.body.ratio === 'all') ? ['1:1', '9:16'] : [req.body.ratio];
+  // Each generation = one card per reference with three dimensions:
+  // 1:1 (parent), 4:5 (child), 9:16 (child). Frontend save logic saves 1:1
+  // first then children with parent_creative_id so the pipeline shows ONE
+  // card per ref and the detail modal can open all three ratios.
+  const ratiosForResponse = (!req.body.ratio || req.body.ratio === 'all') ? ['1:1', '4:5', '9:16'] : [req.body.ratio];
   const preChildTasks = ratiosForResponse.map(r => ({ taskId: `nb-${crypto.randomUUID()}`, ratio: r }));
   for (const ct of preChildTasks) {
     storeTaskResult(ct.taskId, { status: 'processing', progress: `Generating ${ct.ratio}...` });
@@ -1465,7 +1466,7 @@ router.post('/generate', authenticate, async (req, res) => {
       // ratiosToGenerate MUST match ratiosForResponse so the pre-allocated
       // child taskIds (returned in the initial /generate response) line up
       // with what the pipeline actually generates.
-      const ALL_RATIOS = ['1:1', '9:16']; // operator spec: one card, two dimensions
+      const ALL_RATIOS = ['1:1', '4:5', '9:16']; // one card, three dimensions (parent + 2 children)
       const ratiosToGenerate = (!ratio || ratio === 'all') ? ALL_RATIOS : [ratio];
       // Map ratio → pre-allocated child taskId from the initial response.
       const preTaskIdByRatio = Object.fromEntries(preChildTasks.map(t => [t.ratio, t.taskId]));

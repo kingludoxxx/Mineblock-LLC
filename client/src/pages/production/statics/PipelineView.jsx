@@ -21,6 +21,7 @@ import {
 } from 'lucide-react';
 import api from '../../../services/api';
 import { ReferenceColumn } from './ReferenceColumn';
+import { FromLeagueColumn } from './FromLeagueColumn';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -28,21 +29,12 @@ import { ReferenceColumn } from './ReferenceColumn';
 
 const ADSET_SIZE = 6; // 6 creatives = 1 complete ad set (Ludo's spec — was 3)
 
+// NOTE — 'generating' column was removed in Phase A of statics-pipeline-v2.
+// In-flight queue items now render as skeleton cards INSIDE the 'review'
+// column (PipelineColumn merges queueItems with creatives). This matches
+// the operator's intent that "Generating" be an in-place visual state,
+// not its own kanban lane.
 const COLUMNS = [
-  {
-    key: 'generating',
-    label: 'Generating',
-    icon: Loader2,
-    color: 'violet',
-    iconClass: 'text-violet-400 drop-shadow-[0_0_6px_rgba(139,92,246,0.5)]',
-    badgeBg: 'bg-violet-500/10',
-    badgeText: 'text-violet-400',
-    badgeBorder: 'border-violet-500/25',
-    placeholder: 'Queued items appear here',
-    actionLabel: null,
-    nextStatus: null,
-    noDropZone: true,
-  },
   {
     key: 'review',
     label: 'To Review',
@@ -656,7 +648,7 @@ function PipelineColumn({ column, items, onStatusChange, onCardClick, onRegenera
       <div className="flex items-center justify-between mb-4 pb-3 border-b border-white/[0.04] relative">
         <div className="absolute bottom-0 left-0 w-1/3 h-[1px] bg-gradient-to-r from-current to-transparent opacity-30" />
         <div className="flex items-center gap-2">
-          <Icon className={`w-4 h-4 ${column.iconClass}${column.key === 'generating' && (items.length > 0 || queueItems?.length > 0) ? ' animate-spin' : ''}`} />
+          <Icon className={`w-4 h-4 ${column.iconClass}${queueItems?.length > 0 ? ' animate-spin' : ''}`} />
           <h3 className="font-mono text-xs tracking-[0.15em] uppercase text-zinc-300 font-semibold">
             {column.label}
           </h3>
@@ -901,9 +893,12 @@ function LaunchedColumn({ column, items, onCardClick, onStatusChange }) {
 // ---------------------------------------------------------------------------
 
 export function PipelineView({ creatives = [], onStatusChange, onAngleChange, onCardClick, onRegenerate, onRefresh, loading, onOpenTemplates, onEditTemplate, onOpenCopySets, queue = [], onRemoveFromQueue, productId = null, onSelectReference, onAddSelectedToQueue, templatesVersion = 0 }) {
-  // Bucket creatives into columns by status
+  // Bucket creatives into columns by status.
+  // Phase A: 'generating' rows are folded into the review column (the
+  // dedicated Generating column was removed). The CreativeCard already
+  // renders status='generating' rows with a loader + dim reference thumb.
   const buckets = useMemo(() => {
-    const map = { generating: [], review: [], ready: [], launched: [] };
+    const map = { review: [], ready: [], launched: [] };
     const STALE_GENERATING_MS = 7 * 60 * 1000; // 7 min
     const now = Date.now();
     for (const c of creatives) {
@@ -912,13 +907,14 @@ export function PipelineView({ creatives = [], onStatusChange, onAngleChange, on
       if (c.parent_creative_id && c.status !== 'launched') continue;
       if (c.status === 'launching') continue;
       if (c.status === 'generating') {
-        // Mark as stale if it's been "generating" too long — the server-side task
-        // is almost certainly dead (crash, restart, or quota hit).
+        // Mark stale if "generating" too long — the server-side task is
+        // almost certainly dead (crash, restart, quota hit). CreativeCard
+        // shows these with a red tint instead of the spinner.
         const createdAt = c.created_at ? new Date(c.created_at).getTime() : now;
         if (now - createdAt > STALE_GENERATING_MS) {
           c._stale = true;
         }
-        map.generating.push(c);
+        map.review.push(c);
         continue;
       }
       // 'approved' is deprecated → fold into 'ready'. 'queued' also lives in Ready column.
@@ -1107,7 +1103,12 @@ export function PipelineView({ creatives = [], onStatusChange, onAngleChange, on
           onAddSelectedToQueue={onAddSelectedToQueue}
         />
 
-        {/* Standard columns: generating, review */}
+        {/* From League column — Phase A shell. Phase B: followed-brand static feed + filter. */}
+        <FromLeagueColumn />
+
+        {/* Standard columns: review (generating was removed in Phase A — in-flight
+            queue items are merged into review's queueItems prop, rendered as
+            skeleton cards in the same slot they'll occupy when complete). */}
         {standardColumns.map((col) => (
           <PipelineColumn
             key={col.key}
@@ -1117,7 +1118,7 @@ export function PipelineView({ creatives = [], onStatusChange, onAngleChange, on
             onCardClick={onCardClick}
             onRegenerate={onRegenerate}
             allCreatives={creatives}
-            queueItems={col.key === 'generating' ? queue.filter(q => q.status === 'queued' || q.status === 'generating') : undefined}
+            queueItems={col.key === 'review' ? queue.filter(q => q.status === 'queued' || q.status === 'generating') : undefined}
             onRemoveFromQueue={onRemoveFromQueue}
           />
         ))}
