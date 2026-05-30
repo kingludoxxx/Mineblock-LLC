@@ -1135,23 +1135,35 @@ async function syncMetaThumbnails() {
 
   await ensureTable();
 
-  // 1. Get all unique ad_names that need thumbnails, have expired iframe preview URLs,
-  //    or have thumbnails older than 12 hours (Meta CDN URLs expire)
+  // 1. Get all unique (ad_name, ad_account_id) pairs that need thumbnails or
+  //    have stale Meta CDN URLs. We pull account_id alongside name because the
+  //    SAME ad_name can exist in multiple Mineblock ad accounts — each row
+  //    must only accept a Meta linkage from its OWN account, not any account
+  //    that happens to have a matching name (which is how foreign content
+  //    historically poisoned the linkage table).
   const dbRows = await pgQuery(
-    `SELECT DISTINCT ad_name, creative_id FROM creative_analysis
+    `SELECT DISTINCT ad_name, creative_id, ad_account_id FROM creative_analysis
      WHERE ad_name IS NOT NULL
        AND (thumbnail_url IS NULL OR thumbnail_url = ''
             OR (LOWER(type) = 'video' AND (video_url IS NULL OR video_url = ''))
             OR synced_at IS NULL
             OR synced_at < NOW() - INTERVAL '12 hours')`
   );
-  const dbAdNames = new Set(dbRows.map(r => r.ad_name));
-  // Build a map of creative_id -> ad_names for fuzzy matching
-  const creativeIdToAdNames = new Map();
+  // Normalize account_id for matching (Meta returns 'act_<digits>', TW may store either).
+  const normAcct = (a) => {
+    if (!a) return null;
+    const s = String(a).trim();
+    return s.startsWith('act_') ? s.slice(4) : s;
+  };
+  // ad_name -> Set of bare account ids that have a row with this name.
+  // A NULL/unknown account_id in the row maps to the literal token '__null__',
+  // letting grandfathered rows accept any Meta account (they have no other signal).
+  const dbAdNameAccounts = new Map();
   for (const r of dbRows) {
-    if (!creativeIdToAdNames.has(r.creative_id)) creativeIdToAdNames.set(r.creative_id, []);
-    creativeIdToAdNames.get(r.creative_id).push(r.ad_name);
+    if (!dbAdNameAccounts.has(r.ad_name)) dbAdNameAccounts.set(r.ad_name, new Set());
+    dbAdNameAccounts.get(r.ad_name).add(normAcct(r.ad_account_id) || '__null__');
   }
+  const dbAdNames = new Set(dbRows.map(r => r.ad_name));
 
   // 2. Fetch ads from all Meta accounts
   const metaAds = [];
@@ -1211,14 +1223,37 @@ async function syncMetaThumbnails() {
     if (!thumbnailUrl) continue;
 
     if (dbAdNames.has(ad.name)) {
-      // Exact match — the ONLY accepted linkage path.
-      updates.push({
-        ad_name: ad.name,
-        thumbnail_url: thumbnailUrl,
-        video_id: ad.creative?.video_id || null,
-        meta_ad_id: ad.id,
-        account_id: ad._sourceAccount,
-      });
+      // Exact ad_name match — but ALSO require account match (or grandfathered NULL).
+      //
+      // This is the structural cross-account-contamination fix. Previously, if
+      // the same ad_name "MR - Bxxxx - …" lived in two of our Meta accounts
+      // (e.g. Mineblock CC 2 + VIP BM 25031), whichever account this loop hit
+      // LAST would write its meta_ad_id onto the row — even if TW had originally
+      // attributed the spend to a DIFFERENT account. Result: meta_ad_id and
+      // ad_account_id on the same row pointed at different accounts, and the
+      // transcribe path correctly refused to fetch the video (because Meta said
+      // the ad was in the wrong account).
+      //
+      // Fix: only push an update if THIS ad's source account matches a DB row
+      // for this ad_name. Each (ad_name, ad_account_id) row gets its OWN
+      // meta_ad_id from the matching account — never a sibling's.
+      const sourceAcctBare = normAcct(ad._sourceAccount);
+      const allowedAccts = dbAdNameAccounts.get(ad.name) || new Set();
+      const accountMatches = allowedAccts.has(sourceAcctBare) || allowedAccts.has('__null__');
+      if (accountMatches) {
+        updates.push({
+          ad_name: ad.name,
+          thumbnail_url: thumbnailUrl,
+          video_id: ad.creative?.video_id || null,
+          meta_ad_id: ad.id,
+          account_id: ad._sourceAccount,
+        });
+      } else {
+        // Same ad_name in a sibling account that owns a DB row but not THIS one —
+        // skip. The DB row for that sibling account will get this ad's linkage
+        // via its own iteration of the for-loop.
+        // (Most common: ad_name appears in only one Mineblock account; no-op here.)
+      }
     } else {
       // No exact match — log to meta_sync_unmatched for review. Do NOT write
       // a linkage. The operator can inspect to decide: rename in Meta to match,
@@ -1327,14 +1362,22 @@ async function syncMetaThumbnails() {
       const verifiedAccountId = upd.account_id
         ? (String(upd.account_id).startsWith('act_') ? String(upd.account_id) : `act_${upd.account_id}`)
         : null;
+      // Scope the UPDATE to rows whose ad_account_id matches THIS source
+      // account (bare or act_-prefixed) OR are NULL (grandfathered legacy).
+      // This is the WRITE-side enforcement of the cross-account-contamination
+      // fix: a sibling-account match never overwrites our row.
+      const bare = String(upd.account_id || '').replace(/^act_/i, '');
+      const actForm = bare ? `act_${bare}` : null;
+      const accountIdMatches = [bare, actForm].filter(Boolean);
       await pgQuery(
         `UPDATE creative_analysis
          SET thumbnail_url = $1, video_url = $2, meta_ad_id = $3,
              meta_account_verified_id = $5, meta_account_verified_at = NOW(),
              is_linkage_quarantined = FALSE, linkage_quarantine_reason = NULL,
              synced_at = NOW()
-         WHERE ad_name = $4`,
-        [finalThumb, videoUrl, upd.meta_ad_id, upd.ad_name, verifiedAccountId]
+         WHERE ad_name = $4
+           AND (ad_account_id IS NULL OR ad_account_id = ANY($6::text[]))`,
+        [finalThumb, videoUrl, upd.meta_ad_id, upd.ad_name, verifiedAccountId, accountIdMatches]
       );
       matched++;
     } catch (err) {

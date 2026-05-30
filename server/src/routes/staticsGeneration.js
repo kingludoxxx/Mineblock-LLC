@@ -5450,6 +5450,48 @@ async function getCreativeAnalysisColumns() {
   return set;
 }
 
+// In-process cache of Meta Graph account name resolutions.
+//   key: bare account id (no act_ prefix), value: { name, fetchedAt }
+// TTL = 24h; on Render redeploys (which clear the cache), the next
+// /meta-ads/accounts call repopulates lazily.
+const _metaAccountNameCache = new Map();
+const _META_ACCOUNT_NAME_TTL_MS = 24 * 3600 * 1000;
+
+async function resolveMetaAccountNames(rawIds) {
+  const token = process.env.META_ACCESS_TOKEN;
+  if (!token) return new Map();
+  const out = new Map();
+  const toFetch = [];
+  const now = Date.now();
+  for (const raw of rawIds) {
+    if (!raw) continue;
+    const bare = String(raw).replace(/^act_/, '');
+    if (!/^\d+$/.test(bare)) continue;
+    const cached = _metaAccountNameCache.get(bare);
+    if (cached && (now - cached.fetchedAt) < _META_ACCOUNT_NAME_TTL_MS) {
+      out.set(bare, cached.name);
+    } else {
+      toFetch.push(bare);
+    }
+  }
+  // Parallel fetch with mild concurrency (Meta Graph rate limit is generous
+  // for read calls; we expect <10 accounts so a flat Promise.all is fine).
+  await Promise.all(toFetch.map(async (bare) => {
+    try {
+      const url = `https://graph.facebook.com/v22.0/act_${bare}?fields=name&access_token=${encodeURIComponent(token)}`;
+      const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
+      if (!r.ok) return;
+      const j = await r.json();
+      const name = j?.name && String(j.name).trim();
+      if (name) {
+        _metaAccountNameCache.set(bare, { name, fetchedAt: now });
+        out.set(bare, name);
+      }
+    } catch { /* swallow — fallback to ID display */ }
+  }));
+  return out;
+}
+
 router.get('/meta-ads/accounts', authenticate, async (_req, res) => {
   try {
     const cols = await getCreativeAnalysisColumns();
@@ -5508,6 +5550,17 @@ router.get('/meta-ads/accounts', authenticate, async (_req, res) => {
     if (needsBackfill || isStale) {
       const t = await triggerTWSync({ awaitResult: false });
       syncStatus = t.triggered ? 'pending' : t.reason || 'skipped';
+    }
+
+    // Enrich each row with the friendly Meta BM name. Falls back to the
+    // existing ad_account_name (or the raw ID) when Meta Graph is unreachable
+    // or the row has no resolvable account_id.
+    const rawIds = rows.map(r => r.ad_account_id).filter(Boolean);
+    const nameMap = await resolveMetaAccountNames(rawIds);
+    for (const r of rows) {
+      const bare = String(r.ad_account_id || '').replace(/^act_/, '');
+      const resolved = nameMap.get(bare);
+      if (resolved) r.ad_account_name = resolved;
     }
 
     res.json({
@@ -5607,6 +5660,13 @@ router.get('/meta-ads/ads', authenticate, async (req, res) => {
         });
         const rejectedAsVideoCount = twRows.length - typed.length;
 
+        // Friendly-name enrichment from Meta Graph — same cache the
+        // /meta-ads/accounts endpoint feeds, so chips + card subtitles
+        // stay consistent. Parallel-fetched once per request.
+        const accountNameMap = await resolveMetaAccountNames(
+          [...new Set(typed.map(r => r.ad_account_id).filter(Boolean))]
+        );
+
         const data = typed.map(r => {
           const m = metaByName.get(r.ad_name) || {};
           const spend = r.spend, revenue = r.revenue, purchases = r.purchases;
@@ -5617,10 +5677,12 @@ router.get('/meta-ads/ads', authenticate, async (req, res) => {
           if (looksDead && m.creative_id) {
             thumb = `/api/v1/brief-pipeline/meta-thumb/${encodeURIComponent(m.creative_id)}`;
           }
+          const bareAcct = String(r.ad_account_id || '').replace(/^act_/, '');
+          const friendlyName = accountNameMap.get(bareAcct) || r.account_name || r.ad_account_id || 'Unknown';
           return {
             creative_id: m.creative_id || r.ad_name, // fallback to ad_name as key
             ad_account_id: r.ad_account_id,
-            account_name: r.account_name,
+            account_name: friendlyName,
             ad_name: r.ad_name,
             thumbnail_url: thumb,
             meta_ad_id: m.meta_ad_id || null,

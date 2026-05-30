@@ -243,10 +243,20 @@ function trustedAccountSqlClause(colExpr, paramIndexStart, params) {
 // account that failed audit is STRIPPED from TRUSTED_ACCOUNT_IDS_NORM
 // at runtime (env stays untouched — we just refuse to trust it).
 //
-// Required env: META_BUSINESS_ID (the Mineblock Business Manager id) —
-// without it the audit can only confirm the account is reachable, not
-// that it's owned by us. Set this env on Render before P0.1 is meaningful.
-const MINEBLOCK_BUSINESS_ID = process.env.META_BUSINESS_ID || '';
+// Required env: META_BUSINESS_IDS (comma-separated list of trusted Mineblock
+// Business Manager IDs). Accepts the legacy single META_BUSINESS_ID env too.
+// An account passes audit if its business.id matches ANY id in this list.
+// Example: META_BUSINESS_IDS=1757150421916101,863338510147306,1037077445556729
+const MINEBLOCK_BUSINESS_IDS = new Set(
+  (process.env.META_BUSINESS_IDS || process.env.META_BUSINESS_ID || '')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean)
+);
+// Backwards-compat: keep MINEBLOCK_BUSINESS_ID as the first id (for telemetry).
+const MINEBLOCK_BUSINESS_ID = MINEBLOCK_BUSINESS_IDS.size > 0
+  ? Array.from(MINEBLOCK_BUSINESS_IDS)[0]
+  : '';
 const _verifiedTrustedSet = new Set(); // populated after boot audit completes
 let _bootAuditComplete = false;
 
@@ -286,9 +296,9 @@ async function performBootMetaAudit() {
       }
       const businessId = data.business?.id ? String(data.business.id) : null;
       const businessName = data.business?.name || null;
-      const ownedByMineblock = MINEBLOCK_BUSINESS_ID
-        ? (businessId === MINEBLOCK_BUSINESS_ID)
-        : true; // no expected BM set — accept reachability as sufficient
+      const ownedByMineblock = MINEBLOCK_BUSINESS_IDS.size > 0
+        ? (businessId && MINEBLOCK_BUSINESS_IDS.has(String(businessId)))
+        : true; // no expected BMs set — accept reachability as sufficient
       await pgQuery(
         `INSERT INTO meta_account_audit (account_id, business_id, business_name, account_name, account_status, is_trusted, verified_at, verification_error)
          VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7)
@@ -304,7 +314,7 @@ async function performBootMetaAudit() {
           accountIdAct, businessId, businessName, data.name || null,
           Number.isFinite(Number(data.account_status)) ? Number(data.account_status) : null,
           ownedByMineblock,
-          ownedByMineblock ? null : `Business id mismatch: got "${businessId}" (${businessName}), expected "${MINEBLOCK_BUSINESS_ID}"`,
+          ownedByMineblock ? null : `Business id mismatch: got "${businessId}" (${businessName}), expected one of [${Array.from(MINEBLOCK_BUSINESS_IDS).join(', ')}]`,
         ]
       ).catch((e) => console.warn('[BriefPipeline] meta_account_audit upsert failed:', e.message));
       if (ownedByMineblock) {
@@ -314,7 +324,7 @@ async function performBootMetaAudit() {
         console.log(`[BriefPipeline] Boot audit OK: ${accountIdAct} (${data.name || 'unnamed'}, business=${businessName || 'none'})`);
       } else {
         rejectedCount++;
-        console.warn(`[BriefPipeline] Boot audit REJECTED ${accountIdAct}: business "${businessName}" (${businessId}) is not Mineblock BM "${MINEBLOCK_BUSINESS_ID}"`);
+        console.warn(`[BriefPipeline] Boot audit REJECTED ${accountIdAct}: business "${businessName}" (${businessId}) is not in trusted BMs [${Array.from(MINEBLOCK_BUSINESS_IDS).join(', ')}]`);
       }
     } catch (e) {
       rejectedCount++;
