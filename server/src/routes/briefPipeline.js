@@ -175,6 +175,35 @@ const MEDIA_BUYING_LIST = '901518769621';
 const CLICKUP_API = 'https://api.clickup.com/api/v2';
 const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN || '';
 const META_AD_ACCOUNT_IDS = (process.env.META_AD_ACCOUNT_IDS || '').split(',').filter(Boolean);
+
+// ── Trusted-account allowlist for the Brief Pipeline import flow ────────
+// META_AD_ACCOUNT_IDS env var lists Mineblock's own Meta ad accounts. We
+// MUST refuse to surface or import ads from any other account, because
+// TripleWhale's creative_analysis table can contain cross-account rows
+// (different brands sharing the same internal creative_id, NULL account
+// metadata, etc.) — letting those through is how an Italian rap / ALDI /
+// train-trip video gets imported as "MR - B0xxx - Mineblock".
+//
+// Normalize: accept both bare numeric ids and the "act_<digits>" form
+// because TW sometimes stores one, Meta's Graph API the other.
+const TRUSTED_ACCOUNT_IDS_NORM = new Set(
+  META_AD_ACCOUNT_IDS.flatMap((raw) => {
+    const bare = String(raw || '').trim().replace(/^act_/i, '');
+    return bare ? [bare, `act_${bare}`] : [];
+  })
+);
+function isTrustedAccount(accountId) {
+  if (TRUSTED_ACCOUNT_IDS_NORM.size === 0) return true; // unset = allow all (legacy)
+  const id = String(accountId || '').trim();
+  if (!id) return false;
+  return TRUSTED_ACCOUNT_IDS_NORM.has(id) || TRUSTED_ACCOUNT_IDS_NORM.has(id.replace(/^act_/i, ''));
+}
+function trustedAccountSqlClause(colExpr, paramIndexStart, params) {
+  if (TRUSTED_ACCOUNT_IDS_NORM.size === 0) return null;
+  const list = Array.from(TRUSTED_ACCOUNT_IDS_NORM);
+  params.push(list);
+  return `${colExpr} = ANY($${paramIndexStart}::text[])`;
+}
 const META_GRAPH_URL = 'https://graph.facebook.com/v21.0';
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
 const CLAUDE_API_URL = 'https://api.anthropic.com/v1/messages';
@@ -4130,9 +4159,14 @@ router.get('/meta-video-ads/accounts', authenticate, async (req, res) => {
     if (!idCol) {
       return res.json({ success: true, accounts: [], synced: 'no_account_column', last_sync: null });
     }
-    // Note: NULL ad_account_id rows are excluded from selectable accounts
-    // (they're not actionable — you can't filter by "no account"). They still
-    // get aggregated into the modal data, but don't surface as a pill.
+    // HARD GUARDRAIL: only return accounts in the trusted Mineblock allowlist
+    // (META_AD_ACCOUNT_IDS env var). Without this, TripleWhale's broken
+    // creative_id → meta_ad_id mapping can surface other brands' accounts
+    // here, which is how Italian rap / ALDI ads were imported as ours.
+    const sqlParams = [String(windowDays)];
+    const trustedClause = trustedAccountSqlClause(idCol, sqlParams.length + 1, sqlParams);
+    const trustedWhere = trustedClause ? ` AND ${trustedClause}` : '';
+
     const sql = `
       SELECT
         ${idCol}                                                  AS id,
@@ -4142,11 +4176,11 @@ router.get('/meta-video-ads/accounts', authenticate, async (req, res) => {
       FROM creative_analysis
       WHERE type = 'video'
         AND ${idCol} IS NOT NULL
-        AND synced_at >= NOW() - ($1 || ' days')::INTERVAL
+        AND synced_at >= NOW() - ($1 || ' days')::INTERVAL${trustedWhere}
       GROUP BY ${idCol}
       ORDER BY spend DESC NULLS LAST
     `;
-    const rows = await pgQuery(sql, [String(windowDays)]);
+    const rows = await pgQuery(sql, sqlParams);
 
     // Enrich with friendly names from Meta Graph API. Resolve EVERY account
     // ID that TW reports — not just the ones in META_AD_ACCOUNT_IDS env.
@@ -4216,7 +4250,21 @@ router.get('/meta-video-ads', authenticate, async (req, res) => {
     const where = [`ca.type = 'video'`, `ca.thumbnail_url IS NOT NULL`, `ca.thumbnail_url <> ''`, `ca.synced_at >= NOW() - ($1 || ' days')::INTERVAL`];
     const params = [String(windowDays)];
 
+    // HARD GUARDRAIL: always restrict to the trusted Mineblock account
+    // allowlist. Applied IN ADDITION to whatever the user picks. Without
+    // this, the import grid surfaces ads from any account TW happens to
+    // sync — including cross-account contamination that has historically
+    // imported other brands' videos as Mineblock's.
+    if (idCol) {
+      const trustedClause = trustedAccountSqlClause(`ca.${idCol}`, params.length + 1, params);
+      if (trustedClause) where.push(trustedClause);
+      // Always reject NULL account rows — they're not actionable and have
+      // historically been the rows with the most broken video URLs.
+      where.push(`ca.${idCol} IS NOT NULL`);
+    }
+
     if (accounts.length > 0 && idCol) {
+      // User-picked accounts further narrow within the trusted set
       params.push(accounts);
       where.push(`ca.${idCol} = ANY($${params.length}::text[])`);
     }
@@ -4362,6 +4410,18 @@ router.post('/references/import-meta', authenticate, async (req, res) => {
     const accountNameSelect = nameCol ? `ca.${nameCol}` : `'Unknown'::text`;
 
     // Pull the highest-spend row per creative_id — that's the canonical record.
+    // HARD GUARDRAIL: restrict to trusted Mineblock accounts. If META_AD_ACCOUNT_IDS
+    // is set, any creative_id whose canonical row is not in the trusted set is
+    // dropped here. The audit endpoint reports skipped IDs so the operator
+    // knows what was refused (instead of silently importing the wrong brand).
+    const importParams = [creativeIds.map(String)];
+    const importTrustedClause = idCol
+      ? trustedAccountSqlClause(`ca.${idCol}`, importParams.length + 1, importParams)
+      : null;
+    const importTrustedWhere = importTrustedClause
+      ? ` AND ${importTrustedClause} AND ca.${idCol} IS NOT NULL`
+      : '';
+
     const rows = await pgQuery(
       `SELECT DISTINCT ON (ca.creative_id)
          ca.creative_id, ca.ad_name, ca.thumbnail_url, ca.meta_ad_id,
@@ -4373,10 +4433,19 @@ router.post('/references/import-meta', authenticate, async (req, res) => {
          ${accountNameSelect} AS account_name
        FROM creative_analysis ca
        WHERE ca.creative_id = ANY($1::text[])
-         AND ca.type = 'video'
+         AND ca.type = 'video'${importTrustedWhere}
        ORDER BY ca.creative_id, ca.spend DESC NULLS LAST`,
-      [creativeIds.map(String)]
+      importParams
     );
+
+    // Report refused creative_ids back so the UI can show why they weren't imported.
+    const importedCreativeIds = new Set(rows.map((r) => String(r.creative_id)));
+    const refused = creativeIds
+      .map(String)
+      .filter((cid) => !importedCreativeIds.has(cid));
+    if (refused.length > 0) {
+      console.warn(`[BriefPipeline] /import-meta refused ${refused.length} creative_ids not in trusted accounts:`, refused.slice(0, 10));
+    }
 
     const imported = [];
     for (const r of rows) {
@@ -4589,7 +4658,13 @@ router.post('/references/import-meta', authenticate, async (req, res) => {
       }
     }
 
-    res.json({ success: true, imported });
+    res.json({
+      success: true,
+      imported,
+      refused_count: refused.length,
+      refused, // creative_ids dropped because they're not in trusted Mineblock accounts
+      trusted_account_filter_active: TRUSTED_ACCOUNT_IDS_NORM.size > 0,
+    });
   } catch (err) {
     console.error('[BriefPipeline] /references/import-meta error:', err.message);
     res.status(500).json({ success: false, error: { message: err.message } });
