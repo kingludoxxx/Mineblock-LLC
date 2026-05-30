@@ -121,14 +121,6 @@ export function FromLeagueColumn({ onUseAsReference }) {
           <span className="px-1.5 py-0.5 text-[10px] font-mono font-bold bg-violet-500/10 text-violet-300 border border-violet-500/25 rounded">
             {visibleCount}
           </span>
-          {importedCount > 0 && (
-            <span
-              className="px-1.5 py-0.5 text-[10px] font-mono font-bold bg-amber-500/15 text-amber-300 border border-amber-400/30 rounded"
-              title={`${importedCount} card${importedCount === 1 ? '' : 's'} manually imported and pinned to the top`}
-            >
-              ★ {importedCount}
-            </span>
-          )}
         </div>
         <button
           type="button"
