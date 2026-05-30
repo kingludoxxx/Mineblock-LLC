@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   X, ArrowLeft, RefreshCw, Loader2, Check, ChevronDown, Plus,
   Users, Target, DollarSign, BarChart3, Tag, Languages, Layout,
@@ -261,16 +261,46 @@ export default function LaunchTemplateEditor({ open, onClose, template, onSaved 
   };
 
   // -- Sync account data when account changes -------------------------------
-  const syncAccount = useCallback(async (accountId) => {
+  // pruneStale=true → drop pixel/campaign/page/audience selections that
+  // don't exist for this account (used after a user picks a new account).
+  // pruneStale=false → just load the option lists, leave selections as-is
+  // (used on initial editor mount so we don't clobber valid form values
+  // while we wait for the API).
+  const syncAccount = useCallback(async (accountId, { pruneStale = false } = {}) => {
     if (!accountId) return;
     setSyncing(true);
     try {
       const { data } = await api.get(`/ad-launcher/meta/sync/${accountId}`);
       const d = data.data || data || {};
-      setPages(d.pages || []);
-      setPixels(d.pixels || []);
-      setCampaigns(d.campaigns || []);
-      setAudiences(d.audiences || []);
+      const freshPages = d.pages || [];
+      const freshPixels = d.pixels || [];
+      const freshCampaigns = d.campaigns || [];
+      const freshAudiences = d.audiences || [];
+      setPages(freshPages);
+      setPixels(freshPixels);
+      setCampaigns(freshCampaigns);
+      setAudiences(freshAudiences);
+
+      if (pruneStale) {
+        // Templates created on the old BM carry dead pixel_id / campaign_id /
+        // page_ids that silently survive into a Save and explode at launch
+        // time. After the user explicitly changes account, drop anything
+        // Meta no longer recognises for the new account.
+        setForm((f) => {
+          const pixelOK = freshPixels.some(p => p.id === f.pixelId);
+          const campaignOK = freshCampaigns.some(c => c.id === f.campaignId);
+          const validPageIds = new Set(freshPages.map(p => p.id));
+          const validAudienceIds = new Set(freshAudiences.map(a => a.id));
+          return {
+            ...f,
+            pixelId: pixelOK ? f.pixelId : '',
+            campaignId: campaignOK ? f.campaignId : '',
+            selectedPages: (f.selectedPages || []).filter(id => validPageIds.has(id)),
+            includeAudiences: (f.includeAudiences || []).filter(id => validAudienceIds.has(id)),
+            excludeAudiences: (f.excludeAudiences || []).filter(id => validAudienceIds.has(id)),
+          };
+        });
+      }
     } catch (err) {
       console.error('Failed to sync account:', err);
     } finally {
@@ -278,9 +308,23 @@ export default function LaunchTemplateEditor({ open, onClose, template, onSaved 
     }
   }, []);
 
+  // Initial mount: load options for the prefilled account WITHOUT pruning.
+  // Subsequent user-driven account changes go through handleAccountChange
+  // below which DOES prune stale selections.
+  const initialAccountSynced = useRef(false);
   useEffect(() => {
-    if (form.accountId) syncAccount(form.accountId);
+    if (form.accountId && !initialAccountSynced.current) {
+      initialAccountSynced.current = true;
+      syncAccount(form.accountId, { pruneStale: false });
+    }
   }, [form.accountId, syncAccount]);
+
+  // User-driven account change — fired by the Ad Account select onChange below
+  const handleAccountChange = useCallback((newId) => {
+    setForm((f) => ({ ...f, accountId: newId }));
+    initialAccountSynced.current = true; // already in user-control mode
+    syncAccount(newId, { pruneStale: true });
+  }, [syncAccount]);
 
   // -- Field updater ---------------------------------------------------------
   const set = (field) => (value) => setForm((f) => ({ ...f, [field]: value }));
@@ -437,7 +481,7 @@ export default function LaunchTemplateEditor({ open, onClose, template, onSaved 
                 <Loader2 className="w-3.5 h-3.5 animate-spin" /> Loading accounts...
               </div>
             ) : (
-              <Select value={form.accountId} onChange={set('accountId')}>
+              <Select value={form.accountId} onChange={handleAccountChange}>
                 <option value="">Select ad account</option>
                 {accounts.map((a) => (
                   <option key={a.id} value={a.id}>
