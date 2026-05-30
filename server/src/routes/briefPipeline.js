@@ -31,6 +31,36 @@ const YTDLP_PATH = join(__dirname, '..', '..', '..', 'bin', 'yt-dlp');
 
 const router = Router();
 
+// TEMP — one-shot cleanup: delete all references whose headline marks them
+// as static creatives (e.g. "MR - B0xxx - … - IMG - …" or "1080×1080").
+router.post('/_purgestatic', async (req, res) => {
+  try {
+    const rows = await pgQuery(
+      `DELETE FROM brief_pipeline_references
+       WHERE headline ~* '(^|\\s|-)IMG(\\s|-|$)'
+          OR headline ILIKE '%1080x1080%'
+          OR headline ILIKE '%1080×1080%'
+       RETURNING id, headline`
+    );
+    res.json({ deleted_count: rows.length, deleted: rows });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Static-ad reference detection (runtime guardrail) ───────────────────
+// Mirrors staticAdExclusionClause() but at the brief_pipeline_references
+// row level. Used as a hard runtime check in iterate/clone routes so even
+// if a static-creative reference somehow slips into the references table
+// (legacy data, race condition, manual UPLOAD), it can't be iterated.
+function isStaticAdReference(ref) {
+  if (!ref) return false;
+  const name = String(ref.headline || ref.brand_name || '').toUpperCase();
+  if (!name) return false;
+  // Mineblock format-slot convention: " IMG ", "-IMG-", "- IMG -"
+  if (/(^|\s|-)IMG(\s|-|$)/.test(name)) return true;
+  if (name.includes('1080X1080') || name.includes('1080×1080')) return true;
+  return false;
+}
+
 // ── Brand mismatch guardrail ─────────────────────────────────────────────
 // When Vertex multimodal returns brand_or_product_identified that doesn't
 // match the brand implied by the reference's headline / product code, we
@@ -2318,6 +2348,32 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
   try {
     await ensureTables();
     const { script, url, productId, productCode, angle, mode, numVariations = 3, referenceId, vectorsSelected, acknowledgeBrandMismatch } = req.body;
+
+    // STATIC AD GUARDRAIL: brief pipeline is for video ads ONLY. Refuse any
+    // reference whose headline shows it's a static creative ("- IMG -" in
+    // Mineblock's naming, or square 1080×1080 dimensions). No override —
+    // user must delete this reference and pick a video ad.
+    if (referenceId) {
+      try {
+        const refRows = await pgQuery(
+          `SELECT headline, brand_name FROM brief_pipeline_references WHERE id = $1 LIMIT 1`,
+          [referenceId]
+        );
+        if (refRows[0] && isStaticAdReference(refRows[0])) {
+          return res.status(409).json({
+            success: false,
+            error: {
+              code: 'STATIC_AD_REFUSED',
+              message: 'This reference is a static image creative (study card / banner). The Brief Pipeline is for video ads only. Delete this reference and import a video creative instead.',
+              ref_headline: refRows[0].headline,
+              hint: 'Mineblock format-slot convention: "IMG" or "1080×1080" in the ad name = static creative. Use a "Mashup", "UGC", "GIF", or other video format ad.',
+            },
+          });
+        }
+      } catch (e) {
+        console.warn(`[BriefPipeline] static-ad guard check failed for ref ${referenceId}:`, e.message);
+      }
+    }
 
     // Brand-mismatch guardrail. If the picked reference has a brand_mismatch_warning
     // flag set (Vertex multimodal detected the video doesn't match the ad's claimed
