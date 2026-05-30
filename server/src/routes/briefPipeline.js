@@ -35,8 +35,9 @@ const router = Router();
 router.get('/_findpestlab', async (req, res) => {
   try {
     const cols = await pgQuery(`SELECT column_name FROM information_schema.columns WHERE table_name = 'spy_creatives' ORDER BY ordinal_position`);
-    const pestMatches = await pgQuery(`SELECT * FROM spy_creatives WHERE LOWER(COALESCE(headline,'')) LIKE '%pest%' OR LOWER(COALESCE(headline,'')) LIKE '%goodbye%' OR LOWER(COALESCE(brand_name,'')) LIKE '%pest%' OR LOWER(COALESCE(body_text,'')) LIKE '%pest%' OR LOWER(COALESCE(ad_archive_id,'')) LIKE '%1174663881203785%' ORDER BY created_at DESC LIMIT 5`);
-    res.json({ columns: cols.map(c => c.column_name), match_count: pestMatches.length, matches: pestMatches });
+    // Try the ad_archive_id from user's screenshot first (most specific)
+    const byArchive = await pgQuery(`SELECT * FROM spy_creatives WHERE ad_archive_id::text = '1174663881203785' LIMIT 1`);
+    res.json({ columns: cols.map(c => c.column_name), by_archive_count: byArchive.length, byArchive });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
