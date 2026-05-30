@@ -128,6 +128,75 @@ async function getVertexAccessToken() {
 
 const VERTEX_LOCATION = process.env.VERTEX_AI_LOCATION || 'us-central1';
 
+// Vertex AI model IDs we'll try in order. Verified live 2026-05-30:
+// - gemini-2.0-flash-001 → 404 (deprecated suffix)
+// - gemini-2.5-flash       → ✅ accepted
+// - gemini-2.0-flash       → ✅ accepted
+// - gemini-1.5-flash       → ✅ accepted (stable older fallback)
+const VERTEX_MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
+
+// Inline base64 ceiling for Vertex generateContent (~20 MB request limit).
+// We stay at 18 MB to leave headroom for prompt + multipart overhead.
+const VERTEX_INLINE_CEILING_MB = 18;
+
+/**
+ * Upload a video buffer to a project-owned GCS bucket and return its gs:// URI
+ * for use as `fileData.fileUri` in Vertex generateContent. Auto-creates the
+ * bucket on first run with a 1-day lifecycle rule so old uploads don't
+ * accumulate cost.
+ *
+ * Required IAM on the SA: roles/storage.admin (so it can create the bucket
+ * AND upload to it). If only roles/storage.objectAdmin is granted, pre-create
+ * the bucket manually and set VERTEX_TRANSCRIBE_BUCKET to its name.
+ *
+ * Returns null on any failure (caller surfaces a descriptive error).
+ */
+async function uploadBufferToGCS(buffer, mimeType, accessToken, projectId) {
+  const bucket = process.env.VERTEX_TRANSCRIBE_BUCKET || `${projectId}-vertex-transcribe`;
+  const ext = mimeType.includes('quicktime') ? 'mov' : mimeType.includes('webm') ? 'webm' : 'mp4';
+  const objectName = `transcribe-${Date.now()}-${crypto.randomBytes(4).toString('hex')}.${ext}`;
+  const uploadUrl = `https://storage.googleapis.com/upload/storage/v1/b/${bucket}/o?uploadType=media&name=${encodeURIComponent(objectName)}`;
+
+  async function doUpload() {
+    return fetch(uploadUrl, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': mimeType },
+      body: buffer,
+      signal: AbortSignal.timeout(180_000),
+    });
+  }
+
+  let res = await doUpload();
+  if (res.status === 404) {
+    // Bucket doesn't exist — create it then retry.
+    console.log(`[transcribe] GCS bucket ${bucket} not found, creating...`);
+    const createRes = await fetch(`https://storage.googleapis.com/storage/v1/b?project=${projectId}`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: bucket,
+        location: 'US',
+        storageClass: 'STANDARD',
+        lifecycle: { rule: [{ action: { type: 'Delete' }, condition: { age: 1 } }] },
+        iamConfiguration: { uniformBucketLevelAccess: { enabled: true } },
+      }),
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!createRes.ok) {
+      const t = await createRes.text();
+      throw new Error(`GCS bucket create failed HTTP ${createRes.status} (grant SA roles/storage.admin on the project): ${t.slice(0, 200)}`);
+    }
+    console.log(`[transcribe] GCS bucket ${bucket} created`);
+    res = await doUpload();
+  }
+  if (!res.ok) {
+    const t = await res.text();
+    throw new Error(`GCS upload failed HTTP ${res.status}: ${t.slice(0, 200)}`);
+  }
+  console.log(`[transcribe] GCS upload OK: gs://${bucket}/${objectName} (${(buffer.length / 1024 / 1024).toFixed(1)} MB)`);
+  return `gs://${bucket}/${objectName}`;
+}
+
 /**
  * Diagnostic: send a video buffer to Vertex AI with a multimodal-aware prompt
  * that asks for separate audio / on-screen-text / visual-narrative breakdowns.
@@ -141,7 +210,10 @@ export async function probeVertexMultimodal(buffer, mime) {
   if (!token) throw new Error('Vertex OAuth token mint failed');
 
   const sizeMB = buffer.length / 1024 / 1024;
-  if (sizeMB > 18) throw new Error(`buffer too big (${sizeMB.toFixed(1)} MB > 18 MB inline ceiling)`);
+  let fileUri = null;
+  if (sizeMB > VERTEX_INLINE_CEILING_MB) {
+    fileUri = await uploadBufferToGCS(buffer, mime, token, creds.projectId);
+  }
 
   const prompt = `You are analyzing a video advertisement to extract its ACTUAL SELLING MESSAGE, not its surface content.
 
@@ -164,13 +236,15 @@ Return ONLY the JSON, no preamble, no markdown fences.`;
     contents: [{
       role: 'user',
       parts: [
-        { inlineData: { mimeType: mime, data: buffer.toString('base64') } },
+        fileUri
+          ? { fileData: { mimeType: mime, fileUri } }
+          : { inlineData: { mimeType: mime, data: buffer.toString('base64') } },
         { text: prompt },
       ],
     }],
     generationConfig: { maxOutputTokens: 4096, temperature: 0.1, responseMimeType: 'application/json' },
   };
-  const model = 'gemini-2.0-flash-001';
+  const model = VERTEX_MODELS[0];
   const url = `https://${VERTEX_LOCATION}-aiplatform.googleapis.com/v1/projects/${creds.projectId}/locations/${VERTEX_LOCATION}/publishers/google/models/${model}:generateContent`;
   const res = await fetch(url, {
     method: 'POST',
@@ -303,23 +377,33 @@ async function transcribeBufferWithVertex(buffer, mime) {
   if (!token) return { ok: false, error: 'Vertex OAuth token mint failed' };
 
   const sizeMB = buffer.length / 1024 / 1024;
-  if (sizeMB > 18) {
-    return { ok: false, error: `Vertex inline path skipped (${sizeMB.toFixed(1)} MB > 18 MB ceiling); GCS upload not implemented` };
+
+  // For files >18 MB, upload to GCS and pass gs:// URI to Vertex.
+  // Vertex AI in the same project as the bucket can read it automatically.
+  let fileUri = null;
+  if (sizeMB > VERTEX_INLINE_CEILING_MB) {
+    try {
+      fileUri = await uploadBufferToGCS(buffer, mime, token, creds.projectId);
+    } catch (e) {
+      return { ok: false, error: `Vertex GCS path failed: ${e.message}` };
+    }
   }
 
   const requestBody = {
     contents: [{
       role: 'user',
       parts: [
-        { inlineData: { mimeType: mime, data: buffer.toString('base64') } },
+        fileUri
+          ? { fileData: { mimeType: mime, fileUri } }
+          : { inlineData: { mimeType: mime, data: buffer.toString('base64') } },
         { text: GEMINI_PROMPT },
       ],
     }],
     generationConfig: { maxOutputTokens: 4096, temperature: 0.1 },
   };
-  const models = ['gemini-2.0-flash-001', 'gemini-2.5-flash', 'gemini-2.0-flash'];
+
   let lastError = null;
-  for (const model of models) {
+  for (const model of VERTEX_MODELS) {
     try {
       const url = `https://${VERTEX_LOCATION}-aiplatform.googleapis.com/v1/projects/${creds.projectId}/locations/${VERTEX_LOCATION}/publishers/google/models/${model}:generateContent`;
       const res = await fetch(url, {
@@ -341,7 +425,7 @@ async function transcribeBufferWithVertex(buffer, mime) {
       const data = await res.json();
       const text = (data.candidates?.[0]?.content?.parts?.[0]?.text || '').trim();
       if (text.length >= 10) {
-        console.log(`[transcribe] Vertex ${model} returned ${text.length} chars`);
+        console.log(`[transcribe] Vertex ${model} returned ${text.length} chars (via ${fileUri ? 'GCS' : 'inline'})`);
         return { ok: true, text };
       }
       lastError = `${model}: empty transcript`;
@@ -362,7 +446,7 @@ async function transcribeBufferWithLegacyAiStudio(buffer, mime) {
     return { ok: false, error: 'No Gemini API keys configured (GEMINI_API_KEY*)' };
   }
   const sizeMB = buffer.length / 1024 / 1024;
-  const models = ['gemini-2.0-flash-001', 'gemini-2.5-flash', 'gemini-2.0-flash'];
+  const models = VERTEX_MODELS;
 
   let lastError = null;
   for (const apiKey of GEMINI_API_KEYS) {
