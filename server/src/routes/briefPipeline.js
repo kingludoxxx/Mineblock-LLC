@@ -34,8 +34,11 @@ const router = Router();
 // TEMP — PestLab end-to-end test: find ref → re-transcribe → iterate
 router.get('/_findpestlab', async (req, res) => {
   try {
-    const rows = await pgQuery(`SELECT id, brand_name, headline, body_text, video_url, status, LENGTH(COALESCE(transcript, '')) AS tlen, created_at FROM brief_pipeline_references WHERE LOWER(COALESCE(headline,'')) LIKE '%pest%' OR LOWER(COALESCE(headline,'')) LIKE '%goodbye%' OR LOWER(COALESCE(headline,'')) LIKE '%shark%' OR LOWER(COALESCE(brand_name,'')) LIKE '%pest%' OR LOWER(COALESCE(body_text,'')) LIKE '%goodbye to pests%' ORDER BY created_at DESC LIMIT 10`);
-    res.json({ count: rows.length, refs: rows });
+    const cols = await pgQuery(`SELECT column_name FROM information_schema.columns WHERE table_name = 'brief_pipeline_references' ORDER BY ordinal_position`);
+    const recent = await pgQuery(`SELECT id, brand_name, headline, body_text, video_url, status, source, LENGTH(COALESCE(transcript, '')) AS tlen, created_at FROM brief_pipeline_references ORDER BY created_at DESC LIMIT 15`);
+    const pestSearch = await pgQuery(`SELECT id, brand_name, headline, body_text, video_url, status, source, LENGTH(COALESCE(transcript, '')) AS tlen FROM brief_pipeline_references WHERE LOWER(COALESCE(brand_name,'')) LIKE '%pest%' OR LOWER(COALESCE(headline,'')) LIKE '%pest%' OR LOWER(COALESCE(headline,'')) LIKE '%goodbye%' OR LOWER(COALESCE(headline,'')) LIKE '%shark%' OR LOWER(COALESCE(body_text,'')) LIKE '%pest%' LIMIT 5`);
+    const spyAds = await pgQuery(`SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND (table_name LIKE '%spy%' OR table_name LIKE '%champ%' OR table_name LIKE '%brand%')`);
+    res.json({ columns: cols.map(c => c.column_name), recent_count: recent.length, recent, pest_match_count: pestSearch.length, pestSearch, candidate_tables: spyAds.map(t => t.table_name) });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
