@@ -212,10 +212,10 @@ export function BrandFollowConfigModal({ isOpen, onClose, onSynced }) {
                 onClick={handleSyncAll}
                 disabled={syncingAll || summary.count === 0}
                 className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-violet-500/20 border border-violet-400/40 hover:bg-violet-500/30 text-violet-200 text-xs font-mono font-semibold uppercase tracking-wide cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                title="Run a one-shot sync for every brand sequentially"
+                title="Import the top N% of each brand's static ads into the FROM LEAGUE column"
               >
                 {syncingAll ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Zap className="w-3.5 h-3.5" />}
-                Sync all
+                {syncingAll ? 'Importing…' : 'Import all'}
               </button>
             </div>
             {syncAllMsg && (
@@ -355,10 +355,11 @@ function BrandRow({ brand, expanded, onToggleExpand, onPatch, onSynced }) {
             type="button"
             onClick={handleSyncNow}
             disabled={syncing}
-            className="p-2 rounded-md bg-white/[0.04] border border-white/[0.08] hover:bg-violet-500/20 hover:border-violet-400/40 text-violet-300 cursor-pointer disabled:opacity-40"
-            title="Sync now"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-violet-500/15 border border-violet-400/30 hover:bg-violet-500/25 hover:border-violet-400/50 text-violet-200 text-[10px] font-mono font-semibold uppercase tracking-wide cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            title="Import the top N% of this brand's static ads into the FROM LEAGUE column"
           >
             {syncing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+            {syncing ? 'Importing…' : 'Import'}
           </button>
           <button
             type="button"
