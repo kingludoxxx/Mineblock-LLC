@@ -34,12 +34,33 @@ const router = Router();
 // TEMP — PestLab end-to-end test: find ref → re-transcribe → iterate
 router.get('/_findpestlab', async (req, res) => {
   try {
-    const cols = await pgQuery(`SELECT column_name FROM information_schema.columns WHERE table_name = 'brief_pipeline_references' ORDER BY ordinal_position`);
-    const recent = await pgQuery(`SELECT id, brand_name, headline, body_text, video_url, status, source, LENGTH(COALESCE(transcript, '')) AS tlen, created_at FROM brief_pipeline_references ORDER BY created_at DESC LIMIT 15`);
-    const pestSearch = await pgQuery(`SELECT id, brand_name, headline, body_text, video_url, status, source, LENGTH(COALESCE(transcript, '')) AS tlen FROM brief_pipeline_references WHERE LOWER(COALESCE(brand_name,'')) LIKE '%pest%' OR LOWER(COALESCE(headline,'')) LIKE '%pest%' OR LOWER(COALESCE(headline,'')) LIKE '%goodbye%' OR LOWER(COALESCE(headline,'')) LIKE '%shark%' OR LOWER(COALESCE(body_text,'')) LIKE '%pest%' LIMIT 5`);
-    const spyAds = await pgQuery(`SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND (table_name LIKE '%spy%' OR table_name LIKE '%champ%' OR table_name LIKE '%brand%')`);
-    res.json({ columns: cols.map(c => c.column_name), recent_count: recent.length, recent, pest_match_count: pestSearch.length, pestSearch, candidate_tables: spyAds.map(t => t.table_name) });
+    const cols = await pgQuery(`SELECT column_name FROM information_schema.columns WHERE table_name = 'spy_creatives' ORDER BY ordinal_position`);
+    const pestMatches = await pgQuery(`SELECT * FROM spy_creatives WHERE LOWER(COALESCE(headline,'')) LIKE '%pest%' OR LOWER(COALESCE(headline,'')) LIKE '%goodbye%' OR LOWER(COALESCE(brand_name,'')) LIKE '%pest%' OR LOWER(COALESCE(body_text,'')) LIKE '%pest%' OR LOWER(COALESCE(ad_archive_id,'')) LIKE '%1174663881203785%' ORDER BY created_at DESC LIMIT 5`);
+    res.json({ columns: cols.map(c => c.column_name), match_count: pestMatches.length, matches: pestMatches });
   } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// TEMP — transcribe a spy_creatives row directly (no DB writes)
+router.post('/_transcribe_spy/:id', async (req, res) => {
+  try {
+    const rows = await pgQuery(`SELECT * FROM spy_creatives WHERE id = $1 OR ad_archive_id = $1 LIMIT 1`, [req.params.id]);
+    if (!rows.length) return res.status(404).json({ error: 'not found in spy_creatives' });
+    const r = rows[0];
+    const videoUrl = r.video_url || r.creative_link || null;
+    if (!videoUrl) return res.status(400).json({ error: 'spy_creative has no video_url', row_keys: Object.keys(r) });
+    const t0 = Date.now();
+    const result = await transcribeVideoUrl(videoUrl);
+    res.json({
+      id: r.id, brand: r.brand_name, headline: r.headline,
+      video_url_head: videoUrl.slice(0, 100),
+      elapsed_ms: Date.now() - t0,
+      source: result._source,
+      transcript_chars: result.text.length,
+      transcript_head: result.text.slice(0, 800),
+      brand_identified: result._analysis?.brand_or_product_identified || null,
+      selling_message: result._analysis?.selling_message || null,
+    });
+  } catch (e) { res.status(500).json({ error: e.message?.slice(0, 800) }); }
 });
 
 router.post('/_retranscribe/:id', async (req, res) => {
