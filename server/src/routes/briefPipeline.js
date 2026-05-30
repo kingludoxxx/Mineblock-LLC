@@ -415,7 +415,14 @@ async function resolveOwnedVideoFromMeta(metaAdId) {
   // Step 1 — confirm ownership + get video_id
   let adMeta;
   try {
-    const url = `${META_GRAPH_URL}/${adId}?fields=name,account_id,effective_status,creative{video_id,thumbnail_url}&access_token=${META_ACCESS_TOKEN}`;
+    // Pull BOTH possible video_id locations:
+    //  - creative.video_id            ← the outer ad-level video id
+    //  - creative.object_story_spec.video_data.video_id  ← the REAL underlying
+    //    video file (when the ad was created from a page post). Confirmed via
+    //    live probe: for B0112 the outer id is 1486111699652922 but the actual
+    //    file lives at 814979381492094 inside object_story_spec.video_data.
+    const fieldsExpr = 'name,account_id,effective_status,creative{video_id,thumbnail_url,object_story_spec{video_data{video_id,title,message}}}';
+    const url = `${META_GRAPH_URL}/${adId}?fields=${encodeURIComponent(fieldsExpr)}&access_token=${META_ACCESS_TOKEN}`;
     const resp = await fetch(url, { signal: AbortSignal.timeout(10000) });
     const data = await resp.json();
     if (!resp.ok || data.error) {
@@ -438,32 +445,47 @@ async function resolveOwnedVideoFromMeta(metaAdId) {
     };
   }
 
-  const videoId = adMeta.creative?.video_id || null;
-  if (!videoId) {
+  // Collect ALL candidate video_ids — try the underlying object_story_spec
+  // one first (it's the actual file), then the outer creative.video_id.
+  const candidateVideoIds = [];
+  const innerVid = adMeta.creative?.object_story_spec?.video_data?.video_id;
+  if (innerVid) candidateVideoIds.push(String(innerVid));
+  const outerVid = adMeta.creative?.video_id;
+  if (outerVid && !candidateVideoIds.includes(String(outerVid))) candidateVideoIds.push(String(outerVid));
+
+  if (candidateVideoIds.length === 0) {
     return {
-      error: `Ad ${adId} has no creative.video_id (likely an image/carousel ad).`,
+      error: `Ad ${adId} has no video_id in creative OR object_story_spec.video_data (likely an image/carousel ad).`,
       accountId: accountIdAct,
       adName: adMeta.name || null,
       thumbnailUrl: adMeta.creative?.thumbnail_url || null,
     };
   }
 
-  // Step 3 — resolve video CDN URL via direct /{video_id}?fields=source
-  try {
-    const vurl = `${META_GRAPH_URL}/${videoId}?fields=source,permalink_url&access_token=${META_ACCESS_TOKEN}`;
-    const vresp = await fetch(vurl, { signal: AbortSignal.timeout(10000) });
-    const vdata = await vresp.json();
-    if (vresp.ok && !vdata.error && vdata.source) {
-      return {
-        videoUrl: vdata.source,
-        accountId: accountIdAct,
-        videoId,
-        adName: adMeta.name || null,
-        thumbnailUrl: adMeta.creative?.thumbnail_url || null,
-        _via: 'video_direct',
-      };
-    }
-  } catch (_) { /* fall through to account-scoped lookup */ }
+  // Step 3 — resolve video CDN URL. Try each candidate via direct /{video_id}
+  // FIRST, then fall through to the paginated /{account}/advideos search.
+  for (const vid of candidateVideoIds) {
+    try {
+      const vurl = `${META_GRAPH_URL}/${vid}?fields=source,permalink_url&access_token=${META_ACCESS_TOKEN}`;
+      const vresp = await fetch(vurl, { signal: AbortSignal.timeout(10000) });
+      const vdata = await vresp.json();
+      if (vresp.ok && !vdata.error && vdata.source) {
+        return {
+          videoUrl: vdata.source,
+          accountId: accountIdAct,
+          videoId: vid,
+          adName: adMeta.name || null,
+          thumbnailUrl: adMeta.creative?.thumbnail_url || null,
+          _via: vid === innerVid ? 'video_direct_inner' : 'video_direct_outer',
+        };
+      }
+    } catch (_) { /* try next candidate */ }
+  }
+
+  // Keep `videoId` referring to the inner one for the legacy advideos search
+  // below (it's the one that's most likely to be in the ad account's video
+  // library — outer ids are sometimes shared across multiple ads).
+  const videoId = candidateVideoIds[0];
 
   // Step 4 — fallback: /{account_id}/advideos. Some Marketing API tokens
   // reject direct /{video_id} but accept the account-scoped advideos endpoint.
@@ -477,6 +499,7 @@ async function resolveOwnedVideoFromMeta(metaAdId) {
   // Most ads are recent — finding the video usually takes 1 page. We cap at
   // 10 pages × 100 = 1000 videos before giving up.
   try {
+    const targetIds = new Set(candidateVideoIds.map(String));
     let cursor = null;
     const MAX_PAGES = 10;
     for (let page = 0; page < MAX_PAGES; page++) {
@@ -491,12 +514,12 @@ async function resolveOwnedVideoFromMeta(metaAdId) {
       const adata = await aresp.json();
       if (!aresp.ok || adata.error) break;
       const list = Array.isArray(adata.data) ? adata.data : [];
-      const match = list.find((v) => String(v.id) === String(videoId));
+      const match = list.find((v) => targetIds.has(String(v.id)));
       if (match?.source) {
         return {
           videoUrl: match.source,
           accountId: accountIdAct,
-          videoId,
+          videoId: match.id,
           adName: adMeta.name || null,
           thumbnailUrl: adMeta.creative?.thumbnail_url || null,
           _via: `advideos_paginated_page${page + 1}`,
@@ -505,9 +528,9 @@ async function resolveOwnedVideoFromMeta(metaAdId) {
       cursor = adata.paging?.cursors?.after || null;
       if (!cursor || list.length < 100) break;
     }
-    return { error: `Meta video_id=${videoId} not found in ${accountIdAct} advideos (searched up to ${MAX_PAGES} pages).`, accountId: accountIdAct, adName: adMeta.name || null };
+    return { error: `Meta video_ids=[${candidateVideoIds.join(',')}] not found via direct OR ${accountIdAct} advideos (searched up to ${MAX_PAGES} pages).`, accountId: accountIdAct, adName: adMeta.name || null };
   } catch (e) {
-    return { error: `Meta advideos fetch failed for video_id=${videoId}: ${e.message?.slice(0, 160)}`, accountId: accountIdAct };
+    return { error: `Meta advideos fetch failed for video_ids=[${candidateVideoIds.join(',')}]: ${e.message?.slice(0, 160)}`, accountId: accountIdAct };
   }
 }
 
