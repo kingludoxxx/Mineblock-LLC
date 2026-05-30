@@ -169,11 +169,30 @@ export function FromLeagueColumn({ onUseAsReference }) {
             key={`${ad.brand_id}:${ad.id}`}
             ad={ad}
             onUseAsReference={onUseAsReference}
-            onDismiss={() => setDismissed(prev => {
-              const next = new Set(prev);
-              next.add(`${ad.brand_id}:${ad.id}`);
-              return next;
-            })}
+            onDismiss={async () => {
+              // Optimistic hide first so the UI feels instant.
+              setDismissed(prev => {
+                const next = new Set(prev);
+                next.add(`${ad.brand_id}:${ad.id}`);
+                return next;
+              });
+              // Persist server-side so the dismissal survives refresh.
+              try {
+                await api.post('/statics-generation/league/dismiss', {
+                  brand_id: ad.brand_id,
+                  ad_archive_id: ad.ad_archive_id,
+                });
+              } catch (err) {
+                // If the persist call fails, roll back the optimistic hide
+                // so the card reappears and the operator can retry.
+                setDismissed(prev => {
+                  const next = new Set(prev);
+                  next.delete(`${ad.brand_id}:${ad.id}`);
+                  return next;
+                });
+                setError(err.response?.data?.error?.message || err.message);
+              }
+            }}
           />
         ))}
       </div>

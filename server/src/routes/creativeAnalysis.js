@@ -61,6 +61,62 @@ const router = Router();
 
 // ── Unauthenticated cron routes (before global auth middleware) ─────────────
 
+// GET /_inspectb0223 — TEMP investigation. Returns raw DB row(s) for B0223
+// + asks Meta what each stored meta_ad_id ACTUALLY is. No PII; removed after use.
+router.get('/_inspectb0223', async (_req, res) => {
+  const token = process.env.META_ACCESS_TOKEN || '';
+  const META = 'https://graph.facebook.com/v21.0';
+  try {
+    const rows = await pgQuery(
+      `SELECT ad_name, ad_account_id, ad_account_name, creative_id, hook_id, week,
+              meta_ad_id, LEFT(video_url, 120) AS video_url_head,
+              LEFT(creative_link, 120) AS creative_link_head,
+              LEFT(thumbnail_url, 120) AS thumbnail_url_head,
+              meta_account_verified_id,
+              meta_account_verified_at,
+              synced_at
+         FROM creative_analysis
+        WHERE creative_id = 'B0223'
+        ORDER BY synced_at DESC NULLS LAST
+        LIMIT 15`
+    );
+    const enriched = [];
+    for (const r of rows) {
+      let meta = null;
+      if (r.meta_ad_id && token) {
+        try {
+          const url = `${META}/${r.meta_ad_id}?fields=name,account_id,effective_status,created_time,creative{video_id,thumbnail_url,title,body,object_story_spec{video_data{title,message}}}&access_token=${token}`;
+          const resp = await fetch(url, { signal: AbortSignal.timeout(10000) });
+          const data = await resp.json();
+          meta = { ok: resp.ok && !data.error, data, error: data.error?.message || null };
+        } catch (e) { meta = { ok: false, error: e.message }; }
+      }
+      enriched.push({ db: r, meta_marketing_api_response: meta });
+    }
+    // Also pull the BriefPipeline reference rows for B0223 so we can see what
+    // was actually imported / transcribed.
+    const bpRows = await pgQuery(
+      `SELECT id, ad_archive_id, headline, status, COALESCE(is_quarantined,FALSE) AS quarantined,
+              LEFT(transcript, 400) AS transcript_head,
+              imported_metadata->>'ad_id' AS imported_ad_id,
+              imported_metadata->>'creative_id' AS imported_creative_id,
+              imported_metadata->>'account_id' AS imported_account_id,
+              imported_metadata->'multimodal_analysis'->>'brand_or_product_identified' AS mm_brand,
+              LEFT(imported_metadata->'multimodal_analysis'->>'selling_message', 200) AS mm_selling
+         FROM brief_pipeline_references
+        WHERE source = 'meta'
+          AND (headline ILIKE '%B0223%' OR ad_archive_id IN (
+                 SELECT meta_ad_id::text FROM creative_analysis WHERE creative_id = 'B0223' AND meta_ad_id IS NOT NULL
+               ))
+        ORDER BY created_at DESC
+        LIMIT 10`
+    );
+    res.json({ success: true, creative_analysis: enriched, brief_pipeline_references: bpRows });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // POST /_purgewronglinkages — one-shot cleanup: NULLs every creative_analysis
 // row whose stored meta_ad_id lives in a Meta account different from the
 // row's own ad_account_id. The next syncMetaThumbnails run will write back

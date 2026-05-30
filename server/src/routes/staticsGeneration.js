@@ -427,39 +427,6 @@ router.post('/meta-ads/repair-thumbnails', async (req, res) => {
 // through the UI (they're one-shot operations). Both are CRON_SECRET-gated
 // and BELOW the global auth so the fast path fires.
 
-// GET /league/_refsdiag — count is_reference=TRUE rows grouped by source.
-// CRON_SECRET-gated, read-only. Lets us see exactly what's in the Reference
-// column before we decide what to nuke.
-router.get('/league/_refsdiag', async (req, res) => {
-  const cs = process.env.CRON_SECRET;
-  if (!cs || req.headers['x-cron-secret'] !== cs) return res.status(401).json({ error: 'unauthorized' });
-  try {
-    const counts = await pgQuery(`
-      SELECT
-        COALESCE(imported_from, 'NULL/legacy') AS source,
-        status,
-        COUNT(*)::INT AS n
-      FROM spy_creatives
-      WHERE is_reference = TRUE
-        AND parent_creative_id IS NULL
-      GROUP BY 1, 2
-      ORDER BY n DESC
-    `);
-    const sample = await pgQuery(`
-      SELECT id, imported_from, status, reference_name, source_label, created_at
-      FROM spy_creatives
-      WHERE is_reference = TRUE
-        AND parent_creative_id IS NULL
-      ORDER BY created_at DESC
-      LIMIT 20
-    `);
-    return res.json({ success: true, by_source_status: counts, recent: sample });
-  } catch (e) {
-    console.error('[league/_refsdiag] error:', e);
-    return res.status(500).json({ success: false, error: { message: e.message } });
-  }
-});
-
 // POST /league/clear-imports — wipe all 'imported_from=league' rows.
 // Used after the operator decides the auto-sync (or manual imports) pulled
 // too many references and they want a clean slate. PROTECTS:
@@ -4528,6 +4495,15 @@ router.get('/league/ads', authenticate, async (req, res) => {
       where.push(`(a.headline ILIKE $${i} OR a.body_text ILIKE $${i} OR a.caption ILIKE $${i})`);
     }
 
+    // Dismissed-ad join — persistent X-button state from league_dismissed_ads.
+    // We LEFT JOIN and exclude in the WHERE so dismissed cards never come back
+    // until the operator explicitly undoes (DELETE /league/dismiss/...).
+    where.push(`NOT EXISTS (
+      SELECT 1 FROM league_dismissed_ads d
+      WHERE d.brand_id = a.brand_id
+        AND d.ad_archive_id = a.ad_archive_id
+    )`);
+
     const sql = `
       SELECT
         a.id, a.ad_archive_id, a.headline, a.body_text, a.display_format,
@@ -4548,6 +4524,44 @@ router.get('/league/ads', authenticate, async (req, res) => {
     res.json({ success: true, data: rows, count: rows.length });
   } catch (err) {
     console.error('[league/ads] error:', err);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// 2b. POST /league/dismiss — persistent X-button. Hides a card from FROM
+// LEAGUE forever (until DELETE'd). Body: { brand_id, ad_archive_id }
+router.post('/league/dismiss', authenticate, async (req, res) => {
+  try {
+    const { brand_id, ad_archive_id } = req.body || {};
+    if (!brand_id || !ad_archive_id) {
+      return res.status(400).json({ success: false, error: { message: 'brand_id and ad_archive_id required' } });
+    }
+    await pgQuery(
+      `INSERT INTO league_dismissed_ads (brand_id, ad_archive_id)
+       VALUES ($1, $2)
+       ON CONFLICT (brand_id, ad_archive_id) DO NOTHING`,
+      [brand_id, ad_archive_id]
+    );
+    res.json({ success: true });
+  } catch (err) {
+    console.error('[league/dismiss POST] error:', err);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// 2c. DELETE /league/dismiss/:brand_id/:ad_archive_id — undo a dismissal.
+router.delete('/league/dismiss/:brand_id/:ad_archive_id', authenticate, async (req, res) => {
+  try {
+    const { brand_id, ad_archive_id } = req.params;
+    const r = await pgQuery(
+      `DELETE FROM league_dismissed_ads
+        WHERE brand_id = $1 AND ad_archive_id = $2
+        RETURNING brand_id`,
+      [brand_id, ad_archive_id]
+    );
+    res.json({ success: true, restored: r.length });
+  } catch (err) {
+    console.error('[league/dismiss DELETE] error:', err);
     res.status(500).json({ success: false, error: { message: err.message } });
   }
 });
