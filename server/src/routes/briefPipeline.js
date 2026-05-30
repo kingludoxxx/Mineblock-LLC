@@ -65,6 +65,18 @@ function detectBrandMismatch(headline, multimodalAnalysis) {
   };
 }
 
+// TEMP — delete confirmed-bad references (B0340 → ALDI, B0003 → train trips)
+router.post('/_deletebad', async (req, res) => {
+  try {
+    const rows = await pgQuery(
+      `DELETE FROM brief_pipeline_references
+       WHERE id IN ('4fc6f54b-d34f-46eb-9fe9-2c7a5afb9551', '487f421f-8eb5-43ae-ae76-f61a6cff775e')
+       RETURNING id, headline`
+    );
+    res.json({ deleted_count: rows.length, deleted: rows });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // TEMP — delete every reference where brand_mismatch_warning is set
 router.post('/_purgemismatches', async (req, res) => {
   try {
