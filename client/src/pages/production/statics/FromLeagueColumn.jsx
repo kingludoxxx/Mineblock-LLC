@@ -85,10 +85,15 @@ export function FromLeagueColumn({ onUseAsReference }) {
           }))).catch(() => [])
         )
       );
-      // Merge + sort by tier_score desc (already roughly sorted per-brand).
-      const merged = results.flat().sort((a, b) =>
-        (b.tier_score ?? 0) - (a.tier_score ?? 0)
-      );
+      // Merge + sort: imported-first (so the operator's manual Import
+      // choices land at the top of the column, giving them visible
+      // feedback that the button did something), then by tier_score desc.
+      const merged = results.flat().sort((a, b) => {
+        const aImp = a.already_imported ? 1 : 0;
+        const bImp = b.already_imported ? 1 : 0;
+        if (bImp !== aImp) return bImp - aImp;
+        return (b.tier_score ?? 0) - (a.tier_score ?? 0);
+      });
       setAds(merged);
     } catch (err) {
       setError(err.response?.data?.error?.message || err.message);
@@ -101,6 +106,7 @@ export function FromLeagueColumn({ onUseAsReference }) {
 
   const visibleAds = useMemo(() => ads.filter(a => !dismissed.has(`${a.brand_id}:${a.id}`)), [ads, dismissed]);
   const visibleCount = visibleAds.length;
+  const importedCount = useMemo(() => visibleAds.filter(a => a.already_imported).length, [visibleAds]);
   const [configOpen, setConfigOpen] = useState(false);
 
   return (
@@ -115,6 +121,14 @@ export function FromLeagueColumn({ onUseAsReference }) {
           <span className="px-1.5 py-0.5 text-[10px] font-mono font-bold bg-violet-500/10 text-violet-300 border border-violet-500/25 rounded">
             {visibleCount}
           </span>
+          {importedCount > 0 && (
+            <span
+              className="px-1.5 py-0.5 text-[10px] font-mono font-bold bg-amber-500/15 text-amber-300 border border-amber-400/30 rounded"
+              title={`${importedCount} card${importedCount === 1 ? '' : 's'} manually imported and pinned to the top`}
+            >
+              ★ {importedCount}
+            </span>
+          )}
         </div>
         <button
           type="button"
@@ -237,6 +251,14 @@ function LeagueAdCard({ ad, onUseAsReference, onDismiss }) {
           {ad.tier && (
             <span className="absolute top-1.5 left-1.5 text-[9px] font-mono font-bold bg-[#c9a84c]/90 text-black px-1.5 py-0.5 rounded">
               {ad.tier}
+            </span>
+          )}
+          {ad.already_imported && !picked && (
+            <span
+              className="absolute top-1.5 right-1.5 text-[9px] font-mono font-bold bg-amber-500/90 text-black px-1.5 py-0.5 rounded"
+              title="You imported this card via Brand Follow Config"
+            >
+              ★ IMPORTED
             </span>
           )}
           {picked && (

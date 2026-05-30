@@ -181,7 +181,7 @@ export function BrandFollowConfigModal({ isOpen, onClose, onSynced }) {
           <div className="space-y-1">
             <h2 className="text-lg font-mono text-white">Brand Follow Config</h2>
             <p className="text-xs text-zinc-500 leading-relaxed max-w-lg">
-              Manage which brands auto-pull static ads into the Spy Reference Library and at what cadence.
+              Manually import or auto-pull the top static ads from each followed brand. Imported cards are pinned to the top of the FROM LEAGUE column with a ★ badge.
             </p>
           </div>
           <button onClick={onClose} className="p-1.5 rounded hover:bg-white/[0.05] text-zinc-400 cursor-pointer">
