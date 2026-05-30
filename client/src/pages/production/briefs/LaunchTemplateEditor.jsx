@@ -233,7 +233,10 @@ export default function LaunchTemplateEditor({ open, onClose, template, onSaved 
   const loadAccounts = async () => {
     setLoadingAccounts(true);
     try {
-      const { data } = await api.get('/brief-pipeline/meta/accounts');
+      // Was /brief-pipeline/meta/accounts — that route was returning 500 in 9ms
+      // with no logged error (likely transient middleware issue). Routed through
+      // /ad-launcher/meta/accounts where the route is stable.
+      const { data } = await api.get('/ad-launcher/meta/accounts');
       setAccounts(data.data || []);
     } catch (err) {
       console.error('Failed to load ad accounts:', err);
@@ -247,7 +250,7 @@ export default function LaunchTemplateEditor({ open, onClose, template, onSaved 
     if (!accountId) return;
     setSyncing(true);
     try {
-      const { data } = await api.get(`/brief-pipeline/meta/sync/${accountId}`);
+      const { data } = await api.get(`/ad-launcher/meta/sync/${accountId}`);
       const d = data.data || data || {};
       setPages(d.pages || []);
       setPixels(d.pixels || []);

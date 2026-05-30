@@ -5,6 +5,7 @@ import { pgQuery } from '../db/pg.js';
 import {
   uploadAdImage, createAdCreative, createAd,
   getDefaultAdAccountId, isMetaAdsConfigured, getAdAccounts,
+  getPages, getPixels, getCampaigns, getCustomAudiences, getAdSets,
 } from '../services/metaAdsApi.js';
 import crypto from 'crypto';
 
@@ -45,6 +46,49 @@ router.get('/_diag-meta', async (req, res) => {
 });
 
 router.use(authenticate, requirePermission('ads-launcher', 'access'));
+
+// ── Meta-passthrough endpoints (replaces the unreliable brief-pipeline ones)
+// These mirror /api/v1/brief-pipeline/meta/* exactly but live under
+// /api/v1/ad-launcher/* where this worktree has full control over the route
+// behavior. The brief-pipeline route was returning 500 in 9ms with no logged
+// error — likely a transient middleware issue. This is a reliable replacement.
+router.get('/meta/accounts', async (_req, res) => {
+  try {
+    if (!isMetaAdsConfigured()) return res.json({ success: true, data: [] });
+    const accounts = await getAdAccounts();
+    res.json({ success: true, data: accounts });
+  } catch (err) {
+    console.error('[AdLauncher] GET /meta/accounts error:', err?.message || err);
+    res.status(500).json({ success: false, error: { message: err?.message || String(err) } });
+  }
+});
+
+router.get('/meta/sync/:accountId', async (req, res) => {
+  try {
+    const { accountId } = req.params;
+    const [pages, pixels, campaigns, audiences] = await Promise.all([
+      getPages(accountId).catch(e => { console.error('[AdLauncher] sync pages:', e.message); return []; }),
+      getPixels(accountId).catch(e => { console.error('[AdLauncher] sync pixels:', e.message); return []; }),
+      getCampaigns(accountId).catch(e => { console.error('[AdLauncher] sync campaigns:', e.message); return []; }),
+      getCustomAudiences(accountId).catch(e => { console.error('[AdLauncher] sync audiences:', e.message); return []; }),
+    ]);
+    console.log(`[AdLauncher] sync ${accountId}: ${pages.length} pages, ${pixels.length} pixels, ${campaigns.length} campaigns, ${audiences.length} audiences`);
+    res.json({ success: true, data: { pages, pixels, campaigns, audiences } });
+  } catch (err) {
+    console.error('[AdLauncher] GET /meta/sync error:', err?.message || err);
+    res.status(500).json({ success: false, error: { message: err?.message || String(err) } });
+  }
+});
+
+router.get('/meta/adsets/:campaignId', async (req, res) => {
+  try {
+    const adsets = await getAdSets(req.params.campaignId);
+    res.json({ success: true, data: adsets });
+  } catch (err) {
+    console.error('[AdLauncher] GET /meta/adsets error:', err?.message || err);
+    res.status(500).json({ success: false, error: { message: err?.message || String(err) } });
+  }
+});
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
