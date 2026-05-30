@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
-  X, Loader2, RefreshCw, Trash2, ChevronDown, ChevronUp, Search,
+  X, Loader2, RefreshCw, ChevronDown, ChevronUp, Search, Layers, Zap, Info,
 } from 'lucide-react';
 import api from '../../../services/api';
 
@@ -41,6 +41,9 @@ export function BrandFollowConfigModal({ isOpen, onClose, onSynced }) {
   const [error, setError] = useState(null);
   const [expanded, setExpanded] = useState(() => new Set());
   const [search, setSearch] = useState('');
+  const [followedFlag, setFollowedFlag] = useState(true);
+  const [syncingAll, setSyncingAll] = useState(false);
+  const [syncAllMsg, setSyncAllMsg] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -48,12 +51,30 @@ export function BrandFollowConfigModal({ isOpen, onClose, onSynced }) {
     try {
       const { data } = await api.get('/statics-generation/league/brand-configs');
       setBrands(data?.data || []);
+      setFollowedFlag(data?.followed !== false);
     } catch (err) {
       setError(err.response?.data?.error?.message || err.message);
     } finally {
       setLoading(false);
     }
   }, []);
+
+  const handleSyncAll = async () => {
+    if (syncingAll) return;
+    setSyncingAll(true);
+    setSyncAllMsg(null);
+    try {
+      const { data } = await api.post('/statics-generation/league/brand-configs/sync-all');
+      const r = data?.data || {};
+      setSyncAllMsg(`Synced ${r.brands || 0} brands — ${r.imported || 0} imported, ${r.skipped || 0} already in library` + ((r.errors || []).length ? ` (${r.errors.length} errored)` : ''));
+      await load();
+      onSynced?.(r);
+    } catch (err) {
+      setSyncAllMsg(`Sync all failed: ${err.response?.data?.error?.message || err.message}`);
+    } finally {
+      setSyncingAll(false);
+    }
+  };
 
   useEffect(() => { if (isOpen) load(); }, [isOpen, load]);
 
@@ -73,6 +94,28 @@ export function BrandFollowConfigModal({ isOpen, onClose, onSynced }) {
       (b.domain || '').toLowerCase().includes(q)
     );
   }, [brands, search]);
+
+  // Aggregate summary — fuel for the Control Center header row. Counts only
+  // brands that will actually contribute (active_image_count > 0). Total
+  // projected imports = sum of per-brand projections (already tier_filter +
+  // top_pct adjusted by the backend's projection math).
+  const summary = useMemo(() => {
+    const eligible = brands.filter(b => (b.active_image_count || 0) > 0);
+    const enabled = brands.filter(b => b.config?.auto_sync_enabled).length;
+    const totalProjected = eligible.reduce((s, b) => s + (b.projected_import_count || 0), 0);
+    const nextAutoSync = (() => {
+      const eligible = brands.filter(b => b.config?.auto_sync_enabled);
+      if (eligible.length === 0) return null;
+      let soonest = null;
+      for (const b of eligible) {
+        const last = b.config?.last_synced_at ? new Date(b.config.last_synced_at).getTime() : 0;
+        const due  = last + (b.config?.auto_sync_interval_hours || 4) * 3600 * 1000;
+        if (soonest === null || due < soonest) soonest = due;
+      }
+      return soonest;
+    })();
+    return { count: brands.length, eligible: eligible.length, enabled, totalProjected, nextAutoSync };
+  }, [brands]);
 
   const toggleExpand = (id) => {
     setExpanded(prev => {
@@ -134,6 +177,53 @@ export function BrandFollowConfigModal({ isOpen, onClose, onSynced }) {
               {error}
             </div>
           )}
+
+          {/* Control Center — top-of-modal summary + sync-all */}
+          <div className="rounded-lg border border-violet-400/20 bg-violet-500/[0.04] p-4">
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex items-start gap-3 min-w-0">
+                <Layers className="w-4 h-4 text-violet-300 mt-0.5 shrink-0" />
+                <div className="min-w-0">
+                  <div className="text-[11px] font-mono uppercase tracking-wider text-violet-300 mb-1">
+                    Control Center
+                    {!followedFlag && (
+                      <span className="ml-2 text-[9px] normal-case text-amber-300/80" title="No formally-followed brands found; falling back to top-100 active Brand Spy brands.">
+                        · fallback
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-xs font-mono text-zinc-200 leading-relaxed">
+                    <span className="text-white font-bold">{summary.count}</span> brand{summary.count === 1 ? '' : 's'}
+                    {summary.enabled > 0 && (<> · <span className="text-emerald-300 font-bold">{summary.enabled}</span> auto-syncing</>)}
+                    {' · '}
+                    <span className="text-cyan-300 font-bold">~{summary.totalProjected}</span> ads will sync
+                  </div>
+                  {summary.nextAutoSync && (
+                    <div className="text-[10px] font-mono text-zinc-500 mt-0.5">
+                      Next auto-sync {summary.nextAutoSync > Date.now()
+                        ? `in ${Math.max(1, Math.round((summary.nextAutoSync - Date.now()) / 3600000))}h`
+                        : 'pending'}
+                    </div>
+                  )}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={handleSyncAll}
+                disabled={syncingAll || summary.count === 0}
+                className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-violet-500/20 border border-violet-400/40 hover:bg-violet-500/30 text-violet-200 text-xs font-mono font-semibold uppercase tracking-wide cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                title="Run a one-shot sync for every brand sequentially"
+              >
+                {syncingAll ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Zap className="w-3.5 h-3.5" />}
+                Sync all
+              </button>
+            </div>
+            {syncAllMsg && (
+              <div className="mt-3 text-[10px] font-mono text-zinc-400 border-t border-white/[0.05] pt-2">
+                {syncAllMsg}
+              </div>
+            )}
+          </div>
 
           <div>
             <h3 className="text-sm font-mono font-semibold text-white mb-3">Followed Brands</h3>
@@ -293,7 +383,10 @@ function BrandRow({ brand, expanded, onToggleExpand, onPatch, onSynced }) {
           {/* Top ads to import */}
           <div>
             <div className="flex items-center justify-between mb-2">
-              <label className="text-xs font-mono text-zinc-300">Top ads to import</label>
+              <label className="text-xs font-mono text-zinc-300 flex items-center gap-1.5">
+                Top ads to import
+                <Info className="w-3 h-3 text-zinc-500" title="Picks the top N% of this brand's active image ads ordered by tier_score DESC, current_rank ASC — BANGER first, then CHAMP, A, B, C, MID, TEST. Within a tier, ads ranked higher in the FB Ad Library (lower current_rank) come first." />
+              </label>
               <span className="text-xs font-mono text-cyan-300">
                 {localTopPct}% (~{Math.max(1, Math.ceil(active_image_count * (localTopPct / 100)))} ads)
               </span>
@@ -308,6 +401,9 @@ function BrandRow({ brand, expanded, onToggleExpand, onPatch, onSynced }) {
             />
             <div className="flex justify-between text-[9px] font-mono text-zinc-600 mt-1">
               <span>1%</span><span>25%</span><span>50%</span><span>75%</span><span>100%</span>
+            </div>
+            <div className="text-[10px] font-mono text-zinc-500 mt-2 leading-relaxed">
+              Ranked best-converters first <span className="text-[#c9a84c]">BANGER</span> → CHAMP → A → B → C, then by FB Ad Library position.
             </div>
           </div>
 

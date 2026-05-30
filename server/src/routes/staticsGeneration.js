@@ -4582,9 +4582,15 @@ function mergeBrandConfig(row) {
 
 // GET /league/brand-configs — followed brands + their import configs +
 // projected import counts (so the UI can show "will import ~30" labels).
+//
+// Mirrors /league/brands' fallback so the modal can NEVER show fewer brands
+// than the FROM LEAGUE column. Order of preference:
+//   1. spy_brand_follows JOIN brand_pages  (formally followed)
+//   2. brand_spy.brands WHERE status='ACTIVE' LIMIT 100  (fallback)
+// The `followed` flag in the response tells the UI which source was used.
 router.get('/league/brand-configs', authenticate, async (_req, res) => {
   try {
-    const rows = await pgQuery(`
+    const followedSql = `
       SELECT
         b.id, b.display_name AS name, b.domain,
         COALESCE((
@@ -4608,7 +4614,33 @@ router.get('/league/brand-configs', authenticate, async (_req, res) => {
         WHERE bp.brand_id = b.id
       )
       ORDER BY b.display_name ASC NULLS LAST, b.domain ASC
-    `);
+    `;
+    let rows = await pgQuery(followedSql);
+    let followed = true;
+    if (rows.length === 0) {
+      followed = false;
+      rows = await pgQuery(`
+        SELECT
+          b.id, b.display_name AS name, b.domain,
+          COALESCE((
+            SELECT COUNT(*) FROM brand_spy.ads a
+            WHERE a.brand_id = b.id
+              AND a.is_active = TRUE
+              AND a.display_format ILIKE 'image%'
+          ), 0)::INTEGER AS active_image_count,
+          COALESCE((
+            SELECT COUNT(*) FROM brand_spy.ads a
+            WHERE a.brand_id = b.id
+          ), 0)::INTEGER AS total_ads,
+          c.top_pct, c.tier_filter, c.max_copy_length,
+          c.auto_sync_enabled, c.auto_sync_interval_hours, c.last_synced_at
+        FROM brand_spy.brands b
+        LEFT JOIN league_brand_configs c ON c.brand_id = b.id
+        WHERE b.status = 'ACTIVE'
+        ORDER BY active_image_count DESC, b.display_name ASC NULLS LAST, b.domain ASC
+        LIMIT 100
+      `);
+    }
 
     const data = rows.map(r => {
       const config = mergeBrandConfig(r);
@@ -4624,9 +4656,76 @@ router.get('/league/brand-configs', authenticate, async (_req, res) => {
       };
     });
 
-    res.json({ success: true, data });
+    res.json({ success: true, data, followed });
   } catch (err) {
     console.error('[league/brand-configs GET] error:', err);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// POST /league/brand-configs/sync-all — sequential per-brand sync for every
+// brand with auto_sync_enabled OR a tier_filter/top_pct override (i.e.
+// anything the operator has touched). Returns aggregated counts so the UI
+// can show "X imported, Y skipped, Z scanned" without N round-trips.
+router.post('/league/brand-configs/sync-all', authenticate, async (req, res) => {
+  try {
+    // Eligible = same query as GET but only rows the operator has explicitly
+    // engaged with. Falls back to ALL followed brands when no configs exist
+    // (first-run convenience).
+    const eligible = await pgQuery(`
+      SELECT b.id
+      FROM brand_spy.brands b
+      LEFT JOIN league_brand_configs c ON c.brand_id = b.id
+      WHERE EXISTS (
+        SELECT 1 FROM spy_brand_follows sbf
+        JOIN brand_spy.brand_pages bp ON bp.meta_page_id = sbf.meta_page_id
+        WHERE bp.brand_id = b.id
+      )
+      ORDER BY b.display_name ASC NULLS LAST
+    `);
+
+    let totalScanned = 0, totalImported = 0, totalSkipped = 0;
+    const errors = [];
+    // Sequential to avoid stampeding the brand_spy.ads index + spy_creatives
+    // upsert path. Tens of brands × ~tens of picks = well under a minute.
+    for (const row of eligible) {
+      try {
+        const r = await fetch(
+          `http://127.0.0.1:${process.env.PORT || 8080}/api/v1/statics-generation/league/brand-configs/${row.id}/sync`,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              // Forward the caller's auth so the sub-call passes authenticate.
+              ...(req.headers.authorization ? { Authorization: req.headers.authorization } : {}),
+            },
+          }
+        );
+        const j = await r.json();
+        if (j?.success && j.data) {
+          totalScanned  += Number(j.data.scanned  || 0);
+          totalImported += Number(j.data.imported || 0);
+          totalSkipped  += Number(j.data.skipped  || 0);
+        } else {
+          errors.push({ brandId: row.id, error: j?.error?.message || 'unknown' });
+        }
+      } catch (e) {
+        errors.push({ brandId: row.id, error: e.message });
+      }
+    }
+
+    res.json({
+      success: true,
+      data: {
+        brands: eligible.length,
+        scanned: totalScanned,
+        imported: totalImported,
+        skipped: totalSkipped,
+        errors,
+      },
+    });
+  } catch (err) {
+    console.error('[league/brand-configs sync-all] error:', err);
     res.status(500).json({ success: false, error: { message: err.message } });
   }
 });
