@@ -93,6 +93,7 @@ export default function ReferenceCard({ reference, onPreview, onGenerateFromRefe
       <button
         type="button"
         onClick={handleCardClick}
+        aria-label={`Preview reference video and transcript for ${reference.headline || reference.brandName || 'this reference'}`}
         className="block w-full relative aspect-[16/10] bg-black/40 overflow-hidden cursor-pointer text-left"
         title="Click to preview video and transcript"
       >

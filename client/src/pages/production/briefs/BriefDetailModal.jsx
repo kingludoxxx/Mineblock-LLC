@@ -65,6 +65,9 @@ export default function BriefDetailModal({
   onApprove,
   onReject,
   onMoveToReady,
+  onLaunch,           // ← new: launch action for ready_to_launch briefs
+  onMarkLaunched,     // ← new: optimistic mark-as-launched without ad creation
+  onMoveBackToApproved, // ← new: reverse drag without keyboard for ready → approved
   onSave,
   originalScript,
   originalRawScript,
@@ -473,6 +476,7 @@ export default function BriefDetailModal({
             <button
               type="button"
               onClick={() => onMoveToReady?.(brief.id)}
+              aria-label="Move brief to Ready to Launch column"
               className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg
                          bg-blue-500/10 text-blue-400 hover:bg-blue-500/15 border border-blue-500/25 hover:border-blue-500/40
                          text-sm font-mono font-semibold uppercase tracking-wide transition-all cursor-pointer"
@@ -480,6 +484,49 @@ export default function BriefDetailModal({
               <Send className="w-4 h-4" />
               Move to Ready to Launch
             </button>
+          )}
+
+          {status === 'ready_to_launch' && (
+            <>
+              {onLaunch && (
+                <button
+                  type="button"
+                  onClick={() => onLaunch?.(brief.id)}
+                  aria-label="Launch this brief on Meta"
+                  className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg
+                             bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25 border border-emerald-500/30 hover:border-emerald-500/50
+                             shadow-[0_0_15px_rgba(16,185,129,0.1)] hover:shadow-[0_0_20px_rgba(16,185,129,0.2)]
+                             text-sm font-mono font-semibold uppercase tracking-wide transition-all cursor-pointer"
+                >
+                  <Send className="w-4 h-4" />
+                  Launch on Meta
+                </button>
+              )}
+              {onMarkLaunched && (
+                <button
+                  type="button"
+                  onClick={() => onMarkLaunched?.(brief.id)}
+                  aria-label="Mark this brief as launched without creating a Meta ad"
+                  className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg
+                             bg-white/[0.03] border border-white/[0.06] text-sm text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.06] transition-all cursor-pointer"
+                >
+                  <Check className="w-4 h-4" />
+                  Mark Launched (already live)
+                </button>
+              )}
+              {onMoveBackToApproved && (
+                <button
+                  type="button"
+                  onClick={() => onMoveBackToApproved?.(brief.id)}
+                  aria-label="Move brief back to Approved column"
+                  className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg
+                             bg-amber-500/5 text-amber-400/80 hover:bg-amber-500/10 border border-amber-500/10 hover:border-amber-500/20
+                             text-xs transition-all cursor-pointer"
+                >
+                  ↩ Move Back to Approved
+                </button>
+              )}
+            </>
           )}
 
           {/* Legacy: briefs with status='pushed' (from before the Pushed column

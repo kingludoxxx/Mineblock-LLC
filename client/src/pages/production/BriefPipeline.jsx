@@ -359,7 +359,25 @@ export default function BriefPipeline() {
     } catch (err) {
       clearInterval(stepInterval);
       if (!abortRef.current) {
-        const msg = err.response?.data?.error?.message || err.message || 'Generation failed';
+        // Route structured 409 error codes to actionable messages.
+        const errCode = err.response?.data?.error?.code;
+        const errMsg = err.response?.data?.error?.message || err.message || 'Generation failed';
+        const errHint = err.response?.data?.error?.hint;
+        let msg = errMsg;
+        switch (errCode) {
+          case 'BRAND_MISMATCH':
+            msg = `🚫 Brand mismatch: ${errMsg}\n\n${errHint || 'Delete this reference and re-import the correct ad.'}`;
+            break;
+          case 'REFERENCE_QUARANTINED':
+            msg = `🚫 Reference quarantined: ${errMsg}\n\n${errHint || 'Delete and re-import — quarantine cannot be overridden.'}`;
+            break;
+          case 'AD_COPY_METADATA_ONLY':
+            msg = `⚠ No real transcript: ${errMsg}\n\n${errHint || 'Retry Transcribe, or paste the script via Upload.'}`;
+            break;
+          case 'STATIC_AD_REFUSED':
+            msg = `🚫 Static ad refused: ${errMsg}\n\n${errHint || 'Pick a video creative.'}`;
+            break;
+        }
         setError(msg);
         throw new Error(msg);
       }
@@ -379,6 +397,30 @@ export default function BriefPipeline() {
     } catch (err) {
       console.error('Move to ready failed:', err);
       setError('Failed to move brief to Ready to Launch.');
+    }
+  }, [fetchGenerated]);
+
+  // Mark a ready-to-launch brief as launched without going through the
+  // Meta launcher (operator launched it manually outside the tool).
+  const handleMarkLaunched = useCallback(async (briefId) => {
+    try {
+      await api.patch(`/brief-pipeline/generated/${briefId}`, { status: 'launched' });
+      await fetchGenerated();
+    } catch (err) {
+      console.error('Mark launched failed:', err);
+      setError('Failed to mark brief as launched.');
+    }
+  }, [fetchGenerated]);
+
+  // Reverse transition: send a Ready brief back to Approved (UI for users
+  // who can't drag, and for accidental "Move to Ready" clicks).
+  const handleMoveBackToApproved = useCallback(async (briefId) => {
+    try {
+      await api.patch(`/brief-pipeline/generated/${briefId}`, { status: 'approved' });
+      await fetchGenerated();
+    } catch (err) {
+      console.error('Move back to approved failed:', err);
+      setError('Failed to move brief back to Approved.');
     }
   }, [fetchGenerated]);
 
@@ -458,8 +500,29 @@ export default function BriefPipeline() {
       // Refresh references — the poll loop will catch the status flip
       await fetchReferences();
     } catch (err) {
-      const apiMsg = err.response?.data?.error?.message || err.message;
-      setError(`Retry failed: ${apiMsg || 'unknown error'}`);
+      // Route 409 error codes to actionable messages instead of the generic
+      // "Retry failed: <message>" toast. These codes come from the backend
+      // brand-mismatch / quarantine / concurrency guards and have specific
+      // operator actions attached.
+      const errCode = err.response?.data?.error?.code;
+      const errMsg = err.response?.data?.error?.message || err.message;
+      const errHint = err.response?.data?.error?.hint;
+      switch (errCode) {
+        case 'TRANSCRIBE_IN_FLIGHT':
+          setError('A transcribe job is already running for this reference. Wait ~30s and click Refresh.');
+          break;
+        case 'BRAND_MISMATCH':
+          setError(`Brand mismatch detected: ${errMsg}\n\nFix: Delete this reference and re-import a real Mineblock ad.`);
+          break;
+        case 'REFERENCE_QUARANTINED':
+          setError(`Reference is quarantined: ${errMsg}\n\n${errHint || 'Delete and re-import.'}`);
+          break;
+        case 'AD_COPY_METADATA_ONLY':
+          setError(`No real video transcript: ${errMsg}\n\n${errHint || ''}`);
+          break;
+        default:
+          setError(`Retry failed: ${errMsg || 'unknown error'}`);
+      }
     }
   }, [fetchReferences]);
 
@@ -980,6 +1043,14 @@ export default function BriefPipeline() {
           }}
           onMoveToReady={() => {
             handleMoveToReady(detailModal.id);
+            setDetailModal(null);
+          }}
+          onMarkLaunched={() => {
+            handleMarkLaunched(detailModal.id);
+            setDetailModal(null);
+          }}
+          onMoveBackToApproved={() => {
+            handleMoveBackToApproved(detailModal.id);
             setDetailModal(null);
           }}
         />

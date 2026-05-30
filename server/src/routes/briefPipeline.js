@@ -35,6 +35,44 @@ const router = Router();
 // Mirrors staticAdExclusionClause() but at the brief_pipeline_references
 // row level. Used as a hard runtime check in iterate/clone routes so even
 // if a static-creative reference somehow slips into the references table
+// ── Bulk-import transcribe semaphore (C3) ─────────────────────────────
+// Caps concurrent background transcribe IIFEs across ALL /references/import-meta
+// calls. Without this, selecting 50 ads in the modal fires 50 simultaneous
+// resolveOwnedVideoFromMeta calls (each 2-12 Meta fetches) plus 50 Playwright
+// tabs — guaranteed Meta IP rate-limit + Chromium OOM on the Render dyno.
+// 3 is empirically a good balance: Meta tolerates parallel reads from
+// different ad_ids, Vertex transcribe is the actual bottleneck downstream.
+const TRANSCRIBE_CONCURRENCY = Number(process.env.TRANSCRIBE_CONCURRENCY || '3');
+let _transcribeInflight = 0;
+const _transcribeWaiters = [];
+async function acquireTranscribeSlot() {
+  if (_transcribeInflight < TRANSCRIBE_CONCURRENCY) {
+    _transcribeInflight += 1;
+    return;
+  }
+  await new Promise((resolve) => _transcribeWaiters.push(resolve));
+  _transcribeInflight += 1;
+}
+function releaseTranscribeSlot() {
+  _transcribeInflight = Math.max(0, _transcribeInflight - 1);
+  const next = _transcribeWaiters.shift();
+  if (next) next();
+}
+
+// ── Error-message sanitizer (H3) ──────────────────────────────────────
+// Strips Meta access_token + bearer tokens before persisting error text
+// to `brief_pipeline_references.analysis_error` or returning to clients.
+// Meta error messages occasionally echo URL params; fetch failure messages
+// can include the full request URL on DNS errors.
+function sanitizeMetaError(msg) {
+  if (!msg) return msg;
+  let s = String(msg);
+  s = s.replace(/access_token=[^&\s"'#]+/gi, 'access_token=REDACTED');
+  s = s.replace(/Bearer\s+[A-Za-z0-9_-]+/g, 'Bearer REDACTED');
+  s = s.replace(/EAA[A-Za-z0-9_-]{30,}/g, 'EAA_REDACTED');
+  return s;
+}
+
 // (legacy data, race condition, manual UPLOAD), it can't be iterated.
 function isStaticAdReference(ref) {
   if (!ref) return false;
@@ -426,11 +464,11 @@ async function resolveOwnedVideoFromMeta(metaAdId) {
     const resp = await fetch(url, { signal: AbortSignal.timeout(10000) });
     const data = await resp.json();
     if (!resp.ok || data.error) {
-      return { error: `Meta /${adId} returned ${resp.status}: ${(data.error?.message || resp.statusText || '').slice(0, 160)}` };
+      return { error: sanitizeMetaError(`Meta /${adId} returned ${resp.status}: ${(data.error?.message || resp.statusText || '').slice(0, 160)}`) };
     }
     adMeta = data;
   } catch (e) {
-    return { error: `Meta /${adId} fetch failed: ${e.message?.slice(0, 160)}` };
+    return { error: sanitizeMetaError(`Meta /${adId} fetch failed: ${e.message?.slice(0, 160)}`) };
   }
 
   // Step 2 — account ownership verification
@@ -528,9 +566,9 @@ async function resolveOwnedVideoFromMeta(metaAdId) {
       cursor = adata.paging?.cursors?.after || null;
       if (!cursor || list.length < 100) break;
     }
-    return { error: `Meta video_ids=[${candidateVideoIds.join(',')}] not found via direct OR ${accountIdAct} advideos (searched up to ${MAX_PAGES} pages).`, accountId: accountIdAct, adName: adMeta.name || null };
+    return { error: sanitizeMetaError(`Meta video_ids=[${candidateVideoIds.join(',')}] not found via direct OR ${accountIdAct} advideos (searched up to ${MAX_PAGES} pages).`), accountId: accountIdAct, adName: adMeta.name || null };
   } catch (e) {
-    return { error: `Meta advideos fetch failed for video_ids=[${candidateVideoIds.join(',')}]: ${e.message?.slice(0, 160)}`, accountId: accountIdAct };
+    return { error: sanitizeMetaError(`Meta advideos fetch failed for video_ids=[${candidateVideoIds.join(',')}]: ${e.message?.slice(0, 160)}`), accountId: accountIdAct };
   }
 }
 
@@ -2622,7 +2660,35 @@ function validateUuid(req, res) {
 router.post('/generate-from-script', authenticate, async (req, res) => {
   try {
     await ensureTables();
-    const { script, url, productId, productCode, angle, mode, numVariations = 3, referenceId, vectorsSelected, acknowledgeBrandMismatch } = req.body;
+    const { script, url, productId, productCode, angle, mode, numVariations = 3, referenceId, vectorsSelected, acknowledgeBrandMismatch, acknowledgeAdCopyOnly } = req.body;
+
+    // C2 — refuse iterate/clone when the reference's transcript came from
+    // Meta ad-copy metadata (Path 5 last resort) instead of a real video
+    // transcription. The ad-copy text IS the marketer's own description, so
+    // cloning it makes the model hallucinate a "video" from a static blurb.
+    // Operator must explicitly acknowledge with acknowledgeAdCopyOnly:true.
+    if (referenceId && !acknowledgeAdCopyOnly) {
+      try {
+        const adCopyRows = await pgQuery(
+          `SELECT imported_metadata->>'transcribe_source' AS src, headline
+             FROM brief_pipeline_references WHERE id = $1 LIMIT 1`,
+          [referenceId]
+        );
+        if (adCopyRows[0]?.src === 'ad_copy_metadata') {
+          return res.status(409).json({
+            success: false,
+            error: {
+              code: 'AD_COPY_METADATA_ONLY',
+              message: 'This reference has no real video transcript — only Meta ad-copy text (the marketing description). Iterating from this will produce hallucinated content.',
+              ref_headline: adCopyRows[0].headline,
+              hint: 'Click "Retry Transcribe" to attempt video extraction again, OR paste the actual script via the Upload button, OR resubmit with acknowledgeAdCopyOnly:true to proceed anyway.',
+            },
+          });
+        }
+      } catch (e) {
+        console.warn(`[BriefPipeline] ad-copy guard check failed for ref ${referenceId}:`, e.message);
+      }
+    }
 
     // STATIC AD GUARDRAIL: brief pipeline is for video ads ONLY. Refuse any
     // reference whose headline shows it's a static creative ("- IMG -" in
@@ -4456,19 +4522,35 @@ router.post('/references/:id/retry-transcribe', authenticate, async (req, res) =
       return res.status(400).json({ success: false, error: { message: 'No ad library URL available for this reference — cannot retry. Use Upload to paste the script manually.' } });
     }
 
-    // Clear stale state
-    await pgQuery(
+    // C1 — concurrency guard. Atomic flip to 'extracting' that only succeeds
+    // when the ref isn't already mid-transcribe. Prevents double-click /
+    // double-tab from spawning two concurrent IIFEs racing on the same row
+    // (last-writer-wins corruption + doubled Meta + Vertex quota burn).
+    const claimed = await pgQuery(
       `UPDATE brief_pipeline_references
-          SET status = 'pending', transcript = NULL, transcript_at = NULL,
+          SET status = 'extracting', transcript = NULL, transcript_at = NULL,
               analysis_error = NULL, video_url = NULL, updated_at = NOW()
-        WHERE id = $1`,
+        WHERE id = $1
+          AND status NOT IN ('extracting', 'transcribing')
+        RETURNING id`,
       [ref.id]
     );
+    if (claimed.length === 0) {
+      return res.status(409).json({
+        success: false,
+        error: {
+          code: 'TRANSCRIBE_IN_FLIGHT',
+          message: 'A transcribe job is already running for this reference. Wait ~30s and refresh.',
+        },
+      });
+    }
 
     // Kick off background retry — same Meta-direct first pipeline as fresh
     // import. Path 0 (Meta-direct) takes precedence; only when meta_ad_id is
     // missing do we fall back to Playwright/yt-dlp on FB Ad Library.
     (async () => {
+      // C3 — acquire concurrency slot (shared cap across import-meta + retry).
+      await acquireTranscribeSlot();
       try {
         let videoUrl = null;
         let ownershipVerified = false;
@@ -4592,13 +4674,24 @@ router.post('/references/:id/retry-transcribe', authenticate, async (req, res) =
           return;
         }
 
-        // Path 3: ad-copy metadata last resort
+        // Path 3: ad-copy metadata last resort.
+        // C2 — Tagged as 'ad_copy_metadata' transcribe_source so iterate-mode
+        // can refuse to clone-from-marketing-copy without explicit ack. The
+        // status stays 'transcribed' (the operator can see + read the text)
+        // but the source field flags it for the iterate guard.
         const text = await extractScriptFromUrl(adLibraryUrl);
         if (text && text.trim().length > 30) {
           await pgQuery(
             `UPDATE brief_pipeline_references
                 SET transcript = $1, transcript_at = NOW(), status = 'transcribed',
-                    analysis_error = NULL, updated_at = NOW()
+                    analysis_error = NULL,
+                    imported_metadata = CASE
+                      WHEN imported_metadata IS NULL THEN jsonb_build_object('transcribe_source', 'ad_copy_metadata'::text)
+                      WHEN jsonb_typeof(imported_metadata) = 'object' THEN
+                        jsonb_set(imported_metadata, '{transcribe_source}', to_jsonb('ad_copy_metadata'::text), true)
+                      ELSE jsonb_build_object('original', imported_metadata::text, 'transcribe_source', 'ad_copy_metadata'::text)
+                    END,
+                    updated_at = NOW()
               WHERE id = $2`,
             [text.trim(), ref.id]
           );
@@ -4611,11 +4704,14 @@ router.post('/references/:id/retry-transcribe', authenticate, async (req, res) =
           );
         }
       } catch (e) {
-        console.error(`[BriefPipeline] retry-transcribe ${ref.id} error:`, e.message);
+        const safe = sanitizeMetaError(e.message);
+        console.error(`[BriefPipeline] retry-transcribe ${ref.id} error:`, safe);
         await pgQuery(
           `UPDATE brief_pipeline_references SET analysis_error = $1, status = 'error', updated_at = NOW() WHERE id = $2`,
-          [`Retry failed: ${e.message?.slice(0, 600)}`, ref.id]
+          [sanitizeMetaError(`Retry failed: ${e.message?.slice(0, 600)}`), ref.id]
         ).catch(() => {});
+      } finally {
+        releaseTranscribeSlot();
       }
     })();
 
@@ -5020,20 +5116,15 @@ router.post('/references/import-meta', authenticate, async (req, res) => {
         window_days:     windowDays,
       };
 
-      // Re-import semantics: if the row already exists, treat the new import
-      // as an intentional refresh — wipe stale transcript / video_url /
-      // analysis_error and reset status to 'pending' so the background
-      // transcribe job re-runs against the fresh ad library URL. The
-      // RETURNING clause exposes (xmax = 0) so we know whether this was an
-      // INSERT (new) or an UPDATE (existing) and can branch accordingly.
-      const inserted = await pgQuery(
-        `INSERT INTO brief_pipeline_references (
-           brand_spy_ad_id, ad_archive_id, brand_id, brand_name, tier,
-           video_url, thumbnail_url, headline, body_text, transcript, status,
-           source, imported_metadata
-         )
-         VALUES (NULL, $1, NULL, $2, 'OUR', NULL, $3, $4, NULL, NULL, 'pending', 'meta', $5)
-         ON CONFLICT (ad_archive_id, source) DO UPDATE SET
+      // C4 — Re-import preserves existing transcripts. Previously this
+      // unconditionally nuked transcript/status, so re-clicking Import on
+      // an already-transcribed ref destroyed hours of analyzer output.
+      // Now the UPDATE branch only refreshes metadata; transcript is
+      // preserved. The query param `?force=1` reverts to the old destructive
+      // behavior for cases where the operator KNOWS they need a re-extract.
+      const forceRefresh = String(req.query.force || '').toLowerCase() === '1';
+      const conflictClause = forceRefresh
+        ? `DO UPDATE SET
            brand_name        = EXCLUDED.brand_name,
            thumbnail_url     = COALESCE(EXCLUDED.thumbnail_url, brief_pipeline_references.thumbnail_url),
            headline          = COALESCE(EXCLUDED.headline,      brief_pipeline_references.headline),
@@ -5043,7 +5134,21 @@ router.post('/references/import-meta', authenticate, async (req, res) => {
            transcript_at     = NULL,
            analysis_error    = NULL,
            status            = 'pending',
-           updated_at        = NOW()
+           updated_at        = NOW()`
+        : `DO UPDATE SET
+           brand_name        = EXCLUDED.brand_name,
+           thumbnail_url     = COALESCE(EXCLUDED.thumbnail_url, brief_pipeline_references.thumbnail_url),
+           headline          = COALESCE(EXCLUDED.headline,      brief_pipeline_references.headline),
+           imported_metadata = EXCLUDED.imported_metadata,
+           updated_at        = NOW()`;
+      const inserted = await pgQuery(
+        `INSERT INTO brief_pipeline_references (
+           brand_spy_ad_id, ad_archive_id, brand_id, brand_name, tier,
+           video_url, thumbnail_url, headline, body_text, transcript, status,
+           source, imported_metadata
+         )
+         VALUES (NULL, $1, NULL, $2, 'OUR', NULL, $3, $4, NULL, NULL, 'pending', 'meta', $5)
+         ON CONFLICT (ad_archive_id, source) ${conflictClause}
          RETURNING id, status, (xmax = 0) AS was_inserted`,
         // Store the proxy URL so the saved Reference card never breaks. The
         // proxy is keyed on creative_id which is stable across re-syncs.
@@ -5095,7 +5200,28 @@ router.post('/references/import-meta', authenticate, async (req, res) => {
       // is the one currently owned by one of our trusted Meta ad accounts.
       const canResolveOwned = !!r.meta_ad_id && !!META_ACCESS_TOKEN;
       if (canResolveOwned || directVideoCandidate || adLibraryUrl) {
+        // C1 — atomic claim. Only spawn a background IIFE if the row isn't
+        // already mid-extract. Without this, a second import-meta call on the
+        // same creative_id (or a re-import via force=1 fired twice) would
+        // launch parallel pipelines racing on the same row.
+        const claimed = await pgQuery(
+          `UPDATE brief_pipeline_references
+              SET status = 'extracting', updated_at = NOW()
+            WHERE id = $1
+              AND status NOT IN ('extracting', 'transcribing')
+              AND (transcript IS NULL OR $2::boolean = TRUE)
+            RETURNING id`,
+          [ref.id, forceRefresh]
+        ).catch(() => []);
+        if (claimed.length === 0) {
+          // Either already transcribing OR transcript exists and not force-mode.
+          // Don't double-fire. The frontend can poll /references to see state.
+          continue;
+        }
         (async () => {
+          // C3 — Cap parallel transcribe jobs across all import-meta calls
+          // to prevent Meta rate-limit + Playwright OOM on bulk imports.
+          await acquireTranscribeSlot();
           try {
             let videoUrl = null;
             let resolvedSource = null;
@@ -5246,7 +5372,9 @@ router.post('/references/import-meta', authenticate, async (req, res) => {
 
             // Path 5 — extractScriptFromUrl last resort. Hits Meta Graph
             // ads_archive for ad-copy metadata. NOT a real transcription —
-            // just whatever text Meta exposes about the ad.
+            // just whatever text Meta exposes about the ad. Tagged with
+            // transcribe_source='ad_copy_metadata' (C2) so iterate-mode
+            // can refuse to clone from marketing copy without explicit ack.
             if (adLibraryUrl) {
               console.log(`[BriefPipeline] transcribe ref ${ref.id}: extractScriptFromUrl last resort`);
               try {
@@ -5258,6 +5386,12 @@ router.post('/references/import-meta', authenticate, async (req, res) => {
                             transcript_at   = NOW(),
                             status          = 'transcribed',
                             analysis_error  = NULL,
+                            imported_metadata = CASE
+                              WHEN imported_metadata IS NULL THEN jsonb_build_object('transcribe_source', 'ad_copy_metadata'::text)
+                              WHEN jsonb_typeof(imported_metadata) = 'object' THEN
+                                jsonb_set(imported_metadata, '{transcribe_source}', to_jsonb('ad_copy_metadata'::text), true)
+                              ELSE jsonb_build_object('original', imported_metadata::text, 'transcribe_source', 'ad_copy_metadata'::text)
+                            END,
                             updated_at      = NOW()
                       WHERE id = $2`,
                     [text.trim(), ref.id]
@@ -5265,7 +5399,7 @@ router.post('/references/import-meta', authenticate, async (req, res) => {
                   return;
                 }
               } catch (fallbackErr) {
-                console.warn(`[BriefPipeline] extractScriptFromUrl failed for ref ${ref.id}:`, fallbackErr.message);
+                console.warn(`[BriefPipeline] extractScriptFromUrl failed for ref ${ref.id}:`, sanitizeMetaError(fallbackErr.message));
               }
             }
 
@@ -5277,13 +5411,15 @@ router.post('/references/import-meta', authenticate, async (req, res) => {
               ['No video found on this ad — likely an image / carousel ad, or the FB Ad Library page didn\'t load video content. Use the Upload button below to paste the script manually.', ref.id]
             );
           } catch (err) {
-            console.error(`[BriefPipeline] async transcribe failed for ref ${ref.id}:`, err.message);
+            console.error(`[BriefPipeline] async transcribe failed for ref ${ref.id}:`, sanitizeMetaError(err.message));
             await pgQuery(
               `UPDATE brief_pipeline_references
                   SET analysis_error = $1, status = 'error', updated_at = NOW()
                 WHERE id = $2`,
-              [`Transcription failed: ${err.message?.slice(0, 600)}`, ref.id]
+              [sanitizeMetaError(`Transcription failed: ${err.message?.slice(0, 600)}`), ref.id]
             ).catch(() => {});
+          } finally {
+            releaseTranscribeSlot();
           }
         })();
       }
@@ -5298,67 +5434,6 @@ router.post('/references/import-meta', authenticate, async (req, res) => {
     });
   } catch (err) {
     console.error('[BriefPipeline] /references/import-meta error:', err.message);
-    res.status(500).json({ success: false, error: { message: err.message } });
-  }
-});
-
-// POST /_audit-all-meta-refs — one-shot retroactive ownership audit.
-// CRON_SECRET-gated. Scans every brief_pipeline_references row with
-// source='meta', calls Meta API to confirm each meta_ad_id still belongs
-// to a trusted Mineblock account. Quarantines any that fail.
-//
-// This is the cleanup pass run once after deploying the four-layer guard.
-// After it runs and the report shows zero foreign-account rows, the
-// endpoint should be removed (verify-then-clean pattern).
-router.post('/_audit-all-meta-refs', async (req, res) => {
-  const expected = process.env.CRON_SECRET || '';
-  if (!expected || req.query.secret !== expected) {
-    return res.status(401).json({ error: 'Authentication required' });
-  }
-  try {
-    const rows = await pgQuery(
-      `SELECT id, ad_archive_id, headline, imported_metadata, is_quarantined
-         FROM brief_pipeline_references
-        WHERE source = 'meta'
-        ORDER BY created_at DESC
-        LIMIT 5000`
-    );
-    const report = {
-      scanned: rows.length,
-      already_quarantined: 0,
-      newly_quarantined: 0,
-      owned_ok: 0,
-      meta_error: 0,
-      no_meta_ad_id: 0,
-      newly_quarantined_ids: [],
-    };
-    for (const r of rows) {
-      if (r.is_quarantined) { report.already_quarantined++; continue; }
-      let md = r.imported_metadata;
-      if (typeof md === 'string') { try { md = JSON.parse(md); } catch { md = null; } }
-      const metaAdId = md?.ad_id || r.ad_archive_id || null;
-      if (!metaAdId) { report.no_meta_ad_id++; continue; }
-      const owned = await resolveOwnedVideoFromMeta(metaAdId);
-      if (owned?.foreignAccount) {
-        const reason = `Retroactive audit: Meta ad ${metaAdId} (${owned.adName || 'unnamed'}) belongs to account ${owned.accountId}, NOT Mineblock's.`;
-        await pgQuery(
-          `UPDATE brief_pipeline_references
-              SET is_quarantined = TRUE, quarantine_reason = $1, quarantined_at = NOW(),
-                  status = 'error', analysis_error = $1, updated_at = NOW()
-            WHERE id = $2`,
-          [reason, r.id]
-        ).catch((e) => console.warn('[audit-all] quarantine failed for ref', r.id, e.message));
-        report.newly_quarantined++;
-        report.newly_quarantined_ids.push({ id: r.id, ad_archive_id: r.ad_archive_id, headline: r.headline?.slice(0, 80), reason });
-      } else if (owned?.videoUrl || owned?.thumbnailUrl) {
-        report.owned_ok++;
-      } else {
-        report.meta_error++;
-      }
-    }
-    res.json({ success: true, report });
-  } catch (err) {
-    console.error('[BriefPipeline] /_audit-all-meta-refs error:', err.message);
     res.status(500).json({ success: false, error: { message: err.message } });
   }
 });

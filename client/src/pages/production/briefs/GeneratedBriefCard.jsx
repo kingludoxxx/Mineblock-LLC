@@ -68,11 +68,17 @@ function GeneratedBriefCard({ brief, onApprove, onReject, onMoveToReady, onDelet
                 onClick={(e) => { e.stopPropagation(); onDelete(brief); }}
                 className="text-zinc-600 hover:text-red-400 transition-colors cursor-pointer"
                 title="Delete brief"
+                aria-label="Delete brief"
               >
                 <Trash2 className="w-3.5 h-3.5" />
               </button>
             )}
-            <button className="text-zinc-600 hover:text-zinc-300 transition-colors">
+            <button
+              type="button"
+              className="text-zinc-600 hover:text-zinc-300 transition-colors"
+              aria-label="More options"
+              title="More options"
+            >
               <MoreHorizontal className="w-4 h-4" />
             </button>
           </div>
@@ -120,6 +126,8 @@ function GeneratedBriefCard({ brief, onApprove, onReject, onMoveToReady, onDelet
                   <button
                     type="button"
                     onClick={(e) => { e.stopPropagation(); onReject?.(brief); }}
+                    aria-label="Reject brief and regenerate"
+                    title="Reject brief"
                     className="w-7 h-7 rounded-md bg-white/[0.03] border border-white/[0.05] flex items-center justify-center text-zinc-400 hover:text-orange-400 hover:bg-orange-500/10 hover:border-orange-500/25 transition-all duration-200 cursor-pointer"
                   >
                     <RefreshCw className="w-3 h-3" />
@@ -127,6 +135,8 @@ function GeneratedBriefCard({ brief, onApprove, onReject, onMoveToReady, onDelet
                   <button
                     type="button"
                     onClick={(e) => { e.stopPropagation(); onApprove?.(brief); }}
+                    aria-label="Approve brief"
+                    title="Approve brief"
                     className="w-7 h-7 rounded-md bg-white/[0.03] border border-white/[0.05] flex items-center justify-center text-zinc-400 hover:text-emerald-400 hover:bg-emerald-500/10 hover:border-emerald-500/25 transition-all duration-200 cursor-pointer"
                   >
                     <CheckCircle2 className="w-3 h-3" />
@@ -137,6 +147,8 @@ function GeneratedBriefCard({ brief, onApprove, onReject, onMoveToReady, onDelet
                 <button
                   type="button"
                   onClick={(e) => { e.stopPropagation(); onMoveToReady?.(brief); }}
+                  aria-label="Move brief to Ready to Launch"
+                  title="Move to Ready to Launch"
                   className="px-2.5 py-1 rounded-md bg-blue-500/10 text-blue-400 text-[10px] font-mono font-semibold hover:bg-blue-500/20 border border-blue-500/20 hover:border-blue-500/30 transition-all duration-200 flex items-center gap-1.5 uppercase tracking-wide cursor-pointer"
                 >
                   <Send className="w-3 h-3" /> Move to Ready
@@ -146,6 +158,9 @@ function GeneratedBriefCard({ brief, onApprove, onReject, onMoveToReady, onDelet
                 <button
                   type="button"
                   onClick={(e) => { e.stopPropagation(); onSelectForLaunch?.(); }}
+                  aria-label={isSelectedForLaunch ? 'Deselect this brief for batch launch' : 'Select this brief for batch launch'}
+                  title={isSelectedForLaunch ? 'Deselect for launch' : 'Select for launch'}
+                  aria-pressed={isSelectedForLaunch}
                   className={`w-7 h-7 rounded-md border flex items-center justify-center transition-all duration-200 cursor-pointer ${
                     isSelectedForLaunch
                       ? 'bg-blue-500 border-blue-400 text-white'
