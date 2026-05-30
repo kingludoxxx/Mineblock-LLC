@@ -97,20 +97,25 @@ router.get('/_inspectb0223', async (_req, res) => {
     // was actually imported / transcribed.
     const bpRows = await pgQuery(
       `SELECT id, ad_archive_id, headline, status, COALESCE(is_quarantined,FALSE) AS quarantined,
-              LEFT(transcript, 400) AS transcript_head,
-              imported_metadata->>'ad_id' AS imported_ad_id,
-              imported_metadata->>'creative_id' AS imported_creative_id,
-              imported_metadata->>'account_id' AS imported_account_id,
-              imported_metadata->'multimodal_analysis'->>'brand_or_product_identified' AS mm_brand,
-              LEFT(imported_metadata->'multimodal_analysis'->>'selling_message', 200) AS mm_selling
+              LEFT(transcript, 600) AS transcript_head,
+              imported_metadata AS imported_metadata_full
          FROM brief_pipeline_references
         WHERE source = 'meta'
-          AND (headline ILIKE '%B0223%' OR ad_archive_id IN (
-                 SELECT meta_ad_id::text FROM creative_analysis WHERE creative_id = 'B0223' AND meta_ad_id IS NOT NULL
-               ))
+          AND headline ILIKE '%B0223%'
         ORDER BY created_at DESC
-        LIMIT 10`
+        LIMIT 5`
     );
+    // For each BP ref, also ask Meta directly what the ad_archive_id is
+    for (const b of bpRows) {
+      if (b.ad_archive_id && token) {
+        try {
+          const url = `${META}/${b.ad_archive_id}?fields=name,account_id,effective_status,created_time,creative{video_id,thumbnail_url,title,body,object_story_spec{video_data{title,message}}}&access_token=${token}`;
+          const resp = await fetch(url, { signal: AbortSignal.timeout(10000) });
+          const data = await resp.json();
+          b.meta_lookup_by_ad_archive_id = { ok: resp.ok && !data.error, data, error: data.error?.message || null };
+        } catch (e) { b.meta_lookup_by_ad_archive_id = { ok: false, error: e.message }; }
+      }
+    }
     res.json({ success: true, creative_analysis: enriched, brief_pipeline_references: bpRows });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
