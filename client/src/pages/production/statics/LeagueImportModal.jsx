@@ -272,9 +272,9 @@ export function LeagueImportModal({ onClose, onImported }) {
                       </div>
                     </div>
                   )}
-                  <div className="p-2 space-y-0.5">
-                    <div className="text-[10px] font-mono text-zinc-300 truncate">{ad.headline || ad.body_text || ad.ad_archive_id}</div>
-                    <div className="text-[9px] text-zinc-500">{ad.display_format} · {ad.active_days || 0}d</div>
+                  <div className="p-2 space-y-1">
+                    <div className="text-[11px] font-mono text-zinc-100 truncate">{ad.headline || ad.body_text || ad.ad_archive_id}</div>
+                    <div className="text-[11px] font-mono text-zinc-100">{ad.display_format} · {ad.active_days || 0}d</div>
                   </div>
                 </div>
               );
