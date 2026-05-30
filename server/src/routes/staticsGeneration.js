@@ -422,6 +422,72 @@ router.post('/meta-ads/repair-thumbnails', async (req, res) => {
   return authenticate(req, res, () => _doMetaAdsRepairThumbnails(req, res));
 });
 
+// ── TEMP: static-filter diagnostic — CRON_SECRET only ──
+// Returns three buckets for the last 7 days ending YESTERDAY (same window
+// as the production query):
+//   1. all_count   — every Meta ad with spend > $1 (no naming filter)
+//   2. kept_count  — survives the \\bIMG\\b + 1080x1080 filter
+//   3. dropped[]   — top 30 dropped names + spend, so we can eyeball
+//                    which legitimate statics are being rejected.
+// REMOVE after we decide whether to broaden the filter or rename the ads.
+router.get('/meta-ads/_staticfilterdiag', async (req, res) => {
+  const cs = process.env.CRON_SECRET;
+  if (!cs || req.headers['x-cron-secret'] !== cs) return res.status(401).json({ error: 'unauthorized' });
+  try {
+    const TW_API_KEY = process.env.TRIPLEWHALE_API_KEY || '';
+    const TW_SHOP_ID = process.env.TRIPLEWHALE_SHOP_ID || '17cca0-2.myshopify.com';
+    const TW_SQL_URL = 'https://api.triplewhale.com/api/v2/orcabase/api/sql';
+    const attribution = process.env.TW_ATTRIBUTION_MODEL || 'lastPlatformClick';
+    if (!TW_API_KEY) return res.status(500).json({ error: 'TRIPLEWHALE_API_KEY not set' });
+    const today = new Date(); today.setUTCHours(0,0,0,0);
+    const end = new Date(today.getTime() - 86400000);
+    const start = new Date(end.getTime() - 6 * 86400000);
+    const fmt = (d) => d.toISOString().slice(0,10);
+    const minSpend = parseFloat(req.query.min_spend) || 1;
+
+    const sql = `
+      SELECT
+        ad_name,
+        SUM(spend) AS spend,
+        (match(ad_name, '\\\\bIMG\\\\b')
+         OR ad_name ILIKE '%1080x1080%'
+         OR ad_name ILIKE '%1080×1080%') AS kept
+      FROM pixel_joined_tvf
+      WHERE event_date BETWEEN @startDate AND @endDate
+        AND channel = 'facebook-ads'
+      GROUP BY ad_name
+      HAVING SUM(spend) > ${minSpend}
+      ORDER BY SUM(spend) DESC
+      LIMIT 200
+    `;
+    const r = await fetch(TW_SQL_URL, {
+      method: 'POST',
+      headers: { 'x-api-key': TW_API_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ shopId: TW_SHOP_ID, query: sql.trim(), period: { startDate: fmt(start), endDate: fmt(end) }, attributionModel: attribution }),
+      signal: AbortSignal.timeout(45000),
+    });
+    const txt = await r.text();
+    let data; try { data = JSON.parse(txt); } catch { data = { raw: txt }; }
+    const rows = Array.isArray(data) ? data : (data?.data || data?.rows || []);
+    const kept = rows.filter(x => x.kept === 1 || x.kept === true);
+    const dropped = rows.filter(x => !(x.kept === 1 || x.kept === true));
+    return res.json({
+      ok: r.ok,
+      startDate: fmt(start),
+      endDate: fmt(end),
+      attribution,
+      min_spend: minSpend,
+      all_count: rows.length,
+      kept_count: kept.length,
+      dropped_count: dropped.length,
+      dropped: dropped.slice(0, 30).map(x => ({ ad_name: x.ad_name, spend: Number(x.spend).toFixed(2) })),
+      kept_sample: kept.slice(0, 10).map(x => ({ ad_name: x.ad_name, spend: Number(x.spend).toFixed(2) })),
+    });
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
+  }
+});
+
 // ── League maintenance endpoints (CRON_SECRET) ──
 // Two surgical admin actions exposed for the operator without round-tripping
 // through the UI (they're one-shot operations). Both are CRON_SECRET-gated
