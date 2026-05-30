@@ -34,16 +34,38 @@ const router = Router();
 // TEMP — PestLab end-to-end test: find ref → re-transcribe → iterate
 router.get('/_findpestlab', async (req, res) => {
   try {
-    const cols = await pgQuery(`SELECT column_name FROM information_schema.columns WHERE table_name = 'spy_creatives' ORDER BY ordinal_position`);
-    const colNames = cols.map(c => c.column_name);
-    // Find any column that looks like an archive id and search by it
-    const archiveCol = colNames.find(c => /archive|ad_id|external_id|fb_id/i.test(c)) || 'id';
-    const findQuery = `SELECT * FROM spy_creatives WHERE ${archiveCol}::text = '1174663881203785' LIMIT 1`;
-    let match = [];
-    try { match = await pgQuery(findQuery); } catch (e) { match = [{ _err: e.message, _query: findQuery }]; }
-    // Also try a 'recent 5' so I can see what columns hold the actual ad name + url
-    const recent = await pgQuery(`SELECT * FROM spy_creatives ORDER BY created_at DESC NULLS LAST LIMIT 3`);
-    res.json({ columns: colNames, archive_col_used: archiveCol, match, recent_count: recent.length, recent });
+    // List all tables that look like they could hold Brand Spy / League ads
+    const tables = await pgQuery(`SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND (table_name ILIKE '%ad%' OR table_name ILIKE '%spy%' OR table_name ILIKE '%champ%' OR table_name ILIKE '%league%' OR table_name ILIKE '%brand%')`);
+    const tableHits = [];
+    for (const t of tables) {
+      try {
+        const cols = await pgQuery(`SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name = $1`, [t.table_name]);
+        const colNames = cols.map(c => c.column_name);
+        const hasVideoUrl = colNames.includes('video_url') || colNames.includes('creative_link');
+        if (!hasVideoUrl) continue;
+        // Try to find the PestLab row by ad_archive_id-like columns
+        const archiveCols = colNames.filter(c => /archive|ad_id|external_id|fb_id|library_id/i.test(c));
+        const hits = [];
+        for (const ac of archiveCols) {
+          try {
+            const r = await pgQuery(`SELECT * FROM ${t.table_name} WHERE ${ac}::text = '1174663881203785' LIMIT 1`);
+            if (r.length) hits.push({ archive_col: ac, row: r[0] });
+          } catch { /* skip */ }
+        }
+        // Also try by body text or title
+        try {
+          const bodyColCandidates = colNames.filter(c => /body|text|caption|copy|headline|title|name/i.test(c));
+          for (const bc of bodyColCandidates) {
+            const r = await pgQuery(`SELECT * FROM ${t.table_name} WHERE LOWER(COALESCE(${bc}::text,'')) LIKE '%goodbye to pests%' OR LOWER(COALESCE(${bc}::text,'')) LIKE '%say goodbye%pest%' LIMIT 1`);
+            if (r.length) hits.push({ body_col: bc, row: r[0] });
+          }
+        } catch { /* skip */ }
+        tableHits.push({ table: t.table_name, columns: colNames, video_url_col: colNames.includes('video_url') ? 'video_url' : 'creative_link', hits });
+      } catch (e) {
+        tableHits.push({ table: t.table_name, error: e.message });
+      }
+    }
+    res.json({ tables_scanned: tables.map(t => t.table_name), table_hits: tableHits.filter(h => (h.hits && h.hits.length) || h.error) });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
