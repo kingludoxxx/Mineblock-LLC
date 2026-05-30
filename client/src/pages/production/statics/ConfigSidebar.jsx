@@ -3,10 +3,7 @@ import {
   Layers,
   Upload,
   X,
-  Loader2,
   Sparkles,
-  ListPlus,
-  Zap,
 } from 'lucide-react';
 import ProductSelector from '../../../components/ProductSelector';
 import { AresAgent } from './AresAgent';
@@ -60,16 +57,17 @@ export function ConfigSidebar({
   // operator couldn't queue more references mid-flight.
   const canQueue = selectedProduct && hasReference;
 
-  // Compute a human-readable reason why the Generate button is disabled
-  const disabledReason = canGenerate
+  // Reason the button is disabled — only shown when canQueue is false
+  // (i.e. missing product or reference). When canQueue=true the button
+  // is enabled regardless of `generating`; the inline hint below it
+  // tells the operator the click will queue.
+  const disabledReason = canQueue
     ? null
-    : generating
-      ? 'Generation in progress...'
-      : !selectedProduct
-        ? 'Select a product first'
-        : !hasReference
-          ? 'Select a reference first'
-          : null;
+    : !selectedProduct
+      ? 'Select a product first'
+      : !hasReference
+        ? 'Select a reference first'
+        : null;
 
   // -- Drag & drop handlers --------------------------------------------------
 
@@ -267,62 +265,46 @@ export function ConfigSidebar({
         <AresAgent active={generating} step={generationStep} />
       </div>
 
-      {/* ---- Generate & Queue buttons ---- */}
-      <div className="px-5 py-3 border-t border-white/[0.04] mt-3 space-y-3">
+      {/* ---- Generate Static (one smart button) ----
+           Single CTA replaces the old trio (Generate / Add to Queue /
+           Generate All N Angles). Behavior:
+             - idle (no generation in flight) → fires the generation
+             - busy (something is generating)  → auto-queues this reference
+                                                 (queue runner picks it up)
+           Operator never has to choose between Generate vs Queue —
+           the button always does the right thing. */}
+      <div className="px-5 py-3 border-t border-white/[0.04] mt-3">
         <button
           type="button"
-          onClick={onGenerate}
-          disabled={!canGenerate}
+          onClick={generating ? onAddToQueue : onGenerate}
+          disabled={!canQueue}
           className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-lg text-sm font-mono font-semibold uppercase tracking-wide transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
           style={{
-            background: !canGenerate ? '#1a1710' : 'linear-gradient(135deg, #c9a84c, #d4b55a)',
-            color: !canGenerate ? '#c9a84c' : '#111113',
-            border: !canGenerate ? '1px solid rgba(201,168,76,0.2)' : 'none',
-            boxShadow: !canGenerate ? 'none' : '0 0 20px rgba(201,168,76,0.25), 0 1px 3px rgba(0,0,0,0.4), inset 0 1px 0 0 rgba(255,255,255,0.2)',
+            background: !canQueue ? '#1a1710' : 'linear-gradient(135deg, #c9a84c, #d4b55a)',
+            color: !canQueue ? '#c9a84c' : '#111113',
+            border: !canQueue ? '1px solid rgba(201,168,76,0.2)' : 'none',
+            boxShadow: !canQueue ? 'none' : '0 0 20px rgba(201,168,76,0.25), 0 1px 3px rgba(0,0,0,0.4), inset 0 1px 0 0 rgba(255,255,255,0.2)',
           }}
+          title={
+            !canQueue
+              ? 'Pick a product + reference first'
+              : generating
+                ? 'A generation is in progress — this will queue the current reference to run next'
+                : 'Generate immediately'
+          }
         >
-          {generating ? (
-            <>
-              <Loader2 className="w-4 h-4 animate-spin" />
-              Generating...
-            </>
-          ) : (
-            <>
-              <Sparkles className="w-4 h-4" />
-              Generate Static
-            </>
-          )}
+          <Sparkles className="w-4 h-4" />
+          Generate Static
         </button>
-        {/* Explain why the button is disabled so users know what's missing */}
-        {disabledReason && (
-          <p className="text-center text-[11px] text-zinc-600 mt-1">{disabledReason}</p>
+        {/* Inline hint when busy so the operator knows the click will queue */}
+        {generating && canQueue && (
+          <p className="text-center text-[11px] text-zinc-500 mt-2">
+            A generation is in progress — clicking will add this to the queue.
+          </p>
         )}
-        {onAddToQueue && (
-          <button
-            type="button"
-            onClick={onAddToQueue}
-            disabled={!canQueue}
-            className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-xs font-mono font-medium uppercase tracking-wide bg-transparent border border-white/[0.05] text-zinc-400 hover:border-white/[0.1] hover:text-zinc-200 transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-            title={canQueue ? 'Add this reference to the queue (runs after current generation)' : 'Pick a product + reference first'}
-          >
-            <ListPlus className="w-4 h-4" />
-            Add to Queue
-          </button>
-        )}
-        {/* Generate All Angles — one click queues every product angle */}
-        {onGenerateAll && productAngles && productAngles.length > 1 && (
-          <button
-            type="button"
-            onClick={onGenerateAll}
-            disabled={!canGenerate || generatingAll}
-            className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-xs font-mono font-medium uppercase tracking-wide bg-transparent border border-[#c9a84c]/20 text-[#c9a84c]/70 hover:border-[#c9a84c]/40 hover:text-[#c9a84c] transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            {generatingAll ? (
-              <><Loader2 className="w-3.5 h-3.5 animate-spin" />Queuing…</>
-            ) : (
-              <><Zap className="w-3.5 h-3.5" />Generate All {productAngles.length} Angles</>
-            )}
-          </button>
+        {/* Generic disabled reason (missing product / reference) */}
+        {!canQueue && disabledReason && (
+          <p className="text-center text-[11px] text-zinc-600 mt-2">{disabledReason}</p>
         )}
       </div>
 
