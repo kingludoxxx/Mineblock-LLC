@@ -465,24 +465,47 @@ async function resolveOwnedVideoFromMeta(metaAdId) {
     }
   } catch (_) { /* fall through to account-scoped lookup */ }
 
-  // Step 4 — fallback: /{account_id}/advideos. Some Marketing API tokens reject
-  // direct /{video_id} but accept the account-scoped advideos endpoint.
+  // Step 4 — fallback: /{account_id}/advideos. Some Marketing API tokens
+  // reject direct /{video_id} but accept the account-scoped advideos endpoint.
+  //
+  // IMPORTANT — Meta does NOT support filtering=[{field:'id',operator:'EQUAL'}]
+  // on the advideos endpoint (returns "(#100) Filtering field 'id' with
+  // operation 'equal' is not supported"). We previously had that filter and
+  // silently failed on every owned ad. Instead we paginate through the
+  // account's advideos (newest first) and match locally by id.
+  //
+  // Most ads are recent — finding the video usually takes 1 page. We cap at
+  // 10 pages × 100 = 1000 videos before giving up.
   try {
-    const aurl = `${META_GRAPH_URL}/${accountIdAct}/advideos?filtering=${encodeURIComponent(JSON.stringify([{ field: 'id', operator: 'EQUAL', value: videoId }]))}&fields=source&limit=1&access_token=${META_ACCESS_TOKEN}`;
-    const aresp = await fetch(aurl, { signal: AbortSignal.timeout(10000) });
-    const adata = await aresp.json();
-    const src = adata?.data?.[0]?.source;
-    if (aresp.ok && src) {
-      return {
-        videoUrl: src,
-        accountId: accountIdAct,
-        videoId,
-        adName: adMeta.name || null,
-        thumbnailUrl: adMeta.creative?.thumbnail_url || null,
-        _via: 'advideos_account_scoped',
-      };
+    let cursor = null;
+    const MAX_PAGES = 10;
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const params = new URLSearchParams({
+        fields: 'id,source',
+        limit: '100',
+        access_token: META_ACCESS_TOKEN,
+      });
+      if (cursor) params.set('after', cursor);
+      const aurl = `${META_GRAPH_URL}/${accountIdAct}/advideos?${params.toString()}`;
+      const aresp = await fetch(aurl, { signal: AbortSignal.timeout(15000) });
+      const adata = await aresp.json();
+      if (!aresp.ok || adata.error) break;
+      const list = Array.isArray(adata.data) ? adata.data : [];
+      const match = list.find((v) => String(v.id) === String(videoId));
+      if (match?.source) {
+        return {
+          videoUrl: match.source,
+          accountId: accountIdAct,
+          videoId,
+          adName: adMeta.name || null,
+          thumbnailUrl: adMeta.creative?.thumbnail_url || null,
+          _via: `advideos_paginated_page${page + 1}`,
+        };
+      }
+      cursor = adata.paging?.cursors?.after || null;
+      if (!cursor || list.length < 100) break;
     }
-    return { error: `Meta video_id=${videoId} returned no source URL via either direct or account-scoped path.`, accountId: accountIdAct, adName: adMeta.name || null };
+    return { error: `Meta video_id=${videoId} not found in ${accountIdAct} advideos (searched up to ${MAX_PAGES} pages).`, accountId: accountIdAct, adName: adMeta.name || null };
   } catch (e) {
     return { error: `Meta advideos fetch failed for video_id=${videoId}: ${e.message?.slice(0, 160)}`, accountId: accountIdAct };
   }
