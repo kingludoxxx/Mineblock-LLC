@@ -29,6 +29,7 @@ import {
   Monitor,
   Bug,
   Signal,
+  Video,
 } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
 import { usePermissions } from '../../hooks/usePermissions';
@@ -42,6 +43,7 @@ const navGroups = [
       { to: '/app/iteration-king', icon: Crown, label: 'Iteration King', permission: 'iteration-king:access' },
       { to: '/app/statics-generation', icon: Layers, label: 'Statics Generation', permission: 'statics-generation:access' },
       { to: '/app/brief-pipeline', icon: FileText, label: 'Brief Pipeline', permission: 'brief-pipeline:access' },
+      { to: '/app/clickup-pipeline', icon: Video, label: 'ClickUp Pipeline', permission: 'brief-pipeline:access' },
       { to: '/app/ads-launcher', icon: Rocket, label: 'Ads Launcher', permission: 'ads-launcher:access' },
       { to: '/app/languages-pipeline', icon: Globe, label: 'Languages Pipeline', permission: 'languages-pipeline:access' },
       // Brand Spy — no permission gate, always visible to logged-in users

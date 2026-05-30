@@ -47,6 +47,7 @@ import AudioPage from './pages/production/AudioPage';
 import StaticsGenerationPage from './pages/production/StaticsGenerationPage';
 import BriefPipeline from './pages/production/BriefPipeline';
 import BriefPipelineReferenceAnalysis from './pages/production/BriefPipelineReferenceAnalysis';
+import ClickupPipeline from './pages/production/ClickupPipeline';
 import AdsLauncherPage from './pages/production/AdsLauncherPage';
 import LanguagesPipeline from './pages/production/LanguagesPipeline';
 import BrandSpyPage from './pages/production/BrandSpyPage';
@@ -140,6 +141,7 @@ export default function App() {
           <Route path="statics-generation" element={<PageGate permission="statics-generation:access"><StaticsGenerationPage /></PageGate>} />
           <Route path="brief-pipeline" element={<PageGate permission="brief-pipeline:access"><BriefPipeline /></PageGate>} />
           <Route path="brief-pipeline/reference/:id" element={<PageGate permission="brief-pipeline:access"><BriefPipelineReferenceAnalysis /></PageGate>} />
+          <Route path="clickup-pipeline" element={<PageGate permission="brief-pipeline:access"><ClickupPipeline /></PageGate>} />
           <Route path="ads-launcher" element={<PageGate permission="ads-launcher:access"><AdsLauncherPage /></PageGate>} />
           <Route path="languages-pipeline" element={<PageGate permission="languages-pipeline:access"><LanguagesPipeline /></PageGate>} />
           <Route path="brand-spy" element={<PageGate permission="brand-spy:access"><BrandSpyPage /></PageGate>} />
