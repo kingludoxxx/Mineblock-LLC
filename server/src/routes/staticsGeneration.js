@@ -5088,6 +5088,56 @@ router.get('/meta-ads/probe-attribution', authenticate, async (req, res) => {
         out.push({ attribution_mode: mode, ok: false, error: err.message.slice(0, 100) });
       }
     }
+    // Also probe DIFFERENT revenue/purchase column candidates with the
+    // default attribution mode. attributionModel only affects attributed
+    // columns; if the column we're SUM'ing is raw `order_revenue` we'll
+    // always get the same number. Find the column that responds.
+    const REV_CANDIDATES = [
+      'order_revenue',
+      'channel_reported_conversion_value',
+      'pixel_revenue',
+      'tw_revenue',
+      'attributed_revenue',
+      'tw_attributed_revenue',
+      'triple_attributed_revenue',
+      'revenue',
+      'tw_total_revenue',
+    ];
+    const PUR_CANDIDATES = [
+      'website_purchases',
+      'channel_reported_conversions',
+      'pixel_purchases',
+      'attributed_purchases',
+      'tw_attributed_purchases',
+      'purchases',
+    ];
+
+    const revOut = [];
+    for (const col of REV_CANDIDATES) {
+      try {
+        const sql = adName
+          ? `SELECT SUM(${col}) as v FROM pixel_joined_tvf WHERE event_date BETWEEN @startDate AND @endDate AND ad_name = '${adName.replace(/'/g, "''")}'`
+          : `SELECT SUM(${col}) as v FROM pixel_joined_tvf WHERE event_date BETWEEN @startDate AND @endDate`;
+        // Try with 'tw' attribution mode (operator's UI uses Triple Attribution).
+        const rows = await _twQuery(sql, startDate, endDate, 'tw');
+        revOut.push({ column: col, value: Number(rows[0]?.v) || 0, ok: true });
+      } catch (err) {
+        revOut.push({ column: col, ok: false, error: err.message.slice(0, 80) });
+      }
+    }
+    const purOut = [];
+    for (const col of PUR_CANDIDATES) {
+      try {
+        const sql = adName
+          ? `SELECT SUM(${col}) as v FROM pixel_joined_tvf WHERE event_date BETWEEN @startDate AND @endDate AND ad_name = '${adName.replace(/'/g, "''")}'`
+          : `SELECT SUM(${col}) as v FROM pixel_joined_tvf WHERE event_date BETWEEN @startDate AND @endDate`;
+        const rows = await _twQuery(sql, startDate, endDate, 'tw');
+        purOut.push({ column: col, value: Number(rows[0]?.v) || 0, ok: true });
+      } catch (err) {
+        purOut.push({ column: col, ok: false, error: err.message.slice(0, 80) });
+      }
+    }
+
     res.json({
       success: true,
       data: {
@@ -5096,6 +5146,8 @@ router.get('/meta-ads/probe-attribution', authenticate, async (req, res) => {
         date_range: { startDate, endDate },
         current_default: _TW_ATTRIBUTION_DEFAULT,
         modes: out,
+        revenue_columns: revOut,
+        purchase_columns: purOut,
       },
     });
   } catch (err) {
