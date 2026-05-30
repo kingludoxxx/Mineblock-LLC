@@ -4197,17 +4197,19 @@ router.get('/templates/classify-all/status', authenticate, async (_req, res) => 
 
 // ── helpers ───────────────────────────────────────────────────────────────
 
-// brand_spy.ads stores the creative under raw_snapshot JSONB — the canonical
-// thumbnail-extraction lives in server/src/db/brandSpyDb.js. We re-use the
-// same JSON paths here so the imported reference thumbnail matches what the
-// Brand Spy UI shows.
+// brand_spy.ads stores the creative under raw_snapshot JSONB.
+// IMPORTANT: prefer original_image_url over resized_image_url here — the
+// League Import modal renders thumbs at ~400px width on retina, and Meta's
+// pre-shrunk resized_image_url (~320px) upscales blurry. The Brand Spy UI
+// helper (brandSpyDb.js) keeps resized-first for its narrower grids; this
+// SQL is statics-import-specific.
 const BRAND_SPY_THUMB_SQL = `
   COALESCE(
     a.raw_snapshot->'videos'->0->>'video_preview_image_url',
-    a.raw_snapshot->'images'->0->>'resized_image_url',
     a.raw_snapshot->'images'->0->>'original_image_url',
-    a.raw_snapshot->'cards'->0->>'resized_image_url',
+    a.raw_snapshot->'images'->0->>'resized_image_url',
     a.raw_snapshot->'cards'->0->>'original_image_url',
+    a.raw_snapshot->'cards'->0->>'resized_image_url',
     a.raw_snapshot->>'page_profile_picture_url'
   )
 `;

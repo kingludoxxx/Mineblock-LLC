@@ -244,7 +244,14 @@ export function LeagueImportModal({ onClose, onImported }) {
                   }`}
                 >
                   {ad.image_url ? (
-                    <img src={ad.image_url} alt="" className="w-full aspect-[4/5] object-cover" onError={(e) => { e.currentTarget.style.opacity = '0.2'; }} />
+                    <img
+                      src={ad.image_url}
+                      alt=""
+                      loading="lazy"
+                      decoding="async"
+                      className="w-full aspect-[4/5] object-cover"
+                      onError={(e) => { e.currentTarget.style.opacity = '0.2'; }}
+                    />
                   ) : (
                     <div className="w-full aspect-[4/5] bg-white/[0.02]" />
                   )}
