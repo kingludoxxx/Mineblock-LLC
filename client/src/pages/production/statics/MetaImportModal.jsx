@@ -48,7 +48,7 @@ export function MetaImportModal({ onClose, onImported }) {
   const [accounts, setAccounts] = useState([]);
   const [selectedAccounts, setSelectedAccounts] = useState(new Set());
   const [status, setStatus] = useState('active');
-  const [windowDays, setWindowDays] = useState(30);
+  const [windowDays, setWindowDays] = useState(7);
   const [sort, setSort] = useState('spend');
   const [minRoas, setMinRoas] = useState(0);
   const [minSpend, setMinSpend] = useState(0);
