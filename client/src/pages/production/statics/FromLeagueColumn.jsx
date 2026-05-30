@@ -106,7 +106,6 @@ export function FromLeagueColumn({ onUseAsReference }) {
 
   const visibleAds = useMemo(() => ads.filter(a => !dismissed.has(`${a.brand_id}:${a.id}`)), [ads, dismissed]);
   const visibleCount = visibleAds.length;
-  const importedCount = useMemo(() => visibleAds.filter(a => a.already_imported).length, [visibleAds]);
   const [configOpen, setConfigOpen] = useState(false);
 
   return (
