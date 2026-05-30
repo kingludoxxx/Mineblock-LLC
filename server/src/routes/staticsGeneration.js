@@ -4686,28 +4686,32 @@ router.post('/league/brand-configs/sync-all', authenticate, async (req, res) => 
 
     let totalScanned = 0, totalImported = 0, totalSkipped = 0;
     const errors = [];
+    // Loopback base — same pattern as _doRepairAllPreviews (prefers
+    // RENDER_EXTERNAL_URL so we hit the real listener, falls back to
+    // localhost:${PORT || 3000} for local dev).
+    const base = process.env.RENDER_EXTERNAL_URL || `http://localhost:${process.env.PORT || 3000}`;
+    const authHeaders = {};
+    if (req.headers.authorization) authHeaders.authorization = req.headers.authorization;
+
     // Sequential to avoid stampeding the brand_spy.ads index + spy_creatives
     // upsert path. Tens of brands × ~tens of picks = well under a minute.
     for (const row of eligible) {
       try {
         const r = await fetch(
-          `http://127.0.0.1:${process.env.PORT || 8080}/api/v1/statics-generation/league/brand-configs/${row.id}/sync`,
+          `${base}/api/v1/statics-generation/league/brand-configs/${row.id}/sync`,
           {
             method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              // Forward the caller's auth so the sub-call passes authenticate.
-              ...(req.headers.authorization ? { Authorization: req.headers.authorization } : {}),
-            },
+            headers: { 'Content-Type': 'application/json', ...authHeaders },
+            signal: AbortSignal.timeout(60_000),
           }
         );
-        const j = await r.json();
+        const j = await r.json().catch(() => ({}));
         if (j?.success && j.data) {
           totalScanned  += Number(j.data.scanned  || 0);
           totalImported += Number(j.data.imported || 0);
           totalSkipped  += Number(j.data.skipped  || 0);
         } else {
-          errors.push({ brandId: row.id, error: j?.error?.message || 'unknown' });
+          errors.push({ brandId: row.id, status: r.status, error: j?.error?.message || `status ${r.status}` });
         }
       } catch (e) {
         errors.push({ brandId: row.id, error: e.message });
