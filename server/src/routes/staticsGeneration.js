@@ -4984,8 +4984,11 @@ async function _twDiscoverAccountCols(startDate, endDate, attributionModel) {
  */
 async function fetchTopAdsFromTW({ windowDays, attributionModel, accountIds = [], minSpend = 0 }) {
   if (!_TW_API_KEY) throw new Error('TRIPLEWHALE_API_KEY not configured');
+  // TW UI's "Last 7 Days" = today + previous 6 days (7-day inclusive window).
+  // SQL BETWEEN is inclusive on both ends, so subtract (windowDays - 1)
+  // from today. Was off-by-one previously (pulled 8 days for 7D, etc.).
   const endDate = new Date().toISOString().slice(0, 10);
-  const startDate = new Date(Date.now() - (windowDays * 86400 * 1000)).toISOString().slice(0, 10);
+  const startDate = new Date(Date.now() - ((windowDays - 1) * 86400 * 1000)).toISOString().slice(0, 10);
   const attr = attributionModel || _TW_ATTRIBUTION_DEFAULT;
 
   const acct = await _twDiscoverAccountCols(startDate, endDate, attr);
@@ -5035,6 +5038,71 @@ async function fetchTopAdsFromTW({ windowDays, attributionModel, accountIds = []
     clicks: Number(r.total_clicks) || 0,
   }));
 }
+
+// GET /meta-ads/probe-attribution — one-shot probe to find which TW
+// attribution-model value matches the operator's TW UI screenshot.
+// Hits TW with each candidate, returns the total spend + a sample row
+// per mode. Operator picks the row that matches their TW UI, then we
+// set TW_ATTRIBUTION_MODEL=<that value>.
+//
+// Usage: GET /meta-ads/probe-attribution?ad_name=<exact_ad_name>
+// Pick an ad_name from your TW screenshot and compare each row's
+// spend/revenue against TW's number. The matching row IS the correct
+// attribution mode.
+router.get('/meta-ads/probe-attribution', authenticate, async (req, res) => {
+  try {
+    if (!_TW_API_KEY) return res.status(500).json({ success: false, error: { message: 'TRIPLEWHALE_API_KEY not set' } });
+    const adName = req.query.ad_name ? String(req.query.ad_name) : null;
+    const windowDays = [7, 30, 90].includes(parseInt(req.query.window, 10)) ? parseInt(req.query.window, 10) : 7;
+    const endDate = new Date().toISOString().slice(0, 10);
+    const startDate = new Date(Date.now() - ((windowDays - 1) * 86400 * 1000)).toISOString().slice(0, 10);
+
+    // TW's documented attribution model values, plus a few common variants
+    // we've seen the API accept. We probe each and report which return data.
+    const candidates = [
+      'lastPlatformClick',
+      'lastClick',
+      'tw',
+      'triple',
+      'totalImpact',
+      'firstClick',
+      'linear',
+    ];
+    const out = [];
+    for (const mode of candidates) {
+      try {
+        const sql = adName
+          ? `SELECT ad_name, SUM(spend) as total_spend, SUM(${_TW_REVENUE_COL}) as total_revenue, SUM(${_TW_PURCHASE_COL}) as total_purchases FROM pixel_joined_tvf WHERE event_date BETWEEN @startDate AND @endDate AND ad_name = '${adName.replace(/'/g, "''")}' GROUP BY ad_name`
+          : `SELECT 'aggregate' as ad_name, SUM(spend) as total_spend, SUM(${_TW_REVENUE_COL}) as total_revenue, SUM(${_TW_PURCHASE_COL}) as total_purchases FROM pixel_joined_tvf WHERE event_date BETWEEN @startDate AND @endDate`;
+        const rows = await _twQuery(sql, startDate, endDate, mode);
+        const r = rows[0] || {};
+        out.push({
+          attribution_mode: mode,
+          ok: true,
+          spend: Number(r.total_spend) || 0,
+          revenue: Number(r.total_revenue) || 0,
+          purchases: Number(r.total_purchases) || 0,
+          roas: r.total_spend > 0 ? Number(r.total_revenue) / Number(r.total_spend) : 0,
+        });
+      } catch (err) {
+        out.push({ attribution_mode: mode, ok: false, error: err.message.slice(0, 100) });
+      }
+    }
+    res.json({
+      success: true,
+      data: {
+        ad_name: adName,
+        window_days: windowDays,
+        date_range: { startDate, endDate },
+        current_default: _TW_ATTRIBUTION_DEFAULT,
+        modes: out,
+      },
+    });
+  } catch (err) {
+    console.error('[meta-ads/probe-attribution] error:', err);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
 
 // POST /meta-ads/refresh — frontend "Refresh" button. Awaits sync so the
 // caller gets fresh data, but rate-limited to once per minute.
