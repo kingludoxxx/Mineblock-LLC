@@ -396,8 +396,6 @@ export function ReferenceColumn({ productId, onSelectReference, onAddSelectedToQ
         {!loading && !error && items.length === 0 && (
           <div className="px-3 py-6 text-xs text-zinc-500 text-center leading-relaxed">
             No reference ads yet.
-            <br /><br />
-            Click <span className="text-[#d4b55a]">League</span> to import from followed brands or <span className="text-cyan-300">Meta</span> for your own winners.
           </div>
         )}
         {items.map((it) => (
