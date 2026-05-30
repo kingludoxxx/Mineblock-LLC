@@ -5459,22 +5459,15 @@ async function fetchTopAdsFromTW({ windowDays, attributionModel, accountIds = []
   // the strong signal:
   //   • ad_name contains " IMG " token (format-slot convention)
   //   • ad_name contains "1080x1080" or "1080×1080" (square dims)
-  // ClickHouse: match() for regex, ILIKE for substring.
-  // ClickHouse RE2 — TIGHTENED to ZERO-video-leak after operator confirmed
-  // that IT\\d+ and IM\\d+ both appear in video ad names too (MR-B0129-IT3
-  // was a video; IM115/IM111 flagged as video). The only ad-name tokens
-  // that are reliably static-only:
-  //   • \\bIMG\\d*\\b — explicit IMG format slot (IMG, IMG2, IMG12)
-  //   • 1080x1080 / 1080×1080 — square dims tail
-  // Layer 2 (creative_analysis.type='image' join below) is the real
-  // safety net; this SQL layer is a cheap first cut.
-  const STATIC_ONLY_CLAUSE = `
-    (
-      match(ad_name, '\\\\bIMG\\\\d*\\\\b')
-      OR ad_name ILIKE '%1080x1080%'
-      OR ad_name ILIKE '%1080×1080%'
-    )
-  `;
+  // PHASE 1 of the "fix Meta Import once for all" scope (operator-confirmed):
+  // we DROPPED the ad_name regex (\\bIMG\\d*\\b OR 1080x1080) here. It was
+  // unreliable in both directions — IM/IT/MR/VX/B-codes all appear in BOTH
+  // static AND video creatives in Mineblock's convention. After 3 attempts
+  // we accepted that ad_name is not a usable signal. Static-vs-video
+  // classification now lives entirely in Layer 2 (creative_analysis.type
+  // join post-fetch) with a three-bucket model: 'image' / 'video' /
+  // 'unverified'. Unverified ads are SURFACED with a badge, not silently
+  // hidden, so the operator sees their winning ads and can verify per-card.
 
   const sql = `
     SELECT ${acctSelect}
@@ -5487,7 +5480,6 @@ async function fetchTopAdsFromTW({ windowDays, attributionModel, accountIds = []
       FROM pixel_joined_tvf
      WHERE event_date BETWEEN @startDate AND @endDate
        AND ${_TW_META_CHANNEL_FILTER}
-       AND ${STATIC_ONLY_CLAUSE}
      GROUP BY ad_name${acctGroup}
     HAVING SUM(spend) > ${Number(minSpend) || 0.01}
      ORDER BY SUM(spend) DESC
@@ -5840,7 +5832,7 @@ function _metaAdsCacheKey(req) {
     String(p.min_spend || '0'),
     String(p.type || 'image'),
     String(p.search || ''),
-    String(p.include_unclassified || 'false'),
+    String(p.hide_unverified || 'false'),
     String(p.source || 'tw'),
     String(p.attribution || ''),
   ].join('|');
@@ -5938,27 +5930,35 @@ async function _metaAdsHandler(req, res) {
         // filter alone CANNOT guarantee zero-video-leak. Require an explicit
         // creative_analysis.type='image%' classification.
         //
-        // Trade-off (operator's hard rule "NO VIDEOS allowed"):
-        //   • False positives (videos shown) — UNACCEPTABLE → reject
-        //   • False negatives (statics missing) — tolerable; operator can
-        //     opt into `?include_unclassified=true` to relax this layer,
-        //     or check creative_analysis sync lag for the missing ad
+        // PHASE 1 — three-bucket model (operator-approved scope):
+        //   'image'      = creative_analysis.type starts with 'image' → trusted
+        //   'video'      = creative_analysis.type starts with 'video' → REJECT
+        //   'unverified' = no row OR unknown type → SURFACE WITH BADGE
         //
-        // Decision matrix per row:
-        //   creative_analysis.type ILIKE 'image%' → ACCEPT
-        //   creative_analysis.type ILIKE 'video%' → REJECT (definitely video)
-        //   creative_analysis.type is anything else / NULL / no row at all →
-        //     REJECT by default; ACCEPT when include_unclassified=true
-        const includeUnclassified = String(req.query.include_unclassified || 'false') === 'true';
-        const typed = twRows.filter(r => {
+        // Previous fail-closed model silently hid every unverified ad, which
+        // dropped real statics (B0139 IT5/IT3/VX) the operator could see in
+        // their own TW UI. New model trusts the operator to verify per-card
+        // rather than hiding by default.
+        //
+        // Only EXPLICIT 'video%' tags get rejected. Everything else flows
+        // through, tagged with verification_status so the UI can badge it.
+        const hideUnverified = String(req.query.hide_unverified || 'false') === 'true';
+        const classified = twRows.map(r => {
           const m = metaByName.get(r.ad_name);
           const t = m?.type ? String(m.type).toLowerCase() : null;
-          if (t && t.startsWith('image')) return true;
-          if (t && t.startsWith('video')) return false;
-          // Unknown/missing type → operator decides via the toggle.
-          return includeUnclassified;
+          let verification_status;
+          if (t && t.startsWith('image')) verification_status = 'image';
+          else if (t && t.startsWith('video')) verification_status = 'video';
+          else verification_status = 'unverified';
+          return { row: r, verification_status };
         });
-        const rejectedAsVideoCount = twRows.length - typed.length;
+        // Hard reject videos always; respect operator's hide_unverified opt-in.
+        const typed = classified.filter(c =>
+          c.verification_status !== 'video' &&
+          (c.verification_status !== 'unverified' || !hideUnverified)
+        ).map(c => ({ ...c.row, verification_status: c.verification_status }));
+        const rejectedAsVideoCount = classified.filter(c => c.verification_status === 'video').length;
+        const unverifiedCount = classified.filter(c => c.verification_status === 'unverified').length;
 
         // Friendly-name enrichment from Meta Graph — same cache the
         // /meta-ads/accounts endpoint feeds, so chips + card subtitles
@@ -5996,6 +5996,7 @@ async function _metaAdsHandler(req, res) {
             clicks: r.clicks,
             roas, cpa,
             days_active: window,
+            verification_status: r.verification_status, // 'image' | 'unverified'
             already_imported: false, // back-filled below in a single batch
           };
         });
@@ -6038,8 +6039,9 @@ async function _metaAdsHandler(req, res) {
           // video / unclassified — flip the toggle to include them".
           filter_stats: {
             tw_returned: twRows.length,
-            rejected_unverified: rejectedAsVideoCount,
-            include_unclassified: includeUnclassified,
+            rejected_as_video: rejectedAsVideoCount,
+            unverified_count: unverifiedCount,
+            hide_unverified: hideUnverified,
           },
         });
       } catch (err) {

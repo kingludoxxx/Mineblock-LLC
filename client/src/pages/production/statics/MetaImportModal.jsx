@@ -63,8 +63,8 @@ export function MetaImportModal({ onClose, onImported }) {
   const [lastSync, setLastSync] = useState(null);
   const [type, setType] = useState('image'); // image | video | carousel | all
   const [freshness, setFreshness] = useState(null); // { last_sync_at, age_minutes, is_stale, row_count }
-  const [includeUnclassified, setIncludeUnclassified] = useState(false); // escape hatch for the fail-closed video filter
-  const [filterStats, setFilterStats] = useState(null); // { tw_returned, rejected_unverified, include_unclassified }
+  const [hideUnverified, setHideUnverified] = useState(false); // operator can opt to hide unverified
+  const [filterStats, setFilterStats] = useState(null); // { tw_returned, rejected_as_video, unverified_count, hide_unverified }
 
   const loadAccounts = useCallback(async () => {
     try {
@@ -143,7 +143,7 @@ export function MetaImportModal({ onClose, onImported }) {
             min_spend: minSpend,
             type,
             search: debouncedSearch || undefined,
-            include_unclassified: includeUnclassified || undefined,
+            hide_unverified: hideUnverified || undefined,
           },
         }),
         // True freshness from creative_analysis itself (not "we just hit the
@@ -161,7 +161,7 @@ export function MetaImportModal({ onClose, onImported }) {
     } finally {
       setLoadingAds(false);
     }
-  }, [selectedAccounts, status, windowDays, sort, minRoas, minSpend, type, debouncedSearch, includeUnclassified]);
+  }, [selectedAccounts, status, windowDays, sort, minRoas, minSpend, type, debouncedSearch, hideUnverified]);
 
   useEffect(() => { loadAds(); }, [loadAds]);
   useEffect(() => { loadAdsRef.current = loadAds; }, [loadAds]);
@@ -384,25 +384,34 @@ export function MetaImportModal({ onClose, onImported }) {
           </div>
         </div>
 
-        {/* Filter telemetry — surfaces how many candidates the post-fetch
-            video-rejection layer dropped, with an opt-in to relax it. */}
-        {filterStats && filterStats.rejected_unverified > 0 && (
+        {/* Filter telemetry — shows the operator what's happening with the
+            three-bucket classification (image / video / unverified).
+            Unverified cards are SHOWN by default with a ⚠ badge — operator
+            can opt to hide them via the toggle. Videos are always rejected. */}
+        {filterStats && (filterStats.unverified_count > 0 || filterStats.rejected_as_video > 0) && (
           <div className="mx-5 mb-2 px-3 py-2 rounded bg-amber-500/10 border border-amber-400/30 text-[11px] font-mono text-amber-200 flex items-center justify-between gap-3">
             <span>
-              <span className="font-bold">{filterStats.rejected_unverified}</span> ad{filterStats.rejected_unverified === 1 ? '' : 's'} hidden — TW returned them but we couldn't verify they're images. Toggle if you trust the source.
+              {filterStats.rejected_as_video > 0 && (
+                <><span className="font-bold">{filterStats.rejected_as_video}</span> video{filterStats.rejected_as_video === 1 ? '' : 's'} rejected · </>
+              )}
+              {filterStats.unverified_count > 0 && (
+                <><span className="font-bold">{filterStats.unverified_count}</span> unverified ad{filterStats.unverified_count === 1 ? '' : 's'} shown — eyeball the ⚠ badge before importing</>
+              )}
             </span>
-            <button
-              type="button"
-              onClick={() => setIncludeUnclassified(v => !v)}
-              className={`shrink-0 px-2 py-1 rounded border text-[10px] uppercase tracking-wide cursor-pointer transition-colors ${
-                includeUnclassified
-                  ? 'bg-amber-500/30 border-amber-400/50 text-amber-100'
-                  : 'bg-white/[0.04] border-white/[0.15] text-zinc-300 hover:bg-white/[0.08]'
-              }`}
-              title="When ON, ads with no creative_analysis.type record are also shown. May leak videos."
-            >
-              {includeUnclassified ? 'Include unclassified · ON' : 'Include unclassified · OFF'}
-            </button>
+            {filterStats.unverified_count > 0 && (
+              <button
+                type="button"
+                onClick={() => setHideUnverified(v => !v)}
+                className={`shrink-0 px-2 py-1 rounded border text-[10px] uppercase tracking-wide cursor-pointer transition-colors ${
+                  hideUnverified
+                    ? 'bg-amber-500/30 border-amber-400/50 text-amber-100'
+                    : 'bg-white/[0.04] border-white/[0.15] text-zinc-300 hover:bg-white/[0.08]'
+                }`}
+                title={hideUnverified ? 'Currently hiding unverified ads — click to show them' : 'Currently showing unverified ads — click to hide them'}
+              >
+                {hideUnverified ? 'Hide unverified · ON' : 'Hide unverified · OFF'}
+              </button>
+            )}
           </div>
         )}
 
@@ -480,6 +489,12 @@ export function MetaImportModal({ onClose, onImported }) {
                       className="absolute top-1.5 left-[60px] text-[9px] font-mono font-bold bg-purple-500/90 text-white px-1.5 py-0.5 rounded"
                       title="Auto-detected — ad name did not match our IM/B naming convention, metadata was inferred from keywords"
                     >AUTO</span>
+                  )}
+                  {ad.verification_status === 'unverified' && (
+                    <span
+                      className="absolute top-1.5 left-[60px] text-[9px] font-mono font-bold bg-amber-500/90 text-black px-1.5 py-0.5 rounded"
+                      title="Unverified — we couldn't confirm this is a static image (no creative_analysis.type record yet). Eyeball the thumbnail before importing."
+                    >⚠ UNVERIFIED</span>
                   )}
                   {disabled && (
                     <span className="absolute top-1.5 right-1.5 text-[9px] font-mono font-bold bg-zinc-700 text-zinc-200 px-1.5 py-0.5 rounded">IN LIB</span>
