@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { Globe, Loader2, ChevronDown, ChevronUp, Sparkles, Settings } from 'lucide-react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { Globe, Loader2, Sparkles, Settings } from 'lucide-react';
 import api from '../../../services/api';
 import { BrandFollowConfigModal } from './BrandFollowConfigModal';
 
@@ -32,7 +32,6 @@ function writePersisted(brandIds) {
 export function FromLeagueColumn({ onUseAsReference }) {
   const [brands, setBrands] = useState([]);
   const [selectedBrands, setSelectedBrands] = useState(() => readPersisted() || []);
-  const [filterOpen, setFilterOpen] = useState(false);
   const [ads, setAds] = useState([]); // { ...ad, brand_id, brand_name }[]
   const [loadingBrands, setLoadingBrands] = useState(true);
   const [loadingAds, setLoadingAds] = useState(false);
@@ -97,31 +96,7 @@ export function FromLeagueColumn({ onUseAsReference }) {
 
   useEffect(() => { loadAds(); }, [loadAds]);
 
-  const toggleBrand = (id) => {
-    setSelectedBrands((prev) => {
-      const next = prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id];
-      writePersisted(next);
-      return next;
-    });
-  };
-
-  const selectAll = () => {
-    const all = brands.map(b => b.id);
-    setSelectedBrands(all);
-    writePersisted(all);
-  };
-  const clearAll = () => {
-    setSelectedBrands([]);
-    writePersisted([]);
-  };
-
   const visibleCount = ads.length;
-  const filterButtonLabel = useMemo(() => {
-    if (selectedBrands.length === 0) return 'No brands';
-    if (selectedBrands.length === brands.length) return 'All brands';
-    return `${selectedBrands.length} of ${brands.length}`;
-  }, [selectedBrands, brands]);
-
   const [configOpen, setConfigOpen] = useState(false);
 
   return (
@@ -153,47 +128,10 @@ export function FromLeagueColumn({ onUseAsReference }) {
         onSynced={() => { loadAds(); }}
       />
 
-      {/* Brand filter */}
-      <div className="mb-3 px-1">
-        <button
-          type="button"
-          onClick={() => setFilterOpen((v) => !v)}
-          className="w-full flex items-center justify-between gap-2 px-3 py-2 rounded-md bg-white/[0.04] border border-white/[0.08] hover:border-white/[0.15] text-xs font-mono text-zinc-300 cursor-pointer transition-colors"
-          disabled={loadingBrands}
-        >
-          <span>{loadingBrands ? 'Loading brands…' : filterButtonLabel}</span>
-          {filterOpen ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-        </button>
-        {filterOpen && (
-          <div className="mt-2 p-2 rounded-md bg-black/40 border border-white/[0.06] space-y-1 max-h-[260px] overflow-y-auto">
-            <div className="flex items-center gap-2 px-1 pb-2 border-b border-white/[0.05]">
-              <button onClick={selectAll} className="text-[10px] font-mono text-violet-300 hover:text-violet-200 cursor-pointer">All</button>
-              <span className="text-zinc-700">·</span>
-              <button onClick={clearAll} className="text-[10px] font-mono text-zinc-500 hover:text-zinc-300 cursor-pointer">None</button>
-            </div>
-            {brands.length === 0 && !loadingBrands && (
-              <div className="text-[10px] text-zinc-600 px-1 py-2">No followed brands. Add some from the League view.</div>
-            )}
-            {brands.map((b) => {
-              const checked = selectedBrands.includes(b.id);
-              return (
-                <label key={b.id} className="flex items-center gap-2 px-1 py-1 rounded hover:bg-white/[0.03] cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={checked}
-                    onChange={() => toggleBrand(b.id)}
-                    className="accent-violet-500"
-                  />
-                  <span className="text-[11px] font-mono text-zinc-300 truncate flex-1" title={b.name}>{b.name}</span>
-                  {typeof b.static_count === 'number' && (
-                    <span className="text-[9px] font-mono text-zinc-600">{b.static_count}</span>
-                  )}
-                </label>
-              );
-            })}
-          </div>
-        )}
-      </div>
+      {/* Brand-filter dropdown removed — followed-brand selection now lives
+          entirely in the Brand Follow Config modal (gear icon above). All
+          followed brands flow in by default; per-brand inclusion/exclusion
+          is controlled there. */}
 
       {/* Body */}
       <div className="flex-1 overflow-y-auto space-y-3 pr-1 custom-scrollbar">

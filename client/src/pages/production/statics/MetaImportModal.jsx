@@ -301,21 +301,10 @@ export function MetaImportModal({ onClose, onImported }) {
                 ))}
               </div>
             </div>
-            {/* Type */}
-            <div>
-              <label className="text-[10px] font-mono uppercase tracking-wider text-zinc-400 mb-1 block">Type</label>
-              <div className="flex gap-1">
-                {['image', 'video', 'carousel', 'all'].map(t => (
-                  <button
-                    key={t}
-                    onClick={() => setType(t)}
-                    className={`px-2 py-1 text-[10px] font-mono uppercase rounded border cursor-pointer ${
-                      type === t ? 'bg-cyan-500/15 border-cyan-500/40 text-cyan-300' : 'border-white/[0.08] text-zinc-400 hover:border-white/[0.2]'
-                    }`}
-                  >{t}</button>
-                ))}
-              </div>
-            </div>
+            {/* Type chips removed — Meta Import surfaces statics only
+                (videos are filtered server-side via the TW static-only
+                clause). The chip group was redundant once type became
+                forced. State `type` is still 'image' as the API default. */}
             {/* Window */}
             <div>
               <label className="text-[10px] font-mono uppercase tracking-wider text-zinc-400 mb-1 block">Window</label>

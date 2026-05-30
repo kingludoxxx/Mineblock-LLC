@@ -422,39 +422,6 @@ router.post('/meta-ads/repair-thumbnails', async (req, res) => {
   return authenticate(req, res, () => _doMetaAdsRepairThumbnails(req, res));
 });
 
-// ── TEMP: static-only TW probe — CRON_SECRET only ──
-// Returns the top 30 ad_names matching the static-only inclusion clause
-// so we can eyeball that no videos slip through. REMOVE after one
-// verification arc.
-router.get('/meta-ads/_staticverify', async (req, res) => {
-  const cs = process.env.CRON_SECRET;
-  if (!cs || req.headers['x-cron-secret'] !== cs) return res.status(401).json({ error: 'unauthorized' });
-  try {
-    const TW_API_KEY = process.env.TRIPLEWHALE_API_KEY || '';
-    const TW_SHOP_ID = process.env.TRIPLEWHALE_SHOP_ID || '17cca0-2.myshopify.com';
-    const TW_SQL_URL = 'https://api.triplewhale.com/api/v2/orcabase/api/sql';
-    const attribution = process.env.TW_ATTRIBUTION_MODEL || 'lastPlatformClick';
-    if (!TW_API_KEY) return res.status(500).json({ error: 'TRIPLEWHALE_API_KEY not set' });
-    const today = new Date(); today.setUTCHours(0,0,0,0);
-    const end = new Date(today.getTime() - 86400000);
-    const start = new Date(end.getTime() - 6 * 86400000);
-    const fmt = (d) => d.toISOString().slice(0,10);
-    const sql = `SELECT ad_name, SUM(spend) AS spend FROM pixel_joined_tvf WHERE event_date BETWEEN @startDate AND @endDate AND channel = 'facebook-ads' AND ( match(ad_name, '\\\\bIMG\\\\b') OR ad_name ILIKE '%1080x1080%' OR ad_name ILIKE '%1080×1080%' ) GROUP BY ad_name HAVING SUM(spend) > 0.01 ORDER BY SUM(spend) DESC LIMIT 30`;
-    const r = await fetch(TW_SQL_URL, {
-      method: 'POST',
-      headers: { 'x-api-key': TW_API_KEY, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ shopId: TW_SHOP_ID, query: sql.trim(), period: { startDate: fmt(start), endDate: fmt(end) }, attributionModel: attribution }),
-      signal: AbortSignal.timeout(45000),
-    });
-    const txt = await r.text();
-    let data; try { data = JSON.parse(txt); } catch { data = { raw: txt }; }
-    const rows = Array.isArray(data) ? data : (data?.data || data?.rows || []);
-    return res.json({ ok: r.ok, status: r.status, count: rows.length, ads: rows, _err: r.ok ? undefined : data });
-  } catch (e) {
-    return res.status(500).json({ error: e.message });
-  }
-});
-
 router.use(authenticate, requirePermission('statics-generation', 'access'));
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
@@ -5415,16 +5382,14 @@ router.get('/meta-ads/ads', authenticate, async (req, res) => {
           for (const m of metaRows) metaByName.set(m.ad_name, m);
         }
 
-        // Apply type filter at the enriched stage (TW doesn't know the
-        // creative type — that's a creative_analysis attribute). If a row
-        // has no enrichment we can't classify it, so default to 'image'.
-        const typed = type === 'all'
-          ? twRows
-          : twRows.filter(r => {
-              const m = metaByName.get(r.ad_name);
-              const rowType = m?.type || 'image';
-              return rowType === type;
-            });
+        // Type filter is now applied UPSTREAM in fetchTopAdsFromTW's SQL via
+        // the STATIC_ONLY_CLAUSE (\\bIMG\\b token + 1080x1080 dims) — TW's
+        // own pixel_joined_tvf.type column is unreliable (brief-pipeline
+        // b14fa78 documented statics tagged as 'video'). So we MUST NOT
+        // re-filter post-fetch against creative_analysis.type — that would
+        // drop legitimate static ads whose creative_analysis row happens to
+        // carry a stale/wrong type. The SQL clause is the source of truth.
+        const typed = twRows;
 
         const data = typed.map(r => {
           const m = metaByName.get(r.ad_name) || {};
