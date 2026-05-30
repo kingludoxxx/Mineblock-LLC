@@ -594,6 +594,24 @@ const MAX_TEMP_IMAGES = 200;
   }
 })();
 
+// Pre-warm the Meta Graph account-name cache so the first operator who
+// opens the Meta Import modal after Render restart doesn't pay the cold-
+// cache penalty (up to 8s × N accounts). Fire-and-forget — the handler
+// itself still works without the cache and just falls back to IDs.
+// Delayed 5s so it doesn't compete with the migration runs above for
+// the initial Postgres connection pool.
+setTimeout(() => {
+  const ids = (process.env.META_AD_ACCOUNT_IDS || '').split(',').map(s => s.trim()).filter(Boolean);
+  if (ids.length === 0) return;
+  // resolveMetaAccountNames is defined later in this module (hoisted via
+  // function declaration). Wrap in try/catch so an early-boot Meta Graph
+  // outage doesn't crash the server.
+  Promise.resolve()
+    .then(() => resolveMetaAccountNames(ids))
+    .then(map => console.log(`[boot] Meta account name cache prewarmed: ${map.size}/${ids.length} resolved`))
+    .catch(err => console.warn('[boot] Meta account name prewarm failed:', err.message));
+}, 5000);
+
 // Reference-safe image_store GC.
 // Old behaviour was a flat 7-day DELETE, which orphaned every spy_creatives row
 // whose image_url pointed at /tmp-img/<id> once the id aged out — that's the
@@ -5799,7 +5817,66 @@ router.get('/meta-ads/accounts', authenticate, async (_req, res) => {
 });
 
 // 5. GET /meta-ads/ads — aggregated TW image creatives, scoped/sorted/filtered.
+// In-process response cache for /meta-ads/ads. The endpoint chains 4-7
+// network calls (TW SQL + Postgres + Meta Graph names + Postgres again),
+// totaling 1.5-4s warm / 5-50s cold. The operator opens this modal
+// repeatedly (every chip toggle re-fires). Cache the assembled response
+// for 5 minutes keyed by all the inputs that affect output.
+//   value: { body, expiresAt }
+// 5-minute TTL matches TW's freshness expectations — anything fresher
+// and the operator would just hit Refresh.
+const _metaAdsResponseCache = new Map();
+const _META_ADS_CACHE_TTL_MS = 5 * 60 * 1000;
+function _metaAdsCacheKey(req) {
+  const p = req.query;
+  // Deterministic key — sort accounts so '?accounts=a,b' and '?accounts=b,a' hit the same entry.
+  const acctsSorted = String(p.accounts || '').split(',').map(s => s.trim()).filter(Boolean).sort().join(',');
+  return [
+    acctsSorted,
+    String(p.status || 'active'),
+    String(p.window || '30'),
+    String(p.sort || 'spend'),
+    String(p.min_roas || '0'),
+    String(p.min_spend || '0'),
+    String(p.type || 'image'),
+    String(p.search || ''),
+    String(p.include_unclassified || 'false'),
+    String(p.source || 'tw'),
+    String(p.attribution || ''),
+  ].join('|');
+}
+
 router.get('/meta-ads/ads', authenticate, async (req, res) => {
+  // Cache fast-path — serve from memory if still warm. Operator-driven
+  // workflows (chip toggles, modal re-opens) hit this repeatedly within
+  // the 5-minute window.
+  const cacheKey = _metaAdsCacheKey(req);
+  const cached = _metaAdsResponseCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    res.set('X-Cache', 'HIT');
+    return res.json(cached.body);
+  }
+  // Wrap res.json to capture the body for caching before sending.
+  const _originalJson = res.json.bind(res);
+  res.json = (body) => {
+    if (body?.success && Array.isArray(body?.data)) {
+      _metaAdsResponseCache.set(cacheKey, {
+        body,
+        expiresAt: Date.now() + _META_ADS_CACHE_TTL_MS,
+      });
+      // Cap cache size to prevent unbounded growth.
+      if (_metaAdsResponseCache.size > 100) {
+        const oldest = _metaAdsResponseCache.keys().next().value;
+        _metaAdsResponseCache.delete(oldest);
+      }
+    }
+    res.set('X-Cache', 'MISS');
+    return _originalJson(body);
+  };
+  return _metaAdsHandler(req, res);
+});
+
+async function _metaAdsHandler(req, res) {
   try {
     const accountsCsv = req.query.accounts ? String(req.query.accounts) : '';
     const accounts = accountsCsv.split(',').map(a => a.trim()).filter(Boolean);
@@ -6097,7 +6174,7 @@ router.get('/meta-ads/ads', authenticate, async (req, res) => {
     console.error('[meta-ads/ads] error:', err);
     res.status(500).json({ success: false, error: { message: err.message } });
   }
-});
+}
 
 // GET /meta-ads/last-sync — honest freshness indicator (MAX synced_at).
 // Drives the "Last sync: 2h ago" badge in the import modal. Red threshold

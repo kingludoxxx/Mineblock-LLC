@@ -412,8 +412,24 @@ export function MetaImportModal({ onClose, onImported }) {
             <div className="mb-3 px-3 py-2 bg-red-500/10 border border-red-500/30 rounded text-xs text-red-300">{error}</div>
           )}
           {loadingAds && (
-            <div className="text-center text-xs text-zinc-500 py-8">
-              <Loader2 className="w-4 h-4 animate-spin inline mr-2" /> Loading ads…
+            <div className="grid grid-cols-3 gap-3">
+              {/* Skeleton placeholders — render the same card shape so the
+                  modal doesn't feel frozen during the 1-5s TW round-trip.
+                  Pulse animation signals "in progress" without the operator
+                  having to wonder if anything is happening. */}
+              {Array.from({ length: 9 }).map((_, i) => (
+                <div
+                  key={`skel-${i}`}
+                  className="glass-card border border-white/[0.04] rounded-lg overflow-hidden animate-pulse"
+                >
+                  <div className="aspect-[4/5] bg-white/[0.04]" />
+                  <div className="p-2 space-y-1.5">
+                    <div className="h-3 w-2/3 rounded bg-white/[0.05]" />
+                    <div className="h-2.5 w-1/2 rounded bg-white/[0.04]" />
+                    <div className="h-2 w-1/3 rounded bg-white/[0.04]" />
+                  </div>
+                </div>
+              ))}
             </div>
           )}
           {!loadingAds && ads.length === 0 && !error && (
