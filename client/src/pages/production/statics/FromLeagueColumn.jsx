@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { Globe, Loader2, Sparkles, Settings, X, ZoomIn } from 'lucide-react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { Globe, Loader2, Sparkles, Settings, X, ZoomIn, CheckCircle2 } from 'lucide-react';
 import api from '../../../services/api';
 import { BrandFollowConfigModal } from './BrandFollowConfigModal';
 
@@ -33,6 +33,9 @@ export function FromLeagueColumn({ onUseAsReference }) {
   const [brands, setBrands] = useState([]);
   const [selectedBrands, setSelectedBrands] = useState(() => readPersisted() || []);
   const [ads, setAds] = useState([]); // { ...ad, brand_id, brand_name }[]
+  // Locally-dismissed ad IDs — operator clicks the red X on a card and we
+  // hide it from the column until the next loadAds() refresh.
+  const [dismissed, setDismissed] = useState(() => new Set());
   const [loadingBrands, setLoadingBrands] = useState(true);
   const [loadingAds, setLoadingAds] = useState(false);
   const [error, setError] = useState(null);
@@ -96,7 +99,8 @@ export function FromLeagueColumn({ onUseAsReference }) {
 
   useEffect(() => { loadAds(); }, [loadAds]);
 
-  const visibleCount = ads.length;
+  const visibleAds = useMemo(() => ads.filter(a => !dismissed.has(`${a.brand_id}:${a.id}`)), [ads, dismissed]);
+  const visibleCount = visibleAds.length;
   const [configOpen, setConfigOpen] = useState(false);
 
   return (
@@ -155,11 +159,16 @@ export function FromLeagueColumn({ onUseAsReference }) {
             No active image ads from the selected brand{selectedBrands.length === 1 ? '' : 's'}.
           </div>
         )}
-        {ads.map((ad) => (
+        {visibleAds.map((ad) => (
           <LeagueAdCard
             key={`${ad.brand_id}:${ad.id}`}
             ad={ad}
             onUseAsReference={onUseAsReference}
+            onDismiss={() => setDismissed(prev => {
+              const next = new Set(prev);
+              next.add(`${ad.brand_id}:${ad.id}`);
+              return next;
+            })}
           />
         ))}
       </div>
@@ -167,7 +176,7 @@ export function FromLeagueColumn({ onUseAsReference }) {
   );
 }
 
-function LeagueAdCard({ ad, onUseAsReference }) {
+function LeagueAdCard({ ad, onUseAsReference, onDismiss }) {
   const [busy, setBusy] = useState(false);
   const [picked, setPicked] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
@@ -327,20 +336,30 @@ function LeagueAdCard({ ad, onUseAsReference }) {
           <div className="text-[11px] font-mono text-zinc-100 truncate" title={title}>{title}</div>
           <div className="text-[10px] text-zinc-500 font-mono truncate">{ad.brand_name} · {ad.display_format} · {ad.active_days || 0}d</div>
         </div>
-        <button
-          type="button"
-          onClick={handleUse}
-          disabled={busy}
-          className={`w-full inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-[10px] font-mono font-semibold uppercase tracking-wide transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
-            picked
-              ? 'bg-emerald-500/15 border-emerald-400/30 text-emerald-300'
-              : 'bg-violet-500/15 border-violet-400/30 text-violet-300 hover:bg-violet-500/25'
-          }`}
-          title="Set as single-pick reference for the next generation. Not persisted to your library."
-        >
-          <Sparkles className="w-3 h-3" />
-          {picked ? 'Picked' : 'Use as Reference'}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={handleUse}
+            disabled={busy}
+            className={`flex-1 inline-flex items-center justify-center gap-1.5 px-2.5 py-1 rounded-full border text-[10px] font-mono font-medium transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
+              picked
+                ? 'bg-emerald-500/15 border-emerald-400/40 text-emerald-300'
+                : 'bg-emerald-500/10 border-emerald-400/30 text-emerald-300 hover:bg-emerald-500/20'
+            }`}
+            title="Set as the single-pick reference for the next generation"
+          >
+            <CheckCircle2 className="w-3 h-3" />
+            {picked ? 'Picked' : 'Select'}
+          </button>
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onDismiss?.(); }}
+            className="shrink-0 p-1.5 rounded-full text-red-400 hover:text-red-300 hover:bg-red-500/15 cursor-pointer transition-colors"
+            title="Dismiss this card from the column"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
       </div>
     </div>
   );
