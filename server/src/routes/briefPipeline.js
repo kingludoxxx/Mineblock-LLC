@@ -208,14 +208,30 @@ const TRUSTED_ACCOUNT_IDS_NORM = new Set(
   })
 );
 function isTrustedAccount(accountId) {
-  if (TRUSTED_ACCOUNT_IDS_NORM.size === 0) return true; // unset = allow all (legacy)
+  // Prefer the boot-audit-verified set. Strips accounts owned by businesses
+  // other than META_BUSINESS_ID (VIP BM partner accounts whose content is
+  // unverified Mineblock). Falls back to env-based set during cold-start
+  // or when no Meta token is configured for audit.
+  const effective = _verifiedTrustedSet.size > 0
+    ? _verifiedTrustedSet
+    : TRUSTED_ACCOUNT_IDS_NORM;
+  if (effective.size === 0) return true; // unset = allow all (legacy)
   const id = String(accountId || '').trim();
   if (!id) return false;
-  return TRUSTED_ACCOUNT_IDS_NORM.has(id) || TRUSTED_ACCOUNT_IDS_NORM.has(id.replace(/^act_/i, ''));
+  const bare = id.replace(/^act_/i, '');
+  return effective.has(id) || effective.has(bare) || effective.has(`act_${bare}`);
 }
 function trustedAccountSqlClause(colExpr, paramIndexStart, params) {
-  if (TRUSTED_ACCOUNT_IDS_NORM.size === 0) return null;
-  const list = Array.from(TRUSTED_ACCOUNT_IDS_NORM);
+  // Prefer the boot-audit-verified set when populated. Falls back to the
+  // env-based set (TRUSTED_ACCOUNT_IDS_NORM) only when the boot audit hasn't
+  // populated anything yet (cold start) or was skipped (no META_ACCESS_TOKEN).
+  // The verified set strips accounts owned by businesses other than
+  // META_BUSINESS_ID — e.g. VIP BM partner accounts whose content is foreign.
+  const effective = _verifiedTrustedSet.size > 0
+    ? _verifiedTrustedSet
+    : TRUSTED_ACCOUNT_IDS_NORM;
+  if (effective.size === 0) return null;
+  const list = Array.from(effective);
   params.push(list);
   return `${colExpr} = ANY($${paramIndexStart}::text[])`;
 }
