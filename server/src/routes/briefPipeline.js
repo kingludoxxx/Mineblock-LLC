@@ -94,9 +94,12 @@ router.get('/meta-thumb/:creativeId', async (req, res) => {
     } catch { /* fall through to cache miss path */ }
 
     // Cache miss: fetch source URL from creative_analysis and upload to R2.
+    // Type filter intentionally NOT applied — the proxy now serves both video
+    // first-frame thumbs AND image-creative thumbnails (the Meta Import modal
+    // for statics calls it for image rows whose stored URL has expired).
     const rows = await pgQuery(
       `SELECT thumbnail_url FROM creative_analysis
-        WHERE creative_id = $1 AND type='video' AND thumbnail_url IS NOT NULL
+        WHERE creative_id = $1 AND thumbnail_url IS NOT NULL
         ORDER BY synced_at DESC LIMIT 1`,
       [creativeId]
     );

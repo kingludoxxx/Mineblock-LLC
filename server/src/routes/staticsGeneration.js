@@ -5003,6 +5003,11 @@ router.get('/meta-ads/ads', authenticate, async (req, res) => {
     const minRoas = parseFloat(req.query.min_roas) || 0;
     const minSpend = parseFloat(req.query.min_spend) || 0;
     const search = req.query.search ? String(req.query.search).trim() : null;
+    // Type filter (was hardcoded to 'image' — operator can now ask for video
+    // or carousel winners too). 'all' lifts the filter entirely.
+    const typeParam = String(req.query.type || 'image').toLowerCase();
+    const ALLOWED_TYPES = ['image', 'video', 'carousel', 'all'];
+    const type = ALLOWED_TYPES.includes(typeParam) ? typeParam : 'image';
 
     const cols = await getCreativeAnalysisColumns();
     const idCol  = cols.has('ad_account_id') ? 'ad_account_id' : null;
@@ -5011,20 +5016,28 @@ router.get('/meta-ads/ads', authenticate, async (req, res) => {
                   : null;
     const hasStatus = cols.has('is_active') || cols.has('ad_status');
 
-    const where = [`ca.type = 'image'`, `ca.synced_at >= NOW() - ($1 || ' days')::INTERVAL`];
+    const where = [`ca.synced_at >= NOW() - ($1 || ' days')::INTERVAL`];
     const params = [String(window)];
+    if (type !== 'all') where.push(`ca.type = '${type}'`); // already whitelisted
 
     if (accounts.length > 0 && idCol) {
       params.push(accounts);
       where.push(`ca.${idCol} = ANY($${params.length}::text[])`);
     }
-    if (status === 'active' && hasStatus) {
-      if (cols.has('is_active')) where.push(`ca.is_active = TRUE`);
-      else where.push(`ca.ad_status = 'active'`);
+    // Active-only PROXY: ad_status column was never populated by the TW
+    // sync (Analytics-lane bug), so "active" used to be a no-op. Require
+    // the row to also have been synced in the last 24h — high-confidence
+    // proxy that the ad is still pumping.
+    if (status === 'active') {
+      where.push(`ca.synced_at >= NOW() - INTERVAL '24 hours'`);
+      if (hasStatus) {
+        if (cols.has('is_active')) where.push(`ca.is_active = TRUE`);
+        else where.push(`ca.ad_status = 'active'`);
+      }
     } else if (status === 'active+paused' && hasStatus) {
       if (cols.has('is_active')) where.push(`(ca.is_active = TRUE OR ca.ad_status = 'paused')`);
       else where.push(`ca.ad_status IN ('active', 'paused')`);
-    } // 'all' → no filter
+    } // 'all' → no status filter
 
     if (search) {
       params.push(`%${search}%`);
@@ -5098,13 +5111,161 @@ router.get('/meta-ads/ads', authenticate, async (req, res) => {
       LIMIT 500
     `;
     params.push(minSpend, minRoas, sortKey);
-    const rows = await pgQuery(sql, params);
+    const rawRows = await pgQuery(sql, params);
+
+    // Post-process: replace NULL or expiring-fbcdn thumbnail URLs with our
+    // permanent /meta-thumb/<creative_id> proxy (R2-cached, no expiry).
+    // The proxy handles both image + video creative types after today's
+    // briefPipeline.js fix lifted its type='video' restriction.
+    const rows = rawRows.map(r => {
+      const t = r.thumbnail_url;
+      const looksDead = !t || (typeof t === 'string' && /\.fbcdn\.net|cdninstagram\.com/i.test(t));
+      if (looksDead && r.creative_id) {
+        r.thumbnail_url = `/api/v1/brief-pipeline/meta-thumb/${encodeURIComponent(r.creative_id)}`;
+      }
+      return r;
+    });
+
     res.json({ success: true, data: rows, count: rows.length });
   } catch (err) {
     console.error('[meta-ads/ads] error:', err);
     res.status(500).json({ success: false, error: { message: err.message } });
   }
 });
+
+// GET /meta-ads/last-sync — honest freshness indicator (MAX synced_at).
+// Drives the "Last sync: 2h ago" badge in the import modal. Red threshold
+// at 6h tells the operator the TW data may be stale.
+router.get('/meta-ads/last-sync', authenticate, async (req, res) => {
+  try {
+    const accountsCsv = req.query.accounts ? String(req.query.accounts) : '';
+    const accounts = accountsCsv.split(',').map(a => a.trim()).filter(Boolean);
+    const cols = await getCreativeAnalysisColumns();
+    const idCol = cols.has('ad_account_id') ? 'ad_account_id' : null;
+
+    const where = [];
+    const params = [];
+    if (accounts.length > 0 && idCol) {
+      params.push(accounts);
+      where.push(`${idCol} = ANY($${params.length}::text[])`);
+    }
+    const sql = `
+      SELECT MAX(synced_at) AS last_sync_at,
+             COUNT(*)::INTEGER AS row_count
+        FROM creative_analysis
+        ${where.length > 0 ? 'WHERE ' + where.join(' AND ') : ''}
+    `;
+    const rows = await pgQuery(sql, params);
+    const lastSync = rows[0]?.last_sync_at || null;
+    const ageMinutes = lastSync ? Math.floor((Date.now() - new Date(lastSync).getTime()) / 60000) : null;
+    res.json({
+      success: true,
+      data: {
+        last_sync_at: lastSync,
+        age_minutes: ageMinutes,
+        row_count: rows[0]?.row_count ?? 0,
+        is_stale: ageMinutes !== null && ageMinutes > 360, // > 6h
+      },
+    });
+  } catch (err) {
+    console.error('[meta-ads/last-sync] error:', err);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// POST /meta-ads/repair-thumbnails — bulk backfill for null/expired thumbnails.
+// Pattern mirrors the spy_creatives /repair-thumbnails: scan rows where
+// thumbnail_url IS NULL OR matches *.fbcdn.net, batch-call Meta Graph by
+// meta_ad_id, mirror to R2, write back the permanent URL.
+//
+// Auth: JWT or CRON_SECRET.
+router.post('/meta-ads/repair-thumbnails', async (req, res) => {
+  const cronSecret = process.env.CRON_SECRET;
+  const provided = req.headers['x-cron-secret'];
+  if (cronSecret && provided === cronSecret) return _doMetaAdsRepairThumbnails(req, res);
+  return authenticate(req, res, () => _doMetaAdsRepairThumbnails(req, res));
+});
+
+async function _doMetaAdsRepairThumbnails(req, res) {
+  try {
+    const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN || '';
+    const META_GRAPH_URL = 'https://graph.facebook.com/v21.0';
+    if (!META_ACCESS_TOKEN) {
+      return res.status(503).json({ success: false, error: { message: 'META_ACCESS_TOKEN not set' } });
+    }
+
+    // Pull candidates: rows with no usable thumbnail OR an fbcdn URL that's
+    // about to expire. Restrict to rows with a meta_ad_id (required to call
+    // Meta Graph). Limit per call to keep within Graph quota.
+    const limit = Math.max(1, Math.min(500, parseInt(req.body?.limit, 10) || 200));
+    const candidates = await pgQuery(`
+      SELECT DISTINCT ON (creative_id) creative_id, meta_ad_id, ad_account_id
+        FROM creative_analysis
+       WHERE meta_ad_id IS NOT NULL AND meta_ad_id <> ''
+         AND (thumbnail_url IS NULL
+              OR thumbnail_url = ''
+              OR thumbnail_url ILIKE '%fbcdn.net%'
+              OR thumbnail_url ILIKE '%cdninstagram.com%')
+       ORDER BY creative_id, synced_at DESC
+       LIMIT $1
+    `, [limit]);
+
+    if (candidates.length === 0) {
+      return res.json({ success: true, data: { scanned: 0, repaired: 0, skipped: 0, errors: [] } });
+    }
+
+    let repaired = 0, skipped = 0;
+    const errors = [];
+
+    // Batch Meta Graph calls by ad_account_id to use the /adimages bulk endpoint.
+    // For now: per-ad fetch via /<ad_id>?fields=creative{thumbnail_url,image_url}
+    // (sequential with small concurrency to stay polite).
+    const CONCURRENCY = 4;
+    let cursor = 0;
+    async function processOne(row) {
+      try {
+        const url = `${META_GRAPH_URL}/${row.meta_ad_id}?fields=creative{thumbnail_url,image_url}&access_token=${META_ACCESS_TOKEN}`;
+        const r = await fetch(url, { signal: AbortSignal.timeout(15000) });
+        if (!r.ok) {
+          skipped++;
+          if (errors.length < 5) errors.push(`Meta ${r.status} for ${row.meta_ad_id}`);
+          return;
+        }
+        const data = await r.json();
+        const newThumb = data?.creative?.thumbnail_url || data?.creative?.image_url || null;
+        if (!newThumb) { skipped++; return; }
+
+        await pgQuery(
+          `UPDATE creative_analysis
+             SET thumbnail_url = $1
+           WHERE creative_id = $2`,
+          [newThumb, row.creative_id]
+        );
+        repaired++;
+      } catch (err) {
+        skipped++;
+        if (errors.length < 5) errors.push(`${row.meta_ad_id}: ${err.message}`);
+      }
+    }
+    async function worker() {
+      while (true) {
+        const i = cursor++;
+        if (i >= candidates.length) return;
+        await processOne(candidates[i]);
+      }
+    }
+    await Promise.all(Array.from({ length: CONCURRENCY }, () => worker()));
+
+    console.log(`[meta-ads/repair-thumbnails] scanned=${candidates.length} repaired=${repaired} skipped=${skipped}`);
+    res.json({
+      success: true,
+      data: { scanned: candidates.length, repaired, skipped, errors: errors.length > 0 ? errors : undefined },
+    });
+  } catch (err) {
+    console.error('[meta-ads/repair-thumbnails] error:', err);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+}
 
 // 6. POST /meta-ads/import — push selected TW creatives into the Reference column.
 router.post('/meta-ads/import', authenticate, async (req, res) => {
