@@ -6126,17 +6126,17 @@ router.get('/reference-ads', authenticate, async (req, res) => {
     //   (a) global references (product_id IS NULL), AND
     //   (b) references tied to the requested product_id (if filter passed)
     //
-    // PIPELINE-V2 RULE: League-sourced ads are intentionally EXCLUDED here.
-    // The Reference column is now "our own winning ads" (Meta-imported +
-    // manual uploads + null/legacy). League ads live in the dedicated
-    // FROM LEAGUE column as an inspiration surface — they're used as
-    // single-pick references via that column's "Use" button without
-    // persisting into spy_creatives at all.
+    // Reference column shows EVERY ad the operator has chosen to use as a
+    // reference for generation — Meta-imported, league-imported, uploads,
+    // and legacy/null rows. Operator can still see what came from where via
+    // the `imported_from` field surfaced on each row. (The earlier
+    // "league-excluded" rule was reverted at the operator's request — they
+    // want league imports in Reference so they can click them as inputs
+    // to the generation flow, not just see them in FROM LEAGUE.)
     const productId = req.query.product_id || null;
     const cursor = req.query.cursor || null;
     const where = [
       'is_reference = TRUE',
-      `(imported_from IS NULL OR imported_from <> 'league')`,
     ];
     const params = [];
     if (productId) {
