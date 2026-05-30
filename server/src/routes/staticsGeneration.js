@@ -5425,7 +5425,7 @@ async function _twDiscoverAccountCols(startDate, endDate, attributionModel) {
  * @param {string[]} accountIds      optional filter; empty = all accounts
  * @param {number}  minSpend         server-side prefilter
  */
-async function fetchTopAdsFromTW({ windowDays, attributionModel, accountIds = [], minSpend = 0 }) {
+async function fetchTopAdsFromTW({ windowDays, attributionModel, accountIds = [], minSpend = 0, activeOnly = false }) {
   if (!_TW_API_KEY) throw new Error('TRIPLEWHALE_API_KEY not configured');
   // TW UI's "Last 7 Days" = the 7 days ENDING YESTERDAY (not including today).
   // Verified empirically: /meta-ads/_twverify?window=last7excl returned an
@@ -5469,10 +5469,22 @@ async function fetchTopAdsFromTW({ windowDays, attributionModel, accountIds = []
   // 'unverified'. Unverified ads are SURFACED with a badge, not silently
   // hidden, so the operator sees their winning ads and can verify per-card.
 
+  // LAYER 1 ACTIVE GUARD — when the operator picks the ACTIVE chip we add
+  // a 48h-spend HAVING clause. Reasoning: an ad that hasn't spent in 48h
+  // is almost certainly paused / archived / out of budget. Cheap proxy
+  // for Meta's effective_status, no extra round-trip. Window-scoped end
+  // date (yesterday) so we check the freshest 2 days of data.
+  // Layer 2 (creative_analysis.ad_status post-fetch) catches the
+  // remaining cases where the ad spent within 48h but is now paused.
+  const activeHaving = activeOnly
+    ? `AND SUM(if(event_date >= addDays(toDate(@endDate), -1), spend, 0)) > 0`
+    : '';
+
   const sql = `
     SELECT ${acctSelect}
            ad_name,
            SUM(spend)               as total_spend,
+           SUM(if(event_date >= addDays(toDate(@endDate), -1), spend, 0)) as spend_48h,
            SUM(${_TW_REVENUE_COL})  as total_revenue,
            SUM(${_TW_PURCHASE_COL}) as total_purchases,
            SUM(impressions)         as total_impressions,
@@ -5482,6 +5494,7 @@ async function fetchTopAdsFromTW({ windowDays, attributionModel, accountIds = []
        AND ${_TW_META_CHANNEL_FILTER}
      GROUP BY ad_name${acctGroup}
     HAVING SUM(spend) > ${Number(minSpend) || 0.01}
+           ${activeHaving}
      ORDER BY SUM(spend) DESC
      LIMIT 500
   `;
@@ -5498,6 +5511,7 @@ async function fetchTopAdsFromTW({ windowDays, attributionModel, accountIds = []
     ad_account_id: String(r.ad_account_id || 'unknown'),
     account_name: String(r.ad_account_name || r.ad_account_id || 'Unknown'),
     spend: Number(r.total_spend) || 0,
+    spend_48h: Number(r.spend_48h) || 0,
     revenue: Number(r.total_revenue) || 0,
     purchases: Number(r.total_purchases) || 0,
     impressions: Number(r.total_impressions) || 0,
@@ -5895,11 +5909,14 @@ async function _metaAdsHandler(req, res) {
     // ───────────────────────────────────────────────────────────────────
     if (source === 'tw' && _TW_API_KEY) {
       try {
+        // ACTIVE chip → tell TW SQL to drop ads with 0 spend in last 48h
+        // (Layer 1 of the status fix — cheap proxy for "currently delivering").
         const twRows = await fetchTopAdsFromTW({
           windowDays: window,
           attributionModel: attribution,
           accountIds: accounts,
           minSpend,
+          activeOnly: status === 'active',
         });
 
         // Enrich each TW row with our local metadata (creative_id, meta_ad_id,
@@ -5916,7 +5933,9 @@ async function _metaAdsHandler(req, res) {
               ${cols.has('angle') ? 'angle' : `'' as angle`},
               ${cols.has('week') ? 'week' : `null as week`},
               ${cols.has('auto_detected') ? 'auto_detected' : 'FALSE as auto_detected'},
-              ${cols.has('ctr') ? 'ctr' : '0 as ctr'}
+              ${cols.has('ctr') ? 'ctr' : '0 as ctr'},
+              ${cols.has('ad_status') ? 'ad_status' : `null as ad_status`},
+              ${cols.has('is_active') ? 'is_active' : `null as is_active`}
             FROM creative_analysis
             WHERE ad_name = ANY($1::text[])
             ORDER BY ad_name, synced_at DESC
@@ -5952,13 +5971,45 @@ async function _metaAdsHandler(req, res) {
           else verification_status = 'unverified';
           return { row: r, verification_status };
         });
-        // Hard reject videos always; respect operator's hide_unverified opt-in.
-        const typed = classified.filter(c =>
-          c.verification_status !== 'video' &&
-          (c.verification_status !== 'unverified' || !hideUnverified)
-        ).map(c => ({ ...c.row, verification_status: c.verification_status }));
+        // LAYER 2 STATUS FILTER — when chip = ACTIVE, reject ads whose
+        // creative_analysis.ad_status is explicitly 'paused' / 'archived'.
+        // Layer 1 (TW SQL 48h-spend HAVING) already dropped most paused
+        // ads, but some paused ads still have residual spend in the last
+        // 48h (delayed attribution). This catches them.
+        //
+        // ad_status / is_active classification matches the Phase 1 type
+        // pattern: known-good → trust, known-bad → reject, unknown →
+        // surface with badge so the operator isn't blind to it.
+        function classifyDelivery(m) {
+          if (!m) return 'unknown';
+          const s = m.ad_status ? String(m.ad_status).toLowerCase() : null;
+          const a = m.is_active;
+          if (s === 'paused' || s === 'archived' || s === 'inactive') return 'paused';
+          if (s === 'active' || a === true) return 'active';
+          if (a === false) return 'paused';
+          return 'unknown';
+        }
+
+        // Hard reject videos always; respect operator's hide_unverified opt-in;
+        // for ACTIVE chip, reject anything classified as paused.
+        const typed = classified.filter(c => {
+          if (c.verification_status === 'video') return false;
+          if (c.verification_status === 'unverified' && hideUnverified) return false;
+          if (status === 'active') {
+            const delivery = classifyDelivery(metaByName.get(c.row.ad_name));
+            if (delivery === 'paused') return false;
+          }
+          return true;
+        }).map(c => ({
+          ...c.row,
+          verification_status: c.verification_status,
+          delivery_status: classifyDelivery(metaByName.get(c.row.ad_name)),
+        }));
         const rejectedAsVideoCount = classified.filter(c => c.verification_status === 'video').length;
         const unverifiedCount = classified.filter(c => c.verification_status === 'unverified').length;
+        const rejectedAsPausedCount = status === 'active'
+          ? classified.filter(c => classifyDelivery(metaByName.get(c.row.ad_name)) === 'paused').length
+          : 0;
 
         // Friendly-name enrichment from Meta Graph — same cache the
         // /meta-ads/accounts endpoint feeds, so chips + card subtitles
@@ -5997,6 +6048,8 @@ async function _metaAdsHandler(req, res) {
             roas, cpa,
             days_active: window,
             verification_status: r.verification_status, // 'image' | 'unverified'
+            delivery_status: r.delivery_status,         // 'active' | 'paused' | 'unknown'
+            spend_48h: r.spend_48h || 0,                // last 48h spend (proxy for delivery)
             already_imported: false, // back-filled below in a single batch
           };
         });
@@ -6040,8 +6093,10 @@ async function _metaAdsHandler(req, res) {
           filter_stats: {
             tw_returned: twRows.length,
             rejected_as_video: rejectedAsVideoCount,
+            rejected_as_paused: rejectedAsPausedCount,
             unverified_count: unverifiedCount,
             hide_unverified: hideUnverified,
+            status_filter: status,
           },
         });
       } catch (err) {
