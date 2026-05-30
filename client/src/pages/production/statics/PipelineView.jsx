@@ -17,6 +17,7 @@ import {
   Settings,
   Tag,
   RotateCcw,
+  Pencil,
 } from 'lucide-react';
 import api from '../../../services/api';
 import { IterationsColumn } from './IterationsColumn';
@@ -709,7 +710,7 @@ function PipelineColumn({ column, items, onStatusChange, onCardClick, onRegenera
 // Ready to Launch column (grouped by angle)
 // ---------------------------------------------------------------------------
 
-function ReadyToLaunchColumn({ column, items, onCardClick, onLaunchGroup, onBulkLaunch, launchTemplates, selectedTemplateId, onSelectTemplate, copySets, selectedCopySetId, onSelectCopySet, onStatusChange, onAngleChange }) {
+function ReadyToLaunchColumn({ column, items, onCardClick, onLaunchGroup, onBulkLaunch, launchTemplates, selectedTemplateId, onSelectTemplate, onEditTemplate, copySets, selectedCopySetId, onSelectCopySet, onStatusChange, onAngleChange }) {
   const Icon = column.icon;
   const [dragOver, setDragOver] = useState(false);
 
@@ -770,7 +771,20 @@ function ReadyToLaunchColumn({ column, items, onCardClick, onLaunchGroup, onBulk
             <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-zinc-500 pointer-events-none" />
           </div>
           {selectedTemplateId && (
-            <Lock className="w-3.5 h-3.5 text-zinc-600 shrink-0" title="Linked to template" />
+            <>
+              <button
+                type="button"
+                onClick={() => {
+                  const tpl = launchTemplates.find(t => t.id === selectedTemplateId);
+                  if (tpl && onEditTemplate) onEditTemplate(tpl);
+                }}
+                title="Edit this template (ad account, page, pixel, budget, etc.)"
+                className="inline-flex items-center justify-center w-7 h-7 rounded-md bg-white/[0.04] border border-white/[0.08] text-zinc-300 hover:bg-white/[0.08] hover:text-white transition cursor-pointer shrink-0"
+              >
+                <Pencil className="w-3.5 h-3.5" />
+              </button>
+              <Lock className="w-3.5 h-3.5 text-zinc-600 shrink-0" title="Linked to template" />
+            </>
           )}
         </div>
 
@@ -882,7 +896,7 @@ function LaunchedColumn({ column, items, onCardClick, onStatusChange }) {
 // Main PipelineView component
 // ---------------------------------------------------------------------------
 
-export function PipelineView({ creatives = [], onStatusChange, onAngleChange, onCardClick, onRegenerate, onRefresh, loading, onOpenTemplates, onOpenCopySets, queue = [], onRemoveFromQueue, productId = null }) {
+export function PipelineView({ creatives = [], onStatusChange, onAngleChange, onCardClick, onRegenerate, onRefresh, loading, onOpenTemplates, onEditTemplate, onOpenCopySets, queue = [], onRemoveFromQueue, productId = null, templatesVersion = 0 }) {
   // Bucket creatives into columns by status
   const buckets = useMemo(() => {
     const map = { generating: [], review: [], approved: [], ready: [], launched: [] };
@@ -941,7 +955,7 @@ export function PipelineView({ creatives = [], onStatusChange, onAngleChange, on
       .catch(() => {});
   }, []);
 
-  useEffect(() => { fetchLaunchData(); }, [fetchLaunchData]);
+  useEffect(() => { fetchLaunchData(); }, [fetchLaunchData, templatesVersion]);
 
   // Handle launching a single ad set group
   const handleLaunchGroup = (angle, groupCreatives) => {
@@ -1101,6 +1115,7 @@ export function PipelineView({ creatives = [], onStatusChange, onAngleChange, on
           launchTemplates={launchTemplates}
           selectedTemplateId={selectedTemplateId}
           onSelectTemplate={setSelectedTemplateId}
+          onEditTemplate={onEditTemplate}
           copySets={copySets}
           selectedCopySetId={selectedCopySetId}
           onSelectCopySet={setSelectedCopySetId}
