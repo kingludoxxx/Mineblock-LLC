@@ -31,6 +31,89 @@ const YTDLP_PATH = join(__dirname, '..', '..', '..', 'bin', 'yt-dlp');
 
 const router = Router();
 
+// ── Brand mismatch guardrail ─────────────────────────────────────────────
+// When Vertex multimodal returns brand_or_product_identified that doesn't
+// match the brand implied by the reference's headline / product code, we
+// write a warning to imported_metadata.brand_mismatch_warning. Iterate /
+// clone routes then refuse to process the reference until the operator
+// acknowledges the warning by passing acknowledgeBrandMismatch:true.
+//
+// This stops the entire class of bug where TripleWhale maps a Mineblock
+// internal ID (B0248) to a Meta ad_id that actually resolves to someone
+// else's video (JD Sports / LILCR Italian rap, etc.) — Vertex catches
+// the brand, we block the bad iteration before it produces useless output.
+const MINEBLOCK_BRAND_TOKENS = /(mineblock|minerforge|miner forge|bitcoin miner|btc miner)/i;
+const MINEBLOCK_HEADLINE_TOKENS = /^MR\s*-|mineblock|minerforge|miner\s*forge/i;
+
+function detectBrandMismatch(headline, multimodalAnalysis) {
+  if (!multimodalAnalysis || typeof multimodalAnalysis !== 'object') return null;
+  const brand = String(multimodalAnalysis.brand_or_product_identified || '').trim();
+  if (!brand || brand.toLowerCase() === 'unclear') return null;
+
+  const looksMineblock = MINEBLOCK_HEADLINE_TOKENS.test(String(headline || ''));
+  if (!looksMineblock) return null; // only check OUR ads
+
+  if (MINEBLOCK_BRAND_TOKENS.test(brand)) return null; // match
+
+  // Mismatch: headline says Mineblock, but Vertex identified a different brand.
+  return {
+    warning: 'BRAND_MISMATCH',
+    expected: 'Mineblock / MinerForge Pro',
+    actual: brand,
+    selling_message: String(multimodalAnalysis.selling_message || '').slice(0, 200),
+    message: `Video appears to be from "${brand}" but headline claims Mineblock. The video file at this Meta ad_archive_id likely belongs to a different brand. Re-import or delete this reference before iterating.`,
+  };
+}
+
+// TEMP — one-shot cleanup: delete B0248 (mislabeled JD ad) + re-transcribe the
+// other OUR refs so they get multimodal brand data and the guardrail can
+// retroactively flag any other mismatches.
+router.post('/_fixb0248', async (req, res) => {
+  try {
+    const log = [];
+    // 1. Delete B0248 (confirmed JD Sports video, not Mineblock)
+    const del = await pgQuery(
+      `DELETE FROM brief_pipeline_references WHERE id = 'df674f42-0a1b-4941-821b-86ba264290f8' RETURNING id, headline`
+    );
+    log.push({ step: 'delete_b0248', deleted: del });
+
+    // 2. Re-transcribe all remaining OUR refs that lack multimodal_analysis
+    const stale = await pgQuery(
+      `SELECT id, video_url, headline FROM brief_pipeline_references
+       WHERE source = 'meta' AND tier = 'OUR'
+         AND video_url IS NOT NULL
+         AND (imported_metadata->>'multimodal_analysis' IS NULL OR imported_metadata->>'transcribe_source' != 'vertex_multimodal')`
+    );
+    log.push({ step: 'stale_to_retranscribe', count: stale.length, ids: stale.map((r) => ({ id: r.id, headline: r.headline })) });
+
+    for (const ref of stale) {
+      (async () => {
+        try {
+          await pgQuery(`UPDATE brief_pipeline_references SET status='transcribing', analysis_error=NULL, updated_at=NOW() WHERE id=$1`, [ref.id]);
+          const result = await transcribeVideoUrl(ref.video_url);
+          const mismatch = detectBrandMismatch(ref.headline, result._analysis);
+          await pgQuery(
+            `UPDATE brief_pipeline_references
+                SET transcript=$1, transcript_at=NOW(), status='transcribed', analysis_error=NULL,
+                    imported_metadata = CASE
+                      WHEN imported_metadata IS NULL THEN jsonb_build_object('transcript_segments', $2::jsonb, 'transcribe_source', $4::text, 'multimodal_analysis', $5::jsonb, 'brand_mismatch_warning', $6::jsonb)
+                      WHEN jsonb_typeof(imported_metadata) = 'object' THEN
+                        jsonb_set(jsonb_set(jsonb_set(jsonb_set(imported_metadata, '{transcript_segments}', $2::jsonb, true), '{transcribe_source}', to_jsonb($4::text), true), '{multimodal_analysis}', $5::jsonb, true), '{brand_mismatch_warning}', $6::jsonb, true)
+                      ELSE jsonb_build_object('original', imported_metadata::text, 'transcript_segments', $2::jsonb, 'transcribe_source', $4::text, 'multimodal_analysis', $5::jsonb, 'brand_mismatch_warning', $6::jsonb)
+                    END,
+                    updated_at=NOW() WHERE id=$3`,
+            [result.text, JSON.stringify(result.segments || []), ref.id, result._source || 'unknown', JSON.stringify(result._analysis || null), JSON.stringify(mismatch)]
+          );
+          if (mismatch) console.warn(`[fixb0248] BRAND MISMATCH on ref ${ref.id}: ${mismatch.message}`);
+        } catch (e) {
+          console.error(`[fixb0248] retranscribe ${ref.id} failed:`, e.message);
+        }
+      })();
+    }
+    res.json({ success: true, log });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // TEMP — audit all OUR references for brand mismatch via multimodal analysis
 router.get('/_auditour', async (req, res) => {
   try {
@@ -2339,7 +2422,38 @@ function validateUuid(req, res) {
 router.post('/generate-from-script', authenticate, async (req, res) => {
   try {
     await ensureTables();
-    const { script, url, productId, productCode, angle, mode, numVariations = 3, referenceId, vectorsSelected } = req.body;
+    const { script, url, productId, productCode, angle, mode, numVariations = 3, referenceId, vectorsSelected, acknowledgeBrandMismatch } = req.body;
+
+    // Brand-mismatch guardrail. If the picked reference has a brand_mismatch_warning
+    // flag set (Vertex multimodal detected the video doesn't match the ad's claimed
+    // brand), refuse to iterate / clone unless the operator explicitly acknowledges
+    // it. Prevents the "Italian rap video iterated as Mineblock" class of bug.
+    if (referenceId && !acknowledgeBrandMismatch) {
+      try {
+        const refRows = await pgQuery(
+          `SELECT imported_metadata->'brand_mismatch_warning' AS warning, headline
+           FROM brief_pipeline_references WHERE id = $1 LIMIT 1`,
+          [referenceId]
+        );
+        const w = refRows[0]?.warning;
+        if (w && typeof w === 'object' && w.warning === 'BRAND_MISMATCH') {
+          return res.status(409).json({
+            success: false,
+            error: {
+              code: 'BRAND_MISMATCH',
+              message: w.message,
+              detected_brand: w.actual,
+              expected_brand: w.expected,
+              selling_message: w.selling_message,
+              ref_headline: refRows[0].headline,
+              hint: 'To override, resubmit with acknowledgeBrandMismatch: true. Recommended: delete this reference and re-import the correct ad.',
+            },
+          });
+        }
+      } catch (e) {
+        console.warn(`[BriefPipeline] brand mismatch guard check failed for ref ${referenceId}:`, e.message);
+      }
+    }
 
     let rawScript = script || '';
 
@@ -4056,20 +4170,33 @@ router.post('/references/:id/retry-transcribe', authenticate, async (req, res) =
             `UPDATE brief_pipeline_references SET video_url = $1, status = 'transcribing' WHERE id = $2`,
             [videoUrl, ref.id]
           );
-          const { text, segments } = await transcribeVideoUrl(videoUrl);
+          const result = await transcribeVideoUrl(videoUrl);
+          const { text, segments } = result;
+          const mismatch = detectBrandMismatch(ref.headline, result._analysis);
           await pgQuery(
             `UPDATE brief_pipeline_references
                 SET transcript = $1, transcript_at = NOW(), status = 'transcribed',
                     analysis_error = NULL,
                     imported_metadata = CASE
-                          WHEN imported_metadata IS NULL THEN jsonb_build_object('transcript_segments', $2::jsonb)
-                          WHEN jsonb_typeof(imported_metadata) = 'object' THEN jsonb_set(imported_metadata, '{transcript_segments}', $2::jsonb, true)
-                          ELSE jsonb_build_object('original', imported_metadata::text, 'transcript_segments', $2::jsonb)
+                          WHEN imported_metadata IS NULL THEN jsonb_build_object('transcript_segments', $2::jsonb, 'transcribe_source', $4::text, 'multimodal_analysis', $5::jsonb, 'brand_mismatch_warning', $6::jsonb)
+                          WHEN jsonb_typeof(imported_metadata) = 'object' THEN
+                            jsonb_set(
+                              jsonb_set(
+                                jsonb_set(
+                                  jsonb_set(imported_metadata, '{transcript_segments}', $2::jsonb, true),
+                                  '{transcribe_source}', to_jsonb($4::text), true
+                                ),
+                                '{multimodal_analysis}', $5::jsonb, true
+                              ),
+                              '{brand_mismatch_warning}', $6::jsonb, true
+                            )
+                          ELSE jsonb_build_object('original', imported_metadata::text, 'transcript_segments', $2::jsonb, 'transcribe_source', $4::text, 'multimodal_analysis', $5::jsonb, 'brand_mismatch_warning', $6::jsonb)
                         END,
                     updated_at = NOW()
               WHERE id = $3`,
-            [text, JSON.stringify(segments || []), ref.id]
+            [text, JSON.stringify(segments || []), ref.id, result._source || 'unknown', JSON.stringify(result._analysis || null), JSON.stringify(mismatch)]
           );
+          if (mismatch) console.warn(`[BriefPipeline] BRAND MISMATCH on ref ${ref.id}: ${mismatch.message}`);
           return;
         }
 
@@ -4543,7 +4670,9 @@ router.post('/references/import-meta', authenticate, async (req, res) => {
                   WHERE id = $2`,
                 [videoUrl, ref.id]
               );
-              const { text, segments } = await transcribeVideoUrl(videoUrl);
+              const result = await transcribeVideoUrl(videoUrl);
+              const { text, segments } = result;
+              const mismatch = detectBrandMismatch(ref.headline, result._analysis);
               await pgQuery(
                 `UPDATE brief_pipeline_references
                     SET transcript      = $1,
@@ -4551,14 +4680,25 @@ router.post('/references/import-meta', authenticate, async (req, res) => {
                         status          = 'transcribed',
                         analysis_error  = NULL,
                         imported_metadata = CASE
-                          WHEN imported_metadata IS NULL THEN jsonb_build_object('transcript_segments', $2::jsonb)
-                          WHEN jsonb_typeof(imported_metadata) = 'object' THEN jsonb_set(imported_metadata, '{transcript_segments}', $2::jsonb, true)
-                          ELSE jsonb_build_object('original', imported_metadata::text, 'transcript_segments', $2::jsonb)
+                          WHEN imported_metadata IS NULL THEN jsonb_build_object('transcript_segments', $2::jsonb, 'transcribe_source', $4::text, 'multimodal_analysis', $5::jsonb, 'brand_mismatch_warning', $6::jsonb)
+                          WHEN jsonb_typeof(imported_metadata) = 'object' THEN
+                            jsonb_set(
+                              jsonb_set(
+                                jsonb_set(
+                                  jsonb_set(imported_metadata, '{transcript_segments}', $2::jsonb, true),
+                                  '{transcribe_source}', to_jsonb($4::text), true
+                                ),
+                                '{multimodal_analysis}', $5::jsonb, true
+                              ),
+                              '{brand_mismatch_warning}', $6::jsonb, true
+                            )
+                          ELSE jsonb_build_object('original', imported_metadata::text, 'transcript_segments', $2::jsonb, 'transcribe_source', $4::text, 'multimodal_analysis', $5::jsonb, 'brand_mismatch_warning', $6::jsonb)
                         END,
                         updated_at      = NOW()
                   WHERE id = $3`,
-                [text, JSON.stringify(segments || []), ref.id]
+                [text, JSON.stringify(segments || []), ref.id, result._source || 'unknown', JSON.stringify(result._analysis || null), JSON.stringify(mismatch)]
               );
+              if (mismatch) console.warn(`[BriefPipeline] BRAND MISMATCH on ref ${ref.id}: ${mismatch.message}`);
               return;
             }
 
