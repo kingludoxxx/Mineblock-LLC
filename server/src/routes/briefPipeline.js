@@ -181,30 +181,6 @@ router.get('/meta-thumb/:creativeId', async (req, res) => {
   }
 });
 
-// /_bmverify — TEMP: confirms META_BUSINESS_ID env took effect, returns
-// boot audit state. Removed same-arc after verification.
-router.get('/_bmverify', async (_req, res) => {
-  try {
-    const auditRows = await pgQuery(`
-      SELECT account_id, business_id, business_name, is_trusted,
-             account_status, verified_at, verification_error
-        FROM meta_account_audit
-       ORDER BY verified_at DESC NULLS LAST
-       LIMIT 20
-    `).catch(() => []);
-    res.json({
-      success: true,
-      mineblock_business_id_set: !!MINEBLOCK_BUSINESS_ID,
-      mineblock_business_id: MINEBLOCK_BUSINESS_ID || null,
-      boot_audit_complete: _bootAuditComplete,
-      verified_trusted_set_size: _verifiedTrustedSet.size,
-      meta_account_audit: auditRows,
-    });
-  } catch (err) {
-    res.status(500).json({ success: false, error: { message: err.message } });
-  }
-});
-
 router.use(authenticate, requirePermission('brief-pipeline', 'access'));
 
 // ── Config ────────────────────────────────────────────────────────────
