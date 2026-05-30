@@ -4489,9 +4489,11 @@ router.post('/references/:id/retry-transcribe', authenticate, async (req, res) =
           }
         }
 
-        // Playwright + yt-dlp gated on: !canResolveOwned (legacy) OR
-        // ownershipVerified=true (Meta confirmed ours but couldn't return source).
-        const playwrightAllowed = !canResolveOwned || ownershipVerified;
+        // Playwright + yt-dlp gated on NO meta_ad_id (legacy refs). The
+        // ownershipVerified path was REMOVED — Playwright on FB Ad Library
+        // structurally cannot tell whether a network .mp4 is from the
+        // requested ad or a related-ads carousel below it.
+        const playwrightAllowed = !canResolveOwned;
 
         // Path 1: Playwright
         if (!videoUrl && playwrightAllowed) {
