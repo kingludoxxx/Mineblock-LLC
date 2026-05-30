@@ -1257,11 +1257,20 @@ router.post('/generate', authenticate, async (req, res) => {
   if (!reqRefImage) return res.status(400).json({ success: false, error: { message: 'reference_image_url is required' } });
   if (!reqProduct)  return res.status(400).json({ success: false, error: { message: 'product is required' } });
 
-  // Pre-allocate a taskId and respond IMMEDIATELY — avoids proxy-timeout 502s.
+  // Pre-allocate parent + one child task per ratio, respond IMMEDIATELY.
+  // Pre-creating per-ratio child taskIds is critical: the frontend polls each
+  // child individually — the parent task's status payload doesn't contain a
+  // top-level resultImageUrl (each ratio's URL lives on its own child task).
+  // If we only returned [earlyTask] the frontend would poll the parent
+  // forever and never see the image URLs — the save step never fires.
   const earlyTaskId = `gen-${crypto.randomUUID()}`;
-  const earlyTask = { taskId: earlyTaskId, ratio: req.body.ratio || '4:5' };
-  storeTaskResult(earlyTaskId, { status: 'processing', progress: 'Analyzing reference image...' });
-  res.json({ success: true, data: { taskId: earlyTaskId, tasks: [earlyTask], provider: 'nanobanana', status: 'processing' } });
+  const ratiosForResponse = (!req.body.ratio || req.body.ratio === 'all') ? ['1:1', '4:5', '9:16'] : [req.body.ratio];
+  const preChildTasks = ratiosForResponse.map(r => ({ taskId: `nb-${crypto.randomUUID()}`, ratio: r }));
+  for (const ct of preChildTasks) {
+    storeTaskResult(ct.taskId, { status: 'processing', progress: `Generating ${ct.ratio}...` });
+  }
+  storeTaskResult(earlyTaskId, { status: 'processing', progress: 'Analyzing reference image...', tasks: preChildTasks });
+  res.json({ success: true, data: { taskId: earlyTaskId, tasks: preChildTasks, provider: 'nanobanana', status: 'processing' } });
 
   // Watchdog: if the pipeline hangs, mark task as error after 8 minutes.
   const watchdog = setTimeout(() => {
@@ -1450,39 +1459,53 @@ router.post('/generate', authenticate, async (req, res) => {
 
       // 'all' (the UI default for "generate every aspect ratio") expands to the
       // canonical 3. Falsy or 'all' → 3 ratios. Any specific ratio → just that one.
+      // ratiosToGenerate MUST match ratiosForResponse so the pre-allocated
+      // child taskIds (returned in the initial /generate response) line up
+      // with what the pipeline actually generates.
       const ALL_RATIOS = ['1:1', '4:5', '9:16'];
       const ratiosToGenerate = (!ratio || ratio === 'all') ? ALL_RATIOS : [ratio];
-      storeTaskResult(earlyTaskId, { status: 'processing', progress: `Generating ${ratiosToGenerate.length} ratio(s)...` });
+      // Map ratio → pre-allocated child taskId from the initial response.
+      const preTaskIdByRatio = Object.fromEntries(preChildTasks.map(t => [t.ratio, t.taskId]));
+      storeTaskResult(earlyTaskId, { status: 'processing', progress: `Generating ${ratiosToGenerate.length} ratio(s)...`, tasks: preChildTasks });
 
       async function runOneRatio(r) {
         const ratioStart = Date.now();
-        const nbTaskId = await withRetry(
-          () => submitToNanoBanana(nbPrompt, [productHttpUrl], r),
-          `nb-submit ${r}`
-        );
-        console.log(`[staticsGeneration] NanoBanana ${r} submitted: ${nbTaskId}`);
-        const tempUrl = await withRetry(
-          () => pollNanoBanana(nbTaskId),
-          `nb-poll ${r}`
-        );
-        const resultImageUrl = await persistNanoBananaImage(tempUrl, `statics-generated/${r}`);
-        if (!resultImageUrl) {
-          // Refuse to write a dead URL. Throw so Promise.allSettled marks
-          // this ratio as failed; downstream callers handle partial-batch.
-          throw new Error(`persist failed for ${r} — refusing to write dying URL`);
-        }
-        console.log(`[staticsGeneration] ⏱ NanoBanana ${r} done in ${Date.now() - ratioStart}ms`);
+        // Use the pre-allocated child taskId (already returned to the client)
+        // so the frontend's per-ratio poll lines up cleanly.
+        const childTaskId = preTaskIdByRatio[r] || `nb-${crypto.randomUUID()}`;
+        try {
+          const nbTaskId = await withRetry(
+            () => submitToNanoBanana(nbPrompt, [productHttpUrl], r),
+            `nb-submit ${r}`
+          );
+          console.log(`[staticsGeneration] NanoBanana ${r} submitted: ${nbTaskId} (child=${childTaskId.slice(0, 12)}…)`);
+          const tempUrl = await withRetry(
+            () => pollNanoBanana(nbTaskId),
+            `nb-poll ${r}`
+          );
+          const resultImageUrl = await persistNanoBananaImage(tempUrl, `statics-generated/${r}`);
+          if (!resultImageUrl) {
+            // Refuse to write a dead URL. Throw so Promise.allSettled marks
+            // this ratio as failed; downstream callers handle partial-batch.
+            throw new Error(`persist failed for ${r} — refusing to write dying URL`);
+          }
+          console.log(`[staticsGeneration] ⏱ NanoBanana ${r} done in ${Date.now() - ratioStart}ms`);
 
-        const childTaskId = `nb-${crypto.randomUUID()}`;
-        storeTaskResult(childTaskId, {
-          status: 'completed',
-          resultImageUrl,
-          provider: 'nanobanana',
-          model: 'google/nano-banana-edit',
-          claudeAnalysis: claudeResult,
-          quality_warning: null,
-        });
-        return { taskId: childTaskId, ratio: r, resultImageUrl };
+          storeTaskResult(childTaskId, {
+            status: 'completed',
+            resultImageUrl,
+            provider: 'nanobanana',
+            model: 'google/nano-banana-edit',
+            claudeAnalysis: claudeResult,
+            quality_warning: null,
+          });
+          return { taskId: childTaskId, ratio: r, resultImageUrl };
+        } catch (err) {
+          // Propagate failure to the child task too so the frontend's poll
+          // stops cleanly instead of waiting the full 8-minute timeout.
+          storeTaskResult(childTaskId, { status: 'error', error: err.message });
+          throw err;
+        }
       }
 
       const ratioResults = await Promise.allSettled(ratiosToGenerate.map(runOneRatio));
