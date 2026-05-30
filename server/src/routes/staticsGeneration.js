@@ -437,9 +437,20 @@ router.get('/meta-ads/_twverify', async (req, res) => {
     const revCol = req.query.rev || process.env.TW_REVENUE_COL || 'order_revenue';
     const purCol = req.query.pur || process.env.TW_PURCHASE_COL || 'website_purchases';
     if (!TW_API_KEY) return res.status(500).json({ error: 'TRIPLEWHALE_API_KEY not set' });
-    const end = new Date(); end.setUTCHours(0,0,0,0);
-    const start = new Date(end.getTime() - 6 * 86400000);
     const fmt = (d) => d.toISOString().slice(0,10);
+    const today = new Date(); today.setUTCHours(0,0,0,0);
+    let start, end;
+    if (req.query.start && req.query.end) {
+      start = new Date(req.query.start + 'T00:00:00Z');
+      end   = new Date(req.query.end   + 'T00:00:00Z');
+    } else if (req.query.window === 'last7excl') {
+      // last 7 days ending YESTERDAY (TW UI default for "last 7 days")
+      end = new Date(today.getTime() - 86400000);
+      start = new Date(end.getTime() - 6 * 86400000);
+    } else {
+      end = today;
+      start = new Date(end.getTime() - 6 * 86400000);
+    }
     const sql = `SELECT SUM(spend) AS spend, SUM(${revCol}) AS revenue, SUM(${purCol}) AS purchases FROM pixel_joined_tvf WHERE event_date BETWEEN @startDate AND @endDate AND channel = 'facebook-ads'`;
     const r = await fetch(TW_SQL_URL, {
       method: 'POST',
