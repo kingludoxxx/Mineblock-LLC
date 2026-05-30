@@ -173,7 +173,9 @@ function RatioColumn({ ratio, creative, parentId, onRefresh, onAfterDelete, onAp
   const [refining, setRefining] = useState(false);
   const [refineError, setRefineError] = useState(null);
   const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState(null);
   const [approving, setApproving] = useState(false);
+  const [approveError, setApproveError] = useState(null);
   const [iterations, setIterations] = useState([]);
   const [loadingIters, setLoadingIters] = useState(false);
   const abortRef = useRef(false);
@@ -237,11 +239,12 @@ function RatioColumn({ ratio, creative, parentId, onRefresh, onAfterDelete, onAp
     if (!creative?.id || deleting) return;
     if (!window.confirm(`Delete the ${ratio} version?`)) return;
     setDeleting(true);
+    setDeleteError(null);
     try {
       await api.delete(`/statics-generation/creatives/${creative.id}`);
       onAfterDelete?.();
     } catch (err) {
-      setRefineError(err.response?.data?.error?.message || err.message);
+      setDeleteError(err.response?.data?.error?.message || err.message);
     } finally {
       setDeleting(false);
     }
@@ -260,6 +263,7 @@ function RatioColumn({ ratio, creative, parentId, onRefresh, onAfterDelete, onAp
   const handleApprove = async () => {
     if (!creative?.id || approving) return;
     setApproving(true);
+    setApproveError(null);
     try {
       // Backend resolves child → parent + approves the whole tree.
       // Per-ratio approve = full-card approve (intentional — the operator
@@ -267,7 +271,7 @@ function RatioColumn({ ratio, creative, parentId, onRefresh, onAfterDelete, onAp
       await api.post(`/statics-generation/creatives/${creative.id}/approve`);
       onApproved?.();
     } catch (err) {
-      setRefineError(err.response?.data?.error?.message || err.message);
+      setApproveError(err.response?.data?.error?.message || err.message);
     } finally {
       setApproving(false);
     }
@@ -322,6 +326,7 @@ function RatioColumn({ ratio, creative, parentId, onRefresh, onAfterDelete, onAp
           </button>
         </div>
       </div>
+      {deleteError && <div className="px-3 pb-1 text-[10px] text-red-400">{deleteError}</div>}
 
       {/* Refine input + regenerate */}
       <div className="px-3 py-2 border-t border-white/[0.05] space-y-2">
@@ -395,6 +400,7 @@ function RatioColumn({ ratio, creative, parentId, onRefresh, onAfterDelete, onAp
             ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Approving…</>
             : <><CheckCircle2 className="w-3.5 h-3.5" /> Approve</>}
         </button>
+        {approveError && <div className="mt-1.5 text-[10px] text-red-400">{approveError}</div>}
       </div>
     </div>
   );
