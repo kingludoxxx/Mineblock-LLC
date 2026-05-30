@@ -1264,7 +1264,10 @@ router.post('/generate', authenticate, async (req, res) => {
   // If we only returned [earlyTask] the frontend would poll the parent
   // forever and never see the image URLs — the save step never fires.
   const earlyTaskId = `gen-${crypto.randomUUID()}`;
-  const ratiosForResponse = (!req.body.ratio || req.body.ratio === 'all') ? ['1:1', '4:5', '9:16'] : [req.body.ratio];
+  // Operator spec: each generation = ONE card with two dimensions, 1:1 + 9:16.
+  // 4:5 is intentionally dropped. The 9:16 will be saved as a child of the
+  // 1:1 parent on the frontend so the pipeline shows a single card per ref.
+  const ratiosForResponse = (!req.body.ratio || req.body.ratio === 'all') ? ['1:1', '9:16'] : [req.body.ratio];
   const preChildTasks = ratiosForResponse.map(r => ({ taskId: `nb-${crypto.randomUUID()}`, ratio: r }));
   for (const ct of preChildTasks) {
     storeTaskResult(ct.taskId, { status: 'processing', progress: `Generating ${ct.ratio}...` });
@@ -1462,7 +1465,7 @@ router.post('/generate', authenticate, async (req, res) => {
       // ratiosToGenerate MUST match ratiosForResponse so the pre-allocated
       // child taskIds (returned in the initial /generate response) line up
       // with what the pipeline actually generates.
-      const ALL_RATIOS = ['1:1', '4:5', '9:16'];
+      const ALL_RATIOS = ['1:1', '9:16']; // operator spec: one card, two dimensions
       const ratiosToGenerate = (!ratio || ratio === 'all') ? ALL_RATIOS : [ratio];
       // Map ratio → pre-allocated child taskId from the initial response.
       const preTaskIdByRatio = Object.fromEntries(preChildTasks.map(t => [t.ratio, t.taskId]));
@@ -2529,6 +2532,7 @@ router.post('/creatives', authenticate, async (req, res) => {
       claude_analysis, swap_pairs, generation_prompt, generation_task_id,
       source_label, pipeline, status = 'review',
       group_id, quality_warning,
+      parent_creative_id,
     } = req.body;
 
     if (!image_url) return res.status(400).json({ success: false, error: { message: 'image_url is required' } });
@@ -2565,14 +2569,14 @@ router.post('/creatives', authenticate, async (req, res) => {
          reference_image_id, source_label, reference_name, reference_thumbnail,
          adapted_text, claude_analysis, swap_pairs, generation_prompt,
          generation_task_id, pipeline, status, group_id, generated_copy, copy_set_id,
-         quality_warning)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+         quality_warning, parent_creative_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
        RETURNING *`,
       [
         product_id || null,
         product_name || null,
         angle || null,
-        aspect_ratio || '4:5',
+        aspect_ratio || '1:1',
         image_url,
         reference_template_id || null,
         source_label || (reference_template_id ? 'template' : 'upload'),
@@ -2589,6 +2593,7 @@ router.post('/creatives', authenticate, async (req, res) => {
         generatedCopy ? JSON.stringify(generatedCopy) : null,
         matchedCopySetId,
         quality_warning || null,
+        parent_creative_id || null,
       ]
     );
 

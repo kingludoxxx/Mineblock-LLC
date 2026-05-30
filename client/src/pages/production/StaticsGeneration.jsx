@@ -1393,32 +1393,47 @@ export default function StaticsGeneration() {
         );
       }
 
-      // Step 3: Save all creatives with shared group
+      // Step 3: Save creatives — 1:1 first as the parent, then 9:16 as its
+      // child (parent_creative_id pointing at 1:1). Frontend renders only the
+      // parent card and shows the 9:16 variant inline as a ratio pill, so
+      // each reference produces ONE card with two dimensions.
       setGenerationStep(3);
       const groupId = crypto.randomUUID();
       const currentRef = references[references.length - 1] || references[0];
       const resolvedRefUrl = currentRef?.image_url || currentRef?.thumbnail || currentRef?.url || resolvedReferenceUrl;
 
-      const savedCreatives = await Promise.all(completedTasks.map(async (task) => {
-        const saveRes = await api.post('/statics-generation/creatives', {
-          product_id: selectedProductId || null,
-          product_name: productName,
-          image_url: task.imageUrl,
-          angle: marketingAngle || null,
-          aspect_ratio: task.ratio,
-          group_id: groupId,
-          generation_task_id: task.taskId,
-          adapted_text: task.claudeAnalysis?.adapted_text || genResult.adaptedText || genResult.claudeAnalysis?.adapted_text,
-          swap_pairs: task.swapPairs || genResult.swapPairs,
-          claude_analysis: task.claudeAnalysis || genResult.claudeAnalysis,
-          reference_thumbnail: resolvedRefUrl,
-          reference_name: currentRef?.name || 'Reference',
-          source_label: currentRef?.source_label || currentRef?.name || null,
-          pipeline: 'standard',
-          quality_warning: task.qualityWarning || null,
-        });
-        return saveRes.data?.data || saveRes.data;
+      const parentTask = completedTasks.find(t => t.ratio === '1:1') || completedTasks[0];
+      const childTasks = completedTasks.filter(t => t !== parentTask);
+
+      const buildSavePayload = (task, parentId) => ({
+        product_id: selectedProductId || null,
+        product_name: productName,
+        image_url: task.imageUrl,
+        angle: marketingAngle || null,
+        aspect_ratio: task.ratio,
+        group_id: groupId,
+        generation_task_id: task.taskId,
+        adapted_text: task.claudeAnalysis?.adapted_text || genResult.adaptedText || genResult.claudeAnalysis?.adapted_text,
+        swap_pairs: task.swapPairs || genResult.swapPairs,
+        claude_analysis: task.claudeAnalysis || genResult.claudeAnalysis,
+        reference_thumbnail: resolvedRefUrl,
+        reference_name: currentRef?.name || 'Reference',
+        source_label: currentRef?.source_label || currentRef?.name || null,
+        pipeline: 'standard',
+        quality_warning: task.qualityWarning || null,
+        parent_creative_id: parentId || null,
+      });
+
+      const parentRes = await api.post('/statics-generation/creatives', buildSavePayload(parentTask, null));
+      const parentRow = parentRes.data?.data || parentRes.data;
+      const parentId = parentRow?.id;
+
+      const childRows = await Promise.all(childTasks.map(async (task) => {
+        const r = await api.post('/statics-generation/creatives', buildSavePayload(task, parentId));
+        return r.data?.data || r.data;
       }));
+
+      const savedCreatives = [parentRow, ...childRows];
 
       const finalResult = {
         results: completedTasks,
@@ -1842,29 +1857,41 @@ export default function StaticsGeneration() {
                 if (failedTasks.length > 0) allErrors.push(...failedTasks);
                 if (completedTasks.length === 0) return;
 
-                // Step 3: Save creatives
+                // Step 3: Save creatives — 1:1 as parent, 9:16 as child of 1:1.
                 const groupId = crypto.randomUUID();
                 const resolvedRefUrl = currentRef?.image_url || currentRef?.thumbnail || currentRef?.url || refUrl;
 
-                const savedCreatives = await Promise.all(completedTasks.map(async (task) => {
-                  const saveRes = await api.post('/statics-generation/creatives', {
-                    product_id: item.productId || null,
-                    product_name: item.productName,
-                    image_url: task.imageUrl,
-                    angle: item.angle || null,
-                    aspect_ratio: task.ratio,
-                    group_id: groupId,
-                    generation_task_id: task.taskId,
-                    adapted_text: task.claudeAnalysis?.adapted_text || genResult.adaptedText || genResult.claudeAnalysis?.adapted_text,
-                    swap_pairs: task.swapPairs || genResult.swapPairs,
-                    claude_analysis: task.claudeAnalysis || genResult.claudeAnalysis,
-                    reference_thumbnail: resolvedRefUrl,
-                    reference_name: currentRef?.name || 'Reference',
-                    source_label: currentRef?.source_label || currentRef?.name || null,
-                    pipeline: 'standard',
-                  });
-                  return saveRes.data?.data || saveRes.data;
+                const parentTask = completedTasks.find(t => t.ratio === '1:1') || completedTasks[0];
+                const childTasks = completedTasks.filter(t => t !== parentTask);
+
+                const buildPayload = (task, parentId) => ({
+                  product_id: item.productId || null,
+                  product_name: item.productName,
+                  image_url: task.imageUrl,
+                  angle: item.angle || null,
+                  aspect_ratio: task.ratio,
+                  group_id: groupId,
+                  generation_task_id: task.taskId,
+                  adapted_text: task.claudeAnalysis?.adapted_text || genResult.adaptedText || genResult.claudeAnalysis?.adapted_text,
+                  swap_pairs: task.swapPairs || genResult.swapPairs,
+                  claude_analysis: task.claudeAnalysis || genResult.claudeAnalysis,
+                  reference_thumbnail: resolvedRefUrl,
+                  reference_name: currentRef?.name || 'Reference',
+                  source_label: currentRef?.source_label || currentRef?.name || null,
+                  pipeline: 'standard',
+                  parent_creative_id: parentId || null,
+                });
+
+                const parentRes = await api.post('/statics-generation/creatives', buildPayload(parentTask, null));
+                const parentRow = parentRes.data?.data || parentRes.data;
+                const parentId = parentRow?.id;
+
+                const childRows = await Promise.all(childTasks.map(async (task) => {
+                  const r = await api.post('/statics-generation/creatives', buildPayload(task, parentId));
+                  return r.data?.data || r.data;
                 }));
+
+                const savedCreatives = [parentRow, ...childRows];
 
                 setCreatives(prev => [...savedCreatives, ...prev]);
                 totalCreatives += completedTasks.length;
