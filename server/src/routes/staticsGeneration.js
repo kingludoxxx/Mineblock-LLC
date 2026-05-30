@@ -4905,8 +4905,15 @@ const _TW_API_KEY = process.env.TRIPLEWHALE_API_KEY || '';
 const _TW_SHOP_ID = process.env.TRIPLEWHALE_SHOP_ID || '17cca0-2.myshopify.com';
 const _TW_SQL_URL = 'https://api.triplewhale.com/api/v2/orcabase/api/sql';
 const _TW_ATTRIBUTION_DEFAULT = process.env.TW_ATTRIBUTION_MODEL || 'lastPlatformClick';
-const _TW_REVENUE_COL  = process.env.TW_REVENUE_COL  || 'order_revenue';
-const _TW_PURCHASE_COL = process.env.TW_PURCHASE_COL || 'website_purchases';
+// Defaults aligned to TW UI's Triple Attribution + Meta view (the operator's
+// reference). Set via env if the shop uses different columns.
+const _TW_REVENUE_COL  = process.env.TW_REVENUE_COL  || 'channel_reported_conversion_value';
+const _TW_PURCHASE_COL = process.env.TW_PURCHASE_COL || 'channel_reported_conversions';
+// Channel filter — operator's TW screenshot was Meta-only filtered, and
+// adsReporting.js proves the pixel_joined_tvf schema uses `channel='facebook-ads'`
+// for Meta rows. Hardcoded here so the spend column drops from $9.7k (all
+// channels) to ~$4.1k (Meta only), matching the TW UI.
+const _TW_META_CHANNEL_FILTER = `channel = 'facebook-ads'`;
 
 // Per-process column-discovery cache so we don't re-probe TW on every
 // /meta-ads/ads call. Mirrors the Analytics worker's cache (separate
@@ -4959,6 +4966,7 @@ async function _twDiscoverAccountCols(startDate, endDate, attributionModel) {
       SELECT ${selectAcct} ad_name, SUM(spend) as total_spend
       FROM pixel_joined_tvf
       WHERE event_date BETWEEN @startDate AND @endDate
+        AND ${_TW_META_CHANNEL_FILTER}
       GROUP BY ad_name${groupAcct}
       LIMIT 1
     `;
@@ -5003,7 +5011,8 @@ async function fetchTopAdsFromTW({ windowDays, attributionModel, accountIds = []
 
   // Build the main aggregation query. Spend/revenue/purchases come from TW
   // with the operator's chosen attribution model — these are the numbers
-  // that should match the TW UI exactly.
+  // that should match the TW UI exactly. Filter to Meta-only via the
+  // pixel_joined_tvf `channel` column (confirmed in adsReporting.js).
   const sql = `
     SELECT ${acctSelect}
            ad_name,
@@ -5014,6 +5023,7 @@ async function fetchTopAdsFromTW({ windowDays, attributionModel, accountIds = []
            SUM(clicks)              as total_clicks
       FROM pixel_joined_tvf
      WHERE event_date BETWEEN @startDate AND @endDate
+       AND ${_TW_META_CHANNEL_FILTER}
      GROUP BY ad_name${acctGroup}
     HAVING SUM(spend) > ${Number(minSpend) || 0.01}
      ORDER BY SUM(spend) DESC
