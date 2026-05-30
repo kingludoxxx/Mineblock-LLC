@@ -4543,6 +4543,294 @@ router.post('/league/import', authenticate, async (req, res) => {
   }
 });
 
+// ═════════════════════════════════════════════════════════════════════════
+// LEAGUE BRAND-CONFIG — per-brand import preferences for FROM LEAGUE column
+// (migration 059: league_brand_configs table)
+// ═════════════════════════════════════════════════════════════════════════
+
+// Defaults applied when a brand has no row in league_brand_configs yet.
+const LEAGUE_CONFIG_DEFAULTS = Object.freeze({
+  top_pct: 10,
+  tier_filter: null,
+  max_copy_length: null,
+  auto_sync_enabled: false,
+  auto_sync_interval_hours: 4,
+  last_synced_at: null,
+});
+
+function mergeBrandConfig(row) {
+  if (!row) return { ...LEAGUE_CONFIG_DEFAULTS };
+  return {
+    top_pct: row.top_pct ?? LEAGUE_CONFIG_DEFAULTS.top_pct,
+    tier_filter: row.tier_filter ?? null,
+    max_copy_length: row.max_copy_length ?? null,
+    auto_sync_enabled: !!row.auto_sync_enabled,
+    auto_sync_interval_hours: row.auto_sync_interval_hours ?? LEAGUE_CONFIG_DEFAULTS.auto_sync_interval_hours,
+    last_synced_at: row.last_synced_at ?? null,
+  };
+}
+
+// GET /league/brand-configs — followed brands + their import configs +
+// projected import counts (so the UI can show "will import ~30" labels).
+router.get('/league/brand-configs', authenticate, async (_req, res) => {
+  try {
+    const rows = await pgQuery(`
+      SELECT
+        b.id, b.display_name AS name, b.domain,
+        COALESCE((
+          SELECT COUNT(*) FROM brand_spy.ads a
+          WHERE a.brand_id = b.id
+            AND a.is_active = TRUE
+            AND a.display_format ILIKE 'image%'
+        ), 0)::INTEGER AS active_image_count,
+        COALESCE((
+          SELECT COUNT(*) FROM brand_spy.ads a
+          WHERE a.brand_id = b.id
+        ), 0)::INTEGER AS total_ads,
+        c.top_pct, c.tier_filter, c.max_copy_length,
+        c.auto_sync_enabled, c.auto_sync_interval_hours, c.last_synced_at
+      FROM brand_spy.brands b
+      LEFT JOIN league_brand_configs c ON c.brand_id = b.id
+      WHERE EXISTS (
+        SELECT 1
+        FROM spy_brand_follows sbf
+        JOIN brand_spy.brand_pages bp ON bp.meta_page_id = sbf.meta_page_id
+        WHERE bp.brand_id = b.id
+      )
+      ORDER BY b.display_name ASC NULLS LAST, b.domain ASC
+    `);
+
+    const data = rows.map(r => {
+      const config = mergeBrandConfig(r);
+      const projected = Math.max(1, Math.ceil(r.active_image_count * (config.top_pct / 100)));
+      return {
+        id: r.id,
+        name: r.name,
+        domain: r.domain,
+        active_image_count: r.active_image_count,
+        total_ads: r.total_ads,
+        projected_import_count: r.active_image_count > 0 ? projected : 0,
+        config,
+      };
+    });
+
+    res.json({ success: true, data });
+  } catch (err) {
+    console.error('[league/brand-configs GET] error:', err);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// PATCH /league/brand-configs/:brandId — upsert per-brand config.
+router.patch('/league/brand-configs/:brandId', authenticate, async (req, res) => {
+  try {
+    const { brandId } = req.params;
+    if (!brandId) return res.status(400).json({ success: false, error: { message: 'brandId required' } });
+
+    const body = req.body || {};
+    const ALLOWED_TIERS = ['BANGER', 'CHAMP', 'A', 'B', 'C', 'MID', 'TEST'];
+
+    // Validate + normalize each optional field. Unspecified fields are
+    // preserved (UPSERT only writes provided columns).
+    const top_pct = body.top_pct != null
+      ? Math.max(1, Math.min(100, parseInt(body.top_pct, 10) || LEAGUE_CONFIG_DEFAULTS.top_pct))
+      : null;
+    const tier_filter = Array.isArray(body.tier_filter)
+      ? body.tier_filter.map(t => String(t).toUpperCase()).filter(t => ALLOWED_TIERS.includes(t))
+      : (body.tier_filter === null ? null : undefined);
+    const max_copy_length = body.max_copy_length === null
+      ? null
+      : (body.max_copy_length != null
+          ? Math.max(1, parseInt(body.max_copy_length, 10) || 0) || null
+          : undefined);
+    const auto_sync_enabled = body.auto_sync_enabled != null ? !!body.auto_sync_enabled : null;
+    const auto_sync_interval_hours = body.auto_sync_interval_hours != null
+      ? Math.max(1, Math.min(168, parseInt(body.auto_sync_interval_hours, 10) || 4))
+      : null;
+
+    // INSERT … ON CONFLICT DO UPDATE — coalesce against incoming so we only
+    // overwrite the columns the caller actually passed.
+    const rows = await pgQuery(
+      `INSERT INTO league_brand_configs
+         (brand_id, top_pct, tier_filter, max_copy_length, auto_sync_enabled, auto_sync_interval_hours)
+       VALUES ($1,
+               COALESCE($2, ${LEAGUE_CONFIG_DEFAULTS.top_pct}),
+               $3::text[],
+               $4,
+               COALESCE($5, FALSE),
+               COALESCE($6, ${LEAGUE_CONFIG_DEFAULTS.auto_sync_interval_hours}))
+       ON CONFLICT (brand_id) DO UPDATE SET
+         top_pct                  = COALESCE($2, league_brand_configs.top_pct),
+         tier_filter              = CASE WHEN $7::boolean THEN $3::text[]
+                                         ELSE league_brand_configs.tier_filter END,
+         max_copy_length          = CASE WHEN $8::boolean THEN $4
+                                         ELSE league_brand_configs.max_copy_length END,
+         auto_sync_enabled        = COALESCE($5, league_brand_configs.auto_sync_enabled),
+         auto_sync_interval_hours = COALESCE($6, league_brand_configs.auto_sync_interval_hours),
+         updated_at               = NOW()
+       RETURNING *`,
+      [
+        brandId,
+        top_pct,
+        tier_filter === undefined ? null : tier_filter,
+        max_copy_length === undefined ? null : max_copy_length,
+        auto_sync_enabled,
+        auto_sync_interval_hours,
+        tier_filter !== undefined,
+        max_copy_length !== undefined,
+      ]
+    );
+
+    res.json({ success: true, data: mergeBrandConfig(rows[0]) });
+  } catch (err) {
+    console.error('[league/brand-configs PATCH] error:', err);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// POST /league/brand-configs/:brandId/sync — manual one-shot sync.
+// Reads config (or defaults), pulls top top_pct% of active image ads from
+// brand_spy.ads filtered by tier_filter, INSERTs into spy_creatives as
+// imported_from='league' (ON CONFLICT skips already-imported). Updates
+// last_synced_at on success.
+router.post('/league/brand-configs/:brandId/sync', authenticate, async (req, res) => {
+  try {
+    const { brandId } = req.params;
+    if (!brandId) return res.status(400).json({ success: false, error: { message: 'brandId required' } });
+
+    // Resolve current config (or defaults if no row yet).
+    const cfgRows = await pgQuery('SELECT * FROM league_brand_configs WHERE brand_id = $1', [brandId]);
+    const config = mergeBrandConfig(cfgRows[0]);
+
+    // Build the candidate query — active image ads, optionally tier-filtered,
+    // sorted best-first.
+    const where = [
+      'a.brand_id = $1',
+      'a.is_active = TRUE',
+      `a.display_format ILIKE 'image%'`,
+    ];
+    const params = [brandId];
+    if (Array.isArray(config.tier_filter) && config.tier_filter.length > 0) {
+      params.push(config.tier_filter);
+      where.push(`a.tier = ANY($${params.length}::text[])`);
+    }
+
+    // Max copy length filter (applied via length(headline || body_text || caption))
+    if (config.max_copy_length) {
+      params.push(config.max_copy_length);
+      where.push(`COALESCE(length(a.headline), 0)
+                + COALESCE(length(a.body_text), 0)
+                + COALESCE(length(a.caption), 0) <= $${params.length}`);
+    }
+
+    const candidates = await pgQuery(`
+      SELECT
+        a.id, a.ad_archive_id, a.brand_id, a.headline, a.body_text, a.display_format,
+        a.tier, a.tier_score, a.current_rank, a.active_days, a.start_date, a.end_date,
+        ${BRAND_SPY_THUMB_SQL} AS image_url,
+        b.display_name AS brand_name,
+        b.domain AS brand_domain
+      FROM brand_spy.ads a
+      JOIN brand_spy.brands b ON b.id = a.brand_id
+      WHERE ${where.join(' AND ')}
+      ORDER BY a.tier_score DESC NULLS LAST, a.current_rank ASC NULLS LAST, a.id
+    `, params);
+
+    const totalCandidates = candidates.length;
+    const takeN = totalCandidates === 0
+      ? 0
+      : Math.max(1, Math.ceil(totalCandidates * (config.top_pct / 100)));
+    const picks = candidates.slice(0, takeN);
+
+    if (picks.length === 0) {
+      // Update last_synced_at even on empty result so the UI shows recent activity.
+      await pgQuery(
+        `INSERT INTO league_brand_configs (brand_id, last_synced_at)
+         VALUES ($1, NOW())
+         ON CONFLICT (brand_id) DO UPDATE SET last_synced_at = NOW(), updated_at = NOW()`,
+        [brandId]
+      );
+      return res.json({ success: true, data: { scanned: totalCandidates, imported: 0, skipped: 0 } });
+    }
+
+    // Dedup existing imports (same pattern as /league/import).
+    const adKeys = picks.map(p => String(p.ad_archive_id));
+    const existing = await pgQuery(
+      `SELECT external_ref_key FROM spy_creatives
+        WHERE imported_from = 'league' AND external_ref_key = ANY($1::text[])`,
+      [adKeys]
+    );
+    const alreadyImported = new Set(existing.map(r => r.external_ref_key));
+
+    const insertImageUrls = [];
+    const insertSourceLabels = [];
+    const insertMetadataJson = [];
+    const insertAspectRatios = [];
+    const insertExternalKeys = [];
+    let skipped = 0;
+    for (const ad of picks) {
+      if (alreadyImported.has(String(ad.ad_archive_id))) { skipped++; continue; }
+      const brandName = ad.brand_name || ad.brand_domain || 'Unknown brand';
+      const meta = {
+        tier: ad.tier,
+        tier_score: ad.tier_score,
+        current_rank: ad.current_rank,
+        ad_archive_id: ad.ad_archive_id,
+        brand_id: ad.brand_id,
+        brand_name: brandName,
+        headline: ad.headline,
+        body_text: ad.body_text,
+        display_format: ad.display_format,
+        active_days: ad.active_days,
+        start_date: ad.start_date,
+        end_date: ad.end_date,
+      };
+      insertImageUrls.push(ad.image_url);
+      insertSourceLabels.push(brandName);
+      insertMetadataJson.push(JSON.stringify(meta));
+      insertAspectRatios.push(pickAspectRatio(ad.display_format));
+      insertExternalKeys.push(String(ad.ad_archive_id));
+    }
+
+    let imported = 0;
+    if (insertImageUrls.length > 0) {
+      const insertedRows = await pgQuery(`
+        INSERT INTO spy_creatives
+          (pipeline, status, is_reference, imported_from, external_ref_key,
+           image_url, thumbnail_url, source_label, reference_name,
+           reference_thumbnail, imported_metadata, aspect_ratio)
+        SELECT 'standard', 'ready', TRUE, 'league',
+               t.external_ref_key,
+               t.image_url, t.image_url, t.source_label, t.source_label,
+               t.image_url, t.meta_json::jsonb, t.aspect_ratio
+          FROM unnest(
+            $1::text[], $2::text[], $3::text[], $4::text[], $5::text[]
+          ) AS t(image_url, source_label, meta_json, aspect_ratio, external_ref_key)
+        ON CONFLICT DO NOTHING
+        RETURNING id
+      `, [insertImageUrls, insertSourceLabels, insertMetadataJson, insertAspectRatios, insertExternalKeys]);
+      imported = insertedRows.length;
+    }
+
+    // Stamp last_synced_at on the config row (upsert if missing).
+    await pgQuery(
+      `INSERT INTO league_brand_configs (brand_id, last_synced_at)
+       VALUES ($1, NOW())
+       ON CONFLICT (brand_id) DO UPDATE SET last_synced_at = NOW(), updated_at = NOW()`,
+      [brandId]
+    );
+
+    console.log(`[league/brand-configs sync ${brandId.slice(0, 8)}…] scanned=${totalCandidates} picks=${picks.length} imported=${imported} skipped=${skipped}`);
+    res.json({
+      success: true,
+      data: { scanned: totalCandidates, picked: picks.length, imported, skipped },
+    });
+  } catch (err) {
+    console.error('[league/brand-configs sync] error:', err);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
 // ── TW sync trigger (internal) ────────────────────────────────────────────
 // Calls the analytics worktree's /sync-weekly endpoint with CRON_SECRET so the
 // Meta-import modal can force a fresh pull (or auto-trigger one when the table
