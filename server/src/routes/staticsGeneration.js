@@ -2708,34 +2708,48 @@ router.post('/creatives/:id/ai-adjust', authenticate, async (req, res) => {
         // Per friend's architecture: NanoBanana edits the CURRENT image (not the product) on adjustment.
         const currentImageHttpUrl = await ensureHttpUrlGlobal(creative.image_url, 'adjust-src');
         const ratio = creative.aspect_ratio || '4:5';
-        const nbTaskId = await submitToNanoBanana(newNbPrompt, [currentImageHttpUrl], ratio);
-        const newImageUrl = await pollNanoBanana(nbTaskId);
+        const nbTaskId = await withRetry(
+          () => submitToNanoBanana(newNbPrompt, [currentImageHttpUrl], ratio),
+          `ai-adjust-submit ${creative.id.slice(0, 8)}`
+        );
+        const tempUrl = await withRetry(
+          () => pollNanoBanana(nbTaskId),
+          `ai-adjust-poll ${creative.id.slice(0, 8)}`
+        );
 
-        // Persist the new image permanently (kie.ai URLs are short-lived)
-        let finalImageUrl = newImageUrl;
-        try {
-          const imgFetch = await fetch(newImageUrl, { signal: AbortSignal.timeout(30000) });
-          if (imgFetch.ok) {
-            const buf = Buffer.from(await imgFetch.arrayBuffer());
-            const mime = detectMime(buf);
-            if (isR2Configured()) {
-              const ext = mime.includes('png') ? 'png' : 'jpg';
-              finalImageUrl = await uploadBuffer(buf, `statics-adjust/${crypto.randomUUID()}.${ext}`, mime);
-            } else {
-              const imgId = await storeTempImage(buf, mime);
-              const srvUrl = process.env.RENDER_EXTERNAL_URL || `http://localhost:${process.env.PORT || 3000}`;
-              finalImageUrl = `${srvUrl}/api/v1/statics-generation/tmp-img/${imgId}`;
-            }
-          }
-        } catch (storeErr) {
-          console.warn(`[ai-adjust] Permanent store failed, using kie.ai URL: ${storeErr.message}`);
+        // Strict persist (R2 with retries + HEAD-verify; NULL on hard fail).
+        // Mirrors the atomic-variant flow so refines can't leak dying CDN URLs.
+        const finalImageUrl = await persistNanoBananaImage(tempUrl, `statics-adjust/${ratio}`);
+        if (!finalImageUrl) {
+          throw new Error('persist failed — refusing to write dying URL on adjust');
         }
+
+        // Push the OLD image into iteration_history BEFORE we overwrite it.
+        // Phase-B-2 carousel reads this list (last 6). Capped at 6 entries
+        // by trimming oldest off when pushing.
+        const prevHistory = Array.isArray(creative.iteration_history)
+          ? creative.iteration_history
+          : (typeof creative.iteration_history === 'string'
+            ? (() => { try { return JSON.parse(creative.iteration_history); } catch { return []; } })()
+            : []);
+        const trimmedHistory = [
+          ...prevHistory,
+          {
+            image_url: creative.image_url,
+            refine_instruction: correction,
+            created_at: new Date().toISOString(),
+          },
+        ].slice(-6);
 
         await pgQuery(
           `UPDATE spy_creatives
-           SET image_url = $1, generation_prompt = $2, review_notes = NULL, updated_at = NOW()
-           WHERE id = $3`,
-          [finalImageUrl, adjustmentInstruction, creative.id]
+           SET image_url = $1,
+               generation_prompt = $2,
+               iteration_history = $3::jsonb,
+               review_notes = NULL,
+               updated_at = NOW()
+           WHERE id = $4`,
+          [finalImageUrl, adjustmentInstruction, JSON.stringify(trimmedHistory), creative.id]
         );
 
         storeTaskResult(adjustTaskId, {
@@ -2756,6 +2770,77 @@ router.post('/creatives/:id/ai-adjust', authenticate, async (req, res) => {
     })();
   } catch (err) {
     console.error('[staticsGeneration] /creatives/:id/ai-adjust error:', err);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// POST /creatives/:id/approve — Phase B detail modal's "Approve" button.
+//
+// Moves the creative AND all its variants (parent_creative_id = :id) to
+// status='ready' so they show up in Ready to Launch. Idempotent — already-
+// ready rows pass through unchanged.
+//
+// If the id passed is a child (parent_creative_id IS NOT NULL), we resolve
+// up to the parent first so the operator can hit Approve from any ratio.
+// ─────────────────────────────────────────────────────────────────────────
+router.post('/creatives/:id/approve', authenticate, async (req, res) => {
+  try {
+    await ensureCreativesTable();
+    const rows = await pgQuery(
+      'SELECT id, parent_creative_id, status FROM spy_creatives WHERE id = $1',
+      [req.params.id]
+    );
+    if (rows.length === 0) return res.status(404).json({ success: false, error: { message: 'Creative not found' } });
+
+    // Resolve to the parent — children share the same approval state.
+    const parentId = rows[0].parent_creative_id || rows[0].id;
+
+    // Move parent + all children to 'ready'. Skip rows already terminal.
+    await pgQuery(
+      `UPDATE spy_creatives
+         SET status = 'ready', updated_at = NOW()
+       WHERE (id = $1 OR parent_creative_id = $1)
+         AND status NOT IN ('launched', 'launching', 'archived')`,
+      [parentId]
+    );
+
+    const updated = await pgQuery(
+      'SELECT id, aspect_ratio, status FROM spy_creatives WHERE id = $1 OR parent_creative_id = $1 ORDER BY (aspect_ratio = \'1:1\') DESC, aspect_ratio',
+      [parentId]
+    );
+
+    res.json({ success: true, data: { parentId, rows: updated } });
+  } catch (err) {
+    console.error('[staticsGeneration] POST /creatives/:id/approve error:', err);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// GET /creatives/:id/iterations — return the per-ratio refinement carousel.
+//
+// Reads spy_creatives.iteration_history JSONB (migration 058). Returns the
+// stored array as-is (latest at end) so the frontend modal can render the
+// "previous versions" strip under each ratio column.
+// ─────────────────────────────────────────────────────────────────────────
+router.get('/creatives/:id/iterations', authenticate, async (req, res) => {
+  try {
+    await ensureCreativesTable();
+    const rows = await pgQuery(
+      'SELECT id, iteration_history FROM spy_creatives WHERE id = $1',
+      [req.params.id]
+    );
+    if (rows.length === 0) return res.status(404).json({ success: false, error: { message: 'Creative not found' } });
+
+    const raw = rows[0].iteration_history;
+    let history = [];
+    if (Array.isArray(raw)) history = raw;
+    else if (typeof raw === 'string') { try { history = JSON.parse(raw); } catch { history = []; } }
+
+    res.json({ success: true, data: { creativeId: rows[0].id, iterations: history } });
+  } catch (err) {
+    console.error('[staticsGeneration] GET /creatives/:id/iterations error:', err);
     res.status(500).json({ success: false, error: { message: err.message } });
   }
 });
