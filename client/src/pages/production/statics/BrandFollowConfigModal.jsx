@@ -44,6 +44,8 @@ export function BrandFollowConfigModal({ isOpen, onClose, onSynced }) {
   const [followedFlag, setFollowedFlag] = useState(true);
   const [syncingAll, setSyncingAll] = useState(false);
   const [syncAllMsg, setSyncAllMsg] = useState(null);
+  const [autoSyncBusy, setAutoSyncBusy] = useState(false);
+  const [autoSyncMsg, setAutoSyncMsg] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -58,6 +60,22 @@ export function BrandFollowConfigModal({ isOpen, onClose, onSynced }) {
       setLoading(false);
     }
   }, []);
+
+  const handleMasterAutoSync = async (next) => {
+    if (autoSyncBusy) return;
+    setAutoSyncBusy(true);
+    setAutoSyncMsg(null);
+    try {
+      const { data } = await api.post('/statics-generation/league/brand-configs/auto-sync-all', { enabled: next });
+      const r = data?.data || {};
+      setAutoSyncMsg(`Auto-sync ${next ? 'enabled' : 'disabled'} on ${r.touched || 0} brand${r.touched === 1 ? '' : 's'}`);
+      await load();
+    } catch (err) {
+      setAutoSyncMsg(`Failed: ${err.response?.data?.error?.message || err.message}`);
+    } finally {
+      setAutoSyncBusy(false);
+    }
+  };
 
   const handleSyncAll = async () => {
     if (syncingAll) return;
@@ -102,6 +120,7 @@ export function BrandFollowConfigModal({ isOpen, onClose, onSynced }) {
   const summary = useMemo(() => {
     const eligible = brands.filter(b => (b.active_image_count || 0) > 0);
     const enabled = brands.filter(b => b.config?.auto_sync_enabled).length;
+    const anyAutoSync = enabled > 0;
     const totalProjected = eligible.reduce((s, b) => s + (b.projected_import_count || 0), 0);
     const nextAutoSync = (() => {
       const eligible = brands.filter(b => b.config?.auto_sync_enabled);
@@ -114,7 +133,7 @@ export function BrandFollowConfigModal({ isOpen, onClose, onSynced }) {
       }
       return soonest;
     })();
-    return { count: brands.length, eligible: eligible.length, enabled, totalProjected, nextAutoSync };
+    return { count: brands.length, eligible: eligible.length, enabled, anyAutoSync, totalProjected, nextAutoSync };
   }, [brands]);
 
   const toggleExpand = (id) => {
@@ -207,20 +226,45 @@ export function BrandFollowConfigModal({ isOpen, onClose, onSynced }) {
                   )}
                 </div>
               </div>
-              <button
-                type="button"
-                onClick={handleSyncAll}
-                disabled={syncingAll || summary.count === 0}
-                className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-violet-500/20 border border-violet-400/40 hover:bg-violet-500/30 text-violet-200 text-xs font-mono font-semibold uppercase tracking-wide cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                title="Import the top N% of each brand's static ads into the FROM LEAGUE column"
-              >
-                {syncingAll ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Zap className="w-3.5 h-3.5" />}
-                {syncingAll ? 'Importing…' : 'Import all'}
-              </button>
+              <div className="flex items-center gap-2 shrink-0">
+                {/* Master Auto-sync toggle — flips every brand's
+                    auto_sync_enabled in one call. */}
+                <button
+                  type="button"
+                  onClick={() => handleMasterAutoSync(!summary.anyAutoSync)}
+                  disabled={autoSyncBusy || summary.count === 0}
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border text-xs font-mono font-semibold uppercase tracking-wide cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed transition-colors ${
+                    summary.anyAutoSync
+                      ? 'bg-emerald-500/20 border-emerald-400/40 hover:bg-emerald-500/30 text-emerald-200'
+                      : 'bg-white/[0.04] border-white/[0.12] hover:bg-white/[0.08] text-zinc-300'
+                  }`}
+                  title={summary.anyAutoSync
+                    ? 'Auto-sync is ON for some brands — click to pause all'
+                    : 'Auto-sync is OFF everywhere — click to enable on all brands'}
+                >
+                  {autoSyncBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
+                  {`Auto-sync ${summary.anyAutoSync ? 'on' : 'off'}`}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSyncAll}
+                  disabled={syncingAll || summary.count === 0}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-violet-500/20 border border-violet-400/40 hover:bg-violet-500/30 text-violet-200 text-xs font-mono font-semibold uppercase tracking-wide cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                  title="Import the top N% of each brand's static ads into the FROM LEAGUE column"
+                >
+                  {syncingAll ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Zap className="w-3.5 h-3.5" />}
+                  {syncingAll ? 'Importing…' : 'Import all'}
+                </button>
+              </div>
             </div>
             {syncAllMsg && (
               <div className="mt-3 text-[10px] font-mono text-zinc-400 border-t border-white/[0.05] pt-2">
                 {syncAllMsg}
+              </div>
+            )}
+            {autoSyncMsg && (
+              <div className="mt-2 text-[10px] font-mono text-zinc-400">
+                {autoSyncMsg}
               </div>
             )}
           </div>

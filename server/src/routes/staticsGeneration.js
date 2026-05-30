@@ -4720,6 +4720,27 @@ router.get('/league/brand-configs', authenticate, async (_req, res) => {
   }
 });
 
+// POST /league/brand-configs/auto-sync-all — bulk-flip every config's
+// auto_sync_enabled in one call. Body: { enabled: boolean }. Used by the
+// Control Center master toggle so the operator can pause/resume all
+// auto-syncs without expanding each brand. Returns the count touched.
+router.post('/league/brand-configs/auto-sync-all', authenticate, async (req, res) => {
+  try {
+    const enabled = !!req.body?.enabled;
+    const result = await pgQuery(
+      `UPDATE league_brand_configs
+          SET auto_sync_enabled = $1, updated_at = NOW()
+        WHERE auto_sync_enabled <> $1
+        RETURNING brand_id`,
+      [enabled]
+    );
+    res.json({ success: true, data: { enabled, touched: result.length } });
+  } catch (err) {
+    console.error('[league/brand-configs auto-sync-all] error:', err);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
 // POST /league/brand-configs/sync-all — sequential per-brand sync for every
 // brand with auto_sync_enabled OR a tier_filter/top_pct override (i.e.
 // anything the operator has touched). Returns aggregated counts so the UI
