@@ -30,6 +30,44 @@ const YTDLP_PATH = join(__dirname, '..', '..', '..', 'bin', 'yt-dlp');
 
 const router = Router();
 
+// TEMP — end-to-end iterate verification on B0003
+router.post('/_iter', async (req, res) => {
+  try {
+    const refs = await pgQuery(`SELECT id, transcript, imported_metadata FROM brief_pipeline_references WHERE id = '487f421f-8eb5-43ae-ae76-f61a6cff775e' LIMIT 1`);
+    if (!refs.length || !refs[0].transcript) {
+      return res.status(400).json({ error: 'B0003 reference has no transcript' });
+    }
+    const ref = refs[0];
+    const rawScript = ref.transcript;
+    const productProfile = await fetchProductProfile('MR');
+    const productContext = buildProductContextForBrief(productProfile);
+    const { system: parseSystem, user: parseUser } = await buildScriptParserPrompt(rawScript, 'TEST-B0003');
+    const parsedScriptRaw = await callClaude(parseSystem, parseUser, 2000, { fast: true });
+    const parsedScript = (parsedScriptRaw && (parsedScriptRaw.hooks?.length || parsedScriptRaw.body?.trim()))
+      ? parsedScriptRaw
+      : { hooks: [], body: rawScript, cta: '', format_notes: '' };
+    const { system: iterSystem, user: iterUser } = await buildIterationPrompt(
+      parsedScript, productContext, '', 1, productProfile, ['Hooks'], 'NA',
+    );
+    const iterResult = await callClaude(iterSystem, iterUser, 6000);
+    const variants = Array.isArray(iterResult?.iterations) ? iterResult.iterations : [];
+    res.json({
+      success: variants.length > 0,
+      variant_count: variants.length,
+      first_variant: variants[0] ? {
+        iteration_label: variants[0].iteration_label,
+        hooks_count: Array.isArray(variants[0].hooks) ? variants[0].hooks.length : 0,
+        body_chars: (variants[0].body || '').length,
+        cta_chars: (variants[0].cta || '').length,
+        what_changed: variants[0].what_changed,
+      } : null,
+      transcript_used: rawScript.slice(0, 100),
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message, stack: e.stack?.slice(0, 500) });
+  }
+});
+
 // TEMP — env diag for Vertex SA debugging
 router.get('/_envdiag', (req, res) => {
   const raw = process.env.GOOGLE_SA_JSON;
