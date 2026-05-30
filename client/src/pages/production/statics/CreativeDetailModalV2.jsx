@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import {
-  X, Download, Trash2, Loader2, CheckCircle2, RefreshCw, ArrowLeft,
+  X, Download, Trash2, Loader2, CheckCircle2, RefreshCw, ArrowLeft, Sparkles, AlertTriangle,
 } from 'lucide-react';
 import api from '../../../services/api';
 
@@ -152,6 +152,7 @@ export function CreativeDetailModalV2({
                 ratio={ratio}
                 creative={ratioMap[ratio] || null}
                 parentId={trueParent.id}
+                parentReviewNotes={trueParent.review_notes}
                 onRefresh={onRefresh}
                 onAfterDelete={onRefresh}
                 onApproved={() => { onRefresh?.(); onClose?.(); }}
@@ -168,7 +169,7 @@ export function CreativeDetailModalV2({
  * Single-ratio column
  * -------------------------------------------------------------------------- */
 
-function RatioColumn({ ratio, creative, parentId, onRefresh, onAfterDelete, onApproved }) {
+function RatioColumn({ ratio, creative, parentId, parentReviewNotes, onRefresh, onAfterDelete, onApproved }) {
   const [refineInput, setRefineInput] = useState('');
   const [refining, setRefining] = useState(false);
   const [refineError, setRefineError] = useState(null);
@@ -176,6 +177,8 @@ function RatioColumn({ ratio, creative, parentId, onRefresh, onAfterDelete, onAp
   const [deleteError, setDeleteError] = useState(null);
   const [approving, setApproving] = useState(false);
   const [approveError, setApproveError] = useState(null);
+  const [generating, setGenerating] = useState(false);
+  const [generateError, setGenerateError] = useState(null);
   const [iterations, setIterations] = useState([]);
   const [loadingIters, setLoadingIters] = useState(false);
   const abortRef = useRef(false);
@@ -279,12 +282,80 @@ function RatioColumn({ ratio, creative, parentId, onRefresh, onAfterDelete, onAp
 
   const isMissing = !creative;
 
+  // Generate this missing ratio from the 1:1 parent. The backend's
+  // /create-variant endpoint resizes the parent via NanoBanana (same path
+  // the initial 3-ratio fan-out uses) and inserts a child row with
+  // parent_creative_id=parentId. Then we poll until the row appears with
+  // a non-null image_url so the modal can re-render with the new variant.
+  const handleGenerateMissing = async () => {
+    if (!parentId || generating || ratio === '1:1') return;
+    setGenerating(true);
+    setGenerateError(null);
+    try {
+      await api.post(`/statics-generation/creatives/${parentId}/create-variant`, {
+        aspect_ratio: ratio,
+      });
+      // Poll for the new variant to land. The backend's pollNanoBanana
+      // usually completes in 30-90s; cap at ~5 min.
+      for (let i = 0; i < 60; i++) {
+        if (abortRef.current) return;
+        await new Promise((r) => setTimeout(r, 5000));
+        if (abortRef.current) return;
+        try {
+          const { data } = await api.get(`/statics-generation/creatives?parent_creative_id=${parentId}`);
+          const children = data?.data || [];
+          const found = children.find((c) => c.aspect_ratio === ratio && c.image_url);
+          if (found) {
+            onRefresh?.();
+            return;
+          }
+          // Surface backend's recorded failure note if it gave up.
+          const failed = children.find((c) => c.aspect_ratio === ratio && c.review_notes?.includes('Variant resize failed'));
+          if (failed) throw new Error(failed.review_notes);
+        } catch (e) {
+          if (e.message?.includes('Variant resize failed')) throw e;
+        }
+      }
+      throw new Error(`Timed out waiting for ${ratio} variant`);
+    } catch (err) {
+      setGenerateError(err.response?.data?.error?.message || err.message);
+    } finally {
+      if (!abortRef.current) setGenerating(false);
+    }
+  };
+
   return (
     <div className="flex flex-col bg-white/[0.02] border border-white/[0.06] rounded-xl overflow-hidden">
       {/* Image preview */}
-      <div className="relative bg-black/40 aspect-square flex items-center justify-center">
+      <div className="relative bg-black/40 aspect-square flex items-center justify-center p-4">
         {isMissing ? (
-          <div className="text-zinc-700 text-xs font-mono">No {ratio} variant</div>
+          <div className="flex flex-col items-center gap-3 text-center max-w-[80%]">
+            <div className="flex items-center gap-1.5 text-amber-300/80">
+              <AlertTriangle className="w-4 h-4" />
+              <span className="text-[11px] font-mono">No {ratio} variant</span>
+            </div>
+            <div className="text-[10px] text-zinc-500 leading-relaxed">
+              The {ratio} generation didn't complete on the first pass. NanoBanana usually flakes ~1 in 30 ratios. Click to generate it now from the 1:1 parent.
+            </div>
+            {ratio !== '1:1' ? (
+              <button
+                type="button"
+                onClick={handleGenerateMissing}
+                disabled={!parentId || generating}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-violet-500/20 border border-violet-400/40 hover:bg-violet-500/30 text-violet-200 text-[11px] font-mono font-semibold uppercase tracking-wide cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                title={`Resize the 1:1 parent into ${ratio} via NanoBanana`}
+              >
+                {generating
+                  ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Generating…</>
+                  : <><Sparkles className="w-3.5 h-3.5" /> Generate {ratio}</>}
+              </button>
+            ) : (
+              <div className="text-[10px] text-zinc-600 italic">
+                The 1:1 parent is the root — if it failed, re-run the whole creative from the Reference column.
+              </div>
+            )}
+            {generateError && <div className="text-[10px] text-red-400 leading-tight">{generateError}</div>}
+          </div>
         ) : creative.image_url ? (
           <img
             src={creative.image_url}

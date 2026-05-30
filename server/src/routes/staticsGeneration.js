@@ -2185,13 +2185,16 @@ async function autoSpawn916Variant(creativeOrId) {
 router.get('/creatives', authenticate, async (req, res) => {
   try {
     await ensureCreativesTable();
-    const { product_id, status, pipeline = 'standard' } = req.query;
-    let query = "SELECT id, product_id, product_name, image_url, thumbnail_url, source_label, angle, archetype, aspect_ratio, status, reference_thumbnail, reference_name, parent_creative_id, pipeline, copy_set_id, meta_ad_ids, meta_image_hash, generated_copy, parent_creative_id_ref, parent_im_number, im_number, iteration_change_description, quality_warning, created_at FROM spy_creatives WHERE pipeline = $1";
+    const { product_id, status, pipeline = 'standard', parent_creative_id } = req.query;
+    let query = "SELECT id, product_id, product_name, image_url, thumbnail_url, source_label, angle, archetype, aspect_ratio, status, reference_thumbnail, reference_name, review_notes, parent_creative_id, pipeline, copy_set_id, meta_ad_ids, meta_image_hash, generated_copy, parent_creative_id_ref, parent_im_number, im_number, iteration_change_description, quality_warning, created_at FROM spy_creatives WHERE pipeline = $1";
     const params = [pipeline];
     let idx = 2;
 
     if (product_id) { query += ` AND product_id = $${idx++}`; params.push(product_id); }
     if (status) { query += ` AND status = $${idx++}`; params.push(status); }
+    // Filter to children of a specific parent — used by the per-ratio
+    // 'Generate this missing variant' polling in CreativeDetailModalV2.
+    if (parent_creative_id) { query += ` AND parent_creative_id = $${idx++}`; params.push(parent_creative_id); }
 
     query += ' ORDER BY created_at DESC';
     const rows = await pgQuery(query, params);
