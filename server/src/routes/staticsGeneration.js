@@ -412,6 +412,16 @@ async function _doRepairAllPreviews(req, res, cronSecretForSubFetch) {
   });
 }
 
+// POST /meta-ads/repair-thumbnails — must be ABOVE the global authenticate
+// so the CRON_SECRET fast-path actually fires (same hoist pattern as
+// /repair-all-previews above). Body lives near the rest of the meta-ads
+// endpoints below.
+router.post('/meta-ads/repair-thumbnails', async (req, res) => {
+  const cs = process.env.CRON_SECRET;
+  if (cs && req.headers['x-cron-secret'] === cs) return _doMetaAdsRepairThumbnails(req, res);
+  return authenticate(req, res, () => _doMetaAdsRepairThumbnails(req, res));
+});
+
 router.use(authenticate, requirePermission('statics-generation', 'access'));
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
@@ -5178,14 +5188,8 @@ router.get('/meta-ads/last-sync', authenticate, async (req, res) => {
 // thumbnail_url IS NULL OR matches *.fbcdn.net, batch-call Meta Graph by
 // meta_ad_id, mirror to R2, write back the permanent URL.
 //
-// Auth: JWT or CRON_SECRET.
-router.post('/meta-ads/repair-thumbnails', async (req, res) => {
-  const cronSecret = process.env.CRON_SECRET;
-  const provided = req.headers['x-cron-secret'];
-  if (cronSecret && provided === cronSecret) return _doMetaAdsRepairThumbnails(req, res);
-  return authenticate(req, res, () => _doMetaAdsRepairThumbnails(req, res));
-});
-
+// Auth: JWT or CRON_SECRET. The route is registered at the public-routes
+// section near the top of this file (hoisted above the global authenticate).
 async function _doMetaAdsRepairThumbnails(req, res) {
   try {
     const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN || '';
