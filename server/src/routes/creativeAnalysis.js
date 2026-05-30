@@ -877,11 +877,38 @@ async function syncData({ periodWeek, startDate, endDate }) {
     return { synced: 0, skipped: 0, errors: 0, note: 'No ads returned for this date range' };
   }
 
+  // P1.4 — Trusted-account allowlist for TW sync.
+  // pixel_joined_tvf in TripleWhale CAN contain rows for foreign accounts
+  // when the TW shop has been granted access to partner accounts. We refuse
+  // to upsert any row whose ad_account_id isn't in META_AD_ACCOUNT_IDS so
+  // foreign-brand performance data never lands in creative_analysis in the
+  // first place. (Rows with NULL account_id are allowed through — TW's
+  // account-column discovery sometimes fails per-row but the parent shop
+  // is still Mineblock's.)
+  const TRUSTED_TW_ACCOUNTS = new Set(
+    (process.env.META_AD_ACCOUNT_IDS || '')
+      .split(',')
+      .map(s => s.trim())
+      .filter(Boolean)
+      .flatMap(raw => {
+        const bare = raw.replace(/^act_/i, '');
+        return bare ? [bare, `act_${bare}`] : [];
+      })
+  );
+  const isTwAccountTrusted = (acctId) => {
+    if (TRUSTED_TW_ACCOUNTS.size === 0) return true; // unset = allow all (legacy)
+    if (!acctId) return true; // null account = grandfathered; trust shop boundary
+    const id = String(acctId).trim();
+    const bare = id.replace(/^act_/i, '');
+    return TRUSTED_TW_ACCOUNTS.has(id) || TRUSTED_TW_ACCOUNTS.has(bare) || TRUSTED_TW_ACCOUNTS.has(`act_${bare}`);
+  };
+
   // Parse all ads and aggregate by (creative_id, hook_id) to avoid UNIQUE constraint violations.
   // Multiple TW rows can map to the same (creative_id, hook_id) — e.g. different iterations
   // of the same ad. We sum their metrics.
   const aggregated = new Map(); // key: "creative_id|hook_id"
   let skipped = 0;
+  let refusedForeignTw = 0;
 
   for (const ad of twAds) {
     const parsed = parseAdName(ad.ad_name);
@@ -897,6 +924,12 @@ async function syncData({ periodWeek, startDate, endDate }) {
     // across all rows so multi-account brands still get a real picker.
     const acctId   = ad.ad_account_id   != null ? String(ad.ad_account_id)   : null;
     const acctName = ad.ad_account_name != null ? String(ad.ad_account_name) : null;
+
+    // Refuse any TW row whose ad_account_id isn't in the trusted Mineblock set.
+    if (!isTwAccountTrusted(acctId)) {
+      refusedForeignTw++;
+      continue;
+    }
     const key = `${parsed.creative_id}|${parsed.hook_id}`;
     const spend = Number(ad.total_spend) || 0;
     const revenue = Number(ad.total_revenue) || 0;
@@ -946,9 +979,13 @@ async function syncData({ periodWeek, startDate, endDate }) {
     }
   }
 
+  if (refusedForeignTw > 0) {
+    console.warn(`[Creative Analysis] TW sync refused ${refusedForeignTw} rows with foreign ad_account_id (not in META_AD_ACCOUNT_IDS)`);
+  }
+
   // Guard: if all ads were skipped during parsing, don't wipe existing data
   if (aggregated.size === 0) {
-    return { synced: 0, skipped, errors: 0, aggregatedFrom: 0 };
+    return { synced: 0, skipped, errors: 0, aggregatedFrom: 0, refusedForeign: refusedForeignTw };
   }
 
   // Upsert data for this period week (no delete — ON CONFLICT handles updates)
@@ -1145,8 +1182,22 @@ async function syncMetaThumbnails() {
 
   console.log(`[Meta Sync] Fetched ${metaAds.length} ads from ${META_AD_ACCOUNT_IDS.length} accounts`);
 
-  // 3. Match Meta ads to DB rows by ad_name
+  // 3. Match Meta ads to DB rows by **EXACT ad_name only** (P1.1).
+  //
+  // Previously this also did a fuzzy fallback: parse the Meta ad's name with
+  // parseAdName(), extract its creative_id, then write the Meta ad's video_url
+  // onto ANY DB row sharing the same creative_id. That was the structural bug:
+  // a paused swipe-file ad or wrong-content row in our Meta account whose
+  // name happened to parse to the same B-code would overwrite the canonical
+  // linkage with a wrong video URL — and downstream Brief Pipeline would
+  // transcribe the wrong creative (the JD-Sports / ALDI / Marble-Blast class
+  // of contamination).
+  //
+  // Fix: ONLY accept a match when ad_name is byte-for-byte equal to a row in
+  // our DB. Anything else is logged to meta_sync_unmatched for operator review
+  // — not silently written.
   let matched = 0;
+  let unmatchedRecorded = 0;
   const updates = [];
 
   for (const ad of metaAds) {
@@ -1160,7 +1211,7 @@ async function syncMetaThumbnails() {
     if (!thumbnailUrl) continue;
 
     if (dbAdNames.has(ad.name)) {
-      // Exact match
+      // Exact match — the ONLY accepted linkage path.
       updates.push({
         ad_name: ad.name,
         thumbnail_url: thumbnailUrl,
@@ -1169,20 +1220,33 @@ async function syncMetaThumbnails() {
         account_id: ad._sourceAccount,
       });
     } else {
-      // Fuzzy match: extract creative_id from Meta ad name and match to DB rows missing thumbnails
-      const parsed = parseAdName(ad.name);
-      if (parsed?.creative_id && creativeIdToAdNames.has(parsed.creative_id)) {
-        for (const dbName of creativeIdToAdNames.get(parsed.creative_id)) {
-          updates.push({
-            ad_name: dbName,
-            thumbnail_url: thumbnailUrl,
-            video_id: ad.creative?.video_id || null,
-            meta_ad_id: ad.id,
-            account_id: ad._sourceAccount,
-          });
+      // No exact match — log to meta_sync_unmatched for review. Do NOT write
+      // a linkage. The operator can inspect to decide: rename in Meta to match,
+      // create the DB row, or confirm it's a swipe-file that should be ignored.
+      try {
+        await pgQuery(
+          `INSERT INTO meta_sync_unmatched (meta_ad_id, account_id, ad_name, has_video, first_seen_at, last_seen_at, seen_count)
+           VALUES ($1, $2, $3, $4, NOW(), NOW(), 1)
+           ON CONFLICT (meta_ad_id, account_id) DO UPDATE
+             SET ad_name = EXCLUDED.ad_name,
+                 has_video = EXCLUDED.has_video,
+                 last_seen_at = NOW(),
+                 seen_count = meta_sync_unmatched.seen_count + 1,
+                 resolved = FALSE`,
+          [String(ad.id), String(ad._sourceAccount || ''), String(ad.name).slice(0, 500), isVideoAd]
+        );
+        unmatchedRecorded++;
+      } catch (e) {
+        // Table may not exist yet (migration 061 not applied) — log once, continue.
+        if (!e._unmatchedTableWarned) {
+          console.warn('[Meta Sync] meta_sync_unmatched insert failed (table missing? run migration 061):', e.message);
+          e._unmatchedTableWarned = true;
         }
       }
     }
+  }
+  if (unmatchedRecorded > 0) {
+    console.log(`[Meta Sync] Recorded ${unmatchedRecorded} unmatched Meta ads to meta_sync_unmatched (no DB row with exact ad_name match)`);
   }
 
   // 4. For video ads, fetch video source URLs
@@ -1257,11 +1321,20 @@ async function syncMetaThumbnails() {
     const finalThumb = upd.thumbnail_url;
 
     try {
+      // P1.3 — stamp meta_account_verified_id + meta_account_verified_at on
+      // every linkage write. Read-side queries (e.g. /meta-video-ads grid)
+      // can then skip rows whose stamp is older than 7 days (stale).
+      const verifiedAccountId = upd.account_id
+        ? (String(upd.account_id).startsWith('act_') ? String(upd.account_id) : `act_${upd.account_id}`)
+        : null;
       await pgQuery(
         `UPDATE creative_analysis
-         SET thumbnail_url = $1, video_url = $2, meta_ad_id = $3, synced_at = NOW()
+         SET thumbnail_url = $1, video_url = $2, meta_ad_id = $3,
+             meta_account_verified_id = $5, meta_account_verified_at = NOW(),
+             is_linkage_quarantined = FALSE, linkage_quarantine_reason = NULL,
+             synced_at = NOW()
          WHERE ad_name = $4`,
-        [finalThumb, videoUrl, upd.meta_ad_id, upd.ad_name]
+        [finalThumb, videoUrl, upd.meta_ad_id, upd.ad_name, verifiedAccountId]
       );
       matched++;
     } catch (err) {
@@ -2959,16 +3032,54 @@ router.get('/meta-lookup/:creativeId', authenticate, async (req, res) => {
       return res.json({ success: true, data: cached || null, message: 'No Meta API configured or ad not linked' });
     }
 
-    // Search all ad accounts in parallel for faster lookup
+    // P1.2 — EXACT ad_name match only (was: CONTAIN creative_id substring).
+    //
+    // The old CONTAIN filter on the 5-char B-code matched any Meta ad whose
+    // name happened to contain that substring (e.g. "B0375" matched in
+    // "...B0375A..." or "B03750_swipe..."). Combined with first-match-wins,
+    // a wrong-content ad in our account could overwrite our linkage.
+    //
+    // Fix: gather every full ad_name we know for this creative_id (from
+    // creative_analysis.ad_name) and search Meta with operator='EQUAL' on
+    // each. Take the first ad whose Meta-returned account_id is trusted.
+    const dbNamesForCreative = await pgQuery(
+      `SELECT DISTINCT ad_name FROM creative_analysis WHERE creative_id = $1 AND ad_name IS NOT NULL`,
+      [creativeId]
+    );
+    const adNames = dbNamesForCreative.map(r => r.ad_name).filter(Boolean);
+    if (adNames.length === 0) {
+      return res.json({ success: true, data: cached || null, message: 'No DB ad_name available to look up via Meta — cached data only' });
+    }
     const searchResults = await Promise.allSettled(
-      META_AD_ACCOUNT_IDS.slice(0, 5).map(async (accountId) => {
-        const searchUrl = `${META_GRAPH_URL}/${accountId}/ads?filtering=[{"field":"name","operator":"CONTAIN","value":"${encodeURIComponent(creativeId)}"}]&fields=id,name,creative{thumbnail_url,video_id,effective_object_story_id}&limit=10&access_token=${META_ACCESS_TOKEN}`;
-        const apiRes = await fetch(searchUrl, { signal: AbortSignal.timeout(15000) });
-        if (!apiRes.ok) return null;
-        const json = await apiRes.json();
-        const ads = json.data || [];
-        return ads.length ? { ad: ads[0], accountId } : null;
-      })
+      META_AD_ACCOUNT_IDS.slice(0, 5).flatMap((accountId) =>
+        adNames.slice(0, 5).map(async (adName) => {
+          const filt = encodeURIComponent(JSON.stringify([{ field: 'name', operator: 'EQUAL', value: adName }]));
+          const searchUrl = `${META_GRAPH_URL}/${accountId}/ads?filtering=${filt}&fields=id,name,account_id,creative{thumbnail_url,video_id,effective_object_story_id}&limit=1&access_token=${META_ACCESS_TOKEN}`;
+          const apiRes = await fetch(searchUrl, { signal: AbortSignal.timeout(15000) });
+          if (!apiRes.ok) return null;
+          const json = await apiRes.json();
+          const ads = json.data || [];
+          // Only accept ads whose name EXACTLY equals what we asked for.
+          // Meta's EQUAL filter is supposed to be exact but we double-check
+          // to defend against case-sensitivity quirks / Unicode normalization.
+          const ad = ads.find(a => a.name === adName) || null;
+          if (!ad) return null;
+          // Trust gate — account_id on the returned ad must match the account
+          // we queried AND be one of our trusted accounts.
+          const adAccountId = ad.account_id ? String(ad.account_id) : null;
+          const adAccountAct = adAccountId
+            ? (adAccountId.startsWith('act_') ? adAccountId : `act_${adAccountId}`)
+            : null;
+          if (!adAccountAct) return null;
+          const accountAct = accountId.startsWith('act_') ? accountId : `act_${accountId}`;
+          if (adAccountAct !== accountAct) {
+            // Different account responded — refuse
+            console.warn(`[Meta Lookup] EQUAL match returned ad from foreign account: searched ${accountAct}, got ${adAccountAct}`);
+            return null;
+          }
+          return { ad, accountId };
+        })
+      )
     );
 
     // Use the first successful match
@@ -3015,13 +3126,29 @@ router.get('/meta-lookup/:creativeId', authenticate, async (req, res) => {
         }
       }
 
-      // Update DB — always overwrite video_url since Meta URLs expire
+      // Update DB — always overwrite video_url since Meta URLs expire.
+      // P1.3 — stamp meta_account_verified_id + verified_at on every write.
+      // Scope the UPDATE to the EXACT matched ad_name (not all rows for the
+      // creative_id) so we never write the matched ad's video URL onto a
+      // different week/hook row that should have a different linkage.
+      const verifiedAccountAct = matchedAccountId
+        ? (String(matchedAccountId).startsWith('act_') ? String(matchedAccountId) : `act_${matchedAccountId}`)
+        : null;
       await pgQuery(
-        `UPDATE creative_analysis SET meta_ad_id = $1, thumbnail_url = COALESCE($2, thumbnail_url), video_url = $3, synced_at = NOW() WHERE creative_id = $4`,
-        [metaAdId, thumbnailUrl, videoUrl, creativeId]
+        `UPDATE creative_analysis
+            SET meta_ad_id = $1,
+                thumbnail_url = COALESCE($2, thumbnail_url),
+                video_url = $3,
+                meta_account_verified_id = $5,
+                meta_account_verified_at = NOW(),
+                is_linkage_quarantined = FALSE,
+                linkage_quarantine_reason = NULL,
+                synced_at = NOW()
+          WHERE ad_name = $4`,
+        [metaAdId, thumbnailUrl, videoUrl, ad.name, verifiedAccountAct]
       );
 
-      return res.json({ success: true, data: { meta_ad_id: metaAdId, thumbnail_url: thumbnailUrl, video_url: videoUrl } });
+      return res.json({ success: true, data: { meta_ad_id: metaAdId, thumbnail_url: thumbnailUrl, video_url: videoUrl, account_id: verifiedAccountAct } });
     }
 
     return res.json({ success: true, data: cached || null, message: 'No matching Meta ad found' });

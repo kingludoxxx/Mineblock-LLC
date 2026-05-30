@@ -220,6 +220,119 @@ function trustedAccountSqlClause(colExpr, paramIndexStart, params) {
   return `${colExpr} = ANY($${paramIndexStart}::text[])`;
 }
 
+// ── Boot-time Meta env audit ───────────────────────────────────────────
+// Confirms every account_id in META_AD_ACCOUNT_IDS actually belongs to
+// Mineblock's Business Manager. Runs once at boot, persists result to
+// meta_account_audit. Subsequent runtime checks consult that table; any
+// account that failed audit is STRIPPED from TRUSTED_ACCOUNT_IDS_NORM
+// at runtime (env stays untouched — we just refuse to trust it).
+//
+// Required env: META_BUSINESS_ID (the Mineblock Business Manager id) —
+// without it the audit can only confirm the account is reachable, not
+// that it's owned by us. Set this env on Render before P0.1 is meaningful.
+const MINEBLOCK_BUSINESS_ID = process.env.META_BUSINESS_ID || '';
+const _verifiedTrustedSet = new Set(); // populated after boot audit completes
+let _bootAuditComplete = false;
+
+async function performBootMetaAudit() {
+  if (META_AD_ACCOUNT_IDS.length === 0) {
+    console.warn('[BriefPipeline] Boot audit skipped: META_AD_ACCOUNT_IDS empty');
+    _bootAuditComplete = true;
+    return;
+  }
+  if (!META_ACCESS_TOKEN) {
+    console.warn('[BriefPipeline] Boot audit skipped: META_ACCESS_TOKEN unset — trusting env values unverified');
+    for (const id of TRUSTED_ACCOUNT_IDS_NORM) _verifiedTrustedSet.add(id);
+    _bootAuditComplete = true;
+    return;
+  }
+  let okCount = 0;
+  let rejectedCount = 0;
+  for (const rawId of META_AD_ACCOUNT_IDS) {
+    const bare = String(rawId).trim().replace(/^act_/i, '');
+    const accountIdAct = `act_${bare}`;
+    try {
+      const url = `${META_GRAPH_URL}/${accountIdAct}?fields=name,business,account_status&access_token=${META_ACCESS_TOKEN}`;
+      const resp = await fetch(url, { signal: AbortSignal.timeout(10000) });
+      const data = await resp.json();
+      if (!resp.ok || data.error) {
+        const errMsg = `Meta /${accountIdAct} returned ${resp.status}: ${(data.error?.message || resp.statusText || '').slice(0, 200)}`;
+        await pgQuery(
+          `INSERT INTO meta_account_audit (account_id, is_trusted, verification_error, verified_at)
+           VALUES ($1, FALSE, $2, NOW())
+           ON CONFLICT (account_id) DO UPDATE
+             SET is_trusted = FALSE, verification_error = EXCLUDED.verification_error, verified_at = NOW()`,
+          [accountIdAct, errMsg]
+        ).catch(() => {});
+        console.warn(`[BriefPipeline] Boot audit FAILED for ${accountIdAct}: ${errMsg}`);
+        rejectedCount++;
+        continue;
+      }
+      const businessId = data.business?.id ? String(data.business.id) : null;
+      const businessName = data.business?.name || null;
+      const ownedByMineblock = MINEBLOCK_BUSINESS_ID
+        ? (businessId === MINEBLOCK_BUSINESS_ID)
+        : true; // no expected BM set — accept reachability as sufficient
+      await pgQuery(
+        `INSERT INTO meta_account_audit (account_id, business_id, business_name, account_name, account_status, is_trusted, verified_at, verification_error)
+         VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7)
+         ON CONFLICT (account_id) DO UPDATE
+           SET business_id = EXCLUDED.business_id,
+               business_name = EXCLUDED.business_name,
+               account_name = EXCLUDED.account_name,
+               account_status = EXCLUDED.account_status,
+               is_trusted = EXCLUDED.is_trusted,
+               verified_at = NOW(),
+               verification_error = EXCLUDED.verification_error`,
+        [
+          accountIdAct, businessId, businessName, data.name || null,
+          Number.isFinite(Number(data.account_status)) ? Number(data.account_status) : null,
+          ownedByMineblock,
+          ownedByMineblock ? null : `Business id mismatch: got "${businessId}" (${businessName}), expected "${MINEBLOCK_BUSINESS_ID}"`,
+        ]
+      ).catch((e) => console.warn('[BriefPipeline] meta_account_audit upsert failed:', e.message));
+      if (ownedByMineblock) {
+        _verifiedTrustedSet.add(accountIdAct);
+        _verifiedTrustedSet.add(bare);
+        okCount++;
+        console.log(`[BriefPipeline] Boot audit OK: ${accountIdAct} (${data.name || 'unnamed'}, business=${businessName || 'none'})`);
+      } else {
+        rejectedCount++;
+        console.warn(`[BriefPipeline] Boot audit REJECTED ${accountIdAct}: business "${businessName}" (${businessId}) is not Mineblock BM "${MINEBLOCK_BUSINESS_ID}"`);
+      }
+    } catch (e) {
+      rejectedCount++;
+      console.warn(`[BriefPipeline] Boot audit error for ${accountIdAct}:`, e.message);
+    }
+  }
+  console.log(`[BriefPipeline] Boot audit done: ${okCount}/${META_AD_ACCOUNT_IDS.length} accounts trusted, ${rejectedCount} rejected`);
+  _bootAuditComplete = true;
+}
+
+// Synchronous "is this account verified-trusted" — returns false if the
+// boot audit hasn't finished yet (caller must handle), or if audit rejected
+// the account. Use isTrustedAccount() (env-based, optimistic) for SQL
+// pre-filters, and this stricter check for write-time verification.
+function isVerifiedTrustedAccount(accountId) {
+  if (!_bootAuditComplete) return null; // boot in progress — caller must defer
+  if (!accountId) return false;
+  const id = String(accountId).trim();
+  const bare = id.replace(/^act_/i, '');
+  return _verifiedTrustedSet.has(id) || _verifiedTrustedSet.has(bare) || _verifiedTrustedSet.has(`act_${bare}`);
+}
+
+// Fire boot audit a few seconds after server start. Non-blocking — server
+// can serve requests while audit runs. The transcribe paths use the env
+// allowlist (TRUSTED_ACCOUNT_IDS_NORM) up front and the per-ad Meta API
+// resolveOwnedVideoFromMeta as the authoritative ownership check, so
+// audit-pending state never lets bad content through.
+setTimeout(() => {
+  performBootMetaAudit().catch((e) => {
+    console.error('[BriefPipeline] Boot audit unhandled error:', e.message);
+    _bootAuditComplete = true; // unblock isVerifiedTrustedAccount waiters
+  });
+}, 5000);
+
 // ── Static-ad exclusion ──────────────────────────────────────────────────
 // TripleWhale's `type='video'` classification is unreliable — static image
 // creatives (jpg/png banners with on-screen text) sometimes get tagged as
@@ -2465,7 +2578,10 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
       }
     }
 
-    // Brand-mismatch guardrail. Three-tier check:
+    // Brand-mismatch guardrail. Four-tier check:
+    //   0. Quarantine + synchronous Meta-direct ownership re-check at iterate
+    //      time. Belt+braces: even if downstream tiers fail, this catches
+    //      foreign-account ads on every iterate call (no DB-staleness window).
     //   1. Explicit imported_metadata.brand_mismatch_warning persisted by transcribe path
     //   2. Recompute from imported_metadata.multimodal_analysis if warning never persisted
     //      (covers refs transcribed before the warning code shipped, or persistence gaps)
@@ -2477,12 +2593,58 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
         const refRows = await pgQuery(
           `SELECT imported_metadata->'brand_mismatch_warning' AS warning,
                   imported_metadata->'multimodal_analysis' AS analysis,
+                  imported_metadata->>'ad_id' AS meta_ad_id,
+                  is_quarantined, quarantine_reason,
                   headline, transcript
            FROM brief_pipeline_references WHERE id = $1 LIMIT 1`,
           [referenceId]
         );
         const row = refRows[0];
         let mismatch = null;
+
+        // Tier 0 — hard refuse if the ref is already quarantined.
+        if (row?.is_quarantined === true) {
+          return res.status(409).json({
+            success: false,
+            error: {
+              code: 'REFERENCE_QUARANTINED',
+              message: row.quarantine_reason || 'This reference is quarantined (wrong-brand linkage). Delete and re-import a real Mineblock ad.',
+              ref_headline: row.headline,
+              hint: 'Quarantined references cannot be iterated. acknowledgeBrandMismatch does NOT override quarantine — the linkage is structurally wrong.',
+            },
+          });
+        }
+
+        // Tier 0b — synchronous Meta-direct ownership re-check (when ad_id present).
+        // This re-asks Meta right now whether the ad still belongs to us, catching
+        // links that flipped foreign since the last transcribe.
+        if (row?.meta_ad_id) {
+          try {
+            const owned = await resolveOwnedVideoFromMeta(row.meta_ad_id);
+            if (owned?.foreignAccount) {
+              // Quarantine on the spot so the next call doesn't re-pay this round-trip
+              await pgQuery(
+                `UPDATE brief_pipeline_references
+                    SET is_quarantined = TRUE, quarantine_reason = $1, quarantined_at = NOW(), updated_at = NOW()
+                  WHERE id = $2`,
+                [`Iterate-time Meta check: ad ${row.meta_ad_id} lives in account ${owned.accountId}, not Mineblock's.`, referenceId]
+              ).catch(() => {});
+              return res.status(409).json({
+                success: false,
+                error: {
+                  code: 'BRAND_MISMATCH',
+                  message: `Refusing iterate: Meta reports this ad lives in account ${owned.accountId}, not one of Mineblock's. Reference has been quarantined.`,
+                  detected_brand: `Meta account ${owned.accountId}`,
+                  expected_brand: 'Mineblock / MinerForge Pro',
+                  ref_headline: row.headline,
+                  hint: 'Linkage is structurally wrong. Delete this reference and re-import a real Mineblock ad.',
+                },
+              });
+            }
+          } catch (e) {
+            console.warn(`[BriefPipeline] iterate-time Meta-direct check failed for ref ${referenceId}:`, e.message);
+          }
+        }
 
         // Tier 1 — explicit persisted warning
         const w = row?.warning;
@@ -4183,11 +4345,15 @@ router.post('/references', authenticate, async (req, res) => {
 });
 
 // GET /references — list all Reference column items, newest first.
-router.get('/references', authenticate, async (_req, res) => {
+// Quarantined refs (foreign-account Meta links etc.) are HIDDEN by default —
+// pass ?include_quarantined=true to surface them (admin / audit views).
+router.get('/references', authenticate, async (req, res) => {
   try {
-    const rows = await pgQuery(
-      `SELECT * FROM brief_pipeline_references ORDER BY created_at DESC`
-    );
+    const includeQuarantined = String(req.query.include_quarantined || '').toLowerCase() === 'true';
+    const sql = includeQuarantined
+      ? `SELECT * FROM brief_pipeline_references ORDER BY created_at DESC`
+      : `SELECT * FROM brief_pipeline_references WHERE is_quarantined IS NOT TRUE ORDER BY created_at DESC`;
+    const rows = await pgQuery(sql);
     res.json({ success: true, references: rows.map(mapReferenceRow) });
   } catch (err) {
     console.error('[BriefPipeline] GET /references error:', err.message);
@@ -4252,7 +4418,9 @@ router.post('/references/:id/retry-transcribe', authenticate, async (req, res) =
             };
             await pgQuery(
               `UPDATE brief_pipeline_references
-                  SET analysis_error = $1, status = 'error', updated_at = NOW(),
+                  SET analysis_error = $1, status = 'error',
+                      is_quarantined = TRUE, quarantine_reason = $1, quarantined_at = NOW(),
+                      updated_at = NOW(),
                       imported_metadata = CASE
                         WHEN imported_metadata IS NULL THEN jsonb_build_object('brand_mismatch_warning', $2::jsonb, 'transcribe_source', 'refused_foreign_account'::text)
                         WHEN jsonb_typeof(imported_metadata) = 'object' THEN
@@ -4504,7 +4672,23 @@ router.get('/meta-video-ads', authenticate, async (req, res) => {
     // Filter to ads WITH a thumbnail — Meta CDN URLs expire but having one
     // means there's at least a chance of preview. NULL thumbnails always
     // render as blank Play icons which is confusing in the import grid.
-    const where = [`ca.type = 'video'`, `ca.thumbnail_url IS NOT NULL`, `ca.thumbnail_url <> ''`, `ca.synced_at >= NOW() - ($1 || ' days')::INTERVAL`];
+    // STRICT_LINKAGE_VERIFIED env (opt-in until daily cron backfills the stamp):
+    // when set to '1', the import grid hides any creative whose
+    // meta_account_verified_at is NULL or older than 7 days. Default OFF
+    // so the grid isn't empty on the very first deploy. Quarantine flag is
+    // ALWAYS enforced — that flip only happens via explicit audit.
+    const strictVerified = process.env.STRICT_LINKAGE_VERIFIED === '1';
+    const where = [
+      `ca.type = 'video'`,
+      `ca.thumbnail_url IS NOT NULL`,
+      `ca.thumbnail_url <> ''`,
+      `ca.synced_at >= NOW() - ($1 || ' days')::INTERVAL`,
+      // P1.3 — quarantined linkages NEVER appear in the grid (hard rule)
+      `(ca.is_linkage_quarantined IS NULL OR ca.is_linkage_quarantined = FALSE)`,
+    ];
+    if (strictVerified) {
+      where.push(`(ca.meta_account_verified_at IS NOT NULL AND ca.meta_account_verified_at >= NOW() - INTERVAL '7 days')`);
+    }
     const params = [String(windowDays)];
 
     // HARD GUARDRAIL: always restrict to the trusted Mineblock account
@@ -4696,6 +4880,7 @@ router.post('/references/import-meta', authenticate, async (req, res) => {
        FROM creative_analysis ca
        WHERE ca.creative_id = ANY($1::text[])
          AND ca.type = 'video'${importTrustedWhere}
+         AND (ca.is_linkage_quarantined IS NULL OR ca.is_linkage_quarantined = FALSE)
          AND (${staticAdExclusionClause('ca')})
        ORDER BY ca.creative_id, ca.spend DESC NULLS LAST`,
       importParams
@@ -4989,6 +5174,67 @@ router.post('/references/import-meta', authenticate, async (req, res) => {
     });
   } catch (err) {
     console.error('[BriefPipeline] /references/import-meta error:', err.message);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// POST /_audit-all-meta-refs — one-shot retroactive ownership audit.
+// CRON_SECRET-gated. Scans every brief_pipeline_references row with
+// source='meta', calls Meta API to confirm each meta_ad_id still belongs
+// to a trusted Mineblock account. Quarantines any that fail.
+//
+// This is the cleanup pass run once after deploying the four-layer guard.
+// After it runs and the report shows zero foreign-account rows, the
+// endpoint should be removed (verify-then-clean pattern).
+router.post('/_audit-all-meta-refs', async (req, res) => {
+  const expected = process.env.CRON_SECRET || '';
+  if (!expected || req.query.secret !== expected) {
+    return res.status(401).json({ error: 'Authentication required' });
+  }
+  try {
+    const rows = await pgQuery(
+      `SELECT id, ad_archive_id, headline, imported_metadata, is_quarantined
+         FROM brief_pipeline_references
+        WHERE source = 'meta'
+        ORDER BY created_at DESC
+        LIMIT 5000`
+    );
+    const report = {
+      scanned: rows.length,
+      already_quarantined: 0,
+      newly_quarantined: 0,
+      owned_ok: 0,
+      meta_error: 0,
+      no_meta_ad_id: 0,
+      newly_quarantined_ids: [],
+    };
+    for (const r of rows) {
+      if (r.is_quarantined) { report.already_quarantined++; continue; }
+      let md = r.imported_metadata;
+      if (typeof md === 'string') { try { md = JSON.parse(md); } catch { md = null; } }
+      const metaAdId = md?.ad_id || r.ad_archive_id || null;
+      if (!metaAdId) { report.no_meta_ad_id++; continue; }
+      const owned = await resolveOwnedVideoFromMeta(metaAdId);
+      if (owned?.foreignAccount) {
+        const reason = `Retroactive audit: Meta ad ${metaAdId} (${owned.adName || 'unnamed'}) belongs to account ${owned.accountId}, NOT Mineblock's.`;
+        await pgQuery(
+          `UPDATE brief_pipeline_references
+              SET is_quarantined = TRUE, quarantine_reason = $1, quarantined_at = NOW(),
+                  status = 'error', analysis_error = $1, updated_at = NOW()
+            WHERE id = $2`,
+          [reason, r.id]
+        ).catch((e) => console.warn('[audit-all] quarantine failed for ref', r.id, e.message));
+        report.newly_quarantined++;
+        report.newly_quarantined_ids.push({ id: r.id, ad_archive_id: r.ad_archive_id, headline: r.headline?.slice(0, 80), reason });
+      } else if (owned?.videoUrl || owned?.thumbnailUrl) {
+        report.owned_ok++;
+      } else {
+        report.meta_error++;
+      }
+    }
+    res.json({ success: true, report });
+  } catch (err) {
+    console.error('[BriefPipeline] /_audit-all-meta-refs error:', err.message);
     res.status(500).json({ success: false, error: { message: err.message } });
   }
 });
@@ -5851,6 +6097,9 @@ function mapReferenceRow(r) {
     status: r.status,
     generatedBriefId: r.generated_brief_id || null,
     analysisError: r.analysis_error || null,
+    isQuarantined: r.is_quarantined === true,
+    quarantineReason: r.quarantine_reason || null,
+    quarantinedAt: r.quarantined_at ? new Date(r.quarantined_at).toISOString() : null,
     createdAt: r.created_at ? new Date(r.created_at).toISOString() : null,
     updatedAt: r.updated_at ? new Date(r.updated_at).toISOString() : null,
   };
