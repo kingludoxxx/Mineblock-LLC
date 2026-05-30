@@ -1469,6 +1469,22 @@ router.post('/generate', authenticate, async (req, res) => {
       if (productImageMsg) claudeContent.push(productImageMsg);
 
       const tClaude = Date.now();
+      // System message — independently of the operator-editable user template,
+      // REQUIRE three extra fields in Claude's JSON so the renderer downstream
+      // knows the MEDIUM + authenticity vibe of the reference. This fixes the
+      // "looks fake / studio-polished" drift when the reference is a real
+      // phone photo, a UGC piece, a screenshot, etc. The renderer's default
+      // bias is "polished commercial creative"; these fields override it.
+      const claudeSystemPrompt = [
+        'When you return the JSON analysis, you MUST also include these three fields, regardless of what the user template asks for:',
+        '',
+        '- "medium": one of "phone_photo" | "studio_photo" | "mockup" | "illustration" | "screenshot" | "ugc_collage" | "graphic_design". Pick the SINGLE best label for the reference image.',
+        '- "authenticity_cues": array of 3-7 short strings describing the FELT QUALITIES that make this reference look the way it does. Examples: "natural shadows from overhead window light", "paper grain visible", "slight motion blur, handheld phone", "fingertip in frame", "marker ink bleed into paper fibers", "imperfect alignment (real human placement)", "uneven exposure typical of phone camera", "no retouching — pores visible". Be specific to THIS reference, not generic.',
+        '- "style_directive": ONE sentence that tells the image renderer how to render to match this medium. Examples: "Render as a candid handheld phone photo with natural overhead lighting, slight imperfection, and real paper texture — NOT as a designed commercial graphic." / "Render as a clean studio product shot with controlled three-point lighting and crisp focus." / "Render as a phone screenshot of a chat app, sans-serif system fonts, no graphic-design polish."',
+        '',
+        'These fields are CRITICAL. The renderer cannot see the reference image — it only sees your description. If you omit these fields the output will look like a generic ad, not the real-world feel of the reference.',
+      ].join('\n');
+
       const claudeRes = await fetch(CLAUDE_API_URL, {
         method: 'POST',
         headers: {
@@ -1478,7 +1494,8 @@ router.post('/generate', authenticate, async (req, res) => {
         },
         body: JSON.stringify({
           model: CLAUDE_MODEL,
-          max_tokens: 2000,  // 3000 → 2000: JSON brief never needs more; faster + cheaper
+          max_tokens: 2500,  // bumped slightly to accommodate the 3 new fields
+          system: claudeSystemPrompt,
           messages: [{ role: 'user', content: claudeContent }],
         }),
       });
@@ -1520,7 +1537,32 @@ router.post('/generate', authenticate, async (req, res) => {
         throw new Error('No product_image_url available — NanoBanana requires a product image as the sole input');
       }
 
-      const nbPrompt = buildNanoBananaImagePrompt(claudeResult, product, customPrompts.nanobanana_image);
+      let nbPrompt = buildNanoBananaImagePrompt(claudeResult, product, customPrompts.nanobanana_image);
+
+      // STYLE DIRECTIVE prepend — injects the medium + authenticity cues +
+      // style_directive Claude returned, so NanoBanana doesn't default to its
+      // "polished commercial creative" bias when the reference is a real
+      // phone photo / UGC / screenshot. Without this, the output looks like
+      // a designed ad mimicking the reference rather than the reference
+      // itself.
+      const medium = (claudeResult.medium || '').toLowerCase();
+      const cues = Array.isArray(claudeResult.authenticity_cues) ? claudeResult.authenticity_cues : [];
+      const directive = (claudeResult.style_directive || '').trim();
+      if (medium || cues.length || directive) {
+        const cueBlock = cues.length ? cues.map(c => `  - ${c}`).join('\n') : '';
+        const styleBlock = [
+          '═══════════════════════════════════════════════════════════════════',
+          'STYLE / MEDIUM DIRECTIVE — OVERRIDES YOUR DEFAULT POLISH BIAS',
+          '═══════════════════════════════════════════════════════════════════',
+          medium ? `Reference MEDIUM: ${medium} — render the output to match this medium exactly. Do NOT convert a phone photo into a designed ad, do NOT convert a screenshot into a graphic, do NOT convert UGC into a studio shot.` : '',
+          directive ? `\nRender directive: ${directive}` : '',
+          cues.length ? `\nAuthenticity cues observed in the reference — reproduce these qualities:\n${cueBlock}` : '',
+          '\nIf the reference looks imperfect, real, candid, or human, the output must look imperfect, real, candid, or human. The output must FEEL like the same medium as the reference, not a polished version of it.',
+          '═══════════════════════════════════════════════════════════════════\n',
+        ].filter(Boolean).join('\n');
+        nbPrompt = styleBlock + '\n' + nbPrompt;
+      }
+
       console.log(`[staticsGeneration] NanoBanana prompt (${nbPrompt.length} chars):\n${nbPrompt.slice(0, 800)}${nbPrompt.length > 800 ? '...[truncated]' : ''}`);
 
       // 'all' (the UI default for "generate every aspect ratio") expands to the
@@ -1534,29 +1576,22 @@ router.post('/generate', authenticate, async (req, res) => {
       const preTaskIdByRatio = Object.fromEntries(preChildTasks.map(t => [t.ratio, t.taskId]));
       storeTaskResult(earlyTaskId, { status: 'processing', progress: `Generating ${ratiosToGenerate.length} ratio(s)...`, tasks: preChildTasks });
 
-      async function runOneRatio(r) {
+      // ── runFromScratch: full text-to-image generation. Used for the 1:1
+      // parent (or any single-ratio request other than 'all'). NanoBanana
+      // receives the style-directive-injected nbPrompt + the product image.
+      async function runFromScratch(r) {
         const ratioStart = Date.now();
-        // Use the pre-allocated child taskId (already returned to the client)
-        // so the frontend's per-ratio poll lines up cleanly.
         const childTaskId = preTaskIdByRatio[r] || `nb-${crypto.randomUUID()}`;
         try {
           const nbTaskId = await withRetry(
             () => submitToNanoBanana(nbPrompt, [productHttpUrl], r),
             `nb-submit ${r}`
           );
-          console.log(`[staticsGeneration] NanoBanana ${r} submitted: ${nbTaskId} (child=${childTaskId.slice(0, 12)}…)`);
-          const tempUrl = await withRetry(
-            () => pollNanoBanana(nbTaskId),
-            `nb-poll ${r}`
-          );
+          console.log(`[staticsGeneration] NanoBanana ${r} (scratch) submitted: ${nbTaskId} (child=${childTaskId.slice(0, 12)}…)`);
+          const tempUrl = await withRetry(() => pollNanoBanana(nbTaskId), `nb-poll ${r}`);
           const resultImageUrl = await persistNanoBananaImage(tempUrl, `statics-generated/${r}`);
-          if (!resultImageUrl) {
-            // Refuse to write a dead URL. Throw so Promise.allSettled marks
-            // this ratio as failed; downstream callers handle partial-batch.
-            throw new Error(`persist failed for ${r} — refusing to write dying URL`);
-          }
-          console.log(`[staticsGeneration] ⏱ NanoBanana ${r} done in ${Date.now() - ratioStart}ms`);
-
+          if (!resultImageUrl) throw new Error(`persist failed for ${r} — refusing to write dying URL`);
+          console.log(`[staticsGeneration] ⏱ NanoBanana ${r} (scratch) done in ${Date.now() - ratioStart}ms`);
           storeTaskResult(childTaskId, {
             status: 'completed',
             resultImageUrl,
@@ -1567,19 +1602,89 @@ router.post('/generate', authenticate, async (req, res) => {
           });
           return { taskId: childTaskId, ratio: r, resultImageUrl };
         } catch (err) {
-          // Propagate failure to the child task too so the frontend's poll
-          // stops cleanly instead of waiting the full 8-minute timeout.
           storeTaskResult(childTaskId, { status: 'error', error: err.message });
           throw err;
         }
       }
 
-      const ratioResults = await Promise.allSettled(ratiosToGenerate.map(runOneRatio));
-      const tasks = ratioResults
-        .filter(r => r.status === 'fulfilled')
-        .map(r => r.value);
-      ratioResults.filter(r => r.status === 'rejected').forEach((r, i) =>
-        console.error(`[staticsGeneration] NanoBanana ${ratiosToGenerate[i]} failed: ${r.reason?.message}`)
+      // ── runResizeFromParent: takes a 1:1 result and resizes it to the
+      // target ratio. Reuses NanoBanana's edit-mode with the same prompt
+      // pattern as /create-variant — keep ALL content identical, just
+      // extend background to fill the new format. This guarantees style
+      // consistency across ratios (no more 9:16 abandoning the comp).
+      async function runResizeFromParent(parentImageUrl, r) {
+        const ratioStart = Date.now();
+        const childTaskId = preTaskIdByRatio[r] || `nb-${crypto.randomUUID()}`;
+        const resizePrompt = `Seamlessly resize this ad image to ${r} aspect ratio. Keep ALL content identical — same text, same product, same layout, same colors, same style. Extend or adjust the background naturally to fill the new format. Do NOT redesign, do NOT re-imagine, do NOT change the medium or vibe. Only reframe.`;
+        try {
+          const parentHttpUrl = await ensureHttpUrlGlobal(parentImageUrl, 'statics-generated');
+          const nbTaskId = await withRetry(
+            () => submitToNanoBanana(resizePrompt, [parentHttpUrl], r),
+            `nb-resize-submit ${r}`
+          );
+          console.log(`[staticsGeneration] NanoBanana ${r} (resize) submitted: ${nbTaskId} (child=${childTaskId.slice(0, 12)}…)`);
+          const tempUrl = await withRetry(() => pollNanoBanana(nbTaskId), `nb-resize-poll ${r}`);
+          const resultImageUrl = await persistNanoBananaImage(tempUrl, `statics-generated/${r}`);
+          if (!resultImageUrl) throw new Error(`persist failed for ${r} (resize) — refusing to write dying URL`);
+          console.log(`[staticsGeneration] ⏱ NanoBanana ${r} (resize) done in ${Date.now() - ratioStart}ms`);
+          storeTaskResult(childTaskId, {
+            status: 'completed',
+            resultImageUrl,
+            provider: 'nanobanana',
+            model: 'google/nano-banana-edit',
+            claudeAnalysis: claudeResult,
+            quality_warning: null,
+          });
+          return { taskId: childTaskId, ratio: r, resultImageUrl };
+        } catch (err) {
+          storeTaskResult(childTaskId, { status: 'error', error: err.message });
+          throw err;
+        }
+      }
+
+      // Orchestration:
+      //   ratio === 'all' (default): 1:1 from scratch, then 4:5 & 9:16 in
+      //     parallel as resizes of the 1:1 result. Ensures style lock.
+      //   ratio === '<specific>': single-shot from scratch (preserves
+      //     single-ratio call semantics for /iterate etc.)
+      const tasks = [];
+      const failedRatios = [];
+
+      if (ratiosToGenerate.length === 1) {
+        // Single-ratio call — generate from scratch, no parent dependency.
+        try {
+          tasks.push(await runFromScratch(ratiosToGenerate[0]));
+        } catch (err) {
+          failedRatios.push({ ratio: ratiosToGenerate[0], message: err.message });
+        }
+      } else {
+        // Multi-ratio (always 'all' under current call sites). Generate
+        // 1:1 first, then resize children in parallel.
+        let parentResult = null;
+        try {
+          parentResult = await runFromScratch('1:1');
+          tasks.push(parentResult);
+        } catch (err) {
+          failedRatios.push({ ratio: '1:1', message: err.message });
+        }
+
+        // Child resizes — depend on parent. If parent failed, skip them
+        // (the create-variant button in the modal lets the operator retry
+        // missing ratios after the fact).
+        if (parentResult?.resultImageUrl) {
+          const childRatios = ratiosToGenerate.filter(r => r !== '1:1');
+          const childResults = await Promise.allSettled(
+            childRatios.map(r => runResizeFromParent(parentResult.resultImageUrl, r))
+          );
+          childResults.forEach((res, i) => {
+            if (res.status === 'fulfilled') tasks.push(res.value);
+            else failedRatios.push({ ratio: childRatios[i], message: res.reason?.message || 'unknown' });
+          });
+        }
+      }
+
+      failedRatios.forEach(({ ratio: fr, message }) =>
+        console.error(`[staticsGeneration] NanoBanana ${fr} failed: ${message}`)
       );
 
       if (tasks.length === 0) {
