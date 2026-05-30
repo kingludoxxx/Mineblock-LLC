@@ -46,6 +46,21 @@ const TRANSLATION_LANGUAGES = [
 
 const NAMING_VARIABLES = ['{date}', '{angle}', '{batch}', '{num}', '{product}'];
 
+// Safe-array parser — JSONB columns can arrive as either an array (already
+// parsed) or a string (postgres-side JSON) depending on the driver mood.
+// Without this guard, calling .filter/.map on a string crashes the editor.
+function safeArr(v) {
+  if (Array.isArray(v)) return v;
+  if (typeof v === 'string') {
+    try {
+      let parsed = JSON.parse(v);
+      if (typeof parsed === 'string') parsed = JSON.parse(parsed);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch { return []; }
+  }
+  return [];
+}
+
 const DEFAULT_FORM = {
   name: '',
   accountId: '',
@@ -192,7 +207,7 @@ export default function LaunchTemplateEditor({ open, onClose, template, onSaved 
         name: template.name || '',
         accountId: template.ad_account_id || '',
         pageMode: template.page_mode === 'round_robin' ? 'round-robin' : 'single',
-        selectedPages: (template.page_ids || []).filter(p => p.selected !== false).map(p => p.id),
+        selectedPages: safeArr(template.page_ids).filter(p => p.selected !== false).map(p => p.id),
         pixelId: template.pixel_id || '',
         campaignId: template.campaign_id || '',
         adSetNamePattern: template.adset_name_pattern || DEFAULT_FORM.adSetNamePattern,
@@ -205,16 +220,16 @@ export default function LaunchTemplateEditor({ open, onClose, template, onSaved 
         bidStrategy: template.bid_strategy === 'LOWEST_COST_WITHOUT_CAP' ? 'LOWEST_COST' : template.bid_strategy === 'LOWEST_COST_WITH_MIN_ROAS' ? 'MINIMUM_ROAS' : template.bid_strategy || 'LOWEST_COST',
         targetRoas: template.target_roas ?? '',
         attribution: template.attribution_window || '7d_click_1d_view',
-        includeAudiences: (template.include_audiences || []).map(a => a.id || a),
-        excludeAudiences: (template.exclude_audiences || []).map(a => a.id || a),
-        countries: template.countries || [],
+        includeAudiences: safeArr(template.include_audiences).map(a => a.id || a),
+        excludeAudiences: safeArr(template.exclude_audiences).map(a => a.id || a),
+        countries: safeArr(template.countries),
         ageMin: template.age_min ?? 18,
         ageMax: template.age_max ?? 65,
         gender: template.gender ? template.gender.charAt(0).toUpperCase() + template.gender.slice(1) : 'All',
         adFormat: template.ad_format === 'FLEXIBLE' ? 'Flexible Ads' : (template.ad_format || 'Flexible Ads').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
         utmParams: template.utm_parameters || DEFAULT_FORM.utmParams,
         landingPageUrl: template.landing_page_url || '',
-        translationLanguages: template.translation_languages || [],
+        translationLanguages: safeArr(template.translation_languages),
         scheduleEnabled: template.schedule_enabled ?? false,
         scheduleDate: template.schedule_date || '',
         scheduleTime: template.schedule_time || '00:00',
@@ -297,13 +312,13 @@ export default function LaunchTemplateEditor({ open, onClose, template, onSaved 
       // When sync data is available, use it; otherwise preserve original template data
       const resolvedPages = pages.length
         ? pages.filter(p => form.selectedPages.includes(p.id)).map(p => ({ id: p.id, name: p.name, selected: true }))
-        : (template?.page_ids || []).filter(p => form.selectedPages.includes(p.id));
+        : safeArr(template?.page_ids).filter(p => form.selectedPages.includes(p.id));
       const resolvedInclude = audiences.length
         ? audiences.filter(a => form.includeAudiences.includes(a.id))
-        : (template?.include_audiences || []).filter(a => form.includeAudiences.includes(a.id || a));
+        : safeArr(template?.include_audiences).filter(a => form.includeAudiences.includes(a.id || a));
       const resolvedExclude = audiences.length
         ? audiences.filter(a => form.excludeAudiences.includes(a.id))
-        : (template?.exclude_audiences || []).filter(a => form.excludeAudiences.includes(a.id || a));
+        : safeArr(template?.exclude_audiences).filter(a => form.excludeAudiences.includes(a.id || a));
 
       const payload = {
         name: form.name,
