@@ -58,6 +58,43 @@ async function persistNanoBananaImage(tempUrl, prefix = 'statics-nb') {
 
   const RETRIES = 2; // → 3 attempts total
 
+  // OpenAI's image API returns b64-encoded images as data: URIs. Node fetch()
+  // doesn't handle those, so decode + upload directly before falling through
+  // to the URL-based path.
+  if (typeof tempUrl === 'string' && tempUrl.startsWith('data:image')) {
+    if (isR2Configured() && process.env.R2_PUBLIC_URL) {
+      try {
+        const match = tempUrl.match(/^data:(image\/[^;]+);base64,(.+)$/);
+        if (!match) throw new Error('Malformed data-URI');
+        const contentType = match[1];
+        const buffer = Buffer.from(match[2], 'base64');
+        const ext = contentType.includes('jpeg') || contentType.includes('jpg') ? 'jpg' : 'png';
+        const { randomUUID } = await import('node:crypto');
+        const key = `${prefix}/${randomUUID()}.${ext}`;
+        const { uploadBuffer } = await import('../services/r2.js');
+        const url = await uploadBuffer(buffer, key, contentType);
+        if (!url || !url.startsWith('http')) throw new Error('uploadBuffer returned non-http');
+        if (!(await urlIsHealthy(url))) throw new Error('R2 url failed HEAD check');
+        return url;
+      } catch (err) {
+        console.error(`[persistNbImage] data-URI R2 upload failed: ${err.message}`);
+        return null;
+      }
+    }
+    // dev fallback: store in DB via the same /tmp-img path
+    try {
+      const match = tempUrl.match(/^data:(image\/[^;]+);base64,(.+)$/);
+      if (!match) return null;
+      const buf = Buffer.from(match[2], 'base64');
+      const id = await storeTempImage(buf, match[1]);
+      const srv = process.env.RENDER_EXTERNAL_URL || `http://localhost:${process.env.PORT || 3000}`;
+      return `${srv}/api/v1/statics-generation/tmp-img/${id}`;
+    } catch (err) {
+      console.error(`[persistNbImage] data-URI DB-proxy persist failed: ${err.message}`);
+      return null;
+    }
+  }
+
   // Tier 1: R2 with retries + HEAD-verify. Skipped only in dev (no R2 creds).
   if (isR2Configured() && process.env.R2_PUBLIC_URL) {
     for (let attempt = 0; attempt <= RETRIES; attempt++) {
@@ -124,6 +161,7 @@ async function withRetry(fn, label, maxAttempts = 3) {
   throw lastErr;
 }
 import { submitToNanoBanana, pollNanoBanana } from '../services/imageGeneration.js';
+import { getEngine, DEFAULT_ENGINE, listEngines } from '../services/imageEngines.js';
 import crypto from 'crypto';
 import { analyzeTemplate, analyzeTemplateFast } from '../utils/templateAnalysis.js';
 import sharp from 'sharp';
@@ -1354,7 +1392,10 @@ router.post('/generate', authenticate, async (req, res) => {
     storeTaskResult(ct.taskId, { status: 'processing', progress: `Generating ${ct.ratio}...` });
   }
   storeTaskResult(earlyTaskId, { status: 'processing', progress: 'Analyzing reference image...', tasks: preChildTasks });
-  res.json({ success: true, data: { taskId: earlyTaskId, tasks: preChildTasks, provider: 'nanobanana', status: 'processing' } });
+  // Echo back the chosen image engine so the frontend's save flow can stamp
+  // image_engine on each spy_creatives row that gets persisted.
+  const _echoEngine = String(req.body.image_engine || DEFAULT_ENGINE).toLowerCase();
+  res.json({ success: true, data: { taskId: earlyTaskId, tasks: preChildTasks, provider: _echoEngine, image_engine: _echoEngine, status: 'processing' } });
 
   // Watchdog: if the pipeline hangs, mark task as error after 8 minutes.
   const watchdog = setTimeout(() => {
@@ -1369,6 +1410,18 @@ router.post('/generate', authenticate, async (req, res) => {
     const pipelineStart = Date.now();
     try {
       const { reference_image_url, angle, angle_data, ratio, template_id } = req.body;
+      // Image engine selector — defaults to NanoBanana for backwards compat.
+      // Resolved once per /generate call; every ratio (parent + children) uses
+      // the same engine so the creative is consistent.
+      const imageEngineName = String(req.body.image_engine || DEFAULT_ENGINE).toLowerCase();
+      const engine = getEngine(imageEngineName);
+      if (!engine.isConfigured()) {
+        return res.status(400).json({
+          success: false,
+          error: { message: `Image engine '${engine.name}' is not configured (missing API key)` },
+        });
+      }
+      console.log(`[staticsGeneration] /generate using image engine: ${engine.label} (${engine.describe()})`);
       let product = req.body.product;
 
       // ── DB re-fetch of product profile (authoritative source) ──
@@ -1595,26 +1648,28 @@ router.post('/generate', authenticate, async (req, res) => {
       storeTaskResult(earlyTaskId, { status: 'processing', progress: `Generating ${ratiosToGenerate.length} ratio(s)...`, tasks: preChildTasks });
 
       // ── runFromScratch: full text-to-image generation. Used for the 1:1
-      // parent (or any single-ratio request other than 'all'). NanoBanana
-      // receives the style-directive-injected nbPrompt + the product image.
+      // parent (or any single-ratio request other than 'all'). Engine
+      // (NanoBanana or OpenAI gpt-image-2) is whichever the operator picked
+      // via the top-bar pill — resolved into `engine` at the top of the
+      // handler and used uniformly below.
       async function runFromScratch(r) {
         const ratioStart = Date.now();
         const childTaskId = preTaskIdByRatio[r] || `nb-${crypto.randomUUID()}`;
         try {
-          const nbTaskId = await withRetry(
-            () => submitToNanoBanana(nbPrompt, [productHttpUrl], r),
-            `nb-submit ${r}`
+          const taskHandle = await withRetry(
+            () => engine.submit(nbPrompt, [productHttpUrl], r),
+            `${engine.name}-submit ${r}`
           );
-          console.log(`[staticsGeneration] NanoBanana ${r} (scratch) submitted: ${nbTaskId} (child=${childTaskId.slice(0, 12)}…)`);
-          const tempUrl = await withRetry(() => pollNanoBanana(nbTaskId), `nb-poll ${r}`);
+          console.log(`[staticsGeneration] ${engine.label} ${r} (scratch) submitted: ${taskHandle} (child=${childTaskId.slice(0, 12)}…)`);
+          const tempUrl = await withRetry(() => engine.poll(taskHandle), `${engine.name}-poll ${r}`);
           const resultImageUrl = await persistNanoBananaImage(tempUrl, `statics-generated/${r}`);
           if (!resultImageUrl) throw new Error(`persist failed for ${r} — refusing to write dying URL`);
-          console.log(`[staticsGeneration] ⏱ NanoBanana ${r} (scratch) done in ${Date.now() - ratioStart}ms`);
+          console.log(`[staticsGeneration] ⏱ ${engine.label} ${r} (scratch) done in ${Date.now() - ratioStart}ms`);
           storeTaskResult(childTaskId, {
             status: 'completed',
             resultImageUrl,
-            provider: 'nanobanana',
-            model: 'google/nano-banana-edit',
+            provider: engine.name,
+            model: engine.describe(),
             claudeAnalysis: claudeResult,
             quality_warning: null,
           });
@@ -1636,20 +1691,20 @@ router.post('/generate', authenticate, async (req, res) => {
         const resizePrompt = `Seamlessly resize this ad image to ${r} aspect ratio. Keep ALL content identical — same text, same product, same layout, same colors, same style. Extend or adjust the background naturally to fill the new format. Do NOT redesign, do NOT re-imagine, do NOT change the medium or vibe. Only reframe.`;
         try {
           const parentHttpUrl = await ensureHttpUrlGlobal(parentImageUrl, 'statics-generated');
-          const nbTaskId = await withRetry(
-            () => submitToNanoBanana(resizePrompt, [parentHttpUrl], r),
-            `nb-resize-submit ${r}`
+          const taskHandle = await withRetry(
+            () => engine.submit(resizePrompt, [parentHttpUrl], r),
+            `${engine.name}-resize-submit ${r}`
           );
-          console.log(`[staticsGeneration] NanoBanana ${r} (resize) submitted: ${nbTaskId} (child=${childTaskId.slice(0, 12)}…)`);
-          const tempUrl = await withRetry(() => pollNanoBanana(nbTaskId), `nb-resize-poll ${r}`);
+          console.log(`[staticsGeneration] ${engine.label} ${r} (resize) submitted: ${taskHandle} (child=${childTaskId.slice(0, 12)}…)`);
+          const tempUrl = await withRetry(() => engine.poll(taskHandle), `${engine.name}-resize-poll ${r}`);
           const resultImageUrl = await persistNanoBananaImage(tempUrl, `statics-generated/${r}`);
           if (!resultImageUrl) throw new Error(`persist failed for ${r} (resize) — refusing to write dying URL`);
-          console.log(`[staticsGeneration] ⏱ NanoBanana ${r} (resize) done in ${Date.now() - ratioStart}ms`);
+          console.log(`[staticsGeneration] ⏱ ${engine.label} ${r} (resize) done in ${Date.now() - ratioStart}ms`);
           storeTaskResult(childTaskId, {
             status: 'completed',
             resultImageUrl,
-            provider: 'nanobanana',
-            model: 'google/nano-banana-edit',
+            provider: engine.name,
+            model: engine.describe(),
             claudeAnalysis: claudeResult,
             quality_warning: null,
           });
@@ -2271,18 +2326,22 @@ async function generateVariant(parent, newAspectRatio) {
 
     const resizePrompt = `Seamlessly resize this ad image to ${newAspectRatio} aspect ratio. Keep ALL content identical — same text, same product, same layout, same colors, same style. Extend or adjust the background naturally to fill the new format.`;
 
+    // Use the SAME engine the parent was generated with — no cross-engine
+    // style drift on resize. Falls back to NanoBanana for legacy rows
+    // whose image_engine column is null (back-compat with pre-migration data).
+    const variantEngine = getEngine(parent.image_engine || 'nanobanana');
     const nbTaskId = await withRetry(
-      () => submitToNanoBanana(resizePrompt, [parentHttpUrl], newAspectRatio),
-      `variant-submit ${child.id.slice(0,8)}`
+      () => variantEngine.submit(resizePrompt, [parentHttpUrl], newAspectRatio),
+      `variant-submit ${child.id.slice(0,8)} via ${variantEngine.name}`
     );
     await pgQuery(
-      "UPDATE spy_creatives SET generation_task_id = $1, updated_at = NOW() WHERE id = $2",
-      [nbTaskId, child.id]
+      "UPDATE spy_creatives SET generation_task_id = $1, image_engine = $2, updated_at = NOW() WHERE id = $3",
+      [nbTaskId, variantEngine.name, child.id]
     );
 
     const nbImageUrl = await withRetry(
-      () => pollNanoBanana(nbTaskId),
-      `variant-poll ${child.id.slice(0,8)}`
+      () => variantEngine.poll(nbTaskId),
+      `variant-poll ${child.id.slice(0,8)} via ${variantEngine.name}`
     );
 
     // Strict persist — returns null if R2 (or /tmp-img in dev) failed.
@@ -2357,11 +2416,21 @@ async function autoSpawn916Variant(creativeOrId) {
 // Creatives CRUD
 // ─────────────────────────────────────────────────────────────────────────
 
+// GET /image-engines — list available image engines + availability for the
+// frontend's engine-picker pill. Each entry { name, label, available, describe }.
+router.get('/image-engines', authenticate, async (_req, res) => {
+  try {
+    res.json({ success: true, data: listEngines(), default: DEFAULT_ENGINE });
+  } catch (err) {
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
 router.get('/creatives', authenticate, async (req, res) => {
   try {
     await ensureCreativesTable();
     const { product_id, status, pipeline = 'standard', parent_creative_id } = req.query;
-    let query = "SELECT id, product_id, product_name, image_url, thumbnail_url, source_label, angle, archetype, aspect_ratio, status, reference_thumbnail, reference_name, review_notes, parent_creative_id, pipeline, copy_set_id, meta_ad_ids, meta_image_hash, generated_copy, parent_creative_id_ref, parent_im_number, im_number, iteration_change_description, quality_warning, created_at FROM spy_creatives WHERE pipeline = $1";
+    let query = "SELECT id, product_id, product_name, image_url, thumbnail_url, source_label, angle, archetype, aspect_ratio, status, reference_thumbnail, reference_name, review_notes, parent_creative_id, pipeline, copy_set_id, meta_ad_ids, meta_image_hash, generated_copy, parent_creative_id_ref, parent_im_number, im_number, iteration_change_description, quality_warning, image_engine, created_at FROM spy_creatives WHERE pipeline = $1";
     const params = [pipeline];
     let idx = 2;
 
@@ -2722,6 +2791,7 @@ router.post('/creatives', authenticate, async (req, res) => {
       source_label, pipeline, status = 'review',
       group_id, quality_warning,
       parent_creative_id,
+      image_engine, // 'nanobanana' | 'openai' (default 'nanobanana' via DB)
     } = req.body;
 
     if (!image_url) return res.status(400).json({ success: false, error: { message: 'image_url is required' } });
@@ -2758,8 +2828,8 @@ router.post('/creatives', authenticate, async (req, res) => {
          reference_image_id, source_label, reference_name, reference_thumbnail,
          adapted_text, claude_analysis, swap_pairs, generation_prompt,
          generation_task_id, pipeline, status, group_id, generated_copy, copy_set_id,
-         quality_warning, parent_creative_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+         quality_warning, parent_creative_id, image_engine)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
        RETURNING *`,
       [
         product_id || null,
@@ -2783,6 +2853,7 @@ router.post('/creatives', authenticate, async (req, res) => {
         matchedCopySetId,
         quality_warning || null,
         parent_creative_id || null,
+        image_engine || 'nanobanana',
       ]
     );
 
@@ -2894,15 +2965,17 @@ router.post('/creatives/:id/ai-adjust', authenticate, async (req, res) => {
         storeTaskResult(adjustTaskId, { status: 'processing', progress: 'Regenerating with NanoBanana...' });
 
         // Per friend's architecture: NanoBanana edits the CURRENT image (not the product) on adjustment.
+        // Use the SAME engine the creative was originally generated with so refines don't drift style.
+        const adjustEngine = getEngine(creative.image_engine || 'nanobanana');
         const currentImageHttpUrl = await ensureHttpUrlGlobal(creative.image_url, 'adjust-src');
         const ratio = creative.aspect_ratio || '4:5';
         const nbTaskId = await withRetry(
-          () => submitToNanoBanana(newNbPrompt, [currentImageHttpUrl], ratio),
-          `ai-adjust-submit ${creative.id.slice(0, 8)}`
+          () => adjustEngine.submit(newNbPrompt, [currentImageHttpUrl], ratio),
+          `ai-adjust-submit ${creative.id.slice(0, 8)} via ${adjustEngine.name}`
         );
         const tempUrl = await withRetry(
-          () => pollNanoBanana(nbTaskId),
-          `ai-adjust-poll ${creative.id.slice(0, 8)}`
+          () => adjustEngine.poll(nbTaskId),
+          `ai-adjust-poll ${creative.id.slice(0, 8)} via ${adjustEngine.name}`
         );
 
         // Strict persist (R2 with retries + HEAD-verify; NULL on hard fail).
