@@ -34,8 +34,10 @@ const router = Router();
 // TEMP — PestLab end-to-end test: find ref → re-transcribe → iterate
 router.get('/_findpestlab', async (req, res) => {
   try {
-    // List all tables that look like they could hold Brand Spy / League ads
-    const tables = await pgQuery(`SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND (table_name ILIKE '%ad%' OR table_name ILIKE '%spy%' OR table_name ILIKE '%champ%' OR table_name ILIKE '%league%' OR table_name ILIKE '%brand%')`);
+    // List EVERY table across all schemas that has a video_url or creative_link column
+    const tables = await pgQuery(`SELECT DISTINCT t.table_schema, t.table_name FROM information_schema.tables t JOIN information_schema.columns c ON c.table_schema = t.table_schema AND c.table_name = t.table_name WHERE c.column_name IN ('video_url','creative_link') AND t.table_schema NOT IN ('pg_catalog','information_schema')`);
+    res.json({ tables_with_video_url: tables });
+    return;
     const tableHits = [];
     for (const t of tables) {
       try {
