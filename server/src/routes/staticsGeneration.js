@@ -4423,7 +4423,14 @@ router.get('/league/ads', authenticate, async (req, res) => {
       where.push(`a.display_format ILIKE 'image%'`);
     } else if (format === 'CAROUSEL') {
       where.push(`a.display_format ILIKE 'carousel%'`);
-    } // ALL_STATIC → no display_format filter
+    } else {
+      // ALL_STATIC — every non-video format (image, carousel, dco, dpa, …).
+      // Bug fix: previously had NO display_format filter, so videos slipped
+      // through. Defense in depth: require display_format to be NOT NULL
+      // AND not start with 'video' (case-insensitive).
+      where.push(`a.display_format IS NOT NULL`);
+      where.push(`a.display_format NOT ILIKE 'video%'`);
+    }
     if (activeOnly) {
       where.push(`a.is_active = TRUE`);
     }
