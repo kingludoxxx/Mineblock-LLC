@@ -4906,9 +4906,11 @@ const _TW_SHOP_ID = process.env.TRIPLEWHALE_SHOP_ID || '17cca0-2.myshopify.com';
 const _TW_SQL_URL = 'https://api.triplewhale.com/api/v2/orcabase/api/sql';
 const _TW_ATTRIBUTION_DEFAULT = process.env.TW_ATTRIBUTION_MODEL || 'lastPlatformClick';
 // Defaults aligned to TW UI's Triple Attribution + Meta view (the operator's
-// reference). Set via env if the shop uses different columns.
-const _TW_REVENUE_COL  = process.env.TW_REVENUE_COL  || 'channel_reported_conversion_value';
-const _TW_PURCHASE_COL = process.env.TW_PURCHASE_COL || 'channel_reported_conversions';
+// reference). adsReporting.js (the dashboard's existing Ads Report page that
+// already matches TW) uses `order_revenue` + `website_purchases` with the
+// `channel='facebook-ads'` filter — replicate that exact combo here.
+const _TW_REVENUE_COL  = process.env.TW_REVENUE_COL  || 'order_revenue';
+const _TW_PURCHASE_COL = process.env.TW_PURCHASE_COL || 'website_purchases';
 // Channel filter — operator's TW screenshot was Meta-only filtered, and
 // adsReporting.js proves the pixel_joined_tvf schema uses `channel='facebook-ads'`
 // for Meta rows. Hardcoded here so the spend column drops from $9.7k (all
