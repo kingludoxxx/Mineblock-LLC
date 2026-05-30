@@ -65,6 +65,46 @@ function detectBrandMismatch(headline, multimodalAnalysis) {
   };
 }
 
+// TEMP — delete every reference where brand_mismatch_warning is set
+router.post('/_purgemismatches', async (req, res) => {
+  try {
+    const rows = await pgQuery(
+      `DELETE FROM brief_pipeline_references
+       WHERE imported_metadata->'brand_mismatch_warning'->>'warning' = 'BRAND_MISMATCH'
+       RETURNING id, headline,
+                 imported_metadata->'brand_mismatch_warning'->>'actual' AS detected_brand`
+    );
+    res.json({ deleted_count: rows.length, deleted: rows });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// TEMP — verify the iterate guard blocks a flagged reference. Internal-style
+// call that doesn't actually iterate — just runs the warning check.
+router.get('/_testguard/:id', async (req, res) => {
+  try {
+    const refRows = await pgQuery(
+      `SELECT imported_metadata->'brand_mismatch_warning' AS warning, headline
+       FROM brief_pipeline_references WHERE id = $1 LIMIT 1`,
+      [req.params.id]
+    );
+    const w = refRows[0]?.warning;
+    if (w && typeof w === 'object' && w.warning === 'BRAND_MISMATCH') {
+      return res.status(409).json({
+        success: false,
+        guard_fired: true,
+        error: {
+          code: 'BRAND_MISMATCH',
+          message: w.message,
+          detected_brand: w.actual,
+          expected_brand: w.expected,
+          ref_headline: refRows[0].headline,
+        },
+      });
+    }
+    res.json({ success: true, guard_fired: false, headline: refRows[0]?.headline });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // TEMP — one-shot cleanup: delete B0248 (mislabeled JD ad) + re-transcribe the
 // other OUR refs so they get multimodal brand data and the guardrail can
 // retroactively flag any other mismatches.
