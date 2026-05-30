@@ -30,31 +30,46 @@ const YTDLP_PATH = join(__dirname, '..', '..', '..', 'bin', 'yt-dlp');
 
 const router = Router();
 
-// TEMP — multimodal Vertex probe on B0248 to see what Vertex would have extracted
-router.post('/_vertextest', async (req, res) => {
+// TEMP — re-transcribe any reference with the new multimodal-first pipeline
+router.post('/_retranscribe/:id', async (req, res) => {
   try {
-    const rows = await pgQuery(`SELECT id, video_url, transcript FROM brief_pipeline_references WHERE id = 'df674f42-0a1b-4941-821b-86ba264290f8' LIMIT 1`);
-    if (!rows.length || !rows[0].video_url) return res.status(400).json({ error: 'B0248 has no video_url' });
+    const rows = await pgQuery(`SELECT id, video_url FROM brief_pipeline_references WHERE id = $1 LIMIT 1`, [req.params.id]);
+    if (!rows.length || !rows[0].video_url) return res.status(400).json({ error: 'reference has no video_url' });
     const ref = rows[0];
     const t0 = Date.now();
-    const { buf, contentType } = await downloadVideoForDiag(ref.video_url);
-    const downloadMs = Date.now() - t0;
-    const mime = contentType.split(';')[0] || 'video/mp4';
-    const sizeMB = (buf.length / 1024 / 1024).toFixed(2);
-    const t1 = Date.now();
-    const rawText = await probeVertexMultimodal(buf, mime);
-    const vertexMs = Date.now() - t1;
-    let parsed = null;
-    try { parsed = JSON.parse(rawText); } catch { /* keep raw */ }
+    const result = await transcribeVideoUrl(ref.video_url);
+    const elapsedMs = Date.now() - t0;
+    // Persist the new transcript so iterate-mode picks it up
+    await pgQuery(
+      `UPDATE brief_pipeline_references SET transcript=$1, transcript_at=NOW(), status='transcribed', analysis_error=NULL,
+          imported_metadata = CASE
+            WHEN imported_metadata IS NULL THEN jsonb_build_object('transcript_segments', $2::jsonb, 'transcribe_source', $3::text, 'multimodal_analysis', $4::jsonb)
+            WHEN jsonb_typeof(imported_metadata) = 'object' THEN
+              jsonb_set(
+                jsonb_set(
+                  jsonb_set(imported_metadata, '{transcript_segments}', $2::jsonb, true),
+                  '{transcribe_source}', to_jsonb($3::text), true
+                ),
+                '{multimodal_analysis}', $4::jsonb, true
+              )
+            ELSE jsonb_build_object('original', imported_metadata::text, 'transcript_segments', $2::jsonb, 'transcribe_source', $3::text, 'multimodal_analysis', $4::jsonb)
+          END,
+          updated_at=NOW() WHERE id=$5`,
+      [
+        result.text,
+        JSON.stringify(result.segments || []),
+        result._source || 'unknown',
+        JSON.stringify(result._analysis || null),
+        ref.id,
+      ]
+    );
     res.json({
       ref_id: ref.id,
-      video_url_head: ref.video_url.slice(0, 100),
-      whisper_transcript: ref.transcript,
-      download_ms: downloadMs,
-      size_mb: sizeMB,
-      mime,
-      vertex_ms: vertexMs,
-      vertex_analysis: parsed || { raw: rawText.slice(0, 2000) },
+      elapsed_ms: elapsedMs,
+      source: result._source,
+      transcript_chars: result.text.length,
+      transcript_head: result.text.slice(0, 500),
+      analysis: result._analysis || null,
     });
   } catch (e) {
     res.status(500).json({ error: e.message?.slice(0, 800) });

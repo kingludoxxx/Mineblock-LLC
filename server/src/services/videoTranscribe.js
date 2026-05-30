@@ -520,100 +520,153 @@ async function transcribeBufferWithGemini(buffer, mime) {
  * @param {string} videoUrl Public CDN URL of the video.
  * @returns {Promise<{text: string, segments: Array}>}
  */
+/**
+ * Combine the multimodal JSON fields into a single human-readable transcript.
+ * Order matters for iterate-mode: on_screen_text first (it IS the ad copy),
+ * then audio_content (often supplements the visual message), then
+ * selling_message (one-line summary) for context. visual_narrative is omitted
+ * — it describes the scene, not the ad's copy.
+ */
+function combineMultimodalToTranscript(analysis) {
+  const lines = [];
+  const onScreen = String(analysis?.on_screen_text || '').trim();
+  const audio    = String(analysis?.audio_content || '').trim();
+  const selling  = String(analysis?.selling_message || '').trim();
+  const brand    = String(analysis?.brand_or_product_identified || '').trim();
+
+  if (onScreen) lines.push(`[ON-SCREEN TEXT]\n${onScreen}`);
+  if (audio && !/no spoken|background music|music only|no audio/i.test(audio)) {
+    lines.push(`[AUDIO / VOICEOVER]\n${audio}`);
+  } else if (audio) {
+    lines.push(`[AUDIO]\n${audio}`);
+  }
+  if (selling) lines.push(`[SELLING MESSAGE]\n${selling}`);
+  if (brand && brand.toLowerCase() !== 'unclear') lines.push(`[BRAND]\n${brand}`);
+
+  return lines.join('\n\n').trim();
+}
+
+/**
+ * Transcribe a video URL — multimodal-first strategy.
+ *
+ * Strategy (in priority order):
+ *   1. If Vertex AI is configured AND video fits Vertex constraints, run the
+ *      multimodal probe → returns a RICH transcript with on-screen text +
+ *      audio + selling message + brand identification. Best signal for
+ *      iterate-mode.
+ *   2. Fall through to Whisper (audio-only, ≤25 MB) — fast, cheap, covers
+ *      the common "voiced ad" case if Vertex multimodal failed.
+ *   3. Fall through to legacy AI Studio Gemini for any remaining case.
+ *
+ * Size-aware routing:
+ *   - 0-18 MB: Vertex multimodal inline → Whisper → Legacy
+ *   - 18-25 MB: Vertex multimodal via GCS (requires roles/storage.admin) →
+ *               Whisper → Legacy
+ *   - >25 MB: Vertex multimodal via GCS only (Whisper hard limit hit)
+ *
+ * @param {string} videoUrl Public CDN URL of the video.
+ * @returns {Promise<{text: string, segments: Array}>}
+ */
 export async function transcribeVideoUrl(videoUrl) {
   if (!videoUrl) {
     throw new Error('transcribeVideoUrl: videoUrl is required');
   }
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
-    throw new Error('OPENAI_API_KEY is not configured on this server');
-  }
 
   const { buf, contentType } = await downloadVideo(videoUrl);
   const sizeMB = buf.length / 1024 / 1024;
-
-  // ── Gemini fallback path for >25 MB ───────────────────────────────────
-  // Whisper's hard limit is 25 MB. Instead of erroring, route oversized
-  // files to Gemini Flash via its File API. Loses segment timestamps but
-  // the transcript is still cached and downstream analysis is unaffected.
-  if (buf.length > WHISPER_MAX_BYTES) {
-    const mime = contentType.split(';')[0] || 'video/mp4';
-    try {
-      const text = await transcribeBufferWithGemini(buf, mime);
-      return { text, segments: [] };
-    } catch (geminiErr) {
-      throw new Error(
-        `Video is ${sizeMB.toFixed(1)} MB (Whisper's limit is 25 MB) and the Gemini fallback failed: ${geminiErr.message}`,
-      );
-    }
-  }
-
-  // Whisper accepts video files (mp4, mov, etc.) — it strips audio itself.
-  const filename =
-    contentType.includes('mp4')   ? 'ad.mp4'  :
-    contentType.includes('quicktime') ? 'ad.mov'  :
-    contentType.includes('webm')  ? 'ad.webm' :
-                                    'ad.mp4';
-
-  // Try Whisper first. On any failure (HTTP error, empty result, timeout),
-  // fall through to Gemini. Many FB ads are silent / GIF-with-no-audio /
-  // music-only — Whisper returns empty, but Gemini can read the visuals.
-  let whisperResult = null;
-  let whisperError = null;
-  try {
-    const form = new FormData();
-    form.append('file', new Blob([buf], { type: contentType }), filename);
-    form.append('model', WHISPER_MODEL);
-    form.append('response_format', 'verbose_json');
-
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), WHISPER_TIMEOUT_MS);
-    let res;
-    try {
-      res = await fetch(WHISPER_URL, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${apiKey}` },
-        body: form,
-        signal: controller.signal,
-      });
-    } finally {
-      clearTimeout(timer);
-    }
-
-    if (!res.ok) {
-      const detail = await res.text().catch(() => '');
-      throw new Error(`Whisper HTTP ${res.status}: ${detail.slice(0, 200)}`);
-    }
-    const payload = await res.json();
-    const text = (payload?.text ?? '').trim();
-    if (!text) {
-      throw new Error('empty transcript');
-    }
-    const segments = Array.isArray(payload.segments)
-      ? payload.segments.map((s) => ({
-          start: Number(s.start ?? 0),
-          end:   Number(s.end   ?? 0),
-          text:  String(s.text  ?? '').trim(),
-        })).filter((s) => s.text)
-      : [];
-    whisperResult = { text, segments };
-  } catch (err) {
-    whisperError = err.message || String(err);
-    console.warn(`[transcribe] Whisper failed (${whisperError}) — falling through to Gemini`);
-  }
-
-  if (whisperResult) return whisperResult;
-
-  // Gemini fallback (works for silent videos / music-only / unrecognized audio
-  // — Gemini reads the visuals + any OCR'd text + caption track).
   const mime = contentType.split(';')[0] || 'video/mp4';
+
+  const errors = [];
+
+  // ── 1. Vertex AI multimodal (PRIMARY) ──────────────────────────────────
+  // Returns audio + on-screen text + selling message + brand in one call.
+  // Inline for ≤18 MB; GCS upload for larger (needs roles/storage.admin).
+  if (getVertexCreds()) {
+    try {
+      const rawJson = await probeVertexMultimodal(buf, mime);
+      let analysis;
+      try { analysis = JSON.parse(rawJson); } catch { analysis = null; }
+      if (analysis && (analysis.on_screen_text || analysis.audio_content)) {
+        const text = combineMultimodalToTranscript(analysis);
+        if (text && text.length >= 10) {
+          console.log(`[transcribe] Vertex multimodal: ${text.length} chars (${sizeMB.toFixed(1)} MB)`);
+          return { text, segments: [], _source: 'vertex_multimodal', _analysis: analysis };
+        }
+        errors.push(`vertex_multimodal: combined transcript too short`);
+      } else {
+        errors.push(`vertex_multimodal: missing on_screen_text and audio_content fields`);
+      }
+    } catch (e) {
+      errors.push(`vertex_multimodal: ${e.message?.slice(0, 200)}`);
+      console.warn(`[transcribe] Vertex multimodal failed (${e.message?.slice(0, 100)}) — falling through`);
+    }
+  } else {
+    errors.push('vertex_multimodal: GOOGLE_SA_JSON not configured');
+  }
+
+  // ── 2. Whisper audio-only (≤25 MB) ─────────────────────────────────────
+  const openaiKey = process.env.OPENAI_API_KEY;
+  if (openaiKey && buf.length <= WHISPER_MAX_BYTES) {
+    const filename =
+      mime.includes('mp4')       ? 'ad.mp4'  :
+      mime.includes('quicktime') ? 'ad.mov'  :
+      mime.includes('webm')      ? 'ad.webm' :
+                                   'ad.mp4';
+    try {
+      const form = new FormData();
+      form.append('file', new Blob([buf], { type: contentType }), filename);
+      form.append('model', WHISPER_MODEL);
+      form.append('response_format', 'verbose_json');
+
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), WHISPER_TIMEOUT_MS);
+      let res;
+      try {
+        res = await fetch(WHISPER_URL, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${openaiKey}` },
+          body: form,
+          signal: controller.signal,
+        });
+      } finally { clearTimeout(timer); }
+
+      if (!res.ok) {
+        const detail = await res.text().catch(() => '');
+        throw new Error(`Whisper HTTP ${res.status}: ${detail.slice(0, 200)}`);
+      }
+      const payload = await res.json();
+      const text = (payload?.text ?? '').trim();
+      if (!text) throw new Error('empty transcript');
+      const segments = Array.isArray(payload.segments)
+        ? payload.segments.map((s) => ({
+            start: Number(s.start ?? 0),
+            end:   Number(s.end   ?? 0),
+            text:  String(s.text  ?? '').trim(),
+          })).filter((s) => s.text)
+        : [];
+      console.log(`[transcribe] Whisper: ${text.length} chars (${sizeMB.toFixed(1)} MB)`);
+      return { text, segments, _source: 'whisper' };
+    } catch (err) {
+      errors.push(`whisper: ${err.message?.slice(0, 200)}`);
+      console.warn(`[transcribe] Whisper failed (${err.message}) — falling through`);
+    }
+  } else if (!openaiKey) {
+    errors.push('whisper: OPENAI_API_KEY not configured');
+  } else {
+    errors.push(`whisper: skipped (${sizeMB.toFixed(1)} MB > 25 MB limit)`);
+  }
+
+  // ── 3. Legacy AI Studio (last resort) ──────────────────────────────────
   try {
     const text = await transcribeBufferWithGemini(buf, mime);
-    if (!text || !text.trim()) {
-      throw new Error(`Gemini also returned empty (after Whisper: ${whisperError || 'unknown'})`);
+    if (text && text.trim()) {
+      console.log(`[transcribe] Legacy Gemini: ${text.length} chars`);
+      return { text, segments: [], _source: 'legacy_gemini' };
     }
-    return { text, segments: [] };
-  } catch (geminiErr) {
-    throw new Error(`Both transcribers failed — Whisper: ${whisperError}; Gemini: ${geminiErr.message}`);
+    errors.push('legacy_gemini: empty result');
+  } catch (err) {
+    errors.push(`legacy_gemini: ${err.message?.slice(0, 200)}`);
   }
+
+  throw new Error(`All transcription paths failed (${sizeMB.toFixed(1)} MB video) — ${errors.join(' | ')}`);
 }
