@@ -422,6 +422,40 @@ router.post('/meta-ads/repair-thumbnails', async (req, res) => {
   return authenticate(req, res, () => _doMetaAdsRepairThumbnails(req, res));
 });
 
+// ── TEMP: TW aggregate verification probe — CRON_SECRET only ──
+// Returns last-7-days Meta-only aggregate spend/revenue/purchases using the
+// current column + attribution config so we can verify numbers match TW UI
+// without round-tripping through the user. REMOVE after one verification arc.
+router.get('/meta-ads/_twverify', async (req, res) => {
+  const cs = process.env.CRON_SECRET;
+  if (!cs || req.headers['x-cron-secret'] !== cs) return res.status(401).json({ error: 'unauthorized' });
+  try {
+    const TW_API_KEY = process.env.TRIPLEWHALE_API_KEY || '';
+    const TW_SHOP_ID = process.env.TRIPLEWHALE_SHOP_ID || '17cca0-2.myshopify.com';
+    const TW_SQL_URL = 'https://api.triplewhale.com/api/v2/orcabase/api/sql';
+    const attribution = req.query.attribution || process.env.TW_ATTRIBUTION_MODEL || 'lastPlatformClick';
+    const revCol = req.query.rev || process.env.TW_REVENUE_COL || 'order_revenue';
+    const purCol = req.query.pur || process.env.TW_PURCHASE_COL || 'website_purchases';
+    if (!TW_API_KEY) return res.status(500).json({ error: 'TRIPLEWHALE_API_KEY not set' });
+    const end = new Date(); end.setUTCHours(0,0,0,0);
+    const start = new Date(end.getTime() - 6 * 86400000);
+    const fmt = (d) => d.toISOString().slice(0,10);
+    const sql = `SELECT SUM(spend) AS spend, SUM(${revCol}) AS revenue, SUM(${purCol}) AS purchases FROM pixel_joined_tvf WHERE event_date BETWEEN @startDate AND @endDate AND channel = 'facebook-ads'`;
+    const r = await fetch(TW_SQL_URL, {
+      method: 'POST',
+      headers: { 'x-api-key': TW_API_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ shopId: TW_SHOP_ID, query: sql.trim(), period: { startDate: fmt(start), endDate: fmt(end) }, attributionModel: attribution }),
+      signal: AbortSignal.timeout(45000),
+    });
+    const txt = await r.text();
+    let data; try { data = JSON.parse(txt); } catch { data = { raw: txt }; }
+    const row = Array.isArray(data) ? data[0] : (data?.data?.[0] || data?.rows?.[0] || null);
+    return res.json({ ok: r.ok, status: r.status, startDate: fmt(start), endDate: fmt(end), attribution, revCol, purCol, row, _raw: row ? undefined : data });
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
+  }
+});
+
 router.use(authenticate, requirePermission('statics-generation', 'access'));
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
