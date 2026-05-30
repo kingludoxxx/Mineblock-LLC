@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import {
-  Upload, Globe, TrendingUp, Loader2, RefreshCw, Trash2, ExternalLink, X, Sparkles, Check,
+  Upload, Globe, TrendingUp, Loader2, RefreshCw, Trash2, ExternalLink, X, Sparkles, Check, CheckCircle2,
 } from 'lucide-react';
 import api from '../../../services/api';
 import LeagueImportModal from './LeagueImportModal';
@@ -150,52 +150,60 @@ function ReferenceCard({ item, onPreview, onDelete, isSelected, onToggleSelect, 
       ) : (
         <div className="aspect-[4/3] bg-white/[0.02] flex items-center justify-center text-zinc-600 text-xs">No preview</div>
       )}
-      <div className="px-3 pt-2 pb-2.5 space-y-2">
+      <div className="px-3 pt-2.5 pb-3 space-y-2.5">
         {/* Title + timestamp */}
         <div className="space-y-0.5">
-          <div className="text-[11px] font-mono text-zinc-200 truncate" title={title}>{title}</div>
-          <div className="text-[9px] text-zinc-500 font-mono">{timeAgo(item.created_at)}</div>
+          <div className="text-[11px] font-mono text-zinc-100 truncate" title={title}>{title}</div>
+          <div className="text-[10px] text-zinc-500 font-mono">{timeAgo(item.created_at)}</div>
         </div>
-        {/* Action row — sits BELOW the title/timestamp, not overlaid on the image.
-            Two states:
-              - NOT selected: full-width Select button (always visible, subtle).
-              - SELECTED: mint Selected pill + sparkle (Add to Queue) + red X (delete). */}
+        {/* Action row — bottom of the card, BELOW everything else.
+            - NOT selected: full-width Select button + small trash icon.
+            - SELECTED:    mint "Selected" button + sparkle (Add to Queue) + red X (delete). */}
         {isSelected ? (
-          <div className="flex items-center gap-1.5 pt-1">
-            <div className="flex-1 inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-md bg-emerald-500/10 border border-emerald-400/30 text-emerald-300 text-[10px] font-mono uppercase tracking-wide">
-              <Check className="w-3 h-3" strokeWidth={2.5} />
-              <span>Selected</span>
-            </div>
+          <div className="flex items-center gap-1.5">
             <button
-              onClick={(e) => { e.stopPropagation(); onAddToQueue?.(item); }}
-              className="shrink-0 p-1.5 rounded-md bg-white/[0.04] border border-white/[0.08] hover:bg-violet-500/15 hover:border-violet-400/40 text-violet-300 hover:text-violet-200 transition-all cursor-pointer"
-              title="Add to queue"
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onToggleSelect(item); }}
+              className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-emerald-500/15 border border-emerald-400/40 text-emerald-300 text-[11px] font-mono font-semibold uppercase tracking-wide hover:bg-emerald-500/20 transition-all cursor-pointer"
+              title="Click to deselect"
             >
-              <Sparkles className="w-3 h-3" />
+              <CheckCircle2 className="w-3.5 h-3.5" strokeWidth={2} />
+              <span>Selected</span>
             </button>
             <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onAddToQueue?.(item); }}
+              className="shrink-0 p-2 rounded-lg bg-white/[0.04] border border-white/[0.08] hover:bg-violet-500/20 hover:border-violet-400/40 text-violet-300 hover:text-violet-200 transition-all cursor-pointer"
+              title="Add to queue"
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+            </button>
+            <button
+              type="button"
               onClick={(e) => { e.stopPropagation(); onDelete(item); }}
-              className="shrink-0 p-1.5 rounded-md bg-white/[0.04] border border-white/[0.08] hover:bg-red-500/15 hover:border-red-400/40 text-red-300 hover:text-red-200 transition-all cursor-pointer"
+              className="shrink-0 p-2 rounded-lg bg-white/[0.04] border border-white/[0.08] hover:bg-red-500/20 hover:border-red-400/40 text-red-300 hover:text-red-200 transition-all cursor-pointer"
               title="Remove from library"
             >
-              <X className="w-3 h-3" strokeWidth={2.5} />
+              <X className="w-3.5 h-3.5" strokeWidth={2.5} />
             </button>
           </div>
         ) : (
-          <div className="flex items-center gap-1.5 pt-1">
+          <div className="flex items-center gap-1.5">
             <button
+              type="button"
               onClick={(e) => { e.stopPropagation(); onToggleSelect(item); }}
-              className="flex-1 inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-md bg-white/[0.04] border border-white/[0.08] hover:bg-emerald-500/15 hover:border-emerald-400/40 text-zinc-400 hover:text-emerald-200 text-[10px] font-mono uppercase tracking-wide transition-all cursor-pointer"
+              className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-white/[0.04] border border-white/[0.08] hover:bg-emerald-500/15 hover:border-emerald-400/40 text-zinc-300 hover:text-emerald-200 text-[11px] font-mono font-semibold uppercase tracking-wide transition-all cursor-pointer"
               title="Select to add to queue"
             >
               Select
             </button>
             <button
+              type="button"
               onClick={(e) => { e.stopPropagation(); onDelete(item); }}
-              className="shrink-0 p-1.5 rounded-md bg-white/[0.04] border border-white/[0.08] hover:bg-red-500/15 hover:border-red-400/40 text-zinc-500 hover:text-red-300 transition-all cursor-pointer"
+              className="shrink-0 p-2 rounded-lg bg-white/[0.04] border border-white/[0.08] hover:bg-red-500/20 hover:border-red-400/40 text-zinc-500 hover:text-red-300 transition-all cursor-pointer"
               title="Remove from library"
             >
-              <Trash2 className="w-3 h-3" />
+              <Trash2 className="w-3.5 h-3.5" />
             </button>
           </div>
         )}
