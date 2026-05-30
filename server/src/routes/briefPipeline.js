@@ -31,21 +31,6 @@ const YTDLP_PATH = join(__dirname, '..', '..', '..', 'bin', 'yt-dlp');
 
 const router = Router();
 
-// TEMP — one-shot cleanup: delete all references whose headline marks them
-// as static creatives (e.g. "MR - B0xxx - … - IMG - …" or "1080×1080").
-router.post('/_purgestatic', async (req, res) => {
-  try {
-    const rows = await pgQuery(
-      `DELETE FROM brief_pipeline_references
-       WHERE headline ~* '(^|\\s|-)IMG(\\s|-|$)'
-          OR headline ILIKE '%1080x1080%'
-          OR headline ILIKE '%1080×1080%'
-       RETURNING id, headline`
-    );
-    res.json({ deleted_count: rows.length, deleted: rows });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
 // ── Static-ad reference detection (runtime guardrail) ───────────────────
 // Mirrors staticAdExclusionClause() but at the brief_pipeline_references
 // row level. Used as a hard runtime check in iterate/clone routes so even
