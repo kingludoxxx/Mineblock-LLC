@@ -5138,6 +5138,32 @@ router.get('/meta-ads/probe-attribution', authenticate, async (req, res) => {
       }
     }
 
+    // Channel-filter probe — operator's TW UI is Meta-only ($4,128 spend
+    // vs our $9,770 unfiltered ≈ 2.37× ratio). Find the column + value
+    // pair that knocks spend down to the Meta-only value.
+    const CHANNEL_COLS = ['channel', 'source', 'platform', 'ad_channel'];
+    const CHANNEL_VALS = ['meta', 'facebook', 'fb', 'facebook_ads', 'meta_ads', 'instagram'];
+    const channelOut = [];
+    for (const col of CHANNEL_COLS) {
+      for (const val of CHANNEL_VALS) {
+        try {
+          const sql = `SELECT SUM(spend) as s, SUM(channel_reported_conversion_value) as r, SUM(channel_reported_conversions) as p FROM pixel_joined_tvf WHERE event_date BETWEEN @startDate AND @endDate AND ${col} = '${val}'`;
+          const rows = await _twQuery(sql, startDate, endDate, 'tw');
+          const r = rows[0] || {};
+          if (Number(r.s) > 0) {
+            channelOut.push({
+              column: col, value: val, ok: true,
+              spend: Number(r.s) || 0,
+              revenue: Number(r.r) || 0,
+              purchases: Number(r.p) || 0,
+            });
+          }
+        } catch {
+          // try next
+        }
+      }
+    }
+
     res.json({
       success: true,
       data: {
@@ -5148,6 +5174,7 @@ router.get('/meta-ads/probe-attribution', authenticate, async (req, res) => {
         modes: out,
         revenue_columns: revOut,
         purchase_columns: purOut,
+        channel_filters: channelOut,
       },
     });
   } catch (err) {
