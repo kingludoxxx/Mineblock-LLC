@@ -31,6 +31,72 @@ const YTDLP_PATH = join(__dirname, '..', '..', '..', 'bin', 'yt-dlp');
 
 const router = Router();
 
+// TEMP — trace B0248's data lineage (ad_id, video URL, TW source, brand identified)
+router.get('/_traceb0248', async (req, res) => {
+  try {
+    // 1. Find the B0248 row in brief_pipeline_references
+    const refs = await pgQuery(
+      `SELECT id, brand_name, brand_id, ad_archive_id, headline, body_text, video_url,
+              thumbnail_url, status, source, imported_metadata, transcript, transcript_at,
+              created_at, updated_at
+       FROM brief_pipeline_references
+       WHERE id = 'df674f42-0a1b-4941-821b-86ba264290f8'
+       LIMIT 1`
+    );
+    const ref = refs[0];
+    if (!ref) return res.status(404).json({ error: 'B0248 not found' });
+
+    // 2. Cross-reference with creative_analysis (TripleWhale source)
+    let twMatchByArchiveId = [];
+    let twMatchByName = [];
+    try {
+      twMatchByArchiveId = await pgQuery(
+        `SELECT creative_id, meta_ad_id, ad_name, ad_account_name, video_url, creative_link,
+                thumbnail_url, spend, roas, synced_at
+         FROM creative_analysis
+         WHERE meta_ad_id::text = $1 OR creative_id::text = $1
+         ORDER BY synced_at DESC NULLS LAST
+         LIMIT 5`,
+        [String(ref.ad_archive_id)]
+      );
+    } catch (e) { twMatchByArchiveId = [{ _err: e.message }]; }
+
+    try {
+      twMatchByName = await pgQuery(
+        `SELECT creative_id, meta_ad_id, ad_name, ad_account_name, video_url, creative_link,
+                thumbnail_url, spend, roas, synced_at
+         FROM creative_analysis
+         WHERE ad_name = $1
+         ORDER BY synced_at DESC NULLS LAST
+         LIMIT 5`,
+        [ref.headline]
+      );
+    } catch (e) { twMatchByName = [{ _err: e.message }]; }
+
+    res.json({
+      reference_row: {
+        id: ref.id,
+        brand_name: ref.brand_name,
+        brand_id: ref.brand_id,
+        ad_archive_id: ref.ad_archive_id,
+        headline: ref.headline,
+        video_url_head: (ref.video_url || '').slice(0, 250),
+        thumbnail_url_head: (ref.thumbnail_url || '').slice(0, 200),
+        status: ref.status,
+        source: ref.source,
+        transcript_head: (ref.transcript || '').slice(0, 200),
+        transcript_at: ref.transcript_at,
+        created_at: ref.created_at,
+        updated_at: ref.updated_at,
+        imported_metadata: ref.imported_metadata,
+      },
+      tw_match_by_archive_id: twMatchByArchiveId,
+      tw_match_by_name: twMatchByName,
+      ad_library_url: ref.ad_archive_id ? `https://www.facebook.com/ads/library/?id=${ref.ad_archive_id}` : null,
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── Meta thumbnail proxy with R2 caching ──────────────────────────────
 // Placed BEFORE the global authenticate middleware because <img src> tags
 // can't carry JWTs. Safe to expose: thumbnails are non-sensitive, R2
