@@ -76,7 +76,7 @@ router.get('/_inspectb0223', async (_req, res) => {
               meta_account_verified_at,
               synced_at
          FROM creative_analysis
-        WHERE creative_id = 'B0223'
+        WHERE ad_name ILIKE '%B0223%'
         ORDER BY synced_at DESC NULLS LAST
         LIMIT 15`
     );

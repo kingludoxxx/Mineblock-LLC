@@ -4454,6 +4454,72 @@ router.get('/league/brands', authenticate, async (_req, res) => {
   }
 });
 
+// 2a. GET /league/imported-refs — list spy_creatives rows that the operator
+// has explicitly imported from the league (via Brand Follow Config or
+// per-card flows). This is the canonical data source for the FROM LEAGUE
+// column under the new "explicit-imports-only" model — no live brand_spy.ads
+// discovery, no auto-population, only what the operator chose.
+//
+// Response shape mirrors the old /league/ads card schema so the frontend
+// LeagueAdCard component can render either source without forking.
+router.get('/league/imported-refs', authenticate, async (_req, res) => {
+  try {
+    await ensureCreativesTable();
+    const rows = await pgQuery(`
+      SELECT
+        id,
+        image_url,
+        thumbnail_url,
+        source_label,
+        reference_name,
+        imported_metadata,
+        external_ref_key AS ad_archive_id,
+        aspect_ratio,
+        created_at
+      FROM spy_creatives
+      WHERE imported_from = 'league'
+        AND is_reference = TRUE
+        AND status <> 'launched'
+        AND parent_creative_id IS NULL
+      ORDER BY created_at DESC
+      LIMIT 500
+    `);
+
+    // Reshape rows into LeagueAdCard's expected schema, pulling fields from
+    // imported_metadata JSONB so brand_name / tier / display_format etc. show.
+    const data = rows.map(r => {
+      const m = r.imported_metadata || {};
+      return {
+        id: r.id,                       // spy_creatives.id (used as React key)
+        ad_archive_id: r.ad_archive_id,
+        brand_id: m.brand_id || null,
+        brand_name: m.brand_name || r.source_label || 'Unknown brand',
+        headline: m.headline || null,
+        body_text: m.body_text || null,
+        display_format: m.display_format || 'IMAGE',
+        tier: m.tier || null,
+        tier_score: m.tier_score ?? null,
+        current_rank: m.current_rank ?? null,
+        active_days: m.active_days ?? null,
+        start_date: m.start_date || null,
+        end_date: m.end_date || null,
+        image_url: r.image_url,
+        thumbnail_url: r.thumbnail_url || r.image_url,
+        // Always true here — every row in this endpoint IS an import.
+        already_imported: true,
+        // Carry the spy_creatives PK so the X button can DELETE the right row.
+        creative_id: r.id,
+        imported_at: r.created_at,
+      };
+    });
+
+    res.json({ success: true, data, count: data.length });
+  } catch (err) {
+    console.error('[league/imported-refs] error:', err);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
 // 2. GET /league/ads — list ads for a brand with tier / format / active filters.
 router.get('/league/ads', authenticate, async (req, res) => {
   try {

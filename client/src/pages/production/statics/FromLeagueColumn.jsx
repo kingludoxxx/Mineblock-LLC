@@ -68,43 +68,29 @@ export function FromLeagueColumn({ onUseAsReference }) {
     return () => { cancelled = true; };
   }, []);
 
-  // 2. Fetch ads for each selected brand and merge.
+  // 2. Fetch ONLY explicitly-imported references (no live discovery).
+  // Column behavior under the new scope:
+  //   • shows only spy_creatives rows with imported_from='league'
+  //   • never auto-populates from brand_spy.ads
+  //   • single query, no per-brand fan-out
   const loadAds = useCallback(async () => {
-    if (selectedBrands.length === 0) { setAds([]); return; }
     setLoadingAds(true);
     setError(null);
     try {
-      const results = await Promise.all(
-        selectedBrands.map((bid) =>
-          api.get('/statics-generation/league/ads', {
-            params: { brand_id: bid, format: 'IMAGE', tiers: 'BANGER,CHAMP,A', active_only: true },
-          }).then(r => (r.data?.data || []).slice(0, 20).map(a => ({
-            ...a,
-            brand_id: bid,
-            brand_name: brands.find(b => b.id === bid)?.name || '',
-          }))).catch(() => [])
-        )
-      );
-      // Merge + sort: imported-first (so the operator's manual Import
-      // choices land at the top of the column, giving them visible
-      // feedback that the button did something), then by tier_score desc.
-      const merged = results.flat().sort((a, b) => {
-        const aImp = a.already_imported ? 1 : 0;
-        const bImp = b.already_imported ? 1 : 0;
-        if (bImp !== aImp) return bImp - aImp;
-        return (b.tier_score ?? 0) - (a.tier_score ?? 0);
-      });
-      setAds(merged);
+      const r = await api.get('/statics-generation/league/imported-refs');
+      setAds(r.data?.data || []);
     } catch (err) {
       setError(err.response?.data?.error?.message || err.message);
     } finally {
       setLoadingAds(false);
     }
-  }, [selectedBrands, brands]);
+  }, []);
 
   useEffect(() => { loadAds(); }, [loadAds]);
 
   const visibleAds = useMemo(() => ads.filter(a => !dismissed.has(`${a.brand_id}:${a.id}`)), [ads, dismissed]);
+  // The old "no brands selected" empty-state and brand filter are gone —
+  // the column simply shows whatever was imported (zero or many).
   const visibleCount = visibleAds.length;
   const [configOpen, setConfigOpen] = useState(false);
 
@@ -154,37 +140,27 @@ export function FromLeagueColumn({ onUseAsReference }) {
             <Loader2 className="w-4 h-4 animate-spin text-violet-400" />
           </div>
         )}
-        {!loadingAds && !error && selectedBrands.length === 0 && (
+        {!loadingAds && !error && ads.length === 0 && (
           <div className="text-[11px] text-zinc-600 text-center px-3 py-8 leading-relaxed">
-            Pick brands from the filter above to see their statics.
-          </div>
-        )}
-        {!loadingAds && !error && selectedBrands.length > 0 && ads.length === 0 && (
-          <div className="text-[11px] text-zinc-600 text-center px-3 py-8 leading-relaxed">
-            No active image ads from the selected brand{selectedBrands.length === 1 ? '' : 's'}.
+            No imports yet. Open the ⚙ gear → pick a brand → Import to add references here.
           </div>
         )}
         {visibleAds.map((ad) => (
           <LeagueAdCard
-            key={`${ad.brand_id}:${ad.id}`}
+            key={ad.id}
             ad={ad}
             onUseAsReference={onUseAsReference}
             onDismiss={async () => {
-              // Optimistic hide first so the UI feels instant.
+              // Hard-delete the spy_creatives row so the card never comes
+              // back. Optimistic hide first; rollback on failure.
               setDismissed(prev => {
                 const next = new Set(prev);
                 next.add(`${ad.brand_id}:${ad.id}`);
                 return next;
               });
-              // Persist server-side so the dismissal survives refresh.
               try {
-                await api.post('/statics-generation/league/dismiss', {
-                  brand_id: ad.brand_id,
-                  ad_archive_id: ad.ad_archive_id,
-                });
+                await api.delete(`/statics-generation/reference-ads/${ad.id}`);
               } catch (err) {
-                // If the persist call fails, roll back the optimistic hide
-                // so the card reappears and the operator can retry.
                 setDismissed(prev => {
                   const next = new Set(prev);
                   next.delete(`${ad.brand_id}:${ad.id}`);
