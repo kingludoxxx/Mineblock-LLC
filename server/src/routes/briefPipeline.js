@@ -275,6 +275,46 @@ router.post('/_purgeforeigntranscripts', async (_req, res) => {
   }
 });
 
+// /_transcriptsanity — TEMP: counts how many active refs have transcripts
+// that mention Mineblock-family brand tokens vs foreign-brand tokens vs
+// neither. Helps confirm transcribe is producing on-brand content.
+router.get('/_transcriptsanity', async (_req, res) => {
+  try {
+    const r = await pgQuery(`
+      WITH t AS (
+        SELECT source, status, headline,
+               (transcript ~* '\\m(mineblock|minerforge|miner\\s*forge|bitcoin\\s*miner|btc\\s*miner)\\M') AS mentions_mineblock,
+               (transcript ~* '\\m(ALDI|LIDL|WALMART|TESCO|COSTCO|CARREFOUR|KROGER|JD\\s*SPORTS|MARBLE BLAST|TRENITALIA|FRECCIA|NORSE ORGANIC|H&M|ZARA)\\M') AS mentions_foreign,
+               (transcript IS NOT NULL AND LENGTH(transcript) > 30) AS has_transcript
+          FROM brief_pipeline_references
+         WHERE COALESCE(is_quarantined,FALSE) = FALSE
+      )
+      SELECT
+        COUNT(*) FILTER (WHERE has_transcript)::int AS with_transcript,
+        COUNT(*) FILTER (WHERE has_transcript AND mentions_mineblock AND NOT mentions_foreign)::int AS only_mineblock,
+        COUNT(*) FILTER (WHERE has_transcript AND mentions_foreign AND NOT mentions_mineblock)::int AS only_foreign,
+        COUNT(*) FILTER (WHERE has_transcript AND mentions_mineblock AND mentions_foreign)::int AS both,
+        COUNT(*) FILTER (WHERE has_transcript AND NOT mentions_mineblock AND NOT mentions_foreign)::int AS neither
+        FROM t
+    `);
+    const sampleHeads = await pgQuery(`
+      SELECT source, status, LEFT(headline,80) AS headline,
+             (transcript ~* '\\m(mineblock|minerforge|miner\\s*forge|bitcoin\\s*miner|btc\\s*miner)\\M') AS mineblock_hit,
+             (transcript ~* '\\m(ALDI|LIDL|WALMART|TESCO|COSTCO|CARREFOUR|KROGER|JD\\s*SPORTS|MARBLE BLAST|TRENITALIA|FRECCIA|NORSE ORGANIC|H&M|ZARA)\\M') AS foreign_hit,
+             LENGTH(transcript)::int AS transcript_len
+        FROM brief_pipeline_references
+       WHERE COALESCE(is_quarantined,FALSE) = FALSE
+         AND transcript IS NOT NULL
+       ORDER BY created_at DESC
+       LIMIT 15
+    `);
+    res.json({ success: true, sanity: r[0] || {}, sample: sampleHeads });
+  } catch (err) {
+    console.error('[BriefPipeline] /_transcriptsanity error:', err.message);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
 router.use(authenticate, requirePermission('brief-pipeline', 'access'));
 
 // ── Config ────────────────────────────────────────────────────────────
