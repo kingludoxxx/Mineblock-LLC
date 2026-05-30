@@ -427,6 +427,39 @@ router.post('/meta-ads/repair-thumbnails', async (req, res) => {
 // through the UI (they're one-shot operations). Both are CRON_SECRET-gated
 // and BELOW the global auth so the fast path fires.
 
+// GET /league/_refsdiag — count is_reference=TRUE rows grouped by source.
+// CRON_SECRET-gated, read-only. Lets us see exactly what's in the Reference
+// column before we decide what to nuke.
+router.get('/league/_refsdiag', async (req, res) => {
+  const cs = process.env.CRON_SECRET;
+  if (!cs || req.headers['x-cron-secret'] !== cs) return res.status(401).json({ error: 'unauthorized' });
+  try {
+    const counts = await pgQuery(`
+      SELECT
+        COALESCE(imported_from, 'NULL/legacy') AS source,
+        status,
+        COUNT(*)::INT AS n
+      FROM spy_creatives
+      WHERE is_reference = TRUE
+        AND parent_creative_id IS NULL
+      GROUP BY 1, 2
+      ORDER BY n DESC
+    `);
+    const sample = await pgQuery(`
+      SELECT id, imported_from, status, reference_name, source_label, created_at
+      FROM spy_creatives
+      WHERE is_reference = TRUE
+        AND parent_creative_id IS NULL
+      ORDER BY created_at DESC
+      LIMIT 20
+    `);
+    return res.json({ success: true, by_source_status: counts, recent: sample });
+  } catch (e) {
+    console.error('[league/_refsdiag] error:', e);
+    return res.status(500).json({ success: false, error: { message: e.message } });
+  }
+});
+
 // POST /league/clear-imports — wipe all 'imported_from=league' rows.
 // Used after the operator decides the auto-sync (or manual imports) pulled
 // too many references and they want a clean slate. PROTECTS:
