@@ -2360,28 +2360,67 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
       }
     }
 
-    // Brand-mismatch guardrail. If the picked reference has a brand_mismatch_warning
-    // flag set (Vertex multimodal detected the video doesn't match the ad's claimed
-    // brand), refuse to iterate / clone unless the operator explicitly acknowledges
-    // it. Prevents the "Italian rap video iterated as Mineblock" class of bug.
+    // Brand-mismatch guardrail. Three-tier check:
+    //   1. Explicit imported_metadata.brand_mismatch_warning persisted by transcribe path
+    //   2. Recompute from imported_metadata.multimodal_analysis if warning never persisted
+    //      (covers refs transcribed before the warning code shipped, or persistence gaps)
+    //   3. Heuristic transcript scan for known non-Mineblock brand callouts
+    //      (covers Whisper-only path that has no multimodal_analysis)
+    // Refuse to iterate / clone unless operator passes acknowledgeBrandMismatch:true.
     if (referenceId && !acknowledgeBrandMismatch) {
       try {
         const refRows = await pgQuery(
-          `SELECT imported_metadata->'brand_mismatch_warning' AS warning, headline
+          `SELECT imported_metadata->'brand_mismatch_warning' AS warning,
+                  imported_metadata->'multimodal_analysis' AS analysis,
+                  headline, transcript
            FROM brief_pipeline_references WHERE id = $1 LIMIT 1`,
           [referenceId]
         );
-        const w = refRows[0]?.warning;
+        const row = refRows[0];
+        let mismatch = null;
+
+        // Tier 1 — explicit persisted warning
+        const w = row?.warning;
         if (w && typeof w === 'object' && w.warning === 'BRAND_MISMATCH') {
+          mismatch = w;
+        }
+
+        // Tier 2 — recompute from multimodal_analysis on the fly
+        if (!mismatch && row?.analysis && typeof row.analysis === 'object') {
+          mismatch = detectBrandMismatch(row.headline, row.analysis);
+        }
+
+        // Tier 3 — heuristic transcript scan. Catches Whisper-only path where
+        // there is no multimodal_analysis but the transcript clearly mentions
+        // a non-Mineblock brand (e.g. "ALDI, it's an ALDI thing").
+        if (!mismatch && row?.headline && row?.transcript) {
+          const looksMineblock = MINEBLOCK_HEADLINE_TOKENS.test(String(row.headline));
+          const t = String(row.transcript || '');
+          if (looksMineblock && !MINEBLOCK_BRAND_TOKENS.test(t)) {
+            // Known foreign-brand tells we've seen in TripleWhale cross-contamination
+            const foreignHit = /\b(ALDI|LIDL|WALMART|TESCO|COSTCO|CARREFOUR|KROGER|TARGET CORP|JD\s*SPORTS|MARBLE BLAST|TRENITALIA|FRECCIA|NORSE ORGANIC)\b/i.exec(t);
+            if (foreignHit) {
+              mismatch = {
+                warning: 'BRAND_MISMATCH',
+                expected: 'Mineblock / MinerForge Pro',
+                actual: foreignHit[0],
+                selling_message: t.slice(0, 200),
+                message: `Transcript mentions "${foreignHit[0]}" but headline claims Mineblock. The video at this Meta ad_archive_id likely belongs to a different brand. Re-import or delete this reference before iterating.`,
+              };
+            }
+          }
+        }
+
+        if (mismatch) {
           return res.status(409).json({
             success: false,
             error: {
               code: 'BRAND_MISMATCH',
-              message: w.message,
-              detected_brand: w.actual,
-              expected_brand: w.expected,
-              selling_message: w.selling_message,
-              ref_headline: refRows[0].headline,
+              message: mismatch.message,
+              detected_brand: mismatch.actual,
+              expected_brand: mismatch.expected,
+              selling_message: mismatch.selling_message,
+              ref_headline: row?.headline,
               hint: 'To override, resubmit with acknowledgeBrandMismatch: true. Recommended: delete this reference and re-import the correct ad.',
             },
           });
