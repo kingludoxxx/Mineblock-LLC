@@ -4895,6 +4895,147 @@ async function triggerTWSync({ awaitResult = false } = {}) {
   return { triggered: true, async: true };
 }
 
+// ═════════════════════════════════════════════════════════════════════════
+// TW DIRECT QUERY — bypass creative_analysis cache, hit Triple Whale's SQL
+// API. Used by /meta-ads/ads when ?source=tw (default) so the numbers
+// match TW's UI exactly. Same shop + attribution config as the Analytics
+// sync worker.
+// ═════════════════════════════════════════════════════════════════════════
+const _TW_API_KEY = process.env.TRIPLEWHALE_API_KEY || '';
+const _TW_SHOP_ID = process.env.TRIPLEWHALE_SHOP_ID || '17cca0-2.myshopify.com';
+const _TW_SQL_URL = 'https://api.triplewhale.com/api/v2/orcabase/api/sql';
+const _TW_ATTRIBUTION_DEFAULT = process.env.TW_ATTRIBUTION_MODEL || 'lastPlatformClick';
+const _TW_REVENUE_COL  = process.env.TW_REVENUE_COL  || 'order_revenue';
+const _TW_PURCHASE_COL = process.env.TW_PURCHASE_COL || 'website_purchases';
+
+// Per-process column-discovery cache so we don't re-probe TW on every
+// /meta-ads/ads call. Mirrors the Analytics worker's cache (separate
+// instance — each process learns once).
+let _twKnownAccountCols = null; // { idCol, nameCol, idOnly? } | false | null
+
+async function _twQuery(sql, startDate, endDate, attributionModel) {
+  if (!_TW_API_KEY) throw new Error('TRIPLEWHALE_API_KEY not configured');
+  const res = await fetch(_TW_SQL_URL, {
+    method: 'POST',
+    headers: { 'x-api-key': _TW_API_KEY, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      shopId: _TW_SHOP_ID,
+      query: sql.trim(),
+      period: { startDate, endDate },
+      attributionModel,
+    }),
+    signal: AbortSignal.timeout(30000),
+  });
+  if (res.status === 401 || res.status === 403) {
+    const txt = await res.text();
+    throw new Error(`TW auth ${res.status}: ${txt.slice(0, 120)}`);
+  }
+  if (!res.ok) {
+    const txt = await res.text();
+    throw new Error(`TW ${res.status}: ${txt.slice(0, 120)}`);
+  }
+  const data = await res.json();
+  return Array.isArray(data) ? data : (data?.data || data?.rows || []);
+}
+
+// Returns the SELECT clause for the account columns, or '' if not yet known
+// or proven unsupported. Discovery runs once per process.
+async function _twDiscoverAccountCols(startDate, endDate, attributionModel) {
+  if (_twKnownAccountCols === false) return null;
+  if (_twKnownAccountCols && _twKnownAccountCols.idCol) return _twKnownAccountCols;
+  const variants = [
+    { idCol: 'ad_account_id', nameCol: 'ad_account_name' },
+    { idCol: 'account_id',    nameCol: 'account_name' },
+    { idCol: 'source_id',     nameCol: 'source_name' },
+    { idCol: 'account_id',    nameCol: 'account_id', idOnly: true },
+  ];
+  const revRef = _TW_REVENUE_COL;
+  for (const v of variants) {
+    const selectAcct = v.idOnly
+      ? `${v.idCol} as ad_account_id, ${v.idCol} as ad_account_name,`
+      : `${v.idCol} as ad_account_id, ${v.nameCol} as ad_account_name,`;
+    const groupAcct = v.idOnly ? `, ${v.idCol}` : `, ${v.idCol}, ${v.nameCol}`;
+    const probeSql = `
+      SELECT ${selectAcct} ad_name, SUM(spend) as total_spend
+      FROM pixel_joined_tvf
+      WHERE event_date BETWEEN @startDate AND @endDate
+      GROUP BY ad_name${groupAcct}
+      LIMIT 1
+    `;
+    try {
+      await _twQuery(probeSql, startDate, endDate, attributionModel);
+      _twKnownAccountCols = v;
+      console.log(`[meta-ads/tw-direct] account-col discovery: id="${v.idCol}", name="${v.nameCol}"${v.idOnly ? ' (id-only)' : ''}`);
+      return v;
+    } catch {
+      // try next
+    }
+  }
+  _twKnownAccountCols = false;
+  return null;
+}
+
+/**
+ * Fetch the top ads by spend from Triple Whale's SQL warehouse directly.
+ * @param {number} windowDays   7 | 30 | 90
+ * @param {string} attributionModel  TW attribution mode (default from env)
+ * @param {string[]} accountIds      optional filter; empty = all accounts
+ * @param {number}  minSpend         server-side prefilter
+ */
+async function fetchTopAdsFromTW({ windowDays, attributionModel, accountIds = [], minSpend = 0 }) {
+  if (!_TW_API_KEY) throw new Error('TRIPLEWHALE_API_KEY not configured');
+  const endDate = new Date().toISOString().slice(0, 10);
+  const startDate = new Date(Date.now() - (windowDays * 86400 * 1000)).toISOString().slice(0, 10);
+  const attr = attributionModel || _TW_ATTRIBUTION_DEFAULT;
+
+  const acct = await _twDiscoverAccountCols(startDate, endDate, attr);
+  const acctSelect = acct
+    ? (acct.idOnly
+        ? `${acct.idCol} as ad_account_id, ${acct.idCol} as ad_account_name,`
+        : `${acct.idCol} as ad_account_id, ${acct.nameCol} as ad_account_name,`)
+    : `'unknown' as ad_account_id, 'Unknown' as ad_account_name,`;
+  const acctGroup = acct
+    ? (acct.idOnly ? `, ${acct.idCol}` : `, ${acct.idCol}, ${acct.nameCol}`)
+    : '';
+
+  // Build the main aggregation query. Spend/revenue/purchases come from TW
+  // with the operator's chosen attribution model — these are the numbers
+  // that should match the TW UI exactly.
+  const sql = `
+    SELECT ${acctSelect}
+           ad_name,
+           SUM(spend)               as total_spend,
+           SUM(${_TW_REVENUE_COL})  as total_revenue,
+           SUM(${_TW_PURCHASE_COL}) as total_purchases,
+           SUM(impressions)         as total_impressions,
+           SUM(clicks)              as total_clicks
+      FROM pixel_joined_tvf
+     WHERE event_date BETWEEN @startDate AND @endDate
+     GROUP BY ad_name${acctGroup}
+    HAVING SUM(spend) > ${Number(minSpend) || 0.01}
+     ORDER BY SUM(spend) DESC
+     LIMIT 500
+  `;
+  const rows = await _twQuery(sql, startDate, endDate, attr);
+
+  // Optional client-side account filter (the SQL already returns the column
+  // but we want a strict whitelist when the operator picked specific chips).
+  const filtered = (accountIds && accountIds.length > 0)
+    ? rows.filter(r => accountIds.includes(String(r.ad_account_id || '')))
+    : rows;
+
+  return filtered.map(r => ({
+    ad_name: r.ad_name,
+    ad_account_id: String(r.ad_account_id || 'unknown'),
+    account_name: String(r.ad_account_name || r.ad_account_id || 'Unknown'),
+    spend: Number(r.total_spend) || 0,
+    revenue: Number(r.total_revenue) || 0,
+    purchases: Number(r.total_purchases) || 0,
+    impressions: Number(r.total_impressions) || 0,
+    clicks: Number(r.total_clicks) || 0,
+  }));
+}
+
 // POST /meta-ads/refresh — frontend "Refresh" button. Awaits sync so the
 // caller gets fresh data, but rate-limited to once per minute.
 router.post('/meta-ads/refresh', authenticate, async (_req, res) => {
@@ -5018,7 +5159,133 @@ router.get('/meta-ads/ads', authenticate, async (req, res) => {
     const typeParam = String(req.query.type || 'image').toLowerCase();
     const ALLOWED_TYPES = ['image', 'video', 'carousel', 'all'];
     const type = ALLOWED_TYPES.includes(typeParam) ? typeParam : 'image';
+    // Data source: 'tw' (direct TW query — matches TW UI exactly) | 'cached'
+    // (the local creative_analysis aggregate — fast but drifts). Default to
+    // 'tw' so numbers match. Falls back to cached on TW failure.
+    const source = String(req.query.source || 'tw').toLowerCase();
+    const attribution = req.query.attribution ? String(req.query.attribution) : null;
 
+    // ───────────────────────────────────────────────────────────────────
+    // TW DIRECT PATH — query TW SQL warehouse, enrich with local metadata.
+    // ───────────────────────────────────────────────────────────────────
+    if (source === 'tw' && _TW_API_KEY) {
+      try {
+        const twRows = await fetchTopAdsFromTW({
+          windowDays: window,
+          attributionModel: attribution,
+          accountIds: accounts,
+          minSpend,
+        });
+
+        // Enrich each TW row with our local metadata (creative_id, meta_ad_id,
+        // thumbnail_url, type, hook_id, angle, week, auto_detected) by joining
+        // on ad_name. Most recent synced row per ad_name wins.
+        const adNames = twRows.map(r => r.ad_name).filter(Boolean);
+        const metaByName = new Map();
+        if (adNames.length > 0) {
+          const cols = await getCreativeAnalysisColumns();
+          const metaRows = await pgQuery(`
+            SELECT DISTINCT ON (ad_name)
+              ad_name, creative_id, meta_ad_id, thumbnail_url, type,
+              ${cols.has('hook_id') ? 'hook_id' : `'' as hook_id`},
+              ${cols.has('angle') ? 'angle' : `'' as angle`},
+              ${cols.has('week') ? 'week' : `null as week`},
+              ${cols.has('auto_detected') ? 'auto_detected' : 'FALSE as auto_detected'},
+              ${cols.has('ctr') ? 'ctr' : '0 as ctr'}
+            FROM creative_analysis
+            WHERE ad_name = ANY($1::text[])
+            ORDER BY ad_name, synced_at DESC
+          `, [adNames]);
+          for (const m of metaRows) metaByName.set(m.ad_name, m);
+        }
+
+        // Apply type filter at the enriched stage (TW doesn't know the
+        // creative type — that's a creative_analysis attribute). If a row
+        // has no enrichment we can't classify it, so default to 'image'.
+        const typed = type === 'all'
+          ? twRows
+          : twRows.filter(r => {
+              const m = metaByName.get(r.ad_name);
+              const rowType = m?.type || 'image';
+              return rowType === type;
+            });
+
+        const data = typed.map(r => {
+          const m = metaByName.get(r.ad_name) || {};
+          const spend = r.spend, revenue = r.revenue, purchases = r.purchases;
+          const roas = spend > 0 ? revenue / spend : 0;
+          const cpa = purchases > 0 ? spend / purchases : 0;
+          let thumb = m.thumbnail_url || null;
+          const looksDead = !thumb || /\.fbcdn\.net|cdninstagram\.com/i.test(thumb);
+          if (looksDead && m.creative_id) {
+            thumb = `/api/v1/brief-pipeline/meta-thumb/${encodeURIComponent(m.creative_id)}`;
+          }
+          return {
+            creative_id: m.creative_id || r.ad_name, // fallback to ad_name as key
+            ad_account_id: r.ad_account_id,
+            account_name: r.account_name,
+            ad_name: r.ad_name,
+            thumbnail_url: thumb,
+            meta_ad_id: m.meta_ad_id || null,
+            angle: m.angle || null,
+            hook_id: m.hook_id || null,
+            week: m.week || null,
+            auto_detected: !!m.auto_detected,
+            ctr: spend > 0 ? (r.clicks / Math.max(1, r.impressions)) : 0,
+            spend, revenue, purchases,
+            impressions: r.impressions,
+            clicks: r.clicks,
+            roas, cpa,
+            days_active: window,
+            already_imported: false, // back-filled below in a single batch
+          };
+        });
+
+        // Batch-fill already_imported in one query so the map above stays sync.
+        const metaAdIds = data.map(d => d.meta_ad_id).filter(Boolean);
+        const existing = metaAdIds.length > 0
+          ? new Set((await pgQuery(
+              `SELECT external_ref_key FROM spy_creatives
+                WHERE imported_from='meta' AND external_ref_key = ANY($1::text[])`,
+              [metaAdIds]
+            )).map(r => r.external_ref_key))
+          : new Set();
+        for (const d of data) d.already_imported = d.meta_ad_id ? existing.has(d.meta_ad_id) : false;
+
+        // Apply sort + min_roas filter (TW already filtered min_spend via SQL).
+        const sorted = data
+          .filter(d => d.roas >= minRoas)
+          .sort((a, b) => {
+            switch (sortKey) {
+              case 'revenue': return b.revenue - a.revenue;
+              case 'roas':    return b.roas - a.roas;
+              case 'cpa':     return (a.cpa || 9e9) - (b.cpa || 9e9);
+              default:        return b.spend - a.spend;
+            }
+          });
+
+        // Search filter on ad_name (post-fetch — TW doesn't need it).
+        const searched = search
+          ? sorted.filter(d => (d.ad_name || '').toLowerCase().includes(search.toLowerCase()))
+          : sorted;
+
+        return res.json({
+          success: true,
+          data: searched,
+          count: searched.length,
+          source: 'tw',
+          attribution: attribution || _TW_ATTRIBUTION_DEFAULT,
+        });
+      } catch (err) {
+        console.warn(`[meta-ads/ads] TW direct failed (${err.message}) — falling back to cached query`);
+        // fall through to cached path
+      }
+    }
+
+    // ───────────────────────────────────────────────────────────────────
+    // CACHED PATH — aggregate from creative_analysis. Used when source=cached
+    // or TW direct fails. Numbers can drift from TW.
+    // ───────────────────────────────────────────────────────────────────
     const cols = await getCreativeAnalysisColumns();
     const idCol  = cols.has('ad_account_id') ? 'ad_account_id' : null;
     const nameCol = cols.has('ad_account_name') ? 'ad_account_name'
