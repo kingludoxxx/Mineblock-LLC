@@ -213,38 +213,27 @@ export function FromLeagueColumn({ onUseAsReference }) {
 }
 
 function LeagueAdCard({ ad, onUseAsReference }) {
-  const [importing, setImporting] = useState(false);
-  const [imported, setImported] = useState(!!ad.already_imported);
-  const [error, setError] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [picked, setPicked] = useState(false);
   const thumb = ad.image_url;
   const title = ad.headline || ad.body_text || ad.ad_archive_id || 'Untitled';
 
-  const handleUse = async () => {
-    if (importing) return;
-    setImporting(true);
-    setError(null);
+  // PIPELINE-V2 BEHAVIOR: clicking "Use" just sets this ad as the active
+  // single-pick reference for the next generation. It does NOT persist
+  // into spy_creatives. The Reference column is reserved for the
+  // operator's OWN winners (Meta-imported + uploads); league ads are
+  // inspiration-only, used inline from this column.
+  const handleUse = () => {
+    if (busy) return;
+    setBusy(true);
     try {
-      // Import into the user's library so it shows up in REFERENCE column
-      // on next refresh. We also pass the local ad to onUseAsReference so
-      // the parent can set it as the active single-pick reference immediately
-      // (Generate Static enables without waiting for a Reference refresh).
-      let importedRow = null;
-      if (!imported) {
-        const res = await api.post('/statics-generation/league/import', {
-          brand_id: ad.brand_id,
-          ad_ids: [ad.id],
-        });
-        const list = res.data?.data || [];
-        importedRow = list[0] || null;
-        setImported(true);
-      }
-      // Hand back the freshest row we have — imported if available, else the
-      // original league ad shape (caller knows how to read image_url etc.).
-      onUseAsReference?.(importedRow || ad);
-    } catch (err) {
-      setError(err.response?.data?.error?.message || err.message || 'Import failed');
+      onUseAsReference?.(ad);
+      setPicked(true);
+      // Visual confirmation flashes for 2s then resets so the same card
+      // can be re-picked if the operator wants to regenerate with it.
+      setTimeout(() => setPicked(false), 2000);
     } finally {
-      setImporting(false);
+      setBusy(false);
     }
   };
 
@@ -265,9 +254,9 @@ function LeagueAdCard({ ad, onUseAsReference }) {
               {ad.tier}
             </span>
           )}
-          {imported && (
+          {picked && (
             <span className="absolute top-1.5 right-1.5 text-[9px] font-mono font-bold bg-emerald-500/90 text-black px-1.5 py-0.5 rounded">
-              IN LIB
+              PICKED
             </span>
           )}
         </div>
@@ -279,17 +268,19 @@ function LeagueAdCard({ ad, onUseAsReference }) {
           <div className="text-[11px] font-mono text-zinc-100 truncate" title={title}>{title}</div>
           <div className="text-[10px] text-zinc-500 font-mono truncate">{ad.brand_name} · {ad.display_format} · {ad.active_days || 0}d</div>
         </div>
-        {error && <div className="text-[9px] text-red-400 px-1">{error}</div>}
         <button
           type="button"
           onClick={handleUse}
-          disabled={importing}
-          className="w-full inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-violet-500/15 border border-violet-400/30 text-violet-300 text-[10px] font-mono font-semibold uppercase tracking-wide hover:bg-violet-500/25 transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-          title={imported ? 'Already in your reference library — use again' : 'Import into Reference library and use'}
+          disabled={busy}
+          className={`w-full inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-[10px] font-mono font-semibold uppercase tracking-wide transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
+            picked
+              ? 'bg-emerald-500/15 border-emerald-400/30 text-emerald-300'
+              : 'bg-violet-500/15 border-violet-400/30 text-violet-300 hover:bg-violet-500/25'
+          }`}
+          title="Set as single-pick reference for the next generation. Not persisted to your library."
         >
-          {importing
-            ? <><Loader2 className="w-3 h-3 animate-spin" /> Importing…</>
-            : <><Sparkles className="w-3 h-3" /> {imported ? 'Use Again' : 'Use as Reference'}</>}
+          <Sparkles className="w-3 h-3" />
+          {picked ? 'Picked' : 'Use as Reference'}
         </button>
       </div>
     </div>

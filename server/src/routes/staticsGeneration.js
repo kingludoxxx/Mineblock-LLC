@@ -4939,10 +4939,19 @@ router.get('/reference-ads', authenticate, async (req, res) => {
     // References are usable as templates across products — return:
     //   (a) global references (product_id IS NULL), AND
     //   (b) references tied to the requested product_id (if filter passed)
-    // This way an imported League/Meta ad is visible from any product's pipeline.
+    //
+    // PIPELINE-V2 RULE: League-sourced ads are intentionally EXCLUDED here.
+    // The Reference column is now "our own winning ads" (Meta-imported +
+    // manual uploads + null/legacy). League ads live in the dedicated
+    // FROM LEAGUE column as an inspiration surface — they're used as
+    // single-pick references via that column's "Use" button without
+    // persisting into spy_creatives at all.
     const productId = req.query.product_id || null;
     const cursor = req.query.cursor || null;
-    const where = ['is_reference = TRUE'];
+    const where = [
+      'is_reference = TRUE',
+      `(imported_from IS NULL OR imported_from <> 'league')`,
+    ];
     const params = [];
     if (productId) {
       params.push(productId);
