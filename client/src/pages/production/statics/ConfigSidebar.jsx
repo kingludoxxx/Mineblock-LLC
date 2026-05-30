@@ -53,6 +53,12 @@ export function ConfigSidebar({
   // (single-pick from card Select or modal "Use as Reference").
   const hasReference = references.length > 0 || !!referenceImageUrl;
   const canGenerate = selectedProduct && hasReference && !generating;
+  // Adding to queue is allowed EVEN while a generation is in progress —
+  // the queue runner picks items up sequentially, so queueing the next
+  // reference while the current one renders is exactly the desired flow.
+  // Previously this was gated by canGenerate which required !generating;
+  // operator couldn't queue more references mid-flight.
+  const canQueue = selectedProduct && hasReference;
 
   // Compute a human-readable reason why the Generate button is disabled
   const disabledReason = canGenerate
@@ -295,8 +301,9 @@ export function ConfigSidebar({
           <button
             type="button"
             onClick={onAddToQueue}
-            disabled={!canGenerate}
+            disabled={!canQueue}
             className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-xs font-mono font-medium uppercase tracking-wide bg-transparent border border-white/[0.05] text-zinc-400 hover:border-white/[0.1] hover:text-zinc-200 transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+            title={canQueue ? 'Add this reference to the queue (runs after current generation)' : 'Pick a product + reference first'}
           >
             <ListPlus className="w-4 h-4" />
             Add to Queue
