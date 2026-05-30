@@ -30,32 +30,6 @@ const YTDLP_PATH = join(__dirname, '..', '..', '..', 'bin', 'yt-dlp');
 
 const router = Router();
 
-// TEMP — timed transcribe benchmark on B0003 (silent) and B0248 (voiced)
-router.post('/_timetest/:which', async (req, res) => {
-  const map = {
-    silent:  '487f421f-8eb5-43ae-ae76-f61a6cff775e', // B0003 — silent, Vertex path
-    voiced:  'df674f42-0a1b-4941-821b-86ba264290f8', // B0248 — Italian rap, Whisper path
-  };
-  const id = map[req.params.which];
-  if (!id) return res.status(400).json({ error: 'use /silent or /voiced' });
-  try {
-    const rows = await pgQuery(`SELECT video_url FROM brief_pipeline_references WHERE id = $1 LIMIT 1`, [id]);
-    if (!rows.length || !rows[0].video_url) return res.status(400).json({ error: 'no video_url' });
-    const t0 = Date.now();
-    const { text } = await transcribeVideoUrl(rows[0].video_url);
-    const elapsedMs = Date.now() - t0;
-    res.json({
-      which: req.params.which,
-      elapsed_ms: elapsedMs,
-      elapsed_seconds: (elapsedMs / 1000).toFixed(1),
-      transcript_chars: text.length,
-      transcript_head: text.slice(0, 200),
-    });
-  } catch (e) {
-    res.status(500).json({ error: e.message?.slice(0, 500) });
-  }
-});
-
 // ── Meta thumbnail proxy with R2 caching ──────────────────────────────
 // Placed BEFORE the global authenticate middleware because <img src> tags
 // can't carry JWTs. Safe to expose: thumbnails are non-sensitive, R2
