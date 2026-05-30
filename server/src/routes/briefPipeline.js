@@ -30,6 +30,24 @@ const YTDLP_PATH = join(__dirname, '..', '..', '..', 'bin', 'yt-dlp');
 
 const router = Router();
 
+// TEMP — env diag for Vertex SA debugging
+router.get('/_envdiag', (req, res) => {
+  const raw = process.env.GOOGLE_SA_JSON;
+  let parsed = null, parseErr = null;
+  if (raw) {
+    try { const j = JSON.parse(raw); parsed = { hasClientEmail: !!j.client_email, hasPrivateKey: !!j.private_key, projectId: j.project_id, clientEmail: j.client_email }; }
+    catch (e) { parseErr = e.message; }
+  }
+  res.json({
+    GOOGLE_SA_JSON: raw ? `present (${raw.length} bytes)` : 'MISSING',
+    parsed,
+    parseErr,
+    GEMINI_API_KEY: process.env.GEMINI_API_KEY ? `present (${process.env.GEMINI_API_KEY.length} bytes, starts=${process.env.GEMINI_API_KEY.slice(0,8)})` : 'MISSING',
+    OPENAI_API_KEY: process.env.OPENAI_API_KEY ? 'present' : 'MISSING',
+    VERTEX_AI_LOCATION: process.env.VERTEX_AI_LOCATION || '(default us-central1)',
+  });
+});
+
 // TEMP — verify new Gemini key on B0003 silent ad
 router.post('/_gv', async (req, res) => {
   try {
