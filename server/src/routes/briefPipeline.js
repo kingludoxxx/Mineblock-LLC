@@ -244,6 +244,111 @@ function staticAdExclusionClause(tablePrefix = 'ca') {
   `.trim();
 }
 const META_GRAPH_URL = 'https://graph.facebook.com/v21.0';
+
+// ── Direct video resolver from Mineblock-owned Meta ad ──────────────────
+// Given a Meta ad_id that we believe belongs to one of OUR ad accounts,
+// pull the actual video file straight from Meta Marketing API. This is the
+// canonical, authoritative path:
+//
+//   1. GET /{ad_id}?fields=name,account_id,creative{video_id,thumbnail_url}
+//      → confirms which account owns this ad and which video_id is attached
+//   2. Verify account_id ∈ META_AD_ACCOUNT_IDS (else: REFUSE — this ad does
+//      not belong to Mineblock, regardless of what our DB row claimed)
+//   3. GET /{video_id}?fields=source — direct CDN URL to the video file
+//   4. Fallback: /{account_id}/advideos?filtering=[{id EQUAL video_id}]
+//      &fields=source — needed because some Marketing API tokens reject
+//      direct /{video_id} access.
+//
+// Returns one of:
+//   { videoUrl: <url>, accountId, videoId, adName, thumbnailUrl }
+//   { foreignAccount: true, accountId, adName }  — ad belongs to a non-Mineblock account
+//   { error: <reason> }                          — Meta API failure, no answer
+//   null                                         — input invalid / no token / etc.
+//
+// This bypasses Playwright/FB Ad Library entirely: when the ad is ours,
+// Meta hands us the canonical video. No DOM scraping, no risk of grabbing
+// a "related ads" video off the FB Ad Library page.
+async function resolveOwnedVideoFromMeta(metaAdId) {
+  if (!metaAdId || !META_ACCESS_TOKEN) return null;
+  const adId = String(metaAdId).trim();
+  if (!adId) return null;
+
+  // Step 1 — confirm ownership + get video_id
+  let adMeta;
+  try {
+    const url = `${META_GRAPH_URL}/${adId}?fields=name,account_id,effective_status,creative{video_id,thumbnail_url}&access_token=${META_ACCESS_TOKEN}`;
+    const resp = await fetch(url, { signal: AbortSignal.timeout(10000) });
+    const data = await resp.json();
+    if (!resp.ok || data.error) {
+      return { error: `Meta /${adId} returned ${resp.status}: ${(data.error?.message || resp.statusText || '').slice(0, 160)}` };
+    }
+    adMeta = data;
+  } catch (e) {
+    return { error: `Meta /${adId} fetch failed: ${e.message?.slice(0, 160)}` };
+  }
+
+  // Step 2 — account ownership verification
+  const accountId = adMeta.account_id ? String(adMeta.account_id) : null;
+  const accountIdAct = accountId ? (accountId.startsWith('act_') ? accountId : `act_${accountId}`) : null;
+  if (!accountId || !isTrustedAccount(accountIdAct)) {
+    return {
+      foreignAccount: true,
+      accountId: accountIdAct,
+      adName: adMeta.name || null,
+      thumbnailUrl: adMeta.creative?.thumbnail_url || null,
+    };
+  }
+
+  const videoId = adMeta.creative?.video_id || null;
+  if (!videoId) {
+    return {
+      error: `Ad ${adId} has no creative.video_id (likely an image/carousel ad).`,
+      accountId: accountIdAct,
+      adName: adMeta.name || null,
+      thumbnailUrl: adMeta.creative?.thumbnail_url || null,
+    };
+  }
+
+  // Step 3 — resolve video CDN URL via direct /{video_id}?fields=source
+  try {
+    const vurl = `${META_GRAPH_URL}/${videoId}?fields=source,permalink_url&access_token=${META_ACCESS_TOKEN}`;
+    const vresp = await fetch(vurl, { signal: AbortSignal.timeout(10000) });
+    const vdata = await vresp.json();
+    if (vresp.ok && !vdata.error && vdata.source) {
+      return {
+        videoUrl: vdata.source,
+        accountId: accountIdAct,
+        videoId,
+        adName: adMeta.name || null,
+        thumbnailUrl: adMeta.creative?.thumbnail_url || null,
+        _via: 'video_direct',
+      };
+    }
+  } catch (_) { /* fall through to account-scoped lookup */ }
+
+  // Step 4 — fallback: /{account_id}/advideos. Some Marketing API tokens reject
+  // direct /{video_id} but accept the account-scoped advideos endpoint.
+  try {
+    const aurl = `${META_GRAPH_URL}/${accountIdAct}/advideos?filtering=${encodeURIComponent(JSON.stringify([{ field: 'id', operator: 'EQUAL', value: videoId }]))}&fields=source&limit=1&access_token=${META_ACCESS_TOKEN}`;
+    const aresp = await fetch(aurl, { signal: AbortSignal.timeout(10000) });
+    const adata = await aresp.json();
+    const src = adata?.data?.[0]?.source;
+    if (aresp.ok && src) {
+      return {
+        videoUrl: src,
+        accountId: accountIdAct,
+        videoId,
+        adName: adMeta.name || null,
+        thumbnailUrl: adMeta.creative?.thumbnail_url || null,
+        _via: 'advideos_account_scoped',
+      };
+    }
+    return { error: `Meta video_id=${videoId} returned no source URL via either direct or account-scoped path.`, accountId: accountIdAct, adName: adMeta.name || null };
+  } catch (e) {
+    return { error: `Meta advideos fetch failed for video_id=${videoId}: ${e.message?.slice(0, 160)}`, accountId: accountIdAct };
+  }
+}
+
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
 const CLAUDE_API_URL = 'https://api.anthropic.com/v1/messages';
 const CLAUDE_MODEL = 'claude-sonnet-4-6';
@@ -4122,20 +4227,67 @@ router.post('/references/:id/retry-transcribe', authenticate, async (req, res) =
       [ref.id]
     );
 
-    // Kick off background retry — same pipeline as fresh import (Playwright
-    // → yt-dlp → extractScriptFromUrl). Reuses the warm browser pool.
+    // Kick off background retry — same Meta-direct first pipeline as fresh
+    // import. Path 0 (Meta-direct) takes precedence; only when meta_ad_id is
+    // missing do we fall back to Playwright/yt-dlp on FB Ad Library.
     (async () => {
       try {
-        // Path 1: Playwright (the path that ACTUALLY works on FB Ad Library)
-        await pgQuery(
-          `UPDATE brief_pipeline_references SET status = 'extracting' WHERE id = $1`,
-          [ref.id]
-        ).catch(() => {});
-        console.log(`[BriefPipeline] retry-transcribe ref ${ref.id}: Playwright`);
-        let videoUrl = await extractVideoUrlFromAdLibrary(adLibraryUrl);
+        let videoUrl = null;
+        // ad_id stored in imported_metadata is Meta's ad_id (used to build
+        // the ad_library_url). Treat it as our meta_ad_id for ownership resolution.
+        const metaAdId = md?.ad_id || null;
+        const canResolveOwned = !!metaAdId && !!META_ACCESS_TOKEN;
 
-        // Path 2: yt-dlp fallback
-        if (!videoUrl) {
+        // Path 0 — Meta-direct ownership resolution (CANONICAL PATH).
+        if (canResolveOwned) {
+          console.log(`[BriefPipeline] retry-transcribe ref ${ref.id}: Meta-direct resolve (ad_id=${metaAdId})`);
+          const owned = await resolveOwnedVideoFromMeta(metaAdId);
+          if (owned?.foreignAccount) {
+            const warning = {
+              warning: 'BRAND_MISMATCH',
+              expected: 'Mineblock / MinerForge Pro',
+              actual: `Meta account ${owned.accountId}`,
+              selling_message: `Meta ad ${metaAdId} (${owned.adName || 'unnamed'}) belongs to account ${owned.accountId}, which is NOT in META_AD_ACCOUNT_IDS.`,
+              message: `Refusing to transcribe: Meta reports this ad lives in account ${owned.accountId}, not one of Mineblock's. The linkage is wrong. Delete and re-import a real Mineblock ad.`,
+            };
+            await pgQuery(
+              `UPDATE brief_pipeline_references
+                  SET analysis_error = $1, status = 'error', updated_at = NOW(),
+                      imported_metadata = CASE
+                        WHEN imported_metadata IS NULL THEN jsonb_build_object('brand_mismatch_warning', $2::jsonb, 'transcribe_source', 'refused_foreign_account'::text)
+                        WHEN jsonb_typeof(imported_metadata) = 'object' THEN
+                          jsonb_set(
+                            jsonb_set(imported_metadata, '{brand_mismatch_warning}', $2::jsonb, true),
+                            '{transcribe_source}', to_jsonb('refused_foreign_account'::text), true
+                          )
+                        ELSE jsonb_build_object('original', imported_metadata::text, 'brand_mismatch_warning', $2::jsonb, 'transcribe_source', 'refused_foreign_account'::text)
+                      END
+                WHERE id = $3`,
+              [warning.message, JSON.stringify(warning), ref.id]
+            );
+            console.warn(`[BriefPipeline] retry-transcribe REFUSED foreign-account ad ${ref.id}: ${warning.message}`);
+            return;
+          }
+          if (owned?.videoUrl) {
+            videoUrl = owned.videoUrl;
+            console.log(`[BriefPipeline] retry-transcribe ref ${ref.id}: Meta-direct OK (account=${owned.accountId}, video_id=${owned.videoId}, via=${owned._via})`);
+          } else if (owned?.error) {
+            console.warn(`[BriefPipeline] retry-transcribe ref ${ref.id}: Meta-direct could not resolve: ${owned.error}`);
+          }
+        }
+
+        // Path 1: Playwright (only when Meta-direct unavailable)
+        if (!videoUrl && !canResolveOwned) {
+          await pgQuery(
+            `UPDATE brief_pipeline_references SET status = 'extracting' WHERE id = $1`,
+            [ref.id]
+          ).catch(() => {});
+          console.log(`[BriefPipeline] retry-transcribe ref ${ref.id}: Playwright`);
+          videoUrl = await extractVideoUrlFromAdLibrary(adLibraryUrl);
+        }
+
+        // Path 2: yt-dlp fallback (only when Meta-direct unavailable)
+        if (!videoUrl && !canResolveOwned) {
           console.log(`[BriefPipeline] retry-transcribe ref ${ref.id}: yt-dlp fallback`);
           videoUrl = await extractVideoUrlWithYtdlp(adLibraryUrl);
         }
@@ -4656,33 +4808,92 @@ router.post('/references/import-meta', authenticate, async (req, res) => {
       //   5. extractScriptFromUrl — last resort, ad-copy metadata only.
       const directVideoCandidate = r.video_url
         || (r.creative_link && /\.(mp4|webm|mov|m4v)(\?|$)/i.test(r.creative_link) ? r.creative_link : null);
-      if (directVideoCandidate || adLibraryUrl) {
+      // We now ALWAYS try Meta-direct first if we have a meta_ad_id, even
+      // when a TW direct URL exists. This guarantees the transcribed video
+      // is the one currently owned by one of our trusted Meta ad accounts.
+      const canResolveOwned = !!r.meta_ad_id && !!META_ACCESS_TOKEN;
+      if (canResolveOwned || directVideoCandidate || adLibraryUrl) {
         (async () => {
           try {
-            // Quick win: TW already has a direct video URL
-            let videoUrl = directVideoCandidate;
-            if (videoUrl) {
-              console.log(`[BriefPipeline] transcribe ref ${ref.id}: direct TW URL (${r.video_url ? 'video_url' : 'creative_link'})`);
+            let videoUrl = null;
+            let resolvedSource = null;
+
+            // Path 0 — Meta-direct ownership resolution (CANONICAL PATH).
+            // Confirm the ad belongs to a Mineblock account, then ask Meta
+            // for the video file straight from Marketing API. Skips Playwright
+            // entirely on success. If Meta says the ad lives in a foreign
+            // account, we REFUSE to transcribe — that's bad linkage and
+            // running any fallback would only persist the wrong content.
+            if (canResolveOwned) {
+              console.log(`[BriefPipeline] transcribe ref ${ref.id}: Meta-direct resolve (ad_id=${r.meta_ad_id})`);
+              const owned = await resolveOwnedVideoFromMeta(r.meta_ad_id);
+              if (owned?.foreignAccount) {
+                const warning = {
+                  warning: 'BRAND_MISMATCH',
+                  expected: 'Mineblock / MinerForge Pro',
+                  actual: `Meta account ${owned.accountId}`,
+                  selling_message: `Meta ad ${r.meta_ad_id} (${owned.adName || 'unnamed'}) belongs to account ${owned.accountId}, which is NOT in META_AD_ACCOUNT_IDS.`,
+                  message: `Refusing to transcribe: Meta reports this ad lives in account ${owned.accountId}, not one of Mineblock's. The linkage in creative_analysis.meta_ad_id is wrong. Re-import a real Mineblock ad.`,
+                };
+                await pgQuery(
+                  `UPDATE brief_pipeline_references
+                      SET analysis_error = $1, status = 'error', updated_at = NOW(),
+                          imported_metadata = CASE
+                            WHEN imported_metadata IS NULL THEN jsonb_build_object('brand_mismatch_warning', $2::jsonb, 'transcribe_source', 'refused_foreign_account'::text)
+                            WHEN jsonb_typeof(imported_metadata) = 'object' THEN
+                              jsonb_set(
+                                jsonb_set(imported_metadata, '{brand_mismatch_warning}', $2::jsonb, true),
+                                '{transcribe_source}', to_jsonb('refused_foreign_account'::text), true
+                              )
+                            ELSE jsonb_build_object('original', imported_metadata::text, 'brand_mismatch_warning', $2::jsonb, 'transcribe_source', 'refused_foreign_account'::text)
+                          END
+                    WHERE id = $3`,
+                  [warning.message, JSON.stringify(warning), ref.id]
+                );
+                console.warn(`[BriefPipeline] REFUSED foreign-account ad on ref ${ref.id}: ${warning.message}`);
+                return;
+              }
+              if (owned?.videoUrl) {
+                videoUrl = owned.videoUrl;
+                resolvedSource = `meta_graph:${owned._via || 'unknown'}`;
+                console.log(`[BriefPipeline] ref ${ref.id}: Meta-direct OK (account=${owned.accountId}, video_id=${owned.videoId}, via=${owned._via})`);
+              } else if (owned?.error) {
+                console.warn(`[BriefPipeline] ref ${ref.id}: Meta-direct could not resolve: ${owned.error}`);
+                // Fall through to legacy paths ONLY when Meta returned an
+                // error (network/rate/etc.) — never when it told us the ad
+                // is foreign.
+              }
+            }
+
+            // Path 1/2 — fallbacks ONLY when Meta-direct didn't resolve.
+            // Used when meta_ad_id is missing (rare) or Meta API errored.
+            if (!videoUrl && directVideoCandidate) {
+              videoUrl = directVideoCandidate;
+              resolvedSource = r.video_url ? 'ca_video_url' : 'ca_creative_link';
+              console.log(`[BriefPipeline] transcribe ref ${ref.id}: direct TW URL (${resolvedSource})`);
             }
 
             // Path 3 — Playwright headless browser. Renders FB Ad Library
-            // JavaScript, intercepts the .mp4 network request. Works on
-            // 90%+ of ads with visible video content. ~1-2s warm.
-            if (!videoUrl && adLibraryUrl) {
+            // JavaScript, intercepts the .mp4 network request. Only used
+            // when we have no meta_ad_id (no canonical Meta-direct path),
+            // because Playwright can grab the wrong video from FB Ad
+            // Library's "related ads" panel.
+            if (!videoUrl && adLibraryUrl && !canResolveOwned) {
               await pgQuery(
                 `UPDATE brief_pipeline_references SET status = 'extracting', updated_at = NOW() WHERE id = $1 AND status IN ('pending', 'extracting')`,
                 [ref.id]
               ).catch(() => {});
               console.log(`[BriefPipeline] transcribe ref ${ref.id}: Playwright extraction`);
               videoUrl = await extractVideoUrlFromAdLibrary(adLibraryUrl);
+              if (videoUrl) resolvedSource = 'playwright_fb_ad_library';
             }
 
             // Path 4 — yt-dlp fallback (rarely works on FB Ad Library, but
-            // cheap to try). Some ads have public-page URLs that yt-dlp
-            // CAN parse.
-            if (!videoUrl && adLibraryUrl) {
+            // cheap to try). Same gating as Playwright.
+            if (!videoUrl && adLibraryUrl && !canResolveOwned) {
               console.log(`[BriefPipeline] transcribe ref ${ref.id}: yt-dlp fallback`);
               videoUrl = await extractVideoUrlWithYtdlp(adLibraryUrl);
+              if (videoUrl) resolvedSource = 'ytdlp_fb_ad_library';
             }
 
             if (videoUrl) {
