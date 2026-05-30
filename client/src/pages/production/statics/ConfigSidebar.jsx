@@ -124,19 +124,19 @@ export function ConfigSidebar({
         {/* ---- Ad Angle ---- */}
         <div className="space-y-3">
           <div className="flex items-center justify-between">
-            <label className="text-xs text-zinc-400 font-mono">
-              Ad_Angle <span className="text-zinc-600 opacity-70">[OPTIONAL]</span>
-            </label>
+            <label className="text-xs text-zinc-400 font-mono">Ad_Angle</label>
           </div>
 
-          {/* Product angles from library — only renders when the product has angles configured */}
+          {/* Product angles from library — only renders when the product has angles configured.
+              Funnel-stage labels (MIDDLE/BOTTOM) and the selected-angle note box were
+              removed per operator request — clean chip-only list. */}
           {productAngles && productAngles.length > 0 && (
             <div className="flex flex-wrap gap-2">
               {productAngles.map((a) => (
                 <button
                   key={a.id}
                   type="button"
-                  title={a.funnel_stage ? `${a.funnel_stage} funnel` : a.hook_strategy || ''}
+                  title={a.hook_strategy || ''}
                   onClick={() => {
                     const selecting = angle !== a.name;
                     onAngleChange(selecting ? a.name : null);
@@ -149,25 +149,8 @@ export function ConfigSidebar({
                   }`}
                 >
                   {a.name}
-                  {a.funnel_stage && (
-                    <span className="ml-1.5 text-[9px] opacity-50 uppercase tracking-wide">{a.funnel_stage}</span>
-                  )}
                 </button>
               ))}
-            </div>
-          )}
-
-          {/* Selected angle detail */}
-          {angleData && !customAngle && (
-            <div className="bg-[#c9a84c]/[0.04] border border-[#c9a84c]/10 rounded-lg px-3 py-2 space-y-1">
-              {angleData.funnel_stage && (
-                <div className="text-[10px] font-mono text-[#c9a84c]/60 uppercase tracking-wider">
-                  {angleData.funnel_stage} funnel
-                </div>
-              )}
-              {angleData.lead_with && (
-                <p className="text-[11px] text-zinc-400 leading-snug line-clamp-2">{angleData.lead_with}</p>
-              )}
             </div>
           )}
 
