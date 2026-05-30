@@ -30,6 +30,43 @@ const YTDLP_PATH = join(__dirname, '..', '..', '..', 'bin', 'yt-dlp');
 
 const router = Router();
 
+// TEMP — end-to-end iterate verification with the new rich transcript
+router.post('/_iter2/:id', async (req, res) => {
+  try {
+    const refs = await pgQuery(`SELECT id, transcript FROM brief_pipeline_references WHERE id = $1 LIMIT 1`, [req.params.id]);
+    if (!refs.length || !refs[0].transcript) return res.status(400).json({ error: 'no transcript on ref' });
+    const rawScript = refs[0].transcript;
+    const productProfile = await fetchProductProfile('MR');
+    const productContext = buildProductContextForBrief(productProfile);
+    const { system: parseSystem, user: parseUser } = await buildScriptParserPrompt(rawScript, 'TEST');
+    const parsedScriptRaw = await callClaude(parseSystem, parseUser, 2000, { fast: true });
+    const parsedScript = (parsedScriptRaw && (parsedScriptRaw.hooks?.length || parsedScriptRaw.body?.trim()))
+      ? parsedScriptRaw
+      : { hooks: [], body: rawScript, cta: '', format_notes: '' };
+    const { system: iterSystem, user: iterUser } = await buildIterationPrompt(
+      parsedScript, productContext, '', 1, productProfile, ['Hooks'], 'NA',
+    );
+    const iterResult = await callClaude(iterSystem, iterUser, 6000);
+    const variants = Array.isArray(iterResult?.iterations) ? iterResult.iterations : [];
+    res.json({
+      ok: variants.length > 0,
+      variant_count: variants.length,
+      transcript_chars: rawScript.length,
+      parsed_hooks: Array.isArray(parsedScript.hooks) ? parsedScript.hooks.length : 0,
+      parsed_body_chars: (parsedScript.body || '').length,
+      first_variant: variants[0] ? {
+        iteration_label: variants[0].iteration_label,
+        hooks: Array.isArray(variants[0].hooks) ? variants[0].hooks.map(h => h.text || h) : [],
+        body: variants[0].body,
+        cta: variants[0].cta,
+        what_changed: variants[0].what_changed,
+      } : null,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message?.slice(0, 800), stack: e.stack?.slice(0, 500) });
+  }
+});
+
 // TEMP — re-transcribe any reference with the new multimodal-first pipeline
 router.post('/_retranscribe/:id', async (req, res) => {
   try {
