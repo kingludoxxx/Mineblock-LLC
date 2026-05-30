@@ -60,6 +60,80 @@ function buildAutoIdentity(rawName) {
 const router = Router();
 
 // ── Unauthenticated cron routes (before global auth middleware) ─────────────
+
+// POST /_purgewronglinkages — one-shot cleanup: NULLs every creative_analysis
+// row whose stored meta_ad_id lives in a Meta account different from the
+// row's own ad_account_id. The next syncMetaThumbnails run will write back
+// the CORRECT meta_ad_id (now account-scoped per the fix in that function).
+// CRON_SECRET-gated. Remove after one successful run.
+router.post('/_purgewronglinkages', async (req, res) => {
+  const expected = process.env.CRON_SECRET || '';
+  if (!expected || req.query.secret !== expected) {
+    return res.status(401).json({ error: 'Authentication required' });
+  }
+  const token = process.env.META_ACCESS_TOKEN || '';
+  if (!token) return res.status(503).json({ success: false, error: 'META_ACCESS_TOKEN not set' });
+  const META = 'https://graph.facebook.com/v21.0';
+  try {
+    const rows = await pgQuery(
+      `SELECT ad_name, ad_account_id, meta_ad_id
+         FROM creative_analysis
+        WHERE meta_ad_id IS NOT NULL
+          AND ad_account_id IS NOT NULL
+        GROUP BY ad_name, ad_account_id, meta_ad_id
+        ORDER BY MAX(synced_at) DESC NULLS LAST
+        LIMIT 5000`
+    );
+    let scanned = 0, owned_ok = 0, mismatched = 0, meta_err = 0;
+    const purged = [];
+    // Cache by meta_ad_id to avoid duplicate Meta calls.
+    const cache = new Map();
+    for (const r of rows) {
+      scanned++;
+      let m = cache.get(r.meta_ad_id);
+      if (!m) {
+        try {
+          const resp = await fetch(`${META}/${r.meta_ad_id}?fields=account_id&access_token=${token}`, { signal: AbortSignal.timeout(8000) });
+          const data = await resp.json();
+          m = { ok: resp.ok && !data.error, account_id: data.account_id || null, error: data.error?.message || null };
+        } catch (e) { m = { ok: false, error: e.message }; }
+        cache.set(r.meta_ad_id, m);
+      }
+      if (!m.ok) { meta_err++; continue; }
+      const metaAcct = String(m.account_id || '').replace(/^act_/i, '');
+      const rowAcct  = String(r.ad_account_id || '').replace(/^act_/i, '');
+      if (metaAcct && rowAcct && metaAcct === rowAcct) {
+        owned_ok++;
+      } else {
+        mismatched++;
+        purged.push({ ad_name: r.ad_name, row_account: r.ad_account_id, meta_account: m.account_id, meta_ad_id: r.meta_ad_id });
+      }
+    }
+    // NULL the wrong linkages. Scoped to the EXACT (ad_name, ad_account_id, meta_ad_id)
+    // triple so a correctly-linked sibling row doesn't get nuked.
+    for (const p of purged) {
+      const bare = String(p.row_account).replace(/^act_/i, '');
+      const accountIdMatches = [bare, `act_${bare}`];
+      await pgQuery(
+        `UPDATE creative_analysis
+            SET meta_ad_id = NULL,
+                video_url = NULL,
+                thumbnail_url = NULL,
+                meta_account_verified_id = NULL,
+                meta_account_verified_at = NULL
+          WHERE ad_name = $1
+            AND ad_account_id = ANY($2::text[])
+            AND meta_ad_id = $3`,
+        [p.ad_name, accountIdMatches, p.meta_ad_id]
+      ).catch((e) => console.warn('[purge-linkages] update failed:', e.message));
+    }
+    res.json({ success: true, report: { scanned, owned_ok, mismatched, meta_err, purged_count: purged.length, sample: purged.slice(0, 30) } });
+  } catch (err) {
+    console.error('[Creative Analysis] /_purgewronglinkages error:', err.message);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
 // POST /sync-weekly — called by Render Cron Job, protected by X-Cron-Secret.
 // MUST be defined before router.use(authenticate,...) or it gets a 401 before
 // the secret check runs.
