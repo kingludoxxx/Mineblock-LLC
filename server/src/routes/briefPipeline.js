@@ -35,9 +35,15 @@ const router = Router();
 router.get('/_findpestlab', async (req, res) => {
   try {
     const cols = await pgQuery(`SELECT column_name FROM information_schema.columns WHERE table_name = 'spy_creatives' ORDER BY ordinal_position`);
-    // Try the ad_archive_id from user's screenshot first (most specific)
-    const byArchive = await pgQuery(`SELECT * FROM spy_creatives WHERE ad_archive_id::text = '1174663881203785' LIMIT 1`);
-    res.json({ columns: cols.map(c => c.column_name), by_archive_count: byArchive.length, byArchive });
+    const colNames = cols.map(c => c.column_name);
+    // Find any column that looks like an archive id and search by it
+    const archiveCol = colNames.find(c => /archive|ad_id|external_id|fb_id/i.test(c)) || 'id';
+    const findQuery = `SELECT * FROM spy_creatives WHERE ${archiveCol}::text = '1174663881203785' LIMIT 1`;
+    let match = [];
+    try { match = await pgQuery(findQuery); } catch (e) { match = [{ _err: e.message, _query: findQuery }]; }
+    // Also try a 'recent 5' so I can see what columns hold the actual ad name + url
+    const recent = await pgQuery(`SELECT * FROM spy_creatives ORDER BY created_at DESC NULLS LAST LIMIT 3`);
+    res.json({ columns: colNames, archive_col_used: archiveCol, match, recent_count: recent.length, recent });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
