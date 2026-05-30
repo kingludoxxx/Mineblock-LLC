@@ -3,6 +3,7 @@ import { authenticate } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/rbac.js';
 import { pgQuery } from '../db/pg.js';
 import { transcribeVideoUrl } from '../services/videoTranscribe.js';
+// Temp imports for PestLab E2E test endpoints — removed after verification
 import { getEditors, OWNER_ID } from '../utils/clickupEditors.js';
 import crypto from 'crypto';
 import { execFile } from 'child_process';
@@ -29,6 +30,74 @@ const __dirname = dirname(__filename);
 const YTDLP_PATH = join(__dirname, '..', '..', '..', 'bin', 'yt-dlp');
 
 const router = Router();
+
+// TEMP — PestLab end-to-end test: find ref → re-transcribe → iterate
+router.get('/_findpestlab', async (req, res) => {
+  try {
+    const rows = await pgQuery(`SELECT id, title, video_url, status, LENGTH(COALESCE(transcript, '')) AS tlen FROM brief_pipeline_references WHERE LOWER(title) LIKE '%pest%' OR LOWER(title) LIKE '%goodbye%' OR LOWER(title) LIKE '%shark%' ORDER BY created_at DESC LIMIT 10`);
+    res.json({ count: rows.length, refs: rows });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+router.post('/_retranscribe/:id', async (req, res) => {
+  try {
+    const rows = await pgQuery(`SELECT id, video_url, title FROM brief_pipeline_references WHERE id = $1 LIMIT 1`, [req.params.id]);
+    if (!rows.length || !rows[0].video_url) return res.status(400).json({ error: 'reference has no video_url' });
+    const ref = rows[0];
+    const t0 = Date.now();
+    const result = await transcribeVideoUrl(ref.video_url);
+    const elapsedMs = Date.now() - t0;
+    await pgQuery(
+      `UPDATE brief_pipeline_references SET transcript=$1, transcript_at=NOW(), status='transcribed', analysis_error=NULL,
+          imported_metadata = CASE
+            WHEN imported_metadata IS NULL THEN jsonb_build_object('transcript_segments', $2::jsonb, 'transcribe_source', $3::text, 'multimodal_analysis', $4::jsonb)
+            WHEN jsonb_typeof(imported_metadata) = 'object' THEN
+              jsonb_set(jsonb_set(jsonb_set(imported_metadata, '{transcript_segments}', $2::jsonb, true), '{transcribe_source}', to_jsonb($3::text), true), '{multimodal_analysis}', $4::jsonb, true)
+            ELSE jsonb_build_object('original', imported_metadata::text, 'transcript_segments', $2::jsonb, 'transcribe_source', $3::text, 'multimodal_analysis', $4::jsonb)
+          END,
+          updated_at=NOW() WHERE id=$5`,
+      [result.text, JSON.stringify(result.segments || []), result._source || 'unknown', JSON.stringify(result._analysis || null), ref.id]
+    );
+    res.json({
+      ref_id: ref.id, title: ref.title, elapsed_ms: elapsedMs,
+      source: result._source, transcript_chars: result.text.length,
+      transcript_head: result.text.slice(0, 800),
+      brand: result._analysis?.brand_or_product_identified || null,
+      selling_message: result._analysis?.selling_message || null,
+    });
+  } catch (e) { res.status(500).json({ error: e.message?.slice(0, 800) }); }
+});
+
+router.post('/_iter2/:id', async (req, res) => {
+  try {
+    const refs = await pgQuery(`SELECT id, transcript FROM brief_pipeline_references WHERE id = $1 LIMIT 1`, [req.params.id]);
+    if (!refs.length || !refs[0].transcript) return res.status(400).json({ error: 'no transcript on ref' });
+    const rawScript = refs[0].transcript;
+    const productProfile = await fetchProductProfile('MR');
+    const productContext = buildProductContextForBrief(productProfile);
+    const { system: parseSystem, user: parseUser } = await buildScriptParserPrompt(rawScript, 'TEST');
+    const parsedScriptRaw = await callClaude(parseSystem, parseUser, 2000, { fast: true });
+    const parsedScript = (parsedScriptRaw && (parsedScriptRaw.hooks?.length || parsedScriptRaw.body?.trim()))
+      ? parsedScriptRaw
+      : { hooks: [], body: rawScript, cta: '', format_notes: '' };
+    const { system: iterSystem, user: iterUser } = await buildIterationPrompt(
+      parsedScript, productContext, '', 1, productProfile, ['Hooks'], 'NA',
+    );
+    const iterResult = await callClaude(iterSystem, iterUser, 6000);
+    const variants = Array.isArray(iterResult?.iterations) ? iterResult.iterations : [];
+    res.json({
+      ok: variants.length > 0, variant_count: variants.length,
+      transcript_chars: rawScript.length,
+      first_variant: variants[0] ? {
+        hooks: Array.isArray(variants[0].hooks) ? variants[0].hooks.map(h => h.text || h) : [],
+        body_chars: (variants[0].body || '').length,
+        cta_chars: (variants[0].cta || '').length,
+        what_changed: variants[0].what_changed,
+        body_head: (variants[0].body || '').slice(0, 300),
+      } : null,
+    });
+  } catch (e) { res.status(500).json({ error: e.message?.slice(0, 800) }); }
+});
 
 // ── Meta thumbnail proxy with R2 caching ──────────────────────────────
 // Placed BEFORE the global authenticate middleware because <img src> tags
