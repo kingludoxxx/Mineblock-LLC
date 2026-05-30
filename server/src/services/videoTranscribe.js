@@ -12,6 +12,8 @@
  * Node 22 globals used: fetch, FormData, Blob. No additional npm dep needed.
  */
 
+import crypto from 'node:crypto';
+
 const WHISPER_URL = 'https://api.openai.com/v1/audio/transcriptions';
 const WHISPER_MODEL = 'whisper-1';
 const WHISPER_MAX_BYTES = 25 * 1024 * 1024; // OpenAI hard limit
@@ -24,6 +26,107 @@ const GEMINI_API_KEYS = [
   process.env.GEMINI_API_KEY_2,
   process.env.GEMINI_API_KEY_3,
 ].filter(Boolean);
+
+// ── Vertex AI auth via service account JSON ──────────────────────────────
+// Org policies on AI-Studio-created projects now force keys to be bound to
+// service accounts. The legacy generativelanguage.googleapis.com endpoint
+// rejects SA-bound keys with "API key expired", so we hit Vertex AI's
+// aiplatform.googleapis.com endpoint instead — it's designed for SA auth.
+//
+// GOOGLE_SA_JSON env var holds the full service-account JSON (from
+// Cloud Console → IAM → Service Accounts → Keys → Add Key → JSON).
+//
+// We mint our own OAuth access tokens from the SA private key using Node's
+// built-in crypto, avoiding the google-auth-library dependency. Standard
+// JWT-bearer flow per RFC 7523.
+let _vertexCreds = null;
+function getVertexCreds() {
+  if (_vertexCreds !== null) return _vertexCreds;
+  const raw = process.env.GOOGLE_SA_JSON;
+  if (!raw) { _vertexCreds = false; return _vertexCreds; }
+  try {
+    const json = JSON.parse(raw);
+    if (!json.client_email || !json.private_key || !json.project_id) {
+      console.warn('[transcribe] GOOGLE_SA_JSON missing client_email/private_key/project_id');
+      _vertexCreds = false;
+      return _vertexCreds;
+    }
+    _vertexCreds = {
+      clientEmail: json.client_email,
+      privateKey: json.private_key,
+      projectId: json.project_id,
+      // Cache token in-process; OAuth tokens last 1h, we re-mint when ≤60s remain.
+      cachedToken: null,
+      cachedExp: 0,
+    };
+    console.log(`[transcribe] Vertex AI configured (project=${json.project_id}, sa=${json.client_email})`);
+    return _vertexCreds;
+  } catch (e) {
+    console.warn('[transcribe] GOOGLE_SA_JSON failed to parse:', e.message);
+    _vertexCreds = false;
+    return _vertexCreds;
+  }
+}
+
+function base64url(input) {
+  return Buffer.from(input).toString('base64')
+    .replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
+}
+
+/**
+ * Mint a Google OAuth access token from the service account JSON using
+ * JWT-bearer flow. Cached for ~55 minutes (tokens live 60). Returns null
+ * if SA isn't configured or token exchange fails.
+ */
+async function getVertexAccessToken() {
+  const creds = getVertexCreds();
+  if (!creds) return null;
+  const now = Math.floor(Date.now() / 1000);
+  if (creds.cachedToken && creds.cachedExp - 60 > now) return creds.cachedToken;
+
+  const header = base64url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }));
+  const claims = base64url(JSON.stringify({
+    iss: creds.clientEmail,
+    scope: 'https://www.googleapis.com/auth/cloud-platform',
+    aud: 'https://oauth2.googleapis.com/token',
+    iat: now,
+    exp: now + 3600,
+  }));
+  const unsigned = `${header}.${claims}`;
+  const signer = crypto.createSign('RSA-SHA256');
+  signer.update(unsigned);
+  signer.end();
+  const signature = signer.sign(creds.privateKey).toString('base64')
+    .replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
+  const jwt = `${unsigned}.${signature}`;
+
+  try {
+    const res = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+        assertion: jwt,
+      }),
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!res.ok) {
+      const t = await res.text();
+      console.warn(`[transcribe] Vertex token exchange failed HTTP ${res.status}: ${t.slice(0, 300)}`);
+      return null;
+    }
+    const data = await res.json();
+    if (!data.access_token) return null;
+    creds.cachedToken = data.access_token;
+    creds.cachedExp = now + (data.expires_in || 3600);
+    return creds.cachedToken;
+  } catch (e) {
+    console.warn(`[transcribe] Vertex token exchange threw: ${e.message}`);
+    return null;
+  }
+}
+
+const VERTEX_LOCATION = process.env.VERTEX_AI_LOCATION || 'us-central1';
 
 /**
  * Download a remote video into memory. NEVER throws on size — the caller
@@ -114,22 +217,89 @@ async function uploadToGeminiFileApi(buffer, mimeType, apiKey) {
   }
 }
 
+const GEMINI_PROMPT = 'Transcribe ALL spoken words in this video/audio. Return ONLY the transcript as plain text — no timestamps, no speaker labels, no commentary, no formatting. Preserve natural paragraph breaks. If there are multiple speakers, separate their lines with paragraph breaks.';
+
 /**
- * Transcribe a video buffer via Gemini Flash. Used when the buffer exceeds
- * Whisper's 25 MB hard limit. Returns plain text — no segment timestamps.
- * Throws if every (key × model) combination fails.
+ * Vertex AI path — uses the service-account JSON in GOOGLE_SA_JSON.
+ * This is the preferred path because AI-Studio-created projects now bind
+ * keys to service accounts, breaking the legacy endpoint. Returns
+ * { ok: true, text } on success, { ok: false, error } on failure (so the
+ * caller can decide whether to fall through to the legacy path).
+ *
+ * Only the inline path is implemented for Vertex. For files >15 MB we'd
+ * need a GCS bucket upload — not worth the complexity until needed.
  */
-async function transcribeBufferWithGemini(buffer, mime) {
-  if (GEMINI_API_KEYS.length === 0) {
-    throw new Error('No Gemini API keys configured (GEMINI_API_KEY*)');
+async function transcribeBufferWithVertex(buffer, mime) {
+  const creds = getVertexCreds();
+  if (!creds) return { ok: false, error: 'GOOGLE_SA_JSON not configured' };
+
+  const token = await getVertexAccessToken();
+  if (!token) return { ok: false, error: 'Vertex OAuth token mint failed' };
+
+  const sizeMB = buffer.length / 1024 / 1024;
+  if (sizeMB > 18) {
+    return { ok: false, error: `Vertex inline path skipped (${sizeMB.toFixed(1)} MB > 18 MB ceiling); GCS upload not implemented` };
   }
-  const prompt = 'Transcribe ALL spoken words in this video/audio. Return ONLY the transcript as plain text — no timestamps, no speaker labels, no commentary, no formatting. Preserve natural paragraph breaks. If there are multiple speakers, separate their lines with paragraph breaks.';
+
+  const requestBody = {
+    contents: [{
+      role: 'user',
+      parts: [
+        { inlineData: { mimeType: mime, data: buffer.toString('base64') } },
+        { text: GEMINI_PROMPT },
+      ],
+    }],
+    generationConfig: { maxOutputTokens: 4096, temperature: 0.1 },
+  };
+  const models = ['gemini-2.0-flash-001', 'gemini-2.5-flash', 'gemini-2.0-flash'];
+  let lastError = null;
+  for (const model of models) {
+    try {
+      const url = `https://${VERTEX_LOCATION}-aiplatform.googleapis.com/v1/projects/${creds.projectId}/locations/${VERTEX_LOCATION}/publishers/google/models/${model}:generateContent`;
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(requestBody),
+        signal: AbortSignal.timeout(GEMINI_TIMEOUT_MS),
+      });
+      if (res.status === 429) { lastError = `${model}: 429`; continue; }
+      if (res.status === 404) { lastError = `${model}: 404 (model unavailable in ${VERTEX_LOCATION})`; continue; }
+      if (!res.ok) {
+        const t = await res.text();
+        lastError = `${model}: HTTP ${res.status} — ${t.slice(0, 200)}`;
+        continue;
+      }
+      const data = await res.json();
+      const text = (data.candidates?.[0]?.content?.parts?.[0]?.text || '').trim();
+      if (text.length >= 10) {
+        console.log(`[transcribe] Vertex ${model} returned ${text.length} chars`);
+        return { ok: true, text };
+      }
+      lastError = `${model}: empty transcript`;
+    } catch (err) {
+      lastError = `${model}: ${err.message}`;
+    }
+  }
+  return { ok: false, error: lastError || 'unknown Vertex failure' };
+}
+
+/**
+ * Legacy AI Studio path — uses GEMINI_API_KEY*. Kept as a fallback because
+ * it still works for projects where the org policy doesn't enforce SA
+ * binding (e.g. our original key that successfully transcribed B0248).
+ */
+async function transcribeBufferWithLegacyAiStudio(buffer, mime) {
+  if (GEMINI_API_KEYS.length === 0) {
+    return { ok: false, error: 'No Gemini API keys configured (GEMINI_API_KEY*)' };
+  }
   const sizeMB = buffer.length / 1024 / 1024;
   const models = ['gemini-2.0-flash-001', 'gemini-2.5-flash', 'gemini-2.0-flash'];
 
   let lastError = null;
   for (const apiKey of GEMINI_API_KEYS) {
-    // Always upload to File API for >15 MB — inline base64 is unreliable above that.
     let fileUri = null;
     if (sizeMB > 15) {
       fileUri = await uploadToGeminiFileApi(buffer, mime, apiKey);
@@ -144,7 +314,7 @@ async function transcribeBufferWithGemini(buffer, mime) {
           fileUri
             ? { fileData: { mimeType: mime, fileUri } }
             : { inlineData: { mimeType: mime, data: buffer.toString('base64') } },
-          { text: prompt },
+          { text: GEMINI_PROMPT },
         ],
       }],
       generationConfig: { maxOutputTokens: 4096, temperature: 0.1 },
@@ -169,14 +339,29 @@ async function transcribeBufferWithGemini(buffer, mime) {
         }
         const data = await res.json();
         const text = (data.candidates?.[0]?.content?.parts?.[0]?.text || '').trim();
-        if (text.length >= 10) return text;
+        if (text.length >= 10) return { ok: true, text };
         lastError = `${model}: empty transcript`;
       } catch (err) {
         lastError = `${model}: ${err.message}`;
       }
     }
   }
-  throw new Error(`Gemini transcription failed: ${lastError || 'unknown'}`);
+  return { ok: false, error: lastError || 'unknown legacy failure' };
+}
+
+/**
+ * Orchestrator — try Vertex first (preferred for SA-bound projects),
+ * fall through to legacy AI Studio if Vertex isn't configured or fails.
+ * Throws only if BOTH paths fail.
+ */
+async function transcribeBufferWithGemini(buffer, mime) {
+  const vertex = await transcribeBufferWithVertex(buffer, mime);
+  if (vertex.ok) return vertex.text;
+
+  const legacy = await transcribeBufferWithLegacyAiStudio(buffer, mime);
+  if (legacy.ok) return legacy.text;
+
+  throw new Error(`Gemini transcription failed — Vertex: ${vertex.error}; Legacy: ${legacy.error}`);
 }
 
 /**
