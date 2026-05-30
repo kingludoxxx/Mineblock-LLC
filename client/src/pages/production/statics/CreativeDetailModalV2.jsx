@@ -32,23 +32,31 @@ export function CreativeDetailModalV2({
   onClose,
   onRefresh,
 }) {
-  // Resolve the three ratios from the creative tree:
-  // parent = the 1:1 (or whichever the card row is); children are siblings
-  // with parent_creative_id === parent.id.
+  // Resolve the three ratios from the creative tree. The clicked row
+  // (`parent` prop) may be the actual 1:1 parent OR a child (e.g. a
+  // launched 9:16 rendered separately). Either way, walk to the true
+  // parent first, then collect parent + children into ratioMap.
   const ratioMap = useMemo(() => {
-    if (!parent) return {};
-    const map = {};
-    const parentRatio = parent.aspect_ratio || '1:1';
-    map[parentRatio] = parent;
-    if (Array.isArray(allCreatives)) {
-      for (const c of allCreatives) {
-        if (c.parent_creative_id === parent.id && c.aspect_ratio) {
-          map[c.aspect_ratio] = c;
-        }
+    if (!parent) return { trueParent: null };
+    const arr = Array.isArray(allCreatives) ? allCreatives : [];
+    // Walk up: if parent has parent_creative_id, find the actual parent row.
+    let root = parent;
+    if (parent.parent_creative_id) {
+      const found = arr.find((c) => c.id === parent.parent_creative_id);
+      if (found) root = found;
+    }
+    const map = { trueParent: root };
+    const rootRatio = root.aspect_ratio || '1:1';
+    map[rootRatio] = root;
+    for (const c of arr) {
+      if (c.parent_creative_id === root.id && c.aspect_ratio) {
+        map[c.aspect_ratio] = c;
       }
     }
     return map;
   }, [parent, allCreatives]);
+
+  const trueParent = ratioMap.trueParent || parent;
 
   // Close on Escape
   useEffect(() => {
@@ -62,11 +70,11 @@ export function CreativeDetailModalV2({
   const [approveError, setApproveError] = useState(null);
 
   const handleApproveAll = useCallback(async () => {
-    if (!parent || approving) return;
+    if (!trueParent || approving) return;
     setApproving(true);
     setApproveError(null);
     try {
-      await api.post(`/statics-generation/creatives/${parent.id}/approve`);
+      await api.post(`/statics-generation/creatives/${trueParent.id}/approve`);
       onRefresh?.();
       onClose?.();
     } catch (err) {
@@ -74,12 +82,12 @@ export function CreativeDetailModalV2({
     } finally {
       setApproving(false);
     }
-  }, [parent, approving, onRefresh, onClose]);
+  }, [trueParent, approving, onRefresh, onClose]);
 
   if (!isOpen || !parent) return null;
 
-  const title = parent.angle || parent.product_name || 'Creative';
-  const shortId = parent.id ? parent.id.slice(0, 12) + '…' : '';
+  const title = trueParent.angle || trueParent.product_name || 'Creative';
+  const shortId = trueParent.id ? trueParent.id.slice(0, 12) + '…' : '';
 
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-sm p-6" onClick={onClose}>
@@ -143,9 +151,10 @@ export function CreativeDetailModalV2({
                 key={ratio}
                 ratio={ratio}
                 creative={ratioMap[ratio] || null}
-                parentId={parent.id}
+                parentId={trueParent.id}
                 onRefresh={onRefresh}
                 onAfterDelete={onRefresh}
+                onApproved={() => { onRefresh?.(); onClose?.(); }}
               />
             ))}
           </div>
@@ -159,7 +168,7 @@ export function CreativeDetailModalV2({
  * Single-ratio column
  * -------------------------------------------------------------------------- */
 
-function RatioColumn({ ratio, creative, parentId, onRefresh, onAfterDelete }) {
+function RatioColumn({ ratio, creative, parentId, onRefresh, onAfterDelete, onApproved }) {
   const [refineInput, setRefineInput] = useState('');
   const [refining, setRefining] = useState(false);
   const [refineError, setRefineError] = useState(null);
@@ -253,8 +262,10 @@ function RatioColumn({ ratio, creative, parentId, onRefresh, onAfterDelete }) {
     setApproving(true);
     try {
       // Backend resolves child → parent + approves the whole tree.
+      // Per-ratio approve = full-card approve (intentional — the operator
+      // shouldn't need to approve each ratio separately).
       await api.post(`/statics-generation/creatives/${creative.id}/approve`);
-      onRefresh?.();
+      onApproved?.();
     } catch (err) {
       setRefineError(err.response?.data?.error?.message || err.message);
     } finally {
