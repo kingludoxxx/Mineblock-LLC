@@ -1022,6 +1022,7 @@ export default function StaticsGeneration() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [templateEditorOpen, setTemplateEditorOpen] = useState(false);
   const [editingTemplate, setEditingTemplate] = useState(null);
+  const [templatesVersion, setTemplatesVersion] = useState(0); // bumped after save → PipelineView re-fetches templates
   const [copySetsOpen, setCopySetsOpen] = useState(false);
   const [analysisModalTemplate, setAnalysisModalTemplate] = useState(null);
   const [selectedCategory, setSelectedCategory] = useState(null);
@@ -2577,7 +2578,9 @@ export default function StaticsGeneration() {
                       console.error('[Pipeline] Regenerate failed:', err.message);
                     }
                   }}
-                  onOpenTemplates={() => setTemplateEditorOpen(true)}
+                  onOpenTemplates={() => { setEditingTemplate(null); setTemplateEditorOpen(true); }}
+                  onEditTemplate={(tpl) => { setEditingTemplate(tpl); setTemplateEditorOpen(true); }}
+                  templatesVersion={templatesVersion}
                   onOpenCopySets={() => setCopySetsOpen(true)}
                 />
 
@@ -3265,7 +3268,7 @@ export default function StaticsGeneration() {
           open
           template={editingTemplate}
           onClose={() => { setTemplateEditorOpen(false); setEditingTemplate(null); }}
-          onSaved={() => { setTemplateEditorOpen(false); setEditingTemplate(null); }}
+          onSaved={() => { setTemplateEditorOpen(false); setEditingTemplate(null); setTemplatesVersion(v => v + 1); }}
         />
       )}
 
