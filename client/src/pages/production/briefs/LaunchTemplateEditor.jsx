@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import {
   X, ArrowLeft, RefreshCw, Loader2, Check, ChevronDown, Plus,
   Users, Target, DollarSign, BarChart3, Tag, Languages, Layout,
@@ -261,12 +261,17 @@ export default function LaunchTemplateEditor({ open, onClose, template, onSaved 
   };
 
   // -- Sync account data when account changes -------------------------------
-  // pruneStale=true → drop pixel/campaign/page/audience selections that
-  // don't exist for this account (used after a user picks a new account).
-  // pruneStale=false → just load the option lists, leave selections as-is
-  // (used on initial editor mount so we don't clobber valid form values
-  // while we wait for the API).
-  const syncAccount = useCallback(async (accountId, { pruneStale = false } = {}) => {
+  // After syncAccount resolves, ALWAYS prune form selections that don't exist
+  // in the freshly-loaded option lists for the current account. This handles
+  // both:
+  //   - User-driven account change → form has selections valid for the OLD
+  //     account, sync loads NEW account's options, prune drops mismatches
+  //   - Initial editor mount on a template with dead IDs (e.g. created on a
+  //     previous BM) → sync loads current options, prune drops dead values
+  // Prior version only pruned on user-driven changes, so a user could open
+  // a template with dead IDs and Save-as-is — the dead IDs survived into
+  // the DB and exploded at launch with cryptic Meta errors.
+  const syncAccount = useCallback(async (accountId) => {
     if (!accountId) return;
     setSyncing(true);
     try {
@@ -281,26 +286,20 @@ export default function LaunchTemplateEditor({ open, onClose, template, onSaved 
       setCampaigns(freshCampaigns);
       setAudiences(freshAudiences);
 
-      if (pruneStale) {
-        // Templates created on the old BM carry dead pixel_id / campaign_id /
-        // page_ids that silently survive into a Save and explode at launch
-        // time. After the user explicitly changes account, drop anything
-        // Meta no longer recognises for the new account.
-        setForm((f) => {
-          const pixelOK = freshPixels.some(p => p.id === f.pixelId);
-          const campaignOK = freshCampaigns.some(c => c.id === f.campaignId);
-          const validPageIds = new Set(freshPages.map(p => p.id));
-          const validAudienceIds = new Set(freshAudiences.map(a => a.id));
-          return {
-            ...f,
-            pixelId: pixelOK ? f.pixelId : '',
-            campaignId: campaignOK ? f.campaignId : '',
-            selectedPages: (f.selectedPages || []).filter(id => validPageIds.has(id)),
-            includeAudiences: (f.includeAudiences || []).filter(id => validAudienceIds.has(id)),
-            excludeAudiences: (f.excludeAudiences || []).filter(id => validAudienceIds.has(id)),
-          };
-        });
-      }
+      setForm((f) => {
+        const pixelOK = freshPixels.some(p => p.id === f.pixelId);
+        const campaignOK = freshCampaigns.some(c => c.id === f.campaignId);
+        const validPageIds = new Set(freshPages.map(p => p.id));
+        const validAudienceIds = new Set(freshAudiences.map(a => a.id));
+        return {
+          ...f,
+          pixelId: pixelOK ? f.pixelId : '',
+          campaignId: campaignOK ? f.campaignId : '',
+          selectedPages: (f.selectedPages || []).filter(id => validPageIds.has(id)),
+          includeAudiences: (f.includeAudiences || []).filter(id => validAudienceIds.has(id)),
+          excludeAudiences: (f.excludeAudiences || []).filter(id => validAudienceIds.has(id)),
+        };
+      });
     } catch (err) {
       console.error('Failed to sync account:', err);
     } finally {
@@ -308,23 +307,15 @@ export default function LaunchTemplateEditor({ open, onClose, template, onSaved 
     }
   }, []);
 
-  // Initial mount: load options for the prefilled account WITHOUT pruning.
-  // Subsequent user-driven account changes go through handleAccountChange
-  // below which DOES prune stale selections.
-  const initialAccountSynced = useRef(false);
   useEffect(() => {
-    if (form.accountId && !initialAccountSynced.current) {
-      initialAccountSynced.current = true;
-      syncAccount(form.accountId, { pruneStale: false });
-    }
+    if (form.accountId) syncAccount(form.accountId);
   }, [form.accountId, syncAccount]);
 
-  // User-driven account change — fired by the Ad Account select onChange below
+  // User-driven account change — explicit so the select's stale-id pruning
+  // happens via the syncAccount triggered by the useEffect above.
   const handleAccountChange = useCallback((newId) => {
     setForm((f) => ({ ...f, accountId: newId }));
-    initialAccountSynced.current = true; // already in user-control mode
-    syncAccount(newId, { pruneStale: true });
-  }, [syncAccount]);
+  }, []);
 
   // -- Field updater ---------------------------------------------------------
   const set = (field) => (value) => setForm((f) => ({ ...f, [field]: value }));
