@@ -29,7 +29,7 @@ function writePersisted(brandIds) {
  * No queueing or generation happens directly from this column — it's a
  * discovery surface, generation always flows through Reference.
  */
-export function FromLeagueColumn({ onUseAsReference }) {
+export function FromLeagueColumn({ onUseAsReference, refreshTick = 0 }) {
   const [brands, setBrands] = useState([]);
   const [selectedBrands, setSelectedBrands] = useState(() => readPersisted() || []);
   const [ads, setAds] = useState([]); // { ...ad, brand_id, brand_name }[]
@@ -87,6 +87,13 @@ export function FromLeagueColumn({ onUseAsReference }) {
   }, []);
 
   useEffect(() => { loadAds(); }, [loadAds]);
+  // External trigger — parent bumps refreshTick after the LeagueImportModal
+  // completes, so the column re-fetches without a manual page refresh.
+  // Skips the initial 0 → already covered by the mount-effect above.
+  useEffect(() => {
+    if (refreshTick > 0) loadAds();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refreshTick]);
 
   const visibleAds = useMemo(() => ads.filter(a => !dismissed.has(`${a.brand_id}:${a.id}`)), [ads, dismissed]);
   // The old "no brands selected" empty-state and brand filter are gone —

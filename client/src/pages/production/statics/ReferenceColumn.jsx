@@ -212,7 +212,7 @@ function ReferenceCard({ item, onPreview, onDelete, isSelected, onToggleSelect, 
   );
 }
 
-export function ReferenceColumn({ productId, onSelectReference, onAddSelectedToQueue }) {
+export function ReferenceColumn({ productId, onSelectReference, onAddSelectedToQueue, onLeagueImported }) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -414,7 +414,15 @@ export function ReferenceColumn({ productId, onSelectReference, onAddSelectedToQ
       {showLeague && (
         <LeagueImportModal
           onClose={() => setShowLeague(false)}
-          onImported={() => { setShowLeague(false); load(); }}
+          onImported={() => {
+            setShowLeague(false);
+            load();
+            // League imports land in the FROM LEAGUE column, NOT the
+            // Reference column (which excludes imported_from='league').
+            // Without this bridge, the operator clicks Import, sees zero
+            // change in Reference, and assumes the import failed silently.
+            onLeagueImported?.();
+          }}
         />
       )}
       {showMeta && (

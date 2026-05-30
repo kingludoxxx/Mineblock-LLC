@@ -926,6 +926,10 @@ export function PipelineView({ creatives = [], onStatusChange, onAngleChange, on
     return map;
   }, [creatives]);
 
+  // Counter bumped whenever a league import lands so FromLeagueColumn
+  // re-fetches without requiring a page refresh.
+  const [leagueRefreshTick, setLeagueRefreshTick] = useState(0);
+
   // Launch state
   const [launchTemplates, setLaunchTemplates] = useState([]);
   const [copySets, setCopySets] = useState([]);
@@ -1101,12 +1105,16 @@ export function PipelineView({ creatives = [], onStatusChange, onAngleChange, on
           productId={productId}
           onSelectReference={onSelectReference}
           onAddSelectedToQueue={onAddSelectedToQueue}
+          onLeagueImported={() => setLeagueRefreshTick(n => n + 1)}
         />
 
         {/* From League column — followed-brand static feed, multi-select filter.
             "Use as Reference" promotes a league ad into the operator's Reference
-            column for generation (reuses onSelectReference channel). */}
-        <FromLeagueColumn onUseAsReference={onSelectReference} />
+            column for generation (reuses onSelectReference channel).
+            refreshTick bumps when LeagueImportModal completes so the column
+            re-fetches /league/imported-refs without the operator having to
+            manually refresh the page. */}
+        <FromLeagueColumn onUseAsReference={onSelectReference} refreshTick={leagueRefreshTick} />
 
         {/* Standard columns: review (generating was removed in Phase A — in-flight
             queue items are merged into review's queueItems prop, rendered as
