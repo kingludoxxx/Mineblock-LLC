@@ -61,6 +61,8 @@ export function MetaImportModal({ onClose, onImported }) {
   const [importing, setImporting] = useState(false);
   const [syncStatus, setSyncStatus] = useState('idle'); // idle | pending | fresh
   const [lastSync, setLastSync] = useState(null);
+  const [type, setType] = useState('image'); // image | video | carousel | all
+  const [freshness, setFreshness] = useState(null); // { last_sync_at, age_minutes, is_stale, row_count }
 
   const loadAccounts = useCallback(async () => {
     try {
@@ -128,25 +130,34 @@ export function MetaImportModal({ onClose, onImported }) {
     setLoadingAds(true);
     setError(null);
     try {
-      const res = await api.get('/statics-generation/meta-ads/ads', {
-        params: {
-          accounts: Array.from(selectedAccounts).join(','),
-          status,
-          window: windowDays,
-          sort,
-          min_roas: minRoas,
-          min_spend: minSpend,
-          search: debouncedSearch || undefined,
-        },
-      });
-      setAds(res.data?.data || []);
+      const [adsRes, freshRes] = await Promise.all([
+        api.get('/statics-generation/meta-ads/ads', {
+          params: {
+            accounts: Array.from(selectedAccounts).join(','),
+            status,
+            window: windowDays,
+            sort,
+            min_roas: minRoas,
+            min_spend: minSpend,
+            type,
+            search: debouncedSearch || undefined,
+          },
+        }),
+        // True freshness from creative_analysis itself (not "we just hit the
+        // endpoint"). Tolerant of failure — degrades to legacy lastSync.
+        api.get('/statics-generation/meta-ads/last-sync', {
+          params: { accounts: Array.from(selectedAccounts).join(',') },
+        }).catch(() => null),
+      ]);
+      setAds(adsRes.data?.data || []);
       setSelected(new Set());
+      if (freshRes?.data?.data) setFreshness(freshRes.data.data);
     } catch (err) {
       setError(err.response?.data?.error?.message || err.message);
     } finally {
       setLoadingAds(false);
     }
-  }, [selectedAccounts, status, windowDays, sort, minRoas, minSpend, debouncedSearch]);
+  }, [selectedAccounts, status, windowDays, sort, minRoas, minSpend, type, debouncedSearch]);
 
   useEffect(() => { loadAds(); }, [loadAds]);
   useEffect(() => { loadAdsRef.current = loadAds; }, [loadAds]);
@@ -209,15 +220,24 @@ export function MetaImportModal({ onClose, onImported }) {
               <span className="ml-1 inline-flex items-center gap-1 text-[9px] font-mono uppercase bg-cyan-500/10 border border-cyan-500/30 text-cyan-300 px-1.5 py-0.5 rounded">
                 <DollarSign className="w-2.5 h-2.5" /> Triple Whale
               </span>
-              <span className="text-[9px] font-mono uppercase bg-white/[0.04] border border-white/[0.08] text-zinc-300 px-1.5 py-0.5 rounded">Images Only</span>
+              <span className="text-[9px] font-mono uppercase bg-white/[0.04] border border-white/[0.08] text-zinc-300 px-1.5 py-0.5 rounded">
+                {type === 'all' ? 'All Types' : `${type.charAt(0).toUpperCase()}${type.slice(1)}`}
+              </span>
               {syncStatus === 'pending' && (
                 <span className="text-[9px] font-mono uppercase bg-amber-500/10 border border-amber-500/30 text-amber-300 px-1.5 py-0.5 rounded inline-flex items-center gap-1">
                   <Loader2 className="w-2.5 h-2.5 animate-spin" /> Syncing
                 </span>
               )}
-              {syncStatus !== 'pending' && lastSync && (
-                <span className="text-[9px] font-mono uppercase bg-white/[0.04] border border-white/[0.08] text-zinc-400 px-1.5 py-0.5 rounded" title={new Date(lastSync).toLocaleString()}>
-                  Synced {timeAgo(lastSync)}
+              {syncStatus !== 'pending' && freshness?.last_sync_at && (
+                <span
+                  className={`text-[9px] font-mono uppercase border px-1.5 py-0.5 rounded ${
+                    freshness.is_stale
+                      ? 'bg-red-500/10 border-red-500/40 text-red-300'
+                      : 'bg-white/[0.04] border-white/[0.08] text-zinc-400'
+                  }`}
+                  title={`${new Date(freshness.last_sync_at).toLocaleString()} · ${freshness.row_count} rows`}
+                >
+                  TW {timeAgo(freshness.last_sync_at)}{freshness.is_stale ? ' · STALE' : ''}
                 </span>
               )}
             </h2>
@@ -278,6 +298,21 @@ export function MetaImportModal({ onClose, onImported }) {
                       status === s.key ? 'bg-cyan-500/15 border-cyan-500/40 text-cyan-300' : 'border-white/[0.08] text-zinc-400 hover:border-white/[0.2]'
                     }`}
                   >{s.label}</button>
+                ))}
+              </div>
+            </div>
+            {/* Type */}
+            <div>
+              <label className="text-[10px] font-mono uppercase tracking-wider text-zinc-400 mb-1 block">Type</label>
+              <div className="flex gap-1">
+                {['image', 'video', 'carousel', 'all'].map(t => (
+                  <button
+                    key={t}
+                    onClick={() => setType(t)}
+                    className={`px-2 py-1 text-[10px] font-mono uppercase rounded border cursor-pointer ${
+                      type === t ? 'bg-cyan-500/15 border-cyan-500/40 text-cyan-300' : 'border-white/[0.08] text-zinc-400 hover:border-white/[0.2]'
+                    }`}
+                  >{t}</button>
                 ))}
               </div>
             </div>
@@ -386,10 +421,28 @@ export function MetaImportModal({ onClose, onImported }) {
                   }`}
                 >
                   {ad.thumbnail_url ? (
-                    <img src={ad.thumbnail_url} alt="" className="w-full aspect-[4/5] object-cover" onError={(e) => { e.currentTarget.style.opacity = '0.2'; }} />
-                  ) : (
-                    <div className="w-full aspect-[4/5] bg-white/[0.02]" />
-                  )}
+                    <img
+                      src={ad.thumbnail_url}
+                      alt=""
+                      loading="lazy"
+                      decoding="async"
+                      className="w-full aspect-[4/5] object-cover"
+                      onError={(e) => {
+                        // Replace the img with the placeholder by hiding it
+                        // and showing the sibling fallback. The sibling has
+                        // its own onError handler so the chain stops here.
+                        e.currentTarget.style.display = 'none';
+                        const sib = e.currentTarget.nextElementSibling;
+                        if (sib) sib.style.display = 'flex';
+                      }}
+                    />
+                  ) : null}
+                  <div
+                    className="w-full aspect-[4/5] bg-white/[0.02] items-center justify-center text-zinc-700 text-[10px] font-mono uppercase tracking-wider"
+                    style={{ display: ad.thumbnail_url ? 'none' : 'flex' }}
+                  >
+                    No preview
+                  </div>
                   <span className="absolute top-1.5 left-1.5 text-[9px] font-mono font-bold bg-emerald-500/90 text-black px-1.5 py-0.5 rounded">ACTIVE</span>
                   {ad.auto_detected && (
                     <span
