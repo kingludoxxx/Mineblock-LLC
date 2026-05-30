@@ -40,6 +40,7 @@ import { PipelineView } from './statics/PipelineView';
 import { LibraryView } from './statics/LibraryView';
 import { TemplateSelectModal } from './statics/TemplateSelectModal';
 import { CreativeDetailModal } from './statics/CreativeDetailModal';
+import { CreativeDetailModalV2 } from './statics/CreativeDetailModalV2';
 import { ConfigSidebar } from './statics/ConfigSidebar';
 import { AddReferenceModal } from './statics/AddReferenceModal';
 import { StaticsSettingsModal } from './statics/StaticsSettingsModal';
@@ -3188,6 +3189,19 @@ export default function StaticsGeneration() {
       )}
 
       {detailModal && (
+        <CreativeDetailModalV2
+          key={detailModal?.id}
+          parent={detailModal}
+          allCreatives={creatives}
+          isOpen={true}
+          onClose={() => setDetailModal(null)}
+          onRefresh={() => fetchCreatives()}
+        />
+      )}
+
+      {/* Legacy modal — kept import for reference flows that may still want
+          the old tabbed view. V2 above is the new default for pipeline cards. */}
+      {false && detailModal && (
         <CreativeDetailModal
           key={detailModal?.id}
           creative={detailModal}

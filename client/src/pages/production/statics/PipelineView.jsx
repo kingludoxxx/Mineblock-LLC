@@ -1103,8 +1103,10 @@ export function PipelineView({ creatives = [], onStatusChange, onAngleChange, on
           onAddSelectedToQueue={onAddSelectedToQueue}
         />
 
-        {/* From League column — Phase A shell. Phase B: followed-brand static feed + filter. */}
-        <FromLeagueColumn />
+        {/* From League column — followed-brand static feed, multi-select filter.
+            "Use as Reference" promotes a league ad into the operator's Reference
+            column for generation (reuses onSelectReference channel). */}
+        <FromLeagueColumn onUseAsReference={onSelectReference} />
 
         {/* Standard columns: review (generating was removed in Phase A — in-flight
             queue items are merged into review's queueItems prop, rendered as
