@@ -422,6 +422,39 @@ router.post('/meta-ads/repair-thumbnails', async (req, res) => {
   return authenticate(req, res, () => _doMetaAdsRepairThumbnails(req, res));
 });
 
+// ── TEMP: static-only TW probe — CRON_SECRET only ──
+// Returns the top 30 ad_names matching the static-only inclusion clause
+// so we can eyeball that no videos slip through. REMOVE after one
+// verification arc.
+router.get('/meta-ads/_staticverify', async (req, res) => {
+  const cs = process.env.CRON_SECRET;
+  if (!cs || req.headers['x-cron-secret'] !== cs) return res.status(401).json({ error: 'unauthorized' });
+  try {
+    const TW_API_KEY = process.env.TRIPLEWHALE_API_KEY || '';
+    const TW_SHOP_ID = process.env.TRIPLEWHALE_SHOP_ID || '17cca0-2.myshopify.com';
+    const TW_SQL_URL = 'https://api.triplewhale.com/api/v2/orcabase/api/sql';
+    const attribution = process.env.TW_ATTRIBUTION_MODEL || 'lastPlatformClick';
+    if (!TW_API_KEY) return res.status(500).json({ error: 'TRIPLEWHALE_API_KEY not set' });
+    const today = new Date(); today.setUTCHours(0,0,0,0);
+    const end = new Date(today.getTime() - 86400000);
+    const start = new Date(end.getTime() - 6 * 86400000);
+    const fmt = (d) => d.toISOString().slice(0,10);
+    const sql = `SELECT ad_name, SUM(spend) AS spend FROM pixel_joined_tvf WHERE event_date BETWEEN @startDate AND @endDate AND channel = 'facebook-ads' AND ( match(ad_name, '\\\\bIMG\\\\b') OR ad_name ILIKE '%1080x1080%' OR ad_name ILIKE '%1080×1080%' ) GROUP BY ad_name HAVING SUM(spend) > 0.01 ORDER BY SUM(spend) DESC LIMIT 30`;
+    const r = await fetch(TW_SQL_URL, {
+      method: 'POST',
+      headers: { 'x-api-key': TW_API_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ shopId: TW_SHOP_ID, query: sql.trim(), period: { startDate: fmt(start), endDate: fmt(end) }, attributionModel: attribution }),
+      signal: AbortSignal.timeout(45000),
+    });
+    const txt = await r.text();
+    let data; try { data = JSON.parse(txt); } catch { data = { raw: txt }; }
+    const rows = Array.isArray(data) ? data : (data?.data || data?.rows || []);
+    return res.json({ ok: r.ok, status: r.status, count: rows.length, ads: rows, _err: r.ok ? undefined : data });
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
+  }
+});
+
 router.use(authenticate, requirePermission('statics-generation', 'access'));
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
@@ -5019,6 +5052,25 @@ async function fetchTopAdsFromTW({ windowDays, attributionModel, accountIds = []
   // with the operator's chosen attribution model — these are the numbers
   // that should match the TW UI exactly. Filter to Meta-only via the
   // pixel_joined_tvf `channel` column (confirmed in adsReporting.js).
+  // STATIC-ONLY filter — mirrors briefPipeline.staticAdExclusionClause but
+  // INVERTED (that one EXCLUDES statics from a video query; we INCLUDE only
+  // statics). TW's `type` column is unreliable (tags statics as 'video'
+  // sometimes — see brief-pipeline b14fa78 commit). Mineblock naming is
+  // the strong signal:
+  //   • ad_name contains " IMG " token (format-slot convention)
+  //   • ad_name contains "1080x1080" or "1080×1080" (square dims)
+  // ClickHouse: match() for regex, ILIKE for substring.
+  // ClickHouse uses RE2 — \\bIMG\\b matches IMG bounded by non-word chars
+  // (space, dash, end-of-string). Mirrors briefPipeline.staticAdExclusionClause
+  // \\bIMG\\b token detection.
+  const STATIC_ONLY_CLAUSE = `
+    (
+      match(ad_name, '\\\\bIMG\\\\b')
+      OR ad_name ILIKE '%1080x1080%'
+      OR ad_name ILIKE '%1080×1080%'
+    )
+  `;
+
   const sql = `
     SELECT ${acctSelect}
            ad_name,
@@ -5030,6 +5082,7 @@ async function fetchTopAdsFromTW({ windowDays, attributionModel, accountIds = []
       FROM pixel_joined_tvf
      WHERE event_date BETWEEN @startDate AND @endDate
        AND ${_TW_META_CHANNEL_FILTER}
+       AND ${STATIC_ONLY_CLAUSE}
      GROUP BY ad_name${acctGroup}
     HAVING SUM(spend) > ${Number(minSpend) || 0.01}
      ORDER BY SUM(spend) DESC
