@@ -34,14 +34,14 @@ const router = Router();
 // TEMP — PestLab end-to-end test: find ref → re-transcribe → iterate
 router.get('/_findpestlab', async (req, res) => {
   try {
-    const rows = await pgQuery(`SELECT id, title, video_url, status, LENGTH(COALESCE(transcript, '')) AS tlen FROM brief_pipeline_references WHERE LOWER(title) LIKE '%pest%' OR LOWER(title) LIKE '%goodbye%' OR LOWER(title) LIKE '%shark%' ORDER BY created_at DESC LIMIT 10`);
+    const rows = await pgQuery(`SELECT id, brand_name, headline, body_text, video_url, status, LENGTH(COALESCE(transcript, '')) AS tlen, created_at FROM brief_pipeline_references WHERE LOWER(COALESCE(headline,'')) LIKE '%pest%' OR LOWER(COALESCE(headline,'')) LIKE '%goodbye%' OR LOWER(COALESCE(headline,'')) LIKE '%shark%' OR LOWER(COALESCE(brand_name,'')) LIKE '%pest%' OR LOWER(COALESCE(body_text,'')) LIKE '%goodbye to pests%' ORDER BY created_at DESC LIMIT 10`);
     res.json({ count: rows.length, refs: rows });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 router.post('/_retranscribe/:id', async (req, res) => {
   try {
-    const rows = await pgQuery(`SELECT id, video_url, title FROM brief_pipeline_references WHERE id = $1 LIMIT 1`, [req.params.id]);
+    const rows = await pgQuery(`SELECT id, video_url, headline FROM brief_pipeline_references WHERE id = $1 LIMIT 1`, [req.params.id]);
     if (!rows.length || !rows[0].video_url) return res.status(400).json({ error: 'reference has no video_url' });
     const ref = rows[0];
     const t0 = Date.now();
@@ -59,7 +59,7 @@ router.post('/_retranscribe/:id', async (req, res) => {
       [result.text, JSON.stringify(result.segments || []), result._source || 'unknown', JSON.stringify(result._analysis || null), ref.id]
     );
     res.json({
-      ref_id: ref.id, title: ref.title, elapsed_ms: elapsedMs,
+      ref_id: ref.id, headline: ref.headline, elapsed_ms: elapsedMs,
       source: result._source, transcript_chars: result.text.length,
       transcript_head: result.text.slice(0, 800),
       brand: result._analysis?.brand_or_product_identified || null,
