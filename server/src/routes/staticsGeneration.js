@@ -427,18 +427,23 @@ router.post('/meta-ads/repair-thumbnails', async (req, res) => {
 // through the UI (they're one-shot operations). Both are CRON_SECRET-gated
 // and BELOW the global auth so the fast path fires.
 
-// POST /league/clear-imports — wipe all 'imported_from=league' rows that
-// haven't been approved/launched yet. Used after the operator decides the
-// auto-sync pulled too many references and they want a clean slate.
+// POST /league/clear-imports — wipe all 'imported_from=league' rows.
+// Used after the operator decides the auto-sync (or manual imports) pulled
+// too many references and they want a clean slate. PROTECTS:
+//   • status='launched'        (live ads — never touch)
+//   • parent_creative_id IS NOT NULL (children of approved/launched roots)
+// EVERYTHING ELSE under imported_from='league' (including is_reference=TRUE
+// rows with status='ready' from the league sync flow) IS wiped — these are
+// pure references, not generated work, so wiping them is safe.
 router.post('/league/clear-imports', async (req, res) => {
   const cs = process.env.CRON_SECRET;
   if (!cs || req.headers['x-cron-secret'] !== cs) return res.status(401).json({ error: 'unauthorized' });
   try {
-    // Only clear rows still in early statuses — never touch approved/launched.
     const result = await pgQuery(
       `DELETE FROM spy_creatives
         WHERE imported_from = 'league'
-          AND status IN ('review', 'queued', 'generating', 'rejected', 'archived')
+          AND status <> 'launched'
+          AND parent_creative_id IS NULL
         RETURNING id`,
       []
     );
