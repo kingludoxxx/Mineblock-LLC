@@ -31,6 +31,49 @@ const YTDLP_PATH = join(__dirname, '..', '..', '..', 'bin', 'yt-dlp');
 
 const router = Router();
 
+// TEMP — audit all OUR references for brand mismatch via multimodal analysis
+router.get('/_auditour', async (req, res) => {
+  try {
+    const refs = await pgQuery(
+      `SELECT id, headline, ad_archive_id, tier, source, status,
+              imported_metadata->>'multimodal_analysis' AS mm_raw,
+              LENGTH(COALESCE(transcript, '')) AS tlen
+       FROM brief_pipeline_references
+       WHERE source = 'meta' AND tier = 'OUR'
+       ORDER BY created_at DESC LIMIT 30`
+    );
+    const audit = refs.map((r) => {
+      let brand = null;
+      let sellingMessage = null;
+      if (r.mm_raw) {
+        try {
+          const mm = JSON.parse(r.mm_raw);
+          brand = mm.brand_or_product_identified;
+          sellingMessage = (mm.selling_message || '').slice(0, 150);
+        } catch { /* ignore */ }
+      }
+      const headlineUpper = (r.headline || '').toUpperCase();
+      const looksMineblock = /MR\s*-\s*B\d/.test(headlineUpper) || /MINER|MINEBLOCK/i.test(headlineUpper);
+      const brandUpper = (brand || '').toUpperCase();
+      const brandLooksMineblock = /MINER|MINEBLOCK|MINERFORGE|BITCOIN/i.test(brandUpper);
+      const mismatch = looksMineblock && brand && !brandLooksMineblock && brandUpper !== 'UNCLEAR';
+      return {
+        id: r.id,
+        ad_archive_id: r.ad_archive_id,
+        headline: r.headline,
+        status: r.status,
+        transcript_chars: r.tlen,
+        brand_identified: brand,
+        selling_message_head: sellingMessage,
+        looks_mineblock_by_name: looksMineblock,
+        brand_matches: !mismatch,
+        MISMATCH: mismatch,
+      };
+    });
+    res.json({ count: audit.length, mismatches: audit.filter((a) => a.MISMATCH).length, audit });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // TEMP — trace B0248's data lineage (ad_id, video URL, TW source, brand identified)
 router.get('/_traceb0248', async (req, res) => {
   try {
