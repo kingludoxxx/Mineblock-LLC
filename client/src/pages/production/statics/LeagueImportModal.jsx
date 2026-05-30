@@ -128,7 +128,7 @@ export function LeagueImportModal({ onClose, onImported }) {
               Import from League
             </h2>
             <p className="text-xs text-zinc-400 mt-1 leading-relaxed">
-              Pick canonical-ranked Meta ads from a followed brand and push them into the Reference column.
+              Pick canonical-ranked Meta ads from a followed brand and push them into the From League column.
             </p>
           </div>
           <button onClick={onClose} className="text-zinc-400 hover:text-white cursor-pointer">
@@ -300,7 +300,7 @@ export function LeagueImportModal({ onClose, onImported }) {
               className="px-4 py-1.5 text-[11px] font-mono uppercase tracking-wider text-black bg-[#d4b55a] hover:bg-[#e4c56a] rounded disabled:opacity-40 cursor-pointer flex items-center gap-1.5"
             >
               {importing ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
-              Import {selected.size > 0 ? `(${selected.size})` : ''} to Reference
+              Import {selected.size > 0 ? `(${selected.size})` : ''} to From League
             </button>
           </div>
         </div>

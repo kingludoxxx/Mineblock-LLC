@@ -934,7 +934,7 @@ export default function StaticsGeneration() {
   const [activeTab, setActiveTab] = useState('pipeline');
 
   // Pipeline sub-toggle
-  const [activePipeline, setActivePipeline] = useState('standard');
+  // Advertorial pipeline was removed; only the standard pipeline remains.
 
   // =========================================================================
   // STANDARD PIPELINE STATE
@@ -2136,11 +2136,7 @@ export default function StaticsGeneration() {
 
   useEffect(() => {
     if (activeTab === 'pipeline') {
-      if (activePipeline === 'standard') {
-        fetchCreatives();
-      } else {
-        fetchAdvCopies();
-      }
+      fetchCreatives();
     } else if (activeTab === 'library') {
       if (!templatesFetched.current) {
         fetchTemplates(); // ref is set inside on success
@@ -2151,7 +2147,7 @@ export default function StaticsGeneration() {
         creativesFetched.current = true;
       }
     }
-  }, [activeTab, activePipeline]);
+  }, [activeTab]);
 
   // Auto-refresh pipeline when items are generating (variants or standalone)
   // Use refs to avoid infinite re-render: fetchCreatives updates creatives, which
@@ -2273,15 +2269,7 @@ export default function StaticsGeneration() {
       {/* PIPELINE TAB                                                       */}
       {/* ================================================================= */}
       {activeTab === 'pipeline' && (
-        <>
-          {/* Sub-tab: Standard / Advertorial toggle */}
-          <div className="mb-6">
-            <PipelineToggle active={activePipeline} onChange={setActivePipeline} />
-          </div>
-
-          {/* ---- Standard Pipeline ---- */}
-          {activePipeline === 'standard' && (
-            <div className="flex gap-0">
+          <div className="flex gap-0">
               {/* Left: ConfigSidebar */}
               <div className="w-[280px] shrink-0 space-y-4 pr-0 border-r border-white/[0.04]">
                 <ConfigSidebar
@@ -2879,222 +2867,6 @@ export default function StaticsGeneration() {
                 })()}
               </div>
             </div>
-          )}
-
-          {/* ---- Advertorial Pipeline ---- */}
-          {activePipeline === 'advertorial' && (
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-              {/* LEFT PANEL -- Advertorial Form */}
-              <div className="lg:col-span-1 space-y-4">
-                {/* Product Selector */}
-                <div className="bg-[#111] border border-white/[0.06] rounded-lg p-5 space-y-3">
-                  <label className={labelClasses}>Product</label>
-                  <ProductSelector
-                    selectedId={advSelectedProductId}
-                    onSelect={handleAdvProductSelect}
-                  />
-                  {!advSelectedProductId && (
-                    <div className="pt-1">
-                      <label className={labelClasses}>
-                        Product Name <span className="text-accent-text">*</span>
-                      </label>
-                      <input
-                        type="text"
-                        value={advProductName}
-                        onChange={(e) => setAdvProductName(e.target.value)}
-                        placeholder="e.g. GlowSkin Serum"
-                        className={inputClasses}
-                      />
-                    </div>
-                  )}
-                  {advSelectedProductId && (
-                    <div className="flex items-center gap-2 pt-1">
-                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                      <span className="text-sm text-emerald-300">{advProductName}</span>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setAdvSelectedProductId(null);
-                          setAdvProductName('');
-                        }}
-                        className="ml-auto text-[10px] text-slate-500 hover:text-white cursor-pointer"
-                      >
-                        Clear
-                      </button>
-                    </div>
-                  )}
-                </div>
-
-                {/* Marketing Angle */}
-                <div className="bg-[#111] border border-white/[0.06] rounded-lg p-5">
-                  <label className={labelClasses}>Angle / Hook Direction</label>
-                  <input
-                    type="text"
-                    value={advAngle}
-                    onChange={(e) => setAdvAngle(e.target.value)}
-                    placeholder="e.g. Pain point, social proof, curiosity"
-                    className={inputClasses}
-                  />
-                </div>
-
-                {/* Source Copy */}
-                <div className="bg-[#111] border border-white/[0.06] rounded-lg p-5 space-y-3">
-                  <div className="flex items-center justify-between">
-                    <label className={labelClasses + ' mb-0'}>
-                      Source Copy <span className="text-accent-text">*</span>
-                    </label>
-                    <span className={`text-[10px] ${advSourceCopy.length >= 100 ? 'text-emerald-400' : 'text-slate-600'}`}>
-                      {advSourceCopy.split(/\s+/).filter(Boolean).length} words
-                    </span>
-                  </div>
-                  <textarea
-                    value={advSourceCopy}
-                    onChange={(e) => setAdvSourceCopy(e.target.value)}
-                    placeholder="Paste competitor's advertorial copy here (300+ words recommended)..."
-                    rows={12}
-                    className={inputClasses + ' resize-none'}
-                  />
-                  {advSourceCopy.trim().length > 0 && advSourceCopy.trim().length < 100 && (
-                    <p className="text-[10px] text-amber-400">
-                      Copy is short. 300+ words recommended for best results.
-                    </p>
-                  )}
-                </div>
-
-                {/* Generate Button */}
-                <button
-                  type="button"
-                  onClick={handleAdvGenerate}
-                  disabled={!canGenerateAdv}
-                  className={`w-full flex items-center justify-center gap-2 px-4 py-3 rounded-lg text-sm font-medium transition-colors cursor-pointer ${
-                    canGenerateAdv
-                      ? 'bg-accent hover:bg-accent-hover text-white'
-                      : 'bg-accent/30 text-white/40 cursor-not-allowed'
-                  }`}
-                >
-                  {advGenerating ? (
-                    <>
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                      Generating Variants...
-                    </>
-                  ) : (
-                    <>
-                      <Sparkles className="w-4 h-4" />
-                      Generate 3 Copy Variants
-                    </>
-                  )}
-                </button>
-
-                {/* Status flow legend */}
-                <div className="bg-[#111] border border-white/[0.06] rounded-lg p-5">
-                  <label className={labelClasses}>Status Flow</label>
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    {ADVERTORIAL_STATUSES.map((s, i) => (
-                      <div key={s} className="flex items-center gap-1.5">
-                        <StatusBadge status={s} />
-                        {i < ADVERTORIAL_STATUSES.length - 1 && (
-                          <ArrowRight className="w-3 h-3 text-slate-600" />
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-
-              {/* RIGHT PANEL -- Advertorial Copies */}
-              <div className="lg:col-span-2 space-y-6">
-                {/* Error */}
-                {advError && !advGenerating && (
-                  <div className="bg-red-500/5 border border-red-500/20 rounded-lg p-6">
-                    <div className="flex items-start gap-3">
-                      <AlertCircle className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
-                      <div className="flex-1">
-                        <h3 className="text-sm font-medium text-red-300 mb-1">Generation Failed</h3>
-                        <p className="text-sm text-red-400/80">{advError}</p>
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setAdvError(null)}
-                      className="mt-4 flex items-center gap-2 px-4 py-2 rounded-lg bg-red-500/10 border border-red-500/20 text-sm text-red-300 hover:bg-red-500/20 transition-colors cursor-pointer"
-                    >
-                      <X className="w-3.5 h-3.5" />
-                      Dismiss
-                    </button>
-                  </div>
-                )}
-
-                {/* Loading */}
-                {advGenerating && (
-                  <div className="bg-[#111] border border-white/[0.06] rounded-lg p-8">
-                    <div className="flex items-center gap-3">
-                      <Loader2 className="w-5 h-5 text-accent-text animate-spin" />
-                      <div>
-                        <h3 className="text-sm font-medium text-white">Generating copy variants...</h3>
-                        <p className="text-xs text-slate-400 mt-1">
-                          Creating direct adapt, pain pivot, and creative swing variants
-                        </p>
-                      </div>
-                    </div>
-                    <div className="mt-6 h-1.5 rounded-full bg-white/[0.04] overflow-hidden">
-                      <div className="h-full bg-accent rounded-full animate-pulse" style={{ width: '60%' }} />
-                    </div>
-                  </div>
-                )}
-
-                {/* Empty State */}
-                {!advGenerating && advCopies.length === 0 && !advError && (
-                  <div className="flex flex-col items-center justify-center h-full min-h-[400px] text-center">
-                    <FileText className="w-12 h-12 text-slate-700 mb-4" />
-                    <p className="text-sm text-slate-500 max-w-xs">
-                      Paste competitor copy and select a product to generate advertorial variants
-                    </p>
-                    <div className="flex items-center gap-4 mt-6">
-                      {Object.entries(VARIANT_TYPE_COLORS).map(([key, config]) => (
-                        <div key={key} className="flex items-center gap-1.5">
-                          <CircleDot className={`w-3 h-3 ${config.text}`} />
-                          <span className="text-xs text-slate-500">{config.label}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* Copy Cards */}
-                {advCopies.length > 0 && !advGenerating && (
-                  <div>
-                    <div className="flex items-center justify-between mb-3">
-                      <h3 className="text-sm font-medium text-white">
-                        Copy Variants
-                        <span className="ml-2 text-xs text-slate-500">({advCopies.length})</span>
-                      </h3>
-                      <button
-                        type="button"
-                        onClick={fetchAdvCopies}
-                        disabled={advCopiesLoading}
-                        className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-white transition-colors cursor-pointer"
-                      >
-                        <RefreshCw className={`w-3 h-3 ${advCopiesLoading ? 'animate-spin' : ''}`} />
-                        Refresh
-                      </button>
-                    </div>
-                    <div className="space-y-4">
-                      {advCopies.map((copy) => (
-                        <AdvertorialCopyCard
-                          key={copy.id}
-                          copy={copy}
-                          onStatusChange={handleAdvStatusChange}
-                          onGenerateImages={handleAdvGenerateImages}
-                          generatingImages={advGeneratingImagesFor === copy.id}
-                        />
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-        </>
       )}
 
       {/* ================================================================= */}
