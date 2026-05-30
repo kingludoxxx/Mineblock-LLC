@@ -4468,11 +4468,24 @@ router.post('/references/:id/retry-transcribe', authenticate, async (req, res) =
             ownershipVerified = true;
             console.log(`[BriefPipeline] retry-transcribe ref ${ref.id}: Meta-direct OK (account=${owned.accountId}, video_id=${owned.videoId}, via=${owned._via})`);
           } else if (owned?.error) {
-            // Meta confirmed ownership (not foreign) but couldn't return the
-            // video file. Safe to fall back — the ad_archive_id we'd open in
-            // FB Ad Library is verified ours.
-            ownershipVerified = true;
-            console.warn(`[BriefPipeline] retry-transcribe ref ${ref.id}: Meta verified ownership but no video URL: ${owned.error}. Allowing Playwright.`);
+            // REFUSE: Meta confirmed account is ours but couldn't return the
+            // video file. Playwright fallback REMOVED (see import-meta path
+            // for the JD Sports Italian rap contamination evidence).
+            const reason = `Meta cannot return video source URL for this owned ad (token scope insufficient). Original error: ${owned.error}. Use the Upload button to paste the script manually, or have the META_ACCESS_TOKEN regenerated as a System User token with ads_management scope.`;
+            await pgQuery(
+              `UPDATE brief_pipeline_references
+                  SET analysis_error = $1, status = 'error', updated_at = NOW(),
+                      imported_metadata = CASE
+                        WHEN imported_metadata IS NULL THEN jsonb_build_object('transcribe_source', 'refused_no_video_source'::text)
+                        WHEN jsonb_typeof(imported_metadata) = 'object' THEN
+                          jsonb_set(imported_metadata, '{transcribe_source}', to_jsonb('refused_no_video_source'::text), true)
+                        ELSE jsonb_build_object('original', imported_metadata::text, 'transcribe_source', 'refused_no_video_source'::text)
+                      END
+                WHERE id = $2`,
+              [reason, ref.id]
+            );
+            console.warn(`[BriefPipeline] retry-transcribe ref ${ref.id}: Meta verified ownership but no video URL. REFUSING (no safe fallback for owned ads).`);
+            return;
           }
         }
 
@@ -5086,11 +5099,29 @@ router.post('/references/import-meta', authenticate, async (req, res) => {
                 console.log(`[BriefPipeline] ref ${ref.id}: Meta-direct OK (account=${owned.accountId}, video_id=${owned.videoId}, via=${owned._via})`);
               } else if (owned?.error) {
                 // Meta confirmed account is trusted (no foreignAccount flag) but
-                // couldn't return the video file URL. SAFE to fall back —
-                // Playwright will open FB Ad Library at an ad_archive_id we've
-                // verified is ours.
-                ownershipVerified = true;
-                console.warn(`[BriefPipeline] ref ${ref.id}: Meta-direct verified ownership but no video URL: ${owned.error}. Allowing Playwright fallback.`);
+                // couldn't return the video file URL. Verified through live
+                // browser test: Playwright fallback on FB Ad Library grabs
+                // the WRONG video here (related-ads carousel videos, e.g. JD
+                // Sports "Forever Forward" Italian rap leaking into a B0223
+                // Mineblock ad). Refusing instead of guessing is the only
+                // safe option. Fix: regenerate META_ACCESS_TOKEN as a System
+                // User token with ads_management scope so /{video_id}?fields=source
+                // actually returns the canonical URL.
+                const reason = `Meta cannot return video source URL for this owned ad (token scope insufficient). Original error: ${owned.error}. Use the Upload button to paste the script manually, or have the META_ACCESS_TOKEN regenerated as a System User token with ads_management scope.`;
+                await pgQuery(
+                  `UPDATE brief_pipeline_references
+                      SET analysis_error = $1, status = 'error', updated_at = NOW(),
+                          imported_metadata = CASE
+                            WHEN imported_metadata IS NULL THEN jsonb_build_object('transcribe_source', 'refused_no_video_source'::text)
+                            WHEN jsonb_typeof(imported_metadata) = 'object' THEN
+                              jsonb_set(imported_metadata, '{transcribe_source}', to_jsonb('refused_no_video_source'::text), true)
+                            ELSE jsonb_build_object('original', imported_metadata::text, 'transcribe_source', 'refused_no_video_source'::text)
+                          END
+                    WHERE id = $2`,
+                  [reason, ref.id]
+                );
+                console.warn(`[BriefPipeline] ref ${ref.id}: Meta verified ownership but no video URL. REFUSING (Playwright fallback removed — it grabbed wrong videos from FB Ad Library "related ads" panel).`);
+                return;
               }
             }
 
@@ -5101,11 +5132,14 @@ router.post('/references/import-meta', authenticate, async (req, res) => {
               console.log(`[BriefPipeline] transcribe ref ${ref.id}: direct TW URL (${resolvedSource})`);
             }
 
-            // Path 3 — Playwright headless browser. Gated on:
-            //   - no meta_ad_id at all (legacy refs), OR
-            //   - meta_ad_id present AND Meta-confirmed ours (ownershipVerified)
-            // i.e. NEVER used when Meta says the ad is foreign.
-            const playwrightAllowed = !canResolveOwned || ownershipVerified;
+            // Path 3 — Playwright headless browser. Gated on NO meta_ad_id
+            // (legacy refs / League imports of competitor studies). When
+            // meta_ad_id exists, we never reach this path — either Meta
+            // gave us video_url, or we refused above. The ownershipVerified
+            // path was REMOVED because Playwright on FB Ad Library
+            // structurally cannot tell whether a network .mp4 is from the
+            // requested ad or a related-ads carousel below it.
+            const playwrightAllowed = !canResolveOwned;
             if (!videoUrl && adLibraryUrl && playwrightAllowed) {
               await pgQuery(
                 `UPDATE brief_pipeline_references SET status = 'extracting', updated_at = NOW() WHERE id = $1 AND status IN ('pending', 'extracting')`,

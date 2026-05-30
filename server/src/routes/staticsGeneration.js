@@ -6240,21 +6240,15 @@ const REFERENCE_PAGE_SIZE = 100;
 router.get('/reference-ads', authenticate, async (req, res) => {
   try {
     await ensureCreativesTable();
-    // References are usable as templates across products — return:
-    //   (a) global references (product_id IS NULL), AND
-    //   (b) references tied to the requested product_id (if filter passed)
-    //
-    // Reference column shows EVERY ad the operator has chosen to use as a
-    // reference for generation — Meta-imported, league-imported, uploads,
-    // and legacy/null rows. Operator can still see what came from where via
-    // the `imported_from` field surfaced on each row. (The earlier
-    // "league-excluded" rule was reverted at the operator's request — they
-    // want league imports in Reference so they can click them as inputs
-    // to the generation flow, not just see them in FROM LEAGUE.)
+    // PIPELINE-V2 RULE (re-affirmed): Reference column is for OUR OWN
+    // winning ads only — Meta-imported, manual uploads, legacy/null
+    // sources. League-imported ads live in the dedicated FROM LEAGUE
+    // column and must NOT cross over here.
     const productId = req.query.product_id || null;
     const cursor = req.query.cursor || null;
     const where = [
       'is_reference = TRUE',
+      `(imported_from IS NULL OR imported_from <> 'league')`,
     ];
     const params = [];
     if (productId) {
