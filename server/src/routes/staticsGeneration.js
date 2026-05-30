@@ -422,51 +422,6 @@ router.post('/meta-ads/repair-thumbnails', async (req, res) => {
   return authenticate(req, res, () => _doMetaAdsRepairThumbnails(req, res));
 });
 
-// ── TEMP: TW aggregate verification probe — CRON_SECRET only ──
-// Returns last-7-days Meta-only aggregate spend/revenue/purchases using the
-// current column + attribution config so we can verify numbers match TW UI
-// without round-tripping through the user. REMOVE after one verification arc.
-router.get('/meta-ads/_twverify', async (req, res) => {
-  const cs = process.env.CRON_SECRET;
-  if (!cs || req.headers['x-cron-secret'] !== cs) return res.status(401).json({ error: 'unauthorized' });
-  try {
-    const TW_API_KEY = process.env.TRIPLEWHALE_API_KEY || '';
-    const TW_SHOP_ID = process.env.TRIPLEWHALE_SHOP_ID || '17cca0-2.myshopify.com';
-    const TW_SQL_URL = 'https://api.triplewhale.com/api/v2/orcabase/api/sql';
-    const attribution = req.query.attribution || process.env.TW_ATTRIBUTION_MODEL || 'lastPlatformClick';
-    const revCol = req.query.rev || process.env.TW_REVENUE_COL || 'order_revenue';
-    const purCol = req.query.pur || process.env.TW_PURCHASE_COL || 'website_purchases';
-    if (!TW_API_KEY) return res.status(500).json({ error: 'TRIPLEWHALE_API_KEY not set' });
-    const fmt = (d) => d.toISOString().slice(0,10);
-    const today = new Date(); today.setUTCHours(0,0,0,0);
-    let start, end;
-    if (req.query.start && req.query.end) {
-      start = new Date(req.query.start + 'T00:00:00Z');
-      end   = new Date(req.query.end   + 'T00:00:00Z');
-    } else if (req.query.window === 'last7excl') {
-      // last 7 days ending YESTERDAY (TW UI default for "last 7 days")
-      end = new Date(today.getTime() - 86400000);
-      start = new Date(end.getTime() - 6 * 86400000);
-    } else {
-      end = today;
-      start = new Date(end.getTime() - 6 * 86400000);
-    }
-    const sql = `SELECT SUM(spend) AS spend, SUM(${revCol}) AS revenue, SUM(${purCol}) AS purchases FROM pixel_joined_tvf WHERE event_date BETWEEN @startDate AND @endDate AND channel = 'facebook-ads'`;
-    const r = await fetch(TW_SQL_URL, {
-      method: 'POST',
-      headers: { 'x-api-key': TW_API_KEY, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ shopId: TW_SHOP_ID, query: sql.trim(), period: { startDate: fmt(start), endDate: fmt(end) }, attributionModel: attribution }),
-      signal: AbortSignal.timeout(45000),
-    });
-    const txt = await r.text();
-    let data; try { data = JSON.parse(txt); } catch { data = { raw: txt }; }
-    const row = Array.isArray(data) ? data[0] : (data?.data?.[0] || data?.rows?.[0] || null);
-    return res.json({ ok: r.ok, status: r.status, startDate: fmt(start), endDate: fmt(end), attribution, revCol, purCol, row, _raw: row ? undefined : data });
-  } catch (e) {
-    return res.status(500).json({ error: e.message });
-  }
-});
-
 router.use(authenticate, requirePermission('statics-generation', 'access'));
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
@@ -5039,11 +4994,15 @@ async function _twDiscoverAccountCols(startDate, endDate, attributionModel) {
  */
 async function fetchTopAdsFromTW({ windowDays, attributionModel, accountIds = [], minSpend = 0 }) {
   if (!_TW_API_KEY) throw new Error('TRIPLEWHALE_API_KEY not configured');
-  // TW UI's "Last 7 Days" = today + previous 6 days (7-day inclusive window).
-  // SQL BETWEEN is inclusive on both ends, so subtract (windowDays - 1)
-  // from today. Was off-by-one previously (pulled 8 days for 7D, etc.).
-  const endDate = new Date().toISOString().slice(0, 10);
-  const startDate = new Date(Date.now() - ((windowDays - 1) * 86400 * 1000)).toISOString().slice(0, 10);
+  // TW UI's "Last 7 Days" = the 7 days ENDING YESTERDAY (not including today).
+  // Verified empirically: /meta-ads/_twverify?window=last7excl returned an
+  // exact $11,922.73 revenue match against the operator's TW UI screenshot
+  // for the same period; including today drifted by ~9%.
+  const todayMs = Date.now();
+  const endMs   = todayMs - 86400 * 1000;                                  // yesterday
+  const startMs = endMs   - ((windowDays - 1) * 86400 * 1000);             // N-1 days before yesterday
+  const endDate   = new Date(endMs).toISOString().slice(0, 10);
+  const startDate = new Date(startMs).toISOString().slice(0, 10);
   const attr = attributionModel || _TW_ATTRIBUTION_DEFAULT;
 
   const acct = await _twDiscoverAccountCols(startDate, endDate, attr);
