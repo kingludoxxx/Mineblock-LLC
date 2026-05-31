@@ -1804,7 +1804,8 @@ router.post('/generate', authenticate, async (req, res) => {
       storeTaskResult(earlyTaskId, {
         status: 'completed',
         tasks,
-        provider: 'nanobanana',
+        provider: engine.name,
+        model: engine.describe(),
         claudeAnalysis: claudeResult,
         swapPairs: [],
       });
