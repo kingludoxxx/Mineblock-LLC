@@ -226,7 +226,7 @@ router.get('/health/daily-pnl', async (req, res) => {
         yesterdayDate: dateStr,
         channelId: 'C0AF724MJPR',
       },
-      recentReports: ledger.map((r) => ({ date: r.report_date, sentAt: r.sent_at, profit: r.profit })),
+      recentReports: ledger.map((r) => ({ date: r.report_date, sentAt: r.sent_at, profit: r.profit, slackTs: r.slack_ts, slackChannel: r.slack_channel })),
     });
   } catch (err) {
     return res.status(500).json({ ok: false, error: err.message });
