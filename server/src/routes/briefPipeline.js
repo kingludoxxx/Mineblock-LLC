@@ -2156,11 +2156,12 @@ The winning script may have **burned-in on-screen text overlays** — short, bol
 ### What qualifies as a highlighted label vs a hook
 A LABEL is short (≤6 words), attention-grabbing, sticker-style, often ALL CAPS with a trailing emoji, frequently a fragment with no verb. A HOOK is a full first-person sentence the speaker delivers (8–25 words, sentence case, complete grammar). They live in different output fields.
 
-### Rule
+### Rule (binary)
 - **Source of truth: the ORIGINAL ON-SCREEN TEXT block above.** Inspect every line.
-- If that block says "(no on-screen text detected in source — emit empty highlighted_text)": every card emits highlighted_text: []. Do not invent.
-- If that block has text: identify the label-style lines, pick 2–4 highest-leverage ones, rewrite each. ≤ 5 words, ALL CAPS where source uses caps, 1 emoji at end. Preserve role (banner stays banner, comment-reply stays comment-reply).
-- Vary the wording across iteration cards only if the selected vector calls for it (e.g. Hooks rotation → fresh labels per card). Otherwise keep the labels consistent.
+- **The block contains the literal phrase "(no on-screen text detected in source — emit empty highlighted_text)"** → every card emits highlighted_text: []. ONLY valid empty case.
+- **The block contains ANY other text** → every card MUST return between 2 and 4 labels. Pick the lines that read most like banners/stickers/framing. If none look perfectly banner-style, take the shortest, punchiest, most attention-grabbing lines — those are the designer-targeted overlays.
+- Each output label: ≤ 5 words, ALL CAPS where source uses caps, 1 emoji at end. Preserve role (banner stays banner, comment-reply stays comment-reply, apology stays apology).
+- Vary the wording across iteration cards only if the selected vector calls for it. Otherwise keep labels consistent.
 - A hook is NEVER an overlay label. ALL-CAPS sticker fragments belong in highlighted_text, not in hooks.
 
 # OUTPUT — return ONLY valid JSON, no markdown fences, no preamble:
@@ -2382,11 +2383,20 @@ A LABEL is short, attention-grabbing, sticker-style. A HOOK is a full first-pers
 | Emoji | 1 trailing emoji is normal | Rare |
 | Examples | "PUBLIC APOLOGY 👁️", "WE LIED 🤥", "BIGGEST SALE 🇺🇸", "PROJECT REJECTED" | "I'm the founder of X, and what I'm about to announce could ruin our company." |
 
-### Rule
+### Rule (binary — read carefully)
 - **Source of truth: the ORIGINAL ON-SCREEN TEXT block above.** Inspect every line.
-- If that block says "(no on-screen text detected in source — emit empty highlighted_text)", emit highlighted_text: []. Do not invent.
-- If that block contains text lines: identify the LABEL-style lines (matching the Label column above). Pick the **2–4 strongest** and rewrite each for our brand. NEVER let a label end up as a hook — labels are sticker text, not spoken script. If the source's overlay block IS the entire script (all-caps subtitle delivery, no separate banners), the 1–3 shortest punchiest lines are still labels; the rest belong in body.
-- Each output label: ≤ 5 words, ALL CAPS where the source uses caps, exactly 1 emoji at the end (carry the source's emoji if present, otherwise pick one matching the label's emotion). Preserve the role (top-banner discount → top-banner discount; framed comment reply → framed comment reply; apology sticker → apology sticker).
+- **The block contains the literal phrase "(no on-screen text detected in source — emit empty highlighted_text)"** → emit highlighted_text: []. This is the ONLY valid case for emitting an empty array. Do not invent.
+- **The block contains ANY other text** → you MUST return between 2 and 4 labels. Empty is forbidden here. Pick the lines that read most like banners / stickers / framing devices and rewrite them. If you cannot find perfect banner-style lines, take the shortest, punchiest, most attention-grabbing lines and treat them as labels — these are the ones a designer would burn into the cut.
+
+### How to pick labels
+- Examples of source → output:
+  - "COLLEGE BOYS PROVES SHARK TANK WRONG ☠️" → "BITCOIN MINERS PROVE EXPERTS WRONG ☠️"
+  - "BIGGEST Memorial Day SALE 🇺🇸" → "BIGGEST RESTOCK SALE 🇺🇸"
+  - "Buy 3, Get 3 FREE" → "Buy 3, Get 1 FREE 🎁"
+  - "PROJECT REJECTED" → "INDUSTRY REJECTED" (preserves the "told it couldn't be done" energy)
+  - "PUBLIC APOLOGY 👁️" → "PUBLIC APOLOGY 👁️" (apology angle — keep the emoji, change brand context in adjacent labels)
+  - "Reply to Drew_Posts's comment" → "Reply to @bitcoin_skeptic's comment" (preserves the framing device)
+- Each output label: ≤ 5 words, ALL CAPS when the source uses caps, exactly 1 emoji at the end (carry the source's emoji if present, otherwise pick one matching the label's emotion). Preserve the ROLE (banner → banner, comment-reply → comment-reply, apology sticker → apology sticker).
 - Swap competitor brand / product / offer to ours from {{PRODUCT_CONTEXT}}. Never copy competitor brand names, prices, or claims verbatim.
 - **Hooks are NEVER overlay labels.** If you find yourself writing an ALL-CAPS fragment with an emoji as Hook 1, move it to highlighted_text and write a real sentence-form hook in its place.
 
