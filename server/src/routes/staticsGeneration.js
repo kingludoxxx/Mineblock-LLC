@@ -1795,8 +1795,10 @@ router.post('/generate', authenticate, async (req, res) => {
       );
 
       if (tasks.length === 0) {
-        const firstErr = ratioResults.find(r => r.status === 'rejected')?.reason?.message || 'All ratios failed';
-        throw new Error(`All NanoBanana ratios failed: ${firstErr}`);
+        // ratioResults was a stale reference from a previous orchestration
+        // shape — failedRatios is the actual array populated above.
+        const firstErr = failedRatios[0]?.message || 'All ratios failed';
+        throw new Error(`All image-engine ratios failed: ${firstErr}`);
       }
 
       storeTaskResult(earlyTaskId, {

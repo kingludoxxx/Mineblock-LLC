@@ -7,7 +7,7 @@
 //
 // gpt-image-2 (released April 2026):
 //   - flexible sizes (WxH divisible by 16, ratio 1:3..3:1)
-//   - input_fidelity:'high' lets us mimic NanoBanana's edit-mode resize behavior
+//   - (gpt-image-1 had input_fidelity:'high'; gpt-image-2 does not — removed)
 //   - token-based pricing, 50% Batch API discount
 //
 // Synchronous API: /v1/images/{generations,edits} returns the result inline
@@ -87,13 +87,14 @@ export async function submitToOpenAI(prompt, imageUrls = [], ratio = '1:1') {
   // multipart/form-data. For generate, we send JSON.
   if (imageUrls.length === 0) {
     // ─── Generate (text → image) ─────────────────────────────────────────
+    // NOTE: input_fidelity is a gpt-image-1 parameter and was rejected by
+    // gpt-image-2 with `invalid_input_fidelity_model`. Removed for gpt-image-2.
     const body = {
       model: OPENAI_IMAGE_MODEL,
       prompt,
       size,
       n: 1,
       quality: 'high',
-      input_fidelity: 'high',
     };
 
     const res = await fetch(`${OPENAI_BASE}/images/generations`, {
@@ -138,7 +139,7 @@ export async function submitToOpenAI(prompt, imageUrls = [], ratio = '1:1') {
   form.append('size', size);
   form.append('n', '1');
   form.append('quality', 'high');
-  form.append('input_fidelity', 'high');
+  // NOTE: input_fidelity is gpt-image-1 only; gpt-image-2 rejects it. Removed.
 
   // Fetch each input image and append as a Blob.
   for (let i = 0; i < imageUrls.length; i++) {
