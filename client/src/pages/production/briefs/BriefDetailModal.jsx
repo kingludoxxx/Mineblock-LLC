@@ -176,6 +176,33 @@ export default function BriefDetailModal({
   originalRawScript,
   winAnalysis,
 }) {
+  // Parse the raw transcript Vertex multimodal emits — it interleaves
+  // - [ON-SCREEN TEXT] block (one fragment per line, ALL CAPS subtitle dump)
+  // - [AUDIO / VOICEOVER] block (the actual spoken script in a paragraph)
+  // - [SELLING MESSAGE], [BRAND] etc. — analyzer metadata, not script
+  // Operator only wants to see the spoken script flowing normally; the
+  // on-screen lines surface separately as small chips so they're still
+  // visible at a glance without dominating the column.
+  const parsedTranscript = (() => {
+    if (!originalRawScript) return null;
+    const onScreenMatch  = originalRawScript.match(/\[ON[- ]?SCREEN\s*TEXT\]\s*([\s\S]*?)(?=\n\n?\[|$)/i);
+    const audioMatch     = originalRawScript.match(/\[(?:AUDIO|VOICEOVER|AUDIO\s*\/\s*VOICEOVER)\]\s*([\s\S]*?)(?=\n\n?\[|$)/i);
+    const onScreenLines  = onScreenMatch
+      ? onScreenMatch[1].split('\n').map((s) => s.trim()).filter(Boolean)
+      : [];
+    let spoken = audioMatch ? audioMatch[1].trim() : '';
+    if (!spoken) {
+      // No labeled audio block — fall back to stripping the on-screen and
+      // metadata blocks and showing whatever remains. Covers Whisper-only
+      // sources (Forge-class refs) which have no section labels at all.
+      spoken = originalRawScript
+        .replace(/\[ON[- ]?SCREEN\s*TEXT\][\s\S]*?(?=\n\n?\[|$)/i, '')
+        .replace(/\[(?:SELLING\s*MESSAGE|BRAND|METADATA|VISUAL\s*NARRATIVE)\][\s\S]*?(?=\n\n?\[|$)/gi, '')
+        .replace(/\[AUDIO[^\]]*\]\s*/i, '')
+        .trim();
+    }
+    return { onScreenLines, spoken };
+  })();
   const [winAnalysisOpen, setWinAnalysisOpen] = useState(false);
   const [editableHooks, setEditableHooks] = useState([]);
   const [editableBody, setEditableBody] = useState('');
@@ -379,8 +406,35 @@ export default function BriefDetailModal({
               <section>
                 <SectionLabel>Original Script</SectionLabel>
                 <div className="glass-card border border-white/[0.04] rounded-lg p-4 bg-white/[0.02] space-y-3 max-h-[60vh] overflow-y-auto">
-                  {originalRawScript ? (
-                    <p className="text-xs text-zinc-300 leading-relaxed whitespace-pre-line">{originalRawScript}</p>
+                  {parsedTranscript ? (
+                    <>
+                      {parsedTranscript.onScreenLines.length > 0 && (
+                        <div className="space-y-1.5 pb-3 border-b border-white/[0.05]">
+                          <div className="text-[10px] font-mono uppercase tracking-wider text-zinc-500">
+                            On-screen text · {parsedTranscript.onScreenLines.length} lines
+                          </div>
+                          <div className="flex flex-wrap gap-1">
+                            {parsedTranscript.onScreenLines.map((line, i) => (
+                              <span
+                                key={i}
+                                className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-white/[0.04] text-zinc-400 border border-white/[0.04]"
+                              >
+                                {line}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      {parsedTranscript.spoken ? (
+                        <p className="text-xs text-zinc-300 leading-relaxed whitespace-pre-line">
+                          {parsedTranscript.spoken}
+                        </p>
+                      ) : (
+                        <p className="text-[10px] font-mono text-zinc-500 italic">
+                          (No spoken transcript — source is overlay-only.)
+                        </p>
+                      )}
+                    </>
                   ) : (
                     <>
                       {originalHooks.map((hook, i) => (
