@@ -392,6 +392,160 @@ router.post('/regenerate-broken-previews', async (req, res) => {
   return authenticate(req, res, () => _doRegenerateBrokenPreviews(req, res));
 });
 
+// ─────────────────────────────────────────────────────────────────────────
+// POST /repair-missing-ratios — auto-fix cards in review/ready/approved
+// status that have missing ratio variants. Handles BOTH cases:
+//   1. Parent has image_url, but a child ratio is missing → INSERT/UPDATE
+//      child via resize from parent.
+//   2. Parent's own image_url is missing (broken root), but children exist →
+//      resize from a child UP to parent's ratio + UPDATE parent in place.
+//
+// Triggered by operator from the Repair tool OR via the cron job.
+// ─────────────────────────────────────────────────────────────────────────
+router.post('/repair-missing-ratios', authenticate, async (req, res) => {
+  try {
+    await ensureCreativesTable();
+    const ALL_RATIOS = ['1:1', '4:5', '9:16'];
+    const dryRun = req.body?.dry_run === true;
+
+    // Find candidate parents — anything that landed in Review or Ready and
+    // could plausibly have a complete 3-ratio set. Exclude launched (live
+    // ads — can't safely change image_hash) and rejected (operator dismissed).
+    const parents = await pgQuery(
+      `SELECT * FROM spy_creatives
+        WHERE parent_creative_id IS NULL
+          AND status IN ('review', 'ready', 'approved')
+          AND pipeline IN ('standard', 'iteration')
+          AND COALESCE(is_reference, FALSE) = FALSE
+        ORDER BY updated_at DESC
+        LIMIT 200`
+    );
+
+    const report = { scanned: parents.length, broken: 0, fixed: 0, failed: 0, skipped: 0, details: [] };
+
+    // Identify breakage upfront — fast scan, no side effects
+    const broken = [];
+    for (const p of parents) {
+      const children = await pgQuery(
+        `SELECT id, aspect_ratio, image_url, status FROM spy_creatives WHERE parent_creative_id = $1`,
+        [p.id]
+      );
+      const presentRatios = new Set();
+      const parentRatio = p.aspect_ratio || '1:1';
+      if (p.image_url) presentRatios.add(parentRatio);
+      for (const c of children) if (c.image_url) presentRatios.add(c.aspect_ratio);
+      const missing = ALL_RATIOS.filter(r => !presentRatios.has(r));
+      if (missing.length > 0) {
+        broken.push({ parent: p, children, missing, parentRatio });
+      }
+    }
+    report.broken = broken.length;
+
+    if (dryRun) {
+      report.details = broken.map(b => ({
+        id: b.parent.id,
+        angle: b.parent.angle,
+        parentRatio: b.parentRatio,
+        missing: b.missing,
+        hasParentImage: !!b.parent.image_url,
+        childCount: b.children.filter(c => !!c.image_url).length,
+      }));
+      return res.json({ success: true, data: report });
+    }
+
+    // Respond immediately — work runs in setImmediate
+    res.json({ success: true, data: { ...report, message: 'Repair queued. Poll /creatives to see ratios appear.' } });
+
+    setImmediate(async () => {
+      for (const b of broken) {
+        const { parent: p, children, missing, parentRatio } = b;
+        for (const missingRatio of missing) {
+          const tag = `[repair ${p.id.slice(0,8)} ${missingRatio}]`;
+          try {
+            // Source picker — prefer parent.image_url, fall back to any child
+            let sourceUrl = p.image_url;
+            if (!sourceUrl) {
+              const candidate = children.find(c => c.image_url);
+              if (candidate) sourceUrl = candidate.image_url;
+            }
+            if (!sourceUrl) {
+              console.warn(`${tag} no source image — skipping`);
+              continue;
+            }
+
+            const engine = getEngine(p.image_engine || DEFAULT_ENGINE);
+            if (!engine.isConfigured()) {
+              console.warn(`${tag} engine ${engine.name} not configured`);
+              continue;
+            }
+            const sourceHttpUrl = await ensureHttpUrlGlobal(sourceUrl, 'repair-src');
+            const resizePrompt = `Seamlessly resize this ad image to ${missingRatio} aspect ratio. Keep ALL content identical — same text, same product, same layout, same colors, same style. Extend or adjust the background naturally to fill the new format. Do NOT redesign, do NOT re-imagine, do NOT change the medium or vibe. Only reframe.`;
+
+            const submit = await withRetry(
+              () => engine.submit(resizePrompt, [sourceHttpUrl], missingRatio),
+              `${tag} submit`, 3
+            );
+            const tempUrl = await withRetry(() => engine.poll(submit), `${tag} poll`, 3);
+            const persisted = await persistNanoBananaImage(tempUrl, `statics-generated/${missingRatio}`);
+            if (!persisted) throw new Error('persist failed');
+
+            // Write target — if it's the parent's own ratio, UPDATE parent in
+            // place; otherwise UPDATE existing child or INSERT a new one.
+            if (missingRatio === parentRatio) {
+              await pgQuery(
+                `UPDATE spy_creatives
+                   SET image_url = $1, thumbnail_url = $1, status = 'review', updated_at = NOW()
+                 WHERE id = $2`,
+                [persisted, p.id]
+              );
+            } else {
+              const existingChild = children.find(c => c.aspect_ratio === missingRatio);
+              if (existingChild) {
+                await pgQuery(
+                  `UPDATE spy_creatives
+                     SET image_url = $1, thumbnail_url = $1, status = 'review', updated_at = NOW()
+                   WHERE id = $2`,
+                  [persisted, existingChild.id]
+                );
+              } else {
+                await pgQuery(
+                  `INSERT INTO spy_creatives
+                    (product_id, product_name, angle, aspect_ratio, status,
+                     parent_creative_id, reference_name, reference_thumbnail,
+                     adapted_text, source_label, pipeline, image_url, thumbnail_url,
+                     image_engine)
+                   VALUES ($1,$2,$3,$4,'review',$5,$6,$7,$8,$9,$10,$11,$11,$12)`,
+                  [
+                    p.product_id || null,
+                    p.product_name || null,
+                    p.angle || null,
+                    missingRatio,
+                    p.id,
+                    p.reference_name || null,
+                    p.reference_thumbnail || null,
+                    p.adapted_text ? (typeof p.adapted_text === 'string' ? p.adapted_text : JSON.stringify(p.adapted_text)) : null,
+                    p.source_label || null,
+                    p.pipeline || 'standard',
+                    persisted,
+                    p.image_engine || DEFAULT_ENGINE,
+                  ]
+                );
+              }
+            }
+            console.log(`${tag} ✅ filled`);
+          } catch (err) {
+            console.error(`${tag} ❌ ${err.message}`);
+          }
+        }
+      }
+      console.log(`[repair-missing-ratios] done — scanned=${parents.length} broken=${broken.length}`);
+    });
+  } catch (err) {
+    console.error('[repair-missing-ratios] error:', err);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
 async function _doRepairAllPreviews(req, res, cronSecretForSubFetch) {
   const base = process.env.RENDER_EXTERNAL_URL || `http://localhost:${process.env.PORT || 3000}`;
   const t0 = Date.now();
