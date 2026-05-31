@@ -223,7 +223,7 @@ Return your analysis as a JSON object with these fields:
 
 {
   "audio_content": "Describe what's in the audio track. If it's music/song, name the genre and say 'no spoken script'. If it's a voiceover, transcribe it verbatim. If both, separate them.",
-  "on_screen_text": "ALL text shown on the video, in reading order. Include captions, headlines, product names, CTAs, watermarks. This is the most important field — extract every word visible.",
+  "on_screen_text": "ONLY graphic-design overlays — banners, sticker tags, sale labels, framing devices (e.g. quoted comment-reply panels, social-proof callouts), headlines, watermarks, product names, end-card CTAs. A designer deliberately added these as graphics on top of the footage. **EXCLUDE captions or subtitles that simply transcribe the speaker's voiceover** — those duplicate audio_content and pollute this field. If a line of text appears at the same cadence as the spoken words and mirrors them, it is a caption, not an overlay — leave it out. If you are unsure whether a line is an overlay or a caption, prefer leaving it out. Each true overlay goes on its own line.",
   "visual_narrative": "Describe the visual story across the 15s. What does the viewer SEE? Product shots, people, locations, brand logos? This is the visual selling angle.",
   "brand_or_product_identified": "What product or brand is this ad selling? Look at on-screen text, logos, watermarks, end-card. If unclear, say 'unclear'.",
   "selling_message": "In one sentence: what is this ad trying to make the viewer do or feel? This is the actual ad COPY equivalent.",
