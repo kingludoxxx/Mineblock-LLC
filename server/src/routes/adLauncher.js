@@ -4,7 +4,7 @@ import { requirePermission } from '../middleware/rbac.js';
 import { pgQuery } from '../db/pg.js';
 import {
   uploadAdImage, createAdCreative, createAd,
-  getDefaultAdAccountId, isMetaAdsConfigured, getAdAccounts,
+  getDefaultAdAccountId, isMetaAdsConfigured, getAdAccountsCached,
   getPages, getPixels, getCampaigns, getCustomAudiences, getAdSets,
 } from '../services/metaAdsApi.js';
 import crypto from 'crypto';
@@ -50,12 +50,19 @@ router.use(authenticate, requirePermission('ads-launcher', 'access'));
 // ── Meta-passthrough endpoints (replaces the unreliable brief-pipeline ones)
 // These mirror /api/v1/brief-pipeline/meta/* exactly but live under
 // /api/v1/ad-launcher/* where this worktree has full control over the route
-// behavior. The brief-pipeline route was returning 500 in 9ms with no logged
-// error — likely a transient middleware issue. This is a reliable replacement.
-router.get('/meta/accounts', async (_req, res) => {
+// behavior.
+//
+// /meta/accounts is now LIVE-DISCOVERED from Meta's /me/adaccounts endpoint
+// (no env-var iteration). New accounts added or shared into the BM appear
+// automatically within the 5-minute cache TTL. Pass ?nocache=1 to force a
+// fresh fetch — the editor's Sync button uses this.
+router.get('/meta/accounts', async (req, res) => {
   try {
-    if (!isMetaAdsConfigured()) return res.json({ success: true, data: [] });
-    const accounts = await getAdAccounts();
+    if (!process.env.META_ACCESS_TOKEN) {
+      return res.json({ success: true, data: [], warning: 'META_ACCESS_TOKEN not set' });
+    }
+    const force = req.query.nocache === '1' || req.query.refresh === '1';
+    const accounts = await getAdAccountsCached({ force });
     res.json({ success: true, data: accounts });
   } catch (err) {
     console.error('[AdLauncher] GET /meta/accounts error:', err?.message || err);

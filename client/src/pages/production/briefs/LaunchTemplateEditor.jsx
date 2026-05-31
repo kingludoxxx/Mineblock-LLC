@@ -245,13 +245,15 @@ export default function LaunchTemplateEditor({ open, onClose, template, onSaved 
     loadAccounts();
   }, [open]);
 
-  const loadAccounts = async () => {
+  const loadAccounts = async ({ force = false } = {}) => {
     setLoadingAccounts(true);
     try {
-      // Was /brief-pipeline/meta/accounts — that route was returning 500 in 9ms
-      // with no logged error (likely transient middleware issue). Routed through
-      // /ad-launcher/meta/accounts where the route is stable.
-      const { data } = await api.get('/ad-launcher/meta/accounts');
+      // /ad-launcher/meta/accounts is now LIVE-DISCOVERED from Meta's
+      // /me/adaccounts endpoint with a 5-minute server-side cache. Pass
+      // ?nocache=1 (force=true) to bypass cache — used by the Sync button
+      // so the operator sees newly-added BM assets immediately.
+      const url = force ? '/ad-launcher/meta/accounts?nocache=1' : '/ad-launcher/meta/accounts';
+      const { data } = await api.get(url);
       setAccounts(data.data || []);
     } catch (err) {
       console.error('Failed to load ad accounts:', err);
@@ -434,11 +436,18 @@ export default function LaunchTemplateEditor({ open, onClose, template, onSaved 
             {isEdit ? form.name || 'Edit Template' : 'New Launch Template'}
           </h2>
           <button
-            onClick={() => form.accountId && syncAccount(form.accountId)}
-            disabled={!form.accountId || syncing}
+            // Sync refreshes BOTH the ad-account list (live discovery from
+            // Meta, bypassing the 5-min cache) AND the current account's
+            // pages/pixels/campaigns/audiences. Lets the operator instantly
+            // see assets just added in BM without restarting the dashboard.
+            onClick={() => {
+              loadAccounts({ force: true });
+              if (form.accountId) syncAccount(form.accountId);
+            }}
+            disabled={syncing || loadingAccounts}
             className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-zinc-400 hover:text-white bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] rounded-lg transition disabled:opacity-40 cursor-pointer"
           >
-            <RefreshCw className={`w-3.5 h-3.5 ${syncing ? 'animate-spin' : ''}`} />
+            <RefreshCw className={`w-3.5 h-3.5 ${syncing || loadingAccounts ? 'animate-spin' : ''}`} />
             Sync
           </button>
           <button
