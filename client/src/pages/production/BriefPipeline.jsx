@@ -126,6 +126,21 @@ export default function BriefPipeline() {
   const scriptGeneratingRef = useRef(false);
   const stepIntervalsRef = useRef([]);
 
+  // ── Optimistic GENERATING placeholders ────────────────────────────
+  // Each entry: { winner_id, referenceTitle, mode, startedAt, step, status }.
+  // We push one on every /generate-from-script call so the operator sees an
+  // immediate skeleton card in the GENERATED column — no more "is it working?"
+  // staring at the page. The entry self-removes when the real brief lands
+  // (matched by winner_id during fetchGenerated). Survives independently of
+  // scriptGenerating so batch generations + sequential generations stack.
+  const [pendingGenerations, setPendingGenerations] = useState([]);
+
+  // ── Reference-column multi-select mode ────────────────────────────
+  // Operator toggles "Select multiple" → checkboxes appear on every reference
+  // card → a "Generate N briefs" button fires N parallel generations.
+  const [referenceSelectMode, setReferenceSelectMode] = useState(false);
+  const [selectedReferenceIds, setSelectedReferenceIds] = useState([]);
+
   // Cleanup on unmount: abort polling & clear all step intervals
   useEffect(() => {
     return () => {
@@ -133,6 +148,33 @@ export default function BriefPipeline() {
       stepIntervalsRef.current.forEach(id => clearInterval(id));
       stepIntervalsRef.current = [];
     };
+  }, []);
+
+  // Helper: spawn an optimistic placeholder card for a generation.
+  // Returns a cancel fn that removes the placeholder (used on API failure).
+  const spawnPendingGeneration = useCallback(({ winner_id, referenceTitle, mode }) => {
+    const startedAt = Date.now();
+    setPendingGenerations((prev) => [
+      ...prev,
+      { winner_id, referenceTitle: referenceTitle || 'Generating brief', mode: mode || 'clone', startedAt, step: 0 },
+    ]);
+    // Cycle through 3 step indices every 5s so the card feels alive.
+    const interval = setInterval(() => {
+      setPendingGenerations((prev) =>
+        prev.map((p) =>
+          p.winner_id === winner_id ? { ...p, step: Math.min(p.step + 1, 2) } : p
+        )
+      );
+    }, 5000);
+    stepIntervalsRef.current.push(interval);
+    // Safety timeout — drop a card after 5 minutes if it never completes
+    // (server crash, network drop, etc.). Operator can retry from the
+    // source reference card.
+    const safetyTimeout = setTimeout(() => {
+      setPendingGenerations((prev) => prev.filter((p) => p.winner_id !== winner_id));
+      clearInterval(interval);
+    }, 5 * 60 * 1000);
+    stepIntervalsRef.current.push(safetyTimeout);
   }, []);
 
   // ---------------------------------------------------------------------------
@@ -143,7 +185,14 @@ export default function BriefPipeline() {
     setLoadingGenerated(true);
     try {
       const { data } = await api.get('/brief-pipeline/generated');
-      setGenerated(data.briefs || data || []);
+      const briefs = data.briefs || data || [];
+      setGenerated(briefs);
+      // Sweep pending placeholders that now have a real brief landed.
+      // Match on winner_id — that's the row pointer we got back from
+      // /generate-from-script. Cards that arrive get a swap into the real
+      // GeneratedBriefCard renderer; pending entry is dropped here.
+      const landed = new Set(briefs.map((b) => b.winner_id).filter(Boolean));
+      setPendingGenerations((prev) => prev.filter((p) => !landed.has(p.winner_id)));
     } catch (err) {
       console.error('Failed to fetch generated briefs:', err);
     } finally {
@@ -352,6 +401,15 @@ export default function BriefPipeline() {
 
       // Server responds immediately — poll for completion
       if (data.winner_id) {
+        // Immediate optimistic skeleton card in GENERATED column. Survives
+        // independently of the panel-level scriptGenerating flag so the
+        // operator sees "GENERATING ad…" the second they click — no more
+        // staring at the page wondering if it's working.
+        spawnPendingGeneration({
+          winner_id: data.winner_id,
+          referenceTitle: config.referenceTitle || config.label || 'Generating brief',
+          mode: sendMode,
+        });
         setScriptGenStep(stepMessages[1] || 'Working...');
         await pollGenerationStatus(data.winner_id, stepMessages, stepInterval, setScriptGenStep);
       }
@@ -392,7 +450,55 @@ export default function BriefPipeline() {
         setScriptGenStep('');
       }
     }
-  }, [fetchGenerated, pollGenerationStatus]);
+  }, [fetchGenerated, pollGenerationStatus, spawnPendingGeneration]);
+
+  // ── Batch generate from N selected references ────────────────────
+  // Fires N parallel /generate-from-script POSTs, one per selected
+  // reference. Each one spawns its own skeleton card in GENERATED. Uses
+  // the operator's currently-selected Product/Angle from the script
+  // generator panel (read via global ref) or sensible defaults.
+  // Exits select mode + clears selection on success.
+  const handleBatchGenerateFromReferences = useCallback(async (refs, opts = {}) => {
+    if (!Array.isArray(refs) || refs.length === 0) return;
+    const productCode = opts.productCode || 'MR';
+    const angle = opts.angle || null;
+    try {
+      await Promise.all(refs.map(async (ref) => {
+        // Skip references with no transcript — backend would 400 anyway and
+        // the empty skeleton would just timeout. Better to no-op silently.
+        if (!ref?.transcript) return;
+        const sendMode = ref.source === 'meta' ? 'iterate' : 'clone';
+        try {
+          const { data } = await api.post('/brief-pipeline/generate-from-script', {
+            script: ref.transcript,
+            productCode,
+            angle,
+            mode: sendMode,
+            numVariations: 1,
+            referenceId: ref.id,
+          });
+          if (data?.winner_id) {
+            spawnPendingGeneration({
+              winner_id: data.winner_id,
+              referenceTitle: ref.headline || ref.brandName || ref.ad_name || 'Generating brief',
+              mode: sendMode,
+            });
+          }
+        } catch (e) {
+          // Individual generation failed — log and keep going so the
+          // remaining N-1 still fire. The skeleton for this one will
+          // never appear (no spawn called), so visually it's just absent.
+          console.error('[BriefPipeline] batch generate item failed:', e?.response?.data || e?.message);
+        }
+      }));
+      // Quick refresh so any briefs that finished very fast (rare) appear
+      // immediately. The poll on later ticks will catch the rest.
+      setTimeout(() => { fetchGenerated(); }, 1500);
+    } finally {
+      setReferenceSelectMode(false);
+      setSelectedReferenceIds([]);
+    }
+  }, [fetchGenerated, spawnPendingGeneration]);
 
   const handleMoveToReady = useCallback(async (briefId) => {
     try {
@@ -854,16 +960,38 @@ export default function BriefPipeline() {
                       </div>
                       <div className="flex items-center gap-2">
                         {col.key === 'reference' && (
-                          <Link
-                            to="/app/brand-spy"
-                            className="text-[10px] font-mono uppercase tracking-wider text-zinc-500 hover:text-zinc-200 transition-colors inline-flex items-center gap-1"
-                            title="Open Brand Spy to follow more competitor brands"
-                          >
-                            Follow <ExternalLink className="w-2.5 h-2.5" />
-                          </Link>
+                          <>
+                            {/* Multi-select toggle. ON state shows a count + Cancel. */}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setReferenceSelectMode((prev) => {
+                                  if (prev) setSelectedReferenceIds([]);
+                                  return !prev;
+                                });
+                              }}
+                              className={`text-[10px] font-mono uppercase tracking-wider transition-colors px-1.5 py-0.5 rounded border ${
+                                referenceSelectMode
+                                  ? 'border-[#c9a84c]/50 bg-[#c9a84c]/15 text-[#e8d5a3]'
+                                  : 'border-white/[0.06] text-zinc-500 hover:text-zinc-200 hover:border-white/[0.12]'
+                              }`}
+                              title="Toggle multi-select to generate from several references at once"
+                            >
+                              {referenceSelectMode ? `${selectedReferenceIds.length} sel · Cancel` : 'Select'}
+                            </button>
+                            <Link
+                              to="/app/brand-spy"
+                              className="text-[10px] font-mono uppercase tracking-wider text-zinc-500 hover:text-zinc-200 transition-colors inline-flex items-center gap-1"
+                              title="Open Brand Spy to follow more competitor brands"
+                            >
+                              Follow <ExternalLink className="w-2.5 h-2.5" />
+                            </Link>
+                          </>
                         )}
                         <span className={`text-[10px] font-mono px-2 py-0.5 rounded border ${col.badgeClass}`}>
-                          {items.length}
+                          {col.key === 'generated'
+                            ? items.length + pendingGenerations.length
+                            : items.length}
                         </span>
                       </div>
                     </div>
@@ -908,7 +1036,35 @@ export default function BriefPipeline() {
 
                     {/* Card list */}
                     <div className="flex-1 overflow-y-auto space-y-4 pr-2 pb-4">
-                      {items.length === 0 ? (
+                      {/* GENERATING placeholder cards — render first so the
+                          operator sees them at the top of the column the
+                          instant they click Generate (single or batch). */}
+                      {col.key === 'generated' && pendingGenerations.map((p) => {
+                        const stepLabels = p.mode === 'iterate'
+                          ? ['Parsing winning script…', 'Generating iterations…', 'Finalizing cards…']
+                          : ['Parsing source script…', 'Cloning into our product…', 'Finalizing card…'];
+                        return (
+                          <div
+                            key={`pending-${p.winner_id}`}
+                            className="rounded-xl border border-[#c9a84c]/30 bg-[#c9a84c]/[0.04] p-4 animate-pulse"
+                            aria-live="polite"
+                          >
+                            <div className="flex items-center justify-between mb-3">
+                              <span className="text-[9px] font-mono uppercase tracking-wider font-medium px-1.5 py-0.5 rounded bg-[#c9a84c]/15 text-[#e8d5a3] border border-[#c9a84c]/30">
+                                Generating
+                              </span>
+                              <Loader2 className="w-3.5 h-3.5 text-[#c9a84c] animate-spin" />
+                            </div>
+                            <h4 className="text-sm font-medium text-zinc-300 leading-snug truncate mb-1">
+                              {p.referenceTitle}
+                            </h4>
+                            <p className="text-[10px] text-zinc-500 font-mono">
+                              {stepLabels[p.step] || stepLabels[stepLabels.length - 1]}
+                            </p>
+                          </div>
+                        );
+                      })}
+                      {items.length === 0 && (col.key !== 'generated' || pendingGenerations.length === 0) ? (
                         col.key === 'reference' ? (
                           <div className="flex flex-col items-center justify-center h-40 px-4 text-center">
                             <BookOpen className="w-6 h-6 text-violet-400/40 mb-2" />
@@ -926,15 +1082,45 @@ export default function BriefPipeline() {
                           // Reference cards have their own renderer — no drag,
                           // no shared brief card model.
                           if (col.key === 'reference') {
+                            const isSelected = selectedReferenceIds.includes(item.id);
                             return (
-                              <div key={item.id}>
-                                <ReferenceCard
-                                  reference={item}
-                                  onPreview={handlePreviewReference}
-                                  onGenerateFromReference={handleGenerateFromReference}
-                                  onDelete={handleDeleteReference}
-                                  onRetryTranscribe={handleRetryTranscribe}
-                                />
+                              <div
+                                key={item.id}
+                                className={referenceSelectMode ? 'relative' : ''}
+                                onClick={referenceSelectMode ? (e) => {
+                                  // In select mode the entire card surface is a
+                                  // checkbox — swallow card-level clicks (preview,
+                                  // generate) and toggle membership instead.
+                                  e.stopPropagation();
+                                  e.preventDefault();
+                                  setSelectedReferenceIds((prev) =>
+                                    prev.includes(item.id)
+                                      ? prev.filter((id) => id !== item.id)
+                                      : [...prev, item.id]
+                                  );
+                                } : undefined}
+                              >
+                                {referenceSelectMode && (
+                                  <div
+                                    className={`absolute top-2 right-2 z-20 w-5 h-5 rounded-md border-2 flex items-center justify-center transition-all ${
+                                      isSelected
+                                        ? 'bg-[#c9a84c] border-[#c9a84c] shadow-[0_0_8px_rgba(201,168,76,0.4)]'
+                                        : 'bg-zinc-900/80 border-white/40'
+                                    }`}
+                                    aria-hidden
+                                  >
+                                    {isSelected && <CheckCircle2 className="w-3 h-3 text-zinc-900" />}
+                                  </div>
+                                )}
+                                <div className={referenceSelectMode ? `pointer-events-none transition-all ${isSelected ? 'ring-2 ring-[#c9a84c]/60 rounded-xl' : 'opacity-70'}` : ''}>
+                                  <ReferenceCard
+                                    reference={item}
+                                    onPreview={handlePreviewReference}
+                                    onGenerateFromReference={handleGenerateFromReference}
+                                    onDelete={handleDeleteReference}
+                                    onRetryTranscribe={handleRetryTranscribe}
+                                  />
+                                </div>
                               </div>
                             );
                           }
@@ -1014,6 +1200,24 @@ export default function BriefPipeline() {
                         })
                       )}
                     </div>
+                    {/* Sticky batch-generate bar — only on the reference
+                        column, only in multi-select mode, only when at
+                        least one ref is selected. Fires N parallel POSTs. */}
+                    {col.key === 'reference' && referenceSelectMode && selectedReferenceIds.length > 0 && (
+                      <div className="mt-2 mb-1 px-1">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const refs = references.filter((r) => selectedReferenceIds.includes(r.id));
+                            handleBatchGenerateFromReferences(refs);
+                          }}
+                          className="w-full flex items-center justify-center gap-2 py-3 rounded-md bg-[#c9a84c]/15 border border-[#c9a84c]/40 text-[#e8d5a3] font-mono text-xs uppercase tracking-wider hover:bg-[#c9a84c]/25 hover:border-[#c9a84c]/60 shadow-[0_0_15px_rgba(201,168,76,0.15)] transition-all cursor-pointer"
+                        >
+                          <Sparkles className="w-3.5 h-3.5" />
+                          Generate {selectedReferenceIds.length} Brief{selectedReferenceIds.length === 1 ? '' : 's'}
+                        </button>
+                      </div>
+                    )}
                   </div>
                 );
               })}
