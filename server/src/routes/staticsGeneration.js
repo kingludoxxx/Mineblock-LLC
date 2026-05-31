@@ -2951,7 +2951,7 @@ router.get('/creatives', authenticate, async (req, res) => {
   try {
     await ensureCreativesTable();
     const { product_id, status, pipeline = 'standard', parent_creative_id } = req.query;
-    let query = "SELECT id, product_id, product_name, image_url, thumbnail_url, source_label, angle, archetype, aspect_ratio, status, reference_thumbnail, reference_name, review_notes, parent_creative_id, pipeline, copy_set_id, meta_ad_ids, meta_image_hash, generated_copy, parent_creative_id_ref, parent_im_number, im_number, iteration_change_description, quality_warning, image_engine, pending_edit_url, pending_edit_token, previous_image_url, last_edit_prompt, created_at FROM spy_creatives WHERE pipeline = $1";
+    let query = "SELECT id, product_id, product_name, image_url, thumbnail_url, source_label, angle, archetype, aspect_ratio, status, reference_thumbnail, reference_name, review_notes, parent_creative_id, pipeline, copy_set_id, meta_ad_ids, meta_image_hash, generated_copy, parent_creative_id_ref, parent_im_number, im_number, iteration_change_description, quality_warning, image_engine, pending_edit_url, pending_edit_token, previous_image_url, last_edit_prompt, last_edit_error, created_at FROM spy_creatives WHERE pipeline = $1";
     const params = [pipeline];
     let idx = 2;
 
@@ -3602,38 +3602,78 @@ router.post('/creatives/:id/edit', authenticate, async (req, res) => {
       return res.status(400).json({ success: false, error: { message: 'Creative has no image to edit' } });
     }
 
-    // Submit to OpenAI's edit endpoint. The engine.submit method auto-routes
-    // to /v1/images/edits when imageUrls.length > 0. Ratio matches the
-    // creative's existing aspect ratio so edit returns the same shape.
+    // ASYNC pattern (mirrors /generate): respond immediately with a token,
+    // run the OpenAI work in setImmediate. Frontend polls GET /creatives/:id
+    // for pending_edit_url to be populated (success) or last_edit_error to
+    // appear (failure). This avoids the Render proxy 300s response timeout
+    // that occasionally drops slow synchronous /edit responses even when
+    // the underlying OpenAI call succeeded.
     const ratio = creative.aspect_ratio || '1:1';
-    const taskId = await openaiEngine.submit(prompt, [creative.image_url], ratio);
-    const tempUrl = await openaiEngine.poll(taskId);
-    if (!tempUrl) throw new Error('OpenAI edit returned no result');
-
-    // Persist the edited image to R2 as a pending edit (NOT the live image).
-    const persistedUrl = await persistNanoBananaImage(tempUrl, 'statics-edits');
-    if (!persistedUrl) throw new Error('Failed to persist edited image to R2');
-
     const editToken = crypto.randomUUID();
+    const startedAt = Date.now();
+
+    // Mark the row as in-flight: token claimed, no URL yet, no prior error.
+    // Any prior pending_edit_url is cleared so the frontend doesn't show a
+    // stale preview while the new edit cooks.
     await pgQuery(
       `UPDATE spy_creatives
-         SET pending_edit_url = $1,
-             pending_edit_token = $2,
-             last_edit_prompt = $3,
+         SET pending_edit_url = NULL,
+             pending_edit_token = $1,
+             last_edit_prompt = $2,
+             last_edit_error = NULL,
              last_edited_at = NOW()
-       WHERE id = $4`,
-      [persistedUrl, editToken, prompt, creative.id]
+       WHERE id = $3`,
+      [editToken, prompt, creative.id]
     );
 
+    // Respond immediately.
     res.json({
       success: true,
       data: {
         id: creative.id,
-        original_image_url: creative.image_url,
-        pending_edit_url: persistedUrl,
         edit_token: editToken,
-        prompt,
+        status: 'generating',
+        message: 'Edit queued. Poll GET /creatives/:id and look for pending_edit_url matching this token.',
       },
+    });
+
+    // Run the OpenAI call in the background.
+    setImmediate(async () => {
+      const tag = `[statics edit ${creative.id.slice(0,8)} ${editToken.slice(0,8)}]`;
+      try {
+        console.log(`${tag} submitting to OpenAI: "${prompt.slice(0,60)}"`);
+        const taskId = await openaiEngine.submit(prompt, [creative.image_url], ratio);
+        const tempUrl = await openaiEngine.poll(taskId);
+        if (!tempUrl) throw new Error('OpenAI edit returned no result');
+
+        const persistedUrl = await persistNanoBananaImage(tempUrl, 'statics-edits');
+        if (!persistedUrl) throw new Error('Failed to persist edited image to R2');
+
+        // Only update if the token is still ours — protects against a
+        // concurrent Generate that started after we did and replaced the
+        // token. That newer edit's result wins.
+        const updated = await pgQuery(
+          `UPDATE spy_creatives
+             SET pending_edit_url = $1
+           WHERE id = $2 AND pending_edit_token = $3
+           RETURNING id`,
+          [persistedUrl, creative.id, editToken]
+        );
+        if (updated.length === 0) {
+          console.warn(`${tag} pending_edit_token changed before completion — discarding result`);
+        } else {
+          console.log(`${tag} ✅ done in ${Math.round((Date.now() - startedAt) / 1000)}s → ${persistedUrl.slice(-50)}`);
+        }
+      } catch (err) {
+        console.error(`${tag} failed: ${err.message}`);
+        await pgQuery(
+          `UPDATE spy_creatives
+             SET pending_edit_token = NULL,
+                 last_edit_error = $1
+           WHERE id = $2 AND pending_edit_token = $3`,
+          [String(err.message || 'Edit failed').slice(0, 500), creative.id, editToken]
+        ).catch(() => {});
+      }
     });
   } catch (err) {
     console.error('[statics edit] error:', err);

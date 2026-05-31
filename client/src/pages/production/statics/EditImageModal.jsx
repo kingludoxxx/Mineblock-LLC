@@ -49,17 +49,58 @@ export function EditImageModal({ creative, isOpen, onClose, onAccepted }) {
     if (generating) return;
     setGenerating(true);
     setError(null);
+    setPendingUrl(null); // clear stale preview while new one cooks
     try {
+      // Backend is async — returns { edit_token, status: 'generating' }
+      // immediately, runs OpenAI call in setImmediate. We then poll
+      // GET /creatives/:id until pending_edit_url matches our token.
       const { data } = await api.post(
         `/statics-generation/creatives/${creative.id}/edit`,
         { prompt: p }
       );
-      const result = data?.data || data;
-      setPendingUrl(result.pending_edit_url);
-      setEditToken(result.edit_token);
+      const submitResult = data?.data || data;
+      const myToken = submitResult.edit_token;
+      setEditToken(myToken);
+
+      // Poll for completion — max ~4 minutes (gpt-image-2 edits can be slow)
+      const POLL_MS = 2500;
+      const MAX_POLLS = 100;
+      let polls = 0;
+      const poll = async () => {
+        polls++;
+        try {
+          const { data: cdata } = await api.get(`/statics-generation/creatives/${creative.id}`);
+          const c = cdata?.data || cdata;
+          if (c.last_edit_error) {
+            setError(`Edit failed: ${c.last_edit_error}`);
+            setGenerating(false);
+            return;
+          }
+          if (c.pending_edit_url && c.pending_edit_token === myToken) {
+            setPendingUrl(c.pending_edit_url);
+            setGenerating(false);
+            return;
+          }
+          if (c.pending_edit_token !== myToken && c.pending_edit_token !== null) {
+            // Another Generate replaced our token — give up silently
+            setError('Edit was superseded by a newer Generate');
+            setGenerating(false);
+            return;
+          }
+          if (polls >= MAX_POLLS) {
+            setError('Edit timed out after 4 minutes');
+            setGenerating(false);
+            return;
+          }
+          setTimeout(poll, POLL_MS);
+        } catch (e) {
+          setError(e.response?.data?.error?.message || e.message);
+          setGenerating(false);
+        }
+      };
+      setTimeout(poll, POLL_MS);
     } catch (err) {
       setError(err.response?.data?.error?.message || err.message);
-    } finally {
       setGenerating(false);
     }
   }, [prompt, generating, creative?.id]);
