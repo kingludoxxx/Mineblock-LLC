@@ -2153,10 +2153,15 @@ Never introduce claims not supported by the Product Library. Never remove the me
 ## 9. ON-SCREEN TEXT / HIGHLIGHTED LABELS  (CONDITIONAL — driven by ORIGINAL ON-SCREEN TEXT block above)
 The winning script may have **burned-in on-screen text overlays** — short, bold labels framing the video (top discount banners, framed comment-reply quotes, ALL-CAPS sticker text, urgency banners). These are graphics, NOT spoken.
 
-- **Source of truth: the ORIGINAL ON-SCREEN TEXT block above.** Inspect it line-by-line.
+### What qualifies as a highlighted label vs a hook
+A LABEL is short (≤6 words), attention-grabbing, sticker-style, often ALL CAPS with a trailing emoji, frequently a fragment with no verb. A HOOK is a full first-person sentence the speaker delivers (8–25 words, sentence case, complete grammar). They live in different output fields.
+
+### Rule
+- **Source of truth: the ORIGINAL ON-SCREEN TEXT block above.** Inspect every line.
 - If that block says "(no on-screen text detected in source — emit empty highlighted_text)": every card emits highlighted_text: []. Do not invent.
-- If that block has text: pick 2–4 highest-leverage lines, rewrite each into our equivalent label. ≤ 5 words, ALL CAPS where source uses caps, 1 emoji at end. Preserve role (banner stays banner, comment-reply stays comment-reply).
+- If that block has text: identify the label-style lines, pick 2–4 highest-leverage ones, rewrite each. ≤ 5 words, ALL CAPS where source uses caps, 1 emoji at end. Preserve role (banner stays banner, comment-reply stays comment-reply).
 - Vary the wording across iteration cards only if the selected vector calls for it (e.g. Hooks rotation → fresh labels per card). Otherwise keep the labels consistent.
+- A hook is NEVER an overlay label. ALL-CAPS sticker fragments belong in highlighted_text, not in hooks.
 
 # OUTPUT — return ONLY valid JSON, no markdown fences, no preamble:
 
@@ -2354,6 +2359,7 @@ cta: {{ORIGINAL_CTA}}
 - H4 = same framework, contrarian / inverted version (test against H1)
 - H5 = same framework, shortest punch version (under 8 words)
 - Each hook must read seamlessly into the body's first paragraph
+- A hook is a FULL FIRST-PERSON SENTENCE the speaker would actually say. ALL-CAPS sticker fragments (≤6 words with emoji) are NEVER hooks — they're highlighted_text. See rule §7.
 
 ## 6. CTA CLONING
 - Match the original's CTA structure (urgency / curiosity / direct / soft)
@@ -2364,11 +2370,25 @@ cta: {{ORIGINAL_CTA}}
 ## 7. ON-SCREEN TEXT / HIGHLIGHTED LABELS  (CONDITIONAL — driven by ORIGINAL ON-SCREEN TEXT block above)
 The competitor's ad may have **burned-in on-screen text overlays** — short, bold labels that frame the video (e.g. "BIGGEST Memorial Day SALE 🇺🇸 / Buy 3, Get 3 FREE", "PUBLIC APOLOGY 👁️ / WE LIED 🤥", "Reply to Drew_Posts's comment"). These are NOT spoken — they're displayed as graphics, banners, sticker text, or framed quote panels.
 
-- **Source of truth: the ORIGINAL ON-SCREEN TEXT block above.** Inspect it line-by-line.
-- If that block says "(no on-screen text detected in source — emit empty highlighted_text)", the source had no overlays → emit highlighted_text: []. Do not invent.
-- If that block contains text lines, the source HAS overlays. Pick the 2–4 lines that carry the most persuasion weight (banners, framing devices, opening punchlines, discount tags, framed comment-replies, ALL-CAPS callouts). Rewrite each into our equivalent label.
-- Each output label: ≤ 5 words, ALL CAPS where the source uses caps, exactly 1 emoji at the end (carry the source's emoji if present, otherwise pick one that matches the label's emotion). Preserve the role (top-banner discount → top-banner discount; framed comment reply → framed comment reply; apology sticker → apology sticker).
+### What qualifies as a highlighted label vs a hook
+A LABEL is short, attention-grabbing, sticker-style. A HOOK is a full first-person sentence the speaker delivers.
+
+| Trait | Label (goes in highlighted_text) | Hook (goes in hooks) |
+|---|---|---|
+| Length | ≤ 6 words | Full sentence, 8–25 words |
+| Tone | Banner / sticker / framing device | Spoken voice |
+| Grammar | Fragment, often no verb | Subject + verb, complete |
+| Caps | Frequently ALL CAPS | Sentence case |
+| Emoji | 1 trailing emoji is normal | Rare |
+| Examples | "PUBLIC APOLOGY 👁️", "WE LIED 🤥", "BIGGEST SALE 🇺🇸", "PROJECT REJECTED" | "I'm the founder of X, and what I'm about to announce could ruin our company." |
+
+### Rule
+- **Source of truth: the ORIGINAL ON-SCREEN TEXT block above.** Inspect every line.
+- If that block says "(no on-screen text detected in source — emit empty highlighted_text)", emit highlighted_text: []. Do not invent.
+- If that block contains text lines: identify the LABEL-style lines (matching the Label column above). Pick the **2–4 strongest** and rewrite each for our brand. NEVER let a label end up as a hook — labels are sticker text, not spoken script. If the source's overlay block IS the entire script (all-caps subtitle delivery, no separate banners), the 1–3 shortest punchiest lines are still labels; the rest belong in body.
+- Each output label: ≤ 5 words, ALL CAPS where the source uses caps, exactly 1 emoji at the end (carry the source's emoji if present, otherwise pick one matching the label's emotion). Preserve the role (top-banner discount → top-banner discount; framed comment reply → framed comment reply; apology sticker → apology sticker).
 - Swap competitor brand / product / offer to ours from {{PRODUCT_CONTEXT}}. Never copy competitor brand names, prices, or claims verbatim.
+- **Hooks are NEVER overlay labels.** If you find yourself writing an ALL-CAPS fragment with an emoji as Hook 1, move it to highlighted_text and write a real sentence-form hook in its place.
 
 # OUTPUT — return ONLY valid JSON, no markdown fences, no preamble:
 
