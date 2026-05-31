@@ -2407,19 +2407,29 @@ router.post('/iterate/:creativeId', authenticate, async (req, res) => {
 
     // Determine which image engine generated the parent — iterations on an
     // OpenAI creative must stay on OpenAI (no cross-engine style drift).
-    // Look up the parent spy_creatives row by creative_id (the parent here
-    // is a creative_analysis row, but iterations are seeded from spy_creatives).
+    // Resolution order:
+    //   1. Explicit body.image_engine override (highest priority — lets the
+    //      operator A/B test a winner on the other engine)
+    //   2. Look up parent's spy_creatives row by creative_id
+    //   3. DEFAULT_ENGINE fallback (nanobanana)
     let parentImageEngine = DEFAULT_ENGINE;
-    try {
-      const er = await pgQuery(
-        `SELECT image_engine FROM spy_creatives
-         WHERE source_label LIKE $1 OR product_id = $2
-         ORDER BY created_at DESC LIMIT 1`,
-        [`%${parent.creative_id}%`, productId]
-      );
-      if (er[0]?.image_engine) parentImageEngine = er[0].image_engine;
-    } catch (e) {
-      console.warn(`[iterate] parent engine lookup failed, defaulting to ${DEFAULT_ENGINE}: ${e.message}`);
+    const requestedEngine = req.body.image_engine
+      ? String(req.body.image_engine).toLowerCase()
+      : null;
+    if (requestedEngine && ['nanobanana', 'openai'].includes(requestedEngine)) {
+      parentImageEngine = requestedEngine;
+    } else {
+      try {
+        const er = await pgQuery(
+          `SELECT image_engine FROM spy_creatives
+           WHERE source_label LIKE $1 OR product_id = $2
+           ORDER BY created_at DESC LIMIT 1`,
+          [`%${parent.creative_id}%`, productId]
+        );
+        if (er[0]?.image_engine) parentImageEngine = er[0].image_engine;
+      } catch (e) {
+        console.warn(`[iterate] parent engine lookup failed, defaulting to ${DEFAULT_ENGINE}: ${e.message}`);
+      }
     }
 
     // Pre-allocate spy_creatives rows + assign IM numbers
