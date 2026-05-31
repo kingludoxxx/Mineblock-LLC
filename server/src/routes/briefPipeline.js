@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { authenticate } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/rbac.js';
 import { pgQuery } from '../db/pg.js';
-import { transcribeVideoUrl, probeVertexMultimodal, downloadVideoForDiag, combineMultimodalToTranscriptForDiag } from '../services/videoTranscribe.js';
+import { transcribeVideoUrl } from '../services/videoTranscribe.js';
 // Temp imports for PestLab E2E test endpoints — removed after verification
 import { getEditors, OWNER_ID } from '../utils/clickupEditors.js';
 import crypto from 'crypto';
@@ -6460,39 +6460,6 @@ router.post('/settings/league-prompts/reset', authenticate, async (_req, res) =>
 // selected product is wired up, (b) show a field count, and (c) optionally
 // surface what fields will be available to the prompts at generation time.
 // ============================================================================
-
-// TEMP DIAG: POST /_diag-vertex { videoUrl } — downloads the URL, runs
-// probeVertexMultimodal, returns the parsed analysis JSON. Used to verify
-// the on_screen_text prompt change live without going through the
-// brand-spy transcript cache. Strip once verified.
-router.post('/_diag-vertex', authenticate, async (req, res) => {
-  try {
-    const { videoUrl } = req.body || {};
-    if (!videoUrl) return res.status(400).json({ success: false, error: { message: 'videoUrl required' } });
-    const { buf, contentType } = await downloadVideoForDiag(videoUrl);
-    const mime = contentType.split(';')[0] || 'video/mp4';
-    const rawJson = await probeVertexMultimodal(buf, mime);
-    let analysis;
-    try { analysis = JSON.parse(rawJson); } catch { analysis = { _raw: rawJson }; }
-    // Run the same combine + dedup the live transcribe path uses so the
-    // diag shows the FINAL operator-visible text, not just the raw model
-    // output. The on_screen_text field on `analysis` is pre-dedup;
-    // post_dedup_transcript is what would land in brand_spy.ads.transcript.
-    let post_dedup_transcript = null;
-    try { post_dedup_transcript = combineMultimodalToTranscriptForDiag(analysis); }
-    catch (e) { post_dedup_transcript = `(combine failed: ${e.message})`; }
-    res.json({
-      success: true,
-      sizeMB: (buf.length / 1024 / 1024).toFixed(2),
-      mime,
-      analysis,
-      post_dedup_transcript,
-    });
-  } catch (e) {
-    console.error('[BriefPipeline] _diag-vertex error:', e.message);
-    res.status(500).json({ success: false, error: { message: e.message } });
-  }
-});
 
 router.get('/product-context/:id', authenticate, async (req, res) => {
   try {
