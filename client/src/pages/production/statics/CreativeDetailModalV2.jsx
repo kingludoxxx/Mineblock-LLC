@@ -68,6 +68,8 @@ export function CreativeDetailModalV2({
 
   const [approving, setApproving] = useState(false);
   const [approveError, setApproveError] = useState(null);
+  const [deletingCard, setDeletingCard] = useState(false);
+  const [deleteCardError, setDeleteCardError] = useState(null);
 
   const handleApproveAll = useCallback(async () => {
     if (!trueParent || approving) return;
@@ -83,6 +85,28 @@ export function CreativeDetailModalV2({
       setApproving(false);
     }
   }, [trueParent, approving, onRefresh, onClose]);
+
+  // Whole-card delete — DELETE /creatives/:parentId cascades to all children
+  // (1:1 + 4:5 + 9:16 all removed in one transaction on the backend).
+  const handleDeleteCard = useCallback(async () => {
+    if (!trueParent || deletingCard) return;
+    const ratiosFound = ['1:1','4:5','9:16'].filter(r => ratioMap[r]).length;
+    const ok = window.confirm(
+      `Delete this entire card?\n\n"${trueParent.angle || trueParent.product_name || 'Creative'}"\n${ratiosFound} ratio${ratiosFound === 1 ? '' : 's'} will be removed. This cannot be undone.`
+    );
+    if (!ok) return;
+    setDeletingCard(true);
+    setDeleteCardError(null);
+    try {
+      await api.delete(`/statics-generation/creatives/${trueParent.id}`);
+      onRefresh?.();
+      onClose?.();
+    } catch (err) {
+      setDeleteCardError(err.response?.data?.error?.message || err.message);
+    } finally {
+      setDeletingCard(false);
+    }
+  }, [trueParent, deletingCard, ratioMap, onRefresh, onClose]);
 
   if (!isOpen || !parent) return null;
 
@@ -117,8 +141,19 @@ export function CreativeDetailModalV2({
           <div className="flex items-center gap-2">
             <button
               type="button"
+              onClick={handleDeleteCard}
+              disabled={deletingCard || approving}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-red-500/40 text-red-400 hover:bg-red-500/10 text-xs font-mono font-semibold uppercase tracking-wide transition-all cursor-pointer disabled:opacity-50"
+              title="Delete this entire card (all ratios) — cannot be undone"
+            >
+              {deletingCard
+                ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Deleting…</>
+                : <><Trash2 className="w-3.5 h-3.5" /> Delete card</>}
+            </button>
+            <button
+              type="button"
               onClick={handleApproveAll}
-              disabled={approving}
+              disabled={approving || deletingCard}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500/90 hover:bg-emerald-500 text-black text-xs font-mono font-semibold uppercase tracking-wide transition-all cursor-pointer disabled:opacity-50"
               title="Approve all 3 ratios — moves to Ready to Launch"
             >
@@ -140,6 +175,11 @@ export function CreativeDetailModalV2({
         {approveError && (
           <div className="px-5 py-2 bg-red-500/10 border-b border-red-500/30 text-xs text-red-300">
             {approveError}
+          </div>
+        )}
+        {deleteCardError && (
+          <div className="px-5 py-2 bg-red-500/10 border-b border-red-500/30 text-xs text-red-300">
+            {deleteCardError}
           </div>
         )}
 
