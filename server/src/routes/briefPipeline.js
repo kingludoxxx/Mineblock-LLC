@@ -3580,12 +3580,25 @@ router.get('/generation-status/:winnerId', authenticate, async (req, res) => {
 router.get('/generated', authenticate, async (_req, res) => {
   try {
     await ensureTables();
+    // Includes the originating reference (when known) inline on every row
+    // so the kanban-served brief object carries enough data for the detail
+    // modal to render the Source Reference panel without a second fetch.
     const rows = await pgQuery(
-      `SELECT g.*, w.parsed_script AS original_script, w.raw_script AS original_raw_script
-       FROM brief_pipeline_generated g
-       LEFT JOIN brief_pipeline_winners w ON g.winner_id = w.id
-       WHERE g.status != 'rejected'
-       ORDER BY g.overall_score DESC NULLS LAST, g.created_at DESC`
+      `SELECT g.*,
+              w.parsed_script AS original_script,
+              w.raw_script    AS original_raw_script,
+              r.id            AS reference_id,
+              r.source        AS reference_source,
+              r.brand_name    AS reference_brand_name,
+              r.headline      AS reference_headline,
+              r.video_url     AS reference_video_url,
+              r.thumbnail_url AS reference_thumbnail_url,
+              r.source_url    AS reference_source_url
+         FROM brief_pipeline_generated g
+         LEFT JOIN brief_pipeline_winners    w ON g.winner_id = w.id
+         LEFT JOIN brief_pipeline_references r ON w.reference_id = r.id
+        WHERE g.status != 'rejected'
+        ORDER BY g.overall_score DESC NULLS LAST, g.created_at DESC`
     );
     // Fix double-encoded JSONB fields
     for (const b of rows) {
@@ -3605,6 +3618,21 @@ router.get('/generated', authenticate, async (_req, res) => {
         }
         return [];
       })();
+      // Mirror /generated/:id — surface the originating reference inline so
+      // the modal (which opens with the list-item, not a refetch) has it.
+      if (b.reference_id) {
+        b.reference = {
+          id: b.reference_id,
+          source: b.reference_source,
+          brandName: b.reference_brand_name,
+          headline: b.reference_headline,
+          videoUrl: b.reference_video_url,
+          thumbnailUrl: b.reference_thumbnail_url,
+          sourceUrl: b.reference_source_url,
+        };
+      } else {
+        b.reference = null;
+      }
     }
     res.json({ success: true, briefs: rows });
   } catch (err) {
