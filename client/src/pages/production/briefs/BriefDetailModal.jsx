@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   X,
   Check,
@@ -13,8 +13,9 @@ import {
   Loader2,
   Sparkles,
   Save,
-  Rocket,
   Send,
+  Trash2,
+  Plus,
 } from 'lucide-react';
 import api from '../../../services/api';
 
@@ -29,15 +30,30 @@ const SCORE_CONFIG = {
   overall:    { label: 'Overall',    icon: Shield, color: 'bg-emerald-500/10 text-emerald-300 border-emerald-500/20' },
 };
 
+// Quick-action chips fed to the AI chat box. They expand to a sensible
+// natural-language instruction when clicked. Curated to match the most
+// common edits Ludo asks for during reviews.
+const QUICK_ACTIONS = [
+  { label: 'More aggressive', prompt: 'Make all hooks more aggressive and confrontational, sharpen the body to match.' },
+  { label: 'Shorter hooks',   prompt: 'Compress every hook to under 12 words while keeping the same angle and tension.' },
+  { label: 'Add a stat',      prompt: 'Inject a concrete number or stat into hook 1 and the first body paragraph.' },
+  { label: 'Try fear angle',  prompt: 'Rewrite hook 1 with a fear-of-missing-out framing. Keep the other hooks intact.' },
+  { label: 'Discount label',  prompt: 'Add a top-banner discount label to highlighted_text in the BIGGEST SALE 🇺🇸 style.' },
+  { label: 'Apology overlay', prompt: 'Replace highlighted_text with a 2-label PUBLIC APOLOGY 👁️ / WE LIED 🤥 style framing.' },
+];
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-function SectionLabel({ children }) {
+function SectionLabel({ children, actions }) {
   return (
-    <h4 className="font-mono text-xs tracking-[0.15em] uppercase text-[#c9a84c] font-semibold mb-3">
-      {children}
-    </h4>
+    <div className="flex items-center justify-between mb-3">
+      <h4 className="font-mono text-xs tracking-[0.15em] uppercase text-[#c9a84c] font-semibold">
+        {children}
+      </h4>
+      {actions}
+    </div>
   );
 }
 
@@ -54,6 +70,17 @@ function ScoreCard({ scoreKey, value }) {
   );
 }
 
+// Normalize highlighted_text into a JS array regardless of how it arrives
+// (some endpoints still hand back the string "[]" on older rows).
+function parseHighlighted(raw) {
+  if (Array.isArray(raw)) return raw.filter(Boolean).map((s) => String(s));
+  if (typeof raw === 'string') {
+    try { const a = JSON.parse(raw); return Array.isArray(a) ? a.filter(Boolean).map(String) : []; }
+    catch { return []; }
+  }
+  return [];
+}
+
 // ---------------------------------------------------------------------------
 // BriefDetailModal
 // ---------------------------------------------------------------------------
@@ -65,10 +92,10 @@ export default function BriefDetailModal({
   onApprove,
   onReject,
   onMoveToReady,
-  onPushToClickup,    // ← new: open Push-to-ClickUp modal for an Approved brief
-  onLaunch,           // ← new: launch action for ready_to_launch briefs
-  onMarkLaunched,     // ← new: optimistic mark-as-launched without ad creation
-  onMoveBackToApproved, // ← new: reverse drag without keyboard for ready → approved
+  onPushToClickup,
+  onLaunch,
+  onMarkLaunched,
+  onMoveBackToApproved,
   onSave,
   originalScript,
   originalRawScript,
@@ -77,10 +104,13 @@ export default function BriefDetailModal({
   const [winAnalysisOpen, setWinAnalysisOpen] = useState(false);
   const [editableHooks, setEditableHooks] = useState([]);
   const [editableBody, setEditableBody] = useState('');
+  const [editableHighlighted, setEditableHighlighted] = useState([]);
   const [hasChanges, setHasChanges] = useState(false);
-  const [enhancePrompt, setEnhancePrompt] = useState('');
-  const [enhancing, setEnhancing] = useState(false);
+  const [aiPrompt, setAiPrompt] = useState('');
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiHistory, setAiHistory] = useState([]); // [{ role:'user'|'ai', text, summary }]
   const [saving, setSaving] = useState(false);
+  const chatScrollRef = useRef(null);
 
   useEffect(() => {
     if (!brief) return;
@@ -91,21 +121,30 @@ export default function BriefDetailModal({
     })();
     setEditableHooks(parsedHooks);
     setEditableBody(brief.body || '');
+    setEditableHighlighted(parseHighlighted(brief.highlighted_text));
     setHasChanges(false);
+    setAiHistory([]);
+    setAiPrompt('');
   }, [brief?.id]);
+
+  // Auto-scroll AI chat to bottom on new messages
+  useEffect(() => {
+    if (chatScrollRef.current) {
+      chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
+    }
+  }, [aiHistory.length, aiBusy]);
 
   if (!isOpen || !brief) return null;
 
   const status = brief.status || 'generated';
   const scores = {
-    novelty: brief.novelty_score,
+    novelty:    brief.novelty_score,
     aggression: brief.aggression_score,
-    coherence: brief.coherence_score,
-    overall: brief.overall_score,
+    coherence:  brief.coherence_score,
+    overall:    brief.overall_score,
   };
   const hasScores = Object.values(scores).some((v) => v != null);
 
-  // Parse original script
   const originalHooks = (() => {
     if (!originalScript) return [];
     let obj = originalScript;
@@ -122,22 +161,66 @@ export default function BriefDetailModal({
     return obj.body || obj.script || obj.text || null;
   })();
 
-  const handleEnhance = async () => {
-    setEnhancing(true);
+  const handleAi = async (instructionOverride) => {
+    const instruction = (instructionOverride ?? aiPrompt).trim();
+    if (!instruction || aiBusy) return;
+    setAiBusy(true);
+    const userTurn = { role: 'user', text: instruction };
+    setAiHistory((h) => [...h, userTurn]);
+    setAiPrompt('');
     try {
       const { data } = await api.post(`/brief-pipeline/generated/${brief.id}/enhance`, {
-        instruction: enhancePrompt,
+        instruction,
         currentHooks: editableHooks,
         currentBody: editableBody,
+        currentHighlightedText: editableHighlighted,
       });
-      if (data.hooks) setEditableHooks(data.hooks);
-      if (data.body) setEditableBody(data.body);
+      if (Array.isArray(data.hooks)) setEditableHooks(data.hooks);
+      if (typeof data.body === 'string') setEditableBody(data.body);
+      if (Array.isArray(data.highlighted_text)) setEditableHighlighted(data.highlighted_text);
       setHasChanges(true);
-      setEnhancePrompt('');
+      setAiHistory((h) => [...h, { role: 'ai', text: data.edit_summary || 'Applied.', summary: data.edit_summary }]);
     } catch (err) {
-      console.error('Enhance failed:', err);
+      const msg = err.response?.data?.error?.message || err.message || 'AI edit failed';
+      setAiHistory((h) => [...h, { role: 'ai', text: `Error: ${msg}` }]);
     } finally {
-      setEnhancing(false);
+      setAiBusy(false);
+    }
+  };
+
+  const handleDeleteHook = (idx) => {
+    setEditableHooks((prev) => prev.filter((_, i) => i !== idx));
+    setHasChanges(true);
+  };
+
+  const handleDeleteHighlight = (idx) => {
+    setEditableHighlighted((prev) => prev.filter((_, i) => i !== idx));
+    setHasChanges(true);
+  };
+
+  const handleAddHighlight = () => {
+    setEditableHighlighted((prev) => prev.length >= 4 ? prev : [...prev, '']);
+    setHasChanges(true);
+  };
+
+  const handleUpdateHighlight = (idx, value) => {
+    setEditableHighlighted((prev) => prev.map((s, i) => i === idx ? value : s));
+    setHasChanges(true);
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      // Pass highlighted_text — empty labels get filtered server-side
+      const trimmedHighlights = editableHighlighted.map((s) => (s || '').trim()).filter(Boolean);
+      await onSave?.(brief.id, {
+        hooks: editableHooks,
+        body: editableBody,
+        highlighted_text: trimmedHighlights,
+      });
+      setHasChanges(false);
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -148,375 +231,385 @@ export default function BriefDetailModal({
   })();
 
   return (
-    <div className="fixed inset-0 z-50 flex justify-end">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-8"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose?.(); }}
+    >
       {/* Backdrop */}
-      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
+      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
 
-      {/* Slide-over panel */}
-      <div
-        className="relative w-[500px] h-full bg-[#111113] border-l border-white/[0.06] shadow-2xl flex flex-col"
-        style={{ animation: 'slideInRight 0.25s ease-out' }}
-      >
-        {/* Header */}
-        <div className="flex items-center justify-between p-6 border-b border-white/[0.06]">
-          <h2 className="text-lg font-semibold text-white">Brief Detail</h2>
-          <button
-            type="button"
-            onClick={onClose}
-            className="text-zinc-400 hover:text-white transition-colors cursor-pointer"
-          >
-            <X className="w-5 h-5" />
-          </button>
-        </div>
-
-        {/* Scrollable content */}
-        <div className="flex-1 overflow-y-auto p-6 space-y-8">
-          {/* Naming convention */}
-          {brief.naming_convention && (
-            <section>
-              <SectionLabel>Naming Convention</SectionLabel>
-              <div className="glass-card border border-white/[0.04] rounded-lg p-4 bg-white/[0.02]">
-                <p className="font-mono text-xs text-zinc-300 leading-relaxed">
-                  {brief.naming_convention}
-                </p>
-              </div>
-            </section>
-          )}
-
-          {/* Scores */}
-          {hasScores && (
-            <section>
-              <SectionLabel>Scores</SectionLabel>
-              <div className="flex gap-2">
-                {Object.entries(scores).map(([key, val]) => (
-                  <ScoreCard key={key} scoreKey={key} value={val} />
+      {/* Centered modal — 90vw × 90vh max, 3-column grid on lg+ */}
+      <div className="relative w-full max-w-[1400px] h-[90vh] bg-[#0c0c0e] border border-white/[0.07] rounded-2xl shadow-2xl flex flex-col overflow-hidden">
+        {/* Sticky header */}
+        <div className="flex items-start justify-between px-6 py-4 border-b border-white/[0.06] shrink-0">
+          <div className="min-w-0">
+            <h2 className="text-base font-semibold text-white flex items-center gap-2">
+              Brief Detail
+              <span className="text-[10px] uppercase tracking-wider font-mono px-1.5 py-0.5 rounded bg-white/[0.04] text-zinc-400 border border-white/[0.06]">
+                {status}
+              </span>
+            </h2>
+            {brief.naming_convention && (
+              <p className="font-mono text-[11px] text-zinc-500 mt-1 truncate">{brief.naming_convention}</p>
+            )}
+          </div>
+          <div className="flex items-center gap-3">
+            {hasScores && (
+              <div className="hidden md:flex gap-1.5">
+                {Object.entries(scores).map(([k, v]) => (
+                  <ScoreCard key={k} scoreKey={k} value={v} />
                 ))}
               </div>
-            </section>
-          )}
-
-          {/* Original Script — show raw transcript if available, otherwise parsed hooks/body */}
-          {(originalRawScript || originalHooks.length > 0 || originalBody) && (
-            <section>
-              <SectionLabel>Original Script</SectionLabel>
-              <div className="glass-card border border-white/[0.04] rounded-lg p-5 bg-white/[0.02] space-y-4">
-                {originalRawScript ? (
-                  <p className="text-sm text-zinc-300 leading-relaxed whitespace-pre-line">{originalRawScript}</p>
-                ) : (
-                  <>
-                    {originalHooks.map((hook, i) => (
-                      <div key={i}>
-                        <span className="font-mono text-xs text-zinc-500 mr-2">H{i + 1}</span>
-                        <span className={`text-sm ${i === 0 ? 'font-medium text-zinc-200' : 'text-zinc-400'} leading-relaxed`}>
-                          {typeof hook === 'string' ? hook : hook.text}
-                        </span>
-                      </div>
-                    ))}
-                    {originalBody && (
-                      <p className="text-sm text-zinc-400 leading-relaxed whitespace-pre-line">{originalBody}</p>
-                    )}
-                  </>
-                )}
-              </div>
-            </section>
-          )}
-
-          {/* Hooks (editable) */}
-          {editableHooks.length > 0 && (
-            <section>
-              <SectionLabel>Hooks</SectionLabel>
-              <div className="space-y-3">
-                {editableHooks.map((hook, i) => {
-                  const wordCount = (hook.text || '').trim().split(/\s+/).filter(Boolean).length;
-                  const isLong = wordCount > 25;
-                  return (
-                  <div key={hook.id || i} className={`glass-card border rounded-lg p-4 bg-white/[0.02] ${isLong ? 'border-amber-500/30' : 'border-white/[0.04]'}`}>
-                    <div className="flex gap-2 mb-3 items-center">
-                      <span className="text-[10px] font-mono uppercase tracking-wider font-medium px-1.5 py-0.5 rounded bg-[#c9a84c]/10 text-[#e8d5a3] border border-[#c9a84c]/20">
-                        H{i + 1}
-                      </span>
-                      {hook.mechanism && (
-                        <span className="text-[10px] font-mono uppercase tracking-wider font-medium px-1.5 py-0.5 rounded bg-white/[0.04] text-zinc-400 border border-white/[0.06]">
-                          {hook.mechanism}
-                        </span>
-                      )}
-                      <span className={`ml-auto text-[10px] font-mono ${isLong ? 'text-amber-400' : 'text-zinc-600'}`}>
-                        {wordCount}w{isLong ? ' ⚠' : ''}
-                      </span>
-                    </div>
-                    <textarea
-                      value={hook.text || ''}
-                      onChange={(e) => {
-                        const updated = [...editableHooks];
-                        updated[i] = { ...updated[i], text: e.target.value };
-                        setEditableHooks(updated);
-                        setHasChanges(true);
-                      }}
-                      className="w-full bg-transparent text-sm text-zinc-300 leading-relaxed resize-none focus:outline-none border-0 p-0"
-                      rows={3}
-                    />
-                  </div>
-                  );
-                })}
-              </div>
-            </section>
-          )}
-
-          {/* Body (editable) */}
-          {(editableBody || brief.body) && (
-            <section>
-              <SectionLabel>Body</SectionLabel>
-              <textarea
-                value={editableBody}
-                onChange={(e) => { setEditableBody(e.target.value); setHasChanges(true); }}
-                className="w-full h-32 glass-card border border-white/[0.04] rounded-lg p-4 bg-white/[0.02] text-sm text-zinc-300 leading-relaxed resize-none focus:outline-none focus:border-[#c9a84c]/50 focus:ring-1 focus:ring-[#c9a84c]/50 transition-all"
-              />
-            </section>
-          )}
-
-          {/* Enhance with AI */}
-          <section className="space-y-2">
-            <SectionLabel>Enhance with AI</SectionLabel>
-            <div className="flex gap-2">
-              <input
-                type="text"
-                value={enhancePrompt}
-                onChange={(e) => setEnhancePrompt(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && !enhancing && enhancePrompt.trim() && handleEnhance()}
-                placeholder="e.g. 'make hook 1 more aggressive'"
-                className="flex-1 bg-white/[0.02] border border-white/[0.05] rounded-lg px-3 py-2 text-sm text-zinc-300 placeholder:text-zinc-600 focus:outline-none focus:ring-1 focus:ring-[#c9a84c]/30 focus:border-[#c9a84c]/20 transition-all"
-              />
-              <button
-                type="button"
-                onClick={handleEnhance}
-                disabled={enhancing || !enhancePrompt.trim()}
-                className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-colors disabled:opacity-40 cursor-pointer shrink-0"
-                style={{
-                  background: 'linear-gradient(135deg, #c9a84c, #d4b55a)',
-                  color: '#111113',
-                }}
-              >
-                {enhancing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
-                Enhance
-              </button>
-            </div>
-          </section>
-
-          {/* Win Analysis */}
-          {parsedWinAnalysis && (
-            <section>
-              <button
-                type="button"
-                onClick={() => setWinAnalysisOpen(!winAnalysisOpen)}
-                className="flex items-center gap-2 font-mono text-xs tracking-[0.15em] uppercase text-[#c9a84c] font-semibold hover:text-[#e8d5a3] transition-colors cursor-pointer"
-              >
-                {winAnalysisOpen ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
-                Why the Original Won
-              </button>
-
-              {winAnalysisOpen && (
-                <div className="mt-3 glass-card border border-white/[0.04] rounded-lg p-5 bg-white/[0.02] space-y-4">
-                  {/* New 3-agent analysis format */}
-                  {parsedWinAnalysis.scriptDna && (
-                    <div>
-                      <span className="text-[10px] font-mono uppercase tracking-[0.15em] text-[#c9a84c] font-semibold block mb-2">
-                        Script DNA
-                      </span>
-                      <div className="space-y-1.5 text-sm text-zinc-400">
-                        {parsedWinAnalysis.scriptDna.core_angle && <p><span className="text-zinc-500 font-mono text-xs">Angle:</span> {parsedWinAnalysis.scriptDna.core_angle}</p>}
-                        {parsedWinAnalysis.scriptDna.mechanism && <p><span className="text-zinc-500 font-mono text-xs">Mechanism:</span> {parsedWinAnalysis.scriptDna.mechanism}</p>}
-                        {parsedWinAnalysis.scriptDna.belief_shift && <p><span className="text-zinc-500 font-mono text-xs">Belief Shift:</span> {parsedWinAnalysis.scriptDna.belief_shift}</p>}
-                        {parsedWinAnalysis.scriptDna.why_it_works && <p><span className="text-zinc-500 font-mono text-xs">Why It Works:</span> {parsedWinAnalysis.scriptDna.why_it_works}</p>}
-                        {parsedWinAnalysis.scriptDna.what_would_break_it && <p><span className="text-zinc-500 font-mono text-xs">Would Break It:</span> {parsedWinAnalysis.scriptDna.what_would_break_it}</p>}
-                      </div>
-                    </div>
-                  )}
-
-                  {parsedWinAnalysis.psychology?.emotional_arc && (
-                    <div>
-                      <span className="text-[10px] font-mono uppercase tracking-[0.15em] text-[#c9a84c] font-semibold block mb-2">
-                        Emotional Arc
-                      </span>
-                      <div className="flex flex-wrap gap-1 text-xs">
-                        {Object.entries(parsedWinAnalysis.psychology.emotional_arc).map(([key, val]) => (
-                          <span key={key} className="px-2 py-1 rounded bg-violet-500/10 text-violet-300 border border-violet-500/20">
-                            {val}
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {parsedWinAnalysis.psychology?.hooks?.length > 0 && (
-                    <div>
-                      <span className="text-[10px] font-mono uppercase tracking-[0.15em] text-[#c9a84c] font-semibold block mb-2">
-                        Hook Analysis
-                      </span>
-                      <div className="space-y-2 text-sm text-zinc-400">
-                        {parsedWinAnalysis.psychology.hooks.map((h, i) => (
-                          <div key={i} className="flex items-start gap-2">
-                            <span className="text-[10px] font-mono bg-white/[0.04] px-1.5 py-0.5 rounded text-zinc-500 shrink-0 mt-0.5">{h.hook_type || h.type}</span>
-                            <span className="text-xs">{h.why_it_works}</span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {parsedWinAnalysis.iterationRules && (
-                    <div>
-                      <span className="text-[10px] font-mono uppercase tracking-[0.15em] text-[#c9a84c] font-semibold block mb-2">
-                        Iteration Rules
-                      </span>
-                      <div className="space-y-2 text-xs text-zinc-400">
-                        {parsedWinAnalysis.iterationRules.must_stay_fixed?.length > 0 && (
-                          <div>
-                            <span className="text-emerald-400 font-mono">FIXED:</span>{' '}
-                            {parsedWinAnalysis.iterationRules.must_stay_fixed.join(' · ')}
-                          </div>
-                        )}
-                        {parsedWinAnalysis.iterationRules.safe_iteration_directions?.length > 0 && (
-                          <div>
-                            <span className="text-blue-400 font-mono">SAFE DIRS:</span>{' '}
-                            {parsedWinAnalysis.iterationRules.safe_iteration_directions.join(' · ')}
-                          </div>
-                        )}
-                        {parsedWinAnalysis.iterationRules.high_risk_changes?.length > 0 && (
-                          <div>
-                            <span className="text-red-400 font-mono">HIGH RISK:</span>{' '}
-                            {parsedWinAnalysis.iterationRules.high_risk_changes.join(' · ')}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Legacy format fallback */}
-                  {!parsedWinAnalysis.scriptDna && parsedWinAnalysis.winning_elements_ranked?.length > 0 && (
-                    <div>
-                      <span className="text-[10px] font-mono uppercase tracking-[0.15em] text-[#c9a84c] font-semibold block mb-1.5">
-                        Winning Elements
-                      </span>
-                      <ol className="space-y-1 text-sm text-zinc-400 list-decimal list-inside">
-                        {parsedWinAnalysis.winning_elements_ranked.map((el, i) => (
-                          <li key={i} className="leading-relaxed">{el}</li>
-                        ))}
-                      </ol>
-                    </div>
-                  )}
-
-                  {!parsedWinAnalysis.scriptDna && parsedWinAnalysis.emotional_driver?.primary && (
-                    <div>
-                      <span className="text-[10px] font-mono uppercase tracking-[0.15em] text-[#c9a84c] font-semibold block mb-1.5">
-                        Emotional Driver
-                      </span>
-                      <span className="inline-block px-2.5 py-1 text-xs font-medium rounded-full bg-violet-500/10 text-violet-300 border border-violet-500/20">
-                        {parsedWinAnalysis.emotional_driver.primary}
-                      </span>
-                    </div>
-                  )}
-                </div>
-              )}
-            </section>
-          )}
+            )}
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="Close brief detail modal"
+              className="text-zinc-400 hover:text-white transition-colors cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
         </div>
 
-        {/* Action buttons — pinned to bottom */}
-        <div className="p-6 border-t border-white/[0.06] bg-[#111113] space-y-3">
+        {/* Body — 3 columns on lg+, stacked on smaller. Left = source, middle = brief, right = AI chat. */}
+        <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-[1fr_1.3fr_400px] overflow-hidden">
+          {/* ── LEFT: Original Script + Win Analysis ────────────────── */}
+          <div className="overflow-y-auto p-6 space-y-6 border-r border-white/[0.04]">
+            {hasScores && (
+              <section className="md:hidden">
+                <SectionLabel>Scores</SectionLabel>
+                <div className="flex gap-2">
+                  {Object.entries(scores).map(([k, v]) => (
+                    <ScoreCard key={k} scoreKey={k} value={v} />
+                  ))}
+                </div>
+              </section>
+            )}
+
+            {(originalRawScript || originalHooks.length > 0 || originalBody) && (
+              <section>
+                <SectionLabel>Original Script</SectionLabel>
+                <div className="glass-card border border-white/[0.04] rounded-lg p-4 bg-white/[0.02] space-y-3 max-h-[60vh] overflow-y-auto">
+                  {originalRawScript ? (
+                    <p className="text-xs text-zinc-300 leading-relaxed whitespace-pre-line">{originalRawScript}</p>
+                  ) : (
+                    <>
+                      {originalHooks.map((hook, i) => (
+                        <div key={i}>
+                          <span className="font-mono text-[10px] text-zinc-500 mr-2">H{i + 1}</span>
+                          <span className={`text-xs ${i === 0 ? 'font-medium text-zinc-200' : 'text-zinc-400'} leading-relaxed`}>
+                            {typeof hook === 'string' ? hook : hook.text}
+                          </span>
+                        </div>
+                      ))}
+                      {originalBody && (
+                        <p className="text-xs text-zinc-400 leading-relaxed whitespace-pre-line">{originalBody}</p>
+                      )}
+                    </>
+                  )}
+                </div>
+              </section>
+            )}
+
+            {parsedWinAnalysis && (
+              <section>
+                <button
+                  type="button"
+                  onClick={() => setWinAnalysisOpen(!winAnalysisOpen)}
+                  className="flex items-center gap-2 font-mono text-xs tracking-[0.15em] uppercase text-[#c9a84c] font-semibold hover:text-[#e8d5a3] transition-colors cursor-pointer"
+                >
+                  {winAnalysisOpen ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+                  Why the Original Won
+                </button>
+
+                {winAnalysisOpen && (
+                  <div className="mt-3 glass-card border border-white/[0.04] rounded-lg p-4 bg-white/[0.02] space-y-3 text-xs text-zinc-400">
+                    {parsedWinAnalysis.scriptDna?.core_angle && <p><span className="text-zinc-500 font-mono">Angle:</span> {parsedWinAnalysis.scriptDna.core_angle}</p>}
+                    {parsedWinAnalysis.scriptDna?.mechanism && <p><span className="text-zinc-500 font-mono">Mechanism:</span> {parsedWinAnalysis.scriptDna.mechanism}</p>}
+                    {parsedWinAnalysis.scriptDna?.belief_shift && <p><span className="text-zinc-500 font-mono">Belief Shift:</span> {parsedWinAnalysis.scriptDna.belief_shift}</p>}
+                    {parsedWinAnalysis.scriptDna?.why_it_works && <p><span className="text-zinc-500 font-mono">Why It Works:</span> {parsedWinAnalysis.scriptDna.why_it_works}</p>}
+                  </div>
+                )}
+              </section>
+            )}
+          </div>
+
+          {/* ── MIDDLE: Editable brief — highlighted_text + hooks + body ──── */}
+          <div className="overflow-y-auto p-6 space-y-6">
+            {/* Highlighted text — only render when array non-empty OR operator adds first label */}
+            {editableHighlighted.length > 0 && (
+              <section>
+                <SectionLabel
+                  actions={
+                    editableHighlighted.length < 4 && (
+                      <button
+                        type="button"
+                        onClick={handleAddHighlight}
+                        className="flex items-center gap-1 text-[10px] uppercase tracking-wider font-mono text-zinc-400 hover:text-[#c9a84c] transition-colors cursor-pointer"
+                      >
+                        <Plus className="w-3 h-3" /> Add label
+                      </button>
+                    )
+                  }
+                >
+                  On-Screen Text
+                </SectionLabel>
+                <div className="space-y-2">
+                  {editableHighlighted.map((label, i) => (
+                    <div
+                      key={i}
+                      className="flex items-center gap-2 glass-card border border-white/[0.04] rounded-lg px-3 py-2 bg-white/[0.02]"
+                    >
+                      <span className="text-[10px] font-mono uppercase tracking-wider text-zinc-500 shrink-0">
+                        L{i + 1}
+                      </span>
+                      <input
+                        type="text"
+                        value={label}
+                        placeholder="e.g. BIGGEST SALE 🇺🇸"
+                        onChange={(e) => handleUpdateHighlight(i, e.target.value)}
+                        className="flex-1 bg-transparent text-sm text-zinc-200 focus:outline-none border-0 p-0 font-medium"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteHighlight(i)}
+                        aria-label={`Delete label ${i + 1}`}
+                        className="text-zinc-600 hover:text-red-400 transition-colors cursor-pointer shrink-0"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
+
+            {/* If no overlays exist, surface a discreet "Add overlay" affordance.
+                Operator-initiated only — never auto-populated. */}
+            {editableHighlighted.length === 0 && (
+              <button
+                type="button"
+                onClick={handleAddHighlight}
+                className="w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border border-dashed border-white/[0.08] text-[11px] uppercase tracking-wider font-mono text-zinc-500 hover:text-[#c9a84c] hover:border-[#c9a84c]/30 transition-colors cursor-pointer"
+              >
+                <Plus className="w-3.5 h-3.5" /> Add on-screen overlay
+              </button>
+            )}
+
+            {/* Hooks — per-hook delete + edit */}
+            {editableHooks.length > 0 && (
+              <section>
+                <SectionLabel>
+                  Hooks <span className="text-zinc-500 normal-case tracking-normal font-normal">({editableHooks.length})</span>
+                </SectionLabel>
+                <div className="space-y-3">
+                  {editableHooks.map((hook, i) => {
+                    const wordCount = (hook.text || '').trim().split(/\s+/).filter(Boolean).length;
+                    const isLong = wordCount > 25;
+                    return (
+                      <div
+                        key={hook.id || i}
+                        className={`glass-card border rounded-lg p-3 bg-white/[0.02] group ${isLong ? 'border-amber-500/30' : 'border-white/[0.04]'}`}
+                      >
+                        <div className="flex gap-2 mb-2 items-center">
+                          <span className="text-[10px] font-mono uppercase tracking-wider font-medium px-1.5 py-0.5 rounded bg-[#c9a84c]/10 text-[#e8d5a3] border border-[#c9a84c]/20">
+                            H{i + 1}
+                          </span>
+                          {hook.mechanism && (
+                            <span className="text-[10px] font-mono uppercase tracking-wider font-medium px-1.5 py-0.5 rounded bg-white/[0.04] text-zinc-400 border border-white/[0.06]">
+                              {hook.mechanism}
+                            </span>
+                          )}
+                          <span className={`ml-auto text-[10px] font-mono ${isLong ? 'text-amber-400' : 'text-zinc-600'}`}>
+                            {wordCount}w{isLong ? ' ⚠' : ''}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteHook(i)}
+                            aria-label={`Delete hook ${i + 1}`}
+                            className="text-zinc-600 hover:text-red-400 transition-colors cursor-pointer opacity-0 group-hover:opacity-100"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                        <textarea
+                          value={hook.text || ''}
+                          onChange={(e) => {
+                            const updated = [...editableHooks];
+                            updated[i] = { ...updated[i], text: e.target.value };
+                            setEditableHooks(updated);
+                            setHasChanges(true);
+                          }}
+                          className="w-full bg-transparent text-sm text-zinc-300 leading-relaxed resize-none focus:outline-none border-0 p-0"
+                          rows={3}
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+              </section>
+            )}
+
+            {/* Body */}
+            {(editableBody || brief.body) && (
+              <section>
+                <SectionLabel>Body</SectionLabel>
+                <textarea
+                  value={editableBody}
+                  onChange={(e) => { setEditableBody(e.target.value); setHasChanges(true); }}
+                  className="w-full h-64 glass-card border border-white/[0.04] rounded-lg p-3 bg-white/[0.02] text-sm text-zinc-300 leading-relaxed resize-y focus:outline-none focus:border-[#c9a84c]/50 focus:ring-1 focus:ring-[#c9a84c]/50 transition-all"
+                />
+              </section>
+            )}
+          </div>
+
+          {/* ── RIGHT: AI chat sidebar ──────────────────────────────────── */}
+          <div className="hidden lg:flex flex-col border-l border-white/[0.04] bg-white/[0.01]">
+            <div className="px-5 py-4 border-b border-white/[0.04] shrink-0">
+              <h4 className="font-mono text-xs tracking-[0.15em] uppercase text-[#c9a84c] font-semibold flex items-center gap-2">
+                <Sparkles className="w-3.5 h-3.5" /> AI Editor
+              </h4>
+              <p className="text-[11px] text-zinc-500 mt-1">Brief is loaded. Ask for edits — labels, hooks, body, or whole rewrites.</p>
+            </div>
+
+            {/* Quick action chips */}
+            <div className="px-4 pt-3 pb-2 shrink-0 flex flex-wrap gap-1.5">
+              {QUICK_ACTIONS.map((qa) => (
+                <button
+                  key={qa.label}
+                  type="button"
+                  disabled={aiBusy}
+                  onClick={() => handleAi(qa.prompt)}
+                  className="text-[10px] uppercase tracking-wider font-mono px-2 py-1 rounded bg-white/[0.03] border border-white/[0.05] text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.06] disabled:opacity-40 disabled:cursor-not-allowed transition-colors cursor-pointer"
+                >
+                  {qa.label}
+                </button>
+              ))}
+            </div>
+
+            {/* Chat scroll history */}
+            <div ref={chatScrollRef} className="flex-1 overflow-y-auto px-4 py-3 space-y-3 min-h-0">
+              {aiHistory.length === 0 && !aiBusy && (
+                <div className="text-[11px] text-zinc-600 italic text-center py-6">
+                  No edits yet. Try a quick action above or type your own instruction below.
+                </div>
+              )}
+              {aiHistory.map((turn, i) => (
+                <div
+                  key={i}
+                  className={`text-xs leading-relaxed rounded-lg px-3 py-2 ${
+                    turn.role === 'user'
+                      ? 'bg-[#c9a84c]/10 text-[#e8d5a3] border border-[#c9a84c]/20 ml-4'
+                      : 'bg-white/[0.03] text-zinc-300 border border-white/[0.05] mr-4'
+                  }`}
+                >
+                  {turn.text}
+                </div>
+              ))}
+              {aiBusy && (
+                <div className="text-xs text-zinc-500 flex items-center gap-2 mr-4 px-3 py-2 bg-white/[0.02] rounded-lg border border-white/[0.04]">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" /> Thinking…
+                </div>
+              )}
+            </div>
+
+            {/* Chat input */}
+            <div className="px-4 py-3 border-t border-white/[0.04] shrink-0">
+              <textarea
+                value={aiPrompt}
+                onChange={(e) => setAiPrompt(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); handleAi(); }
+                }}
+                placeholder="e.g. 'rewrite hook 2 as a quote-reply', 'shorten body 30%'…"
+                rows={2}
+                className="w-full bg-white/[0.02] border border-white/[0.06] rounded-lg px-3 py-2 text-sm text-zinc-200 placeholder:text-zinc-600 resize-none focus:outline-none focus:ring-1 focus:ring-[#c9a84c]/30 focus:border-[#c9a84c]/30 transition-all"
+              />
+              <button
+                type="button"
+                onClick={() => handleAi()}
+                disabled={aiBusy || !aiPrompt.trim()}
+                aria-label="Send AI edit instruction"
+                className="mt-2 w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium uppercase tracking-wider font-mono transition-colors disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+                style={{ background: 'linear-gradient(135deg, #c9a84c, #d4b55a)', color: '#111113' }}
+              >
+                {aiBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+                {aiBusy ? 'Editing…' : 'Send ⌘↵'}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Sticky footer — actions */}
+        <div className="px-6 py-3 border-t border-white/[0.06] bg-[#0c0c0e] shrink-0 flex items-center gap-2">
           {hasChanges && (
             <button
               type="button"
-              onClick={async () => {
-                setSaving(true);
-                try {
-                  await onSave?.(brief.id, { hooks: editableHooks, body: editableBody });
-                  setHasChanges(false);
-                } finally {
-                  setSaving(false);
-                }
-              }}
+              onClick={handleSave}
               disabled={saving}
-              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors cursor-pointer disabled:opacity-40"
-              style={{
-                background: 'linear-gradient(135deg, #c9a84c, #d4b55a)',
-                color: '#111113',
-              }}
+              className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors cursor-pointer disabled:opacity-40"
+              style={{ background: 'linear-gradient(135deg, #c9a84c, #d4b55a)', color: '#111113' }}
             >
               {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
               Save Changes
             </button>
           )}
 
+          <div className="flex-1" />
+
           {status === 'generated' && (
             <>
               <button
                 type="button"
-                onClick={() => onApprove?.(brief.id)}
-                className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg
-                           bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 border border-emerald-500/20 hover:border-emerald-500/40
-                           shadow-[0_0_15px_rgba(16,185,129,0.1)] hover:shadow-[0_0_20px_rgba(16,185,129,0.2)]
-                           text-sm font-medium transition-all cursor-pointer"
+                onClick={() => onReject?.(brief.id)}
+                className="flex items-center gap-2 px-3 py-2 rounded-lg bg-red-500/5 text-red-400/80 hover:bg-red-500/10 border border-red-500/10 hover:border-red-500/20 text-sm font-medium transition-all cursor-pointer"
               >
-                <Check className="w-4 h-4" />
-                Approve
+                <ThumbsDown className="w-4 h-4" /> Reject
               </button>
               <button
                 type="button"
-                onClick={() => onReject?.(brief.id)}
-                className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg
-                           bg-red-500/5 text-red-400/80 hover:bg-red-500/10 border border-red-500/10 hover:border-red-500/20
-                           text-sm font-medium transition-all cursor-pointer"
+                onClick={() => onApprove?.(brief.id)}
+                className="flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 border border-emerald-500/20 hover:border-emerald-500/40 shadow-[0_0_15px_rgba(16,185,129,0.1)] text-sm font-medium transition-all cursor-pointer"
               >
-                <ThumbsDown className="w-4 h-4" />
-                Reject
+                <Check className="w-4 h-4" /> Approve
               </button>
             </>
           )}
 
           {status === 'approved' && (
             <>
+              <button
+                type="button"
+                onClick={() => onMoveToReady?.(brief.id)}
+                aria-label="Move brief to Ready ClickUp column without opening ClickUp form"
+                className="flex items-center gap-2 px-3 py-2 rounded-lg bg-blue-500/10 text-blue-400 hover:bg-blue-500/15 border border-blue-500/25 text-xs font-mono uppercase tracking-wide transition-all cursor-pointer"
+              >
+                <Send className="w-3.5 h-3.5" /> Skip form
+              </button>
               {onPushToClickup && (
                 <button
                   type="button"
                   onClick={() => onPushToClickup?.(brief.id)}
                   aria-label="Push this brief to ClickUp and assign editor"
-                  className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg
-                             bg-amber-500/15 text-amber-300 hover:bg-amber-500/25 border border-amber-500/30 hover:border-amber-500/50
-                             shadow-[0_0_15px_rgba(245,158,11,0.1)] hover:shadow-[0_0_20px_rgba(245,158,11,0.2)]
-                             text-sm font-mono font-semibold uppercase tracking-wide transition-all cursor-pointer"
+                  className="flex items-center gap-2 px-4 py-2 rounded-lg bg-amber-500/15 text-amber-300 hover:bg-amber-500/25 border border-amber-500/30 hover:border-amber-500/50 shadow-[0_0_15px_rgba(245,158,11,0.1)] text-sm font-mono font-semibold uppercase tracking-wide transition-all cursor-pointer"
                 >
-                  <Send className="w-4 h-4" />
-                  Push to ClickUp
+                  <Send className="w-4 h-4" /> Push to ClickUp
                 </button>
               )}
-              <button
-                type="button"
-                onClick={() => onMoveToReady?.(brief.id)}
-                aria-label="Move brief to Ready ClickUp column without opening ClickUp form"
-                className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg
-                           bg-blue-500/10 text-blue-400 hover:bg-blue-500/15 border border-blue-500/25 hover:border-blue-500/40
-                           text-xs font-mono uppercase tracking-wide transition-all cursor-pointer"
-              >
-                <Send className="w-3.5 h-3.5" />
-                Move to Ready (skip ClickUp form)
-              </button>
             </>
           )}
 
           {status === 'ready_to_launch' && (
             <>
-              {onLaunch && (
+              {onMoveBackToApproved && (
                 <button
                   type="button"
-                  onClick={() => onLaunch?.(brief.id)}
-                  aria-label="Launch this brief on Meta"
-                  className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg
-                             bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25 border border-emerald-500/30 hover:border-emerald-500/50
-                             shadow-[0_0_15px_rgba(16,185,129,0.1)] hover:shadow-[0_0_20px_rgba(16,185,129,0.2)]
-                             text-sm font-mono font-semibold uppercase tracking-wide transition-all cursor-pointer"
+                  onClick={() => onMoveBackToApproved?.(brief.id)}
+                  aria-label="Move brief back to Approved column"
+                  className="flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-500/5 text-amber-400/80 hover:bg-amber-500/10 border border-amber-500/10 text-xs transition-all cursor-pointer"
                 >
-                  <Send className="w-4 h-4" />
-                  Launch on Meta
+                  ↩ Back to Approved
                 </button>
               )}
               {onMarkLaunched && (
@@ -524,41 +617,32 @@ export default function BriefDetailModal({
                   type="button"
                   onClick={() => onMarkLaunched?.(brief.id)}
                   aria-label="Mark this brief as launched without creating a Meta ad"
-                  className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg
-                             bg-white/[0.03] border border-white/[0.06] text-sm text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.06] transition-all cursor-pointer"
+                  className="flex items-center gap-2 px-3 py-2 rounded-lg bg-white/[0.03] border border-white/[0.06] text-sm text-zinc-400 hover:text-zinc-200 transition-all cursor-pointer"
                 >
-                  <Check className="w-4 h-4" />
-                  Mark Launched (already live)
+                  <Check className="w-4 h-4" /> Already live
                 </button>
               )}
-              {onMoveBackToApproved && (
+              {onLaunch && (
                 <button
                   type="button"
-                  onClick={() => onMoveBackToApproved?.(brief.id)}
-                  aria-label="Move brief back to Approved column"
-                  className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg
-                             bg-amber-500/5 text-amber-400/80 hover:bg-amber-500/10 border border-amber-500/10 hover:border-amber-500/20
-                             text-xs transition-all cursor-pointer"
+                  onClick={() => onLaunch?.(brief.id)}
+                  aria-label="Launch this brief on Meta"
+                  className="flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25 border border-emerald-500/30 shadow-[0_0_15px_rgba(16,185,129,0.1)] text-sm font-mono font-semibold uppercase tracking-wide transition-all cursor-pointer"
                 >
-                  ↩ Move Back to Approved
+                  <Send className="w-4 h-4" /> Launch on Meta
                 </button>
               )}
             </>
           )}
 
-          {/* Legacy: briefs with status='pushed' (from before the Pushed column
-              was removed) still get a "View in ClickUp" link if a ClickUp task
-              URL was saved. */}
           {status === 'pushed' && brief.clickup_task_url && (
             <a
               href={brief.clickup_task_url}
               target="_blank"
               rel="noopener noreferrer"
-              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg
-                         bg-white/[0.03] border border-white/[0.06] text-sm text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.06] transition-all"
+              className="flex items-center gap-2 px-4 py-2 rounded-lg bg-white/[0.03] border border-white/[0.06] text-sm text-zinc-400 hover:text-zinc-200 transition-all"
             >
-              <ExternalLink className="w-4 h-4" />
-              View in ClickUp
+              <ExternalLink className="w-4 h-4" /> View in ClickUp
             </a>
           )}
         </div>

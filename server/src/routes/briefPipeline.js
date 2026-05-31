@@ -3520,18 +3520,27 @@ router.patch('/generated/:id', authenticate, async (req, res) => {
   try {
     await ensureTables();
     const reqBody = req.body || {};
-    const { status: newStatus, hooks, body: briefBody } = reqBody;
+    const { status: newStatus, hooks, body: briefBody, highlighted_text: ht } = reqBody;
 
     let contentUpdated = false;
     let contentResult = null;
 
-    // If content edit (hooks/body) - handle this BEFORE status change
-    if (hooks !== undefined || briefBody !== undefined) {
+    // If content edit (hooks/body/highlighted_text) - handle this BEFORE status change
+    if (hooks !== undefined || briefBody !== undefined || ht !== undefined) {
       const setClauses = [];
       const params = [];
       let idx = 1;
       if (hooks !== undefined) { setClauses.push(`hooks = $${idx++}`); params.push(JSON.stringify(hooks)); }
       if (briefBody !== undefined) { setClauses.push(`body = $${idx++}`); params.push(briefBody); }
+      if (ht !== undefined) {
+        // Accept array or stringified array; normalize to JSON. Cast to jsonb
+        // so older TEXT-shaped rows still accept the value cleanly.
+        const arr = Array.isArray(ht)
+          ? ht.filter(Boolean).map(String).slice(0, 4)
+          : (typeof ht === 'string' ? (() => { try { const a = JSON.parse(ht); return Array.isArray(a) ? a.filter(Boolean).map(String).slice(0, 4) : []; } catch { return []; } })() : []);
+        setClauses.push(`highlighted_text = $${idx++}::jsonb`);
+        params.push(JSON.stringify(arr));
+      }
       params.push(req.params.id);
       const rows = await pgQuery(
         `UPDATE brief_pipeline_generated SET ${setClauses.join(', ')} WHERE id = $${idx} RETURNING *`,
@@ -3546,6 +3555,12 @@ router.patch('/generated/:id', authenticate, async (req, res) => {
         retBrief.hooks = parseJsonb(retBrief.hooks);
         retBrief.win_analysis = parseJsonb(retBrief.win_analysis);
         retBrief.scores_json = parseJsonb(retBrief.scores_json);
+        retBrief.highlighted_text = (() => {
+          const raw = retBrief.highlighted_text;
+          if (Array.isArray(raw)) return raw;
+          if (typeof raw === 'string') { try { const a = JSON.parse(raw); return Array.isArray(a) ? a : []; } catch { return []; } }
+          return [];
+        })();
         return res.json({ success: true, brief: retBrief });
       }
     }
@@ -3628,7 +3643,7 @@ router.delete('/generated/:id', authenticate, async (req, res) => {
 router.post('/generated/:id/enhance', authenticate, async (req, res) => {
   if (!validateUuid(req, res)) return;
   try {
-    const { instruction, currentHooks, currentBody } = req.body || {};
+    const { instruction, currentHooks, currentBody, currentHighlightedText } = req.body || {};
 
     if (!instruction?.trim()) {
       return res.status(400).json({ success: false, error: { message: 'Instruction is required' } });
@@ -3652,6 +3667,14 @@ router.post('/generated/:id/enhance', authenticate, async (req, res) => {
     }
 
     const hooksFormatted = (currentHooks || []).map((h, i) => `Hook ${i+1}: ${h.text}${h.mechanism ? ` [${h.mechanism}]` : ''}`).join('\n');
+    const highlightedArr = Array.isArray(currentHighlightedText)
+      ? currentHighlightedText
+      : (typeof currentHighlightedText === 'string'
+          ? (() => { try { const a = JSON.parse(currentHighlightedText); return Array.isArray(a) ? a : []; } catch { return []; } })()
+          : []);
+    const highlightedFormatted = highlightedArr.length
+      ? highlightedArr.map((s, i) => `Label ${i+1}: ${s}`).join('\n')
+      : '(no on-screen labels)';
 
     const enhanceSystem = `You are an expert direct-response copywriter and creative strategist specializing in Facebook UGC-style video ad scripts. You make precise, surgical edits to existing scripts and hooks without touching anything outside the scope of the edit request. You never use em dashes or hyphens inside any copy. You use periods, line breaks, or rewrite sentence structure instead.${productContextStr ? ' You have access to the product brief and compliance rules. Never invent claims not present in the product profile.' : ''}`;
 
@@ -3660,6 +3683,9 @@ router.post('/generated/:id/enhance', authenticate, async (req, res) => {
 Read the full existing copy first. Understand its structure, tone, perspective, avatar, and emotional flow before making any change. Then apply only the edit requested.
 
 ${productContextStr ? `PRODUCT CONTEXT:\n${productContextStr}\n\n` : ''}EXISTING COPY:
+--- Highlighted Text (on-screen overlays) ---
+${highlightedFormatted}
+
 --- Hooks ---
 ${hooksFormatted}
 
@@ -3684,12 +3710,15 @@ EDIT RULES:
 
 5. HOOK SPECIFIC RULES: If the edit target is a hook, the new version must still pass: perspective matches the body opener, tension created by the hook is resolved by the first line of the body, no bridge line is needed between hook and body. If any check fails, rewrite before outputting.
 
-6. VARIANT LOGIC: If the edit instruction asks for a new variant or alternative rather than a replacement, include both the original and the new variant in the output.
+6. HIGHLIGHTED TEXT RULES: If the instruction targets the on-screen labels (e.g. "make the discount label more aggressive", "add an apology overlay", "shorten the comment-reply"), edit only highlighted_text. Each label: ≤ 5 words, ALL CAPS where appropriate, exactly 1 emoji at the end. Operator may explicitly request adding overlays even if none currently exist — that is allowed. If the instruction does not touch highlighted_text, return it unchanged.
 
-7. SELF CHECK: Before outputting, read the full copy with the edit applied from start to finish. Confirm it reads as one seamless piece. Confirm no rules were broken.
+7. VARIANT LOGIC: If the edit instruction asks for a new variant or alternative rather than a replacement, include both the original and the new variant in the output.
+
+8. SELF CHECK: Before outputting, read the full copy with the edit applied from start to finish. Confirm it reads as one seamless piece. Confirm no rules were broken.
 
 Return ONLY valid JSON, no markdown fences:
 {
+  "highlighted_text": ["LABEL 1 + emoji", "LABEL 2 + emoji"],
   "hooks": [
     { "id": "H1", "text": "...", "mechanism": "..." },
     { "id": "H2", "text": "...", "mechanism": "..." },
@@ -3701,14 +3730,23 @@ Return ONLY valid JSON, no markdown fences:
 
     const enhanced = await callClaude(enhanceSystem, enhanceUser, 3000);
 
-    if (!enhanced || (!enhanced.hooks && !enhanced.body)) {
+    if (!enhanced || (!enhanced.hooks && !enhanced.body && !enhanced.highlighted_text)) {
       return res.status(500).json({ success: false, error: { message: 'AI returned invalid response structure' } });
+    }
+
+    // Normalize highlighted_text — if missing/null, fall back to current
+    let outHighlighted;
+    if (Array.isArray(enhanced.highlighted_text)) {
+      outHighlighted = enhanced.highlighted_text.filter(Boolean).map(String).slice(0, 4);
+    } else {
+      outHighlighted = highlightedArr;
     }
 
     res.json({
       success: true,
       hooks: enhanced.hooks || currentHooks,
       body: enhanced.body || currentBody,
+      highlighted_text: outHighlighted,
       edit_summary: enhanced.edit_summary || null,
     });
   } catch (err) {
