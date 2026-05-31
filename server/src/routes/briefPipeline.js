@@ -6910,6 +6910,9 @@ function mapReferenceRow(r) {
     quarantinedAt: r.quarantined_at ? new Date(r.quarantined_at).toISOString() : null,
     createdAt: r.created_at ? new Date(r.created_at).toISOString() : null,
     updatedAt: r.updated_at ? new Date(r.updated_at).toISOString() : null,
+    // Source URL of the original ad. Powers the auto-filled Reference link
+    // on every ClickUp push.
+    sourceUrl: r.source_url || null,
   };
 }
 
