@@ -1213,7 +1213,10 @@ async function ensureHttpUrlGlobal(url, label = 'img') {
 // Statics prompt settings (3-prompt architecture)
 // ─────────────────────────────────────────────────────────────────────────
 
-const STATICS_PROMPT_KEYS = ['claude_analysis', 'nanobanana_image', 'ai_adjustment'];
+// PROMPT KEYS — Claude analysis is shared across engines (same JSON brief).
+// Each image engine has its own renderer prompt template; ai_adjustment is
+// shared because both engines accept the same correction instruction.
+const STATICS_PROMPT_KEYS = ['claude_analysis', 'nanobanana_image', 'openai_image', 'ai_adjustment'];
 
 const STATICS_PROMPT_TYPES = [
   { key: 'claude_analysis',   label: 'Step 1 — Claude Analysis',  description: 'Claude sees ref + product, emits JSON brief' },
@@ -1291,6 +1294,31 @@ ABSOLUTE RULES:
 - Zero extra text elements beyond what is listed above
 - Hands must have 5 fingers with realistic anatomy
 - Same overall image dimensions and safe zones`,
+
+    openai_image:
+`Generate a high-quality static ad image for {{PRODUCT_NAME}}.
+
+PRODUCT (the ONLY visual element that should come from the attached image):
+{{PRODUCT_INSTRUCTION}}
+
+SCENE & LAYOUT:
+{{VISUAL_CHANGES}}
+
+TEXT OVERLAYS (render as styled typography matching the reference ad's typography style):
+{{TEXT_SWAPS}}
+
+CHARACTERS:
+- Exactly {{PEOPLE_COUNT}} people visible. If the reference had none, render none.
+- {{CHARACTER_ADAPTATION}}
+
+ABSOLUTE RULES:
+{{PRODUCT_RULE}}
+- No additional people, faces, or text beyond what is listed above.
+- Hands must have exactly 5 fingers with natural anatomy.
+- Photorealistic rendering — match the reference ad's medium (real photo vs designed graphic).
+- High input fidelity to the attached product image — preserve exact shape, color, branding.
+
+OUTPUT: a single completed ad creative ready for Meta delivery.`,
 
     ai_adjustment:
 `You are an expert ad creative director. You generated an ad image and the user wants a specific adjustment.
@@ -1608,7 +1636,13 @@ router.post('/generate', authenticate, async (req, res) => {
         throw new Error('No product_image_url available — NanoBanana requires a product image as the sole input');
       }
 
-      let nbPrompt = buildNanoBananaImagePrompt(claudeResult, product, customPrompts.nanobanana_image);
+      // Per-engine prompt template. NanoBanana uses customPrompts.nanobanana_image;
+      // OpenAI uses customPrompts.openai_image (falls back to NB template if the
+      // operator hasn't filled in the OAI one yet — DB defaults seed both).
+      const engineTemplate = engine.name === 'openai'
+        ? (customPrompts.openai_image || customPrompts.nanobanana_image)
+        : customPrompts.nanobanana_image;
+      let nbPrompt = buildNanoBananaImagePrompt(claudeResult, product, engineTemplate);
 
       // STYLE DIRECTIVE prepend — injects the medium + authenticity cues +
       // style_directive Claude returned, so NanoBanana doesn't default to its
@@ -2958,8 +2992,12 @@ router.post('/creatives/:id/ai-adjust', authenticate, async (req, res) => {
         const adjustmentInstruction = (adjust.adjustment_instruction || '').trim();
         if (!adjustmentInstruction) throw new Error('Claude returned empty adjustment_instruction');
 
-        // Build the new NB prompt: original NB prompt + adjustment instruction.
-        const baseNbPrompt = buildNanoBananaImagePrompt(claudeResult, product, customPrompts.nanobanana_image);
+        // Build the new prompt — use the engine-specific template so the
+        // refine matches the original generation's style.
+        const adjustTemplate = (creative.image_engine === 'openai')
+          ? (customPrompts.openai_image || customPrompts.nanobanana_image)
+          : customPrompts.nanobanana_image;
+        const baseNbPrompt = buildNanoBananaImagePrompt(claudeResult, product, adjustTemplate);
         const newNbPrompt = `${baseNbPrompt}\n\nADJUSTMENT REQUESTED BY USER:\n${adjustmentInstruction}\n\nPreserve everything else exactly as it appears in the input image.`;
 
         storeTaskResult(adjustTaskId, { status: 'processing', progress: 'Regenerating with NanoBanana...' });
