@@ -527,6 +527,13 @@ async function transcribeBufferWithGemini(buffer, mime) {
  * selling_message (one-line summary) for context. visual_narrative is omitted
  * — it describes the scene, not the ad's copy.
  */
+// Exposed for /_diag-vertex so the briefPipeline route can verify the
+// dedup output without going through the full transcribe pipeline.
+// To strip once the diag endpoint is removed.
+export function combineMultimodalToTranscriptForDiag(analysis) {
+  return combineMultimodalToTranscript(analysis);
+}
+
 function combineMultimodalToTranscript(analysis) {
   const lines = [];
   const onScreen = String(analysis?.on_screen_text || '').trim();
