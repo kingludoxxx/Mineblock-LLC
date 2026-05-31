@@ -28,6 +28,12 @@ const TABS = [
     vars: '{{PRODUCT_NAME}} {{PRODUCT_INSTRUCTION}} {{PRODUCT_RULE}} {{VISUAL_CHANGES}} {{TEXT_SWAPS}} {{PEOPLE_COUNT}} {{CHARACTER_ADAPTATION}}',
   },
   {
+    key: 'openai_image',
+    label: '②′ OpenAI Image',
+    summary: 'Step 2 alt — OpenAI gpt-image-2 renderer. Used when the engine pill is set to OpenAI. Same variables as the NanoBanana template.',
+    vars: '{{PRODUCT_NAME}} {{PRODUCT_INSTRUCTION}} {{PRODUCT_RULE}} {{VISUAL_CHANGES}} {{TEXT_SWAPS}} {{PEOPLE_COUNT}} {{CHARACTER_ADAPTATION}}',
+  },
+  {
     key: 'ai_adjustment',
     label: '③ AI Adjustment',
     summary: 'Optional Step — Sent to Claude when user clicks "Regenerate with Correction". Claude turns the user\'s freeform correction into a precise NanoBanana instruction.',
