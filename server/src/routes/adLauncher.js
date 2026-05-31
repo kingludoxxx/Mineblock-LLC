@@ -34,7 +34,7 @@ router.get('/_diag-meta', async (req, res) => {
     isMetaAdsConfigured: isMetaAdsConfigured(),
   };
   try {
-    out.getAdAccounts = await getAdAccounts();
+    out.getAdAccounts = await getAdAccountsCached({ force: true });
   } catch (err) {
     out.getAdAccounts_error = {
       message: err?.message,
