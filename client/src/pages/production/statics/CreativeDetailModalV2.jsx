@@ -3,7 +3,7 @@ import {
   X, Download, Trash2, Loader2, CheckCircle2, RefreshCw, ArrowLeft, Sparkles, AlertTriangle, Pencil,
 } from 'lucide-react';
 import api from '../../../services/api';
-import { EditImageModal } from './EditImageModal';
+import { EditImageEditor } from './EditImageEditor';
 
 const RATIOS = ['1:1', '4:5', '9:16'];
 
@@ -154,20 +154,10 @@ export function CreativeDetailModalV2({
                 ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Deleting…</>
                 : <><Trash2 className="w-3.5 h-3.5" /> Delete card</>}
             </button>
-            {/* Edit Image — opens OpenAI gpt-image-2 editor on the 1:1 parent.
-                Only available in Review (operator rule). Accept cascades 4:5/9:16. */}
-            {trueParent?.status === 'review' && trueParent?.image_url && (
-              <button
-                type="button"
-                onClick={() => setEditTarget(trueParent)}
-                disabled={approving || deletingCard}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-fuchsia-500/40 text-fuchsia-300 hover:bg-fuchsia-500/15 text-xs font-mono font-semibold uppercase tracking-wide transition-all cursor-pointer disabled:opacity-50"
-                title="Edit this image with AI (OpenAI gpt-image-2)"
-              >
-                <Pencil className="w-3.5 h-3.5" />
-                Edit Image
-              </button>
-            )}
+            {/* The header Edit Image pill was removed in the chat-editor
+                refactor — operator now opens the full-screen ChatGPT-style
+                editor by clicking the pink dot next to the "1:1" label in
+                that ratio's column footer. */}
             <button
               type="button"
               onClick={handleApproveAll}
@@ -214,16 +204,20 @@ export function CreativeDetailModalV2({
                 onRefresh={onRefresh}
                 onAfterDelete={onRefresh}
                 onApproved={() => { onRefresh?.(); onClose?.(); }}
+                onEditClick={ratio === '1:1' && trueParent?.status === 'review'
+                  ? () => setEditTarget(trueParent)
+                  : null}
               />
             ))}
           </div>
         </div>
       </div>
 
-      {/* Edit Image — opens nested over this modal. When accepted, parent
-          board refreshes + this modal closes (cascade runs in background). */}
+      {/* Full-screen chat editor — opens over this modal when operator
+          clicks the pink dot next to the 1:1 ratio label. Accept commits
+          the edited 1:1 + cascades 4:5/9:16, then closes everything. */}
       {editTarget && (
-        <EditImageModal
+        <EditImageEditor
           key={editTarget.id}
           creative={editTarget}
           isOpen={true}
@@ -243,7 +237,7 @@ export function CreativeDetailModalV2({
  * Single-ratio column
  * -------------------------------------------------------------------------- */
 
-function RatioColumn({ ratio, creative, parentId, parentReviewNotes, onRefresh, onAfterDelete, onApproved }) {
+function RatioColumn({ ratio, creative, parentId, parentReviewNotes, onRefresh, onAfterDelete, onApproved, onEditClick }) {
   const [refineInput, setRefineInput] = useState('');
   const [refining, setRefining] = useState(false);
   const [refineError, setRefineError] = useState(null);
@@ -449,7 +443,21 @@ function RatioColumn({ ratio, creative, parentId, parentReviewNotes, onRefresh, 
 
       {/* Ratio badge + utility row */}
       <div className="flex items-center justify-between px-3 py-2 border-t border-white/[0.05]">
-        <span className="text-[11px] font-mono font-bold text-zinc-300">{ratio}</span>
+        <div className="flex items-center gap-2">
+          <span className="text-[11px] font-mono font-bold text-zinc-300">{ratio}</span>
+          {/* Pink dot — opens the chat-style image editor. Only on 1:1 because
+              edits cascade to 4:5/9:16 on Accept. Shown only when the parent
+              is in Review (operator rule). onEditClick is null otherwise so
+              this entire affordance disappears. */}
+          {onEditClick && (
+            <button
+              type="button"
+              onClick={onEditClick}
+              title="Open AI image editor"
+              className="w-2.5 h-2.5 rounded-full bg-fuchsia-500 hover:bg-fuchsia-400 ring-2 ring-fuchsia-500/30 hover:ring-fuchsia-400/50 transition-all cursor-pointer"
+            />
+          )}
+        </div>
         <div className="flex items-center gap-1.5">
           <button
             type="button"

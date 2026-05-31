@@ -235,21 +235,9 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, onRegener
               View Full
             </span>
           </div>
-          {/* Edit Image button — only on cards in Review (operator rule:
-              once moved to Ready / Approved / Launched, edits are locked).
-              Hover-only overlay at bottom-right; stopPropagation so clicking
-              it doesn't open the View Full / detail modal. */}
-          {creative.status === 'review' && creative.image_url && onEditClick && (
-            <button
-              type="button"
-              onClick={(e) => { e.stopPropagation(); onEditClick(creative); }}
-              className="absolute bottom-2 right-2 z-20 opacity-0 group-hover:opacity-100 transition-opacity inline-flex items-center gap-1 px-2 py-1 rounded-md bg-fuchsia-500/90 hover:bg-fuchsia-500 text-white text-[10px] font-mono font-semibold uppercase tracking-wide shadow-lg cursor-pointer"
-              title="Edit this image with AI"
-            >
-              <Pencil className="w-3 h-3" />
-              Edit
-            </button>
-          )}
+          {/* Edit Image button removed in chat-editor refactor — operator
+              now opens the editor from the detail modal via the pink dot
+              next to the 1:1 ratio label. */}
           {creative.parent_creative_id && creative.pipeline !== 'iteration' && (
             <span className="absolute top-2 left-2 text-[9px] font-mono bg-[#c9a84c]/20 text-[#e8d5a3] px-1.5 py-0.5 rounded border border-[#c9a84c]/30 backdrop-blur-md">
               Variant

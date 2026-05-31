@@ -36,7 +36,8 @@ const ENGINES = {
   openai: {
     name: 'openai',
     label: 'OpenAI',
-    submit: submitToOpenAI,
+    // Pass-through preserves the optional mask 4th arg (only OpenAI uses it).
+    submit: (prompt, imgs, ratio, mask) => submitToOpenAI(prompt, imgs, ratio, mask),
     poll:   pollOpenAI,
     isConfigured: isOpenAIConfigured,
     describe: () => `OpenAI ${getOpenAIModel()}`,

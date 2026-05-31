@@ -76,7 +76,7 @@ function ratioToSize(ratio) {
  * @returns {string} taskId for polling (synthetic — OpenAI is synchronous,
  *                   the actual result is already stored by the time this returns)
  */
-export async function submitToOpenAI(prompt, imageUrls = [], ratio = '1:1') {
+export async function submitToOpenAI(prompt, imageUrls = [], ratio = '1:1', maskDataUrl = null) {
   if (!OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is not configured');
 
   const size = ratioToSize(ratio);
@@ -164,6 +164,18 @@ export async function submitToOpenAI(prompt, imageUrls = [], ratio = '1:1') {
     const blob = new Blob([buf], { type: 'image/png' });
     // Multiple-image edit uses the `image[]` field per OpenAI docs.
     form.append('image[]', blob, `input-${i}.png`);
+  }
+
+  // Optional mask — region-select editing. The mask is a PNG where
+  // TRANSPARENT pixels mark the area to edit and OPAQUE pixels mark the
+  // area to preserve. Frontend's canvas tool exports it as a data URL.
+  if (maskDataUrl && typeof maskDataUrl === 'string' && maskDataUrl.startsWith('data:')) {
+    const m = maskDataUrl.match(/^data:(image\/[^;]+);base64,(.+)$/);
+    if (m) {
+      const maskBuf = Buffer.from(m[2], 'base64');
+      const maskBlob = new Blob([maskBuf], { type: 'image/png' });
+      form.append('mask', maskBlob, 'mask.png');
+    }
   }
 
   const res = await fetch(`${OPENAI_BASE}/images/edits`, {

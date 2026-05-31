@@ -3602,6 +3602,13 @@ router.post('/creatives/:id/edit', authenticate, async (req, res) => {
       return res.status(400).json({ success: false, error: { message: 'Creative has no image to edit' } });
     }
 
+    // NEW (chat editor): operator can compound edits inside the session.
+    // sourceImageUrl defaults to creative.image_url but the editor passes
+    // the LATEST edit's URL so the next chat message edits the in-progress
+    // result, not the original. mask is the region-select PNG data URL.
+    const sourceImageUrl = String(req.body.source_image_url || creative.image_url);
+    const mask = req.body.mask || null;
+
     // ASYNC pattern (mirrors /generate): respond immediately with a token,
     // run the OpenAI work in setImmediate. Frontend polls GET /creatives/:id
     // for pending_edit_url to be populated (success) or last_edit_error to
@@ -3641,8 +3648,9 @@ router.post('/creatives/:id/edit', authenticate, async (req, res) => {
     setImmediate(async () => {
       const tag = `[statics edit ${creative.id.slice(0,8)} ${editToken.slice(0,8)}]`;
       try {
-        console.log(`${tag} submitting to OpenAI: "${prompt.slice(0,60)}"`);
-        const taskId = await openaiEngine.submit(prompt, [creative.image_url], ratio);
+        console.log(`${tag} submitting to OpenAI: "${prompt.slice(0,60)}" (mask=${mask ? 'yes' : 'no'}, source=${sourceImageUrl.slice(-30)})`);
+        // 4th arg = mask. NB engine doesn't accept it; only OpenAI does.
+        const taskId = await openaiEngine.submit(prompt, [sourceImageUrl], ratio, mask);
         const tempUrl = await openaiEngine.poll(taskId);
         if (!tempUrl) throw new Error('OpenAI edit returned no result');
 
@@ -3697,18 +3705,25 @@ router.post('/creatives/:id/edit/accept', authenticate, async (req, res) => {
         error: { message: `Card status changed to '${creative.status}' — edit cannot be accepted` },
       });
     }
-    if (!creative.pending_edit_url) {
-      return res.status(400).json({ success: false, error: { message: 'No pending edit to accept' } });
+    // NEW (chat editor): operator can accept any image URL from the chat
+    // history, not just pending_edit_url. If body.image_url is provided,
+    // the editor must also include a valid edit_token (proves it owns the
+    // session). If not provided, fall back to pending_edit_url (legacy).
+    const overrideImageUrl = req.body.image_url ? String(req.body.image_url) : null;
+    const acceptUrl = overrideImageUrl || creative.pending_edit_url;
+    if (!acceptUrl) {
+      return res.status(400).json({ success: false, error: { message: 'No pending edit to accept (provide image_url or have a pending_edit_url)' } });
     }
     // Strict token check — must match exactly. Prevents accepting a stale
     // pending edit if a concurrent Generate replaced it between the user's
-    // preview and click.
+    // preview and click. The same token is used for both legacy and chat-
+    // editor flows since both call /edit to start the session.
     if (!token || !creative.pending_edit_token || token !== creative.pending_edit_token) {
       return res.status(409).json({ success: false, error: { message: 'edit_token mismatch or missing — pending edit has been replaced or expired' } });
     }
 
     const oldImageUrl = creative.image_url;
-    const newImageUrl = creative.pending_edit_url;
+    const newImageUrl = acceptUrl;
 
     // Promote: pending → live; preserve old for one-step undo
     await pgQuery(

@@ -41,7 +41,9 @@ import { LibraryView } from './statics/LibraryView';
 import { TemplateSelectModal } from './statics/TemplateSelectModal';
 import { CreativeDetailModal } from './statics/CreativeDetailModal';
 import { CreativeDetailModalV2 } from './statics/CreativeDetailModalV2';
-import { EditImageModal } from './statics/EditImageModal';
+// EditImageEditor (full-screen chat-style editor) lives nested INSIDE
+// CreativeDetailModalV2 — opened by the pink dot on the 1:1 ratio label.
+// StaticsGeneration no longer needs to render it directly.
 import { ConfigSidebar } from './statics/ConfigSidebar';
 import { AddReferenceModal } from './statics/AddReferenceModal';
 import { StaticsSettingsModal } from './statics/StaticsSettingsModal';
@@ -1067,9 +1069,8 @@ export default function StaticsGeneration() {
   const [templateModal, setTemplateModal] = useState(false);
   const [addRefModal, setAddRefModal] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  // editTarget = the creative currently being edited (null = no modal open).
-  // Only set when operator clicks the Edit button on a Review-status card.
-  const [editTarget, setEditTarget] = useState(null);
+  // editTarget state moved INTO CreativeDetailModalV2 (the chat-style editor
+  // opens nested inside the detail modal). Removed here in the refactor.
   const [templateEditorOpen, setTemplateEditorOpen] = useState(false);
   const [editingTemplate, setEditingTemplate] = useState(null);
   const [templatesVersion, setTemplatesVersion] = useState(0); // bumped after save → PipelineView re-fetches templates
@@ -2570,7 +2571,6 @@ export default function StaticsGeneration() {
                   queue={queue}
                   onRemoveFromQueue={handleRemoveFromQueue}
                   productId={selectedProductId}
-                  onEditClick={(creative) => setEditTarget(creative)}
                   onSelectReference={(item) => {
                     // null = "user deselected; clear active single reference"
                     if (!item) {
@@ -3055,18 +3055,10 @@ export default function StaticsGeneration() {
         />
       )}
 
-      {/* Inline Edit Image modal — opens when operator clicks the pencil
-          button on a Review-status card. Backend rejects edits on cards
-          outside Review with 409. Accept cascades 4:5 + 9:16 regen. */}
-      {editTarget && (
-        <EditImageModal
-          key={editTarget.id}
-          creative={editTarget}
-          isOpen={true}
-          onClose={() => setEditTarget(null)}
-          onAccepted={() => { setEditTarget(null); fetchCreatives(); }}
-        />
-      )}
+      {/* The inline EditImageModal render block was removed — the new
+          chat-style EditImageEditor is rendered nested inside
+          CreativeDetailModalV2, which is the only way operators reach the
+          editor (via the pink dot next to the 1:1 ratio label). */}
 
       {/* Legacy modal — kept import for reference flows that may still want
           the old tabbed view. V2 above is the new default for pipeline cards. */}
