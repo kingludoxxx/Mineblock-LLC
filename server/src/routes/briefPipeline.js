@@ -6210,6 +6210,9 @@ router.post('/_diag-compile-clone-prompt', authenticate, async (req, res) => {
       contains_ORIGINAL_ON_SCREEN_TEXT_section: user.includes('# ORIGINAL ON-SCREEN TEXT'),
       contains_binary_rule: user.includes('Rule (binary'),
       contains_must_return: user.includes('MUST return between 2 and 4'),
+      contains_highlighted_text_word: user.includes('highlighted_text'),
+      contains_ORIGINAL_ON_SCREEN_TEXT_placeholder: user.includes('{{ORIGINAL_ON_SCREEN_TEXT}}'),
+      contains_section7_marker: user.includes('## 7.'),
       onScreenSectionSnippet: (() => {
         const idx = user.indexOf('# ORIGINAL ON-SCREEN TEXT');
         return idx >= 0 ? user.slice(idx, idx + 500) : '(section not in prompt)';
@@ -6218,6 +6221,17 @@ router.post('/_diag-compile-clone-prompt', authenticate, async (req, res) => {
         const idx = user.indexOf('## 7. ON-SCREEN TEXT');
         return idx >= 0 ? user.slice(idx, idx + 1200) : '(rule 7 not in prompt)';
       })(),
+      // Show a slice around the ORIGINAL HOOKS / BODY / CTA section so we can
+      // see whether the new section was inserted after CTA as expected.
+      sliceAroundHooks: (() => {
+        const idx = user.indexOf('# ORIGINAL COMPETITOR SCRIPT');
+        return idx >= 0 ? user.slice(idx, idx + 800) : '(competitor script header not in prompt)';
+      })(),
+      // First 2000 chars of the user prompt — guaranteed to include the
+      // top-of-prompt rule structure
+      userHead: user.slice(0, 2000),
+      // Last 2000 chars — should include §7 and the JSON output spec
+      userTail: user.slice(-2500),
     });
   } catch (e) {
     console.error('[BriefPipeline] _diag-compile-clone-prompt error:', e.message);
