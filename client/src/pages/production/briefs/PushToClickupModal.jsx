@@ -10,7 +10,11 @@
 
 import { useState, useEffect, useMemo } from 'react';
 import { X, Loader2, CheckCircle2, ExternalLink, AlertCircle, Zap } from 'lucide-react';
-import api from '../../../lib/api';
+// FIX: original import `../../../lib/api` doesn't exist — that path resolves
+// to client/src/lib/api which isn't a real directory. The actual api client
+// lives at client/src/services/api.js (used by every other page in this dir).
+// Cross-lane fix from ads worktree to unblock the build chain.
+import api from '../../../services/api';
 
 // Compute the same ISO-ish week the backend uses. Mirrors briefAgent's
 // getISOWeekNumber + the existing live preview math.
