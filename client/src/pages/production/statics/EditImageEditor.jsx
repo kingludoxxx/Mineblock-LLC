@@ -71,48 +71,72 @@ export function EditImageEditor({ creative, isOpen, onClose, onAccepted }) {
   }, [isOpen, onClose, generating, accepting]);
 
   // ── Canvas / mask drawing ───────────────────────────────────────────────
-  // Resize canvas to match the rendered image element exactly so brush
-  // coordinates map 1:1.
+  // The image is rendered inside a 1:1 aspect-square wrapper so the canvas
+  // can use absolute inset-0 to perfectly overlay. Canvas pixel dimensions
+  // are sync'd to the wrapper's CSS pixel dimensions on every interaction
+  // so we always draw on a buffer the same size as the visible canvas
+  // (no scaling needed, brush position stays accurate).
   const syncCanvasSize = useCallback(() => {
-    const img = imageRef.current;
     const canvas = canvasRef.current;
-    if (!img || !canvas) return;
-    const rect = img.getBoundingClientRect();
-    if (canvas.width !== rect.width || canvas.height !== rect.height) {
-      canvas.width = Math.round(rect.width);
-      canvas.height = Math.round(rect.height);
+    if (!canvas) return false;
+    const rect = canvas.getBoundingClientRect();
+    const w = Math.round(rect.width);
+    const h = Math.round(rect.height);
+    if (w <= 0 || h <= 0) return false;
+    if (canvas.width !== w || canvas.height !== h) {
+      // Preserve any existing drawing when we resize (capture → resize → restore)
+      const prev = canvas.width > 0 && canvas.height > 0
+        ? canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height)
+        : null;
+      canvas.width = w;
+      canvas.height = h;
+      if (prev) {
+        try { canvas.getContext('2d').putImageData(prev, 0, 0); } catch {}
+      }
     }
+    return true;
   }, []);
 
   useEffect(() => {
     if (!selectingRegion) return;
-    syncCanvasSize();
+    // Run after layout commits, so canvas has its CSS dimensions resolved
+    const raf = requestAnimationFrame(syncCanvasSize);
     const onResize = () => syncCanvasSize();
     window.addEventListener('resize', onResize);
-    return () => window.removeEventListener('resize', onResize);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener('resize', onResize);
+    };
   }, [selectingRegion, syncCanvasSize, sourceImageUrl]);
+
+  // Helper — draws the brush mark and sets hasMask. Defensive: re-syncs
+  // canvas size on every event so an early click before the wrapper has
+  // settled still draws correctly.
+  const drawBrush = useCallback((e) => {
+    if (!syncCanvasSize()) return;
+    const canvas = canvasRef.current;
+    const rect = canvas.getBoundingClientRect();
+    const ctx = canvas.getContext('2d');
+    // Click coords are in CSS pixels; canvas buffer is sized to same CSS dims
+    // so no scaling needed. Brush radius stays visually consistent.
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    ctx.fillStyle = 'rgba(217, 70, 239, 0.55)'; // fuchsia-500 @ 55% — brighter
+    ctx.beginPath();
+    ctx.arc(x, y, 22, 0, Math.PI * 2);
+    ctx.fill();
+    setHasMask(true);
+  }, [syncCanvasSize]);
 
   const onCanvasDown = (e) => {
     if (!selectingRegion) return;
+    e.preventDefault(); // prevent text selection drag
     drawingRef.current = true;
-    const canvas = canvasRef.current;
-    const rect = canvas.getBoundingClientRect();
-    const ctx = canvas.getContext('2d');
-    ctx.fillStyle = 'rgba(217, 70, 239, 0.45)'; // fuchsia-500 @ 45%
-    ctx.beginPath();
-    ctx.arc(e.clientX - rect.left, e.clientY - rect.top, 18, 0, Math.PI * 2);
-    ctx.fill();
-    setHasMask(true);
+    drawBrush(e);
   };
   const onCanvasMove = (e) => {
     if (!selectingRegion || !drawingRef.current) return;
-    const canvas = canvasRef.current;
-    const rect = canvas.getBoundingClientRect();
-    const ctx = canvas.getContext('2d');
-    ctx.fillStyle = 'rgba(217, 70, 239, 0.45)';
-    ctx.beginPath();
-    ctx.arc(e.clientX - rect.left, e.clientY - rect.top, 18, 0, Math.PI * 2);
-    ctx.fill();
+    drawBrush(e);
   };
   const onCanvasUp = () => { drawingRef.current = false; };
 
@@ -396,16 +420,25 @@ export function EditImageEditor({ creative, isOpen, onClose, onAccepted }) {
           </div>
         </div>
 
-        {/* Center: image + mask canvas */}
+        {/* Center: image + mask canvas
+            FIXED 1:1 wrapper — the editor only opens on 1:1 cards per
+            operator rule, so we lock the wrapper to a square. This gives
+            the canvas a deterministic size to lay over, with no flex
+            shrink-wrap ambiguity. Canvas uses inset-0 = perfect overlay. */}
         <div className="flex-1 flex items-center justify-center p-6 relative overflow-hidden">
           {sourceImageUrl ? (
-            <div className="relative max-w-full max-h-full flex items-center justify-center">
+            <div
+              className={`relative aspect-square h-full max-h-[calc(100vh-260px)] max-w-full transition-shadow ${
+                selectingRegion ? 'ring-2 ring-fuchsia-500 ring-offset-2 ring-offset-zinc-950 shadow-[0_0_30px_rgba(217,70,239,0.4)]' : ''
+              }`}
+              style={{ aspectRatio: '1 / 1' }}
+            >
               <img
                 ref={imageRef}
                 src={sourceImageUrl}
                 alt=""
                 onLoad={syncCanvasSize}
-                className="max-w-full max-h-[calc(100vh-260px)] object-contain rounded-md select-none"
+                className="absolute inset-0 w-full h-full object-contain rounded-md select-none"
                 draggable={false}
               />
               {selectingRegion && (
@@ -415,8 +448,14 @@ export function EditImageEditor({ creative, isOpen, onClose, onAccepted }) {
                   onMouseMove={onCanvasMove}
                   onMouseUp={onCanvasUp}
                   onMouseLeave={onCanvasUp}
-                  className="absolute top-0 left-0 w-full h-full cursor-crosshair"
+                  className="absolute inset-0 w-full h-full cursor-crosshair rounded-md"
+                  style={{ touchAction: 'none' }}
                 />
+              )}
+              {selectingRegion && !hasMask && (
+                <div className="absolute bottom-3 left-1/2 -translate-x-1/2 px-3 py-1.5 rounded-full bg-fuchsia-500/90 text-white text-[11px] font-mono uppercase tracking-wide pointer-events-none shadow-lg">
+                  Click + drag to paint a region
+                </div>
               )}
               {generating && (
                 <div className="absolute inset-0 bg-zinc-950/70 flex items-center justify-center rounded-md">
