@@ -929,9 +929,33 @@ function StaticsSettingsInline() {
 // Main Component
 // ---------------------------------------------------------------------------
 
+// LocalStorage key for the image-engine pill (survives refresh / new session).
+const IMAGE_ENGINE_LS_KEY = 'mb.statics.imageEngine.v1';
+
 export default function StaticsGeneration() {
   // Top-level tab
   const [activeTab, setActiveTab] = useState('pipeline');
+
+  // Image engine selector — global per-session. Each /generate call sends
+  // this in the body; the backend persists it on each saved creative so
+  // refines / variants reuse the same engine. Defaults to NanoBanana.
+  const [imageEngine, setImageEngine] = useState(() => {
+    try { return localStorage.getItem(IMAGE_ENGINE_LS_KEY) || 'nanobanana'; }
+    catch { return 'nanobanana'; }
+  });
+  const [availableEngines, setAvailableEngines] = useState([]);
+  useEffect(() => {
+    api.get('/statics-generation/image-engines')
+      .then(r => setAvailableEngines(r.data?.data || []))
+      .catch(() => setAvailableEngines([
+        { name: 'nanobanana', label: 'NanoBanana', available: true },
+        { name: 'openai',     label: 'OpenAI',     available: false },
+      ]));
+  }, []);
+  const handleEngineChange = (name) => {
+    setImageEngine(name);
+    try { localStorage.setItem(IMAGE_ENGINE_LS_KEY, name); } catch { /* private mode */ }
+  };
 
   // Pipeline sub-toggle
   // Advertorial pipeline was removed; only the standard pipeline remains.
@@ -1314,6 +1338,7 @@ export default function StaticsGeneration() {
         angle: customAngle || marketingAngle || undefined,
         angle_data: !customAngle && selectedAngleData ? selectedAngleData : undefined,
         ratio: 'all',
+        image_engine: imageEngine,
       });
 
       const genResult = response.data?.data || response.data;
@@ -1423,6 +1448,7 @@ export default function StaticsGeneration() {
         pipeline: 'standard',
         quality_warning: task.qualityWarning || null,
         parent_creative_id: parentId || null,
+        image_engine: genResult.image_engine || imageEngine,
       });
 
       const parentRes = await api.post('/statics-generation/creatives', buildSavePayload(parentTask, null));
@@ -2235,6 +2261,38 @@ export default function StaticsGeneration() {
               );
             })}
           </nav>
+
+          {/* Image-engine pill — global per-session. Persisted to localStorage.
+              Sends image_engine on every /generate call; backend stamps it on
+              each saved creative so refines / variants use the same engine. */}
+          {availableEngines.length > 0 && (
+            <div className="flex items-center gap-2 bg-white/[0.02] border border-white/[0.06] rounded-full pl-3 pr-1 py-1">
+              <span className="text-[10px] font-mono uppercase tracking-wider text-zinc-500">Image Engine</span>
+              <div className="flex items-center gap-1">
+                {availableEngines.map((eng) => {
+                  const isActive = imageEngine === eng.name;
+                  const disabled = !eng.available;
+                  return (
+                    <button
+                      key={eng.name}
+                      type="button"
+                      disabled={disabled}
+                      onClick={() => handleEngineChange(eng.name)}
+                      title={disabled ? `${eng.label} is not configured (missing API key)` : eng.describe}
+                      className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-mono uppercase tracking-wide transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
+                        isActive
+                          ? 'bg-black text-white shadow-[0_0_8px_rgba(0,0,0,0.4)]'
+                          : 'text-zinc-400 hover:text-zinc-200'
+                      }`}
+                    >
+                      <span className={`w-1.5 h-1.5 rounded-full ${disabled ? 'bg-zinc-700' : (isActive ? 'bg-emerald-400' : 'bg-zinc-500')}`} />
+                      {eng.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="flex items-center gap-4">
