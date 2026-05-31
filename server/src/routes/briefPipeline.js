@@ -6183,6 +6183,48 @@ router.post('/settings/league-prompts/reset', authenticate, async (_req, res) =>
 // surface what fields will be available to the prompts at generation time.
 // ============================================================================
 
+// TEMP DIAG: returns the compiled clone prompt the model would see for a
+// given reference + product. Used to debug highlighted_text emission. Strip
+// once verified.
+router.post('/_diag-compile-clone-prompt', authenticate, async (req, res) => {
+  try {
+    await ensureTables();
+    const { referenceId, productCode = 'MR', angle = 'NA' } = req.body || {};
+    if (!referenceId) return res.status(400).json({ success: false, error: { message: 'referenceId required' } });
+    const refRows = await pgQuery(`SELECT transcript FROM brief_pipeline_references WHERE id = $1`, [referenceId]);
+    if (!refRows.length) return res.status(404).json({ success: false, error: { message: 'reference not found' } });
+    const rawScript = refRows[0].transcript || '';
+    const { system: parseSys, user: parseUsr } = await buildScriptParserPrompt(rawScript, 'DIAG');
+    const parsed = await callClaude(parseSys, parseUsr, 2000, { fast: true });
+    const parsedScript = parsed || { hooks: [], body: rawScript, cta: '' };
+    const productProfile = await fetchProductProfile(productCode);
+    const productContext = buildProductContextForBrief(productProfile);
+    const { system, user } = await buildScriptClonePrompt(parsedScript, {}, productContext, productProfile, angle, rawScript);
+    res.json({
+      success: true,
+      rawScriptLength: rawScript.length,
+      onScreenTextExtracted: extractOnScreenText(rawScript),
+      systemPromptLength: system.length,
+      userPromptLength: user.length,
+      // Slices that prove the new rules + variable are present
+      contains_ORIGINAL_ON_SCREEN_TEXT_section: user.includes('# ORIGINAL ON-SCREEN TEXT'),
+      contains_binary_rule: user.includes('Rule (binary'),
+      contains_must_return: user.includes('MUST return between 2 and 4'),
+      onScreenSectionSnippet: (() => {
+        const idx = user.indexOf('# ORIGINAL ON-SCREEN TEXT');
+        return idx >= 0 ? user.slice(idx, idx + 500) : '(section not in prompt)';
+      })(),
+      rule7Snippet: (() => {
+        const idx = user.indexOf('## 7. ON-SCREEN TEXT');
+        return idx >= 0 ? user.slice(idx, idx + 1200) : '(rule 7 not in prompt)';
+      })(),
+    });
+  } catch (e) {
+    console.error('[BriefPipeline] _diag-compile-clone-prompt error:', e.message);
+    res.status(500).json({ success: false, error: { message: e.message } });
+  }
+});
+
 router.get('/product-context/:id', authenticate, async (req, res) => {
   try {
     const idParam = req.params.id;
