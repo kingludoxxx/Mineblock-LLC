@@ -81,6 +81,10 @@ export function CreativeDetailModalV2({
     setApproveError(null);
     try {
       await api.post(`/statics-generation/creatives/${trueParent.id}/approve`);
+      // Notify the FROM LEAGUE column to re-fetch — the backend auto-dismisses
+      // the LEAGUE reference that spawned this card. This event makes the
+      // removed reference disappear from the column without a page refresh.
+      window.dispatchEvent(new CustomEvent('statics:approved', { detail: { id: trueParent.id } }));
       onRefresh?.();
       onClose?.();
     } catch (err) {
@@ -340,6 +344,9 @@ function RatioColumn({ ratio, creative, parentId, parentReviewNotes, onRefresh, 
       // Per-ratio approve = full-card approve (intentional — the operator
       // shouldn't need to approve each ratio separately).
       await api.post(`/statics-generation/creatives/${creative.id}/approve`);
+      // Notify FROM LEAGUE column to re-fetch — backend auto-dismisses
+      // the LEAGUE reference behind this card.
+      window.dispatchEvent(new CustomEvent('statics:approved', { detail: { id: creative.id } }));
       onApproved?.();
     } catch (err) {
       setApproveError(err.response?.data?.error?.message || err.message);

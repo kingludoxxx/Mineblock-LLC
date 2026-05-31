@@ -95,6 +95,16 @@ export function FromLeagueColumn({ onUseAsReference, refreshTick = 0 }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshTick]);
 
+  // Listen for the global 'statics:approved' window event — fired by the
+  // detail modal's Approve button. Backend auto-dismisses the LEAGUE
+  // reference that spawned the approved card; this re-fetch shows the
+  // removed reference disappear from the column without a page refresh.
+  useEffect(() => {
+    const handler = () => loadAds();
+    window.addEventListener('statics:approved', handler);
+    return () => window.removeEventListener('statics:approved', handler);
+  }, [loadAds]);
+
   const visibleAds = useMemo(() => ads.filter(a => !dismissed.has(`${a.brand_id}:${a.id}`)), [ads, dismissed]);
   // The old "no brands selected" empty-state and brand filter are gone —
   // the column simply shows whatever was imported (zero or many).

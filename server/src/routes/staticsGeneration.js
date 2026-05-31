@@ -3816,8 +3816,10 @@ router.post('/creatives/:id/edit/discard', authenticate, async (req, res) => {
 router.post('/creatives/:id/approve', authenticate, async (req, res) => {
   try {
     await ensureCreativesTable();
+    // Pull reference_thumbnail too — used below to auto-dismiss the LEAGUE
+    // reference that spawned this card (operator request).
     const rows = await pgQuery(
-      'SELECT id, parent_creative_id, status FROM spy_creatives WHERE id = $1',
+      'SELECT id, parent_creative_id, status, reference_thumbnail FROM spy_creatives WHERE id = $1',
       [req.params.id]
     );
     if (rows.length === 0) return res.status(404).json({ success: false, error: { message: 'Creative not found' } });
@@ -3839,7 +3841,51 @@ router.post('/creatives/:id/approve', authenticate, async (req, res) => {
       [parentId]
     );
 
-    res.json({ success: true, data: { parentId, rows: updated } });
+    // NEW: auto-dismiss the LEAGUE reference that spawned this card.
+    // Operator request — "once a generation gets approved, remove the
+    // reference from the LEAGUE column." The link from generated card →
+    // LEAGUE ref is via reference_thumbnail (generation flow copies the
+    // ref's image URL into the new row's reference_thumbnail field).
+    // The fetch must use the parent's reference_thumbnail (children inherit
+    // from parent but the parent is the source of truth).
+    let dismissedRefs = [];
+    try {
+      const parentRow = (await pgQuery(
+        'SELECT reference_thumbnail FROM spy_creatives WHERE id = $1',
+        [parentId]
+      ))[0];
+      const refUrl = parentRow?.reference_thumbnail;
+      if (refUrl) {
+        // Find matching LEAGUE references — match against image_url OR
+        // thumbnail_url (the generation flow can pull either). Limit to
+        // is_reference=true rows in pipeline=standard since LEAGUE imports
+        // land as references.
+        const dismissed = await pgQuery(
+          `DELETE FROM spy_creatives
+             WHERE imported_from = 'league'
+               AND is_reference = TRUE
+               AND (image_url = $1 OR thumbnail_url = $1)
+             RETURNING id, reference_name, image_url`,
+          [refUrl]
+        );
+        dismissedRefs = dismissed;
+        if (dismissed.length > 0) {
+          console.log(`[approve] auto-dismissed ${dismissed.length} LEAGUE ref(s) for parent=${parentId.slice(0,8)} — ${dismissed.map(r => r.reference_name || r.id.slice(0,8)).join(', ')}`);
+        }
+      }
+    } catch (dismissErr) {
+      // Don't fail the approve over a dismiss-side issue. Log + continue.
+      console.warn('[approve] LEAGUE auto-dismiss failed (non-fatal):', dismissErr.message);
+    }
+
+    res.json({
+      success: true,
+      data: {
+        parentId,
+        rows: updated,
+        dismissed_league_refs: dismissedRefs.map(r => r.id),
+      },
+    });
   } catch (err) {
     console.error('[staticsGeneration] POST /creatives/:id/approve error:', err);
     res.status(500).json({ success: false, error: { message: err.message } });
