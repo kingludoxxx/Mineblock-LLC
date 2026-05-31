@@ -2090,6 +2090,10 @@ router.get('/iterations', authenticate, async (req, res) => {
       JOIN best_hook bh ON bh.creative_id = agg.creative_id
       WHERE agg.spend >= $2
         AND (CASE WHEN agg.spend > 0 THEN agg.revenue / agg.spend ELSE 0 END) >= $3
+        AND NOT EXISTS (
+          SELECT 1 FROM dismissed_iteration_winners
+          WHERE creative_id = agg.creative_id
+        )
       ORDER BY (CASE WHEN agg.spend > 0 THEN agg.revenue / agg.spend ELSE 0 END) DESC, agg.spend DESC
     `, [String(windowDays), minSpend, minRoas]);
 
@@ -2113,6 +2117,17 @@ router.post('/iterate/:creativeId', authenticate, async (req, res) => {
     const parentCreativeId = req.params.creativeId;
     const variations = Math.max(1, Math.min(5, parseInt(req.body.variations) || 3));
     const productId = req.body.productId || null;
+    // NEW: ratios — array of '1:1' / '4:5' / '9:16'. Default ['4:5'] for back-compat.
+    // For each variation we generate ONE row at the "primary" ratio, then schedule
+    // generateVariant() for each additional ratio (mirrors /generate orchestration
+    // so style stays consistent across ratios — no cross-engine drift either).
+    const ALLOWED_RATIOS = new Set(['1:1', '4:5', '9:16']);
+    const requestedRatios = Array.isArray(req.body.ratios) && req.body.ratios.length > 0
+      ? req.body.ratios.filter(r => ALLOWED_RATIOS.has(r))
+      : ['4:5'];
+    // Primary ratio = '1:1' if selected (best for re-targeting), else first selected.
+    const primaryRatio = requestedRatios.includes('1:1') ? '1:1' : requestedRatios[0];
+    const extraRatios = requestedRatios.filter(r => r !== primaryRatio);
 
     // Load parent creative
     const parentRows = await pgQuery(`
@@ -2183,13 +2198,14 @@ router.post('/iterate/:creativeId', authenticate, async (req, res) => {
            source_label, reference_name, reference_thumbnail, angle,
            parent_creative_id_ref, parent_im_number, im_number, batch_id, batch_position,
            image_engine)
-        VALUES ('iteration', $1, $2, 'generating', '4:5',
+        VALUES ('iteration', $1, $2, 'generating', $13,
                 $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
         RETURNING id, im_number, source_label
       `, [
         productId, product.name, sourceLabel, parent.ad_name, parent.thumbnail_url,
         parent.angle, parent.creative_id, parentImNumber, imNum, batchId, i + 1,
         parentImageEngine,
+        primaryRatio,
       ]);
       createdRows.push(row[0]);
     }
@@ -2295,7 +2311,7 @@ router.post('/iterate/:creativeId', authenticate, async (req, res) => {
             : customPrompts.nanobanana_image;
           product._angle = variationAngle;
           const nbPrompt = buildNanoBananaImagePrompt(claudeResult, product, iterTemplate);
-          const nbTaskId = await iterEngine.submit(nbPrompt, [productHttpUrl], '4:5');
+          const nbTaskId = await iterEngine.submit(nbPrompt, [productHttpUrl], primaryRatio);
           const tempUrl = await iterEngine.poll(nbTaskId);
           const generatedUrl = await persistNanoBananaImage(tempUrl, 'statics-iterations');
 
@@ -2311,7 +2327,21 @@ router.post('/iterate/:creativeId', authenticate, async (req, res) => {
                 updated_at = NOW()
             WHERE id = $5
           `, [generatedUrl, JSON.stringify(claudeResult), JSON.stringify(claudeResult.adapted_text || {}), variationLabel, childRow.id]);
-          console.log(`${tagPrefix} ✅ done → ${generatedUrl.slice(0,80)}`);
+          console.log(`${tagPrefix} ✅ done → ${generatedUrl.slice(0,80)} (${primaryRatio})`);
+
+          // Step B4: NEW — spawn extra-ratio resizes (each becomes its own child
+          // row with parent_creative_id = this iteration). Same orchestration as
+          // /generate uses for 4:5 + 9:16 after the 1:1 lands. Honors per-creative
+          // engine (no cross-engine drift). Fire-and-forget — they update their
+          // own DB rows when done.
+          if (extraRatios.length > 0) {
+            const updatedParent = (await pgQuery('SELECT * FROM spy_creatives WHERE id = $1', [childRow.id]))[0];
+            for (const r of extraRatios) {
+              generateVariant(updatedParent, r).catch(err =>
+                console.error(`${tagPrefix} variant ${r} failed: ${err.message}`)
+              );
+            }
+          }
         } catch (err) {
           console.error(`${tagPrefix} failed: ${err.message}`);
           await pgQuery(
@@ -2324,6 +2354,37 @@ router.post('/iterate/:creativeId', authenticate, async (req, res) => {
     });
   } catch (err) {
     console.error('[iterations] POST /iterate error:', err);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// Dismiss a winner from the Iterations column. Soft-hide (operator can
+// un-dismiss directly in the DB if needed). Used by the red ✕ button on
+// each WinnerCard — operator doesn't want this card to keep appearing.
+router.post('/iterations/:creativeId/dismiss', authenticate, async (req, res) => {
+  try {
+    const cid = String(req.params.creativeId || '').trim();
+    if (!cid) return res.status(400).json({ success: false, error: { message: 'creativeId required' } });
+    await pgQuery(
+      `INSERT INTO dismissed_iteration_winners (creative_id, dismissed_by, dismissed_at)
+       VALUES ($1, $2, NOW())
+       ON CONFLICT (creative_id) DO UPDATE SET dismissed_by = EXCLUDED.dismissed_by, dismissed_at = NOW()`,
+      [cid, req.user?.id || null]
+    );
+    res.json({ success: true, data: { creative_id: cid, dismissed: true } });
+  } catch (err) {
+    console.error('[iterations] dismiss error:', err);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// Optional undismiss (operator-facing escape hatch via raw API).
+router.delete('/iterations/:creativeId/dismiss', authenticate, async (req, res) => {
+  try {
+    const cid = String(req.params.creativeId || '').trim();
+    await pgQuery(`DELETE FROM dismissed_iteration_winners WHERE creative_id = $1`, [cid]);
+    res.json({ success: true, data: { creative_id: cid, dismissed: false } });
+  } catch (err) {
     res.status(500).json({ success: false, error: { message: err.message } });
   }
 });
