@@ -2218,10 +2218,12 @@ The winning script may have **burned-in on-screen text overlays** — short, bol
 ### What qualifies as a highlighted label vs a hook
 A LABEL is short (≤6 words), attention-grabbing, sticker-style, often ALL CAPS with a trailing emoji, frequently a fragment with no verb. A HOOK is a full first-person sentence the speaker delivers (8–25 words, sentence case, complete grammar). They live in different output fields.
 
-### Rule (binary)
-- **Source of truth: the ORIGINAL ON-SCREEN TEXT block above.** Inspect every line.
-- **The block contains the literal phrase "(no on-screen text detected in source — emit empty highlighted_text)"** → every card emits highlighted_text: []. ONLY valid empty case.
-- **The block contains ANY other text** → every card MUST return between 2 and 4 labels. Pick the lines that read most like banners/stickers/framing. If none look perfectly banner-style, take the shortest, punchiest, most attention-grabbing lines — those are the designer-targeted overlays.
+### Rule (3-way decision)
+- **Source of truth #1: the ORIGINAL ON-SCREEN TEXT block above.** Inspect every line.
+- **The block contains ANY text other than the "no on-screen text detected" sentinel** → every card MUST return between 2 and 4 labels. Pick the lines that read most like banners/stickers/framing. If none look perfectly banner-style, take the shortest, punchiest, most attention-grabbing lines — those are the designer-targeted overlays.
+- **The block contains the "no on-screen text detected" sentinel** → consult the winning script as a fallback signal. Apply the OVERLAY-SIGNAL CHECK: count time-bound promo wording, offer constructions ("buy N get N", "% off"), urgency triggers, framing devices (apology, comment-reply, "as seen on"), price callouts, imperative CTAs.
+  - **≥ 2 signals → infer 2-4 overlay candidates** per card from the strongest signals. Mark highlighted_text_notes accordingly.
+  - **0-1 signals → emit highlighted_text: []** (clean talking-head testimonial probably has no overlays).
 - Each output label: ≤ 5 words, ALL CAPS where source uses caps, 1 emoji at end. Preserve role (banner stays banner, comment-reply stays comment-reply, apology stays apology).
 - Vary the wording across iteration cards only if the selected vector calls for it. Otherwise keep labels consistent.
 - A hook is NEVER an overlay label. ALL-CAPS sticker fragments belong in highlighted_text, not in hooks.
@@ -2445,10 +2447,13 @@ A LABEL is short, attention-grabbing, sticker-style. A HOOK is a full first-pers
 | Emoji | 1 trailing emoji is normal | Rare |
 | Examples | "PUBLIC APOLOGY 👁️", "WE LIED 🤥", "BIGGEST SALE 🇺🇸", "PROJECT REJECTED" | "I'm the founder of X, and what I'm about to announce could ruin our company." |
 
-### Rule (binary — read carefully)
-- **Source of truth: the ORIGINAL ON-SCREEN TEXT block above.** Inspect every line.
-- **The block contains the literal phrase "(no on-screen text detected in source — emit empty highlighted_text)"** → emit highlighted_text: []. This is the ONLY valid case for emitting an empty array. Do not invent.
-- **The block contains ANY other text** → you MUST return between 2 and 4 labels. Empty is forbidden here. Pick the lines that read most like banners / stickers / framing devices and rewrite them. If you cannot find perfect banner-style lines, take the shortest, punchiest, most attention-grabbing lines and treat them as labels — these are the ones a designer would burn into the cut.
+### Rule (3-way decision — read carefully)
+- **Source of truth #1: the ORIGINAL ON-SCREEN TEXT block above.** Inspect every line.
+- **The block contains ANY text other than the literal "no on-screen text detected" sentinel** → you MUST return between 2 and 4 labels. Empty is forbidden here. Pick the lines that read most like banners / stickers / framing devices and rewrite them. If you cannot find perfect banner-style lines, take the shortest, punchiest, most attention-grabbing lines and treat them as labels — these are the ones a designer would burn into the cut.
+- **The block contains the literal "(no on-screen text detected in source — emit empty highlighted_text)" sentinel** → consult the spoken script below as a fallback signal. The transcription pipeline missed overlays for plenty of source ads but the spoken script still reveals whether the source has visual graphics. Apply the OVERLAY-SIGNAL CHECK:
+  - SIGNALS (count them in ORIGINAL_BODY + ORIGINAL_HOOKS): explicit time-bound promo wording ("Memorial Day", "Today only", "Ends tonight", "Last chance"); offer constructions ("Buy N get N", "free with purchase", "% off", "save $X"); urgency triggers ("won't last", "going fast", "while stock lasts"); call-out / framing devices ("public apology", "we lied", "I owe you an apology", "reply to comment", "as seen on", "as featured in"); price callouts ($XX or code XXXX); imperative CTAs ("click below", "tap below", "link in bio").
+  - **≥ 2 signals → infer 2-4 overlay candidates** from the strongest signals and emit them. These are the banners/stickers the source ad almost certainly burned in. Mark highlighted_text_notes = "Inferred from spoken script (no [ON-SCREEN TEXT] block in source)".
+  - **0-1 signals → emit highlighted_text: []**. A clean talking-head testimonial with no offer/framing devices probably has no overlays. Don't fabricate.
 
 ### How to pick labels
 - Examples of source → output:
@@ -6230,7 +6235,10 @@ async function seedDefaultLeaguePrompts() {
     //    if it's missing, overwrite with the current baked default. This is
     //    one-shot per signature bump and leaves operator edits alone once
     //    they include the marker.
-    const CLONE_V2_SIGNATURE = 'ORIGINAL_ON_SCREEN_TEXT';
+    // v3 — adds the spoken-script inference fallback to §7 (Forge-class
+    // sources that came through Whisper without overlay markers now still
+    // get inferred banner labels when the script has 2+ overlay signals).
+    const CLONE_V2_SIGNATURE = 'OVERLAY-SIGNAL CHECK';
     const currentClone = existing.scriptClone?.json || '';
     if (!currentClone.trim() || !currentClone.includes(CLONE_V2_SIGNATURE)) {
       existing.scriptClone = {
