@@ -889,6 +889,29 @@ async function ensureTables() {
     // - META:   ad_library_url from imported_metadata
     // - UPLOAD: operator-provided URL (already accepted as `sourceUrl`)
     await pgQuery(`ALTER TABLE brief_pipeline_references ADD COLUMN IF NOT EXISTS source_url TEXT`).catch(() => {});
+    // Backfill source_url for legacy League/Meta references that were
+    // imported before this column existed. Idempotent — only fills NULL
+    // values, so re-runs on every boot are cheap and don't overwrite
+    // operator-edited URLs. League rows compute from ad_archive_id; Meta
+    // rows pull ad_library_url from imported_metadata if present.
+    await pgQuery(`
+      UPDATE brief_pipeline_references
+         SET source_url = 'https://www.facebook.com/ads/library/?id=' || ad_archive_id
+       WHERE source = 'league'
+         AND source_url IS NULL
+         AND ad_archive_id IS NOT NULL
+    `).catch((e) => {
+      console.warn('[BriefPipeline] source_url league backfill skipped:', e.message);
+    });
+    await pgQuery(`
+      UPDATE brief_pipeline_references
+         SET source_url = imported_metadata->>'ad_library_url'
+       WHERE source = 'meta'
+         AND source_url IS NULL
+         AND imported_metadata ? 'ad_library_url'
+    `).catch((e) => {
+      console.warn('[BriefPipeline] source_url meta backfill skipped:', e.message);
+    });
     // reference_id: pointer from the virtual winner row back to the
     // brief_pipeline_references row it was generated from. Needed so the
     // push-to-ClickUp resolver can read reference.source_url without
