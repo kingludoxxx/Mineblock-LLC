@@ -848,13 +848,16 @@ async function ensureTables() {
     // Idempotent ALTER for older deployments — operator's earlier briefs
     // (B0390, B0391) were created before highlighted_text existed.
     await pgQuery(`ALTER TABLE brief_pipeline_generated ADD COLUMN IF NOT EXISTS highlighted_text JSONB DEFAULT '[]'`).catch(() => {});
-    // First test run landed the column as TEXT on at least one deploy
-    // (B0391 stored as the string '"[]"' instead of JSONB '[]'). Coerce
-    // any TEXT-shaped column to JSONB. Idempotent — no-op when already JSONB.
-    await pgQuery(`ALTER TABLE brief_pipeline_generated ALTER COLUMN highlighted_text TYPE JSONB USING (CASE WHEN highlighted_text IS NULL THEN '[]'::jsonb WHEN highlighted_text::text ~ '^\\s*\\[' THEN highlighted_text::text::jsonb ELSE '[]'::jsonb END)`).catch((e) => {
-      // Surface the error in logs so we can spot lingering schema drift.
-      console.warn('[BriefPipeline] highlighted_text TYPE coercion skipped:', e.message);
-    });
+    // ─── REGRET ─────────────────────────────────────────────────────
+    // A previous build of this file ran an `ALTER COLUMN ... TYPE JSONB
+    // USING (CASE ...)` on every boot to coerce any rows that landed as
+    // TEXT. The USING expression's regex misclassified valid JSONB
+    // payloads and reset them to '[]', wiping the data on every deploy.
+    // The ADD COLUMN above creates the column as JSONB on fresh tables,
+    // and the INSERT path now uses an explicit ::jsonb cast, so the
+    // coercion is no longer needed. Do NOT add it back without a typeof
+    // guard against information_schema.columns first.
+    // ────────────────────────────────────────────────────────────────
 
     await pgQuery(`
       CREATE TABLE IF NOT EXISTS brief_pipeline_analysis_cache (
