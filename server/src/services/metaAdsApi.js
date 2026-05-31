@@ -179,32 +179,100 @@ export function getAllAdAccountIds() {
 }
 
 /**
- * Fetch ad account details (name, currency, etc.)
+ * Discover ad accounts the System User can see DIRECTLY from Meta.
+ * No env var iteration — every account added to/shared into the BM that the
+ * System User has access to will show up automatically. Pagination handled
+ * up to 5 pages (500 accounts) which is plenty for any real BM.
+ *
+ * @returns {Array<{id,name,currency,status,business_name,business_id}>}
+ */
+export async function discoverAdAccounts() {
+  const results = [];
+  let url = `${META_GRAPH_URL}/me/adaccounts?fields=id,name,currency,account_status,business&limit=100&access_token=${META_ACCESS_TOKEN}`;
+  const MAX_PAGES = 5;
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const res = await fetch(url, { signal: AbortSignal.timeout(META_API_TIMEOUT) });
+    if (!res.ok) {
+      const errBody = await res.text().catch(() => '');
+      throw new Error(`Meta /me/adaccounts error ${res.status}: ${errBody.slice(0, 300)}`);
+    }
+    const data = await res.json();
+    for (const acct of (data.data || [])) {
+      results.push({
+        id: acct.id,
+        name: acct.name || acct.id,
+        currency: acct.currency,
+        status: acct.account_status,
+        business_name: acct.business?.name || '',
+        business_id: acct.business?.id || '',
+      });
+    }
+    if (!data.paging?.next) break;
+    url = data.paging.next;
+  }
+  return results;
+}
+
+/**
+ * In-memory cache for discovered ad accounts.
+ * Meta API calls aren't free (rate limits + latency), and the BM doesn't
+ * change every second. 5-minute TTL is short enough that newly-added
+ * accounts appear within a few minutes without operator intervention.
+ */
+let _adAccountsCache = { ts: 0, data: null };
+const AD_ACCOUNTS_TTL_MS = 5 * 60 * 1000;
+
+/**
+ * Cached wrapper around discoverAdAccounts(). Pass { force: true } to bypass.
+ */
+export async function getAdAccountsCached({ force = false } = {}) {
+  if (!force && _adAccountsCache.data && (Date.now() - _adAccountsCache.ts) < AD_ACCOUNTS_TTL_MS) {
+    return _adAccountsCache.data;
+  }
+  try {
+    const fresh = await discoverAdAccounts();
+    _adAccountsCache = { ts: Date.now(), data: fresh };
+    return fresh;
+  } catch (err) {
+    // If discovery fails (Meta down, token expired, etc.) but we have any
+    // stale cached data, serve that rather than nothing — degrades better
+    // than an empty dropdown. Errors are logged so the operator can see.
+    console.error('[getAdAccountsCached] discover failed:', err?.message || err);
+    if (_adAccountsCache.data) {
+      console.warn('[getAdAccountsCached] serving stale cache from', new Date(_adAccountsCache.ts).toISOString());
+      return _adAccountsCache.data;
+    }
+    throw err;
+  }
+}
+
+/**
+ * Legacy API — iterates the META_AD_ACCOUNT_IDS env var.
+ * Kept as a fallback (resilience) and for callers that still depend on it.
+ * New callers should use getAdAccountsCached() for auto-discovery.
  */
 export async function getAdAccounts() {
-  // DIAG (temp) — capture env-var state on each call so we can see if the
-  // server has the new credentials loaded after env-var update + restart.
-  console.log('[getAdAccounts] DIAG token_len=' + (META_ACCESS_TOKEN?.length || 0)
-    + ' token_prefix=' + (META_ACCESS_TOKEN?.slice(0, 12) || '')
-    + ' acct_ids=' + JSON.stringify(META_AD_ACCOUNT_IDS)
-    + ' graph_url=' + META_GRAPH_URL);
+  // Prefer live discovery — eliminates the need to keep META_AD_ACCOUNT_IDS
+  // in sync with what's actually in the BM.
+  if (META_ACCESS_TOKEN) {
+    try {
+      return await getAdAccountsCached();
+    } catch (err) {
+      console.warn('[getAdAccounts] live discovery failed, falling back to env-var list:', err?.message);
+    }
+  }
+  // Fallback: env-var iteration (the original behaviour)
   const results = [];
   for (const accountId of META_AD_ACCOUNT_IDS) {
     try {
       const res = await fetch(
         `${META_GRAPH_URL}/${accountId}?fields=name,account_id,currency,account_status,business_name&access_token=${META_ACCESS_TOKEN}`
       );
-      console.log(`[getAdAccounts] DIAG ${accountId} → status=${res.status}`);
       if (res.ok) {
         const data = await res.json();
         results.push({ id: accountId, name: data.name || accountId, currency: data.currency, status: data.account_status, business_name: data.business_name });
-      } else {
-        // Capture the error body so we can see WHY Meta rejected the call
-        const errBody = await res.text().catch(() => '<read-failed>');
-        console.error(`[getAdAccounts] DIAG ${accountId} META ERROR ${res.status}: ${errBody.slice(0, 400)}`);
       }
     } catch (err) {
-      console.error(`[getAdAccounts] DIAG ${accountId} THROW: ${err?.message || err}`);
       results.push({ id: accountId, name: accountId, error: err.message });
     }
   }
