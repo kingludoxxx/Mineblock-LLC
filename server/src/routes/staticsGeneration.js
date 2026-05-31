@@ -2015,16 +2015,71 @@ router.get('/status/:taskId', authenticate, async (req, res) => {
 const WINNER_MIN_SPEND = 50;
 const WINNER_MIN_ROAS  = 1.5;
 
-// Variation tweaks — injected into each iteration's Claude analysis to bias
-// the AI toward a different emotional/structural angle while keeping the
-// proven hook and product intact.
-const VARIATION_TWEAKS = [
-  'Test a sharper, more direct emotional hook in the headline (same angle, stronger language).',
-  'Test a punchier subheadline + tighter bullets (same story, fewer words).',
-  'Test a more curiosity-driven headline (lead with a question or contrarian claim).',
-  'Test a stronger urgency / scarcity framing in the copy.',
-  'Test a more specific number / proof point in the headline (replace abstract claims with concrete data).',
-];
+// Iteration strategies — one variable changes per variation; everything else
+// stays pixel-identical to the source winner. This is how $100M DTC brands
+// scale winning statics: isolate one element so you learn what specifically
+// drove the lift. Order is fixed by ROAS leverage — Hook always tested
+// first, then CTA, etc.
+const ITERATION_STRATEGIES = {
+  hook: {
+    label: 'Hook',
+    vary:  'HEADLINE — write ONE new headline that tests a different opening angle (question vs statement, fear vs aspiration, specific number vs abstract claim, first-person vs third-person). Same product, same offer, same emotional category. Different attack angle.',
+    lock:  'subheadline, body, CTA, badges, bullets, visual style, color palette, lighting, composition, product placement, people count, typography, and all proof elements must stay IDENTICAL to the source ad.',
+  },
+  cta: {
+    label: 'CTA',
+    vary:  'CTA — write ONE new call-to-action phrase that tests a different action verb or value frame ("Shop Now" vs "Get 40% Off" vs "Try Risk-Free" vs "See Reviews" vs "Claim Yours"). Single short string. Optionally change CTA button color for visual contrast.',
+    lock:  'headline, subheadline, body, badges, bullets, visual style, color palette, lighting, composition, product placement, people count, typography, and all proof elements must stay IDENTICAL.',
+  },
+  visual: {
+    label: 'Visual',
+    vary:  'COLOR PALETTE + LIGHTING — choose a fundamentally different color treatment (e.g. brand-red gradient → deep-navy + gold, or vibrant → muted-premium, or daylight → moody studio). The composition, product placement, and ALL TEXT must stay byte-identical to the source.',
+    lock:  'every text element (headline, subhead, CTA, badges, bullets) must be letter-for-letter identical. Product position, layout structure, people count, and typography unchanged. ONLY palette and lighting move.',
+  },
+  proof: {
+    label: 'Proof',
+    vary:  'SOCIAL PROOF elements — swap the proof signal (e.g. star rating → press logo strip, or "4,800+ reviews" → "Trusted by 12,000 customers", or testimonial quote → expert endorsement badge). One proof element changes; if none existed, add ONE.',
+    lock:  'headline, CTA, body copy, visual style, colors, lighting, composition, product placement, people count must stay IDENTICAL.',
+  },
+  offer: {
+    label: 'Offer',
+    vary:  'OFFER PRESENTATION — same dollar amount, different visual framing of the discount (strikethrough "$270 → $179" vs "34% OFF" badge vs "SAVE $91" callout vs "FROM $179" anchor). Optionally swap badge shape (starburst vs ribbon vs flat tag).',
+    lock:  'the actual discount value and product remain unchanged. Headline, CTA, body copy, color palette, composition, people count must stay IDENTICAL.',
+  },
+};
+
+// Priority order — Hook moves the needle most (~70% of CTR), so it always
+// goes first. Angle is intentionally NOT in the default rotation; reserved
+// for when smaller variables are exhausted.
+const STRATEGY_ORDER = ['hook', 'cta', 'visual', 'proof', 'offer'];
+
+// Given a 0-based variation index in a batch, return the strategy key.
+// Count=3 → [hook, cta, visual]. Count=5 → all five. Count beyond 5 wraps.
+function strategyForVariationIndex(idx) {
+  return STRATEGY_ORDER[idx % STRATEGY_ORDER.length];
+}
+
+// Build the iteration directive that prepends the Claude analysis prompt
+// during /iterate. This is the "lock X, vary Y" instruction that forces
+// the AI to produce a clean single-variable iteration.
+function buildIterationDirective(strategyKey) {
+  const s = ITERATION_STRATEGIES[strategyKey] || ITERATION_STRATEGIES.hook;
+  return `═══ ITERATION DIRECTIVE — ${s.label.toUpperCase()} VARIATION ═══
+
+You are producing an iteration of a winning static ad. ONE variable changes; everything else must stay pixel-identical to the source.
+
+CHANGE THIS:
+${s.vary}
+
+LOCK THESE (must be byte-identical to source):
+${s.lock}
+
+This is a scientific isolation test. If you change more than the single specified variable, the test is invalid and the iteration must be discarded. When you produce the JSON brief below, the fields you would NORMALLY adapt — but are locked here — must be returned UNCHANGED from the original_text / source values.
+
+═══ END ITERATION DIRECTIVE ═══
+
+`;
+}
 
 /**
  * Allocate the next IM sequence number (atomic, single-row-locked).
@@ -2258,18 +2313,26 @@ router.post('/iterate/:creativeId', authenticate, async (req, res) => {
         ? await ensureHttpUrlGlobal(product.product_image_url, 'iter-product').catch(() => null)
         : null;
 
-      // Step B: process each variation in parallel
+      // Step B: process each variation in parallel — each variation tests
+      // a DIFFERENT element (Hook, CTA, Visual, Proof, Offer in priority
+      // order). Single-variable isolation = scientific iteration.
       await Promise.allSettled(createdRows.map(async (childRow, idx) => {
-        const variationLabel = VARIATION_TWEAKS[idx % VARIATION_TWEAKS.length];
-        const variationAngle = `${parent.angle || 'Winner iteration'} — ${variationLabel}`;
-        const tagPrefix = `[iter ${batchId.slice(0,8)} ${idx+1}/${variations}]`;
+        const strategyKey = strategyForVariationIndex(idx);
+        const strategy = ITERATION_STRATEGIES[strategyKey];
+        const variationLabel = `${strategy.label} variation`;
+        const variationAngle = `${parent.angle || 'Winner iteration'} — ${strategy.label}`;
+        const iterationDirective = buildIterationDirective(strategyKey);
+        const tagPrefix = `[iter ${batchId.slice(0,8)} ${idx+1}/${variations} ${strategy.label}]`;
         try {
-          // Step B1: Claude analysis on the parent ad image
+          // Step B1: Claude analysis on the parent ad image — directive
+          // PREPENDED so Claude knows which single variable it's allowed
+          // to change. Everything else returns identical to source.
           const { base64: refBase64, mediaType: refMediaType } = await resolveImage(refImgUrl);
-          const promptText = buildClaudeAnalysisPrompt(
+          const basePromptText = buildClaudeAnalysisPrompt(
             product, variationAngle, customPrompts.claude_analysis,
             { PRODUCT_IMAGE_NOTE: productHttpUrl ? '\n\nA second image is attached: this is OUR product. Render it precisely as shown.' : '' }
           );
+          const promptText = iterationDirective + basePromptText;
 
           const userContent = [{ type: 'text', text: promptText }, { type: 'image', source: { type: 'base64', media_type: refMediaType, data: refBase64 } }];
           if (productHttpUrl && productHttpUrl.startsWith('http')) {
@@ -2310,7 +2373,12 @@ router.post('/iterate/:creativeId', authenticate, async (req, res) => {
             ? (customPrompts.openai_image || customPrompts.nanobanana_image)
             : customPrompts.nanobanana_image;
           product._angle = variationAngle;
-          const nbPrompt = buildNanoBananaImagePrompt(claudeResult, product, iterTemplate);
+          // Prepend the same iteration directive to the image-engine prompt
+          // so the renderer also respects the lock/vary constraint — e.g. a
+          // "Visual" iteration must render the EXACT text Claude returned
+          // (which Claude was instructed to keep identical to source).
+          const baseImgPrompt = buildNanoBananaImagePrompt(claudeResult, product, iterTemplate);
+          const nbPrompt = iterationDirective + baseImgPrompt;
           const nbTaskId = await iterEngine.submit(nbPrompt, [productHttpUrl], primaryRatio);
           const tempUrl = await iterEngine.poll(nbTaskId);
           const generatedUrl = await persistNanoBananaImage(tempUrl, 'statics-iterations');
