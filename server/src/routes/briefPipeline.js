@@ -840,9 +840,14 @@ async function ensureTables() {
         clickup_task_url TEXT,
         created_at TIMESTAMPTZ DEFAULT NOW(),
         approved_at TIMESTAMPTZ,
-        pushed_at TIMESTAMPTZ
+        pushed_at TIMESTAMPTZ,
+        highlighted_text JSONB DEFAULT '[]'
       )
     `, [], { timeout: 15000 });
+
+    // Idempotent ALTER for older deployments — operator's earlier briefs
+    // (B0390, B0391) were created before highlighted_text existed.
+    await pgQuery(`ALTER TABLE brief_pipeline_generated ADD COLUMN IF NOT EXISTS highlighted_text JSONB DEFAULT '[]'`).catch(() => {});
 
     await pgQuery(`
       CREATE TABLE IF NOT EXISTS brief_pipeline_analysis_cache (
@@ -2135,6 +2140,13 @@ Match the original's voice exactly:
 ## 8. PRODUCT INTEGRITY
 Never introduce claims not supported by the Product Library. Never remove the mechanism or big_promise. Respect compliance_restrictions from the library — never make claims the product can't legally make.
 
+## 9. ON-SCREEN TEXT / HIGHLIGHTED LABELS  (CONDITIONAL — only if original has them)
+The winning script may have **burned-in on-screen text overlays** — short, bold labels framing the video (top discount banners, framed comment-reply quotes, ALL-CAPS sticker text, urgency banners). These are graphics, NOT spoken.
+
+- Inspect the ORIGINAL WINNING SCRIPT for evidence of on-screen text. Strong signals: ALL-CAPS shouted phrases, emoji-laden short tags, "Reply to …'s comment" framing, discount banners (% OFF / FREE / SALE), countdown stickers.
+- **If the original uses overlays**: produce 2–4 short equivalent labels per iteration card, ≤ 5 words each, ALL CAPS where appropriate, 1 emoji at the end. Preserve the overlay's ROLE (banner stays banner, comment-reply stays comment-reply). Vary the wording across iteration cards only if the selected vector calls for it (e.g. Hooks rotation → fresh labels per card). Otherwise keep the labels consistent.
+- **If the original has no on-screen overlays**: emit an empty array on every card. Do not invent overlays.
+
 # OUTPUT — return ONLY valid JSON, no markdown fences, no preamble:
 
 {
@@ -2149,7 +2161,11 @@ Never introduce claims not supported by the Product Library. Never remove the me
         { "id": "H5", "text": "..." }
       ],
       "body": "the full body of this iteration card",
-      "cta": "the CTA — same structure as original, only wording adapts if needed"
+      "cta": "the CTA — same structure as original, only wording adapts if needed",
+      "highlighted_text": [
+        "ON-SCREEN LABEL 1 + emoji",
+        "ON-SCREEN LABEL 2 + emoji"
+      ]
     }
   ]
 }`;
@@ -2327,6 +2343,14 @@ cta: {{ORIGINAL_CTA}}
 - If original CTA had a deadline, ours has a deadline (use any active promo from offer_details)
 - If original was "verify yourself" style and we have the blockchain mechanism, lean into verification
 
+## 7. ON-SCREEN TEXT / HIGHLIGHTED LABELS  (CONDITIONAL — only if source has them)
+The competitor's ad may have **burned-in on-screen text overlays** — short, bold labels that frame the video (e.g. "BIGGEST Memorial Day SALE 🇺🇸 / Buy 3, Get 3 FREE", "PUBLIC APOLOGY 👁️ / WE LIED 🤥", "Reply to Drew_Posts's comment"). These are NOT spoken — they're displayed as graphics, banners, sticker text, or framed quote panels.
+
+- Inspect the ORIGINAL HOOKS / ORIGINAL BODY / DEEP ANALYSIS context for evidence of on-screen text. Strong signals: ALL-CAPS shouting phrases, emoji-laden short tags, "Reply to …'s comment" framing, explicit discount banners (% OFF, FREE, SALE), countdown / urgency stickers, banner-style hooks.
+- **If the source clearly uses on-screen overlays**: produce 2–4 short equivalent labels for our brand. Each label is ≤ 5 words, ALL CAPS where appropriate, with 1 emoji at the end. Mirror the source's role (top-banner discount → top-banner discount; framed comment reply → framed comment reply; apology sticker → apology sticker). Swap the brand / product / offer to ours.
+- **If the source has no on-screen overlays** (clean talking-head, pure spoken script, no visual text indicators in the analysis): emit an empty array. **Do not invent overlays**.
+- Never copy competitor brand names, prices, or claims verbatim into our labels.
+
 # OUTPUT — return ONLY valid JSON, no markdown fences, no preamble:
 
 {
@@ -2339,6 +2363,11 @@ cta: {{ORIGINAL_CTA}}
   ],
   "body": "the full cloned body with natural paragraph breaks — same paragraph count as original, equal or up to 10% shorter",
   "cta": "the cloned CTA",
+  "highlighted_text": [
+    "ON-SCREEN LABEL 1 + emoji",
+    "ON-SCREEN LABEL 2 + emoji"
+  ],
+  "highlighted_text_notes": "1 sentence — what evidence in the source signalled overlays, OR explicitly 'No on-screen overlays detected in source — emitting empty array'.",
   "angle_used": { "name": "the angle name actually used", "reason": "one sentence — why this angle (only if AUTO was selected)", "required_elements_used": ["list of required_elements that fit naturally"], "required_elements_skipped": ["list of skipped + one-line reason for each"], "copy_directives_followed": ["list of directives visible in output"] },
   "clone_fidelity": { "original_word_count": 0, "clone_word_count": 0, "original_sections": 0, "clone_sections": 0, "framework_match": "what structural elements were preserved", "product_swaps_made": "summary of competitor → our product replacements" },
   "key_changes_from_original": "2-3 sentence summary of what's different and why",
@@ -2525,6 +2554,10 @@ async function pushBriefToClickUp(generatedBrief, parentClickupTaskId, overrides
   const parent_creative_id = overrides.parent_creative_id ?? generatedBrief.parent_creative_id;
   const hooks            = overrides.hooks            ?? generatedBrief.hooks;
   const body             = overrides.body             ?? generatedBrief.body;
+  // highlighted_text = on-screen overlay labels. Reference-driven only —
+  // empty array when source had no overlays. We never fabricate. The
+  // operator can override from the modal once that section ships.
+  const highlightedTextRaw = overrides.highlighted_text ?? generatedBrief.highlighted_text;
   const iteration_direction = overrides.idea ?? generatedBrief.iteration_direction;
   // Naming convention: prefer operator-provided override (live-preview from
   // modal). Else use stored naming_convention. Else build fresh from parts.
@@ -2554,18 +2587,56 @@ async function pushBriefToClickUp(generatedBrief, parentClickupTaskId, overrides
     }
   }
 
-  // Build description with script
+  // Build description in the operator's ClickUp template:
+  //
+  //   Reference link: <url>
+  //
+  //   Highlighted text:
+  //
+  //   LABEL 1 emoji
+  //   LABEL 2 emoji
+  //
+  //   HOOKS:
+  //
+  //   hook 1
+  //   hook 2
+  //   ...
+  //
+  //   BODY:
+  //
+  //   body text
+  //
+  // The "Highlighted text:" section is skipped entirely when the brief has
+  // no on-screen overlays — we never emit an empty header (see operator
+  // requirement: overlays are reference-driven, not fabricated).
   const parsedHooks = (() => {
     if (Array.isArray(hooks)) return hooks;
     if (typeof hooks === 'string') { try { return JSON.parse(hooks); } catch { return []; } }
     return [];
   })();
   const hooksFormatted = parsedHooks
-    .map((h, i) => `Hook ${i + 1}:\n${h.text || ''}`.trim())
-    .join('\n');
+    .map((h) => (h.text || '').trim())
+    .filter(Boolean)
+    .join('\n\n');
 
-  const referenceLine = referenceLink ? `Reference: ${referenceLink}\n\n` : '';
-  const description = `${referenceLine}--- Hooks ---\n\n${hooksFormatted}\n\n--- Body ---\n\n${body || ''}\n\n[brief-pipeline]`;
+  const parsedHighlights = (() => {
+    if (Array.isArray(highlightedTextRaw)) return highlightedTextRaw;
+    if (typeof highlightedTextRaw === 'string') {
+      try { const arr = JSON.parse(highlightedTextRaw); return Array.isArray(arr) ? arr : []; }
+      catch { return []; }
+    }
+    return [];
+  })().map((s) => String(s || '').trim()).filter(Boolean);
+
+  const sections = [];
+  if (referenceLink) sections.push(`Reference link: ${referenceLink}`);
+  if (parsedHighlights.length) {
+    sections.push(`Highlighted text:\n\n${parsedHighlights.join('\n')}`);
+  }
+  sections.push(`HOOKS:\n\n${hooksFormatted || '(no hooks)'}`);
+  sections.push(`BODY:\n\n${body || ''}`);
+  sections.push('[brief-pipeline]');
+  const description = sections.join('\n\n');
 
   // Resolve dropdown option IDs. Angle is normalized through the alias map so
   // analyzer-emitted display strings (e.g. "Anti-Fake / Competitor Callout")
@@ -3075,6 +3146,9 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
           hooks: Array.isArray(v.hooks) ? v.hooks : [],
           body:  v.body || '',
           cta:   v.cta || '',
+          // On-screen overlay labels (empty if the winning script has none —
+          // we never fabricate overlays. See iteration prompt rule §9.)
+          highlighted_text: Array.isArray(v.highlighted_text) ? v.highlighted_text.filter(Boolean).map(String) : [],
           preservation_notes: v.preservation_notes || '',
         },
         scores: { novelty: null, aggression: null, coherence: null, verdict: null },
@@ -3100,6 +3174,17 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
           if (!generated || (!generated.hooks && !generated.body)) throw new Error('Invalid clone response');
           if (!Array.isArray(generated.hooks)) generated.hooks = [];
           if (!generated.body) generated.body = '';
+          // Normalize on-screen labels. Reference-driven only — if the
+          // source has no overlays the prompt returns [] and we persist [].
+          if (!Array.isArray(generated.highlighted_text)) {
+            generated.highlighted_text = [];
+          } else {
+            generated.highlighted_text = generated.highlighted_text
+              .filter(Boolean)
+              .map((s) => String(s).trim())
+              .filter(Boolean)
+              .slice(0, 4);   // hard cap — see rule §7
+          }
 
           // Deep validation: hooks must have text, body must be non-empty
           const cloneValidation = validateGeneratedBrief(generated);
@@ -3166,12 +3251,12 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
             novelty_score, aggression_score, coherence_score, overall_score,
             verdict, scores_json,
             brief_number, product_code, angle, format, avatar, editor,
-            strategist, creator, naming_convention, status
+            strategist, creator, naming_convention, status, highlighted_text
           ) VALUES (
             $1, $2, $3, $4, $5, $6, $7, $8,
             $9, $10, $11, $12, $13, $14,
             $15, $16, $17, $18, $19, $20,
-            $21, $22, $23, 'generated'
+            $21, $22, $23, 'generated', $24
           ) RETURNING *
         `, [
           winner.id, creativeId, config.mode, 'medium',
@@ -3191,6 +3276,9 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
           isIterateMode ? (direction.name || 'Iteration') : (angle || 'NA'),
           isIterateMode ? 'Iteration' : 'Mashup',
           'NA', 'Uly', 'Ludovico', 'NA', namingConvention,
+          // On-screen labels — empty array when source has no overlays. We
+          // never invent overlays (see clone rule §7 / iteration rule §9).
+          JSON.stringify(Array.isArray(generated.highlighted_text) ? generated.highlighted_text : []),
         ], { timeout: 10000 });
         generatedBriefs.push({ ...inserted[0], scores, direction });
       } catch (dbErr) {
@@ -3651,6 +3739,19 @@ router.get('/generated/:id/clickup-prefill', authenticate, async (req, res) => {
       console.warn('[BriefPipeline] prefill: editor list fetch failed:', e.message);
     }
 
+    // highlighted_text is stored as JSONB[]. Default to empty array so the
+    // modal can render its (forthcoming) ON-SCREEN ELEMENTS section
+    // conditionally — render only when length > 0.
+    const highlightedText = (() => {
+      const raw = brief.highlighted_text;
+      if (Array.isArray(raw)) return raw;
+      if (typeof raw === 'string') {
+        try { const arr = JSON.parse(raw); return Array.isArray(arr) ? arr : []; }
+        catch { return []; }
+      }
+      return [];
+    })().map((s) => String(s || '').trim()).filter(Boolean);
+
     res.json({
       success: true,
       defaults: {
@@ -3663,6 +3764,7 @@ router.get('/generated/:id/clickup-prefill', authenticate, async (req, res) => {
         avatar:         brief.avatar || 'NA',
         idea:           brief.iteration_direction || (parsedHooks[0]?.text?.slice(0, 80)) || '',
         briefText,
+        highlightedText,
         referenceLink,
         parentBriefId:  brief.parent_creative_id || '',
         briefNumber:    brief.brief_number,
