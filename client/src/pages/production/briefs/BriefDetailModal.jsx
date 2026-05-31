@@ -65,6 +65,7 @@ export default function BriefDetailModal({
   onApprove,
   onReject,
   onMoveToReady,
+  onPushToClickup,    // ← new: open Push-to-ClickUp modal for an Approved brief
   onLaunch,           // ← new: launch action for ready_to_launch briefs
   onMarkLaunched,     // ← new: optimistic mark-as-launched without ad creation
   onMoveBackToApproved, // ← new: reverse drag without keyboard for ready → approved
@@ -473,17 +474,33 @@ export default function BriefDetailModal({
           )}
 
           {status === 'approved' && (
-            <button
-              type="button"
-              onClick={() => onMoveToReady?.(brief.id)}
-              aria-label="Move brief to Ready to Launch column"
-              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg
-                         bg-blue-500/10 text-blue-400 hover:bg-blue-500/15 border border-blue-500/25 hover:border-blue-500/40
-                         text-sm font-mono font-semibold uppercase tracking-wide transition-all cursor-pointer"
-            >
-              <Send className="w-4 h-4" />
-              Move to Ready to Launch
-            </button>
+            <>
+              {onPushToClickup && (
+                <button
+                  type="button"
+                  onClick={() => onPushToClickup?.(brief.id)}
+                  aria-label="Push this brief to ClickUp and assign editor"
+                  className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg
+                             bg-amber-500/15 text-amber-300 hover:bg-amber-500/25 border border-amber-500/30 hover:border-amber-500/50
+                             shadow-[0_0_15px_rgba(245,158,11,0.1)] hover:shadow-[0_0_20px_rgba(245,158,11,0.2)]
+                             text-sm font-mono font-semibold uppercase tracking-wide transition-all cursor-pointer"
+                >
+                  <Send className="w-4 h-4" />
+                  Push to ClickUp
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => onMoveToReady?.(brief.id)}
+                aria-label="Move brief to Ready ClickUp column without opening ClickUp form"
+                className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg
+                           bg-blue-500/10 text-blue-400 hover:bg-blue-500/15 border border-blue-500/25 hover:border-blue-500/40
+                           text-xs font-mono uppercase tracking-wide transition-all cursor-pointer"
+              >
+                <Send className="w-3.5 h-3.5" />
+                Move to Ready (skip ClickUp form)
+              </button>
+            </>
           )}
 
           {status === 'ready_to_launch' && (

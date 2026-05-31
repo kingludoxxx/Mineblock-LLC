@@ -229,6 +229,7 @@ const CLICKUP_API = 'https://api.clickup.com/api/v2';
 const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN || '';
 const META_AD_ACCOUNT_IDS = (process.env.META_AD_ACCOUNT_IDS || '').split(',').filter(Boolean);
 
+
 // ── Trusted-account allowlist for the Brief Pipeline import flow ────────
 // META_AD_ACCOUNT_IDS env var lists Mineblock's own Meta ad accounts. We
 // MUST refuse to surface or import ads from any other account, because
@@ -2458,21 +2459,39 @@ A brief PASSES if overall_blend >= 6.5.`;
 
 // ── Push to ClickUp ───────────────────────────────────────────────────
 
-async function pushBriefToClickUp(generatedBrief, parentClickupTaskId) {
-  const {
-    brief_number, product_code, angle, format, avatar,
-    editor, strategist, creator, parent_creative_id, hooks, body, naming_convention, iteration_direction,
-  } = generatedBrief;
+async function pushBriefToClickUp(generatedBrief, parentClickupTaskId, overrides = {}) {
+  // Operator-provided overrides (from PushToClickupModal) take precedence
+  // over the brief's stored values. Lets the operator pick a different
+  // editor / avatar / angle / etc. at push time without mutating the brief row.
+  const brief_number     = overrides.brief_number     ?? generatedBrief.brief_number;
+  const product_code     = overrides.product_code     ?? generatedBrief.product_code;
+  const angle            = overrides.angle            ?? generatedBrief.angle;
+  const format           = overrides.format           ?? generatedBrief.format;
+  const avatar           = overrides.avatar           ?? generatedBrief.avatar;
+  const editor           = overrides.editor           ?? generatedBrief.editor;
+  const strategist       = overrides.strategist       ?? generatedBrief.strategist;
+  const creator          = overrides.creator          ?? generatedBrief.creator;
+  const parent_creative_id = overrides.parent_creative_id ?? generatedBrief.parent_creative_id;
+  const hooks            = overrides.hooks            ?? generatedBrief.hooks;
+  const body             = overrides.body             ?? generatedBrief.body;
+  const iteration_direction = overrides.idea ?? generatedBrief.iteration_direction;
+  // Naming convention: prefer operator-provided override (live-preview from
+  // modal). Else use stored naming_convention. Else build fresh from parts.
+  const namingOverride   = overrides.naming_convention;
+  const referenceLinkOverride = overrides.reference_link;
 
   const weekLabel = getCurrentWeekLabel();
-  const namingConvention = naming_convention || buildNamingConvention({
-    product_code, brief_number, parent_creative_id, avatar, angle, format,
-    strategist, creator, editor, week: weekLabel,
-  });
+  const namingConvention = namingOverride
+    || generatedBrief.naming_convention
+    || buildNamingConvention({
+      product_code, brief_number, parent_creative_id, avatar, angle, format,
+      strategist, creator, editor, week: weekLabel,
+    });
 
-  // Fetch parent ad's Frame.io link from ClickUp
-  let referenceLink = '';
-  if (parentClickupTaskId) {
+  // Fetch parent ad's Frame.io link from ClickUp. Operator override takes
+  // precedence (lets them paste a custom Frame link or other URL).
+  let referenceLink = referenceLinkOverride || '';
+  if (!referenceLink && parentClickupTaskId) {
     try {
       const parentTask = await clickupFetch(`/task/${parentClickupTaskId}`);
       const frameField = parentTask.custom_fields?.find(f => f.id === FIELD_IDS.adsFrameLink);
@@ -3511,6 +3530,182 @@ router.post('/generated/:id/push', authenticate, async (req, res) => {
     });
   } catch (err) {
     console.error('[BriefPipeline] POST /generated/:id/push error:', err.message);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// GET /generated/:id/clickup-prefill — returns brief field defaults + dropdown
+// options in one call, ready for the PushToClickupModal to display.
+//
+// Auto-fill mapping:
+//   Product       ← brief.product_code (default MR)
+//   Angle         ← brief.angle (default NA)
+//   Creative Type ← brief.format (default Mashup)
+//   Brief Type    ← IT (locked — every Brief Pipeline brief is an iteration)
+//   Editor        ← brief.editor (if set, else empty)
+//   Avatar        ← brief.avatar
+//   Idea / Hook   ← first hook from brief.hooks[] or iteration_direction
+//   Brief Text    ← formatted hooks + body
+//   Reference Link ← parent winner's ClickUp Frame.io link (auto-resolved)
+//   Parent Brief  ← parent_creative_id (e.g. "B0223" — used in task naming)
+router.get('/generated/:id/clickup-prefill', authenticate, async (req, res) => {
+  if (!validateUuid(req, res)) return;
+  try {
+    await ensureTables();
+    const rows = await pgQuery(
+      `SELECT * FROM brief_pipeline_generated WHERE id = $1`,
+      [req.params.id]
+    );
+    if (!rows.length) {
+      return res.status(404).json({ success: false, error: { message: 'Brief not found' } });
+    }
+    const brief = rows[0];
+    brief.hooks = parseJsonb(brief.hooks);
+
+    // Resolve parent's frame link if we have a parent winner with a ClickUp task
+    let referenceLink = '';
+    if (brief.winner_id) {
+      try {
+        const winnerRows = await pgQuery(`SELECT clickup_task_id FROM brief_pipeline_winners WHERE id = $1`, [brief.winner_id]);
+        const parentTaskId = winnerRows[0]?.clickup_task_id;
+        if (parentTaskId) {
+          const parentTask = await clickupFetch(`/task/${parentTaskId}`);
+          const frameField = parentTask.custom_fields?.find(f => f.id === FIELD_IDS.adsFrameLink);
+          if (frameField?.value) referenceLink = frameField.value;
+        }
+      } catch (e) {
+        console.warn(`[BriefPipeline] prefill: parent frame lookup failed:`, e.message);
+      }
+    }
+
+    // Build a "brief text" preview from hooks + body
+    const parsedHooks = Array.isArray(brief.hooks) ? brief.hooks : [];
+    const hooksFormatted = parsedHooks
+      .map((h, i) => `Hook ${i + 1}: ${h.text || ''}`.trim())
+      .join('\n');
+    const briefText = [
+      hooksFormatted,
+      brief.body ? `\n--- Body ---\n${brief.body}` : '',
+    ].filter(Boolean).join('\n').trim();
+
+    // Editor list — use cached/dynamic editor map
+    let editors = [];
+    try {
+      const editorMap = await getEditors();
+      editors = Object.keys(editorMap).sort();
+    } catch (e) {
+      console.warn('[BriefPipeline] prefill: editor list fetch failed:', e.message);
+    }
+
+    res.json({
+      success: true,
+      defaults: {
+        product:        brief.product_code || 'MR',
+        angle:          brief.angle || 'NA',
+        creativeType:   brief.format || 'Mashup',
+        briefType:      'IT',  // locked — Brief Pipeline only generates iterations
+        editor:         brief.editor || '',
+        avatar:         brief.avatar || 'NA',
+        idea:           brief.iteration_direction || (parsedHooks[0]?.text?.slice(0, 80)) || '',
+        briefText,
+        referenceLink,
+        parentBriefId:  brief.parent_creative_id || '',
+        briefNumber:    brief.brief_number,
+        namingConvention: brief.naming_convention || '',
+      },
+      options: {
+        angles:        Object.keys(ANGLE_OPTIONS),
+        creativeTypes: Object.keys(CREATIVE_TYPE_OPTIONS),
+        briefTypes:    Object.keys(BRIEF_TYPE_OPTIONS),
+        editors,
+        avatars:       Object.keys(AVATAR_TASK_IDS),
+        products:      Object.keys(PRODUCT_TASK_IDS),
+        creativeTypeCodes: CREATIVE_TYPE_CODES,
+      },
+    });
+  } catch (err) {
+    console.error('[BriefPipeline] GET /generated/:id/clickup-prefill error:', err.message);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// POST /generated/:id/push-to-clickup — operator-driven push with modal overrides.
+//
+// Differs from POST /generated/:id/push (which uses brief defaults silently):
+//   * Accepts an `overrides` payload from the PushToClickupModal
+//   * Allows editor / avatar / angle / Frame link / brief text override
+//   * Sets brief status to 'ready_to_launch' (displays as "Ready ClickUp")
+//     instead of 'pushed' — so the brief lands in the renamed column.
+router.post('/generated/:id/push-to-clickup', authenticate, async (req, res) => {
+  if (!validateUuid(req, res)) return;
+  try {
+    await ensureTables();
+    const rows = await pgQuery(
+      `SELECT * FROM brief_pipeline_generated WHERE id = $1`,
+      [req.params.id]
+    );
+    if (!rows.length) {
+      return res.status(404).json({ success: false, error: { message: 'Brief not found' } });
+    }
+    const brief = rows[0];
+    brief.hooks = parseJsonb(brief.hooks);
+    brief.win_analysis = parseJsonb(brief.win_analysis);
+    brief.scores_json = parseJsonb(brief.scores_json);
+
+    if (brief.status !== 'approved') {
+      return res.status(409).json({
+        success: false,
+        error: {
+          code: 'NOT_APPROVED',
+          message: `Brief must be in 'approved' status before pushing to ClickUp. Current status: '${brief.status}'.`,
+        },
+      });
+    }
+    if (brief.clickup_task_id) {
+      return res.status(409).json({
+        success: false,
+        error: {
+          code: 'ALREADY_PUSHED',
+          message: 'Brief already has a ClickUp task — cannot push twice.',
+          clickup_task_url: brief.clickup_task_url,
+        },
+      });
+    }
+
+    // Operator overrides from modal. All optional — anything not provided
+    // falls back to the brief's stored value inside pushBriefToClickUp.
+    const overrides = req.body || {};
+
+    // Look up parent winner's ClickUp task for Frame.io auto-resolution
+    let parentClickupTaskId = null;
+    if (brief.winner_id) {
+      const winnerRows = await pgQuery(`SELECT clickup_task_id FROM brief_pipeline_winners WHERE id = $1`, [brief.winner_id]);
+      parentClickupTaskId = winnerRows[0]?.clickup_task_id || null;
+    }
+
+    const result = await pushBriefToClickUp(brief, parentClickupTaskId, overrides);
+
+    // Move to 'ready_to_launch' (column relabelled "Ready ClickUp")
+    await pgQuery(
+      `UPDATE brief_pipeline_generated
+         SET status = 'ready_to_launch',
+             clickup_task_id = $1,
+             clickup_task_url = $2,
+             naming_convention = $3,
+             pushed_at = NOW()
+       WHERE id = $4`,
+      [result.taskId, result.taskUrl, result.namingConvention, brief.id]
+    );
+
+    res.json({
+      success: true,
+      brief_id: brief.id,
+      clickup_task_id: result.taskId,
+      clickup_task_url: result.taskUrl,
+      naming_convention: result.namingConvention,
+    });
+  } catch (err) {
+    console.error('[BriefPipeline] POST /generated/:id/push-to-clickup error:', err.message);
     res.status(500).json({ success: false, error: { message: err.message } });
   }
 });

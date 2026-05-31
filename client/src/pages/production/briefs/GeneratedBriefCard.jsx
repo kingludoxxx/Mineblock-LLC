@@ -4,7 +4,7 @@ import { CheckCircle2, RefreshCw, ExternalLink, MoreHorizontal, MessageSquare, P
 // GeneratedBriefCard — glass-card style matching Magic Patterns design
 // ---------------------------------------------------------------------------
 
-function GeneratedBriefCard({ brief, onApprove, onReject, onMoveToReady, onDelete, onClick, showActions = 'generated', launchFailed, launchError, onSelectForLaunch, isSelectedForLaunch, metaAdIds }) {
+function GeneratedBriefCard({ brief, onApprove, onReject, onMoveToReady, onPushToClickup, onDelete, onClick, showActions = 'generated', launchFailed, launchError, onSelectForLaunch, isSelectedForLaunch, metaAdIds }) {
   const hooks = (() => {
     if (Array.isArray(brief.hooks)) return brief.hooks;
     if (typeof brief.hooks === 'string') { try { return JSON.parse(brief.hooks); } catch { return []; } }
@@ -144,15 +144,28 @@ function GeneratedBriefCard({ brief, onApprove, onReject, onMoveToReady, onDelet
                 </>
               )}
               {showActions === 'approved' && (
-                <button
-                  type="button"
-                  onClick={(e) => { e.stopPropagation(); onMoveToReady?.(brief); }}
-                  aria-label="Move brief to Ready to Launch"
-                  title="Move to Ready to Launch"
-                  className="px-2.5 py-1 rounded-md bg-blue-500/10 text-blue-400 text-[10px] font-mono font-semibold hover:bg-blue-500/20 border border-blue-500/20 hover:border-blue-500/30 transition-all duration-200 flex items-center gap-1.5 uppercase tracking-wide cursor-pointer"
-                >
-                  <Send className="w-3 h-3" /> Move to Ready
-                </button>
+                <>
+                  {onPushToClickup && (
+                    <button
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); onPushToClickup?.(brief); }}
+                      aria-label="Push brief to ClickUp"
+                      title="Push to ClickUp (opens form)"
+                      className="px-2.5 py-1 rounded-md bg-amber-500/15 text-amber-300 text-[10px] font-mono font-semibold hover:bg-amber-500/25 border border-amber-500/30 hover:border-amber-500/50 shadow-[0_0_8px_rgba(245,158,11,0.1)] transition-all duration-200 flex items-center gap-1.5 uppercase tracking-wide cursor-pointer"
+                    >
+                      <Send className="w-3 h-3" /> Push to ClickUp
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); onMoveToReady?.(brief); }}
+                    aria-label="Move brief to Ready ClickUp column"
+                    title="Move to Ready ClickUp (skip form)"
+                    className="w-7 h-7 rounded-md bg-white/[0.03] border border-white/[0.05] flex items-center justify-center text-zinc-400 hover:text-blue-400 hover:bg-blue-500/10 hover:border-blue-500/25 transition-all duration-200 cursor-pointer"
+                  >
+                    <Send className="w-3 h-3" />
+                  </button>
+                </>
               )}
               {showActions === 'ready_to_launch' && (
                 <button

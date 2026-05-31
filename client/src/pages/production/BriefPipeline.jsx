@@ -28,6 +28,7 @@ import LeagueImportModal from './briefs/LeagueImportModal';
 import MetaVideoImportModal from './briefs/MetaVideoImportModal';
 import ScriptUploadModal from './briefs/ScriptUploadModal';
 import BriefDetailModal from './briefs/BriefDetailModal';
+import PushToClickupModal from './briefs/PushToClickupModal';
 import PipelineSettingsModal from './briefs/PipelineSettingsModal';
 import LaunchTemplateEditor from './briefs/LaunchTemplateEditor';
 import AdCopySetsManager from './briefs/AdCopySetsManager';
@@ -64,7 +65,7 @@ const PIPELINE_COLUMNS = [
   // for future auto-push-on-approve work.
   {
     key: 'ready_to_launch',
-    label: 'Ready to Launch',
+    label: 'Ready ClickUp',                     // renamed from "Ready to Launch"
     icon: Send,
     colorClass: 'text-blue-400 drop-shadow-[0_0_6px_rgba(96,165,250,0.5)]',
     badgeClass: 'bg-blue-500/10 text-blue-400 border-blue-500/25',
@@ -97,6 +98,9 @@ export default function BriefPipeline() {
 
   // UI state
   const [detailModal, setDetailModal] = useState(null);
+  // Push-to-ClickUp modal: holds {id, naming_convention} of the brief being pushed.
+  // Null = closed. Opening it fires GET /clickup-prefill internally.
+  const [pushModal, setPushModal] = useState(null);
   const [error, setError] = useState(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [templateEditorOpen, setTemplateEditorOpen] = useState(false);
@@ -396,8 +400,23 @@ export default function BriefPipeline() {
       await fetchGenerated();
     } catch (err) {
       console.error('Move to ready failed:', err);
-      setError('Failed to move brief to Ready to Launch.');
+      setError('Failed to move brief to Ready ClickUp.');
     }
+  }, [fetchGenerated]);
+
+  // Open the Push-to-ClickUp modal for a brief. Lightweight — the actual
+  // prefill fetch happens inside the modal on mount.
+  const handleOpenPushModal = useCallback((brief) => {
+    setPushModal({
+      id: brief.id,
+      title: brief.naming_convention || brief.hooks?.[0]?.text || 'Brief',
+    });
+  }, []);
+
+  // After a successful push, refresh the columns so the brief moves out of
+  // Approved and into Ready ClickUp.
+  const handlePushSuccess = useCallback(async () => {
+    await fetchGenerated();
   }, [fetchGenerated]);
 
   // Mark a ready-to-launch brief as launched without going through the
@@ -951,6 +970,7 @@ export default function BriefPipeline() {
                                 brief={item}
                                 onClick={() => setDetailModal(item)}
                                 showActions="approved"
+                                onPushToClickup={() => handleOpenPushModal(item)}
                                 onMoveToReady={() => handleMoveToReady(item.id)}
                                 onDelete={() => handleDelete(item.id)}
                               />
@@ -1053,8 +1073,26 @@ export default function BriefPipeline() {
             handleMoveBackToApproved(detailModal.id);
             setDetailModal(null);
           }}
+          onPushToClickup={() => {
+            // Close the detail panel and open the Push modal for the same brief.
+            // Two-step instead of stacked modals so the operator only sees one UI.
+            handleOpenPushModal(detailModal);
+            setDetailModal(null);
+          }}
         />
       )}
+
+      {/* Push to ClickUp Modal */}
+      <PushToClickupModal
+        briefId={pushModal?.id}
+        briefTitle={pushModal?.title}
+        isOpen={!!pushModal}
+        onClose={() => setPushModal(null)}
+        onSuccess={() => {
+          // Refresh columns; let the operator close the success state in modal.
+          handlePushSuccess();
+        }}
+      />
 
       {/* Pipeline Settings Modal */}
       <PipelineSettingsModal
