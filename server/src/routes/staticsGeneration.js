@@ -3577,14 +3577,13 @@ router.post('/creatives/:id/ai-adjust', authenticate, async (req, res) => {
 // user's freeform string as the prompt. The Claude / NB / OpenAI / iteration
 // templates stay untouched.
 // ─────────────────────────────────────────────────────────────────────────
-import { submitToOpenAI as _editSubmitToOpenAI, pollOpenAI as _editPollOpenAI, isOpenAIConfigured as _editIsOpenAIConfigured } from '../services/openaiImageGen.js';
-
 router.post('/creatives/:id/edit', authenticate, async (req, res) => {
   try {
     await ensureCreativesTable();
     const prompt = String(req.body.prompt || '').trim();
     if (!prompt) return res.status(400).json({ success: false, error: { message: 'prompt is required' } });
-    if (!_editIsOpenAIConfigured()) {
+    const openaiEngine = getEngine('openai');
+    if (!openaiEngine.isConfigured()) {
       return res.status(400).json({ success: false, error: { message: 'OpenAI is not configured (missing OPENAI_API_KEY)' } });
     }
 
@@ -3603,12 +3602,12 @@ router.post('/creatives/:id/edit', authenticate, async (req, res) => {
       return res.status(400).json({ success: false, error: { message: 'Creative has no image to edit' } });
     }
 
-    // Submit to OpenAI's edit endpoint. submitToOpenAI auto-routes to
-    // /v1/images/edits when imageUrls.length > 0. Ratio matches the
+    // Submit to OpenAI's edit endpoint. The engine.submit method auto-routes
+    // to /v1/images/edits when imageUrls.length > 0. Ratio matches the
     // creative's existing aspect ratio so edit returns the same shape.
     const ratio = creative.aspect_ratio || '1:1';
-    const taskId = await _editSubmitToOpenAI(prompt, [creative.image_url], ratio);
-    const tempUrl = await _editPollOpenAI(taskId);
+    const taskId = await openaiEngine.submit(prompt, [creative.image_url], ratio);
+    const tempUrl = await openaiEngine.poll(taskId);
     if (!tempUrl) throw new Error('OpenAI edit returned no result');
 
     // Persist the edited image to R2 as a pending edit (NOT the live image).
@@ -3661,8 +3660,11 @@ router.post('/creatives/:id/edit/accept', authenticate, async (req, res) => {
     if (!creative.pending_edit_url) {
       return res.status(400).json({ success: false, error: { message: 'No pending edit to accept' } });
     }
-    if (token && creative.pending_edit_token && token !== creative.pending_edit_token) {
-      return res.status(409).json({ success: false, error: { message: 'edit_token mismatch — pending edit has been replaced' } });
+    // Strict token check — must match exactly. Prevents accepting a stale
+    // pending edit if a concurrent Generate replaced it between the user's
+    // preview and click.
+    if (!token || !creative.pending_edit_token || token !== creative.pending_edit_token) {
+      return res.status(409).json({ success: false, error: { message: 'edit_token mismatch or missing — pending edit has been replaced or expired' } });
     }
 
     const oldImageUrl = creative.image_url;
@@ -3687,16 +3689,27 @@ router.post('/creatives/:id/edit/accept', authenticate, async (req, res) => {
     const regenerating = [];
 
     if (isParent) {
-      // Delete existing children for ratios 4:5 and 9:16 so they don't show
+      // Cascade: regenerate ALL ratios that aren't the parent's own ratio.
+      // E.g. parent=1:1 → cascade [4:5, 9:16]. parent=4:5 → cascade [1:1, 9:16].
+      // Most iteration parents are 1:1 (the typical case), but iterations can
+      // also be standalone 4:5 if the operator only picked that ratio at
+      // /iterate time. Don't hardcode 1:1-as-parent — derive from the row.
+      const ALL_RATIOS = ['1:1', '4:5', '9:16'];
+      const parentRatio = creative.aspect_ratio || '1:1';
+      const childRatios = ALL_RATIOS.filter(r => r !== parentRatio);
+
+      // Delete existing children for the cascade ratios so they don't show
       // stale renders. generateVariant will INSERT fresh rows.
       await pgQuery(
-        `DELETE FROM spy_creatives WHERE parent_creative_id = $1 AND aspect_ratio IN ('4:5', '9:16')`,
-        [creative.id]
+        `DELETE FROM spy_creatives
+           WHERE parent_creative_id = $1
+             AND aspect_ratio = ANY($2::text[])`,
+        [creative.id, childRatios]
       );
 
       // Re-read the now-updated parent so generateVariant uses the new image
       const refreshed = (await pgQuery('SELECT * FROM spy_creatives WHERE id = $1', [creative.id]))[0];
-      for (const r of ['4:5', '9:16']) {
+      for (const r of childRatios) {
         regenerating.push(r);
         generateVariant(refreshed, r).catch(err =>
           console.error(`[edit cascade] variant ${r} for ${creative.id.slice(0,8)} failed: ${err.message}`)
