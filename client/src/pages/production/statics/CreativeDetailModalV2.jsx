@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import {
-  X, Download, Trash2, Loader2, CheckCircle2, RefreshCw, ArrowLeft, Sparkles, AlertTriangle,
+  X, Download, Trash2, Loader2, CheckCircle2, RefreshCw, ArrowLeft, Sparkles, AlertTriangle, Pencil,
 } from 'lucide-react';
 import api from '../../../services/api';
+import { EditImageModal } from './EditImageModal';
 
 const RATIOS = ['1:1', '4:5', '9:16'];
 
@@ -70,6 +71,9 @@ export function CreativeDetailModalV2({
   const [approveError, setApproveError] = useState(null);
   const [deletingCard, setDeletingCard] = useState(false);
   const [deleteCardError, setDeleteCardError] = useState(null);
+  // editTarget = the 1:1 parent being edited (always the 1:1 — cascade
+  // regenerates 4:5 + 9:16 from edited 1:1). null = modal closed.
+  const [editTarget, setEditTarget] = useState(null);
 
   const handleApproveAll = useCallback(async () => {
     if (!trueParent || approving) return;
@@ -150,6 +154,20 @@ export function CreativeDetailModalV2({
                 ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Deleting…</>
                 : <><Trash2 className="w-3.5 h-3.5" /> Delete card</>}
             </button>
+            {/* Edit Image — opens OpenAI gpt-image-2 editor on the 1:1 parent.
+                Only available in Review (operator rule). Accept cascades 4:5/9:16. */}
+            {trueParent?.status === 'review' && trueParent?.image_url && (
+              <button
+                type="button"
+                onClick={() => setEditTarget(trueParent)}
+                disabled={approving || deletingCard}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-fuchsia-500/40 text-fuchsia-300 hover:bg-fuchsia-500/15 text-xs font-mono font-semibold uppercase tracking-wide transition-all cursor-pointer disabled:opacity-50"
+                title="Edit this image with AI (OpenAI gpt-image-2)"
+              >
+                <Pencil className="w-3.5 h-3.5" />
+                Edit Image
+              </button>
+            )}
             <button
               type="button"
               onClick={handleApproveAll}
@@ -201,6 +219,22 @@ export function CreativeDetailModalV2({
           </div>
         </div>
       </div>
+
+      {/* Edit Image — opens nested over this modal. When accepted, parent
+          board refreshes + this modal closes (cascade runs in background). */}
+      {editTarget && (
+        <EditImageModal
+          key={editTarget.id}
+          creative={editTarget}
+          isOpen={true}
+          onClose={() => setEditTarget(null)}
+          onAccepted={() => {
+            setEditTarget(null);
+            onRefresh?.();
+            onClose?.();
+          }}
+        />
+      )}
     </div>
   );
 }
