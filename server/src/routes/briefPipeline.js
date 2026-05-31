@@ -882,6 +882,22 @@ async function ensureTables() {
       CREATE INDEX IF NOT EXISTS idx_bpac_script_hash ON brief_pipeline_analysis_cache (script_hash);
     `).catch(() => {});
 
+    // source_url: the public URL of the source ad so editors get a
+    // Reference link auto-filled on every ClickUp push, regardless of
+    // whether the parent ever lived in our own ClickUp Frame.io flow.
+    // - LEAGUE: https://www.facebook.com/ads/library/?id=<ad_archive_id>
+    // - META:   ad_library_url from imported_metadata
+    // - UPLOAD: operator-provided URL (already accepted as `sourceUrl`)
+    await pgQuery(`ALTER TABLE brief_pipeline_references ADD COLUMN IF NOT EXISTS source_url TEXT`).catch(() => {});
+    // reference_id: pointer from the virtual winner row back to the
+    // brief_pipeline_references row it was generated from. Needed so the
+    // push-to-ClickUp resolver can read reference.source_url without
+    // guessing — the virtual winner's creative_id is MANUAL-XXXX, NOT the
+    // reference's ad_archive_id, so a JOIN on creative_id/ad_archive_id
+    // fails for all manual references. Populated at generate-from-script
+    // time when referenceId is provided; NULL otherwise.
+    await pgQuery(`ALTER TABLE brief_pipeline_winners ADD COLUMN IF NOT EXISTS reference_id UUID REFERENCES brief_pipeline_references(id) ON DELETE SET NULL`).catch(() => {});
+
     // Recover any winners stuck in 'generating' from a previous crash
     const stuck = await pgQuery(
       `UPDATE brief_pipeline_winners SET status = 'detected' WHERE status = 'generating' RETURNING creative_id`
@@ -2650,8 +2666,15 @@ async function pushBriefToClickUp(generatedBrief, parentClickupTaskId, overrides
       strategist, creator, editor, week: weekLabel,
     });
 
-  // Fetch parent ad's Frame.io link from ClickUp. Operator override takes
-  // precedence (lets them paste a custom Frame link or other URL).
+  // Resolve the Reference link via a four-step fallback chain. Every brief
+  // gets one regardless of how the source was imported — this matches the
+  // operator's ClickUp template rule that the link is always populated.
+  //   1. Operator-provided override from the PushToClickupModal.
+  //   2. Parent ad's Frame.io link from the parent ClickUp task (only set
+  //      when the parent went through our own ClickUp pipeline).
+  //   3. The reference's source_url column (FB Ad Library URL for League /
+  //      Meta imports, operator-provided URL for Upload imports).
+  //   4. Empty — the description builder will skip the section entirely.
   let referenceLink = referenceLinkOverride || '';
   if (!referenceLink && parentClickupTaskId) {
     try {
@@ -2662,6 +2685,26 @@ async function pushBriefToClickUp(generatedBrief, parentClickupTaskId, overrides
       }
     } catch (err) {
       console.warn(`[BriefPipeline] Could not fetch parent Frame link from ${parentClickupTaskId}:`, err.message);
+    }
+  }
+  // Fallback to the reference row's source_url via winner.reference_id —
+  // the explicit pointer we set at generate-from-script time. JOINs on
+  // creative_id/ad_archive_id won't work because virtual winners use
+  // MANUAL-XXXX creative_ids that don't match the reference's archive id.
+  if (!referenceLink && generatedBrief.winner_id) {
+    try {
+      const refRows = await pgQuery(
+        `SELECT bpr.source_url
+           FROM brief_pipeline_winners bpw
+           JOIN brief_pipeline_references bpr ON bpr.id = bpw.reference_id
+          WHERE bpw.id = $1
+          LIMIT 1`,
+        [generatedBrief.winner_id],
+      );
+      const candidate = refRows[0]?.source_url;
+      if (candidate) referenceLink = candidate;
+    } catch (err) {
+      console.warn('[BriefPipeline] Could not resolve reference.source_url for push:', err.message);
     }
   }
 
@@ -3074,13 +3117,18 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
 
     console.log(`[BriefPipeline] generate-from-script: ${rawScript.length} chars, ${numVariations} variants`);
 
-    // Create a virtual winner record
+    // Create a virtual winner record. We stash the originating reference
+    // UUID so the push-to-ClickUp resolver can read the reference's
+    // source_url back later — the operator's "Reference link must always
+    // be filled" rule depends on this. NULL is fine when the operator
+    // pasted a script with no reference (raw-text flow).
     const creativeId = `MANUAL-${Date.now().toString(36).toUpperCase()}`;
+    const referenceIdForWinner = (referenceId && /^[0-9a-f-]{36}$/i.test(String(referenceId))) ? referenceId : null;
     const insertedWinner = await pgQuery(`
       INSERT INTO brief_pipeline_winners (
         creative_id, ad_name, product_code, angle, format, raw_script,
-        status, spend, roas, cpa, ctr, purchases, winner_reason
-      ) VALUES ($1, $2, $3, $4, $5, $6, 'generating', 0, 0, 0, 0, 0, 'manual')
+        status, spend, roas, cpa, ctr, purchases, winner_reason, reference_id
+      ) VALUES ($1, $2, $3, $4, $5, $6, 'generating', 0, 0, 0, 0, 0, 'manual', $7)
       RETURNING *
     `, [
       creativeId,
@@ -3089,6 +3137,7 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
       angle || 'NA',
       'Mashup',
       rawScript,
+      referenceIdForWinner,
     ]);
     const winner = insertedWinner[0];
 
@@ -3842,19 +3891,34 @@ router.get('/generated/:id/clickup-prefill', authenticate, async (req, res) => {
     const brief = rows[0];
     brief.hooks = parseJsonb(brief.hooks);
 
-    // Resolve parent's frame link if we have a parent winner with a ClickUp task
+    // Resolve Reference link via the same fallback chain as the actual push:
+    // operator override (set in the modal) → parent ClickUp Frame.io link →
+    // reference.source_url via winner.reference_id. Editors get a link in
+    // every task regardless of how the source was imported.
     let referenceLink = '';
     if (brief.winner_id) {
       try {
-        const winnerRows = await pgQuery(`SELECT clickup_task_id FROM brief_pipeline_winners WHERE id = $1`, [brief.winner_id]);
+        const winnerRows = await pgQuery(
+          `SELECT clickup_task_id, reference_id FROM brief_pipeline_winners WHERE id = $1`,
+          [brief.winner_id],
+        );
         const parentTaskId = winnerRows[0]?.clickup_task_id;
+        const refId = winnerRows[0]?.reference_id;
         if (parentTaskId) {
-          const parentTask = await clickupFetch(`/task/${parentTaskId}`);
-          const frameField = parentTask.custom_fields?.find(f => f.id === FIELD_IDS.adsFrameLink);
-          if (frameField?.value) referenceLink = frameField.value;
+          try {
+            const parentTask = await clickupFetch(`/task/${parentTaskId}`);
+            const frameField = parentTask.custom_fields?.find(f => f.id === FIELD_IDS.adsFrameLink);
+            if (frameField?.value) referenceLink = frameField.value;
+          } catch (e) {
+            console.warn('[BriefPipeline] prefill: parent frame lookup failed:', e.message);
+          }
+        }
+        if (!referenceLink && refId) {
+          const refRows = await pgQuery(`SELECT source_url FROM brief_pipeline_references WHERE id = $1`, [refId]);
+          if (refRows[0]?.source_url) referenceLink = refRows[0].source_url;
         }
       } catch (e) {
-        console.warn(`[BriefPipeline] prefill: parent frame lookup failed:`, e.message);
+        console.warn('[BriefPipeline] prefill: reference resolve failed:', e.message);
       }
     }
 
@@ -4931,13 +4995,18 @@ router.post('/references', authenticate, async (req, res) => {
       ? (transcriptAt ? new Date(transcriptAt) : new Date())
       : null;
 
+    // FB Ad Library URL — every League import gets one for free since
+    // ad_archive_id is the deeplink slug. Editors land on the source ad
+    // with one click from the ClickUp task.
+    const sourceUrl = `https://www.facebook.com/ads/library/?id=${String(adArchiveId)}`;
+
     const rows = await pgQuery(
       `INSERT INTO brief_pipeline_references (
          brand_spy_ad_id, ad_archive_id, brand_id, brand_name, tier,
          video_url, thumbnail_url, headline, body_text,
-         transcript, transcript_at, status
+         transcript, transcript_at, status, source_url
        )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
        ON CONFLICT (ad_archive_id, source) DO UPDATE SET
          brand_spy_ad_id = EXCLUDED.brand_spy_ad_id,
          brand_id        = EXCLUDED.brand_id,
@@ -4949,6 +5018,7 @@ router.post('/references', authenticate, async (req, res) => {
          body_text       = COALESCE(EXCLUDED.body_text, brief_pipeline_references.body_text),
          transcript      = COALESCE(EXCLUDED.transcript, brief_pipeline_references.transcript),
          transcript_at   = COALESCE(EXCLUDED.transcript_at, brief_pipeline_references.transcript_at),
+         source_url      = COALESCE(EXCLUDED.source_url, brief_pipeline_references.source_url),
          status          = CASE
                              WHEN EXCLUDED.transcript IS NOT NULL THEN 'transcribed'
                              WHEN brief_pipeline_references.transcript IS NOT NULL THEN brief_pipeline_references.status
@@ -4969,6 +5039,7 @@ router.post('/references', authenticate, async (req, res) => {
         transcript || null,
         transcriptAtVal,
         status,
+        sourceUrl,
       ]
     );
     const reference = mapReferenceRow(rows[0]);
@@ -5626,6 +5697,7 @@ router.post('/references/import-meta', authenticate, async (req, res) => {
            thumbnail_url     = COALESCE(EXCLUDED.thumbnail_url, brief_pipeline_references.thumbnail_url),
            headline          = COALESCE(EXCLUDED.headline,      brief_pipeline_references.headline),
            imported_metadata = EXCLUDED.imported_metadata,
+           source_url        = COALESCE(EXCLUDED.source_url, brief_pipeline_references.source_url),
            video_url         = NULL,
            transcript        = NULL,
            transcript_at     = NULL,
@@ -5637,14 +5709,15 @@ router.post('/references/import-meta', authenticate, async (req, res) => {
            thumbnail_url     = COALESCE(EXCLUDED.thumbnail_url, brief_pipeline_references.thumbnail_url),
            headline          = COALESCE(EXCLUDED.headline,      brief_pipeline_references.headline),
            imported_metadata = EXCLUDED.imported_metadata,
+           source_url        = COALESCE(EXCLUDED.source_url, brief_pipeline_references.source_url),
            updated_at        = NOW()`;
       const inserted = await pgQuery(
         `INSERT INTO brief_pipeline_references (
            brand_spy_ad_id, ad_archive_id, brand_id, brand_name, tier,
            video_url, thumbnail_url, headline, body_text, transcript, status,
-           source, imported_metadata
+           source, imported_metadata, source_url
          )
-         VALUES (NULL, $1, NULL, $2, 'OUR', NULL, $3, $4, NULL, NULL, 'pending', 'meta', $5)
+         VALUES (NULL, $1, NULL, $2, 'OUR', NULL, $3, $4, NULL, NULL, 'pending', 'meta', $5, $6)
          ON CONFLICT (ad_archive_id, source) ${conflictClause}
          RETURNING id, status, (xmax = 0) AS was_inserted`,
         // Store the proxy URL so the saved Reference card never breaks. The
@@ -5657,6 +5730,7 @@ router.post('/references/import-meta', authenticate, async (req, res) => {
             : (r.thumbnail_url || null),
           r.ad_name || null,
           JSON.stringify(metaJson),
+          adLibraryUrl || null,
         ]
       );
       const ref = inserted[0];
@@ -5978,13 +6052,19 @@ router.post('/references/upload', authenticate, async (req, res) => {
     const extKey = `upload_${crypto.randomBytes(8).toString('hex')}`;
     const meta = { sourceUrl: sourceUrl || null };
 
+    // Note: source_url goes into its own column now (was incorrectly stuffed
+    // into video_url before — that column is reserved for direct CDN video
+    // file URLs the transcriber can pull bytes from). Old uploads with the
+    // URL in video_url stay there; new ones populate both columns where the
+    // operator gave us a URL, so the push-to-ClickUp fallback chain can see
+    // it. Editors get a Reference link in every ClickUp task.
     const inserted = await pgQuery(
       `INSERT INTO brief_pipeline_references (
          brand_spy_ad_id, ad_archive_id, brand_id, brand_name, tier,
          video_url, thumbnail_url, headline, body_text, transcript, transcript_at,
-         status, source, imported_metadata
+         status, source, imported_metadata, source_url
        )
-       VALUES (NULL, $1, NULL, $2, 'UPLOAD', $3, $4, $5, $6, $7, NOW(), 'transcribed', 'upload', $8)
+       VALUES (NULL, $1, NULL, $2, 'UPLOAD', $3, $4, $5, $6, $7, NOW(), 'transcribed', 'upload', $8, $9)
        RETURNING *`,
       [
         extKey,
@@ -5995,6 +6075,7 @@ router.post('/references/upload', authenticate, async (req, res) => {
         bodyText || null,
         rawScript.trim(),
         JSON.stringify(meta),
+        sourceUrl || null,
       ]
     );
     res.json({ success: true, reference: mapReferenceRowWithAnalysis(inserted[0]) });
