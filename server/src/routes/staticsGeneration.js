@@ -1217,12 +1217,22 @@ async function ensureHttpUrlGlobal(url, label = 'img') {
 // PROMPT KEYS — Claude analysis is shared across engines (same JSON brief).
 // Each image engine has its own renderer prompt template; ai_adjustment is
 // shared because both engines accept the same correction instruction.
-const STATICS_PROMPT_KEYS = ['claude_analysis', 'nanobanana_image', 'openai_image', 'ai_adjustment'];
+const STATICS_PROMPT_KEYS = [
+  'claude_analysis',
+  'nanobanana_image',
+  'openai_image',
+  'ai_adjustment',
+  'nanobanana_iteration',   // JSON brief for NB when ITERATING a winner (vs fresh generation)
+  'openai_iteration',       // JSON brief for OpenAI when ITERATING a winner
+];
 
 const STATICS_PROMPT_TYPES = [
-  { key: 'claude_analysis',   label: 'Step 1 — Claude Analysis',  description: 'Claude sees ref + product, emits JSON brief' },
-  { key: 'nanobanana_image',  label: 'Step 2 — NanoBanana Image', description: 'NanoBanana sees only product image, generates ad' },
-  { key: 'ai_adjustment',     label: 'Step 3 — AI Adjustment',    description: 'Claude turns freeform correction into NB regen prompt' },
+  { key: 'claude_analysis',       label: 'Step 1 — Claude Analysis',       description: 'Claude sees ref + product, emits JSON brief' },
+  { key: 'nanobanana_image',      label: 'Step 2 — NanoBanana Image',      description: 'NanoBanana sees only product image, generates ad' },
+  { key: 'openai_image',          label: 'Step 2 — OpenAI Image',          description: 'OpenAI gpt-image-2 fresh-generation JSON brief' },
+  { key: 'ai_adjustment',         label: 'Step 3 — AI Adjustment',         description: 'Claude turns freeform correction into engine regen prompt' },
+  { key: 'nanobanana_iteration',  label: 'Step 4 — NanoBanana Iteration',  description: 'JSON iteration brief used when iterating a winning static via NanoBanana' },
+  { key: 'openai_iteration',      label: 'Step 4 — OpenAI Iteration',      description: 'JSON iteration brief used when iterating a winning static via OpenAI' },
 ];
 
 let staticsPromptsCache = { data: null, timestamp: 0 };
@@ -1431,6 +1441,177 @@ Respond with a JSON object:
 {
   "adjustment_instruction": "A precise 2-4 sentence instruction describing the specific change to make",
   "preserve_note": "What must stay exactly the same"
+}`,
+
+    // ── Iteration prompts ──────────────────────────────────────────────────
+    // Used ONLY when /iterate runs on a winning source ad. The strategy
+    // ({{STRATEGY_LABEL}} / {{VARIED}} / {{LOCKED}}) gets injected by code
+    // based on the variation's position in the batch (Hook / CTA / Visual /
+    // Proof / Offer). Single-variable isolation = scientific iteration.
+    //
+    // Both templates have access to the SAME marketing-context vars as the
+    // fresh-generation templates plus the iteration-specific ones.
+
+    nanobanana_iteration:
+`{
+  "iteration_meta": {
+    "deliverable": "Single iteration of a proven winning static ad — preserve the winner, change ONE variable.",
+    "rendering_tier": "Match the source ad's production quality exactly.",
+    "test_validity_rule": "If you change more than the single specified variable, the test is invalid and the iteration must be discarded."
+  },
+
+  "iteration_directive": {
+    "strategy": "{{STRATEGY_LABEL}}",
+    "change_ONLY": "{{VARIED}}",
+    "lock_these_to_source": "{{LOCKED}}"
+  },
+
+  "brand_context": {
+    "_purpose": "Mood + styling vocabulary. Do NOT paint these onto the image.",
+    "product_name": "{{PRODUCT_NAME}}",
+    "voice": "{{BRAND_VOICE}}",
+    "angle": "{{ANGLE}}"
+  },
+
+  "subject": {
+    "source_of_truth": "The attached image is the SOLE source of truth for the product. Reproduce its geometry, label, text, logo, color, finish EXACTLY.",
+    "render_instruction": "{{PRODUCT_INSTRUCTION}}",
+    "placement_rule": "{{PRODUCT_RULE}}",
+    "screen_or_display_rule": "If the product has a screen, display, or readable surface — reproduce its contents from the source image exactly. Do NOT invent UI elements or fake numbers."
+  },
+
+  "scene": {
+    "description": "{{VISUAL_CHANGES}}",
+    "interpretation_rule": "This is an iteration of a proven ad — preserve the winning composition. Do NOT redesign the scene."
+  },
+
+  "text_overlays": {
+    "_render_exactly_as_quoted": true,
+    "_quoting_note": "Render each text element below verbatim — same case, punctuation, spelling. The iteration_directive above tells you whether text is locked or varied; if locked, every character must match the source.",
+    "swaps": "{{TEXT_SWAPS}}"
+  },
+
+  "characters": {
+    "count": {{PEOPLE_COUNT}},
+    "adaptation": "{{CHARACTER_ADAPTATION}}"
+  },
+
+  "negative_constraints": [
+    "no illustration look, no 3D-render look, no AI-art artifacts",
+    "no deformed hands, no extra fingers — exactly 5 fingers per hand",
+    "no extra text, no extra brand marks, no watermarks beyond what's specified",
+    "no rendering of JSON keys, labels, brackets, or syntax onto the image",
+    "no changing more than the single variable named in iteration_directive.change_ONLY"
+  ],
+
+  "output_spec": {
+    "format": "single static ad image",
+    "delivery": "Ready to upload as a Meta ad creative"
+  }
+}`,
+
+    openai_iteration:
+`You are rendering an iteration of a proven winning static advertisement. Read the JSON brief below as a director's call sheet. NEVER render the JSON keys, field names, underscores, or any syntax onto the image — render ONLY the IMAGE that satisfies the brief.
+
+This is a SCIENTIFIC ITERATION TEST. ONE variable changes; everything else must stay pixel-identical to the source winner. If you change more than the single specified variable, the test is invalid.
+
+{
+  "iteration_directive": {
+    "strategy": "{{STRATEGY_LABEL}}",
+    "change_ONLY": "{{VARIED}}",
+    "lock_these_to_source": "{{LOCKED}}",
+    "test_validity_rule": "Changing more than the single specified variable invalidates the test."
+  },
+
+  "brief_meta": {
+    "deliverable": "Single iteration of a winning Meta-ready static ad",
+    "rendering_tier": "Match the source ad's production quality — Apple keynote / luxury catalog tier",
+    "medium": "Photoreal commercial product photography unless scene.description explicitly specifies otherwise",
+    "safe_zones": "Keep product + headline inside the central 80 percent of the frame"
+  },
+
+  "brand_context": {
+    "_purpose": "Mood, color temperature, material vocabulary. DO NOT paint these strings onto the image.",
+    "product_name": "{{PRODUCT_NAME}}",
+    "short_name": "{{SHORT_NAME}}",
+    "oneliner": "{{ONELINER}}",
+    "tagline": "{{TAGLINE}}",
+    "category": "{{CATEGORY}}",
+    "type": "{{PRODUCT_TYPE}}",
+    "description": "{{PRODUCT_DESCRIPTION}}",
+    "voice": "{{BRAND_VOICE}}"
+  },
+
+  "strategic_frame": {
+    "_purpose": "Emotional register the source ad already captured — preserve it.",
+    "angle": "{{ANGLE}}",
+    "big_promise": "{{BIG_PROMISE}}",
+    "unique_mechanism": "{{UNIQUE_MECHANISM}}",
+    "differentiator": "{{DIFFERENTIATOR}}",
+    "competitive_edge": "{{COMPETITIVE_EDGE}}"
+  },
+
+  "audience": {
+    "_purpose": "Demographic the source winner already resonates with — preserve it.",
+    "avatar": "{{CUSTOMER}}",
+    "frustration": "{{CUSTOMER_FRUSTRATION}}",
+    "dream": "{{CUSTOMER_DREAM}}",
+    "demographic": "{{TARGET_AUDIENCE}}",
+    "pain_points": "{{PAIN_POINTS}}",
+    "key_benefits": "{{KEY_BENEFITS}}"
+  },
+
+  "subject": {
+    "primary": "the product — no exceptions",
+    "source_of_truth": "The attached image is the SOLE source of truth for the product's geometry, label, text, logo, color, finish, and material. Reproduce it pixel-accurately. Do NOT redesign, restyle, recolor, or invent variants.",
+    "screen_or_display_rule": "If the product has a screen, display, gauge, or readable surface — reproduce its contents from the source image exactly. Do NOT invent UI elements, fake numbers, or placeholder graphics.",
+    "render_instruction": "{{PRODUCT_INSTRUCTION}}",
+    "placement_rule": "{{PRODUCT_RULE}}"
+  },
+
+  "scene": {
+    "description": "{{VISUAL_CHANGES}}",
+    "camera_direction": "50mm prime equivalent at f/4.0, soft directional natural light, gentle falloff, subtle ground shadow",
+    "interpretation_rule": "Render as a REAL photograph. Not a digital composite, not a vector graphic, not a 3D render, not an illustration. Preserve the source ad's composition — this is an iteration, not a redesign."
+  },
+
+  "text_overlays": {
+    "_render_exactly_as_quoted": true,
+    "_quoting_note": "gpt-image-2 is letter-accurate when strings are quoted. Render each text element verbatim — same case, punctuation, line breaks, spelling. iteration_directive.lock_these_to_source tells you whether text is locked; if locked, every character must match the source ad letter-for-letter.",
+    "swaps": "{{TEXT_SWAPS}}",
+    "typography_rule": "Match the source ad's hierarchy exactly — headline weight, sub size, CTA emphasis, badge style. Optimized for mobile Meta feed."
+  },
+
+  "characters": {
+    "count": {{PEOPLE_COUNT}},
+    "adaptation": "{{CHARACTER_ADAPTATION}}",
+    "exclusion_rule": "Exactly the specified count. No background figures, no implied silhouettes, no reflections of people not specified."
+  },
+
+  "compliance": {
+    "forbidden_visual_claims": "{{COMPLIANCE}}",
+    "brand_exclusion": "Render only marks belonging to brand_context.product_name. Do NOT carry over competitor logos, third-party watermarks, or retailer marks even if they were in the source.",
+    "operator_notes": "{{NOTES}}"
+  },
+
+  "negative_constraints": [
+    "no illustration look, no 3D-render look, no CGI feel, no AI-art artifacts",
+    "no oversaturated colors, no plastic skin, no waxy faces",
+    "no deformed hands, no extra fingers, no fused digits — exactly 5 fingers per hand",
+    "no extra text, no extra brand marks, no watermarks, no UI chrome, no signatures",
+    "no cropping of the product or critical text",
+    "no fabricated screen content — if the product has a display, reproduce the source image's screen exactly or render it OFF",
+    "no excessive decorative repetition — maximum 2 of any repeating element (ribbons, badges, starbursts)",
+    "no spelling drift on repeated text elements — both instances must be letter-identical",
+    "no rendering of JSON keys, labels, underscores, brackets, or syntax onto the image",
+    "no changing any element other than the single variable named in iteration_directive.change_ONLY"
+  ],
+
+  "output_spec": {
+    "format": "single iteration of the source winner — same ad, one variable isolated",
+    "fidelity_target": "Photoreal, commercial-grade, ready for paid-media distribution",
+    "delivery": "Ready to upload as a Meta ad creative"
+  }
 }`,
   };
 }
@@ -2375,16 +2556,33 @@ router.post('/iterate/:creativeId', authenticate, async (req, res) => {
           if (!iterEngine.isConfigured()) {
             throw new Error(`Iteration engine '${iterEngine.name}' is not configured (missing API key)`);
           }
-          const iterTemplate = iterEngine.name === 'openai'
-            ? (customPrompts.openai_image || customPrompts.nanobanana_image)
-            : customPrompts.nanobanana_image;
+          // ITERATION TEMPLATE SELECTION
+          // Prefer the dedicated *_iteration template (editable JSON brief
+          // structured for strategy-locked single-variable iteration). Fall
+          // back to the fresh-generation *_image template + prepended
+          // directive if the iteration template hasn't been seeded yet
+          // (back-compat for environments that haven't been redeployed).
+          const isOpenAIEng = iterEngine.name === 'openai';
+          const iterTemplate = isOpenAIEng
+            ? (customPrompts.openai_iteration || customPrompts.openai_image || customPrompts.nanobanana_image)
+            : (customPrompts.nanobanana_iteration || customPrompts.nanobanana_image);
+          const usedDedicatedIterationTemplate =
+            (isOpenAIEng && !!customPrompts.openai_iteration) ||
+            (!isOpenAIEng && !!customPrompts.nanobanana_iteration);
           product._angle = variationAngle;
-          // Prepend the same iteration directive to the image-engine prompt
-          // so the renderer also respects the lock/vary constraint — e.g. a
-          // "Visual" iteration must render the EXACT text Claude returned
-          // (which Claude was instructed to keep identical to source).
-          const baseImgPrompt = buildNanoBananaImagePrompt(claudeResult, product, iterTemplate);
-          const nbPrompt = iterationDirective + baseImgPrompt;
+          // Pass strategy vars so the iteration template can interpolate
+          // {{STRATEGY_LABEL}} / {{VARIED}} / {{LOCKED}}.
+          const baseImgPrompt = buildNanoBananaImagePrompt(claudeResult, product, iterTemplate, {
+            STRATEGY_LABEL: strategy.label,
+            VARIED:         strategy.vary,
+            LOCKED:         strategy.lock,
+          });
+          // Only prepend the hardcoded directive when falling back to the
+          // fresh-generation template (no dedicated iteration template yet).
+          // The dedicated template has the directive built into its JSON.
+          const nbPrompt = usedDedicatedIterationTemplate
+            ? baseImgPrompt
+            : iterationDirective + baseImgPrompt;
           // Wrap in withRetry — NB occasionally times out on submit under
           // load; one retry caught both timeouts in the prior live test.
           const nbTaskId = await withRetry(

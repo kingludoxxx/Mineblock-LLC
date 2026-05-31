@@ -751,6 +751,20 @@ function StaticsSettingsInline() {
       desc: 'Optional Step — Claude turns user\'s freeform correction into a precise NanoBanana regen prompt',
       vars: '{{PRODUCT_NAME}} {{ANGLE}} {{ADAPTED_HEADLINE}} {{ADAPTED_CTA}} {{PEOPLE_COUNT}} {{USER_CORRECTION}}',
     },
+    {
+      key: 'nanobanana_iteration',
+      label: '④ NanoBanana Iteration',
+      icon: ImagePlus,
+      desc: 'Used when iterating a TripleWhale winner via NanoBanana. JSON director\'s brief with strategy-locked single-variable isolation (Hook/CTA/Visual/Proof/Offer auto-assigned).',
+      vars: '{{STRATEGY_LABEL}} {{VARIED}} {{LOCKED}} | {{PRODUCT_NAME}} {{PRODUCT_INSTRUCTION}} {{PRODUCT_RULE}} {{VISUAL_CHANGES}} {{TEXT_SWAPS}} {{PEOPLE_COUNT}} {{CHARACTER_ADAPTATION}} {{ANGLE}} {{BRAND_VOICE}}',
+    },
+    {
+      key: 'openai_iteration',
+      label: '④′ OpenAI Iteration',
+      icon: ImagePlus,
+      desc: 'Used when iterating a TripleWhale winner via OpenAI gpt-image-2. Same JSON shape as openai_image plus the iteration_directive block.',
+      vars: '{{STRATEGY_LABEL}} {{VARIED}} {{LOCKED}} | {{PRODUCT_NAME}} {{PRODUCT_INSTRUCTION}} {{PRODUCT_RULE}} {{VISUAL_CHANGES}} {{TEXT_SWAPS}} {{PEOPLE_COUNT}} {{CHARACTER_ADAPTATION}} | {{SHORT_NAME}} {{ONELINER}} {{TAGLINE}} {{CATEGORY}} {{PRODUCT_TYPE}} {{PRODUCT_DESCRIPTION}} {{ANGLE}} {{BRAND_VOICE}} {{BIG_PROMISE}} {{UNIQUE_MECHANISM}} {{DIFFERENTIATOR}} {{COMPETITIVE_EDGE}} {{CUSTOMER}} {{CUSTOMER_FRUSTRATION}} {{CUSTOMER_DREAM}} {{PAIN_POINTS}} {{KEY_BENEFITS}} {{TARGET_AUDIENCE}} {{COMPLIANCE}} {{NOTES}}',
+    },
   ];
 
   const [activeSection, setActiveSection] = useState('claude_analysis');

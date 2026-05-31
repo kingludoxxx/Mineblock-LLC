@@ -181,7 +181,7 @@ export function mapProductRowToFlatProfile(row = {}) {
  * @param {string} template     — DB-stored prompt template with {{VARS}}
  * @returns {string} interpolated prompt text
  */
-export function buildNanoBananaImagePrompt(claudeResult = {}, product = {}, template = '') {
+export function buildNanoBananaImagePrompt(claudeResult = {}, product = {}, template = '', iterationVars = {}) {
   const hasProduct = claudeResult.reference_has_product_visual !== false;
   const productVisual = (claudeResult.product_visual_for_generation || '').trim();
   const peopleCount = claudeResult.people_count ?? 0;
@@ -287,6 +287,11 @@ export function buildNanoBananaImagePrompt(claudeResult = {}, product = {}, temp
     PRICING:                p.pricing           || product.price || '',
     COMPLIANCE:             p.compliance        || '',
     NOTES:                  p.notes             || '',
+    // Iteration-specific vars — populated only when called from /iterate.
+    // Resolve to empty string for fresh /generate calls.
+    STRATEGY_LABEL:         iterationVars.STRATEGY_LABEL || '',
+    VARIED:                 iterationVars.VARIED         || '',
+    LOCKED:                 iterationVars.LOCKED         || '',
   };
   return interpolate(template, vars);
 }

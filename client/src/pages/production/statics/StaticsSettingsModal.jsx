@@ -39,6 +39,18 @@ const TABS = [
     summary: 'Optional Step — Sent to Claude when user clicks "Regenerate with Correction". Claude turns the user\'s freeform correction into a precise NanoBanana instruction.',
     vars: '{{PRODUCT_NAME}} {{ANGLE}} {{ADAPTED_HEADLINE}} {{ADAPTED_CTA}} {{PEOPLE_COUNT}} {{USER_CORRECTION}}',
   },
+  {
+    key: 'nanobanana_iteration',
+    label: '④ NanoBanana Iteration',
+    summary: 'Step 4 (NB) — Sent to NanoBanana when ITERATING a winning static. JSON director\'s brief with locked/varied fields per strategy (Hook/CTA/Visual/Proof/Offer auto-assigned by code).',
+    vars: '{{STRATEGY_LABEL}} {{VARIED}} {{LOCKED}} | {{PRODUCT_NAME}} {{PRODUCT_INSTRUCTION}} {{PRODUCT_RULE}} {{VISUAL_CHANGES}} {{TEXT_SWAPS}} {{PEOPLE_COUNT}} {{CHARACTER_ADAPTATION}} {{ANGLE}} {{BRAND_VOICE}}',
+  },
+  {
+    key: 'openai_iteration',
+    label: '④′ OpenAI Iteration',
+    summary: 'Step 4 (OAI) — Sent to OpenAI gpt-image-2 when ITERATING a winning static. Same JSON director\'s structure as openai_image but with iteration_directive block on top.',
+    vars: '{{STRATEGY_LABEL}} {{VARIED}} {{LOCKED}} | {{PRODUCT_NAME}} {{PRODUCT_INSTRUCTION}} {{PRODUCT_RULE}} {{VISUAL_CHANGES}} {{TEXT_SWAPS}} {{PEOPLE_COUNT}} {{CHARACTER_ADAPTATION}} | {{SHORT_NAME}} {{ONELINER}} {{TAGLINE}} {{CATEGORY}} {{PRODUCT_TYPE}} {{PRODUCT_DESCRIPTION}} {{ANGLE}} {{BRAND_VOICE}} {{BIG_PROMISE}} {{UNIQUE_MECHANISM}} {{DIFFERENTIATOR}} {{COMPETITIVE_EDGE}} {{CUSTOMER}} {{CUSTOMER_FRUSTRATION}} {{CUSTOMER_DREAM}} {{PAIN_POINTS}} {{KEY_BENEFITS}} {{TARGET_AUDIENCE}} {{COMPLIANCE}} {{NOTES}}',
+  },
 ];
 
 // ---------------------------------------------------------------------------
