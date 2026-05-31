@@ -659,7 +659,58 @@ const ANGLE_OPTIONS = {
   Breakingnews: 'e5cd049f-13a5-45e4-a8d7-6b78f0acc9a3',
   Offer: 'e0c1d0fd-b376-4146-8887-ad7c0c209489',
   Reaction: 'bbe5f0c0-8bbf-45a2-bc04-fbcebb11e242',
+  Miningwhilesleep: '8bfcbdeb-c21b-4d78-b2f4-fa45f7856b18',
+  Apology: '3c59aca9-f26b-4d8d-95b9-652fd4d30044',
 };
+
+// Map free-text angle labels (as stored on brief rows or returned by the
+// analyzer) to ClickUp ANGLE_OPTIONS dropdown keys. The brief pipeline
+// analyzer emits display-friendly strings like "Anti-Fake / Competitor
+// Callout" that must be collapsed onto the canonical dropdown key
+// ("Againstcompetition") before we can resolve the UUID. Comparison is
+// case-insensitive and ignores non-alphanumerics so minor punctuation drift
+// doesn't break the match.
+const ANGLE_ALIAS_MAP = {
+  'antifakecompetitorcallout': 'Againstcompetition',
+  'antifake': 'Againstcompetition',
+  'competitorcallout': 'Againstcompetition',
+  'againstcompetition': 'Againstcompetition',
+  'competition': 'Againstcompetition',
+  'lottery': 'Lottery',
+  'btcmadeeasy': 'BTC Made easy',
+  'bitcoinmadeeasy': 'BTC Made easy',
+  'gtrs': 'GTRS',
+  'livestream': 'livestream',
+  'hiddenopportunity': 'Hiddenopportunity',
+  'rebranding': 'Rebranding',
+  'missedopportunity': 'Missedopportunity',
+  'btcfarm': 'BTCFARM',
+  'bitcoinfarm': 'BTCFARM',
+  'sale': 'Sale',
+  'scarcity': 'Scarcity',
+  'breakingnews': 'Breakingnews',
+  'offer': 'Offer',
+  'reaction': 'Reaction',
+  'miningwhilesleep': 'Miningwhilesleep',
+  'miningwhileyousleep': 'Miningwhilesleep',
+  'apology': 'Apology',
+  'na': 'NA',
+};
+
+function normalizeAngleKey(angle) {
+  if (!angle) return 'NA';
+  // Exact match wins first (cheap and avoids over-collapsing)
+  if (ANGLE_OPTIONS[angle]) return angle;
+  const slug = String(angle).toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (ANGLE_ALIAS_MAP[slug]) return ANGLE_ALIAS_MAP[slug];
+  // Last resort: try matching against the canonical keys themselves
+  // collapsed the same way.
+  for (const key of Object.keys(ANGLE_OPTIONS)) {
+    const keySlug = key.toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (keySlug === slug) return key;
+  }
+  return 'NA';
+}
 
 const BRIEF_TYPE_OPTIONS = {
   NN: '1e274045-a4b3-4b0d-85c2-d7ec1a347d3c',
@@ -2516,8 +2567,11 @@ async function pushBriefToClickUp(generatedBrief, parentClickupTaskId, overrides
   const referenceLine = referenceLink ? `Reference: ${referenceLink}\n\n` : '';
   const description = `${referenceLine}--- Hooks ---\n\n${hooksFormatted}\n\n--- Body ---\n\n${body || ''}\n\n[brief-pipeline]`;
 
-  // Resolve dropdown option IDs
-  const angleUuid = ANGLE_OPTIONS[angle] || ANGLE_OPTIONS.NA;
+  // Resolve dropdown option IDs. Angle is normalized through the alias map so
+  // analyzer-emitted display strings (e.g. "Anti-Fake / Competitor Callout")
+  // resolve to the canonical key ("Againstcompetition") and then to the UUID.
+  const angleKey = normalizeAngleKey(angle);
+  const angleUuid = ANGLE_OPTIONS[angleKey] || ANGLE_OPTIONS.NA;
   const briefTypeUuid = BRIEF_TYPE_OPTIONS.IT;
   const creativeTypeUuid = CREATIVE_TYPE_OPTIONS[format] || CREATIVE_TYPE_OPTIONS.Mashup;
 
@@ -3601,7 +3655,8 @@ router.get('/generated/:id/clickup-prefill', authenticate, async (req, res) => {
       success: true,
       defaults: {
         product:        brief.product_code || 'MR',
-        angle:          brief.angle || 'NA',
+        angle:          normalizeAngleKey(brief.angle),
+        angleDisplay:   brief.angle || null,
         creativeType:   brief.format || 'Mashup',
         briefType:      'IT',  // locked — Brief Pipeline only generates iterations
         editor:         brief.editor || '',
