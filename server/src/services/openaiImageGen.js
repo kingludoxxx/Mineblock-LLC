@@ -104,7 +104,9 @@ export async function submitToOpenAI(prompt, imageUrls = [], ratio = '1:1') {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(120_000),
+      // 5 min — gpt-image-2 quality='high' fresh-generation can be slow.
+      // Callers run this in background (setImmediate), so we're not HTTP-bound.
+      signal: AbortSignal.timeout(300_000),
     });
 
     if (!res.ok) {
@@ -141,6 +143,11 @@ export async function submitToOpenAI(prompt, imageUrls = [], ratio = '1:1') {
   form.append('quality', 'high');
   // NOTE: input_fidelity is gpt-image-1 only; gpt-image-2 rejects it. Removed.
 
+  // Edits run via the same endpoint with multipart/form-data + an
+  // image[] field per input. They're the slowest path in the API —
+  // bump the timeout to 5 min since edits run in background jobs
+  // (setImmediate) and aren't HTTP-bound to the original request.
+
   // Fetch each input image and append as a Blob.
   for (let i = 0; i < imageUrls.length; i++) {
     const url = imageUrls[i];
@@ -163,7 +170,10 @@ export async function submitToOpenAI(prompt, imageUrls = [], ratio = '1:1') {
     method: 'POST',
     headers: { Authorization: `Bearer ${OPENAI_API_KEY}` },
     body: form,
-    signal: AbortSignal.timeout(180_000),
+    // 5 min — edits are the slowest path. Background job (setImmediate),
+    // so we're not HTTP-bound to the original /edit request. The frontend
+    // polls for completion.
+    signal: AbortSignal.timeout(300_000),
   });
 
   if (!res.ok) {
