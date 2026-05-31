@@ -2951,7 +2951,7 @@ router.get('/creatives', authenticate, async (req, res) => {
   try {
     await ensureCreativesTable();
     const { product_id, status, pipeline = 'standard', parent_creative_id } = req.query;
-    let query = "SELECT id, product_id, product_name, image_url, thumbnail_url, source_label, angle, archetype, aspect_ratio, status, reference_thumbnail, reference_name, review_notes, parent_creative_id, pipeline, copy_set_id, meta_ad_ids, meta_image_hash, generated_copy, parent_creative_id_ref, parent_im_number, im_number, iteration_change_description, quality_warning, image_engine, created_at FROM spy_creatives WHERE pipeline = $1";
+    let query = "SELECT id, product_id, product_name, image_url, thumbnail_url, source_label, angle, archetype, aspect_ratio, status, reference_thumbnail, reference_name, review_notes, parent_creative_id, pipeline, copy_set_id, meta_ad_ids, meta_image_hash, generated_copy, parent_creative_id_ref, parent_im_number, im_number, iteration_change_description, quality_warning, image_engine, pending_edit_url, pending_edit_token, previous_image_url, last_edit_prompt, created_at FROM spy_creatives WHERE pipeline = $1";
     const params = [pipeline];
     let idx = 2;
 
@@ -3557,6 +3557,180 @@ router.post('/creatives/:id/ai-adjust', authenticate, async (req, res) => {
     })();
   } catch (err) {
     console.error('[staticsGeneration] /creatives/:id/ai-adjust error:', err);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Inline image editing via OpenAI gpt-image-2.
+//
+// Operator clicks "Edit Image" on a card in Review → modal opens → types
+// freeform instruction ("make the background navy blue") → Generate.
+// Backend sends current image + prompt to OpenAI's edit endpoint, persists
+// pending result, returns URL for preview. Operator hits Accept → live
+// image swapped + child ratios (4:5, 9:16) regenerated from new 1:1.
+//
+// Status guard: only allowed when creative.status='review'. Once a card
+// moves to ready/approved/launched, edits are blocked (operator rule).
+//
+// No existing prompts touched — this uses pure OpenAI edit mode with the
+// user's freeform string as the prompt. The Claude / NB / OpenAI / iteration
+// templates stay untouched.
+// ─────────────────────────────────────────────────────────────────────────
+import { submitToOpenAI as _editSubmitToOpenAI, pollOpenAI as _editPollOpenAI, isOpenAIConfigured as _editIsOpenAIConfigured } from '../services/openaiImageGen.js';
+
+router.post('/creatives/:id/edit', authenticate, async (req, res) => {
+  try {
+    await ensureCreativesTable();
+    const prompt = String(req.body.prompt || '').trim();
+    if (!prompt) return res.status(400).json({ success: false, error: { message: 'prompt is required' } });
+    if (!_editIsOpenAIConfigured()) {
+      return res.status(400).json({ success: false, error: { message: 'OpenAI is not configured (missing OPENAI_API_KEY)' } });
+    }
+
+    const rows = await pgQuery('SELECT * FROM spy_creatives WHERE id = $1', [req.params.id]);
+    if (rows.length === 0) return res.status(404).json({ success: false, error: { message: 'Creative not found' } });
+    const creative = rows[0];
+
+    // Operator rule: edits ONLY allowed while card is in Review.
+    if (creative.status !== 'review') {
+      return res.status(409).json({
+        success: false,
+        error: { message: `Card status is '${creative.status}' — editing is only allowed in Review (status='review')` },
+      });
+    }
+    if (!creative.image_url) {
+      return res.status(400).json({ success: false, error: { message: 'Creative has no image to edit' } });
+    }
+
+    // Submit to OpenAI's edit endpoint. submitToOpenAI auto-routes to
+    // /v1/images/edits when imageUrls.length > 0. Ratio matches the
+    // creative's existing aspect ratio so edit returns the same shape.
+    const ratio = creative.aspect_ratio || '1:1';
+    const taskId = await _editSubmitToOpenAI(prompt, [creative.image_url], ratio);
+    const tempUrl = await _editPollOpenAI(taskId);
+    if (!tempUrl) throw new Error('OpenAI edit returned no result');
+
+    // Persist the edited image to R2 as a pending edit (NOT the live image).
+    const persistedUrl = await persistNanoBananaImage(tempUrl, 'statics-edits');
+    if (!persistedUrl) throw new Error('Failed to persist edited image to R2');
+
+    const editToken = crypto.randomUUID();
+    await pgQuery(
+      `UPDATE spy_creatives
+         SET pending_edit_url = $1,
+             pending_edit_token = $2,
+             last_edit_prompt = $3,
+             last_edited_at = NOW()
+       WHERE id = $4`,
+      [persistedUrl, editToken, prompt, creative.id]
+    );
+
+    res.json({
+      success: true,
+      data: {
+        id: creative.id,
+        original_image_url: creative.image_url,
+        pending_edit_url: persistedUrl,
+        edit_token: editToken,
+        prompt,
+      },
+    });
+  } catch (err) {
+    console.error('[statics edit] error:', err);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// Accept the pending edit — promote to live, save old image for one-step
+// undo, cascade-regenerate child ratios (4:5, 9:16) from the new 1:1.
+router.post('/creatives/:id/edit/accept', authenticate, async (req, res) => {
+  try {
+    await ensureCreativesTable();
+    const token = String(req.body.edit_token || '').trim();
+    const rows = await pgQuery('SELECT * FROM spy_creatives WHERE id = $1', [req.params.id]);
+    if (rows.length === 0) return res.status(404).json({ success: false, error: { message: 'Creative not found' } });
+    const creative = rows[0];
+
+    if (creative.status !== 'review') {
+      return res.status(409).json({
+        success: false,
+        error: { message: `Card status changed to '${creative.status}' — edit cannot be accepted` },
+      });
+    }
+    if (!creative.pending_edit_url) {
+      return res.status(400).json({ success: false, error: { message: 'No pending edit to accept' } });
+    }
+    if (token && creative.pending_edit_token && token !== creative.pending_edit_token) {
+      return res.status(409).json({ success: false, error: { message: 'edit_token mismatch — pending edit has been replaced' } });
+    }
+
+    const oldImageUrl = creative.image_url;
+    const newImageUrl = creative.pending_edit_url;
+
+    // Promote: pending → live; preserve old for one-step undo
+    await pgQuery(
+      `UPDATE spy_creatives
+         SET image_url = $1,
+             thumbnail_url = $1,
+             previous_image_url = $2,
+             pending_edit_url = NULL,
+             pending_edit_token = NULL,
+             updated_at = NOW()
+       WHERE id = $3`,
+      [newImageUrl, oldImageUrl, creative.id]
+    );
+
+    // Only the 1:1 parent should cascade. Children (parent_creative_id IS NOT NULL)
+    // shouldn't trigger another cascade — their parent's edit replaces them.
+    const isParent = !creative.parent_creative_id;
+    const regenerating = [];
+
+    if (isParent) {
+      // Delete existing children for ratios 4:5 and 9:16 so they don't show
+      // stale renders. generateVariant will INSERT fresh rows.
+      await pgQuery(
+        `DELETE FROM spy_creatives WHERE parent_creative_id = $1 AND aspect_ratio IN ('4:5', '9:16')`,
+        [creative.id]
+      );
+
+      // Re-read the now-updated parent so generateVariant uses the new image
+      const refreshed = (await pgQuery('SELECT * FROM spy_creatives WHERE id = $1', [creative.id]))[0];
+      for (const r of ['4:5', '9:16']) {
+        regenerating.push(r);
+        generateVariant(refreshed, r).catch(err =>
+          console.error(`[edit cascade] variant ${r} for ${creative.id.slice(0,8)} failed: ${err.message}`)
+        );
+      }
+    }
+
+    res.json({
+      success: true,
+      data: {
+        id: creative.id,
+        new_image_url: newImageUrl,
+        previous_image_url: oldImageUrl,
+        regenerating_ratios: regenerating,
+      },
+    });
+  } catch (err) {
+    console.error('[statics edit accept] error:', err);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// Discard the pending edit — clears the staging URL without promoting it.
+router.post('/creatives/:id/edit/discard', authenticate, async (req, res) => {
+  try {
+    await ensureCreativesTable();
+    await pgQuery(
+      `UPDATE spy_creatives
+         SET pending_edit_url = NULL, pending_edit_token = NULL
+       WHERE id = $1`,
+      [req.params.id]
+    );
+    res.json({ success: true });
+  } catch (err) {
     res.status(500).json({ success: false, error: { message: err.message } });
   }
 });
