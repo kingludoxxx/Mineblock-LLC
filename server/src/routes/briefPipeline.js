@@ -921,6 +921,19 @@ async function ensureTables() {
     // time when referenceId is provided; NULL otherwise.
     await pgQuery(`ALTER TABLE brief_pipeline_winners ADD COLUMN IF NOT EXISTS reference_id UUID REFERENCES brief_pipeline_references(id) ON DELETE SET NULL`).catch(() => {});
 
+    // One-shot naming convention cleanup. Older briefs were built with a
+    // synthetic "MANUAL-XXXXXXXX" parent slot in the task name; operator
+    // asked us to strip that everywhere. The slug looks like " - MANUAL-XXXXXX -"
+    // or " - MANUAL_XXXXXX -". Idempotent — UPDATE only fires on rows that
+    // still contain the pattern. Safe to re-run on every boot.
+    await pgQuery(`
+      UPDATE brief_pipeline_generated
+         SET naming_convention = regexp_replace(naming_convention, ' - MANUAL[-_][A-Z0-9]+', '', 'g')
+       WHERE naming_convention ~ ' - MANUAL[-_][A-Z0-9]+'
+    `).catch((e) => {
+      console.warn('[BriefPipeline] MANUAL- slug strip on naming_convention skipped:', e.message);
+    });
+
     // Recover any winners stuck in 'generating' from a previous crash
     const stuck = await pgQuery(
       `UPDATE brief_pipeline_winners SET status = 'detected' WHERE status = 'generating' RETURNING creative_id`
@@ -1267,11 +1280,17 @@ function abbreviateAngle(angle) {
 
 function buildNamingConvention({ product_code, brief_number, parent_creative_id, avatar, angle, format, strategist, creator, editor, week }) {
   const briefId = `B${String(brief_number).padStart(4, '0')}`;
-  return [
+  // The parent slot exists so iterations of a real winner carry the parent's
+  // B-code (e.g. "B0223") in the task name. For briefs generated from a
+  // raw script paste or a reference card the parent_creative_id is a
+  // synthetic "MANUAL-XXXXXXXX" — noise in the task name. Drop the slot
+  // entirely in that case rather than emitting MANUAL-XXXX strings.
+  const isSyntheticParent = !parent_creative_id || /^MANUAL[-_]/i.test(String(parent_creative_id));
+  const slots = [
     product_code || 'MR',
     briefId,
     'IT',
-    parent_creative_id,
+    isSyntheticParent ? null : parent_creative_id,
     avatar || 'NA',
     abbreviateAngle(angle),
     format || 'Mashup',
@@ -1279,7 +1298,8 @@ function buildNamingConvention({ product_code, brief_number, parent_creative_id,
     creator || 'NA',
     editor || 'Uly',
     week || getCurrentWeekLabel(),
-  ].join(' - ');
+  ];
+  return slots.filter((s) => s !== null && s !== undefined && s !== '').join(' - ');
 }
 
 // ── Transcribe video/audio with Gemini ───────────────────────────────

@@ -84,13 +84,26 @@ export default function PushToClickupModal({ briefId, briefTitle, isOpen, onClos
     setError(null);
   };
 
-  // Live task-name preview
+  // Live task-name preview. Mirrors server-side buildNamingConvention:
+  // synthetic "MANUAL-XXXXXXXX" parent ids are dropped from the slot
+  // list entirely (operator confirmed they're noise). Real parent
+  // B-codes — like "B0223" — still surface.
   const taskPreview = useMemo(() => {
     const code = options.creativeTypeCodes?.[form.creativeType] || 'HX';
     const num = form.briefNumber ? `B${String(form.briefNumber).padStart(4, '0')}` : 'B????';
-    const parent = form.briefType === 'IT' ? (form.parentBriefId || '?') : 'NA';
+    const rawParent = form.briefType === 'IT' ? form.parentBriefId : 'NA';
+    const isSyntheticParent = !rawParent || /^MANUAL[-_]/i.test(String(rawParent));
     const weekStr = getCurrentWeekStr();
-    return `${form.product || 'MR'} - ${num} - ${code} - ${form.briefType || 'IT'} - ${parent} - ${form.angle || '?'} - ${weekStr}`;
+    const slots = [
+      form.product || 'MR',
+      num,
+      code,
+      form.briefType || 'IT',
+      isSyntheticParent ? null : rawParent,
+      form.angle || '?',
+      weekStr,
+    ];
+    return slots.filter((s) => s !== null && s !== undefined && s !== '').join(' - ');
   }, [form, options.creativeTypeCodes]);
 
   const canSubmit = !!(form.angle && form.creativeType && form.editor && form.avatar);
