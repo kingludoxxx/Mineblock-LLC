@@ -6058,15 +6058,23 @@ async function seedDefaultLeaguePrompts() {
       if (!allowed.has(k)) delete existing[k];
     }
 
-    // 3) Seed scriptClone if empty (v1 lives in DEFAULT_CLONE_PROMPT_*).
-    if (!existing.scriptClone?.json || !existing.scriptClone.json.trim()) {
+    // 3) Seed (or force-refresh) scriptClone. The slot stores a snapshot of
+    //    DEFAULT_CLONE_PROMPT_*, so once seeded, subsequent edits to the
+    //    baked default never reach production (they get masked by the saved
+    //    DB row). Use a signature string from the latest prompt revision —
+    //    if it's missing, overwrite with the current baked default. This is
+    //    one-shot per signature bump and leaves operator edits alone once
+    //    they include the marker.
+    const CLONE_V2_SIGNATURE = 'ORIGINAL_ON_SCREEN_TEXT';
+    const currentClone = existing.scriptClone?.json || '';
+    if (!currentClone.trim() || !currentClone.includes(CLONE_V2_SIGNATURE)) {
       existing.scriptClone = {
         json: JSON.stringify(
           { system: DEFAULT_CLONE_PROMPT_SYSTEM, user: DEFAULT_CLONE_PROMPT_USER },
           null,
           2,
         ),
-        notes: 'scriptClone v1 — clones competitor narrative architecture into our product. Uses {{PRODUCT_CONTEXT}}, {{ANGLES_LIST}}, {{ANGLE_NAME}}, {{ANGLE_DETAILS}}, {{ORIGINAL_HOOKS}}, {{ORIGINAL_BODY}}, {{ORIGINAL_CTA}}, {{ANALYSIS_CONTEXT}} placeholders. Length: equal or up to 10% shorter than original. required_elements treated as guidance, not mandatory.',
+        notes: 'scriptClone v2 — clones competitor narrative architecture into our product, including on-screen overlay labels via highlighted_text[]. Uses {{PRODUCT_CONTEXT}}, {{ANGLES_LIST}}, {{ANGLE_NAME}}, {{ANGLE_DETAILS}}, {{ORIGINAL_HOOKS}}, {{ORIGINAL_BODY}}, {{ORIGINAL_CTA}}, {{ORIGINAL_ON_SCREEN_TEXT}}, {{ANALYSIS_CONTEXT}} placeholders.',
       };
     }
 
@@ -6182,62 +6190,6 @@ router.post('/settings/league-prompts/reset', authenticate, async (_req, res) =>
 // selected product is wired up, (b) show a field count, and (c) optionally
 // surface what fields will be available to the prompts at generation time.
 // ============================================================================
-
-// TEMP DIAG: returns the compiled clone prompt the model would see for a
-// given reference + product. Used to debug highlighted_text emission. Strip
-// once verified.
-router.post('/_diag-compile-clone-prompt', authenticate, async (req, res) => {
-  try {
-    await ensureTables();
-    const { referenceId, productCode = 'MR', angle = 'NA' } = req.body || {};
-    if (!referenceId) return res.status(400).json({ success: false, error: { message: 'referenceId required' } });
-    const refRows = await pgQuery(`SELECT transcript FROM brief_pipeline_references WHERE id = $1`, [referenceId]);
-    if (!refRows.length) return res.status(404).json({ success: false, error: { message: 'reference not found' } });
-    const rawScript = refRows[0].transcript || '';
-    const { system: parseSys, user: parseUsr } = await buildScriptParserPrompt(rawScript, 'DIAG');
-    const parsed = await callClaude(parseSys, parseUsr, 2000, { fast: true });
-    const parsedScript = parsed || { hooks: [], body: rawScript, cta: '' };
-    const productProfile = await fetchProductProfile(productCode);
-    const productContext = buildProductContextForBrief(productProfile);
-    const { system, user } = await buildScriptClonePrompt(parsedScript, {}, productContext, productProfile, angle, rawScript);
-    res.json({
-      success: true,
-      rawScriptLength: rawScript.length,
-      onScreenTextExtracted: extractOnScreenText(rawScript),
-      systemPromptLength: system.length,
-      userPromptLength: user.length,
-      // Slices that prove the new rules + variable are present
-      contains_ORIGINAL_ON_SCREEN_TEXT_section: user.includes('# ORIGINAL ON-SCREEN TEXT'),
-      contains_binary_rule: user.includes('Rule (binary'),
-      contains_must_return: user.includes('MUST return between 2 and 4'),
-      contains_highlighted_text_word: user.includes('highlighted_text'),
-      contains_ORIGINAL_ON_SCREEN_TEXT_placeholder: user.includes('{{ORIGINAL_ON_SCREEN_TEXT}}'),
-      contains_section7_marker: user.includes('## 7.'),
-      onScreenSectionSnippet: (() => {
-        const idx = user.indexOf('# ORIGINAL ON-SCREEN TEXT');
-        return idx >= 0 ? user.slice(idx, idx + 500) : '(section not in prompt)';
-      })(),
-      rule7Snippet: (() => {
-        const idx = user.indexOf('## 7. ON-SCREEN TEXT');
-        return idx >= 0 ? user.slice(idx, idx + 1200) : '(rule 7 not in prompt)';
-      })(),
-      // Show a slice around the ORIGINAL HOOKS / BODY / CTA section so we can
-      // see whether the new section was inserted after CTA as expected.
-      sliceAroundHooks: (() => {
-        const idx = user.indexOf('# ORIGINAL COMPETITOR SCRIPT');
-        return idx >= 0 ? user.slice(idx, idx + 800) : '(competitor script header not in prompt)';
-      })(),
-      // First 2000 chars of the user prompt — guaranteed to include the
-      // top-of-prompt rule structure
-      userHead: user.slice(0, 2000),
-      // Last 2000 chars — should include §7 and the JSON output spec
-      userTail: user.slice(-2500),
-    });
-  } catch (e) {
-    console.error('[BriefPipeline] _diag-compile-clone-prompt error:', e.message);
-    res.status(500).json({ success: false, error: { message: e.message } });
-  }
-});
 
 router.get('/product-context/:id', authenticate, async (req, res) => {
   try {
