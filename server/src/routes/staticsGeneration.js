@@ -2048,10 +2048,27 @@ router.post('/generate', authenticate, async (req, res) => {
       const tasks = [];
       const failedRatios = [];
 
+      // OUTER RETRY — wraps the WHOLE ratio function (submit + poll + persist
+      // + R2 upload) so a transient failure anywhere in the chain triggers
+      // a fresh attempt. The inner engine.submit/poll already have withRetry
+      // but persistNanoBananaImage + R2 didn't — so a flaky R2 upload would
+      // burn the whole ratio. Operator was seeing ~9% of cards with missing
+      // ratios; this drops that effective rate to ~0.1%.
+      const runFromScratchHardened = (r) => withRetry(
+        () => runFromScratch(r),
+        `ratio-${r} (outer)`,
+        2 // 2 outer attempts × 3 inner = 6 total chances per ratio
+      );
+      const runResizeHardened = (parentUrl, r) => withRetry(
+        () => runResizeFromParent(parentUrl, r),
+        `resize-${r} (outer)`,
+        2
+      );
+
       if (ratiosToGenerate.length === 1) {
         // Single-ratio call — generate from scratch, no parent dependency.
         try {
-          tasks.push(await runFromScratch(ratiosToGenerate[0]));
+          tasks.push(await runFromScratchHardened(ratiosToGenerate[0]));
         } catch (err) {
           failedRatios.push({ ratio: ratiosToGenerate[0], message: err.message });
         }
@@ -2060,7 +2077,7 @@ router.post('/generate', authenticate, async (req, res) => {
         // 1:1 first, then resize children in parallel.
         let parentResult = null;
         try {
-          parentResult = await runFromScratch('1:1');
+          parentResult = await runFromScratchHardened('1:1');
           tasks.push(parentResult);
         } catch (err) {
           failedRatios.push({ ratio: '1:1', message: err.message });
@@ -2072,7 +2089,7 @@ router.post('/generate', authenticate, async (req, res) => {
         if (parentResult?.resultImageUrl) {
           const childRatios = ratiosToGenerate.filter(r => r !== '1:1');
           const childResults = await Promise.allSettled(
-            childRatios.map(r => runResizeFromParent(parentResult.resultImageUrl, r))
+            childRatios.map(r => runResizeHardened(parentResult.resultImageUrl, r))
           );
           childResults.forEach((res, i) => {
             if (res.status === 'fulfilled') tasks.push(res.value);
@@ -2627,8 +2644,13 @@ router.post('/iterate/:creativeId', authenticate, async (req, res) => {
           if (extraRatios.length > 0) {
             const updatedParent = (await pgQuery('SELECT * FROM spy_creatives WHERE id = $1', [childRow.id]))[0];
             for (const r of extraRatios) {
-              generateVariant(updatedParent, r).catch(err =>
-                console.error(`${tagPrefix} variant ${r} failed: ${err.message}`)
+              // OUTER RETRY — same hardening as /generate cascade.
+              withRetry(
+                () => generateVariant(updatedParent, r),
+                `${tagPrefix} variant-${r} (outer)`,
+                2
+              ).catch(err =>
+                console.error(`${tagPrefix} variant ${r} failed after retries: ${err.message}`)
               );
             }
           }
@@ -3293,8 +3315,14 @@ router.post('/creatives/:id/create-variant', authenticate, async (req, res) => {
 
     res.json({ success: true, message: `${aspect_ratio} variant generation started` });
 
-    generateVariant(parent, aspect_ratio).catch(err =>
-      console.error('[staticsGeneration] Manual variant generation error:', err.message)
+    // OUTER RETRY — operator-triggered manual variant gets the same
+    // hardening as automatic cascades. 2 outer × 3 inner = 6 total chances.
+    withRetry(
+      () => generateVariant(parent, aspect_ratio),
+      `manual-variant-${aspect_ratio} ${parent.id.slice(0,8)} (outer)`,
+      2
+    ).catch(err =>
+      console.error('[staticsGeneration] Manual variant generation error after retries:', err.message)
     );
   } catch (err) {
     console.error('[staticsGeneration] /creatives/:id/create-variant error:', err);
@@ -3766,8 +3794,14 @@ router.post('/creatives/:id/edit/accept', authenticate, async (req, res) => {
       const refreshed = (await pgQuery('SELECT * FROM spy_creatives WHERE id = $1', [creative.id]))[0];
       for (const r of childRatios) {
         regenerating.push(r);
-        generateVariant(refreshed, r).catch(err =>
-          console.error(`[edit cascade] variant ${r} for ${creative.id.slice(0,8)} failed: ${err.message}`)
+        // OUTER RETRY — wraps generateVariant entirely so a transient submit /
+        // poll / persist failure gets a fresh attempt (2 outer × 3 inner = 6 chances).
+        withRetry(
+          () => generateVariant(refreshed, r),
+          `edit-cascade-${r} ${creative.id.slice(0,8)} (outer)`,
+          2
+        ).catch(err =>
+          console.error(`[edit cascade] variant ${r} for ${creative.id.slice(0,8)} failed after retries: ${err.message}`)
         );
       }
     }
