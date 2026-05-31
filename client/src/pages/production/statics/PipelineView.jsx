@@ -177,7 +177,7 @@ function RatioPill({ label, status }) {
   return null;
 }
 
-function CreativeCard({ creative, column, onStatusChange, onCardClick, onRegenerate, variantStatus }) {
+function CreativeCard({ creative, column, onStatusChange, onCardClick, onRegenerate, variantStatus, onEditClick }) {
   const [wasDragged, setWasDragged] = useState(false);
   const isDraggable = !column.noDropZone;
 
@@ -235,6 +235,21 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, onRegener
               View Full
             </span>
           </div>
+          {/* Edit Image button — only on cards in Review (operator rule:
+              once moved to Ready / Approved / Launched, edits are locked).
+              Hover-only overlay at bottom-right; stopPropagation so clicking
+              it doesn't open the View Full / detail modal. */}
+          {creative.status === 'review' && creative.image_url && onEditClick && (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onEditClick(creative); }}
+              className="absolute bottom-2 right-2 z-20 opacity-0 group-hover:opacity-100 transition-opacity inline-flex items-center gap-1 px-2 py-1 rounded-md bg-fuchsia-500/90 hover:bg-fuchsia-500 text-white text-[10px] font-mono font-semibold uppercase tracking-wide shadow-lg cursor-pointer"
+              title="Edit this image with AI"
+            >
+              <Pencil className="w-3 h-3" />
+              Edit
+            </button>
+          )}
           {creative.parent_creative_id && creative.pipeline !== 'iteration' && (
             <span className="absolute top-2 left-2 text-[9px] font-mono bg-[#c9a84c]/20 text-[#e8d5a3] px-1.5 py-0.5 rounded border border-[#c9a84c]/30 backdrop-blur-md">
               Variant
@@ -693,7 +708,7 @@ function QueueCard({ item, onRemove }) {
 // Standard pipeline column (generating, review, approved)
 // ---------------------------------------------------------------------------
 
-function PipelineColumn({ column, items, onStatusChange, onCardClick, onRegenerate, allCreatives, queueItems, onRemoveFromQueue }) {
+function PipelineColumn({ column, items, onStatusChange, onCardClick, onRegenerate, allCreatives, queueItems, onRemoveFromQueue, onEditClick }) {
   const Icon = column.icon;
   const [dragOver, setDragOver] = useState(false);
 
@@ -765,6 +780,7 @@ function PipelineColumn({ column, items, onStatusChange, onCardClick, onRegenera
                 onCardClick={onCardClick}
                 onRegenerate={onRegenerate}
                 variantStatus={vStatus}
+                onEditClick={onEditClick}
               />
             );
           })
@@ -965,7 +981,7 @@ function LaunchedColumn({ column, items, onCardClick, onStatusChange, onRefresh 
 // Main PipelineView component
 // ---------------------------------------------------------------------------
 
-export function PipelineView({ creatives = [], onStatusChange, onAngleChange, onCardClick, onRegenerate, onRefresh, loading, onOpenTemplates, onEditTemplate, onOpenCopySets, queue = [], onRemoveFromQueue, productId = null, onSelectReference, onAddSelectedToQueue, templatesVersion = 0 }) {
+export function PipelineView({ creatives = [], onStatusChange, onAngleChange, onCardClick, onRegenerate, onRefresh, loading, onOpenTemplates, onEditTemplate, onOpenCopySets, queue = [], onRemoveFromQueue, productId = null, onSelectReference, onAddSelectedToQueue, templatesVersion = 0, onEditClick }) {
   // Bucket creatives into columns by status.
   // Phase A: 'generating' rows are folded into the review column (the
   // dedicated Generating column was removed). The CreativeCard already
@@ -1203,6 +1219,7 @@ export function PipelineView({ creatives = [], onStatusChange, onAngleChange, on
             allCreatives={creatives}
             queueItems={col.key === 'review' ? queue.filter(q => q.status === 'queued' || q.status === 'generating') : undefined}
             onRemoveFromQueue={onRemoveFromQueue}
+            onEditClick={onEditClick}
           />
         ))}
 
