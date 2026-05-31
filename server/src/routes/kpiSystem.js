@@ -46,8 +46,13 @@ router.get('/cron/daily-pnl', async (req, res) => {
       yesterday.setUTCDate(yesterday.getUTCDate() - 1);
       dateStr = `${yesterday.getUTCFullYear()}-${String(yesterday.getUTCMonth() + 1).padStart(2, '0')}-${String(yesterday.getUTCDate()).padStart(2, '0')}`;
     }
-    console.log(`[Daily P&L] Cron trigger for ${dateStr}`);
-    await sendDailyPnlReport(dateStr);
+    // Allow manual force-resend via ?force=true. Without this, dedup blocks
+    // legitimate re-sends (e.g. backfill ran when Sellerboard didn't yet
+    // have Amazon data for the target day → message went without the
+    // Amazon block → operator wants a corrected resend).
+    const force = req.query.force === 'true';
+    console.log(`[Daily P&L] Cron trigger for ${dateStr}${force ? ' (force=true)' : ''}`);
+    await sendDailyPnlReport(dateStr, { force });
     res.json({ success: true, date: dateStr });
   } catch (err) {
     console.error('[Daily P&L] Cron error:', err.message);
