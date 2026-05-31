@@ -223,7 +223,7 @@ Return your analysis as a JSON object with these fields:
 
 {
   "audio_content": "Describe what's in the audio track. If it's music/song, name the genre and say 'no spoken script'. If it's a voiceover, transcribe it verbatim. If both, separate them.",
-  "on_screen_text": "ONLY graphic-design overlays — banners, sticker tags, sale labels, framing devices (e.g. quoted comment-reply panels, social-proof callouts), headlines, watermarks, product names, end-card CTAs. A designer deliberately added these as graphics on top of the footage. **EXCLUDE captions or subtitles that simply transcribe the speaker's voiceover** — those duplicate audio_content and pollute this field. If a line of text appears at the same cadence as the spoken words and mirrors them, it is a caption, not an overlay — leave it out. If you are unsure whether a line is an overlay or a caption, prefer leaving it out. Each true overlay goes on its own line.",
+  "on_screen_text": "Graphic-design overlays only — items the editor placed on top of the footage as stand-alone graphics. KEEP: top banners ('BIGGEST Memorial Day SALE!'), sale tags ('Buy 3 Get 3 FREE — SAVE $120'), brand logos / wordmarks ('FORGESKIN'), end-card CTAs ('CLICK BELOW'), watermarks, framing panels with quoted text (a 'Reply to @user' comment-reply box, social-proof callouts, before/after labels). DROP: burned-in subtitle captions that transcribe the voiceover. Concrete pattern: if the visual stream contains short ALL-CAPS phrases broken word-by-word like a teleprompter ('EVERY' / 'SINGLE PERSON' / 'AROUND ME' / 'TOLD ME THIS WAS' / 'INSANE'), those are auto-captions — DROP THEM. Also drop any line whose words appear inside the spoken voiceover (audio_content) — even one or two such lines means subtitles, not overlays. The only exception is a complete sentence inside a clearly-framed graphic panel (e.g. a quoted comment-reply box reproducing the speaker's opening line once) — keep that single panel and drop the rest. Each retained overlay on its own line. If unsure, leave it out.",
   "visual_narrative": "Describe the visual story across the 15s. What does the viewer SEE? Product shots, people, locations, brand logos? This is the visual selling angle.",
   "brand_or_product_identified": "What product or brand is this ad selling? Look at on-screen text, logos, watermarks, end-card. If unclear, say 'unclear'.",
   "selling_message": "In one sentence: what is this ad trying to make the viewer do or feel? This is the actual ad COPY equivalent.",
@@ -534,7 +534,73 @@ function combineMultimodalToTranscript(analysis) {
   const selling  = String(analysis?.selling_message || '').trim();
   const brand    = String(analysis?.brand_or_product_identified || '').trim();
 
-  if (onScreen) lines.push(`[ON-SCREEN TEXT]\n${onScreen}`);
+  // Post-process dedup: even when the prompt instructs Vertex to exclude
+  // burned-in subtitle captions, ads like Forge slip them through because
+  // the designer deliberately placed them as graphics. Belt-and-suspenders
+  // — for each on-screen line, drop it if its words appear inside the
+  // spoken voiceover. Heuristic, not exact: normalize both sides
+  // (lowercase, strip punctuation, collapse whitespace), then a line is
+  // considered a "mirror caption" if its normalized form is a substring
+  // of the normalized audio. Keeps banners ('BIGGEST SALE!' is not spoken
+  // anywhere → kept) but drops subtitle fragments ('MY ACCOUNTANT
+  // THREATENED TO QUIT' → contained in audio → dropped).
+  // Multi-sentence framing panels (full comment-reply quoting the hook)
+  // are preserved because they exceed the 12-word ceiling we use below to
+  // distinguish a banner from a paragraph; long panels remain even if
+  // they mirror the voiceover, since they're framing devices.
+  const filteredOnScreen = (() => {
+    if (!onScreen || !audio) return onScreen;
+    const norm = (s) => String(s || '')
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    const normalisedAudio = norm(audio);
+    const audioWordSet = new Set(normalisedAudio.split(' ').filter((w) => w.length > 2));
+    // A framing panel is distinguished from a sentence subtitle by being
+    // BOTH long (≥20 words) AND multi-sentence. Single long sentences
+    // (typical caption line) get dropped if they mirror audio. True quote
+    // panels (comment-reply boxes) survive even when their content is in
+    // audio because they're a framing device, not a transcript.
+    const isFramingPanel = (line) => {
+      const wc = line.split(/\s+/).filter(Boolean).length;
+      const sentenceCount = (line.match(/[.!?](\s|$)/g) || []).length;
+      return wc >= 20 && sentenceCount >= 2;
+    };
+    const survivors = [];
+    let droppedSubtitleCount = 0;
+    for (const rawLine of onScreen.split('\n')) {
+      const line = rawLine.trim();
+      if (!line) continue;
+      const n = norm(line);
+      if (!n) continue;
+      if (isFramingPanel(line)) {
+        survivors.push(line);
+        continue;
+      }
+      // Subtitle catcher #1 — single ALL-CAPS word/phrase whose words all
+      // appear in the audio (teleprompter-style 'EVERY' / 'INSANE').
+      if (/^[A-Z0-9\s\W]+$/.test(line) && line === line.toUpperCase()) {
+        const tokens = n.split(' ').filter((w) => w.length > 2);
+        if (tokens.length > 0 && tokens.every((w) => audioWordSet.has(w))) {
+          droppedSubtitleCount += 1;
+          continue;
+        }
+      }
+      // Subtitle catcher #2 — normalised line appears verbatim in audio.
+      if (n.split(' ').length >= 2 && normalisedAudio.includes(n)) {
+        droppedSubtitleCount += 1;
+        continue;
+      }
+      survivors.push(line);
+    }
+    if (droppedSubtitleCount > 0) {
+      console.log(`[transcribe] dedup: dropped ${droppedSubtitleCount} subtitle line(s) from on_screen_text that mirrored audio_content`);
+    }
+    return survivors.join('\n').trim();
+  })();
+
+  if (filteredOnScreen) lines.push(`[ON-SCREEN TEXT]\n${filteredOnScreen}`);
   if (audio && !/no spoken|background music|music only|no audio/i.test(audio)) {
     lines.push(`[AUDIO / VOICEOVER]\n${audio}`);
   } else if (audio) {
