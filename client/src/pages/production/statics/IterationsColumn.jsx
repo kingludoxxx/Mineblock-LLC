@@ -1,6 +1,7 @@
-import React, { useEffect, useState, useCallback, useMemo } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
-  Repeat, Loader2, RefreshCw, TrendingUp, DollarSign, Target, Clock, X, Sparkles, SlidersHorizontal,
+  Repeat, Loader2, RefreshCw, Clock, X, Sparkles, SlidersHorizontal,
+  CheckCircle2, Trash2,
 } from 'lucide-react';
 import api from '../../../services/api';
 
@@ -9,6 +10,9 @@ import api from '../../../services/api';
 const DEFAULT_MIN_SPEND = 50;
 const DEFAULT_MIN_ROAS = 1.5;
 const DEFAULT_WINDOW_DAYS = 30;
+
+const COUNT_OPTIONS = [1, 2, 3, 5];
+const RATIO_OPTIONS = ['9:16', '4:5', '1:1'];
 
 function formatMoney(n) {
   const num = Number(n) || 0;
@@ -29,125 +33,184 @@ function timeAgo(iso) {
 }
 
 // ---------------------------------------------------------------------------
-// Iterate confirmation modal
+// IteratePopover — anchored popover under the pink Iterate button.
+// Replaces the old centered modal. Count chips + ratio chips + live total.
 // ---------------------------------------------------------------------------
-function IterateModal({ winner, productId, onClose, onSubmitted }) {
+function IteratePopover({ winner, productId, anchorRef, onClose, onSubmitted }) {
+  const popRef = useRef(null);
   const [variations, setVariations] = useState(3);
+  const [ratios, setRatios] = useState(['9:16', '4:5', '1:1']);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
 
+  // Close on outside click + Escape
+  useEffect(() => {
+    const onDoc = (e) => {
+      if (popRef.current?.contains(e.target)) return;
+      if (anchorRef?.current?.contains(e.target)) return;
+      onClose();
+    };
+    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('mousedown', onDoc);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDoc);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [onClose, anchorRef]);
+
+  const toggleRatio = (r) => {
+    setRatios((cur) => cur.includes(r) ? cur.filter(x => x !== r) : [...cur, r]);
+  };
+
+  const total = variations * (ratios.length || 0);
+
   const submit = async () => {
+    if (ratios.length === 0) { setError('Pick at least one ratio'); return; }
     setSubmitting(true);
     setError(null);
     try {
       const res = await api.post(
         `/statics-generation/iterate/${winner.creative_id}`,
-        { variations, productId: productId || undefined }
+        { variations, ratios, productId: productId || undefined }
       );
       const data = res.data?.data || res.data;
       onSubmitted?.(data);
       onClose();
     } catch (err) {
-      setError(err.response?.data?.error || err.message);
+      setError(err.response?.data?.error?.message || err.response?.data?.error || err.message);
       setSubmitting(false);
     }
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={onClose}>
-      <div
-        className="glass-card border border-white/10 rounded-xl w-full max-w-md p-6 mx-4"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-2">
-            <Sparkles className="w-4 h-4 text-[#d4b55a]" />
-            <h3 className="text-sm font-mono font-semibold text-white uppercase tracking-wider">
-              Iterate {winner.creative_id}
-            </h3>
-          </div>
-          <button onClick={onClose} className="text-zinc-400 hover:text-white"><X className="w-4 h-4" /></button>
-        </div>
+    <div
+      ref={popRef}
+      className="absolute left-0 right-0 top-full mt-2 z-30 rounded-lg border border-white/[0.08] bg-zinc-950/95 backdrop-blur-xl shadow-2xl p-3 space-y-3"
+      onClick={(e) => e.stopPropagation()}
+    >
+      <div className="flex items-center justify-between">
+        <span className="text-[10px] font-mono uppercase tracking-wider text-zinc-300">
+          Generate Iterations
+        </span>
+        <button
+          onClick={onClose}
+          className="text-zinc-500 hover:text-white cursor-pointer"
+          title="Close"
+        >
+          <X className="w-3.5 h-3.5" />
+        </button>
+      </div>
 
-        {/* Parent preview */}
-        <div className="flex gap-3 mb-5 p-3 bg-white/[0.02] border border-white/[0.05] rounded-lg">
-          {winner.thumbnail_url ? (
-            <img src={winner.thumbnail_url} alt="" className="w-14 h-14 rounded object-cover flex-shrink-0" />
-          ) : (
-            <div className="w-14 h-14 bg-white/5 rounded" />
-          )}
-          <div className="flex-1 min-w-0">
-            <div className="text-xs font-mono text-zinc-300 truncate">{winner.ad_name || winner.creative_id}</div>
-            <div className="flex gap-3 mt-1 text-xs">
-              <span className="text-emerald-400">{Number(winner.roas).toFixed(1)}x</span>
-              <span className="text-zinc-400">{formatMoney(winner.spend)}</span>
-              {winner.angle && <span className="text-zinc-500 truncate">{winner.angle}</span>}
-            </div>
-          </div>
-        </div>
-
-        {/* Variations slider */}
-        <label className="block mb-5">
-          <div className="flex justify-between mb-2">
-            <span className="text-xs font-mono text-zinc-400 uppercase tracking-wider">Variations</span>
-            <span className="text-xs font-mono text-white">{variations}</span>
-          </div>
-          <input
-            type="range" min="1" max="5" value={variations}
-            onChange={(e) => setVariations(Number(e.target.value))}
-            className="w-full accent-[#d4b55a]"
-            disabled={submitting}
-          />
-          <div className="flex justify-between mt-1 text-[10px] text-zinc-600 font-mono">
-            <span>1</span><span>3 (default)</span><span>5</span>
-          </div>
-        </label>
-
-        <p className="text-xs text-zinc-400 mb-5 leading-relaxed">
-          Iterations land in <strong className="text-zinc-300">To Review</strong>. Each tests a different surgical change while preserving the working hook and product.
-        </p>
-
-        {error && (
-          <div className="mb-4 px-3 py-2 bg-red-500/10 border border-red-500/30 rounded text-xs text-red-300">
-            {error}
-          </div>
-        )}
-
-        <div className="flex gap-2">
-          <button
-            onClick={onClose}
-            disabled={submitting}
-            className="flex-1 px-3 py-2 text-xs font-mono uppercase tracking-wider text-zinc-400 border border-white/[0.06] rounded-md hover:border-white/[0.12] hover:text-zinc-200 disabled:opacity-40 cursor-pointer"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={submit}
-            disabled={submitting}
-            className="flex-1 px-3 py-2 text-xs font-mono uppercase tracking-wider text-black bg-[#d4b55a] rounded-md hover:bg-[#e4c56a] disabled:opacity-40 flex items-center justify-center gap-1.5 cursor-pointer"
-          >
-            {submitting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
-            {submitting ? 'Starting...' : `Iterate ${variations}`}
-          </button>
+      <div>
+        <div className="text-[9px] font-mono uppercase tracking-wider text-zinc-500 mb-1.5">Count</div>
+        <div className="flex gap-1.5">
+          {COUNT_OPTIONS.map((n) => (
+            <button
+              key={n}
+              onClick={() => setVariations(n)}
+              disabled={submitting}
+              className={`flex-1 h-8 rounded-md text-[12px] font-mono font-semibold transition-colors cursor-pointer disabled:opacity-40 ${
+                variations === n
+                  ? 'bg-fuchsia-500 text-white'
+                  : 'bg-white/[0.04] text-zinc-300 hover:bg-white/[0.08]'
+              }`}
+            >
+              {n}
+            </button>
+          ))}
         </div>
       </div>
+
+      <div>
+        <div className="text-[9px] font-mono uppercase tracking-wider text-zinc-500 mb-1.5">Ratios</div>
+        <div className="flex gap-1.5">
+          {RATIO_OPTIONS.map((r) => {
+            const active = ratios.includes(r);
+            return (
+              <button
+                key={r}
+                onClick={() => toggleRatio(r)}
+                disabled={submitting}
+                className={`flex-1 h-8 rounded-md text-[11px] font-mono font-semibold transition-colors cursor-pointer disabled:opacity-40 ${
+                  active
+                    ? 'bg-fuchsia-500 text-white'
+                    : 'bg-white/[0.04] text-zinc-400 hover:bg-white/[0.08]'
+                }`}
+              >
+                {r}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="flex items-center justify-between text-[11px] font-mono pt-0.5">
+        <span className="text-zinc-500 uppercase tracking-wider">Total</span>
+        <span className="text-white font-semibold">{total} image{total === 1 ? '' : 's'}</span>
+      </div>
+
+      {error && (
+        <div className="px-2 py-1.5 bg-red-500/10 border border-red-500/30 rounded text-[10px] text-red-300">
+          {String(error)}
+        </div>
+      )}
+
+      <button
+        onClick={submit}
+        disabled={submitting || ratios.length === 0 || total === 0}
+        className="w-full h-9 rounded-md bg-fuchsia-500 hover:bg-fuchsia-400 text-white text-[12px] font-mono font-semibold uppercase tracking-wider transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-1.5"
+      >
+        {submitting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+        {submitting ? 'Starting…' : 'Generate'}
+      </button>
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Individual winner card
+// Individual winner card — now with 3 action buttons (Select / Iterate / Hide)
 // ---------------------------------------------------------------------------
-function WinnerCard({ winner, productId, onIterate }) {
+function WinnerCard({ winner, productId, onUseAsReference, onSubmitted, onDismissed }) {
   const roas = Number(winner.roas) || 0;
   const spend = Number(winner.spend) || 0;
   const cpa = Number(winner.cpa) || 0;
   const itCount = Number(winner.iteration_count) || 0;
   const itAgo = timeAgo(winner.iterated_at);
 
+  const [popoverOpen, setPopoverOpen] = useState(false);
+  const [selected, setSelected] = useState(false);
+  const [dismissing, setDismissing] = useState(false);
+  const [dismissError, setDismissError] = useState(null);
+  const iterateBtnRef = useRef(null);
+
+  const handleSelect = () => {
+    setSelected(true);
+    // Hand the card to the parent so it can pre-load this image in the main
+    // statics-generation flow (operator picks angle there).
+    onUseAsReference?.(winner);
+  };
+
+  const handleHide = async () => {
+    if (dismissing) return;
+    const ok = window.confirm(`Hide "${winner.ad_name || winner.creative_id}" from the Iterations queue?\n\nIt won't appear here again until you un-dismiss it.`);
+    if (!ok) return;
+    setDismissing(true);
+    setDismissError(null);
+    try {
+      await api.post(`/statics-generation/iterations/${winner.creative_id}/dismiss`);
+      onDismissed?.(winner.creative_id);
+    } catch (err) {
+      setDismissError(err.response?.data?.error?.message || err.message);
+      setDismissing(false);
+    }
+  };
+
   return (
-    <div className="group relative glass-card border border-white/[0.05] hover:border-white/[0.12] rounded-xl overflow-hidden transition-all shadow-[inset_0_1px_0_0_rgba(255,255,255,0.03)]">
-      {/* Thumbnail — aspect-[4/3] matches pipeline cards */}
+    <div className={`group relative glass-card border rounded-xl overflow-hidden transition-all shadow-[inset_0_1px_0_0_rgba(255,255,255,0.03)] ${
+      selected ? 'border-emerald-500/40 ring-1 ring-emerald-500/20' : 'border-white/[0.05] hover:border-white/[0.12]'
+    }`}>
+      {/* Thumbnail */}
       {winner.thumbnail_url ? (
         <div className="relative aspect-[4/3] bg-black/40 overflow-hidden">
           <img
@@ -156,11 +219,9 @@ function WinnerCard({ winner, productId, onIterate }) {
             className="w-full h-full object-cover opacity-90 group-hover:opacity-100 group-hover:scale-105 transition-all duration-500"
             onError={(e) => { e.currentTarget.style.opacity = '0.2'; }}
           />
-          {/* Creative ID badge */}
           <span className="absolute top-2 left-2 text-[9px] font-mono bg-black/60 text-zinc-200 px-1.5 py-0.5 rounded border border-white/[0.1] backdrop-blur-md">
             {winner.creative_id}
           </span>
-          {/* ROAS badge */}
           <span className="absolute top-2 right-2 text-[9px] font-mono font-semibold bg-emerald-500/90 text-black px-1.5 py-0.5 rounded">
             {roas.toFixed(1)}x
           </span>
@@ -169,9 +230,8 @@ function WinnerCard({ winner, productId, onIterate }) {
         <div className="aspect-[4/3] bg-white/[0.02] flex items-center justify-center text-zinc-600 text-xs">No preview</div>
       )}
 
-      {/* Body — compact, matches pipeline card padding */}
+      {/* Body */}
       <div className="px-3 pt-2.5 pb-3 space-y-2">
-        {/* Angle pill + metrics — single row, matches pipeline layout */}
         <div className="flex items-center gap-2 min-w-0">
           <span className="inline-flex items-center text-[11px] font-medium px-2 py-0.5 rounded-full bg-white/[0.06] text-zinc-200 border border-white/[0.1] truncate">
             {winner.angle || 'Uncategorized'}
@@ -180,7 +240,6 @@ function WinnerCard({ winner, productId, onIterate }) {
           {cpa > 0 && <span className="text-[10px] text-zinc-500 font-mono shrink-0">{formatMoney(cpa)} CPA</span>}
         </div>
 
-        {/* Iteration history (small, only when iterated before) */}
         {itCount > 0 && (
           <div className="flex items-center gap-1 text-[9px] font-mono text-zinc-500">
             <Clock className="w-2.5 h-2.5" />
@@ -188,14 +247,59 @@ function WinnerCard({ winner, productId, onIterate }) {
           </div>
         )}
 
-        {/* Iterate button — matches "Approve" style: subtle border/bg + gold text */}
-        <button
-          onClick={() => onIterate(winner)}
-          className="w-full inline-flex items-center justify-center gap-1.5 h-9 rounded-lg text-[12px] font-semibold border border-[#c9a84c]/30 bg-[#c9a84c]/[0.08] text-[#d4b55a] hover:bg-[#c9a84c]/15 transition-colors cursor-pointer"
-        >
-          <Sparkles className="w-3.5 h-3.5 shrink-0" />
-          Iterate
-        </button>
+        {dismissError && (
+          <div className="text-[10px] text-red-400 font-mono">{dismissError}</div>
+        )}
+
+        {/* 3-button action row — Select / Iterate (pink) / Hide */}
+        <div className="relative flex items-stretch gap-1.5">
+          <button
+            onClick={handleSelect}
+            disabled={dismissing}
+            title="Use as reference for full statics generation (pick angle next)"
+            className={`flex-1 inline-flex items-center justify-center gap-1 h-9 rounded-lg text-[11px] font-mono font-semibold transition-colors cursor-pointer disabled:opacity-40 ${
+              selected
+                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                : 'bg-white/[0.04] text-zinc-300 hover:bg-white/[0.08] border border-white/[0.06]'
+            }`}
+          >
+            <CheckCircle2 className="w-3.5 h-3.5" />
+            {selected ? 'Selected' : 'Select'}
+          </button>
+
+          <button
+            ref={iterateBtnRef}
+            onClick={() => setPopoverOpen((v) => !v)}
+            disabled={dismissing}
+            title="Generate AI iterations of this ad"
+            className={`px-3 h-9 rounded-lg inline-flex items-center justify-center transition-colors cursor-pointer disabled:opacity-40 ${
+              popoverOpen
+                ? 'bg-fuchsia-500 text-white'
+                : 'bg-fuchsia-500/15 text-fuchsia-300 hover:bg-fuchsia-500/25 border border-fuchsia-500/30'
+            }`}
+          >
+            <Sparkles className="w-3.5 h-3.5" />
+          </button>
+
+          <button
+            onClick={handleHide}
+            disabled={dismissing}
+            title="Hide this card from the Iterations queue"
+            className="px-3 h-9 rounded-lg inline-flex items-center justify-center text-red-400 hover:bg-red-500/10 border border-red-500/30 transition-colors cursor-pointer disabled:opacity-40"
+          >
+            {dismissing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <X className="w-3.5 h-3.5" />}
+          </button>
+
+          {popoverOpen && (
+            <IteratePopover
+              winner={winner}
+              productId={productId}
+              anchorRef={iterateBtnRef}
+              onClose={() => setPopoverOpen(false)}
+              onSubmitted={onSubmitted}
+            />
+          )}
+        </div>
       </div>
     </div>
   );
@@ -204,11 +308,10 @@ function WinnerCard({ winner, productId, onIterate }) {
 // ---------------------------------------------------------------------------
 // Main column
 // ---------------------------------------------------------------------------
-export function IterationsColumn({ productId, onSubmitted }) {
+export function IterationsColumn({ productId, onSubmitted, onUseAsReference }) {
   const [winners, setWinners] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [selected, setSelected] = useState(null);
   const [showFilters, setShowFilters] = useState(false);
   const [minSpend, setMinSpend] = useState(DEFAULT_MIN_SPEND);
   const [minRoas, setMinRoas] = useState(DEFAULT_MIN_ROAS);
@@ -231,13 +334,18 @@ export function IterationsColumn({ productId, onSubmitted }) {
 
   useEffect(() => {
     load();
-    const interval = setInterval(load, 10 * 60 * 1000); // auto-refresh every 10 min
+    const interval = setInterval(load, 10 * 60 * 1000);
     return () => clearInterval(interval);
   }, [load]);
 
   const handleSubmitted = (batchData) => {
     load();
     onSubmitted?.(batchData);
+  };
+
+  // Optimistic remove on hide — no need to wait for /iterations re-fetch.
+  const handleDismissed = (creativeId) => {
+    setWinners((cur) => cur.filter((w) => w.creative_id !== creativeId));
   };
 
   const applyPreset = (spend, roas, days) => {
@@ -330,7 +438,7 @@ export function IterationsColumn({ productId, onSubmitted }) {
       <div className="flex-1 overflow-y-auto space-y-3 pr-1">
         {error && (
           <div className="px-3 py-2 bg-red-500/10 border border-red-500/30 rounded text-xs text-red-300">
-            {error}
+            {String(error?.message || error)}
           </div>
         )}
 
@@ -347,20 +455,12 @@ export function IterationsColumn({ productId, onSubmitted }) {
             key={w.creative_id}
             winner={w}
             productId={productId}
-            onIterate={setSelected}
+            onUseAsReference={onUseAsReference}
+            onSubmitted={handleSubmitted}
+            onDismissed={handleDismissed}
           />
         ))}
       </div>
-
-      {/* Modal */}
-      {selected && (
-        <IterateModal
-          winner={selected}
-          productId={productId}
-          onClose={() => setSelected(null)}
-          onSubmitted={handleSubmitted}
-        />
-      )}
     </div>
   );
 }
