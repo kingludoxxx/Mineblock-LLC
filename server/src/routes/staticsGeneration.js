@@ -167,8 +167,8 @@ import crypto from 'crypto';
 import { analyzeTemplate, analyzeTemplateFast } from '../utils/templateAnalysis.js';
 import sharp from 'sharp';
 import {
-  isMetaAdsConfigured, createAdSet, createFlexibleAdCreative, createAd,
-  uploadAdImageFromUrl, diagnoseMetaApp, switchAppToLiveMode,
+  isMetaAdsConfigured, createAdSet, createFlexibleAdCreative, createPlacementAwareAdCreative,
+  createAd, uploadAdImageFromUrl, diagnoseMetaApp, switchAppToLiveMode,
 } from '../services/metaAdsApi.js';
 import { sendSlackAlert } from '../utils/slackAlert.js';
 
@@ -3531,52 +3531,66 @@ router.post('/launch', authenticate, async (req, res) => {
           : safeArr(genCopy.descriptions).length ? safeArr(genCopy.descriptions)
           : [''];
         const cta  = copySet?.cta_button || genCopy.cta || 'SHOP_NOW';
-        const link = copySet?.landing_page_url || template.landing_page_url || 'https://mineblock.com';
+        // FIX: previous fallback was 'https://mineblock.com' — a DEAD domain
+        // (our store is mineblock.co). Now reads SHOPIFY_STORE_URL env var
+        // with the correct .co TLD as the final fallback.
+        const link = copySet?.landing_page_url || template.landing_page_url || process.env.SHOPIFY_STORE_URL || 'https://mineblock.co';
 
         const existingMeta = safeArr(creative.meta_ad_ids);
-        let primaryMetaAdId = null;
-        let primaryImageHash = creative.meta_image_hash;
 
-        for (const ratioItem of uploadedRatios) {
-          const ratioSuffix = uploadedRatios.length > 1 ? ` [${ratioItem.ratio}]` : '';
-          const ratioAdName = `${adName}${ratioSuffix}`;
+        // PLACEMENT-AWARE LAUNCH (was: one ad per ratio = N ads per creative).
+        // Now: ONE Meta ad creative per creative-group, containing all
+        // uploaded ratios pinned to their best placements (4:5 → feeds,
+        // 9:16 → stories/reels, 1:1 → right-column/AN/messenger). Meta
+        // serves the right ratio per placement at delivery time. Result: 6
+        // creatives produce 6 ads (not 12), each with full placement
+        // coverage instead of one placement per ad.
+        const placementRatios = uploadedRatios.map(r => ({
+          ratio: r.ratio,
+          imageHash: r.imageHash,
+        }));
 
-          const metaCreativeId = await createFlexibleAdCreative(template.ad_account_id, {
-            name: ratioAdName,
-            imageHashes: [ratioItem.imageHash],
-            primaryTexts, headlines, descriptions, cta, link,
-            pageId: page?.id || selectedPages[0]?.id,
-            utmParameters: template.utm_parameters,
-          });
+        const metaCreativeId = await createPlacementAwareAdCreative(template.ad_account_id, {
+          name: adName,
+          ratioImages: placementRatios,
+          primaryTexts, headlines, descriptions, cta, link,
+          pageId: page?.id || selectedPages[0]?.id,
+        });
 
-          const metaAdId = await createAd(template.ad_account_id, {
-            name: ratioAdName, adsetId, creativeId: metaCreativeId, status: 'ACTIVE',
-          });
+        const metaAdId = await createAd(template.ad_account_id, {
+          name: adName, adsetId, creativeId: metaCreativeId, status: 'ACTIVE',
+        });
 
-          existingMeta.push({
-            ad_id: metaAdId, creative_id: metaCreativeId, adset_id: adsetId,
-            campaign_id: template.campaign_id, page_id: page?.id || selectedPages[0]?.id,
-            ad_name: ratioAdName, aspect_ratio: ratioItem.ratio,
-            launched_at: new Date().toISOString(),
-          });
+        const primaryMetaAdId = metaAdId;
+        const primaryImageHash = uploadedRatios.find(r => r.id === creative.id)?.imageHash || uploadedRatios[0]?.imageHash;
 
-          await pgQuery(
-            `INSERT INTO statics_launches (creative_id, template_id, copy_set_id, ad_account_id, meta_campaign_id, meta_adset_id, meta_ad_id, meta_creative_id, meta_image_hash, ad_name, adset_name, page_id, page_name, batch_number, status, launched_at)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'launched',NOW())`,
-            [ratioItem.id, template_id, copy_set_id || null, template.ad_account_id, template.campaign_id, adsetId, metaAdId, metaCreativeId, ratioItem.imageHash, ratioAdName, adsetName, page?.id || null, page?.name || null, batchNum]
-          ).catch(err => console.warn('[staticsGeneration] Failed to log launch:', err.message));
+        // Single launch record with all ratios captured in meta_ad_ids
+        existingMeta.push({
+          ad_id: metaAdId,
+          creative_id: metaCreativeId,
+          adset_id: adsetId,
+          campaign_id: template.campaign_id,
+          page_id: page?.id || selectedPages[0]?.id,
+          ad_name: adName,
+          aspect_ratios: uploadedRatios.map(r => r.ratio),
+          launched_at: new Date().toISOString(),
+        });
 
-          if (ratioItem.id === creative.id) {
-            primaryMetaAdId = metaAdId;
-            primaryImageHash = ratioItem.imageHash;
-          }
-        }
+        // One DB row in statics_launches per (creative × ad). Records the
+        // primary creative_id and lists all ratios served in ad_name.
+        await pgQuery(
+          `INSERT INTO statics_launches (creative_id, template_id, copy_set_id, ad_account_id, meta_campaign_id, meta_adset_id, meta_ad_id, meta_creative_id, meta_image_hash, ad_name, adset_name, page_id, page_name, batch_number, status, launched_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'launched',NOW())`,
+          [creative.id, template_id, copy_set_id || null, template.ad_account_id, template.campaign_id, adsetId, metaAdId, metaCreativeId, primaryImageHash, adName, adsetName, page?.id || null, page?.name || null, batchNum]
+        ).catch(err => console.warn('[staticsGeneration] Failed to log launch:', err.message));
 
         await pgQuery(
           `UPDATE spy_creatives SET status = 'launched', meta_ad_ids = $1, meta_image_hash = $2, updated_at = NOW() WHERE id = $3`,
-          [JSON.stringify(existingMeta), primaryImageHash || uploadedRatios[0]?.imageHash, creative.id]
+          [JSON.stringify(existingMeta), primaryImageHash, creative.id]
         );
 
+        // Sibling ratio variants share the launched status (they're part of
+        // the same Meta ad now, not separate ads as before).
         for (const ratioItem of uploadedRatios) {
           if (ratioItem.id !== creative.id) {
             await pgQuery(

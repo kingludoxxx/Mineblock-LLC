@@ -581,6 +581,150 @@ export async function createFlexibleAdCreative(adAccountId, params) {
   return data.id;
 }
 
+// ── Placement-aware multi-ratio creative ─────────────────────────────────
+//
+// Maps each aspect ratio to the Meta placements where it serves best:
+//
+//   4:5  → FB Feed, FB Marketplace, FB Video Feeds; IG Feed, Explore,
+//          Profile Feed, Mentions   (the "tall portrait mobile feed" surface)
+//   9:16 → FB Stories, FB Reels; IG Stories, IG Reels (full-screen vertical)
+//   1:1  → FB Right Column, FB Search, FB Instant Article; Audience Network
+//          Classic + Rewarded Video; Messenger Home    (square fallback +
+//          desktop + AN/Messenger)
+//
+// Refs:
+//   https://developers.facebook.com/docs/marketing-api/reference/asset-feed-spec
+//   https://developers.facebook.com/docs/marketing-api/reference/ad-asset-customization-rule-spec
+//
+// Tweak the table here if Meta deprecates a placement or you want a
+// different mapping. This is the single source of truth.
+const PLACEMENT_RULES_BY_RATIO = {
+  '4:5': {
+    publisher_platforms: ['facebook', 'instagram'],
+    facebook_positions: ['feed', 'marketplace', 'video_feeds'],
+    instagram_positions: ['stream', 'explore', 'explore_home', 'profile_feed', 'mention'],
+  },
+  '9:16': {
+    publisher_platforms: ['facebook', 'instagram'],
+    facebook_positions: ['story', 'facebook_reels'],
+    instagram_positions: ['story', 'reels', 'ig_search'],
+  },
+  '1:1': {
+    publisher_platforms: ['facebook', 'audience_network', 'messenger'],
+    facebook_positions: ['right_hand_column', 'search', 'instant_article'],
+    audience_network_positions: ['classic', 'rewarded_video'],
+    messenger_positions: ['messenger_home'],
+  },
+};
+
+function ratioLabelName(ratio) {
+  return `ratio_${ratio.replace(':', '_')}`;
+}
+
+/**
+ * Create ONE Meta ad creative that contains multiple aspect-ratio variants,
+ * each pinned to the placements where it renders best. Meta automatically
+ * serves the right image per placement at delivery time.
+ *
+ * Replaces the previous "loop over ratios → create N separate ads" pattern
+ * which produced 12 ads from 6 creatives (one per ratio) and forced Meta to
+ * guess placement-image matching.
+ *
+ * @param {string} adAccountId
+ * @param {object} params
+ * @param {string} params.name                              — ad creative name
+ * @param {Array<{ratio,imageHash}>} params.ratioImages     — one entry per ratio
+ * @param {string[]} [params.primaryTexts]                  — body copy options
+ * @param {string[]} [params.headlines]                     — headline options
+ * @param {string[]} [params.descriptions]                  — description options
+ * @param {string} [params.cta='SHOP_NOW']
+ * @param {string} params.link                              — landing URL
+ * @param {string} params.pageId                            — FB page id
+ * @param {string} [params.instagramActorId]                — IG actor (optional)
+ * @returns {Promise<string>} creativeId
+ */
+export async function createPlacementAwareAdCreative(adAccountId, params) {
+  const {
+    name,
+    ratioImages = [],
+    primaryTexts = [],
+    headlines = [],
+    descriptions = [],
+    cta = 'SHOP_NOW',
+    link,
+    pageId,
+    instagramActorId,
+  } = params;
+
+  if (!ratioImages.length) throw new Error('createPlacementAwareAdCreative: ratioImages is empty');
+  if (!pageId) throw new Error('createPlacementAwareAdCreative: pageId is required');
+  if (!link) throw new Error('createPlacementAwareAdCreative: link is required');
+
+  // Deduplicate by ratio (in case a caller passes the same ratio twice)
+  // and only keep ratios we have placement rules for.
+  const seen = new Set();
+  const ratiosUsed = [];
+  for (const r of ratioImages) {
+    if (!r?.ratio || !r?.imageHash) continue;
+    if (seen.has(r.ratio)) continue;
+    if (!PLACEMENT_RULES_BY_RATIO[r.ratio]) {
+      console.warn(`[createPlacementAwareAdCreative] no placement rule for ratio "${r.ratio}" — skipping`);
+      continue;
+    }
+    seen.add(r.ratio);
+    ratiosUsed.push(r);
+  }
+  if (!ratiosUsed.length) throw new Error('createPlacementAwareAdCreative: no usable ratios after filtering');
+
+  const images = ratiosUsed.map(r => ({
+    hash: r.imageHash,
+    adlabels: [{ name: ratioLabelName(r.ratio) }],
+  }));
+
+  const asset_customization_rules = ratiosUsed.map(r => ({
+    customization_spec: PLACEMENT_RULES_BY_RATIO[r.ratio],
+    image_label: { name: ratioLabelName(r.ratio) },
+  }));
+
+  const body = {
+    access_token: META_ACCESS_TOKEN,
+    name,
+    object_story_spec: {
+      page_id: pageId,
+      ...(instagramActorId ? { instagram_actor_id: instagramActorId } : {}),
+    },
+    asset_feed_spec: {
+      images,
+      bodies: (primaryTexts.length ? primaryTexts : ['']).map(text => ({ text })),
+      titles: (headlines.length ? headlines : ['']).map(text => ({ text })),
+      descriptions: (descriptions.length ? descriptions : ['']).map(text => ({ text })),
+      call_to_action_types: [cta],
+      link_urls: [{ website_url: link }],
+      ad_formats: ['SINGLE_IMAGE'],
+      asset_customization_rules,
+    },
+    url_tags: DEFAULT_URL_TAGS,
+  };
+
+  console.log(`[createPlacementAwareAdCreative] ${name}: ratios=${ratiosUsed.map(r => r.ratio).join(',')} link=${link}`);
+
+  const res = await fetch(`${META_GRAPH_URL}/${adAccountId}/adcreatives`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    signal: AbortSignal.timeout(META_API_TIMEOUT),
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text();
+    console.error('[createPlacementAwareAdCreative] Meta error:', errText.slice(0, 1000));
+    throw new Error(`Meta adcreatives error ${res.status}: ${errText.slice(0, 500)}`);
+  }
+
+  const data = await res.json();
+  return data.id;
+}
+
 /**
  * Upload video to Meta ad account
  */
