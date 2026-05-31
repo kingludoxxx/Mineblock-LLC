@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  X, Loader2, Send, CheckCircle2, MousePointer2, MessageSquarePlus,
+  X, Loader2, Send, CheckCircle2, MousePointer2,
   Pencil, AlertTriangle, RotateCcw,
 } from 'lucide-react';
 import api from '../../../services/api';
@@ -39,6 +39,11 @@ export function EditImageEditor({ creative, isOpen, onClose, onAccepted }) {
 
   // Accept flow
   const [accepting, setAccepting] = useState(false);
+
+  // Mounted ref — set false on unmount so async pollers can skip setState
+  // and we don't leak warnings ("can't update state on unmounted component").
+  const mountedRef = useRef(true);
+  useEffect(() => () => { mountedRef.current = false; }, []);
 
   const current = history[currentIdx] || null;
   const sourceImageUrl = current?.imageUrl;
@@ -191,9 +196,13 @@ export function EditImageEditor({ creative, isOpen, onClose, onAccepted }) {
       const MAX_POLLS = 120; // ~5 min
       let polls = 0;
       const poll = async () => {
+        // Guard: if the component unmounted (operator closed the editor
+        // somehow), drop the poll silently — backend keeps the row state.
+        if (!mountedRef.current) return;
         polls++;
         try {
           const { data: cdata } = await api.get(`/statics-generation/creatives/${creative.id}`);
+          if (!mountedRef.current) return;
           const c = cdata?.data || cdata;
           if (c.last_edit_error) {
             setError(`Edit failed: ${c.last_edit_error}`);
@@ -225,6 +234,7 @@ export function EditImageEditor({ creative, isOpen, onClose, onAccepted }) {
           }
           setTimeout(poll, POLL_MS);
         } catch (e) {
+          if (!mountedRef.current) return;
           setError(e.response?.data?.error?.message || e.message);
           setGenerating(false);
         }
