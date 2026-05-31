@@ -85,21 +85,23 @@ export default function PushToClickupModal({ briefId, briefTitle, isOpen, onClos
   };
 
   // Live task-name preview. Mirrors server-side buildNamingConvention:
-  // synthetic "MANUAL-XXXXXXXX" parent ids are dropped from the slot
-  // list entirely (operator confirmed they're noise). Real parent
-  // B-codes — like "B0223" — still surface.
+  // - parent slot drops entirely for NN (clones — no meaningful parent)
+  //   or when parentBriefId is a synthetic "MANUAL-XXXXXXXX" id
+  // - real parent B-codes ("B0223") still surface for IT iterations
   const taskPreview = useMemo(() => {
     const code = options.creativeTypeCodes?.[form.creativeType] || 'HX';
     const num = form.briefNumber ? `B${String(form.briefNumber).padStart(4, '0')}` : 'B????';
-    const rawParent = form.briefType === 'IT' ? form.parentBriefId : 'NA';
+    const briefType = form.briefType || 'IT';
+    const rawParent = briefType === 'IT' ? form.parentBriefId : null;
     const isSyntheticParent = !rawParent || /^MANUAL[-_]/i.test(String(rawParent));
+    const dropParent = briefType === 'NN' || isSyntheticParent;
     const weekStr = getCurrentWeekStr();
     const slots = [
       form.product || 'MR',
       num,
       code,
-      form.briefType || 'IT',
-      isSyntheticParent ? null : rawParent,
+      briefType,
+      dropParent ? null : rawParent,
       form.angle || '?',
       weekStr,
     ];
@@ -120,12 +122,16 @@ export default function PushToClickupModal({ briefId, briefTitle, isOpen, onClos
         product_code:        form.product,
         angle:               form.angle,
         format:              form.creativeType,        // backend uses 'format'
+        brief_type:          form.briefType,           // NN | IT — drives both naming + ClickUp dropdown
         avatar:              form.avatar,
         editor:              form.editor,
         idea:                form.idea,
         body:                form.briefText,            // Brief Text → body
         reference_link:      form.referenceLink,
-        parent_creative_id:  form.parentBriefId,
+        // Parent slot only meaningful for IT iterations. NN sends empty so
+        // the backend doesn't accidentally stamp a stale parent on the
+        // ClickUp custom field.
+        parent_creative_id:  form.briefType === 'IT' ? form.parentBriefId : '',
         naming_convention:   taskPreview,
       };
       const { data } = await api.post(`/brief-pipeline/generated/${briefId}/push-to-clickup`, payload);
@@ -219,10 +225,15 @@ export default function PushToClickupModal({ briefId, briefTitle, isOpen, onClos
               <FieldSelect
                 label="Brief Type"
                 value={form.briefType}
-                onChange={(v) => updateField('briefType', v)}
+                onChange={(v) => {
+                  updateField('briefType', v);
+                  // Switching to NN clears the parent brief id — net-new
+                  // clones have no meaningful parent. Switching back to
+                  // IT leaves whatever the operator types next.
+                  if (v === 'NN') updateField('parentBriefId', '');
+                }}
                 options={options.briefTypes}
-                labelFor={(b) => (b === 'NN' ? 'NN (New)' : 'IT (Iteration)')}
-                disabled                                    // Q2 — locked to IT
+                labelFor={(b) => (b === 'NN' ? 'NN (Net New)' : 'IT (Iteration)')}
               />
               <FieldSelect
                 label="Editor"
@@ -240,13 +251,16 @@ export default function PushToClickupModal({ briefId, briefTitle, isOpen, onClos
               />
             </div>
 
-            {/* Parent Brief ID (auto-filled from iteration metadata) */}
-            <FieldInput
-              label="Parent Brief ID"
-              value={form.parentBriefId}
-              onChange={(v) => updateField('parentBriefId', v)}
-              placeholder="e.g. B0223"
-            />
+            {/* Parent Brief ID — visible only for IT iterations. NN clones
+                have no meaningful parent so the field is hidden entirely. */}
+            {form.briefType === 'IT' && (
+              <FieldInput
+                label="Parent Brief ID"
+                value={form.parentBriefId}
+                onChange={(v) => updateField('parentBriefId', v)}
+                placeholder="e.g. B0223"
+              />
+            )}
 
             {/* Idea */}
             <FieldInput

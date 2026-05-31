@@ -933,6 +933,19 @@ async function ensureTables() {
     `).catch((e) => {
       console.warn('[BriefPipeline] MANUAL- slug strip on naming_convention skipped:', e.message);
     });
+    // Brief type backfill — clones of competitor ads were previously
+    // stamped as IT in the naming convention. Convert " - IT -" to " - NN -"
+    // for every brief whose iteration_mode is 'clone'. Idempotent (only
+    // affects rows still on the wrong type). Iteration-mode briefs are
+    // untouched.
+    await pgQuery(`
+      UPDATE brief_pipeline_generated
+         SET naming_convention = regexp_replace(naming_convention, '^(\\S+ - B\\d{4}) - IT - ', '\\1 - NN - ')
+       WHERE iteration_mode = 'clone'
+         AND naming_convention ~ '^\\S+ - B\\d{4} - IT - '
+    `).catch((e) => {
+      console.warn('[BriefPipeline] IT→NN backfill on naming_convention skipped:', e.message);
+    });
 
     // Recover any winners stuck in 'generating' from a previous crash
     const stuck = await pgQuery(
@@ -1278,19 +1291,27 @@ function abbreviateAngle(angle) {
   return angle.split(/\s+/).slice(0, 3).map(w => w[0]?.toUpperCase()).join('') || angle.slice(0, 6);
 }
 
-function buildNamingConvention({ product_code, brief_number, parent_creative_id, avatar, angle, format, strategist, creator, editor, week }) {
+function buildNamingConvention({ product_code, brief_number, parent_creative_id, avatar, angle, format, strategist, creator, editor, week, brief_type }) {
   const briefId = `B${String(brief_number).padStart(4, '0')}`;
+  // Brief type — NN (Net New) for clones of competitor ads, IT (Iteration)
+  // for refreshes of our own proven winners. Default IT for back-compat
+  // with callers that don't pass it explicitly. Anything else (operator
+  // override, junk) → IT.
+  const briefType = brief_type === 'NN' ? 'NN' : 'IT';
   // The parent slot exists so iterations of a real winner carry the parent's
   // B-code (e.g. "B0223") in the task name. For briefs generated from a
   // raw script paste or a reference card the parent_creative_id is a
   // synthetic "MANUAL-XXXXXXXX" — noise in the task name. Drop the slot
   // entirely in that case rather than emitting MANUAL-XXXX strings.
+  // Also drop the slot entirely for NN briefs — net-new clones have no
+  // meaningful parent, the slot should not appear at all.
   const isSyntheticParent = !parent_creative_id || /^MANUAL[-_]/i.test(String(parent_creative_id));
+  const dropParent = briefType === 'NN' || isSyntheticParent;
   const slots = [
     product_code || 'MR',
     briefId,
-    'IT',
-    isSyntheticParent ? null : parent_creative_id,
+    briefType,
+    dropParent ? null : parent_creative_id,
     avatar || 'NA',
     abbreviateAngle(angle),
     format || 'Mashup',
@@ -2694,6 +2715,13 @@ async function pushBriefToClickUp(generatedBrief, parentClickupTaskId, overrides
   const strategist       = overrides.strategist       ?? generatedBrief.strategist;
   const creator          = overrides.creator          ?? generatedBrief.creator;
   const parent_creative_id = overrides.parent_creative_id ?? generatedBrief.parent_creative_id;
+  // Brief type — NN for clones of competitor ads, IT for iterations of our
+  // own winners. Operator override (from the now-unlocked modal field)
+  // takes precedence; otherwise derive from the brief's stored
+  // iteration_mode. Old rows without iteration_mode default to IT for
+  // back-compat (they predate the clone/iterate split).
+  const brief_type = (overrides.brief_type ?? overrides.briefType)
+    || (generatedBrief.iteration_mode === 'clone' ? 'NN' : 'IT');
   const hooks            = overrides.hooks            ?? generatedBrief.hooks;
   const body             = overrides.body             ?? generatedBrief.body;
   // highlighted_text = on-screen overlay labels. Reference-driven only —
@@ -2711,7 +2739,7 @@ async function pushBriefToClickUp(generatedBrief, parentClickupTaskId, overrides
     || generatedBrief.naming_convention
     || buildNamingConvention({
       product_code, brief_number, parent_creative_id, avatar, angle, format,
-      strategist, creator, editor, week: weekLabel,
+      strategist, creator, editor, week: weekLabel, brief_type,
     });
 
   // Resolve the Reference link via a four-step fallback chain. Every brief
@@ -2812,7 +2840,9 @@ async function pushBriefToClickUp(generatedBrief, parentClickupTaskId, overrides
   // resolve to the canonical key ("Againstcompetition") and then to the UUID.
   const angleKey = normalizeAngleKey(angle);
   const angleUuid = ANGLE_OPTIONS[angleKey] || ANGLE_OPTIONS.NA;
-  const briefTypeUuid = BRIEF_TYPE_OPTIONS.IT;
+  // ClickUp dropdown UUID for brief type. Derives from the resolved
+  // brief_type above (NN for clones, IT for iterations).
+  const briefTypeUuid = BRIEF_TYPE_OPTIONS[brief_type] || BRIEF_TYPE_OPTIONS.IT;
   const creativeTypeUuid = CREATIVE_TYPE_OPTIONS[format] || CREATIVE_TYPE_OPTIONS.Mashup;
 
   const editorMap = await getEditors();
@@ -3413,10 +3443,16 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
       const { generated, scores, overall, direction } = result;
       const briefNumber = nextBriefNum++;
       const weekLabel = getCurrentWeekLabel();
+      // Brief type derives from generation mode: clones of competitor ads
+      // are Net New (NN); iterations of our own winners are IT. The mode
+      // is set from the request body (clone | iterate) so this stays in
+      // sync without re-querying the reference row.
+      const briefType = isCloneMode ? 'NN' : 'IT';
       const namingConvention = buildNamingConvention({
         product_code: productCode || 'MR', brief_number: briefNumber,
         parent_creative_id: creativeId, avatar: 'NA', angle: angle || 'NA',
         format: 'Mashup', strategist: 'Ludovico', creator: 'NA', editor: 'Uly', week: weekLabel,
+        brief_type: briefType,
       });
 
       try {
@@ -4030,6 +4066,11 @@ router.get('/generated/:id/clickup-prefill', authenticate, async (req, res) => {
       return [];
     })().map((s) => String(s || '').trim()).filter(Boolean);
 
+    // Derive brief type from the brief's stored generation mode: clones of
+    // competitor ads default to NN (Net New), iterations of our winners to
+    // IT. Modal field is no longer locked — operator can override before
+    // pushing. Parent Brief ID is meaningful only for IT.
+    const defaultBriefType = brief.iteration_mode === 'clone' ? 'NN' : 'IT';
     res.json({
       success: true,
       defaults: {
@@ -4037,14 +4078,14 @@ router.get('/generated/:id/clickup-prefill', authenticate, async (req, res) => {
         angle:          normalizeAngleKey(brief.angle),
         angleDisplay:   brief.angle || null,
         creativeType:   brief.format || 'Mashup',
-        briefType:      'IT',  // locked — Brief Pipeline only generates iterations
+        briefType:      defaultBriefType,
         editor:         brief.editor || '',
         avatar:         brief.avatar || 'NA',
         idea:           brief.iteration_direction || (parsedHooks[0]?.text?.slice(0, 80)) || '',
         briefText,
         highlightedText,
         referenceLink,
-        parentBriefId:  brief.parent_creative_id || '',
+        parentBriefId:  defaultBriefType === 'IT' ? (brief.parent_creative_id || '') : '',
         briefNumber:    brief.brief_number,
         namingConvention: brief.naming_convention || '',
       },
