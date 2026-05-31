@@ -3707,15 +3707,13 @@ router.post('/generated/:id/push-to-clickup', authenticate, async (req, res) => 
     brief.win_analysis = parseJsonb(brief.win_analysis);
     brief.scores_json = parseJsonb(brief.scores_json);
 
-    if (brief.status !== 'approved') {
-      return res.status(409).json({
-        success: false,
-        error: {
-          code: 'NOT_APPROVED',
-          message: `Brief must be in 'approved' status before pushing to ClickUp. Current status: '${brief.status}'.`,
-        },
-      });
-    }
+    // ALREADY_PUSHED takes precedence over NOT_APPROVED because the more
+    // specific failure ("you already sent this to ClickUp") is more
+    // actionable than the generic status check. A brief that already has a
+    // clickup_task_id has by definition transitioned out of 'approved'
+    // (status='ready_to_launch'), so without this ordering operators would
+    // always see NOT_APPROVED on a re-push attempt and miss the link to the
+    // existing task.
     if (brief.clickup_task_id) {
       return res.status(409).json({
         success: false,
@@ -3723,6 +3721,15 @@ router.post('/generated/:id/push-to-clickup', authenticate, async (req, res) => 
           code: 'ALREADY_PUSHED',
           message: 'Brief already has a ClickUp task — cannot push twice.',
           clickup_task_url: brief.clickup_task_url,
+        },
+      });
+    }
+    if (brief.status !== 'approved') {
+      return res.status(409).json({
+        success: false,
+        error: {
+          code: 'NOT_APPROVED',
+          message: `Brief must be in 'approved' status before pushing to ClickUp. Current status: '${brief.status}'.`,
         },
       });
     }
