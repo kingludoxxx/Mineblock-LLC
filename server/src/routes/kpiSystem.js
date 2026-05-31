@@ -1846,6 +1846,17 @@ router.get('/home-dashboard', authenticate, async (req, res) => {
       // (showed 2.38x when TW Summary showed 1.42x).
       const twRevenue = twRevenueLookup[d] || 0;
       const roas = adSpend > 0 ? Math.round((revenue / adSpend) * 100) / 100 : 0;
+      // Blended ROAS — matches TW UI's "ROAS" widget, which uses
+      // Blended Sales (multi-channel pixel attribution: Meta + Google +
+      // Klaviyo email + organic + Loox reviews etc.) instead of Shopify
+      // direct revenue. Our `twRevenue` is SUM(order_revenue) across all
+      // channels in pixel_joined_tvf — runs ~1-2% higher than TW UI's
+      // Blended Sales because TW dedups multi-touch overlap proprietarily.
+      // Numerator = TW pixel-attributed revenue (incl. email + organic).
+      // Denominator = same ad spend (Meta+Google API totals via TW).
+      const roasBlended = adSpend > 0 && twRevenue > 0
+        ? Math.round((twRevenue / adSpend) * 100) / 100
+        : 0;
       // Break-even ROAS = Revenue / (Revenue − COGS − Shipping − Fees).
       // Equivalent per-order: AOV / (AOV − variable cost per order).
       // This is the minimum ROAS at which a campaign is cash-neutral.
@@ -1878,7 +1889,7 @@ router.get('/home-dashboard', authenticate, async (req, res) => {
       const pctAmazon = revenueWithAmazon > 0
         ? Math.round((amazonRevenue / revenueWithAmazon) * 10000) / 100
         : 0;
-      return { date: d, revenue, twRevenue, adSpend, roas, breakEvenRoas, contributionMarginPct, orders, aov, costs, cogs, shipping, fees, whopFees, lassoFees, profit, netMargin, conversionRate, clicks, refunds, amazonRevenue, amazonPpc, amazonOrders: az.orders, amazonUnits: az.units, revenueWithAmazon, adSpendWithAmazon, roasWithAmazon, pctAmazon };
+      return { date: d, revenue, twRevenue, adSpend, roas, roasBlended, breakEvenRoas, contributionMarginPct, orders, aov, costs, cogs, shipping, fees, whopFees, lassoFees, profit, netMargin, conversionRate, clicks, refunds, amazonRevenue, amazonPpc, amazonOrders: az.orders, amazonUnits: az.units, revenueWithAmazon, adSpendWithAmazon, roasWithAmazon, pctAmazon };
     }
 
     // Build daily metrics for the full fetched window
@@ -1909,6 +1920,11 @@ router.get('/home-dashboard', authenticate, async (req, res) => {
       const aov = orders > 0 ? Math.round((revenue / orders) * 100) / 100 : 0;
       // ROAS = Total Sales / Ad Spend (matches TW Summary widget formula)
       const roas = adSpend > 0 ? Math.round((revenue / adSpend) * 100) / 100 : 0;
+      // Blended ROAS — sums TW pixel-attributed revenue (Meta+Google+email+organic)
+      // and divides by total ad spend. Matches TW UI ROAS widget within ~2%.
+      const roasBlended = adSpend > 0 && twRevenue > 0
+        ? Math.round((twRevenue / adSpend) * 100) / 100
+        : 0;
       // Break-even ROAS — minimum ROAS at which campaigns are cash-neutral
       const variableCosts = cogs + shipping + fees;
       const contribution = revenue - variableCosts;
@@ -1938,7 +1954,7 @@ router.get('/home-dashboard', authenticate, async (req, res) => {
       const pctAmazon = revenueWithAmazon > 0
         ? Math.round((amazonRevenue / revenueWithAmazon) * 10000) / 100
         : 0;
-      return { revenue, twRevenue, adSpend, roas, breakEvenRoas, contributionMarginPct, varCostPerOrder, orders, aov, costs, cogs, shipping, fees, whopFees, lassoFees, profit, netMargin, conversionRate, refunds, amazonRevenue, amazonPpc, amazonOrders, amazonUnits, revenueWithAmazon, adSpendWithAmazon, roasWithAmazon, pctAmazon };
+      return { revenue, twRevenue, adSpend, roas, roasBlended, breakEvenRoas, contributionMarginPct, varCostPerOrder, orders, aov, costs, cogs, shipping, fees, whopFees, lassoFees, profit, netMargin, conversionRate, refunds, amazonRevenue, amazonPpc, amazonOrders, amazonUnits, revenueWithAmazon, adSpendWithAmazon, roasWithAmazon, pctAmazon };
     }
 
     // Current period = selected range
@@ -2842,6 +2858,11 @@ async function sendDailyPnlReport(dateStr, { force = false } = {}) {
     const totalCosts = cogs + shipping + fees + adSpend;
     const profit = revenue - totalCosts;
     const roas = adSpend > 0 ? (revenue / adSpend) : 0;
+    // Blended ROAS for the Slack message — matches TW UI's ROAS widget.
+    // twSpend used here is the same single-day SUM(spend) already fetched
+    // above (it equals adSpend when TW data is present).
+    const twDayRevenue = twRows[0]?.revenue || 0;
+    const roasBlended = adSpend > 0 && twDayRevenue > 0 ? (twDayRevenue / adSpend) : 0;
     const netMarginPct = revenue > 0 ? (profit / revenue) * 100 : 0;
 
     // Format date as MM/DD/YYYY
@@ -2872,7 +2893,8 @@ async function sendDailyPnlReport(dateStr, { force = false } = {}) {
       `Fees:  ${fmt(fees)}`,
       `Ad Spend:  ${fmt(adSpend)}`,
       `Total Costs:  ${fmt(totalCosts)}`,
-      `ROAS:  ${roas.toFixed(2)}x`,
+      `ROAS (Direct):  ${roas.toFixed(2)}x`,
+      ...(roasBlended > 0 ? [`ROAS (Blended):  ${roasBlended.toFixed(2)}x`] : []),
       `Net Margin:  ${netMarginPct.toFixed(1)}%`,
       `Profit:  ${fmt(profit)}`,
     ];

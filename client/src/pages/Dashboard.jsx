@@ -51,7 +51,8 @@ const fmtInt = (n) => Number(n || 0).toLocaleString();
 const METRICS = [
   { key: 'revenue',        label: 'Total Sales',      icon: DollarSign,   color: '#10b981', format: 'moneyFull' },
   { key: 'adSpend',        label: 'Ad Spend',         icon: Megaphone,    color: '#f59e0b', format: 'moneyFull' },
-  { key: 'roas',           label: 'ROAS',             icon: TrendingUp,   color: '#3b82f6', format: 'roas' },
+  { key: 'roas',           label: 'ROAS (Direct)',    icon: TrendingUp,   color: '#3b82f6', format: 'roas' },
+  { key: 'roasBlended',    label: 'ROAS (Blended)',   icon: TrendingUp,   color: '#06b6d4', format: 'roas' },
   { key: 'breakEvenRoas',  label: 'Break-Even ROAS',  icon: Scale,         color: '#c9a84c', format: 'roas', invertColor: true },
   { key: 'orders',         label: 'Purchases',        icon: ShoppingCart,  color: '#8b5cf6', format: 'int' },
   { key: 'aov',            label: 'AOV',              icon: Receipt,       color: '#06b6d4', format: 'moneyFull' },
