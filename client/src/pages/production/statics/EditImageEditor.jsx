@@ -133,7 +133,6 @@ export function EditImageEditor({ creative, isOpen, onClose, onAccepted }) {
     const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
 
     // Build a destination canvas the same size as the natural image
-    const destSize = Math.max(img.naturalWidth, img.naturalHeight, canvas.width);
     const dest = document.createElement('canvas');
     dest.width = img.naturalWidth;
     dest.height = img.naturalHeight;
@@ -308,7 +307,7 @@ export function EditImageEditor({ creative, isOpen, onClose, onAccepted }) {
           <button
             type="button"
             onClick={() => setSelectingRegion((v) => !v)}
-            disabled={generating || accepting || current?.original === false ? false : false}
+            disabled={generating || accepting}
             className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-mono font-semibold uppercase tracking-wide transition-colors cursor-pointer disabled:opacity-40 ${
               selectingRegion
                 ? 'bg-fuchsia-500 text-white'
@@ -406,8 +405,7 @@ export function EditImageEditor({ creative, isOpen, onClose, onAccepted }) {
                   onMouseMove={onCanvasMove}
                   onMouseUp={onCanvasUp}
                   onMouseLeave={onCanvasUp}
-                  className="absolute inset-0 cursor-crosshair m-auto"
-                  style={{ width: imageRef.current?.getBoundingClientRect().width, height: imageRef.current?.getBoundingClientRect().height }}
+                  className="absolute top-0 left-0 w-full h-full cursor-crosshair"
                 />
               )}
               {generating && (
@@ -428,9 +426,30 @@ export function EditImageEditor({ creative, isOpen, onClose, onAccepted }) {
       {/* Bottom input */}
       <div className="border-t border-white/[0.06] px-5 py-3 shrink-0">
         <div className="flex items-center gap-2 max-w-3xl mx-auto">
-          {selectingRegion && (
+          {/* Mask status — visible whenever a mask exists (even after the
+              operator exits select mode), because the next Send WILL include
+              the mask. Prevents silent "why did only part of my image change?"
+              confusion. Click ✕ to drop the mask. */}
+          {hasMask && (
+            <span
+              className="inline-flex items-center gap-1 text-[10px] font-mono text-fuchsia-300 uppercase tracking-wide whitespace-nowrap"
+              title="Mask will apply to your next prompt"
+            >
+              Region selected
+              <button
+                type="button"
+                onClick={clearMask}
+                disabled={generating || accepting}
+                className="ml-1 p-0.5 rounded hover:bg-fuchsia-500/20 cursor-pointer disabled:opacity-40"
+                title="Drop mask"
+              >
+                <X className="w-3 h-3" />
+              </button>
+            </span>
+          )}
+          {selectingRegion && !hasMask && (
             <span className="text-[10px] font-mono text-fuchsia-300 uppercase tracking-wide whitespace-nowrap">
-              Region {hasMask ? 'selected' : 'mode'}
+              Region mode
             </span>
           )}
           <input
