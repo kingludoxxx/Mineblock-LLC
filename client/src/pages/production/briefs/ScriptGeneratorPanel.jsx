@@ -17,7 +17,6 @@ const FALLBACK_ANGLES = [
 
 const FUNNEL_ORDER = { top: 0, middle: 1, bottom: 2 };
 const FUNNEL_LABEL = { top: 'Top of Funnel', middle: 'Middle of Funnel', bottom: 'Bottom of Funnel' };
-const FUNNEL_COLOR = { top: 'text-emerald-400', middle: 'text-amber-400', bottom: 'text-sky-400' };
 
 // ── Iteration vectors ──────────────────────────────────────────────────
 // Each iteration card can pull one or more of these levers. Angle, product,
@@ -399,9 +398,7 @@ export default function ScriptGeneratorPanel({
 
         <div className="space-y-2">
           <div className="flex items-center justify-between">
-            <label className="text-xs text-zinc-400 font-mono">
-              Ad_Angle <span className="text-zinc-600 opacity-70">[OPTIONAL]</span>
-            </label>
+            <label className="text-xs text-zinc-400 font-mono">Ad_Angle</label>
             {productContext?.product?.angles?.length > 0 && (
               <span className="text-[10px] font-mono text-zinc-500">
                 {productContext.product.angles.length} from {productContext.product.short_name || 'product'}
@@ -445,24 +442,6 @@ export default function ScriptGeneratorPanel({
                   </optgroup>
                 ))}
               </select>
-            );
-          })()}
-          {selectedAngle && (() => {
-            // Show a tiny detail card with the angle's funnel stage + tone
-            // so the user knows what the prompt will instruct.
-            const all = productContext?.product?.angles?.length > 0
-              ? productContext.product.angles
-              : FALLBACK_ANGLES;
-            const a = all.find(x => x.name === selectedAngle);
-            if (!a) return null;
-            const stage = (a.funnel_stage || 'middle').toLowerCase();
-            return (
-              <div className="text-[10px] font-mono text-zinc-500 px-2 py-1.5 bg-white/[0.015] border border-white/[0.04] rounded">
-                <span className={`uppercase tracking-wider ${FUNNEL_COLOR[stage] || 'text-zinc-500'}`}>
-                  {FUNNEL_LABEL[stage] || stage}
-                </span>
-                {a.tone && <span className="text-zinc-600"> · {a.tone.split('.')[0].slice(0, 80)}{a.tone.length > 80 ? '…' : ''}</span>}
-              </div>
             );
           })()}
           <input
