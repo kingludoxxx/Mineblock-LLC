@@ -2316,7 +2316,13 @@ router.post('/iterate/:creativeId', authenticate, async (req, res) => {
       // Step B: process each variation in parallel — each variation tests
       // a DIFFERENT element (Hook, CTA, Visual, Proof, Offer in priority
       // order). Single-variable isolation = scientific iteration.
+      //
+      // STAGGERED LAUNCH: 1.5s gap between variations to avoid hammering
+      // NanoBanana / OpenAI with simultaneous parallel jobs (which caused
+      // 2-of-3 timeouts on the first live run). Each variation's awaits
+      // are still concurrent end-to-end; just the kick-off is staggered.
       await Promise.allSettled(createdRows.map(async (childRow, idx) => {
+        if (idx > 0) await new Promise(r => setTimeout(r, 1500 * idx));
         const strategyKey = strategyForVariationIndex(idx);
         const strategy = ITERATION_STRATEGIES[strategyKey];
         const variationLabel = `${strategy.label} variation`;
@@ -2379,8 +2385,16 @@ router.post('/iterate/:creativeId', authenticate, async (req, res) => {
           // (which Claude was instructed to keep identical to source).
           const baseImgPrompt = buildNanoBananaImagePrompt(claudeResult, product, iterTemplate);
           const nbPrompt = iterationDirective + baseImgPrompt;
-          const nbTaskId = await iterEngine.submit(nbPrompt, [productHttpUrl], primaryRatio);
-          const tempUrl = await iterEngine.poll(nbTaskId);
+          // Wrap in withRetry — NB occasionally times out on submit under
+          // load; one retry caught both timeouts in the prior live test.
+          const nbTaskId = await withRetry(
+            () => iterEngine.submit(nbPrompt, [productHttpUrl], primaryRatio),
+            `iter-submit ${childRow.id.slice(0,8)} via ${iterEngine.name}`
+          );
+          const tempUrl = await withRetry(
+            () => iterEngine.poll(nbTaskId),
+            `iter-poll ${childRow.id.slice(0,8)} via ${iterEngine.name}`
+          );
           const generatedUrl = await persistNanoBananaImage(tempUrl, 'statics-iterations');
 
           // Step B3: write result back to spy_creatives row
