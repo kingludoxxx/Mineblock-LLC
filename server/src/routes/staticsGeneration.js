@@ -1356,6 +1356,7 @@ ABSOLUTE RULES:
   "subject": {
     "primary": "the product — no exceptions",
     "source_of_truth": "The attached image is the SOLE source of truth for the product's geometry, label, text, logo, color, finish, and material. Reproduce it pixel-accurately at the new scale. Do NOT redesign, restyle, recolor, or invent alternate angles, color variants, or fictional packaging.",
+    "screen_or_display_rule": "If the product has a screen, display, gauge, dial, or any informational surface — reproduce its exact contents from the attached product image. Do NOT invent UI elements, fake numbers, random characters, dummy text, or placeholder graphics on the screen. If the source image's screen is unclear, render it OFF (black/dark) rather than fabricating content.",
     "render_instruction": "{{PRODUCT_INSTRUCTION}}",
     "placement_rule": "{{PRODUCT_RULE}}"
   },
@@ -1392,7 +1393,10 @@ ABSOLUTE RULES:
     "no extra text, no extra brand marks, no watermarks, no UI chrome, no signatures, no captions, no metadata overlays",
     "no cropping of the product, no cropping of any critical text element",
     "no surreal, fantastical, or impossible elements unless explicitly requested in scene.description",
-    "no rendering of the JSON keys, labels, underscores, brackets, or syntax onto the image"
+    "no rendering of the JSON keys, labels, underscores, brackets, or syntax onto the image",
+    "no fabricated screen content — if the product has a display, reproduce the source image's screen exactly or render it OFF",
+    "no excessive decorative repetition — maximum 2 of any repeating element (ribbons, banners, badges, starbursts, stickers, etc.); 'repeating' in the brief means 2 instances, not 5+",
+    "no spelling drift on repeated text elements — if a ribbon appears twice, both instances must contain the SAME characters letter-for-letter (no FLASH SALE on one, FLASH SALT on the other)"
   ],
 
   "output_spec": {
