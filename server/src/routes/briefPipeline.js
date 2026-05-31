@@ -848,6 +848,13 @@ async function ensureTables() {
     // Idempotent ALTER for older deployments — operator's earlier briefs
     // (B0390, B0391) were created before highlighted_text existed.
     await pgQuery(`ALTER TABLE brief_pipeline_generated ADD COLUMN IF NOT EXISTS highlighted_text JSONB DEFAULT '[]'`).catch(() => {});
+    // First test run landed the column as TEXT on at least one deploy
+    // (B0391 stored as the string '"[]"' instead of JSONB '[]'). Coerce
+    // any TEXT-shaped column to JSONB. Idempotent — no-op when already JSONB.
+    await pgQuery(`ALTER TABLE brief_pipeline_generated ALTER COLUMN highlighted_text TYPE JSONB USING (CASE WHEN highlighted_text IS NULL THEN '[]'::jsonb WHEN highlighted_text::text ~ '^\\s*\\[' THEN highlighted_text::text::jsonb ELSE '[]'::jsonb END)`).catch((e) => {
+      // Surface the error in logs so we can spot lingering schema drift.
+      console.warn('[BriefPipeline] highlighted_text TYPE coercion skipped:', e.message);
+    });
 
     await pgQuery(`
       CREATE TABLE IF NOT EXISTS brief_pipeline_analysis_cache (
@@ -2077,6 +2084,9 @@ Generate {{NUM_VARIATIONS}} iteration cards of the winning script below. Each ca
 # THE ORIGINAL WINNING SCRIPT
 {{REFERENCE_TRANSCRIPT}}
 
+# ORIGINAL ON-SCREEN TEXT  (burned-in overlays from the winning video — if any)
+{{ORIGINAL_ON_SCREEN_TEXT}}
+
 # PERFORMANCE CONTEXT (why this is winning)
 {{PERFORMANCE_CONTEXT}}
 
@@ -2140,12 +2150,13 @@ Match the original's voice exactly:
 ## 8. PRODUCT INTEGRITY
 Never introduce claims not supported by the Product Library. Never remove the mechanism or big_promise. Respect compliance_restrictions from the library — never make claims the product can't legally make.
 
-## 9. ON-SCREEN TEXT / HIGHLIGHTED LABELS  (CONDITIONAL — only if original has them)
+## 9. ON-SCREEN TEXT / HIGHLIGHTED LABELS  (CONDITIONAL — driven by ORIGINAL ON-SCREEN TEXT block above)
 The winning script may have **burned-in on-screen text overlays** — short, bold labels framing the video (top discount banners, framed comment-reply quotes, ALL-CAPS sticker text, urgency banners). These are graphics, NOT spoken.
 
-- Inspect the ORIGINAL WINNING SCRIPT for evidence of on-screen text. Strong signals: ALL-CAPS shouted phrases, emoji-laden short tags, "Reply to …'s comment" framing, discount banners (% OFF / FREE / SALE), countdown stickers.
-- **If the original uses overlays**: produce 2–4 short equivalent labels per iteration card, ≤ 5 words each, ALL CAPS where appropriate, 1 emoji at the end. Preserve the overlay's ROLE (banner stays banner, comment-reply stays comment-reply). Vary the wording across iteration cards only if the selected vector calls for it (e.g. Hooks rotation → fresh labels per card). Otherwise keep the labels consistent.
-- **If the original has no on-screen overlays**: emit an empty array on every card. Do not invent overlays.
+- **Source of truth: the ORIGINAL ON-SCREEN TEXT block above.** Inspect it line-by-line.
+- If that block says "(no on-screen text detected in source — emit empty highlighted_text)": every card emits highlighted_text: []. Do not invent.
+- If that block has text: pick 2–4 highest-leverage lines, rewrite each into our equivalent label. ≤ 5 words, ALL CAPS where source uses caps, 1 emoji at end. Preserve role (banner stays banner, comment-reply stays comment-reply).
+- Vary the wording across iteration cards only if the selected vector calls for it (e.g. Hooks rotation → fresh labels per card). Otherwise keep the labels consistent.
 
 # OUTPUT — return ONLY valid JSON, no markdown fences, no preamble:
 
@@ -2190,7 +2201,7 @@ const DEFAULT_AVATARS = [
   { name: 'Creator (UGC)',        description: 'Paid creator delivering script in their voice' },
 ];
 
-async function buildIterationPrompt(parsedScript, productContext, performanceContext, numVariations, productProfile = null, vectorsSelected = null, angleLocked = null) {
+async function buildIterationPrompt(parsedScript, productContext, performanceContext, numVariations, productProfile = null, vectorsSelected = null, angleLocked = null, rawTranscript = null) {
   // Load saved prompt or fall back to baked v1 defaults.
   let systemPrompt = DEFAULT_ITERATION_PROMPT_SYSTEM;
   let userTemplate = DEFAULT_ITERATION_PROMPT_USER;
@@ -2239,9 +2250,13 @@ async function buildIterationPrompt(parsedScript, productContext, performanceCon
   }
 
   const angleLockedStr = angleLocked && angleLocked !== 'NA' ? angleLocked : '(unknown — infer from original script and state your inference)';
+  // On-screen overlays from the raw multimodal transcript. Empty string when
+  // source has no overlays. See extractOnScreenText() above.
+  const originalOnScreenText = extractOnScreenText(rawTranscript) || '(no on-screen text detected in source — emit empty highlighted_text)';
 
   const user = userTemplate
     .replace(/\{\{\s*REFERENCE_TRANSCRIPT\s*\}\}/g, transcript)
+    .replace(/\{\{\s*ORIGINAL_ON_SCREEN_TEXT\s*\}\}/g, originalOnScreenText)
     .replace(/\{\{\s*PERFORMANCE_CONTEXT\s*\}\}/g, performanceContext || '(no live performance data attached)')
     .replace(/\{\{\s*PRODUCT_CONTEXT\s*\}\}/g, productContext || 'No product profile available.')
     .replace(/\{\{\s*NUM_VARIATIONS\s*\}\}/g, String(numVariations || 3))
@@ -2285,6 +2300,9 @@ Lock to it. Every hook must voice the angle. The body must weave it through ever
 hooks: {{ORIGINAL_HOOKS}}
 body: {{ORIGINAL_BODY}}
 cta: {{ORIGINAL_CTA}}
+
+# ORIGINAL ON-SCREEN TEXT  (burned-in overlays from the source video — if any)
+{{ORIGINAL_ON_SCREEN_TEXT}}
 
 # DEEP ANALYSIS OF THE ORIGINAL
 {{ANALYSIS_CONTEXT}}
@@ -2343,13 +2361,14 @@ cta: {{ORIGINAL_CTA}}
 - If original CTA had a deadline, ours has a deadline (use any active promo from offer_details)
 - If original was "verify yourself" style and we have the blockchain mechanism, lean into verification
 
-## 7. ON-SCREEN TEXT / HIGHLIGHTED LABELS  (CONDITIONAL — only if source has them)
+## 7. ON-SCREEN TEXT / HIGHLIGHTED LABELS  (CONDITIONAL — driven by ORIGINAL ON-SCREEN TEXT block above)
 The competitor's ad may have **burned-in on-screen text overlays** — short, bold labels that frame the video (e.g. "BIGGEST Memorial Day SALE 🇺🇸 / Buy 3, Get 3 FREE", "PUBLIC APOLOGY 👁️ / WE LIED 🤥", "Reply to Drew_Posts's comment"). These are NOT spoken — they're displayed as graphics, banners, sticker text, or framed quote panels.
 
-- Inspect the ORIGINAL HOOKS / ORIGINAL BODY / DEEP ANALYSIS context for evidence of on-screen text. Strong signals: ALL-CAPS shouting phrases, emoji-laden short tags, "Reply to …'s comment" framing, explicit discount banners (% OFF, FREE, SALE), countdown / urgency stickers, banner-style hooks.
-- **If the source clearly uses on-screen overlays**: produce 2–4 short equivalent labels for our brand. Each label is ≤ 5 words, ALL CAPS where appropriate, with 1 emoji at the end. Mirror the source's role (top-banner discount → top-banner discount; framed comment reply → framed comment reply; apology sticker → apology sticker). Swap the brand / product / offer to ours.
-- **If the source has no on-screen overlays** (clean talking-head, pure spoken script, no visual text indicators in the analysis): emit an empty array. **Do not invent overlays**.
-- Never copy competitor brand names, prices, or claims verbatim into our labels.
+- **Source of truth: the ORIGINAL ON-SCREEN TEXT block above.** Inspect it line-by-line.
+- If that block says "(no on-screen text detected in source — emit empty highlighted_text)", the source had no overlays → emit highlighted_text: []. Do not invent.
+- If that block contains text lines, the source HAS overlays. Pick the 2–4 lines that carry the most persuasion weight (banners, framing devices, opening punchlines, discount tags, framed comment-replies, ALL-CAPS callouts). Rewrite each into our equivalent label.
+- Each output label: ≤ 5 words, ALL CAPS where the source uses caps, exactly 1 emoji at the end (carry the source's emoji if present, otherwise pick one that matches the label's emotion). Preserve the role (top-banner discount → top-banner discount; framed comment reply → framed comment reply; apology sticker → apology sticker).
+- Swap competitor brand / product / offer to ours from {{PRODUCT_CONTEXT}}. Never copy competitor brand names, prices, or claims verbatim.
 
 # OUTPUT — return ONLY valid JSON, no markdown fences, no preamble:
 
@@ -2375,10 +2394,35 @@ The competitor's ad may have **burned-in on-screen text overlays** — short, bo
   "compliance_notes": "any claims that brush against compliance_restrictions, or 'clean' if none"
 }`;
 
-async function buildScriptClonePrompt(parsedScript, deepAnalysis, productContext, productProfile = null, angle = null) {
+// Extract the [ON-SCREEN TEXT] block from a raw multimodal transcript so we
+// can pass it into the clone/iteration prompts as a dedicated variable.
+// The script parser collapses transcripts down to hooks + body and discards
+// the labeled section markers — by the time the clone prompt fires, all
+// signal of on-screen overlays is gone. We grab it BEFORE parsing.
+//
+// Supports both shapes:
+//   1) "[ON-SCREEN TEXT]\n... \n\n[AUDIO]..." — multimodal vertex transcript
+//   2) Loose raw text — returns '' (no overlays detected).
+function extractOnScreenText(rawTranscript) {
+  if (!rawTranscript || typeof rawTranscript !== 'string') return '';
+  // Match [ON-SCREEN TEXT] ... up to next [SECTION_TAG] or end-of-string
+  const m = rawTranscript.match(/\[ON[- ]?SCREEN\s*TEXT\]\s*([\s\S]*?)(?:\n\n\[|\n\[|$)/i);
+  if (!m) return '';
+  return m[1]
+    .split('\n')
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .join('\n')
+    .slice(0, 2000); // hard cap so we don't blow the token budget
+}
+
+async function buildScriptClonePrompt(parsedScript, deepAnalysis, productContext, productProfile = null, angle = null, rawTranscript = null) {
   const originalHooks = (parsedScript.hooks || [])
     .map(h => `${h.id}: ${h.text}`)
     .join('\n');
+  // Pull on-screen text out of the raw source so the §7 rule has real
+  // overlay evidence to work from. Empty string = no overlays.
+  const originalOnScreenText = extractOnScreenText(rawTranscript);
 
   const { scriptDna, psychology, iterationRules } = deepAnalysis || {};
 
@@ -2489,6 +2533,7 @@ async function buildScriptClonePrompt(parsedScript, deepAnalysis, productContext
     ORIGINAL_HOOKS:   originalHooks || '(no hooks parsed)',
     ORIGINAL_BODY:    parsedScript?.body || '(empty body)',
     ORIGINAL_CTA:     parsedScript?.cta || '(no CTA)',
+    ORIGINAL_ON_SCREEN_TEXT: originalOnScreenText || '(no on-screen text detected in source — emit empty highlighted_text)',
     ANALYSIS_CONTEXT: analysisContext,
     ANGLE_NAME:       angleName,
     ANGLE_DETAILS:    angleDetails,
@@ -3127,6 +3172,7 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
         productProfile,
         vectorsSelected,
         resolvedAngleLocked,
+        rawScript,   // pass raw transcript so the prompt can see [ON-SCREEN TEXT] markers
       );
       const iterResult = await callClaude(iterSystem, iterUser, 6000);
       const variants = Array.isArray(iterResult?.iterations) ? iterResult.iterations : [];
@@ -3164,7 +3210,7 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
       // {{ANGLE_DETAILS}} + {{ANGLES_LIST}} placeholders, sourced from
       // productProfile.angles. No more hardcoded post-prompt appendix.
       const { system: cloneSystem, user: cloneUser } = await buildScriptClonePrompt(
-        parsedScript, {}, productContext, productProfile, angle
+        parsedScript, {}, productContext, productProfile, angle, rawScript
       );
       const enhancedCloneUser = cloneUser;
 
@@ -3256,7 +3302,7 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
             $1, $2, $3, $4, $5, $6, $7, $8,
             $9, $10, $11, $12, $13, $14,
             $15, $16, $17, $18, $19, $20,
-            $21, $22, $23, 'generated', $24
+            $21, $22, $23, 'generated', $24::jsonb
           ) RETURNING *
         `, [
           winner.id, creativeId, config.mode, 'medium',
@@ -3381,6 +3427,18 @@ router.get('/generated', authenticate, async (_req, res) => {
       b.hooks = parseJsonb(b.hooks);
       b.scores_json = parseJsonb(b.scores_json);
       b.original_script = parseJsonb(b.original_script);
+      // highlighted_text was stored as TEXT '"[]"' on early B0391 row before
+      // the JSONB coercion ran. Defensive parse so UI consumers always see
+      // a real array.
+      b.highlighted_text = (() => {
+        const raw = b.highlighted_text;
+        if (Array.isArray(raw)) return raw;
+        if (typeof raw === 'string') {
+          try { const arr = JSON.parse(raw); return Array.isArray(arr) ? arr : []; }
+          catch { return []; }
+        }
+        return [];
+      })();
     }
     res.json({ success: true, briefs: rows });
   } catch (err) {
@@ -3410,6 +3468,15 @@ router.get('/generated/:id', authenticate, async (req, res) => {
     brief.hooks = parseJsonb(brief.hooks);
     brief.scores_json = parseJsonb(brief.scores_json);
     brief.original_script = parseJsonb(brief.original_script);
+    brief.highlighted_text = (() => {
+      const raw = brief.highlighted_text;
+      if (Array.isArray(raw)) return raw;
+      if (typeof raw === 'string') {
+        try { const arr = JSON.parse(raw); return Array.isArray(arr) ? arr : []; }
+        catch { return []; }
+      }
+      return [];
+    })();
     res.json({ success: true, brief });
   } catch (err) {
     console.error('[BriefPipeline] GET /generated/:id error:', err.message);
