@@ -1312,28 +1312,60 @@ ABSOLUTE RULES:
 - Same overall image dimensions and safe zones`,
 
     openai_image:
-`Create a single Meta-ready static advertisement for {{PRODUCT_NAME}}, rendered in a natural, photorealistic, production-quality style. Treat this as a brief to a senior commercial photographer and retoucher — not an illustration prompt.
+`You are rendering a Meta-ready static advertisement image. Treat this as a brief to a senior commercial photographer and retoucher producing one finished hero shot — not an illustration, not a digital collage, not an AI-art piece.
 
-Subject (the only object that should be sourced from the attached image):
+═══ CONTEXT — this informs visual tone and demographic feel, NOT literal on-image text ═══
+
+Product: {{PRODUCT_NAME}}
+Short Name: {{SHORT_NAME}}
+Oneliner: {{ONELINER}}
+Tagline: {{TAGLINE}}
+Category / Type: {{CATEGORY}} / {{PRODUCT_TYPE}}
+Description: {{PRODUCT_DESCRIPTION}}
+Angle (the strategic frame this ad pushes — image must feel aligned to it): {{ANGLE}}
+Brand Voice (visual mood should match this voice): {{BRAND_VOICE}}
+Big Promise (the implied outcome the visual should sell): {{BIG_PROMISE}}
+Unique Mechanism: {{UNIQUE_MECHANISM}}
+Differentiator: {{DIFFERENTIATOR}}
+Competitive Edge: {{COMPETITIVE_EDGE}}
+Customer Avatar (who this image must resonate with — set the look-and-feel demographic): {{CUSTOMER}}
+Customer Frustration (what the visual should subtly speak to): {{CUSTOMER_FRUSTRATION}}
+Customer Dream (what the visual should subtly promise): {{CUSTOMER_DREAM}}
+Pain Points to evoke or solve visually: {{PAIN_POINTS}}
+Key Benefits to imply through composition: {{KEY_BENEFITS}}
+Target Audience demographic: {{TARGET_AUDIENCE}}
+Compliance — the visual must NOT depict or imply: {{COMPLIANCE}}
+Operator Notes: {{NOTES}}
+
+═══ HARD REQUIREMENTS ═══
+
+SUBJECT — the product. The attached image is the SOLE visual source of truth for the product. Reproduce its shape, proportions, label, text, logo, color, finish, and material EXACTLY. Do not stylize, redesign, or "improve" the product. Do not invent alternate angles, color variants, or fictional packaging.
+
 {{PRODUCT_INSTRUCTION}}
 
-Scene and composition (write the image as a real photograph, not a digital collage):
+SCENE & COMPOSITION — write the image as a real photograph, not a graphic composite.
+
 {{VISUAL_CHANGES}}
 
-Text overlays — render the text EXACTLY as quoted, letter-for-letter, including capitalization and punctuation. Match the reference ad's typographic hierarchy (headline weight, sub size, CTA emphasis):
+TEXT OVERLAYS — render every text element EXACTLY as quoted below, letter-for-letter, including capitalization, punctuation, and line breaks. gpt-image-2 is letter-accurate when text is in quotes — use that strength. Match the reference ad's typographic hierarchy (headline weight, sub size, CTA emphasis, badge style). Do NOT paraphrase, do NOT add extra words, do NOT remove characters.
+
 {{TEXT_SWAPS}}
 
-People — render exactly {{PEOPLE_COUNT}} human{{PEOPLE_COUNT}}. {{CHARACTER_ADAPTATION}}
+CHARACTERS — exactly {{PEOPLE_COUNT}} people in frame. {{CHARACTER_ADAPTATION}}
 
-Rules:
+═══ ABSOLUTE RULES ═══
+
 {{PRODUCT_RULE}}
-- No additional people, faces, logos, watermarks, or text beyond what is listed above.
-- Hands must have exactly 5 fingers with natural anatomy.
-- Photorealistic, unstylized — no illustration, no 3D-render look, no AI-generated artifacts.
+- ZERO additional people, faces, logos, watermarks, brand marks, or text beyond what is listed above. If the reference ad showed a competitor brand or third-party logo, do NOT carry it over.
+- Hands must have exactly 5 fingers with natural anatomy. No deformed limbs, no extra fingers, no fused digits.
+- Photorealistic, unstylized — no illustration, no 3D-render look, no AI-art artifacts, no oversaturated colors, no plastic skin, no waxy faces.
 - Preserve the attached product image with exact shape, color, label text, and branding.
-- Use clean, modern commercial lighting (soft key light, natural shadow falloff) unless the reference scene dictates otherwise.
+- Use clean, modern commercial lighting (soft key light, gentle fill, natural shadow falloff) unless the reference scene specifically dictates otherwise.
+- Compliance: never include visual claims forbidden by the Compliance field above.
 
-Output: a single completed static ad image ready to upload as a Meta ad creative.`,
+═══ OUTPUT ═══
+
+One completed static ad image, ready to upload as a Meta ad creative. Composition must read clearly at the target aspect ratio without cropping the product or critical text.`,
 
     ai_adjustment:
 `You are an expert ad creative director. You generated an ad image and the user wants a specific adjustment.
@@ -1679,6 +1711,8 @@ router.post('/generate', authenticate, async (req, res) => {
       const engineTemplate = engine.name === 'openai'
         ? (customPrompts.openai_image || customPrompts.nanobanana_image)
         : customPrompts.nanobanana_image;
+      // Stamp the angle so image-prompt builder can interpolate {{ANGLE}}
+      product._angle = angle_data?.name || angle || '';
       let nbPrompt = buildNanoBananaImagePrompt(claudeResult, product, engineTemplate);
 
       // STYLE DIRECTIVE prepend — injects the medium + authenticity cues +
@@ -2220,6 +2254,7 @@ router.post('/iterate/:creativeId', authenticate, async (req, res) => {
           const iterTemplate = iterEngine.name === 'openai'
             ? (customPrompts.openai_image || customPrompts.nanobanana_image)
             : customPrompts.nanobanana_image;
+          product._angle = variationAngle;
           const nbPrompt = buildNanoBananaImagePrompt(claudeResult, product, iterTemplate);
           const nbTaskId = await iterEngine.submit(nbPrompt, [productHttpUrl], '4:5');
           const tempUrl = await iterEngine.poll(nbTaskId);
@@ -3059,6 +3094,7 @@ router.post('/creatives/:id/ai-adjust', authenticate, async (req, res) => {
         const adjustTemplate = (creative.image_engine === 'openai')
           ? (customPrompts.openai_image || customPrompts.nanobanana_image)
           : customPrompts.nanobanana_image;
+        product._angle = creative.angle || '';
         const baseNbPrompt = buildNanoBananaImagePrompt(claudeResult, product, adjustTemplate);
         const newNbPrompt = `${baseNbPrompt}\n\nADJUSTMENT REQUESTED BY USER:\n${adjustmentInstruction}\n\nPreserve everything else exactly as it appears in the input image.`;
 
@@ -4483,6 +4519,7 @@ async function _doRegenerateBrokenPreviews(req, res) {
           const rgnTemplate = rgnEngine.name === 'openai'
             ? (customPrompts.openai_image || customPrompts.nanobanana_image)
             : customPrompts.nanobanana_image;
+          product._angle = row.angle || '';
           const nbPrompt = buildNanoBananaImagePrompt(claudeResult, product, rgnTemplate);
           const ratio = row.aspect_ratio || '4:5';
           const nbTaskId = await rgnEngine.submit(nbPrompt, [productHttpUrl], ratio);

@@ -219,7 +219,14 @@ export function buildNanoBananaImagePrompt(claudeResult = {}, product = {}, temp
   }
   const textSwaps = swapLines.join('\n') || '(no text overlays — leave the ad text-free)';
 
+  // Image-engine prompts also get the full product profile context — same
+  // shape as buildClaudeAnalysisPrompt so the openai_image / nanobanana_image
+  // templates can pull in Brand Voice, Big Promise, Angle, etc. to inform
+  // the visual style (e.g. "render with the brand voice in mind"). Missing
+  // values resolve to empty string per interpolate() semantics.
+  const p = product.profile || {};
   const vars = {
+    // Visual-brief fields (derived from Claude's analysis)
     PRODUCT_NAME:           product.name || '',
     PRODUCT_INSTRUCTION:    productInstruction,
     PRODUCT_RULE:           productRule,
@@ -227,6 +234,33 @@ export function buildNanoBananaImagePrompt(claudeResult = {}, product = {}, temp
     TEXT_SWAPS:             textSwaps,
     PEOPLE_COUNT:           String(peopleCount),
     CHARACTER_ADAPTATION:   characterAdaptation,
+    // Marketing / product-library context (same names as Claude prompt vars)
+    SHORT_NAME:             p.short_name        || '',
+    ONELINER:               p.oneliner          || '',
+    TAGLINE:                p.tagline           || '',
+    CATEGORY:               p.category          || '',
+    PRODUCT_TYPE:           p.product_type      || '',
+    PRODUCT_DESCRIPTION:    product.description || p.description || '',
+    ANGLE:                  product._angle      || '',  // optional: caller stamps angle on product._angle
+    BRAND_VOICE:            p.brand_voice       || '',
+    CUSTOMER:               p.customer          || '',
+    CUSTOMER_FRUSTRATION:   p.customer_frustration || '',
+    CUSTOMER_DREAM:         p.customer_dream    || '',
+    BIG_PROMISE:            p.big_promise       || '',
+    DIFFERENTIATOR:         p.differentiator    || '',
+    COMPETITIVE_EDGE:       p.competitive_edge  || '',
+    UNIQUE_MECHANISM:       p.unique_mechanism  || '',
+    KEY_BENEFITS:           p.key_benefits      || '',
+    TARGET_AUDIENCE:        p.target_audience   || '',
+    PAIN_POINTS:            p.pain_points       || '',
+    OBJECTIONS:             p.objections        || '',
+    GUARANTEE:              p.guarantee         || '',
+    WINNING_ANGLES:         p.winning_angles    || '',
+    CUSTOM_ANGLES:          p.custom_angles     || '',
+    OFFER_HOOK:             p.offer_hook        || '',
+    PRICING:                p.pricing           || product.price || '',
+    COMPLIANCE:             p.compliance        || '',
+    NOTES:                  p.notes             || '',
   };
   return interpolate(template, vars);
 }

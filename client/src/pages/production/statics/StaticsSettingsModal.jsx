@@ -24,14 +24,14 @@ const TABS = [
   {
     key: 'nanobanana_image',
     label: '② NanoBanana Image',
-    summary: 'Step 2 — Sent to NanoBanana with the product image as the sole visual reference. Built from Claude\'s analysis output.',
-    vars: '{{PRODUCT_NAME}} {{PRODUCT_INSTRUCTION}} {{PRODUCT_RULE}} {{VISUAL_CHANGES}} {{TEXT_SWAPS}} {{PEOPLE_COUNT}} {{CHARACTER_ADAPTATION}}',
+    summary: 'Step 2 — Sent to NanoBanana with the product image as the sole visual reference. Built from Claude\'s analysis output. Has access to the full product library context (Brand Voice, Big Promise, Angle, etc.) — use sparingly; NB likes terse prompts.',
+    vars: '{{PRODUCT_NAME}} {{PRODUCT_INSTRUCTION}} {{PRODUCT_RULE}} {{VISUAL_CHANGES}} {{TEXT_SWAPS}} {{PEOPLE_COUNT}} {{CHARACTER_ADAPTATION}} | {{SHORT_NAME}} {{ONELINER}} {{TAGLINE}} {{CATEGORY}} {{PRODUCT_TYPE}} {{PRODUCT_DESCRIPTION}} {{ANGLE}} {{BRAND_VOICE}} {{BIG_PROMISE}} {{UNIQUE_MECHANISM}} {{DIFFERENTIATOR}} {{COMPETITIVE_EDGE}} {{CUSTOMER}} {{CUSTOMER_FRUSTRATION}} {{CUSTOMER_DREAM}} {{PAIN_POINTS}} {{KEY_BENEFITS}} {{TARGET_AUDIENCE}} {{COMPLIANCE}} {{NOTES}}',
   },
   {
     key: 'openai_image',
     label: '②′ OpenAI Image',
-    summary: 'Step 2 alt — OpenAI gpt-image-2 renderer. Used when the engine pill is set to OpenAI. Same variables as the NanoBanana template.',
-    vars: '{{PRODUCT_NAME}} {{PRODUCT_INSTRUCTION}} {{PRODUCT_RULE}} {{VISUAL_CHANGES}} {{TEXT_SWAPS}} {{PEOPLE_COUNT}} {{CHARACTER_ADAPTATION}}',
+    summary: 'Step 2 alt — OpenAI gpt-image-2 renderer. Used when the engine pill is set to OpenAI. Receives the FULL product library context so the visual tone stays on-brand (Brand Voice, Big Promise, Angle, Customer Avatar, etc.).',
+    vars: '{{PRODUCT_NAME}} {{PRODUCT_INSTRUCTION}} {{PRODUCT_RULE}} {{VISUAL_CHANGES}} {{TEXT_SWAPS}} {{PEOPLE_COUNT}} {{CHARACTER_ADAPTATION}} | {{SHORT_NAME}} {{ONELINER}} {{TAGLINE}} {{CATEGORY}} {{PRODUCT_TYPE}} {{PRODUCT_DESCRIPTION}} {{ANGLE}} {{BRAND_VOICE}} {{BIG_PROMISE}} {{UNIQUE_MECHANISM}} {{DIFFERENTIATOR}} {{COMPETITIVE_EDGE}} {{CUSTOMER}} {{CUSTOMER_FRUSTRATION}} {{CUSTOMER_DREAM}} {{PAIN_POINTS}} {{KEY_BENEFITS}} {{TARGET_AUDIENCE}} {{COMPLIANCE}} {{NOTES}}',
   },
   {
     key: 'ai_adjustment',
