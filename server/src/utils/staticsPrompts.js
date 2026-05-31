@@ -13,18 +13,44 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
+ * JSON-escape a value so it can be embedded safely inside a JSON string
+ * literal. Without this, a product field containing a `"`, `\`, or newline
+ * would break a JSON-shaped prompt and confuse the downstream model.
+ */
+function jsonEscapeForString(str) {
+  return String(str)
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\n/g, '\\n')
+    .replace(/\r/g, '\\r')
+    .replace(/\t/g, '\\t');
+}
+
+/**
  * Replace {{VAR}} tokens in a template with values from `vars`.
  * Missing keys are replaced with empty string (silent — keeps templates flexible).
+ *
+ * `opts.jsonSafe` (auto-detected by default): when true, every interpolated
+ * value is JSON-string-escaped. Required for JSON-shaped prompt templates
+ * (e.g. the $100M-tier openai_image default) so embedded `"` / `\` / `\n`
+ * in product profile fields don't break the JSON structure.
+ *
+ * Auto-detect: if the template (trimmed) starts with `{`, it's treated as
+ * JSON-shaped and jsonSafe=true is used unless explicitly overridden.
  */
-export function interpolate(template, vars = {}) {
+export function interpolate(template, vars = {}, opts = {}) {
   if (typeof template !== 'string') return '';
+  const isJsonShaped = template.trimStart().startsWith('{');
+  const jsonSafe = opts.jsonSafe !== undefined ? opts.jsonSafe : isJsonShaped;
   return template.replace(/\{\{([A-Z_]+)\}\}/g, (_, key) => {
     const v = vars[key];
     if (v === null || v === undefined) return '';
-    if (typeof v === 'string') return v;
-    if (typeof v === 'number' || typeof v === 'boolean') return String(v);
-    if (Array.isArray(v)) return v.join(', ');
-    return JSON.stringify(v);
+    let str;
+    if (typeof v === 'string') str = v;
+    else if (typeof v === 'number' || typeof v === 'boolean') str = String(v);
+    else if (Array.isArray(v)) str = v.join(', ');
+    else str = JSON.stringify(v);
+    return jsonSafe ? jsonEscapeForString(str) : str;
   });
 }
 

@@ -1312,60 +1312,95 @@ ABSOLUTE RULES:
 - Same overall image dimensions and safe zones`,
 
     openai_image:
-`You are rendering a Meta-ready static advertisement image. Treat this as a brief to a senior commercial photographer and retoucher producing one finished hero shot — not an illustration, not a digital collage, not an AI-art piece.
+`You are rendering a single Meta-ready static advertisement image. The JSON brief below is a director's call sheet for a $50K commercial photoshoot. Interpret every field strategically. NEVER render the JSON keys, field names, underscores, or any syntax onto the image — render ONLY the IMAGE that satisfies the brief. The only strings that should appear visually on the output are the text elements explicitly quoted inside \`text_overlays.swaps\`.
 
-═══ CONTEXT — this informs visual tone and demographic feel, NOT literal on-image text ═══
+{
+  "brief_meta": {
+    "deliverable": "Single static advertisement image, magazine-cover production quality, ready to upload as a Meta ad creative with zero post-production",
+    "rendering_tier": "Apple keynote / luxury catalog / Fortune-500 brand review — would survive a senior creative director's review",
+    "medium": "Photoreal commercial product photography unless scene.description explicitly specifies otherwise",
+    "safe_zones": "Keep product and headline inside the central 80 percent of the frame — leave margin for Meta UI overlays at the edges"
+  },
 
-Product: {{PRODUCT_NAME}}
-Short Name: {{SHORT_NAME}}
-Oneliner: {{ONELINER}}
-Tagline: {{TAGLINE}}
-Category / Type: {{CATEGORY}} / {{PRODUCT_TYPE}}
-Description: {{PRODUCT_DESCRIPTION}}
-Angle (the strategic frame this ad pushes — image must feel aligned to it): {{ANGLE}}
-Brand Voice (visual mood should match this voice): {{BRAND_VOICE}}
-Big Promise (the implied outcome the visual should sell): {{BIG_PROMISE}}
-Unique Mechanism: {{UNIQUE_MECHANISM}}
-Differentiator: {{DIFFERENTIATOR}}
-Competitive Edge: {{COMPETITIVE_EDGE}}
-Customer Avatar (who this image must resonate with — set the look-and-feel demographic): {{CUSTOMER}}
-Customer Frustration (what the visual should subtly speak to): {{CUSTOMER_FRUSTRATION}}
-Customer Dream (what the visual should subtly promise): {{CUSTOMER_DREAM}}
-Pain Points to evoke or solve visually: {{PAIN_POINTS}}
-Key Benefits to imply through composition: {{KEY_BENEFITS}}
-Target Audience demographic: {{TARGET_AUDIENCE}}
-Compliance — the visual must NOT depict or imply: {{COMPLIANCE}}
-Operator Notes: {{NOTES}}
+  "brand_context": {
+    "_purpose": "Mood, color temperature, material vocabulary, styling cues. DO NOT paint these strings onto the image.",
+    "product_name": "{{PRODUCT_NAME}}",
+    "short_name": "{{SHORT_NAME}}",
+    "oneliner": "{{ONELINER}}",
+    "tagline": "{{TAGLINE}}",
+    "category": "{{CATEGORY}}",
+    "type": "{{PRODUCT_TYPE}}",
+    "description": "{{PRODUCT_DESCRIPTION}}",
+    "voice": "{{BRAND_VOICE}}"
+  },
 
-═══ HARD REQUIREMENTS ═══
+  "strategic_frame": {
+    "_purpose": "Set the emotional register of the image — confident vs cozy vs urgent vs aspirational. Internalize before rendering.",
+    "angle": "{{ANGLE}}",
+    "big_promise": "{{BIG_PROMISE}}",
+    "unique_mechanism": "{{UNIQUE_MECHANISM}}",
+    "differentiator": "{{DIFFERENTIATOR}}",
+    "competitive_edge": "{{COMPETITIVE_EDGE}}"
+  },
 
-SUBJECT — the product. The attached image is the SOLE visual source of truth for the product. Reproduce its shape, proportions, label, text, logo, color, finish, and material EXACTLY. Do not stylize, redesign, or "improve" the product. Do not invent alternate angles, color variants, or fictional packaging.
+  "audience": {
+    "_purpose": "If the scene includes people, they MUST look like this audience. The composition should feel made FOR them, not at them.",
+    "avatar": "{{CUSTOMER}}",
+    "frustration": "{{CUSTOMER_FRUSTRATION}}",
+    "dream": "{{CUSTOMER_DREAM}}",
+    "demographic": "{{TARGET_AUDIENCE}}",
+    "pain_points": "{{PAIN_POINTS}}",
+    "key_benefits": "{{KEY_BENEFITS}}"
+  },
 
-{{PRODUCT_INSTRUCTION}}
+  "subject": {
+    "primary": "the product — no exceptions",
+    "source_of_truth": "The attached image is the SOLE source of truth for the product's geometry, label, text, logo, color, finish, and material. Reproduce it pixel-accurately at the new scale. Do NOT redesign, restyle, recolor, or invent alternate angles, color variants, or fictional packaging.",
+    "render_instruction": "{{PRODUCT_INSTRUCTION}}",
+    "placement_rule": "{{PRODUCT_RULE}}"
+  },
 
-SCENE & COMPOSITION — write the image as a real photograph, not a graphic composite.
+  "scene": {
+    "description": "{{VISUAL_CHANGES}}",
+    "camera_direction": "50mm prime equivalent at f/4.0, soft directional natural light, gentle falloff, subtle ground shadow, shallow but not extreme depth of field",
+    "interpretation_rule": "Render as a REAL photograph captured in a real studio or environment. Not a digital composite. Not a vector graphic. Not a 3D render. Not an illustration."
+  },
 
-{{VISUAL_CHANGES}}
+  "text_overlays": {
+    "_render_exactly_as_quoted": true,
+    "_quoting_note": "gpt-image-2 is letter-accurate when strings are quoted. Render each text element below verbatim — same case, same punctuation, same line breaks, same spelling. Do NOT paraphrase. Do NOT add words. Do NOT drop characters.",
+    "swaps": "{{TEXT_SWAPS}}",
+    "typography_rule": "Match the reference ad's hierarchy: headline weight and size, sub-line cadence, CTA emphasis, badge styling. Modern, legible, optimized for mobile Meta feed at small sizes."
+  },
 
-TEXT OVERLAYS — render every text element EXACTLY as quoted below, letter-for-letter, including capitalization, punctuation, and line breaks. gpt-image-2 is letter-accurate when text is in quotes — use that strength. Match the reference ad's typographic hierarchy (headline weight, sub size, CTA emphasis, badge style). Do NOT paraphrase, do NOT add extra words, do NOT remove characters.
+  "characters": {
+    "count": {{PEOPLE_COUNT}},
+    "adaptation": "{{CHARACTER_ADAPTATION}}",
+    "exclusion_rule": "Exactly the specified count. No background figures. No implied silhouettes. No reflections of people not specified. No body parts (hand holding product) unless explicitly described."
+  },
 
-{{TEXT_SWAPS}}
+  "compliance": {
+    "forbidden_visual_claims": "{{COMPLIANCE}}",
+    "brand_exclusion": "If the reference ad displayed a competitor brand mark, third-party logo, retailer logo, or watermark — do NOT carry it over. The output must contain only marks belonging to brand_context.product_name.",
+    "operator_notes": "{{NOTES}}"
+  },
 
-CHARACTERS — exactly {{PEOPLE_COUNT}} people in frame. {{CHARACTER_ADAPTATION}}
+  "negative_constraints": [
+    "no illustration look, no 3D-render look, no CGI feel, no AI-art artifacts, no obvious upscaling",
+    "no oversaturated colors, no plastic skin, no waxy faces, no glassy eyes, no overly smooth fabric",
+    "no deformed hands, no extra fingers, no fused digits — exactly 5 fingers per hand with natural anatomy",
+    "no extra text, no extra brand marks, no watermarks, no UI chrome, no signatures, no captions, no metadata overlays",
+    "no cropping of the product, no cropping of any critical text element",
+    "no surreal, fantastical, or impossible elements unless explicitly requested in scene.description",
+    "no rendering of the JSON keys, labels, underscores, brackets, or syntax onto the image"
+  ],
 
-═══ ABSOLUTE RULES ═══
-
-{{PRODUCT_RULE}}
-- ZERO additional people, faces, logos, watermarks, brand marks, or text beyond what is listed above. If the reference ad showed a competitor brand or third-party logo, do NOT carry it over.
-- Hands must have exactly 5 fingers with natural anatomy. No deformed limbs, no extra fingers, no fused digits.
-- Photorealistic, unstylized — no illustration, no 3D-render look, no AI-art artifacts, no oversaturated colors, no plastic skin, no waxy faces.
-- Preserve the attached product image with exact shape, color, label text, and branding.
-- Use clean, modern commercial lighting (soft key light, gentle fill, natural shadow falloff) unless the reference scene specifically dictates otherwise.
-- Compliance: never include visual claims forbidden by the Compliance field above.
-
-═══ OUTPUT ═══
-
-One completed static ad image, ready to upload as a Meta ad creative. Composition must read clearly at the target aspect ratio without cropping the product or critical text.`,
+  "output_spec": {
+    "format": "single completed static advertisement image",
+    "fidelity_target": "Photoreal, commercial-grade, ready for paid-media distribution at scale",
+    "delivery": "Ready to upload as a Meta ad creative with zero post-production"
+  }
+}`,
 
     ai_adjustment:
 `You are an expert ad creative director. You generated an ad image and the user wants a specific adjustment.
