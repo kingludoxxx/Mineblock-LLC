@@ -2898,8 +2898,7 @@ async function sendDailyPnlReport(dateStr, { force = false } = {}) {
       `Fees:  ${fmt(fees)}`,
       `Ad Spend:  ${fmt(adSpend)}`,
       `Total Costs:  ${fmt(totalCosts)}`,
-      `ROAS (Direct):  ${roas.toFixed(2)}x`,
-      ...(roasBlended > 0 ? [`ROAS (Blended):  ${roasBlended.toFixed(2)}x`] : []),
+      `ROAS:  ${roas.toFixed(2)}x`,
       `Net Margin:  ${netMarginPct.toFixed(1)}%`,
       `Profit:  ${fmt(profit)}`,
     ];
