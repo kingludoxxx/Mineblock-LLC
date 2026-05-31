@@ -28,6 +28,7 @@ import {
   buildNanoBananaImagePrompt,
   buildAdjustmentPrompt,
   buildLayoutAnalysisPrompt,
+  mapProductRowToFlatProfile,
 } from '../utils/staticsPrompts.js';
 import { pgQuery } from '../db/pg.js';
 import { authenticate } from '../middleware/auth.js';
@@ -1240,23 +1241,38 @@ PRODUCT DETECTION: Set reference_has_product_visual to true if the reference ad 
 PRODUCT SWAP: Describe where the competitor product sits in the scene (position, size, angle, quantity). Our product will be placed there.
 
 Product: {{PRODUCT_NAME}}
+Short Name: {{SHORT_NAME}}
+Oneliner: {{ONELINER}}
+Tagline: {{TAGLINE}}
+Category / Type: {{CATEGORY}} / {{PRODUCT_TYPE}}
+Unit Details: {{UNIT_DETAILS}}
+Product URL: {{PRODUCT_URL}}
 Price: {{PRODUCT_PRICE}}
 Description: {{PRODUCT_DESCRIPTION}}
 Angle: {{ANGLE}}
 Brand Voice: {{BRAND_VOICE}}
-Customer: {{CUSTOMER}}
+Customer Avatar: {{CUSTOMER}}
+Customer Frustration: {{CUSTOMER_FRUSTRATION}}
+Customer Dream: {{CUSTOMER_DREAM}}
 Big Promise: {{BIG_PROMISE}}
 Differentiator: {{DIFFERENTIATOR}}
+Competitive Edge: {{COMPETITIVE_EDGE}}
 Unique Mechanism: {{UNIQUE_MECHANISM}}
 Key Benefits: {{KEY_BENEFITS}}
+Ingredients / Components: {{INGREDIENTS}}
 Target Audience: {{TARGET_AUDIENCE}}
 Pain Points: {{PAIN_POINTS}}
-Ingredients: {{INGREDIENTS}}
+Common Objections: {{OBJECTIONS}}
+Guarantee: {{GUARANTEE}}
 Winning Angles: {{WINNING_ANGLES}}
-Objections to handle: {{OBJECTIONS}}
+Custom Angles: {{CUSTOM_ANGLES}}
 Offer: {{OFFER_HOOK}}
-Pricing: {{PRICING}}
-Compliance — never claim: {{COMPLIANCE}}{{PRODUCT_IMAGE_NOTE}}
+Pricing / Bundles: {{PRICING}}
+Max Discount: {{MAX_DISCOUNT}}
+Discount Codes: {{DISCOUNT_CODES}}
+Offers: {{OFFERS}}
+Compliance — never claim: {{COMPLIANCE}}
+Operator Notes: {{NOTES}}{{PRODUCT_IMAGE_NOTE}}
 
 Analyze the reference image and respond in valid JSON only:
 {
@@ -1296,29 +1312,28 @@ ABSOLUTE RULES:
 - Same overall image dimensions and safe zones`,
 
     openai_image:
-`Generate a high-quality static ad image for {{PRODUCT_NAME}}.
+`Create a single Meta-ready static advertisement for {{PRODUCT_NAME}}, rendered in a natural, photorealistic, production-quality style. Treat this as a brief to a senior commercial photographer and retoucher — not an illustration prompt.
 
-PRODUCT (the ONLY visual element that should come from the attached image):
+Subject (the only object that should be sourced from the attached image):
 {{PRODUCT_INSTRUCTION}}
 
-SCENE & LAYOUT:
+Scene and composition (write the image as a real photograph, not a digital collage):
 {{VISUAL_CHANGES}}
 
-TEXT OVERLAYS (render as styled typography matching the reference ad's typography style):
+Text overlays — render the text EXACTLY as quoted, letter-for-letter, including capitalization and punctuation. Match the reference ad's typographic hierarchy (headline weight, sub size, CTA emphasis):
 {{TEXT_SWAPS}}
 
-CHARACTERS:
-- Exactly {{PEOPLE_COUNT}} people visible. If the reference had none, render none.
-- {{CHARACTER_ADAPTATION}}
+People — render exactly {{PEOPLE_COUNT}} human{{PEOPLE_COUNT}}. {{CHARACTER_ADAPTATION}}
 
-ABSOLUTE RULES:
+Rules:
 {{PRODUCT_RULE}}
-- No additional people, faces, or text beyond what is listed above.
+- No additional people, faces, logos, watermarks, or text beyond what is listed above.
 - Hands must have exactly 5 fingers with natural anatomy.
-- Photorealistic rendering — match the reference ad's medium (real photo vs designed graphic).
-- High input fidelity to the attached product image — preserve exact shape, color, branding.
+- Photorealistic, unstylized — no illustration, no 3D-render look, no AI-generated artifacts.
+- Preserve the attached product image with exact shape, color, label text, and branding.
+- Use clean, modern commercial lighting (soft key light, natural shadow falloff) unless the reference scene dictates otherwise.
 
-OUTPUT: a single completed ad creative ready for Meta delivery.`,
+Output: a single completed static ad image ready to upload as a Meta ad creative.`,
 
     ai_adjustment:
 `You are an expert ad creative director. You generated an ad image and the user wants a specific adjustment.
@@ -1332,7 +1347,7 @@ People in ad: {{PEOPLE_COUNT}}
 
 USER CORRECTION: "{{USER_CORRECTION}}"
 
-Your task: Write a concise, precise NanoBanana image generation prompt CORRECTION that incorporates the user's adjustment while preserving everything else about the ad.
+Your task: Write a concise, precise image-generation prompt CORRECTION that incorporates the user's adjustment while preserving everything else about the ad. The output may be sent to NanoBanana OR OpenAI gpt-image-2 depending on which engine originally generated this creative — keep the wording engine-neutral.
 
 The correction should:
 - Address ONLY what the user asked to change
@@ -1506,26 +1521,48 @@ router.post('/generate', authenticate, async (req, res) => {
         }
       }
 
-      // Map profile to the flat fields the prompt builder expects
-      const profileForPrompt = {
-        product_name:      product.name,
-        price:             product.price,
-        description:       product.description,
-        brand_voice:       product.profile?.voice || '',
-        customer:          product.profile?.customerAvatar || '',
-        big_promise:       product.profile?.bigPromise || '',
-        differentiator:    product.profile?.differentiator || '',
-        unique_mechanism:  product.profile?.mechanism || '',
-        key_benefits:      product.profile?.benefits || '',
-        target_audience:   product.profile?.targetDemographics || product.profile?.customerAvatar || '',
-        pain_points:       product.profile?.painPoints || '',
-        ingredients:       product.profile?.ingredients || '',
-        winning_angles:    product.profile?.winningAngles || '',
-        objections:        product.profile?.commonObjections || '',
-        offer_hook:        product.profile?.offerDetails || '',
-        pricing:           product.profile?.bundleVariants || product.price || '',
-        compliance:        product.profile?.complianceRestrictions || '',
+      // Map profile to the flat fields the prompt builder expects.
+      // Uses mapProductRowToFlatProfile so all 3 generation paths
+      // (/generate, /iterate, /regenerate-ready) reach Claude with the
+      // exact same product context — no missing fields when using OpenAI.
+      // Builds a synthetic DB-row shape from the camelCase fresh profile
+      // (kept here for back-compat with callers that don't refetch).
+      const profileSource = {
+        name: product.name,
+        price: product.price,
+        description: product.description,
+        oneliner:                product.profile?.oneliner,
+        tagline:                 product.profile?.tagline,
+        voice:                   product.profile?.voice,
+        customer_avatar:         product.profile?.customerAvatar,
+        customer_frustration:    product.profile?.customerFrustration,
+        customer_dream:          product.profile?.customerDream,
+        big_promise:             product.profile?.bigPromise,
+        mechanism:               product.profile?.mechanism,
+        differentiator:          product.profile?.differentiator,
+        competitive_edge:        product.profile?.competitiveEdge,
+        voice:                   product.profile?.voice,
+        guarantee:               product.profile?.guarantee,
+        benefits:                product.profile?.benefits,
+        pain_points:             product.profile?.painPoints,
+        common_objections:       product.profile?.commonObjections,
+        winning_angles:          product.profile?.winningAngles,
+        custom_angles_text:      product.profile?.customAngles,
+        offer_details:           product.profile?.offerDetails,
+        max_discount:            product.profile?.maxDiscount,
+        discount_codes:          product.profile?.discountCodes,
+        bundle_variants:         product.profile?.bundleVariants,
+        compliance_restrictions: product.profile?.complianceRestrictions,
+        notes:                   product.profile?.notes,
+        target_demographics:     product.profile?.targetDemographics,
+        category:                product.profile?.category,
+        product_type:            product.profile?.productType,
+        product_url:             product.profile?.productUrl,
+        unit_details:            product.profile?.unitDetails,
+        short_name:              product.profile?.shortName,
+        offers:                  product.profile?.offers,
       };
+      const profileForPrompt = mapProductRowToFlatProfile(profileSource);
       const productForPrompt = { ...product, profile: profileForPrompt };
 
       // ── Pre-fetch: prompts + reference image (parallel) ──
@@ -2034,19 +2071,31 @@ router.post('/iterate/:creativeId', authenticate, async (req, res) => {
       }
       {
         const p = prodRows[0];
+        // Full profile mapping via shared helper — ensures /iterate has the
+        // same product context as /generate (was previously only 14 fields).
         product = {
           id: p.id, name: p.name, price: p.price, description: p.description,
           product_image_url: firstProductImageFromRow(p),
-          profile: {
-            oneliner: p.oneliner, tagline: p.tagline, big_promise: p.big_promise,
-            differentiator: p.differentiator, unique_mechanism: p.mechanism, voice: p.voice,
-            key_benefits: p.benefits, pain_points: p.pain_points, target_demographics: p.target_demographics,
-            target_audience: p.customer_avatar, customer: p.customer_avatar,
-            winning_angles: p.winning_angles, objections: p.common_objections,
-            offer_hook: p.offer_details, pricing: p.price, compliance: p.compliance_restrictions,
-          },
+          profile: mapProductRowToFlatProfile(p),
         };
       }
+    }
+
+    // Determine which image engine generated the parent — iterations on an
+    // OpenAI creative must stay on OpenAI (no cross-engine style drift).
+    // Look up the parent spy_creatives row by creative_id (the parent here
+    // is a creative_analysis row, but iterations are seeded from spy_creatives).
+    let parentImageEngine = DEFAULT_ENGINE;
+    try {
+      const er = await pgQuery(
+        `SELECT image_engine FROM spy_creatives
+         WHERE source_label LIKE $1 OR product_id = $2
+         ORDER BY created_at DESC LIMIT 1`,
+        [`%${parent.creative_id}%`, productId]
+      );
+      if (er[0]?.image_engine) parentImageEngine = er[0].image_engine;
+    } catch (e) {
+      console.warn(`[iterate] parent engine lookup failed, defaulting to ${DEFAULT_ENGINE}: ${e.message}`);
     }
 
     // Pre-allocate spy_creatives rows + assign IM numbers
@@ -2059,13 +2108,15 @@ router.post('/iterate/:creativeId', authenticate, async (req, res) => {
         INSERT INTO spy_creatives
           (pipeline, product_id, product_name, status, aspect_ratio,
            source_label, reference_name, reference_thumbnail, angle,
-           parent_creative_id_ref, parent_im_number, im_number, batch_id, batch_position)
+           parent_creative_id_ref, parent_im_number, im_number, batch_id, batch_position,
+           image_engine)
         VALUES ('iteration', $1, $2, 'generating', '4:5',
-                $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
         RETURNING id, im_number, source_label
       `, [
         productId, product.name, sourceLabel, parent.ad_name, parent.thumbnail_url,
         parent.angle, parent.creative_id, parentImNumber, imNum, batchId, i + 1,
+        parentImageEngine,
       ]);
       createdRows.push(row[0]);
     }
@@ -2159,11 +2210,19 @@ router.post('/iterate/:creativeId', authenticate, async (req, res) => {
             claudeResult = JSON.parse(fixable);
           }
 
-          // Step B2: NanoBanana with ONLY the product image (per architecture)
+          // Step B2: Image generation via the parent's engine (NB or OpenAI).
+          // Honors per-creative engine persistence — no cross-engine drift.
           if (!productHttpUrl) throw new Error('Iteration requires product.product_image_url — none available');
-          const nbPrompt = buildNanoBananaImagePrompt(claudeResult, product, customPrompts.nanobanana_image);
-          const nbTaskId = await submitToNanoBanana(nbPrompt, [productHttpUrl], '4:5');
-          const tempUrl = await pollNanoBanana(nbTaskId);
+          const iterEngine = getEngine(parentImageEngine);
+          if (!iterEngine.isConfigured()) {
+            throw new Error(`Iteration engine '${iterEngine.name}' is not configured (missing API key)`);
+          }
+          const iterTemplate = iterEngine.name === 'openai'
+            ? (customPrompts.openai_image || customPrompts.nanobanana_image)
+            : customPrompts.nanobanana_image;
+          const nbPrompt = buildNanoBananaImagePrompt(claudeResult, product, iterTemplate);
+          const nbTaskId = await iterEngine.submit(nbPrompt, [productHttpUrl], '4:5');
+          const tempUrl = await iterEngine.poll(nbTaskId);
           const generatedUrl = await persistNanoBananaImage(tempUrl, 'statics-iterations');
 
           // Step B3: write result back to spy_creatives row
@@ -4326,7 +4385,8 @@ async function _doRegenerateBrokenPreviews(req, res) {
       : DEFAULT_STATUSES;
 
     const broken = await pgQuery(`
-      SELECT id, product_id, angle, reference_thumbnail, aspect_ratio, status
+      SELECT id, product_id, angle, reference_thumbnail, aspect_ratio, status,
+             COALESCE(image_engine, 'nanobanana') AS image_engine
       FROM spy_creatives
       WHERE status = ANY($1::text[])
       AND COALESCE(is_reference, FALSE) = FALSE  -- NEVER overwrite League/Meta/Upload reference rows
@@ -4368,18 +4428,12 @@ async function _doRegenerateBrokenPreviews(req, res) {
           const prodRows = await pgQuery('SELECT * FROM product_profiles WHERE id = $1', [row.product_id]);
           if (prodRows.length === 0) throw new Error(`product_id ${row.product_id} not found`);
           const p = prodRows[0];
+          // Full profile mapping via shared helper — ensures regenerate has
+          // the same product context as /generate (was previously only 14 fields).
           const product = {
             id: p.id, name: p.name, price: p.price, description: p.description,
             product_image_url: firstProductImageFromRow(p),
-            profile: {
-              oneliner: p.oneliner, tagline: p.tagline, big_promise: p.big_promise,
-              differentiator: p.differentiator, unique_mechanism: p.mechanism, voice: p.voice,
-              key_benefits: p.benefits, pain_points: p.pain_points,
-              target_demographics: p.target_demographics, target_audience: p.customer_avatar,
-              customer: p.customer_avatar, winning_angles: p.winning_angles,
-              objections: p.common_objections, offer_hook: p.offer_details,
-              pricing: p.price, compliance: p.compliance_restrictions,
-            },
+            profile: mapProductRowToFlatProfile(p),
           };
           if (!product.product_image_url) throw new Error('no product_image_url');
 
@@ -4419,11 +4473,20 @@ async function _doRegenerateBrokenPreviews(req, res) {
           try { claudeResult = JSON.parse(m[0]); }
           catch { claudeResult = JSON.parse(m[0].replace(/,\s*([}\]])/g, '$1')); }
 
-          // 4. Step 2: NanoBanana with ONLY product image
-          const nbPrompt = buildNanoBananaImagePrompt(claudeResult, product, customPrompts.nanobanana_image);
+          // 4. Step 2: image gen via the row's original engine (NB or OpenAI).
+          // Honors per-creative engine persistence — regenerating an OpenAI
+          // creative stays on OpenAI (no cross-engine style drift).
+          const rgnEngine = getEngine(row.image_engine || DEFAULT_ENGINE);
+          if (!rgnEngine.isConfigured()) {
+            throw new Error(`Regenerate engine '${rgnEngine.name}' is not configured (missing API key)`);
+          }
+          const rgnTemplate = rgnEngine.name === 'openai'
+            ? (customPrompts.openai_image || customPrompts.nanobanana_image)
+            : customPrompts.nanobanana_image;
+          const nbPrompt = buildNanoBananaImagePrompt(claudeResult, product, rgnTemplate);
           const ratio = row.aspect_ratio || '4:5';
-          const nbTaskId = await submitToNanoBanana(nbPrompt, [productHttpUrl], ratio);
-          const tempUrl = await pollNanoBanana(nbTaskId);
+          const nbTaskId = await rgnEngine.submit(nbPrompt, [productHttpUrl], ratio);
+          const tempUrl = await rgnEngine.poll(nbTaskId);
           const persisted = await persistNanoBananaImage(tempUrl, 'statics-recovered');
 
           // 5. Write back to spy_creatives

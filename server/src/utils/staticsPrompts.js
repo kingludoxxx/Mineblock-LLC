@@ -41,28 +41,103 @@ export function interpolate(template, vars = {}) {
 export function buildClaudeAnalysisPrompt(product = {}, angle = '', template = '', extras = {}) {
   const p = product.profile || {};
   const vars = {
-    PRODUCT_NAME:        product.name        || p.product_name    || '',
-    PRODUCT_PRICE:       product.price       || p.price           || '',
-    PRODUCT_DESCRIPTION: product.description || p.description     || '',
-    ANGLE:               angle               || '',
-    BRAND_VOICE:         p.brand_voice       || '',
-    CUSTOMER:            p.customer          || p.target_customer || '',
-    BIG_PROMISE:         p.big_promise       || '',
-    DIFFERENTIATOR:      p.differentiator    || '',
-    UNIQUE_MECHANISM:    p.unique_mechanism  || '',
-    KEY_BENEFITS:        p.key_benefits      || '',
-    TARGET_AUDIENCE:     p.target_audience   || '',
-    PAIN_POINTS:         p.pain_points       || '',
-    INGREDIENTS:         p.ingredients       || '',
-    WINNING_ANGLES:      p.winning_angles    || '',
-    OBJECTIONS:          p.objections        || '',
-    OFFER_HOOK:          p.offer_hook        || p.offer    || '',
-    PRICING:             p.pricing           || product.price || '',
-    COMPLIANCE:          p.compliance        || '',
-    PRODUCT_IMAGE_NOTE:  extras.PRODUCT_IMAGE_NOTE || '',
+    // Core
+    PRODUCT_NAME:         product.name        || p.product_name    || '',
+    PRODUCT_PRICE:        product.price       || p.price           || '',
+    PRODUCT_DESCRIPTION:  product.description || p.description     || '',
+    ANGLE:                angle               || '',
+    // Brand
+    ONELINER:             p.oneliner          || '',
+    TAGLINE:              p.tagline           || '',
+    BRAND_VOICE:          p.brand_voice       || '',
+    SHORT_NAME:           p.short_name        || '',
+    PRODUCT_TYPE:         p.product_type      || '',
+    CATEGORY:             p.category          || '',
+    UNIT_DETAILS:         p.unit_details      || '',
+    PRODUCT_URL:          p.product_url       || '',
+    // Audience
+    CUSTOMER:             p.customer          || p.target_customer || '',
+    CUSTOMER_FRUSTRATION: p.customer_frustration || '',
+    CUSTOMER_DREAM:       p.customer_dream    || '',
+    TARGET_AUDIENCE:      p.target_audience   || '',
+    PAIN_POINTS:          p.pain_points       || '',
+    OBJECTIONS:           p.objections        || '',
+    // Promise
+    BIG_PROMISE:          p.big_promise       || '',
+    UNIQUE_MECHANISM:     p.unique_mechanism  || '',
+    DIFFERENTIATOR:       p.differentiator    || '',
+    COMPETITIVE_EDGE:     p.competitive_edge  || '',
+    KEY_BENEFITS:         p.key_benefits      || '',
+    INGREDIENTS:          p.ingredients       || '',
+    GUARANTEE:            p.guarantee         || '',
+    // Angles
+    WINNING_ANGLES:       p.winning_angles    || '',
+    CUSTOM_ANGLES:        p.custom_angles     || '',
+    // Offer / pricing
+    OFFER_HOOK:           p.offer_hook        || p.offer          || '',
+    PRICING:              p.pricing           || product.price    || '',
+    MAX_DISCOUNT:         p.max_discount      || '',
+    DISCOUNT_CODES:       p.discount_codes    || '',
+    OFFERS:               p.offers            || '',
+    // Compliance / misc
+    COMPLIANCE:           p.compliance        || '',
+    NOTES:                p.notes             || '',
+    PRODUCT_IMAGE_NOTE:   extras.PRODUCT_IMAGE_NOTE || '',
     ...extras,
   };
   return interpolate(template, vars);
+}
+
+/**
+ * Map a raw `product_profiles` DB row to the flat snake_case profile shape
+ * that buildClaudeAnalysisPrompt expects. Single source of truth for which
+ * DB columns surface in the Claude prompt — keep all 3 generation paths
+ * (/generate, /iterate, /regenerate-ready) calling this so OpenAI + NB
+ * both see identical product context.
+ *
+ * @param {Object} row — raw row from `product_profiles` (snake_case columns)
+ * @returns {Object} flat profile for product.profile
+ */
+export function mapProductRowToFlatProfile(row = {}) {
+  const arrayJoin = (v) => Array.isArray(v) ? v.filter(Boolean).join(', ') : (v || '');
+  const offersStr = Array.isArray(row.offers)
+    ? row.offers.map(o => typeof o === 'string' ? o : JSON.stringify(o)).join(' | ')
+    : '';
+  return {
+    product_name:         row.name        || '',
+    price:                row.price       || '',
+    description:          row.description || '',
+    oneliner:             row.oneliner    || '',
+    tagline:              row.tagline     || '',
+    brand_voice:          row.voice       || '',
+    customer:             row.customer_avatar || '',
+    customer_frustration: row.customer_frustration || '',
+    customer_dream:       row.customer_dream || '',
+    big_promise:          row.big_promise || '',
+    differentiator:       row.differentiator || '',
+    unique_mechanism:     row.mechanism   || '',
+    competitive_edge:     row.competitive_edge || '',
+    key_benefits:         arrayJoin(row.benefits),
+    target_audience:      row.target_demographics || row.customer_avatar || '',
+    pain_points:          row.pain_points || '',
+    ingredients:          row.ingredients || '',
+    winning_angles:       row.winning_angles || '',
+    custom_angles:        row.custom_angles_text || '',
+    objections:           row.common_objections  || '',
+    offer_hook:           row.offer_details      || '',
+    pricing:              row.bundle_variants    || row.price || '',
+    compliance:           row.compliance_restrictions || '',
+    guarantee:            row.guarantee   || '',
+    max_discount:         row.max_discount || '',
+    discount_codes:       row.discount_codes || '',
+    offers:               offersStr,
+    notes:                row.notes       || '',
+    short_name:           row.short_name  || '',
+    product_type:         row.product_type || '',
+    category:             row.category    || '',
+    unit_details:         row.unit_details || '',
+    product_url:          row.product_url || '',
+  };
 }
 
 /**
