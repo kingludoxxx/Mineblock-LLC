@@ -3583,10 +3583,21 @@ router.get('/generated/:id', authenticate, async (req, res) => {
   try {
     await ensureTables();
     const rows = await pgQuery(
-      `SELECT g.*, w.parsed_script AS original_script, w.raw_script AS original_raw_script
-       FROM brief_pipeline_generated g
-       LEFT JOIN brief_pipeline_winners w ON g.winner_id = w.id
-       WHERE g.id = $1`,
+      `SELECT g.*,
+              w.parsed_script AS original_script,
+              w.raw_script    AS original_raw_script,
+              w.reference_id  AS winner_reference_id,
+              r.id            AS reference_id,
+              r.source        AS reference_source,
+              r.brand_name    AS reference_brand_name,
+              r.headline      AS reference_headline,
+              r.video_url     AS reference_video_url,
+              r.thumbnail_url AS reference_thumbnail_url,
+              r.source_url    AS reference_source_url
+         FROM brief_pipeline_generated g
+         LEFT JOIN brief_pipeline_winners    w ON g.winner_id = w.id
+         LEFT JOIN brief_pipeline_references r ON w.reference_id = r.id
+        WHERE g.id = $1`,
       [req.params.id]
     );
     if (!rows.length) {
@@ -3607,6 +3618,23 @@ router.get('/generated/:id', authenticate, async (req, res) => {
       }
       return [];
     })();
+    // Surface the originating reference (when known) so the modal can
+    // render a video player + "watch source" link without a second
+    // round-trip. NULL when the brief was generated from a raw script
+    // paste with no upstream reference attached.
+    if (brief.reference_id) {
+      brief.reference = {
+        id: brief.reference_id,
+        source: brief.reference_source,
+        brandName: brief.reference_brand_name,
+        headline: brief.reference_headline,
+        videoUrl: brief.reference_video_url,
+        thumbnailUrl: brief.reference_thumbnail_url,
+        sourceUrl: brief.reference_source_url,
+      };
+    } else {
+      brief.reference = null;
+    }
     res.json({ success: true, brief });
   } catch (err) {
     console.error('[BriefPipeline] GET /generated/:id error:', err.message);

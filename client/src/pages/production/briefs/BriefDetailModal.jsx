@@ -16,6 +16,8 @@ import {
   Send,
   Trash2,
   Plus,
+  Play,
+  Film,
 } from 'lucide-react';
 import api from '../../../services/api';
 
@@ -84,6 +86,79 @@ function parseHighlighted(raw) {
 // ---------------------------------------------------------------------------
 // BriefDetailModal
 // ---------------------------------------------------------------------------
+
+// ReferenceMedia — renders an embedded video player when the source has a
+// direct video file URL (Meta refs from Triple Whale typically do), or a
+// clickable thumbnail card when only a sourceUrl is known (League refs from
+// the FB Ad Library). Always shows the "Watch source ad" link to sourceUrl
+// so the editor can open the original in a new tab no matter what.
+function ReferenceMedia({ reference }) {
+  const { videoUrl, thumbnailUrl, sourceUrl, headline, brandName, source } = reference || {};
+  // True when the URL looks like a direct video file (mp4/webm/mov/m4v),
+  // OR when it points at our own R2/CDN. Avoids trying to render an FB
+  // Ad Library page URL inside a <video> element.
+  const isPlayableVideo =
+    typeof videoUrl === 'string' && /\.(mp4|webm|mov|m4v)(\?|$)/i.test(videoUrl);
+  return (
+    <div className="glass-card border border-white/[0.04] rounded-lg overflow-hidden bg-white/[0.02]">
+      {isPlayableVideo ? (
+        <video
+          src={videoUrl}
+          controls
+          playsInline
+          preload="metadata"
+          poster={thumbnailUrl || undefined}
+          className="w-full aspect-[9/16] max-h-[420px] bg-black object-contain"
+        />
+      ) : thumbnailUrl ? (
+        <a
+          href={sourceUrl || videoUrl || '#'}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="relative block group"
+          aria-label="Open source ad in a new tab"
+        >
+          <img
+            src={thumbnailUrl}
+            alt={headline || brandName || 'Source ad thumbnail'}
+            className="w-full aspect-[9/16] max-h-[420px] object-cover bg-black"
+          />
+          <div className="absolute inset-0 flex items-center justify-center bg-black/40 group-hover:bg-black/30 transition-colors">
+            <div className="flex items-center gap-2 px-3 py-2 rounded-full bg-white/10 border border-white/20 backdrop-blur-sm">
+              <Play className="w-4 h-4 text-white" fill="currentColor" />
+              <span className="text-xs font-mono uppercase tracking-wider text-white">Watch source</span>
+            </div>
+          </div>
+        </a>
+      ) : (
+        <div className="aspect-[9/16] max-h-[300px] flex items-center justify-center text-zinc-600 bg-black/40">
+          <Film className="w-8 h-8" />
+        </div>
+      )}
+      <div className="p-3 space-y-2">
+        {(brandName || headline) && (
+          <div className="text-[10px] font-mono uppercase tracking-wider text-zinc-500 truncate">
+            {[brandName, source ? source.toUpperCase() : null].filter(Boolean).join(' · ')}
+          </div>
+        )}
+        {headline && (
+          <div className="text-xs text-zinc-300 leading-snug line-clamp-2">{headline}</div>
+        )}
+        {sourceUrl && (
+          <a
+            href={sourceUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1.5 text-[10px] font-mono uppercase tracking-wider text-[#c9a84c] hover:text-[#e8d5a3] transition-colors"
+          >
+            <ExternalLink className="w-3 h-3" />
+            Open in source
+          </a>
+        )}
+      </div>
+    </div>
+  );
+}
 
 export default function BriefDetailModal({
   brief,
@@ -240,36 +315,42 @@ export default function BriefDetailModal({
 
       {/* Centered modal — 90vw × 90vh max, 3-column grid on lg+ */}
       <div className="relative w-full max-w-[1400px] h-[90vh] bg-[#0c0c0e] border border-white/[0.07] rounded-2xl shadow-2xl flex flex-col overflow-hidden">
-        {/* Sticky header */}
-        <div className="flex items-start justify-between px-6 py-4 border-b border-white/[0.06] shrink-0">
-          <div className="min-w-0">
-            <h2 className="text-base font-semibold text-white flex items-center gap-2">
-              Brief Detail
+        {/* Sticky header — naming convention is the prominent centered title.
+            "Brief Detail · STATUS" demotes to a small pill above. */}
+        <div className="relative px-6 py-4 border-b border-white/[0.06] shrink-0">
+          {/* Top row: tiny label pill on the left, scores + close on the right */}
+          <div className="flex items-start justify-between gap-4 mb-2">
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] font-mono uppercase tracking-wider text-zinc-500">Brief Detail</span>
               <span className="text-[10px] uppercase tracking-wider font-mono px-1.5 py-0.5 rounded bg-white/[0.04] text-zinc-400 border border-white/[0.06]">
                 {status}
               </span>
+            </div>
+            <div className="flex items-center gap-3">
+              {hasScores && (
+                <div className="hidden md:flex gap-1.5">
+                  {Object.entries(scores).map(([k, v]) => (
+                    <ScoreCard key={k} scoreKey={k} value={v} />
+                  ))}
+                </div>
+              )}
+              <button
+                type="button"
+                onClick={onClose}
+                aria-label="Close brief detail modal"
+                className="text-zinc-400 hover:text-white transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+          </div>
+          {/* Centered big title — the naming convention is what the editor
+              actually needs to read at a glance. Mono, white, large. */}
+          {brief.naming_convention && (
+            <h2 className="font-mono text-base md:text-lg text-white text-center tracking-wide leading-snug px-12 break-words">
+              {brief.naming_convention}
             </h2>
-            {brief.naming_convention && (
-              <p className="font-mono text-[11px] text-zinc-500 mt-1 truncate">{brief.naming_convention}</p>
-            )}
-          </div>
-          <div className="flex items-center gap-3">
-            {hasScores && (
-              <div className="hidden md:flex gap-1.5">
-                {Object.entries(scores).map(([k, v]) => (
-                  <ScoreCard key={k} scoreKey={k} value={v} />
-                ))}
-              </div>
-            )}
-            <button
-              type="button"
-              onClick={onClose}
-              aria-label="Close brief detail modal"
-              className="text-zinc-400 hover:text-white transition-colors cursor-pointer"
-            >
-              <X className="w-5 h-5" />
-            </button>
-          </div>
+          )}
         </div>
 
         {/* Body — 3 columns on lg+, stacked on smaller. Left = source, middle = brief, right = AI chat. */}
@@ -284,6 +365,13 @@ export default function BriefDetailModal({
                     <ScoreCard key={k} scoreKey={k} value={v} />
                   ))}
                 </div>
+              </section>
+            )}
+
+            {brief.reference && (brief.reference.videoUrl || brief.reference.thumbnailUrl || brief.reference.sourceUrl) && (
+              <section>
+                <SectionLabel>Source Reference</SectionLabel>
+                <ReferenceMedia reference={brief.reference} />
               </section>
             )}
 
