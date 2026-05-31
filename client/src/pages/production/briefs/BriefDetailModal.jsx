@@ -179,28 +179,38 @@ export default function BriefDetailModal({
   // Parse the raw transcript Vertex multimodal emits — it interleaves
   // - [ON-SCREEN TEXT] block (one fragment per line, ALL CAPS subtitle dump)
   // - [AUDIO / VOICEOVER] block (the actual spoken script in a paragraph)
-  // - [SELLING MESSAGE], [BRAND] etc. — analyzer metadata, not script
+  // - [SELLING MESSAGE], [BRAND], [VISUAL NARRATIVE] etc. — analyzer
+  //   metadata that the operator doesn't want to see in the script panel.
   // Operator only wants to see the spoken script flowing normally; the
   // on-screen lines surface separately as small chips so they're still
   // visible at a glance without dominating the column.
   const parsedTranscript = (() => {
     if (!originalRawScript) return null;
-    const onScreenMatch  = originalRawScript.match(/\[ON[- ]?SCREEN\s*TEXT\]\s*([\s\S]*?)(?=\n\n?\[|$)/i);
-    const audioMatch     = originalRawScript.match(/\[(?:AUDIO|VOICEOVER|AUDIO\s*\/\s*VOICEOVER)\]\s*([\s\S]*?)(?=\n\n?\[|$)/i);
+    // Strip every metadata section by name. The bracket sections we want
+    // GONE from the rendered script entirely, regardless of where in the
+    // transcript they appear. Run before extracting the audio block so
+    // even if the audio match captures too greedily, no metadata leaks
+    // through.
+    const METADATA_STRIP_REGEX = /\[(?:SELLING\s*MESSAGE|BRAND|METADATA|VISUAL\s*NARRATIVE|ANALYSIS|NOTES|CTA)\][\s\S]*?(?=\n\s*\[[A-Z]|$)/gi;
+    const cleaned = originalRawScript.replace(METADATA_STRIP_REGEX, '').trim();
+
+    const onScreenMatch  = cleaned.match(/\[ON[- ]?SCREEN\s*TEXT\]\s*([\s\S]*?)(?=\n\s*\[[A-Z]|$)/i);
+    const audioMatch     = cleaned.match(/\[(?:AUDIO\s*\/?\s*VOICEOVER|AUDIO|VOICEOVER)\]\s*([\s\S]*?)(?=\n\s*\[[A-Z]|$)/i);
     const onScreenLines  = onScreenMatch
       ? onScreenMatch[1].split('\n').map((s) => s.trim()).filter(Boolean)
       : [];
     let spoken = audioMatch ? audioMatch[1].trim() : '';
     if (!spoken) {
-      // No labeled audio block — fall back to stripping the on-screen and
-      // metadata blocks and showing whatever remains. Covers Whisper-only
-      // sources (Forge-class refs) which have no section labels at all.
-      spoken = originalRawScript
-        .replace(/\[ON[- ]?SCREEN\s*TEXT\][\s\S]*?(?=\n\n?\[|$)/i, '')
-        .replace(/\[(?:SELLING\s*MESSAGE|BRAND|METADATA|VISUAL\s*NARRATIVE)\][\s\S]*?(?=\n\n?\[|$)/gi, '')
-        .replace(/\[AUDIO[^\]]*\]\s*/i, '')
+      // No labeled audio block — strip the on-screen block too and show
+      // whatever paragraph remains. Covers Whisper-only sources (Forge-class
+      // refs) which have no section labels at all.
+      spoken = cleaned
+        .replace(/\[ON[- ]?SCREEN\s*TEXT\][\s\S]*?(?=\n\s*\[[A-Z]|$)/i, '')
+        .replace(/\[(?:AUDIO|VOICEOVER)[^\]]*\]\s*/gi, '')
         .trim();
     }
+    // Defence in depth — if any [SECTION] tag still survived, scrub it.
+    spoken = spoken.replace(/\[(?:SELLING\s*MESSAGE|BRAND|METADATA|VISUAL\s*NARRATIVE|ANALYSIS|NOTES|CTA)\][\s\S]*$/gi, '').trim();
     return { onScreenLines, spoken };
   })();
   const [winAnalysisOpen, setWinAnalysisOpen] = useState(false);
