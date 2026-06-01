@@ -732,7 +732,31 @@ function scheduleDailyScrape() {
     setInterval(runScrapeAll, INTERVAL_MS);
   }, BOOT_DELAY_MS);
 
-  console.log('[brand-spy] auto-scrape scheduled (boot +5min, then every 24h); recovery check running immediately');
+  // Pending sweep — every 15 min, look for brands that never finished a
+  // successful scrape (last_scrape_status NULL or 'OUT_OF_CREDITS') and
+  // re-queue them. This means the user follows a brand, watches credits
+  // arrive, and the next sweep auto-runs the scrape — no manual Refresh.
+  // Cheap when there's nothing to do (one indexed SELECT) and bounded by
+  // the ScrapeCreators pre-flight credit check.
+  const PENDING_SWEEP_MS = 15 * 60 * 1000;
+  const pendingSweep = async () => {
+    try {
+      const { rows } = await pgQuery(
+        `SELECT id FROM brand_spy.brands
+          WHERE last_scrape_status IS NULL
+             OR last_scrape_status = 'OUT_OF_CREDITS'`,
+      );
+      if (!rows.length) return;
+      console.log(`[brand-spy] pending sweep: ${rows.length} brand(s) waiting on credits — attempting`);
+      await scrapeAllInBackground(rows.map((r) => r.id));
+    } catch (err) {
+      console.error('[brand-spy] pending sweep error:', err.message);
+    }
+  };
+  setTimeout(pendingSweep, 60 * 1000);            // first sweep 1 min after boot
+  setInterval(pendingSweep, PENDING_SWEEP_MS);    // then every 15 min
+
+  console.log('[brand-spy] auto-scrape scheduled (boot +5min, then every 24h); pending-sweep every 15 min; recovery check running immediately');
 }
 
 scheduleDailyScrape();

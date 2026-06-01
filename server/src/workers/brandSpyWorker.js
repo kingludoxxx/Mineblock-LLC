@@ -421,6 +421,18 @@ export async function runBrandScrape({ brandId, trigger, client: scClient }) {
     const balance = await sc.getCreditBalance();
     const remaining = balance?.creditCount;
     if (typeof remaining === 'number' && remaining <= 0) {
+      // Mark the brand so the UI surfaces a clear "credits needed" state
+      // instead of looking like nothing happened. The pendingSweep below
+      // will auto-retry as soon as the balance goes positive — the user
+      // never has to click Refresh manually.
+      await query(
+        `UPDATE brand_spy.brands
+            SET last_scrape_status = 'OUT_OF_CREDITS',
+                last_scrape_error  = $2,
+                last_scraped_at    = COALESCE(last_scraped_at, NOW())
+          WHERE id = $1`,
+        [brandId, `Out of ScrapeCreators credits (balance: ${remaining}). Auto-retry when credits return.`],
+      ).catch((dbErr) => console.warn(`[brand-spy] failed to mark OUT_OF_CREDITS for ${brandId}: ${dbErr.message}`));
       throw new ScrapeCreatorsError(
         `Out of credits (balance: ${remaining}). Top up at https://app.scrapecreators.com to resume scraping.`,
         402, 'NO_CREDITS', false,
