@@ -400,6 +400,7 @@ export default function BriefPipeline() {
         mode:            sendMode,
         numVariations:   config.numVariations,
         referenceId:     config.referenceId,
+        model:           config.model || 'claude',
         // Iterate-mode vector picker payload. Backend buildIterationPrompt
         // expects [{ vector, target }] — Hooks / Format Swap / Avatar / etc.
         // Undefined in clone mode (server ignores it).
@@ -469,6 +470,7 @@ export default function BriefPipeline() {
     if (!Array.isArray(refs) || refs.length === 0) return;
     const productCode = opts.productCode || 'MR';
     const angle = opts.angle || null;
+    const model = opts.model || 'claude';
     try {
       await Promise.all(refs.map(async (ref) => {
         // Skip references with no transcript — backend would 400 anyway and
@@ -483,6 +485,7 @@ export default function BriefPipeline() {
             mode: sendMode,
             numVariations: 1,
             referenceId: ref.id,
+            model,
           });
           if (data?.winner_id) {
             spawnPendingGeneration({

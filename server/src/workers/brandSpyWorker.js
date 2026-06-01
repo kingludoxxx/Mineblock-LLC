@@ -1143,6 +1143,16 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
       p1dBatchCount += 1;
       const filtered = batch.filter((ad) => {
         const url = ad.snapshot?.link_url ?? ad.link_url ?? '';
+        if (!url) {
+          // Ad has no link_url (text-overlay creatives, before/after frames,
+          // some statement-style ads — the CTA URL lives on the button image
+          // not in the snapshot). Accept it if we already know this page
+          // belongs to the brand. Mirrors the Phase 2 filter so the
+          // phase1dCoveredEverything skip stays safe — without this fallback
+          // we'd lose tens to hundreds of no-link-url ads per brand.
+          const metaPageId = String(ad.page_id ?? ad.snapshot?.page_id ?? '');
+          return metaPageId && pageCache.has(metaPageId);
+        }
         return linkBelongsToBrand(url, normalizedDomain);
       });
       if (filtered.length > 0) {
@@ -1178,6 +1188,12 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
         phaseCredits.p1d += 1;
         const filtered = batch.filter((ad) => {
           const url = ad.snapshot?.link_url ?? ad.link_url ?? '';
+          if (!url) {
+            // Same no-link-url fallback as the ACTIVE pass — accept ads on
+            // known brand pages.
+            const metaPageId = String(ad.page_id ?? ad.snapshot?.page_id ?? '');
+            return metaPageId && pageCache.has(metaPageId);
+          }
           return linkBelongsToBrand(url, normalizedDomain);
         });
         if (filtered.length > 0) {

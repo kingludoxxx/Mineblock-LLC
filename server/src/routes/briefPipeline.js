@@ -1145,6 +1145,87 @@ async function callClaude(systemPrompt, userPrompt, maxTokens = 3000, { fast = f
 }
 
 /**
+ * Call OpenAI API for brief generation. Same interface as callClaude
+ * for seamless model swapping. Returns parsed JSON response.
+ */
+async function callOpenAI(systemPrompt, userPrompt, maxTokens = 3000) {
+  const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
+  if (!OPENAI_API_KEY) {
+    throw new Error('OPENAI_API_KEY not configured');
+  }
+
+  const OPENAI_API_URL = 'https://api.openai.com/v1/chat/completions';
+  const messages = [
+    { role: 'system', content: systemPrompt },
+    { role: 'user', content: userPrompt },
+  ];
+
+  const body = {
+    model: 'gpt-4-turbo',
+    max_tokens: maxTokens,
+    messages,
+  };
+
+  const res = await fetch(OPENAI_API_URL, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${OPENAI_API_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text();
+    console.error(`[callOpenAI] HTTP ${res.status} from OpenAI: ${errText.slice(0, 500)}`);
+    throw new Error(`OpenAI API error ${res.status}: ${errText.slice(0, 300)}`);
+  }
+
+  const data = await res.json();
+  const text = data.choices?.[0]?.message?.content || '';
+  if (data.choices?.[0]?.finish_reason === 'length') {
+    console.warn(`[callOpenAI] Response clipped at ${maxTokens} tokens. Consider bumping the budget.`);
+  }
+
+  // Parse JSON response (same as callClaude)
+  let cleaned = text.trim();
+  const fenceMatch = cleaned.match(/```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/) ||
+                     cleaned.match(/```(?:json)?\s*\n?([\s\S]+)$/);
+  if (fenceMatch) cleaned = fenceMatch[1].trim();
+
+  let jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+  let wasTruncated = false;
+  if (!jsonMatch) {
+    jsonMatch = cleaned.match(/\{[\s\S]+$/);
+    wasTruncated = !!jsonMatch;
+  }
+  if (!jsonMatch) {
+    throw new Error(`OpenAI returned no JSON block. Response: ${cleaned.slice(0, 500)}`);
+  }
+
+  let raw = jsonMatch[0];
+
+  if (wasTruncated) {
+    const quotes = raw.match(/(?<!\\)"/g) || [];
+    if (quotes.length % 2 !== 0) raw += '"';
+    raw = raw.replace(/,\s*"[^"]*"\s*$/, '');
+    raw = raw.replace(/,\s*$/, '');
+    const openBrackets = (raw.match(/\[/g) || []).length;
+    const closeBrackets = (raw.match(/\]/g) || []).length;
+    for (let i = 0; i < openBrackets - closeBrackets; i++) raw += ']';
+    const opens = (raw.match(/\{/g) || []).length;
+    const closes = (raw.match(/\}/g) || []).length;
+    for (let i = 0; i < opens - closes; i++) raw += '}';
+  }
+
+  try {
+    return JSON.parse(raw);
+  } catch (parseErr) {
+    throw new Error(`Failed to parse OpenAI JSON: ${parseErr.message}\nRaw: ${raw.slice(0, 300)}`);
+  }
+}
+
+/**
  * Classify why a winner is winning.
  */
 function classifyWinner(winner) {
@@ -2438,6 +2519,8 @@ cta: {{ORIGINAL_CTA}}
 ### Forced enumeration step (do this BEFORE writing the body)
 Before generating hooks or body, emit a "source_beats" field in the output JSON: an array where each entry is one source paragraph compressed to ONE sentence (≤ 20 words). This is a contract between you and yourself — once you've listed N source beats, you commit to writing N output paragraphs, each one mapping to the same beat at the same position.
 
+**CRITICAL: Do not skip validation moments.** If the source mentions Shark Tank, a major press moment, celebrity endorsement, regulatory approval, or other credibility inflection — that moment MUST appear as its own beat in source_beats AND as its own paragraph in your output. These are structural, not optional. Search the source explicitly for: "Shark Tank", "Forbes", "TechCrunch", "went viral", "made headlines", "industry experts said", "regulatory approval", "partnership with", "investment from". If found, list as a separate beat and preserve that paragraph.
+
 Then write the body paragraph-by-paragraph against that list. If your output has fewer paragraphs than source_beats has entries, you have dropped beats — that is the failure mode this rule exists to prevent. Go back and write the missing paragraphs before emitting JSON.
 
 ### What "equivalent paragraph" means
@@ -3081,7 +3164,7 @@ function validateUuid(req, res) {
 router.post('/generate-from-script', authenticate, async (req, res) => {
   try {
     await ensureTables();
-    const { script, url, productId, productCode, angle, mode, numVariations = 3, referenceId, vectorsSelected, acknowledgeBrandMismatch, acknowledgeAdCopyOnly } = req.body;
+    const { script, url, productId, productCode, angle, mode, numVariations = 3, referenceId, vectorsSelected, acknowledgeBrandMismatch, acknowledgeAdCopyOnly, model = 'claude' } = req.body;
 
     // C2 — refuse iterate/clone when the reference's transcript came from
     // Meta ad-copy metadata (Path 5 last resort) instead of a real video
@@ -3462,23 +3545,41 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
         let lastErr = null;
         let modelUsed = null;
         let generated = null;
-        try {
-          modelUsed = 'opus';
-          generated = await callClaude(cloneSystem, enhancedCloneUser, 12000, { opus: true });
-        } catch (opusErr) {
-          lastErr = `opus: ${opusErr.message}`;
-          console.warn(`[BriefPipeline] Opus clone attempt failed (${opusErr.message}) — falling back to Sonnet.`);
+
+        // Route to correct model (Claude vs OpenAI) based on request parameter
+        if (model === 'openai') {
           try {
-            modelUsed = 'sonnet';
-            generated = await callClaude(cloneSystem, enhancedCloneUser, 12000);
-          } catch (sonnetErr) {
-            lastErr = `${lastErr}; sonnet: ${sonnetErr.message}`;
+            modelUsed = 'openai';
+            generated = await callOpenAI(cloneSystem, enhancedCloneUser, 12000);
+          } catch (openaiErr) {
+            lastErr = `openai: ${openaiErr.message}`;
             await pgQuery(
               `UPDATE brief_pipeline_winners SET generation_error = $1, generation_model = $2 WHERE id = $3`,
-              [lastErr, 'both-failed', winner.id]
+              [lastErr, 'openai', winner.id]
             ).catch(() => {});
-            console.error(`[BriefPipeline] clone — both Opus and Sonnet failed: ${lastErr}`);
+            console.error(`[BriefPipeline] clone — OpenAI failed: ${lastErr}`);
             return { direction: { id: 1, name: '1:1 Clone' }, success: false };
+          }
+        } else {
+          // Default Claude with Opus-first / Sonnet fallback
+          try {
+            modelUsed = 'opus';
+            generated = await callClaude(cloneSystem, enhancedCloneUser, 12000, { opus: true });
+          } catch (opusErr) {
+            lastErr = `opus: ${opusErr.message}`;
+            console.warn(`[BriefPipeline] Opus clone attempt failed (${opusErr.message}) — falling back to Sonnet.`);
+            try {
+              modelUsed = 'sonnet';
+              generated = await callClaude(cloneSystem, enhancedCloneUser, 12000);
+            } catch (sonnetErr) {
+              lastErr = `${lastErr}; sonnet: ${sonnetErr.message}`;
+              await pgQuery(
+                `UPDATE brief_pipeline_winners SET generation_error = $1, generation_model = $2 WHERE id = $3`,
+                [lastErr, 'both-failed', winner.id]
+              ).catch(() => {});
+              console.error(`[BriefPipeline] clone — both Opus and Sonnet failed: ${lastErr}`);
+              return { direction: { id: 1, name: '1:1 Clone' }, success: false };
+            }
           }
         }
         try {

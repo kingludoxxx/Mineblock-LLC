@@ -72,6 +72,7 @@ export default function ScriptGeneratorPanel({
   });
   const [enhancing, setEnhancing] = useState(false);
   const [error, setError] = useState(null);
+  const [selectedModel, setSelectedModel] = useState('claude');
 
   // Apply external prefill (from Reference card → "Generate Brief") once per
   // distinct initialScript. We track the last applied value so subsequent
@@ -194,6 +195,7 @@ export default function ScriptGeneratorPanel({
         mode: outputMode,
         numVariations: variantCount,
         referenceId: initialReferenceId || null,
+        model: selectedModel,
         // Only send vectorsSelected on iterate mode — clone mode ignores it.
         vectorsSelected: outputMode === 'iterate' ? buildVectorsPayload() : undefined,
       });
@@ -632,6 +634,37 @@ export default function ScriptGeneratorPanel({
           {error}
         </div>
       )}
+
+      {/* Model selector */}
+      <div className="flex items-center gap-3 px-3 py-2 rounded-lg bg-[#0a0a0a] border border-slate-700/30">
+        <span className="text-xs font-mono text-slate-400">MODEL</span>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={() => setSelectedModel('claude')}
+            className="px-3 py-1.5 rounded text-xs font-mono font-semibold transition-all"
+            style={{
+              background: selectedModel === 'claude' ? '#c9a84c' : 'transparent',
+              color: selectedModel === 'claude' ? '#111113' : '#a1a1a1',
+              border: selectedModel === 'claude' ? 'none' : '1px solid rgba(161,161,161,0.3)',
+            }}
+          >
+            CLAUDE
+          </button>
+          <button
+            type="button"
+            onClick={() => setSelectedModel('openai')}
+            className="px-3 py-1.5 rounded text-xs font-mono font-semibold transition-all"
+            style={{
+              background: selectedModel === 'openai' ? '#10a37f' : 'transparent',
+              color: selectedModel === 'openai' ? '#ffffff' : '#a1a1a1',
+              border: selectedModel === 'openai' ? 'none' : '1px solid rgba(161,161,161,0.3)',
+            }}
+          >
+            OPENAI
+          </button>
+        </div>
+      </div>
 
       {/* Generate button */}
       <button
