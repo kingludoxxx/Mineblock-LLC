@@ -196,10 +196,47 @@ export default function BriefDetailModal({
 
     const onScreenMatch  = cleaned.match(/\[ON[- ]?SCREEN\s*TEXT\]\s*([\s\S]*?)(?=\n\s*\[[A-Z]|$)/i);
     const audioMatch     = cleaned.match(/\[(?:AUDIO\s*\/?\s*VOICEOVER|AUDIO|VOICEOVER)\]\s*([\s\S]*?)(?=\n\s*\[[A-Z]|$)/i);
-    const onScreenLines  = onScreenMatch
+    const rawOnScreenLines  = onScreenMatch
       ? onScreenMatch[1].split('\n').map((s) => s.trim()).filter(Boolean)
       : [];
     let spoken = audioMatch ? audioMatch[1].trim() : '';
+    // Caption dedup applied at READ time so old cached transcripts (Vertex
+    // run BEFORE the prompt + dedup landed) also get cleaned up in the UI.
+    // Matches the heuristic in server/src/services/videoTranscribe.js:
+    //   - keep framing panels (≥20 words AND ≥2 sentences)
+    //   - drop ALL-CAPS lines whose every meaningful token appears in audio
+    //   - drop any 2+ word line whose normalised form is a substring of
+    //     normalised audio
+    const onScreenLines = (() => {
+      if (rawOnScreenLines.length === 0 || !spoken) return rawOnScreenLines;
+      const norm = (s) => String(s || '')
+        .toLowerCase()
+        .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+      const normalisedAudio = norm(spoken);
+      const audioWordSet = new Set(normalisedAudio.split(' ').filter((w) => w.length > 2));
+      const isFramingPanel = (line) => {
+        const wc = line.split(/\s+/).filter(Boolean).length;
+        const sentenceCount = (line.match(/[.!?](\s|$)/g) || []).length;
+        return wc >= 20 && sentenceCount >= 2;
+      };
+      const survivors = [];
+      for (const line of rawOnScreenLines) {
+        const n = norm(line);
+        if (!n) continue;
+        if (isFramingPanel(line)) { survivors.push(line); continue; }
+        // ALL-CAPS teleprompter fragment whose tokens all appear in audio.
+        if (/^[A-Z0-9\s\W]+$/.test(line) && line === line.toUpperCase()) {
+          const tokens = n.split(' ').filter((w) => w.length > 2);
+          if (tokens.length > 0 && tokens.every((w) => audioWordSet.has(w))) continue;
+        }
+        // Multi-word line whose normalised form is a substring of audio.
+        if (n.split(' ').length >= 2 && normalisedAudio.includes(n)) continue;
+        survivors.push(line);
+      }
+      return survivors;
+    })();
     if (!spoken) {
       // No labeled audio block — strip the on-screen block too and show
       // whatever paragraph remains. Covers Whisper-only sources (Forge-class
