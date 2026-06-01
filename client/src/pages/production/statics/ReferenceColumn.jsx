@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import {
-  Upload, Globe, TrendingUp, Loader2, RefreshCw, Trash2, ExternalLink, X, Sparkles, Check, CheckCircle2,
+  Upload, Globe, TrendingUp, Loader2, RefreshCw, Trash2, ExternalLink, X, Sparkles, Check, CheckCircle2, Layers,
 } from 'lucide-react';
 import api from '../../../services/api';
 import LeagueImportModal from './LeagueImportModal';
@@ -24,16 +24,54 @@ function timeAgo(iso) {
   return `${d}d ago`;
 }
 
-function ReferencePreviewModal({ item, onClose, onUse, isSelected, onToggleSelect }) {
+function ReferencePreviewModal({ item, onClose, onUse, isSelected, onToggleSelect, productAngles = [], onQueueRefWithAngles }) {
   // Close on ESC + autofocus the close button so tab-order starts on the modal,
   // not the page underneath. Cleanup on unmount.
+  const [mode, setMode] = useState('view'); // 'view' | 'angles'
+  const [pickedAngles, setPickedAngles] = useState(() => new Set());
+  const [queueing, setQueueing] = useState(false);
   useEffect(() => {
     if (!item) return undefined;
     const h = (e) => { if (e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', h);
     return () => window.removeEventListener('keydown', h);
   }, [item, onClose]);
+  // Reset angle-picker state when the modal opens with a new item.
+  useEffect(() => {
+    if (item) { setMode('view'); setPickedAngles(new Set()); setQueueing(false); }
+  }, [item?.id]);
   if (!item) return null;
+  const hasAngles = Array.isArray(productAngles) && productAngles.length > 0;
+  const toggleAngle = (angleObj) => {
+    const key = (angleObj?.name || '').trim().toLowerCase();
+    if (!key) return;
+    setPickedAngles(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  };
+  const selectAllAngles = () => {
+    const all = new Set();
+    productAngles.forEach(a => {
+      const k = (a?.name || '').trim().toLowerCase();
+      if (k) all.add(k);
+    });
+    setPickedAngles(all);
+  };
+  const clearAngles = () => setPickedAngles(new Set());
+  const handleQueueAngles = async () => {
+    if (pickedAngles.size === 0 || queueing) return;
+    const picked = productAngles.filter(a => pickedAngles.has((a?.name || '').trim().toLowerCase()));
+    if (picked.length === 0) return;
+    setQueueing(true);
+    try {
+      await onQueueRefWithAngles?.(item, picked);
+      onClose();
+    } finally {
+      setQueueing(false);
+    }
+  };
   const fullImg = item.image_url || item.thumbnail_url || item.reference_thumbnail;
   const src = SOURCE_BADGES[item.imported_from] || SOURCE_BADGES.upload;
   const meta = item.imported_metadata || {};
@@ -65,21 +103,96 @@ function ReferencePreviewModal({ item, onClose, onUse, isSelected, onToggleSelec
             <X className="w-5 h-5" />
           </button>
         </div>
-        {/* Image */}
-        <div className="flex-1 overflow-auto p-4 flex items-center justify-center bg-black/40 min-h-[200px]">
-          {fullImg ? (
-            <img
-              src={fullImg}
-              alt={title}
-              loading="lazy"
-              decoding="async"
-              className="max-w-full max-h-[60vh] object-contain rounded shadow-lg"
-              onError={(e) => { e.currentTarget.alt = 'Preview failed to load'; e.currentTarget.style.opacity = '0.3'; }}
-            />
-          ) : (
-            <div className="text-zinc-500 text-sm">No preview available</div>
+        {/* Body — split: image (left) + angle picker (right) when in 'angles' mode */}
+        <div className={`flex-1 overflow-hidden flex ${mode === 'angles' ? 'flex-row' : ''} min-h-[200px]`}>
+          {/* Image */}
+          <div className={`overflow-auto p-4 flex items-center justify-center bg-black/40 ${mode === 'angles' ? 'w-1/2 border-r border-white/[0.06]' : 'flex-1'}`}>
+            {fullImg ? (
+              <img
+                src={fullImg}
+                alt={title}
+                loading="lazy"
+                decoding="async"
+                className="max-w-full max-h-[60vh] object-contain rounded shadow-lg"
+                onError={(e) => { e.currentTarget.alt = 'Preview failed to load'; e.currentTarget.style.opacity = '0.3'; }}
+              />
+            ) : (
+              <div className="text-zinc-500 text-sm">No preview available</div>
+            )}
+          </div>
+
+          {/* Angle picker — visible only in 'angles' mode */}
+          {mode === 'angles' && (
+            <div className="w-1/2 flex flex-col overflow-hidden">
+              <div className="px-5 py-3 border-b border-white/[0.06] flex items-center justify-between shrink-0">
+                <div className="flex items-center gap-2 min-w-0">
+                  <Layers className="w-4 h-4 text-violet-300" />
+                  <span className="text-xs font-mono font-semibold uppercase tracking-wider text-white">
+                    Queue Angles
+                  </span>
+                  <span className="text-[10px] font-mono text-zinc-500">
+                    {pickedAngles.size}/{productAngles.length} picked
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={selectAllAngles}
+                    disabled={!hasAngles || queueing}
+                    className="text-[10px] font-mono uppercase tracking-wider text-zinc-400 hover:text-white disabled:opacity-30 cursor-pointer"
+                  >All</button>
+                  <button
+                    type="button"
+                    onClick={clearAngles}
+                    disabled={pickedAngles.size === 0 || queueing}
+                    className="text-[10px] font-mono uppercase tracking-wider text-zinc-400 hover:text-white disabled:opacity-30 cursor-pointer"
+                  >Clear</button>
+                </div>
+              </div>
+              <div className="flex-1 overflow-y-auto p-3 space-y-1.5">
+                {!hasAngles ? (
+                  <div className="px-2 py-6 text-xs text-zinc-500 text-center leading-relaxed">
+                    No angles available for this product. Add angles in the product library, then come back here.
+                  </div>
+                ) : (
+                  productAngles.map((angleObj, idx) => {
+                    const name = angleObj?.name || `Angle ${idx + 1}`;
+                    const key = name.trim().toLowerCase();
+                    const checked = pickedAngles.has(key);
+                    return (
+                      <button
+                        type="button"
+                        key={`${key}-${idx}`}
+                        onClick={() => toggleAngle(angleObj)}
+                        disabled={queueing}
+                        className={`w-full flex items-start gap-2.5 px-3 py-2.5 rounded-lg border text-left transition-all cursor-pointer ${
+                          checked
+                            ? 'bg-violet-500/15 border-violet-400/50 text-white'
+                            : 'bg-white/[0.02] border-white/[0.06] text-zinc-300 hover:bg-white/[0.05] hover:border-white/[0.12]'
+                        } disabled:opacity-50 disabled:cursor-not-allowed`}
+                      >
+                        <div className={`mt-0.5 w-4 h-4 rounded border shrink-0 flex items-center justify-center ${
+                          checked ? 'bg-violet-500 border-violet-400' : 'border-white/20 bg-white/[0.04]'
+                        }`}>
+                          {checked && <Check className="w-3 h-3 text-white" strokeWidth={3} />}
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="text-[12px] font-mono font-semibold truncate">{name}</div>
+                          {angleObj?.description && (
+                            <div className="text-[10px] text-zinc-500 line-clamp-2 mt-0.5">
+                              {angleObj.description}
+                            </div>
+                          )}
+                        </div>
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+            </div>
           )}
         </div>
+
         {/* Footer */}
         <div className="flex items-center justify-between gap-3 px-5 py-3 border-t border-white/[0.06] shrink-0">
           <div className="text-[10px] font-mono text-zinc-500 truncate flex-1">
@@ -87,23 +200,54 @@ function ReferencePreviewModal({ item, onClose, onUse, isSelected, onToggleSelec
             {timeAgo(item.created_at) && <span>imported {timeAgo(item.created_at)}</span>}
           </div>
           <div className="flex gap-2 shrink-0">
-            <button
-              onClick={onClose}
-              className="px-4 py-2 text-xs font-mono uppercase tracking-wider text-zinc-300 border border-white/[0.08] rounded hover:border-white/[0.2] cursor-pointer"
-            >Cancel</button>
-            {/* SELECT — toggle multi-select for batch generation */}
-            <button
-              onClick={() => { onToggleSelect?.(item); onClose(); }}
-              className={`px-4 py-2 text-xs font-mono uppercase tracking-wider rounded cursor-pointer font-bold transition-colors ${
-                isSelected
-                  ? 'bg-emerald-500 text-black hover:bg-emerald-400'
-                  : 'bg-emerald-500/80 text-black hover:bg-emerald-500'
-              }`}
-            >{isSelected ? '✓ Selected' : 'Select'}</button>
-            <button
-              onClick={onUse}
-              className="px-4 py-2 text-xs font-mono uppercase tracking-wider text-black bg-[#d4b55a] hover:bg-[#e4c56a] rounded cursor-pointer font-bold"
-            >Use as Reference</button>
+            {mode === 'view' ? (
+              <>
+                <button
+                  onClick={onClose}
+                  className="px-4 py-2 text-xs font-mono uppercase tracking-wider text-zinc-300 border border-white/[0.08] rounded hover:border-white/[0.2] cursor-pointer"
+                >Cancel</button>
+                {/* QUEUE ANGLES — multi-pick angles for this reference */}
+                {typeof onQueueRefWithAngles === 'function' && (
+                  <button
+                    onClick={() => setMode('angles')}
+                    className="px-4 py-2 text-xs font-mono uppercase tracking-wider rounded cursor-pointer font-bold bg-violet-500/80 text-white hover:bg-violet-500 inline-flex items-center gap-1.5"
+                    title={hasAngles ? 'Pick multiple angles and queue one generation per angle' : 'No angles available for this product yet'}
+                  >
+                    <Layers className="w-3.5 h-3.5" />
+                    Queue Angles
+                  </button>
+                )}
+                {/* SELECT — toggle multi-select for batch generation */}
+                <button
+                  onClick={() => { onToggleSelect?.(item); onClose(); }}
+                  className={`px-4 py-2 text-xs font-mono uppercase tracking-wider rounded cursor-pointer font-bold transition-colors ${
+                    isSelected
+                      ? 'bg-emerald-500 text-black hover:bg-emerald-400'
+                      : 'bg-emerald-500/80 text-black hover:bg-emerald-500'
+                  }`}
+                >{isSelected ? '✓ Selected' : 'Select'}</button>
+                <button
+                  onClick={onUse}
+                  className="px-4 py-2 text-xs font-mono uppercase tracking-wider text-black bg-[#d4b55a] hover:bg-[#e4c56a] rounded cursor-pointer font-bold"
+                >Use as Reference</button>
+              </>
+            ) : (
+              <>
+                <button
+                  onClick={() => setMode('view')}
+                  disabled={queueing}
+                  className="px-4 py-2 text-xs font-mono uppercase tracking-wider text-zinc-300 border border-white/[0.08] rounded hover:border-white/[0.2] cursor-pointer disabled:opacity-40"
+                >Back</button>
+                <button
+                  onClick={handleQueueAngles}
+                  disabled={pickedAngles.size === 0 || queueing || !hasAngles}
+                  className="px-4 py-2 text-xs font-mono uppercase tracking-wider rounded cursor-pointer font-bold bg-violet-500 text-white hover:bg-violet-400 disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center gap-1.5"
+                >
+                  {queueing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+                  Queue {pickedAngles.size || ''} Angle{pickedAngles.size !== 1 ? 's' : ''}
+                </button>
+              </>
+            )}
           </div>
         </div>
       </div>
@@ -212,7 +356,7 @@ function ReferenceCard({ item, onPreview, onDelete, isSelected, onToggleSelect, 
   );
 }
 
-export function ReferenceColumn({ productId, onSelectReference, onAddSelectedToQueue, onLeagueImported }) {
+export function ReferenceColumn({ productId, onSelectReference, onAddSelectedToQueue, productAngles = [], onQueueRefWithAngles, onLeagueImported }) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -437,6 +581,8 @@ export function ReferenceColumn({ productId, onSelectReference, onAddSelectedToQ
         onUse={handleUseReference}
         isSelected={previewItem ? selectedIds.has(previewItem.id) : false}
         onToggleSelect={toggleSelect}
+        productAngles={productAngles}
+        onQueueRefWithAngles={onQueueRefWithAngles}
       />
     </div>
   );

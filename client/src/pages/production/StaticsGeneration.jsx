@@ -2612,6 +2612,65 @@ export default function StaticsGeneration() {
                     setReferencePreview(url);
                     setReferenceFile(null);
                   }}
+                  productAngles={productAngles}
+                  onQueueRefWithAngles={(ref, anglesPicked) => {
+                    // One reference image × N angles → N queue items.
+                    // Each item carries its own angle / angleData snapshot
+                    // so the queue runner's existing per-item path generates
+                    // the correct creative without any cross-item leakage.
+                    if (!selectedProductId) {
+                      addToast('Pick a product first before queueing angles', 'error');
+                      return;
+                    }
+                    const refUrl = ref?.image_url || ref?.thumbnail_url || ref?.reference_thumbnail;
+                    if (!refUrl) {
+                      addToast('Reference has no usable image URL', 'error');
+                      return;
+                    }
+                    if (!Array.isArray(anglesPicked) || anglesPicked.length === 0) {
+                      addToast('Pick at least one angle', 'error');
+                      return;
+                    }
+                    // Deduplicate angles defensively by name (cap to actual list).
+                    const seen = new Set();
+                    const uniqueAngles = anglesPicked.filter(a => {
+                      const key = (a?.name || '').trim().toLowerCase();
+                      if (!key || seen.has(key)) return false;
+                      seen.add(key);
+                      return true;
+                    });
+                    if (uniqueAngles.length === 0) {
+                      addToast('Selected angles are empty / invalid', 'error');
+                      return;
+                    }
+                    const refLabel = ref.reference_name || ref.source_label || 'Reference';
+                    const newItems = uniqueAngles.map((angleObj) => ({
+                      id: crypto.randomUUID(),
+                      references: [{ url: refUrl, image_url: refUrl, thumbnail: refUrl, label: refLabel, name: refLabel }],
+                      angle: angleObj.name || '',
+                      angleData: angleObj,
+                      customAngle: '',
+                      productId: selectedProductId,
+                      productName: productName,
+                      productRef: selectedProductRef.current ? { ...selectedProductRef.current } : null,
+                      productDescription,
+                      productPrice,
+                      productImageUrl,
+                      aspectRatio,
+                      oneliner, customerAvatar, customerFrustration, customerDream,
+                      bigPromise, mechanism, differentiator, voice, guarantee,
+                      status: 'queued',
+                      result: null,
+                      error: null,
+                      createdAt: Date.now(),
+                    }));
+                    setQueue(prev => {
+                      const next = [...prev, ...newItems];
+                      queueRef.current = next;
+                      return next;
+                    });
+                    addToast(`Queued ${newItems.length} angle${newItems.length > 1 ? 's' : ''} from "${refLabel}"`, 'success');
+                  }}
                   onAddSelectedToQueue={(picked) => {
                     // Batch: each selected reference becomes its own queue item.
                     // The existing queue runner picks them up sequentially.
