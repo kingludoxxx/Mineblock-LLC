@@ -791,7 +791,23 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
 
   // Root fragment for relevance filtering in Phase 2 Meta platform page scrapes.
   // 'try-forge.com' → 'try-forge' so ads linking to shop.try-forge.com also match.
-  const rootFragment = domain.replace(/\.[a-z]{2,}(\.[a-z]{2,})?$/, '');
+  //
+  // Belt-and-braces with normalizeDomain in the route: if a legacy brand row
+  // still stores a subdomain prefix (e.g. shop.try-sprtn.com from before the
+  // route-side strip), peel it here so the keyword search still works. Newer
+  // rows get cleaned at insert time and this is a no-op.
+  const STRIPPABLE = new Set([
+    'www','shop','store','m','mobile','app','try','get','check','checkout',
+    'order','pay','cart','secure','ssl','cdn','static','assets','account',
+    'login','auth','admin','go','track','click','lp','landing','en','us','eu','uk',
+  ]);
+  let normalizedDomain = domain;
+  for (;;) {
+    const parts = normalizedDomain.split('.');
+    if (parts.length < 3 || !STRIPPABLE.has(parts[0])) break;
+    normalizedDomain = parts.slice(1).join('.');
+  }
+  const rootFragment = normalizedDomain.replace(/\.[a-z]{2,}(\.[a-z]{2,})?$/, '');
 
   // Shutdown guard: if SIGTERM was received before we even started, bail out.
   if (shutdownRequested) throw Object.assign(new Error('Shutdown requested before scrape start'), { isShutdown: true });
@@ -926,7 +942,7 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
       const filterBatch = (batch) => batch.filter((ad) => {
         const url = ad.snapshot?.link_url ?? '';
         if (!url) return !isMetaPage;
-        return linkBelongsToBrand(url, domain);
+        return linkBelongsToBrand(url, normalizedDomain);
       });
 
       if (isMetaPage) {
@@ -1127,7 +1143,7 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
       p1dBatchCount += 1;
       const filtered = batch.filter((ad) => {
         const url = ad.snapshot?.link_url ?? ad.link_url ?? '';
-        return linkBelongsToBrand(url, domain);
+        return linkBelongsToBrand(url, normalizedDomain);
       });
       if (filtered.length > 0) {
         const { d, u } = await upsertAdBatch(brandId, filtered, pageCache, null, crossDomains, pageNameCache, metaRankCursor);
@@ -1162,7 +1178,7 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
         phaseCredits.p1d += 1;
         const filtered = batch.filter((ad) => {
           const url = ad.snapshot?.link_url ?? ad.link_url ?? '';
-          return linkBelongsToBrand(url, domain);
+          return linkBelongsToBrand(url, normalizedDomain);
         });
         if (filtered.length > 0) {
           const { d, u } = await upsertAdBatch(brandId, filtered, pageCache, null, crossDomains, pageNameCache);

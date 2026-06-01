@@ -47,6 +47,33 @@ function validateUuidParam(name) {
 // the first's promise instead of re-running.
 const transcribeInFlight = new Map(); // adId → Promise<{transcript, segments, cached, transcriptAt}>
 
+// Known subdomain prefixes that are storefront / CDN / indirection — never
+// the brand identity itself. Stripping these from the followed domain lets
+// users paste any URL they have (shop.brand.com, try.brand.com, m.brand.com,
+// track.brand.com, …) and still have the worker find the brand's full ad
+// library. An UNKNOWN prefix (blog., community., support.case.com, …) is
+// preserved — better to follow a subdomain than to silently over-strip.
+const STRIPPABLE_PREFIXES = new Set([
+  'www', 'shop', 'store', 'm', 'mobile', 'app',
+  'try', 'get', 'check', 'checkout', 'order', 'pay', 'cart',
+  'secure', 'ssl', 'cdn', 'static', 'assets',
+  'account', 'login', 'auth', 'admin',
+  'go', 'track', 'click', 'lp', 'landing',
+  'en', 'us', 'eu', 'uk',
+]);
+
+function stripCommonSubdomains(domain) {
+  if (!domain) return domain;
+  let result = domain;
+  for (;;) {
+    const parts = result.split('.');
+    if (parts.length < 3) break;                       // already at registrable form
+    if (!STRIPPABLE_PREFIXES.has(parts[0])) break;     // unknown prefix → preserve
+    result = parts.slice(1).join('.');
+  }
+  return result;
+}
+
 function normalizeDomain(input) {
   if (!input) return null;
   const trimmed = input.trim();
@@ -57,7 +84,9 @@ function normalizeDomain(input) {
     return cleaned.replace(/\/$/, '');
   }
   cleaned = cleaned.split('/')[0].split('?')[0].split('#')[0];
-  return cleaned || null;
+  if (!cleaned) return null;
+  // Peel known storefront/CDN prefixes — shop.try-sprtn.com → try-sprtn.com.
+  return stripCommonSubdomains(cleaned);
 }
 
 function parseFollowInput(body) {
@@ -179,6 +208,60 @@ router.post('/brands', async (req, res, next) => {
     }
 
     res.status(201).json({ brands: createdBrands, warnings });
+  } catch (err) { next(err); }
+});
+
+// POST /brands/:id/heal-domain
+// One-shot fix for brands originally followed with a storefront subdomain
+// (shop.brand.com, try.brand.com, m.brand.com, …). Re-normalizes the brand's
+// stored domain to the registrable form, registers the old subdomain in
+// brand_domains so it's still tracked, and force-triggers a fresh scrape.
+router.post('/brands/:id/heal-domain', validateUuidParam('id'), async (req, res, next) => {
+  try {
+    const brand = await getBrandExpanded(req.params.id);
+    if (!brand) return res.status(404).json({ error: 'Brand not found' });
+
+    const original = brand.domain;
+    const cleaned  = stripCommonSubdomains(original);
+    if (cleaned === original) {
+      return res.json({
+        healed: false,
+        reason: 'domain already at registrable form',
+        domain: original,
+      });
+    }
+
+    // Move the brand to the cleaned root. Subdomain row will record the
+    // original so any leftover lookups still resolve.
+    await pgQuery(
+      `UPDATE brand_spy.brands SET domain = $1 WHERE id = $2`,
+      [cleaned, req.params.id],
+    );
+    await pgQuery(
+      `INSERT INTO brand_spy.brand_domains (brand_id, domain, is_primary)
+         VALUES ($2, $1, FALSE)
+         ON CONFLICT (brand_id, domain) DO NOTHING`,
+      [original, req.params.id],
+    );
+    // Also ensure the new canonical primary domain exists.
+    await pgQuery(
+      `INSERT INTO brand_spy.brand_domains (brand_id, domain, is_primary)
+         VALUES ($2, $1, TRUE)
+         ON CONFLICT (brand_id, domain) DO UPDATE SET is_primary = TRUE`,
+      [cleaned, req.params.id],
+    );
+
+    // Force-trigger a fresh scrape (bypass the 12h cool-down).
+    runBrandScrape({ brandId: req.params.id, trigger: 'HEAL', force: true }).catch((err) =>
+      console.error(`[brand-spy] heal-domain scrape failed for ${req.params.id}:`, err),
+    );
+
+    res.json({
+      healed: true,
+      from: original,
+      to: cleaned,
+      scrapeQueued: true,
+    });
   } catch (err) { next(err); }
 });
 
