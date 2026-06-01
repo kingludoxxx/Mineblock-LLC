@@ -3461,15 +3461,16 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
 
       generationResults = [await (async () => {
         try {
-          // Clone routes to Opus — architecture-preservation is the kind of
-          // long-instruction multi-rule task where Opus materially beats
-          // Sonnet. 16384 tokens budgeted because v4 prompt asks for:
-          //   source_pov + source_beats[] + 5 hooks + full body + highlighted_text
-          //   + angle_used + clone_fidelity + self_score + key_changes + ...
-          // That's ~12k tokens of output for a long PestLab-class source.
-          // 8192 clipped between source_beats and body, returning malformed
-          // JSON and triggering the silent failure path.
-          const generated = await callClaude(cloneSystem, enhancedCloneUser, 16384, { opus: true });
+          // TEMP — Opus model alias resolution is failing silently in this
+          // account. Routing the v4 prompt through Sonnet for now so we can
+          // validate the architecture-preservation contract works on its own
+          // merits. Will flip back to opus:true once the right Opus model
+          // identifier is confirmed via Render logs / a probe.
+          // 16384 tokens budgeted because v4 prompt emits source_pov +
+          // source_beats[] + 5 hooks + full body + highlighted_text + angle_used
+          // + clone_fidelity + self_score + key_changes — ~12k tokens for a
+          // long PestLab-class source.
+          const generated = await callClaude(cloneSystem, enhancedCloneUser, 16384);
           if (!generated || (!generated.hooks && !generated.body)) throw new Error('Invalid clone response');
           if (!Array.isArray(generated.hooks)) generated.hooks = [];
           if (!generated.body) generated.body = '';
