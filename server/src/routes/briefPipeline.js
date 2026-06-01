@@ -1020,10 +1020,12 @@ async function callClaude(systemPrompt, userPrompt, maxTokens = 3000, { fast = f
   //   preservation, multi-rule following, and structured cloning.
   //   fast → quick parses (script parser, hook extractor) where Haiku is fine.
   //   default → Sonnet for general work (iterate, enhance, win-analysis).
+  // Aliases used throughout this codebase — matches the CLAUDE_MODEL pattern.
+  const model = opus
+    ? 'claude-opus-4-1'
+    : (fast ? 'claude-haiku-4-5-20251001' : CLAUDE_MODEL);
   const body = {
-    model: opus
-      ? 'claude-opus-4-1-20250805'
-      : (fast ? 'claude-haiku-4-5-20251001' : CLAUDE_MODEL),
+    model,
     max_tokens: maxTokens,
     messages,
     system: systemPrompt,
@@ -1041,11 +1043,15 @@ async function callClaude(systemPrompt, userPrompt, maxTokens = 3000, { fast = f
 
   if (!res.ok) {
     const errText = await res.text();
-    throw new Error(`Claude API error ${res.status}: ${errText}`);
+    console.error(`[callClaude] HTTP ${res.status} from model=${model} maxTokens=${maxTokens}: ${errText.slice(0, 500)}`);
+    throw new Error(`Claude API error ${res.status} (model=${model}): ${errText.slice(0, 300)}`);
   }
 
   const data = await res.json();
   const text = data.content?.[0]?.text || '';
+  if (data.stop_reason === 'max_tokens') {
+    console.warn(`[callClaude] stop_reason=max_tokens — response was clipped at ${maxTokens} tokens. Consider bumping the budget. model=${model}`);
+  }
 
   // Raw text mode — return plain text without JSON parsing
   if (rawText) return text.trim();
@@ -3457,9 +3463,13 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
         try {
           // Clone routes to Opus — architecture-preservation is the kind of
           // long-instruction multi-rule task where Opus materially beats
-          // Sonnet. Bumped maxTokens to 8192 because §0/§1/§6 ask Opus to
-          // emit a source_beats list AND a full clone in the same response.
-          const generated = await callClaude(cloneSystem, enhancedCloneUser, 8192, { opus: true });
+          // Sonnet. 16384 tokens budgeted because v4 prompt asks for:
+          //   source_pov + source_beats[] + 5 hooks + full body + highlighted_text
+          //   + angle_used + clone_fidelity + self_score + key_changes + ...
+          // That's ~12k tokens of output for a long PestLab-class source.
+          // 8192 clipped between source_beats and body, returning malformed
+          // JSON and triggering the silent failure path.
+          const generated = await callClaude(cloneSystem, enhancedCloneUser, 16384, { opus: true });
           if (!generated || (!generated.hooks && !generated.body)) throw new Error('Invalid clone response');
           if (!Array.isArray(generated.hooks)) generated.hooks = [];
           if (!generated.body) generated.body = '';
