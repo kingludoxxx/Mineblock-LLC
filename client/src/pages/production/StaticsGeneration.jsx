@@ -1040,8 +1040,18 @@ export default function StaticsGeneration() {
   // Queue state
   const [queue, setQueue] = useState([]);
   const [queueProcessing, setQueueProcessing] = useState(false);
-  const queueProcessingRef = useRef(false);
+  const queueProcessingRef = useRef(false); // legacy single-slot guard, retained but no longer the bottleneck
   const queueRef = useRef([]);
+  // Concurrency: how many queue items can run at the same time. 2 doubles
+  // throughput vs the old single-threaded design while staying comfortably
+  // under OpenAI/NB per-account concurrency caps. Bump cautiously.
+  const MAX_CONCURRENT_QUEUE_ITEMS = 2;
+  const queueInFlightCountRef = useRef(0);
+  // Ref tracking which item IDs are currently being processed — prevents
+  // the same item from being picked up by two parallel processNext calls
+  // during the tiny window between findIndex and the updateStatus setState
+  // that marks the item as 'generating'.
+  const queueInFlightIdsRef = useRef(new Set());
 
   // Creative review state (Standard pipeline)
   const [creatives, setCreatives] = useState([]);
@@ -1743,30 +1753,34 @@ export default function StaticsGeneration() {
     });
   };
 
-  // Queue processor — runs queued items sequentially
+  // Queue processor — runs up to MAX_CONCURRENT_QUEUE_ITEMS in parallel.
+  // Was previously single-threaded (~4 min per queue item × N items).
+  // Parallel-2 typically halves operator-perceived queue completion time.
   useEffect(() => {
     const hasQueued = queue.some(q => q.status === 'queued');
-    const hasGenerating = queue.some(q => q.status === 'generating');
+    const generatingCount = queue.filter(q => q.status === 'generating').length;
 
-    // Wait if: nothing queued, already generating (queue or manual), or processing flag set.
-    // Use ref as primary guard to prevent race condition where React hasn't yet
-    // batched the setQueueProcessing(true) state update from a prior invocation.
-    if (!hasQueued || hasGenerating || queueProcessingRef.current || queueProcessing || generating) return;
+    // Wait if: nothing queued, the concurrency cap is hit, OR a non-queue
+    // manual /generate is running (the manual button isn't queue-managed
+    // so we don't risk overlapping its output with a queue item).
+    if (!hasQueued) return;
+    if (generatingCount >= MAX_CONCURRENT_QUEUE_ITEMS) return;
+    if (queueInFlightCountRef.current >= MAX_CONCURRENT_QUEUE_ITEMS) return;
+    if (generating) return;
 
     const processNext = async () => {
-      queueProcessingRef.current = true;
-      setQueueProcessing(true);
-
-      // Find first queued item
+      // Atomic claim: pick an item AND immediately mark it claimed before
+      // any await so a parallel useEffect fire can't grab the same item.
       const currentQueue = queueRef.current;
-      const itemIndex = currentQueue.findIndex(q => q.status === 'queued');
-      if (itemIndex === -1) {
-        queueProcessingRef.current = false;
-        setQueueProcessing(false);
-        return;
+      const item = currentQueue.find(q => q.status === 'queued' && !queueInFlightIdsRef.current.has(q.id));
+      if (!item) return;
+      queueInFlightIdsRef.current.add(item.id);
+      queueInFlightCountRef.current++;
+      // Surface a single global "processing" flag for any UI that relied on it.
+      if (queueInFlightCountRef.current > 0) {
+        queueProcessingRef.current = true;
+        setQueueProcessing(true);
       }
-
-      const item = currentQueue[itemIndex];
 
       // Mark as generating
       const updateStatus = (id, updates) => {
@@ -1984,14 +1998,27 @@ export default function StaticsGeneration() {
         updateStatus(item.id, { status: 'error', error: message });
         addToast(`Queue item failed: ${message}`, 'error', 6000);
       } finally {
-        queueProcessingRef.current = false;
-        setQueueProcessing(false);
+        // Release the slot
+        queueInFlightCountRef.current = Math.max(0, queueInFlightCountRef.current - 1);
+        queueInFlightIdsRef.current.delete(item.id);
+        if (queueInFlightCountRef.current === 0) {
+          queueProcessingRef.current = false;
+          setQueueProcessing(false);
+        }
         // Catch-up fetch after queue item to pick up server-side 9:16 variants
         setTimeout(() => fetchCreatives(true), 3000);
       }
     };
 
-    processNext();
+    // Try to start as many items as the concurrency budget allows in this
+    // effect fire. Each call increments queueInFlightCountRef before any
+    // await so subsequent calls in the same tick honor the cap correctly.
+    while (
+      queueInFlightCountRef.current < MAX_CONCURRENT_QUEUE_ITEMS &&
+      queueRef.current.some(q => q.status === 'queued' && !queueInFlightIdsRef.current.has(q.id))
+    ) {
+      processNext();
+    }
   }, [queue, queueProcessing, generating]);
 
   // Fetch creatives for pipeline
