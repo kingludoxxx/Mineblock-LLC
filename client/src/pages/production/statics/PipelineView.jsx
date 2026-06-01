@@ -445,6 +445,51 @@ function AdSetGroupCard({ angle, creatives, isComplete, onLaunch, onCardClick, o
   const count = creatives.length;
   const [dragOver, setDragOver] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  // Inline-editable group label — click h4 to edit, Enter to save,
+  // Escape to cancel. Save calls the bulk-angle endpoint so all creatives
+  // in this group (typically the 6-card ad-set) get the same new angle in
+  // one atomic UPDATE. The launch flow reads creatives[0].angle for the
+  // Meta adset_name, so the rename propagates into launched ad naming.
+  const [editing, setEditing] = useState(false);
+  const [editValue, setEditValue] = useState(angle);
+  const [savingLabel, setSavingLabel] = useState(false);
+  const [labelError, setLabelError] = useState(null);
+
+  const beginEdit = (e) => {
+    e?.stopPropagation();
+    if (savingLabel) return;
+    setEditValue(angle === 'Uncategorized' ? '' : angle);
+    setEditing(true);
+    setLabelError(null);
+  };
+  const cancelEdit = () => {
+    if (savingLabel) return;
+    setEditing(false);
+    setLabelError(null);
+  };
+  const saveLabel = async () => {
+    const next = (editValue || '').trim();
+    if (savingLabel) return;
+    if (next === angle || (!next && angle === 'Uncategorized')) {
+      setEditing(false);
+      return;
+    }
+    setSavingLabel(true);
+    setLabelError(null);
+    try {
+      const ids = creatives.map(c => c.id).filter(Boolean);
+      await api.patch('/statics-generation/creatives/bulk-angle', {
+        ids,
+        angle: next,
+      });
+      setEditing(false);
+      onRefresh?.();
+    } catch (err) {
+      setLabelError(err.response?.data?.error?.message || err.message);
+    } finally {
+      setSavingLabel(false);
+    }
+  };
 
   return (
     <div
@@ -483,9 +528,36 @@ function AdSetGroupCard({ angle, creatives, isComplete, onLaunch, onCardClick, o
           ) : (
             <AlertTriangle className="w-4 h-4 text-red-400 shrink-0" />
           )}
-          <h4 className="text-sm font-semibold text-white truncate">
-            {angle}
-          </h4>
+          {editing ? (
+            <div className="flex items-center gap-1.5 min-w-0 flex-1">
+              <input
+                type="text"
+                value={editValue}
+                onChange={(e) => setEditValue(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') { e.preventDefault(); saveLabel(); }
+                  else if (e.key === 'Escape') { e.preventDefault(); cancelEdit(); }
+                }}
+                onBlur={saveLabel}
+                disabled={savingLabel}
+                autoFocus
+                placeholder="Group name (Meta adset name will use this)"
+                className="flex-1 bg-white/[0.04] border border-fuchsia-500/40 rounded px-2 py-1 text-sm font-semibold text-white focus:outline-none focus:border-fuchsia-500 disabled:opacity-50"
+                onClick={(e) => e.stopPropagation()}
+              />
+              {savingLabel && <Loader2 className="w-3.5 h-3.5 animate-spin text-fuchsia-400 shrink-0" />}
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={beginEdit}
+              title="Click to rename this group (used for Meta adset_name)"
+              className="text-sm font-semibold text-white truncate hover:text-fuchsia-300 transition-colors cursor-pointer inline-flex items-center gap-1.5 group/label"
+            >
+              <span className="truncate">{angle}</span>
+              <Pencil className="w-3 h-3 opacity-0 group-hover/label:opacity-60 transition-opacity shrink-0" />
+            </button>
+          )}
           <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${
             isComplete
               ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
@@ -494,6 +566,9 @@ function AdSetGroupCard({ angle, creatives, isComplete, onLaunch, onCardClick, o
             {count}/{ADSET_SIZE}
           </span>
         </div>
+        {labelError && (
+          <div className="absolute mt-9 ml-2 text-[10px] text-red-400 font-mono">{labelError}</div>
+        )}
         <div className="flex items-center gap-1.5 shrink-0">
           {isComplete ? (
             <button

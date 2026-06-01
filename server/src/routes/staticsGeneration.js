@@ -3257,6 +3257,35 @@ router.patch('/creatives/:id/angle', authenticate, async (req, res) => {
   }
 });
 
+// Bulk-rename the angle on a set of creatives. Used by the Ready-to-Launch
+// group's inline-editable label — operator clicks the group name, types a
+// new one, saves; all 6 creatives in the ad-set group get the new angle in
+// one atomic UPDATE. The downstream /launch flow reads creatives[0].angle
+// to build the Meta adset_name, so the rename automatically reflects in
+// the launched ad's naming convention.
+router.patch('/creatives/bulk-angle', authenticate, async (req, res) => {
+  try {
+    await ensureCreativesTable();
+    const { ids, angle } = req.body;
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ success: false, error: { message: 'ids[] is required and must be non-empty' } });
+    }
+    if (angle === undefined) {
+      return res.status(400).json({ success: false, error: { message: 'angle is required (string or empty string to clear)' } });
+    }
+    const trimmed = typeof angle === 'string' ? angle.trim() : String(angle);
+    const newAngle = trimmed.length > 0 ? trimmed : null;
+    const rows = await pgQuery(
+      'UPDATE spy_creatives SET angle = $1, updated_at = NOW() WHERE id = ANY($2::uuid[]) RETURNING id',
+      [newAngle, ids]
+    );
+    res.json({ success: true, data: { updated: rows.length, angle: newAngle } });
+  } catch (err) {
+    console.error('[staticsGeneration] /creatives/bulk-angle error:', err);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
 router.patch('/creatives/:id/copy', authenticate, async (req, res) => {
   try {
     const { adapted_text } = req.body;
