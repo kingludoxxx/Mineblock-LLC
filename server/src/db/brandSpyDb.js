@@ -581,10 +581,22 @@ export async function getBrandAggregations(brandId, type, { limit = 50, activeOn
   if (activeOnly) where.push('a.is_active = TRUE');
   const whereSql = where.join(' AND ');
 
+  // Same SQL-side JSON extraction listAds / getAdDetail use. Dropping
+  // raw_snapshot from the SELECT cuts the wire payload from ~12 MB to ~2 MB
+  // on big brands like Norse Organics (2,400 ads × ~5 KB JSON each) and
+  // moves the thumbnail computation from JS to Postgres where it's free.
   const { rows } = await query(
     `SELECT a.id, a.ad_archive_id, a.headline, a.body_text, a.link_url, a.cta_text,
             a.tier, a.is_active, a.active_days, a.total_active_time,
-            a.display_format, a.current_rank, a.raw_snapshot
+            a.display_format, a.current_rank,
+            COALESCE(
+              a.raw_snapshot->'videos'->0->>'video_preview_image_url',
+              a.raw_snapshot->'images'->0->>'resized_image_url',
+              a.raw_snapshot->'images'->0->>'original_image_url',
+              a.raw_snapshot->'cards'->0->>'resized_image_url',
+              a.raw_snapshot->'cards'->0->>'original_image_url',
+              a.raw_snapshot->>'page_profile_picture_url'
+            ) AS thumbnail_url
        FROM brand_spy.ads a
       WHERE ${whereSql}`,
     params,
@@ -679,7 +691,9 @@ export async function getBrandAggregations(brandId, type, { limit = 50, activeOn
       g.sampleBody = r.body_text ?? g.sampleBody;
       g.sampleLink = r.link_url ?? g.sampleLink;
       g.sampleCta = r.cta_text ?? g.sampleCta;
-      g.thumbnailUrl = extractThumbnail(r.raw_snapshot);
+      // thumbnail_url is now computed in SQL above — same fallback chain as
+      // extractThumbnail used to walk in JS, just done in Postgres for free.
+      g.thumbnailUrl = r.thumbnail_url ?? null;
     }
     if (g.sampleAdIds.length < 6) g.sampleAdIds.push(r.id);
   }
