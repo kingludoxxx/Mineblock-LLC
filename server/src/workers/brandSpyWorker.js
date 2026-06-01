@@ -831,14 +831,22 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
   // discovered by Phase 1 keyword search if relevant, and Phase 2 handles them with
   // link_url filtering when their page name is identified.
   const { rows: existingPages } = await query(
-    `SELECT meta_page_id, id, page_name FROM brand_spy.brand_pages WHERE brand_id = $1`,
+    `SELECT bp.meta_page_id, bp.id, bp.page_name,
+            (SELECT COUNT(*) FROM brand_spy.ads a
+              WHERE a.brand_page_id = bp.id AND a.is_active = TRUE) AS live_active
+       FROM brand_spy.brand_pages bp WHERE bp.brand_id = $1`,
     [brandId],
   );
+  // Page → previously-known active ad count, used by Phase 2 ACTIVE to size
+  // the cursor cap dynamically (small pages stay cheap, big pages don't
+  // truncate at 150 ads). Live count beats the stored column.
+  const pageActiveAdsHint = new Map();
   let skippedMetaPages = 0;
   for (const row of existingPages) {
     if (!row.meta_page_id) continue;
     if (isMetaPlatformPage(row.page_name)) { skippedMetaPages++; continue; }
     pageCache.set(row.meta_page_id, row.id);
+    pageActiveAdsHint.set(row.meta_page_id, Number(row.live_active) || 0);
     if (row.page_name) pageNameCache.set(row.meta_page_id, row.page_name);
   }
   console.log(`[brand-spy] pre-loaded ${pageCache.size} known pages for "${domain}" (skipped ${skippedMetaPages} Meta platform pages)`);
@@ -965,10 +973,18 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
       if (skipP2Active) {
         console.log(`[brand-spy] phase-2 page ${metaPageId} ("${pageName}") — skip ACTIVE: Phase 1d covered everything`);
       } else {
-        // Optimisation E: drop maxPages 100 → 5 on re-scrape known pages.
-        // 5 cursor pages ≈ 150 ads, more than any current single page has.
-        // First-scrape / unknown pages keep the wide cap to bootstrap.
-        const activeMaxPages = isKnownPage ? 5 : 100;
+        // Phase 2 ACTIVE page cap.
+        //   • Unknown pages — keep wide cap (100 cursor pages ≈ 3,000 ads)
+        //     to bootstrap.
+        //   • Known pages — base cap of 15 (≈ 450 ads) plus a safety
+        //     overhead of 5 above the page's previously-recorded active
+        //     count, so a page with 300 ads gets ~15 cursor pages and a
+        //     page with 600 ads gets ~25. Without this, big pages were
+        //     truncated at ~150 ads and we under-counted brands like
+        //     SPRTN where one page runs 300+ image creatives.
+        const expected = pageActiveAdsHint?.get(metaPageId) ?? 0;
+        const dynamicCap = Math.min(40, Math.max(15, Math.ceil(expected / 30) + 5));
+        const activeMaxPages = isKnownPage ? dynamicCap : 100;
         for await (const batch of sc.iterateCompanyAds({ pageId: metaPageId, status: 'ACTIVE', country: 'US', maxPages: activeMaxPages })) {
           creditsUsed += 1;
           phaseCredits.p2_active += 1;
