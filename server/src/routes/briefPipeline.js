@@ -1009,13 +1009,21 @@ function getCurrentWeekLabel() {
 /**
  * Call Claude API and return parsed JSON from the response.
  */
-async function callClaude(systemPrompt, userPrompt, maxTokens = 3000, { fast = false, rawText = false } = {}) {
+async function callClaude(systemPrompt, userPrompt, maxTokens = 3000, { fast = false, rawText = false, opus = false } = {}) {
   const messages = [
     { role: 'user', content: userPrompt },
   ];
 
+  // Model routing:
+  //   opus → clone mode + any other path that benefits from long-instruction
+  //   fidelity. Slower and pricier but materially better at architecture
+  //   preservation, multi-rule following, and structured cloning.
+  //   fast → quick parses (script parser, hook extractor) where Haiku is fine.
+  //   default → Sonnet for general work (iterate, enhance, win-analysis).
   const body = {
-    model: fast ? 'claude-haiku-4-5-20251001' : CLAUDE_MODEL,
+    model: opus
+      ? 'claude-opus-4-1-20250805'
+      : (fast ? 'claude-haiku-4-5-20251001' : CLAUDE_MODEL),
     max_tokens: maxTokens,
     messages,
     system: systemPrompt,
@@ -2370,6 +2378,13 @@ const DEFAULT_CLONE_PROMPT_SYSTEM = `You are a senior performance copywriter who
 const DEFAULT_CLONE_PROMPT_USER = `# MISSION
 Clone the competitor script below for OUR product, preserving its narrative architecture exactly.
 
+# §0 PRINCIPLE — read this first, then again, then again
+This is a 1:1 CLONE, not a "reinterpretation in our product's voice." A clone keeps the **same protagonist type** (if the source has named founders, you keep named founders), **same setting type** (if the source has a college dorm, you keep a college dorm), **same arc** (every paragraph of the source must have an equivalent paragraph in your output), **same offer structure**, **same rhetorical devices**, **same POV**. The ONLY thing you change is the product being sold and the product-category details surrounding it.
+
+The most common failure mode you must avoid: treating the angle, the product profile, or your own creative instincts as license to rewrite the story. You are NOT rewriting the story. You are taking the source story and surgically swapping the product noun + category details. If you find yourself writing a paragraph the source doesn't have, STOP — that paragraph doesn't belong. If you find yourself dropping a source paragraph, STOP — go back and write its equivalent.
+
+Test for every output paragraph: "Does the source have a paragraph that maps to this one?" If no → cut it. Test for every source paragraph: "Does my output have an equivalent?" If no → write it.
+
 # OUR PRODUCT (Product Library — use this as the single source of truth)
 {{PRODUCT_CONTEXT}}
 
@@ -2400,32 +2415,61 @@ cta: {{ORIGINAL_CTA}}
 
 # CLONE RULES (non-negotiable)
 
-## 1. ARCHITECTURE PRESERVATION
+## 1. ARCHITECTURE PRESERVATION (the hard contract)
 - Same number of body paragraphs / sections as original
 - Same rhetorical device at each structural position (apology, confession, contrarian claim, stat-drop, callout, etc.)
 - Same emotional escalation curve (e.g., calm → tension → reveal → relief → CTA)
 - Same pacing — short punchy sentences where original is punchy, flowing where original flows
 - Body word count must EQUAL the original OR be up to 10% SHORTER. NEVER longer than the original.
 
-## 2. PRODUCT SWAP (use Product Library only)
-- Every competitor product mention → swap to our product name from {{PRODUCT_CONTEXT}}
-- Every competitor benefit → find the equivalent in our benefits / big_promise / mechanism
-- Every competitor proof → swap to our proof points / differentiator / customer testimonials
-- Every competitor offer / price → swap to our offer_details / discount_codes / guarantee
-- If no equivalent exists in our library, use the closest field that serves the same persuasive purpose
-- NEVER leave any competitor name, feature, or claim in the final script
-- NEVER invent claims not supported by our Product Library
-- Respect compliance_restrictions from the Product Library — flag any borderline claims in compliance_notes
+### Forced enumeration step (do this BEFORE writing the body)
+Before generating hooks or body, emit a "source_beats" field in the output JSON: an array where each entry is one source paragraph compressed to ONE sentence (≤ 20 words). This is a contract between you and yourself — once you've listed N source beats, you commit to writing N output paragraphs, each one mapping to the same beat at the same position.
 
-## 3. ANGLE INFUSION
-- The selected angle is the lens through which the entire script reads
-- Open with the angle's lead_with concept (rephrased to match the original's opening rhythm)
-- The 5 hooks must each be a variation of the angle's hook_strategy applied to our product
-- Tone must match the angle's tone field
-- Treat the angle's required_elements as GUIDANCE, not a mandatory checklist. Hit as many as fit naturally in the original's structure. If a required element doesn't fit a short clone, skip it — don't shoehorn. Track what fit vs what didn't in the output.
-- Use the angle's copy_directives as a checklist — every directive must be visible in the output
-- NEVER use any phrase in the angle's banned_phrases list (this is a HARD ban)
-- If headline_examples exist, use them as energy reference only — paraphrase, do not copy
+Then write the body paragraph-by-paragraph against that list. If your output has fewer paragraphs than source_beats has entries, you have dropped beats — that is the failure mode this rule exists to prevent. Go back and write the missing paragraphs before emitting JSON.
+
+### What "equivalent paragraph" means
+A source paragraph and its clone paragraph share: same narrative function (origin / obstacle / breakthrough / rejection / proof / CTA / etc.), same characters (founders if source has named founders), same setting type (school if source uses school), same proof structure (numbers if source has numbers). They differ in product noun + product-category details only.
+
+Example: source paragraph = "Jake and Ryan were engineering students at Iowa State when bed bugs invaded their dorm." Clone = "Jake and Ryan were engineering students at Iowa State when they became obsessed with Bitcoin." Same founders, same school, same paragraph-shape — just swapped the obstacle from product-category A (pests) to product-category B (Bitcoin mining).
+
+## 2. PRODUCT SWAP — narrow scope, not wholesale rewrite
+SWAP THESE (and only these):
+- Competitor product NAME → our product name from {{PRODUCT_CONTEXT}}
+- Competitor product CATEGORY references → our category (pest control → Bitcoin mining; skincare → mining hardware; etc.)
+- Competitor-specific cost obstacles → our category's equivalent ("$2,500 exterminators were charging" → "$3,000 ASIC mining rigs were costing")
+- Competitor proof figures → our proof figures (50,000 families → 50,000 users) when stated as raw numbers
+- Competitor offer / price / code → our offer_details / discount_codes / guarantee
+- Competitor compliance-sensitive claims → safe equivalents per our compliance_restrictions
+
+KEEP VERBATIM (DO NOT TOUCH):
+- Founder names ("Jake and Ryan" stays "Jake and Ryan")
+- Setting ("Iowa State" stays, "dorm room" stays, "engineering lab" stays)
+- Journey beats ("nine months", "eight more months", "snuck into the lab after hours")
+- Rejection/inflection moments ("Shark Tank rejection" stays — find an equivalent if the moment is so brand-specific it would be jarring, but keep the rhetorical beat)
+- Volume proof points ("120,000 devices shipped", "two years later")
+- Adversarial industry framing ("big X companies fighting back" — replace "X" with our category, keep the framing)
+- All emotional cues, transitions, and pacing
+
+NEVER:
+- Leave any competitor brand name in the final script (PestLab → MinerForge Pro, etc.)
+- Invent claims not supported by our Product Library
+- Drop a setting, name, or beat just because "it doesn't fit our product." Find the equivalent in our category.
+
+Respect compliance_restrictions — flag any borderline claims in compliance_notes.
+
+## 3. ANGLE INFUSION (TONAL LAYER ONLY — does NOT reshape source architecture)
+The angle is a **tonal coloring** applied OVER the source's preserved structure. It is NOT permission to change the structure.
+
+**HIERARCHY OF AUTHORITY (resolve all conflicts via this order):**
+1. SOURCE STRUCTURE — always wins. Source has founders → output has founders. Source has Shark Tank beat → output has equivalent rejection beat. Source has 13 paragraphs → output has 13 paragraphs.
+2. PRODUCT LIBRARY — provides the product noun + category facts used in swaps. Never invents structural changes.
+3. ANGLE — provides tonal coloring (word choice, emotional register, occasional rhetorical flavor). Bounded by #1 and #2 above.
+
+If the angle directs "lead with offer urgency" but the source leads with a founder story, the **SOURCE WINS**: open with the founder story, use the angle's words for tone but keep the source's opening beat. The angle never replaces a source paragraph; it only colors the language within paragraphs.
+
+If the angle's lead_with concept conflicts with the source's actual opener, skip the angle's lead_with. The angle's copy_directives must be visible in the output ONLY where they fit naturally within the preserved structure — never invent a new paragraph to fit a directive.
+
+NEVER use any phrase in the angle's banned_phrases list. If headline_examples exist, use them as energy reference only — paraphrase, do not copy.
 
 ## 4. VOICE LOCK (anti-AI)
 - Contractions: don't, can't, won't, it's, that's, here's — always
@@ -2436,16 +2480,25 @@ cta: {{ORIGINAL_CTA}}
 - BANNED softeners: "may", "might", "could potentially", "helps you to" (unless original used them)
 - Use natural verbal tics that match the original's register: "Look," / "Listen," / "Honestly," / "The truth is," / "Here's the deal"
 
-## 5. HOOK CLONING
-- Generate exactly 5 hooks
-- All 5 must share the original's hook framework AND the selected angle's hook_strategy
-- H1 = closest energy match to the original's strongest hook + angle infusion
-- H2 = same framework, different entry angle
-- H3 = same framework, different emotional texture
-- H4 = same framework, contrarian / inverted version (test against H1)
-- H5 = same framework, shortest punch version (under 8 words)
-- Each hook must read seamlessly into the body's first paragraph
-- A hook is a FULL FIRST-PERSON SENTENCE the speaker would actually say. ALL-CAPS sticker fragments (≤6 words with emoji) are NEVER hooks — they're highlighted_text. See rule §7.
+## 5. HOOK CLONING (preserve source narrator type + central pivot)
+- Generate exactly 5 hooks.
+- **H1 must mirror the source's strongest opening hook**: same narrator type (third-person founder narrative? same. first-person speaker? same. object-POV? same.), same central pivot moment (rejection / apology / breaking news / contrarian claim / etc.), same rhetorical opener.
+  - Example: if the source H1 is "These two college boys were laughed off the Shark Tank stage, but their invention is helping more than 50,000 families…" your H1 must be "These two engineering students were laughed off by the Bitcoin mining industry, but their invention is helping more than 50,000 people…" — same third-person founder framing, same rejection→success pivot, just swapped product/category.
+  - You may NOT pivot to a different narrator type. "I'm the chip inside MinerForge Pro" is NOT a clone of a third-person founder hook — that's an object-POV variant, which belongs in variants mode, not clone mode.
+- H2 = same narrator type, same framework, different entry beat.
+- H3 = same narrator type, same framework, different emotional texture.
+- H4 = same narrator type, same framework, contrarian / inverted version.
+- H5 = same narrator type, same framework, shortest punch version (under 12 words).
+- Each hook reads seamlessly into the body's first paragraph.
+- A hook is a FULL SENTENCE. ALL-CAPS sticker fragments belong in highlighted_text (§7), not in hooks.
+
+## 5b. POV LOCK (NEW — read carefully)
+Do not swap POV. Clone narrator type maps 1:1 to source narrator type:
+- Source uses third-person founder narrative ("Jake and Ryan were engineering students…") → output uses third-person founder narrative.
+- Source uses first-person founder confession ("I'm the co-founder of Forge…") → output uses first-person founder confession.
+- Source uses object/product POV ("I'm a chip inside MinerForge Pro…") → output uses object/product POV.
+
+Object-POV is NEVER a valid clone of a third-person founder narrative. That's a creative reinterpretation — i.e. a variant, not a clone. Variants belong in variants mode, which we are not in right now. If you find yourself opening with "I'm the [product]…" when the source opens with "These two [founders]…", STOP and rewrite from the source's POV.
 
 ## 6. CTA CLONING
 - Match the original's CTA structure (urgency / curiosity / direct / soft)
@@ -2488,17 +2541,30 @@ A LABEL is short, attention-grabbing, sticker-style. A HOOK is a full first-pers
 - Swap competitor brand / product / offer to ours from {{PRODUCT_CONTEXT}}. Never copy competitor brand names, prices, or claims verbatim.
 - **Hooks are NEVER overlay labels.** If you find yourself writing an ALL-CAPS fragment with an emoji as Hook 1, move it to highlighted_text and write a real sentence-form hook in its place.
 
-# OUTPUT — return ONLY valid JSON, no markdown fences, no preamble:
+# OUTPUT — return ONLY valid JSON, no markdown fences, no preamble.
+
+# IMPORTANT: emit "source_pov" + "source_beats" FIRST. Then write hooks + body
+# AGAINST those beats. Then emit the fidelity self-check at the end. The
+# source_beats list is the contract you signed in §1 ARCHITECTURE PRESERVATION
+# — if your body has fewer paragraphs than source_beats[], go back and write
+# the missing ones before emitting.
 
 {
-  "hooks": [
-    { "id": "H1", "text": "...", "framework_used": "matches original", "angle_signal": "how this hook voices the selected angle", "maps_to_original": "which original hook this clones" },
-    { "id": "H2", "text": "...", "framework_used": "...", "angle_signal": "...", "maps_to_original": "..." },
-    { "id": "H3", "text": "...", "framework_used": "...", "angle_signal": "...", "maps_to_original": "..." },
-    { "id": "H4", "text": "...", "framework_used": "...", "angle_signal": "...", "maps_to_original": "..." },
-    { "id": "H5", "text": "...", "framework_used": "...", "angle_signal": "...", "maps_to_original": "..." }
+  "source_pov": "third-person-founder-narrative | first-person-founder-confession | object-product-pov | speaker-direct-address",
+  "source_beats": [
+    "one source paragraph compressed to ≤ 20 words — beat 1",
+    "beat 2",
+    "beat 3",
+    "..."
   ],
-  "body": "the full cloned body with natural paragraph breaks — same paragraph count as original, equal or up to 10% shorter",
+  "hooks": [
+    { "id": "H1", "text": "...", "framework_used": "matches original", "angle_signal": "how this hook voices the selected angle", "maps_to_original": "which original hook this clones", "narrator_type_check": "same POV as source — confirm" },
+    { "id": "H2", "text": "...", "framework_used": "...", "angle_signal": "...", "maps_to_original": "...", "narrator_type_check": "..." },
+    { "id": "H3", "text": "...", "framework_used": "...", "angle_signal": "...", "maps_to_original": "...", "narrator_type_check": "..." },
+    { "id": "H4", "text": "...", "framework_used": "...", "angle_signal": "...", "maps_to_original": "...", "narrator_type_check": "..." },
+    { "id": "H5", "text": "...", "framework_used": "...", "angle_signal": "...", "maps_to_original": "...", "narrator_type_check": "..." }
+  ],
+  "body": "the full cloned body. One paragraph per entry in source_beats[], in the same order. Use double newlines between paragraphs. Same paragraph count as source. Word count equal or up to 10% shorter — never longer.",
   "cta": "the cloned CTA",
   "highlighted_text": [
     "ON-SCREEN LABEL 1 + emoji",
@@ -2506,7 +2572,20 @@ A LABEL is short, attention-grabbing, sticker-style. A HOOK is a full first-pers
   ],
   "highlighted_text_notes": "1 sentence — what evidence in the source signalled overlays, OR explicitly 'No on-screen overlays detected in source — emitting empty array'.",
   "angle_used": { "name": "the angle name actually used", "reason": "one sentence — why this angle (only if AUTO was selected)", "required_elements_used": ["list of required_elements that fit naturally"], "required_elements_skipped": ["list of skipped + one-line reason for each"], "copy_directives_followed": ["list of directives visible in output"] },
-  "clone_fidelity": { "original_word_count": 0, "clone_word_count": 0, "original_sections": 0, "clone_sections": 0, "framework_match": "what structural elements were preserved", "product_swaps_made": "summary of competitor → our product replacements" },
+  "clone_fidelity": {
+    "original_word_count": 0,
+    "clone_word_count": 0,
+    "original_paragraph_count": 0,
+    "clone_paragraph_count": 0,
+    "paragraphs_match": "true | false — true if clone_paragraph_count == original_paragraph_count",
+    "pov_preserved": "true | false — true if H1.narrator_type_check matches source_pov",
+    "named_protagonists_preserved": "true | false — true if founder names from source survive in clone",
+    "setting_preserved": "true | false — true if school/dorm/origin setting survives",
+    "central_pivot_preserved": "true | false — true if Shark-Tank-style rejection or equivalent moment survives",
+    "framework_match": "what structural elements were preserved",
+    "product_swaps_made": "summary of competitor → our product replacements"
+  },
+  "self_score": "0–10 fidelity score — would the operator who briefed editors on this script accept it as a 1:1 clone, or would they bounce it as a creative reinterpretation? Be honest. <7 = bounce.",
   "key_changes_from_original": "2-3 sentence summary of what's different and why",
   "emotional_arc": "hook_emotion → middle_emotion → close_emotion (must match original's arc)",
   "compliance_notes": "any claims that brush against compliance_restrictions, or 'clean' if none"
@@ -3376,7 +3455,11 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
 
       generationResults = [await (async () => {
         try {
-          const generated = await callClaude(cloneSystem, enhancedCloneUser, 4096);
+          // Clone routes to Opus — architecture-preservation is the kind of
+          // long-instruction multi-rule task where Opus materially beats
+          // Sonnet. Bumped maxTokens to 8192 because §0/§1/§6 ask Opus to
+          // emit a source_beats list AND a full clone in the same response.
+          const generated = await callClaude(cloneSystem, enhancedCloneUser, 8192, { opus: true });
           if (!generated || (!generated.hooks && !generated.body)) throw new Error('Invalid clone response');
           if (!Array.isArray(generated.hooks)) generated.hooks = [];
           if (!generated.body) generated.body = '';
@@ -6332,10 +6415,10 @@ async function seedDefaultLeaguePrompts() {
     //    if it's missing, overwrite with the current baked default. This is
     //    one-shot per signature bump and leaves operator edits alone once
     //    they include the marker.
-    // v3 — adds the spoken-script inference fallback to §7 (Forge-class
-    // sources that came through Whisper without overlay markers now still
-    // get inferred banner labels when the script has 2+ overlay signals).
-    const CLONE_V2_SIGNATURE = 'OVERLAY-SIGNAL CHECK';
+    // v4 — adds §0 PRINCIPLE + §5b POV LOCK + source_beats forced step.
+    // The bump force-refreshes any cached snapshot from v3 so the new
+    // architecture-preservation contract actually reaches production.
+    const CLONE_V2_SIGNATURE = '§0 PRINCIPLE';
     const currentClone = existing.scriptClone?.json || '';
     if (!currentClone.trim() || !currentClone.includes(CLONE_V2_SIGNATURE)) {
       existing.scriptClone = {
