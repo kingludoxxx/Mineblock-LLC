@@ -807,6 +807,13 @@ async function ensureTables() {
     await pgQuery(`ALTER TABLE brief_pipeline_winners ADD COLUMN IF NOT EXISTS iteration_mode TEXT`).catch(() => {});
     await pgQuery(`ALTER TABLE brief_pipeline_winners ADD COLUMN IF NOT EXISTS iteration_config JSONB`).catch(() => {});
     await pgQuery(`ALTER TABLE brief_pipeline_winners ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()`).catch(() => {});
+    // Diagnostics — record the last clone/iterate failure so the UI can
+    // surface it instead of leaving the operator staring at a silent
+    // 'failed' status. Idempotent ADD COLUMN IF NOT EXISTS, safe to re-run
+    // on every boot. Also records which model the successful generation
+    // used (Opus vs Sonnet fallback).
+    await pgQuery(`ALTER TABLE brief_pipeline_winners ADD COLUMN IF NOT EXISTS generation_error TEXT`).catch(() => {});
+    await pgQuery(`ALTER TABLE brief_pipeline_winners ADD COLUMN IF NOT EXISTS generation_model TEXT`).catch(() => {});
 
     await pgQuery(`
       CREATE TABLE IF NOT EXISTS brief_pipeline_generated (
@@ -2547,53 +2554,39 @@ A LABEL is short, attention-grabbing, sticker-style. A HOOK is a full first-pers
 - Swap competitor brand / product / offer to ours from {{PRODUCT_CONTEXT}}. Never copy competitor brand names, prices, or claims verbatim.
 - **Hooks are NEVER overlay labels.** If you find yourself writing an ALL-CAPS fragment with an emoji as Hook 1, move it to highlighted_text and write a real sentence-form hook in its place.
 
-# OUTPUT — return ONLY valid JSON, no markdown fences, no preamble.
+# INTERNAL THINKING (do this in your head BEFORE writing the JSON below)
+# 1. Identify the source POV (third-person founder narrative, first-person
+#    confession, object-product POV, or speaker-direct-address). Lock to it.
+# 2. List the source's beats in your head: one short sentence per source
+#    paragraph. Count them. Commit to writing that exact same number of
+#    output paragraphs, each mapping to the same beat at the same position.
+# 3. Identify the source's central pivot (the Shark-Tank-style rejection, the
+#    "we lied" apology, the contrarian claim — whatever the source uses as
+#    its emotional inflection point). Your H1 must contain the equivalent.
+# 4. Identify named protagonists, setting, and any concrete proof points.
+#    Carry them into the clone unchanged or near-unchanged.
+# Only after this internal pass do you emit the JSON below.
 
-# IMPORTANT: emit "source_pov" + "source_beats" FIRST. Then write hooks + body
-# AGAINST those beats. Then emit the fidelity self-check at the end. The
-# source_beats list is the contract you signed in §1 ARCHITECTURE PRESERVATION
-# — if your body has fewer paragraphs than source_beats[], go back and write
-# the missing ones before emitting.
-
+# OUTPUT — return ONLY valid JSON, no markdown fences, no preamble, no trailing commentary.
 {
   "source_pov": "third-person-founder-narrative | first-person-founder-confession | object-product-pov | speaker-direct-address",
-  "source_beats": [
-    "one source paragraph compressed to ≤ 20 words — beat 1",
-    "beat 2",
-    "beat 3",
-    "..."
-  ],
   "hooks": [
-    { "id": "H1", "text": "...", "framework_used": "matches original", "angle_signal": "how this hook voices the selected angle", "maps_to_original": "which original hook this clones", "narrator_type_check": "same POV as source — confirm" },
-    { "id": "H2", "text": "...", "framework_used": "...", "angle_signal": "...", "maps_to_original": "...", "narrator_type_check": "..." },
-    { "id": "H3", "text": "...", "framework_used": "...", "angle_signal": "...", "maps_to_original": "...", "narrator_type_check": "..." },
-    { "id": "H4", "text": "...", "framework_used": "...", "angle_signal": "...", "maps_to_original": "...", "narrator_type_check": "..." },
-    { "id": "H5", "text": "...", "framework_used": "...", "angle_signal": "...", "maps_to_original": "...", "narrator_type_check": "..." }
+    { "id": "H1", "text": "...", "framework_used": "matches original", "angle_signal": "how this hook voices the selected angle", "maps_to_original": "which original hook this clones" },
+    { "id": "H2", "text": "...", "framework_used": "...", "angle_signal": "...", "maps_to_original": "..." },
+    { "id": "H3", "text": "...", "framework_used": "...", "angle_signal": "...", "maps_to_original": "..." },
+    { "id": "H4", "text": "...", "framework_used": "...", "angle_signal": "...", "maps_to_original": "..." },
+    { "id": "H5", "text": "...", "framework_used": "...", "angle_signal": "...", "maps_to_original": "..." }
   ],
-  "body": "the full cloned body. One paragraph per entry in source_beats[], in the same order. Use double newlines between paragraphs. Same paragraph count as source. Word count equal or up to 10% shorter — never longer.",
+  "body": "the full cloned body. One paragraph per beat in the source, in the same order. Use double newlines between paragraphs. Same paragraph count as source. Word count equal or up to 10% shorter — never longer.",
   "cta": "the cloned CTA",
   "highlighted_text": [
     "ON-SCREEN LABEL 1 + emoji",
     "ON-SCREEN LABEL 2 + emoji"
   ],
   "highlighted_text_notes": "1 sentence — what evidence in the source signalled overlays, OR explicitly 'No on-screen overlays detected in source — emitting empty array'.",
-  "angle_used": { "name": "the angle name actually used", "reason": "one sentence — why this angle (only if AUTO was selected)", "required_elements_used": ["list of required_elements that fit naturally"], "required_elements_skipped": ["list of skipped + one-line reason for each"], "copy_directives_followed": ["list of directives visible in output"] },
-  "clone_fidelity": {
-    "original_word_count": 0,
-    "clone_word_count": 0,
-    "original_paragraph_count": 0,
-    "clone_paragraph_count": 0,
-    "paragraphs_match": "true | false — true if clone_paragraph_count == original_paragraph_count",
-    "pov_preserved": "true | false — true if H1.narrator_type_check matches source_pov",
-    "named_protagonists_preserved": "true | false — true if founder names from source survive in clone",
-    "setting_preserved": "true | false — true if school/dorm/origin setting survives",
-    "central_pivot_preserved": "true | false — true if Shark-Tank-style rejection or equivalent moment survives",
-    "framework_match": "what structural elements were preserved",
-    "product_swaps_made": "summary of competitor → our product replacements"
-  },
-  "self_score": "0–10 fidelity score — would the operator who briefed editors on this script accept it as a 1:1 clone, or would they bounce it as a creative reinterpretation? Be honest. <7 = bounce.",
+  "angle_used": { "name": "the angle name actually used", "reason": "one sentence — why this angle (only if AUTO was selected)" },
+  "clone_fidelity_notes": "2-3 sentences confirming: paragraph count matches source, POV preserved, named protagonists carried over, setting carried over, central pivot preserved. If any of these were broken, say so and explain why.",
   "key_changes_from_original": "2-3 sentence summary of what's different and why",
-  "emotional_arc": "hook_emotion → middle_emotion → close_emotion (must match original's arc)",
   "compliance_notes": "any claims that brush against compliance_restrictions, or 'clean' if none"
 }`;
 
@@ -3460,17 +3453,35 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
       const enhancedCloneUser = cloneUser;
 
       generationResults = [await (async () => {
+        // Opus-first, Sonnet-fallback. Operator wants Opus for clone fidelity
+        // (long-instruction multi-rule task). If the Opus alias doesn't
+        // resolve on this account, we fall back to Sonnet so the operator
+        // still gets a clone out the door instead of a silent failure. Both
+        // attempts' errors are captured to brief_pipeline_winners.generation_error
+        // so they surface on /generation-status without needing Render logs.
+        let lastErr = null;
+        let modelUsed = null;
+        let generated = null;
         try {
-          // TEMP — Opus model alias resolution is failing silently in this
-          // account. Routing the v4 prompt through Sonnet for now so we can
-          // validate the architecture-preservation contract works on its own
-          // merits. Will flip back to opus:true once the right Opus model
-          // identifier is confirmed via Render logs / a probe.
-          // 16384 tokens budgeted because v4 prompt emits source_pov +
-          // source_beats[] + 5 hooks + full body + highlighted_text + angle_used
-          // + clone_fidelity + self_score + key_changes — ~12k tokens for a
-          // long PestLab-class source.
-          const generated = await callClaude(cloneSystem, enhancedCloneUser, 16384);
+          modelUsed = 'opus';
+          generated = await callClaude(cloneSystem, enhancedCloneUser, 12000, { opus: true });
+        } catch (opusErr) {
+          lastErr = `opus: ${opusErr.message}`;
+          console.warn(`[BriefPipeline] Opus clone attempt failed (${opusErr.message}) — falling back to Sonnet.`);
+          try {
+            modelUsed = 'sonnet';
+            generated = await callClaude(cloneSystem, enhancedCloneUser, 12000);
+          } catch (sonnetErr) {
+            lastErr = `${lastErr}; sonnet: ${sonnetErr.message}`;
+            await pgQuery(
+              `UPDATE brief_pipeline_winners SET generation_error = $1, generation_model = $2 WHERE id = $3`,
+              [lastErr, 'both-failed', winner.id]
+            ).catch(() => {});
+            console.error(`[BriefPipeline] clone — both Opus and Sonnet failed: ${lastErr}`);
+            return { direction: { id: 1, name: '1:1 Clone' }, success: false };
+          }
+        }
+        try {
           if (!generated || (!generated.hooks && !generated.body)) throw new Error('Invalid clone response');
           if (!Array.isArray(generated.hooks)) generated.hooks = [];
           if (!generated.body) generated.body = '';
@@ -3510,6 +3521,14 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
           };
           const overall = (7 * 0.15) + (8 * 0.15) + (9 * 0.25) + (8 * 0.15) + (9 * 0.30); // 8.4
 
+          // Record which model produced the clone so the operator can see
+          // whether Opus landed or we fell back to Sonnet. Clears any prior
+          // generation_error on success.
+          await pgQuery(
+            `UPDATE brief_pipeline_winners SET generation_error = NULL, generation_model = $1 WHERE id = $2`,
+            [modelUsed, winner.id]
+          ).catch(() => {});
+
           return {
             generated,
             scores,
@@ -3518,7 +3537,12 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
             success: true,
           };
         } catch (err) {
-          console.error(`[BriefPipeline] clone generation failed:`, err.message);
+          const fullErr = lastErr ? `${lastErr}; post-call: ${err.message}` : `${modelUsed}: ${err.message}`;
+          await pgQuery(
+            `UPDATE brief_pipeline_winners SET generation_error = $1, generation_model = $2 WHERE id = $3`,
+            [fullErr, modelUsed || 'unknown', winner.id]
+          ).catch(() => {});
+          console.error(`[BriefPipeline] clone generation failed (${modelUsed}):`, err.message);
           return { direction: { id: 1, name: '1:1 Clone' }, success: false };
         }
       })()];
@@ -3629,9 +3653,11 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
 router.get('/generation-status/:winnerId', authenticate, async (req, res) => {
   try {
     const winnerId = req.params.winnerId;
-    // Check winner status
+    // Check winner status — pull generation_error + model so the UI can
+    // surface the actual failure reason instead of a silent "failed".
     const winnerRows = await pgQuery(
-      `SELECT id, status, creative_id FROM brief_pipeline_winners WHERE id = $1`,
+      `SELECT id, status, creative_id, generation_error, generation_model
+         FROM brief_pipeline_winners WHERE id = $1`,
       [winnerId]
     );
     if (!winnerRows.length) {
@@ -3663,6 +3689,9 @@ router.get('/generation-status/:winnerId', authenticate, async (req, res) => {
       creative_id: winner.creative_id,
       briefs_generated: briefs.length,
       briefs,
+      // Diagnostic — null on success, populated when the clone failed.
+      generation_error: winner.generation_error || null,
+      generation_model: winner.generation_model || null,
     });
   } catch (err) {
     console.error('[BriefPipeline] GET /generation-status error:', err.message);
@@ -6426,10 +6455,11 @@ async function seedDefaultLeaguePrompts() {
     //    if it's missing, overwrite with the current baked default. This is
     //    one-shot per signature bump and leaves operator edits alone once
     //    they include the marker.
-    // v4 — adds §0 PRINCIPLE + §5b POV LOCK + source_beats forced step.
-    // The bump force-refreshes any cached snapshot from v3 so the new
-    // architecture-preservation contract actually reaches production.
-    const CLONE_V2_SIGNATURE = '§0 PRINCIPLE';
+    // v4.1 — keeps §0 PRINCIPLE + §5b POV LOCK + architecture preservation
+    // instructions, but moves source_beats from JSON contract to INTERNAL
+    // THINKING (model was failing JSON parsing under v4's stricter shape).
+    // Bumping the signature force-refreshes any v4 snapshot from v4.0 to v4.1.
+    const CLONE_V2_SIGNATURE = 'INTERNAL THINKING';
     const currentClone = existing.scriptClone?.json || '';
     if (!currentClone.trim() || !currentClone.includes(CLONE_V2_SIGNATURE)) {
       existing.scriptClone = {

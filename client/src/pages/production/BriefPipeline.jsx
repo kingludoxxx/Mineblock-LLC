@@ -276,7 +276,14 @@ export default function BriefPipeline() {
           }
           if (data.status === 'failed') {
             clearInterval(stepInterval);
-            reject(new Error('All brief generations failed. Check server logs.'));
+            // Surface the actual backend error (and which model was attempted)
+            // instead of the generic "check server logs" — server now stamps
+            // brief_pipeline_winners.generation_error so the operator sees the
+            // root cause inline.
+            const err = data.generation_error
+              ? `Generation failed (model=${data.generation_model || 'unknown'}): ${data.generation_error}`
+              : 'All brief generations failed. Check server logs.';
+            reject(new Error(err));
             return;
           }
           // Still generating — update step message and continue
