@@ -189,7 +189,10 @@ router.post('/brands/:id/scrape', validateUuidParam('id'), async (req, res, next
   try {
     const brand = await getBrandExpanded(req.params.id);
     if (!brand) return res.status(404).json({ error: 'Brand not found' });
-    runBrandScrape({ brandId: req.params.id, trigger: 'MANUAL' }).catch((err) =>
+    // Manual refresh from the UI always bypasses the 12h cool-down. The user
+    // explicitly clicked, so honor it. Background callers (cron, pending
+    // sweep, boot scrape) don't pass force and get rate-limited.
+    runBrandScrape({ brandId: req.params.id, trigger: 'MANUAL', force: true }).catch((err) =>
       console.error(`[brand-spy] manual scrape failed for ${req.params.id}:`, err),
     );
     res.status(202).json({ queued: true });
