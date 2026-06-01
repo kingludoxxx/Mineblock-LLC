@@ -777,6 +777,37 @@ const MAX_TEMP_IMAGES = 200;
   }
 })();
 
+// Boot-time stuck-edit cleanup. The /edit endpoint runs the OpenAI call in
+// setImmediate (background job). If the server restarts mid-flight, the
+// row keeps its pending_edit_token but never gets pending_edit_url —
+// permanently stuck. The frontend polls until its 4-min timeout then
+// shows "Edit timed out" but the DB stays in the broken state.
+//
+// On startup, clear any pending edit that's older than 10 min — the
+// underlying OpenAI request would have hit its 5-min timeout anyway,
+// so anything older is definitely stale.
+(async () => {
+  try {
+    // Wait a beat for ensureCreativesTable to settle on a cold start
+    await new Promise(r => setTimeout(r, 5000));
+    const rows = await pgQuery(
+      `UPDATE spy_creatives
+         SET pending_edit_token = NULL,
+             last_edit_error = 'Edit interrupted by server restart — please try again'
+       WHERE pending_edit_token IS NOT NULL
+         AND pending_edit_url IS NULL
+         AND last_edited_at < NOW() - INTERVAL '10 minutes'
+       RETURNING id`,
+      []
+    );
+    if (rows.length > 0) {
+      console.log(`[statics edit cleanup] boot: cleared ${rows.length} stuck edit(s)`);
+    }
+  } catch (err) {
+    console.warn('[statics edit cleanup] boot: could not clear stuck edits:', err.message);
+  }
+})();
+
 (async () => {
   try {
     await pgQuery(`ALTER TABLE statics_templates ADD COLUMN IF NOT EXISTS deep_analysis JSONB`, []);
