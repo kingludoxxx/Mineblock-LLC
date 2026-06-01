@@ -1432,6 +1432,7 @@ FORMULA PRESERVATION: Keep exact sentence structure, opening words, word counts 
 TEXT EXTRACTION: Only extract ACTUALLY VISIBLE text from the image. Do NOT extract text from product labels — only text that is overlaid on the scene as ad copy.
 LAYOUT CAPTURE: Describe the full scene in detail — background color/texture, product position, props, lighting, composition. This description will be used to recreate the layout.
 CHARACTER RULES: Count people in original — new image must match exactly.
+BULLET RULES: For adapted bullets, spell out any dollar amounts as words (e.g., "$50" → "Fifty Dollars", "$1/year" → "One Dollar a Year"). Bullet length tolerance: up to 1.8x the original length, max 38 characters per bullet.
 PRODUCT DETECTION: Set reference_has_product_visual to true if the reference ad features ANY physical product as a main visual element — including: bottle, jar, box, package, pill, container, supplement, wearable device, neck brace, knee wrap, foot pad, LED device, gadget, appliance, tool, or any physical object being held or displayed. Set false ONLY if the ad is purely text/infographic/checklist/screenshot/social-post style with absolutely no physical product or object visible.
 PRODUCT SWAP: Describe where the competitor product sits in the scene (position, size, angle, quantity). Our product will be placed there.
 

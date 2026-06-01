@@ -4,12 +4,6 @@ import {
   Check,
   ThumbsDown,
   ExternalLink,
-  ChevronDown,
-  ChevronRight,
-  Brain,
-  Zap,
-  Target,
-  Shield,
   Loader2,
   Sparkles,
   Save,
@@ -25,24 +19,6 @@ import api from '../../../services/api';
 // Constants
 // ---------------------------------------------------------------------------
 
-const SCORE_CONFIG = {
-  novelty:    { label: 'Novelty',    icon: Zap,    color: 'bg-purple-500/10 text-purple-300 border-purple-500/20' },
-  aggression: { label: 'Aggression', icon: Target, color: 'bg-red-500/10 text-red-300 border-red-500/20' },
-  coherence:  { label: 'Coherence',  icon: Brain,  color: 'bg-[#c9a84c]/10 text-[#e8d5a3] border-[#c9a84c]/20' },
-  overall:    { label: 'Overall',    icon: Shield, color: 'bg-emerald-500/10 text-emerald-300 border-emerald-500/20' },
-};
-
-// Quick-action chips fed to the AI chat box. They expand to a sensible
-// natural-language instruction when clicked. Curated to match the most
-// common edits Ludo asks for during reviews.
-const QUICK_ACTIONS = [
-  { label: 'More aggressive', prompt: 'Make all hooks more aggressive and confrontational, sharpen the body to match.' },
-  { label: 'Shorter hooks',   prompt: 'Compress every hook to under 12 words while keeping the same angle and tension.' },
-  { label: 'Add a stat',      prompt: 'Inject a concrete number or stat into hook 1 and the first body paragraph.' },
-  { label: 'Try fear angle',  prompt: 'Rewrite hook 1 with a fear-of-missing-out framing. Keep the other hooks intact.' },
-  { label: 'Discount label',  prompt: 'Add a top-banner discount label to highlighted_text in the BIGGEST SALE 🇺🇸 style.' },
-  { label: 'Apology overlay', prompt: 'Replace highlighted_text with a 2-label PUBLIC APOLOGY 👁️ / WE LIED 🤥 style framing.' },
-];
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -59,18 +35,6 @@ function SectionLabel({ children, actions }) {
   );
 }
 
-function ScoreCard({ scoreKey, value }) {
-  const config = SCORE_CONFIG[scoreKey];
-  if (!config) return null;
-  const Icon = config.icon;
-  return (
-    <div className={`flex-1 flex flex-col items-center gap-1 py-3 px-2 rounded-lg border ${config.color}`}>
-      <Icon className="w-3.5 h-3.5" />
-      <span className="text-lg font-bold leading-none">{value ?? '—'}</span>
-      <span className="text-[10px] opacity-70 font-mono uppercase tracking-wider">{config.label}</span>
-    </div>
-  );
-}
 
 // Normalize highlighted_text into a JS array regardless of how it arrives
 // (some endpoints still hand back the string "[]" on older rows).
@@ -250,7 +214,6 @@ export default function BriefDetailModal({
     spoken = spoken.replace(/\[(?:SELLING\s*MESSAGE|BRAND|METADATA|VISUAL\s*NARRATIVE|ANALYSIS|NOTES|CTA)\][\s\S]*$/gi, '').trim();
     return { onScreenLines, spoken };
   })();
-  const [winAnalysisOpen, setWinAnalysisOpen] = useState(false);
   const [editableHooks, setEditableHooks] = useState([]);
   const [editableBody, setEditableBody] = useState('');
   const [editableHighlighted, setEditableHighlighted] = useState([]);
@@ -286,13 +249,6 @@ export default function BriefDetailModal({
   if (!isOpen || !brief) return null;
 
   const status = brief.status || 'generated';
-  const scores = {
-    novelty:    brief.novelty_score,
-    aggression: brief.aggression_score,
-    coherence:  brief.coherence_score,
-    overall:    brief.overall_score,
-  };
-  const hasScores = Object.values(scores).some((v) => v != null);
 
   const originalHooks = (() => {
     if (!originalScript) return [];
@@ -342,20 +298,6 @@ export default function BriefDetailModal({
     setHasChanges(true);
   };
 
-  const handleDeleteHighlight = (idx) => {
-    setEditableHighlighted((prev) => prev.filter((_, i) => i !== idx));
-    setHasChanges(true);
-  };
-
-  const handleAddHighlight = () => {
-    setEditableHighlighted((prev) => prev.length >= 4 ? prev : [...prev, '']);
-    setHasChanges(true);
-  };
-
-  const handleUpdateHighlight = (idx, value) => {
-    setEditableHighlighted((prev) => prev.map((s, i) => i === idx ? value : s));
-    setHasChanges(true);
-  };
 
   const handleSave = async () => {
     setSaving(true);
@@ -373,11 +315,6 @@ export default function BriefDetailModal({
     }
   };
 
-  const parsedWinAnalysis = (() => {
-    if (!winAnalysis) return null;
-    if (typeof winAnalysis === 'object') return winAnalysis;
-    try { return JSON.parse(winAnalysis); } catch { return null; }
-  })();
 
   return (
     <div
@@ -401,13 +338,6 @@ export default function BriefDetailModal({
               </span>
             </div>
             <div className="flex items-center gap-3">
-              {hasScores && (
-                <div className="hidden md:flex gap-1.5">
-                  {Object.entries(scores).map(([k, v]) => (
-                    <ScoreCard key={k} scoreKey={k} value={v} />
-                  ))}
-                </div>
-              )}
               <button
                 type="button"
                 onClick={onClose}
@@ -429,19 +359,8 @@ export default function BriefDetailModal({
 
         {/* Body — 3 columns on lg+, stacked on smaller. Left = source, middle = brief, right = AI chat. */}
         <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-[1fr_1.3fr_400px] overflow-hidden">
-          {/* ── LEFT: Original Script + Win Analysis ────────────────── */}
+          {/* ── LEFT: Original Script ──────────────────────────────── */}
           <div className="overflow-y-auto p-6 space-y-6 border-r border-white/[0.04]">
-            {hasScores && (
-              <section className="md:hidden">
-                <SectionLabel>Scores</SectionLabel>
-                <div className="flex gap-2">
-                  {Object.entries(scores).map(([k, v]) => (
-                    <ScoreCard key={k} scoreKey={k} value={v} />
-                  ))}
-                </div>
-              </section>
-            )}
-
             {brief.reference && (brief.reference.videoUrl || brief.reference.thumbnailUrl || brief.reference.sourceUrl) && (
               <section>
                 <SectionLabel>Source Reference</SectionLabel>
@@ -501,90 +420,10 @@ export default function BriefDetailModal({
               </section>
             )}
 
-            {parsedWinAnalysis && (
-              <section>
-                <button
-                  type="button"
-                  onClick={() => setWinAnalysisOpen(!winAnalysisOpen)}
-                  className="flex items-center gap-2 font-mono text-xs tracking-[0.15em] uppercase text-[#c9a84c] font-semibold hover:text-[#e8d5a3] transition-colors cursor-pointer"
-                >
-                  {winAnalysisOpen ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
-                  Why the Original Won
-                </button>
-
-                {winAnalysisOpen && (
-                  <div className="mt-3 glass-card border border-white/[0.04] rounded-lg p-4 bg-white/[0.02] space-y-3 text-xs text-zinc-400">
-                    {parsedWinAnalysis.scriptDna?.core_angle && <p><span className="text-zinc-500 font-mono">Angle:</span> {parsedWinAnalysis.scriptDna.core_angle}</p>}
-                    {parsedWinAnalysis.scriptDna?.mechanism && <p><span className="text-zinc-500 font-mono">Mechanism:</span> {parsedWinAnalysis.scriptDna.mechanism}</p>}
-                    {parsedWinAnalysis.scriptDna?.belief_shift && <p><span className="text-zinc-500 font-mono">Belief Shift:</span> {parsedWinAnalysis.scriptDna.belief_shift}</p>}
-                    {parsedWinAnalysis.scriptDna?.why_it_works && <p><span className="text-zinc-500 font-mono">Why It Works:</span> {parsedWinAnalysis.scriptDna.why_it_works}</p>}
-                  </div>
-                )}
-              </section>
-            )}
           </div>
 
           {/* ── MIDDLE: Editable brief — highlighted_text + hooks + body ──── */}
           <div className="overflow-y-auto p-6 space-y-6">
-            {/* Highlighted text — only render when array non-empty OR operator adds first label */}
-            {editableHighlighted.length > 0 && (
-              <section>
-                <SectionLabel
-                  actions={
-                    editableHighlighted.length < 4 && (
-                      <button
-                        type="button"
-                        onClick={handleAddHighlight}
-                        className="flex items-center gap-1 text-[10px] uppercase tracking-wider font-mono text-zinc-400 hover:text-[#c9a84c] transition-colors cursor-pointer"
-                      >
-                        <Plus className="w-3 h-3" /> Add label
-                      </button>
-                    )
-                  }
-                >
-                  On-Screen Text
-                </SectionLabel>
-                <div className="space-y-2">
-                  {editableHighlighted.map((label, i) => (
-                    <div
-                      key={i}
-                      className="flex items-center gap-2 glass-card border border-white/[0.04] rounded-lg px-3 py-2 bg-white/[0.02]"
-                    >
-                      <span className="text-[10px] font-mono uppercase tracking-wider text-zinc-500 shrink-0">
-                        L{i + 1}
-                      </span>
-                      <input
-                        type="text"
-                        value={label}
-                        placeholder="e.g. BIGGEST SALE 🇺🇸"
-                        onChange={(e) => handleUpdateHighlight(i, e.target.value)}
-                        className="flex-1 bg-transparent text-sm text-zinc-200 focus:outline-none border-0 p-0 font-medium"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteHighlight(i)}
-                        aria-label={`Delete label ${i + 1}`}
-                        className="text-zinc-600 hover:text-red-400 transition-colors cursor-pointer shrink-0"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </section>
-            )}
-
-            {/* If no overlays exist, surface a discreet "Add overlay" affordance.
-                Operator-initiated only — never auto-populated. */}
-            {editableHighlighted.length === 0 && (
-              <button
-                type="button"
-                onClick={handleAddHighlight}
-                className="w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border border-dashed border-white/[0.08] text-[11px] uppercase tracking-wider font-mono text-zinc-500 hover:text-[#c9a84c] hover:border-[#c9a84c]/30 transition-colors cursor-pointer"
-              >
-                <Plus className="w-3.5 h-3.5" /> Add on-screen overlay
-              </button>
-            )}
 
             {/* Hooks — per-hook delete + edit */}
             {editableHooks.length > 0 && (
@@ -662,26 +501,11 @@ export default function BriefDetailModal({
               <p className="text-[11px] text-zinc-500 mt-1">Brief is loaded. Ask for edits — labels, hooks, body, or whole rewrites.</p>
             </div>
 
-            {/* Quick action chips */}
-            <div className="px-4 pt-3 pb-2 shrink-0 flex flex-wrap gap-1.5">
-              {QUICK_ACTIONS.map((qa) => (
-                <button
-                  key={qa.label}
-                  type="button"
-                  disabled={aiBusy}
-                  onClick={() => handleAi(qa.prompt)}
-                  className="text-[10px] uppercase tracking-wider font-mono px-2 py-1 rounded bg-white/[0.03] border border-white/[0.05] text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.06] disabled:opacity-40 disabled:cursor-not-allowed transition-colors cursor-pointer"
-                >
-                  {qa.label}
-                </button>
-              ))}
-            </div>
-
             {/* Chat scroll history */}
             <div ref={chatScrollRef} className="flex-1 overflow-y-auto px-4 py-3 space-y-3 min-h-0">
               {aiHistory.length === 0 && !aiBusy && (
                 <div className="text-[11px] text-zinc-600 italic text-center py-6">
-                  No edits yet. Try a quick action above or type your own instruction below.
+                  No edits yet. Type your instruction below to get started.
                 </div>
               )}
               {aiHistory.map((turn, i) => (

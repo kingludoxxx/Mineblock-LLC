@@ -1166,62 +1166,70 @@ async function callOpenAI(systemPrompt, userPrompt, maxTokens = 3000) {
     messages,
   };
 
-  const res = await fetch(OPENAI_API_URL, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${OPENAI_API_KEY}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(body),
-  });
-
-  if (!res.ok) {
-    const errText = await res.text();
-    console.error(`[callOpenAI] HTTP ${res.status} from OpenAI: ${errText.slice(0, 500)}`);
-    throw new Error(`OpenAI API error ${res.status}: ${errText.slice(0, 300)}`);
-  }
-
-  const data = await res.json();
-  const text = data.choices?.[0]?.message?.content || '';
-  if (data.choices?.[0]?.finish_reason === 'length') {
-    console.warn(`[callOpenAI] Response clipped at ${maxTokens} tokens. Consider bumping the budget.`);
-  }
-
-  // Parse JSON response (same as callClaude)
-  let cleaned = text.trim();
-  const fenceMatch = cleaned.match(/```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/) ||
-                     cleaned.match(/```(?:json)?\s*\n?([\s\S]+)$/);
-  if (fenceMatch) cleaned = fenceMatch[1].trim();
-
-  let jsonMatch = cleaned.match(/\{[\s\S]*\}/);
-  let wasTruncated = false;
-  if (!jsonMatch) {
-    jsonMatch = cleaned.match(/\{[\s\S]+$/);
-    wasTruncated = !!jsonMatch;
-  }
-  if (!jsonMatch) {
-    throw new Error(`OpenAI returned no JSON block. Response: ${cleaned.slice(0, 500)}`);
-  }
-
-  let raw = jsonMatch[0];
-
-  if (wasTruncated) {
-    const quotes = raw.match(/(?<!\\)"/g) || [];
-    if (quotes.length % 2 !== 0) raw += '"';
-    raw = raw.replace(/,\s*"[^"]*"\s*$/, '');
-    raw = raw.replace(/,\s*$/, '');
-    const openBrackets = (raw.match(/\[/g) || []).length;
-    const closeBrackets = (raw.match(/\]/g) || []).length;
-    for (let i = 0; i < openBrackets - closeBrackets; i++) raw += ']';
-    const opens = (raw.match(/\{/g) || []).length;
-    const closes = (raw.match(/\}/g) || []).length;
-    for (let i = 0; i < opens - closes; i++) raw += '}';
-  }
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 60000); // 60 second timeout
 
   try {
-    return JSON.parse(raw);
-  } catch (parseErr) {
-    throw new Error(`Failed to parse OpenAI JSON: ${parseErr.message}\nRaw: ${raw.slice(0, 300)}`);
+    const res = await fetch(OPENAI_API_URL, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      console.error(`[callOpenAI] HTTP ${res.status} from OpenAI: ${errText.slice(0, 500)}`);
+      throw new Error(`OpenAI API error ${res.status}: ${errText.slice(0, 300)}`);
+    }
+
+    const data = await res.json();
+    const text = data.choices?.[0]?.message?.content || '';
+    if (data.choices?.[0]?.finish_reason === 'length') {
+      console.warn(`[callOpenAI] Response clipped at ${maxTokens} tokens. Consider bumping the budget.`);
+    }
+
+    // Parse JSON response (same as callClaude)
+    let cleaned = text.trim();
+    const fenceMatch = cleaned.match(/```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/) ||
+                       cleaned.match(/```(?:json)?\s*\n?([\s\S]+)$/);
+    if (fenceMatch) cleaned = fenceMatch[1].trim();
+
+    let jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+    let wasTruncated = false;
+    if (!jsonMatch) {
+      jsonMatch = cleaned.match(/\{[\s\S]+$/);
+      wasTruncated = !!jsonMatch;
+    }
+    if (!jsonMatch) {
+      throw new Error(`OpenAI returned no JSON block. Response: ${cleaned.slice(0, 500)}`);
+    }
+
+    let raw = jsonMatch[0];
+
+    if (wasTruncated) {
+      const quotes = raw.match(/(?<!\\)"/g) || [];
+      if (quotes.length % 2 !== 0) raw += '"';
+      raw = raw.replace(/,\s*"[^"]*"\s*$/, '');
+      raw = raw.replace(/,\s*$/, '');
+      const openBrackets = (raw.match(/\[/g) || []).length;
+      const closeBrackets = (raw.match(/\]/g) || []).length;
+      for (let i = 0; i < openBrackets - closeBrackets; i++) raw += ']';
+      const opens = (raw.match(/\{/g) || []).length;
+      const closes = (raw.match(/\}/g) || []).length;
+      for (let i = 0; i < opens - closes; i++) raw += '}';
+    }
+
+    try {
+      return JSON.parse(raw);
+    } catch (parseErr) {
+      throw new Error(`Failed to parse OpenAI JSON: ${parseErr.message}\nRaw: ${raw.slice(0, 300)}`);
+    }
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
 
@@ -1395,18 +1403,7 @@ function abbreviateAngle(angle) {
 
 function buildNamingConvention({ product_code, brief_number, parent_creative_id, avatar, angle, format, strategist, creator, editor, week, brief_type }) {
   const briefId = `B${String(brief_number).padStart(4, '0')}`;
-  // Brief type — NN (Net New) for clones of competitor ads, IT (Iteration)
-  // for refreshes of our own proven winners. Default IT for back-compat
-  // with callers that don't pass it explicitly. Anything else (operator
-  // override, junk) → IT.
   const briefType = brief_type === 'NN' ? 'NN' : 'IT';
-  // The parent slot exists so iterations of a real winner carry the parent's
-  // B-code (e.g. "B0223") in the task name. For briefs generated from a
-  // raw script paste or a reference card the parent_creative_id is a
-  // synthetic "MANUAL-XXXXXXXX" — noise in the task name. Drop the slot
-  // entirely in that case rather than emitting MANUAL-XXXX strings.
-  // Also drop the slot entirely for NN briefs — net-new clones have no
-  // meaningful parent, the slot should not appear at all.
   const isSyntheticParent = !parent_creative_id || /^MANUAL[-_]/i.test(String(parent_creative_id));
   const dropParent = briefType === 'NN' || isSyntheticParent;
   const slots = [
@@ -1419,7 +1416,7 @@ function buildNamingConvention({ product_code, brief_number, parent_creative_id,
     format || 'Mashup',
     strategist || 'Ludovico',
     creator || 'NA',
-    editor || 'Uly',
+    editor || null,
     week || getCurrentWeekLabel(),
   ];
   return slots.filter((s) => s !== null && s !== undefined && s !== '').join(' - ');
@@ -3553,12 +3550,26 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
             generated = await callOpenAI(cloneSystem, enhancedCloneUser, 12000);
           } catch (openaiErr) {
             lastErr = `openai: ${openaiErr.message}`;
-            await pgQuery(
-              `UPDATE brief_pipeline_winners SET generation_error = $1, generation_model = $2 WHERE id = $3`,
-              [lastErr, 'openai', winner.id]
-            ).catch(() => {});
-            console.error(`[BriefPipeline] clone — OpenAI failed: ${lastErr}`);
-            return { direction: { id: 1, name: '1:1 Clone' }, success: false };
+            console.warn(`[BriefPipeline] OpenAI clone attempt failed (${openaiErr.message}) — falling back to Claude (Opus first).`);
+            try {
+              modelUsed = 'opus';
+              generated = await callClaude(cloneSystem, enhancedCloneUser, 12000, { opus: true });
+            } catch (opusErr) {
+              lastErr = `${lastErr}; opus: ${opusErr.message}`;
+              console.warn(`[BriefPipeline] Opus fallback failed (${opusErr.message}) — trying Sonnet.`);
+              try {
+                modelUsed = 'sonnet';
+                generated = await callClaude(cloneSystem, enhancedCloneUser, 12000);
+              } catch (sonnetErr) {
+                lastErr = `${lastErr}; sonnet: ${sonnetErr.message}`;
+                await pgQuery(
+                  `UPDATE brief_pipeline_winners SET generation_error = $1, generation_model = $2 WHERE id = $3`,
+                  [lastErr, 'openai-fallback-both-failed', winner.id]
+                ).catch(() => {});
+                console.error(`[BriefPipeline] clone — OpenAI and both Claude models failed: ${lastErr}`);
+                return { direction: { id: 1, name: '1:1 Clone' }, success: false };
+              }
+            }
           }
         } else {
           // Default Claude with Opus-first / Sonnet fallback

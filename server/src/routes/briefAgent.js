@@ -71,7 +71,7 @@ const ANGLE_OPTIONS = {
   Reaction: 'bbe5f0c0-8bbf-45a2-bc04-fbcebb11e242',
   Miningwhilesleep: '8bfcbdeb-c21b-4d78-b2f4-fa45f7856b18',
   Apology: '3c59aca9-f26b-4d8d-95b9-652fd4d30044',
-  Gamblingaddiction: null,
+  Gamblingaddiction: '253d18aa-9114-40a4-97d7-a77b0498bb25',
 };
 
 const BRIEF_TYPE_OPTIONS = {

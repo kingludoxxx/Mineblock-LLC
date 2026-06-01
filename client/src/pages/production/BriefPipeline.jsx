@@ -120,6 +120,7 @@ export default function BriefPipeline() {
   // The panel reads these as initialScript / initialMode / referenceLabel.
   const [scriptPrefill, setScriptPrefill] = useState({ script: null, mode: null, label: null });
   const scriptGenSectionRef = useRef(null);
+  const scriptGeneratorPanelRef = useRef(null);
 
   // Refs for cleanup and double-click guards
   const abortRef = useRef(false);
@@ -904,6 +905,7 @@ export default function BriefPipeline() {
             {/* Script Generator panel */}
             <div className="p-4">
               <ScriptGeneratorPanel
+                ref={scriptGeneratorPanelRef}
                 onGenerated={handleGenerateFromScript}
                 generating={scriptGenerating}
                 generatingStep={scriptGenStep}
@@ -1219,7 +1221,8 @@ export default function BriefPipeline() {
                           type="button"
                           onClick={() => {
                             const refs = references.filter((r) => selectedReferenceIds.includes(r.id));
-                            handleBatchGenerateFromReferences(refs);
+                            const selectedModel = scriptGeneratorPanelRef.current?.getSelectedModel?.() || 'claude';
+                            handleBatchGenerateFromReferences(refs, { model: selectedModel });
                           }}
                           className="w-full flex items-center justify-center gap-2 py-3 rounded-md bg-[#c9a84c]/15 border border-[#c9a84c]/40 text-[#e8d5a3] font-mono text-xs uppercase tracking-wider hover:bg-[#c9a84c]/25 hover:border-[#c9a84c]/60 shadow-[0_0_15px_rgba(201,168,76,0.15)] transition-all cursor-pointer"
                         >

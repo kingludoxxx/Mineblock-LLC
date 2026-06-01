@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, forwardRef, useImperativeHandle } from 'react';
 import { FileText, Video, Wand2, Loader2, Sparkles, ChevronDown, Trophy, X, Package, Check, AlertCircle } from 'lucide-react';
 import ProductSelector from '../../../components/ProductSelector';
 import api from '../../../services/api';
@@ -42,7 +42,7 @@ const PROOF_TARGETS   = ['Auto (rotate)', 'Data', 'Story', 'Comparison', 'Testim
 
 const VECTOR_LABEL = ITERATION_VECTORS.reduce((acc, v) => ({ ...acc, [v.key]: v.label }), {});
 
-export default function ScriptGeneratorPanel({
+const ScriptGeneratorPanel = forwardRef(function ScriptGeneratorPanel({
   onGenerated,
   generating,
   generatingStep,
@@ -51,7 +51,7 @@ export default function ScriptGeneratorPanel({
   initialReferenceId,
   referenceLabel,
   onClearReference,
-}) {
+}, ref) {
   const [inputMode, setInputMode] = useState('text');
   const [scriptText, setScriptText] = useState('');
   const [scriptUrl, setScriptUrl] = useState('');
@@ -73,6 +73,10 @@ export default function ScriptGeneratorPanel({
   const [enhancing, setEnhancing] = useState(false);
   const [error, setError] = useState(null);
   const [selectedModel, setSelectedModel] = useState('claude');
+
+  useImperativeHandle(ref, () => ({
+    getSelectedModel: () => selectedModel,
+  }));
 
   // Apply external prefill (from Reference card → "Generate Brief") once per
   // distinct initialScript. We track the last applied value so subsequent
@@ -333,10 +337,6 @@ export default function ScriptGeneratorPanel({
 
       {/* Configuration */}
       <div className="space-y-4">
-        <div className="text-[10px] font-mono font-semibold text-zinc-500 uppercase tracking-[0.15em] flex items-center gap-2">
-          <div className="w-1 h-1 bg-[#c9a84c]/40 rounded-full" />
-          Configuration
-        </div>
 
         <div className="space-y-1.5">
           <label className="text-xs text-zinc-400 font-mono">Target_Product</label>
@@ -693,4 +693,6 @@ export default function ScriptGeneratorPanel({
       </button>
     </div>
   );
-}
+});
+
+export default ScriptGeneratorPanel;

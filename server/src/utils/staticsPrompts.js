@@ -194,7 +194,9 @@ export function buildNanoBananaImagePrompt(claudeResult = {}, product = {}, temp
   if (hasProduct) {
     productInstruction =
 `1. PRODUCT: Use the product image (the ONLY image attached) as the SOLE product reference. Render the product visually as follows: ${productVisual || `the ${product.name || 'product'} as shown in the input image`}.`;
-    productRule = `- The product must appear prominently in the scene, matching the input product image exactly (shape, color, label, branding)`;
+    productRule = `- The product must appear prominently in the scene, matching the input product image exactly (shape, color, label, branding)
+- NEVER overlay logo or brand marks directly ON TOP OF the physical product itself — any branding should be on the product's surface as designed, not added as floating text/graphics on top
+- NEVER render the product in retail packaging (box, wrapper, blister pack) unless the reference image explicitly shows it in such packaging`;
   } else {
     productInstruction =
 `1. PRODUCT: This ad is text-only / infographic — do NOT add a product visual. The scene must contain ZERO product objects.`;

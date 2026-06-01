@@ -261,6 +261,17 @@ export async function createBrand({ domain, workspaceId, ownerUserId, displayNam
      RETURNING *`,
     [domain, displayName ?? null, workspaceId, ownerUserId],
   );
+  // Also seed brand_domains with the primary domain. The worker only adds
+  // domains it sees in ad link_urls — if all of a brand's ads link to a
+  // subdomain (sale.brand.com), the bare brand.com would never appear in
+  // brand_domains and the UI would show "no primary domain". This insert
+  // guarantees the canonical primary is always there.
+  await query(
+    `INSERT INTO brand_spy.brand_domains (brand_id, domain, is_primary)
+       VALUES ($1, $2, TRUE)
+       ON CONFLICT (brand_id, domain) DO UPDATE SET is_primary = TRUE`,
+    [rows[0].id, domain],
+  ).catch((err) => console.warn(`[brand-spy] failed to seed primary domain for ${rows[0].id}: ${err.message}`));
   return mapBrand(rows[0]);
 }
 
