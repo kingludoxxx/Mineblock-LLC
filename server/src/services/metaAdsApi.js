@@ -467,12 +467,12 @@ export async function createAdSet(adAccountId, params) {
     billing_event: billingEvent,
     bid_strategy: bidStrategy,
     status,
-    // DYNAMIC CREATIVE: required because our placement-aware path uses
-    // asset_feed_spec (multi-image DCO). Meta error_subcode 1885998
-    // ("Cannot Create Dynamic Creative ad In Non-Dynamic Creative Ad Set")
-    // triggers without this flag. Setting it true for ALL ad sets is fine
-    // — DCO ad sets also accept single-image asset_feed_spec ads.
-    is_dynamic_creative: true,
+    // is_dynamic_creative DROPPED — Meta caps DCO ad sets at ONE active ad
+    // each (error_subcode 1885553 "Dynamic Creative Ad Set allows at most
+    // one active ad"). Our launcher puts N creatives into one ad set per
+    // angle, so DCO ad sets are incompatible. createPlacementAwareAdCreative
+    // now emits plain link_data ads (single-image), which non-DCO ad sets
+    // happily host in bulk.
     targeting: {
       geo_locations: targeting.countries ? { countries: targeting.countries } : { countries: ['US'] },
       age_min: Math.max(18, Math.min(65, parseInt(targeting.age_min) || 18)),
@@ -699,43 +699,21 @@ export async function createPlacementAwareAdCreative(adAccountId, params) {
   if (!pageId) throw new Error('createPlacementAwareAdCreative: pageId is required');
   if (!link) throw new Error('createPlacementAwareAdCreative: link is required');
 
-  // Deduplicate by ratio (in case a caller passes the same ratio twice)
-  // and only keep ratios we have placement rules for.
-  const seen = new Set();
-  const ratiosUsed = [];
-  for (const r of ratioImages) {
-    if (!r?.ratio || !r?.imageHash) continue;
-    if (seen.has(r.ratio)) continue;
-    if (!PLACEMENT_RULES_BY_RATIO[r.ratio]) {
-      console.warn(`[createPlacementAwareAdCreative] no placement rule for ratio "${r.ratio}" — skipping`);
-      continue;
-    }
-    seen.add(r.ratio);
-    ratiosUsed.push(r);
+  // STRATEGY: prefer the 4:5 image (best for feeds — highest-traffic
+  // placements), fall back to 1:1, then 9:16, then whatever's available.
+  // Single-image link_data ad. Non-DCO. Goes into bulk ad sets that hold
+  // N ads per ad set.
+  const ratioPriority = ['4:5', '1:1', '9:16'];
+  const byRatio = new Map(ratioImages.filter(r => r?.imageHash).map(r => [r.ratio, r.imageHash]));
+  let chosen = null;
+  for (const r of ratioPriority) {
+    if (byRatio.has(r)) { chosen = { ratio: r, hash: byRatio.get(r) }; break; }
   }
-  // FALLBACK: no creative had a "standard" 4:5 / 9:16 / 1:1 ratio (common
-  // when aspect_ratio is "all" or empty in the DB). Promote the first image
-  // we got into the ratiosUsed list so the rest of the function builds a
-  // single-image asset_feed_spec ad. Same DCO shape, just one image —
-  // compatible with the is_dynamic_creative=true ad sets createAdSet now
-  // produces. (link_data fallback was incompatible with DCO ad sets:
-  // Meta error 1885998 "Cannot Create Dynamic Creative ad In Non-Dynamic
-  // Creative Ad Set".)
-  if (!ratiosUsed.length) {
-    const firstWithHash = ratioImages.find(r => r?.imageHash);
-    if (!firstWithHash) throw new Error('createPlacementAwareAdCreative: no images with hashes provided');
-    console.warn(`[createPlacementAwareAdCreative] no standard ratios — using first image (${firstWithHash.ratio || '<empty>'}) as the only DCO image`);
-    ratiosUsed.push({ ratio: firstWithHash.ratio || '1:1', imageHash: firstWithHash.imageHash });
+  if (!chosen) {
+    const fallback = ratioImages.find(r => r?.imageHash);
+    if (!fallback) throw new Error('createPlacementAwareAdCreative: no images with hashes provided');
+    chosen = { ratio: fallback.ratio || '<empty>', hash: fallback.imageHash };
   }
-
-  // Multi-ratio DCO path. asset_customization_rules turned out to be
-  // unsupported on our Marketing API tier (error_subcode 1885896). Without
-  // ad_formats, Meta also rejects (1885374 "An asset feed can have exactly
-  // one ad format"). The shape that works: ad_formats + multiple images
-  // in the feed, NO customization rules. Meta runs Dynamic Creative
-  // Optimization and auto-places the best-fitting image per placement.
-  // We lose explicit per-placement pinning but every creative LAUNCHES.
-  const images = ratiosUsed.map(r => ({ hash: r.imageHash }));
 
   const body = {
     access_token: META_ACCESS_TOKEN,
@@ -743,20 +721,19 @@ export async function createPlacementAwareAdCreative(adAccountId, params) {
     object_story_spec: {
       page_id: pageId,
       ...(instagramActorId ? { instagram_actor_id: instagramActorId } : {}),
-    },
-    asset_feed_spec: {
-      images,
-      bodies: (primaryTexts.length ? primaryTexts : ['']).map(text => ({ text })),
-      titles: (headlines.length ? headlines : ['']).map(text => ({ text })),
-      descriptions: (descriptions.length ? descriptions : ['']).map(text => ({ text })),
-      call_to_action_types: [cta],
-      link_urls: [{ website_url: link }],
-      ad_formats: ['SINGLE_IMAGE'],
+      link_data: {
+        link,
+        message: primaryTexts[0] || '',
+        image_hash: chosen.hash,
+        name: headlines[0] || '',
+        description: descriptions[0] || '',
+        call_to_action: { type: cta, value: { link } },
+      },
     },
     url_tags: DEFAULT_URL_TAGS,
   };
 
-  console.log(`[createPlacementAwareAdCreative] ${name}: ratios=${ratiosUsed.map(r => r.ratio).join(',')} → DCO (${images.length} images, ad_formats=SINGLE_IMAGE), link=${link}`);
+  console.log(`[createPlacementAwareAdCreative] ${name}: chose ratio=${chosen.ratio} (preferred 4:5 → 1:1 → 9:16), link=${link}`);
 
   const res = await fetch(`${META_GRAPH_URL}/${adAccountId}/adcreatives`, {
     method: 'POST',
