@@ -49,6 +49,7 @@ import { AddReferenceModal } from './statics/AddReferenceModal';
 import { StaticsSettingsModal } from './statics/StaticsSettingsModal';
 import TemplateAnalysisModal from './statics/TemplateAnalysisModal';
 import LaunchTemplateEditor from './briefs/LaunchTemplateEditor';
+import LaunchTemplatesListModal from './briefs/LaunchTemplatesListModal';
 import AdCopySetsManager from './briefs/AdCopySetsManager';
 
 // ---------------------------------------------------------------------------
@@ -1084,6 +1085,10 @@ export default function StaticsGeneration() {
   const [templateEditorOpen, setTemplateEditorOpen] = useState(false);
   const [editingTemplate, setEditingTemplate] = useState(null);
   const [templatesVersion, setTemplatesVersion] = useState(0); // bumped after save → PipelineView re-fetches templates
+  // Templates LIST modal (Templates button now opens this; New / Edit / Duplicate / Delete all dispatch from inside it)
+  const [templatesListOpen, setTemplatesListOpen] = useState(false);
+  const [templatesListData, setTemplatesListData] = useState([]);
+  const [templatesListLoading, setTemplatesListLoading] = useState(false);
   const [copySetsOpen, setCopySetsOpen] = useState(false);
   const [analysisModalTemplate, setAnalysisModalTemplate] = useState(null);
   const [selectedCategory, setSelectedCategory] = useState(null);
@@ -2764,7 +2769,22 @@ export default function StaticsGeneration() {
                       console.error('[Pipeline] Regenerate failed:', err.message);
                     }
                   }}
-                  onOpenTemplates={() => { setEditingTemplate(null); setTemplateEditorOpen(true); }}
+                  // TEMPLATES button now opens the templates LIST view
+                  // (was: direct-to-editor with empty form). New / Edit /
+                  // Duplicate / Delete all dispatch from inside the list.
+                  onOpenTemplates={async () => {
+                    setTemplatesListLoading(true);
+                    setTemplatesListOpen(true);
+                    try {
+                      const { data } = await api.get('/brief-pipeline/launch-templates');
+                      setTemplatesListData(data?.data || []);
+                    } catch (err) {
+                      console.error('[StaticsGeneration] Failed to load templates list:', err.message);
+                      setTemplatesListData([]);
+                    } finally {
+                      setTemplatesListLoading(false);
+                    }
+                  }}
                   onEditTemplate={(tpl) => { setEditingTemplate(tpl); setTemplateEditorOpen(true); }}
                   templatesVersion={templatesVersion}
                   onOpenCopySets={() => setCopySetsOpen(true)}
@@ -3256,9 +3276,41 @@ export default function StaticsGeneration() {
           open
           template={editingTemplate}
           onClose={() => { setTemplateEditorOpen(false); setEditingTemplate(null); }}
-          onSaved={() => { setTemplateEditorOpen(false); setEditingTemplate(null); setTemplatesVersion(v => v + 1); }}
+          onSaved={async () => {
+            setTemplateEditorOpen(false);
+            setEditingTemplate(null);
+            setTemplatesVersion(v => v + 1);
+            // If the LIST modal is still open behind the editor, refresh
+            // its data so the new/edited template shows up immediately.
+            if (templatesListOpen) {
+              try {
+                const { data } = await api.get('/brief-pipeline/launch-templates');
+                setTemplatesListData(data?.data || []);
+              } catch (_) { /* ignore — list will refresh on next open */ }
+            }
+          }}
         />
       )}
+
+      <LaunchTemplatesListModal
+        open={templatesListOpen}
+        templates={templatesListLoading ? [] : templatesListData}
+        onClose={() => setTemplatesListOpen(false)}
+        onNew={() => { setEditingTemplate(null); setTemplateEditorOpen(true); }}
+        onEdit={(tpl) => { setEditingTemplate(tpl); setTemplateEditorOpen(true); }}
+        onChanged={async () => {
+          // Duplicate or delete inside the modal succeeded — reload the list
+          // and bump the version so PipelineView's dropdown refreshes too.
+          try {
+            const { data } = await api.get('/brief-pipeline/launch-templates');
+            setTemplatesListData(data?.data || []);
+            setTemplatesVersion(v => v + 1);
+          } catch (err) {
+            console.error('[StaticsGeneration] Failed to refresh templates after change:', err.message);
+          }
+        }}
+      />
+
 
       {copySetsOpen && (
         <AdCopySetsManager
