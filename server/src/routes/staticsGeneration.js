@@ -743,13 +743,31 @@ router.post('/admin-launch', async (req, res) => {
     return res.status(403).json({ success: false, error: { message: 'Forbidden' } });
   }
   try {
-    const { template_id, angle, copy_set_id, limit } = req.body || {};
-    if (!template_id || !angle) {
-      return res.status(400).json({ success: false, error: { message: 'template_id and angle are required' } });
+    let { template_id, template_name, angle, copy_set_id, limit, dry_run } = req.body || {};
+    if (!angle) {
+      return res.status(400).json({ success: false, error: { message: 'angle is required (e.g. "%accidental%")' } });
+    }
+    // Resolve template_id from template_name ILIKE if not provided directly.
+    if (!template_id && template_name) {
+      const tpl = await pgQuery(
+        `SELECT id, name FROM launch_templates WHERE name ILIKE $1 ORDER BY created_at DESC LIMIT 5`,
+        [template_name]
+      );
+      if (!tpl.length) {
+        return res.status(404).json({ success: false, error: { message: `No template matches name ILIKE ${template_name}` } });
+      }
+      if (tpl.length > 1) {
+        return res.status(409).json({ success: false, error: { message: `Ambiguous template_name (${tpl.length} matches)`, matches: tpl } });
+      }
+      template_id = tpl[0].id;
+      console.log(`[admin-launch] resolved template_name "${template_name}" → ${template_id} ("${tpl[0].name}")`);
+    }
+    if (!template_id) {
+      return res.status(400).json({ success: false, error: { message: 'template_id OR template_name is required' } });
     }
     const cap = Math.min(parseInt(limit) || 100, 500);
     const rows = await pgQuery(
-      `SELECT id, angle FROM spy_creatives
+      `SELECT id, angle, aspect_ratio FROM spy_creatives
         WHERE status IN ('ready', 'approved')
           AND angle ILIKE $1
         ORDER BY updated_at DESC
@@ -759,7 +777,18 @@ router.post('/admin-launch', async (req, res) => {
     if (!rows.length) {
       return res.status(404).json({ success: false, error: { message: `No ready creatives match angle ILIKE ${angle}` } });
     }
-    console.log(`[admin-launch] matched ${rows.length} creatives for angle ILIKE ${angle}: ${rows.map(r => r.angle).filter((v,i,a)=>a.indexOf(v)===i).join(', ')}`);
+    const distinctAngles = [...new Set(rows.map(r => r.angle))];
+    console.log(`[admin-launch] template=${template_id} angle="${angle}" matched ${rows.length} creatives across angles: ${distinctAngles.join(' | ')}`);
+    if (dry_run) {
+      return res.json({
+        success: true,
+        dry_run: true,
+        template_id,
+        matched_count: rows.length,
+        angles_seen: distinctAngles,
+        creative_ids: rows.map(r => r.id),
+      });
+    }
     // Forward to the shared launch handler by stuffing req.body.
     req.body = {
       creative_ids: rows.map(r => r.id),
