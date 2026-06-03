@@ -4288,6 +4288,12 @@ router.post('/launch', authenticate, async (req, res) => {
     if (!templates.length) return res.status(404).json({ success: false, error: { message: 'Template not found' } });
     const template = templates[0];
 
+    if (!template.ad_account_id) {
+      // Without ad_account_id the createAdSet URL becomes /v21.0//adsets and Meta
+      // returns a cryptic "Object with ID 'adsets' does not exist" 400. Catch it
+      // here with a clear app-level message instead.
+      return res.status(400).json({ success: false, error: { message: 'Template has no ad account configured. Please edit the template and select an Ad Account.' } });
+    }
     if (!template.campaign_id) {
       return res.status(400).json({ success: false, error: { message: 'Template has no campaign configured. Please edit the template and select a campaign.' } });
     }

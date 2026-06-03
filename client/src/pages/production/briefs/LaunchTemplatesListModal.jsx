@@ -70,10 +70,32 @@ function buildDuplicatePayload(template) {
   return out;
 }
 
+// Returns an array of human-readable reasons the template can't be launched as-is.
+// Mirrors the staticsGeneration.js /launch endpoint's pre-flight checks so the
+// UI surfaces the same gaps before the operator clicks Launch.
+function templateIncompleteReasons(template) {
+  const reasons = [];
+  if (!template.ad_account_id) reasons.push('No ad account');
+  if (!template.campaign_id) reasons.push('No campaign');
+  // pages can be stored as array OR JSON-stringified array (postgres JSONB
+  // mood); normalize before checking length
+  let pageIds = template.page_ids;
+  if (typeof pageIds === 'string') {
+    try {
+      let p = JSON.parse(pageIds);
+      if (typeof p === 'string') p = JSON.parse(p);
+      pageIds = Array.isArray(p) ? p : [];
+    } catch { pageIds = []; }
+  }
+  if (!Array.isArray(pageIds) || pageIds.length === 0) reasons.push('No pages');
+  return reasons;
+}
+
 function TemplateCard({ template, onEdit, onDuplicate, onDelete, busy }) {
   const accountTag = template.ad_account_name || template.ad_account_id || '—';
   const budgetTag = template.daily_budget != null ? `$${Number(template.daily_budget).toFixed(2)}/day` : '—';
   const budgetType = template.bid_strategy?.includes('ROAS') ? 'ROAS' : 'CBO';
+  const incompleteReasons = templateIncompleteReasons(template);
   // Countries — handle string-vs-array
   let countries = template.countries;
   if (typeof countries === 'string') {
@@ -87,7 +109,11 @@ function TemplateCard({ template, onEdit, onDuplicate, onDelete, busy }) {
   const countryStr = countries.length ? countries.slice(0, 3).join(', ') + (countries.length > 3 ? ` +${countries.length - 3}` : '') : '—';
 
   return (
-    <div className="group relative rounded-xl border border-white/[0.06] bg-white/[0.02] hover:border-white/[0.12] hover:bg-white/[0.03] transition-all p-5">
+    <div className={`group relative rounded-xl border bg-white/[0.02] hover:bg-white/[0.03] transition-all p-5 ${
+      incompleteReasons.length > 0
+        ? 'border-amber-500/[0.3] hover:border-amber-500/[0.5]'
+        : 'border-white/[0.06] hover:border-white/[0.12]'
+    }`}>
       {/* Action row */}
       <div className="absolute top-3 right-3 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
         <button
@@ -146,6 +172,15 @@ function TemplateCard({ template, onEdit, onDuplicate, onDelete, busy }) {
         <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono text-emerald-300 bg-emerald-500/[0.08] border border-emerald-500/[0.15]">
           {budgetTag}
         </span>
+        {incompleteReasons.length > 0 ? (
+          <span
+            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono uppercase tracking-wider text-amber-300 bg-amber-500/[0.1] border border-amber-500/[0.3]"
+            title={`Can't launch yet — ${incompleteReasons.join(', ')}. Edit and complete the template first.`}
+          >
+            <AlertCircle className="w-3 h-3" />
+            Incomplete · {incompleteReasons.join(' · ')}
+          </span>
+        ) : null}
       </div>
     </div>
   );

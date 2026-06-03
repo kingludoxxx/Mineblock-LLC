@@ -343,6 +343,23 @@ export default function LaunchTemplateEditor({ open, onClose, template, onSaved 
 
   // -- Save -----------------------------------------------------------------
   const handleSave = async () => {
+    // Required-field validation — a template with no ad_account_id / campaign_id /
+    // pages WILL silently survive a save, then explode at launch time with a
+    // cryptic Meta error like "Object with ID 'adsets' does not exist" (because
+    // the URL ends up as /v21.0//adsets with the empty account in the path).
+    // Block here so the operator can't ship a broken template.
+    if (!form.accountId) {
+      setSaveError('Please pick an Ad Account before saving.');
+      return;
+    }
+    if (!form.campaignId) {
+      setSaveError('Please pick a Campaign before saving.');
+      return;
+    }
+    if (!form.selectedPages || form.selectedPages.length === 0) {
+      setSaveError('Please pick at least one Facebook Page before saving.');
+      return;
+    }
     setSaving(true);
     setSaveError('');
     try {
