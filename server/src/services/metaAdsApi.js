@@ -625,11 +625,17 @@ export async function createFlexibleAdCreative(adAccountId, params) {
 //
 // Tweak the table here if Meta deprecates a placement or you want a
 // different mapping. This is the single source of truth.
+// Meta's valid instagram_positions values (v21.0):
+//   reels, reels_overlay, stream, story, explore, explore_home, ig_search,
+//   shop, profile_feed, profile_reels, effect_tray
+// Anything else returns "must be one of the following values: ..." with
+// the specific bad position pointed out. DON'T add new entries without
+// confirming they're in the current Marketing API enum.
 const PLACEMENT_RULES_BY_RATIO = {
   '4:5': {
     publisher_platforms: ['facebook', 'instagram'],
     facebook_positions: ['feed', 'marketplace', 'video_feeds'],
-    instagram_positions: ['stream', 'explore', 'explore_home', 'profile_feed', 'mention'],
+    instagram_positions: ['stream', 'explore', 'explore_home', 'profile_feed'],
   },
   '9:16': {
     publisher_platforms: ['facebook', 'instagram'],
@@ -727,7 +733,10 @@ export async function createPlacementAwareAdCreative(adAccountId, params) {
       descriptions: (descriptions.length ? descriptions : ['']).map(text => ({ text })),
       call_to_action_types: [cta],
       link_urls: [{ website_url: link }],
-      ad_formats: ['SINGLE_IMAGE'],
+      // NOTE: ad_formats omitted on purpose. Including `ad_formats:
+      // ['SINGLE_IMAGE']` together with asset_customization_rules triggers
+      // error_subcode 1885896 ("Asset Customization Rule Not Supported")
+      // — Meta infers the format from the images automatically.
       asset_customization_rules,
     },
     url_tags: DEFAULT_URL_TAGS,
