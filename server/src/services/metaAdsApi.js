@@ -707,7 +707,46 @@ export async function createPlacementAwareAdCreative(adAccountId, params) {
     seen.add(r.ratio);
     ratiosUsed.push(r);
   }
-  if (!ratiosUsed.length) throw new Error('createPlacementAwareAdCreative: no usable ratios after filtering');
+  // FALLBACK: no creative had a "standard" 4:5 / 9:16 / 1:1 ratio (common
+  // when aspect_ratio is "all" or empty in the DB). Build a simple
+  // single-image ad with the first image we got, no asset_customization_rules.
+  // Meta auto-places using its default rules. We lose explicit per-placement
+  // control but the ad LAUNCHES, which beats throwing.
+  if (!ratiosUsed.length) {
+    const firstWithHash = ratioImages.find(r => r?.imageHash);
+    if (!firstWithHash) throw new Error('createPlacementAwareAdCreative: no images with hashes provided');
+    console.warn(`[createPlacementAwareAdCreative] no usable ratios in placement map — falling back to simple link_data ad with first image`);
+    const fallbackBody = {
+      access_token: META_ACCESS_TOKEN,
+      name,
+      object_story_spec: {
+        page_id: pageId,
+        ...(instagramActorId ? { instagram_actor_id: instagramActorId } : {}),
+        link_data: {
+          link,
+          message: primaryTexts[0] || '',
+          image_hash: firstWithHash.imageHash,
+          name: headlines[0] || '',
+          description: descriptions[0] || '',
+          call_to_action: { type: cta, value: { link } },
+        },
+      },
+      url_tags: DEFAULT_URL_TAGS,
+    };
+    const fbRes = await fetch(`${META_GRAPH_URL}/${adAccountId}/adcreatives`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: AbortSignal.timeout(META_API_TIMEOUT),
+      body: JSON.stringify(fallbackBody),
+    });
+    if (!fbRes.ok) {
+      const errText = await fbRes.text();
+      console.error('[createPlacementAwareAdCreative-fallback] Meta error:', errText.slice(0, 1000));
+      throw new Error(`Meta adcreatives error ${fbRes.status} (fallback): ${errText.slice(0, 500)}`);
+    }
+    const fbData = await fbRes.json();
+    return fbData.id;
+  }
 
   const images = ratiosUsed.map(r => ({
     hash: r.imageHash,
