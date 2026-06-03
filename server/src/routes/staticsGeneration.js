@@ -4332,55 +4332,35 @@ router.post('/launch', authenticate, async (req, res) => {
       return res.status(400).json({ success: false, error: { message: 'No Facebook pages configured in launch template. Edit the template and select at least one page.' } });
     }
 
-    let adsetId = null;
-    let adsetName = buildLaunchName(template.adset_name_pattern || '{date} - Batch {batch}', {
-      date: dateStr,
-      angle: creatives[0]?.angle || 'General',
-      batch: batchNum,
-      product: creatives[0]?.product_name || '',
-    });
-
-    try {
-      const normalizedCountries = (() => {
-        const raw = safeArr(template.countries);
-        const codes = raw.map(c => {
-          if (typeof c === 'string') return c.trim().toUpperCase();
-          if (c && typeof c === 'object') return (c.code || c.id || c.value || '').toString().trim().toUpperCase();
-          return '';
-        }).filter(c => /^[A-Z]{2}$/.test(c));
-        return codes.length ? codes : ['US'];
-      })();
-
-      adsetId = await createAdSet(template.ad_account_id, {
-        name: adsetName,
-        campaignId: template.campaign_id,
-        dailyBudget: template.daily_budget,
-        optimizationGoal: template.optimization_goal,
-        bidStrategy: template.bid_strategy,
-        targetRoas: template.target_roas,
-        pixelId: template.pixel_id,
-        conversionEvent: template.conversion_event,
-        conversionLocation: template.conversion_location,
-        targeting: {
-          countries: normalizedCountries,
-          age_min: template.age_min,
-          age_max: template.age_max,
-          gender: template.gender,
-          include_audiences: safeArr(template.include_audiences),
-          exclude_audiences: safeArr(template.exclude_audiences),
-        },
-        attributionWindow: template.attribution_window,
-        pageId: selectedPages[0]?.id,
-        status: 'ACTIVE',
-        startTime: template.schedule_enabled && template.schedule_date
-          ? `${template.schedule_date}T${template.schedule_time || '00:00'}:00`
-          : undefined,
-      });
-    } catch (err) {
-      await pgQuery(`UPDATE spy_creatives SET status = 'ready' WHERE id = ANY($1)`, [creative_ids]);
-      return res.status(500).json({ success: false, error: { message: `Ad set creation failed: ${err.message}` } });
+    // ─── ANGLE GROUPING ──────────────────────────────────────────────────
+    // Bug fix (#1083): previously the launcher created ONE ad set and dumped
+    // EVERY creative into it, naming the ad set after `creatives[0].angle`.
+    // Result: an ad set called "Accidental Winner - Batch 4480" containing
+    // both Accidental Winner AND Promo ads (whatever happened to come first
+    // wins the name; everything mixes).
+    //
+    // Fix: bucket creatives by `angle` and create ONE ad set per bucket.
+    // Each bucket gets its own adsetId, adsetName, and runs the per-creative
+    // launch loop scoped to that bucket only.
+    const creativesByAngle = new Map();
+    for (const c of creatives) {
+      const angleKey = (c.angle || 'General').toString().trim() || 'General';
+      if (!creativesByAngle.has(angleKey)) creativesByAngle.set(angleKey, []);
+      creativesByAngle.get(angleKey).push(c);
     }
+    console.log(`[launch] grouping ${creatives.length} creatives into ${creativesByAngle.size} ad set(s) by angle: ${Array.from(creativesByAngle.keys()).join(', ')}`);
 
+    const normalizedCountries = (() => {
+      const raw = safeArr(template.countries);
+      const codes = raw.map(c => {
+        if (typeof c === 'string') return c.trim().toUpperCase();
+        if (c && typeof c === 'object') return (c.code || c.id || c.value || '').toString().trim().toUpperCase();
+        return '';
+      }).filter(c => /^[A-Z]{2}$/.test(c));
+      return codes.length ? codes : ['US'];
+    })();
+
+    const createdAdsets = []; // [{ angle, adsetId, adsetName }]
     let pageIdx = 0;
     const processedGroupIds = new Set();
 
@@ -4406,8 +4386,59 @@ router.post('/launch', authenticate, async (req, res) => {
       console.warn('[launch] pre-fetch of legacy variants failed (continuing without):', e.message);
     }
 
-    for (let i = 0; i < creatives.length; i++) {
-      const creative = creatives[i];
+    // Outer loop: one ad set per angle bucket.
+    let bucketIdx = 0;
+    for (const [angleKey, bucketCreatives] of creativesByAngle.entries()) {
+      bucketIdx++;
+      const bucketBatchNum = (batchNum + bucketIdx) % 10000;
+      let adsetId = null;
+      const adsetName = buildLaunchName(template.adset_name_pattern || '{date} - Batch {batch}', {
+        date: dateStr,
+        angle: angleKey,
+        batch: bucketBatchNum,
+        product: bucketCreatives[0]?.product_name || '',
+      });
+
+      try {
+        adsetId = await createAdSet(template.ad_account_id, {
+          name: adsetName,
+          campaignId: template.campaign_id,
+          dailyBudget: template.daily_budget,
+          optimizationGoal: template.optimization_goal,
+          bidStrategy: template.bid_strategy,
+          targetRoas: template.target_roas,
+          pixelId: template.pixel_id,
+          conversionEvent: template.conversion_event,
+          conversionLocation: template.conversion_location,
+          targeting: {
+            countries: normalizedCountries,
+            age_min: template.age_min,
+            age_max: template.age_max,
+            gender: template.gender,
+            include_audiences: safeArr(template.include_audiences),
+            exclude_audiences: safeArr(template.exclude_audiences),
+          },
+          attributionWindow: template.attribution_window,
+          pageId: selectedPages[0]?.id,
+          status: 'ACTIVE',
+          startTime: template.schedule_enabled && template.schedule_date
+            ? `${template.schedule_date}T${template.schedule_time || '00:00'}:00`
+            : undefined,
+        });
+        createdAdsets.push({ angle: angleKey, adsetId, adsetName });
+        console.log(`[launch] ✓ ad set created for "${angleKey}": ${adsetId} (${bucketCreatives.length} creative(s) to follow)`);
+      } catch (err) {
+        console.error(`[launch] ✗ ad set creation FAILED for angle "${angleKey}": ${err.message}`);
+        // Mark creatives in this bucket as failed but keep going with other buckets
+        for (const c of bucketCreatives) {
+          results.push({ creative_id: c.id, status: 'failed', error: `Ad set creation failed: ${err.message}` });
+          await pgQuery(`UPDATE spy_creatives SET status = 'ready', review_notes = $1 WHERE id = $2`, [`Ad set creation failed: ${err.message}`, c.id]).catch(() => {});
+        }
+        continue; // next angle bucket
+      }
+
+    for (let i = 0; i < bucketCreatives.length; i++) {
+      const creative = bucketCreatives[i];
 
       if (creative.group_id && processedGroupIds.has(creative.group_id)) {
         results.push({ creative_id: creative.id, status: 'skipped', reason: 'Handled as part of group launch' });
@@ -4420,9 +4451,9 @@ router.post('/launch', authenticate, async (req, res) => {
 
       const adName = buildLaunchName(template.ad_name_pattern || '{date} - {angle} {num}', {
         date: dateStr,
-        angle: creative.angle || 'General',
+        angle: creative.angle || angleKey || 'General',
         num: i + 1,
-        batch: batchNum,
+        batch: bucketBatchNum,
         product: creative.product_name || '',
       });
 
@@ -4550,7 +4581,7 @@ router.post('/launch', authenticate, async (req, res) => {
         await pgQuery(
           `INSERT INTO statics_launches (creative_id, template_id, copy_set_id, ad_account_id, meta_campaign_id, meta_adset_id, meta_ad_id, meta_creative_id, meta_image_hash, ad_name, adset_name, page_id, page_name, batch_number, status, launched_at)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'launched',NOW())`,
-          [creative.id, template_id, copy_set_id || null, template.ad_account_id, template.campaign_id, adsetId, metaAdId, metaCreativeId, primaryImageHash, adName, adsetName, page?.id || null, page?.name || null, batchNum]
+          [creative.id, template_id, copy_set_id || null, template.ad_account_id, template.campaign_id, adsetId, metaAdId, metaCreativeId, primaryImageHash, adName, adsetName, page?.id || null, page?.name || null, bucketBatchNum]
         ).catch(err => console.warn('[staticsGeneration] Failed to log launch:', err.message));
 
         await pgQuery(
@@ -4580,7 +4611,7 @@ router.post('/launch', authenticate, async (req, res) => {
         await pgQuery(
           `INSERT INTO statics_launches (creative_id, template_id, copy_set_id, ad_account_id, batch_number, status, error_message)
            VALUES ($1,$2,$3,$4,$5,'failed',$6)`,
-          [creative.id, template_id, copy_set_id || null, template.ad_account_id, batchNum, err.message]
+          [creative.id, template_id, copy_set_id || null, template.ad_account_id, bucketBatchNum, err.message]
         ).catch(() => {});
 
         await pgQuery(
@@ -4590,13 +4621,23 @@ router.post('/launch', authenticate, async (req, res) => {
         results.push({ creative_id: creative.id, status: 'failed', error: err.message });
       }
     }
+    } // end outer angle-bucket loop
 
     await pgQuery(
       `UPDATE spy_creatives SET status = 'ready', review_notes = 'Launch interrupted — retryable' WHERE id = ANY($1) AND status = 'launching'`,
       [creative_ids]
     ).catch(() => {});
 
-    res.json({ success: true, data: { results, adset_id: adsetId, adset_name: adsetName } });
+    res.json({
+      success: true,
+      data: {
+        results,
+        adsets: createdAdsets, // [{ angle, adsetId, adsetName }, ...]
+        // Back-compat: keep adset_id / adset_name pointing at the first one
+        adset_id: createdAdsets[0]?.adsetId || null,
+        adset_name: createdAdsets[0]?.adsetName || null,
+      },
+    });
   } catch (err) {
     console.error('[StaticsGeneration] Launch error:', err);
     if (req.body.creative_ids?.length) {
