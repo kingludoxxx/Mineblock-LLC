@@ -1212,22 +1212,67 @@ async function storeTempImage(buf, contentType) {
 }
 
 // ── Reset launched creatives back to ready ──
-router.post('/reset-launched', authenticate, async (req, res) => {
+router.post('/reset-launched', async (req, res) => {
+  // Dual auth: CRON_SECRET (header x-cron-secret) OR JWT.
+  const cronSecret = process.env.CRON_SECRET;
+  const provided   = req.headers['x-cron-secret'];
+  const authed     = cronSecret && provided === cronSecret;
+  if (!authed) {
+    return authenticate(req, res, async () => { await _doResetLaunched(req, res); });
+  }
+  await _doResetLaunched(req, res);
+});
+
+async function _doResetLaunched(req, res) {
   try {
-    const limit = parseInt(req.query.limit) || 2;
-    const result = await pgQuery(
-      `UPDATE spy_creatives SET status = 'ready', review_notes = 'Reset to re-launch', updated_at = NOW()
-       WHERE id IN (
-         SELECT id FROM spy_creatives WHERE status = 'launched' ORDER BY updated_at DESC LIMIT $1
-       )
-       RETURNING id, angle`,
-      [limit]
-    );
-    res.json({ success: true, reset_count: result.length, creatives: result.map(r => ({ id: r.id, angle: r.angle })) });
+    // Two modes:
+    //   ?within_hours=12  → reset every 'launched' updated in the last N hours
+    //                        (preferred when undoing a buggy batch).
+    //   ?limit=N          → legacy: reset the N most-recent launched rows.
+    const withinHours = parseInt(req.query.within_hours);
+    const ids = [];
+    let result;
+    if (Number.isFinite(withinHours) && withinHours > 0) {
+      result = await pgQuery(
+        `UPDATE spy_creatives
+            SET status='ready',
+                review_notes='Reset to re-launch (within ' || $1 || 'h window)',
+                meta_ad_ids='[]'::jsonb,
+                updated_at=NOW()
+          WHERE status='launched'
+            AND updated_at > NOW() - ($1::int * INTERVAL '1 hour')
+          RETURNING id, angle, aspect_ratio`,
+        [withinHours]
+      );
+      // Also drop the corresponding statics_launches log rows so launch
+      // history doesn't show the broken batch.
+      const resetIds = result.map(r => r.id);
+      if (resetIds.length) {
+        await pgQuery(
+          `DELETE FROM statics_launches
+            WHERE creative_id = ANY($1::uuid[])
+              AND launched_at > NOW() - ($2::int * INTERVAL '1 hour')`,
+          [resetIds, withinHours]
+        ).catch(() => {});
+      }
+    } else {
+      const limit = parseInt(req.query.limit) || 2;
+      result = await pgQuery(
+        `UPDATE spy_creatives SET status='ready', review_notes='Reset to re-launch', meta_ad_ids='[]'::jsonb, updated_at=NOW()
+         WHERE id IN (SELECT id FROM spy_creatives WHERE status='launched' ORDER BY updated_at DESC LIMIT $1)
+         RETURNING id, angle, aspect_ratio`,
+        [limit]
+      );
+    }
+    res.json({
+      success: true,
+      reset_count: result.length,
+      creatives: result.map(r => ({ id: r.id, angle: r.angle, ratio: r.aspect_ratio })),
+    });
   } catch (err) {
     res.status(500).json({ success: false, error: { message: err.message } });
   }
-});
+}
 
 // ── Reset stuck 'generating' creatives back to 'ready' ──
 router.post('/reset-generating', authenticate, async (req, res) => {
