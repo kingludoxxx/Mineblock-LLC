@@ -748,15 +748,14 @@ export async function createPlacementAwareAdCreative(adAccountId, params) {
     return fbData.id;
   }
 
-  const images = ratiosUsed.map(r => ({
-    hash: r.imageHash,
-    adlabels: [{ name: ratioLabelName(r.ratio) }],
-  }));
-
-  const asset_customization_rules = ratiosUsed.map(r => ({
-    customization_spec: PLACEMENT_RULES_BY_RATIO[r.ratio],
-    image_label: { name: ratioLabelName(r.ratio) },
-  }));
+  // Multi-ratio DCO path. asset_customization_rules turned out to be
+  // unsupported on our Marketing API tier (error_subcode 1885896). Without
+  // ad_formats, Meta also rejects (1885374 "An asset feed can have exactly
+  // one ad format"). The shape that works: ad_formats + multiple images
+  // in the feed, NO customization rules. Meta runs Dynamic Creative
+  // Optimization and auto-places the best-fitting image per placement.
+  // We lose explicit per-placement pinning but every creative LAUNCHES.
+  const images = ratiosUsed.map(r => ({ hash: r.imageHash }));
 
   const body = {
     access_token: META_ACCESS_TOKEN,
@@ -772,16 +771,12 @@ export async function createPlacementAwareAdCreative(adAccountId, params) {
       descriptions: (descriptions.length ? descriptions : ['']).map(text => ({ text })),
       call_to_action_types: [cta],
       link_urls: [{ website_url: link }],
-      // NOTE: ad_formats omitted on purpose. Including `ad_formats:
-      // ['SINGLE_IMAGE']` together with asset_customization_rules triggers
-      // error_subcode 1885896 ("Asset Customization Rule Not Supported")
-      // — Meta infers the format from the images automatically.
-      asset_customization_rules,
+      ad_formats: ['SINGLE_IMAGE'],
     },
     url_tags: DEFAULT_URL_TAGS,
   };
 
-  console.log(`[createPlacementAwareAdCreative] ${name}: ratios=${ratiosUsed.map(r => r.ratio).join(',')} link=${link}`);
+  console.log(`[createPlacementAwareAdCreative] ${name}: ratios=${ratiosUsed.map(r => r.ratio).join(',')} → DCO (${images.length} images, ad_formats=SINGLE_IMAGE), link=${link}`);
 
   const res = await fetch(`${META_GRAPH_URL}/${adAccountId}/adcreatives`, {
     method: 'POST',
