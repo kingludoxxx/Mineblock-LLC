@@ -484,12 +484,39 @@ export async function createAdSet(adAccountId, params) {
     } : {}),
   };
 
-  if (dailyBudget) {
+  // CBO DETECTION — if the campaign has a budget set at the campaign level
+  // (daily_budget or lifetime_budget), it's CBO (Campaign Budget Optimization)
+  // and Meta will reject any ad-set-level budget with:
+  //   error_subcode 1885621 "Can't Set Ad Set and Campaign Budget"
+  // We probe the campaign once and skip our ad-set budget on CBO campaigns.
+  let isCBO = false;
+  try {
+    const camRes = await fetch(
+      `${META_GRAPH_URL}/${campaignId}?fields=daily_budget,lifetime_budget&access_token=${META_ACCESS_TOKEN}`,
+      { signal: AbortSignal.timeout(META_API_TIMEOUT) }
+    );
+    if (camRes.ok) {
+      const camData = await camRes.json();
+      isCBO = !!(
+        (camData.daily_budget && Number(camData.daily_budget) > 0) ||
+        (camData.lifetime_budget && Number(camData.lifetime_budget) > 0)
+      );
+      console.log(`[createAdSet] campaign ${campaignId} CBO=${isCBO} (campaign.daily_budget=${camData.daily_budget || 'none'}, lifetime=${camData.lifetime_budget || 'none'})`);
+    } else {
+      console.warn(`[createAdSet] campaign budget probe failed (${camRes.status}); assuming non-CBO`);
+    }
+  } catch (err) {
+    console.warn(`[createAdSet] campaign budget probe threw: ${err?.message}; assuming non-CBO`);
+  }
+
+  if (dailyBudget && !isCBO) {
     const budgetNum = typeof dailyBudget === 'string' ? parseFloat(dailyBudget) : dailyBudget;
     if (isNaN(budgetNum) || budgetNum <= 0) throw new Error(`Invalid daily_budget: ${dailyBudget}`);
     body.daily_budget = Math.round(budgetNum * 100); // cents
   }
-  if (targetRoas && bidStrategy === 'LOWEST_COST_WITH_MIN_ROAS') {
+  // ROAS floor lives at the campaign level on CBO campaigns too — only set
+  // ad-set bid_constraints on non-CBO campaigns.
+  if (targetRoas && bidStrategy === 'LOWEST_COST_WITH_MIN_ROAS' && !isCBO) {
     body.bid_constraints = { roas_average_floor: Math.round(targetRoas * 10000) };
   }
   if (attributionWindow === '7d_click') {
