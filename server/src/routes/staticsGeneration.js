@@ -727,6 +727,52 @@ async function _doResetLaunched(req, res) {
   }
 }
 
+// ─── /admin-launch — CRON_SECRET-gated launch by angle filter ────────────
+// Calls the same _doLaunch handler used by the user-facing /launch route.
+// Body: { template_id, angle, copy_set_id?, limit? }
+//   • angle:   ILIKE pattern matched against spy_creatives.angle
+//              (e.g. "%accidental%", "%promo%"). Required.
+//   • template_id: launch_templates.id. Required.
+//   • copy_set_id, limit: optional. limit defaults to 100.
+// Only resolves status='ready' creatives — never tries to relaunch already
+// launched/launching rows.
+router.post('/admin-launch', async (req, res) => {
+  const cronSecret = process.env.CRON_SECRET;
+  const provided   = req.headers['x-cron-secret'];
+  if (!cronSecret || provided !== cronSecret) {
+    return res.status(403).json({ success: false, error: { message: 'Forbidden' } });
+  }
+  try {
+    const { template_id, angle, copy_set_id, limit } = req.body || {};
+    if (!template_id || !angle) {
+      return res.status(400).json({ success: false, error: { message: 'template_id and angle are required' } });
+    }
+    const cap = Math.min(parseInt(limit) || 100, 500);
+    const rows = await pgQuery(
+      `SELECT id, angle FROM spy_creatives
+        WHERE status IN ('ready', 'approved')
+          AND angle ILIKE $1
+        ORDER BY updated_at DESC
+        LIMIT $2`,
+      [angle, cap]
+    );
+    if (!rows.length) {
+      return res.status(404).json({ success: false, error: { message: `No ready creatives match angle ILIKE ${angle}` } });
+    }
+    console.log(`[admin-launch] matched ${rows.length} creatives for angle ILIKE ${angle}: ${rows.map(r => r.angle).filter((v,i,a)=>a.indexOf(v)===i).join(', ')}`);
+    // Forward to the shared launch handler by stuffing req.body.
+    req.body = {
+      creative_ids: rows.map(r => r.id),
+      template_id,
+      copy_set_id: copy_set_id || undefined,
+    };
+    return _doLaunch(req, res);
+  } catch (err) {
+    console.error('[admin-launch] error:', err);
+    return res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
 router.use(authenticate, requirePermission('statics-generation', 'access'));
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
@@ -4317,7 +4363,12 @@ function buildLaunchName(pattern, vars) {
   return result.trim();
 }
 
-router.post('/launch', authenticate, async (req, res) => {
+// Inline handler extracted into _doLaunch so a CRON_SECRET-gated /admin-launch
+// route (registered before the router-level authenticate gate) can reuse the
+// exact same launch logic without duplicating ~370 lines.
+router.post('/launch', authenticate, (req, res) => _doLaunch(req, res));
+
+async function _doLaunch(req, res) {
   try {
     await ensureCreativesTable();
     if (!isMetaAdsConfigured()) {
@@ -4693,7 +4744,7 @@ router.post('/launch', authenticate, async (req, res) => {
     }
     res.status(500).json({ success: false, error: { message: err.message } });
   }
-});
+}
 
 router.get('/creatives/:id/launch-history', authenticate, async (req, res) => {
   try {
