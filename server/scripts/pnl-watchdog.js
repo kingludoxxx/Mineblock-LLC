@@ -1,7 +1,13 @@
 #!/usr/bin/env node
 /**
  * Render Cron Job: Daily P&L Watchdog
- * Runs at 01:00 UTC (1h30 after the main P&L cron at 23:30 UTC).
+ *
+ * SCHEDULE: ≥ 09:00 UTC, i.e. AFTER the daily-pnl-morning cron at 08:30 UTC.
+ * Running earlier (the legacy 01:00 UTC slot) created a race: the watchdog
+ * saw "no ledger row for yesterday yet" and force-sent the report — but at
+ * 01:00 UTC, Amazon's PST day hadn't closed yet (closes 07:00 UTC), so the
+ * force-send went out without the Amazon block, and then dedup blocked the
+ * legitimate 08:30 UTC morning send.
  *
  * Calls /cron/pnl-watchdog which:
  *   1. Checks the daily_pnl_reports ledger for yesterday's row.
@@ -16,6 +22,16 @@
 
 const BASE = process.env.RENDER_EXTERNAL_URL || 'https://mineblock-dashboard.onrender.com';
 const CRON_SECRET = process.env.CRON_SECRET || '';
+
+// Time-gate: legacy cron service still fires at 01:00 UTC. If we ran at that
+// time we'd pre-empt the 08:30 UTC daily-pnl-morning cron (Amazon's PST day
+// not yet closed). Skip cleanly until UTC hour ≥ 9 — a parallel watchdog
+// cron at 09:00 UTC handles the real check.
+const utcHour = new Date().getUTCHours();
+if (utcHour < 9) {
+  console.log(`[watchdog] Suppressed at ${utcHour}:xx UTC — watchdog moved to ≥09:00 UTC so Amazon PST day is closed before checking. Delete the legacy 01:00 UTC cron in the Render dashboard to clean up.`);
+  process.exit(0);
+}
 
 if (!CRON_SECRET) {
   console.error('[watchdog] CRON_SECRET not set — cannot check P&L');
