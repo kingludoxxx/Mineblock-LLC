@@ -4120,6 +4120,17 @@ router.post('/creatives/:id/edit/accept', authenticate, async (req, res) => {
     // the editor must also include a valid edit_token (proves it owns the
     // session). If not provided, fall back to pending_edit_url (legacy).
     const overrideImageUrl = req.body.image_url ? String(req.body.image_url) : null;
+    // Layer A guard — even the /edit/accept override must be a stable URL.
+    // Without this, a buggy client could re-poison image_url with a volatile
+    // host. Internal pending_edit_url is already R2 (set via
+    // persistNanoBananaImage in /edit), so the guard only fires on overrides.
+    if (overrideImageUrl && isVolatileImageUrl(overrideImageUrl)) {
+      console.warn(`[edit/accept] BLOCKED volatile override image_url=${overrideImageUrl.slice(0, 80)}`);
+      return res.status(400).json({
+        success: false,
+        error: { message: 'override image_url is on a volatile host (tempfile.aiquickdraw / kie.ai / /tmp-img/). Persist to R2 first.' },
+      });
+    }
     const acceptUrl = overrideImageUrl || creative.pending_edit_url;
     if (!acceptUrl) {
       return res.status(400).json({ success: false, error: { message: 'No pending edit to accept (provide image_url or have a pending_edit_url)' } });
