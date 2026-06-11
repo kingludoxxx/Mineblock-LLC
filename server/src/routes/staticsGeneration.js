@@ -35,6 +35,34 @@ import { authenticate } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/rbac.js';
 import { uploadBuffer, uploadFromUrl, isR2Configured } from '../services/r2.js';
 
+// ─────────────────────────────────────────────────────────────────────────
+// STABLE URL contract — `spy_creatives.image_url` MUST resolve to a host
+// whose content survives server restarts and CDN TTLs. Anything else is a
+// time bomb: tempfile.aiquickdraw.com expires in ~3h, kie.ai rotates,
+// /tmp-img/{id} dies when the in-memory cache + Postgres `image_store` row
+// is gone. fbcdn.net is treated as stable because Meta's ad-library URLs
+// are pinned by the Graph API repair path — they're our launched-ad source.
+// Reject every other host at write time so the table never re-poisons.
+// ─────────────────────────────────────────────────────────────────────────
+const STABLE_URL_PATTERNS = [
+  /\.r2\.dev[\/]/i,
+  /\.r2\.cloudflarestorage\.com[\/]/i,
+  /\.fbcdn\.net[\/]/i,
+];
+const VOLATILE_URL_PATTERNS = [
+  /tempfile\.aiquickdraw\.com/i,
+  /kie\.ai/i,
+  /\/tmp-img\//i,
+];
+function isStableImageUrl(url) {
+  if (!url || typeof url !== 'string' || !url.startsWith('http')) return false;
+  return STABLE_URL_PATTERNS.some(p => p.test(url));
+}
+function isVolatileImageUrl(url) {
+  if (!url || typeof url !== 'string') return false;
+  return VOLATILE_URL_PATTERNS.some(p => p.test(url));
+}
+
 /**
  * NanoBanana returns a tempfile.aiquickdraw.com URL that expires after a few
  * hours. We persist the result so it survives forever:
@@ -3680,6 +3708,25 @@ router.post('/creatives', authenticate, async (req, res) => {
 
     if (!image_url) return res.status(400).json({ success: false, error: { message: 'image_url is required' } });
 
+    // STABLE URL contract — refuse to write a URL we know will rot.
+    // This is the structural guarantee that the table can never
+    // re-poison itself even if a buggy caller bypasses persistNanoBananaImage.
+    if (isVolatileImageUrl(image_url)) {
+      console.warn(`[POST /creatives] BLOCKED volatile image_url=${image_url.slice(0, 80)} — caller must persist to R2 first`);
+      return res.status(400).json({
+        success: false,
+        error: {
+          message: 'image_url is on a volatile host (tempfile.aiquickdraw.com / kie.ai / /tmp-img/). Persist to R2 first via persistNanoBananaImage().',
+          volatile_url: image_url.slice(0, 200),
+        },
+      });
+    }
+    // Soft-warn (no block) if URL is non-stable but also non-volatile.
+    // This catches future patterns we haven't seen yet.
+    if (!isStableImageUrl(image_url)) {
+      console.warn(`[POST /creatives] UNRECOGNIZED image_url host: ${image_url.slice(0, 80)} — proceeding (no allowlist match)`);
+    }
+
     let resolvedRefThumb = reference_thumbnail || null;
     if (resolvedRefThumb && resolvedRefThumb.startsWith('/')) {
       const base = process.env.RENDER_EXTERNAL_URL || `http://localhost:${process.env.PORT || 3000}`;
@@ -5532,22 +5579,37 @@ async function _doRegenerateBrokenPreviews(req, res) {
     const statuses = (Array.isArray(req.body?.statuses) && req.body.statuses.length > 0)
       ? req.body.statuses
       : DEFAULT_STATUSES;
+    // NEW: per-id filter — lets the frontend img.onError handler heal ONE
+    // specific creative without scanning the whole table. Skips the status
+    // filter when ids[] is provided so a card in any status can be repaired.
+    const idsFilter = Array.isArray(req.body?.ids) ? req.body.ids.filter(x => typeof x === 'string' && x.length > 0).slice(0, 50) : [];
 
-    const broken = await pgQuery(`
-      SELECT id, product_id, angle, reference_thumbnail, aspect_ratio, status,
-             COALESCE(image_engine, 'nanobanana') AS image_engine
-      FROM spy_creatives
-      WHERE status = ANY($1::text[])
-      AND COALESCE(is_reference, FALSE) = FALSE  -- NEVER overwrite League/Meta/Upload reference rows
-      AND (
-        image_url LIKE '%tempfile%' OR image_url LIKE '%/tmp-img/%' OR
-        image_url LIKE '%aiquickdraw%' OR image_url IS NULL OR image_url = ''
-      )
-      AND reference_thumbnail IS NOT NULL
-      AND reference_thumbnail != ''
-      AND product_id IS NOT NULL
-      ORDER BY status, updated_at DESC
-    `, [statuses]);
+    const broken = idsFilter.length > 0
+      ? await pgQuery(`
+          SELECT id, product_id, angle, reference_thumbnail, aspect_ratio, status,
+                 COALESCE(image_engine, 'nanobanana') AS image_engine
+          FROM spy_creatives
+          WHERE id = ANY($1::uuid[])
+          AND COALESCE(is_reference, FALSE) = FALSE
+          AND reference_thumbnail IS NOT NULL
+          AND reference_thumbnail != ''
+          AND product_id IS NOT NULL
+        `, [idsFilter])
+      : await pgQuery(`
+          SELECT id, product_id, angle, reference_thumbnail, aspect_ratio, status,
+                 COALESCE(image_engine, 'nanobanana') AS image_engine
+          FROM spy_creatives
+          WHERE status = ANY($1::text[])
+          AND COALESCE(is_reference, FALSE) = FALSE  -- NEVER overwrite League/Meta/Upload reference rows
+          AND (
+            image_url LIKE '%tempfile%' OR image_url LIKE '%/tmp-img/%' OR
+            image_url LIKE '%aiquickdraw%' OR image_url IS NULL OR image_url = ''
+          )
+          AND reference_thumbnail IS NOT NULL
+          AND reference_thumbnail != ''
+          AND product_id IS NOT NULL
+          ORDER BY status, updated_at DESC
+        `, [statuses]);
 
     // Respond immediately — pipeline runs in background
     const eta = Math.ceil((broken.length * 25) / 4 / 60); // ~25s each, 4 workers, in minutes

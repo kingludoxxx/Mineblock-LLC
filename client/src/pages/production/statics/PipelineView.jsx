@@ -19,6 +19,7 @@ import {
   RotateCcw,
   Pencil,
   Trash2,
+  Wrench,
 } from 'lucide-react';
 import api from '../../../services/api';
 import { ReferenceColumn } from './ReferenceColumn';
@@ -29,6 +30,30 @@ import { FromLeagueColumn } from './FromLeagueColumn';
 // ---------------------------------------------------------------------------
 
 const ADSET_SIZE = 6; // 6 creatives = 1 complete ad set (Ludo's spec — was 3)
+
+// Per-card self-heal on broken thumbnails. Calls the server backfill
+// endpoint with the creative's id. Stateful via module-level Set so we
+// only fire once per id per session (otherwise every re-render of a
+// broken card re-triggers regeneration). Fire-and-forget — the operator
+// hits Refresh after the eta to see the rescued image.
+// Pairs with the server-side guard that refuses to write volatile URLs:
+// new generations never produce broken cards, this only heals the
+// historical backlog.
+const _selfHealedIds = new Set();
+function selfHealCreative(id) {
+  if (!id || _selfHealedIds.has(id)) return;
+  _selfHealedIds.add(id);
+  api.post('/statics-generation/regenerate-broken-previews', { ids: [id] })
+    .then(r => {
+      const queued = r?.data?.data?.queued ?? 0;
+      if (queued > 0) {
+        console.log(`[self-heal] queued repair for creative=${id.slice(0, 8)} eta=${r.data.data.eta_min}min`);
+      }
+    })
+    .catch(err => {
+      console.warn(`[self-heal] repair POST failed for ${id.slice(0, 8)}:`, err?.response?.data?.error?.message || err.message);
+    });
+}
 
 // NOTE — 'generating' column was removed in Phase A of statics-pipeline-v2.
 // In-flight queue items now render as skeleton cards INSIDE the 'review'
@@ -227,7 +252,7 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, onRegener
               loading="lazy"
               decoding="async"
               className="absolute inset-0 w-full h-full object-cover opacity-90 group-hover:opacity-100 transition-opacity group-hover:scale-105 duration-500"
-              onError={(e) => { e.target.style.display = 'none'; }}
+              onError={(e) => { e.target.style.display = 'none'; selfHealCreative(creative.id); }}
             />
           ) : null}
           <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
@@ -396,7 +421,7 @@ function AdSetThumb({ creative, onCardClick }) {
           loading="lazy"
           decoding="async"
           className="absolute inset-0 w-full h-full object-cover opacity-90 group-hover:opacity-100 transition-opacity"
-          onError={(e) => { e.target.style.display = 'none'; }}
+          onError={(e) => { e.target.style.display = 'none'; selfHealCreative(creative.id); }}
         />
       ) : (
         <div className="absolute inset-0 flex items-center justify-center">
@@ -678,7 +703,7 @@ function LaunchedGroupCard({ angle, creatives, onCardClick, onReset, onRefresh }
                   loading="lazy"
                   decoding="async"
                   className="absolute inset-0 w-full h-full object-cover opacity-90 group-hover:opacity-100 transition-opacity"
-                  onError={(e) => { e.target.style.display = 'none'; }}
+                  onError={(e) => { e.target.style.display = 'none'; selfHealCreative(c.id); }}
                 />
               ) : (
                 <div className="absolute inset-0 flex items-center justify-center">
@@ -1082,6 +1107,9 @@ export function PipelineView({ creatives = [], onStatusChange, onAngleChange, on
   // re-fetches without requiring a page refresh.
   const [leagueRefreshTick, setLeagueRefreshTick] = useState(0);
 
+  // "Repair Broken" button busy flag.
+  const [repairing, setRepairing] = useState(false);
+
   // Launch state
   const [launchTemplates, setLaunchTemplates] = useState([]);
   const [copySets, setCopySets] = useState([]);
@@ -1227,6 +1255,35 @@ export function PipelineView({ creatives = [], onStatusChange, onAngleChange, on
           >
             <Package className="w-3.5 h-3.5" />
             Copy Sets
+          </button>
+          {/* Repair Broken — one-shot trigger for /repair-all-previews. Fires
+              the server-side triage that backfills volatile URLs → R2, then
+              repairs missing 4:5 / 9:16 child variants. Server returns
+              immediately with eta_min; operator hits Refresh after to see
+              results. */}
+          <button
+            type="button"
+            onClick={async () => {
+              if (repairing) return;
+              setRepairing(true);
+              try {
+                const r = await api.post('/statics-generation/repair-all-previews');
+                const data = r?.data?.data || {};
+                window.alert(`Repair triggered: ${JSON.stringify(data, null, 2)}\n\nResults appear over the next few minutes — hit Refresh.`);
+              } catch (err) {
+                window.alert('Repair failed: ' + (err?.response?.data?.error?.message || err.message));
+              } finally {
+                setRepairing(false);
+              }
+            }}
+            disabled={repairing}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-mono font-medium text-orange-300 uppercase tracking-wide
+                       bg-orange-500/10 border border-orange-500/30 rounded-md
+                       hover:bg-orange-500/20 hover:border-orange-500/50 transition-all disabled:opacity-40 cursor-pointer"
+            title="Backfill volatile URLs → R2 and repair missing 4:5 / 9:16 child variants. Runs server-side; ~25s per broken card."
+          >
+            {repairing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Wrench className="w-3.5 h-3.5" />}
+            Repair Broken
           </button>
           <button
             type="button"
