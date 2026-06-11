@@ -5569,6 +5569,163 @@ router.get('/migrate-image-store-to-r2/status', async (req, res, next) => {
   }
 });
 
+// ─────────────────────────────────────────────────────────────────────────
+// POST /repair-volatile-urls
+//
+// Light-weight rescue path — for creatives whose image_url is on a volatile
+// host (tempfile.aiquickdraw, kie.ai, /tmp-img/) OR is NULL, but which
+// CAN'T be regenerated from scratch because they lack product_id +
+// reference_thumbnail (which /regenerate-broken-previews requires).
+//
+// For each row:
+//   1. /tmp-img/{id} — look the id up in image_store DB, if bytes exist
+//                     upload to R2 and rewrite image_url.
+//   2. tempfile/kie  — HEAD probe; if 2xx use uploadFromUrl → R2; if dead
+//                     mark status='rejected'.
+//   3. NULL          — mark status='rejected'.
+//
+// Body: { dry?: bool, limit?: number, includeStatuses?: string[] }
+// Returns: { scanned, rescued, marked_rejected, errors }
+// CRON_SECRET-gated. Runs SYNCHRONOUSLY (HEAD probes are <1s each) so the
+// caller gets a real answer not just "queued in background."
+// ─────────────────────────────────────────────────────────────────────────
+router.post('/repair-volatile-urls', async (req, res, next) => {
+  const cronSecret = process.env.CRON_SECRET;
+  const provided   = req.headers['x-cron-secret'];
+  if (cronSecret && provided === cronSecret) return next();
+  return authenticate(req, res, next);
+}, async (req, res) => {
+  try {
+    await ensureCreativesTable();
+    const limit = Math.min(Math.max(parseInt(req.body?.limit, 10) || 500, 1), 5000);
+    const dry = !!req.body?.dry;
+
+    // Hosts we'll attempt to rescue. Anything else (R2, fbcdn) is already stable.
+    const rows = await pgQuery(`
+      SELECT id, image_url, status, aspect_ratio
+      FROM spy_creatives
+      WHERE COALESCE(is_reference, FALSE) = FALSE
+      AND (
+        image_url IS NULL OR image_url = '' OR
+        image_url LIKE '%tempfile.aiquickdraw%' OR
+        image_url LIKE '%kie.ai%' OR
+        image_url LIKE '%/tmp-img/%'
+      )
+      ORDER BY updated_at DESC NULLS LAST
+      LIMIT $1
+    `, [limit]);
+
+    if (dry) {
+      const sample = rows.slice(0, 5).map(r => ({ id: r.id.slice(0,8), url: (r.image_url||'NULL').slice(0,60), status: r.status }));
+      return res.json({ success: true, data: { dry: true, scanned: rows.length, sample } });
+    }
+
+    let rescuedR2 = 0;
+    let rescuedFromImageStore = 0;
+    let markedRejected = 0;
+    let errors = 0;
+    const errorSamples = [];
+
+    // HEAD-probe helper with 6s timeout
+    const isAlive = async (url) => {
+      try {
+        const r = await fetch(url, { method: 'HEAD', signal: AbortSignal.timeout(6000) });
+        return r.ok;
+      } catch { return false; }
+    };
+
+    // Lifecycle helpers — we don't want to block on bad rows for too long
+    const CONCURRENCY = 6;
+    let cursor = 0;
+
+    async function processRow(row) {
+      const tag = `[rescue ${row.id.slice(0,8)}]`;
+      const url = row.image_url;
+
+      // Case 1: NULL — straight to rejected
+      if (!url) {
+        await pgQuery(`UPDATE spy_creatives SET status = 'rejected', updated_at = NOW() WHERE id = $1 AND status != 'rejected'`, [row.id]);
+        markedRejected++;
+        return;
+      }
+
+      // Case 2: /tmp-img/{id} — try DB image_store first (in-memory cache is gone)
+      const tmpMatch = url.match(/\/tmp-img\/([a-zA-Z0-9-]+)/);
+      if (tmpMatch) {
+        const imageId = tmpMatch[1];
+        try {
+          const ir = await pgQuery('SELECT data, content_type FROM image_store WHERE id = $1', [imageId]);
+          if (ir.length > 0) {
+            const buf = Buffer.isBuffer(ir[0].data) ? ir[0].data : Buffer.from(ir[0].data);
+            const ct = ir[0].content_type || 'image/png';
+            const ext = ct.includes('jpeg') || ct.includes('jpg') ? 'jpg' : 'png';
+            const key = `statics-rescued/tmpimg/${imageId}.${ext}`;
+            const r2Url = await uploadBuffer(buf, key, ct);
+            if (r2Url && r2Url.startsWith('http')) {
+              await pgQuery('UPDATE spy_creatives SET image_url = $1, updated_at = NOW() WHERE id = $2', [r2Url, row.id]);
+              rescuedFromImageStore++;
+              return;
+            }
+          }
+        } catch (err) {
+          console.warn(`${tag} image_store rescue failed: ${err.message}`);
+        }
+        // image_store row gone — give up, mark rejected
+        await pgQuery(`UPDATE spy_creatives SET status = 'rejected', updated_at = NOW() WHERE id = $1 AND status != 'rejected'`, [row.id]);
+        markedRejected++;
+        return;
+      }
+
+      // Case 3: tempfile/kie — HEAD-probe → uploadFromUrl → R2
+      try {
+        if (await isAlive(url)) {
+          const { url: r2Url } = await uploadFromUrl(url, 'statics-rescued/cdn');
+          if (r2Url && r2Url.startsWith('http')) {
+            await pgQuery('UPDATE spy_creatives SET image_url = $1, updated_at = NOW() WHERE id = $2', [r2Url, row.id]);
+            rescuedR2++;
+            return;
+          }
+        }
+        // Source is dead — mark rejected
+        await pgQuery(`UPDATE spy_creatives SET status = 'rejected', updated_at = NOW() WHERE id = $1 AND status != 'rejected'`, [row.id]);
+        markedRejected++;
+      } catch (err) {
+        errors++;
+        if (errorSamples.length < 5) errorSamples.push({ id: row.id.slice(0,8), err: err.message.slice(0, 120) });
+        console.warn(`${tag} cdn rescue failed: ${err.message}`);
+      }
+    }
+
+    async function worker() {
+      while (true) {
+        const i = cursor++;
+        if (i >= rows.length) return;
+        await processRow(rows[i]);
+        if ((rescuedR2 + rescuedFromImageStore + markedRejected + errors) % 25 === 0) {
+          console.log(`[repair-volatile-urls] progress: r2=${rescuedR2} imgstore=${rescuedFromImageStore} rejected=${markedRejected} errors=${errors} of ${rows.length}`);
+        }
+      }
+    }
+
+    await Promise.all(Array.from({ length: CONCURRENCY }, () => worker()));
+
+    res.json({
+      success: true,
+      data: {
+        scanned: rows.length,
+        rescued_r2: rescuedR2,
+        rescued_from_image_store: rescuedFromImageStore,
+        marked_rejected: markedRejected,
+        errors,
+        errorSamples,
+      },
+    });
+  } catch (err) {
+    console.error('[repair-volatile-urls] error:', err);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
 // Body of /regenerate-broken-previews — route REGISTERED above line 271.
 async function _doRegenerateBrokenPreviews(req, res) {
   try {

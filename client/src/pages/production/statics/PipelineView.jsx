@@ -1267,9 +1267,24 @@ export function PipelineView({ creatives = [], onStatusChange, onAngleChange, on
               if (repairing) return;
               setRepairing(true);
               try {
-                const r = await api.post('/statics-generation/repair-all-previews');
-                const data = r?.data?.data || {};
-                window.alert(`Repair triggered: ${JSON.stringify(data, null, 2)}\n\nResults appear over the next few minutes — hit Refresh.`);
+                // Two-phase repair:
+                //   1. /repair-all-previews — for cards with product_id +
+                //      reference_thumbnail, regenerates fresh image via Claude+NB.
+                //   2. /repair-volatile-urls — for everything else (orphan rows
+                //      with no recoverable reference): HEAD-probes the dying
+                //      URL, uploads to R2 if alive, marks rejected if dead.
+                const [a, b] = await Promise.all([
+                  api.post('/statics-generation/repair-all-previews').catch(e => ({ error: e?.response?.data?.error?.message || e.message })),
+                  api.post('/statics-generation/repair-volatile-urls', { limit: 1000 }).catch(e => ({ error: e?.response?.data?.error?.message || e.message })),
+                ]);
+                const regen = a?.data?.data || { error: a?.error };
+                const rescue = b?.data?.data || { error: b?.error };
+                window.alert(
+                  `Repair fired:\n\n` +
+                  `1) Regen-from-scratch (slow, needs product+reference):\n   ` + JSON.stringify(regen) + `\n\n` +
+                  `2) URL rescue (fast, probes + R2 upload):\n   ` + JSON.stringify(rescue) + `\n\n` +
+                  `Hit Refresh in ~1-2 min to see rescued thumbnails.`
+                );
               } catch (err) {
                 window.alert('Repair failed: ' + (err?.response?.data?.error?.message || err.message));
               } finally {
