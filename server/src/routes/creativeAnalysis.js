@@ -998,12 +998,6 @@ async function syncData({ periodWeek, startDate, endDate }) {
     // across all rows so multi-account brands still get a real picker.
     const acctId   = ad.ad_account_id   != null ? String(ad.ad_account_id)   : null;
     const acctName = ad.ad_account_name != null ? String(ad.ad_account_name) : null;
-
-    // Refuse any TW row whose ad_account_id isn't in the trusted Mineblock set.
-    if (!isTwAccountTrusted(acctId)) {
-      refusedForeignTw++;
-      continue;
-    }
     const key = `${parsed.creative_id}|${parsed.hook_id}`;
     const spend = Number(ad.total_spend) || 0;
     const revenue = Number(ad.total_revenue) || 0;
