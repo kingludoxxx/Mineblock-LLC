@@ -16,3 +16,8 @@ coverage/
 bin/
 playwright-browsers/
 /_*.mjs
+
+# Claude Code — share CLAUDE.md + .claude/settings.json; keep everything else local
+.claude/*
+!.claude/settings.json
+.claude/settings.local.json
