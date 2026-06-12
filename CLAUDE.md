@@ -1,243 +1,177 @@
-# AREA SCOPE: CREATIVE
+# Mineblock LLC — Admin Dashboard & Automation Platform
 
-This worktree is the **Creative** area. Branch: `creative/active`.
-
-## In scope (edit freely)
-- `server/src/routes/briefAgent.js`
-- `server/src/routes/briefPipeline.js`
-- `server/src/routes/advertorialPipeline.js`
-- `server/src/routes/staticsGeneration.js`
-- `server/src/routes/staticsTemplates.js`
-- `server/src/routes/iterationKing.js`
-- `server/src/routes/clickupWebhook.js`
-- `server/src/services/geminiImageGen.js`
-- `server/src/services/imageGeneration.js`
-- `server/src/services/redditScraper.js`
-- All creative utils in `server/src/utils/` (staticsPrompts, etc.)
-
-## Out of scope (DO NOT EDIT — use the right worktree)
-- Ads (`adLauncher`, `adRejectionMonitor`, `adsControlCenter`, `videoAdsLauncher`, `metaWebhook`, `metaAdsApi`) → **`/Users/ludo/Mineblock-LLC-ads`**
-- Analytics (`kpiSystem`, `creativeAnalysis`, `creativeIntel`, `dashboard`) → **`/Users/ludo/Mineblock-LLC-analytics`**
-- Storefront (`shopifyWebhook`, `productProfiles`) → **`/Users/ludo/Mineblock-LLC-storefront`**
-- Platform (`auth`, `users`, `team`, `departments`, `settings`, `audit`, `health`, all controllers, models, middleware, `authService`, `auditService`) → **`/Users/ludo/Mineblock-LLC-platform`**
-
-## Shared coordination files (edit with care, merge early)
-- `app.js`, `package.json`, `server/migrations/*`, `render.yaml`
-
-If a change requires touching out-of-scope code, STOP and tell the operator — do not cross lanes.
+Onboarding + working conventions for anyone (human or Claude Code) working in this repo.
+**Read this fully before your first change.**
 
 ---
 
-# CLAUDE.md — Behavior Instructions
+## 1. What this is
+
+A secure, modular admin dashboard + automation backend for Mineblock LLC's e‑commerce
+operations: creative generation, ad launching, analytics, storefront sync, and platform/auth.
+
+**Tech stack**
+- Backend: Node.js + Express (`server/`)
+- Frontend: React + Vite + Tailwind (`client/`)
+- Database: PostgreSQL (migrations in `server/migrations/`)
+- Auth: JWT + refresh tokens + bcrypt
+- Hosting: Render.com (see `render.yaml`)
 
 ---
 
-## DEFINITION OF DONE
+## 2. Getting started
 
-A task is NEVER done when the code is written.
-A task is NEVER done when it looks correct.
-A task is ONLY done when it has been executed, tested,
-verified, and the output has been confirmed correct.
+**Prerequisites:** Node.js 18+, PostgreSQL 15+
 
-This rule applies to every single task without exception.
-There is no task type exempt from this rule.
+```bash
+# install
+npm install
+cd client && npm install && cd ..
 
----
+# configure secrets — copy the template and fill in real values
+cp .env.example .env        # then edit .env (NEVER commit it)
 
-## MANDATORY COMPLETION PROTOCOL
+# database
+npm run migrate
+npm run seed                # optional: seed initial data
 
-Before marking any task complete, execute every step in
-this protocol in order. Skipping any step is not permitted.
+# run (two processes)
+npm run dev                 # backend (Express, --watch)
+cd client && npm run dev    # frontend (Vite) on :5173
 
-### STEP 1. EXECUTE
-Run the code, script, or function.
-Do not assume it works. Run it.
-If it cannot be run in the current environment, document
-exactly why and mark the task BLOCKED, not complete.
+# production build
+npm run build
+```
 
-### STEP 2. VERIFY OUTPUT
-Inspect the actual output produced.
-Confirm it matches what the task specified as done.
-Do not confirm based on what the output should be in theory.
-Confirm based on what it actually produced.
-
-### STEP 3. TEST EDGE CASES
-Test at least one failure scenario before marking complete.
-Examples to test depending on task type:
-- What happens if the API returns an error or timeout?
-- What happens if the input is missing or malformed?
-- What happens if the file does not exist?
-- What happens if the network is unavailable?
-- What happens if the data returned is empty?
-The code must handle these without crashing.
-If it crashes on any edge case, fix it before proceeding.
-Do not mark complete until edge cases pass.
-
-### STEP 4. FIX ALL ERRORS BEFORE MOVING ON
-If any error occurs during steps 1, 2, or 3, fix it
-immediately before proceeding to the next task.
-Do not log the error and move on.
-Do not note it as something to revisit later.
-Fix it now. Re-run steps 1 and 2 to confirm the fix worked.
-Only then mark the task complete.
-
-### STEP 5. CONFIRM AND DOCUMENT
-Write a completion entry in /logs/progress.md containing:
-- Task name and number
-- What was built
-- How it was tested
-- What the actual output was
-- Any decisions made and why
-- Timestamp
-
-Only after this entry is written is the task considered done.
+`npm start` runs the production server. `postinstall` installs Playwright Chromium
+(used by some scraping/automation routes).
 
 ---
 
-## ERROR HANDLING RULES
+## 3. Environment variables
 
-Every script and function must include error handling
-before the task is marked complete.
-Silent failures are not acceptable.
-If something goes wrong the script must log it clearly
-and exit cleanly rather than producing incorrect output silently.
+All secrets live in `.env` (gitignored — **never commit it**). `.env.example` lists every
+required variable with placeholder values, grouped by purpose (core, auth/admin, AI
+providers, and per-integration tokens for ClickUp, Triple Whale, Meta, Slack, Shopify, Whop).
 
-Error logs go to /logs/errors.md with:
-- Timestamp
-- Task name
-- Error message verbatim
-- What was attempted
-- What was tried to fix it
+Real credential values are **not** in the repo — ask the operator for them.
 
 ---
 
-## NO ASSUMED SUCCESS
+## 4. Architecture map
 
-Never write or say:
-- "This should work"
-- "This ought to handle it"
-- "This will likely run correctly"
-- "I believe this is working"
-- "This appears to be correct"
-
-If it has not been run, it is not known to work.
-Run it. Then report what actually happened.
-Report actual output, not expected output.
-
----
-
-## BLOCKED TASK PROTOCOL
-
-If a task cannot be completed because of a missing
-dependency, missing credential, unclear requirement,
-or environment limitation:
-
-1. Write the blocker to /logs/errors.md with full context
-2. Mark the task as BLOCKED in /tasks/TASKS.md with a
-   one line explanation of what is needed to unblock it
-3. Move immediately to the next task in the queue
-4. Never stall, never loop, never retry the same
-   failed approach more than twice
+```
+server/
+  src/
+    routes/        # one file per feature area (see worktree scopes below)
+    services/      # external integrations (gemini, image gen, scrapers, meta, etc.)
+    utils/         # shared helpers (statics prompts, etc.)
+    controllers/   # platform controllers
+    models/        # DB models
+    middleware/    # auth, audit, etc.
+    server.js      # entrypoint
+  migrations/      # SQL migrations — run with `npm run migrate`
+  seeds/
+client/            # React + Vite + Tailwind admin UI
+scripts/           # one-off + maintenance scripts
+render.yaml        # Render service + cron definitions
+app.js             # shared app wiring
+```
 
 ---
 
-## SESSION START PROTOCOL
+## 5. Worktree / area model (IMPORTANT)
 
-At the start of every session, before doing anything else:
+Work is split into **area lanes**, each on its own branch, so multiple people/agents can
+work in parallel without colliding. `main` is the integration branch.
 
-1. Read this file fully (includes AREA SCOPE: CREATIVE at the top)
-2. Check /tasks/ACTIVE-creative.md for the current task queue (NOT /tasks/TASKS.md — that's historical)
-3. Check /logs/progress.md for the last recorded checkpoint
-4. Begin at the first incomplete task
-5. Do not ask for confirmation before starting. Start.
+| Area | Branch | Owns (routes / services) |
+|---|---|---|
+| **Creative** | `creative/active` | briefAgent, briefPipeline, advertorialPipeline, staticsGeneration, staticsTemplates, iterationKing, clickupWebhook, geminiImageGen, imageGeneration, redditScraper, utils/staticsPrompts |
+| **Ads** | `ads/active` | adLauncher, adRejectionMonitor, adsControlCenter, videoAdsLauncher, metaWebhook, metaAdsApi |
+| **Analytics** | `analytics/active` | kpiSystem, creativeAnalysis, creativeIntel, dashboard |
+| **Storefront** | `storefront/active` | shopifyWebhook, productProfiles |
+| **Platform** | `platform/active` | auth, users, team, departments, settings, audit, health, controllers, models, middleware, authService, auditService |
 
----
+**Shared — coordinate before editing:** `app.js`, `package.json`, `server/migrations/*`, `render.yaml`.
 
-## TASK QUEUE BEHAVIOR
-
-Work through tasks in the order they appear in TASKS.md.
-Complete one task fully before starting the next.
-Do not work on multiple tasks simultaneously.
-Do not skip a task unless it is explicitly marked BLOCKED.
-If a task is BLOCKED, document it and move to the next one.
+**Rule:** stay in your lane. If a change requires touching code owned by another area,
+STOP and coordinate — don't cross lanes in a single branch. Merge shared-file changes early.
 
 ---
 
-## DECISION MAKING
+## 6. Deploy
 
-When a task requires a decision the operator has not specified:
-
-1. Make the most conservative reasonable choice
-2. Document the decision and the reasoning in /logs/progress.md
-3. Flag it with the label DECISION MADE so the operator
-   can review it on return
-4. Never stall waiting for operator input unless the task
-   literally cannot proceed without it
+Hosting is Render.com, defined in `render.yaml` (web service + cron jobs). Deploys trigger
+from `main`. Don't change `render.yaml` without coordinating — it controls production
+services and scheduled jobs.
 
 ---
 
-## DELIVERY STANDARD
+## 7. Security
 
-When reporting a task as complete to the operator,
-the operator must be able to use or run it immediately
-with zero additional fixes required.
-
-If the operator has to fix something after a task is
-reported complete, that is a failure of this protocol,
-not a new follow-up task.
-
-Responsibility for delivery quality does not end when
-the code is written. It ends when the output is verified.
+- Secrets only in `.env` (gitignored). Never paste real keys into code, docs, or commits.
+- Don't commit machine-specific files (handled by `.gitignore`).
+- Rotate any credential that may have been exposed; prefer a git credential helper over
+  embedding tokens in remote URLs.
 
 ---
-
-## LOG FILE STRUCTURE
-
-/logs/progress.md — completion entries for every finished task
-/logs/errors.md   — error entries for every failure or blocker
-/tasks/TASKS.md   — task queue with status per task
-
-If these files do not exist at session start, create them
-before beginning any task.
-
 ---
 
-## TASK STATUS LABELS
+# Operating protocol (Mineblock standard)
 
-Use only these labels in TASKS.md:
+The standard the operator expects for every task. Applies to humans and Claude Code alike.
 
-[ ]  — not started
-[>]  — in progress
-[x]  — complete and verified
-[!]  — blocked, reason documented in errors.md
+## Definition of Done
 
----
+A task is **never** done when the code is merely written or looks correct. It is done only
+when it has been **executed, verified, and confirmed**.
 
-## PROGRESS LOG FORMAT
+**Mandatory completion protocol — every step, in order:**
+1. **EXECUTE** — Run the code/script/function. Don't assume it works. If it can't run in the
+   current environment, document why and mark it **BLOCKED**, not complete.
+2. **VERIFY OUTPUT** — Inspect the actual output and confirm it matches the requirement.
+   Confirm based on what it produced, not what it should produce in theory.
+3. **TEST EDGE CASES** — Test at least one failure scenario (API error/timeout,
+   missing/malformed input, missing file, network down, empty data). It must not crash.
+4. **FIX ALL ERRORS BEFORE MOVING ON** — Don't log-and-continue. Fix now, re-run steps 1–2.
+5. **CONFIRM & DOCUMENT** — Record what was built, how it was tested, the actual output, and
+   any decisions, in `logs/progress.md`.
 
-Each entry in /logs/progress.md must follow this format:
+## Error handling
 
----
-TIMESTAMP: YYYY-MM-DD HH:MM
-TASK: [task name and number]
-BUILT: [one paragraph describing what was built]
-TESTED: [what was run, what edge cases were tested]
-OUTPUT: [what the actual output was]
-DECISIONS: [any decisions made, or NONE]
-STATUS: COMPLETE
----
+Every script/function must handle errors before being marked complete. **No silent
+failures** — log clearly and exit cleanly rather than producing wrong output silently.
+Error entries go in `logs/errors.md` (timestamp, task, verbatim error, what was attempted,
+what was tried to fix it).
 
----
+## No assumed success
 
-## ERROR LOG FORMAT
+Never claim "this should work / appears correct / will likely run." If it hasn't been run,
+it isn't known to work. Run it, then report **actual** output.
 
-Each entry in /logs/errors.md must follow this format:
+## Blocked tasks
 
----
-TIMESTAMP: YYYY-MM-DD HH:MM
-TASK: [task name and number]
-ERROR: [exact error message]
-ATTEMPTED: [what was tried]
-FIX TRIED: [what was done to resolve it]
-STATUS: [FIXED or BLOCKED]
----
+If blocked by a missing dependency/credential, unclear requirement, or environment limit:
+document the blocker, mark the task BLOCKED with a one-line note on what's needed, move to
+the next task. Never retry the same failed approach more than twice.
+
+## Decisions
+
+When a decision isn't specified: make the most conservative reasonable choice, document it
+with the label **DECISION MADE**, and continue. Don't stall unless the task literally cannot
+proceed.
+
+## Delivery standard
+
+When you report a task complete, it must be usable/runnable immediately with zero additional
+fixes. If the operator has to fix something afterward, that's a protocol failure, not a new
+task.
+
+## Logs & tasks
+
+- `logs/progress.md` — completion entry per finished task
+- `logs/errors.md` — error/blocker entries
+- `tasks/` — task queue (status labels: `[ ]` not started · `[>]` in progress · `[x]` done & verified · `[!]` blocked)
+
+Create these files if they don't exist before starting work.
