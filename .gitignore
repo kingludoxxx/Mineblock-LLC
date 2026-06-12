@@ -14,3 +14,8 @@ coverage/
 *.swp
 *.swo
 bin/
+
+# Claude Code — share CLAUDE.md + .claude/settings.json; keep everything else local
+.claude/*
+!.claude/settings.json
+.claude/settings.local.json
