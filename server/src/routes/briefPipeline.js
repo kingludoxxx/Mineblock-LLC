@@ -2464,7 +2464,7 @@ async function buildIterationPrompt(parsedScript, productContext, performanceCon
 // inline default runs. Template variables (ALL_CAPS in {{}}) are substituted
 // at call time. See buildScriptClonePrompt below for the substitution logic.
 // ───────────────────────────────────────────────────────────────────────────
-const DEFAULT_CLONE_PROMPT_SYSTEM = `You are a senior performance copywriter who clones winning ad scripts surgically. Your job is to preserve the persuasion architecture of a proven competitor script while swapping their product for ours. You think in terms of ARCHITECTURE (sequence, pacing, rhetorical devices, emotional beats) — not surface words. Every paragraph in the original maps to an equivalent paragraph in your clone. You write like a real media buyer who has spent millions: raw, direct, no marketing-speak, no AI tells, no filler. Contractions, fragments, real talk. If the original sounds like someone ranting on TikTok, your clone rants on TikTok. If it sounds like a calm authority, your clone is a calm authority. You NEVER soften, hedge, or add disclaimers the original didn't have. You NEVER invent claims unsupported by the product profile. You NEVER break the angle once it is selected — every sentence reinforces it.`;
+const DEFAULT_CLONE_PROMPT_SYSTEM = `You are a senior performance copywriter who clones winning ad scripts surgically. Your job is to preserve the persuasion architecture of a proven competitor script while swapping their product for ours. You think in terms of ARCHITECTURE (sequence, pacing, rhetorical devices, emotional beats) — not surface words. Every paragraph in the original maps to an equivalent paragraph in your clone, at the same length — length parity is part of the architecture, and a clone that comes back meaningfully shorter than its source has failed. You write like a real media buyer who has spent millions: raw, direct, no marketing-speak, no AI tells, no filler. Contractions, fragments, real talk. If the original sounds like someone ranting on TikTok, your clone rants on TikTok. If it sounds like a calm authority, your clone is a calm authority. You NEVER soften, hedge, or add disclaimers the original didn't have. You NEVER invent claims unsupported by the product profile. You NEVER break the angle once it is selected — every sentence reinforces it.`;
 
 const DEFAULT_CLONE_PROMPT_USER = `# MISSION
 Clone the competitor script below for OUR product, preserving its narrative architecture exactly.
@@ -2506,15 +2506,20 @@ cta: {{ORIGINAL_CTA}}
 
 # CLONE RULES (non-negotiable)
 
-## 1. ARCHITECTURE PRESERVATION (the hard contract)
-- Same number of body paragraphs / sections as original
+## 1. ARCHITECTURE + LENGTH PRESERVATION (the hard contract)
 - Same rhetorical device at each structural position (apology, confession, contrarian claim, stat-drop, callout, etc.)
 - Same emotional escalation curve (e.g., calm → tension → reveal → relief → CTA)
 - Same pacing — short punchy sentences where original is punchy, flowing where original flows
-- Body word count must EQUAL the original OR be up to 10% SHORTER. NEVER longer than the original.
 
-### Forced enumeration step (do this BEFORE writing the body)
-Before generating hooks or body, emit a "source_beats" field in the output JSON: an array where each entry is one source paragraph compressed to ONE sentence (≤ 20 words). This is a contract between you and yourself — once you've listed N source beats, you commit to writing N output paragraphs, each one mapping to the same beat at the same position.
+### LENGTH CONTRACT (numbers, not vibes)
+The source body is **{{ORIGINAL_WORD_COUNT}} words**. Your cloned body MUST land between **{{MIN_WORDS}} and {{ORIGINAL_WORD_COUNT}} words**. Under {{MIN_WORDS}} words means you dropped or compressed beats — FAILURE. Over {{ORIGINAL_WORD_COUNT}} means you padded — FAILURE.
+
+The #1 historical failure mode of this task is COMPRESSION: clones coming back at half the source length because whole beats got summarized into single sentences. A clone that "covers the same story" in half the words is not a clone — it's a summary. Every beat gets its full airtime: if the source spends 70 words on the dressing-room scene, your equivalent scene gets ~70 words, not 25.
+
+### Forced enumeration step (emitted in the output JSON as "source_beats" — the FIRST field you write)
+Before writing the body, walk the source start to finish and enumerate EVERY beat. A beat = one narrative move: a scene, a claim, a failed-solutions list, a mechanism step, a proof point, a testimonial, an offer element, a scarcity push. Expect roughly one beat per 40–80 source words — for this source that means about {{EXPECTED_BEATS}} beats. For each beat record: a ≤20-word compression, the approximate number of source words it occupies (source_words), and your target word count for the equivalent clone passage (target_words = source_words, or up to 10% less). The target_words column must SUM to at least {{MIN_WORDS}}.
+
+This is a contract between you and yourself — once you've listed N beats, you commit to writing N equivalent passages, each at its target length, in the same order.
 
 **CRITICAL: Do not skip validation moments.** If the source mentions Shark Tank, a major press moment, celebrity endorsement, regulatory approval, or other credibility inflection — that moment MUST appear as its own beat in source_beats AND as its own paragraph in your output. These are structural, not optional. Search the source explicitly for: "Shark Tank", "Forbes", "TechCrunch", "went viral", "made headlines", "industry experts said", "regulatory approval", "partnership with", "investment from". If found, list as a separate beat and preserve that paragraph.
 
@@ -2542,6 +2547,17 @@ KEEP VERBATIM (DO NOT TOUCH):
 - Volume proof points ("120,000 devices shipped", "two years later")
 - Adversarial industry framing ("big X companies fighting back" — replace "X" with our category, keep the framing)
 - All emotional cues, transitions, and pacing
+
+### CUSTOMER TESTIMONIAL SWAP (non-founder characters)
+Founder names stay verbatim (rule above). A CUSTOMER testimonial character ("Take Linda, 54, from Ohio…") is an avatar anchor, not a protagonist — swap her for a NEW plausible persona matching OUR customer_avatar: new first name, age inside our avatar's range, different US state. Rewrite the quote to the same length, register, and function (same "I don't have time for X / this has been the answer" everyday energy), grounded in OUR product's usage ritual. Example: "Linda, 54, from Ohio" (arm-firming device) → "Gail, 58, from Texas" (breast-lift device), quote same length and same daily-routine framing.
+
+### PROOF SUBSTITUTION (studies you can't support)
+If the source cites a clinical study or percentage results ("In a study of 1,000 women… 93% saw…") and OUR Product Library has no equivalent study: keep the proof beat at the SAME position and SAME length, but convert it to volume/review social proof — units shipped, star rating, review count, return rate ("shipped to 40,000 women, 4.8 out of 5 across 4,206 reviews, fewer than 3 in 100 send it back"). NEVER invent a clinical study, trial, or percentage-outcome claim for our product.
+
+### MICRO-SWAP QUALITY BAR (this is the standard)
+Source: "I was shopping for a dress for my daughter's graduation. Sleeveless, elegant, exactly what I wanted… maybe I could pull it off with a cardigan over the top."
+Clone:  "I was shopping for a dress for my daughter's wedding. V-neck, elegant, exactly what I wanted… maybe I could pull it off with a shawl over the top."
+Same scene, same sentence shapes, same word count — only the avatar-specific nouns moved (graduation→wedding, sleeveless→V-neck, cardigan→shawl). That is the granularity of change allowed. Whole sentences carried near-verbatim with 2-3 word swaps are GOOD cloning, not lazy cloning.
 
 NEVER:
 - Leave any competitor brand name in the final script (PestLab → MinerForge Pro, etc.)
@@ -2573,17 +2589,24 @@ NEVER use any phrase in the angle's banned_phrases list. If headline_examples ex
 - BANNED softeners: "may", "might", "could potentially", "helps you to" (unless original used them)
 - Use natural verbal tics that match the original's register: "Look," / "Listen," / "Honestly," / "The truth is," / "Here's the deal"
 
-## 5. HOOK CLONING (preserve source narrator type + central pivot)
-- Generate exactly 5 hooks.
-- **H1 must mirror the source's strongest opening hook**: same narrator type (third-person founder narrative? same. first-person speaker? same. object-POV? same.), same central pivot moment (rejection / apology / breaking news / contrarian claim / etc.), same rhetorical opener.
-  - Example: if the source H1 is "These two college boys were laughed off the Shark Tank stage, but their invention is helping more than 50,000 families…" your H1 must be "These two engineering students were laughed off by the Bitcoin mining industry, but their invention is helping more than 50,000 people…" — same third-person founder framing, same rejection→success pivot, just swapped product/category.
-  - You may NOT pivot to a different narrator type. "I'm the chip inside MinerForge Pro" is NOT a clone of a third-person founder hook — that's an object-POV variant, which belongs in variants mode, not clone mode.
-- H2 = same narrator type, same framework, different entry beat.
-- H3 = same narrator type, same framework, different emotional texture.
-- H4 = same narrator type, same framework, contrarian / inverted version.
-- H5 = same narrator type, same framework, shortest punch version (under 12 words).
-- Each hook reads seamlessly into the body's first paragraph.
-- A hook is a FULL SENTENCE. ALL-CAPS sticker fragments belong in highlighted_text (§7), not in hooks.
+## 5. HOOK CLONING (written AFTER the body — every hook must blend into it)
+Hooks come AFTER the body in the output JSON, and you write them after the body on purpose: a hook is a candidate FIRST LINE of the finished video, spoken immediately before the body's opening sentence.
+
+**THE BLEND TEST (apply to all 5 hooks):** read the hook aloud, then the body's first sentence, back to back. It must sound like one person mid-take — no seam, no gear-change, no tonal jump. If a listener would notice the splice, rewrite the hook.
+
+Style rules:
+- Exactly 5 hooks. Full sentences, sentence case, no emoji, no ALL-CAPS (sticker fragments belong in highlighted_text, §7).
+- ≤ 20 words each, unless the source's own hook runs longer. Plain, specific claim language — clear beats clever.
+- NEVER reuse a sentence or distinctive phrase from the body. A hook that pre-spends the body's reveal wastes it — tease the payoff, don't deliver it. (Bad: hook says "your body stops producing collagen" when that line IS the body's mechanism reveal.)
+- No meta-language, no annotations, no colons-with-labels inside the hook text.
+- Same narrator type as the source — POV LOCK (§5b) applies to hooks too. "I'm the chip inside MinerForge Pro" is NOT a clone of a third-person founder hook; that's a variant, and we are not in variants mode.
+
+Framework per hook:
+- **H1 mirrors the source's strongest opening hook**: same narrator type, same central pivot (rejection / apology / contrarian claim / "why you have X after AGE" explainer), same rhetorical opener — product, problem, and avatar swapped. If the source opens "Why you have flabby arms after 40", H1 is "Why your breasts sag after 50" — same shape, our problem, our avatar's age.
+- **H2 = direct-promise version**: outcome + timeframe, flat and confident. ("This will lift your sagging breasts in 2 weeks.")
+- **H3 = story-tease version**: the narrator's near-miss or turning-point moment, no payoff. ("I almost paid $20,000 for a breast lift. Then a plastic surgeon told me to try this first.")
+- **H4 = mechanism-tease version**: the "how" without the reveal. ("How a red light device lifts sagging breasts in 10 minutes a day.")
+- **H5 = shortest punch version**: under 12 words.
 
 ## 5b. POV LOCK (NEW — read carefully)
 Do not swap POV. Clone narrator type maps 1:1 to source narrator type:
@@ -2634,38 +2657,40 @@ A LABEL is short, attention-grabbing, sticker-style. A HOOK is a full first-pers
 - Swap competitor brand / product / offer to ours from {{PRODUCT_CONTEXT}}. Never copy competitor brand names, prices, or claims verbatim.
 - **Hooks are NEVER overlay labels.** If you find yourself writing an ALL-CAPS fragment with an emoji as Hook 1, move it to highlighted_text and write a real sentence-form hook in its place.
 
-# INTERNAL THINKING (do this in your head BEFORE writing the JSON below)
-# 1. Identify the source POV (third-person founder narrative, first-person
-#    confession, object-product POV, or speaker-direct-address). Lock to it.
-# 2. List the source's beats in your head: one short sentence per source
-#    paragraph. Count them. Commit to writing that exact same number of
-#    output paragraphs, each mapping to the same beat at the same position.
-# 3. Identify the source's central pivot (the Shark-Tank-style rejection, the
-#    "we lied" apology, the contrarian claim — whatever the source uses as
-#    its emotional inflection point). Your H1 must contain the equivalent.
-# 4. Identify named protagonists, setting, and any concrete proof points.
-#    Carry them into the clone unchanged or near-unchanged.
-# Only after this internal pass do you emit the JSON below.
+# ORDER OF OPERATIONS (the JSON field order below is deliberate — write the fields in this order)
+# 1. source_pov — identify and lock the source POV.
+# 2. source_beats — enumerate the source beat by beat, with word counts (§1).
+# 3. body — write beat-by-beat against source_beats, hitting each target_words.
+#    After writing, count your words. Below {{MIN_WORDS}}? Find the beats you
+#    compressed and restore them to full length BEFORE emitting.
+# 4. cta — clone the CTA.
+# 5. hooks — LAST, so each one blends into the body you just wrote (§5).
+# 6. Identify the source's central pivot (the Shark-Tank-style rejection, the
+#    "we lied" apology, the contrarian claim). H1 must contain the equivalent.
 
 # OUTPUT — return ONLY valid JSON, no markdown fences, no preamble, no trailing commentary.
 {
   "source_pov": "third-person-founder-narrative | first-person-founder-confession | object-product-pov | speaker-direct-address",
-  "hooks": [
-    { "id": "H1", "text": "...", "framework_used": "matches original", "angle_signal": "how this hook voices the selected angle", "maps_to_original": "which original hook this clones" },
-    { "id": "H2", "text": "...", "framework_used": "...", "angle_signal": "...", "maps_to_original": "..." },
-    { "id": "H3", "text": "...", "framework_used": "...", "angle_signal": "...", "maps_to_original": "..." },
-    { "id": "H4", "text": "...", "framework_used": "...", "angle_signal": "...", "maps_to_original": "..." },
-    { "id": "H5", "text": "...", "framework_used": "...", "angle_signal": "...", "maps_to_original": "..." }
+  "source_beats": [
+    { "n": 1, "beat": "one-sentence compression of this source beat (≤ 20 words)", "source_words": 74, "target_words": 74 },
+    { "n": 2, "beat": "...", "source_words": 55, "target_words": 52 }
   ],
-  "body": "the full cloned body. One paragraph per beat in the source, in the same order. Use double newlines between paragraphs. Same paragraph count as source. Word count equal or up to 10% shorter — never longer.",
+  "body": "the full cloned body. One passage per entry in source_beats, in the same order, each at its target_words length. Use double newlines between paragraphs. TOTAL WORD COUNT between {{MIN_WORDS}} and {{ORIGINAL_WORD_COUNT}} — count before emitting.",
   "cta": "the cloned CTA",
+  "hooks": [
+    { "id": "H1", "text": "...", "framework_used": "mirrors source opening hook", "angle_signal": "how this hook voices the selected angle", "maps_to_original": "which original hook/opener this clones" },
+    { "id": "H2", "text": "...", "framework_used": "direct promise + timeframe", "angle_signal": "...", "maps_to_original": "..." },
+    { "id": "H3", "text": "...", "framework_used": "story tease / near-miss", "angle_signal": "...", "maps_to_original": "..." },
+    { "id": "H4", "text": "...", "framework_used": "mechanism tease", "angle_signal": "...", "maps_to_original": "..." },
+    { "id": "H5", "text": "...", "framework_used": "shortest punch (<12 words)", "angle_signal": "...", "maps_to_original": "..." }
+  ],
   "highlighted_text": [
     "ON-SCREEN LABEL 1 + emoji",
     "ON-SCREEN LABEL 2 + emoji"
   ],
   "highlighted_text_notes": "1 sentence — what evidence in the source signalled overlays, OR explicitly 'No on-screen overlays detected in source — emitting empty array'.",
   "angle_used": { "name": "the angle name actually used", "reason": "one sentence — why this angle (only if AUTO was selected)" },
-  "clone_fidelity_notes": "2-3 sentences confirming: paragraph count matches source, POV preserved, named protagonists carried over, setting carried over, central pivot preserved. If any of these were broken, say so and explain why.",
+  "clone_fidelity_notes": "2-3 sentences. MUST open with the literal word-count report: 'source {{ORIGINAL_WORD_COUNT}} words → clone N words' using your actual count. Then confirm: beat count matches source_beats, POV preserved, named protagonists carried over, setting carried over, central pivot preserved. If anything was broken, say so and explain why.",
   "key_changes_from_original": "2-3 sentence summary of what's different and why",
   "compliance_notes": "any claims that brush against compliance_restrictions, or 'clean' if none"
 }`;
@@ -2804,6 +2829,13 @@ async function buildScriptClonePrompt(parsedScript, deepAnalysis, productContext
     console.warn('[BriefPipeline] scriptClone league prompt load error — using default:', e.message);
   }
 
+  // Length contract numbers — the prompt enforces word-count parity with the
+  // source, and LLMs only hit length targets when given explicit numbers.
+  const sourceBodyText  = parsedScript?.body || '';
+  const originalWordCount = sourceBodyText.trim() ? sourceBodyText.trim().split(/\s+/).length : 0;
+  const minWords      = Math.round(originalWordCount * 0.9);
+  const expectedBeats = Math.max(4, Math.round(originalWordCount / 60));
+
   const vars = {
     PRODUCT_CONTEXT:  productContext || 'No product profile available.',
     ORIGINAL_HOOKS:   originalHooks || '(no hooks parsed)',
@@ -2814,6 +2846,9 @@ async function buildScriptClonePrompt(parsedScript, deepAnalysis, productContext
     ANGLE_NAME:       angleName,
     ANGLE_DETAILS:    angleDetails,
     ANGLES_LIST:      anglesList,
+    ORIGINAL_WORD_COUNT: originalWordCount,
+    MIN_WORDS:        minWords,
+    EXPECTED_BEATS:   expectedBeats,
   };
   const substitute = (tpl) => Object.entries(vars).reduce(
     (acc, [k, v]) => acc.replace(new RegExp(`\\{\\{\\s*${k}\\s*\\}\\}`, 'g'), String(v ?? '')),
