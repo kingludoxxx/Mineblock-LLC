@@ -5472,7 +5472,9 @@ router.post('/references/repair-media', authenticate, async (req, res) => {
     }
     const refs = await pgQuery(`
       SELECT r.id, r.video_url, r.thumbnail_url, r.brand_spy_ad_id,
-             a.video_hd_url AS fresh_hd, a.video_sd_url AS fresh_sd, a.thumbnail_url AS fresh_thumb
+             a.raw_snapshot->'videos'->0->>'video_hd_url'            AS fresh_hd,
+             a.raw_snapshot->'videos'->0->>'video_sd_url'            AS fresh_sd,
+             a.raw_snapshot->'videos'->0->>'video_preview_image_url' AS fresh_thumb
       FROM brief_pipeline_references r
       LEFT JOIN brand_spy.ads a ON a.id::text = r.brand_spy_ad_id::text
       WHERE (r.video_url ~* 'fbcdn|fbsbx' OR r.thumbnail_url ~* 'fbcdn|fbsbx')

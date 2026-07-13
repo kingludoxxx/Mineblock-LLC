@@ -1,6 +1,36 @@
 # Progress Log
 
 ---
+TIMESTAMP: 2026-07-13 22:55
+TASK: Clone prompt v5 + parser/CTA fixes — full E2E validation
+
+BUILT: (1) Clone prompt v5 (commit a67ae6f): LENGTH CONTRACT with injected numeric
+targets, source_beats in output schema with per-beat word budgets, hooks generated
+AFTER body with blend test, testimonial-persona swap + proof-substitution +
+micro-swap rules. (2) Seeder signature fix (fe65c47) so boot no longer clobbers the
+prompt. (3) Parser fix (e1b891a): body completeness rule — opening narrative no
+longer swallowed into hooks. (4) CTA persistence (e1b891a): cloned CTA appended to
+body at insert (generated table has no cta column; endings were silently dropped).
+
+TESTED: Full E2E in production with the operator's gold-standard Myoglo reference
+(767 words) cloned to Puure, Claude model. All checks PASS:
+- Length: 760-word clone from 767-word source (99%)
+- Body opens at the dress-shopping scene (previously clipped one beat late)
+- Body ends with CTA "Click below to get Puure at 60% off." (previously dropped)
+- Hooks: 5, short, blended (H1 "Why your breasts sag after 50." mirrors source
+  opener; H5 "The $99 breast lift.")
+- Persona swap: Linda/54/Ohio -> Gail/58/Texas; no fabricated study (93%/87% gone,
+  replaced by review proof); no competitor brand names; 17 paragraphs; verdict YES.
+
+OUTPUT: Brief row in brief_pipeline_generated, naming PUURE - B0350 - NN - ... -
+WK29_2026. Tool ready for operator use.
+
+DECISIONS: CTA persisted by appending to body rather than adding a column (zero
+schema change, ClickUp push inherits it). NOTE for operator: Puure profile has no
+offer_details, so clones inherit the SOURCE's offer (60% off from Myoglo) — add
+real offer_details to the Puure product profile to control this.
+STATUS: COMPLETE
+---
 TIMESTAMP: 2026-07-13 20:56
 TASK: Deploy Puure + Brief Pipeline MODEL selector + Video player fixes
 
@@ -12,24 +42,48 @@ OUTPUT: Deployment status = build_in_progress. Migration 068 will execute during
 
 DECISIONS: Used direct git push with provided GitHub token (ghp_gjrgQcBkWkv7D6...) to unblock deployment. Render auto-deploy from main handles infrastructure; no manual deploy steps needed. Migration uses ON CONFLICT upsert for safety. OpenAI routing mirrors existing Claude path for consistency.
 
-STATUS: IN PROGRESS — Debugging persistent migration execution issue
+STATUS: COMPLETE — verified in production
 
-BLOCKER DISCOVERED: Despite 4 deployments with corrected migrations, Puure product not appearing in database after INSERT. Root cause still unknown. Migration execution may be silenced or architecture issue with how migrations run during Render startup.
+ROOT CAUSE (found and fixed in bf63b1d): the original Puure migration was written
+against an imagined schema and failed silently on every boot:
+1. Used full_name — column does not exist (real display column is `name`, NOT NULL,
+   never provided)
+2. Used ON CONFLICT (product_code) — no UNIQUE constraint exists on product_code,
+   so Postgres rejected the whole statement (42P10)
+3. server.js catches migration errors and boots anyway, so deploys reported "live"
+   while the INSERT rolled back every time. Render logs confirmed: "Running migration:
+   069" with no "Migration complete" line at 21:11 and 21:14; after the rewrite,
+   "Migration complete: 069_add_puure_product.sql" at 21:23:58.
 
-Current investigation:
-- Migrations appear syntactically correct (verified multiple times)
-- Schema columns added correctly (ensureTable ALTER TABLE statements updated)
-- 4 deployment attempts with different migration strategies
-- Test migration 070 created to diagnose if migrations execute at all
-- Awaiting test migration results to determine if issue is execution or SQL
+FIX: rewrote 069 against the actual product_profiles schema (name/short_name/
+product_code/category, TEXT price fields, customer_avatar/mechanism/voice as TEXT,
+benefits + angles JSONB in the same rich format Miner Forge Pro uses), idempotency
+via INSERT ... SELECT ... WHERE NOT EXISTS. Removed test migration 070 and stray
+scripts/add-puure.js (same wrong schema).
 
-All UI/code changes verified working:
-✅ MODEL selector button visible and functional  
-✅ Brief Pipeline page loads without errors
-✅ OpenAI routing code committed and deployed
-✅ Video player CORS fixes committed and deployed
+VERIFIED IN PRODUCTION (deploy dep-d9aldjmq1p3s73ck4ncg, live 21:24:07 UTC):
+✅ Render logs: "Migration complete: 069_add_puure_product.sql"
+✅ API: GET /product-profiles returns Puure (id=37, product_code=PUURE) with all 6 angles
+✅ Brief Pipeline UI: Puure selectable in Target_Product, "21 fields loaded", "6 from PU"
+✅ Ad_Angle dropdown lists all 6 Puure angles (Surgeon's Secret, Collagen Scaffold
+   Collapse, Triple Beats Dual, $2,417 Wasted, Get Your Closet Back, $99 vs $20,000)
+✅ MODEL selector (CLAUDE/OPENAI) renders and toggles in header
+✅ Video preview modal shows new graceful fallback UI + transcript for dead-source videos
 
-ACTION REQUIRED: Once test migration 070 deploys, will determine root cause and fix accordingly.
+LESSON: never write a migration against an assumed schema — read ensureTable()/the
+live table first. ON CONFLICT requires a UNIQUE constraint; WHERE NOT EXISTS is the
+safe idempotency pattern here. Migration failures in this app are swallowed at boot —
+always check Render logs for the "Migration complete" line, not just deploy status.
+
+E2E GENERATION TEST (2026-07-13 21:35 UTC, production):
+Ran a full 1:1 Script Clone with Puure as target product, Claude model, pestlab.co
+CHAMP reference (992-word transcript). Result: brief 107ea325 created —
+"PUURE - B0350 - NN - NA - NA - Mashup - Ludovico - NA - Uly - WK29_2026",
+status=generated, rank 1. Output quality verified: 5 Puure-specific hooks, full body
+script correctly swapped to Puure facts from the product profile (TriRed™ triple
+wavelength, 8mm depth, fibroblast/collagen scaffold, FDA approved, $99 vs $20,000,
+10 min/day, 120K devices), scores novelty 7 / aggression 8 / coherence 9 /
+overall 8.4, verdict YES. Generation-status polling and /generated endpoints all 200.
 ---
 TIMESTAMP: 2026-06-01 16:15
 TASK: Add Puure™ Breast Lift Device to Product Library
