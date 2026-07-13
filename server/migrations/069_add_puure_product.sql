@@ -19,8 +19,8 @@ INSERT INTO product_profiles (
   'Puure',
   'Puure™ Breast Lift Device v1.1',
   'At-home, non-surgical breast firming & lifting device using TriRed™ Triple Red Light Technology. Penetrates ~8mm to activate fibroblast cells and rebuild collagen + elastin in the breast scaffold for natural lift without surgery, scars, or recovery.',
-  99,
-  199,
+  '99',
+  '199',
   '[
     "TriRed™ Triple Red Light Technology (3 wavelengths vs competitors'' 1)",
     "FDA approved - clinical-grade red light therapy",
