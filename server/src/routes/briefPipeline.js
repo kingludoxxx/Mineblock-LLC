@@ -6636,11 +6636,12 @@ async function seedDefaultLeaguePrompts() {
     //    if it's missing, overwrite with the current baked default. This is
     //    one-shot per signature bump and leaves operator edits alone once
     //    they include the marker.
-    // v4.1 — keeps §0 PRINCIPLE + §5b POV LOCK + architecture preservation
-    // instructions, but moves source_beats from JSON contract to INTERNAL
-    // THINKING (model was failing JSON parsing under v4's stricter shape).
-    // Bumping the signature force-refreshes any v4 snapshot from v4.0 to v4.1.
-    const CLONE_V2_SIGNATURE = 'INTERNAL THINKING';
+    // v5 — LENGTH CONTRACT revision: numeric word-count targets
+    // ({{ORIGINAL_WORD_COUNT}}/{{MIN_WORDS}}), source_beats back in the JSON
+    // schema with per-beat word budgets, hooks emitted AFTER the body with a
+    // blend test, testimonial-persona swap + proof-substitution rules.
+    // Bumping the signature force-refreshes any pre-v5 snapshot once.
+    const CLONE_V2_SIGNATURE = 'LENGTH CONTRACT';
     const currentClone = existing.scriptClone?.json || '';
     if (!currentClone.trim() || !currentClone.includes(CLONE_V2_SIGNATURE)) {
       existing.scriptClone = {
