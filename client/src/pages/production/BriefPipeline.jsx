@@ -114,6 +114,7 @@ export default function BriefPipeline() {
   const [metaImportOpen, setMetaImportOpen]     = useState(false);
   const [uploadOpen, setUploadOpen]             = useState(false);
   const [previewReference, setPreviewReference] = useState(null);
+  const [selectedModel, setSelectedModel] = useState('claude');
 
   // Prefill state for the Script Generator panel — populated when the user
   // imports a reference OR clicks "Generate Brief" / "Use as Reference".
@@ -841,6 +842,26 @@ export default function BriefPipeline() {
             <h1 className="text-sm font-mono font-semibold text-white tracking-[0.2em] uppercase text-glow">
               Brief Pipeline
             </h1>
+
+            {/* Model selector */}
+            <div className="flex items-center gap-1 ml-4 pl-4 border-l border-white/[0.04]">
+              {['claude', 'openai'].map((model) => (
+                <button
+                  key={model}
+                  onClick={() => setSelectedModel(model)}
+                  className={`px-2.5 py-1.5 rounded-md text-xs font-mono font-medium transition-all tracking-wide uppercase
+                    ${selectedModel === model
+                      ? model === 'claude'
+                        ? 'bg-[#d4b55a]/15 text-[#d4b55a] border border-[#d4b55a]/30 shadow-[0_0_12px_rgba(212,181,90,0.25)]'
+                        : 'bg-blue-500/15 text-blue-400 border border-blue-500/30 shadow-[0_0_12px_rgba(59,130,246,0.25)]'
+                      : 'bg-white/[0.03] text-zinc-500 border border-white/[0.06] hover:bg-white/[0.05] hover:text-zinc-300'
+                    }
+                  `}
+                >
+                  {model === 'claude' ? 'CLAUDE' : 'OPENAI'}
+                </button>
+              ))}
+            </div>
           </div>
 
           <div className="flex items-center gap-2">
@@ -914,6 +935,8 @@ export default function BriefPipeline() {
                 initialReferenceId={scriptPrefill.referenceId}
                 referenceLabel={scriptPrefill.label}
                 onClearReference={handleClearScriptPrefill}
+                selectedModel={selectedModel}
+                onModelChange={setSelectedModel}
               />
             </div>
 

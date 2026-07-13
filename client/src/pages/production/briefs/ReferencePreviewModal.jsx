@@ -31,6 +31,7 @@ export default function ReferencePreviewModal({ reference, open, onClose, onUseA
   // setState-in-effect anti-pattern.
   const refKey = reference?.id || null;
   const [videoErrorFor, setVideoErrorFor] = useState(null);
+  const [videoLoading, setVideoLoading] = useState(false);
   const videoError = videoErrorFor === refKey && refKey !== null;
 
   useEffect(() => {
@@ -113,15 +114,37 @@ export default function ReferencePreviewModal({ reference, open, onClose, onUseA
           {/* Video */}
           <div className="p-5">
             {reference.videoUrl && !videoError ? (
-              <div className="rounded-lg overflow-hidden bg-black border border-white/[0.06]">
+              <div className="rounded-lg overflow-hidden bg-black border border-white/[0.06] relative">
+                {videoLoading && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-black/40 z-10">
+                    <div className="flex flex-col items-center gap-2">
+                      <div className="animate-spin">
+                        <Play className="w-6 h-6 text-zinc-400" />
+                      </div>
+                      <div className="text-xs text-zinc-400">Loading video...</div>
+                    </div>
+                  </div>
+                )}
                 <video
                   key={reference.id}
                   src={reference.videoUrl}
                   controls
+                  controlsList="nodownload"
                   playsInline
+                  crossOrigin="anonymous"
                   poster={reference.thumbnailUrl || undefined}
                   className="w-full max-h-[44vh] object-contain bg-black mx-auto"
-                  onError={() => setVideoErrorFor(refKey)}
+                  onLoadStart={() => setVideoLoading(true)}
+                  onCanPlay={() => setVideoLoading(false)}
+                  onError={(e) => {
+                    setVideoLoading(false);
+                    setVideoErrorFor(refKey);
+                    console.error('[ReferencePreviewModal] Video load failed:', {
+                      videoUrl: reference.videoUrl,
+                      errorCode: e.currentTarget?.error?.code,
+                      errorMessage: e.currentTarget?.error?.message,
+                    });
+                  }}
                 />
               </div>
             ) : (
@@ -131,23 +154,32 @@ export default function ReferencePreviewModal({ reference, open, onClose, onUseA
                     src={reference.thumbnailUrl}
                     alt=""
                     className="max-h-[28vh] mx-auto rounded mb-3 opacity-60"
+                    onError={(e) => { e.currentTarget.style.display = 'none'; }}
                   />
                 ) : (
                   <Play className="w-10 h-10 text-zinc-700 mx-auto mb-3" />
                 )}
-                <div className="text-xs text-zinc-400">
-                  {reference.videoUrl
-                    ? "Video can't play inline — open in a new tab."
+                <div className="text-xs text-zinc-400 mb-2">
+                  {videoError
+                    ? "Video failed to load. This usually means the video file is no longer available or is in an incompatible format."
+                    : reference.videoUrl
+                    ? "Video isn't supported in this player."
                     : 'No direct video URL stored for this ad.'}
                 </div>
+                {reference.videoUrl && (
+                  <div className="text-[11px] text-zinc-500 mb-3">
+                    Try opening in a new tab for better compatibility.
+                  </div>
+                )}
                 {reference.videoUrl && (
                   <a
                     href={reference.videoUrl}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1.5 mt-3 px-3 py-1.5 text-[11px] font-mono rounded bg-white/[0.04] border border-white/[0.08] text-zinc-300 hover:text-white hover:bg-white/[0.06] transition-colors"
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-mono rounded bg-blue-500/15 border border-blue-500/30 text-blue-300 hover:text-blue-200 hover:bg-blue-500/20 hover:border-blue-500/50 transition-colors"
                   >
-                    Open in new tab
+                    <Play className="w-3 h-3" />
+                    Play in New Tab
                   </a>
                 )}
               </div>

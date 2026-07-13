@@ -3492,7 +3492,41 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
         resolvedAngleLocked,
         rawScript,   // pass raw transcript so the prompt can see [ON-SCREEN TEXT] markers
       );
-      const iterResult = await callClaude(iterSystem, iterUser, 6000);
+
+      // Route to correct model (Claude vs OpenAI) based on request parameter
+      let iterResult;
+      let iterModelUsed = null;
+      let iterLastErr = null;
+
+      if (model === 'openai') {
+        try {
+          iterModelUsed = 'openai';
+          iterResult = await callOpenAI(iterSystem, iterUser, 6000);
+        } catch (openaiErr) {
+          iterLastErr = `openai: ${openaiErr.message}`;
+          console.warn(`[BriefPipeline] OpenAI iteration attempt failed (${openaiErr.message}) — falling back to Claude (Opus first).`);
+          try {
+            iterModelUsed = 'opus';
+            iterResult = await callClaude(iterSystem, iterUser, 6000, { opus: true });
+          } catch (opusErr) {
+            iterLastErr = `${iterLastErr}; opus: ${opusErr.message}`;
+            console.warn(`[BriefPipeline] Opus fallback failed (${opusErr.message}) — trying Sonnet.`);
+            try {
+              iterModelUsed = 'sonnet';
+              iterResult = await callClaude(iterSystem, iterUser, 6000);
+            } catch (sonnetErr) {
+              iterLastErr = `${iterLastErr}; sonnet: ${sonnetErr.message}`;
+              console.error(`[BriefPipeline] iteration — OpenAI and both Claude models failed: ${iterLastErr}`);
+              throw new Error(`Iteration failed on all models: ${iterLastErr}`);
+            }
+          }
+        }
+      } else {
+        // Default: Claude only (backward compatible)
+        iterModelUsed = 'claude';
+        iterResult = await callClaude(iterSystem, iterUser, 6000);
+      }
+
       const variants = Array.isArray(iterResult?.iterations) ? iterResult.iterations : [];
       if (variants.length === 0) {
         throw new Error('Iteration prompt returned no variants. Check the scriptIteration JSON prompt slot if you customised it.');

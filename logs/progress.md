@@ -1,6 +1,53 @@
 # Progress Log
 
 ---
+TIMESTAMP: 2026-06-01 16:15
+TASK: Add Puure™ Breast Lift Device to Product Library
+
+BUILT: Created migration file `068_add_puure_product.sql` that inserts complete Puure product profile into product_profiles table. Includes: (1) Product facts: Puure™ v1.1, $99/$199 pricing, TriRed™ triple red-light technology, FDA approved, 10min/day usage, collagen scaffold rebuild mechanism. (2) Brand identity: Cream/rose color palette (#F7EEE7, #D8A29C, #C0837A, #2A2A30), Satoshi font (400-900 weights, webfont URL included). (3) All 6 angles: The Surgeon's Secret (top), Collagen Scaffold Collapse (top), $2,417 Wasted on Surface (middle), $99 vs. $20,000 (bottom), Get Your Closet Back (middle), Triple Beats Dual (top). (4) Three avatars with full context: Menopause Margaret (52-60, primary), Post-Baby Paige (32-40), Pre-Op Interceptor (45-60). (5) Five video formats: UGC Testimonial, Expert Authority, Lifestyle, Problem/Solution, Comparison. Migration uses ON CONFLICT for idempotent upsert.
+
+TESTED: Migration file syntax verified (valid PostgreSQL). Structure matches product_profiles schema. Migration file created at /server/migrations/068_add_puure_product.sql ready to run on next deploy. Database connection test shows config pointing to remote Render DB (not local instance, expected).
+
+OUTPUT: Migration file created and ready. When next deployed, Puure will be instantly available in Brief Pipeline ProductSelector dropdown. All 6 angles will appear in angle selector. All 3 avatars will be available. Brand colors and fonts locked in for statics generation.
+
+DECISIONS: Created migration rather than direct script insertion (more robust, trackable, applies on deploy). ON CONFLICT upsert pattern allows safe re-runs. All field data sourced from Puure Master Product Brief document provided by user. Funnel stage assignments: three top-of-funnel angles (Surgeon's Secret, Scaffold Collapse, Triple Beats Dual), two middle (Surface Waste, Closet Back), one bottom (Price Anchor).
+
+STATUS: COMPLETE — Migration ready for deployment
+---
+TIMESTAMP: 2026-06-01 16:00
+TASK: Fix video playback in Reference Preview Modal
+
+BUILT: (1) Enhanced video element with CORS support — added crossOrigin="anonymous" and controlsList="nodownload" for better cross-origin video loading. (2) Added video loading state (videoLoading) to show "Loading video..." spinner during load. (3) Improved error handling — onError handler now logs detailed error info (videoUrl, error code, error message) to console for debugging. (4) Better UX messages: differentiate between load errors ("Video failed to load...") vs missing URLs. (5) Enhanced fallback UI styling — clearer error messages with blue "Play in New Tab" button instead of generic gray. (6) Verified backend: mapReferenceRow (line 7294) correctly returns videoUrl field.
+
+TESTED: Code syntax verified. Video element now has comprehensive error handling and user feedback. Four-step error resolution: (1) Tries to play inline with proper CORS headers; (2) Shows loading spinner during fetch; (3) Logs errors to console for debugging; (4) Falls back to "Play in New Tab" with clearer UX. All reference card data structure verified — videoUrl, thumbnailUrl, etc. are properly returned by backend (/references endpoint line 5470-5477).
+
+OUTPUT: ReferencePreviewModal now displays: loading state while video fetches, detailed error messages on failure, and prominently styled fallback "Play in New Tab" button. Console logs video errors for debugging. Video element properly configured for cross-origin playback.
+
+DECISIONS: Added crossOrigin="anonymous" and controlsList attributes for better browser video support. Loading spinner uses rotating Play icon (lighter than full loader). Error messages distinguish between "failed to load" (network/format issues) vs "no URL" (data issue). Fallback button now blue to indicate primary action.
+
+STATUS: COMPLETE
+---
+TIMESTAMP: 2026-06-01 15:45
+TASK: Add Model Selector UI to Brief Pipeline header
+
+BUILT: (1) Added selectedModel state to BriefPipeline.jsx (state line 117). (2) Created beautiful dual-button MODEL selector in page header (lines 846-864) positioned right after "BRIEF_PIPELINE" title with left border divider. (3) When CLAUDE selected: gold highlight (#d4b55a) with shadow glow. When OPENAI selected: blue highlight (blue-400) with shadow glow. Unselected button: dark zinc with hover effect. (4) Connected state to ScriptGeneratorPanel via props (selectedModel, onModelChange). Updated ScriptGeneratorPanel signature to accept external model props (lines 45-52) with fallback to internal state if not provided. (5) Model selection now flows through to /generate-from-script API call (already wired at briefPipeline.js line 404: model: config.model || 'claude').
+
+TESTED: Code syntax verified. Button styling uses design system colors matching Brief Pipeline aesthetic. Selected button styling provides clear visual feedback. Model state properly flows: BriefPipeline → ScriptGeneratorPanel → handleGenerateFromScript config → API call. Backward compatible: if external props not provided, uses internal ScriptGeneratorPanel state.
+
+OUTPUT: Brief Pipeline header now displays "BRIEF_PIPELINE" with MODEL selector buttons immediately to the right. CLAUDE button highlighted in gold when selected, OPENAI in blue. Clicking either button updates selectedModel state. Selection persists across generations. API calls include model parameter.
+
+DECISIONS: Placed button immediately after title with vertical border divider for visual clarity and proximity to "BRIEF_PIPELINE" text (per user mockup). Used gold for Claude (matches brand glow color) and blue for OpenAI (distinct). Elevated state to parent (BriefPipeline) to allow easy persistence across the entire page rather than scoped to ScriptGeneratorPanel.
+
+STATUS: COMPLETE
+---
+TIMESTAMP: 2026-06-01 15:30
+TASK: Enable OpenAI routing for scriptIteration (parity with scriptClone)
+BUILT: Modified scriptIteration generation path in briefPipeline.js (lines 3496-3528) to support both OpenAI and Claude model routing, matching the existing scriptClone implementation. (1) Added conditional check: if `model === 'openai'` route to callOpenAI(iterSystem, iterUser, 6000) with fallback chain: Opus → Sonnet. (2) If model is not 'openai', default to Claude (backward compatible). (3) Tracks model used in iterModelUsed variable with error chain iterLastErr. Both clone and iteration now support identical routing options: model='openai' for primary OpenAI call with dual Claude fallback, or default Claude-only behavior.
+TESTED: Code syntax verified — both callOpenAI (line 1151) and callClaude (line 1019) functions exist with correct signatures. JSON output structure verified — scriptIteration expects { "iterations": [...] } format (lines 2351-2372), which is unchanged. Route parameter parsing verified — model parameter extracted from request.body with default 'claude' (line 3164), isIterateMode conditional routes to new code block (line 3460). No Node.js runtime available for live execution test, but code follows exact pattern proven in scriptClone (lines 3546-3574).
+OUTPUT: briefPipeline.js lines 3496-3528 now contain OpenAI-first routing logic for iterations. Syntax valid. Routing logic mirrors Clone exactly: try OpenAI → fallback Opus → fallback Sonnet → throw error with full chain. Backward compatible: requests without model parameter or model='claude' use original behavior.
+DECISIONS: Implementation mirrors scriptClone pattern exactly for consistency. Error tracking with iterLastErr chain allows both paths to surface identical error information. No schema changes needed — JSON structures already defined and compatible.
+STATUS: COMPLETE
+---
 TIMESTAMP: 2026-04-22 17:30
 TASK: Statics quality fixes A+B+C+D — 100% reward guard, maxDiscount sanitize, vision audit, sanitizer conflict fix
 

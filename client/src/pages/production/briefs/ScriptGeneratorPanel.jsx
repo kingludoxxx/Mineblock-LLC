@@ -51,6 +51,8 @@ const ScriptGeneratorPanel = forwardRef(function ScriptGeneratorPanel({
   initialReferenceId,
   referenceLabel,
   onClearReference,
+  selectedModel: externalSelectedModel,
+  onModelChange: externalOnModelChange,
 }, ref) {
   const [inputMode, setInputMode] = useState('text');
   const [scriptText, setScriptText] = useState('');
@@ -72,7 +74,11 @@ const ScriptGeneratorPanel = forwardRef(function ScriptGeneratorPanel({
   });
   const [enhancing, setEnhancing] = useState(false);
   const [error, setError] = useState(null);
-  const [selectedModel, setSelectedModel] = useState('claude');
+  const [internalSelectedModel, setInternalSelectedModel] = useState('claude');
+
+  // Use external model if provided by parent, otherwise use internal state
+  const selectedModel = externalSelectedModel !== undefined ? externalSelectedModel : internalSelectedModel;
+  const setSelectedModel = externalOnModelChange || setInternalSelectedModel;
 
   useImperativeHandle(ref, () => ({
     getSelectedModel: () => selectedModel,
