@@ -2193,8 +2193,9 @@ Extract and return ONLY valid JSON:
 
 RULES:
 - Hooks are usually labeled H1, H2, H3 or Hook 1, Hook 2, Hook 3 or numbered
-- If hooks aren't explicitly labeled, the first 1-3 sentences before the body are hooks
-- The body is everything after the hooks until the CTA
+- If hooks aren't explicitly labeled: AT MOST the first sentence qualifies as a hook, and ONLY if it is a true pattern-interrupt ("Why you have flabby arms after 40."). If the script opens directly with narrative or story ("I was shopping for a dress for my daughter's graduation…"), there are NO unlabeled hooks — return an empty hooks array and start the body at sentence one.
+- BODY COMPLETENESS (hard rule): the body must be the COMPLETE playable script — from the first narrative/story/argument sentence through the last line before the CTA. Extracting a hook must NEVER remove story content from the body. If in doubt whether a sentence is hook or body, it is body. Never drop sentences between the hook and the body.
+- The CTA is ONLY the final click-instruction lines (e.g. "Click below to get X at 60% off") — scarcity/urgency passages before it ("check if it's still in stock…") belong in the body.
 - Preserve the exact wording — do NOT paraphrase or rewrite
 - If the script has multiple sections (e.g. "Body:", "CTA:"), respect those boundaries
 
@@ -3771,7 +3772,12 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
           ) RETURNING *
         `, [
           winner.id, creativeId, config.mode, 'medium',
-          JSON.stringify(winAnalysis), JSON.stringify(generated.hooks), generated.body,
+          JSON.stringify(winAnalysis), JSON.stringify(generated.hooks),
+          // The generated table has no cta column, so without this append the
+          // cloned CTA never reaches the editor — the script arrives endless.
+          (generated.cta && generated.cta.trim() && !generated.body.includes(generated.cta.trim()))
+            ? `${generated.body}\n\n${generated.cta.trim()}`
+            : generated.body,
           `${direction.name}: ${direction.description}`,
           // Iterate-mode briefs persist null scores intentionally (see
           // iterate-mode dispatch above). Variants/clones get real numbers.
