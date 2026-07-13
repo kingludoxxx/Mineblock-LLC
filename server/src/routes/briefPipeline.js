@@ -5407,6 +5407,123 @@ router.get('/league/ads', authenticate, async (req, res) => {
   }
 });
 
+// ── Reference media mirroring ────────────────────────────────────────
+// Facebook CDN URLs (fbcdn.net) carry an `oe=` expiry and die ~2-4 weeks
+// after scrape — after that the reference card thumbnail and the preview
+// modal video 403 forever. Same disease as the statics image_url arc:
+// the fix is the same stable-URL contract — mirror the bytes to R2 at
+// import time and store OUR url, not theirs.
+
+const VOLATILE_MEDIA_RE = /\bfbcdn\.net\b|\bfbsbx\.com\b|\bscontent[^/]*\.xx\b/i;
+
+async function probeMediaUrl(url) {
+  try {
+    const r = await fetch(url, { method: 'HEAD', signal: AbortSignal.timeout(8000) });
+    return r.ok;
+  } catch { return false; }
+}
+
+async function mirrorMediaUrlToR2(url, keyPrefix, kind) {
+  const res = await fetch(url, { signal: AbortSignal.timeout(120000) });
+  if (!res.ok) throw new Error(`fetch ${res.status}`);
+  const buf = Buffer.from(await res.arrayBuffer());
+  const MAX = kind === 'video' ? 150 * 1024 * 1024 : 15 * 1024 * 1024;
+  if (buf.length > MAX) throw new Error(`file too large: ${buf.length} bytes`);
+  if (buf.length < 1024) throw new Error(`file suspiciously small: ${buf.length} bytes`);
+  const ct = res.headers.get('content-type') || (kind === 'video' ? 'video/mp4' : 'image/jpeg');
+  const ext = kind === 'video' ? 'mp4' : (ct.includes('png') ? 'png' : 'jpg');
+  const key = `${keyPrefix}/${crypto.randomUUID()}.${ext}`;
+  return uploadBuffer(buf, key, ct);
+}
+
+// Mirror a reference's volatile video/thumbnail to R2 and persist the stable
+// URLs. Never throws — designed to run fire-and-forget after import.
+async function mirrorReferenceMediaToR2(refId, videoUrl, thumbnailUrl) {
+  if (!isR2Configured()) return { mirrored: [], reason: 'R2 not configured' };
+  const mirrored = [];
+  if (videoUrl && VOLATILE_MEDIA_RE.test(videoUrl)) {
+    try {
+      const r2Url = await mirrorMediaUrlToR2(videoUrl, 'brief-refs/video', 'video');
+      await pgQuery(`UPDATE brief_pipeline_references SET video_url = $1, updated_at = NOW() WHERE id = $2`, [r2Url, refId]);
+      mirrored.push('video');
+    } catch (e) { console.warn(`[BriefPipeline] ref ${refId} video mirror failed: ${e.message}`); }
+  }
+  if (thumbnailUrl && VOLATILE_MEDIA_RE.test(thumbnailUrl)) {
+    try {
+      const r2Url = await mirrorMediaUrlToR2(thumbnailUrl, 'brief-refs/thumb', 'image');
+      await pgQuery(`UPDATE brief_pipeline_references SET thumbnail_url = $1, updated_at = NOW() WHERE id = $2`, [r2Url, refId]);
+      mirrored.push('thumbnail');
+    } catch (e) { console.warn(`[BriefPipeline] ref ${refId} thumb mirror failed: ${e.message}`); }
+  }
+  if (mirrored.length) console.log(`[BriefPipeline] ref ${refId} media mirrored to R2: ${mirrored.join(', ')}`);
+  return { mirrored };
+}
+
+// POST /references/repair-media — fix existing references whose fbcdn URLs
+// have expired. For each reference with volatile or missing media:
+//   1. stored URL still alive → mirror it to R2 now (beat the expiry)
+//   2. dead → pull the freshest video_hd_url/video_sd_url/thumbnail_url from
+//      brand_spy.ads (the daily scraper refreshes them) → probe → mirror
+//   3. nothing alive anywhere → unrecoverable; transcript-only fallback UI stands
+router.post('/references/repair-media', authenticate, async (req, res) => {
+  try {
+    if (!isR2Configured()) {
+      return res.status(503).json({ success: false, error: { message: 'R2 not configured on this environment' } });
+    }
+    const refs = await pgQuery(`
+      SELECT r.id, r.video_url, r.thumbnail_url, r.brand_spy_ad_id,
+             a.video_hd_url AS fresh_hd, a.video_sd_url AS fresh_sd, a.thumbnail_url AS fresh_thumb
+      FROM brief_pipeline_references r
+      LEFT JOIN brand_spy.ads a ON a.id::text = r.brand_spy_ad_id::text
+      WHERE (r.video_url ~* 'fbcdn|fbsbx' OR r.thumbnail_url ~* 'fbcdn|fbsbx')
+    `);
+    const results = [];
+    for (const ref of refs) {
+      const out = { id: ref.id, video: 'skipped', thumbnail: 'skipped' };
+      // ── video ──
+      if (ref.video_url && VOLATILE_MEDIA_RE.test(ref.video_url)) {
+        const candidates = [ref.video_url, ref.fresh_hd, ref.fresh_sd].filter(Boolean);
+        out.video = 'unrecoverable';
+        for (const c of candidates) {
+          if (!(await probeMediaUrl(c))) continue;
+          try {
+            const r2Url = await mirrorMediaUrlToR2(c, 'brief-refs/video', 'video');
+            await pgQuery(`UPDATE brief_pipeline_references SET video_url = $1, updated_at = NOW() WHERE id = $2`, [r2Url, ref.id]);
+            out.video = 'repaired';
+            break;
+          } catch (e) { out.video = `mirror failed: ${e.message}`; }
+        }
+      }
+      // ── thumbnail ──
+      if (ref.thumbnail_url && VOLATILE_MEDIA_RE.test(ref.thumbnail_url)) {
+        const candidates = [ref.thumbnail_url, ref.fresh_thumb].filter(Boolean);
+        out.thumbnail = 'unrecoverable';
+        for (const c of candidates) {
+          if (!(await probeMediaUrl(c))) continue;
+          try {
+            const r2Url = await mirrorMediaUrlToR2(c, 'brief-refs/thumb', 'image');
+            await pgQuery(`UPDATE brief_pipeline_references SET thumbnail_url = $1, updated_at = NOW() WHERE id = $2`, [r2Url, ref.id]);
+            out.thumbnail = 'repaired';
+            break;
+          } catch (e) { out.thumbnail = `mirror failed: ${e.message}`; }
+        }
+      }
+      results.push(out);
+    }
+    const count = (k) => results.filter(r => r.video === k).length + results.filter(r => r.thumbnail === k).length;
+    res.json({
+      success: true,
+      checked: refs.length,
+      repaired: count('repaired'),
+      unrecoverable: count('unrecoverable'),
+      results,
+    });
+  } catch (err) {
+    console.error('[BriefPipeline] POST /references/repair-media error:', err.message);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
 // POST /references — import a League ad into the Reference column.
 // Upserts on ad_archive_id (unique). Returns { reference, alreadyExists }.
 router.post('/references', authenticate, async (req, res) => {
@@ -5499,6 +5616,11 @@ router.post('/references', authenticate, async (req, res) => {
     );
     const reference = mapReferenceRow(rows[0]);
     res.json({ success: true, reference, alreadyExists });
+
+    // Fire-and-forget: mirror the fbcdn video/thumbnail to R2 so the card
+    // and preview modal survive Facebook's ~2-4 week URL expiry.
+    mirrorReferenceMediaToR2(rows[0].id, rows[0].video_url, rows[0].thumbnail_url)
+      .catch(e => console.warn(`[BriefPipeline] post-import media mirror failed for ref ${rows[0].id}: ${e.message}`));
   } catch (err) {
     console.error('[BriefPipeline] POST /references error:', err.message);
     res.status(500).json({ success: false, error: { message: err.message } });
