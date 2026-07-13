@@ -131,7 +131,6 @@ export default function ReferencePreviewModal({ reference, open, onClose, onUseA
                   controls
                   controlsList="nodownload"
                   playsInline
-                  crossOrigin="anonymous"
                   poster={reference.thumbnailUrl || undefined}
                   className="w-full max-h-[44vh] object-contain bg-black mx-auto"
                   onLoadStart={() => setVideoLoading(true)}
