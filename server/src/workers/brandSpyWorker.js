@@ -402,12 +402,23 @@ async function loadHistoricalRanks(client, brandId) {
 // Scrape worker
 // ---------------------------------------------------------------------------
 
-// Per-brand cool-down: refuse to re-scrape a brand whose last successful run
-// finished less than this many hours ago. Prevents the deploy-restart amplifier
+// Per-brand cool-down: refuse to re-scrape a brand whose last run finished
+// less than this many hours ago. Prevents the deploy-restart amplifier
 // (every Render boot triggers a 5-min auto-scrape) and stops the pending-sweep
 // from stacking against the daily cron. Manual Refresh from the UI passes
 // `force: true` and bypasses the gate.
 const SCRAPE_COOLDOWN_HOURS = 12;
+
+// Fix C4: minimum interval between ANY two attempts on the same brand,
+// regardless of status. The old logic only applied cool-down to `DONE`
+// brands. But the pending sweep specifically targets NULL / OUT_OF_CREDITS /
+// ERROR / INTERRUPTED brands — none of those hit the DONE gate — so once
+// credits ran out we re-attempted 11 stuck brands every 15 min forever.
+// This universal 15-min floor stops the sweep-loop; the pre-flight balance
+// check still runs and blocks before any real credit burn, but at least the
+// noise goes away and once credits return we don't hit 11 brands
+// simultaneously.
+const MIN_ATTEMPT_INTERVAL_MIN = 15;
 
 export async function runBrandScrape({ brandId, trigger, client: scClient, force = false }) {
   // Guard: skip duplicate concurrent scrapes on the same brand.
@@ -416,18 +427,28 @@ export async function runBrandScrape({ brandId, trigger, client: scClient, force
     return { jobId: null, status: 'SKIPPED', pagesDiscovered: 0, adsDiscovered: 0, adsUpdated: 0, creditsUsed: 0 };
   }
 
-  // Per-brand cool-down — protects credits against deploy-day amplification.
+  // Per-brand cool-down — protects credits against deploy-day amplification
+  // and pending-sweep loops (C4).
   if (!force) {
     const recent = await query(
       `SELECT last_scrape_status, last_scraped_at FROM brand_spy.brands WHERE id = $1`,
       [brandId],
     );
     const r = recent.rows[0];
+    // (a) 12h cool-down for successfully-completed brands
     if (r?.last_scrape_status === 'DONE' && r.last_scraped_at) {
       const hoursAgo = (Date.now() - new Date(r.last_scraped_at).getTime()) / 3600_000;
       if (hoursAgo < SCRAPE_COOLDOWN_HOURS) {
         console.log(`[brand-spy] scrape for ${brandId} skipped — last DONE ${hoursAgo.toFixed(1)}h ago (< ${SCRAPE_COOLDOWN_HOURS}h cool-down, trigger=${trigger}). Pass force=true to override.`);
         return { jobId: null, status: 'SKIPPED_RECENT', pagesDiscovered: 0, adsDiscovered: 0, adsUpdated: 0, creditsUsed: 0 };
+      }
+    }
+    // (b) 15-min floor for EVERY brand regardless of status — C4 fix
+    if (r?.last_scraped_at) {
+      const minutesAgo = (Date.now() - new Date(r.last_scraped_at).getTime()) / 60_000;
+      if (minutesAgo < MIN_ATTEMPT_INTERVAL_MIN) {
+        console.log(`[brand-spy] scrape for ${brandId} skipped — last attempt ${minutesAgo.toFixed(1)}m ago (< ${MIN_ATTEMPT_INTERVAL_MIN}m floor, status=${r.last_scrape_status}, trigger=${trigger}).`);
+        return { jobId: null, status: 'SKIPPED_TOO_SOON', pagesDiscovered: 0, adsDiscovered: 0, adsUpdated: 0, creditsUsed: 0 };
       }
     }
   }
@@ -1026,17 +1047,30 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
     }
   }
 
+  // Fix C1: defer pre-loaded pages until Phase 1d completes.
+  //
+  // The `phase1dCoveredEverything` skip-optimisation is read once at the top
+  // of each Phase 2 worker. If we launched pre-loaded pages before Phase 1d
+  // even started, the flag is always `false` at read time — every pre-loaded
+  // page burned full Phase 2 credits regardless of what Phase 1d would later
+  // find (~75+ credits/re-scrape/brand of pure waste).
+  //
+  // Fix: `launchNewPages` skips pre-loaded pages until Phase 1d finishes.
+  // Newly-discovered pages (not in knownPageIds) still launch immediately
+  // because they aren't the ones the skip-optimisation targets.
+  let phase1dComplete = false;
   function launchNewPages() {
     for (const metaPageId of pageCache.keys()) {
-      if (metaPageId && !p2Launched.has(metaPageId)) {
-        p2Launched.add(metaPageId);
-        p2Promises.push(runPhase2Page(metaPageId));
-      }
+      if (!metaPageId || p2Launched.has(metaPageId)) continue;
+      const isPreloaded = knownPageIds.has(metaPageId);
+      if (isPreloaded && !phase1dComplete) continue; // defer — Phase 1d not done yet
+      p2Launched.add(metaPageId);
+      p2Promises.push(runPhase2Page(metaPageId));
     }
   }
 
-  // Launch Phase 2 for all pre-loaded known pages immediately (in parallel with Phase 1).
-  // New pages discovered by Phase 1 are also launched via launchNewPages() below.
+  // Pre-loaded pages held for Phase 1d completion; newly-discovered pages
+  // still fire ASAP via launchNewPages() below.
   launchNewPages();
 
   // Phase 1a/1b: keyword-search the full domain. ONLY runs on first scrape when
@@ -1181,6 +1215,12 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
     console.log(`[brand-spy] phase-1d done: ${p1dDiscovered} new, ${p1dUpdated} updated, ${pageCache.size - p1dBefore} new pages`);
     discovered += p1dDiscovered; updated += p1dUpdated;
   }
+  // C1: Phase 1d is now finished — release the pre-loaded pages that were
+  // held back at scrape start. Each Phase 2 worker reads
+  // `phase1dCoveredEverything` at its top; workers launched now will see
+  // the correct value and skip the redundant ACTIVE pass when appropriate.
+  phase1dComplete = true;
+  launchNewPages();
   if (shutdownRequested) { p2Blocked = true; throw Object.assign(new Error('Shutdown requested after phase-1d'), { isShutdown: true }); }
 
   // Phase 1.5: company-name search — discovers FB pages not found via domain

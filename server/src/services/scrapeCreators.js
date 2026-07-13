@@ -5,8 +5,14 @@
 import axios from 'axios';
 
 const BASE_URL = 'https://api.scrapecreators.com/v1';
-const DEFAULT_TIMEOUT_MS = 30_000;
-const MAX_RETRIES = 3;
+// Fix C2: raise timeout to 60s. /company/ads and /search/ads regularly take
+// 20-40s on high-cursor pages; the old 30s cap turned normal slow calls
+// into ECONNABORTED aborts, and every abort still burned a credit on SC's
+// side (they process/bill the request even if the client stopped waiting).
+const DEFAULT_TIMEOUT_MS = 60_000;
+// Fix C2: retries reduced to 2. Historic value of 3 could triple-charge
+// us on flaky-network days when combined with the retryable timeout bug.
+const MAX_RETRIES = 2;
 const RETRY_BASE_DELAY_MS = 1_000;
 
 export class ScrapeCreatorsError extends Error {
@@ -110,16 +116,21 @@ export class ScrapeCreatorsClient {
       const status = err.response?.status ?? null;
       const body = err.response?.data;
       const message = body?.message ?? body?.error ?? err.message ?? 'ScrapeCreators request failed';
+      // Fix C2: DO NOT retry on ECONNABORTED / ETIMEDOUT. When axios aborts a
+      // request client-side, SC's server has almost always received and
+      // billed the request already — retrying pays a second credit for the
+      // same logical call. 429 (rate-limit) is safe to retry because SC
+      // doesn't bill rate-limited requests. 5xx (gateway) is retryable
+      // because in practice SC's edge rejects before billing.
       const retryable =
-        err.code === 'ECONNABORTED' ||
-        err.code === 'ETIMEDOUT' ||
         status === 429 ||
-        (status !== null && status >= 500);
+        (status !== null && status >= 502 && status <= 504);
       const code =
         status === 401 ? 'AUTH'
           : status === 404 ? 'NOT_FOUND'
           : status === 429 ? 'RATE_LIMIT'
           : status && status >= 500 ? 'UPSTREAM'
+          : err.code === 'ECONNABORTED' || err.code === 'ETIMEDOUT' ? 'TIMEOUT'
           : 'UNKNOWN';
       return new ScrapeCreatorsError(message, status, code, retryable);
     }
