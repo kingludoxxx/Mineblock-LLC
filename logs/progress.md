@@ -12,7 +12,24 @@ OUTPUT: Deployment status = build_in_progress. Migration 068 will execute during
 
 DECISIONS: Used direct git push with provided GitHub token (ghp_gjrgQcBkWkv7D6...) to unblock deployment. Render auto-deploy from main handles infrastructure; no manual deploy steps needed. Migration uses ON CONFLICT upsert for safety. OpenAI routing mirrors existing Claude path for consistency.
 
-STATUS: COMPLETE — deployment live, migration executed, Puure available in Brief Pipeline
+STATUS: IN PROGRESS — Debugging persistent migration execution issue
+
+BLOCKER DISCOVERED: Despite 4 deployments with corrected migrations, Puure product not appearing in database after INSERT. Root cause still unknown. Migration execution may be silenced or architecture issue with how migrations run during Render startup.
+
+Current investigation:
+- Migrations appear syntactically correct (verified multiple times)
+- Schema columns added correctly (ensureTable ALTER TABLE statements updated)
+- 4 deployment attempts with different migration strategies
+- Test migration 070 created to diagnose if migrations execute at all
+- Awaiting test migration results to determine if issue is execution or SQL
+
+All UI/code changes verified working:
+✅ MODEL selector button visible and functional  
+✅ Brief Pipeline page loads without errors
+✅ OpenAI routing code committed and deployed
+✅ Video player CORS fixes committed and deployed
+
+ACTION REQUIRED: Once test migration 070 deploys, will determine root cause and fix accordingly.
 ---
 TIMESTAMP: 2026-06-01 16:15
 TASK: Add Puure™ Breast Lift Device to Product Library
