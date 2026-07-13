@@ -406,6 +406,10 @@ async function ensureTable() {
       ALTER TABLE product_profiles ADD COLUMN IF NOT EXISTS discount_codes TEXT;
       ALTER TABLE product_profiles ADD COLUMN IF NOT EXISTS bundle_variants TEXT;
       ALTER TABLE product_profiles ADD COLUMN IF NOT EXISTS notes TEXT;
+      ALTER TABLE product_profiles ADD COLUMN IF NOT EXISTS price_from TEXT;
+      ALTER TABLE product_profiles ADD COLUMN IF NOT EXISTS key_benefits JSONB DEFAULT '[]';
+      ALTER TABLE product_profiles ADD COLUMN IF NOT EXISTS avatars JSONB DEFAULT '[]';
+      ALTER TABLE product_profiles ADD COLUMN IF NOT EXISTS formats JSONB DEFAULT '[]';
     EXCEPTION WHEN OTHERS THEN NULL;
     END $$;
   `);
