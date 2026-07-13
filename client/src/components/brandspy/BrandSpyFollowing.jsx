@@ -262,11 +262,42 @@ function BrandRow({ brand, onOpen, onScrape, onDelete }) {
         {t.c > 0 && <TierChip label={`C ${t.c}`} cls="bg-zinc-700/40 text-zinc-400 border-zinc-700" />}
       </div>
 
-      {/* Counts */}
-      <div className="text-right shrink-0 min-w-[72px]">
-        <p className="text-sm font-semibold text-text-primary tabular-nums">{fmtCount(brand.totalAdsCount)}</p>
-        <p className="text-xs text-emerald-400 tabular-nums">{fmtCount(brand.activeAdsCount)} active</p>
-        <p className="text-[10px] text-text-faint">{relTime(brand.lastScrapedAt)}</p>
+      {/* Counts + scrape state */}
+      <div className="text-right shrink-0 min-w-[100px]">
+        {brand.lastScrapeStatus === 'OUT_OF_CREDITS' ? (
+          <div title={brand.lastScrapeError || 'Out of ScrapeCreators credits'}>
+            <a
+              href="https://app.scrapecreators.com"
+              target="_blank"
+              rel="noreferrer"
+              onClick={e => e.stopPropagation()}
+              className="inline-flex items-center gap-1 text-[11px] font-semibold text-amber-400 hover:text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-md px-1.5 py-0.5 whitespace-nowrap"
+            >
+              ⚠ Credits needed
+            </a>
+            <p className="text-[10px] text-text-faint mt-0.5">Top up to resume</p>
+          </div>
+        ) : brand.lastScrapeStatus === 'RUNNING' ? (
+          <div>
+            <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-sky-400 bg-sky-500/10 border border-sky-500/30 rounded-md px-1.5 py-0.5">
+              <RefreshCw className="w-2.5 h-2.5 animate-spin" /> Scraping
+            </span>
+            <p className="text-[10px] text-text-faint mt-0.5">{relTime(brand.lastScrapedAt)}</p>
+          </div>
+        ) : brand.lastScrapeStatus === 'ERROR' ? (
+          <div title={brand.lastScrapeError || 'Scrape failed'}>
+            <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-rose-400 bg-rose-500/10 border border-rose-500/30 rounded-md px-1.5 py-0.5">
+              ⚠ Scrape failed
+            </span>
+            <p className="text-[10px] text-text-faint mt-0.5">{relTime(brand.lastScrapedAt)}</p>
+          </div>
+        ) : (
+          <>
+            <p className="text-sm font-semibold text-text-primary tabular-nums">{fmtCount(brand.totalAdsCount)}</p>
+            <p className="text-xs text-emerald-400 tabular-nums">{fmtCount(brand.activeAdsCount)} active</p>
+            <p className="text-[10px] text-text-faint">{relTime(brand.lastScrapedAt)}</p>
+          </>
+        )}
       </div>
 
       {/* Actions — visible on hover */}
