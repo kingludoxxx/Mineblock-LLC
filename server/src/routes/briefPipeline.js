@@ -5471,7 +5471,7 @@ router.post('/references/repair-media', authenticate, async (req, res) => {
       return res.status(503).json({ success: false, error: { message: 'R2 not configured on this environment' } });
     }
     const refs = await pgQuery(`
-      SELECT r.id, r.video_url, r.thumbnail_url, r.brand_spy_ad_id,
+      SELECT r.id, r.video_url, r.thumbnail_url, r.brand_spy_ad_id, r.source_url, r.ad_archive_id,
              a.raw_snapshot->'videos'->0->>'video_hd_url'            AS fresh_hd,
              a.raw_snapshot->'videos'->0->>'video_sd_url'            AS fresh_sd,
              a.raw_snapshot->'videos'->0->>'video_preview_image_url' AS fresh_thumb
@@ -5479,47 +5479,57 @@ router.post('/references/repair-media', authenticate, async (req, res) => {
       LEFT JOIN brand_spy.ads a ON a.id::text = r.brand_spy_ad_id::text
       WHERE (r.video_url ~* 'fbcdn|fbsbx' OR r.thumbnail_url ~* 'fbcdn|fbsbx')
     `);
-    const results = [];
-    for (const ref of refs) {
-      const out = { id: ref.id, video: 'skipped', thumbnail: 'skipped' };
-      // ── video ──
-      if (ref.video_url && VOLATILE_MEDIA_RE.test(ref.video_url)) {
-        const candidates = [ref.video_url, ref.fresh_hd, ref.fresh_sd].filter(Boolean);
-        out.video = 'unrecoverable';
-        for (const c of candidates) {
-          if (!(await probeMediaUrl(c))) continue;
-          try {
-            const r2Url = await mirrorMediaUrlToR2(c, 'brief-refs/video', 'video');
-            await pgQuery(`UPDATE brief_pipeline_references SET video_url = $1, updated_at = NOW() WHERE id = $2`, [r2Url, ref.id]);
-            out.video = 'repaired';
-            break;
-          } catch (e) { out.video = `mirror failed: ${e.message}`; }
+
+    // yt-dlp re-extraction can take 45s+ per ref — way past Render's 30s
+    // response limit. Respond immediately, repair in the background; the
+    // operator sees results as R2 URLs appearing on GET /references.
+    res.json({ success: true, started: true, checked: refs.length });
+
+    (async () => {
+      const results = [];
+      for (const ref of refs) {
+        const out = { id: ref.id, video: 'skipped', thumbnail: 'skipped' };
+        // ── video: stored URL → brand_spy snapshot → yt-dlp re-extract from Ad Library ──
+        if (ref.video_url && VOLATILE_MEDIA_RE.test(ref.video_url)) {
+          out.video = 'unrecoverable';
+          const candidates = [ref.video_url, ref.fresh_hd, ref.fresh_sd].filter(Boolean);
+          let fresh = null;
+          for (const c of candidates) {
+            if (await probeMediaUrl(c)) { fresh = c; break; }
+          }
+          if (!fresh) {
+            // Last resort: the ad may still be live in the FB Ad Library —
+            // yt-dlp pulls a brand-new (unexpired) fbcdn URL from the page.
+            const pageUrl = ref.source_url || (ref.ad_archive_id ? `https://www.facebook.com/ads/library/?id=${ref.ad_archive_id}` : null);
+            if (pageUrl) fresh = await extractVideoUrlWithYtdlp(pageUrl).catch(() => null);
+          }
+          if (fresh) {
+            try {
+              const r2Url = await mirrorMediaUrlToR2(fresh, 'brief-refs/video', 'video');
+              await pgQuery(`UPDATE brief_pipeline_references SET video_url = $1, updated_at = NOW() WHERE id = $2`, [r2Url, ref.id]);
+              out.video = 'repaired';
+            } catch (e) { out.video = `mirror failed: ${e.message}`; }
+          }
         }
-      }
-      // ── thumbnail ──
-      if (ref.thumbnail_url && VOLATILE_MEDIA_RE.test(ref.thumbnail_url)) {
-        const candidates = [ref.thumbnail_url, ref.fresh_thumb].filter(Boolean);
-        out.thumbnail = 'unrecoverable';
-        for (const c of candidates) {
-          if (!(await probeMediaUrl(c))) continue;
-          try {
-            const r2Url = await mirrorMediaUrlToR2(c, 'brief-refs/thumb', 'image');
-            await pgQuery(`UPDATE brief_pipeline_references SET thumbnail_url = $1, updated_at = NOW() WHERE id = $2`, [r2Url, ref.id]);
-            out.thumbnail = 'repaired';
-            break;
-          } catch (e) { out.thumbnail = `mirror failed: ${e.message}`; }
+        // ── thumbnail: stored URL → brand_spy snapshot ──
+        if (ref.thumbnail_url && VOLATILE_MEDIA_RE.test(ref.thumbnail_url)) {
+          out.thumbnail = 'unrecoverable';
+          for (const c of [ref.thumbnail_url, ref.fresh_thumb].filter(Boolean)) {
+            if (!(await probeMediaUrl(c))) continue;
+            try {
+              const r2Url = await mirrorMediaUrlToR2(c, 'brief-refs/thumb', 'image');
+              await pgQuery(`UPDATE brief_pipeline_references SET thumbnail_url = $1, updated_at = NOW() WHERE id = $2`, [r2Url, ref.id]);
+              out.thumbnail = 'repaired';
+              break;
+            } catch (e) { out.thumbnail = `mirror failed: ${e.message}`; }
+          }
         }
+        results.push(out);
+        console.log(`[BriefPipeline] repair-media ref ${ref.id}: video=${out.video} thumbnail=${out.thumbnail}`);
       }
-      results.push(out);
-    }
-    const count = (k) => results.filter(r => r.video === k).length + results.filter(r => r.thumbnail === k).length;
-    res.json({
-      success: true,
-      checked: refs.length,
-      repaired: count('repaired'),
-      unrecoverable: count('unrecoverable'),
-      results,
-    });
+      const count = (k, field) => results.filter(r => r[field] === k).length;
+      console.log(`[BriefPipeline] repair-media DONE — ${results.length} refs; video repaired=${count('repaired','video')} unrecoverable=${count('unrecoverable','video')}; thumb repaired=${count('repaired','thumbnail')} unrecoverable=${count('unrecoverable','thumbnail')}`);
+    })().catch(e => console.error('[BriefPipeline] repair-media background error:', e.message));
   } catch (err) {
     console.error('[BriefPipeline] POST /references/repair-media error:', err.message);
     res.status(500).json({ success: false, error: { message: err.message } });
