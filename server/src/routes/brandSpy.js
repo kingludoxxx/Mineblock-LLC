@@ -20,6 +20,7 @@ import { query as pgQuery } from '../config/db.js';
 import { runBrandScrape, scrapeAllInBackground, recoverStuckScrapes } from '../workers/brandSpyWorker.js';
 import { getScrapeCreatorsClient } from '../services/scrapeCreators.js';
 import { transcribeVideoUrl } from '../services/videoTranscribe.js';
+import { extractFreshVideoUrl, adLibraryUrl } from '../services/freshVideoUrl.js';
 
 const router = Router();
 
@@ -735,7 +736,19 @@ router.post('/ads/:id/transcribe', validateUuidParam('id'), async (req, res, nex
     let inflight = transcribeInFlight.get(adId);
     if (!inflight) {
       inflight = (async () => {
-        const { text, segments } = await transcribeVideoUrl(ad.videoUrl);
+        let transcription;
+        try {
+          transcription = await transcribeVideoUrl(ad.videoUrl);
+        } catch (err) {
+          // Stored fbcdn URL expired (403 etc.) — the ad may still be live
+          // in the FB Ad Library. Pull a fresh URL via yt-dlp and retry once.
+          const archiveId = ad.adArchiveId || ad.ad_archive_id;
+          const fresh = archiveId ? await extractFreshVideoUrl(adLibraryUrl(archiveId)) : null;
+          if (!fresh) throw err;
+          console.log(`[brand-spy] transcribe: stored URL dead (${err.message}) — retrying with fresh yt-dlp URL for ad ${adId}`);
+          transcription = await transcribeVideoUrl(fresh);
+        }
+        const { text, segments } = transcription;
         const { rows } = await pgQuery(
           `UPDATE brand_spy.ads
               SET transcript = $1, transcript_segments = $2, transcript_at = NOW()
@@ -757,6 +770,24 @@ router.post('/ads/:id/transcribe', validateUuidParam('id'), async (req, res, nex
     // did pay OpenAI for it — once — and they're getting the fresh result),
     // but the second physical caller didn't trigger a second Whisper call.
     res.json(result);
+  } catch (err) { next(err); }
+});
+
+// POST /ads/:id/fresh-video-url — the stored fbcdn video URL has expired;
+// re-extract a live one from the ad's FB Ad Library page via yt-dlp.
+// Returns { videoUrl } or 404 if the ad is gone from the library.
+// Takes 10-45s (yt-dlp) — the frontend shows a refreshing state.
+router.post('/ads/:id/fresh-video-url', validateUuidParam('id'), async (req, res, next) => {
+  try {
+    const ad = await getAdDetail(req.params.id);
+    if (!ad) return res.status(404).json({ error: 'Ad not found' });
+    const archiveId = ad.adArchiveId || ad.ad_archive_id;
+    if (!archiveId) return res.status(400).json({ error: 'Ad has no ad_archive_id to re-extract from' });
+    const fresh = await extractFreshVideoUrl(adLibraryUrl(archiveId));
+    if (!fresh) {
+      return res.status(404).json({ error: 'Could not extract a fresh video URL — the ad may no longer be live in the FB Ad Library' });
+    }
+    res.json({ videoUrl: fresh });
   } catch (err) { next(err); }
 });
 

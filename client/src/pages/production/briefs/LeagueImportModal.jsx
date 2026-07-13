@@ -63,6 +63,8 @@ export default function LeagueImportModal({ open, onClose, onImported }) {
   // Right-panel preview
   const [selectedAd, setSelectedAd] = useState(null);
   const [videoError, setVideoError] = useState(false);
+  const [freshVideoUrl, setFreshVideoUrl] = useState(null);
+  const [refreshingVideo, setRefreshingVideo] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
   const [transcriptError, setTranscriptError] = useState(null);
 
@@ -205,9 +207,32 @@ export default function LeagueImportModal({ open, onClose, onImported }) {
   const handleSelectAd = (ad) => {
     setSelectedAd(ad);
     setVideoError(false);
+    setFreshVideoUrl(null);
+    setRefreshingVideo(false);
     setTranscriptError(null);
     setImportError(null);
     setImportSuccess(false);
+  };
+
+  // Stored fbcdn URLs expire ~2-4 weeks after scrape. When playback fails,
+  // ask the server to re-extract a live URL from the FB Ad Library (yt-dlp,
+  // takes up to ~45s) and retry once.
+  const handleVideoError = async () => {
+    if (freshVideoUrl || refreshingVideo) { setVideoError(true); return; }
+    setRefreshingVideo(true);
+    try {
+      const { data } = await api.post(`/brand-spy/ads/${selectedAd.id}/fresh-video-url`, {}, { timeout: 60000 });
+      if (data?.videoUrl) {
+        setFreshVideoUrl(data.videoUrl);
+        setVideoError(false);
+      } else {
+        setVideoError(true);
+      }
+    } catch {
+      setVideoError(true);
+    } finally {
+      setRefreshingVideo(false);
+    }
   };
 
   const handleTranscribe = async () => {
@@ -605,16 +630,24 @@ export default function LeagueImportModal({ open, onClose, onImported }) {
                 <div className="flex-1 overflow-y-auto min-h-0">
                   {/* Video */}
                   <div className="p-5">
-                    {selectedAd.videoUrl && !videoError ? (
+                    {refreshingVideo ? (
+                      <div className="rounded-lg border border-white/[0.06] bg-black/40 p-6 text-center">
+                        <Loader2 className="w-6 h-6 text-zinc-500 mx-auto mb-3 animate-spin" />
+                        <div className="text-xs text-zinc-400 mb-1">
+                          Video link expired — fetching a fresh one from the Ad Library…
+                        </div>
+                        <div className="text-[10px] text-zinc-600">This can take up to 45 seconds.</div>
+                      </div>
+                    ) : selectedAd.videoUrl && !videoError ? (
                       <div className="rounded-lg overflow-hidden bg-black border border-white/[0.06]">
                         <video
-                          key={selectedAd.id}
-                          src={selectedAd.videoUrl}
+                          key={`${selectedAd.id}-${freshVideoUrl ? 'fresh' : 'stored'}`}
+                          src={freshVideoUrl || selectedAd.videoUrl}
                           controls
                           playsInline
                           poster={selectedAd.thumbnailUrl || undefined}
                           className="w-full max-h-[40vh] object-contain bg-black"
-                          onError={() => setVideoError(true)}
+                          onError={handleVideoError}
                         />
                       </div>
                     ) : (
@@ -630,12 +663,12 @@ export default function LeagueImportModal({ open, onClose, onImported }) {
                         )}
                         <div className="text-xs text-zinc-400 mb-2">
                           {selectedAd.videoUrl
-                            ? "Video can't play inline (Meta CDN blocks it)."
-                            : "No direct video URL stored for this ad."}
+                            ? 'Video link expired and the ad is no longer live in the FB Ad Library.'
+                            : 'No direct video URL stored for this ad.'}
                         </div>
                         {selectedAd.videoUrl && (
                           <a
-                            href={selectedAd.videoUrl}
+                            href={freshVideoUrl || selectedAd.videoUrl}
                             target="_blank"
                             rel="noopener noreferrer"
                             className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-mono rounded bg-white/[0.04] border border-white/[0.08] text-zinc-300 hover:text-white hover:bg-white/[0.06] transition-colors"
