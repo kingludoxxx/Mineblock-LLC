@@ -18,7 +18,8 @@ ALTER TABLE brand_spy.ads
   ADD COLUMN IF NOT EXISTS assets_mirrored_at TIMESTAMPTZ;
 
 ALTER TABLE brand_spy.brand_pages
-  ADD COLUMN IF NOT EXISTS page_profile_pic_r2 TEXT;
+  ADD COLUMN IF NOT EXISTS page_profile_pic_r2       TEXT,
+  ADD COLUMN IF NOT EXISTS page_profile_pic_r2_attempted_at TIMESTAMPTZ;
 
 -- Index the mirror-pending set. The background worker queries
 -- WHERE video_url IS NOT NULL AND video_url_r2 IS NULL AND is_active = TRUE

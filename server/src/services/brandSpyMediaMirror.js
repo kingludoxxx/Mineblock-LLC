@@ -213,11 +213,18 @@ async function mirrorAdsBatch() {
 async function mirrorPagesBatch() {
   if (!isR2Configured()) return;
   try {
+    // Only re-attempt pages we haven't tried in the last hour — 403s on
+    // the stored fbcdn URL are permanent for that URL, so hot-looping over
+    // the same 8 rows every 30s achieves nothing but log noise. NULLS FIRST
+    // takes never-attempted rows before we cycle back to prior failures.
     const { rows } = await query(
       `SELECT id, meta_page_id, page_profile_pic
          FROM brand_spy.brand_pages
         WHERE page_profile_pic IS NOT NULL
           AND page_profile_pic_r2 IS NULL
+          AND (page_profile_pic_r2_attempted_at IS NULL
+               OR page_profile_pic_r2_attempted_at < NOW() - INTERVAL '1 hour')
+        ORDER BY page_profile_pic_r2_attempted_at NULLS FIRST
         LIMIT $1`,
       [MIRROR_BATCH_SIZE],
     );
@@ -227,12 +234,13 @@ async function mirrorPagesBatch() {
         metaPageId: row.meta_page_id,
         pageProfilePic: row.page_profile_pic,
       });
-      if (url) {
-        await query(
-          `UPDATE brand_spy.brand_pages SET page_profile_pic_r2 = $2 WHERE id = $1`,
-          [row.id, url],
-        );
-      }
+      await query(
+        `UPDATE brand_spy.brand_pages
+            SET page_profile_pic_r2              = COALESCE($2, page_profile_pic_r2),
+                page_profile_pic_r2_attempted_at = NOW()
+          WHERE id = $1`,
+        [row.id, url],
+      );
     }
     console.log(`[bs-mirror] pages — processed ${rows.length}`);
   } catch (err) {
