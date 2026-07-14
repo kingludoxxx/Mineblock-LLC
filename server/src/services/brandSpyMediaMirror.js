@@ -39,10 +39,29 @@ async function downloadWithLimit(url, maxBytes) {
   try {
     const res = await fetch(url, { headers: FBCDN_HEADERS, signal: controller.signal });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const buf = Buffer.from(await res.arrayBuffer());
-    if (buf.length > maxBytes) {
-      throw new Error(`asset ${(buf.length / 1024 / 1024).toFixed(1)} MB exceeds ${maxBytes / 1024 / 1024} MB cap`);
+
+    // Enforce the cap BEFORE allocating. The original implementation did
+    // arrayBuffer()-then-check, which buffered a 100+ MB video in full (twice,
+    // with the Buffer copy) before the cap ran — that IS the OOM, the check
+    // never got to matter. Reject on Content-Length when present, and
+    // stream-read with a running cap when it isn't.
+    const declared = parseInt(res.headers.get('content-length') || '', 10);
+    if (!isNaN(declared) && declared > maxBytes) {
+      controller.abort();
+      throw new Error(`asset ${(declared / 1024 / 1024).toFixed(1)} MB exceeds ${maxBytes / 1024 / 1024} MB cap (content-length)`);
     }
+
+    const chunks = [];
+    let received = 0;
+    for await (const chunk of res.body) {
+      received += chunk.length;
+      if (received > maxBytes) {
+        controller.abort();
+        throw new Error(`asset exceeds ${maxBytes / 1024 / 1024} MB cap (aborted at ${(received / 1024 / 1024).toFixed(1)} MB)`);
+      }
+      chunks.push(chunk);
+    }
+    const buf = Buffer.concat(chunks);
     const contentType = res.headers.get('content-type') || 'application/octet-stream';
     return { buffer: buf, contentType };
   } finally {
@@ -65,32 +84,35 @@ export async function mirrorAdAssets({ adArchiveId, videoUrl, thumbnailUrl }) {
   // --- Video ---
   if (videoUrl) {
     try {
-      let { buffer, contentType } = await downloadWithLimit(videoUrl, MAX_VIDEO_BYTES);
-      // fbcdn may have already expired the stored URL. Try yt-dlp re-extract
-      // once as a fallback before giving up.
-      if (!buffer || buffer.length < 1024) {
-        const fresh = await extractFreshVideoUrl(adLibraryUrl(adArchiveId));
-        if (fresh) {
-          ({ buffer, contentType } = await downloadWithLimit(fresh, MAX_VIDEO_BYTES));
-        }
-      }
+      const { buffer, contentType } = await downloadWithLimit(videoUrl, MAX_VIDEO_BYTES);
       if (buffer && buffer.length >= 1024) {
         const key = `brand-spy/videos/${adArchiveId}.mp4`;
         videoUrlR2 = await uploadBuffer(buffer, key, contentType || 'video/mp4');
       }
     } catch (err) {
-      // Try yt-dlp fallback on any download failure (403, timeout, etc.)
-      try {
-        const fresh = await extractFreshVideoUrl(adLibraryUrl(adArchiveId));
-        if (fresh) {
-          const { buffer, contentType } = await downloadWithLimit(fresh, MAX_VIDEO_BYTES);
-          if (buffer && buffer.length >= 1024) {
-            const key = `brand-spy/videos/${adArchiveId}.mp4`;
-            videoUrlR2 = await uploadBuffer(buffer, key, contentType || 'video/mp4');
+      // yt-dlp fallback in the BACKFILL is gated off by default: each spawn is
+      // a ~150 MB Python process inside the same 512 MB cgroup as a Node
+      // baseline of 250-400 MB, and most of the old backlog is dead URLs — the
+      // worker was OOM-killing the whole service every ~2-3 min (2026-07-14
+      // crash loop). Dead ads get stamped attempted_at and skipped; the
+      // interactive /ads/:id/fresh-video-url path still serves user-facing
+      // needs one ad at a time. Re-enable here with BS_MIRROR_YTDLP=1 only on
+      // a plan with >= 1 GB memory.
+      if (process.env.BS_MIRROR_YTDLP === '1') {
+        try {
+          const fresh = await extractFreshVideoUrl(adLibraryUrl(adArchiveId));
+          if (fresh) {
+            const { buffer, contentType } = await downloadWithLimit(fresh, MAX_VIDEO_BYTES);
+            if (buffer && buffer.length >= 1024) {
+              const key = `brand-spy/videos/${adArchiveId}.mp4`;
+              videoUrlR2 = await uploadBuffer(buffer, key, contentType || 'video/mp4');
+            }
           }
+        } catch (fallbackErr) {
+          console.warn(`[bs-mirror] video ${adArchiveId} failed: ${err.message}; fresh-url fallback: ${fallbackErr.message}`);
         }
-      } catch (fallbackErr) {
-        console.warn(`[bs-mirror] video ${adArchiveId} failed: ${err.message}; fresh-url fallback: ${fallbackErr.message}`);
+      } else {
+        console.warn(`[bs-mirror] video ${adArchiveId} failed: ${err.message} (yt-dlp backfill fallback disabled — BS_MIRROR_YTDLP!=1)`);
       }
     }
   }
