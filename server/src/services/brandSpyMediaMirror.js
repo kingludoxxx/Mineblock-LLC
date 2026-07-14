@@ -17,9 +17,12 @@ import { query } from '../config/db.js';
 import { uploadBuffer, isR2Configured } from './r2.js';
 import { extractFreshVideoUrl, adLibraryUrl } from './freshVideoUrl.js';
 
-const FBCDN_DOWNLOAD_TIMEOUT_MS = 60_000;
-const MAX_VIDEO_BYTES = 100 * 1024 * 1024;   // 100 MB — reasonable ad-video ceiling
-const MAX_IMAGE_BYTES = 5 * 1024 * 1024;     //   5 MB — thumbnail ceiling
+const FBCDN_DOWNLOAD_TIMEOUT_MS = 45_000;
+// Aggressive caps because the service runs on a 512 MB Render plan and the
+// mirror worker OOM'd the process at the original 100 MB × 3-concurrent
+// ceiling — 300 MB of in-flight buffers + Node baseline == kill.
+const MAX_VIDEO_BYTES = 25 * 1024 * 1024;    //  25 MB — most ads are 3-10 MB
+const MAX_IMAGE_BYTES = 3 * 1024 * 1024;     //   3 MB — thumbnails are typically < 500 KB
 
 // Meta's edge sometimes wants a plausible User-Agent + Referer or it 403s.
 // These headers match what a real Chrome browser sends when loading an
@@ -132,8 +135,8 @@ export async function mirrorPageProfilePic({ metaPageId, pageProfilePic }) {
 // ---------------------------------------------------------------------------
 
 const MIRROR_TICK_MS       = 30 * 1000;   // process a batch every 30s
-const MIRROR_BATCH_SIZE    = 8;           // up to 8 ads per tick
-const MIRROR_CONCURRENCY   = 3;           // 3 in flight at once
+const MIRROR_BATCH_SIZE    = 4;           // 4 ads per tick — was 8, halved for memory
+const MIRROR_CONCURRENCY   = 1;           // serial — starter-plan can't hold 3 × 25 MB buffers
 
 let mirrorRunning = false;
 
