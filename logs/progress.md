@@ -1,6 +1,42 @@
 # Progress Log
 
 ---
+TIMESTAMP: 2026-07-15 01:40
+TASK: Adversarial bug hunt on Batch Queue — all features exercised
+
+TESTED: select-all/multi-select, prefetch, dedup, cancel, retry, clear-done,
+specific-angle queue, openai-model queue, strip persistence across reloads,
+localStorage defaults, single-select flow.
+
+BUGS FOUND + FIXED:
+1. CRITICAL: 'Select all on page' fired 13 parallel transcribe prefetches ->
+   13 concurrent video downloads OOM-crashed the 512MB instance (502 burst).
+   FIX: select-all no longer prefetches (queue worker transcribes at safe
+   concurrency post-Queue); individual checkbox prefetch is now a sequential
+   chain (1 in flight); server transcribe endpoint hard-capped at 2 concurrent
+   (429 TRANSCRIBE_BUSY). Re-tested: select-all fires ZERO calls, selection +
+   footer + Queue button all work.
+2. CRITICAL (cross-lane, prod down): adRejectionMonitor re-posts the entire
+   un-notified backlog to Slack every 3 min; SLACK_REJECTION_CHANNEL is
+   ARCHIVED so every post fails forever -> is_archived storm, then Slack
+   rate-limited the token, dozens of req/sec starving the instance.
+   FIX: circuit breaker (fatal channel errors -> 6h off w/ one log line;
+   ratelimited -> 15 min off) + 1.1s pacing between posts.
+   OPERATOR ACTION: SLACK_REJECTION_CHANNEL (C0ANTAJ7H9N) is archived —
+   unarchive or repoint, alerts are silently off until then.
+3. Self-inflicted during test: /api/health returns 503 by design when a
+   subsystem is degraded — NOT a service-down signal; probe / or /login.
+
+VERIFIED PASSING: dedup (skip 'already queued or running'); cancel queued
+(action:canceled, never ran); retry failed (re-runs, fails again w/ same
+readable error; 409 on complete); specific angle -> naming carries TSS;
+openai model path completes (fallback chain, B0439); strip survives reload;
+defaults persist (Puure preselected); numbers unique B0429-B0439; queue
+cleaned to 0 rows after clear-done + failed-row deletes.
+STATUS: COMPLETE
+---
+
+---
 TIMESTAMP: 2026-07-15 00:55
 TASK: Batch Queue feature (BATCH_QUEUE_SCOPE.md) — build, test to 10/10
 
