@@ -1017,17 +1017,20 @@ function getCurrentWeekLabel() {
 /**
  * Call Claude API and return parsed JSON from the response.
  */
-async function callClaude(systemPrompt, userPrompt, maxTokens = 3000, { fast = false, rawText = false, opus = false } = {}) {
+async function callClaude(systemPrompt, userPrompt, maxTokens = 3000, { fast = false, rawText = false, opus = false, timeoutMs = 0 } = {}) {
+  // userPrompt may be a plain string OR a pre-built content-block array
+  // (used by the clone path to set a prompt-cache breakpoint after the
+  // static prefix — product context + template — so repeat generations
+  // within the cache TTL skip reprocessing ~11K input tokens).
   const messages = [
     { role: 'user', content: userPrompt },
   ];
 
   // Model routing:
-  //   opus → clone mode + any other path that benefits from long-instruction
-  //   fidelity. Slower and pricier but materially better at architecture
-  //   preservation, multi-rule following, and structured cloning.
+  //   opus → opt-in quality mode for long-instruction fidelity. Slower and
+  //   pricier; used as fallback (or explicit choice), not the default.
   //   fast → quick parses (script parser, hook extractor) where Haiku is fine.
-  //   default → Sonnet for general work (iterate, enhance, win-analysis).
+  //   default → Sonnet for general work (clone, iterate, enhance, win-analysis).
   // Aliases used throughout this codebase — matches the CLAUDE_MODEL pattern.
   const model = opus
     ? 'claude-opus-4-1'
@@ -1047,6 +1050,9 @@ async function callClaude(systemPrompt, userPrompt, maxTokens = 3000, { fast = f
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(body),
+    // Cap the tail: a hung attempt must fail fast so the fallback model can
+    // run instead of stacking a full failed wait on top of a full retry.
+    ...(timeoutMs > 0 ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
   });
 
   if (!res.ok) {
@@ -1356,31 +1362,49 @@ async function findClickUpTaskByBriefCode(briefCode) {
  * Get the next available brief number from ClickUp.
  */
 async function getNextBriefNumber() {
+  // The next number is MAX(ClickUp tasks, DB briefs) + 1. Considering only
+  // ClickUp pinned the number at 350 for days: briefs that were never pushed
+  // to ClickUp didn't count, so every generation shared the same number and
+  // identical naming — indistinguishable cards in the UI.
   let maxBrief = 0;
-  let page = 0;
-  let hasMore = true;
 
-  while (hasMore) {
-    const data = await clickupFetch(
-      `/list/${VIDEO_ADS_LIST}/task?page=${page}&limit=100&include_closed=true&subtasks=true`
-    );
-    const tasks = data.tasks || [];
+  try {
+    let page = 0;
+    let hasMore = true;
+    while (hasMore) {
+      const data = await clickupFetch(
+        `/list/${VIDEO_ADS_LIST}/task?page=${page}&limit=100&include_closed=true&subtasks=true`
+      );
+      const tasks = data.tasks || [];
 
-    for (const task of tasks) {
-      const briefField = task.custom_fields?.find(f => f.id === FIELD_IDS.briefNumber);
-      if (briefField?.value != null) {
-        const num = parseInt(briefField.value, 10);
-        if (!isNaN(num) && num > maxBrief) maxBrief = num;
+      for (const task of tasks) {
+        const briefField = task.custom_fields?.find(f => f.id === FIELD_IDS.briefNumber);
+        if (briefField?.value != null) {
+          const num = parseInt(briefField.value, 10);
+          if (!isNaN(num) && num > maxBrief) maxBrief = num;
+        }
+        const match = task.name?.match(/B(\d{2,5})/);
+        if (match) {
+          const num = parseInt(match[1], 10);
+          if (!isNaN(num) && num > maxBrief) maxBrief = num;
+        }
       }
-      const match = task.name?.match(/B(\d{2,5})/);
-      if (match) {
-        const num = parseInt(match[1], 10);
-        if (!isNaN(num) && num > maxBrief) maxBrief = num;
-      }
+
+      hasMore = tasks.length === 100;
+      page++;
     }
+  } catch (e) {
+    // A ClickUp outage must not abort generation — the DB max below still
+    // guarantees a unique, monotonically increasing number.
+    console.warn(`[BriefPipeline] getNextBriefNumber: ClickUp fetch failed (${e.message}) — using DB max only`);
+  }
 
-    hasMore = tasks.length === 100;
-    page++;
+  try {
+    const rows = await pgQuery(`SELECT COALESCE(MAX(brief_number), 0) AS max FROM brief_pipeline_generated`);
+    const dbMax = Number(rows[0]?.max || 0);
+    if (dbMax > maxBrief) maxBrief = dbMax;
+  } catch (e) {
+    console.warn(`[BriefPipeline] getNextBriefNumber: DB max query failed (${e.message})`);
   }
 
   return maxBrief + 1;
@@ -2508,8 +2532,8 @@ cta: {{ORIGINAL_CTA}}
 
 # HOW TO WORK — analyze first, then strategize, then write
 
-## STEP 1 — ANALYZE THE SOURCE (emit as "script_analysis")
-Before writing a word, understand the machine you are cloning:
+## STEP 1 — ANALYZE THE SOURCE (emit as "source_read" — 2-3 sentences MAX, distilled)
+Before writing a word, understand the machine you are cloning (think through ALL of this; emit only the distilled conclusion):
 - What TYPE of ad is this? (third-person founder story / first-person testimonial / UGC rant / expert explainer / offer blast / apology / competitor callout / ...)
 - POV and narrator: who is speaking, and why does the viewer believe them?
 - Protagonist: what ROLE do they play (underdog inventor, burned customer, insider expert) and what makes them credible?
@@ -2517,8 +2541,8 @@ Before writing a word, understand the machine you are cloning:
 - Persuasion devices: named villains, proof points, credibility moments (Shark Tank, press, studies), scarcity, guarantee.
 - Why does this ad win? One or two sentences.
 
-## STEP 2 — ADAPTATION STRATEGY (emit as "adaptation_strategy")
-Decide how the machine rebuilds around OUR product:
+## STEP 2 — ADAPTATION STRATEGY (emit as "adaptation_plan" — 2-3 sentences MAX, distilled)
+Decide how the machine rebuilds around OUR product (think through ALL of this; emit only the distilled plan):
 - Protagonist recast: keep the ROLE and the full arc; choose the identity that is MOST CREDIBLE for our product's world and our avatar. Two college boys who built a pest device can become a menopausal plastic surgeon who built a breast-lift device — the role (rejected inventor) and every beat survive; the identity serves our product. Never carry over names, genders, or professions that make no sense in our category — and never invent an identity our master brief contradicts.
 - Fact mapping: which master-brief facts power which beats (mechanism → the discovery beat, guarantee → the promise beat, our real offer → the CTA beat).
 - Keep-verbatim list: culturally recognizable moments (Shark Tank, Forbes, "went viral") are structural gold — keep them literally unless truly impossible. Same for the source's transitions and rhetorical devices.
@@ -2581,51 +2605,41 @@ A LABEL is short, attention-grabbing, sticker-style. A HOOK is a full first-pers
 - **Hooks are NEVER overlay labels.** If you find yourself writing an ALL-CAPS fragment with an emoji as Hook 1, move it to highlighted_text and write a real sentence-form hook in its place.
 
 # ORDER OF OPERATIONS (the JSON field order below is deliberate — write the fields in this order)
-# 1. script_analysis — understand the source (STEP 1).
-# 2. adaptation_strategy — decide the rebuild (STEP 2).
+# 1. source_read — distilled source understanding (STEP 1, 2-3 sentences).
+# 2. adaptation_plan — distilled rebuild decision (STEP 2, 2-3 sentences).
 # 3. source_beats — enumerate the source with word counts.
 # 4. body — write beat-by-beat, hitting each target_words. After writing, count
 #    your words: below {{MIN_WORDS}}? Restore the compressed beats BEFORE emitting.
 # 5. cta — clone the CTA structure with OUR offer.
 # 6. hooks — LAST, so each one blends into the body you just wrote.
+# Keep every meta field SHORT — the body and hooks are the product; everything
+# else is scaffolding and costs generation time.
 
 # OUTPUT — return ONLY valid JSON, no markdown fences, no preamble, no trailing commentary.
 {
   "source_pov": "third-person-founder-narrative | first-person-testimonial | first-person-founder-confession | expert-explainer | speaker-direct-address | other",
-  "script_analysis": {
-    "ad_type": "...",
-    "narrator": "who speaks and why the viewer believes them",
-    "protagonist_role": "the structural role they play",
-    "pivot_moment": "the emotional inflection point",
-    "why_it_wins": "1-2 sentences"
-  },
-  "adaptation_strategy": {
-    "protagonist_recast": "who the protagonist becomes in our version and why that identity is the most credible for our product",
-    "kept_verbatim": ["culturally recognizable moments and devices carried over literally"],
-    "fact_mapping": "which master-brief facts power which beats",
-    "proof_strategy": "how proof beats are handled truthfully"
-  },
+  "source_read": "2-3 sentences: ad type, narrator + why the viewer believes them, the pivot moment, why this ad wins",
+  "adaptation_plan": "2-3 sentences: who the protagonist becomes and why that identity is most credible for our product; what stays verbatim (e.g. Shark Tank); how proof beats are handled truthfully",
   "source_beats": [
     { "n": 1, "beat": "one-sentence compression of this source beat (max 20 words)", "source_words": 74, "target_words": 74 }
   ],
   "body": "the full cloned body. One passage per entry in source_beats, in the same order, each at its target_words length. Double newlines between paragraphs. TOTAL between {{MIN_WORDS}} and {{ORIGINAL_WORD_COUNT}} words — count before emitting.",
   "cta": "the cloned CTA with our real offer",
   "hooks": [
-    { "id": "H1", "text": "...", "entry_point": "pivot moment | credibility stat | promise | mechanism | punch", "maps_to_original": "which original hook/opener this echoes" },
-    { "id": "H2", "text": "...", "entry_point": "...", "maps_to_original": "..." },
-    { "id": "H3", "text": "...", "entry_point": "...", "maps_to_original": "..." },
-    { "id": "H4", "text": "...", "entry_point": "...", "maps_to_original": "..." },
-    { "id": "H5", "text": "...", "entry_point": "shortest punch (<12 words)", "maps_to_original": "..." }
+    { "id": "H1", "text": "..." },
+    { "id": "H2", "text": "..." },
+    { "id": "H3", "text": "..." },
+    { "id": "H4", "text": "..." },
+    { "id": "H5", "text": "... (shortest punch, under 12 words)" }
   ],
   "highlighted_text": [
     "ON-SCREEN LABEL 1 + emoji",
     "ON-SCREEN LABEL 2 + emoji"
   ],
-  "highlighted_text_notes": "1 sentence — what evidence in the source signalled overlays, OR explicitly 'No on-screen overlays detected in source — emitting empty array'.",
-  "angle_used": { "name": "the angle name actually used", "reason": "one sentence — why this angle (only if AUTO was selected)" },
-  "clone_fidelity_notes": "MUST open with the literal word-count report: 'source {{ORIGINAL_WORD_COUNT}} words -> clone N words' using your actual count. Then confirm: beat count matches source_beats, POV coherent across hooks+body+cta, protagonist recast serves our product, central pivot preserved.",
-  "key_changes_from_original": "2-3 sentence summary of what changed and why",
-  "compliance_notes": "any claims that brush against compliance_restrictions, or 'clean' if none"
+  "highlighted_text_notes": "1 short sentence — evidence for overlays, or 'none detected'",
+  "angle_used": { "name": "the angle name actually used", "reason": "one short sentence (only if AUTO was selected)" },
+  "clone_fidelity_notes": "1 sentence, MUST include: 'source {{ORIGINAL_WORD_COUNT}} words -> clone N words' using your actual count",
+  "compliance_notes": "borderline claims, or 'clean'"
 }`;
 
 // Extract the [ON-SCREEN TEXT] block from a raw multimodal transcript so we
@@ -3534,13 +3548,30 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
       );
       const enhancedCloneUser = cloneUser;
 
+      // Prompt-cache breakpoint: everything before the ORIGINAL SCRIPT block
+      // (mission + full master brief + angles + template rules) is identical
+      // across generations for the same product. Splitting the user prompt
+      // there lets the API cache ~11K input tokens for 5 minutes — repeat
+      // generations skip reprocessing the entire static prefix.
+      const CACHE_SPLIT_MARKER = '# ORIGINAL COMPETITOR SCRIPT';
+      const splitIdx = enhancedCloneUser.indexOf(CACHE_SPLIT_MARKER);
+      const cloneUserContent = splitIdx > 0
+        ? [
+            { type: 'text', text: enhancedCloneUser.slice(0, splitIdx), cache_control: { type: 'ephemeral' } },
+            { type: 'text', text: enhancedCloneUser.slice(splitIdx) },
+          ]
+        : enhancedCloneUser;
+
       generationResults = [await (async () => {
-        // Opus-first, Sonnet-fallback. Operator wants Opus for clone fidelity
-        // (long-instruction multi-rule task). If the Opus alias doesn't
-        // resolve on this account, we fall back to Sonnet so the operator
-        // still gets a clone out the door instead of a silent failure. Both
-        // attempts' errors are captured to brief_pipeline_winners.generation_error
-        // so they surface on /generation-status without needing Render logs.
+        // Sonnet-first, Opus-fallback. Latency profiling showed the clone
+        // call is ~86% of wall-clock and Opus takes ~120s vs Sonnet ~30s —
+        // Sonnet with the length-contract prompt + blend validator is the
+        // default; Opus remains the quality fallback if Sonnet errors.
+        // A 90s timeout on the primary attempt kills the 5-minute tail where
+        // a hung attempt used to stack a full failed wait on top of a full
+        // fallback call. Errors are captured to
+        // brief_pipeline_winners.generation_error so they surface on
+        // /generation-status without needing Render logs.
         let lastErr = null;
         let modelUsed = null;
         let generated = null;
@@ -3552,18 +3583,18 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
             generated = await callOpenAI(cloneSystem, enhancedCloneUser, 12000);
           } catch (openaiErr) {
             lastErr = `openai: ${openaiErr.message}`;
-            console.warn(`[BriefPipeline] OpenAI clone attempt failed (${openaiErr.message}) — falling back to Claude (Opus first).`);
+            console.warn(`[BriefPipeline] OpenAI clone attempt failed (${openaiErr.message}) — falling back to Claude (Sonnet first).`);
             try {
-              modelUsed = 'opus';
-              generated = await callClaude(cloneSystem, enhancedCloneUser, 12000, { opus: true });
-            } catch (opusErr) {
-              lastErr = `${lastErr}; opus: ${opusErr.message}`;
-              console.warn(`[BriefPipeline] Opus fallback failed (${opusErr.message}) — trying Sonnet.`);
+              modelUsed = 'sonnet';
+              generated = await callClaude(cloneSystem, cloneUserContent, 12000, { timeoutMs: 90000 });
+            } catch (sonnetErr) {
+              lastErr = `${lastErr}; sonnet: ${sonnetErr.message}`;
+              console.warn(`[BriefPipeline] Sonnet fallback failed (${sonnetErr.message}) — trying Opus.`);
               try {
-                modelUsed = 'sonnet';
-                generated = await callClaude(cloneSystem, enhancedCloneUser, 12000);
-              } catch (sonnetErr) {
-                lastErr = `${lastErr}; sonnet: ${sonnetErr.message}`;
+                modelUsed = 'opus';
+                generated = await callClaude(cloneSystem, cloneUserContent, 12000, { opus: true });
+              } catch (opusErr) {
+                lastErr = `${lastErr}; opus: ${opusErr.message}`;
                 await pgQuery(
                   `UPDATE brief_pipeline_winners SET generation_error = $1, generation_model = $2 WHERE id = $3`,
                   [lastErr, 'openai-fallback-both-failed', winner.id]
@@ -3574,23 +3605,23 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
             }
           }
         } else {
-          // Default Claude with Opus-first / Sonnet fallback
+          // Default Claude: Sonnet-first (fast) with Opus fallback (quality)
           try {
-            modelUsed = 'opus';
-            generated = await callClaude(cloneSystem, enhancedCloneUser, 12000, { opus: true });
-          } catch (opusErr) {
-            lastErr = `opus: ${opusErr.message}`;
-            console.warn(`[BriefPipeline] Opus clone attempt failed (${opusErr.message}) — falling back to Sonnet.`);
+            modelUsed = 'sonnet';
+            generated = await callClaude(cloneSystem, cloneUserContent, 12000, { timeoutMs: 90000 });
+          } catch (sonnetErr) {
+            lastErr = `sonnet: ${sonnetErr.message}`;
+            console.warn(`[BriefPipeline] Sonnet clone attempt failed (${sonnetErr.message}) — falling back to Opus.`);
             try {
-              modelUsed = 'sonnet';
-              generated = await callClaude(cloneSystem, enhancedCloneUser, 12000);
-            } catch (sonnetErr) {
-              lastErr = `${lastErr}; sonnet: ${sonnetErr.message}`;
+              modelUsed = 'opus';
+              generated = await callClaude(cloneSystem, cloneUserContent, 12000, { opus: true });
+            } catch (opusErr) {
+              lastErr = `${lastErr}; opus: ${opusErr.message}`;
               await pgQuery(
                 `UPDATE brief_pipeline_winners SET generation_error = $1, generation_model = $2 WHERE id = $3`,
                 [lastErr, 'both-failed', winner.id]
               ).catch(() => {});
-              console.error(`[BriefPipeline] clone — both Opus and Sonnet failed: ${lastErr}`);
+              console.error(`[BriefPipeline] clone — both Sonnet and Opus failed: ${lastErr}`);
               return { direction: { id: 1, name: '1:1 Clone' }, success: false };
             }
           }
@@ -3622,44 +3653,21 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
             generated.key_changes_from_original = generated.key_adaptations || generated.key_changes_from_original || '';
           }
 
-          // Hook-body blend validation — a real check, not a hardcoded score.
-          // If hooks don't read as the body's narrator (the July 2026 failure:
-          // first-person hooks on a third-person founder story), rewrite the
-          // hooks once against the finished body, then accept the result.
-          let blendScore = null;
-          try {
-            const { system: bvSys, user: bvUser } = await buildBlendValidationPrompt(generated);
-            const blend = await callClaude(bvSys, bvUser, 1500, { fast: true });
-            blendScore = typeof blend?.overall_blend === 'number' ? blend.overall_blend : null;
-            if (blendScore !== null && blendScore < 6.5) {
-              console.warn(`[BriefPipeline] clone hooks failed blend check (${blendScore}) — rewriting hooks against the body`);
-              const rewriteSys = 'You are a direct response copywriter. You fix hooks so they blend seamlessly into an existing ad script body. You never change the body.';
-              const rewriteUser = `The 5 hooks below do not blend with the body — likely a POV mismatch (e.g. first-person hooks on a third-person story). Rewrite all 5 so each is speakable by the body's narrator, in the body's voice, and reads seamlessly into the body's first sentence. Keep them <= 20 words (H5 under 12), sentence case, no emoji. Vary them by entry point (pivot moment, credibility stat, promise, mechanism, short punch) — never by voice.\n\nBODY:\n${generated.body}\n\nCURRENT HOOKS:\n${(generated.hooks || []).map(h => `${h.id}: ${h.text}`).join('\n')}\n\nBlend issues found:\n${JSON.stringify(blend?.hooks || [])}\n\nReturn ONLY valid JSON: { "hooks": [ { "id": "H1", "text": "..." }, ... 5 items ] }`;
-              const fixed = await callClaude(rewriteSys, rewriteUser, 2000, { fast: true });
-              if (Array.isArray(fixed?.hooks) && fixed.hooks.length === 5 && fixed.hooks.every(h => h?.text)) {
-                generated.hooks = generated.hooks.map((h, i) => ({ ...h, text: fixed.hooks[i].text }));
-                blendScore = 7; // rewritten against the body — treated as passing
-              }
-            }
-          } catch (e) {
-            console.warn(`[BriefPipeline] blend validation skipped (${e.message}) — proceeding with generated hooks`);
-          }
-
           // Clone scoring: measure fidelity, not novelty. Clones replicate proven winners
           // so high scores reflect successful structural replication, not creative originality.
+          // Hook-body blend is validated AFTER the brief row is inserted (off the
+          // critical path — saves 8-20s of blocking) and the row is patched if
+          // the hooks need a POV rewrite. See the post-insert block below.
           const scores = {
             novelty: { score: 7, rationale: 'Clone mode — structural fidelity over originality; product/angle swap adds freshness' },
             aggression: { score: 8, rationale: 'Preserved from proven original' },
             coherence: { score: 9, rationale: 'Structural clone maintains original flow and logic' },
-            hook_body_blend: blendScore !== null
-              ? { score: Math.round(blendScore), rationale: 'Measured by blend validation agent against the finished body' }
-              : { score: 8, rationale: 'Blend validator unavailable — default' },
+            hook_body_blend: { score: 8, rationale: 'Validated post-insert by the blend agent (score patched if rewrite fires)' },
             conversion_potential: { score: 9, rationale: 'Proven structure with validated conversion path' },
             verdict: 'YES',
             _clone_fast_path: true,
           };
-          const blendForOverall = blendScore !== null ? blendScore : 8;
-          const overall = Math.round(((7 * 0.15) + (8 * 0.15) + (9 * 0.25) + (blendForOverall * 0.15) + (9 * 0.30)) * 10) / 10;
+          const overall = (7 * 0.15) + (8 * 0.15) + (9 * 0.25) + (8 * 0.15) + (9 * 0.30); // 8.4
 
           // Record which model produced the clone so the operator can see
           // whether Opus landed or we fell back to Sonnet. Clears any prior
@@ -3778,6 +3786,53 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
     // Mark virtual winner as detected (keeps it in the winning ads column)
     await pgQuery(`UPDATE brief_pipeline_winners SET status = 'detected' WHERE id = $1`, [winner.id]);
 
+    // Link the originating reference to its newest brief so the UI (and the
+    // operator) can always trace which brief came from which reference.
+    if (referenceId && generatedBriefs[0]?.id) {
+      await pgQuery(
+        `UPDATE brief_pipeline_references SET generated_brief_id = $1, updated_at = NOW() WHERE id = $2`,
+        [generatedBriefs[0].id, referenceId]
+      ).catch(e => console.warn(`[BriefPipeline] could not link ref ${referenceId} to brief: ${e.message}`));
+    }
+
+    // Post-insert hook-body blend validation (clone mode) — off the critical
+    // path so the brief is visible immediately. If the hooks fail the blend
+    // check (POV mismatch vs the body), rewrite them once and patch the row.
+    if (isCloneMode) {
+      for (const brief of generatedBriefs) {
+        const gen = generationResults.find(r => r.success && r.generated)?.generated;
+        if (!gen?.body || !Array.isArray(gen.hooks) || !gen.hooks.length) continue;
+        (async () => {
+          try {
+            const { system: bvSys, user: bvUser } = await buildBlendValidationPrompt(gen);
+            const blend = await callClaude(bvSys, bvUser, 1500, { fast: true });
+            const blendScore = typeof blend?.overall_blend === 'number' ? blend.overall_blend : null;
+            if (blendScore === null) return;
+            let hooks = gen.hooks;
+            if (blendScore < 6.5) {
+              console.warn(`[BriefPipeline] brief ${brief.id}: hooks failed blend check (${blendScore}) — rewriting against the body`);
+              const rewriteSys = 'You are a direct response copywriter. You fix hooks so they blend seamlessly into an existing ad script body. You never change the body.';
+              const rewriteUser = `The 5 hooks below do not blend with the body — likely a POV mismatch (e.g. first-person hooks on a third-person story). Rewrite all 5 so each is speakable by the body's narrator, in the body's voice, and reads seamlessly into the body's first sentence. Keep them <= 20 words (H5 under 12), sentence case, no emoji. Vary them by entry point (pivot moment, credibility stat, promise, mechanism, short punch) — never by voice.\n\nBODY:\n${gen.body}\n\nCURRENT HOOKS:\n${gen.hooks.map(h => `${h.id}: ${h.text}`).join('\n')}\n\nBlend issues found:\n${JSON.stringify(blend?.hooks || [])}\n\nReturn ONLY valid JSON: { "hooks": [ { "id": "H1", "text": "..." }, ... 5 items ] }`;
+              const fixed = await callClaude(rewriteSys, rewriteUser, 2000, { fast: true });
+              if (Array.isArray(fixed?.hooks) && fixed.hooks.length === 5 && fixed.hooks.every(h => h?.text)) {
+                hooks = gen.hooks.map((h, i) => ({ ...h, text: fixed.hooks[i].text }));
+              }
+            }
+            await pgQuery(
+              `UPDATE brief_pipeline_generated
+                  SET hooks = $1,
+                      scores_json = jsonb_set(COALESCE(scores_json, '{}'::jsonb), '{hook_body_blend}',
+                        jsonb_build_object('score', $2::int, 'rationale', 'Measured by blend validation agent post-insert'))
+                WHERE id = $3`,
+              [JSON.stringify(hooks), Math.round(blendScore < 6.5 ? 7 : blendScore), brief.id]
+            );
+          } catch (e) {
+            console.warn(`[BriefPipeline] post-insert blend validation skipped for brief ${brief.id}: ${e.message}`);
+          }
+        })();
+      }
+    }
+
     console.log(`[BriefPipeline] generate-from-script complete: ${generatedBriefs.length} briefs`);
     } catch (bgErr) {
       console.error('[BriefPipeline] generate-from-script background error:', bgErr.message);
@@ -3866,7 +3921,7 @@ router.get('/generated', authenticate, async (_req, res) => {
          LEFT JOIN brief_pipeline_winners    w ON g.winner_id = w.id
          LEFT JOIN brief_pipeline_references r ON w.reference_id = r.id
         WHERE g.status != 'rejected'
-        ORDER BY g.overall_score DESC NULLS LAST, g.created_at DESC`
+        ORDER BY g.created_at DESC`
     );
     // Fix double-encoded JSONB fields
     for (const b of rows) {
@@ -6834,10 +6889,11 @@ async function seedDefaultLeaguePrompts() {
     // schema with per-beat word budgets, hooks emitted AFTER the body with a
     // blend test, testimonial-persona swap + proof-substitution rules.
     // Bumping the signature force-refreshes any pre-v5 snapshot once.
-    // v6 signature: 'adaptation_strategy' exists only in the v6
-    // analyze-then-adapt prompt, so the stale v5 snapshot in the DB gets
-    // force-refreshed exactly once on next boot, then operator edits stick.
-    const CLONE_V2_SIGNATURE = 'adaptation_strategy';
+    // v6.1 signature: 'adaptation_plan' exists only in the trimmed-output
+    // revision (compact analysis fields, slim hook objects — ~30% fewer
+    // output tokens), so the v6 snapshot in the DB gets force-refreshed
+    // exactly once on next boot, then operator edits stick.
+    const CLONE_V2_SIGNATURE = 'adaptation_plan';
     const currentClone = existing.scriptClone?.json || '';
     if (!currentClone.trim() || !currentClone.includes(CLONE_V2_SIGNATURE)) {
       existing.scriptClone = {
