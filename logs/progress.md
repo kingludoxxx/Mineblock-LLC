@@ -1,6 +1,37 @@
 # Progress Log
 
 ---
+TIMESTAMP: 2026-07-14 19:20
+TASK: Brief Pipeline — Phase 1 correctness + Phase 2 speed (post 5-agent investigation)
+
+BUILT: (1) getNextBriefNumber = MAX(ClickUp, DB)+1, ClickUp outage no longer aborts
+generation. (2) Migration 073 renumbered duplicate B0350 briefs (kept oldest; newer
+got B0424-B0427). (3) /generated orders created_at DESC. (4) generated_brief_id set
+on the originating reference after generation. (5) Clone dispatch Sonnet-first with
+Opus fallback + 90s timeout on the primary attempt. (6) Prompt caching: static
+prefix (master brief + template, ~11K tokens) behind a cache_control breakpoint.
+(7) Prompt v6.1: analysis fields collapsed to 2-3 sentence source_read /
+adaptation_plan, hooks slimmed to {id,text}; seeder signature 'adaptation_plan'.
+(8) Blend validation moved off critical path (post-insert background patch).
+(9) ScriptGeneratorPanel: script+referenceId atomic prefill unit; clear resets.
+(10) ReferenceCard: misleading play overlay removed.
+
+TESTED (production E2E, deploy 4d944bf live 19:11 UTC): /generated shows unique
+numbers (PASS) and newest-first order (PASS). Fresh timed generation from the
+Flabby Arms reference: COMPLETE in 91 seconds (was 2-5 min), generation_model =
+sonnet, brief B0429, 821-word body opening with the correct first-person surgeon
+adaptation, real master-brief offer in the CTA (50% off $99, 90-day guarantee),
+zero pestlab leakage, hooks all in the body's POV. reference.generatedBriefId now
+points at the new brief (86e0e6bc).
+
+OUTPUT: All Phase 1 + Phase 2 items live and verified. Speed: 2-5 min -> 91s
+measured (Sonnet ~40-50 tok/s on ~800-word output is the remaining floor; true
+streaming UI is the next lever if desired).
+
+DECISIONS: Kept source_beats in the output (the anti-compression device) and cut
+only pure scaffolding; Opus remains the automatic fallback rather than a UI toggle.
+STATUS: COMPLETE
+---
 TIMESTAMP: 2026-07-14 14:15
 TASK: OOM crash-loop fix + clone v6 validation (analyze-then-adapt + master brief)
 
