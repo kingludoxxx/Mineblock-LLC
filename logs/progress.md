@@ -1,6 +1,38 @@
 # Progress Log
 
 ---
+TIMESTAMP: 2026-07-14 14:15
+TASK: OOM crash-loop fix + clone v6 validation (analyze-then-adapt + master brief)
+
+BUILT: (1) Commit 22f1389 — brandSpyMediaMirror.js downloadWithLimit now rejects
+on Content-Length and stream-reads with a running byte cap (was: arrayBuffer()
+full-buffer THEN check → 100MB videos allocated twice before the 25MB cap ran);
+yt-dlp backfill fallback gated behind BS_MIRROR_YTDLP=1 (each spawn = ~150MB
+python inside the 512MB cgroup; most of the backlog is dead URLs so the worker
+was a yt-dlp loop). (2) Ran the deferred clone-v6 validation test.
+
+TESTED: Crash loop confirmed via Render metrics (boot audits every 2-3 min,
+instances dying between 1-min samples with no stack = kernel OOM kill; baseline
+250-400MB on 512MB limit). After fix: instance ran FLAT at ~330MB for its full
+8-min life, replaced only by the next deploy. Clone v6 test (pestlab CHAMP ref +
+The Surgeon's Secret + Puure, Claude): PUURE - B0350 - TSS brief generated in
+~3 min. Protagonist recast to a female plastic surgeon (was: college kids —
+matches operator's gold standard exactly); Shark Tank beat kept verbatim; all 5
+hooks third-person founder POV matching the body (blend validator RAN, measured
+7); master-brief facts present: TriRed wavelengths, 90-day-vs-30-day guarantee
+contrast, counterfeit/official-site warning, $99 anchor; 469-word body ≈ gold
+standard length; 9 paragraphs.
+
+NOTE: The earlier "production outage" call was partially wrong — the service was
+OOM boot-looping (real, now fixed) but user-facing traffic worked in up-windows;
+my curl client also got edge-402/502'd separately. Background generations stuck
+at status=generating were casualties of the restarts.
+
+DECISIONS: yt-dlp stays available interactively (/ads/:id/fresh-video-url) —
+only the unattended backfill path is gated. Re-enable with BS_MIRROR_YTDLP=1 on
+a >=1GB plan.
+STATUS: COMPLETE
+---
 TIMESTAMP: 2026-07-14 00:45
 TASK: League/reference video players + transcriber + layout cleanup
 
