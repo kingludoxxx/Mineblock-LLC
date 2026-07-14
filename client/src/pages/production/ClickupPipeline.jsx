@@ -2,6 +2,10 @@ import { useRef, useState, useEffect } from 'react';
 import { ExternalLink, RefreshCw, AlertCircle } from 'lucide-react';
 
 const PIPELINE_URL = 'https://mineblock-video-launcher.onrender.com';
+// Admin access token — the pipeline tool treats visitors without it as
+// editors (pipeline-only). The dashboard is the admin surface, so the iframe
+// always passes it. No sign-in dialog is ever shown either way.
+const PIPELINE_EMBED_URL = `${PIPELINE_URL}/?access=mb-bdabeb1589f7160234f33dfb6118ed57`;
 const HEALTH_URL   = `${PIPELINE_URL}/health`;
 const POLL_MS      = 15_000;
 
@@ -14,7 +18,7 @@ export default function ClickupPipeline() {
   function triggerLoad() {
     setLoading(true);
     setServiceDown(false);
-    if (iframeRef.current) iframeRef.current.src = PIPELINE_URL;
+    if (iframeRef.current) iframeRef.current.src = PIPELINE_EMBED_URL;
   }
 
   /**
@@ -86,7 +90,7 @@ export default function ClickupPipeline() {
             <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
           </button>
           <a
-            href={PIPELINE_URL}
+            href={PIPELINE_EMBED_URL}
             target="_blank"
             rel="noopener noreferrer"
             className="text-gray-500 hover:text-gray-300 transition p-1 rounded"
@@ -127,7 +131,7 @@ export default function ClickupPipeline() {
 
         <iframe
           ref={iframeRef}
-          src={PIPELINE_URL}
+          src={PIPELINE_EMBED_URL}
           title="ClickUp Pipeline"
           className="w-full h-full border-0"
           onLoad={() => setLoading(false)}
