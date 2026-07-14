@@ -18,6 +18,7 @@ import {
   uploadAdImage, uploadAdVideo, uploadAdImageFromUrl, isMetaAdsConfigured, getAllAdAccountIds
 } from '../services/metaAdsApi.js';
 import { uploadBuffer, isR2Configured } from '../services/r2.js';
+import { extractFreshVideoUrl, adLibraryUrl } from '../services/freshVideoUrl.js';
 import { extractVideoUrlFromAdLibrary, warmupBrowser as warmupFbExtractor } from '../services/fbAdLibraryExtractor.js';
 
 // Warm up the Chromium browser pool at boot so the first import doesn't
@@ -5381,16 +5382,64 @@ async function probeMediaUrl(url) {
 }
 
 async function mirrorMediaUrlToR2(url, keyPrefix, kind) {
+  // OOM caution (512MB instance — see the July 2026 brand-spy crash loop):
+  // reject on Content-Length BEFORE reading, then stream with a running byte
+  // cap. A size check after arrayBuffer() is no cap at all.
+  const MAX = kind === 'video' ? 80 * 1024 * 1024 : 15 * 1024 * 1024;
   const res = await fetch(url, { signal: AbortSignal.timeout(120000) });
   if (!res.ok) throw new Error(`fetch ${res.status}`);
-  const buf = Buffer.from(await res.arrayBuffer());
-  const MAX = kind === 'video' ? 150 * 1024 * 1024 : 15 * 1024 * 1024;
-  if (buf.length > MAX) throw new Error(`file too large: ${buf.length} bytes`);
+  const declared = parseInt(res.headers.get('content-length') || '0', 10);
+  if (declared > MAX) {
+    try { await res.body?.cancel(); } catch { /* already closed */ }
+    throw new Error(`file too large (content-length ${declared} bytes)`);
+  }
+  const chunks = [];
+  let total = 0;
+  for await (const chunk of res.body) {
+    total += chunk.length;
+    if (total > MAX) {
+      try { await res.body?.cancel(); } catch { /* already closed */ }
+      throw new Error(`file too large (streamed past ${MAX} bytes)`);
+    }
+    chunks.push(Buffer.from(chunk));
+  }
+  const buf = Buffer.concat(chunks);
   if (buf.length < 1024) throw new Error(`file suspiciously small: ${buf.length} bytes`);
   const ct = res.headers.get('content-type') || (kind === 'video' ? 'video/mp4' : 'image/jpeg');
   const ext = kind === 'video' ? 'mp4' : (ct.includes('png') ? 'png' : 'jpg');
   const key = `${keyPrefix}/${crypto.randomUUID()}.${ext}`;
   return uploadBuffer(buf, key, ct);
+}
+
+// Repair one reference's video to a permanent R2 URL. Candidate order:
+//   1. the stored URL (if still alive — beat the expiry clock)
+//   2. fresh video_hd/sd URLs from brand_spy.ads (daily scraper)
+//   3. yt-dlp re-extraction from the FB Ad Library page (works whenever the
+//      ad is still live, even when every stored URL is long dead)
+// Whichever candidate wins gets mirrored to R2 and persisted — repairs are
+// terminal; we never write another expiring fbcdn URL as the "fix".
+async function repairReferenceVideo(ref) {
+  if (!ref?.video_url && !ref?.ad_archive_id) return { status: 'skipped' };
+  const direct = [ref.video_url, ref.fresh_hd, ref.fresh_sd].filter(Boolean);
+  for (const c of direct) {
+    if (!(await probeMediaUrl(c))) continue;
+    try {
+      const r2Url = await mirrorMediaUrlToR2(c, 'brief-refs/video', 'video');
+      await pgQuery(`UPDATE brief_pipeline_references SET video_url = $1, updated_at = NOW() WHERE id = $2`, [r2Url, ref.id]);
+      return { status: 'repaired', videoUrl: r2Url, via: 'stored-or-brandspy' };
+    } catch (e) { console.warn(`[BriefPipeline] ref ${ref.id} mirror of live candidate failed: ${e.message}`); }
+  }
+  if (ref.ad_archive_id) {
+    const fresh = await extractFreshVideoUrl(adLibraryUrl(ref.ad_archive_id));
+    if (fresh) {
+      try {
+        const r2Url = await mirrorMediaUrlToR2(fresh, 'brief-refs/video', 'video');
+        await pgQuery(`UPDATE brief_pipeline_references SET video_url = $1, updated_at = NOW() WHERE id = $2`, [r2Url, ref.id]);
+        return { status: 'repaired', videoUrl: r2Url, via: 'yt-dlp' };
+      } catch (e) { return { status: `mirror failed: ${e.message}` }; }
+    }
+  }
+  return { status: 'unrecoverable' };
 }
 
 // Mirror a reference's volatile video/thumbnail to R2 and persist the stable
@@ -5489,6 +5538,43 @@ router.post('/references/repair-media', authenticate, async (req, res) => {
     })().catch(e => console.error('[BriefPipeline] repair-media background error:', e.message));
   } catch (err) {
     console.error('[BriefPipeline] POST /references/repair-media error:', err.message);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// POST /references/:id/repair-video — on-demand repair for ONE reference,
+// called by the preview modal when playback fails. Same candidate chain as
+// the batch repair (stored URL → brand-spy snapshot → yt-dlp from the Ad
+// Library), ends in a permanent R2 URL. Synchronous: yt-dlp can take ~45s,
+// the modal shows a recovering state meanwhile.
+router.post('/references/:id/repair-video', authenticate, async (req, res) => {
+  if (!validateUuid(req, res)) return;
+  try {
+    if (!isR2Configured()) {
+      return res.status(503).json({ success: false, error: { message: 'R2 not configured on this environment' } });
+    }
+    const rows = await pgQuery(`
+      SELECT r.id, r.video_url, r.ad_archive_id,
+             a.raw_snapshot->'videos'->0->>'video_hd_url' AS fresh_hd,
+             a.raw_snapshot->'videos'->0->>'video_sd_url' AS fresh_sd
+      FROM brief_pipeline_references r
+      LEFT JOIN brand_spy.ads a ON a.id::text = r.brand_spy_ad_id::text
+      WHERE r.id = $1
+    `, [req.params.id]);
+    if (!rows.length) return res.status(404).json({ success: false, error: { message: 'Reference not found' } });
+
+    const result = await repairReferenceVideo(rows[0]);
+    if (result.status === 'repaired') {
+      return res.json({ success: true, videoUrl: result.videoUrl, via: result.via });
+    }
+    return res.status(404).json({
+      success: false,
+      error: { message: result.status === 'unrecoverable'
+        ? 'Video is unrecoverable — the ad is no longer live in the FB Ad Library and no stored copy exists.'
+        : `Repair failed: ${result.status}` },
+    });
+  } catch (err) {
+    console.error('[BriefPipeline] POST /references/:id/repair-video error:', err.message);
     res.status(500).json({ success: false, error: { message: err.message } });
   }
 });
@@ -5758,6 +5844,12 @@ router.post('/references/:id/retry-transcribe', authenticate, async (req, res) =
             `UPDATE brief_pipeline_references SET video_url = $1, status = 'transcribing' WHERE id = $2`,
             [videoUrl, ref.id]
           );
+          // The freshly-extracted URL is another expiring fbcdn link — mirror
+          // it to R2 in the background so the row ends up with a permanent URL
+          // instead of dying again in 2-4 weeks (that loop is how repaired
+          // refs kept reverting to dead fbcdn URLs).
+          mirrorReferenceMediaToR2(ref.id, videoUrl, null)
+            .catch(e => console.warn(`[BriefPipeline] retry-transcribe post-mirror failed for ref ${ref.id}: ${e.message}`));
           const result = await transcribeVideoUrl(videoUrl);
           const { text, segments } = result;
           const mismatch = detectBrandMismatch(ref.headline, result._analysis);
@@ -6455,6 +6547,10 @@ router.post('/references/import-meta', authenticate, async (req, res) => {
                   WHERE id = $2`,
                 [videoUrl, ref.id]
               );
+              // Mirror the fresh (expiring) URL to R2 in the background — see
+              // retry-transcribe: never leave an fbcdn URL as the stored value.
+              mirrorReferenceMediaToR2(ref.id, videoUrl, null)
+                .catch(e => console.warn(`[BriefPipeline] transcribe post-mirror failed for ref ${ref.id}: ${e.message}`));
               const result = await transcribeVideoUrl(videoUrl);
               const { text, segments } = result;
               const mismatch = detectBrandMismatch(ref.headline, result._analysis);

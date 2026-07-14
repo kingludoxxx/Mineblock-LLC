@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
-import { X, Sparkles, Trash2, Clock, Trophy, Flame, Star, FileText, Play, Eye, TrendingUp, Upload } from 'lucide-react';
+import { X, Sparkles, Trash2, Clock, Trophy, Flame, Star, FileText, Play, Eye, TrendingUp, Upload, Loader2 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import api from '../../../services/api';
 
 const TIER_META = {
   BANGER: { Icon: Flame,  label: 'Banger',  accent: 'text-zinc-200' },
@@ -32,7 +33,39 @@ export default function ReferencePreviewModal({ reference, open, onClose, onUseA
   const refKey = reference?.id || null;
   const [videoErrorFor, setVideoErrorFor] = useState(null);
   const [videoLoading, setVideoLoading] = useState(false);
+  // Repaired-URL state, keyed by reference id (same reset-on-change pattern).
+  const [repairedFor, setRepairedFor] = useState(null);   // { id, url }
+  const [repairingFor, setRepairingFor] = useState(null); // id while repair in flight
   const videoError = videoErrorFor === refKey && refKey !== null;
+  const repairedUrl = repairedFor?.id === refKey ? repairedFor.url : null;
+  const repairing = repairingFor === refKey && refKey !== null;
+
+  // Stored fbcdn URLs expire ~2-4 weeks after scrape. On playback failure,
+  // ask the server to recover the video (fresh Ad Library extraction → R2)
+  // and retry once with the permanent URL it returns.
+  async function handleVideoError(e) {
+    setVideoLoading(false);
+    console.error('[ReferencePreviewModal] Video load failed:', {
+      videoUrl: repairedUrl || reference?.videoUrl,
+      errorCode: e.currentTarget?.error?.code,
+      errorMessage: e.currentTarget?.error?.message,
+    });
+    if (repairedUrl || repairing) { setVideoErrorFor(refKey); return; } // already retried once
+    setRepairingFor(refKey);
+    try {
+      const { data } = await api.post(`/brief-pipeline/references/${refKey}/repair-video`, {}, { timeout: 120000 });
+      if (data?.videoUrl) {
+        setRepairedFor({ id: refKey, url: data.videoUrl });
+        setVideoErrorFor(null);
+      } else {
+        setVideoErrorFor(refKey);
+      }
+    } catch {
+      setVideoErrorFor(refKey);
+    } finally {
+      setRepairingFor(null);
+    }
+  }
 
   useEffect(() => {
     if (!open) return;
@@ -113,7 +146,15 @@ export default function ReferencePreviewModal({ reference, open, onClose, onUseA
         <div className="flex-1 overflow-y-auto min-h-0">
           {/* Video */}
           <div className="p-5">
-            {reference.videoUrl && !videoError ? (
+            {repairing ? (
+              <div className="rounded-lg border border-white/[0.06] bg-black/40 p-6 text-center">
+                <Loader2 className="w-6 h-6 text-zinc-500 mx-auto mb-3 animate-spin" />
+                <div className="text-xs text-zinc-400 mb-1">
+                  Video link expired — recovering it from the Ad Library…
+                </div>
+                <div className="text-[10px] text-zinc-600">This can take up to a minute. The recovered copy is saved permanently.</div>
+              </div>
+            ) : reference.videoUrl && !videoError ? (
               <div className="rounded-lg overflow-hidden bg-black border border-white/[0.06] relative">
                 {videoLoading && (
                   <div className="absolute inset-0 flex items-center justify-center bg-black/40 z-10">
@@ -126,8 +167,8 @@ export default function ReferencePreviewModal({ reference, open, onClose, onUseA
                   </div>
                 )}
                 <video
-                  key={reference.id}
-                  src={reference.videoUrl}
+                  key={`${reference.id}-${repairedUrl ? 'repaired' : 'stored'}`}
+                  src={repairedUrl || reference.videoUrl}
                   controls
                   controlsList="nodownload"
                   playsInline
@@ -135,15 +176,7 @@ export default function ReferencePreviewModal({ reference, open, onClose, onUseA
                   className="w-full max-h-[44vh] object-contain bg-black mx-auto"
                   onLoadStart={() => setVideoLoading(true)}
                   onCanPlay={() => setVideoLoading(false)}
-                  onError={(e) => {
-                    setVideoLoading(false);
-                    setVideoErrorFor(refKey);
-                    console.error('[ReferencePreviewModal] Video load failed:', {
-                      videoUrl: reference.videoUrl,
-                      errorCode: e.currentTarget?.error?.code,
-                      errorMessage: e.currentTarget?.error?.message,
-                    });
-                  }}
+                  onError={handleVideoError}
                 />
               </div>
             ) : (
