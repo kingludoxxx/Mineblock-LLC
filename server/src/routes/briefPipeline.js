@@ -1411,6 +1411,31 @@ async function getNextBriefNumber() {
   return maxBrief + 1;
 }
 
+// Race-free brief-number allocation. read-MAX-then-insert-later let two
+// concurrent queue jobs (worker concurrency 2) mint the same number — the
+// single-row counter's atomic UPDATE ... RETURNING cannot collide. `floor`
+// carries the ClickUp-side max so numbers always stay above pushed tasks.
+async function allocateBriefNumber(floor = 0) {
+  try {
+    await pgQuery(`
+      INSERT INTO brief_number_counter (id, value)
+      SELECT 1, COALESCE((SELECT MAX(brief_number) FROM brief_pipeline_generated), 0)
+      ON CONFLICT (id) DO NOTHING
+    `);
+    const rows = await pgQuery(
+      `UPDATE brief_number_counter SET value = GREATEST(value, $1) + 1 WHERE id = 1 RETURNING value`,
+      [Number(floor) || 0]
+    );
+    if (rows[0]?.value) return Number(rows[0].value);
+  } catch (e) {
+    console.warn(`[BriefPipeline] allocateBriefNumber failed (${e.message}) — falling back to MAX+1`);
+  }
+  // Last resort (counter table unavailable): the old racy path, still better
+  // than failing the generation outright.
+  const rows = await pgQuery(`SELECT COALESCE(MAX(brief_number), 0) AS max FROM brief_pipeline_generated`);
+  return Number(rows[0]?.max || 0) + Math.floor(1 + Math.random() * 3);
+}
+
 /**
  * Build the naming convention string.
  */
@@ -3463,7 +3488,10 @@ async function executeGenerationJob({
     const productContext = buildProductContextForBrief(productProfile);
     console.log(`[BriefPipeline] Product context: ${productContext === 'No product profile available.' ? 'EMPTY (no profile)' : `${productContext.split('\n').length} fields loaded`}`);
 
-    let nextBriefNum = await getNextBriefNumber();
+    // Floor for atomic allocation: getNextBriefNumber() scans ClickUp + DB.
+    // The actual per-brief number is minted race-free at INSERT time by
+    // allocateBriefNumber() — two concurrent queue jobs can never collide.
+    const briefNumberFloor = (await getNextBriefNumber()) - 1;
     let generationResults;
     let winAnalysis = {};
     const config = {
@@ -3741,7 +3769,7 @@ async function executeGenerationJob({
     for (const result of generationResults) {
       if (!result.success) continue;
       const { generated, scores, overall, direction } = result;
-      const briefNumber = nextBriefNum++;
+      const briefNumber = await allocateBriefNumber(briefNumberFloor);
       const weekLabel = getCurrentWeekLabel();
       // Brief type derives from generation mode: clones of competitor ads
       // are Net New (NN); iterations of our own winners are IT. The mode
