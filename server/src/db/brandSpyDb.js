@@ -205,7 +205,7 @@ export async function getBrandExpanded(id) {
       // Compute live per-page ad counts via a join — the column-based
       // active_ads_count was never being populated, so the UI dropdown
       // had no way to show counts.
-      `SELECT bp.id, bp.meta_page_id, bp.page_name, bp.page_profile_pic,
+      `SELECT bp.id, bp.meta_page_id, bp.page_name, bp.page_profile_pic, bp.page_profile_pic_r2,
               bp.active_ads_count, bp.total_ads_count, bp.match_confidence, bp.first_seen_at,
               (SELECT COUNT(*) FROM brand_spy.ads a
                  WHERE a.brand_page_id = bp.id AND a.is_active = TRUE) AS live_active_ads,
@@ -230,7 +230,8 @@ export async function getBrandExpanded(id) {
       id: r.id,
       metaPageId: r.meta_page_id,
       pageName: r.page_name,
-      pageProfilePic: r.page_profile_pic,
+      // R2-mirrored URL preferred (never expires); fbcdn URL is a fallback.
+      pageProfilePic: r.page_profile_pic_r2 || r.page_profile_pic,
       // Prefer the live computed counts (always current) over the column
       // values (which the worker historically forgot to populate).
       activeAdsCount: live || Number(r.active_ads_count) || 0,
@@ -401,20 +402,20 @@ export async function listAds(brandId, q) {
        a.collation_id, a.collation_count,
        a.tier, a.current_rank, a.meta_rank, a.rank_3d, a.rank_7d, a.rank_21d,
        a.velocity_7d, a.velocity_21d, a.pool_size,
+       -- Prefer the R2-mirrored URL if the media-mirror worker has already
+       -- processed this ad. R2 URLs never expire; fbcdn does (~2-4 weeks).
+       -- For ads not yet mirrored, fall through the existing fbcdn chain.
        COALESCE(
+         a.thumbnail_url_r2,
          a.raw_snapshot->'videos'->0->>'video_preview_image_url',
          a.raw_snapshot->'images'->0->>'resized_image_url',
          a.raw_snapshot->'images'->0->>'original_image_url',
          a.raw_snapshot->'cards'->0->>'resized_image_url',
          a.raw_snapshot->'cards'->0->>'original_image_url',
-         -- Last-resort DCO fallback: the page's profile picture. ScrapeCreators
-         -- doesn't return a canonical creative for DCO ads (multiple variants),
-         -- so the table cell would otherwise be empty. Page logo is at least a
-         -- brand-recognizable placeholder. Frontend uses object-contain for
-         -- DCO ads so the logo doesn't stretch awkwardly in the 4/5 AdCard box.
          a.raw_snapshot->>'page_profile_picture_url'
        ) AS thumbnail_url,
        COALESCE(
+         a.video_url_r2,
          a.raw_snapshot->'videos'->0->>'video_hd_url',
          a.raw_snapshot->'videos'->0->>'video_sd_url'
        ) AS video_url,
@@ -442,9 +443,10 @@ export async function getAdDetail(adId) {
        a.collation_id, a.collation_count,
        a.tier, a.current_rank, a.meta_rank, a.rank_3d, a.rank_7d, a.rank_21d,
        a.velocity_7d, a.velocity_21d, a.pool_size,
-       -- Same SQL-side JSON extraction as listAds — keeps the response small.
-       -- The frontend uses thumbnailUrl + videoUrl, never raw_snapshot.
+       -- Prefer R2-mirrored URLs (never expire). Fall through the fbcdn
+       -- chain only for ads the mirror worker hasn't reached yet.
        COALESCE(
+         a.thumbnail_url_r2,
          a.raw_snapshot->'videos'->0->>'video_preview_image_url',
          a.raw_snapshot->'images'->0->>'resized_image_url',
          a.raw_snapshot->'images'->0->>'original_image_url',
@@ -453,6 +455,7 @@ export async function getAdDetail(adId) {
          a.raw_snapshot->>'page_profile_picture_url'
        ) AS thumbnail_url,
        COALESCE(
+         a.video_url_r2,
          a.raw_snapshot->'videos'->0->>'video_hd_url',
          a.raw_snapshot->'videos'->0->>'video_sd_url'
        ) AS video_url,

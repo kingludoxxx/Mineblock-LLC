@@ -21,6 +21,7 @@ import { runBrandScrape, scrapeAllInBackground, recoverStuckScrapes } from '../w
 import { getScrapeCreatorsClient } from '../services/scrapeCreators.js';
 import { transcribeVideoUrl } from '../services/videoTranscribe.js';
 import { extractFreshVideoUrl, adLibraryUrl } from '../services/freshVideoUrl.js';
+import { startMediaMirrorWorker } from '../services/brandSpyMediaMirror.js';
 
 const router = Router();
 
@@ -877,5 +878,6 @@ function scheduleDailyScrape() {
 }
 
 scheduleDailyScrape();
+startMediaMirrorWorker();
 
 export default router;
