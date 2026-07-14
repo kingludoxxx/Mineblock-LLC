@@ -1,6 +1,40 @@
 # Progress Log
 
 ---
+TIMESTAMP: 2026-07-15 00:55
+TASK: Batch Queue feature (BATCH_QUEUE_SCOPE.md) — build, test to 10/10
+
+BUILT (3 parallel agents + integration): migration 074 brief_generation_jobs;
+executeGenerationJob extraction (route behavior identical); queue endpoints
+(POST bulk w/ dedup, GET+summary, retry, delete, clear-done); worker (8s tick,
+concurrency 2, transcribe->import->generate, stage-prefixed errors); League
+modal multi-select + prefetch-on-check transcription + footer (product/angle
+AUTO/model, localStorage); QueueStrip live status UI. Two defects found IN
+TESTING and fixed: (1) brief-number race under concurrency (two B0432) ->
+migration 075 atomic counter, allocateBriefNumber at INSERT time; (2) restart
+recovery raced Render's deploy drain -> duplicate brief -> 12-min staleness
+guard + 60s steady-state recovery sweep; DELETE /queue/:id now clears failed.
+
+TESTED (all in production):
+- UI E2E: 3 videos checked in modal (prefetch fired exactly 1 transcribe call
+  for the 1 untranscribed ad), Puure/AUTO/Claude queued in 1 click, strip
+  showed 2 RUNNING + 1 QUEUED, all 3 complete unattended (~4 min), briefs
+  landed newest-first, distinct content per source, zero competitor leakage
+- Failure isolation: dead-ad job failed in <1s with readable stage error;
+  other jobs unaffected
+- Restart mid-queue: deploy landed while a job generated; boot recovery
+  re-queued and completed it (logs: 'boot recovery: re-queued 1 stuck job');
+  drain-race dup found + fixed + dup brief deleted
+- Single-video flow post-refactor: 84s, B0437, 725 words
+- Final: all brief numbers unique (429-437), list newest-first, queue clean
+
+OUTPUT: Feature live. Acceptance criteria 1-6 pass. Numbers race-free under
+concurrency. Recovery is drain-safe.
+DECISIONS: recovery staleness 12 min (> max generation + drain); failed jobs
+hard-delete via DELETE /queue/:id; v2 nightly auto-transcribe NOT built (spend
+decision, per scope).
+STATUS: COMPLETE
+---
 TIMESTAMP: 2026-07-14 19:20
 TASK: Brief Pipeline — Phase 1 correctness + Phase 2 speed (post 5-agent investigation)
 
