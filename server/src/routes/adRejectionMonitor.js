@@ -129,11 +129,32 @@ async function checkSiblingAds(briefNumber, sourceAccountId, sourceAccountName) 
 }
 
 // ── Slack Helper ────────────────────────────────────────────────────
+// Circuit breaker. The un-notified backlog is re-posted every 3-minute
+// cycle by design ("retry next cycle") — but when the channel itself is
+// broken (archived channel, bad token) every post fails forever, so each
+// cycle re-flooded Slack with the WHOLE backlog. That flood is what took
+// prod down on 2026-07-14/15 (is_archived storm, then Slack rate-limiting
+// the token, event loop starved, health checks failing). Fatal channel
+// errors now open the breaker for 6h with a single log line; ratelimited
+// opens it for 15 min; and posts are paced ~1/sec (Slack's channel limit).
+let slackDisabledUntil = 0;
+let slackDisabledReason = null;
+let lastSlackPostAt = 0;
+const SLACK_FATAL_ERRORS = new Set(['is_archived', 'channel_not_found', 'not_in_channel', 'invalid_auth', 'account_inactive', 'token_revoked']);
+
 async function sendSlackMessage(text, blocks) {
   if (!SLACK_BOT_TOKEN || !SLACK_CHANNEL) {
     console.warn('[Ad Rejection] No SLACK_BOT_TOKEN or SLACK_REJECTION_CHANNEL configured');
     return { ok: false };
   }
+  if (Date.now() < slackDisabledUntil) {
+    return { ok: false, error: `breaker_open:${slackDisabledReason}` };
+  }
+
+  // Pace: min 1.1s between posts — chat.postMessage is ~1/sec per channel.
+  const wait = lastSlackPostAt + 1100 - Date.now();
+  if (wait > 0) await sleep(wait);
+  lastSlackPostAt = Date.now();
 
   const body = {
     channel: SLACK_CHANNEL,
@@ -154,7 +175,19 @@ async function sendSlackMessage(text, blocks) {
     });
 
     const data = await resp.json();
-    if (!data.ok) console.error('[Ad Rejection] Slack error:', data.error);
+    if (!data.ok) {
+      if (SLACK_FATAL_ERRORS.has(data.error)) {
+        slackDisabledUntil = Date.now() + 6 * 60 * 60 * 1000;
+        slackDisabledReason = data.error;
+        console.error(`[Ad Rejection] Slack channel is broken (${data.error}) — notifications OFF for 6h. OPERATOR: fix SLACK_REJECTION_CHANNEL (${SLACK_CHANNEL}) — it appears archived/inaccessible.`);
+      } else if (data.error === 'ratelimited') {
+        slackDisabledUntil = Date.now() + 15 * 60 * 1000;
+        slackDisabledReason = 'ratelimited';
+        console.error('[Ad Rejection] Slack rate-limited — notifications paused 15 min.');
+      } else {
+        console.error('[Ad Rejection] Slack error:', data.error);
+      }
+    }
     return data;
   } catch (err) {
     console.error('[Ad Rejection] Slack fetch error:', err.message);
