@@ -84,16 +84,31 @@ const ScriptGeneratorPanel = forwardRef(function ScriptGeneratorPanel({
     getSelectedModel: () => selectedModel,
   }));
 
-  // Apply external prefill (from Reference card → "Generate Brief") once per
-  // distinct initialScript. We track the last applied value so subsequent
-  // user edits to the textarea aren't clobbered on re-render.
+  // Apply external prefill (from Reference card → "Generate Brief"). The
+  // script and its referenceId must travel as ONE atomic unit: keying the
+  // dedup on script text alone let scriptText lag behind a newer
+  // initialReferenceId (stale textarea surviving a clear / no-transcript
+  // prefill), so a generate could pair the OLD script with a NEW reference.
+  // The dedup key is now referenceId+script, the applied referenceId is
+  // captured in state alongside the script (handleGenerate reads THAT, never
+  // the live prop), and a cleared prefill resets everything.
   const appliedScriptRef = useRef(null);
   const appliedModeRef = useRef(null);
+  const [appliedReferenceId, setAppliedReferenceId] = useState(null);
   useEffect(() => {
-    if (initialScript && appliedScriptRef.current !== initialScript) {
-      appliedScriptRef.current = initialScript;
+    const prefillKey = initialScript ? `${initialReferenceId || 'manual'}::${initialScript}` : null;
+    if (prefillKey && appliedScriptRef.current !== prefillKey) {
+      appliedScriptRef.current = prefillKey;
       setInputMode('text');
       setScriptText(initialScript);
+      setAppliedReferenceId(initialReferenceId || null);
+    }
+    if (!initialScript && appliedScriptRef.current !== null) {
+      // Prefill cleared (X on the reference banner) — reset so the stale
+      // transcript can't survive into the next generation.
+      appliedScriptRef.current = null;
+      setScriptText('');
+      setAppliedReferenceId(null);
     }
     if (initialMode && appliedModeRef.current !== initialMode) {
       appliedModeRef.current = initialMode;
@@ -103,7 +118,7 @@ const ScriptGeneratorPanel = forwardRef(function ScriptGeneratorPanel({
       // legacy 'variants' value coming in from old state falls back to clone.
       setOutputMode(initialMode === 'iterate' ? 'iterate' : 'clone');
     }
-  }, [initialScript, initialMode]);
+  }, [initialScript, initialMode, initialReferenceId]);
 
   // ── MR (Miner Forge Pro) is the default product, always ───────────────
   // Auto-snaps the selection back to MR whenever the field is empty AND
@@ -204,7 +219,10 @@ const ScriptGeneratorPanel = forwardRef(function ScriptGeneratorPanel({
         angle: selectedAngle || customAngle || null,
         mode: outputMode,
         numVariations: variantCount,
-        referenceId: initialReferenceId || null,
+        // appliedReferenceId was captured in the SAME state update as the
+        // script text — the live initialReferenceId prop can be newer than
+        // the textarea contents (the wrong-reference bug).
+        referenceId: appliedReferenceId || null,
         model: selectedModel,
         // Only send vectorsSelected on iterate mode — clone mode ignores it.
         vectorsSelected: outputMode === 'iterate' ? buildVectorsPayload() : undefined,

@@ -109,12 +109,10 @@ export default function ReferenceCard({ reference, onPreview, onGenerateFromRefe
             <Play className="w-6 h-6 text-zinc-700" />
           </div>
         )}
-        {/* Play overlay on hover */}
-        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-colors flex items-center justify-center opacity-0 group-hover:opacity-100">
-          <div className="w-9 h-9 rounded-full bg-white/10 backdrop-blur-sm border border-white/20 flex items-center justify-center">
-            <Play className="w-4 h-4 text-white fill-white" />
-          </div>
-        </div>
+        {/* Hover tint — clicking the thumbnail opens the preview modal. The old
+            play-button overlay was removed: the card never had an inline player,
+            and the icon misleadingly implied one. */}
+        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors" />
         {/* Source/tier badge over thumbnail */}
         <div className="absolute top-2 left-2 flex items-center gap-1">
           <span
