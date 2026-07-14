@@ -719,17 +719,33 @@ export default function LeagueImportModal({ open, onClose, onImported, onQueued 
               {ads.map(ad => {
                 const isSelected = selectedAd?.id === ad.id;
                 const imported = ad.alreadyImported || importedAdIds.has(ad.adArchiveId);
+                const checked = selectedAdIds.has(ad.id);
                 return (
-                  <button
+                  <div
                     key={ad.id}
-                    type="button"
+                    role="button"
+                    tabIndex={0}
                     onClick={() => handleSelectAd(ad)}
-                    className={`w-full text-left flex gap-3 p-2.5 rounded-lg border transition-all cursor-pointer ${
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleSelectAd(ad); } }}
+                    className={`relative w-full text-left flex gap-3 p-2.5 rounded-lg border transition-all cursor-pointer ${
                       isSelected
                         ? 'bg-violet-500/10 border-violet-500/40'
                         : 'bg-white/[0.02] border-white/[0.05] hover:bg-white/[0.04] hover:border-white/[0.1]'
                     }`}
                   >
+                    {/* Batch checkbox — checking must NOT open the preview */}
+                    <button
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); toggleAdChecked(ad); }}
+                      title={checked ? 'Remove from batch' : 'Add to batch (starts transcription)'}
+                      className={`absolute top-2 right-2 w-4 h-4 rounded border flex items-center justify-center transition-colors cursor-pointer ${
+                        checked
+                          ? 'bg-violet-500 border-violet-400 text-white'
+                          : 'bg-black/40 border-white/[0.2] text-transparent hover:border-white/[0.45]'
+                      }`}
+                    >
+                      {checked && <Check className="w-3 h-3" strokeWidth={3} />}
+                    </button>
                     {/* Thumb */}
                     <div className="w-16 h-16 rounded bg-black/40 border border-white/[0.04] overflow-hidden shrink-0 relative flex items-center justify-center">
                       {ad.thumbnailUrl ? (
@@ -743,8 +759,8 @@ export default function LeagueImportModal({ open, onClose, onImported, onQueued 
                         <Play className="w-4 h-4 text-zinc-600" />
                       )}
                     </div>
-                    {/* Info */}
-                    <div className="flex-1 min-w-0 flex flex-col gap-1">
+                    {/* Info — right padding reserves room for the checkbox */}
+                    <div className="flex-1 min-w-0 flex flex-col gap-1 pr-5">
                       <div className="flex items-center gap-1.5">
                         <TierBadge tier={ad.tier} />
                         {imported && (
@@ -764,7 +780,7 @@ export default function LeagueImportModal({ open, onClose, onImported, onQueued 
                         {ad.transcript && <span className="ml-2 text-violet-400/80">· transcript ready</span>}
                       </div>
                     </div>
-                  </button>
+                  </div>
                 );
               })}
 
@@ -971,6 +987,115 @@ export default function LeagueImportModal({ open, onClose, onImported, onQueued 
             )}
           </div>
         </div>
+
+        {/* BATCH FOOTER — appears when at least one ad is checked */}
+        {selectedAdIds.size > 0 && (
+          <div className="border-t border-white/[0.08] bg-[#0c0c0e] px-5 py-3 shrink-0 flex items-center gap-4 flex-wrap">
+            {/* Product */}
+            <div className="flex items-center gap-2">
+              <label className="text-[10px] font-mono font-semibold uppercase tracking-[0.15em] text-zinc-500 shrink-0">
+                Product
+              </label>
+              <select
+                value={queueProductId != null ? String(queueProductId) : ''}
+                onChange={(e) => setQueueProductId(e.target.value || null)}
+                className="bg-[#0a0a0a] border border-white/[0.08] rounded-md pl-2.5 py-1.5 text-xs font-mono text-zinc-200 focus:outline-none focus:ring-1 focus:ring-violet-500/30 focus:border-violet-500/30 hover:border-white/[0.15] cursor-pointer appearance-none transition-colors max-w-[13rem] truncate"
+                style={{
+                  backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23a1a1aa' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E")`,
+                  backgroundRepeat: 'no-repeat',
+                  backgroundPosition: 'right 0.5rem center',
+                  paddingRight: '1.75rem',
+                }}
+              >
+                <option value="">
+                  {loadingQueueProducts ? 'Loading products…' : '— Pick product —'}
+                </option>
+                {queueProducts.map(p => (
+                  <option key={p.id} value={String(p.id)}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Angle */}
+            <div className="flex items-center gap-2">
+              <label className="text-[10px] font-mono font-semibold uppercase tracking-[0.15em] text-zinc-500 shrink-0">
+                Angle
+              </label>
+              <select
+                value={queueAngle}
+                onChange={(e) => setQueueAngle(e.target.value)}
+                className="bg-[#0a0a0a] border border-white/[0.08] rounded-md pl-2.5 py-1.5 text-xs font-mono text-zinc-200 focus:outline-none focus:ring-1 focus:ring-violet-500/30 focus:border-violet-500/30 hover:border-white/[0.15] cursor-pointer appearance-none transition-colors max-w-[12rem] truncate"
+                style={{
+                  backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23a1a1aa' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E")`,
+                  backgroundRepeat: 'no-repeat',
+                  backgroundPosition: 'right 0.5rem center',
+                  paddingRight: '1.75rem',
+                }}
+              >
+                <option value="">— AUTO —</option>
+                {queueAngles.map((a, i) => (
+                  <option key={`${a.name}-${i}`} value={a.name}>
+                    {a.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Model toggle */}
+            <div className="flex items-center p-0.5 bg-white/[0.02] rounded-md border border-white/[0.06]">
+              {['claude', 'openai'].map(m => (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => setQueueModel(m)}
+                  className={`px-2.5 py-1 text-[10px] font-mono font-semibold uppercase tracking-wider rounded transition-colors cursor-pointer ${
+                    queueModel === m
+                      ? 'bg-violet-500/15 text-violet-300 border border-violet-500/30'
+                      : 'text-zinc-500 hover:text-zinc-300 border border-transparent'
+                  }`}
+                >
+                  {m}
+                </button>
+              ))}
+            </div>
+
+            <div className="flex-1" />
+
+            {queueError ? (
+              <span
+                className="text-[10px] font-mono text-red-400 max-w-[16rem] truncate"
+                title={queueError}
+              >
+                {queueError}
+              </span>
+            ) : !queueProduct ? (
+              <span className="text-[10px] font-mono text-zinc-500">
+                Pick a product to queue.
+              </span>
+            ) : null}
+
+            <button
+              type="button"
+              onClick={handleQueue}
+              disabled={queueing || !queueProduct || selectedAdIds.size === 0}
+              className="inline-flex items-center gap-2 px-4 py-2 text-xs font-mono font-semibold uppercase tracking-wider rounded-lg border bg-violet-500/10 border-violet-500/30 text-violet-300 hover:bg-violet-500/20 hover:border-violet-500/50 transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {queueing ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  Queueing…
+                </>
+              ) : (
+                <>
+                  <Layers className="w-3.5 h-3.5" />
+                  Queue {selectedAdIds.size} Brief{selectedAdIds.size === 1 ? '' : 's'}
+                </>
+              )}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -3367,9 +3367,38 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
     // Respond immediately so client doesn't timeout on Render's 30s limit
     res.json({ success: true, message: 'Generation started in background', creative_id: creativeId, winner_id: winner.id });
 
-    // Continue generation in background (non-blocking)
-    (async () => {
-    try {
+    // Continue generation in background (non-blocking). The engine lives in
+    // executeGenerationJob() (module scope) so the batch-queue worker can
+    // await the identical flow; this route keeps the original
+    // fire-and-forget behavior.
+    executeGenerationJob({
+      rawScript, referenceId, productId, productCode, angle, mode,
+      numVariations, vectorsSelected, model, winner, creativeId,
+    }).catch(async (bgErr) => {
+      console.error('[BriefPipeline] generate-from-script background error:', bgErr.message);
+      // Reset winner status so user can retry
+      await pgQuery(`UPDATE brief_pipeline_winners SET status = 'detected' WHERE id = $1`, [winner.id]).catch(() => {});
+    });
+
+  } catch (err) {
+    console.error('[BriefPipeline] generate-from-script error:', err.message);
+    if (!res.headersSent) {
+      res.status(500).json({ success: false, error: { message: err.message } });
+    }
+  }
+});
+
+// ── Core generation engine ─────────────────────────────────────────────
+// Extracted 1:1 from the POST /generate-from-script background IIFE so the
+// batch-queue worker can await the exact same flow. Parameterized on
+// everything the IIFE used to close over. Returns { briefIds } on success;
+// THROWS when every generation/insert failed (after resetting the winner
+// row to 'detected'). Callers own further error handling — the route logs
+// + resets the winner; the queue worker marks the job failed.
+async function executeGenerationJob({
+  rawScript, referenceId, productId, productCode, angle, mode,
+  numVariations = 3, vectorsSelected, model = 'claude', winner, creativeId,
+}) {
     // Step 4: Parse script + fetch product in parallel
     const isCloneMode   = mode === 'clone';
     const isIterateMode = mode === 'iterate';
@@ -3778,7 +3807,7 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
       // All DB inserts failed or all generations failed
       await pgQuery(`UPDATE brief_pipeline_winners SET status = 'detected' WHERE id = $1`, [winner.id]);
       console.error('[BriefPipeline] generate-from-script: All brief generations failed');
-      return;
+      throw new Error('All brief generations failed');
     }
 
     // Rank (parallel updates)
@@ -3839,20 +3868,8 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
     }
 
     console.log(`[BriefPipeline] generate-from-script complete: ${generatedBriefs.length} briefs`);
-    } catch (bgErr) {
-      console.error('[BriefPipeline] generate-from-script background error:', bgErr.message);
-      // Reset winner status so user can retry
-      await pgQuery(`UPDATE brief_pipeline_winners SET status = 'detected' WHERE id = $1`, [winner.id]).catch(() => {});
-    }
-    })(); // end background IIFE
-
-  } catch (err) {
-    console.error('[BriefPipeline] generate-from-script error:', err.message);
-    if (!res.headersSent) {
-      res.status(500).json({ success: false, error: { message: err.message } });
-    }
-  }
-});
+    return { briefIds: generatedBriefs.map((b) => b.id) };
+}
 
 // GET /generation-status/:winnerId — poll for background generation completion
 router.get('/generation-status/:winnerId', authenticate, async (req, res) => {
@@ -5531,6 +5548,207 @@ async function mirrorReferenceMediaToR2(refId, videoUrl, thumbnailUrl) {
 //   2. dead → pull the freshest video_hd_url/video_sd_url/thumbnail_url from
 //      brand_spy.ads (the daily scraper refreshes them) → probe → mirror
 //   3. nothing alive anywhere → unrecoverable; transcript-only fallback UI stands
+// ═══════════════════════════════════════════════════════════════════════
+// BATCH QUEUE — brief_generation_jobs (see BATCH_QUEUE_SCOPE.md)
+// Select N League ads → queue → worker auto-transcribes, imports the
+// reference, and generates a brief per ad. Queue survives restarts.
+// ═══════════════════════════════════════════════════════════════════════
+
+// Lazy belt-and-braces guard (same pattern as ensureTables /
+// ensureLaunchTables): migration 074 owns the canonical DDL, but the
+// endpoints + worker must not 500 on an environment where migrations
+// haven't run yet.
+let jobsTableReady = false;
+async function ensureJobsTable() {
+  if (jobsTableReady) return;
+  await pgQuery(`
+    CREATE TABLE IF NOT EXISTS brief_generation_jobs (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      brand_spy_ad_id  TEXT NOT NULL,
+      ad_archive_id    TEXT,
+      brand_id         TEXT,
+      brand_name       TEXT,
+      tier             TEXT,
+      headline         TEXT,
+      product_id       INTEGER,
+      product_code     TEXT,
+      angle            TEXT,
+      model            TEXT DEFAULT 'claude',
+      status           TEXT NOT NULL DEFAULT 'queued',
+      error            TEXT,
+      reference_id     UUID,
+      brief_id         UUID,
+      attempts         INTEGER NOT NULL DEFAULT 0,
+      created_at       TIMESTAMPTZ DEFAULT NOW(),
+      started_at       TIMESTAMPTZ,
+      finished_at      TIMESTAMPTZ
+    )
+  `, [], { timeout: 15000 });
+  await pgQuery(`
+    CREATE INDEX IF NOT EXISTS idx_bgj_status ON brief_generation_jobs (status, created_at)
+  `).catch(() => {});
+  jobsTableReady = true;
+}
+
+// POST /queue — enqueue N League ads for auto transcribe → import → generate.
+// Dedup: an ad with an existing queued/transcribing/generating job for the
+// same ad_archive_id is skipped (double-click / re-open safety).
+router.post('/queue', authenticate, async (req, res) => {
+  try {
+    await ensureJobsTable();
+    const { items, productId, productCode, angle, model } = req.body || {};
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ success: false, error: { message: 'items array is required (at least one ad)' } });
+    }
+    const modelVal = model === 'openai' ? 'openai' : 'claude';
+    // angle: string | null — null/''/'AUTO' all mean AUTO (resolve at generate time)
+    const angleVal = (angle && String(angle).trim() && String(angle).trim().toUpperCase() !== 'AUTO')
+      ? String(angle).trim()
+      : null;
+    const productIdVal = (productId != null && /^\d+$/.test(String(productId))) ? Number(productId) : null;
+
+    const skipped = [];
+    const jobs = [];
+    for (const item of items) {
+      const { brandSpyAdId, adArchiveId, brandId, brandName, tier, headline } = item || {};
+      if (!brandSpyAdId) {
+        skipped.push({ adArchiveId: adArchiveId ? String(adArchiveId) : null, reason: 'brandSpyAdId is required' });
+        continue;
+      }
+      if (adArchiveId) {
+        const dupe = await pgQuery(
+          `SELECT id FROM brief_generation_jobs
+            WHERE ad_archive_id = $1 AND status IN ('queued','transcribing','generating')
+            LIMIT 1`,
+          [String(adArchiveId)]
+        );
+        if (dupe.length) {
+          skipped.push({ adArchiveId: String(adArchiveId), reason: 'already queued or running' });
+          continue;
+        }
+      }
+      const inserted = await pgQuery(
+        `INSERT INTO brief_generation_jobs (
+           brand_spy_ad_id, ad_archive_id, brand_id, brand_name, tier, headline,
+           product_id, product_code, angle, model
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         RETURNING id, headline, status`,
+        [
+          String(brandSpyAdId),
+          adArchiveId ? String(adArchiveId) : null,
+          brandId ? String(brandId) : null,
+          brandName || null,
+          tier || null,
+          headline || null,
+          productIdVal,
+          productCode || null,
+          angleVal,
+          modelVal,
+        ]
+      );
+      jobs.push(inserted[0]);
+    }
+    res.json({ success: true, queued: jobs.length, skipped, jobs });
+  } catch (err) {
+    console.error('[BriefPipeline] POST /queue error:', err.message);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// GET /queue — list jobs for the queue strip. Default: last 24h OR not
+// done yet; ?include_done=true returns everything.
+router.get('/queue', authenticate, async (req, res) => {
+  try {
+    await ensureJobsTable();
+    const includeDone = String(req.query.include_done || '').toLowerCase() === 'true';
+    const where = includeDone
+      ? ''
+      : `WHERE (created_at > NOW() - INTERVAL '24 hours' OR status NOT IN ('complete', 'canceled'))`;
+    const jobs = await pgQuery(`
+      SELECT id, headline, brand_name, tier, status, error, brief_id,
+             reference_id, created_at, started_at, finished_at
+        FROM brief_generation_jobs
+        ${where}
+       ORDER BY created_at DESC
+    `);
+    const summary = { queued: 0, running: 0, complete: 0, failed: 0 };
+    for (const j of jobs) {
+      if (j.status === 'queued') summary.queued += 1;
+      else if (j.status === 'transcribing' || j.status === 'generating') summary.running += 1;
+      else if (j.status === 'complete') summary.complete += 1;
+      else if (j.status === 'failed') summary.failed += 1;
+    }
+    res.json({ success: true, jobs, summary });
+  } catch (err) {
+    console.error('[BriefPipeline] GET /queue error:', err.message);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// POST /queue/clear-done — remove completed jobs from the strip.
+router.post('/queue/clear-done', authenticate, async (_req, res) => {
+  try {
+    await ensureJobsTable();
+    const rows = await pgQuery(
+      `DELETE FROM brief_generation_jobs WHERE status = 'complete' RETURNING id`
+    );
+    res.json({ success: true, cleared: rows.length });
+  } catch (err) {
+    console.error('[BriefPipeline] POST /queue/clear-done error:', err.message);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// POST /queue/:id/retry — failed → queued (fresh attempt counter).
+router.post('/queue/:id/retry', authenticate, async (req, res) => {
+  if (!validateUuid(req, res)) return;
+  try {
+    await ensureJobsTable();
+    const rows = await pgQuery(
+      `UPDATE brief_generation_jobs
+          SET status = 'queued', error = NULL, attempts = 0,
+              started_at = NULL, finished_at = NULL, brief_id = NULL
+        WHERE id = $1 AND status = 'failed'
+        RETURNING id`,
+      [req.params.id]
+    );
+    if (!rows.length) {
+      const exists = await pgQuery(`SELECT status FROM brief_generation_jobs WHERE id = $1`, [req.params.id]);
+      if (!exists.length) return res.status(404).json({ success: false, error: { message: 'Job not found' } });
+      return res.status(409).json({ success: false, error: { message: `Only failed jobs can be retried (job is '${exists[0].status}')` } });
+    }
+    res.json({ success: true });
+  } catch (err) {
+    console.error('[BriefPipeline] POST /queue/:id/retry error:', err.message);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+// DELETE /queue/:id — cancel; only status='queued' is cancelable (running
+// jobs can't be aborted mid-transcribe/generate without orphaning work).
+router.delete('/queue/:id', authenticate, async (req, res) => {
+  if (!validateUuid(req, res)) return;
+  try {
+    await ensureJobsTable();
+    const rows = await pgQuery(
+      `UPDATE brief_generation_jobs
+          SET status = 'canceled', finished_at = NOW()
+        WHERE id = $1 AND status = 'queued'
+        RETURNING id`,
+      [req.params.id]
+    );
+    if (!rows.length) {
+      const exists = await pgQuery(`SELECT status FROM brief_generation_jobs WHERE id = $1`, [req.params.id]);
+      if (!exists.length) return res.status(404).json({ success: false, error: { message: 'Job not found' } });
+      return res.status(409).json({ success: false, error: { message: `Only queued jobs can be canceled (job is '${exists[0].status}')` } });
+    }
+    res.json({ success: true });
+  } catch (err) {
+    console.error('[BriefPipeline] DELETE /queue/:id error:', err.message);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
 router.post('/references/repair-media', authenticate, async (req, res) => {
   try {
     if (!isR2Configured()) {
@@ -5639,6 +5857,84 @@ router.post('/references/:id/repair-video', authenticate, async (req, res) => {
   }
 });
 
+// ── League-ad import core ───────────────────────────────────────────────
+// Extracted from POST /references so the batch-queue worker can import a
+// reference through the exact same upsert (including the fire-and-forget
+// R2 media mirror). Validation-light: callers own request validation.
+// Returns { reference, alreadyExists }.
+async function importLeagueAdAsReference({
+  brandSpyAdId, adArchiveId, brandId, brandName, tier,
+  videoUrl, thumbnailUrl, headline, bodyText, transcript, transcriptAt,
+}) {
+  // Check if it already exists (so callers can report alreadyExists: true)
+  const existing = await pgQuery(
+    `SELECT id FROM brief_pipeline_references WHERE ad_archive_id = $1`,
+    [String(adArchiveId)]
+  );
+  const alreadyExists = existing.length > 0;
+
+  const status = transcript ? 'transcribed' : 'pending';
+  const transcriptAtVal = transcript
+    ? (transcriptAt ? new Date(transcriptAt) : new Date())
+    : null;
+
+  // FB Ad Library URL — every League import gets one for free since
+  // ad_archive_id is the deeplink slug. Editors land on the source ad
+  // with one click from the ClickUp task.
+  const sourceUrl = `https://www.facebook.com/ads/library/?id=${String(adArchiveId)}`;
+
+  const rows = await pgQuery(
+    `INSERT INTO brief_pipeline_references (
+       brand_spy_ad_id, ad_archive_id, brand_id, brand_name, tier,
+       video_url, thumbnail_url, headline, body_text,
+       transcript, transcript_at, status, source_url
+     )
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+     ON CONFLICT (ad_archive_id, source) DO UPDATE SET
+       brand_spy_ad_id = EXCLUDED.brand_spy_ad_id,
+       brand_id        = EXCLUDED.brand_id,
+       brand_name      = EXCLUDED.brand_name,
+       tier            = EXCLUDED.tier,
+       video_url       = COALESCE(EXCLUDED.video_url, brief_pipeline_references.video_url),
+       thumbnail_url   = COALESCE(EXCLUDED.thumbnail_url, brief_pipeline_references.thumbnail_url),
+       headline        = COALESCE(EXCLUDED.headline, brief_pipeline_references.headline),
+       body_text       = COALESCE(EXCLUDED.body_text, brief_pipeline_references.body_text),
+       transcript      = COALESCE(EXCLUDED.transcript, brief_pipeline_references.transcript),
+       transcript_at   = COALESCE(EXCLUDED.transcript_at, brief_pipeline_references.transcript_at),
+       source_url      = COALESCE(EXCLUDED.source_url, brief_pipeline_references.source_url),
+       status          = CASE
+                           WHEN EXCLUDED.transcript IS NOT NULL THEN 'transcribed'
+                           WHEN brief_pipeline_references.transcript IS NOT NULL THEN brief_pipeline_references.status
+                           ELSE 'pending'
+                         END,
+       updated_at      = NOW()
+     RETURNING *`,
+    [
+      brandSpyAdId,
+      String(adArchiveId),
+      brandId,
+      brandName,
+      tier,
+      videoUrl || null,
+      thumbnailUrl || null,
+      headline || null,
+      bodyText || null,
+      transcript || null,
+      transcriptAtVal,
+      status,
+      sourceUrl,
+    ]
+  );
+  const reference = mapReferenceRow(rows[0]);
+
+  // Fire-and-forget: mirror the fbcdn video/thumbnail to R2 so the card
+  // and preview modal survive Facebook's ~2-4 week URL expiry.
+  mirrorReferenceMediaToR2(rows[0].id, rows[0].video_url, rows[0].thumbnail_url)
+    .catch(e => console.warn(`[BriefPipeline] post-import media mirror failed for ref ${rows[0].id}: ${e.message}`));
+
+  return { reference, alreadyExists };
+}
+
 // POST /references — import a League ad into the Reference column.
 // Upserts on ad_archive_id (unique). Returns { reference, alreadyExists }.
 router.post('/references', authenticate, async (req, res) => {
@@ -5670,72 +5966,11 @@ router.post('/references', authenticate, async (req, res) => {
       });
     }
 
-    // Check if it already exists (so we can report alreadyExists: true)
-    const existing = await pgQuery(
-      `SELECT id FROM brief_pipeline_references WHERE ad_archive_id = $1`,
-      [String(adArchiveId)]
-    );
-    const alreadyExists = existing.length > 0;
-
-    const status = transcript ? 'transcribed' : 'pending';
-    const transcriptAtVal = transcript
-      ? (transcriptAt ? new Date(transcriptAt) : new Date())
-      : null;
-
-    // FB Ad Library URL — every League import gets one for free since
-    // ad_archive_id is the deeplink slug. Editors land on the source ad
-    // with one click from the ClickUp task.
-    const sourceUrl = `https://www.facebook.com/ads/library/?id=${String(adArchiveId)}`;
-
-    const rows = await pgQuery(
-      `INSERT INTO brief_pipeline_references (
-         brand_spy_ad_id, ad_archive_id, brand_id, brand_name, tier,
-         video_url, thumbnail_url, headline, body_text,
-         transcript, transcript_at, status, source_url
-       )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-       ON CONFLICT (ad_archive_id, source) DO UPDATE SET
-         brand_spy_ad_id = EXCLUDED.brand_spy_ad_id,
-         brand_id        = EXCLUDED.brand_id,
-         brand_name      = EXCLUDED.brand_name,
-         tier            = EXCLUDED.tier,
-         video_url       = COALESCE(EXCLUDED.video_url, brief_pipeline_references.video_url),
-         thumbnail_url   = COALESCE(EXCLUDED.thumbnail_url, brief_pipeline_references.thumbnail_url),
-         headline        = COALESCE(EXCLUDED.headline, brief_pipeline_references.headline),
-         body_text       = COALESCE(EXCLUDED.body_text, brief_pipeline_references.body_text),
-         transcript      = COALESCE(EXCLUDED.transcript, brief_pipeline_references.transcript),
-         transcript_at   = COALESCE(EXCLUDED.transcript_at, brief_pipeline_references.transcript_at),
-         source_url      = COALESCE(EXCLUDED.source_url, brief_pipeline_references.source_url),
-         status          = CASE
-                             WHEN EXCLUDED.transcript IS NOT NULL THEN 'transcribed'
-                             WHEN brief_pipeline_references.transcript IS NOT NULL THEN brief_pipeline_references.status
-                             ELSE 'pending'
-                           END,
-         updated_at      = NOW()
-       RETURNING *`,
-      [
-        brandSpyAdId,
-        String(adArchiveId),
-        brandId,
-        brandName,
-        tier,
-        videoUrl || null,
-        thumbnailUrl || null,
-        headline || null,
-        bodyText || null,
-        transcript || null,
-        transcriptAtVal,
-        status,
-        sourceUrl,
-      ]
-    );
-    const reference = mapReferenceRow(rows[0]);
+    const { reference, alreadyExists } = await importLeagueAdAsReference({
+      brandSpyAdId, adArchiveId, brandId, brandName, tier,
+      videoUrl, thumbnailUrl, headline, bodyText, transcript, transcriptAt,
+    });
     res.json({ success: true, reference, alreadyExists });
-
-    // Fire-and-forget: mirror the fbcdn video/thumbnail to R2 so the card
-    // and preview modal survive Facebook's ~2-4 week URL expiry.
-    mirrorReferenceMediaToR2(rows[0].id, rows[0].video_url, rows[0].thumbnail_url)
-      .catch(e => console.warn(`[BriefPipeline] post-import media mirror failed for ref ${rows[0].id}: ${e.message}`));
   } catch (err) {
     console.error('[BriefPipeline] POST /references error:', err.message);
     res.status(500).json({ success: false, error: { message: err.message } });
@@ -7603,6 +7838,243 @@ function mapReferenceRow(r) {
     // on every ClickUp push.
     sourceUrl: r.source_url || null,
   };
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// BATCH QUEUE WORKER — pattern-matched to startMediaMirrorWorker
+// (services/brandSpyMediaMirror.js): setInterval + in-process guard, every
+// tick and every job is wrapped so a failure never kills the process or
+// stops the queue.
+// ═══════════════════════════════════════════════════════════════════════
+
+const BRIEF_QUEUE_TICK_MS = 8_000;
+const BRIEF_QUEUE_CONCURRENCY = 2;
+const runningQueueJobs = new Set(); // in-process guard: job ids currently executing
+let briefQueueWorkerStarted = false;
+
+// Boot recovery: a restart mid-job leaves rows stuck in transcribing /
+// generating with no in-process executor. Re-queue them (attempts+1);
+// anything that has now been recovered 3+ times is structurally broken —
+// fail it instead of looping forever.
+async function recoverStuckQueueJobs() {
+  await ensureJobsTable();
+  const requeued = await pgQuery(`
+    UPDATE brief_generation_jobs
+       SET status = 'queued', attempts = attempts + 1
+     WHERE status IN ('transcribing', 'generating')
+     RETURNING id
+  `);
+  if (requeued.length) {
+    console.log(`[BriefQueue] boot recovery: re-queued ${requeued.length} stuck job(s)`);
+  }
+  const failed = await pgQuery(`
+    UPDATE brief_generation_jobs
+       SET status = 'failed', error = 'max retries after restarts', finished_at = NOW()
+     WHERE status = 'queued' AND attempts > 2
+     RETURNING id
+  `);
+  if (failed.length) {
+    console.log(`[BriefQueue] boot recovery: failed ${failed.length} job(s) past max restart retries`);
+  }
+}
+
+// One job, all four stages. Errors are stage-prefixed ('transcribe: …',
+// 'import: …', 'generate: …') and land on the job row — never thrown past
+// the caller's guard, never allowed to block other jobs.
+async function processBriefQueueJob(job) {
+  try {
+    // ── Stage 1: transcribe (job row is already status='transcribing') ──
+    let ad;
+    let transcript;
+    try {
+      ad = await getAdDetail(job.brand_spy_ad_id);
+      if (!ad) throw new Error(`brand_spy ad ${job.brand_spy_ad_id} not found`);
+      transcript = ad.transcript || null;
+      if (!transcript) {
+        // Prefetch (modal checkbox) usually got here first — this path only
+        // pays Whisper when the cache is cold.
+        if (!ad.videoUrl) throw new Error('ad has no video URL to transcribe');
+        let transcription;
+        try {
+          transcription = await transcribeVideoUrl(ad.videoUrl);
+        } catch (err) {
+          // Stored fbcdn URL expired — pull a fresh one from the FB Ad
+          // Library via yt-dlp and retry once (same chain as brandSpy.js
+          // POST /ads/:id/transcribe).
+          const archiveId = job.ad_archive_id || ad.adArchiveId;
+          const fresh = archiveId
+            ? await extractFreshVideoUrl(adLibraryUrl(archiveId)).catch(() => null)
+            : null;
+          if (!fresh) throw err;
+          console.log(`[BriefQueue] job ${job.id}: stored URL dead (${err.message}) — retrying with fresh yt-dlp URL`);
+          transcription = await transcribeVideoUrl(fresh);
+        }
+        // Persist to brand_spy.ads so the next consumer (and the prefetch
+        // cache) sees it — same UPDATE shape as brandSpy.js /transcribe.
+        await pgQuery(
+          `UPDATE brand_spy.ads
+              SET transcript = $1, transcript_segments = $2, transcript_at = NOW()
+            WHERE id = $3`,
+          [transcription.text, JSON.stringify(transcription.segments || []), job.brand_spy_ad_id]
+        );
+        transcript = transcription.text;
+      }
+      if (!transcript || transcript.trim().length < 20) {
+        throw new Error('transcript too short (<20 chars) — nothing to generate from');
+      }
+    } catch (e) {
+      throw new Error(`transcribe: ${e.message}`);
+    }
+
+    // ── Stage 2: import reference (shared upsert with POST /references) ──
+    let reference;
+    try {
+      ({ reference } = await importLeagueAdAsReference({
+        brandSpyAdId: job.brand_spy_ad_id,
+        adArchiveId: job.ad_archive_id || ad.adArchiveId,
+        brandId: job.brand_id || ad.brandId,
+        brandName: job.brand_name || ad.pageName || 'Unknown',
+        tier: job.tier || ad.tier || 'A',
+        videoUrl: ad.videoUrl || null,
+        thumbnailUrl: ad.thumbnailUrl || null,
+        headline: job.headline || ad.headline || null,
+        bodyText: ad.bodyText || null,
+        transcript,
+        transcriptAt: ad.transcriptAt || new Date().toISOString(),
+      }));
+      await pgQuery(
+        `UPDATE brief_generation_jobs SET reference_id = $1 WHERE id = $2`,
+        [reference.id, job.id]
+      );
+    } catch (e) {
+      throw new Error(`import: ${e.message}`);
+    }
+
+    // ── Stage 3: generate (same flow as POST /generate-from-script) ──
+    let briefIds;
+    try {
+      await pgQuery(
+        `UPDATE brief_generation_jobs SET status = 'generating' WHERE id = $1`,
+        [job.id]
+      );
+      const creativeId = `MANUAL-${Date.now().toString(36).toUpperCase()}`;
+      const insertedWinner = await pgQuery(`
+        INSERT INTO brief_pipeline_winners (
+          creative_id, ad_name, product_code, angle, format, raw_script,
+          status, spend, roas, cpa, ctr, purchases, winner_reason, reference_id
+        ) VALUES ($1, $2, $3, $4, $5, $6, 'generating', 0, 0, 0, 0, 0, 'manual', $7)
+        RETURNING *
+      `, [
+        creativeId,
+        `Manual script — ${transcript.slice(0, 50)}...`,
+        job.product_code || 'MR',
+        job.angle || 'NA',
+        'Mashup',
+        transcript,
+        reference.id,
+      ]);
+      const winner = insertedWinner[0];
+      try {
+        ({ briefIds } = await executeGenerationJob({
+          rawScript: transcript,
+          referenceId: reference.id,
+          productId: job.product_id,
+          productCode: job.product_code,
+          angle: job.angle, // null = AUTO (clone prompt resolves from product angles)
+          mode: 'clone',
+          numVariations: 1,
+          vectorsSelected: undefined,
+          model: job.model || 'claude',
+          winner,
+          creativeId,
+        }));
+      } catch (genErr) {
+        // Same reset the route's fire-and-forget catch performs, so the
+        // virtual winner row never wedges in 'generating'.
+        await pgQuery(
+          `UPDATE brief_pipeline_winners SET status = 'detected' WHERE id = $1`,
+          [winner.id]
+        ).catch(() => {});
+        throw genErr;
+      }
+    } catch (e) {
+      throw new Error(`generate: ${e.message}`);
+    }
+
+    // ── Stage 4: complete ──
+    await pgQuery(
+      `UPDATE brief_generation_jobs
+          SET status = 'complete', brief_id = $1, error = NULL, finished_at = NOW()
+        WHERE id = $2`,
+      [briefIds?.[0] || null, job.id]
+    );
+    console.log(`[BriefQueue] job ${job.id} complete — brief ${briefIds?.[0] || 'n/a'}`);
+  } catch (err) {
+    console.error(`[BriefQueue] job ${job.id} failed:`, err.message);
+    await pgQuery(
+      `UPDATE brief_generation_jobs
+          SET status = 'failed', error = $1, finished_at = NOW()
+        WHERE id = $2`,
+      [String(err.message || err).slice(0, 2000), job.id]
+    ).catch((e2) => console.error(`[BriefQueue] could not mark job ${job.id} failed:`, e2.message));
+  }
+}
+
+async function briefQueueTick() {
+  if (runningQueueJobs.size >= BRIEF_QUEUE_CONCURRENCY) return;
+  await ensureJobsTable();
+  const slots = BRIEF_QUEUE_CONCURRENCY - runningQueueJobs.size;
+  const candidates = await pgQuery(
+    `SELECT id FROM brief_generation_jobs
+      WHERE status = 'queued'
+      ORDER BY created_at ASC
+      LIMIT $1`,
+    [slots]
+  );
+  for (const row of candidates) {
+    if (runningQueueJobs.has(row.id)) continue;
+    // Atomic claim — the status guard means a concurrent cancel (or a second
+    // instance) can never double-run a job.
+    const claimed = await pgQuery(
+      `UPDATE brief_generation_jobs
+          SET status = 'transcribing', started_at = NOW(), error = NULL
+        WHERE id = $1 AND status = 'queued'
+        RETURNING *`,
+      [row.id]
+    );
+    if (!claimed.length) continue;
+    const job = claimed[0];
+    runningQueueJobs.add(job.id);
+    console.log(`[BriefQueue] job ${job.id} started (${job.headline || job.ad_archive_id || job.brand_spy_ad_id})`);
+    processBriefQueueJob(job)
+      .catch((e) => console.error(`[BriefQueue] job ${job.id} unexpected error:`, e.message))
+      .finally(() => runningQueueJobs.delete(job.id));
+  }
+}
+
+function startBriefQueueWorker() {
+  if (briefQueueWorkerStarted) return;
+  briefQueueWorkerStarted = true;
+  console.log(`[BriefQueue] queue worker scheduled (tick ${BRIEF_QUEUE_TICK_MS / 1000}s, concurrency ${BRIEF_QUEUE_CONCURRENCY})`);
+  // Boot recovery first, then steady ticks. Short settle delay so the DB
+  // pool is up; every layer is guarded so a crash never kills the process.
+  setTimeout(() => {
+    recoverStuckQueueJobs()
+      .catch((e) => console.error('[BriefQueue] boot recovery error:', e.message))
+      .finally(() => {
+        setInterval(() => {
+          briefQueueTick().catch((e) => console.error('[BriefQueue] tick error:', e.message));
+        }, BRIEF_QUEUE_TICK_MS);
+      });
+  }, 10_000);
+}
+
+// Start at module load (same placement as brandSpy.js's worker start),
+// wrapped so a worker startup crash can never take the server down.
+try {
+  startBriefQueueWorker();
+} catch (err) {
+  console.error('[BriefQueue] worker failed to start:', err.message);
 }
 
 export default router;
