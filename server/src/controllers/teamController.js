@@ -1,8 +1,23 @@
 import crypto from 'crypto';
 import pool from '../config/db.js';
-import { hashPassword } from '../utils/hash.js';
 import { createAuditLog } from '../services/auditService.js';
+import { hashToken } from '../services/authService.js';
+import { buildInviteLink } from '../services/emailService.js';
 import logger from '../utils/logger.js';
+
+// 7 days — matches typical SaaS invite expiry. Long enough for someone
+// to check their inbox after the weekend.
+const INVITE_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000;
+
+// Generate a fresh invite token pair (raw for the link, hashed for the DB).
+function newInviteToken() {
+  const raw = crypto.randomBytes(32).toString('hex');
+  return {
+    raw,
+    hash: hashToken(raw),
+    expiresAt: new Date(Date.now() + INVITE_EXPIRY_MS),
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Helper: build permissions JSONB from a list of page keys
@@ -20,50 +35,73 @@ function buildPermissionsFromPages(pages) {
 }
 
 // ---------------------------------------------------------------------------
-// POST /api/v1/team/invite — Invite a new team member
+// POST /api/v1/team/invite — Send a real invite.
+//
+// Flow:
+//   1. Admin submits { email, roleId? , pages? } (no name — invitee fills that
+//      in on the accept page)
+//   2. We create (or reuse) a Pending users row with password_hash=NULL,
+//      is_active=false, and a fresh single-use invite token
+//   3. Response includes an `inviteLink` the admin copies + sends. Until we
+//      wire an email provider (Phase 2) this is the delivery mechanism.
+//
+// Re-inviting an email that's already Pending regenerates the token so
+// the old link stops working — no way to end up with two live invites
+// for the same person.
 // ---------------------------------------------------------------------------
 export const inviteTeamMember = async (req, res) => {
   try {
-    const { email, firstName, lastName, roleId, pages } = req.body;
+    const { email, roleId, pages } = req.body;
 
-    // Must have either roleId or pages
-    if (!email || !firstName || !lastName) {
-      return res.status(400).json({ error: 'email, firstName, and lastName are required' });
+    if (!email) {
+      return res.status(400).json({ error: 'email is required' });
     }
     if (!roleId && (!Array.isArray(pages) || pages.length === 0)) {
       return res.status(400).json({ error: 'Either roleId or pages array is required' });
     }
 
-    // Validate email format
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(email)) {
       return res.status(400).json({ error: 'Invalid email format' });
     }
 
-    // Check if user already exists
+    const normalizedEmail = email.toLowerCase().trim();
+
+    // Existing-user check. Three states matter here:
+    //   • Active/Deactivated user with a password → 409, admin must revoke first
+    //   • Pending invitee (password_hash NULL) → replace token, resend
+    //   • No row → create fresh Pending row
     const existing = await pool.query(
-      'SELECT id FROM users WHERE email = $1',
-      [email.toLowerCase().trim()],
+      'SELECT id, password_hash, is_active FROM users WHERE email = $1',
+      [normalizedEmail],
     );
-    if (existing.rows.length > 0) {
-      return res.status(409).json({ error: 'A user with this email already exists' });
+    const existingUser = existing.rows[0] || null;
+    if (existingUser && existingUser.password_hash !== null) {
+      return res.status(409).json({
+        error: existingUser.is_active
+          ? 'A user with this email is already on your team'
+          : 'A user with this email exists but is deactivated. Reactivate them instead of re-inviting.',
+      });
     }
 
+    // Resolve the role to assign (preset or custom-per-pages).
     let assignedRoleId;
     let assignedRoleName;
 
     if (Array.isArray(pages) && pages.length > 0) {
-      // Custom pages mode — create a custom role
+      // Custom pages mode — create a per-invitee role. Name it by email
+      // rather than first/last (which we don't have yet at invite time).
       const permissions = buildPermissionsFromPages(pages);
-      const customRoleName = `Custom - ${firstName} ${lastName}`;
+      const customRoleName = `Custom - ${normalizedEmail}`;
       const roleResult = await pool.query(
-        `INSERT INTO roles (name, permissions) VALUES ($1, $2) RETURNING id, name`,
+        `INSERT INTO roles (name, permissions) VALUES ($1, $2)
+         ON CONFLICT (name) DO UPDATE SET permissions = EXCLUDED.permissions
+         RETURNING id, name`,
         [customRoleName, JSON.stringify(permissions)],
       );
       assignedRoleId = roleResult.rows[0].id;
       assignedRoleName = roleResult.rows[0].name;
     } else {
-      // Preset role mode — validate role exists
       const roleCheck = await pool.query('SELECT id, name FROM roles WHERE id = $1', [roleId]);
       if (roleCheck.rows.length === 0) {
         return res.status(404).json({ error: 'Role not found' });
@@ -72,54 +110,82 @@ export const inviteTeamMember = async (req, res) => {
       assignedRoleName = roleCheck.rows[0].name;
     }
 
-    // Generate temporary password
-    const tempPassword = crypto.randomBytes(12).toString('base64url');
-    const hashedPassword = await hashPassword(tempPassword);
+    const invite = newInviteToken();
 
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
 
-      const userResult = await client.query(
-        `INSERT INTO users (email, first_name, last_name, password_hash, must_change_password, is_active)
-         VALUES ($1, $2, $3, $4, true, true)
-         RETURNING id, email, first_name, last_name, is_active, must_change_password, created_at`,
-        [email.toLowerCase().trim(), firstName, lastName, hashedPassword],
-      );
-
-      const newUser = userResult.rows[0];
+      let userId;
+      if (existingUser) {
+        // Re-issuing invite to a Pending row — refresh token + expiry.
+        userId = existingUser.id;
+        await client.query(
+          `UPDATE users
+              SET password_reset_token   = $1,
+                  password_reset_expires = $2,
+                  invited_at             = NOW(),
+                  invited_by             = $3,
+                  updated_at             = NOW()
+            WHERE id = $4`,
+          [invite.hash, invite.expiresAt, req.user.id, userId],
+        );
+        // Clear any prior role assignment so pages/role changes take effect.
+        await client.query('DELETE FROM user_roles WHERE user_id = $1', [userId]);
+      } else {
+        const userResult = await client.query(
+          `INSERT INTO users
+             (email, first_name, last_name,
+              password_hash, is_active, email_verified,
+              password_reset_token, password_reset_expires,
+              invited_at, invited_by)
+           VALUES ($1, '', '',
+                   NULL, false, false,
+                   $2, $3,
+                   NOW(), $4)
+           RETURNING id`,
+          [normalizedEmail, invite.hash, invite.expiresAt, req.user.id],
+        );
+        userId = userResult.rows[0].id;
+      }
 
       await client.query(
         'INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2)',
-        [newUser.id, assignedRoleId],
+        [userId, assignedRoleId],
       );
 
       await client.query('COMMIT');
 
       await createAuditLog({
         userId: req.user.id,
-        action: 'INVITE_TEAM_MEMBER',
+        action: existingUser ? 'RESEND_TEAM_INVITE' : 'INVITE_TEAM_MEMBER',
         resourceType: 'user',
-        resourceId: newUser.id,
-        newValues: { email: newUser.email, firstName, lastName, roleId: assignedRoleId, roleName: assignedRoleName, pages: pages || null },
+        resourceId: userId,
+        newValues: {
+          email: normalizedEmail,
+          roleId: assignedRoleId,
+          roleName: assignedRoleName,
+          pages: pages || null,
+          expiresAt: invite.expiresAt,
+        },
         ip: req.ip,
         userAgent: req.headers['user-agent'],
       });
 
-      return res.status(201).json({
+      const inviteLink = buildInviteLink({ token: invite.raw });
+
+      return res.status(existingUser ? 200 : 201).json({
         success: true,
-        message: 'Team member invited successfully',
+        message: existingUser
+          ? 'Invite re-issued — old link no longer works'
+          : 'Invite created — copy the link and send it to the invitee',
         user: {
-          id: newUser.id,
-          email: newUser.email,
-          firstName: newUser.first_name,
-          lastName: newUser.last_name,
-          isActive: newUser.is_active,
-          mustChangePassword: newUser.must_change_password,
-          createdAt: newUser.created_at,
+          id: userId,
+          email: normalizedEmail,
           role: { id: assignedRoleId, name: assignedRoleName },
         },
-        temporaryPassword: tempPassword,
+        inviteLink,
+        expiresAt: invite.expiresAt,
       });
     } catch (err) {
       await client.query('ROLLBACK');
@@ -134,6 +200,66 @@ export const inviteTeamMember = async (req, res) => {
 };
 
 // ---------------------------------------------------------------------------
+// POST /api/v1/team/:userId/resend-invite — Regenerate the invite token for a
+// still-pending invitee and return a fresh link. Idempotent; safe to call as
+// many times as the admin wants (each call invalidates the previous link).
+// ---------------------------------------------------------------------------
+export const resendTeamInvite = async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    const userRes = await pool.query(
+      'SELECT id, email, password_hash, is_active FROM users WHERE id = $1',
+      [userId],
+    );
+    const user = userRes.rows[0];
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    // Only Pending / Expired invitees are eligible.
+    if (user.password_hash !== null) {
+      return res.status(400).json({
+        error: user.is_active
+          ? 'User is already active — nothing to resend'
+          : 'User is deactivated — reactivate instead of resending invite',
+      });
+    }
+
+    const invite = newInviteToken();
+
+    await pool.query(
+      `UPDATE users
+          SET password_reset_token   = $1,
+              password_reset_expires = $2,
+              invited_at             = NOW(),
+              invited_by             = $3,
+              updated_at             = NOW()
+        WHERE id = $4`,
+      [invite.hash, invite.expiresAt, req.user.id, userId],
+    );
+
+    await createAuditLog({
+      userId: req.user.id,
+      action: 'RESEND_TEAM_INVITE',
+      resourceType: 'user',
+      resourceId: userId,
+      newValues: { email: user.email, expiresAt: invite.expiresAt },
+      ip: req.ip,
+      userAgent: req.headers['user-agent'],
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: 'Invite re-issued — old link no longer works',
+      inviteLink: buildInviteLink({ token: invite.raw }),
+      expiresAt: invite.expiresAt,
+    });
+  } catch (err) {
+    logger.error('resendTeamInvite error', { error: err.message, stack: err.stack });
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
+// ---------------------------------------------------------------------------
 // GET /api/v1/team — List all team members with roles and permissions
 // ---------------------------------------------------------------------------
 export const listTeamMembers = async (req, res) => {
@@ -141,6 +267,9 @@ export const listTeamMembers = async (req, res) => {
     const result = await pool.query(
       `SELECT
          u.id, u.email, u.first_name, u.last_name, u.is_active,
+         u.password_hash IS NOT NULL             AS has_password,
+         u.password_reset_expires                AS invite_expires_at,
+         u.invited_at, u.invited_by,
          u.last_login, u.created_at,
          json_agg(
            json_build_object('id', r.id, 'name', r.name, 'permissions', r.permissions)
@@ -152,16 +281,33 @@ export const listTeamMembers = async (req, res) => {
        ORDER BY u.created_at DESC`,
     );
 
-    const members = result.rows.map((row) => ({
-      id: row.id,
-      email: row.email,
-      firstName: row.first_name,
-      lastName: row.last_name,
-      isActive: row.is_active,
-      lastLogin: row.last_login,
-      createdAt: row.created_at,
-      roles: row.roles || [],
-    }));
+    const now = Date.now();
+    const members = result.rows.map((row) => {
+      // Derive invite status without a new column — everything is a function
+      // of has_password + is_active + password_reset_expires (see plan file
+      // for the truth table). Frontend renders a coloured pill per status.
+      let status;
+      if (row.has_password && row.is_active)          status = 'active';
+      else if (row.has_password && !row.is_active)    status = 'deactivated';
+      else if (row.invite_expires_at &&
+               new Date(row.invite_expires_at).getTime() > now)
+                                                      status = 'pending';
+      else                                            status = 'expired';
+
+      return {
+        id: row.id,
+        email: row.email,
+        firstName: row.first_name,
+        lastName: row.last_name,
+        isActive: row.is_active,
+        status,
+        invitedAt: row.invited_at,
+        inviteExpiresAt: row.invite_expires_at,
+        lastLogin: row.last_login,
+        createdAt: row.created_at,
+        roles: row.roles || [],
+      };
+    });
 
     return res.json({ success: true, members });
   } catch (err) {

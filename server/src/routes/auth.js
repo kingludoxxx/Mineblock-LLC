@@ -9,6 +9,8 @@ import {
   forgotPassword,
   resetPassword,
   verifyEmail,
+  getInviteInfo,
+  acceptInvite,
 } from '../controllers/authController.js';
 import { authenticate } from '../middleware/auth.js';
 import { authRateLimiter } from '../middleware/rateLimiter.js';
@@ -21,6 +23,10 @@ router.post('/login', authRateLimiter, login);
 router.post('/forgot-password', authRateLimiter, forgotPassword);
 router.post('/reset-password', authRateLimiter, resetPassword);
 router.get('/verify-email', verifyEmail);
+
+// Invite flow (public, rate-limited — token in body/query is the auth).
+router.get('/invite-info', authRateLimiter, getInviteInfo);
+router.post('/accept-invite', authRateLimiter, acceptInvite);
 
 // Token refresh (uses cookie, no auth header needed)
 router.post('/refresh', authRateLimiter, refresh);

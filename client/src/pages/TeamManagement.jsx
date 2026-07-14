@@ -198,11 +198,24 @@ function PageBadges({ member }) {
   );
 }
 
-function StatusDot({ active }) {
+// Backend-provided status enum: active | pending | expired | deactivated.
+// Legacy rows (no status field) fall back to is_active.
+function StatusDot({ member }) {
+  const status =
+    member?.status ??
+    (member?.isActive === false ? 'deactivated' : 'active');
+
+  const meta = {
+    active:      { color: 'bg-success', label: 'Active' },
+    pending:     { color: 'bg-yellow-500', label: 'Pending invite' },
+    expired:     { color: 'bg-orange-500', label: 'Invite expired' },
+    deactivated: { color: 'bg-danger', label: 'Deactivated' },
+  }[status] || { color: 'bg-zinc-500', label: status };
+
   return (
     <span className="inline-flex items-center gap-1.5 text-xs">
-      <span className={`w-2 h-2 rounded-full ${active ? 'bg-success' : 'bg-danger'}`} />
-      {active ? 'Active' : 'Inactive'}
+      <span className={`w-2 h-2 rounded-full ${meta.color}`} />
+      {meta.label}
     </span>
   );
 }
@@ -455,14 +468,15 @@ function EditAccessModal({ open, onClose, member, onSaved }) {
 // ── Invite Modal ─────────────────────────────────────────────────────────────
 
 function InviteModal({ open, onClose, roles, onInvited }) {
-  const [form, setForm] = useState({ email: '', firstName: '', lastName: '', roleId: '' });
+  // Names are captured on the accept-invite page by the invitee themselves,
+  // not by the admin — so we only collect email + role/pages here.
+  const [form, setForm] = useState({ email: '', roleId: '' });
   const [accessMode, setAccessMode] = useState('preset'); // 'preset' | 'custom'
   const [selectedPages, setSelectedPages] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [result, setResult] = useState(null);
   const [copied, setCopied] = useState(false);
-  const [showPassword, setShowPassword] = useState(false);
   const [selectedRolePermissions, setSelectedRolePermissions] = useState([]);
 
   useEffect(() => {
@@ -488,13 +502,12 @@ function InviteModal({ open, onClose, roles, onInvited }) {
   }, [form.roleId, roles]);
 
   const reset = () => {
-    setForm({ email: '', firstName: '', lastName: '', roleId: '' });
+    setForm({ email: '', roleId: '' });
     setAccessMode('preset');
     setSelectedPages([]);
     setError('');
     setResult(null);
     setCopied(false);
-    setShowPassword(false);
     setSelectedRolePermissions([]);
   };
 
@@ -505,8 +518,8 @@ function InviteModal({ open, onClose, roles, onInvited }) {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!form.email || !form.firstName || !form.lastName) {
-      setError('Name and email are required.');
+    if (!form.email) {
+      setError('Email is required.');
       return;
     }
     if (accessMode === 'preset' && !form.roleId) {
@@ -520,16 +533,9 @@ function InviteModal({ open, onClose, roles, onInvited }) {
     setLoading(true);
     setError('');
     try {
-      const payload = {
-        email: form.email,
-        firstName: form.firstName,
-        lastName: form.lastName,
-      };
-      if (accessMode === 'custom') {
-        payload.pages = selectedPages;
-      } else {
-        payload.roleId = form.roleId;
-      }
+      const payload = { email: form.email };
+      if (accessMode === 'custom') payload.pages = selectedPages;
+      else                          payload.roleId = form.roleId;
       const res = await api.post('/team/invite', payload);
       setResult(res.data);
       onInvited();
@@ -542,15 +548,15 @@ function InviteModal({ open, onClose, roles, onInvited }) {
   };
 
   const handleCopy = async () => {
-    const pw = result?.temporaryPassword || result?.password || '';
-    if (!pw) return;
+    const link = result?.inviteLink || '';
+    if (!link) return;
     try {
-      await navigator.clipboard.writeText(pw);
+      await navigator.clipboard.writeText(link);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
       const el = document.createElement('textarea');
-      el.value = pw;
+      el.value = link;
       document.body.appendChild(el);
       el.select();
       document.execCommand('copy');
@@ -562,7 +568,8 @@ function InviteModal({ open, onClose, roles, onInvited }) {
 
   if (!open) return null;
 
-  const tempPassword = result?.temporaryPassword || result?.password || '';
+  const inviteLink = result?.inviteLink || '';
+  const invitedEmail = result?.user?.email || form.email;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
@@ -583,38 +590,29 @@ function InviteModal({ open, onClose, roles, onInvited }) {
           <div className="space-y-4">
             <div className="flex items-center gap-2 text-success text-sm">
               <Check className="w-4 h-4" />
-              <span>Team member invited successfully!</span>
+              <span>Invite created for {invitedEmail}</span>
             </div>
-            {tempPassword && (
-              <div className="bg-warning/10 border border-warning/30 rounded-lg p-4 space-y-3">
-                <div className="flex items-center gap-2 text-warning text-sm font-medium">
-                  <AlertTriangle className="w-4 h-4" />
-                  Temporary Password
-                </div>
-                <div className="flex items-center gap-2">
-                  <code className="flex-1 bg-black/40 text-text-primary px-3 py-2 rounded-lg text-sm font-mono">
-                    {showPassword ? tempPassword : '\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022'}
-                  </code>
-                  <button
-                    onClick={() => setShowPassword(!showPassword)}
-                    className="p-2 rounded-lg text-text-muted hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer"
-                    title={showPassword ? 'Hide' : 'Show'}
-                  >
-                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                  </button>
-                  <button
-                    onClick={handleCopy}
-                    className="p-2 rounded-lg text-text-muted hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer"
-                    title="Copy"
-                  >
-                    {copied ? <Check className="w-4 h-4 text-success" /> : <Copy className="w-4 h-4" />}
-                  </button>
-                </div>
-                <p className="text-xs text-warning/80">
-                  Share this password securely. They will be asked to change it on first login.
-                </p>
+            <div className="bg-accent-muted/40 border border-accent/30 rounded-lg p-4 space-y-3">
+              <div className="text-xs text-text-muted font-medium uppercase tracking-wider">
+                Invite link \u2014 expires in 7 days
               </div>
-            )}
+              <div className="flex items-center gap-2">
+                <code className="flex-1 bg-black/40 text-text-primary px-3 py-2 rounded-lg text-xs font-mono break-all">
+                  {inviteLink}
+                </code>
+                <button
+                  onClick={handleCopy}
+                  className="p-2 rounded-lg text-text-muted hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer shrink-0"
+                  title="Copy link"
+                >
+                  {copied ? <Check className="w-4 h-4 text-success" /> : <Copy className="w-4 h-4" />}
+                </button>
+              </div>
+              <p className="text-xs text-text-muted">
+                Send this link to <span className="text-text-primary">{invitedEmail}</span> however
+                you like (email, Slack, WhatsApp). They'll set their name + password when they open it.
+              </p>
+            </div>
             <button
               onClick={handleClose}
               className="w-full mt-2 px-4 py-2 text-sm rounded-lg bg-accent hover:bg-accent-hover text-white transition-colors cursor-pointer"
@@ -630,29 +628,6 @@ function InviteModal({ open, onClose, roles, onInvited }) {
                 {error}
               </div>
             )}
-
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="block text-xs text-text-muted mb-1.5">First Name</label>
-                <input
-                  type="text"
-                  value={form.firstName}
-                  onChange={(e) => setForm({ ...form, firstName: e.target.value })}
-                  className="w-full bg-bg-main border border-border-default rounded-lg px-3 py-2 text-sm text-text-primary placeholder:text-text-faint focus:border-accent/50 focus:outline-none transition-colors"
-                  placeholder="John"
-                />
-              </div>
-              <div>
-                <label className="block text-xs text-text-muted mb-1.5">Last Name</label>
-                <input
-                  type="text"
-                  value={form.lastName}
-                  onChange={(e) => setForm({ ...form, lastName: e.target.value })}
-                  className="w-full bg-bg-main border border-border-default rounded-lg px-3 py-2 text-sm text-text-primary placeholder:text-text-faint focus:border-accent/50 focus:outline-none transition-colors"
-                  placeholder="Doe"
-                />
-              </div>
-            </div>
 
             <div>
               <label className="block text-xs text-text-muted mb-1.5">Email</label>
@@ -822,6 +797,37 @@ export default function TeamManagement() {
     }
   };
 
+  // Regenerate the invite token, copy the fresh link, flash "Copied!" for 2s.
+  // Each call invalidates the previous link — safe to spam-click.
+  const [copiedInviteId, setCopiedInviteId] = useState(null);
+  const handleCopyInviteLink = async (userId) => {
+    setActionLoading((prev) => ({ ...prev, [`invite-${userId}`]: true }));
+    try {
+      const res = await api.post(`/team/${userId}/resend-invite`);
+      const link = res?.data?.inviteLink;
+      if (!link) throw new Error('No invite link returned');
+      try {
+        await navigator.clipboard.writeText(link);
+      } catch {
+        // Fallback for browsers without Clipboard API access
+        const el = document.createElement('textarea');
+        el.value = link;
+        document.body.appendChild(el);
+        el.select();
+        document.execCommand('copy');
+        document.body.removeChild(el);
+      }
+      setCopiedInviteId(userId);
+      setTimeout(() => setCopiedInviteId((cur) => (cur === userId ? null : cur)), 2000);
+      await fetchData(); // refresh expires_at so the pill re-renders as Pending
+    } catch (err) {
+      const msg = err.response?.data?.error || err.response?.data?.message || 'Failed to regenerate invite link.';
+      setError(msg);
+    } finally {
+      setActionLoading((prev) => ({ ...prev, [`invite-${userId}`]: false }));
+    }
+  };
+
   const currentUserId = user?.id || user?.userId;
 
   return (
@@ -926,7 +932,7 @@ export default function TeamManagement() {
                         <PageBadges member={member} />
                       </td>
                       <td className="px-5 py-4">
-                        <StatusDot active={isActive} />
+                        <StatusDot member={member} />
                       </td>
                       <td className="px-5 py-4">
                         <span className="text-text-muted text-xs flex items-center gap-1.5">
@@ -938,19 +944,40 @@ export default function TeamManagement() {
                         <div className="flex items-center gap-2 justify-end">
                           {!isCurrentUser && (
                             <>
-                              <button
-                                onClick={() => setEditAccessMember(member)}
-                                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border border-purple-500/30 text-purple-400 hover:bg-purple-500/10 transition-colors cursor-pointer"
-                              >
-                                <Settings2 className="w-3 h-3" />
-                                Edit Access
-                              </button>
-                              <RoleDropdown
-                                roles={roles}
-                                currentRoleId={roleId}
-                                loading={actionLoading[`role-${memberId}`]}
-                                onChange={(newRoleId) => handleChangeRole(memberId, newRoleId)}
-                              />
+                              {/* Pending/Expired: single "Copy invite link" button
+                                  — regenerates token server-side + copies fresh URL. */}
+                              {(member.status === 'pending' || member.status === 'expired') && (
+                                <button
+                                  onClick={() => handleCopyInviteLink(memberId)}
+                                  disabled={actionLoading[`invite-${memberId}`]}
+                                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border border-accent/30 text-accent-text hover:bg-accent-muted transition-colors cursor-pointer"
+                                >
+                                  {copiedInviteId === memberId
+                                    ? <Check className="w-3 h-3 text-success" />
+                                    : <Copy className="w-3 h-3" />}
+                                  {copiedInviteId === memberId
+                                    ? 'Copied!'
+                                    : (member.status === 'expired' ? 'New invite link' : 'Copy invite link')}
+                                </button>
+                              )}
+                              {/* Only show role edit tools once the user has accepted. */}
+                              {member.status === 'active' && (
+                                <>
+                                  <button
+                                    onClick={() => setEditAccessMember(member)}
+                                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border border-purple-500/30 text-purple-400 hover:bg-purple-500/10 transition-colors cursor-pointer"
+                                  >
+                                    <Settings2 className="w-3 h-3" />
+                                    Edit Access
+                                  </button>
+                                  <RoleDropdown
+                                    roles={roles}
+                                    currentRoleId={roleId}
+                                    loading={actionLoading[`role-${memberId}`]}
+                                    onChange={(newRoleId) => handleChangeRole(memberId, newRoleId)}
+                                  />
+                                </>
+                              )}
                               {isActive ? (
                                 <button
                                   onClick={() => setConfirmDeactivate(member)}
@@ -958,7 +985,9 @@ export default function TeamManagement() {
                                   className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border border-danger/30 text-danger hover:bg-danger/10 transition-colors cursor-pointer"
                                 >
                                   <X className="w-3 h-3" />
-                                  Deactivate
+                                  {member.status === 'pending' || member.status === 'expired'
+                                    ? 'Cancel invite'
+                                    : 'Revoke access'}
                                 </button>
                               ) : (
                                 <button
@@ -1009,7 +1038,7 @@ export default function TeamManagement() {
                         <div className="text-text-faint text-xs">{member.email}</div>
                       </div>
                     </div>
-                    <StatusDot active={isActive} />
+                    <StatusDot member={member} />
                   </div>
                   <div className="flex items-center justify-between">
                     <div>
@@ -1023,27 +1052,57 @@ export default function TeamManagement() {
                   </div>
                   {!isCurrentUser && (
                     <div className="flex gap-2 pt-1 flex-wrap">
-                      <button
-                        onClick={() => setEditAccessMember(member)}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border border-purple-500/30 text-purple-400 hover:bg-purple-500/10 transition-colors cursor-pointer"
-                      >
-                        <Settings2 className="w-3 h-3" />
-                        Edit Access
-                      </button>
-                      <RoleDropdown
-                        roles={roles}
-                        currentRoleId={roleId}
-                        loading={actionLoading[`role-${memberId}`]}
-                        onChange={(newRoleId) => handleChangeRole(memberId, newRoleId)}
-                      />
-                      <button
-                        onClick={() => setConfirmDeactivate(member)}
-                        disabled={actionLoading[`deactivate-${memberId}`]}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border border-danger/30 text-danger hover:bg-danger/10 transition-colors cursor-pointer"
-                      >
-                        <X className="w-3 h-3" />
-                        Deactivate
-                      </button>
+                      {(member.status === 'pending' || member.status === 'expired') && (
+                        <button
+                          onClick={() => handleCopyInviteLink(memberId)}
+                          disabled={actionLoading[`invite-${memberId}`]}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border border-accent/30 text-accent-text hover:bg-accent-muted transition-colors cursor-pointer"
+                        >
+                          {copiedInviteId === memberId
+                            ? <Check className="w-3 h-3 text-success" />
+                            : <Copy className="w-3 h-3" />}
+                          {copiedInviteId === memberId
+                            ? 'Copied!'
+                            : (member.status === 'expired' ? 'New link' : 'Copy link')}
+                        </button>
+                      )}
+                      {member.status === 'active' && (
+                        <>
+                          <button
+                            onClick={() => setEditAccessMember(member)}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border border-purple-500/30 text-purple-400 hover:bg-purple-500/10 transition-colors cursor-pointer"
+                          >
+                            <Settings2 className="w-3 h-3" />
+                            Edit Access
+                          </button>
+                          <RoleDropdown
+                            roles={roles}
+                            currentRoleId={roleId}
+                            loading={actionLoading[`role-${memberId}`]}
+                            onChange={(newRoleId) => handleChangeRole(memberId, newRoleId)}
+                          />
+                        </>
+                      )}
+                      {isActive && (
+                        <button
+                          onClick={() => setConfirmDeactivate(member)}
+                          disabled={actionLoading[`deactivate-${memberId}`]}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border border-danger/30 text-danger hover:bg-danger/10 transition-colors cursor-pointer"
+                        >
+                          <X className="w-3 h-3" />
+                          {member.status === 'pending' || member.status === 'expired' ? 'Cancel invite' : 'Revoke'}
+                        </button>
+                      )}
+                      {!isActive && (
+                        <button
+                          onClick={() => handleReactivate(memberId)}
+                          disabled={actionLoading[`reactivate-${memberId}`]}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border border-green-500/30 text-green-400 hover:bg-green-500/10 transition-colors cursor-pointer"
+                        >
+                          <Check className="w-3 h-3" />
+                          {actionLoading[`reactivate-${memberId}`] ? 'Reactivating…' : 'Reactivate'}
+                        </button>
+                      )}
                     </div>
                   )}
                 </div>

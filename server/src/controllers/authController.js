@@ -519,6 +519,153 @@ export const verifyEmail = async (req, res, next) => {
 };
 
 // ---------------------------------------------------------------------------
+// GET /api/auth/invite-info?token=xxx
+//
+// Peek at an invite before showing the accept form. Returns the invitee's
+// email + inviter's name if the token is valid, else 404 so we don't leak
+// which tokens are real.
+// ---------------------------------------------------------------------------
+export const getInviteInfo = async (req, res, next) => {
+  try {
+    const { token } = req.query;
+    if (!token || typeof token !== 'string') {
+      return res.status(400).json({ error: 'Token is required' });
+    }
+
+    const tokenHashValue = hashToken(token);
+
+    // Match the accept-invite predicate exactly (password_hash NULL,
+    // is_active false, unexpired) so a stale/consumed token 404s.
+    const result = await pool.query(
+      `SELECT
+         u.email,
+         COALESCE(NULLIF(TRIM(inviter.first_name || ' ' || inviter.last_name), ''),
+                  inviter.email,
+                  'A teammate') AS inviter_name
+       FROM users u
+       LEFT JOIN users inviter ON inviter.id = u.invited_by
+       WHERE u.password_reset_token   = $1
+         AND u.password_reset_expires > NOW()
+         AND u.is_active              = false
+         AND u.password_hash          IS NULL`,
+      [tokenHashValue],
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Invite is invalid or has expired' });
+    }
+
+    return res.status(200).json({
+      email:       result.rows[0].email,
+      inviterName: result.rows[0].inviter_name,
+    });
+  } catch (err) {
+    logger.error('Get-invite-info error', { error: err.message, stack: err.stack });
+    next(err);
+  }
+};
+
+// ---------------------------------------------------------------------------
+// POST /api/auth/accept-invite
+//
+// Body: { token, firstName, lastName, password }
+//
+// Consumes an invite token. Sets the user's name + password, flips them
+// Active + email_verified, clears the token, and signs them in via the
+// same access/refresh cookie mechanism as /login — so the accept page
+// can redirect straight to the dashboard.
+// ---------------------------------------------------------------------------
+export const acceptInvite = async (req, res, next) => {
+  try {
+    const { token, firstName, lastName, password } = req.body;
+
+    if (!token || !firstName || !lastName || !password) {
+      return res.status(400).json({
+        error: 'token, firstName, lastName, and password are required',
+      });
+    }
+    if (typeof password !== 'string' || password.length < 8) {
+      return res.status(400).json({ error: 'Password must be at least 8 characters' });
+    }
+    const trimmedFirst = String(firstName).trim();
+    const trimmedLast  = String(lastName).trim();
+    if (!trimmedFirst || !trimmedLast) {
+      return res.status(400).json({ error: 'First and last name are required' });
+    }
+
+    const tokenHashValue = hashToken(token);
+
+    // Consume the invite atomically: match token → set password + names →
+    // flip active/verified → clear token. Wrapping in an UPDATE...RETURNING
+    // means a second click on the same link 404s (row no longer matches).
+    const newHash = await hashPassword(password);
+
+    const consume = await pool.query(
+      `UPDATE users
+          SET password_hash          = $1,
+              first_name             = $2,
+              last_name              = $3,
+              is_active              = true,
+              email_verified         = true,
+              must_change_password   = false,
+              password_reset_token   = NULL,
+              password_reset_expires = NULL,
+              failed_login_attempts  = 0,
+              locked_until           = NULL,
+              updated_at             = NOW()
+        WHERE password_reset_token   = $4
+          AND password_reset_expires > NOW()
+          AND is_active              = false
+          AND password_hash          IS NULL
+       RETURNING id, email, first_name, last_name, must_change_password, email_verified`,
+      [newHash, trimmedFirst, trimmedLast, tokenHashValue],
+    );
+
+    if (consume.rows.length === 0) {
+      return res.status(400).json({ error: 'Invite is invalid or has expired' });
+    }
+    const user = consume.rows[0];
+
+    // Pull role info + build session, mirroring /login exactly. Any code
+    // that reads req.user (rbac middleware, /me) expects this shape.
+    const rolesResult = await pool.query(
+      `SELECT r.id, r.name, r.permissions
+         FROM roles r
+         INNER JOIN user_roles ur ON r.id = ur.role_id
+        WHERE ur.user_id = $1`,
+      [user.id],
+    );
+    const roles = rolesResult.rows.map((r) => ({
+      id: r.id, name: r.name, permissions: r.permissions,
+    }));
+
+    const accessToken = signAccessToken({ userId: user.id, email: user.email, roles });
+    const tokenId = crypto.randomUUID();
+    const refreshToken = signRefreshToken({ userId: user.id, tokenId });
+
+    await createSession(user.id, refreshToken, req.ip, req.headers['user-agent'] || '');
+
+    const userData = {
+      id: user.id,
+      email: user.email,
+      firstName: user.first_name,
+      lastName: user.last_name,
+      roles,
+      mustChangePassword: user.must_change_password,
+      emailVerified: user.email_verified,
+    };
+
+    setAccessCookie(res, accessToken);
+    setRefreshCookie(res, refreshToken);
+
+    return res.status(200).json({ accessToken, user: userData });
+  } catch (err) {
+    logger.error('Accept-invite error', { error: err.message, stack: err.stack });
+    next(err);
+  }
+};
+
+// ---------------------------------------------------------------------------
 // GET /api/auth/me
 // ---------------------------------------------------------------------------
 export const me = (req, res) => {

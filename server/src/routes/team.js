@@ -3,6 +3,7 @@ import { authenticate } from '../middleware/auth.js';
 import { requireRole } from '../middleware/rbac.js';
 import {
   inviteTeamMember,
+  resendTeamInvite,
   listTeamMembers,
   changeTeamMemberRole,
   deactivateTeamMember,
@@ -17,6 +18,9 @@ router.get('/', authenticate, requireRole('SuperAdmin', 'Admin'), listTeamMember
 
 // POST /api/v1/team/invite — invite a new team member (Admin or SuperAdmin)
 router.post('/invite', authenticate, requireRole('SuperAdmin', 'Admin'), inviteTeamMember);
+
+// POST /api/v1/team/:userId/resend-invite — regenerate token + return fresh link
+router.post('/:userId/resend-invite', authenticate, requireRole('SuperAdmin', 'Admin'), resendTeamInvite);
 
 // PUT /api/v1/team/:userId/role — change a team member's role (Admin or SuperAdmin)
 router.put('/:userId/role', authenticate, requireRole('SuperAdmin', 'Admin'), changeTeamMemberRole);
