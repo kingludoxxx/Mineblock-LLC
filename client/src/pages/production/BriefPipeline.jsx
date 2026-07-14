@@ -25,6 +25,7 @@ import GeneratedBriefCard from './briefs/GeneratedBriefCard';
 import ReferenceCard from './briefs/ReferenceCard';
 import ReferencePreviewModal from './briefs/ReferencePreviewModal';
 import LeagueImportModal from './briefs/LeagueImportModal';
+import QueueStrip from './briefs/QueueStrip';
 import MetaVideoImportModal from './briefs/MetaVideoImportModal';
 import ScriptUploadModal from './briefs/ScriptUploadModal';
 import BriefDetailModal from './briefs/BriefDetailModal';
@@ -111,6 +112,9 @@ export default function BriefPipeline() {
   const [selectedForLaunch, setSelectedForLaunch] = useState([]);
   const [launchModalOpen, setLaunchModalOpen] = useState(false);
   const [leagueImportOpen, setLeagueImportOpen] = useState(false);
+  // Bumped after a successful batch-queue POST so the QueueStrip refetches
+  // immediately (instead of waiting for its next poll).
+  const [queueRefreshKey, setQueueRefreshKey] = useState(0);
   const [metaImportOpen, setMetaImportOpen]     = useState(false);
   const [uploadOpen, setUploadOpen]             = useState(false);
   const [previewReference, setPreviewReference] = useState(null);
@@ -1069,6 +1073,11 @@ export default function BriefPipeline() {
                       <div className="absolute top-6 -right-5 w-4 border-t border-dashed border-white/[0.06]" />
                     )}
 
+                    {/* Batch queue strip — sits above the GENERATED card list */}
+                    {col.key === 'generated' && (
+                      <QueueStrip refreshKey={queueRefreshKey} onJobComplete={fetchGenerated} />
+                    )}
+
                     {/* Card list */}
                     <div className="flex-1 overflow-y-auto space-y-4 pr-2 pb-4">
                       {/* GENERATING placeholder cards — render first so the
@@ -1361,6 +1370,7 @@ export default function BriefPipeline() {
         open={leagueImportOpen}
         onClose={() => setLeagueImportOpen(false)}
         onImported={handleLeagueImported}
+        onQueued={() => setQueueRefreshKey((k) => k + 1)}
       />
 
       {/* Meta video import — our own active ads from Triple Whale */}

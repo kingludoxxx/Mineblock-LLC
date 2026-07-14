@@ -374,6 +374,13 @@ export async function listAds(brandId, q) {
     case 'first_seen_desc':
       orderBy = 'a.is_active DESC, a.first_seen_at DESC';
       break;
+    case 'impressions_desc':
+      // Meta's raw impression order — mirrors what the FB Ad Library shows
+      // when sorted by total_impressions DESC. meta_rank ASC = most
+      // impressions first. Ads outside Phase 1d's top-N window have NULL
+      // meta_rank and fall to the tail, ordered by active_days as proxy.
+      orderBy = 'a.is_active DESC, a.meta_rank ASC NULLS LAST, a.active_days DESC NULLS LAST';
+      break;
     default:
       orderBy = 'a.is_active DESC, a.current_rank ASC NULLS LAST, a.first_seen_at DESC';
   }

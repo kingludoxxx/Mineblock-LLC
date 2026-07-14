@@ -53,6 +53,7 @@ const TIER_LABELS = {
 
 const SORT_OPTIONS = [
   { value: 'rank_asc',         label: 'Top rank' },
+  { value: 'impressions_desc', label: 'Top impressions (Meta)' },
   { value: 'velocity_7d_desc', label: 'Climbing fast' },
   { value: 'active_days_desc', label: 'Longest running' },
   { value: 'first_seen_desc',  label: 'Newest' },

@@ -12,6 +12,8 @@ import {
   FileText,
   Mic,
   Play,
+  Check,
+  Layers,
 } from 'lucide-react';
 import api from '../../../services/api';
 
@@ -40,7 +42,7 @@ function TierBadge({ tier, size = 'sm' }) {
   );
 }
 
-export default function LeagueImportModal({ open, onClose, onImported }) {
+export default function LeagueImportModal({ open, onClose, onImported, onQueued }) {
   // Brand list
   const [brands, setBrands] = useState([]);
   const [loadingBrands, setLoadingBrands] = useState(false);
@@ -73,6 +75,19 @@ export default function LeagueImportModal({ open, onClose, onImported }) {
   const [importError, setImportError] = useState(null);
   const [importedAdIds, setImportedAdIds] = useState(new Set());
   const [importSuccess, setImportSuccess] = useState(false);
+
+  // ── Batch queue (multi-select) state ─────────────────────────────────
+  const [selectedAdIds, setSelectedAdIds] = useState(new Set());
+  // Ads whose transcribe prefetch already fired this session — never fire twice.
+  const prefetchedRef = useRef(new Set());
+  const [queueProducts, setQueueProducts] = useState([]);
+  const [loadingQueueProducts, setLoadingQueueProducts] = useState(false);
+  const [queueProductId, setQueueProductId] = useState(null);
+  const [queueAngles, setQueueAngles] = useState([]);
+  const [queueAngle, setQueueAngle] = useState(''); // '' = AUTO (null in payload)
+  const [queueModel, setQueueModel] = useState('claude');
+  const [queueing, setQueueing] = useState(false);
+  const [queueError, setQueueError] = useState(null);
 
   const PAGE_SIZE = 20;
 
@@ -143,6 +158,8 @@ export default function LeagueImportModal({ open, onClose, onImported }) {
       setImportError(null);
       setTranscriptError(null);
       setVideoError(false);
+      setSelectedAdIds(new Set());
+      setQueueError(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
@@ -151,8 +168,57 @@ export default function LeagueImportModal({ open, onClose, onImported }) {
     if (!open || !selectedBrandId) return;
     setAdsPage(1);
     setSelectedAd(null);
+    // Batch selection is per-list — a brand/tier switch swaps the ad list,
+    // so stale ids from the previous list must not linger in the Set.
+    setSelectedAdIds(new Set());
     fetchAds(selectedBrandId, [...selectedTiers], 1);
   }, [open, selectedBrandId, selectedTiers, fetchAds]);
+
+  // ── Batch queue: hydrate persisted defaults on open ───────────────────
+  useEffect(() => {
+    if (!open) return;
+    try {
+      const saved = JSON.parse(localStorage.getItem('briefQueueDefaults') || 'null');
+      if (saved && typeof saved === 'object') {
+        if (saved.productId != null) setQueueProductId(saved.productId);
+        if (typeof saved.angle === 'string' && saved.angle) setQueueAngle(saved.angle);
+        if (saved.model === 'claude' || saved.model === 'openai') setQueueModel(saved.model);
+      }
+    } catch {
+      // Corrupt localStorage entry — ignore, defaults stand.
+    }
+  }, [open]);
+
+  // ── Batch queue: product list (same endpoint ProductSelector uses) ────
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    setLoadingQueueProducts(true);
+    api.get('/product-profiles')
+      .then(r => { if (!cancelled) setQueueProducts(r.data?.data || []); })
+      .catch(err => {
+        console.error('[LeagueImportModal] product-profiles fetch failed:', err);
+        if (!cancelled) setQueueProducts([]);
+      })
+      .finally(() => { if (!cancelled) setLoadingQueueProducts(false); });
+    return () => { cancelled = true; };
+  }, [open]);
+
+  // ── Batch queue: angles for the selected product (AUTO-only fallback) ─
+  useEffect(() => {
+    if (!open || !queueProductId) { setQueueAngles([]); return; }
+    let cancelled = false;
+    api.get(`/brief-pipeline/product-context/${queueProductId}`)
+      .then(r => {
+        if (cancelled) return;
+        const list = r.data?.product?.angles || [];
+        setQueueAngles(list);
+        // A persisted angle from another product isn't valid here — snap to AUTO.
+        setQueueAngle(prev => (prev && !list.some(a => a.name === prev)) ? '' : prev);
+      })
+      .catch(() => { if (!cancelled) setQueueAngles([]); });
+    return () => { cancelled = true; };
+  }, [open, queueProductId]);
 
   // Click-outside for brand dropdown
   useEffect(() => {
@@ -190,6 +256,16 @@ export default function LeagueImportModal({ open, onClose, onImported }) {
     );
   }, [brands, brandSearch]);
 
+  const queueProduct = useMemo(
+    () => queueProducts.find(p => String(p.id) === String(queueProductId)) || null,
+    [queueProducts, queueProductId]
+  );
+
+  const allOnPageSelected = useMemo(
+    () => ads.length > 0 && ads.every(a => selectedAdIds.has(a.id)),
+    [ads, selectedAdIds]
+  );
+
   // ── Handlers ──────────────────────────────────────────────────────────
   const toggleTier = (tier) => {
     setSelectedTiers(prev => {
@@ -212,6 +288,93 @@ export default function LeagueImportModal({ open, onClose, onImported }) {
     setTranscriptError(null);
     setImportError(null);
     setImportSuccess(false);
+  };
+
+  // ── Batch queue handlers ──────────────────────────────────────────────
+  // Fire-and-forget transcription prefetch. The endpoint has a DB cache +
+  // in-flight mutex server-side, so repeats are safe — but we still guard
+  // client-side so each ad fires at most once per session.
+  const prefetchTranscript = (ad) => {
+    if (!ad || ad.transcript || prefetchedRef.current.has(ad.id)) return;
+    prefetchedRef.current.add(ad.id);
+    api.post(`/brand-spy/ads/${ad.id}/transcribe`).catch(() => {});
+  };
+
+  const toggleAdChecked = (ad) => {
+    const willCheck = !selectedAdIds.has(ad.id);
+    if (willCheck) prefetchTranscript(ad);
+    setSelectedAdIds(prev => {
+      const next = new Set(prev);
+      if (next.has(ad.id)) next.delete(ad.id);
+      else next.add(ad.id);
+      return next;
+    });
+  };
+
+  const toggleSelectAllOnPage = () => {
+    if (allOnPageSelected) {
+      setSelectedAdIds(prev => {
+        const next = new Set(prev);
+        ads.forEach(a => next.delete(a.id));
+        return next;
+      });
+    } else {
+      ads.forEach(a => { if (!selectedAdIds.has(a.id)) prefetchTranscript(a); });
+      setSelectedAdIds(prev => {
+        const next = new Set(prev);
+        ads.forEach(a => next.add(a.id));
+        return next;
+      });
+    }
+  };
+
+  const handleQueue = async () => {
+    if (queueing || selectedAdIds.size === 0 || !queueProduct) return;
+    setQueueing(true);
+    setQueueError(null);
+    try {
+      const items = ads
+        .filter(a => selectedAdIds.has(a.id))
+        .map(ad => ({
+          brandSpyAdId: ad.id,
+          adArchiveId: ad.adArchiveId,
+          brandId: ad.brandId || selectedBrand?.id,
+          brandName: selectedBrand?.name || selectedBrand?.domain,
+          tier: ad.tier,
+          headline: ad.headline,
+        }));
+      const productCode = queueProduct.product_code || queueProduct.short_name || null;
+      const angle = queueAngle || null;
+      await api.post('/brief-pipeline/queue', {
+        items,
+        productId: queueProduct.id,
+        productCode,
+        angle,
+        model: queueModel,
+      });
+      // Persist the batch defaults so the next open starts pre-configured.
+      try {
+        localStorage.setItem('briefQueueDefaults', JSON.stringify({
+          productId: queueProduct.id,
+          productCode,
+          angle,
+          model: queueModel,
+        }));
+      } catch {
+        // Storage full/unavailable — non-fatal, queue already succeeded.
+      }
+      setSelectedAdIds(new Set());
+      if (onQueued) onQueued();
+      onClose();
+    } catch (err) {
+      console.error('[LeagueImportModal] queue failed:', err);
+      const raw = err.response?.data?.error;
+      setQueueError(
+        (typeof raw === 'object' ? raw?.message : raw) || err.message || 'Queue failed'
+      );
+    } finally {
+      setQueueing(false);
+    }
   };
 
   // Stored fbcdn URLs expire ~2-4 weeks after scrape. When playback fails,
@@ -499,6 +662,34 @@ export default function LeagueImportModal({ open, onClose, onImported }) {
                   );
                 })}
               </div>
+
+              {/* Select-all + selection count */}
+              {ads.length > 0 && (
+                <div className="flex items-center justify-between">
+                  <button
+                    type="button"
+                    onClick={toggleSelectAllOnPage}
+                    className="inline-flex items-center gap-2 text-[10px] font-mono uppercase tracking-wider text-zinc-400 hover:text-white transition-colors cursor-pointer"
+                  >
+                    <span
+                      className={`w-3.5 h-3.5 rounded border flex items-center justify-center transition-colors ${
+                        allOnPageSelected
+                          ? 'bg-violet-500 border-violet-400 text-white'
+                          : 'bg-black/40 border-white/[0.2]'
+                      }`}
+                    >
+                      {allOnPageSelected && <Check className="w-2.5 h-2.5" strokeWidth={3} />}
+                    </span>
+                    Select all on page
+                  </button>
+                  {selectedAdIds.size > 0 && (
+                    <span className="inline-flex items-center gap-1 text-[10px] font-mono uppercase tracking-wider text-violet-300 bg-violet-500/10 border border-violet-500/30 rounded px-1.5 py-0.5">
+                      <Layers className="w-2.5 h-2.5" />
+                      {selectedAdIds.size} selected
+                    </span>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* Ad list */}

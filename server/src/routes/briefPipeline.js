@@ -19,6 +19,7 @@ import {
 } from '../services/metaAdsApi.js';
 import { uploadBuffer, isR2Configured } from '../services/r2.js';
 import { extractFreshVideoUrl, adLibraryUrl } from '../services/freshVideoUrl.js';
+import { getAdDetail } from '../db/brandSpyDb.js';
 import { extractVideoUrlFromAdLibrary, warmupBrowser as warmupFbExtractor } from '../services/fbAdLibraryExtractor.js';
 
 // Warm up the Chromium browser pool at boot so the first import doesn't

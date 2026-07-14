@@ -39,6 +39,7 @@ const TIER_LABELS  = { ALL: 'ALL', BANGER: '🔥 BANGER', CHAMP: '🏆 CHAMP', A
 
 const SORT_OPTIONS = [
   { value: 'rank_asc',         label: 'Top rank' },
+  { value: 'impressions_desc', label: 'Top impressions (Meta)' },
   { value: 'first_seen_desc',  label: 'Most recent' },
   { value: 'active_days_desc', label: 'Longest running' },
   { value: 'velocity_7d_desc', label: 'Climbing fast' },
