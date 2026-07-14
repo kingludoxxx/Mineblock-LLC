@@ -5758,19 +5758,29 @@ router.delete('/queue/:id', authenticate, async (req, res) => {
   if (!validateUuid(req, res)) return;
   try {
     await ensureJobsTable();
-    const rows = await pgQuery(
+    // queued → canceled (soft, keeps the row); failed/canceled → hard delete
+    // (removes dead test/junk rows from the strip). Running jobs can't be
+    // touched — the executor owns them.
+    const canceled = await pgQuery(
       `UPDATE brief_generation_jobs
           SET status = 'canceled', finished_at = NOW()
         WHERE id = $1 AND status = 'queued'
         RETURNING id`,
       [req.params.id]
     );
-    if (!rows.length) {
-      const exists = await pgQuery(`SELECT status FROM brief_generation_jobs WHERE id = $1`, [req.params.id]);
-      if (!exists.length) return res.status(404).json({ success: false, error: { message: 'Job not found' } });
-      return res.status(409).json({ success: false, error: { message: `Only queued jobs can be canceled (job is '${exists[0].status}')` } });
-    }
-    res.json({ success: true });
+    if (canceled.length) return res.json({ success: true, action: 'canceled' });
+
+    const deleted = await pgQuery(
+      `DELETE FROM brief_generation_jobs
+        WHERE id = $1 AND status IN ('failed', 'canceled')
+        RETURNING id`,
+      [req.params.id]
+    );
+    if (deleted.length) return res.json({ success: true, action: 'deleted' });
+
+    const exists = await pgQuery(`SELECT status FROM brief_generation_jobs WHERE id = $1`, [req.params.id]);
+    if (!exists.length) return res.status(404).json({ success: false, error: { message: 'Job not found' } });
+    return res.status(409).json({ success: false, error: { message: `Running jobs can't be removed (job is '${exists[0].status}')` } });
   } catch (err) {
     console.error('[BriefPipeline] DELETE /queue/:id error:', err.message);
     res.status(500).json({ success: false, error: { message: err.message } });
@@ -7880,20 +7890,30 @@ const BRIEF_QUEUE_CONCURRENCY = 2;
 const runningQueueJobs = new Set(); // in-process guard: job ids currently executing
 let briefQueueWorkerStarted = false;
 
-// Boot recovery: a restart mid-job leaves rows stuck in transcribing /
-// generating with no in-process executor. Re-queue them (attempts+1);
-// anything that has now been recovered 3+ times is structurally broken —
-// fail it instead of looping forever.
+// Stuck-job recovery. A dead process leaves rows in transcribing/generating
+// with no executor — but "no executor on THIS instance" is not proof of
+// death: Render drains the previous instance for a grace period after a
+// deploy, and its in-flight jobs usually FINISH during the drain. Recovering
+// them immediately produced a duplicate brief (2026-07-14: old instance
+// completed brief 0d7f2a42 while the new one re-ran the same job into
+// 2e7cd272). So recovery only touches jobs whose started_at is older than
+// STUCK_AFTER_MIN — long past any generation (~3 min) or drain window —
+// and runs every tick, so truly dead jobs recover without waiting for the
+// next boot. In-process jobs are protected by the runningQueueJobs guard.
+const STUCK_AFTER_MIN = 12;
 async function recoverStuckQueueJobs() {
   await ensureJobsTable();
+  const running = [...runningQueueJobs];
   const requeued = await pgQuery(`
     UPDATE brief_generation_jobs
        SET status = 'queued', attempts = attempts + 1
      WHERE status IN ('transcribing', 'generating')
+       AND started_at < NOW() - INTERVAL '${STUCK_AFTER_MIN} minutes'
+       AND NOT (id = ANY($1::uuid[]))
      RETURNING id
-  `);
+  `, [running]);
   if (requeued.length) {
-    console.log(`[BriefQueue] boot recovery: re-queued ${requeued.length} stuck job(s)`);
+    console.log(`[BriefQueue] recovery: re-queued ${requeued.length} stuck job(s) (stale > ${STUCK_AFTER_MIN}m)`);
   }
   const failed = await pgQuery(`
     UPDATE brief_generation_jobs
@@ -7902,7 +7922,7 @@ async function recoverStuckQueueJobs() {
      RETURNING id
   `);
   if (failed.length) {
-    console.log(`[BriefQueue] boot recovery: failed ${failed.length} job(s) past max restart retries`);
+    console.log(`[BriefQueue] recovery: failed ${failed.length} job(s) past max restart retries`);
   }
 }
 
@@ -8090,8 +8110,18 @@ function startBriefQueueWorker() {
     recoverStuckQueueJobs()
       .catch((e) => console.error('[BriefQueue] boot recovery error:', e.message))
       .finally(() => {
+        let lastRecovery = 0;
         setInterval(() => {
           briefQueueTick().catch((e) => console.error('[BriefQueue] tick error:', e.message));
+          // Steady-state recovery sweep (~60s cadence): truly dead jobs
+          // (crash without a clean boot afterwards) recover here instead of
+          // waiting for the next restart. The 12-min staleness guard inside
+          // recoverStuckQueueJobs keeps draining-instance jobs untouched.
+          const now = Date.now();
+          if (now - lastRecovery > 60_000) {
+            lastRecovery = now;
+            recoverStuckQueueJobs().catch((e) => console.error('[BriefQueue] recovery sweep error:', e.message));
+          }
         }, BRIEF_QUEUE_TICK_MS);
       });
   }, 10_000);
