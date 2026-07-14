@@ -293,7 +293,8 @@ function fmtTime(s) {
 }
 
 function AdCard({ ad, brand, onOpenIntel }) {
-  const [imgFailed,   setImgFailed]   = useState(false);
+  const [imgFailed,        setImgFailed]        = useState(false);
+  const [profileImgFailed, setProfileImgFailed] = useState(false);
   const [playing,     setPlaying]     = useState(false);
   const [paused,      setPaused]      = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -516,14 +517,15 @@ function AdCard({ ad, brand, onOpenIntel }) {
               <img src={ad.thumbnailUrl} alt=""
                 className={`w-full h-full ${ad.isDco ? 'object-contain p-6 bg-zinc-900' : 'object-cover'}`}
                 onError={() => setImgFailed(true)} />
-            ) : pageAvatar.pageProfilePic ? (
-              // Final fallback — when the ad has no thumbnail AND no logo
-              // came back from the snapshot, use the page profile pic from
-              // the brand.pages list. Without this DCO ads whose Meta page
-              // logo URL expired show up as a giant black box that reads
-              // like dead space between rows.
+            ) : pageAvatar.pageProfilePic && !profileImgFailed ? (
+              // Fallback tier 2 — page profile pic. Fbcdn expiry hits this
+              // one too (widely 403 across all brands), so it MUST have its
+              // own onError → profileImgFailed to fall through cleanly to
+              // the gradient tile. Without this handler the <img> stays
+              // broken and the whole card reads as pitch-black.
               <div className="w-full h-full flex items-center justify-center bg-zinc-900">
                 <img src={pageAvatar.pageProfilePic} alt=""
+                  onError={() => setProfileImgFailed(true)}
                   className="max-w-[60%] max-h-[60%] object-contain rounded-full opacity-90" />
               </div>
             ) : (
