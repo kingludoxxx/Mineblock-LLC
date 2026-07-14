@@ -1,6 +1,33 @@
 # Progress Log
 
 ---
+TIMESTAMP: 2026-07-14 00:45
+TASK: League/reference video players + transcriber + layout cleanup
+
+BUILT: (1) services/freshVideoUrl.js — yt-dlp re-extraction of live video URLs
+from FB Ad Library pages (fbcdn URLs expire ~2-4 wks). (2) POST
+/brand-spy/ads/:id/fresh-video-url endpoint. (3) LeagueImportModal auto-retries
+playback with a fresh URL on video error (loading state while yt-dlp runs).
+(4) Transcribe endpoint falls back to fresh yt-dlp URL on download failure
+(was: "HTTP 403 Forbidden"). (5) R2 mirroring for reference media: at League
+import + POST /references/repair-media for existing refs (pestlab video now
+permanent on R2, 31MB, 200 OK). (6) Removed crossOrigin=anonymous from the
+reference video player (blocked R2 playback — no ACAO header). (7) Removed
+PRODUCT LIBRARY status panel from Script Generator layout (fetch kept — angles
+and prompts still consume the context).
+
+TESTED (production, browser E2E): League modal → dead-URL ad → network log
+shows fresh-video-url → 200 → player loads 0:16 video with controls.
+Transcribe on same ad → transcript extracted and displayed, "ready", import
+enabled. Product Library panel confirmed gone. repair-media: 1 video repaired
+(pestlab, still live in Ad Library), 4 unrecoverable (ads deleted from
+library — graceful transcript-only fallback stands).
+
+DECISIONS: For refs whose ads are gone from the Ad Library AND whose stored +
+brand-spy URLs are dead, media is genuinely unrecoverable — fallback UI stands.
+New imports mirror to R2 automatically so this decays away.
+STATUS: COMPLETE
+---
 TIMESTAMP: 2026-07-13 22:55
 TASK: Clone prompt v5 + parser/CTA fixes — full E2E validation
 

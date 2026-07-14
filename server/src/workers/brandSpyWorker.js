@@ -34,18 +34,19 @@ export function requestShutdown() {
  */
 export async function recoverStuckScrapes() {
   try {
-    // Only recover brands stuck >2h. Without this guard, every deploy SIGTERMs
-    // an in-flight scrape and the next boot's recovery immediately re-runs it
-    // — burning credits on partial work the user is about to manually refresh
-    // anyway. 2h cooldown lets back-to-back deploys settle without re-scraping.
+    // Recover brands stuck > 20 min. Combined with the 15-min MIN_ATTEMPT
+    // floor added in C4, this means a scrape orphaned by a deploy self-heals
+    // within ~20 min instead of 2h. The old 2h window was chosen when we
+    // deployed rarely; with the C4 floor already preventing sweep-loops,
+    // there's no reason to wait longer.
     const { rows } = await query(
       `SELECT id FROM brand_spy.brands
         WHERE last_scrape_status IN ('RUNNING', 'INTERRUPTED')
-          AND (last_scraped_at IS NULL OR last_scraped_at < NOW() - INTERVAL '2 hours')`,
+          AND (last_scraped_at IS NULL OR last_scraped_at < NOW() - INTERVAL '20 minutes')`,
     );
     if (!rows.length) return [];
     const ids = rows.map((r) => r.id);
-    console.log(`[brand-spy] boot recovery: ${ids.length} brand(s) stuck > 2h — re-queuing: ${ids.join(', ')}`);
+    console.log(`[brand-spy] boot recovery: ${ids.length} brand(s) stuck > 20 min — re-queuing: ${ids.join(', ')}`);
     await query(
       `UPDATE brand_spy.brands SET last_scrape_status = 'PENDING', last_scrape_error = NULL
        WHERE id = ANY($1::uuid[])`,

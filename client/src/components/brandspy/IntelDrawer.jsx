@@ -269,6 +269,43 @@ export default function IntelDrawer({
   const [videoStarted, setVideoStarted] = useState(false);
   const videoRef = useRef(null);
 
+  // Fresh-video-URL fallback state.
+  // Meta's fbcdn URLs carry an `oe=` expiry and 403 after ~2-4 weeks. When
+  // the stored URL fails, the backend has a yt-dlp-based re-extractor at
+  // POST /ads/:id/fresh-video-url. We try it exactly once per ad — flags
+  // reset on ad change via the effect below.
+  const [freshVideoUrl,   setFreshVideoUrl]   = useState(null);
+  const [refreshingVideo, setRefreshingVideo] = useState(false);
+  const [videoFailed,     setVideoFailed]     = useState(false);
+  const freshAttemptedRef = useRef(false);
+
+  async function tryRefreshVideoUrl() {
+    if (!ad?.id || freshAttemptedRef.current) return;
+    freshAttemptedRef.current = true;
+    setRefreshingVideo(true);
+    try {
+      const res = await fetch(`/api/v1/brand-spy/ads/${ad.id}/fresh-video-url`, {
+        method: 'POST',
+        credentials: 'include',
+      });
+      if (!res.ok) {
+        setVideoFailed(true);
+        return;
+      }
+      const body = await res.json().catch(() => ({}));
+      if (body.videoUrl) {
+        setFreshVideoUrl(body.videoUrl);
+        setVideoFailed(false);
+      } else {
+        setVideoFailed(true);
+      }
+    } catch {
+      setVideoFailed(true);
+    } finally {
+      setRefreshingVideo(false);
+    }
+  }
+
   // Transcribe state — when the user clicks "Transcribe", we POST to the
   // backend which downloads the video and runs OpenAI Whisper on it. Result
   // is cached in brand_spy.ads.transcript so subsequent clicks are instant.
@@ -305,6 +342,12 @@ export default function IntelDrawer({
     setTranscribing(false);
     setTranscriptError(null);
     setTranscriptCached(false);
+    // Reset the fbcdn refresh state — different ad, different stored URL,
+    // needs its own re-extraction attempt if the URL is dead.
+    setFreshVideoUrl(null);
+    setRefreshingVideo(false);
+    setVideoFailed(false);
+    freshAttemptedRef.current = false;
   }, [ad?.id]);
 
   // VideoScriptPanel dispatches 'brand-spy:seek-video' when a timestamped
@@ -381,7 +424,8 @@ export default function IntelDrawer({
   }
 
   async function handleSave() {
-    const url = ad.videoUrl || ad.thumbnailUrl;
+    // Prefer the re-extracted fresh URL if the stored one already 403'd.
+    const url = freshVideoUrl || ad.videoUrl || ad.thumbnailUrl;
     if (!url) return;
     const ext = ad.videoUrl ? '.mp4' : '.jpg';
     const filename = `ad-${ad.adArchiveId || 'creative'}${ext}`;
@@ -501,15 +545,48 @@ export default function IntelDrawer({
                   The container shrink-wraps because there's no flex-1 / min-h. */}
               {ad.videoUrl ? (
                 <div className="relative">
+                  {/* Prefer the freshly-extracted URL if we've re-fetched one.
+                      The stored fbcdn URL carries an `oe=` expiry and 403s
+                      ~2-4 weeks after scrape; on any playback error we POST
+                      /ads/:id/fresh-video-url (yt-dlp re-extract from the
+                      Ad Library page) exactly once and swap it in. */}
                   <video
+                    key={freshVideoUrl || ad.videoUrl}
                     ref={videoRef}
-                    src={ad.videoUrl}
+                    src={freshVideoUrl || ad.videoUrl}
                     poster={ad.thumbnailUrl ?? undefined}
                     controls
                     className="block w-full"
                     style={{ maxHeight: '70vh', background: '#000' }}
                     onPlay={() => setVideoStarted(true)}
+                    onError={() => { if (!freshAttemptedRef.current) tryRefreshVideoUrl(); }}
                   />
+                  {refreshingVideo && (
+                    <div className="absolute inset-0 flex items-center justify-center bg-black/60 z-10 pointer-events-none">
+                      <div className="flex items-center gap-2 text-xs text-white bg-zinc-900/80 border border-white/10 rounded-full px-3 py-1.5">
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        Refreshing video URL…
+                      </div>
+                    </div>
+                  )}
+                  {videoFailed && !refreshingVideo && (
+                    <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-black/70 z-10 px-6 text-center">
+                      <p className="text-xs text-zinc-300">
+                        This video's CDN link has expired and couldn't be refreshed.
+                      </p>
+                      {ad.adArchiveId && (
+                        <a
+                          href={`https://www.facebook.com/ads/library/?id=${ad.adArchiveId}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          className="text-[11px] text-orange-300 hover:text-orange-200 underline"
+                        >
+                          View on Facebook Ad Library →
+                        </a>
+                      )}
+                    </div>
+                  )}
                   {/* Transcribe pill — top-right of the video player, matches
                       the Atria reference "Scripts ▼" placement. In modal mode
                       this is the primary trigger; in pageMode it ALSO works
