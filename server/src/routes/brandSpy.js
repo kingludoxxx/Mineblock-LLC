@@ -878,6 +878,13 @@ function scheduleDailyScrape() {
 }
 
 scheduleDailyScrape();
-startMediaMirrorWorker();
+// Media mirror worker temporarily disabled — instance crash-looping ~5-6 min
+// after boot with mirror active. Ads already largely mirrored during the
+// 13 h the previous instance ran, so R2 URLs continue to be served. Fresh
+// videos still work via the IntelDrawer onError → yt-dlp fresh-video-url
+// fallback. Will re-enable behind an env flag after diagnosis.
+if (process.env.BRAND_SPY_MIRROR_ENABLED === 'true') {
+  startMediaMirrorWorker();
+}
 
 export default router;
