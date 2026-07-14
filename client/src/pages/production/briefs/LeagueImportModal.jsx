@@ -291,13 +291,18 @@ export default function LeagueImportModal({ open, onClose, onImported, onQueued 
   };
 
   // ── Batch queue handlers ──────────────────────────────────────────────
-  // Fire-and-forget transcription prefetch. The endpoint has a DB cache +
-  // in-flight mutex server-side, so repeats are safe — but we still guard
-  // client-side so each ad fires at most once per session.
+  // Transcription prefetch runs through a SEQUENTIAL client-side runner —
+  // one request in flight at a time. Firing them in parallel took the
+  // 512MB server down (13 concurrent video downloads → OOM, 2026-07-15).
+  // The endpoint's DB cache + in-flight mutex make repeats safe; the
+  // prefetchedRef guards each ad to at most one attempt per session.
+  const prefetchChainRef = useRef(Promise.resolve());
   const prefetchTranscript = (ad) => {
     if (!ad || ad.transcript || prefetchedRef.current.has(ad.id)) return;
     prefetchedRef.current.add(ad.id);
-    api.post(`/brand-spy/ads/${ad.id}/transcribe`).catch(() => {});
+    prefetchChainRef.current = prefetchChainRef.current
+      .then(() => api.post(`/brand-spy/ads/${ad.id}/transcribe`))
+      .catch(() => {});
   };
 
   const toggleAdChecked = (ad) => {
@@ -319,7 +324,10 @@ export default function LeagueImportModal({ open, onClose, onImported, onQueued 
         return next;
       });
     } else {
-      ads.forEach(a => { if (!selectedAdIds.has(a.id)) prefetchTranscript(a); });
+      // Deliberately NO prefetch here: select-all can cover 20 ads, and even
+      // sequential transcription of 15+ videos is real spend the user hasn't
+      // committed to yet. The queue worker transcribes at safe concurrency
+      // once they actually click Queue.
       setSelectedAdIds(prev => {
         const next = new Set(prev);
         ads.forEach(a => next.add(a.id));

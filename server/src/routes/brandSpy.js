@@ -735,6 +735,18 @@ router.post('/ads/:id/transcribe', validateUuidParam('id'), async (req, res, nex
     // Mutex — if another request is already transcribing this ad, await it
     // instead of starting a duplicate Whisper call.
     let inflight = transcribeInFlight.get(adId);
+    // Global concurrency cap. Each transcription downloads a whole video
+    // into memory — 13 parallel requests OOM-crashed the 512MB instance
+    // (2026-07-15 select-all prefetch burst). New transcriptions beyond the
+    // cap get a 429; prefetch callers ignore it and the queue worker picks
+    // the ad up later at its own safe concurrency.
+    if (!inflight && transcribeInFlight.size >= 2) {
+      return res.status(429).json({
+        error: 'Transcription capacity busy — try again shortly',
+        reason: 'TRANSCRIBE_BUSY',
+        inFlight: transcribeInFlight.size,
+      });
+    }
     if (!inflight) {
       inflight = (async () => {
         let transcription;
