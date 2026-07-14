@@ -6738,7 +6738,10 @@ async function seedDefaultLeaguePrompts() {
     // schema with per-beat word budgets, hooks emitted AFTER the body with a
     // blend test, testimonial-persona swap + proof-substitution rules.
     // Bumping the signature force-refreshes any pre-v5 snapshot once.
-    const CLONE_V2_SIGNATURE = 'LENGTH CONTRACT';
+    // v6 signature: 'adaptation_strategy' exists only in the v6
+    // analyze-then-adapt prompt, so the stale v5 snapshot in the DB gets
+    // force-refreshed exactly once on next boot, then operator edits stick.
+    const CLONE_V2_SIGNATURE = 'adaptation_strategy';
     const currentClone = existing.scriptClone?.json || '';
     if (!currentClone.trim() || !currentClone.includes(CLONE_V2_SIGNATURE)) {
       existing.scriptClone = {
