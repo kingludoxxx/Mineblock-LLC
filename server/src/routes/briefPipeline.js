@@ -3204,7 +3204,7 @@ async function pushBriefToClickUp(generatedBrief, parentClickupTaskId, overrides
     relationshipPromises.push(
       clickupFetch(`/task/${taskId}/field/${FIELD_IDS.product}`, {
         method: 'POST',
-        body: JSON.stringify({ value: { add: [{ id: productTaskId }], rem: [] } }),
+        body: JSON.stringify({ value: { add: [productTaskId], rem: [] } }),
       }).catch(err => console.error('[BriefPipeline] Product relationship error:', err.message))
     );
   }
@@ -3218,7 +3218,7 @@ async function pushBriefToClickUp(generatedBrief, parentClickupTaskId, overrides
     relationshipPromises.push(
       clickupFetch(`/task/${taskId}/field/${FIELD_IDS.avatar}`, {
         method: 'POST',
-        body: JSON.stringify({ value: { add: [{ id: avatarTaskId }], rem: [] } }),
+        body: JSON.stringify({ value: { add: [avatarTaskId], rem: [] } }),
       }).catch(err => console.error('[BriefPipeline] Avatar relationship error:', err.message))
     );
   }
@@ -3234,7 +3234,7 @@ async function pushBriefToClickUp(generatedBrief, parentClickupTaskId, overrides
   relationshipPromises.push(
     clickupFetch(`/task/${taskId}/field/${FIELD_IDS.creator}`, {
       method: 'POST',
-      body: JSON.stringify({ value: { add: [{ id: creatorTaskId || CREATOR_NA_TASK_ID }], rem: [] } }),
+      body: JSON.stringify({ value: { add: [creatorTaskId || CREATOR_NA_TASK_ID], rem: [] } }),
     }).catch(err => console.error('[BriefPipeline] Creator relationship error:', err.message))
   );
 
