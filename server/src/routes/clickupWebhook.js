@@ -905,14 +905,18 @@ router.post('/', async (req, res) => {
     } else if (event === 'taskCreated') {
       await handleTaskCreated(task_id);
     } else if (event === 'taskUpdated') {
-      // Check if a custom field relevant to naming was changed
-      const fieldChange = history_items?.find((h) => h.field === 'custom_field');
-      if (fieldChange) {
-        const changedTask = await getTask(task_id);
-        if (changedTask?.list?.id === PL_VIDEO_LIST) {
-          // PL: editor assignment → put the editor's first name into the card name
-          await syncPlEditorName(changedTask);
-        } else {
+      // Users-type custom-field changes (e.g. Editor) don't reliably surface
+      // as field==='custom_field' history items, so PL cards are always
+      // fetched and reconciled — the sync is idempotent and PL traffic is low.
+      const historyFields = (history_items || []).map((h) => h.field).join(',') || 'none';
+      logger.info(`[ClickUp Webhook] taskUpdated ${task_id} history fields: ${historyFields}`);
+      const changedTask = await getTask(task_id);
+      if (changedTask?.list?.id === PL_VIDEO_LIST) {
+        await syncPlEditorName(changedTask);
+      } else {
+        // Check if a custom field relevant to naming was changed
+        const fieldChange = history_items?.find((h) => h.field === 'custom_field');
+        if (fieldChange) {
           await handleCustomFieldChanged(task_id);
         }
       }
