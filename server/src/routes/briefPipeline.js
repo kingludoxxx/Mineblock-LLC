@@ -4406,15 +4406,36 @@ router.delete('/generated/:id', authenticate, async (req, res) => {
 // If DEDUPE_SECRET is unset in prod, the bypass simply doesn't fire and the
 // normal authenticate middleware handles the request.
 const DEDUPE_SECRET = process.env.DEDUPE_SECRET || '';
+console.log(`[BriefPipeline] boot: DEDUPE_SECRET ${DEDUPE_SECRET ? `SET (${DEDUPE_SECRET.length} chars)` : 'NOT SET'}`);
 function dedupeAuthOrAuthenticate(req, res, next) {
   const supplied = req.get('x-dedupe-secret') || req.query.secret || '';
-  if (DEDUPE_SECRET && supplied && supplied === DEDUPE_SECRET) {
-    // Populate a stub user so downstream code that touches req.user doesn't NPE
+  const suppliedLen = supplied ? String(supplied).length : 0;
+  const secretLen   = DEDUPE_SECRET ? DEDUPE_SECRET.length : 0;
+  const matched     = !!(DEDUPE_SECRET && supplied && supplied === DEDUPE_SECRET);
+  console.log(`[BriefPipeline] dedupe auth: secretLen=${secretLen} suppliedLen=${suppliedLen} matched=${matched}`);
+  if (matched) {
     req.user = req.user || { id: null, email: 'dedupe-bot', roles: [] };
     return next();
   }
   return authenticate(req, res, next);
 }
+
+// One-shot diagnostic: does the running process see DEDUPE_SECRET?
+// Response includes ONLY the length + a checksum prefix so the value never
+// leaks over the wire.
+router.get('/generated/_env-check', (_req, res) => {
+  const val = process.env.DEDUPE_SECRET || '';
+  const hash = val
+    ? require('crypto').createHash('sha256').update(val).digest('hex').slice(0, 8)
+    : null;
+  res.json({
+    dedupeSecretLen: val.length,
+    dedupeSecretHashPrefix: hash,
+    nodeEnv: process.env.NODE_ENV || null,
+    pid: process.pid,
+    uptimeSec: Math.round(process.uptime()),
+  });
+});
 
 router.post('/generated/dedupe-recent', dedupeAuthOrAuthenticate, async (req, res) => {
   try {
