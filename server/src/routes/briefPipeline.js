@@ -1413,7 +1413,7 @@ async function callClaude(systemPrompt, userPrompt, maxTokens = 3000, { fast = f
  * Call OpenAI API for brief generation. Same interface as callClaude
  * for seamless model swapping. Returns parsed JSON response.
  */
-async function callOpenAI(systemPrompt, userPrompt, maxTokens = 3000) {
+async function callOpenAI(systemPrompt, userPrompt, maxTokens = 3000, { temperature = 0.3, jsonMode = true } = {}) {
   const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
   if (!OPENAI_API_KEY) {
     throw new Error('OPENAI_API_KEY not configured');
@@ -1428,6 +1428,14 @@ async function callOpenAI(systemPrompt, userPrompt, maxTokens = 3000) {
   const body = {
     model: 'gpt-4o',
     max_tokens: maxTokens,
+    // GPT-4o at the default temperature (1.0) paraphrases and genericizes
+    // instead of cloning surgically — it turned a "Black Friday launched 4
+    // months early by mistake" ad into a bland "our sale went live early".
+    // Low temperature keeps it faithful to the source. json_object mode makes
+    // the structured output reliable (all our prompts already say "return
+    // ONLY valid JSON", which satisfies the API's json-in-prompt requirement).
+    temperature,
+    ...(jsonMode ? { response_format: { type: 'json_object' } } : {}),
     messages,
   };
 
@@ -2833,9 +2841,12 @@ async function buildIterationPrompt(parsedScript, productContext, performanceCon
 const DEFAULT_CLONE_PROMPT_SYSTEM = `You are a senior performance copywriter who clones winning ad scripts surgically. Your job is to preserve the persuasion architecture of a proven competitor script while swapping their product for ours. You think in terms of ARCHITECTURE (sequence, pacing, rhetorical devices, emotional beats) — not surface words. Every paragraph in the original maps to an equivalent paragraph in your clone, at the same length — length parity is part of the architecture, and a clone that comes back meaningfully shorter than its source has failed. You write like a real media buyer who has spent millions: raw, direct, no marketing-speak, no AI tells, no filler. Contractions, fragments, real talk. If the original sounds like someone ranting on TikTok, your clone rants on TikTok. If it sounds like a calm authority, your clone is a calm authority. You NEVER soften, hedge, or add disclaimers the original didn't have. You match the source's proof strength one-for-one — if the source cites a stat, a study, or an imaging result, your clone carries an equivalent at the same specificity, adapted to our product (the operator owns responsibility for all claims). You NEVER break the angle once it is selected — every sentence reinforces it.`;
 
 const DEFAULT_CLONE_PROMPT_USER = `# MISSION
-Study the competitor script below like a senior creative strategist, then rebuild it for OUR product: same narrative architecture, same emotional arc, same structure, same length — adapted intelligently to our product's world using the full product brief.
+Study the competitor script below like a senior creative strategist, then rebuild it for OUR product: same narrative architecture, same emotional arc, same structure, same length, SAME SPECIFIC FRAMING — adapted intelligently to our product's world using the full product brief.
 
 You are not following a swap table. You are doing what a top media buyer does when they clone a proven winner: first understand WHY it works, then rebuild every beat so it works just as hard for our product.
+
+# THE ONE RULE ABOVE ALL (read twice)
+DO NOT PARAPHRASE. This is surgical cloning, not "capture the gist / retell in your own words". Go sentence by sentence: keep each sentence's exact shape, wording, and specific hooks, changing ONLY the product noun, the product-category details, and our real numbers. The source's SPECIFIC framing — its sale event ("Black Friday"), its gimmick ("launched four months early by mistake"), its jokes ("the intern"), its exact offer structure ("normally $X, now Y% off, 24 hours") — is the creative and MUST survive word-for-word. If your output reads like a looser, blander retelling of the source rather than the same sentences with the product swapped, you have FAILED. A stranger reading your clone next to the source should see two ads that are line-for-line twins, differing only in product.
 
 # OUR PRODUCT — MASTER BRIEF (your complete product knowledge; single source of truth for every fact)
 {{PRODUCT_CONTEXT}}
@@ -2870,13 +2881,15 @@ Before writing a word, understand the machine you are cloning (think through ALL
 - Protagonist: what ROLE do they play (underdog inventor, burned customer, insider expert) and what makes them credible?
 - Emotional arc: the beats in order, and where the pivot moment sits (rejection, confession, reveal, near-miss).
 - Persuasion devices: named villains, proof points, credibility moments (Shark Tank, press, studies), scarcity, guarantee.
+- SIGNATURE DEVICE: the one specific gimmick or framing that makes THIS ad memorable and IS the creative — the exact conceit the whole ad hangs on. Examples: "our Black Friday sale launched four months early by mistake and we can't take it back", "public apology / we lied", "reply to a hater's comment", "the intern leaked our price". Name it exactly. This is the #1 thing that must survive the clone intact — an ad that loses its signature device is a different, weaker ad.
 - Why does this ad win? One or two sentences.
 
 ## STEP 2 — ADAPTATION STRATEGY (emit as "adaptation_plan" — 2-3 sentences MAX, distilled)
 Decide how the machine rebuilds around OUR product (think through ALL of this; emit only the distilled plan):
 - Protagonist recast: keep the ROLE and the full arc; choose the identity that is MOST CREDIBLE for our product's world and our avatar. Two college boys who built a pest device can become a menopausal plastic surgeon who built a breast-lift device — the role (rejected inventor) and every beat survive; the identity serves our product. Never carry over names, genders, or professions that make no sense in our category — and never invent an identity our master brief contradicts.
 - Fact mapping: which master-brief facts power which beats (mechanism → the discovery beat, guarantee → the promise beat, our real offer → the CTA beat).
-- Keep-verbatim list: culturally recognizable moments (Shark Tank, Forbes, "went viral") are structural gold — keep them literally unless truly impossible. Same for the source's transitions and rhetorical devices.
+- KEEP THE SIGNATURE DEVICE VERBATIM: whatever you named as the signature device in STEP 1 is carried over word-for-word, only the product noun + our real numbers changed. If the source says "our Black Friday sale launched four months early by mistake and we can't take it back", the clone says "our Black Friday sale launched four months early by mistake and we can't take it back" (swap the product, keep everything else). Do NOT soften or genericize it: "Black Friday" stays "Black Friday" (NOT "anniversary sale" or "our sale"), "four months early" stays, "the intern" stays "the intern". These named events, seasonal promos (Black Friday, Cyber Monday, Memorial Day), specific jokes, and offer framings ARE the ad — treating them as competitor-specific and swapping them for generic wording is the single most common way to ruin a clone.
+- Keep-verbatim list: culturally recognizable moments (Shark Tank, Forbes, "went viral") are structural gold — keep them literally unless truly impossible. Same for the source's transitions, rhetorical devices, and the exact OFFER STRUCTURE (if the source frames it as "normally $X, now Y% off for 24 hours", your clone uses the same "normally $OUR_PRICE, now OUR% off for 24 hours" frame — carry the discount-percentage framing, not just a bare price).
 - PROOF PARITY: mirror the source's proof devices at FULL strength — one for one. If the source cites "60% firmness loss in two years", your clone carries an equally specific stat adapted to our product. If the source uses ultrasound imaging as a proof device, yours uses an equivalent clinical device. Use master-brief numbers where they exist; where they don't, craft proof of the SAME specificity and type as the source's (the operator takes full responsibility for claims). A proof beat that comes back vaguer or softer than the source's has failed — "significant improvement" is not a clone of "60% loss".
 
 ## STEP 3 — WRITE THE CLONE
@@ -2951,7 +2964,8 @@ A LABEL is short, attention-grabbing, sticker-style. A HOOK is a full first-pers
 {
   "source_pov": "third-person-founder-narrative | first-person-testimonial | first-person-founder-confession | expert-explainer | speaker-direct-address | other",
   "source_read": "2-3 sentences: ad type, narrator + why the viewer believes them, the pivot moment, why this ad wins",
-  "adaptation_plan": "2-3 sentences: who the protagonist becomes and why that identity is most credible for our product; what stays verbatim (e.g. Shark Tank); which source proof devices are mirrored and how",
+  "signature_device": "the ONE specific gimmick/framing this ad hangs on, stated exactly (e.g. 'Black Friday sale launched 4 months early by mistake, can't take it back'). You will carry this over word-for-word in the body, product swapped.",
+  "adaptation_plan": "2-3 sentences: who the protagonist becomes and why that identity is most credible for our product; confirm the signature_device is kept verbatim; which source proof devices are mirrored and how",
   "source_beats": [
     { "n": 1, "beat": "one-sentence compression of this source beat (max 20 words)", "source_words": 74, "target_words": 74 }
   ],
@@ -7601,11 +7615,11 @@ async function seedDefaultLeaguePrompts() {
     // schema with per-beat word budgets, hooks emitted AFTER the body with a
     // blend test, testimonial-persona swap + proof-substitution rules.
     // Bumping the signature force-refreshes any pre-v5 snapshot once.
-    // v6.3 signature: 'NO DASHES OR HYPHENS' exists only in the revision that
-    // adds the operator's no-"-"/em-dash rule to the clone voice section (on
-    // top of v6.2 proof-parity + ±5% length + cloned-CTA rules). One-shot
-    // snapshot refresh, then operator edits stick.
-    const CLONE_V2_SIGNATURE = 'NO DASHES OR HYPHENS';
+    // v6.4 signature: 'SIGNATURE DEVICE' exists only in the revision that adds
+    // the anti-paraphrase mandate + signature-device preservation (Black Friday
+    // / the-intern gimmicks stay verbatim) on top of v6.3's no-dash rule.
+    // One-shot snapshot refresh, then operator edits stick.
+    const CLONE_V2_SIGNATURE = 'SIGNATURE DEVICE';
     const currentClone = existing.scriptClone?.json || '';
     if (!currentClone.trim() || !currentClone.includes(CLONE_V2_SIGNATURE)) {
       existing.scriptClone = {
