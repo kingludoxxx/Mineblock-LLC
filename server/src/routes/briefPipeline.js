@@ -221,6 +221,119 @@ router.get('/meta-thumb/:creativeId', async (req, res) => {
   }
 });
 
+// ── Public diagnostic (BEFORE the router-wide authenticate guard) ────
+// Length + first 8 chars of sha256 only — real secret never crosses the wire.
+router.get('/generated/_env-check', (_req, res) => {
+  const val = process.env.DEDUPE_SECRET || '';
+  const hash = val
+    ? require('crypto').createHash('sha256').update(val).digest('hex').slice(0, 8)
+    : null;
+  res.json({
+    dedupeSecretLen: val.length,
+    dedupeSecretHashPrefix: hash,
+    nodeEnv: process.env.NODE_ENV || null,
+    pid: process.pid,
+    uptimeSec: Math.round(process.uptime()),
+  });
+});
+
+// ── POST /generated/dedupe-recent (BEFORE the authenticate guard) ────
+// Bypasses login when a matching DEDUPE_SECRET is presented; otherwise
+// still falls through to authenticate() for a normal admin session. See
+// full docstring on the handler below.
+const DEDUPE_SECRET = process.env.DEDUPE_SECRET || '';
+console.log(`[BriefPipeline] boot: DEDUPE_SECRET ${DEDUPE_SECRET ? `SET (${DEDUPE_SECRET.length} chars)` : 'NOT SET'}`);
+function dedupeAuthOrAuthenticate(req, res, next) {
+  const supplied = req.get('x-dedupe-secret') || req.query.secret || '';
+  const suppliedLen = supplied ? String(supplied).length : 0;
+  const secretLen   = DEDUPE_SECRET ? DEDUPE_SECRET.length : 0;
+  const matched     = !!(DEDUPE_SECRET && supplied && supplied === DEDUPE_SECRET);
+  console.log(`[BriefPipeline] dedupe auth: secretLen=${secretLen} suppliedLen=${suppliedLen} matched=${matched}`);
+  if (matched) {
+    req.user = req.user || { id: null, email: 'dedupe-bot', roles: [] };
+    return next();
+  }
+  return authenticate(req, res, next);
+}
+router.post('/generated/dedupe-recent', dedupeAuthOrAuthenticate, async (req, res) => {
+  try {
+    await ensureTables();
+    const dryRun = String(req.query.dryRun ?? 'true').toLowerCase() !== 'false';
+    const hours  = Math.min(240, Math.max(1, parseInt(String(req.query.hours ?? '48'), 10) || 48));
+    const status = String(req.query.status ?? 'generated');
+
+    // Group recent generated briefs by reference_id (their shared source ad
+    // — importLeagueAdAsReference upserts on ad_archive_id, so even
+    // duplicate runs point at the same reference row). Keep the oldest per
+    // group; the rest are duplicates.
+    const rows = await pgQuery(
+      `SELECT bg.id                AS brief_id,
+              bg.brief_number,
+              bg.status,
+              bg.naming_convention,
+              bg.created_at,
+              bw.id                AS winner_id,
+              bw.reference_id
+         FROM brief_pipeline_generated bg
+         JOIN brief_pipeline_winners  bw ON bw.id = bg.winner_id
+        WHERE bw.reference_id IS NOT NULL
+          AND bg.created_at > NOW() - ($1::int || ' hours')::interval
+          AND ($2::text = 'ANY' OR bg.status = $2)
+        ORDER BY bw.reference_id, bg.created_at ASC`,
+      [hours, status],
+    );
+
+    const groups = new Map(); // reference_id → { keep, duplicates: [] }
+    for (const r of rows) {
+      const g = groups.get(r.reference_id);
+      if (!g) groups.set(r.reference_id, { keep: r, duplicates: [] });
+      else    g.duplicates.push(r);
+    }
+
+    const plan = [];
+    let totalToDelete = 0;
+    for (const [referenceId, g] of groups.entries()) {
+      if (g.duplicates.length === 0) continue;
+      plan.push({
+        referenceId,
+        keep: {
+          briefId: g.keep.brief_id, briefNumber: g.keep.brief_number,
+          namingConvention: g.keep.naming_convention, createdAt: g.keep.created_at,
+        },
+        delete: g.duplicates.map((d) => ({
+          briefId: d.brief_id, briefNumber: d.brief_number,
+          namingConvention: d.naming_convention, createdAt: d.created_at,
+        })),
+      });
+      totalToDelete += g.duplicates.length;
+    }
+
+    if (dryRun || totalToDelete === 0) {
+      return res.json({
+        success: true, executed: false, window: { hours, status },
+        duplicateGroups: plan.length, totalToDelete, plan,
+      });
+    }
+
+    const idsToDelete = plan.flatMap((g) => g.delete.map((d) => d.briefId));
+    const deleted = await pgQuery(
+      `DELETE FROM brief_pipeline_generated
+        WHERE id = ANY($1::uuid[])
+        RETURNING id`,
+      [idsToDelete],
+    );
+    console.log(`[BriefPipeline] dedupe-recent: deleted ${deleted.length} duplicate brief(s) across ${plan.length} group(s)`);
+
+    return res.json({
+      success: true, executed: true, window: { hours, status },
+      duplicateGroups: plan.length, totalDeleted: deleted.length, plan,
+    });
+  } catch (err) {
+    console.error('[BriefPipeline] POST /generated/dedupe-recent error:', err.message);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
 router.use(authenticate, requirePermission('brief-pipeline', 'access'));
 
 // ── Config ────────────────────────────────────────────────────────────
@@ -4379,161 +4492,7 @@ router.delete('/generated/:id', authenticate, async (req, res) => {
   }
 });
 
-// POST /generated/dedupe-recent — one-shot cleanup for duplicate briefs
-// generated by the batch-queue recovery-race bug (fixed in 51d38c7 on
-// 2026-07-15). During the window that bug was live, a job that survived
-// a deploy could be re-processed by the new instance while the draining
-// old instance also completed it — resulting in multiple brief_pipeline_
-// winners rows sharing the same reference_id (source ad) and each with
-// its own brief_pipeline_generated row (unique brief_number, identical
-// content).
-//
-// Dedup key: reference_id. Keeps the EARLIEST winner per reference
-// (whichever finished first — most likely the one already in the
-// user's approved/launched columns). Deletes the rest.
-//
-// Query params:
-//   dryRun   — 'true' (default) returns the plan without touching data;
-//              'false' executes the delete.
-//   hours    — how far back to look. Default 48.
-//   status   — restrict to briefs in a specific status. Default 'generated'
-//              (avoid nuking anything the user already actioned).
-// Route mounted below with authenticate. This handler lets a caller with the
-// DEDUPE_SECRET header/query param bypass the login gate — same pattern as
-// /adsReporting cron endpoints use CRON_SECRET. Rationale: this is a one-shot
-// cleanup endpoint for a known bug; letting an operator run it from a script
-// without maintaining a session is worth the tiny secret-shared-in-env cost.
-// If DEDUPE_SECRET is unset in prod, the bypass simply doesn't fire and the
-// normal authenticate middleware handles the request.
-const DEDUPE_SECRET = process.env.DEDUPE_SECRET || '';
-console.log(`[BriefPipeline] boot: DEDUPE_SECRET ${DEDUPE_SECRET ? `SET (${DEDUPE_SECRET.length} chars)` : 'NOT SET'}`);
-function dedupeAuthOrAuthenticate(req, res, next) {
-  const supplied = req.get('x-dedupe-secret') || req.query.secret || '';
-  const suppliedLen = supplied ? String(supplied).length : 0;
-  const secretLen   = DEDUPE_SECRET ? DEDUPE_SECRET.length : 0;
-  const matched     = !!(DEDUPE_SECRET && supplied && supplied === DEDUPE_SECRET);
-  console.log(`[BriefPipeline] dedupe auth: secretLen=${secretLen} suppliedLen=${suppliedLen} matched=${matched}`);
-  if (matched) {
-    req.user = req.user || { id: null, email: 'dedupe-bot', roles: [] };
-    return next();
-  }
-  return authenticate(req, res, next);
-}
-
-// One-shot diagnostic: does the running process see DEDUPE_SECRET?
-// Response includes ONLY the length + a checksum prefix so the value never
-// leaks over the wire.
-router.get('/generated/_env-check', (_req, res) => {
-  const val = process.env.DEDUPE_SECRET || '';
-  const hash = val
-    ? require('crypto').createHash('sha256').update(val).digest('hex').slice(0, 8)
-    : null;
-  res.json({
-    dedupeSecretLen: val.length,
-    dedupeSecretHashPrefix: hash,
-    nodeEnv: process.env.NODE_ENV || null,
-    pid: process.pid,
-    uptimeSec: Math.round(process.uptime()),
-  });
-});
-
-router.post('/generated/dedupe-recent', dedupeAuthOrAuthenticate, async (req, res) => {
-  try {
-    await ensureTables();
-    const dryRun = String(req.query.dryRun ?? 'true').toLowerCase() !== 'false';
-    const hours  = Math.min(240, Math.max(1, parseInt(String(req.query.hours ?? '48'), 10) || 48));
-    const status = String(req.query.status ?? 'generated');
-
-    // Find every recent brief with its winner + reference, then group by
-    // reference_id. Ignore rows that don't have a reference (manual-input
-    // briefs and everything pre-queue) — those can't be batch duplicates.
-    const rows = await pgQuery(
-      `SELECT bg.id                AS brief_id,
-              bg.brief_number,
-              bg.status,
-              bg.naming_convention,
-              bg.created_at,
-              bw.id                AS winner_id,
-              bw.reference_id
-         FROM brief_pipeline_generated bg
-         JOIN brief_pipeline_winners  bw ON bw.id = bg.winner_id
-        WHERE bw.reference_id IS NOT NULL
-          AND bg.created_at > NOW() - ($1::int || ' hours')::interval
-          AND ($2::text = 'ANY' OR bg.status = $2)
-        ORDER BY bw.reference_id, bg.created_at ASC`,
-      [hours, status],
-    );
-
-    // Group by reference_id. Keep the oldest (first in each group); all
-    // subsequent rows are duplicates.
-    const groups = new Map(); // reference_id → { keep, duplicates: [] }
-    for (const r of rows) {
-      const g = groups.get(r.reference_id);
-      if (!g) {
-        groups.set(r.reference_id, { keep: r, duplicates: [] });
-      } else {
-        g.duplicates.push(r);
-      }
-    }
-
-    const plan = [];
-    let totalToDelete = 0;
-    for (const [referenceId, g] of groups.entries()) {
-      if (g.duplicates.length === 0) continue;
-      plan.push({
-        referenceId,
-        keep: {
-          briefId:     g.keep.brief_id,
-          briefNumber: g.keep.brief_number,
-          namingConvention: g.keep.naming_convention,
-          createdAt:   g.keep.created_at,
-        },
-        delete: g.duplicates.map((d) => ({
-          briefId:     d.brief_id,
-          briefNumber: d.brief_number,
-          namingConvention: d.naming_convention,
-          createdAt:   d.created_at,
-        })),
-      });
-      totalToDelete += g.duplicates.length;
-    }
-
-    if (dryRun || totalToDelete === 0) {
-      return res.json({
-        success: true,
-        executed: false,
-        window: { hours, status },
-        duplicateGroups: plan.length,
-        totalToDelete,
-        plan,
-      });
-    }
-
-    // Execute — one bulk DELETE for safety + speed. Only rows in `status`
-    // and inside the time window get touched; the "keep" row per group is
-    // filtered out by NOT-in.
-    const idsToDelete = plan.flatMap((g) => g.delete.map((d) => d.briefId));
-    const deleted = await pgQuery(
-      `DELETE FROM brief_pipeline_generated
-        WHERE id = ANY($1::uuid[])
-        RETURNING id`,
-      [idsToDelete],
-    );
-    console.log(`[BriefPipeline] dedupe-recent: deleted ${deleted.length} duplicate brief(s) across ${plan.length} group(s)`);
-
-    return res.json({
-      success: true,
-      executed: true,
-      window: { hours, status },
-      duplicateGroups: plan.length,
-      totalDeleted: deleted.length,
-      plan,
-    });
-  } catch (err) {
-    console.error('[BriefPipeline] POST /generated/dedupe-recent error:', err.message);
-    res.status(500).json({ success: false, error: { message: err.message } });
-  }
-});
+// (dedupe-recent moved above the router-wide authenticate guard, near line 224)
 
 // POST /generated/:id/enhance — AI enhancement endpoint
 router.post('/generated/:id/enhance', authenticate, async (req, res) => {
