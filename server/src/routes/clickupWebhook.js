@@ -694,6 +694,47 @@ async function ensureMediaBuyingTask(task, taskListId) {
   }
 }
 
+// ── PL | Video Creatives: keep the assigned editor's name in the card name ─
+// Card names follow: "PL - B0455 - NN - Product Aware - Promo - Mashup -
+// Ludovico - {EDITOR} - WK29_2026" — the editor slot is the second-to-last
+// segment ("NA" until someone is assigned). Whenever the Editor custom field
+// changes (usually while the card sits in Edit Queue), rewrite that slot with
+// the editor's first name. Idempotent; renames never re-trigger processing
+// (a name change carries no custom_field history item).
+const PL_EDITOR_FIELD = 'a9613cd9-715a-4a2a-bbbb-fbb7f664980a';
+
+async function syncPlEditorName(task) {
+  try {
+    const editors = getFieldValue(task, PL_EDITOR_FIELD);
+    const first = Array.isArray(editors) && editors[0]?.username
+      ? String(editors[0].username).trim().split(/\s+/)[0]
+      : null;
+    if (!first) return; // no editor assigned — leave the name alone
+
+    const name = task.name || '';
+    const segments = name.split(' - ');
+    // Only touch names that follow the convention (≥6 segments, ends with WK##_####)
+    if (segments.length < 6 || !/^WK\d+_\d{4}$/i.test(segments[segments.length - 1])) {
+      logger.info(`[syncPlEditorName] Skipping ${task.id} — name doesn't match convention ("${name}")`);
+      return;
+    }
+
+    const slot = segments.length - 2;
+    if (segments[slot] === first) return; // already correct
+
+    segments[slot] = first;
+    const newName = segments.join(' - ');
+    await clickupFetch(`/task/${task.id}`, {
+      method: 'PUT',
+      body: JSON.stringify({ name: newName }),
+    });
+    task.name = newName; // downstream consumers (Frame.io folder) use the fresh name
+    logger.info(`[syncPlEditorName] ✅ ${task.id} → "${newName}"`);
+  } catch (err) {
+    logger.error(`[syncPlEditorName] FAILED for ${task.id}: ${err.message}`);
+  }
+}
+
 // ── Frame.io folder auto-creation on "editing" status ─────────────────────
 // When a Video Ads task moves to the "editing" column, create a Frame.io
 // subfolder named after the ClickUp task and write the folder URL back to
@@ -772,6 +813,12 @@ async function handleStatusSync(taskId, historyItems) {
   const taskListId = task.list?.id;
 
   if (!SYNC_LISTS.includes(taskListId) && taskListId !== PL_VIDEO_LIST) return;
+
+  // PL: make sure the card name carries the assigned editor before anything
+  // else runs — the Frame.io folder inherits the card name.
+  if (taskListId === PL_VIDEO_LIST) {
+    await syncPlEditorName(task);
+  }
 
   // When a VA task hits "editing", auto-create a Frame.io folder and
   // write the URL into the Ads Frame Link custom field.
@@ -861,7 +908,13 @@ router.post('/', async (req, res) => {
       // Check if a custom field relevant to naming was changed
       const fieldChange = history_items?.find((h) => h.field === 'custom_field');
       if (fieldChange) {
-        await handleCustomFieldChanged(task_id);
+        const changedTask = await getTask(task_id);
+        if (changedTask?.list?.id === PL_VIDEO_LIST) {
+          // PL: editor assignment → put the editor's first name into the card name
+          await syncPlEditorName(changedTask);
+        } else {
+          await handleCustomFieldChanged(task_id);
+        }
       }
     }
   } catch (err) {
