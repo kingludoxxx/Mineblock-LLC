@@ -2452,6 +2452,54 @@ const DEFAULT_AVATARS = [
   { name: 'Creator (UGC)',        description: 'Paid creator delivering script in their voice' },
 ];
 
+// ── Avatar + Angle auto-detection ────────────────────────────────────
+// Classifies an ad transcript against the product's own avatar/angle
+// catalog so the naming convention gets ` - Menopause - Fear ` instead
+// of ` - NA - NA `. Uses Haiku (~1s, ~$0.0005/call) — cheap enough to
+// run on every batch job without adding cost.
+//
+// Returns { avatar, angle } — either may be null if we couldn't resolve
+// to a valid catalog entry. Callers fall back to 'NA' in that case.
+async function detectAvatarAndAngle({ transcript, headline, productProfile }) {
+  const resolveArr = (raw, fallback) => {
+    let a = raw;
+    if (typeof a === 'string') { try { a = JSON.parse(a); } catch { a = null; } }
+    return Array.isArray(a) && a.length > 0 ? a : fallback;
+  };
+  const avatars = resolveArr(productProfile?.avatars, DEFAULT_AVATARS);
+  const angles  = resolveArr(productProfile?.angles, []);
+  if (!avatars.length && !angles.length) return { avatar: null, angle: null };
+
+  const clean = String(transcript || '').slice(0, 4000);
+  if (!clean.trim()) return { avatar: null, angle: null };
+
+  const sys = 'You classify a video-ad transcript into the single best-matching avatar (persona/voice) and angle (positioning) from the provided catalogs. Names in your reply MUST match a catalog entry exactly, character-for-character. Respond with strict JSON only: {"avatar":"<name>","angle":"<name>"}. If nothing fits, use null for that field.';
+
+  const avatarsBlock = avatars.map(a => `- ${a.name}${a.description ? `: ${a.description}` : ''}`).join('\n');
+  const anglesBlock  = angles.length
+    ? angles.map(a => `- ${a.name}${a.description ? `: ${a.description}` : ''}`).join('\n')
+    : '(no product angles defined — return null for angle)';
+
+  const user = `AVATAR CATALOG:\n${avatarsBlock}\n\nANGLE CATALOG:\n${anglesBlock}\n\nAD HEADLINE: ${headline || '(none)'}\n\nAD TRANSCRIPT:\n${clean}\n\nReturn strict JSON — no prose.`;
+
+  let result;
+  try {
+    result = await callClaude(sys, user, 200, { fast: true });
+  } catch (err) {
+    console.warn('[BriefPipeline] avatar/angle detection failed:', err.message);
+    return { avatar: null, angle: null };
+  }
+
+  // Model may return { avatar: 'name' } or wrap it in another object. Be
+  // strict about matching against the catalog — hallucinated names get
+  // rejected so the naming convention never contains garbage.
+  const proposedAvatar = String(result?.avatar || '').trim();
+  const proposedAngle  = String(result?.angle  || '').trim();
+  const avatar = avatars.find(a => a.name === proposedAvatar)?.name || null;
+  const angle  = angles.find(a  => a.name === proposedAngle)?.name  || null;
+  return { avatar, angle };
+}
+
 async function buildIterationPrompt(parsedScript, productContext, performanceContext, numVariations, productProfile = null, vectorsSelected = null, angleLocked = null, rawTranscript = null) {
   // Load saved prompt or fall back to baked v1 defaults.
   let systemPrompt = DEFAULT_ITERATION_PROMPT_SYSTEM;
@@ -3488,6 +3536,30 @@ async function executeGenerationJob({
     const productContext = buildProductContextForBrief(productProfile);
     console.log(`[BriefPipeline] Product context: ${productContext === 'No product profile available.' ? 'EMPTY (no profile)' : `${productContext.split('\n').length} fields loaded`}`);
 
+    // Auto-detect avatar + angle from the transcript. Only fills in what the
+    // caller hasn't already specified: an explicit `angle` param from the
+    // League Import modal always wins, and if the product has no
+    // avatars/angles catalog we simply keep 'NA'. Runs on Haiku (~1s) so
+    // the extra latency is invisible next to the ~30s clone generation.
+    let detectedAvatar = null;
+    let effectiveAngle = angle && String(angle).trim() && String(angle).trim().toUpperCase() !== 'NA' ? angle : null;
+    if (isCloneMode && productProfile) {
+      const needAvatar = true; // we NEVER receive avatar today; always try
+      const needAngle  = !effectiveAngle;
+      if (needAvatar || needAngle) {
+        const detection = await detectAvatarAndAngle({
+          transcript: rawScript,
+          headline:   winner?.ad_name || null,
+          productProfile,
+        });
+        if (needAvatar) detectedAvatar = detection.avatar;
+        if (needAngle && detection.angle) effectiveAngle = detection.angle;
+        if (detectedAvatar || (needAngle && effectiveAngle)) {
+          console.log(`[BriefPipeline] auto-detected avatar=${detectedAvatar || 'null'} angle=${effectiveAngle || 'null'}`);
+        }
+      }
+    }
+
     // Floor for atomic allocation: getNextBriefNumber() scans ClickUp + DB.
     // The actual per-brief number is minted race-free at INSERT time by
     // allocateBriefNumber() — two concurrent queue jobs can never collide.
@@ -3776,9 +3848,11 @@ async function executeGenerationJob({
       // is set from the request body (clone | iterate) so this stays in
       // sync without re-querying the reference row.
       const briefType = isCloneMode ? 'NN' : 'IT';
+      const nameAvatar = detectedAvatar || 'NA';
+      const nameAngle  = effectiveAngle  || 'NA';
       const namingConvention = buildNamingConvention({
         product_code: productCode || 'MR', brief_number: briefNumber,
-        parent_creative_id: creativeId, avatar: 'NA', angle: angle || 'NA',
+        parent_creative_id: creativeId, avatar: nameAvatar, angle: nameAngle,
         // Editor is deliberately omitted — buildNamingConvention filters null
         // slots, and the editor is assigned inside ClickUp after the brief is
         // pushed. Baking a name in here forces admins to rename in ClickUp.
@@ -3821,11 +3895,13 @@ async function executeGenerationJob({
           briefNumber, productCode || 'MR',
           // For iterate mode, the angle column carries the iteration_label
           // so the column-card pill is meaningful (e.g. "Iteration 1 — pain-pivot").
-          isIterateMode ? (direction.name || 'Iteration') : (angle || 'NA'),
+          // For clone mode we persist the auto-detected angle (falls back to
+          // 'NA' when detection had nothing to work with).
+          isIterateMode ? (direction.name || 'Iteration') : nameAngle,
           isIterateMode ? 'Iteration' : 'Mashup',
           // avatar, editor, strategist, creator — editor stays NULL here
           // (assigned in ClickUp), same reason as the naming-convention slot.
-          'NA', null, 'Ludovico', 'NA', namingConvention,
+          nameAvatar, null, 'Ludovico', 'NA', namingConvention,
           // On-screen labels — empty array when source has no overlays. We
           // never invent overlays (see clone rule §7 / iteration rule §9).
           JSON.stringify(Array.isArray(generated.highlighted_text) ? generated.highlighted_text : []),
