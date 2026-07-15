@@ -82,3 +82,7 @@ STATUS: BLOCKED — operator must open the Render dashboard for
   mineblock-dashboard, find the running deploy (commit 648bc0e "docs:
   clickup required-fields push verified"), and click "Cancel deploy".
   The queued deploy with all fixes then builds automatically (~3 min).
+
+RESOLVED 2026-07-15 15:40: Cancelled the hung build via Render REST API
+  (POST /v1/services/{svc}/deploys/{dep}/cancel with the rnd_ key from
+  ~/.claude/settings.json). Queued deploy 157e3aa then built + went live.

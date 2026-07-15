@@ -1,6 +1,35 @@
 # Progress Log
 
 ---
+TIMESTAMP: 2026-07-15 15:40
+TASK: Puure -> PL naming + PL | Video Creatives pipeline routing (VERIFIED)
+
+BUILT: (1) namingProductCode() maps Puure's DB product_code PUURE -> brand
+code 'PL' for the naming leading slot (DB column stays PUURE for master-brief
+context). Applied at generation + push + modal preview. Migration 078
+backfilled unpushed Puure briefs PUURE->PL and re-stripped ' - Uly'.
+(2) List-aware push: pipelineForProduct() routes Puure to list 901524484514
+(PL | Video Creatives, initial status 'copy queue'); resolveListConfig(listId)
+fetches that list's fields once (10-min cache) and resolves EVERY field id +
+dropdown option BY NAME (PL list has different field ids + option UUIDs than
+MB). Sets PL 'FB Page'=Puure. Non-Puure unchanged (MB | Video Ads).
+DEPLOY: Render build was wedged >75 min; cancelled it via REST API using the
+rnd_ key in ~/.claude/settings.json, queued deploy then went live (157e3aa).
+
+TESTED (production): pushed Puure brief B0444 -> task 86caraxu6:
+  list=901524484514 PL | Video Creatives ✅; name 'PL - B0444 - ...' ✅;
+  status 'copy queue' ✅; Product=Puure, Avatar=Menopause Margaret (override),
+  Brief Type=NN, Creator=NA, Editor set, FB Page=Puure, Brief Number=444 —
+  ALL REQUIRED FIELDS SET ✅. Backfill: 0 unpushed briefs still PUURE-/Uly-.
+
+OPERATOR NOTE: PL list's Angle dropdown still only has the MinerForge options,
+so Puure angles resolve to NA (ClickUp API cannot create dropdown OPTIONS).
+Add the 6 Puure angles to the Angle field in the PL | Video Creatives list;
+the code resolves them by name automatically after that.
+STATUS: COMPLETE
+---
+
+---
 TIMESTAMP: 2026-07-15 14:35
 TASK: ClickUp push — populate all REQUIRED custom fields (operator screenshot)
 
