@@ -55,10 +55,16 @@ export default function QueueStrip({ refreshKey = 0, onJobComplete }) {
       const { data } = await api.get('/brief-pipeline/queue');
       const nextJobs = Array.isArray(data?.jobs) ? data.jobs : [];
 
-      // Detect jobs that flipped to complete since the last poll.
+      // Detect jobs that flipped to complete since the last poll. The FIRST
+      // fetch also counts completed jobs as "new": if the page was opened
+      // after the queue finished (or the board's own fetch failed during a
+      // deploy restart), this nudges the parent to refetch the briefs list
+      // so completed work is never invisible. fetchGenerated is idempotent —
+      // one extra GET on mount is the whole cost.
       const prev = prevStatusesRef.current;
+      const isFirstFetch = Object.keys(prev).length === 0;
       const anyCompleted = nextJobs.some(
-        (j) => j.status === 'complete' && prev[j.id] !== undefined && prev[j.id] !== 'complete'
+        (j) => j.status === 'complete' && (isFirstFetch || (prev[j.id] !== undefined && prev[j.id] !== 'complete'))
       );
       const nextMap = {};
       for (const j of nextJobs) nextMap[j.id] = j.status;

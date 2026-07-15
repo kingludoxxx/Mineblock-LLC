@@ -187,7 +187,7 @@ export default function BriefPipeline() {
   // Data fetching
   // ---------------------------------------------------------------------------
 
-  const fetchGenerated = useCallback(async () => {
+  const fetchGenerated = useCallback(async (attempt = 0) => {
     setLoadingGenerated(true);
     try {
       const { data } = await api.get('/brief-pipeline/generated');
@@ -201,6 +201,12 @@ export default function BriefPipeline() {
       setPendingGenerations((prev) => prev.filter((p) => !landed.has(p.winner_id)));
     } catch (err) {
       console.error('Failed to fetch generated briefs:', err);
+      // A transient failure on mount (page opened during a deploy restart)
+      // used to strand the board on "No items" until a manual reload —
+      // retry with backoff instead of giving up.
+      if (attempt < 3) {
+        setTimeout(() => { fetchGenerated(attempt + 1); }, (attempt + 1) * 4000);
+      }
     } finally {
       setLoadingGenerated(false);
     }
