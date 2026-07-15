@@ -744,15 +744,31 @@ async function getNextPlBriefNumber() {
   return maxBrief + 1;
 }
 
-function generatePlNamingConvention(task, briefNumber, weekLabel) {
+function generatePlNamingConvention(task, briefNumber, weekLabel, existingName) {
   const briefId = `B${String(briefNumber).padStart(4, '0')}`;
-  const briefType = getFieldValue(task, FIELD_IDS.briefType) || 'NA';
-  const avatar = getFieldValue(task, FIELD_IDS.avatarVideo) || 'NA';
-  const angle = getFieldValue(task, FIELD_IDS.angle) || 'NA';
-  const creativeType = getFieldValue(task, FIELD_IDS.creativeType) || 'NA';
-  const strategist = firstNameOf(getFieldValue(task, FIELD_IDS.creativeStrategist)) || 'Ludovico';
-  const editor = firstNameOf(getFieldValue(task, PL_EDITOR_FIELD)) || 'NA';
+
+  // If the current name already conforms, keep its segments as fallbacks —
+  // some cards intentionally carry richer values in the name than in the
+  // fields (e.g. angle "Promo"/"TCS" where the dropdown has no such option).
+  // A field only overrides a name segment when it resolves to a real value.
+  const oldSegs = (existingName || '').split(' - ');
+  const conforms = oldSegs.length >= 9 && /^WK\d+_\d{4}$/i.test(oldSegs[oldSegs.length - 1]);
+  const oldAt = (idxFromEnd) => (conforms ? oldSegs[oldSegs.length - idxFromEnd] : null);
+
+  const pick = (fieldVal, oldSeg, fallback) => {
+    if (fieldVal && fieldVal !== 'NA') return fieldVal;
+    if (oldSeg && oldSeg !== 'NA') return oldSeg;
+    return fieldVal || fallback;
+  };
+
+  const briefType    = pick(getFieldValue(task, FIELD_IDS.briefType), oldAt(7), 'NA');
+  const avatar       = pick(getFieldValue(task, FIELD_IDS.avatarVideo), oldAt(6), 'NA');
+  const angle        = pick(getFieldValue(task, FIELD_IDS.angle), oldAt(5), 'NA');
+  const creativeType = pick(getFieldValue(task, FIELD_IDS.creativeType), oldAt(4), 'NA');
+  const strategist   = pick(firstNameOf(getFieldValue(task, FIELD_IDS.creativeStrategist)), oldAt(3), 'Ludovico');
+  const editor       = pick(firstNameOf(getFieldValue(task, PL_EDITOR_FIELD)), oldAt(2), 'NA');
   const week = weekLabel || getWeekLabel();
+
   return ['PL', briefId, briefType, avatar, angle, creativeType, strategist, editor, week]
     .map((p) => String(p).trim() || 'NA')
     .join(' - ');
@@ -783,7 +799,7 @@ async function reconcilePlName(task, { assignNumberIfMissing = false } = {}) {
     // Week: keep whatever the name already carries; only new names get the current week
     const weekInName = name.match(/WK\d+_\d{4}/i)?.[0] || null;
 
-    const newName = generatePlNamingConvention(task, briefNumber, weekInName);
+    const newName = generatePlNamingConvention(task, briefNumber, weekInName, name);
     if (newName === name) return;
 
     await clickupFetch(`/task/${task.id}`, {
