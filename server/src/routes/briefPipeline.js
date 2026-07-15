@@ -3348,10 +3348,6 @@ async function pushBriefToClickUp(generatedBrief, parentClickupTaskId, overrides
     || (generatedBrief.iteration_mode === 'clone' ? 'NN' : 'IT');
   const hooks            = overrides.hooks            ?? generatedBrief.hooks;
   const body             = overrides.body             ?? generatedBrief.body;
-  // highlighted_text = on-screen overlay labels. Reference-driven only —
-  // empty array when source had no overlays. We never fabricate. The
-  // operator can override from the modal once that section ships.
-  const highlightedTextRaw = overrides.highlighted_text ?? generatedBrief.highlighted_text;
   const iteration_direction = overrides.idea ?? generatedBrief.iteration_direction;
   // Naming convention: prefer operator-provided override (live-preview from
   // modal). Else use stored naming_convention. Else build fresh from parts.
@@ -3422,11 +3418,6 @@ async function pushBriefToClickUp(generatedBrief, parentClickupTaskId, overrides
   //
   //   Reference: <competitor video / ad link>
   //
-  //   Highlighted text:
-  //
-  //   LABEL 1 emoji
-  //   LABEL 2 emoji
-  //
   //   HOOKS:
   //
   //   hook 1
@@ -3437,9 +3428,8 @@ async function pushBriefToClickUp(generatedBrief, parentClickupTaskId, overrides
   //
   //   body text
   //
-  // The "Highlighted text:" section is skipped entirely when the brief has
-  // no on-screen overlays — we never emit an empty header (see operator
-  // requirement: overlays are reference-driven, not fabricated).
+  // (The old "Highlighted text:" on-screen-overlay section was removed per
+  // operator request — briefs no longer carry auto-extracted overlay labels.)
   const parsedHooks = (() => {
     if (Array.isArray(hooks)) return hooks;
     if (typeof hooks === 'string') { try { return JSON.parse(hooks); } catch { return []; } }
@@ -3450,15 +3440,6 @@ async function pushBriefToClickUp(generatedBrief, parentClickupTaskId, overrides
     .filter(Boolean)
     .join('\n\n');
 
-  const parsedHighlights = (() => {
-    if (Array.isArray(highlightedTextRaw)) return highlightedTextRaw;
-    if (typeof highlightedTextRaw === 'string') {
-      try { const arr = JSON.parse(highlightedTextRaw); return Array.isArray(arr) ? arr : []; }
-      catch { return []; }
-    }
-    return [];
-  })().map((s) => String(s || '').trim()).filter(Boolean);
-
   const sections = [];
   // Reference link ALWAYS leads the description. Operator rule: the competitor
   // link slot must be visible on every card — even for manual / pasted-script
@@ -3467,9 +3448,6 @@ async function pushBriefToClickUp(generatedBrief, parentClickupTaskId, overrides
   sections.push(referenceLink
     ? `Reference: ${referenceLink}`
     : 'Reference: (paste competitor video link here)');
-  if (parsedHighlights.length) {
-    sections.push(`Highlighted text:\n\n${parsedHighlights.join('\n')}`);
-  }
   sections.push(`HOOKS:\n\n${hooksFormatted || '(no hooks)'}`);
   sections.push(`BODY:\n\n${body || ''}`);
   sections.push('[brief-pipeline]');
