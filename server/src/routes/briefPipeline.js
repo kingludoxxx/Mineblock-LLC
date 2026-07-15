@@ -3386,7 +3386,13 @@ async function pushBriefToClickUp(generatedBrief, parentClickupTaskId, overrides
   })().map((s) => String(s || '').trim()).filter(Boolean);
 
   const sections = [];
-  if (referenceLink) sections.push(`Reference: ${referenceLink}`);
+  // Reference link ALWAYS leads the description. Operator rule: the competitor
+  // link slot must be visible on every card — even for manual / pasted-script
+  // briefs that carry no source URL — so the editor immediately sees where the
+  // competitor video link belongs and can paste it in if the resolver had none.
+  sections.push(referenceLink
+    ? `Reference: ${referenceLink}`
+    : 'Reference: (paste competitor video link here)');
   if (parsedHighlights.length) {
     sections.push(`Highlighted text:\n\n${parsedHighlights.join('\n')}`);
   }

@@ -1410,3 +1410,13 @@ STATUS: COMPLETE
 ---
 
 
+
+---
+TIMESTAMP: 2026-07-15 18:45
+TASK: Puure — rename Menopause avatar + bottom-of-funnel "Product Aware"/"Promo" rule; verify by pushing an offer-ad brief to ClickUp
+BUILT: (1) detectAvatarAndAngle now first classifies FUNNEL STAGE; any bottom-of-funnel offer/discount ad forces avatar="Product Aware" + angle="Promo". (2) AVATAR_TASK_IDS: renamed Menopause Margaret->Menopause (kept legacy alias), added Product Aware (86carcn0z). (3) ANGLE_ABBREV + ANGLE_ALIAS_MAP: Promo. (4) migration 079 rewrites Puure avatars (rename + Product Aware) and appends the Promo angle. Commit 3b2596a.
+TESTED: Deployed to prod (dep-d9bt6mpoagis73flmtp0 LIVE 18:39). Boot logs show "Running migration: 079_puure_avatar_promo.sql" -> "Migration complete". Logged into live API, generated a real Puure offer ad (clone mode, 50%-off 48h sale script), polled to completion, approved, and pushed to ClickUp.
+OUTPUT: Brief B0455 -> naming "PL - B0455 - NN - Product Aware - Promo - Mashup - Ludovico - NA - WK29_2026". ClickUp task 86carcz6k in "PL | Video Creatives", status "copy queue". Fields verified populated: Product=Puure, Avatar=Product Aware, Brief Number=455, Brief Type=NN, Creative Type=Mashup, Creation Week=WK29_2026, Copywriter/Strategist/Editor=Ludovico, Naming Convention correct. Body copy contained NO dashes. Bottom-funnel classifier correctly returned Product Aware + Promo.
+DECISIONS: DECISION MADE — left the ClickUp "Angle" custom dropdown as NA on the task. The PL list's Angle dropdown has no "Promo" option and the ClickUp public API cannot create dropdown options; the naming string still reads "Promo" correctly. Operator must add "Promo" to the Angle dropdown of list 901524484514 (field b84a8f84-fb68-40e8-9dcc-9fc434c55239) for the dropdown to populate on future pushes.
+STATUS: COMPLETE
+---
