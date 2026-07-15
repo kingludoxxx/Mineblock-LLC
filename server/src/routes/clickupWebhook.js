@@ -497,6 +497,15 @@ async function handleTaskCreated(taskId) {
   const task = await getTask(taskId);
   const listId = task.list?.id;
 
+  if (listId === PL_VIDEO_LIST) {
+    // Manual PL card via the ClickUp form — build the full naming convention.
+    // Brief-pipeline cards arrive already named.
+    if (!task.description?.includes('[brief-pipeline]')) {
+      await reconcilePlName(task, { assignNumberIfMissing: true });
+    }
+    return;
+  }
+
   if (!NAMING_LISTS.includes(listId)) return;
 
   const isBriefPipeline = task.description?.includes('[brief-pipeline]');
@@ -694,47 +703,98 @@ async function ensureMediaBuyingTask(task, taskListId) {
   }
 }
 
-// ── PL | Video Creatives: keep the assigned editor's name in the card name ─
-// Card names follow: "PL - B0455 - NN - Product Aware - Promo - Mashup -
-// Ludovico - {EDITOR} - WK29_2026" — the editor slot is the second-to-last
-// segment ("NA" until someone is assigned). Whenever the Editor custom field
-// changes (usually while the card sits in Edit Queue), rewrite that slot with
-// the editor's first name. Idempotent; renames never re-trigger processing
-// (a name change carries no custom_field history item).
+// ── PL | Video Creatives: naming convention engine ─────────────────────────
+// Canonical name:
+//   PL - B0455 - NN - Menopause - mechanism - VSL - Ludovico - Uly - WK29_2026
+//   [product, briefId, briefType, avatar, angle, creativeType, strategist, editor, week]
+// reconcilePlName() rebuilds the name from the card's fields while PRESERVING
+// the brief number and week already in the name (so they never drift). It runs
+// on task creation, on every field change, and before Frame.io folder creation.
+// Idempotent — identical fields produce an identical name, so no update loop.
 const PL_EDITOR_FIELD = 'a9613cd9-715a-4a2a-bbbb-fbb7f664980a';
 
-async function syncPlEditorName(task) {
+function firstNameOf(usersFieldValue) {
+  return usersFieldValue ? String(usersFieldValue).split(',')[0].trim() : null;
+}
+
+async function getNextPlBriefNumber() {
+  let maxBrief = 0;
+  let page = 0;
+  let hasMore = true;
+  while (hasMore) {
+    const data = await clickupFetch(
+      `/list/${PL_VIDEO_LIST}/task?page=${page}&limit=100&include_closed=true&subtasks=true`,
+    );
+    const tasks = data.tasks || [];
+    for (const t of tasks) {
+      const briefField = t.custom_fields?.find((f) => f.id === FIELD_IDS.briefNumber);
+      if (briefField?.value != null) {
+        const num = parseInt(briefField.value, 10);
+        if (!isNaN(num) && num > maxBrief) maxBrief = num;
+      }
+      const match = t.name?.match(/B(\d{2,5})/);
+      if (match) {
+        const num = parseInt(match[1], 10);
+        if (!isNaN(num) && num > maxBrief) maxBrief = num;
+      }
+    }
+    hasMore = tasks.length === 100;
+    page += 1;
+  }
+  return maxBrief + 1;
+}
+
+function generatePlNamingConvention(task, briefNumber, weekLabel) {
+  const briefId = `B${String(briefNumber).padStart(4, '0')}`;
+  const briefType = getFieldValue(task, FIELD_IDS.briefType) || 'NA';
+  const avatar = getFieldValue(task, FIELD_IDS.avatarVideo) || 'NA';
+  const angle = getFieldValue(task, FIELD_IDS.angle) || 'NA';
+  const creativeType = getFieldValue(task, FIELD_IDS.creativeType) || 'NA';
+  const strategist = firstNameOf(getFieldValue(task, FIELD_IDS.creativeStrategist)) || 'Ludovico';
+  const editor = firstNameOf(getFieldValue(task, PL_EDITOR_FIELD)) || 'NA';
+  const week = weekLabel || getWeekLabel();
+  return ['PL', briefId, briefType, avatar, angle, creativeType, strategist, editor, week]
+    .map((p) => String(p).trim() || 'NA')
+    .join(' - ');
+}
+
+async function reconcilePlName(task, { assignNumberIfMissing = false } = {}) {
   try {
-    // getFieldValue returns users fields as a comma-joined string of first
-    // names (e.g. "Uly" or "Uly, Jesame") — take the first one.
-    const editorNames = getFieldValue(task, PL_EDITOR_FIELD);
-    const first = editorNames ? String(editorNames).split(',')[0].trim() : null;
-    if (!first) {
-      logger.info(`[syncPlEditorName] ${task.id} — no editor assigned, leaving name as-is`);
-      return;
-    }
-
     const name = task.name || '';
-    const segments = name.split(' - ');
-    // Only touch names that follow the convention (≥6 segments, ends with WK##_####)
-    if (segments.length < 6 || !/^WK\d+_\d{4}$/i.test(segments[segments.length - 1])) {
-      logger.info(`[syncPlEditorName] Skipping ${task.id} — name doesn't match convention ("${name}")`);
-      return;
+
+    // Brief number: field → parse from name → optionally allocate the next one
+    let briefNumber = getFieldValue(task, FIELD_IDS.briefNumber);
+    if (briefNumber != null) {
+      briefNumber = Math.round(briefNumber);
+    } else {
+      const m = name.match(/B(\d{2,5})/i);
+      if (m) {
+        briefNumber = parseInt(m[1], 10);
+      } else if (assignNumberIfMissing) {
+        briefNumber = await getNextPlBriefNumber();
+        logger.info(`[reconcilePlName] auto-assigned brief number B${String(briefNumber).padStart(4, '0')} to ${task.id}`);
+      } else {
+        logger.info(`[reconcilePlName] ${task.id} has no brief number yet — skipping ("${name}")`);
+        return;
+      }
+      await setCustomField(task.id, FIELD_IDS.briefNumber, briefNumber);
     }
 
-    const slot = segments.length - 2;
-    if (segments[slot] === first) return; // already correct
+    // Week: keep whatever the name already carries; only new names get the current week
+    const weekInName = name.match(/WK\d+_\d{4}/i)?.[0] || null;
 
-    segments[slot] = first;
-    const newName = segments.join(' - ');
+    const newName = generatePlNamingConvention(task, briefNumber, weekInName);
+    if (newName === name) return;
+
     await clickupFetch(`/task/${task.id}`, {
       method: 'PUT',
       body: JSON.stringify({ name: newName }),
     });
+    await setCustomField(task.id, FIELD_IDS.namingConvention, newName).catch(() => {});
     task.name = newName; // downstream consumers (Frame.io folder) use the fresh name
-    logger.info(`[syncPlEditorName] ✅ ${task.id} → "${newName}"`);
+    logger.info(`[reconcilePlName] ✅ ${task.id} "${name}" → "${newName}"`);
   } catch (err) {
-    logger.error(`[syncPlEditorName] FAILED for ${task.id}: ${err.message}`);
+    logger.error(`[reconcilePlName] FAILED for ${task.id}: ${err.message}`);
   }
 }
 
@@ -817,10 +877,10 @@ async function handleStatusSync(taskId, historyItems) {
 
   if (!SYNC_LISTS.includes(taskListId) && taskListId !== PL_VIDEO_LIST) return;
 
-  // PL: make sure the card name carries the assigned editor before anything
-  // else runs — the Frame.io folder inherits the card name.
+  // PL: reconcile the card name from its fields before anything else runs —
+  // the Frame.io folder inherits the card name.
   if (taskListId === PL_VIDEO_LIST) {
-    await syncPlEditorName(task);
+    await reconcilePlName(task);
   }
 
   // When a VA task hits "editing", auto-create a Frame.io folder and
@@ -915,7 +975,7 @@ router.post('/', async (req, res) => {
       logger.info(`[ClickUp Webhook] taskUpdated ${task_id} history fields: ${historyFields}`);
       const changedTask = await getTask(task_id);
       if (changedTask?.list?.id === PL_VIDEO_LIST) {
-        await syncPlEditorName(changedTask);
+        await reconcilePlName(changedTask);
       } else {
         // Check if a custom field relevant to naming was changed
         const fieldChange = history_items?.find((h) => h.field === 'custom_field');
