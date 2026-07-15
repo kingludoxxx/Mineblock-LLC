@@ -801,6 +801,35 @@ async function resolveRelationshipTask(kind, name, { createIfMissing = false } =
   return null;
 }
 
+// Angle dropdown resolution: static map first (MinerForge-era options), then
+// the LIVE dropdown options from ClickUp by normalized name — so when the
+// operator adds product-specific angle options (e.g. Puure's "The Surgeon's
+// Secret") in the ClickUp UI they resolve automatically. The ClickUp API
+// cannot create dropdown options, so an unmatched angle falls back to NA.
+const angleOptionsCache = { map: null, ts: 0 };
+async function resolveAngleOptionId(angle) {
+  const key = normalizeAngleKey(angle);
+  if (key !== 'NA' && ANGLE_OPTIONS[key]) return ANGLE_OPTIONS[key];
+  if (angle && relSlug(angle) && relSlug(angle) !== 'na') {
+    try {
+      const now = Date.now();
+      if (!angleOptionsCache.map || now - angleOptionsCache.ts > 10 * 60 * 1000) {
+        const resp = await clickupFetch(`/list/${VIDEO_ADS_LIST}/field`);
+        const f = (resp.fields || []).find(x => x.id === FIELD_IDS.angle);
+        angleOptionsCache.map = {};
+        for (const o of (f?.type_config?.options || [])) angleOptionsCache.map[relSlug(o.name)] = o.id;
+        angleOptionsCache.ts = now;
+      }
+      const hit = angleOptionsCache.map[relSlug(angle)];
+      if (hit) return hit;
+      console.warn(`[BriefPipeline] angle "${angle}" has no ClickUp dropdown option — falling back to NA. Add the option in ClickUp to have it picked up automatically.`);
+    } catch (e) {
+      console.warn('[BriefPipeline] dynamic angle option lookup failed:', e.message);
+    }
+  }
+  return ANGLE_OPTIONS.NA;
+}
+
 // Editors are now fetched dynamically from ClickUp list members (see utils/clickupEditors.js).
 
 // ── Table Initialization ──────────────────────────────────────────────
@@ -3102,8 +3131,7 @@ async function pushBriefToClickUp(generatedBrief, parentClickupTaskId, overrides
   // Resolve dropdown option IDs. Angle is normalized through the alias map so
   // analyzer-emitted display strings (e.g. "Anti-Fake / Competitor Callout")
   // resolve to the canonical key ("Againstcompetition") and then to the UUID.
-  const angleKey = normalizeAngleKey(angle);
-  const angleUuid = ANGLE_OPTIONS[angleKey] || ANGLE_OPTIONS.NA;
+  const angleUuid = await resolveAngleOptionId(angle);
   // ClickUp dropdown UUID for brief type. Derives from the resolved
   // brief_type above (NN for clones, IT for iterations).
   const briefTypeUuid = BRIEF_TYPE_OPTIONS[brief_type] || BRIEF_TYPE_OPTIONS.IT;
@@ -3160,10 +3188,18 @@ async function pushBriefToClickUp(generatedBrief, parentClickupTaskId, overrides
 
   const taskId = createdTask.id;
 
-  // Set relationship fields (Product, Avatar, Creator)
+  // Set relationship fields (Product, Avatar, Creator). Static maps are the
+  // fast path; unknown names resolve dynamically against the relationship
+  // lists (and products/avatars are created there when genuinely new), so a
+  // new product never again silently defaults to MR.
   const relationshipPromises = [];
 
-  const productTaskId = PRODUCT_TASK_IDS[product_code] || PRODUCT_TASK_IDS.MR;
+  let productTaskId = PRODUCT_TASK_IDS[product_code];
+  if (!productTaskId) {
+    productTaskId = await resolveRelationshipTask('product', product_code, { createIfMissing: true })
+      .catch(err => { console.error('[BriefPipeline] Product resolve error:', err.message); return null; });
+  }
+  if (!productTaskId) productTaskId = PRODUCT_TASK_IDS.MR;
   if (productTaskId) {
     relationshipPromises.push(
       clickupFetch(`/task/${taskId}/field/${FIELD_IDS.product}`, {
@@ -3173,7 +3209,11 @@ async function pushBriefToClickUp(generatedBrief, parentClickupTaskId, overrides
     );
   }
 
-  const avatarTaskId = AVATAR_TASK_IDS[avatar];
+  let avatarTaskId = AVATAR_TASK_IDS[avatar];
+  if (avatarTaskId === undefined && avatar && avatar !== 'NA') {
+    avatarTaskId = await resolveRelationshipTask('avatar', avatar, { createIfMissing: true })
+      .catch(err => { console.error('[BriefPipeline] Avatar resolve error:', err.message); return null; });
+  }
   if (avatarTaskId) {
     relationshipPromises.push(
       clickupFetch(`/task/${taskId}/field/${FIELD_IDS.avatar}`, {
@@ -3183,10 +3223,18 @@ async function pushBriefToClickUp(generatedBrief, parentClickupTaskId, overrides
     );
   }
 
+  // Creator: resolve real creators by name from the Creators Database; 'NA'
+  // (or no match) falls back to the standing NA task so the required field
+  // is never left empty.
+  let creatorTaskId = null;
+  if (creator && creator !== 'NA') {
+    creatorTaskId = await resolveRelationshipTask('creator', creator, { createIfMissing: false })
+      .catch(err => { console.error('[BriefPipeline] Creator resolve error:', err.message); return null; });
+  }
   relationshipPromises.push(
     clickupFetch(`/task/${taskId}/field/${FIELD_IDS.creator}`, {
       method: 'POST',
-      body: JSON.stringify({ value: { add: [{ id: CREATOR_NA_TASK_ID }], rem: [] } }),
+      body: JSON.stringify({ value: { add: [{ id: creatorTaskId || CREATOR_NA_TASK_ID }], rem: [] } }),
     }).catch(err => console.error('[BriefPipeline] Creator relationship error:', err.message))
   );
 
