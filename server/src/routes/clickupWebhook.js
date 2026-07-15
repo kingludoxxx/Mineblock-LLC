@@ -705,11 +705,14 @@ const PL_EDITOR_FIELD = 'a9613cd9-715a-4a2a-bbbb-fbb7f664980a';
 
 async function syncPlEditorName(task) {
   try {
-    const editors = getFieldValue(task, PL_EDITOR_FIELD);
-    const first = Array.isArray(editors) && editors[0]?.username
-      ? String(editors[0].username).trim().split(/\s+/)[0]
-      : null;
-    if (!first) return; // no editor assigned — leave the name alone
+    // getFieldValue returns users fields as a comma-joined string of first
+    // names (e.g. "Uly" or "Uly, Jesame") — take the first one.
+    const editorNames = getFieldValue(task, PL_EDITOR_FIELD);
+    const first = editorNames ? String(editorNames).split(',')[0].trim() : null;
+    if (!first) {
+      logger.info(`[syncPlEditorName] ${task.id} — no editor assigned, leaving name as-is`);
+      return;
+    }
 
     const name = task.name || '';
     const segments = name.split(' - ');
