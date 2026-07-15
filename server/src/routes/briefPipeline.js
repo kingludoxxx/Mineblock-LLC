@@ -813,6 +813,7 @@ const ANGLE_OPTIONS = {
 // case-insensitive and ignores non-alphanumerics so minor punctuation drift
 // doesn't break the match.
 const ANGLE_ALIAS_MAP = {
+  'promo': 'Promo',
   'antifakecompetitorcallout': 'Againstcompetition',
   'antifake': 'Againstcompetition',
   'competitorcallout': 'Againstcompetition',
@@ -892,9 +893,11 @@ const AVATAR_TASK_IDS = {
   MoneySeeker: '86c7m5417',
   'Test Avatar': '86c75fyjh',
   Aware: '86c8jhvfk',
-  'Menopause Margaret': '86car9c0r',
+  Menopause: '86car9c0r',
+  'Menopause Margaret': '86car9c0r',   // legacy alias — old briefs still resolve to the renamed task
   'Post-Baby Paige': '86car9c1f',
   'Pre-Op Interceptor': '86car9c1x',
+  'Product Aware': '86carcn0z',        // bottom-of-funnel offer/promo ads
   NA: null,
 };
 
@@ -1708,6 +1711,7 @@ async function allocateBriefNumber(floor = 0) {
 const ANGLE_ABBREV = {
   'pain point': 'PP', 'social proof': 'SP', 'before/after': 'BA',
   'curiosity hook': 'CH', 'direct offer': 'DO', 'authority': 'AU',
+  'promo': 'Promo',
 };
 function abbreviateAngle(angle) {
   if (!angle || angle === 'NA') return 'NA';
@@ -2738,7 +2742,7 @@ async function detectAvatarAndAngle({ transcript, headline, productProfile }) {
   const clean = String(transcript || '').slice(0, 4000);
   if (!clean.trim()) return { avatar: null, angle: null };
 
-  const sys = 'You classify a video-ad transcript into the single best-matching avatar (persona/voice) and angle (positioning) from the provided catalogs. Names in your reply MUST match a catalog entry exactly, character-for-character. Respond with strict JSON only: {"avatar":"<name>","angle":"<name>"}. If nothing fits, use null for that field.';
+  const sys = 'You classify a video-ad transcript. First decide the FUNNEL STAGE: is the ad primarily a BOTTOM-of-funnel OFFER ad — its main job is selling a discount, sale, limited-time deal, price drop, coupon, or scarcity to someone who already knows the product (little or no problem-education / mechanism / story) — or is it TOP/MIDDLE (educates on the problem, explains the mechanism, tells a founder/customer story, builds authority)? Then pick the single best-matching avatar and angle from the catalogs. Names MUST match a catalog entry exactly, character-for-character. Respond with strict JSON only: {"funnel":"bottom"|"top_or_middle","avatar":"<name>","angle":"<name>"}. Use null for avatar/angle if nothing fits.';
 
   const avatarsBlock = avatars.map(a => `- ${a.name}${a.description ? `: ${a.description}` : ''}`).join('\n');
   const anglesBlock  = angles.length
@@ -2753,6 +2757,18 @@ async function detectAvatarAndAngle({ transcript, headline, productProfile }) {
   } catch (err) {
     console.warn('[BriefPipeline] avatar/angle detection failed:', err.message);
     return { avatar: null, angle: null };
+  }
+
+  // Bottom-of-funnel offer/promo ads get a fixed pairing per operator rule:
+  // avatar "Product Aware", angle "Promo" (when those exist in the catalog).
+  // This overrides the best-match so discount-led ads are always tagged
+  // consistently instead of mis-detecting as a price/problem angle.
+  if (String(result?.funnel || '').toLowerCase() === 'bottom') {
+    const promoAvatar = avatars.find(a => a.name === 'Product Aware')?.name || null;
+    const promoAngle  = angles.find(a  => a.name === 'Promo')?.name || null;
+    if (promoAvatar || promoAngle) {
+      return { avatar: promoAvatar, angle: promoAngle };
+    }
   }
 
   // Model may return { avatar: 'name' } or wrap it in another object. Be
