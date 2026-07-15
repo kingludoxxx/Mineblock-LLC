@@ -1440,3 +1440,12 @@ OUTPUT: B0458 card has the actual competitor video attached + provenance link + 
 DECISIONS: DECISION MADE — attach at push time (single streamed file, user-triggered) rather than re-enabling the always-on R2 mirror worker (which caused the #1727 OOM). Keep the link as provenance even when the video attaches.
 DISCOVERY (editor-in-naming, prior request): The webhook already has reconcilePlName() which, on any PL taskUpdated, rebuilds the name as [PL, briefId, briefType, avatar, angle, creativeType, strategist, EDITOR, week] with editor = first name from the Editor custom field (default NA). This is why B0457/B0458 names now show the editor slot filled ("Ludovico") while B0455/B0456 (whose reconcile webhook never fired) still show NA. So "editor name in the naming when assigned" is already implemented — when a human assigns a real editor, the name auto-updates to e.g. "... - Ludovico - Uly - WK29_2026". Two wrinkles to confirm with operator: (a) push pre-assigns editor=owner so it defaults to "Ludovico" not "NA"; (b) webhook delivery timing made it inconsistent across the rapid test pushes.
 STATUS: COMPLETE
+
+---
+TIMESTAMP: 2026-07-15 19:55
+TASK: brief-pipeline — remove auto "Highlighted text" on-screen-overlay section from card descriptions
+BUILT: Operator no longer wants auto-extracted on-screen overlay labels on briefs. Removed the "Highlighted text:" section from the push description builder plus the now-unused highlightedTextRaw/parsedHighlights inputs. Descriptions are now Reference -> HOOKS -> BODY only. Commit c185383.
+TESTED: Deployed (dep-d9c07fq8qa3s73d1urog LIVE). Pushed a fresh clone to ClickUp task 86carfdry; verified description contains NO "Highlighted text" section (regex check = NO). Structure confirmed: Reference line, HOOKS, BODY, [brief-pipeline] marker.
+OUTPUT: Card 86carfdry description = Reference -> HOOKS -> BODY, no overlay block.
+DECISIONS: Left the clone-prompt highlighted_text generation intact (harmless, unused now) to avoid destabilizing the seeded clone prompt; only the description-time rendering was removed.
+STATUS: COMPLETE

@@ -2990,6 +2990,7 @@ A hook is the first line of the finished video, spoken by the SAME narrator as t
 - ALL FIVE must be speakable by the body's narrator. Third-person founder story → every hook is third-person founder framing. First-person testimonial → every hook is that person speaking. NEVER mix POVs across hooks or between hooks and body.
 - Vary hooks by ENTRY POINT, not by voice: the pivot moment, the credibility stat, the outcome promise, the mechanism, the short punch — all in the body's voice.
 - Do not pre-spend the body's reveal, and do not reuse body sentences verbatim.
+- NO HOOK MAY RESTATE THE BODY'S OPENING LINE. The hooks are 5 different DOORS into the body — never a copy of the door the body already uses. This overrides the keep-signature-device-verbatim rule for the HOOKS only: even when the body opens ON the signature device (e.g. body starts "We spent a year planning our Black Friday sale. Our intern launched it this morning by accident."), NONE of the 5 hooks may be that opening line reworded, re-punctuated, or sentence-joined. The BODY keeps the signature opening word-for-word; the HOOKS are 5 alternative ways IN that lead to it (the intern's panic, the deadline, the price reveal, a customer's reaction, a blunt one-liner) — so that hook-then-body reads as two consecutive lines, never the same line twice. If H1 is your body's first sentence with the period swapped for "and", you have failed this rule.
 
 # NON-NEGOTIABLE PRINCIPLES
 - POV coherence is absolute: hooks, body, CTA — one narrator, start to finish.
@@ -4386,9 +4387,29 @@ async function executeGenerationJob({
     }
 
     // Post-insert hook-body blend validation (clone mode) — off the critical
-    // path so the brief is visible immediately. If the hooks fail the blend
-    // check (POV mismatch vs the body), rewrite them once and patch the row.
+    // path so the brief is visible immediately. Two independent triggers rewrite
+    // the hooks once and patch the row:
+    //   (a) blend failure — hooks don't share the body's narrator/POV, or
+    //   (b) a hook RESTATES the body's opening line (the signature-device opener
+    //       shows up both as the body's first sentence and as H1). The hooks are
+    //       5 alternative doors into the body, never a copy of the door the body
+    //       already uses — see the clone prompt's no-restate rule.
     if (isCloneMode) {
+      // Deterministic near-duplicate check between a hook and the body's opening.
+      // Normalizes away punctuation and the "and" that joins two opener sentences
+      // into one hook, then flags containment or high token overlap.
+      const normDup = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\band\b/g, ' ').replace(/\s+/g, ' ').trim();
+      const hookDupesOpening = (hookText, body) => {
+        const h = normDup(hookText);
+        const b = normDup(String(body || '').split(/\n\n+/)[0]);
+        if (h.length < 8 || b.length < 8) return false;
+        if (b.includes(h) || h.includes(b)) return true;
+        const ht = new Set(h.split(' ').filter(w => w.length > 2));
+        const bt = new Set(b.split(' ').filter(w => w.length > 2));
+        if (!ht.size) return false;
+        let inter = 0; ht.forEach(w => { if (bt.has(w)) inter++; });
+        return inter / (ht.size + bt.size - inter) >= 0.8;
+      };
       for (const brief of generatedBriefs) {
         const gen = generationResults.find(r => r.success && r.generated)?.generated;
         if (!gen?.body || !Array.isArray(gen.hooks) || !gen.hooks.length) continue;
@@ -4397,24 +4418,32 @@ async function executeGenerationJob({
             const { system: bvSys, user: bvUser } = await buildBlendValidationPrompt(gen);
             const blend = await callClaude(bvSys, bvUser, 1500, { fast: true });
             const blendScore = typeof blend?.overall_blend === 'number' ? blend.overall_blend : null;
-            if (blendScore === null) return;
+            const dupIdx = gen.hooks
+              .map((h, i) => (hookDupesOpening(h.text || h, gen.body) ? i + 1 : null))
+              .filter(Boolean);
+            const blendFail = blendScore !== null && blendScore < 6.5;
+            if (blendScore === null && !dupIdx.length) return;
             let hooks = gen.hooks;
-            if (blendScore < 6.5) {
-              console.warn(`[BriefPipeline] brief ${brief.id}: hooks failed blend check (${blendScore}) — rewriting against the body`);
+            if (blendFail || dupIdx.length) {
+              const reasons = [];
+              if (blendFail) reasons.push(`blend check failed (${blendScore}) — likely a POV mismatch vs the body`);
+              if (dupIdx.length) reasons.push(`hook(s) ${dupIdx.map(i => 'H' + i).join(', ')} restate the body's opening line verbatim`);
+              console.warn(`[BriefPipeline] brief ${brief.id}: rewriting hooks — ${reasons.join('; ')}`);
               const rewriteSys = 'You are a direct response copywriter. You fix hooks so they blend seamlessly into an existing ad script body. You never change the body.';
-              const rewriteUser = `The 5 hooks below do not blend with the body — likely a POV mismatch (e.g. first-person hooks on a third-person story). Rewrite all 5 so each is speakable by the body's narrator, in the body's voice, and reads seamlessly into the body's first sentence. Keep them <= 20 words (H5 under 12), sentence case, no emoji. Vary them by entry point (pivot moment, credibility stat, promise, mechanism, short punch) — never by voice.\n\nBODY:\n${gen.body}\n\nCURRENT HOOKS:\n${gen.hooks.map(h => `${h.id}: ${h.text}`).join('\n')}\n\nBlend issues found:\n${JSON.stringify(blend?.hooks || [])}\n\nReturn ONLY valid JSON: { "hooks": [ { "id": "H1", "text": "..." }, ... 5 items ] }`;
+              const rewriteUser = `The 5 hooks below need fixing. Rewrite all 5 so each is speakable by the body's narrator, in the body's voice, and reads seamlessly into the body's first sentence. Keep them <= 20 words (H5 under 12), sentence case, no emoji, no dashes. Vary them by ENTRY POINT (pivot moment, credibility stat, promise, mechanism, short punch) — never by voice.\n\nCRITICAL: NONE of the 5 hooks may restate the body's OPENING LINE. The hooks are 5 different doors into the body, never a copy of the door the body already uses. Even if the body opens on a signature gimmick, the hooks are alternative ways IN that lead to it — never the same sentence reworded, re-punctuated, or joined with "and".\n\nBODY:\n${gen.body}\n\nCURRENT HOOKS:\n${gen.hooks.map(h => `${h.id}: ${h.text || h}`).join('\n')}\n\nIssues:\n${blendFail ? `Blend issues: ${JSON.stringify(blend?.hooks || [])}\n` : ''}${dupIdx.length ? `Duplicate-of-opening: ${dupIdx.map(i => 'H' + i).join(', ')}\n` : ''}\nReturn ONLY valid JSON: { "hooks": [ { "id": "H1", "text": "..." }, ... 5 items ] }`;
               const fixed = await callClaude(rewriteSys, rewriteUser, 2000, { fast: true });
               if (Array.isArray(fixed?.hooks) && fixed.hooks.length === 5 && fixed.hooks.every(h => h?.text)) {
-                hooks = gen.hooks.map((h, i) => ({ ...h, text: fixed.hooks[i].text }));
+                hooks = gen.hooks.map((h, i) => ({ ...h, text: removeDashes(fixed.hooks[i].text) }));
               }
             }
+            const recordScore = Math.round(blendScore !== null ? (blendFail ? 7 : blendScore) : 7);
             await pgQuery(
               `UPDATE brief_pipeline_generated
                   SET hooks = $1,
                       scores_json = jsonb_set(COALESCE(scores_json, '{}'::jsonb), '{hook_body_blend}',
                         jsonb_build_object('score', $2::int, 'rationale', 'Measured by blend validation agent post-insert'))
                 WHERE id = $3`,
-              [JSON.stringify(hooks), Math.round(blendScore < 6.5 ? 7 : blendScore), brief.id]
+              [JSON.stringify(hooks), recordScore, brief.id]
             );
           } catch (e) {
             console.warn(`[BriefPipeline] post-insert blend validation skipped for brief ${brief.id}: ${e.message}`);
@@ -7697,11 +7726,13 @@ async function seedDefaultLeaguePrompts() {
     // schema with per-beat word budgets, hooks emitted AFTER the body with a
     // blend test, testimonial-persona swap + proof-substitution rules.
     // Bumping the signature force-refreshes any pre-v5 snapshot once.
-    // v6.4 signature: 'SIGNATURE DEVICE' exists only in the revision that adds
-    // the anti-paraphrase mandate + signature-device preservation (Black Friday
-    // / the-intern gimmicks stay verbatim) on top of v6.3's no-dash rule.
+    // v6.5 signature: 'DOORS into the body' exists only in the revision that
+    // adds the no-hook-may-restate-the-body's-opening-line rule (the hooks are
+    // alternative doors, never a copy of the body's opening — fixes H1
+    // duplicating the signature-device opener). Sits on top of v6.4's
+    // anti-paraphrase + signature-device-verbatim rules and v6.3's no-dash rule.
     // One-shot snapshot refresh, then operator edits stick.
-    const CLONE_V2_SIGNATURE = 'SIGNATURE DEVICE';
+    const CLONE_V2_SIGNATURE = 'DOORS into the body';
     const currentClone = existing.scriptClone?.json || '';
     if (!currentClone.trim() || !currentClone.includes(CLONE_V2_SIGNATURE)) {
       existing.scriptClone = {
