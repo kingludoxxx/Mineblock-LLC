@@ -3779,7 +3779,10 @@ async function executeGenerationJob({
       const namingConvention = buildNamingConvention({
         product_code: productCode || 'MR', brief_number: briefNumber,
         parent_creative_id: creativeId, avatar: 'NA', angle: angle || 'NA',
-        format: 'Mashup', strategist: 'Ludovico', creator: 'NA', editor: 'Uly', week: weekLabel,
+        // Editor is deliberately omitted — buildNamingConvention filters null
+        // slots, and the editor is assigned inside ClickUp after the brief is
+        // pushed. Baking a name in here forces admins to rename in ClickUp.
+        format: 'Mashup', strategist: 'Ludovico', creator: 'NA', editor: null, week: weekLabel,
         brief_type: briefType,
       });
 
@@ -3820,7 +3823,9 @@ async function executeGenerationJob({
           // so the column-card pill is meaningful (e.g. "Iteration 1 — pain-pivot").
           isIterateMode ? (direction.name || 'Iteration') : (angle || 'NA'),
           isIterateMode ? 'Iteration' : 'Mashup',
-          'NA', 'Uly', 'Ludovico', 'NA', namingConvention,
+          // avatar, editor, strategist, creator — editor stays NULL here
+          // (assigned in ClickUp), same reason as the naming-convention slot.
+          'NA', null, 'Ludovico', 'NA', namingConvention,
           // On-screen labels — empty array when source has no overlays. We
           // never invent overlays (see clone rule §7 / iteration rule §9).
           JSON.stringify(Array.isArray(generated.highlighted_text) ? generated.highlighted_text : []),
