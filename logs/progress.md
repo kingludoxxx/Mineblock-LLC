@@ -1,6 +1,34 @@
 # Progress Log
 
 ---
+TIMESTAMP: 2026-07-15 14:35
+TASK: ClickUp push — populate all REQUIRED custom fields (operator screenshot)
+
+BUILT: (1) Created ClickUp tasks via API: Products/'Puure' 86car9c09; Avatars/
+'Menopause Margaret' 86car9c0r, 'Post-Baby Paige' 86car9c1f, 'Pre-Op
+Interceptor' 86car9c1x. (2) PRODUCT_TASK_IDS/AVATAR_TASK_IDS updated (+PL).
+(3) resolveRelationshipTask(): dynamic by-name lookup vs Products/Avatars/
+Creators lists (10-min cache), auto-creates products/avatars — new products
+need zero code changes. (4) resolveAngleOptionId(): live dropdown option
+lookup by name after the static map. (5) ROOT-CAUSE FIX: relationship field
+value shape was wrong since day one — add:[{id}] returns FIELD_211 (error
+swallowed by .catch), so every pushed task had Product/Avatar/Creator EMPTY;
+correct shape is add:[taskId] (verified live).
+
+TESTED: pushed brief B0439 through the deployed code with avatar override ->
+task 86car9pv2: Angle=NA(fallback), Avatar=Post-Baby Paige, Brief Type=NN,
+Creative Type=Mashup, Creator=NA, Editor=Uly Castres, Parent Brief ID set,
+Product=Puure — ALL REQUIRED FIELDS SET. Also completed 86car9j9p manually.
+
+OPERATOR ACTION: ClickUp API cannot create dropdown OPTIONS — add the 6 Puure
+angle options to the Angle dropdown in ClickUp UI (The Surgeon's Secret, The
+Collagen Scaffold Collapse, $2,417 Wasted on the Surface, $99 vs. $20,000,
+Get Your Closet Back, Triple Beats Dual); pushes then resolve them by name
+automatically. Until then Angle falls back to NA.
+STATUS: COMPLETE
+---
+
+---
 TIMESTAMP: 2026-07-15 01:40
 TASK: Adversarial bug hunt on Batch Queue — all features exercised
 
