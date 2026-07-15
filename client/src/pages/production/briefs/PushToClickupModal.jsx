@@ -26,6 +26,12 @@ function getCurrentWeekStr() {
   return `WK${String(week).padStart(2, '0')}_${now.getFullYear()}`;
 }
 
+// Brand short code used in the naming convention leading slot. The product
+// dropdown value (product_code) stays as-is for routing; only the DISPLAY
+// code changes. Puure is named 'PL' (its ClickUp pipeline is PL | Video
+// Creatives) while its product_code remains PUURE.
+const NAMING_CODE_BY_PRODUCT = { PUURE: 'PL' };
+
 const EMPTY_FORM = {
   product:        'MR',
   angle:          '',
@@ -88,6 +94,9 @@ export default function PushToClickupModal({ briefId, briefTitle, isOpen, onClos
   // - parent slot drops entirely for NN (clones — no meaningful parent)
   //   or when parentBriefId is a synthetic "MANUAL-XXXXXXXX" id
   // - real parent B-codes ("B0223") still surface for IT iterations
+  // - the leading slot uses the brand SHORT CODE (Puure -> 'PL'); the
+  //   product_code sent to the server stays as selected (PUURE) so routing
+  //   and the Product relationship resolve correctly.
   const taskPreview = useMemo(() => {
     const code = options.creativeTypeCodes?.[form.creativeType] || 'HX';
     const num = form.briefNumber ? `B${String(form.briefNumber).padStart(4, '0')}` : 'B????';
@@ -96,8 +105,9 @@ export default function PushToClickupModal({ briefId, briefTitle, isOpen, onClos
     const isSyntheticParent = !rawParent || /^MANUAL[-_]/i.test(String(rawParent));
     const dropParent = briefType === 'NN' || isSyntheticParent;
     const weekStr = getCurrentWeekStr();
+    const namingCode = NAMING_CODE_BY_PRODUCT[form.product] || form.product || 'MR';
     const slots = [
-      form.product || 'MR',
+      namingCode,
       num,
       code,
       briefType,
