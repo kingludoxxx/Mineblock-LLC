@@ -65,3 +65,20 @@ FIX TRIED:
 STATUS: BLOCKED (task description unclear — cannot identify the location of the stray comma after comprehensive search)
 ---
 
+
+---
+TIMESTAMP: 2026-07-15 15:22
+TASK: Deploy Puure PL-pipeline routing + naming
+ERROR: Render build dep-d9bpeqgrruvc73fcq3n0 (commit 648bc0e) stuck in
+  build_in_progress since 14:23 UTC (>70 min). All subsequent commits
+  (091d4b02 PL routing, 16d80a3 modal, migration 077/078) fold into one
+  queued deploy behind it and cannot start.
+ATTEMPTED: git push (x3), mcp trigger_deploy, mcp trigger_deploy clearCache.
+  All accepted but only re-queue behind the hung build; Render is not
+  auto-cancelling the wedged in-progress build.
+FIX TRIED: none possible via API — the Render MCP/API exposes no
+  build-cancel. Requires manual UI action.
+STATUS: BLOCKED — operator must open the Render dashboard for
+  mineblock-dashboard, find the running deploy (commit 648bc0e "docs:
+  clickup required-fields push verified"), and click "Cancel deploy".
+  The queued deploy with all fixes then builds automatically (~3 min).
