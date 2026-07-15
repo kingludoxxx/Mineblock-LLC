@@ -4398,7 +4398,25 @@ router.delete('/generated/:id', authenticate, async (req, res) => {
 //   hours    — how far back to look. Default 48.
 //   status   — restrict to briefs in a specific status. Default 'generated'
 //              (avoid nuking anything the user already actioned).
-router.post('/generated/dedupe-recent', authenticate, async (req, res) => {
+// Route mounted below with authenticate. This handler lets a caller with the
+// DEDUPE_SECRET header/query param bypass the login gate — same pattern as
+// /adsReporting cron endpoints use CRON_SECRET. Rationale: this is a one-shot
+// cleanup endpoint for a known bug; letting an operator run it from a script
+// without maintaining a session is worth the tiny secret-shared-in-env cost.
+// If DEDUPE_SECRET is unset in prod, the bypass simply doesn't fire and the
+// normal authenticate middleware handles the request.
+const DEDUPE_SECRET = process.env.DEDUPE_SECRET || '';
+function dedupeAuthOrAuthenticate(req, res, next) {
+  const supplied = req.get('x-dedupe-secret') || req.query.secret || '';
+  if (DEDUPE_SECRET && supplied && supplied === DEDUPE_SECRET) {
+    // Populate a stub user so downstream code that touches req.user doesn't NPE
+    req.user = req.user || { id: null, email: 'dedupe-bot', roles: [] };
+    return next();
+  }
+  return authenticate(req, res, next);
+}
+
+router.post('/generated/dedupe-recent', dedupeAuthOrAuthenticate, async (req, res) => {
   try {
     await ensureTables();
     const dryRun = String(req.query.dryRun ?? 'true').toLowerCase() !== 'false';
