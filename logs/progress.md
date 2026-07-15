@@ -1420,3 +1420,13 @@ OUTPUT: Brief B0455 -> naming "PL - B0455 - NN - Product Aware - Promo - Mashup 
 DECISIONS: DECISION MADE — left the ClickUp "Angle" custom dropdown as NA on the task. The PL list's Angle dropdown has no "Promo" option and the ClickUp public API cannot create dropdown options; the naming string still reads "Promo" correctly. Operator must add "Promo" to the Angle dropdown of list 901524484514 (field b84a8f84-fb68-40e8-9dcc-9fc434c55239) for the dropdown to populate on future pushes.
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-07-15 19:05
+TASK: brief-pipeline — always lead ClickUp card description with the Reference line
+BUILT: Description builder in briefPipeline.js previously only emitted "Reference: <link>" when a source URL resolved (line ~3389), so briefs generated from a hand-pasted script (no attached competitor reference, e.g. the B0455 test) had the whole line silently dropped. Now the Reference line is ALWAYS the first section: the resolved competitor link when available, else the placeholder "Reference: (paste competitor video link here)". Commit 3f633b5.
+TESTED: Deployed to prod (dep-d9bts92ap7bc73as9ua0 LIVE). Logged into live API, generated a fresh Puure offer brief (clone mode), pushed to ClickUp task 86cardy64 (B0456). Verified via ClickUp API that the description now starts with "Reference: (paste competitor video link here)" followed by Highlighted text / HOOKS / BODY. Also retro-fixed the earlier B0455 card (86carcz6k) description to include the Reference line while preserving its original hooks/body.
+OUTPUT: B0456 description first line = "Reference: (paste competitor video link here)". B0455 restored with same leading line + full original content intact.
+DECISIONS: DECISION MADE — for briefs with no resolvable competitor source (manual/pasted-script), show a placeholder rather than omit the line, so editors always see where the competitor link belongs. Real League/Meta clones still show the actual source_url.
+NOTE/ERROR RECOVERED: During the B0455 retro-fix a diagnostic dummy PUT ("description":"test") briefly overwrote B0455's description; immediately rebuilt and restored the full description from the brief record via the API. Verified restored content matches original.
+STATUS: COMPLETE
