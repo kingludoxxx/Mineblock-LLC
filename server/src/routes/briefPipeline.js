@@ -3267,7 +3267,7 @@ async function pushBriefToClickUp(generatedBrief, parentClickupTaskId, overrides
 
   // Build description in the operator's ClickUp template:
   //
-  //   Reference link: <url>
+  //   Reference: <competitor video / ad link>
   //
   //   Highlighted text:
   //
@@ -3307,7 +3307,7 @@ async function pushBriefToClickUp(generatedBrief, parentClickupTaskId, overrides
   })().map((s) => String(s || '').trim()).filter(Boolean);
 
   const sections = [];
-  if (referenceLink) sections.push(`Reference link: ${referenceLink}`);
+  if (referenceLink) sections.push(`Reference: ${referenceLink}`);
   if (parsedHighlights.length) {
     sections.push(`Highlighted text:\n\n${parsedHighlights.join('\n')}`);
   }
