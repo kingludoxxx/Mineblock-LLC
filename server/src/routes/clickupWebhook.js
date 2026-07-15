@@ -487,6 +487,21 @@ async function createFrameFolder(parentFolderId, folderName, projectId = FRAMEIO
   }
 }
 
+// Detect a brief-pipeline-pushed card WITHOUT relying on a visible marker.
+// The old marker was a '[brief-pipeline]' line in the description; the operator
+// asked to remove that text. Pipeline pushes arrive ALREADY fully named
+// ("<CODE> - B#### - ... - WK##_####"), whereas Brief-Agent/manual cards are
+// created unnamed, so a conforming name is a reliable signal. The legacy
+// description marker stays as a fallback for cards pushed before this change.
+function nameConformsToConvention(name) {
+  const n = String(name || '').trim();
+  return / - B\d{3,5} - /.test(n) && /\bWK\d{2}_\d{4}$/.test(n);
+}
+function isBriefPipelineTask(task) {
+  if (task.description?.includes('[brief-pipeline]')) return true;
+  return nameConformsToConvention(task.name);
+}
+
 // Handle taskCreated — auto-generate naming convention + create Frame.io folder
 async function handleTaskCreated(taskId) {
   // Longer delay to let Brief Agent set relationship fields (product, avatar, creator)
@@ -500,7 +515,7 @@ async function handleTaskCreated(taskId) {
   if (listId === PL_VIDEO_LIST) {
     // Manual PL card via the ClickUp form — build the full naming convention.
     // Brief-pipeline cards arrive already named.
-    if (!task.description?.includes('[brief-pipeline]')) {
+    if (!isBriefPipelineTask(task)) {
       await reconcilePlName(task, { assignNumberIfMissing: true });
     }
     return;
@@ -508,7 +523,7 @@ async function handleTaskCreated(taskId) {
 
   if (!NAMING_LISTS.includes(listId)) return;
 
-  const isBriefPipeline = task.description?.includes('[brief-pipeline]');
+  const isBriefPipeline = isBriefPipelineTask(task);
   const isYtDuplicate = task.description?.includes('[yt-duplicate]');
 
   if (!isBriefPipeline && !isYtDuplicate) {
@@ -569,7 +584,7 @@ async function handleCustomFieldChanged(taskId) {
   if (!NAMING_LISTS.includes(listId)) return;
 
   // Skip renaming for tasks created by the Brief Pipeline or YT duplicates
-  if (task.description?.includes('[brief-pipeline]')) return;
+  if (isBriefPipelineTask(task)) return;
   if (task.description?.includes('[yt-duplicate]')) return;
 
   // Get or assign brief number
@@ -1027,7 +1042,7 @@ router.get('/fix-naming/:taskId', async (req, res) => {
     }
 
     // Skip brief-pipeline and yt-duplicate tasks
-    if (task.description?.includes('[brief-pipeline]')) {
+    if (isBriefPipelineTask(task)) {
       return res.status(400).json({ error: 'Task is from brief pipeline — naming is handled there' });
     }
     if (task.description?.includes('[yt-duplicate]')) {

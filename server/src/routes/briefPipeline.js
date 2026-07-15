@@ -1260,67 +1260,6 @@ async function clickupFetch(url, options = {}) {
   return res.json();
 }
 
-// Download a reference video and attach the FILE itself to a ClickUp task.
-// Facebook removes commercial ads from the Ad Library the moment they're
-// turned off, and fbcdn URLs 403 after ~2-4 weeks anyway — so a link alone
-// rots. Attaching the bytes to the card means editors always have the exact
-// reference video, forever, independent of Facebook. Best-effort: any failure
-// is logged and swallowed so a push never fails over the reference video.
-const REF_VIDEO_MAX_BYTES = 180 * 1024 * 1024;  // 180MB cap — guards memory
-const REF_VIDEO_DOWNLOAD_TIMEOUT_MS = 45_000;
-async function attachReferenceVideoToTask(taskId, videoUrl, filenameBase) {
-  if (!taskId || !videoUrl) return null;
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), REF_VIDEO_DOWNLOAD_TIMEOUT_MS);
-    let dl;
-    try {
-      dl = await fetch(videoUrl, {
-        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; MineblockBot/1.0)' },
-        redirect: 'follow',
-        signal: controller.signal,
-      });
-    } finally {
-      clearTimeout(timer);
-    }
-    if (!dl.ok) {
-      console.warn(`[BriefPipeline] Reference video download failed (HTTP ${dl.status}) for task ${taskId} — attachment skipped, link kept`);
-      return null;
-    }
-    const declaredLen = Number(dl.headers.get('content-length') || 0);
-    if (declaredLen && declaredLen > REF_VIDEO_MAX_BYTES) {
-      console.warn(`[BriefPipeline] Reference video too large (${(declaredLen / 1048576).toFixed(1)}MB > cap) for task ${taskId} — attachment skipped, link kept`);
-      return null;
-    }
-    const contentType = (dl.headers.get('content-type') || 'video/mp4').split(';')[0];
-    const buffer = Buffer.from(await dl.arrayBuffer());
-    if (buffer.length > REF_VIDEO_MAX_BYTES) {
-      console.warn(`[BriefPipeline] Reference video exceeded cap after download (${(buffer.length / 1048576).toFixed(1)}MB) for task ${taskId} — attachment skipped`);
-      return null;
-    }
-    const ext = contentType.includes('webm') ? 'webm' : contentType.includes('quicktime') ? 'mov' : 'mp4';
-    const safeName = String(filenameBase || 'reference').replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^_+|_+$/g, '') || 'reference';
-    const form = new FormData();
-    form.append('attachment', new Blob([buffer], { type: contentType }), `${safeName}.${ext}`);
-    // Multipart upload — do NOT reuse `headers` (it forces application/json and
-    // would clobber the multipart boundary fetch sets automatically).
-    const res = await fetch(`${CLICKUP_API}/task/${taskId}/attachment`, {
-      method: 'POST',
-      headers: { Authorization: CLICKUP_TOKEN },
-      body: form,
-    });
-    if (!res.ok) {
-      console.warn(`[BriefPipeline] ClickUp attachment upload failed (HTTP ${res.status}) for task ${taskId}: ${(await res.text()).slice(0, 200)}`);
-      return null;
-    }
-    const json = await res.json().catch(() => ({}));
-    console.log(`[BriefPipeline] Attached reference video (${(buffer.length / 1048576).toFixed(1)}MB) to task ${taskId}`);
-    return json.url || json.url_w_query || true;
-  } catch (err) {
-    console.warn(`[BriefPipeline] Reference video attach errored for task ${taskId}: ${err.message} — link kept, push unaffected`);
-    return null;
-  }
-}
 
 function getISOWeekNumber() {
   const now = new Date();
@@ -3449,9 +3388,14 @@ async function pushBriefToClickUp(generatedBrief, parentClickupTaskId, overrides
   sections.push(referenceLink
     ? `Reference: ${referenceLink}`
     : 'Reference: (paste competitor video link here)');
+  // Durable playable link to OUR stored copy of the reference video (R2 URLs
+  // never expire, so editors keep the source even after the competitor turns
+  // the ad off). We LINK it rather than attach the file: a file attachment
+  // makes ClickUp render a video-frame thumbnail as the card cover, which the
+  // operator does not want on the board.
+  if (referenceVideoUrl) sections.push(`Reference video: ${referenceVideoUrl}`);
   sections.push(`HOOKS:\n\n${hooksFormatted || '(no hooks)'}`);
   sections.push(`BODY:\n\n${body || ''}`);
-  sections.push('[brief-pipeline]');
   const description = sections.join('\n\n');
 
   // Resolve dropdown option IDs against the TARGET list (ids differ per list).
@@ -3487,6 +3431,9 @@ async function pushBriefToClickUp(generatedBrief, parentClickupTaskId, overrides
     status: pipeline.initialStatus,
     assignees: [editorUserId],
     custom_fields: customFields,
+    // No '[brief-pipeline]' marker in the description anymore (operator asked to
+    // remove that text). The ClickUp webhook instead recognizes pipeline pushes
+    // by their already-complete naming convention, so it won't re-name them.
   };
 
   let createdTask;
@@ -3576,12 +3523,11 @@ async function pushBriefToClickUp(generatedBrief, parentClickupTaskId, overrides
 
   await Promise.all(relationshipPromises);
 
-  // Attach the actual reference video file to the card (best-effort, non-fatal).
-  // The Reference: link in the description stays as provenance, but the attached
-  // bytes are what editors rely on — durable even after the competitor kills the
-  // ad or the fbcdn URL expires. Skipped cleanly when there's no video_url.
-  const briefIdLabel = `B${String(brief_number).padStart(4, '0')}`;
-  await attachReferenceVideoToTask(taskId, referenceVideoUrl, `${briefIdLabel}-reference`);
+  // NOTE: we deliberately do NOT attach the reference video as a task file —
+  // ClickUp renders a video-frame thumbnail as the card cover for file
+  // attachments, which clutters the board. Instead the durable R2 video URL is
+  // linked in the description ("Reference video:" above), so editors keep the
+  // source without a preview image on the card.
 
   return {
     taskId,
