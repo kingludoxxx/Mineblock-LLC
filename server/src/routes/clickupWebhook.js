@@ -711,7 +711,16 @@ async function ensureMediaBuyingTask(task, taskListId) {
 // the brief number and week already in the name (so they never drift). It runs
 // on task creation, on every field change, and before Frame.io folder creation.
 // Idempotent — identical fields produce an identical name, so no update loop.
-const PL_EDITOR_FIELD = 'a9613cd9-715a-4a2a-bbbb-fbb7f664980a';
+const PL_FIELD_IDS = {
+  angle:              'b84a8f84-fb68-40e8-9dcc-9fc434c55239',
+  briefType:          '2d7aaf46-73e1-4c23-806d-ed92ba5329df',
+  creativeType:       'f8cce62e-fe29-4566-992f-863c27a694ba',
+  avatar:             '8558d3ec-79da-4a93-b7c3-3bbec4dc2cd1',
+  creativeStrategist: 'ffccf1dc-dbae-4c38-826d-9a46e83a6f7d',
+  editor:             'a9613cd9-715a-4a2a-bbbb-fbb7f664980a', // shared with MB
+  // briefNumber / namingConvention / adsFrameLink are shared with MB (FIELD_IDS)
+};
+const PL_EDITOR_FIELD = PL_FIELD_IDS.editor;
 
 function firstNameOf(usersFieldValue) {
   return usersFieldValue ? String(usersFieldValue).split(',')[0].trim() : null;
@@ -761,11 +770,11 @@ function generatePlNamingConvention(task, briefNumber, weekLabel, existingName) 
     return fieldVal || fallback;
   };
 
-  const briefType    = pick(getFieldValue(task, FIELD_IDS.briefType), oldAt(7), 'NA');
-  const avatar       = pick(getFieldValue(task, FIELD_IDS.avatarVideo), oldAt(6), 'NA');
-  const angle        = pick(getFieldValue(task, FIELD_IDS.angle), oldAt(5), 'NA');
-  const creativeType = pick(getFieldValue(task, FIELD_IDS.creativeType), oldAt(4), 'NA');
-  const strategist   = pick(firstNameOf(getFieldValue(task, FIELD_IDS.creativeStrategist)), oldAt(3), 'Ludovico');
+  const briefType    = pick(getFieldValue(task, PL_FIELD_IDS.briefType), oldAt(7), 'NA');
+  const avatar       = pick(getFieldValue(task, PL_FIELD_IDS.avatar), oldAt(6), 'NA');
+  const angle        = pick(getFieldValue(task, PL_FIELD_IDS.angle), oldAt(5), 'NA');
+  const creativeType = pick(getFieldValue(task, PL_FIELD_IDS.creativeType), oldAt(4), 'NA');
+  const strategist   = pick(firstNameOf(getFieldValue(task, PL_FIELD_IDS.creativeStrategist)), oldAt(3), 'Ludovico');
   const editor       = pick(firstNameOf(getFieldValue(task, PL_EDITOR_FIELD)), oldAt(2), 'NA');
   const week = weekLabel || getWeekLabel();
 
