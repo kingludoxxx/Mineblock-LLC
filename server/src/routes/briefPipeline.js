@@ -338,8 +338,35 @@ router.use(authenticate, requirePermission('brief-pipeline', 'access'));
 
 // ── Config ────────────────────────────────────────────────────────────
 const CLICKUP_TOKEN = process.env.CLICKUP_API_TOKEN || '';
-const VIDEO_ADS_LIST = '901518716584';
+const VIDEO_ADS_LIST = '901518716584';           // MB | Video Ads (MinerForge etc.)
+const PUURE_VIDEO_LIST = '901524484514';          // PL | Video Creatives (Puure)
 const MEDIA_BUYING_LIST = '901518769621';
+
+// ── ClickUp pipeline routing ──────────────────────────────────────────
+// Each product-family pushes to its own ClickUp list. Fields differ PER
+// LIST (ClickUp custom fields are list-scoped), so pushBriefToClickUp
+// resolves field + dropdown-option ids dynamically by NAME via
+// resolveListConfig(listId) instead of a single hardcoded FIELD_IDS map.
+const CLICKUP_PIPELINES = {
+  MB: { listId: VIDEO_ADS_LIST,   initialStatus: 'edit queue', namingCode: null },   // default
+  PL: { listId: PUURE_VIDEO_LIST, initialStatus: 'copy queue', namingCode: 'PL', fbPage: 'Puure' }, // Puure
+};
+
+// Product → pipeline. Puure (code PUURE / naming PL) routes to PL | Video
+// Creatives; everything else stays on MB | Video Ads.
+function pipelineForProduct(productCode) {
+  const c = String(productCode || '').toUpperCase();
+  if (c === 'PUURE' || c === 'PL') return CLICKUP_PIPELINES.PL;
+  return CLICKUP_PIPELINES.MB;
+}
+
+// The code that leads the naming convention. Puure briefs read PUURE as the
+// DB product_code (master-brief context lookups depend on it) but must be
+// NAMED with the brand's short code 'PL'.
+function namingProductCode(productCode) {
+  const pl = pipelineForProduct(productCode);
+  return pl.namingCode || productCode || 'MR';
+}
 const CLICKUP_API = 'https://api.clickup.com/api/v2';
 const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN || '';
 const META_AD_ACCOUNT_IDS = (process.env.META_AD_ACCOUNT_IDS || '').split(',').filter(Boolean);
@@ -941,6 +968,48 @@ async function resolveAngleOptionId(angle) {
     }
   }
   return ANGLE_OPTIONS.NA;
+}
+
+// ── Per-list ClickUp field resolver ───────────────────────────────────
+// ClickUp custom fields are LIST-scoped: the same logical field (Product,
+// Angle, Creative Type, ...) has a different id in each list, and dropdown
+// options carry per-list UUIDs. This resolver fetches a list's fields once
+// (10-min cache) and exposes lookups by NAME, so pushBriefToClickUp works
+// against any pipeline without hardcoded id maps.
+const listConfigCache = {}; // listId -> { ts, byName }
+async function resolveListConfig(listId) {
+  const now = Date.now();
+  const cached = listConfigCache[listId];
+  if (cached && now - cached.ts < 10 * 60 * 1000) return cached.cfg;
+
+  const resp = await clickupFetch(`/list/${listId}/field`);
+  const byName = {};
+  for (const f of (resp.fields || [])) byName[f.name] = f;
+
+  const cfg = {
+    fieldId: (name) => byName[name]?.id || null,
+    // Resolve a dropdown option UUID by option name (normalized).
+    optionId: (fieldName, optionName) => {
+      const f = byName[fieldName];
+      if (!f || optionName == null) return null;
+      const slug = relSlug(optionName);
+      const opt = (f.type_config?.options || []).find(o => relSlug(o.name) === slug);
+      return opt?.id || null;
+    },
+  };
+  listConfigCache[listId] = { ts: now, cfg };
+  return cfg;
+}
+
+// Resolve the Angle dropdown option for a SPECIFIC list. Tries the
+// normalized canonical key first ("Anti-Fake / Competitor Callout" ->
+// "Againstcompetition"), then the raw display name, then NA. Works for any
+// list's Angle field and auto-picks up options the operator adds later.
+function resolveListAngleOptionId(cfg, angle) {
+  const key = normalizeAngleKey(angle);
+  return cfg.optionId('Angle', key)
+      || (angle ? cfg.optionId('Angle', angle) : null)
+      || cfg.optionId('Angle', 'NA');
 }
 
 // Editors are now fetched dynamically from ClickUp list members (see utils/clickupEditors.js).
@@ -3140,12 +3209,18 @@ async function pushBriefToClickUp(generatedBrief, parentClickupTaskId, overrides
   const namingOverride   = overrides.naming_convention;
   const referenceLinkOverride = overrides.reference_link;
 
+  // Route to the product's ClickUp pipeline (Puure -> PL | Video Creatives;
+  // everything else -> MB | Video Ads) and load that list's field config.
+  const pipeline = pipelineForProduct(product_code);
+  const targetListId = pipeline.listId;
+  const listCfg = await resolveListConfig(targetListId);
+
   const weekLabel = getCurrentWeekLabel();
   const namingConvention = namingOverride
     || generatedBrief.naming_convention
     || buildNamingConvention({
-      product_code, brief_number, parent_creative_id, avatar, angle, format,
-      strategist, creator, editor, week: weekLabel, brief_type,
+      product_code: namingProductCode(product_code), brief_number, parent_creative_id,
+      avatar, angle, format, strategist, creator, editor, week: weekLabel, brief_type,
     });
 
   // Resolve the Reference link via a four-step fallback chain. Every brief
@@ -3241,36 +3316,37 @@ async function pushBriefToClickUp(generatedBrief, parentClickupTaskId, overrides
   sections.push('[brief-pipeline]');
   const description = sections.join('\n\n');
 
-  // Resolve dropdown option IDs. Angle is normalized through the alias map so
-  // analyzer-emitted display strings (e.g. "Anti-Fake / Competitor Callout")
-  // resolve to the canonical key ("Againstcompetition") and then to the UUID.
-  const angleUuid = await resolveAngleOptionId(angle);
-  // ClickUp dropdown UUID for brief type. Derives from the resolved
-  // brief_type above (NN for clones, IT for iterations).
-  const briefTypeUuid = BRIEF_TYPE_OPTIONS[brief_type] || BRIEF_TYPE_OPTIONS.IT;
-  const creativeTypeUuid = CREATIVE_TYPE_OPTIONS[format] || CREATIVE_TYPE_OPTIONS.Mashup;
+  // Resolve dropdown option IDs against the TARGET list (ids differ per list).
+  // Angle is normalized through the alias map so analyzer display strings
+  // ("Anti-Fake / Competitor Callout") resolve to the canonical option name.
+  const angleUuid       = resolveListAngleOptionId(listCfg, angle);
+  const briefTypeUuid   = listCfg.optionId('Brief Type', brief_type) || listCfg.optionId('Brief Type', 'IT');
+  const creativeTypeUuid = listCfg.optionId('Creative Type', format) || listCfg.optionId('Creative Type', 'Mashup');
+  const fbPageUuid      = pipeline.fbPage ? listCfg.optionId('FB Page', pipeline.fbPage) : null;
 
   const editorMap = await getEditors();
   const editorUserId = editorMap[editor] || OWNER_ID;
 
+  const editorFieldId = listCfg.fieldId('Editor');
   const customFields = [
-    { id: FIELD_IDS.briefNumber, value: brief_number },
-    { id: FIELD_IDS.briefType, value: briefTypeUuid },
-    { id: FIELD_IDS.parentBriefId, value: parent_creative_id },
-    { id: FIELD_IDS.idea, value: iteration_direction || '-' },
-    { id: FIELD_IDS.angle, value: angleUuid },
-    { id: FIELD_IDS.creativeType, value: creativeTypeUuid },
-    { id: FIELD_IDS.namingConvention, value: namingConvention },
-    { id: FIELD_IDS.creationWeek, value: weekLabel },
-    { id: FIELD_IDS.creativeStrategist, value: { add: [OWNER_ID], rem: [] } },
-    { id: FIELD_IDS.copywriter, value: { add: [OWNER_ID], rem: [] } },
-    { id: FIELD_IDS.editor, value: { add: [editorUserId], rem: [] } },
-  ].filter(f => f.value != null);
+    { id: listCfg.fieldId('Brief Number'),      value: brief_number },
+    { id: listCfg.fieldId('Brief Type'),        value: briefTypeUuid },
+    { id: listCfg.fieldId('Parent Brief ID'),   value: parent_creative_id },
+    { id: listCfg.fieldId('Idea'),              value: iteration_direction || '-' },
+    { id: listCfg.fieldId('Angle'),             value: angleUuid },
+    { id: listCfg.fieldId('Creative Type'),     value: creativeTypeUuid },
+    { id: listCfg.fieldId('FB Page'),           value: fbPageUuid },
+    { id: listCfg.fieldId('Naming Convention'), value: namingConvention },
+    { id: listCfg.fieldId('Creation Week'),     value: weekLabel },
+    { id: listCfg.fieldId('Creative Strategist'), value: { add: [OWNER_ID], rem: [] } },
+    { id: listCfg.fieldId('Copywriter'),        value: { add: [OWNER_ID], rem: [] } },
+    { id: editorFieldId,                        value: { add: [editorUserId], rem: [] } },
+  ].filter(f => f.id && f.value != null);
 
   const taskPayload = {
     name: namingConvention,
     description,
-    status: 'edit queue',
+    status: pipeline.initialStatus,
     assignees: [editorUserId],
     custom_fields: customFields,
   };
@@ -3278,7 +3354,7 @@ async function pushBriefToClickUp(generatedBrief, parentClickupTaskId, overrides
   let createdTask;
   try {
     createdTask = await clickupFetch(
-      `/list/${VIDEO_ADS_LIST}/task`,
+      `/list/${targetListId}/task`,
       { method: 'POST', body: JSON.stringify(taskPayload) }
     );
   } catch (err) {
@@ -3286,12 +3362,12 @@ async function pushBriefToClickUp(generatedBrief, parentClickupTaskId, overrides
     if (err.message.includes('FIELD_129') || err.message.includes('must have access')) {
       console.warn(`[BriefPipeline] Editor ${editor} (${editorUserId}) not accessible, falling back to Ludovico`);
       const fallbackFields = customFields.map(f => {
-        if (f.id === FIELD_IDS.editor) return { ...f, value: { add: [OWNER_ID], rem: [] } };
+        if (editorFieldId && f.id === editorFieldId) return { ...f, value: { add: [OWNER_ID], rem: [] } };
         return f;
       });
       const fallbackPayload = { ...taskPayload, assignees: [OWNER_ID], custom_fields: fallbackFields };
       createdTask = await clickupFetch(
-        `/list/${VIDEO_ADS_LIST}/task`,
+        `/list/${targetListId}/task`,
         { method: 'POST', body: JSON.stringify(fallbackPayload) }
       );
     } else {
@@ -3307,15 +3383,22 @@ async function pushBriefToClickUp(generatedBrief, parentClickupTaskId, overrides
   // new product never again silently defaults to MR.
   const relationshipPromises = [];
 
+  // Relationship field ids come from the TARGET list's config; the linked
+  // relationship LISTS (Products / Avatars / Creators) are shared across
+  // pipelines, so the resolved task ids are valid in either.
+  const productFieldId = listCfg.fieldId('Product');
+  const avatarFieldId  = listCfg.fieldId('Avatar');
+  const creatorFieldId = listCfg.fieldId('Creator');
+
   let productTaskId = PRODUCT_TASK_IDS[product_code];
   if (!productTaskId) {
     productTaskId = await resolveRelationshipTask('product', product_code, { createIfMissing: true })
       .catch(err => { console.error('[BriefPipeline] Product resolve error:', err.message); return null; });
   }
   if (!productTaskId) productTaskId = PRODUCT_TASK_IDS.MR;
-  if (productTaskId) {
+  if (productTaskId && productFieldId) {
     relationshipPromises.push(
-      clickupFetch(`/task/${taskId}/field/${FIELD_IDS.product}`, {
+      clickupFetch(`/task/${taskId}/field/${productFieldId}`, {
         method: 'POST',
         body: JSON.stringify({ value: { add: [productTaskId], rem: [] } }),
       }).catch(err => console.error('[BriefPipeline] Product relationship error:', err.message))
@@ -3327,9 +3410,9 @@ async function pushBriefToClickUp(generatedBrief, parentClickupTaskId, overrides
     avatarTaskId = await resolveRelationshipTask('avatar', avatar, { createIfMissing: true })
       .catch(err => { console.error('[BriefPipeline] Avatar resolve error:', err.message); return null; });
   }
-  if (avatarTaskId) {
+  if (avatarTaskId && avatarFieldId) {
     relationshipPromises.push(
-      clickupFetch(`/task/${taskId}/field/${FIELD_IDS.avatar}`, {
+      clickupFetch(`/task/${taskId}/field/${avatarFieldId}`, {
         method: 'POST',
         body: JSON.stringify({ value: { add: [avatarTaskId], rem: [] } }),
       }).catch(err => console.error('[BriefPipeline] Avatar relationship error:', err.message))
@@ -3344,12 +3427,14 @@ async function pushBriefToClickUp(generatedBrief, parentClickupTaskId, overrides
     creatorTaskId = await resolveRelationshipTask('creator', creator, { createIfMissing: false })
       .catch(err => { console.error('[BriefPipeline] Creator resolve error:', err.message); return null; });
   }
-  relationshipPromises.push(
-    clickupFetch(`/task/${taskId}/field/${FIELD_IDS.creator}`, {
-      method: 'POST',
-      body: JSON.stringify({ value: { add: [creatorTaskId || CREATOR_NA_TASK_ID], rem: [] } }),
-    }).catch(err => console.error('[BriefPipeline] Creator relationship error:', err.message))
-  );
+  if (creatorFieldId) {
+    relationshipPromises.push(
+      clickupFetch(`/task/${taskId}/field/${creatorFieldId}`, {
+        method: 'POST',
+        body: JSON.stringify({ value: { add: [creatorTaskId || CREATOR_NA_TASK_ID], rem: [] } }),
+      }).catch(err => console.error('[BriefPipeline] Creator relationship error:', err.message))
+    );
+  }
 
   await Promise.all(relationshipPromises);
 
@@ -4058,7 +4143,9 @@ async function executeGenerationJob({
       const nameAvatar = detectedAvatar || 'NA';
       const nameAngle  = effectiveAngle  || 'NA';
       const namingConvention = buildNamingConvention({
-        product_code: productCode || 'MR', brief_number: briefNumber,
+        // Naming uses the brand short code (Puure -> 'PL'); the DB
+        // product_code column below stays PUURE for context lookups.
+        product_code: namingProductCode(productCode || 'MR'), brief_number: briefNumber,
         parent_creative_id: creativeId, avatar: nameAvatar, angle: nameAngle,
         // Editor is deliberately omitted — buildNamingConvention filters null
         // slots, and the editor is assigned inside ClickUp after the brief is
