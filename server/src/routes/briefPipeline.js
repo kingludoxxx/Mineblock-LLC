@@ -2898,6 +2898,7 @@ A hook is the first line of the finished video, spoken by the SAME narrator as t
 - Respect compliance_restrictions from the brief — flag anything borderline in compliance_notes.
 - Never leave a competitor brand name, price, or offer in the output.
 - VOICE (anti-AI): contractions always (don't, can't, it's, here's); sentence fragments where the source uses them; speak to one person, never "audiences". BANNED: "Imagine", "Picture this", "In a world where", "What if I told you", "Did you know", "But here's the thing", "Now here's where it gets interesting", "And that's not all", "Let me explain". No softeners ("may", "might", "could potentially") unless the source used them.
+- NO DASHES OR HYPHENS. Never use the "-" character, em-dashes (—), or en-dashes (–) anywhere in hooks, body, or cta. Use periods, commas, or rewrite the sentence. Write compounds as separate words ("90 day guarantee" not "90-day", "board certified" not "board-certified").
 - Never use any phrase in the selected angle's banned_phrases list.
 
 # ON-SCREEN TEXT / HIGHLIGHTED LABELS  (CONDITIONAL — driven by ORIGINAL ON-SCREEN TEXT block above)
@@ -2993,6 +2994,54 @@ function extractOnScreenText(rawTranscript) {
     .filter(Boolean)
     .join('\n')
     .slice(0, 2000); // hard cap so we don't blow the token budget
+}
+
+// Remove the [ON-SCREEN TEXT] block from a transcript, leaving only the
+// spoken script. The on-screen overlay text (auto-caption word-soup:
+// "exercise / moisturizers / that actually fix the problem / Doctor / ...")
+// pollutes the reference "original script" and confuses the clone parser —
+// the overlays are captured separately via extractOnScreenText() for the
+// highlighted_text labels, so stripping them here loses nothing. Also drops
+// the [AUDIO / VOICEOVER] / [AD COPY] section markers so the parser sees
+// clean prose.
+function stripOnScreenText(transcript) {
+  if (!transcript || typeof transcript !== 'string') return transcript || '';
+  let out = transcript;
+  // Drop the whole [ON-SCREEN TEXT] block up to the next [SECTION] marker.
+  out = out.replace(/\[ON[- ]?SCREEN\s*TEXT\]\s*[\s\S]*?(?=\n\s*\[[A-Z][^\]]*\]|$)/i, '');
+  // Remove remaining section markers so the parser reads plain script.
+  out = out.replace(/^\s*\[(AUDIO(?:\s*\/\s*VOICEOVER)?|VOICEOVER(?:\s+TRANSCRIPT)?|AD COPY)\]\s*/gim, '');
+  return out.replace(/\n{3,}/g, '\n\n').trim();
+}
+
+// Strip hyphens and em/en dashes from generated ad copy. Operator rule: the
+// copy must never contain the "-" sign (nor — / –). em/en dashes become
+// commas (they act as sentence breaks); intra-word hyphens ("90-day",
+// "board-certified") become spaces. Deterministic belt to the prompt rule —
+// LLMs slip em-dashes in constantly, so we guarantee it post-generation.
+function removeDashes(text) {
+  if (!text || typeof text !== 'string') return text;
+  let out = text
+    .replace(/\s*[—–―]\s*/g, ', ')                 // em/en/horizontal-bar → comma
+    .replace(/(\p{L}|\d)[-‐‑‒](\p{L}|\d)/gu, '$1 $2') // intra-word hyphen → space
+    .replace(/[-‐‑‒]/g, ' ');                       // any remaining hyphen → space
+  out = out
+    .replace(/,\s*([.!?,;:])/g, '$1')  // ", ." → "."
+    .replace(/\s+([.!?,;:])/g, '$1')   // stray space before punctuation
+    .replace(/[ \t]{2,}/g, ' ');       // collapse runs of spaces
+  return out.trim();
+}
+
+// Apply removeDashes across a generated brief's copy fields in place.
+function stripDashesFromBrief(generated) {
+  if (!generated || typeof generated !== 'object') return generated;
+  if (typeof generated.body === 'string') generated.body = removeDashes(generated.body);
+  if (typeof generated.cta === 'string') generated.cta = removeDashes(generated.cta);
+  if (Array.isArray(generated.hooks)) {
+    generated.hooks = generated.hooks.map((h) =>
+      (h && typeof h.text === 'string') ? { ...h, text: removeDashes(h.text) } : h);
+  }
+  return generated;
 }
 
 async function buildScriptClonePrompt(parsedScript, deepAnalysis, productContext, productProfile = null, angle = null, rawTranscript = null) {
@@ -3795,7 +3844,11 @@ async function executeGenerationJob({
         }
       } catch (e) { console.warn('[BriefPipeline] iterate: could not load reference performance:', e.message); }
     }
-    const { system: parseSystem, user: parseUser } = await buildScriptParserPrompt(rawScript, creativeId);
+    // Parse only the SPOKEN script — strip the [ON-SCREEN TEXT] word-soup so
+    // it never pollutes the cloned body. rawScript stays intact for the clone
+    // prompt's separate on-screen overlay extraction (highlighted_text).
+    const spokenScript = stripOnScreenText(rawScript);
+    const { system: parseSystem, user: parseUser } = await buildScriptParserPrompt(spokenScript, creativeId);
     // Prefer fetching by explicit productId (set when the user picked a product
     // in the ProductSelector). Falls back to product_code lookup for callers
     // that don't have an id (e.g. detected-winner ClickUp flow).
@@ -3818,7 +3871,8 @@ async function executeGenerationJob({
     ]);
     let parsedScript = parsedScriptRaw;
     if (!parsedScript || (!parsedScript.hooks?.length && !parsedScript.body?.trim())) {
-      parsedScript = { hooks: [], body: rawScript, cta: '', format_notes: '' };
+      // Fallback body is the spoken script (on-screen text already stripped).
+      parsedScript = { hooks: [], body: spokenScript, cta: '', format_notes: '' };
     }
     pgQuery(`UPDATE brief_pipeline_winners SET parsed_script = $1 WHERE id = $2`, [JSON.stringify(parsedScript), winner.id]).catch(() => {});
 
@@ -3948,7 +4002,8 @@ async function executeGenerationJob({
       generationResults = variants.map((v, idx) => ({
         success: true,
         direction: { id: `iter-${idx + 1}`, name: v.iteration_label || `Iteration ${idx + 1}`, description: v.what_changed || '' },
-        generated: {
+        // Operator rule: no "-" / em-dashes in generated copy.
+        generated: stripDashesFromBrief({
           hooks: Array.isArray(v.hooks) ? v.hooks : [],
           body:  v.body || '',
           cta:   v.cta || '',
@@ -3956,7 +4011,7 @@ async function executeGenerationJob({
           // we never fabricate overlays. See iteration prompt rule §9.)
           highlighted_text: Array.isArray(v.highlighted_text) ? v.highlighted_text.filter(Boolean).map(String) : [],
           preservation_notes: v.preservation_notes || '',
-        },
+        }),
         scores: { novelty: null, aggression: null, coherence: null, verdict: null },
         overall: null,
       }));
@@ -4056,6 +4111,8 @@ async function executeGenerationJob({
           if (!generated || (!generated.hooks && !generated.body)) throw new Error('Invalid clone response');
           if (!Array.isArray(generated.hooks)) generated.hooks = [];
           if (!generated.body) generated.body = '';
+          // Operator rule: generated copy must never contain "-" / em-dashes.
+          stripDashesFromBrief(generated);
           // Normalize on-screen labels. Reference-driven only — if the
           // source has no overlays the prompt returns [] and we persist [].
           if (!Array.isArray(generated.highlighted_text)) {
@@ -7544,12 +7601,11 @@ async function seedDefaultLeaguePrompts() {
     // schema with per-beat word budgets, hooks emitted AFTER the body with a
     // blend test, testimonial-persona swap + proof-substitution rules.
     // Bumping the signature force-refreshes any pre-v5 snapshot once.
-    // v6.2 signature: 'PROOF PARITY' exists only in the revision that
-    // (a) mirrors source proof devices at full strength (operator owns
-    // claim responsibility), (b) tightens length to ±5% of the source,
-    // (c) clones the CTA's pressure devices instead of trading them for
-    // offer facts. One-shot snapshot refresh, then operator edits stick.
-    const CLONE_V2_SIGNATURE = 'PROOF PARITY';
+    // v6.3 signature: 'NO DASHES OR HYPHENS' exists only in the revision that
+    // adds the operator's no-"-"/em-dash rule to the clone voice section (on
+    // top of v6.2 proof-parity + ±5% length + cloned-CTA rules). One-shot
+    // snapshot refresh, then operator edits stick.
+    const CLONE_V2_SIGNATURE = 'NO DASHES OR HYPHENS';
     const currentClone = existing.scriptClone?.json || '';
     if (!currentClone.trim() || !currentClone.includes(CLONE_V2_SIGNATURE)) {
       existing.scriptClone = {
