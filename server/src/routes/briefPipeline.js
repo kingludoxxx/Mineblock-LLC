@@ -1692,19 +1692,25 @@ async function findClickUpTaskByBriefCode(briefCode) {
 /**
  * Get the next available brief number from ClickUp.
  */
-async function getNextBriefNumber() {
+async function getNextBriefNumber(productCode = null) {
   // The next number is MAX(ClickUp tasks, DB briefs) + 1. Considering only
   // ClickUp pinned the number at 350 for days: briefs that were never pushed
   // to ClickUp didn't count, so every generation shared the same number and
   // identical naming — indistinguishable cards in the UI.
-  let maxBrief = 0;
+  //
+  // Puure (PUURE/PL) has its OWN sequence starting at B0010 — it scans the
+  // PL | Video Creatives list and only PUURE rows in the DB. Everything else
+  // shares the original global sequence.
+  const isPl = productCode === 'PUURE' || productCode === 'PL';
+  const scanListId = isPl ? PUURE_VIDEO_LIST : VIDEO_ADS_LIST;
+  let maxBrief = isPl ? 9 : 0; // PL floor: first brief is B0010
 
   try {
     let page = 0;
     let hasMore = true;
     while (hasMore) {
       const data = await clickupFetch(
-        `/list/${VIDEO_ADS_LIST}/task?page=${page}&limit=100&include_closed=true&subtasks=true`
+        `/list/${scanListId}/task?page=${page}&limit=100&include_closed=true&subtasks=true`
       );
       const tasks = data.tasks || [];
 
@@ -1731,7 +1737,9 @@ async function getNextBriefNumber() {
   }
 
   try {
-    const rows = await pgQuery(`SELECT COALESCE(MAX(brief_number), 0) AS max FROM brief_pipeline_generated`);
+    const rows = isPl
+      ? await pgQuery(`SELECT COALESCE(MAX(brief_number), 0) AS max FROM brief_pipeline_generated WHERE product_code IN ('PUURE','PL')`)
+      : await pgQuery(`SELECT COALESCE(MAX(brief_number), 0) AS max FROM brief_pipeline_generated WHERE product_code IS NULL OR product_code NOT IN ('PUURE','PL')`);
     const dbMax = Number(rows[0]?.max || 0);
     if (dbMax > maxBrief) maxBrief = dbMax;
   } catch (e) {
@@ -1745,16 +1753,16 @@ async function getNextBriefNumber() {
 // concurrent queue jobs (worker concurrency 2) mint the same number — the
 // single-row counter's atomic UPDATE ... RETURNING cannot collide. `floor`
 // carries the ClickUp-side max so numbers always stay above pushed tasks.
-async function allocateBriefNumber(floor = 0) {
+async function allocateBriefNumber(floor = 0, counterId = 1) {
   try {
     await pgQuery(`
       INSERT INTO brief_number_counter (id, value)
-      SELECT 1, COALESCE((SELECT MAX(brief_number) FROM brief_pipeline_generated), 0)
+      SELECT $1, COALESCE((SELECT MAX(brief_number) FROM brief_pipeline_generated), 0)
       ON CONFLICT (id) DO NOTHING
-    `);
+    `, [counterId]);
     const rows = await pgQuery(
-      `UPDATE brief_number_counter SET value = GREATEST(value, $1) + 1 WHERE id = 1 RETURNING value`,
-      [Number(floor) || 0]
+      `UPDATE brief_number_counter SET value = GREATEST(value, $1) + 1 WHERE id = $2 RETURNING value`,
+      [Number(floor) || 0, counterId]
     );
     if (rows[0]?.value) return Number(rows[0].value);
   } catch (e) {
@@ -4018,7 +4026,8 @@ async function executeGenerationJob({
     // Floor for atomic allocation: getNextBriefNumber() scans ClickUp + DB.
     // The actual per-brief number is minted race-free at INSERT time by
     // allocateBriefNumber() — two concurrent queue jobs can never collide.
-    const briefNumberFloor = (await getNextBriefNumber()) - 1;
+    const briefNumberFloor = (await getNextBriefNumber(productCode)) - 1;
+    const briefCounterId = (productCode === 'PUURE' || productCode === 'PL') ? 2 : 1;
     let generationResults;
     let winAnalysis = {};
     const config = {
@@ -4299,7 +4308,7 @@ async function executeGenerationJob({
     for (const result of generationResults) {
       if (!result.success) continue;
       const { generated, scores, overall, direction } = result;
-      const briefNumber = await allocateBriefNumber(briefNumberFloor);
+      const briefNumber = await allocateBriefNumber(briefNumberFloor, briefCounterId);
       const weekLabel = getCurrentWeekLabel();
       // Brief type derives from generation mode: clones of competitor ads
       // are Net New (NN); iterations of our own winners are IT. The mode

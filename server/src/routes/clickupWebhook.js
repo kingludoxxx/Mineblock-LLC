@@ -750,7 +750,8 @@ async function getNextPlBriefNumber() {
     hasMore = tasks.length === 100;
     page += 1;
   }
-  return maxBrief + 1;
+  // PL sequence starts at B0010 (operator decision) — never allocate below it
+  return Math.max(maxBrief + 1, 10);
 }
 
 function generatePlNamingConvention(task, briefNumber, weekLabel, existingName) {
