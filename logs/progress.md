@@ -1449,3 +1449,16 @@ TESTED: Deployed (dep-d9c07fq8qa3s73d1urog LIVE). Pushed a fresh clone to ClickU
 OUTPUT: Card 86carfdry description = Reference -> HOOKS -> BODY, no overlay block.
 DECISIONS: Left the clone-prompt highlighted_text generation intact (harmless, unused now) to avoid destabilizing the seeded clone prompt; only the description-time rendering was removed.
 STATUS: COMPLETE
+
+---
+TIMESTAMP: 2026-07-15 20:20
+TASK: brief-pipeline — (1) remove card preview image, (2) remove [brief-pipeline] text, (3) fix B0429 hooks-twice
+BUILT:
+ 1. Card preview image: ClickUp renders a video-frame thumbnail as the board card cover for any video FILE attachment. Replaced the file-attachment (attachReferenceVideoToTask, removed) with a LINK to our durable R2 copy in the description ("Reference video: <r2 url>"). R2 URLs never expire, so editors keep the source with no preview image.
+ 2. [brief-pipeline] marker: removed the visible line from card descriptions. The ClickUp webhook now detects pipeline pushes by their already-complete naming convention (nameConformsToConvention) instead of the description marker; legacy marker kept as fallback. Tried a 'brief-pipeline' TAG first but the scoped ClickUp token can't create space tags (200 no-op), so used name-conformance. PL cards handled by reconcilePlName regardless. Commit 492f9d5.
+ 3. B0429 (86carfgyt): legacy card whose stored description had the hooks re-listed in the body ("Hook 1:/Hook 2:/Hook 3:/--- Body ---") plus a stray "Then check this brief that I just created." The DB body for that brief is clean and the live pipeline no longer does this (verified on 4+ recent pushes). Rewrote the card description via API from the clean DB body.
+TESTED: Deployed (dep-d9c0ppl8nd3s738cklf0 LIVE). Fresh clone push -> task 86carfmph: attachments=0 (no cover preview), cover=undefined, desc has NO [brief-pipeline], desc HAS "Reference video:" durable R2 link, structure Reference->Reference video->HOOKS->BODY. B0429 card re-verified: no "Hook N:" labels, no "--- Body ---", no stray note.
+OUTPUT: New cards have no preview image, no [brief-pipeline] text, and a durable reference-video link. B0429 cleaned.
+DECISIONS: DECISION MADE — link the durable R2 video instead of attaching the file (removes the cover preview while keeping the source permanently accessible; R2 never expires). Webhook brief-pipeline detection switched from description-marker to naming-convention conformance because the scoped token cannot create ClickUp tags.
+CAVEAT: Existing already-pushed cards (e.g. B0012/86carejbt, B0013/86carekrp) still have their video FILE attachments -> still show previews. ClickUp API v2 has no delete-attachment endpoint, so those can't be stripped programmatically; options are the board view "Cover images" toggle or deleting/re-pushing those cards.
+STATUS: COMPLETE

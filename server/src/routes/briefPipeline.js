@@ -3407,7 +3407,14 @@ async function pushBriefToClickUp(generatedBrief, parentClickupTaskId, overrides
   const fbPageUuid      = pipeline.fbPage ? listCfg.optionId('FB Page', pipeline.fbPage) : null;
 
   const editorMap = await getEditors();
-  const editorUserId = editorMap[editor] || OWNER_ID;
+  // Only treat it as a real editor when the brief actually names one AND that
+  // name resolves to a ClickUp user. 'NA' / unknown means NO editor yet — we
+  // must NOT stamp the owner into the Editor field, because reconcilePlName
+  // rebuilds the card name from that field and would write "Ludovico" into the
+  // editor slot, drifting from the brief's stored "... - NA - ..." naming.
+  const resolvedEditorId = (editor && editor !== 'NA') ? editorMap[editor] : null;
+  // Assignee still falls back to the owner so a pushed card is never ownerless.
+  const assigneeUserId = resolvedEditorId || OWNER_ID;
 
   const editorFieldId = listCfg.fieldId('Editor');
   const customFields = [
@@ -3422,14 +3429,15 @@ async function pushBriefToClickUp(generatedBrief, parentClickupTaskId, overrides
     { id: listCfg.fieldId('Creation Week'),     value: weekLabel },
     { id: listCfg.fieldId('Creative Strategist'), value: { add: [OWNER_ID], rem: [] } },
     { id: listCfg.fieldId('Copywriter'),        value: { add: [OWNER_ID], rem: [] } },
-    { id: editorFieldId,                        value: { add: [editorUserId], rem: [] } },
+    // Editor field is set ONLY when a real editor is assigned (see above).
+    ...(resolvedEditorId ? [{ id: editorFieldId, value: { add: [resolvedEditorId], rem: [] } }] : []),
   ].filter(f => f.id && f.value != null);
 
   const taskPayload = {
     name: namingConvention,
     description,
     status: pipeline.initialStatus,
-    assignees: [editorUserId],
+    assignees: [assigneeUserId],
     custom_fields: customFields,
     // No '[brief-pipeline]' marker in the description anymore (operator asked to
     // remove that text). The ClickUp webhook instead recognizes pipeline pushes
@@ -3445,7 +3453,7 @@ async function pushBriefToClickUp(generatedBrief, parentClickupTaskId, overrides
   } catch (err) {
     // If editor user doesn't have workspace access, retry without user fields
     if (err.message.includes('FIELD_129') || err.message.includes('must have access')) {
-      console.warn(`[BriefPipeline] Editor ${editor} (${editorUserId}) not accessible, falling back to Ludovico`);
+      console.warn(`[BriefPipeline] Editor ${editor} (${resolvedEditorId}) not accessible, falling back to Ludovico`);
       const fallbackFields = customFields.map(f => {
         if (editorFieldId && f.id === editorFieldId) return { ...f, value: { add: [OWNER_ID], rem: [] } };
         return f;
