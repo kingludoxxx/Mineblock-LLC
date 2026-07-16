@@ -1733,6 +1733,33 @@ function abbreviateAngle(angle) {
 function buildNamingConvention({ product_code, brief_number, parent_creative_id, avatar, angle, format, strategist, creator, editor, week, brief_type }) {
   const briefId = `B${String(brief_number).padStart(4, '0')}`;
   const briefType = brief_type === 'NN' ? 'NN' : 'IT';
+  const weekLabel = week || getCurrentWeekLabel();
+
+  // Puure (PL) has its own canonical shape — and it is NOT this function's
+  // shape, it is the one the ClickUp webhook rebuilds every PL card with
+  // (reconcilePlName):
+  //   PL - B#### - BriefType - Avatar - Angle - CreativeType - Strategist - Editor - WK##_####
+  // Nine slots: no parent-brief slot and, crucially, NO creator slot.
+  // Emitting a creator here would shove the editor into a 10th slot
+  // ("... - Ludovico - NA - Uly - WK29_2026"), so every pushed PL card would
+  // disagree with the board. Today that only stays hidden because the editor
+  // is usually null and the creator's 'NA' lands in the editor's position by
+  // coincidence — the drift appears the moment a real editor is assigned.
+  if (product_code === 'PL') {
+    return [
+      'PL',
+      briefId,
+      briefType,
+      avatar || 'NA',
+      abbreviateAngle(angle),
+      format || 'Mashup',
+      strategist || 'Ludovico',
+      editor || 'NA',
+      weekLabel,
+    ].map((s) => String(s).trim() || 'NA').join(' - ');
+  }
+
+  // MB / everything else keeps the original shape (parent + creator + editor).
   const isSyntheticParent = !parent_creative_id || /^MANUAL[-_]/i.test(String(parent_creative_id));
   const dropParent = briefType === 'NN' || isSyntheticParent;
   const slots = [
@@ -1746,7 +1773,7 @@ function buildNamingConvention({ product_code, brief_number, parent_creative_id,
     strategist || 'Ludovico',
     creator || 'NA',
     editor || null,
-    week || getCurrentWeekLabel(),
+    weekLabel,
   ];
   return slots.filter((s) => s !== null && s !== undefined && s !== '').join(' - ');
 }
