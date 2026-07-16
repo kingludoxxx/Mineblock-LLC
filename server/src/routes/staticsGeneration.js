@@ -996,12 +996,13 @@ const MAX_TEMP_IMAGES = 200;
 // baked default (one-shot upgrade). Operator edits made AFTER the upgrade
 // keep the signature and are therefore left alone on subsequent boots.
 //
-// Signature "MASTER PRODUCT BRIEF — FULL DOCUMENT" ships with the
-// {{MASTER_BRIEF}} interpolation block in getDefaultStaticsPrompts() —
-// the string exists nowhere else. Bumping the marker on future revisions
-// will force another one-shot refresh.
+// Signature "{{MASTER_BRIEF}}" is the interpolation placeholder itself —
+// the string exists in every claude_analysis template that has the new
+// revision, and nowhere in older ones. When bumping the schema again
+// (e.g. adding {{PUURE_HOOKS}}), change the constant below to force a
+// one-shot refresh across all deployments.
 // ─────────────────────────────────────────────────────────────────────────
-const STATICS_CLAUDE_SIGNATURE = 'MASTER PRODUCT BRIEF — FULL DOCUMENT';
+const STATICS_CLAUDE_SIGNATURE = '{{MASTER_BRIEF}}';
 (async () => {
   try {
     await new Promise(r => setTimeout(r, 6000)); // let migrations settle
@@ -1013,7 +1014,7 @@ const STATICS_CLAUDE_SIGNATURE = 'MASTER PRODUCT BRIEF — FULL DOCUMENT';
     const raw = rows[0].value;
     const data = typeof raw === 'string' ? JSON.parse(raw) : raw;
     const currentClaude = (data && typeof data.claude_analysis === 'string') ? data.claude_analysis : '';
-    if (currentClaude.includes(STATICS_CLAUDE_SIGNATURE) && currentClaude.includes('{{MASTER_BRIEF}}')) {
+    if (currentClaude.includes(STATICS_CLAUDE_SIGNATURE)) {
       // Already on the master-brief revision — leave operator edits alone.
       return;
     }
