@@ -1873,6 +1873,31 @@ router.get('/frameio-v4-debug', async (req, res) => {
   }
 });
 
+// Read-only Frame.io proxy for the puure-editor-dashboard service.
+// That service cannot authenticate to Frame.io v4 (the account blocks legacy
+// developer tokens), so it borrows this service's IMS OAuth session for reads.
+// Only folder-children listings and file metadata on our account are allowed.
+router.get('/ped-frame-proxy', async (req, res) => {
+  const expected = process.env.PED_PROXY_KEY;
+  if (!expected || req.headers['x-ped-key'] !== expected) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  const path = String(req.query.path || '');
+  const uuid = '[0-9a-fA-F-]{36}';
+  const allowed = new RegExp(
+    `^/accounts/${FRAMEIO_ACCOUNT_ID}/(folders/${uuid}/children|files/${uuid}(/metadata)?)(\\?[\\w=&%.~-]*)?$`
+  );
+  if (!allowed.test(path)) {
+    return res.status(400).json({ error: 'Path not allowed' });
+  }
+  try {
+    const data = await frameioFetchV4(path);
+    res.json(data);
+  } catch (err) {
+    res.status(502).json({ error: err.message });
+  }
+});
+
 // One-shot test: exercise createFrameFolder() end-to-end, then delete the test folder.
 router.post('/frameio-test-create-folder', async (req, res) => {
   const secret = req.headers['x-admin-secret'];

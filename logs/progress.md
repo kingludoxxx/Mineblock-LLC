@@ -1474,3 +1474,12 @@ OUTPUT: BEFORE: B0458, then B0449. AFTER 082: naming_convention = "PL - B0022 - 
 DECISIONS: DECISION MADE — purge (not renumber) the stale >21 PUURE rows: they are throwaway test residue and any surviving row keeps poisoning both the counter and the floor. Test artifacts created during testing (B0458 card 86carthj4, B0449 card 86carvzy3) were deleted from ClickUp and the DB.
 NOTE: the verification generation left a real brief B0022 in the pipeline at status 'generated' (id e73586ec-ed09-4d8c-a6bf-d2001f8d2fa1), not pushed. Kept deliberately — deleting it would leave the counter at 22 and skip B0022.
 STATUS: COMPLETE
+
+---
+TIMESTAMP: 2026-07-16 14:20
+TASK: brief-pipeline — PL naming convention must follow ClickUp's exact format
+BUILT: The ClickUp webhook rebuilds every PL card with reconcilePlName's canonical 9-slot shape (PL - B#### - BriefType - Avatar - Angle - CreativeType - Strategist - Editor - WK##_####) — no parent slot and NO creator slot. buildNamingConvention was still emitting the generic MB shape, which carries a creator slot and drops a null editor. The two only agreed BY COINCIDENCE: with no editor, the creator's 'NA' lands in the editor's position. With a real editor the pipeline would emit a 10th slot ("... - Ludovico - NA - Uly - WK29_2026") vs ClickUp's ("... - Ludovico - Uly - WK29_2026"). Gave PL its own branch mirroring reconcilePlName exactly; MB and everything else keep the original parent+creator+editor shape. Commit af14280.
+TESTED: node --check passed. Unit-compared the new PL builder against reconcilePlName's format across 3 cases: (1) no editor, (2) WITH editor (the previously broken case), (3) Menopause/VSL/Harmain. All three render byte-identical, 9 slots each. Deployed (dep-d9ce064s728c738tderg LIVE).
+OUTPUT: no-editor -> "PL - B0022 - NN - Product Aware - Promo - Mashup - Ludovico - NA - WK29_2026" (unchanged, no regression); with-editor -> "PL - B0022 - NN - Product Aware - Promo - Mashup - Ludovico - Uly - WK29_2026" (9 slots, was 10 with a stray NA).
+DECISIONS: DECISION MADE — branch on product_code === 'PL' rather than changing the shared builder, so the MB pipeline's naming is untouched. Left abbreviateAngle() in place: every angle the PL detector can emit (TSS/TCS/$V$/Promo) is absent from the ClickUp Angle dropdown, so reconcilePlName falls back to the name segment and preserves the abbreviation — no drift. (A drift would only appear if an angle were BOTH auto-detected AND an existing dropdown option, which none currently are.)
+STATUS: COMPLETE
