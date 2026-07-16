@@ -541,8 +541,8 @@ router.post('/repair-missing-ratios', authenticate, async (req, res) => {
                     (product_id, product_name, angle, aspect_ratio, status,
                      parent_creative_id, reference_name, reference_thumbnail,
                      adapted_text, source_label, pipeline, image_url, thumbnail_url,
-                     image_engine)
-                   VALUES ($1,$2,$3,$4,'review',$5,$6,$7,$8,$9,$10,$11,$11,$12)`,
+                     image_engine, product_image_index)
+                   VALUES ($1,$2,$3,$4,'review',$5,$6,$7,$8,$9,$10,$11,$11,$12,$13)`,
                   [
                     p.product_id || null,
                     p.product_name || null,
@@ -556,6 +556,7 @@ router.post('/repair-missing-ratios', authenticate, async (req, res) => {
                     p.pipeline || 'standard',
                     persisted,
                     p.image_engine || DEFAULT_ENGINE,
+                    Number.isInteger(p.product_image_index) ? p.product_image_index : 0,
                   ]
                 );
               }
@@ -1499,24 +1500,44 @@ async function shrinkForClaude(base64, mediaType) {
 }
 
 /**
- * Pull the first product image (data URI) from a product_profiles row.
+ * Pull a product image (data URI or URL) from a product_profiles row by index.
  * Handles both: (a) JSONB column auto-parsed to JS array by `pg`, and
  * (b) TEXT column that comes back as a JSON-encoded string.
- * Returns null if no image is found.
+ *
+ * imageIndex defaults to 0 for backward compatibility — every legacy caller
+ * that omitted the param keeps its original behavior (Mineblock non-regression).
+ * If the index is out of range, falls back to 0 (safest for cross-product
+ * differences; also protects against a queue item saved with an index that
+ * later became invalid).
+ *
+ * Returns null if the row has no images at all.
  */
-function firstProductImageFromRow(p) {
+function productImageAtIndex(p, imageIndex = 0) {
   let pi = p?.product_images;
   if (!pi) return null;
   if (typeof pi === 'string') {
-    // TEXT column with JSON content — must parse
     try { pi = JSON.parse(pi); } catch { return null; }
   }
-  if (Array.isArray(pi) && pi.length > 0) {
-    const first = pi[0];
-    if (typeof first === 'string' && first.length > 10) return first;
-    if (first && typeof first === 'object' && first.url) return first.url;
+  if (!Array.isArray(pi) || pi.length === 0) return null;
+  const idx = Number.isInteger(imageIndex) && imageIndex >= 0 && imageIndex < pi.length
+    ? imageIndex
+    : 0;
+  const entry = pi[idx];
+  if (typeof entry === 'string' && entry.length > 10) return entry;
+  if (entry && typeof entry === 'object' && entry.url) return entry.url;
+  // Chosen index was malformed — one more attempt at index 0
+  if (idx !== 0) {
+    const fallback = pi[0];
+    if (typeof fallback === 'string' && fallback.length > 10) return fallback;
+    if (fallback && typeof fallback === 'object' && fallback.url) return fallback.url;
   }
   return null;
+}
+
+// Legacy alias — every existing caller assumes "first image, always."
+// New callers should pass an explicit index via productImageAtIndex().
+function firstProductImageFromRow(p) {
+  return productImageAtIndex(p, 0);
 }
 
 async function ensureHttpUrlGlobal(url, label = 'img') {
@@ -2039,6 +2060,12 @@ router.post('/generate', authenticate, async (req, res) => {
     const pipelineStart = Date.now();
     try {
       const { reference_image_url, angle, angle_data, ratio, template_id } = req.body;
+      // NEW: product_image_index — deliberate shot selection. Defaults to 0 →
+      // Mineblock non-regression (every legacy caller kept getting image #1).
+      // Coerce to a safe int; productImageAtIndex clamps out-of-range to 0.
+      const productImageIndex = Number.isInteger(req.body.product_image_index)
+        ? req.body.product_image_index
+        : (parseInt(req.body.product_image_index, 10) || 0);
       // Image engine selector — defaults to NanoBanana for backwards compat.
       // Resolved once per /generate call; every ratio (parent + children) uses
       // the same engine so the creative is consistent.
@@ -2093,11 +2120,27 @@ router.post('/generate', authenticate, async (req, res) => {
             };
             Object.keys(freshProfile).forEach(k => freshProfile[k] === undefined && delete freshProfile[k]);
 
+            // Server-side product-image resolution for the requested shot.
+            // If caller sent product.product_image_url + product_image_index=0,
+            // we honor the client choice (back-compat). For any non-zero index
+            // we authoritatively resolve from the DB — the client can't be
+            // trusted to have the full product_images[] anyway.
+            let resolvedProductImageUrl = product.product_image_url;
+            if (productImageIndex > 0) {
+              const dbImage = productImageAtIndex(p, productImageIndex);
+              if (dbImage) {
+                resolvedProductImageUrl = dbImage;
+                console.log(`[staticsGeneration] product_image_index=${productImageIndex} → picked from DB (${dbImage.slice(0, 60)}...)`);
+              } else {
+                console.warn(`[staticsGeneration] product_image_index=${productImageIndex} out of range for product ${p.id} — falling back to client-supplied or index 0`);
+              }
+            }
             product = {
               ...product,
               name: p.name || product.name,
               description: p.description || product.description,
               price: p.price || product.price,
+              product_image_url: resolvedProductImageUrl,
               profile: freshProfile,
             };
             console.log(`[staticsGeneration] ✅ DB re-fetch: "${p.name}" — ${Object.keys(freshProfile).length} profile fields`);
@@ -2733,6 +2776,14 @@ router.post('/iterate/:creativeId', authenticate, async (req, res) => {
     const parentImMatch = String(parent.creative_id).match(/^IM(\d+)$/);
     const parentImNumber = parentImMatch ? parseInt(parentImMatch[1]) : null;
 
+    // Deliberate product-image selection — same contract as /generate.
+    // Default 0 = image #1 = back-compat with every legacy caller.
+    // The iteration inherits this same index for every variation it spawns,
+    // so a shot picked at iterate-time doesn't collapse back to #1.
+    const productImageIndex = Number.isInteger(req.body.product_image_index)
+      ? req.body.product_image_index
+      : (parseInt(req.body.product_image_index, 10) || 0);
+
     // productId is now required — silent default to "Miner Forge Pro" was a bug
     // (would generate wrong-brand ads if caller forgot the param).
     if (!productId) {
@@ -2750,7 +2801,7 @@ router.post('/iterate/:creativeId', authenticate, async (req, res) => {
         // same product context as /generate (was previously only 14 fields).
         product = {
           id: p.id, name: p.name, price: p.price, description: p.description,
-          product_image_url: firstProductImageFromRow(p),
+          product_image_url: productImageAtIndex(p, productImageIndex),
           profile: mapProductRowToFlatProfile(p),
         };
       }
@@ -2794,15 +2845,16 @@ router.post('/iterate/:creativeId', authenticate, async (req, res) => {
           (pipeline, product_id, product_name, status, aspect_ratio,
            source_label, reference_name, reference_thumbnail, angle,
            parent_creative_id_ref, parent_im_number, im_number, batch_id, batch_position,
-           image_engine)
+           image_engine, product_image_index)
         VALUES ('iteration', $1, $2, 'generating', $13,
-                $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $14)
         RETURNING id, im_number, source_label
       `, [
         productId, product.name, sourceLabel, parent.ad_name, parent.thumbnail_url,
         parent.angle, parent.creative_id, parentImNumber, imNum, batchId, i + 1,
         parentImageEngine,
         primaryRatio,
+        productImageIndex,
       ]);
       createdRows.push(row[0]);
     }
@@ -3157,8 +3209,9 @@ async function generateVariant(parent, newAspectRatio) {
       `INSERT INTO spy_creatives
         (product_id, product_name, angle, aspect_ratio, status,
          parent_creative_id, reference_name, reference_thumbnail,
-         adapted_text, swap_pairs, generation_prompt, source_label, pipeline)
-       VALUES ($1,$2,$3,$4,'generating',$5,$6,$7,$8,$9,$10,$11,$12)
+         adapted_text, swap_pairs, generation_prompt, source_label, pipeline,
+         product_image_index)
+       VALUES ($1,$2,$3,$4,'generating',$5,$6,$7,$8,$9,$10,$11,$12,$13)
        RETURNING *`,
       [
         parent.product_id || null,
@@ -3173,6 +3226,7 @@ async function generateVariant(parent, newAspectRatio) {
         parent.generation_prompt || null,
         parent.source_label || null,
         parent.pipeline || 'standard',
+        Number.isInteger(parent.product_image_index) ? parent.product_image_index : 0,
       ]
     );
     if (!childRows || childRows.length === 0) {
@@ -3705,6 +3759,11 @@ router.post('/creatives', authenticate, async (req, res) => {
       parent_creative_id,
       image_engine, // 'nanobanana' | 'openai' (default 'nanobanana' via DB)
     } = req.body;
+    // Deliberate product-image selection persisted on the row so regenerate +
+    // iterate can honor the same shot. Default 0 = image #1 = back-compat.
+    const productImageIndex = Number.isInteger(req.body.product_image_index)
+      ? req.body.product_image_index
+      : (parseInt(req.body.product_image_index, 10) || 0);
 
     if (!image_url) return res.status(400).json({ success: false, error: { message: 'image_url is required' } });
 
@@ -3759,8 +3818,8 @@ router.post('/creatives', authenticate, async (req, res) => {
          reference_image_id, source_label, reference_name, reference_thumbnail,
          adapted_text, claude_analysis, swap_pairs, generation_prompt,
          generation_task_id, pipeline, status, group_id, generated_copy, copy_set_id,
-         quality_warning, parent_creative_id, image_engine)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
+         quality_warning, parent_creative_id, image_engine, product_image_index)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
        RETURNING *`,
       [
         product_id || null,
@@ -3785,6 +3844,7 @@ router.post('/creatives', authenticate, async (req, res) => {
         quality_warning || null,
         parent_creative_id || null,
         image_engine || 'nanobanana',
+        productImageIndex,
       ]
     );
 
@@ -5755,7 +5815,8 @@ async function _doRegenerateBrokenPreviews(req, res) {
     const broken = idsFilter.length > 0
       ? await pgQuery(`
           SELECT id, product_id, angle, reference_thumbnail, aspect_ratio, status,
-                 COALESCE(image_engine, 'nanobanana') AS image_engine
+                 COALESCE(image_engine, 'nanobanana') AS image_engine,
+                 COALESCE(product_image_index, 0) AS product_image_index
           FROM spy_creatives
           WHERE id = ANY($1::uuid[])
           AND COALESCE(is_reference, FALSE) = FALSE
@@ -5765,7 +5826,8 @@ async function _doRegenerateBrokenPreviews(req, res) {
         `, [idsFilter])
       : await pgQuery(`
           SELECT id, product_id, angle, reference_thumbnail, aspect_ratio, status,
-                 COALESCE(image_engine, 'nanobanana') AS image_engine
+                 COALESCE(image_engine, 'nanobanana') AS image_engine,
+                 COALESCE(product_image_index, 0) AS product_image_index
           FROM spy_creatives
           WHERE status = ANY($1::text[])
           AND COALESCE(is_reference, FALSE) = FALSE  -- NEVER overwrite League/Meta/Upload reference rows
@@ -5811,7 +5873,9 @@ async function _doRegenerateBrokenPreviews(req, res) {
           // the same product context as /generate (was previously only 14 fields).
           const product = {
             id: p.id, name: p.name, price: p.price, description: p.description,
-            product_image_url: firstProductImageFromRow(p),
+            // Honor the operator's original shot pick for THIS creative — else
+            // regenerate would silently collapse every card back to image #1.
+            product_image_url: productImageAtIndex(p, row.product_image_index),
             profile: mapProductRowToFlatProfile(p),
           };
           if (!product.product_image_url) throw new Error('no product_image_url');

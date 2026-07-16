@@ -1358,10 +1358,16 @@ export default function StaticsGeneration() {
       const refTemplateId = references[0]?.id;
       const isTemplateUUID = typeof refTemplateId === 'string' && refTemplateId.includes('-');
 
+      // Derive the deliberate shot index the operator picked in the sidebar
+      // gallery. Falls back to 0 (image #1) whenever the URL isn't found in
+      // product_images — the safest default and preserves legacy behavior.
+      const _pImages = selectedProductRef.current?.product_images || [];
+      const productImageIndex = Math.max(0, _pImages.indexOf(resolvedProductUrl));
       const response = await api.post('/statics-generation/generate', {
         reference_image_url: resolvedReferenceUrl,
         template_id: isTemplateUUID ? refTemplateId : undefined,
         product_id: selectedProductRef.current?.id || selectedProductId || undefined,
+        product_image_index: productImageIndex,
         product: {
           id: selectedProductRef.current?.id || selectedProductId || undefined,
           name: productName,
@@ -1490,6 +1496,8 @@ export default function StaticsGeneration() {
         quality_warning: task.qualityWarning || null,
         parent_creative_id: parentId || null,
         image_engine: genResult.image_engine || imageEngine,
+        // Persist the operator's shot pick so regenerate + iterate honor it later.
+        product_image_index: productImageIndex,
       });
 
       const parentRes = await api.post('/statics-generation/creatives', buildSavePayload(parentTask, null));
@@ -1581,12 +1589,17 @@ export default function StaticsGeneration() {
     const isTemplateUUID = typeof refTemplateId === 'string' && refTemplateId.includes('-');
     const currentRef = references[references.length - 1] || references[0];
 
+    // Derive index once for this batch — every angle uses the same shot pick
+    const _allAnglesImages = full?.product_images || [];
+    const allAnglesImageIndex = Math.max(0, _allAnglesImages.indexOf(productImageUrl));
+
     for (const angleObj of productAngles) {
       try {
         const resp = await api.post('/statics-generation/generate', {
           reference_image_url: resolvedReferenceUrl,
           template_id: isTemplateUUID ? refTemplateId : undefined,
           product_id: full?.id || selectedProductId || undefined,
+          product_image_index: allAnglesImageIndex,
           product: {
             id: full?.id || selectedProductId || undefined,
             name: productName,
@@ -1668,6 +1681,7 @@ export default function StaticsGeneration() {
             reference_thumbnail: capturedRefUrl,
             reference_name: capturedRefName,
             pipeline: 'standard',
+            product_image_index: allAnglesImageIndex,
           });
           // Refresh to surface the new card in the Pipeline
           fetchCreatives(true);
@@ -1707,6 +1721,11 @@ export default function StaticsGeneration() {
       productDescription,
       productPrice,
       productImageUrl,
+      // Snapshot the picked shot index at enqueue time — the picker state may
+      // change before the queue runner fires, and each item must remember its
+      // own pick (otherwise every item collapses to whatever the sidebar
+      // shows at run time).
+      productImageIndex: Math.max(0, (selectedProductRef.current?.product_images || []).indexOf(productImageUrl)),
       aspectRatio,
       // Profile fields snapshot
       oneliner, customerAvatar, customerFrustration, customerDream,
@@ -1905,9 +1924,14 @@ export default function StaticsGeneration() {
               const refId = currentRef?.id;
               const isRefTemplate = typeof refId === 'string' && refId.includes('-');
 
+              // Queue item snapshotted the operator's product-image pick at
+              // enqueue time (see productImageIndex field). Falls back to 0.
+              const queueImageIndex = Number.isInteger(item.productImageIndex) ? item.productImageIndex : 0;
               const response = await api.post('/statics-generation/generate', {
                 reference_image_url: refUrl,
                 template_id: isRefTemplate ? refId : undefined,
+                product_id: item.productId || undefined,
+                product_image_index: queueImageIndex,
                 product: productPayload,
                 angle: item.customAngle || item.angle || undefined,
                 angle_data: !item.customAngle && item.angleData ? item.angleData : undefined,
@@ -1952,6 +1976,8 @@ export default function StaticsGeneration() {
                   source_label: currentRef?.source_label || currentRef?.name || null,
                   pipeline: 'standard',
                   parent_creative_id: parentId || null,
+                  // Persist the shot pick so regenerate + iterate honor it.
+                  product_image_index: queueImageIndex,
                 });
 
                 const parentRes = await api.post('/statics-generation/creatives', buildPayload(parentTask, null));
@@ -2661,6 +2687,7 @@ export default function StaticsGeneration() {
                       productDescription,
                       productPrice,
                       productImageUrl,
+                      productImageIndex: Math.max(0, (selectedProductRef.current?.product_images || []).indexOf(productImageUrl)),
                       aspectRatio,
                       oneliner, customerAvatar, customerFrustration, customerDream,
                       bigPromise, mechanism, differentiator, voice, guarantee,
@@ -2699,6 +2726,7 @@ export default function StaticsGeneration() {
                         productDescription,
                         productPrice,
                         productImageUrl,
+                        productImageIndex: Math.max(0, (ref.product_images || selectedProductRef.current?.product_images || []).indexOf(productImageUrl)),
                         aspectRatio,
                         oneliner, customerAvatar, customerFrustration, customerDream,
                         bigPromise, mechanism, differentiator, voice, guarantee,
