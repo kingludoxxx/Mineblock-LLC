@@ -997,6 +997,12 @@ export default function StaticsGeneration() {
   const [productDescription, setProductDescription] = useState('');
   const [productPrice, setProductPrice] = useState('');
   const [productImageUrl, setProductImageUrl] = useState('');
+  // True when the operator has manually clicked a thumbnail in the picker.
+  // When false, we send `product_image_index: null` to the backend so the
+  // server's smart resolver picks a shot from the angle (spreads across
+  // shots by default — the "10/10" shape). Any thumbnail click flips this
+  // to true and locks the shot for subsequent generations.
+  const [productImageIndexTouched, setProductImageIndexTouched] = useState(false);
   const [productFile, setProductFile] = useState(null);
   const [productPreview, setProductPreview] = useState('');
   const [selectedProductImages, setSelectedProductImages] = useState([]); // extra images selected for generation
@@ -1142,6 +1148,9 @@ export default function StaticsGeneration() {
         setProductImageUrl(fullProduct.product_images[0]);
         setProductPreview(fullProduct.product_images[0]);
       }
+      // New product selected → forget any prior picker override so the smart
+      // resolver takes over again (per-angle shot spread, iteration variety).
+      setProductImageIndexTouched(false);
       setOneliner(fullProduct.oneliner || '');
       setCustomerAvatar(fullProduct.customer_avatar || '');
       setCustomerFrustration(fullProduct.customer_frustration || '');
@@ -1358,11 +1367,14 @@ export default function StaticsGeneration() {
       const refTemplateId = references[0]?.id;
       const isTemplateUUID = typeof refTemplateId === 'string' && refTemplateId.includes('-');
 
-      // Derive the deliberate shot index the operator picked in the sidebar
-      // gallery. Falls back to 0 (image #1) whenever the URL isn't found in
-      // product_images — the safest default and preserves legacy behavior.
+      // Deliberate shot selection. When the operator locked a pick in the
+      // picker, send that exact index. When they left it on Auto, send null
+      // so the backend smart-resolves from the angle (different angles →
+      // different shots, no manual babysitting).
       const _pImages = selectedProductRef.current?.product_images || [];
-      const productImageIndex = Math.max(0, _pImages.indexOf(resolvedProductUrl));
+      const productImageIndex = productImageIndexTouched
+        ? Math.max(0, _pImages.indexOf(resolvedProductUrl))
+        : null;
       const response = await api.post('/statics-generation/generate', {
         reference_image_url: resolvedReferenceUrl,
         template_id: isTemplateUUID ? refTemplateId : undefined,
@@ -1427,6 +1439,12 @@ export default function StaticsGeneration() {
                 claudeAnalysis: statusData.claudeAnalysis || null,
                 swapPairs: statusData.swapPairs || null,
                 qualityWarning: statusData.quality_warning || null,
+                // Actual shot the backend used (backend smart-resolves when
+                // caller sends null). Persisted on POST /creatives so
+                // regenerate keeps hitting the SAME shot.
+                productImageIndex: Number.isInteger(statusData.product_image_index)
+                  ? statusData.product_image_index
+                  : null,
               };
             }
             if (statusData?.status === 'failed' || statusData?.error) {
@@ -1496,8 +1514,12 @@ export default function StaticsGeneration() {
         quality_warning: task.qualityWarning || null,
         parent_creative_id: parentId || null,
         image_engine: genResult.image_engine || imageEngine,
-        // Persist the operator's shot pick so regenerate + iterate honor it later.
-        product_image_index: productImageIndex,
+        // ACTUAL shot the backend used (task.productImageIndex from /status).
+        // Falls back to the pre-send index if the poll response didn't
+        // include it (older server), else 0. Regenerate honors this later.
+        product_image_index: Number.isInteger(task.productImageIndex)
+          ? task.productImageIndex
+          : (Number.isInteger(productImageIndex) ? productImageIndex : 0),
       });
 
       const parentRes = await api.post('/statics-generation/creatives', buildSavePayload(parentTask, null));
@@ -1589,9 +1611,13 @@ export default function StaticsGeneration() {
     const isTemplateUUID = typeof refTemplateId === 'string' && refTemplateId.includes('-');
     const currentRef = references[references.length - 1] || references[0];
 
-    // Derive index once for this batch — every angle uses the same shot pick
+    // Derive index once for this batch. When operator hasn't locked a shot,
+    // send null so the backend's smart resolver picks per-angle (different
+    // angles → different shots by default).
     const _allAnglesImages = full?.product_images || [];
-    const allAnglesImageIndex = Math.max(0, _allAnglesImages.indexOf(productImageUrl));
+    const allAnglesImageIndex = productImageIndexTouched
+      ? Math.max(0, _allAnglesImages.indexOf(productImageUrl))
+      : null;
 
     for (const angleObj of productAngles) {
       try {
@@ -1650,6 +1676,7 @@ export default function StaticsGeneration() {
           let imageUrl = null;
           let claudeAnalysis = null;
           let qualityWarning = null;
+          let resolvedProductImageIndex = null;
           for (let i = 0; i < 120; i++) {
             const delay = i < 10 ? 2000 : (i < 60 ? 4000 : 6000);
             await new Promise(r => setTimeout(r, delay));
@@ -1660,6 +1687,7 @@ export default function StaticsGeneration() {
                 imageUrl = sd.resultImageUrl;
                 claudeAnalysis = sd.claudeAnalysis || null;
                 qualityWarning = sd.quality_warning || null;
+                resolvedProductImageIndex = Number.isInteger(sd.product_image_index) ? sd.product_image_index : null;
                 break;
               }
               if (sd?.status === 'failed' || (sd?.error && sd.status !== 'processing')) break;
@@ -1667,7 +1695,9 @@ export default function StaticsGeneration() {
           }
           if (!imageUrl) return; // generation failed or timed out
 
-          // Save creative to DB so it appears in the Pipeline
+          // Save creative to DB so it appears in the Pipeline. Prefer the
+          // backend's resolved index (spread across angles) over the
+          // pre-send value which is null in Auto mode.
           await api.post('/statics-generation/creatives', {
             product_id: capturedProductId || null,
             product_name: capturedProductName,
@@ -1681,7 +1711,9 @@ export default function StaticsGeneration() {
             reference_thumbnail: capturedRefUrl,
             reference_name: capturedRefName,
             pipeline: 'standard',
-            product_image_index: allAnglesImageIndex,
+            product_image_index: Number.isInteger(resolvedProductImageIndex)
+              ? resolvedProductImageIndex
+              : (Number.isInteger(allAnglesImageIndex) ? allAnglesImageIndex : 0),
           });
           // Refresh to surface the new card in the Pipeline
           fetchCreatives(true);
@@ -1722,10 +1754,11 @@ export default function StaticsGeneration() {
       productPrice,
       productImageUrl,
       // Snapshot the picked shot index at enqueue time — the picker state may
-      // change before the queue runner fires, and each item must remember its
-      // own pick (otherwise every item collapses to whatever the sidebar
-      // shows at run time).
-      productImageIndex: Math.max(0, (selectedProductRef.current?.product_images || []).indexOf(productImageUrl)),
+      // change before the queue runner fires. When operator hasn't locked a
+      // shot (auto mode), null → backend smart-resolves per angle at run time.
+      productImageIndex: productImageIndexTouched
+        ? Math.max(0, (selectedProductRef.current?.product_images || []).indexOf(productImageUrl))
+        : null,
       aspectRatio,
       // Profile fields snapshot
       oneliner, customerAvatar, customerFrustration, customerDream,
@@ -1924,9 +1957,12 @@ export default function StaticsGeneration() {
               const refId = currentRef?.id;
               const isRefTemplate = typeof refId === 'string' && refId.includes('-');
 
-              // Queue item snapshotted the operator's product-image pick at
-              // enqueue time (see productImageIndex field). Falls back to 0.
-              const queueImageIndex = Number.isInteger(item.productImageIndex) ? item.productImageIndex : 0;
+              // Snapshot may be an int (operator locked a shot) or null
+              // (auto mode → backend smart-resolves from the angle at
+              // run time; different angles produce visually distinct statics).
+              const queueImageIndex = Number.isInteger(item.productImageIndex)
+                ? item.productImageIndex
+                : null;
               const response = await api.post('/statics-generation/generate', {
                 reference_image_url: refUrl,
                 template_id: isRefTemplate ? refId : undefined,
@@ -1976,8 +2012,12 @@ export default function StaticsGeneration() {
                   source_label: currentRef?.source_label || currentRef?.name || null,
                   pipeline: 'standard',
                   parent_creative_id: parentId || null,
-                  // Persist the shot pick so regenerate + iterate honor it.
-                  product_image_index: queueImageIndex,
+                  // Prefer the resolved index from /status (backend
+                  // smart-resolved from the angle). Fall back to enqueue-
+                  // time snapshot, else 0.
+                  product_image_index: Number.isInteger(task.productImageIndex)
+                    ? task.productImageIndex
+                    : (Number.isInteger(queueImageIndex) ? queueImageIndex : 0),
                 });
 
                 const parentRes = await api.post('/statics-generation/creatives', buildPayload(parentTask, null));
@@ -2517,7 +2557,28 @@ export default function StaticsGeneration() {
                         {/* Product image gallery — pick which images to send */}
                         {selectedProductRef.current?.product_images?.length > 1 && (
                           <div className="mt-2">
-                            <p className="text-xs text-zinc-500 mb-1.5">Click to set as main · Shift+click to add extra images</p>
+                            <div className="flex items-center justify-between mb-1.5">
+                              <p className="text-xs text-zinc-500">
+                                {productImageIndexTouched
+                                  ? 'Locked to your pick · click again to change'
+                                  : '🎯 Auto — server picks per angle & spreads iterations'}
+                              </p>
+                              {productImageIndexTouched && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setProductImageIndexTouched(false);
+                                    setProductImageUrl(selectedProductRef.current?.product_images?.[0] || '');
+                                    setProductPreview(selectedProductRef.current?.product_images?.[0] || '');
+                                  }}
+                                  className="text-xs text-orange-400 hover:text-orange-300 underline"
+                                  title="Return to smart-default (angle-driven) shot selection"
+                                >
+                                  Reset to auto
+                                </button>
+                              )}
+                            </div>
+                            <p className="text-xs text-zinc-500 mb-1.5">Click to lock as main · Shift+click to add extra images</p>
                             <div className="flex gap-1.5 flex-wrap">
                               {selectedProductRef.current.product_images.map((img, i) => {
                                 const isMain = img === productImageUrl;
@@ -2533,10 +2594,12 @@ export default function StaticsGeneration() {
                                           prev.includes(img) ? prev.filter(x => x !== img) : [...prev, img].slice(0, 3)
                                         );
                                       } else {
-                                        // Set as main product image
+                                        // Manual pick — LOCK this shot for future generations
+                                        // (backend stops smart-resolving until operator clicks "Reset to auto").
                                         setProductImageUrl(img);
                                         setProductPreview(img);
                                         setProductFile(null);
+                                        setProductImageIndexTouched(true);
                                       }
                                     }}
                                     className={`relative w-12 h-12 rounded border-2 overflow-hidden transition-all ${
@@ -2687,7 +2750,9 @@ export default function StaticsGeneration() {
                       productDescription,
                       productPrice,
                       productImageUrl,
-                      productImageIndex: Math.max(0, (selectedProductRef.current?.product_images || []).indexOf(productImageUrl)),
+                      productImageIndex: productImageIndexTouched
+                        ? Math.max(0, (selectedProductRef.current?.product_images || []).indexOf(productImageUrl))
+                        : null,
                       aspectRatio,
                       oneliner, customerAvatar, customerFrustration, customerDream,
                       bigPromise, mechanism, differentiator, voice, guarantee,
@@ -2726,7 +2791,9 @@ export default function StaticsGeneration() {
                         productDescription,
                         productPrice,
                         productImageUrl,
-                        productImageIndex: Math.max(0, (ref.product_images || selectedProductRef.current?.product_images || []).indexOf(productImageUrl)),
+                        productImageIndex: productImageIndexTouched
+                          ? Math.max(0, (ref.product_images || selectedProductRef.current?.product_images || []).indexOf(productImageUrl))
+                          : null,
                         aspectRatio,
                         oneliner, customerAvatar, customerFrustration, customerDream,
                         bigPromise, mechanism, differentiator, voice, guarantee,

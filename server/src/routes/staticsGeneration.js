@@ -1540,6 +1540,70 @@ function firstProductImageFromRow(p) {
   return productImageAtIndex(p, 0);
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// Smart product-image index resolver — this is the "10/10 shape" from the
+// multiproduct brief §2A.1. Without it, every static collapses to shot #1
+// visually because the picker default (0) is what gets sent.
+//
+// Contract:
+//   - explicitIndex (int, ≥0)   → operator override wins, always
+//   - explicitIndex null/undef → derive from angle position + iterationIndex
+//   - productImagesLength ≤ 1  → return 0 (nothing to spread across)
+//
+// How the derivation works:
+//   base   = position of `angle` inside productAngles, mod images length.
+//            Same angle → same shot deterministically (predictable across runs).
+//            Falls back to a stable string-hash of the angle name if the angle
+//            list is missing; else 0.
+//   offset = iterationIndex (0-based). Each variation N of an iterate call
+//            uses (base + N) % length so a 5-variation iteration on a
+//            5-image product covers every shot.
+//   result = (base + offset) % length
+//
+// Regression posture: no angle + no explicit + no iteration → base=0 offset=0
+// → index 0. Identical to legacy `pi[0]` behavior. Mineblock's existing single-
+// shot flows do NOT change behavior unless an angle is set (which is the
+// exact case the operator wants variety in).
+// ─────────────────────────────────────────────────────────────────────────
+function resolveProductImageIndex({ explicitIndex, angle, productAngles, iterationIndex, productImagesLength }) {
+  const len = Number.isInteger(productImagesLength) ? productImagesLength : 0;
+  if (len <= 1) return 0;
+
+  // Explicit override — operator or upstream code already picked a shot.
+  if (Number.isInteger(explicitIndex) && explicitIndex >= 0) {
+    return explicitIndex % len;
+  }
+
+  // Derive base from angle position in the product's angle list.
+  let base = 0;
+  const angleName = typeof angle === 'string' ? angle.trim() : '';
+  if (angleName) {
+    if (Array.isArray(productAngles) && productAngles.length > 0) {
+      const idx = productAngles.findIndex(a => {
+        const n = (a?.name || '').trim().toLowerCase();
+        return n && n === angleName.toLowerCase();
+      });
+      if (idx >= 0) base = idx % len;
+      else base = stableStringHash(angleName) % len;
+    } else {
+      base = stableStringHash(angleName) % len;
+    }
+  }
+  const offset = Number.isInteger(iterationIndex) && iterationIndex >= 0 ? iterationIndex : 0;
+  return (base + offset) % len;
+}
+
+// Stable non-cryptographic 32-bit string hash. Deterministic across processes,
+// unlike JS's built-in hashing, so "Anti-Fake / Competitor Callout" always
+// resolves to the same shot for a given product images length.
+function stableStringHash(str) {
+  let h = 0;
+  for (let i = 0; i < str.length; i++) {
+    h = ((h << 5) - h + str.charCodeAt(i)) | 0;
+  }
+  return Math.abs(h);
+}
+
 async function ensureHttpUrlGlobal(url, label = 'img') {
   const GLOBAL_SERVER_URL = process.env.RENDER_EXTERNAL_URL || `http://localhost:${process.env.PORT || 3000}`;
   if (!url) return url;
@@ -2060,12 +2124,20 @@ router.post('/generate', authenticate, async (req, res) => {
     const pipelineStart = Date.now();
     try {
       const { reference_image_url, angle, angle_data, ratio, template_id } = req.body;
-      // NEW: product_image_index — deliberate shot selection. Defaults to 0 →
-      // Mineblock non-regression (every legacy caller kept getting image #1).
-      // Coerce to a safe int; productImageAtIndex clamps out-of-range to 0.
-      const productImageIndex = Number.isInteger(req.body.product_image_index)
+      // Deliberate shot selection — see resolveProductImageIndex() for the
+      // full contract. If the caller sent an explicit int, that wins (operator
+      // manual pick). If null/undef, we resolve smartly from the angle so
+      // different angles produce different visuals by default (the whole
+      // point of the multiproduct brief §2A.1).
+      const explicitProductImageIndex = Number.isInteger(req.body.product_image_index)
         ? req.body.product_image_index
-        : (parseInt(req.body.product_image_index, 10) || 0);
+        : (typeof req.body.product_image_index === 'string' && req.body.product_image_index !== ''
+            ? parseInt(req.body.product_image_index, 10)
+            : null);
+      // Actual resolution happens after DB re-fetch (need productAngles + images length).
+      // Placeholder kept for downstream code that expects an int — we'll assign it
+      // once we have the product row.
+      let productImageIndex = 0;
       // Image engine selector — defaults to NanoBanana for backwards compat.
       // Resolved once per /generate call; every ratio (parent + children) uses
       // the same engine so the creative is consistent.
@@ -2120,20 +2192,30 @@ router.post('/generate', authenticate, async (req, res) => {
             };
             Object.keys(freshProfile).forEach(k => freshProfile[k] === undefined && delete freshProfile[k]);
 
-            // Server-side product-image resolution for the requested shot.
-            // If caller sent product.product_image_url + product_image_index=0,
-            // we honor the client choice (back-compat). For any non-zero index
-            // we authoritatively resolve from the DB — the client can't be
-            // trusted to have the full product_images[] anyway.
-            let resolvedProductImageUrl = product.product_image_url;
-            if (productImageIndex > 0) {
-              const dbImage = productImageAtIndex(p, productImageIndex);
-              if (dbImage) {
-                resolvedProductImageUrl = dbImage;
-                console.log(`[staticsGeneration] product_image_index=${productImageIndex} → picked from DB (${dbImage.slice(0, 60)}...)`);
-              } else {
-                console.warn(`[staticsGeneration] product_image_index=${productImageIndex} out of range for product ${p.id} — falling back to client-supplied or index 0`);
-              }
+            // Smart shot selection. Different angles → different shots by
+            // default, so a batch of "8 angles queued" produces 8 visually
+            // distinct statics instead of 8 renders of the same product photo.
+            const _pImages = (() => {
+              let raw = p.product_images;
+              if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch { raw = []; } }
+              return Array.isArray(raw) ? raw : [];
+            })();
+            productImageIndex = resolveProductImageIndex({
+              explicitIndex: explicitProductImageIndex,
+              angle,
+              productAngles: Array.isArray(p.angles) ? p.angles : [],
+              iterationIndex: null,
+              productImagesLength: _pImages.length,
+            });
+            // If explicit was provided (operator manual pick), honor the exact
+            // resolved index. Otherwise, still respect the resolved smart index —
+            // NOT the client-supplied product_image_url, which was picked by an
+            // outdated code path (frontend picker default = 0 always).
+            const dbImage = productImageAtIndex(p, productImageIndex);
+            const resolvedProductImageUrl = dbImage || product.product_image_url;
+            if (dbImage) {
+              const src = explicitProductImageIndex != null ? 'explicit' : `smart(angle="${(angle||'').slice(0, 30)}")`;
+              console.log(`[staticsGeneration] product_image_index=${productImageIndex}/${_pImages.length} via ${src} → ${dbImage.slice(0, 60)}...`);
             }
             product = {
               ...product,
@@ -2374,6 +2456,9 @@ router.post('/generate', authenticate, async (req, res) => {
             model: engine.describe(),
             claudeAnalysis: claudeResult,
             quality_warning: null,
+            // Return the actual shot the backend used so POST /creatives
+            // persists the SAME index (regenerate can then honor it).
+            product_image_index: productImageIndex,
           });
           return { taskId: childTaskId, ratio: r, resultImageUrl };
         } catch (err) {
@@ -2409,6 +2494,9 @@ router.post('/generate', authenticate, async (req, res) => {
             model: engine.describe(),
             claudeAnalysis: claudeResult,
             quality_warning: null,
+            // Return the actual shot the backend used so POST /creatives
+            // persists the SAME index (regenerate can then honor it).
+            product_image_index: productImageIndex,
           });
           return { taskId: childTaskId, ratio: r, resultImageUrl };
         } catch (err) {
@@ -2564,6 +2652,9 @@ router.get('/status/:taskId', authenticate, async (req, res) => {
           claudeAnalysis: result.claudeAnalysis || null,
           error: result.error || null,
           quality_warning: result.quality_warning || null,
+          // Actual resolved shot the backend used — frontend persists this
+          // in POST /creatives so regenerate can honor the same pick.
+          product_image_index: Number.isInteger(result.product_image_index) ? result.product_image_index : null,
         },
       });
     }
@@ -2777,12 +2868,14 @@ router.post('/iterate/:creativeId', authenticate, async (req, res) => {
     const parentImNumber = parentImMatch ? parseInt(parentImMatch[1]) : null;
 
     // Deliberate product-image selection — same contract as /generate.
-    // Default 0 = image #1 = back-compat with every legacy caller.
-    // The iteration inherits this same index for every variation it spawns,
-    // so a shot picked at iterate-time doesn't collapse back to #1.
-    const productImageIndex = Number.isInteger(req.body.product_image_index)
+    // Explicit override wins; otherwise we resolve per-variation below so each
+    // of the N iterations spreads across the product's shots (the fix for the
+    // "every iteration looks the same" complaint).
+    const explicitProductImageIndex = Number.isInteger(req.body.product_image_index)
       ? req.body.product_image_index
-      : (parseInt(req.body.product_image_index, 10) || 0);
+      : (typeof req.body.product_image_index === 'string' && req.body.product_image_index !== ''
+          ? parseInt(req.body.product_image_index, 10)
+          : null);
 
     // productId is now required — silent default to "Miner Forge Pro" was a bug
     // (would generate wrong-brand ads if caller forgot the param).
@@ -2790,6 +2883,12 @@ router.post('/iterate/:creativeId', authenticate, async (req, res) => {
       return res.status(400).json({ success: false, error: { message: 'productId is required' } });
     }
     let product = { id: productId, name: '', profile: {} };
+    // Cached shape used by the variation loop below to pick a distinct shot
+    // per iteration. Set inside the DB-fetch block so we only parse
+    // product_images once.
+    let productImagesLen = 0;
+    let productAngles = [];
+    let productRowRef = null;
     {
       const prodRows = await pgQuery('SELECT * FROM product_profiles WHERE id = $1', [productId]);
       if (prodRows.length === 0) {
@@ -2797,11 +2896,20 @@ router.post('/iterate/:creativeId', authenticate, async (req, res) => {
       }
       {
         const p = prodRows[0];
+        productRowRef = p;
+        productAngles = Array.isArray(p.angles) ? p.angles : [];
+        {
+          let raw = p.product_images;
+          if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch { raw = []; } }
+          productImagesLen = Array.isArray(raw) ? raw.length : 0;
+        }
         // Full profile mapping via shared helper — ensures /iterate has the
         // same product context as /generate (was previously only 14 fields).
+        // product_image_url stays a placeholder — the actual per-variation
+        // shot resolves inside the variation loop below.
         product = {
           id: p.id, name: p.name, price: p.price, description: p.description,
-          product_image_url: productImageAtIndex(p, productImageIndex),
+          product_image_url: null,
           profile: mapProductRowToFlatProfile(p),
         };
       }
@@ -2834,10 +2942,22 @@ router.post('/iterate/:creativeId', authenticate, async (req, res) => {
       }
     }
 
-    // Pre-allocate spy_creatives rows + assign IM numbers
+    // Pre-allocate spy_creatives rows + assign IM numbers.
+    // Iteration-spread: variation i gets shot index (base + i) % len so N
+    // variations produce N visually distinct statics (10/10 fix for the
+    // "every iteration looks the same" bug).
     const batchId = crypto.randomUUID();
     const createdRows = [];
+    const perVariationIndexes = [];
     for (let i = 0; i < variations; i++) {
+      const perVarIndex = resolveProductImageIndex({
+        explicitIndex: explicitProductImageIndex,
+        angle: parent.angle,
+        productAngles,
+        iterationIndex: i,
+        productImagesLength: productImagesLen,
+      });
+      perVariationIndexes.push(perVarIndex);
       const imNum = await assignNextImNumber();
       const sourceLabel = `IM${imNum} - IT - ${parent.creative_id}`;
       const row = await pgQuery(`
@@ -2854,10 +2974,11 @@ router.post('/iterate/:creativeId', authenticate, async (req, res) => {
         parent.angle, parent.creative_id, parentImNumber, imNum, batchId, i + 1,
         parentImageEngine,
         primaryRatio,
-        productImageIndex,
+        perVarIndex,
       ]);
       createdRows.push(row[0]);
     }
+    console.log(`[iterate] batch ${batchId.slice(0,8)}: ${variations} variations spread across shots [${perVariationIndexes.join(',')}] (product has ${productImagesLen} images)`);
 
     // Mark parent as iterated (UI "last iterated" timestamp)
     await pgQuery(
@@ -2903,13 +3024,12 @@ router.post('/iterate/:creativeId', authenticate, async (req, res) => {
       }
 
       const customPrompts = (await getCustomStaticsPrompts().catch(() => null)) || getDefaultStaticsPrompts();
-      const productHttpUrl = product.product_image_url
-        ? await ensureHttpUrlGlobal(product.product_image_url, 'iter-product').catch(() => null)
-        : null;
 
       // Step B: process each variation in parallel — each variation tests
       // a DIFFERENT element (Hook, CTA, Visual, Proof, Offer in priority
-      // order). Single-variable isolation = scientific iteration.
+      // order) AND uses a DIFFERENT product image (via perVariationIndexes).
+      // Single-variable isolation on Claude side + shot spread on NB side =
+      // scientifically iterated statics that actually look visually distinct.
       //
       // STAGGERED LAUNCH: 1.5s gap between variations to avoid hammering
       // NanoBanana / OpenAI with simultaneous parallel jobs (which caused
@@ -2923,6 +3043,14 @@ router.post('/iterate/:creativeId', authenticate, async (req, res) => {
         const variationAngle = `${parent.angle || 'Winner iteration'} — ${strategy.label}`;
         const iterationDirective = buildIterationDirective(strategyKey);
         const tagPrefix = `[iter ${batchId.slice(0,8)} ${idx+1}/${variations} ${strategy.label}]`;
+
+        // Per-variation product image — the whole point of iteration spread.
+        const perVarIndex = perVariationIndexes[idx] ?? 0;
+        const perVarProductImage = productImageAtIndex(productRowRef, perVarIndex);
+        const productHttpUrl = perVarProductImage
+          ? await ensureHttpUrlGlobal(perVarProductImage, 'iter-product').catch(() => null)
+          : null;
+        console.log(`${tagPrefix} product_image_index=${perVarIndex}/${productImagesLen}`);
         try {
           // Step B1: Claude analysis on the parent ad image — directive
           // PREPENDED so Claude knows which single variable it's allowed
