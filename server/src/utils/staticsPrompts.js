@@ -108,10 +108,35 @@ export function buildClaudeAnalysisPrompt(product = {}, angle = '', template = '
     // Compliance / misc
     COMPLIANCE:           p.compliance        || '',
     NOTES:                p.notes             || '',
+    // Full master brief — the operator's authoritative product document
+    // (angle strategy, mechanism, avatar deep-dive, offer, compliance).
+    // Mirrors briefPipeline.js buildProductContextForBrief:2521. Rendered
+    // inside a labeled block by the template so Claude knows it's the
+    // primary source of truth. Empty string → template block collapses
+    // to whitespace (harmless).
+    MASTER_BRIEF:         renderMasterBriefBlock(p.master_brief),
     PRODUCT_IMAGE_NOTE:   extras.PRODUCT_IMAGE_NOTE || '',
     ...extras,
   };
   return interpolate(template, vars);
+}
+
+/**
+ * Wrap the master_brief in a labeled block so Claude recognizes it as
+ * primary source-of-truth (not just more flat context). Empty when the
+ * product has no brief. Soft-caps at 40,000 chars (~10k tokens) with a
+ * loud log line — brief §4 gotcha: "Never silently truncate — if you cap
+ * it, log it."
+ */
+const MASTER_BRIEF_MAX_CHARS = 40000;
+function renderMasterBriefBlock(masterBrief) {
+  if (!masterBrief || typeof masterBrief !== 'string' || !masterBrief.trim()) return '';
+  let body = masterBrief.trim();
+  if (body.length > MASTER_BRIEF_MAX_CHARS) {
+    console.warn(`[staticsPrompts] MASTER_BRIEF capped: ${body.length} → ${MASTER_BRIEF_MAX_CHARS} chars (${body.length - MASTER_BRIEF_MAX_CHARS} truncated). Consider trimming the source or raising MASTER_BRIEF_MAX_CHARS.`);
+    body = body.slice(0, MASTER_BRIEF_MAX_CHARS) + '\n\n[…truncated for token budget]';
+  }
+  return `\n\n===== MASTER PRODUCT BRIEF — FULL DOCUMENT (primary source of truth) =====\n\n${body}`;
 }
 
 /**
@@ -163,6 +188,10 @@ export function mapProductRowToFlatProfile(row = {}) {
     category:             row.category    || '',
     unit_details:         row.unit_details || '',
     product_url:          row.product_url || '',
+    // Full 24k-char product document — passed through raw so
+    // buildClaudeAnalysisPrompt can wrap it in the labeled block.
+    // Puure's master brief holds every detail statics currently misses.
+    master_brief:         row.master_brief || '',
   };
 }
 

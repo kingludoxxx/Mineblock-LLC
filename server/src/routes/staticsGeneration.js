@@ -982,6 +982,62 @@ const MAX_TEMP_IMAGES = 200;
   }
 })();
 
+// ─────────────────────────────────────────────────────────────────────────
+// Signature-based statics-prompt re-seeder (multiproduct-brief §4 pattern).
+//
+// The problem the brief calls out: prompts are DB-stored, so a new
+// {{TEMPLATE_VAR}} in the code default is inert until the stored row
+// references it. Silently doing nothing is worse than a crash — Puure
+// generations "look deployed" but never see the master brief.
+//
+// Signature strategy: pick a distinct string from the newest template
+// revision that would NOT appear in any older revision. On boot, load the
+// DB copy; if it lacks the signature, force-overwrite with the current
+// baked default (one-shot upgrade). Operator edits made AFTER the upgrade
+// keep the signature and are therefore left alone on subsequent boots.
+//
+// Signature "MASTER PRODUCT BRIEF — FULL DOCUMENT" ships with the
+// {{MASTER_BRIEF}} interpolation block in getDefaultStaticsPrompts() —
+// the string exists nowhere else. Bumping the marker on future revisions
+// will force another one-shot refresh.
+// ─────────────────────────────────────────────────────────────────────────
+const STATICS_CLAUDE_SIGNATURE = 'MASTER PRODUCT BRIEF — FULL DOCUMENT';
+(async () => {
+  try {
+    await new Promise(r => setTimeout(r, 6000)); // let migrations settle
+    const rows = await pgQuery(`SELECT value FROM system_settings WHERE key = 'statics_prompts'`);
+    if (rows.length === 0) {
+      console.log('[boot] statics_prompts: no DB row yet — baked defaults will be used on first read (already include MASTER_BRIEF)');
+      return;
+    }
+    const raw = rows[0].value;
+    const data = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    const currentClaude = (data && typeof data.claude_analysis === 'string') ? data.claude_analysis : '';
+    if (currentClaude.includes(STATICS_CLAUDE_SIGNATURE) && currentClaude.includes('{{MASTER_BRIEF}}')) {
+      // Already on the master-brief revision — leave operator edits alone.
+      return;
+    }
+    // Missing the signature → force-overwrite claude_analysis with the current
+    // baked default. Keep operator's nanobanana_image + ai_adjustment intact.
+    const defaults = getDefaultStaticsPrompts();
+    const merged = {
+      claude_analysis:  defaults.claude_analysis,
+      nanobanana_image: data?.nanobanana_image || defaults.nanobanana_image,
+      ai_adjustment:    data?.ai_adjustment    || defaults.ai_adjustment,
+    };
+    await pgQuery(
+      `INSERT INTO system_settings (key, value, description)
+       VALUES ('statics_prompts', $1, 'Pipeline prompts for statics generation — 3-prompt architecture')
+       ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()`,
+      [JSON.stringify(merged)]
+    );
+    staticsPromptsCache = { data: null, timestamp: 0 };
+    console.log('[boot] statics_prompts: force-refreshed claude_analysis to include {{MASTER_BRIEF}} block (operator edits to other prompts preserved)');
+  } catch (err) {
+    console.warn('[boot] statics_prompts re-seed failed:', err.message);
+  }
+})();
+
 // Pre-warm the Meta Graph account-name cache so the first operator who
 // opens the Meta Import modal after Render restart doesn't pay the cold-
 // cache penalty (up to 8s × N accounts). Fire-and-forget — the handler
@@ -1702,6 +1758,7 @@ Discount Codes: {{DISCOUNT_CODES}}
 Offers: {{OFFERS}}
 Compliance — never claim: {{COMPLIANCE}}
 Operator Notes: {{NOTES}}{{PRODUCT_IMAGE_NOTE}}
+{{MASTER_BRIEF}}
 
 Analyze the reference image and respond in valid JSON only:
 {
@@ -2189,6 +2246,11 @@ router.post('/generate', authenticate, async (req, res) => {
               unitDetails: p.unit_details || undefined,
               shortName: p.short_name || undefined,
               offers: p.offers?.length > 0 ? p.offers : undefined,
+              // Puure's 24,451-char master brief. buildClaudeAnalysisPrompt
+              // wraps it in a labeled block via renderMasterBriefBlock so
+              // Claude treats it as primary source of truth. Empty for
+              // products without a brief — the block collapses silently.
+              masterBrief: p.master_brief || undefined,
             };
             Object.keys(freshProfile).forEach(k => freshProfile[k] === undefined && delete freshProfile[k]);
 
@@ -2272,6 +2334,7 @@ router.post('/generate', authenticate, async (req, res) => {
         unit_details:            product.profile?.unitDetails,
         short_name:              product.profile?.shortName,
         offers:                  product.profile?.offers,
+        master_brief:            product.profile?.masterBrief,
       };
       const profileForPrompt = mapProductRowToFlatProfile(profileSource);
       const productForPrompt = { ...product, profile: profileForPrompt };
