@@ -2680,6 +2680,77 @@ export default function StaticsGeneration() {
                   </>
                 )}
 
+                {/* Product-image picker for LIBRARY products (mirror of the
+                    manual-entry gallery). Only shows when a library product
+                    is selected AND it has more than one shot to choose
+                    between. Without this, the picker inside the manual-entry
+                    fallback is unreachable in the real workflow — every
+                    library-driven generation would collapse to shot #1
+                    (the pre-Workstream-A behavior). */}
+                {selectedProductId && selectedProductRef.current?.product_images?.length > 1 && (
+                  <div className="bg-[#111] border border-white/[0.06] rounded-lg p-4 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-sm font-medium text-white">Product Photo</h3>
+                      <span className="text-[10px] font-mono text-zinc-500">
+                        {selectedProductRef.current.product_images.length} shots
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <p className="text-xs text-zinc-500">
+                        {productImageIndexTouched
+                          ? 'Locked to your pick · click a thumbnail to change'
+                          : '🎯 Auto — server picks per angle & spreads iterations'}
+                      </p>
+                      {productImageIndexTouched && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setProductImageIndexTouched(false);
+                            setProductImageUrl(selectedProductRef.current?.product_images?.[0] || '');
+                            setProductPreview(selectedProductRef.current?.product_images?.[0] || '');
+                          }}
+                          className="text-xs text-orange-400 hover:text-orange-300 underline"
+                          title="Return to smart-default (angle-driven) shot selection"
+                        >
+                          Reset to auto
+                        </button>
+                      )}
+                    </div>
+                    <div className="flex gap-1.5 flex-wrap">
+                      {selectedProductRef.current.product_images.map((img, i) => {
+                        const isMain = productImageIndexTouched && img === productImageUrl;
+                        return (
+                          <button
+                            key={i}
+                            type="button"
+                            onClick={() => {
+                              // Manual pick — LOCK this shot for future generations.
+                              setProductImageUrl(img);
+                              setProductPreview(img);
+                              setProductFile(null);
+                              setProductImageIndexTouched(true);
+                            }}
+                            className={`relative w-14 h-14 rounded border-2 overflow-hidden transition-all ${
+                              isMain
+                                ? 'border-orange-500 ring-1 ring-orange-500/50'
+                                : 'border-white/10 hover:border-white/30'
+                            }`}
+                            title={isMain ? `Locked: shot ${i + 1}` : `Click to lock shot ${i + 1}`}
+                          >
+                            <img src={img} alt="" className="w-full h-full object-cover" />
+                            <span className="absolute bottom-0 right-0 text-[8px] font-mono font-bold bg-black/70 text-white px-1 rounded-tl">{i + 1}</span>
+                            {isMain && (
+                              <div className="absolute inset-0 bg-orange-500/25 flex items-center justify-center">
+                                <span className="text-[8px] font-bold text-orange-200">LOCKED</span>
+                              </div>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
                 {/* Selected product summary */}
               </div>
 
