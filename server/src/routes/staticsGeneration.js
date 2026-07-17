@@ -8359,6 +8359,33 @@ router.delete('/reference-ads/:id', authenticate, async (req, res) => {
   }
 });
 
+// POST /url-to-r2 — small utility for browser-side flows that hit CORS
+// when trying to fetch a public URL directly. Server fetches the URL,
+// uploads bytes to R2, returns the permanent https URL. Zero side effects
+// (no spy_creatives row, no product_profiles change). Used for wiring
+// product images from public hosts into product_profiles.product_images.
+// Body: { url: 'https://...', prefix?: 'string' }
+router.post('/url-to-r2', authenticate, async (req, res) => {
+  try {
+    const srcUrl = req.body?.url;
+    if (!srcUrl || typeof srcUrl !== 'string' || !/^https?:\/\//i.test(srcUrl)) {
+      return res.status(400).json({ success: false, error: { message: 'url (http/https) is required' } });
+    }
+    if (!isR2Configured() || !process.env.R2_PUBLIC_URL) {
+      return res.status(503).json({ success: false, error: { message: 'R2 not configured' } });
+    }
+    const prefix = (req.body?.prefix && typeof req.body.prefix === 'string') ? req.body.prefix : 'external-url';
+    const { url: r2Url } = await uploadFromUrl(srcUrl, prefix);
+    if (!r2Url || !r2Url.startsWith('http')) {
+      return res.status(500).json({ success: false, error: { message: `uploadFromUrl returned non-http: ${(r2Url||'').slice(0,80)}` } });
+    }
+    res.json({ success: true, data: { r2_url: r2Url, source_url: srcUrl } });
+  } catch (err) {
+    console.error('[url-to-r2] error:', err);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
 // 9. POST /reference-ads/upload — upload an image file from disk as a reference.
 // Body: { image_data_uri: 'data:image/...;base64,...', label?: string, angle?: string }
 router.post('/reference-ads/upload', authenticate, async (req, res) => {
