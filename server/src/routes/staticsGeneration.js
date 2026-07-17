@@ -6414,13 +6414,24 @@ router.get('/templates/classify-all/status', authenticate, async (_req, res) => 
 // pre-shrunk resized_image_url (~320px) upscales blurry. The Brand Spy UI
 // helper (brandSpyDb.js) keeps resized-first for its narrower grids; this
 // SQL is statics-import-specific.
+// Prefer R2-mirrored thumbnails FIRST (instant load, permanent URL, no CORS
+// throttling from Meta CDN). The brandSpyMediaMirror background service
+// populates `thumbnail_url_r2` for every ad — see server/src/services/
+// brandSpyMediaMirror.js. Only fall back to raw fbcdn if the ad hasn't been
+// mirrored yet. This is the single-line fix that turned the League import
+// modal from 500-simultaneous-fbcdn-fetches into 500-r2-fetches.
+//
+// Fbcdn fallback order also swapped: resized (smaller, faster) before original
+// (full-size, huge). Previously loaded originals-first, which meant every card
+// pulled a multi-MB image over a throttled CDN.
 const BRAND_SPY_THUMB_SQL = `
   COALESCE(
+    a.thumbnail_url_r2,
     a.raw_snapshot->'videos'->0->>'video_preview_image_url',
-    a.raw_snapshot->'images'->0->>'original_image_url',
     a.raw_snapshot->'images'->0->>'resized_image_url',
-    a.raw_snapshot->'cards'->0->>'original_image_url',
     a.raw_snapshot->'cards'->0->>'resized_image_url',
+    a.raw_snapshot->'images'->0->>'original_image_url',
+    a.raw_snapshot->'cards'->0->>'original_image_url',
     a.raw_snapshot->>'page_profile_picture_url'
   )
 `;
@@ -6609,12 +6620,20 @@ router.get('/league/ads', authenticate, async (req, res) => {
         AND d.ad_archive_id = a.ad_archive_id
     )`);
 
+    // Perf fix: order ALREADY-MIRRORED (thumbnail_url_r2 populated) ads FIRST.
+    // The modal fills the visible viewport with instant-loading R2 thumbs;
+    // any un-mirrored fbcdn stragglers fall to the tail and load lazily
+    // when the operator scrolls. LIMIT capped at 100 (was 500) — screen
+    // shows ~12 at a time; 100 covers half a dozen scrolls without dumping
+    // a full brand's catalog into one JSON response.
+    const limit = Math.max(20, Math.min(200, parseInt(req.query.limit, 10) || 100));
     const sql = `
       SELECT
         a.id, a.ad_archive_id, a.headline, a.body_text, a.display_format,
         a.tier, a.tier_score, a.current_rank, a.is_active,
         a.start_date, a.end_date, a.active_days,
         ${BRAND_SPY_THUMB_SQL} AS image_url,
+        (a.thumbnail_url_r2 IS NOT NULL) AS is_r2_mirrored,
         EXISTS (
           SELECT 1 FROM spy_creatives sc
           WHERE sc.imported_from = 'league'
@@ -6622,11 +6641,14 @@ router.get('/league/ads', authenticate, async (req, res) => {
         ) AS already_imported
       FROM brand_spy.ads a
       WHERE ${where.join(' AND ')}
-      ORDER BY a.tier_score DESC NULLS LAST, a.current_rank ASC NULLS LAST
-      LIMIT 500
+      ORDER BY
+        (a.thumbnail_url_r2 IS NOT NULL) DESC,      -- R2-mirrored ads first (instant load)
+        a.tier_score DESC NULLS LAST,
+        a.current_rank ASC NULLS LAST
+      LIMIT ${limit}
     `;
     const rows = await pgQuery(sql, params);
-    res.json({ success: true, data: rows, count: rows.length });
+    res.json({ success: true, data: rows, count: rows.length, limit });
   } catch (err) {
     console.error('[league/ads] error:', err);
     res.status(500).json({ success: false, error: { message: err.message } });

@@ -244,14 +244,24 @@ export function LeagueImportModal({ onClose, onImported }) {
                   }`}
                 >
                   {ad.image_url ? (
-                    <img
-                      src={ad.image_url}
-                      alt=""
-                      loading="lazy"
-                      decoding="async"
-                      className="w-full aspect-[4/5] object-cover"
-                      onError={(e) => { e.currentTarget.style.opacity = '0.2'; }}
-                    />
+                    <div className="relative w-full aspect-[4/5]">
+                      <img
+                        src={ad.image_url}
+                        alt=""
+                        loading="lazy"
+                        decoding="async"
+                        className="w-full h-full object-cover"
+                        onError={(e) => { e.currentTarget.style.opacity = '0.2'; }}
+                      />
+                      {ad.is_r2_mirrored === false && (
+                        // Un-mirrored (raw fbcdn) — small badge so operator
+                        // knows the load may be slow / may fail. Mirror job
+                        // will heal these in the background.
+                        <span className="absolute bottom-1.5 right-1.5 text-[8px] font-mono font-bold bg-amber-500/85 text-black px-1.5 py-0.5 rounded" title="Slow-loading — Meta CDN, will be R2-mirrored soon">
+                          SLOW
+                        </span>
+                      )}
+                    </div>
                   ) : (
                     <div className="w-full aspect-[4/5] bg-white/[0.02]" />
                   )}
