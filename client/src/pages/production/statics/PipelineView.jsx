@@ -39,20 +39,72 @@ const ADSET_SIZE = 6; // 6 creatives = 1 complete ad set (Ludo's spec — was 3)
 // Pairs with the server-side guard that refuses to write volatile URLs:
 // new generations never produce broken cards, this only heals the
 // historical backlog.
+// Batched + rate-limited self-heal.
+//
+// The pre-fix implementation fired one /regenerate-broken-previews call per
+// broken card as soon as its <img onError> triggered. On a page with 100+
+// broken cards (the historical backlog), that's a burst of 100 concurrent
+// API calls, each starting its own background regen — the DB pool exhausted
+// within seconds and even the /generate call for a fresh generation timed
+// out at pgQuery after 8000ms.
+//
+// New behavior:
+//   - Once-per-id dedup (module-scope Set) still applies.
+//   - Ids collected in _pendingHeal; on first add, an 800ms debounce timer
+//     is armed.
+//   - When it fires: cap the batch to 20 ids, POST ONE call with all of
+//     them, and pause any further self-heal for at least 15s. Then repeat
+//     for the next batch.
+//   - Result: page with 100 broken cards → ~5 API calls spaced 15s apart
+//     instead of 100 concurrent calls in 1s.
 const _selfHealedIds = new Set();
-function selfHealCreative(id) {
-  if (!id || _selfHealedIds.has(id)) return;
-  _selfHealedIds.add(id);
-  api.post('/statics-generation/regenerate-broken-previews', { ids: [id] })
+const _pendingHeal = new Set();
+let _healScheduled = false;
+let _lastHealFireAt = 0;
+const HEAL_DEBOUNCE_MS = 800;
+const HEAL_MIN_INTERVAL_MS = 15000;
+const HEAL_BATCH_CAP = 20;
+
+function _fireHealBatch() {
+  const now = Date.now();
+  const cooldown = _lastHealFireAt + HEAL_MIN_INTERVAL_MS - now;
+  if (cooldown > 0) {
+    // Not enough time has passed since the last call — reschedule.
+    setTimeout(_fireHealBatch, cooldown + 50);
+    return;
+  }
+  _healScheduled = false;
+  if (_pendingHeal.size === 0) return;
+  const batch = Array.from(_pendingHeal).slice(0, HEAL_BATCH_CAP);
+  for (const id of batch) _pendingHeal.delete(id);
+  _lastHealFireAt = Date.now();
+  api.post('/statics-generation/regenerate-broken-previews', { ids: batch })
     .then(r => {
       const queued = r?.data?.data?.queued ?? 0;
       if (queued > 0) {
-        console.log(`[self-heal] queued repair for creative=${id.slice(0, 8)} eta=${r.data.data.eta_min}min`);
+        console.log(`[self-heal] batch queued: ${batch.length} ids → ${queued} regen job(s) started`);
       }
     })
     .catch(err => {
-      console.warn(`[self-heal] repair POST failed for ${id.slice(0, 8)}:`, err?.response?.data?.error?.message || err.message);
+      console.warn(`[self-heal] batch POST failed:`, err?.response?.data?.error?.message || err.message);
+    })
+    .finally(() => {
+      // If more ids piled up during the request, drain them on the next tick.
+      if (_pendingHeal.size > 0 && !_healScheduled) {
+        _healScheduled = true;
+        setTimeout(_fireHealBatch, HEAL_DEBOUNCE_MS);
+      }
     });
+}
+
+function selfHealCreative(id) {
+  if (!id || _selfHealedIds.has(id)) return;
+  _selfHealedIds.add(id);
+  _pendingHeal.add(id);
+  if (!_healScheduled) {
+    _healScheduled = true;
+    setTimeout(_fireHealBatch, HEAL_DEBOUNCE_MS);
+  }
 }
 
 // NOTE — 'generating' column was removed in Phase A of statics-pipeline-v2.
