@@ -1574,7 +1574,33 @@ async function resolveImage(referenceImageUrl) {
     const base = process.env.RENDER_EXTERNAL_URL || `http://localhost:${process.env.PORT || 3000}`;
     fetchUrl = `${base}${referenceImageUrl}`;
   }
-  const res = await fetch(fetchUrl);
+  let res = await fetch(fetchUrl);
+  // Broken-previews forever-fix (Phase 4): if the reference URL is on a
+  // volatile host and returns 403/404, try mirroring it via persistAnyUrlToR2
+  // as a just-in-time rescue. This handles the operator's flow of
+  // "pick a FROM LEAGUE ref that we haven't yet mirrored, then generate" —
+  // instead of dying with 403, we heal the row on-the-fly. If the source is
+  // already dead there's no rescue possible; error propagates.
+  if (!res.ok && (res.status === 403 || res.status === 404) && isVolatileImageUrl(fetchUrl)) {
+    console.warn(`[resolveImage] ${res.status} on volatile URL — attempting on-the-fly R2 mirror: ${fetchUrl.slice(0, 80)}`);
+    try {
+      const persisted = await persistAnyUrlToR2(fetchUrl, 'jit-rescue');
+      if (persisted?.url) {
+        // The mirror itself just failed above so this is really a "one more
+        // attempt through a different network path" — some fbcdn URLs
+        // intermittently succeed. Log and re-fetch through R2.
+        res = await fetch(persisted.url);
+        if (res.ok) {
+          const buf = Buffer.from(await res.arrayBuffer());
+          const mediaType = detectMime(buf);
+          console.log(`[resolveImage] JIT rescued via R2: ${persisted.url.slice(0, 80)}`);
+          return { base64: buf.toString('base64'), mediaType, isUrl: true };
+        }
+      }
+    } catch (rescueErr) {
+      console.warn(`[resolveImage] JIT rescue failed: ${rescueErr.message}`);
+    }
+  }
   if (!res.ok) throw new Error(`Failed to fetch reference image: ${res.status} ${res.statusText}`);
   const buf = Buffer.from(await res.arrayBuffer());
   const mediaType = detectMime(buf);
@@ -6485,8 +6511,15 @@ router.get('/league/imported-refs', authenticate, async (_req, res) => {
       FROM spy_creatives
       WHERE imported_from = 'league'
         AND is_reference = TRUE
-        AND status <> 'launched'
+        AND status NOT IN ('launched', 'rejected')
         AND parent_creative_id IS NULL
+        AND image_url IS NOT NULL
+        AND image_url NOT LIKE '%.fbcdn.net%'
+        AND image_url NOT LIKE '%.fbsbx.com%'
+        AND image_url NOT LIKE '%scontent%.xx.%'
+        AND image_url NOT LIKE '%tempfile.aiquickdraw%'
+        AND image_url NOT LIKE '%kie.ai%'
+        AND image_url NOT LIKE '%/tmp-img/%'
       ORDER BY created_at DESC
       LIMIT 500
     `);
