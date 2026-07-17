@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect } from 'react';
 import { ScanSearch, MousePointerSquareDashed, EyeOff, AlertCircle, X, Check, Trash2, Zap, Calendar, RefreshCw, Pencil, Save, XCircle, Plus } from 'lucide-react';
+import CreativeImage from './CreativeImage';
 
 // ---------------------------------------------------------------------------
 // Categories
@@ -110,12 +111,12 @@ function TemplateCard({ template, onView, onAnalyze, onDelete }) {
         className="relative aspect-[4/5] w-full overflow-hidden bg-black/30 cursor-pointer"
       >
         {template.image_url ? (
-          <img
+          <CreativeImage
             src={template.image_url}
+            creativeId={template.id}
             alt={template.name || 'Reference Ad'}
-            loading="lazy"
-            decoding="async"
             className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+            imgProps={{ loading: 'lazy', decoding: 'async' }}
           />
         ) : (
           <div className="w-full h-full flex items-center justify-center text-slate-700">
@@ -326,12 +327,12 @@ function ReferenceLightbox({ template, onClose, onSelect, onAnalyze, onHide, onD
         {/* Left — Image */}
         <div className="flex-shrink-0 w-[45%] bg-black/40 flex items-center justify-center p-4 relative">
           {template.image_url ? (
-            <img
+            <CreativeImage
               src={template.image_url}
+              creativeId={template.id}
               alt={template.name || 'Reference Ad'}
-              loading="lazy"
-              decoding="async"
               className="max-w-full max-h-[75vh] rounded-lg object-contain"
+              imgProps={{ loading: 'lazy', decoding: 'async' }}
             />
           ) : (
             <div className="w-full aspect-[4/5] rounded-lg bg-[#1a1a1a] flex items-center justify-center text-slate-600">

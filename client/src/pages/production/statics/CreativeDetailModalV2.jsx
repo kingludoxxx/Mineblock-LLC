@@ -4,6 +4,7 @@ import {
 } from 'lucide-react';
 import api from '../../../services/api';
 import { EditImageEditor } from './EditImageEditor';
+import CreativeImage from './CreativeImage';
 
 const RATIOS = ['1:1', '4:5', '9:16'];
 
@@ -432,13 +433,12 @@ function RatioColumn({ ratio, creative, parentId, parentReviewNotes, onRefresh, 
             {generateError && <div className="text-[10px] text-red-400 leading-tight">{generateError}</div>}
           </div>
         ) : creative.image_url ? (
-          <img
+          <CreativeImage
             src={creative.image_url}
+            creativeId={creative.id}
             alt={ratio}
-            loading="lazy"
-            decoding="async"
             className="max-w-full max-h-full object-contain"
-            onError={(e) => { e.currentTarget.style.opacity = '0.2'; }}
+            imgProps={{ loading: 'lazy', decoding: 'async' }}
           />
         ) : (
           <div className="flex flex-col items-center gap-2 text-violet-300/70">

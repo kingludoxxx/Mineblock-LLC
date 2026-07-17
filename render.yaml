@@ -58,3 +58,26 @@ services:
         value: "1bv_tMbizihBeGpd-uxUPMlm0OHUL3VnRKYnExPjsNAo"
       - key: SLACK_WEBHOOK_URL
         sync: false
+
+  # Daily preview-repair sweep — the safety-net layer of the broken-previews
+  # forever-fix. Phase 1 closed every known ingress leak in staticsGeneration.js
+  # (see tasks/BROKEN-PREVIEWS-FOREVER-FIX.md). If a future ingress regression
+  # slips through, this cron sweeps the DB within 24h — sweep hits
+  # /repair-volatile-urls (fbcdn/kie.ai/tempfile rescue) and /repair-thumbnails
+  # (launched-ad Meta URL refresh). Uses CRON_SECRET for auth bypass.
+  - type: cron
+    name: preview-repair-sweep
+    runtime: node
+    plan: starter
+    schedule: "0 3 * * *"   # 03:00 UTC daily
+    buildCommand: npm install
+    startCommand: node server/scripts/repair-preview-sweep.mjs
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: RENDER_EXTERNAL_URL
+        value: "https://mineblock-dashboard.onrender.com"
+      - key: CRON_SECRET
+        sync: false
+      - key: SLACK_WEBHOOK_URL
+        sync: false

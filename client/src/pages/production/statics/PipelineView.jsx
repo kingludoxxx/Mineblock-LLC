@@ -24,6 +24,7 @@ import {
 import api from '../../../services/api';
 import { ReferenceColumn } from './ReferenceColumn';
 import { FromLeagueColumn } from './FromLeagueColumn';
+import CreativeImage from './CreativeImage';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -298,13 +299,11 @@ function CreativeCard({ creative, column, onStatusChange, onCardClick, onRegener
               onError={(e) => { e.target.style.display = 'none'; }}
             />
           ) : creative.image_url && creative.status !== 'generating' ? (
-            <img
+            <CreativeImage
               src={creative.image_url}
-              alt=""
-              loading="lazy"
-              decoding="async"
+              creativeId={creative.id}
               className="absolute inset-0 w-full h-full object-cover opacity-90 group-hover:opacity-100 transition-opacity group-hover:scale-105 duration-500"
-              onError={(e) => { e.target.style.display = 'none'; selfHealCreative(creative.id); }}
+              imgProps={{ loading: 'lazy', decoding: 'async' }}
             />
           ) : null}
           <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
@@ -467,13 +466,11 @@ function AdSetThumb({ creative, onCardClick }) {
       className="relative aspect-square w-full rounded-lg overflow-hidden bg-black/40 cursor-grab active:cursor-grabbing group"
     >
       {creative.image_url ? (
-        <img
+        <CreativeImage
           src={creative.image_url}
-          alt=""
-          loading="lazy"
-          decoding="async"
+          creativeId={creative.id}
           className="absolute inset-0 w-full h-full object-cover opacity-90 group-hover:opacity-100 transition-opacity"
-          onError={(e) => { e.target.style.display = 'none'; selfHealCreative(creative.id); }}
+          imgProps={{ loading: 'lazy', decoding: 'async' }}
         />
       ) : (
         <div className="absolute inset-0 flex items-center justify-center">
@@ -749,13 +746,12 @@ function LaunchedGroupCard({ angle, creatives, onCardClick, onReset, onRefresh }
               className="relative aspect-square rounded-lg overflow-hidden bg-black/40 cursor-pointer group"
             >
               {c.image_url ? (
-                <img
+                <CreativeImage
                   src={c.image_url}
-                  alt=""
-                  loading="lazy"
-                  decoding="async"
+                  creativeId={c.id}
+                  compact
                   className="absolute inset-0 w-full h-full object-cover opacity-90 group-hover:opacity-100 transition-opacity"
-                  onError={(e) => { e.target.style.display = 'none'; selfHealCreative(c.id); }}
+                  imgProps={{ loading: 'lazy', decoding: 'async' }}
                 />
               ) : (
                 <div className="absolute inset-0 flex items-center justify-center">
