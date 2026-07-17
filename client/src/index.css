@@ -108,6 +108,20 @@ body {
   50% { opacity: 0.4; }
 }
 
+/* Indeterminate progress bar — a segment that slides across the row.
+   The segment is 40% of the track width; translating from -100% to 250%
+   makes both the entry and the exit smooth (segment fully off both edges
+   at the loop boundaries). Used on brand-spy rows during scrape (no exact
+   progress signal from the worker — Phase 1a/1c/1d/1.5/2/3 have
+   unpredictable cursor depth, so a shimmer is more honest than a fake %). */
+@keyframes indeterminate-slide {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(250%); }
+}
+.progress-indeterminate {
+  animation: indeterminate-slide 1.4s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
 /* ─── Brief Pipeline utilities ─────────────────────────────── */
 .bg-dot-pattern {
   background-image: radial-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px);

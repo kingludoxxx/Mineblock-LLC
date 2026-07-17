@@ -214,8 +214,24 @@ function BrandRow({ brand, onOpen, onScrape, onDelete }) {
     try { await onScrape(); } finally { setScraping(false); }
   };
 
+  // A brand is scraping when the DB marked it RUNNING OR the user just kicked
+  // off a refresh from this row (optimistic — the API POST returns before the
+  // background job flips the DB status, so relying on lastScrapeStatus alone
+  // leaves the bar hidden for the first 1-2 seconds).
+  const isScraping = scraping || brand.lastScrapeStatus === 'RUNNING';
+
   return (
-    <div className="flex items-center gap-3 px-4 py-3 bg-bg-card border border-border-subtle rounded-xl hover:border-border-default transition-colors group">
+    <div className="relative flex items-center gap-3 px-4 py-3 bg-bg-card border border-border-subtle rounded-xl hover:border-border-default transition-colors group overflow-hidden">
+      {/* Indeterminate progress bar — 2px stripe at the bottom of the row
+          while a scrape is in flight. The worker exposes no reliable %,
+          so a slim shimmer conveys "something is happening" without lying
+          about ETA. Absolute-positioned; `overflow-hidden` on the parent
+          keeps the sliding segment inside the rounded corners. */}
+      {isScraping && (
+        <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-sky-500/10 pointer-events-none">
+          <div className="progress-indeterminate absolute inset-y-0 w-2/5 bg-gradient-to-r from-sky-500/0 via-sky-400 to-sky-500/0" />
+        </div>
+      )}
       {/* Avatar: Clearbit logo → Google favicon → letter fallback */}
       <div className="relative w-9 h-9 rounded-lg bg-bg-elevated border border-border-default flex items-center justify-center shrink-0 overflow-hidden">
         <span className="text-xs font-bold text-text-muted select-none">
