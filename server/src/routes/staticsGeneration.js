@@ -37,22 +37,32 @@ import { uploadBuffer, uploadFromUrl, isR2Configured } from '../services/r2.js';
 
 // ─────────────────────────────────────────────────────────────────────────
 // STABLE URL contract — `spy_creatives.image_url` MUST resolve to a host
-// whose content survives server restarts and CDN TTLs. Anything else is a
-// time bomb: tempfile.aiquickdraw.com expires in ~3h, kie.ai rotates,
-// /tmp-img/{id} dies when the in-memory cache + Postgres `image_store` row
-// is gone. fbcdn.net is treated as stable because Meta's ad-library URLs
-// are pinned by the Graph API repair path — they're our launched-ad source.
-// Reject every other host at write time so the table never re-poisons.
+// whose content survives server restarts AND CDN TTLs. Anything else is a
+// time bomb.
+//
+// FBCDN CORRECTION (broken-previews forever-fix): the prior comment claimed
+// fbcdn.net was stable because "Meta's ad-library URLs are pinned by the
+// Graph API repair path." That premise is false for League/Brand-Spy
+// imports and Meta-launch overwrites, which have no `meta_ad_id` /
+// `meta_image_hash` and cannot be repaired by the Graph API. Live evidence:
+// a reference imported 6 days ago already 403s. Other files agree fbcdn is
+// volatile — see briefPipeline.js:6014 ("~2-4 weeks after scrape") and
+// brandSpyDb.js:413. The correct policy is: mirror every fbcdn URL to R2
+// at INGEST time and never store the raw URL.
 // ─────────────────────────────────────────────────────────────────────────
 const STABLE_URL_PATTERNS = [
   /\.r2\.dev[\/]/i,
   /\.r2\.cloudflarestorage\.com[\/]/i,
-  /\.fbcdn\.net[\/]/i,
 ];
 const VOLATILE_URL_PATTERNS = [
   /tempfile\.aiquickdraw\.com/i,
   /kie\.ai/i,
   /\/tmp-img\//i,
+  // Meta CDN — always volatile. See mirror-at-ingest calls in League
+  // import / Meta import / iteration flows.
+  /\.fbcdn\.net/i,
+  /\.fbsbx\.com/i,
+  /scontent[^/]*\.xx\./i,
 ];
 function isStableImageUrl(url) {
   if (!url || typeof url !== 'string' || !url.startsWith('http')) return false;
@@ -1119,6 +1129,13 @@ const DOOMED_CDN_PATTERNS = [
   '%kie.ai/%',
   '%aiquickdraw.com%',
   '%file.kieai.app%',
+  // Meta CDN — added in the broken-previews forever-fix. These URLs die in
+  // days-to-weeks (not "years" as previously assumed). Mirror-at-ingest now
+  // prevents new ingress, but every historical row here still needs the
+  // sweeper to rescue it.
+  '%.fbcdn.net%',
+  '%.fbsbx.com%',
+  '%scontent%.xx.%',
 ];
 // ─────────────────────────────────────────────────────────────────────────
 // Persist any doomed URL to a permanent home.
@@ -1157,12 +1174,22 @@ async function backsyncDoomedUrls() {
   if (_backsyncInFlight) return { backed: 0, dead: 0, scanned: 0, skipped: 'in-flight' };
   _backsyncInFlight = true;
   try {
+    // Broken-previews forever-fix: include is_reference=TRUE rows. The
+    // historical filter (is_reference=FALSE) missed every League/Meta
+    // reference — which is exactly what the operator saw as recurring
+    // broken previews. Also scan `reference_thumbnail` in addition to
+    // `image_url` because iteration flows write fbcdn into that column.
     const sql = `
-      SELECT id, image_url
+      SELECT id, image_url, reference_thumbnail
       FROM spy_creatives
-      WHERE image_url IS NOT NULL
-        AND COALESCE(is_reference, FALSE) = FALSE
-        AND (${DOOMED_CDN_PATTERNS.map((_, i) => `image_url LIKE $${i + 1}`).join(' OR ')})
+      WHERE (
+        (image_url IS NOT NULL AND (
+          ${DOOMED_CDN_PATTERNS.map((_, i) => `image_url LIKE $${i + 1}`).join(' OR ')}
+        )) OR
+        (reference_thumbnail IS NOT NULL AND (
+          ${DOOMED_CDN_PATTERNS.map((_, i) => `reference_thumbnail LIKE $${i + 1}`).join(' OR ')}
+        ))
+      )
       ORDER BY updated_at DESC NULLS LAST, created_at DESC
       LIMIT 200
     `;
@@ -1172,12 +1199,32 @@ async function backsyncDoomedUrls() {
     let backed = 0, dead = 0;
     const useR2 = isR2Configured() && process.env.R2_PUBLIC_URL;
     for (const row of rows) {
-      const persisted = await persistAnyUrlToR2(row.image_url, 'backsync-r2');
-      if (!persisted) { dead++; continue; }
+      // Heal image_url if doomed
+      const imgDoomed = row.image_url && DOOMED_CDN_PATTERNS.some(p => {
+        const bare = p.replace(/%/g, '').toLowerCase();
+        return row.image_url.toLowerCase().includes(bare);
+      });
+      const refDoomed = row.reference_thumbnail && DOOMED_CDN_PATTERNS.some(p => {
+        const bare = p.replace(/%/g, '').toLowerCase();
+        return row.reference_thumbnail.toLowerCase().includes(bare);
+      });
+      const updates = {};
+      if (imgDoomed) {
+        const persisted = await persistAnyUrlToR2(row.image_url, 'backsync-r2');
+        if (persisted) updates.image_url = persisted.url;
+      }
+      if (refDoomed) {
+        const persisted = await persistAnyUrlToR2(row.reference_thumbnail, 'backsync-r2-ref');
+        if (persisted) updates.reference_thumbnail = persisted.url;
+      }
+      if (Object.keys(updates).length === 0) { dead++; continue; }
       try {
+        const setClauses = Object.keys(updates).map((k, i) => `${k} = $${i + 1}`).join(', ');
+        const params = Object.values(updates);
+        params.push(row.id);
         await pgQuery(
-          'UPDATE spy_creatives SET image_url = $1, updated_at = NOW() WHERE id = $2',
-          [persisted.url, row.id]
+          `UPDATE spy_creatives SET ${setClauses}, updated_at = NOW() WHERE id = $${params.length}`,
+          params
         );
         backed++;
       } catch { dead++; }
@@ -3006,6 +3053,21 @@ router.post('/iterate/:creativeId', authenticate, async (req, res) => {
       }
     }
 
+    // Broken-previews forever-fix: mirror parent thumbnail (fbcdn) to R2 ONCE
+    // before the variation loop. Prior code wrote parent.thumbnail_url — a raw
+    // fbcdn URL — into 5 iteration rows' reference_thumbnail column per call,
+    // producing 5 fresh broken-preview candidates per iterate. Mirror once →
+    // reuse the R2 URL for all N variations.
+    let stableRefThumb = parent.thumbnail_url;
+    if (parent.thumbnail_url && !isStableImageUrl(parent.thumbnail_url)) {
+      try {
+        const persisted = await persistAnyUrlToR2(parent.thumbnail_url, 'iter-ref');
+        if (persisted?.url) stableRefThumb = persisted.url;
+      } catch (err) {
+        console.warn(`[iterate] parent thumbnail mirror failed: ${err.message}; using original (may 403 later)`);
+      }
+    }
+
     // Pre-allocate spy_creatives rows + assign IM numbers.
     // Iteration-spread: variation i gets shot index (base + i) % len so N
     // variations produce N visually distinct statics (10/10 fix for the
@@ -3034,7 +3096,7 @@ router.post('/iterate/:creativeId', authenticate, async (req, res) => {
                 $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $14)
         RETURNING id, im_number, source_label
       `, [
-        productId, product.name, sourceLabel, parent.ad_name, parent.thumbnail_url,
+        productId, product.name, sourceLabel, parent.ad_name, stableRefThumb,
         parent.angle, parent.creative_id, parentImNumber, imNum, batchId, i + 1,
         parentImageEngine,
         primaryRatio,
@@ -4932,10 +4994,16 @@ async function _doLaunch(req, res) {
               const uRes = await uploadAdImageFromUrl(template.ad_account_id, data.image_url);
               if (!uRes?.hash) throw new Error(`Upload returned no hash for ratio ${ratio}`);
               hash = uRes.hash;
-              const metaCdnUrl = uRes.url || null;
+              // Broken-previews forever-fix: NEVER overwrite the stable R2
+              // image_url with Meta's returned fbcdn preview URL. Prior code
+              // silently downgraded every launched creative from R2 → fbcdn,
+              // and every fbcdn URL 403s within days-to-weeks. We still store
+              // the meta_image_hash (which is what Meta needs to reference the
+              // asset in future ad-creation calls); the raw fbcdn URL is
+              // discarded because it isn't useful for anything durable.
               await pgQuery(
-                `UPDATE spy_creatives SET meta_image_hash = $1${metaCdnUrl ? ', image_url = $3, thumbnail_url = $3' : ''}, updated_at = NOW() WHERE id = $2`,
-                metaCdnUrl ? [hash, data.id, metaCdnUrl] : [hash, data.id]
+                `UPDATE spy_creatives SET meta_image_hash = $1, updated_at = NOW() WHERE id = $2`,
+                [hash, data.id]
               ).catch(() => {});
             } catch (uErr) {
               console.warn(`[staticsGeneration] ⚠️ Skipping ${ratio} (${data.id}) — upload failed: ${uErr.message}`);
@@ -5865,14 +5933,16 @@ router.post('/repair-volatile-urls', async (req, res, next) => {
 
     // Hosts we'll attempt to rescue. Anything else (R2, fbcdn) is already stable.
     const rows = await pgQuery(`
-      SELECT id, image_url, status, aspect_ratio
+      SELECT id, image_url, status, aspect_ratio, is_reference
       FROM spy_creatives
-      WHERE COALESCE(is_reference, FALSE) = FALSE
-      AND (
+      WHERE (
         image_url IS NULL OR image_url = '' OR
         image_url LIKE '%tempfile.aiquickdraw%' OR
         image_url LIKE '%kie.ai%' OR
-        image_url LIKE '%/tmp-img/%'
+        image_url LIKE '%/tmp-img/%' OR
+        image_url LIKE '%.fbcdn.net%' OR
+        image_url LIKE '%.fbsbx.com%' OR
+        image_url LIKE '%scontent%.xx.%'
       )
       ORDER BY updated_at DESC NULLS LAST
       LIMIT $1
@@ -6635,8 +6705,49 @@ router.post('/league/import', authenticate, async (req, res) => {
       insertExternalKeys.push(String(ad.ad_archive_id));
     }
 
+    // Broken-previews forever-fix: mirror every fbcdn URL to R2 BEFORE the
+    // INSERT. This is the ingress-time guarantee that fbcdn URLs never land
+    // in spy_creatives. Original URL preserved in imported_metadata for
+    // audit trail. If mirror fails, skip that row (better to drop the
+    // import than store a URL that will 403 in days).
+    let mirrorDeadOnArrival = 0;
+    let mirrorFailed = 0;
+    for (let i = 0; i < insertImageUrls.length; i++) {
+      const src = insertImageUrls[i];
+      if (!src) { mirrorDeadOnArrival++; continue; }
+      if (isStableImageUrl(src)) continue; // Already R2 → skip
+      try {
+        const persisted = await persistAnyUrlToR2(src, 'league-import');
+        if (persisted?.url) {
+          // Rewrite the URL that gets INSERTed. Keep original in meta for audit.
+          const meta = JSON.parse(insertMetadataJson[i]);
+          meta.original_source_url = src;
+          insertMetadataJson[i] = JSON.stringify(meta);
+          insertImageUrls[i] = persisted.url;
+        } else {
+          mirrorFailed++;
+          insertImageUrls[i] = null; // signal skip below
+        }
+      } catch (err) {
+        console.warn(`[league/import] mirror failed for ${src?.slice(0,80)}: ${err.message}`);
+        mirrorFailed++;
+        insertImageUrls[i] = null;
+      }
+    }
+    // Drop rows whose mirror failed — leaving them in would either 400 at
+    // POST /creatives (Layer A guard) or land a dead-on-arrival URL.
+    const compact = { urls: [], labels: [], meta: [], ratios: [], keys: [] };
+    for (let i = 0; i < insertImageUrls.length; i++) {
+      if (!insertImageUrls[i]) continue;
+      compact.urls.push(insertImageUrls[i]);
+      compact.labels.push(insertSourceLabels[i]);
+      compact.meta.push(insertMetadataJson[i]);
+      compact.ratios.push(insertAspectRatios[i]);
+      compact.keys.push(insertExternalKeys[i]);
+    }
+
     let imported = 0;
-    if (insertImageUrls.length > 0) {
+    if (compact.urls.length > 0) {
       const insertedRows = await pgQuery(`
         INSERT INTO spy_creatives
           (pipeline, status, is_reference, imported_from, external_ref_key,
@@ -6650,8 +6761,11 @@ router.post('/league/import', authenticate, async (req, res) => {
             $1::text[], $2::text[], $3::text[], $4::text[], $5::text[]
           ) AS t(image_url, source_label, meta_json, aspect_ratio, external_ref_key)
         RETURNING id
-      `, [insertImageUrls, insertSourceLabels, insertMetadataJson, insertAspectRatios, insertExternalKeys]);
+      `, [compact.urls, compact.labels, compact.meta, compact.ratios, compact.keys]);
       imported = insertedRows.length;
+    }
+    if (mirrorFailed > 0 || mirrorDeadOnArrival > 0) {
+      console.log(`[league/import] mirror stats: imported=${imported} mirrorFailed=${mirrorFailed} deadOnArrival=${mirrorDeadOnArrival}`);
     }
 
     res.json({
@@ -7048,8 +7162,42 @@ router.post('/league/brand-configs/:brandId/sync', authenticate, async (req, res
       insertExternalKeys.push(String(ad.ad_archive_id));
     }
 
+    // Broken-previews forever-fix: mirror every URL to R2 BEFORE INSERT.
+    // This is the auto-sync path — highest ongoing bleed rate before fix.
+    // Original URL preserved in imported_metadata.original_source_url.
+    let mirrorFailed = 0;
+    for (let i = 0; i < insertImageUrls.length; i++) {
+      const src = insertImageUrls[i];
+      if (!src || isStableImageUrl(src)) continue;
+      try {
+        const persisted = await persistAnyUrlToR2(src, 'league-autosync');
+        if (persisted?.url) {
+          const meta = JSON.parse(insertMetadataJson[i]);
+          meta.original_source_url = src;
+          insertMetadataJson[i] = JSON.stringify(meta);
+          insertImageUrls[i] = persisted.url;
+        } else {
+          mirrorFailed++;
+          insertImageUrls[i] = null;
+        }
+      } catch (err) {
+        console.warn(`[league/autosync] mirror failed for ${src?.slice(0,80)}: ${err.message}`);
+        mirrorFailed++;
+        insertImageUrls[i] = null;
+      }
+    }
+    const compact = { urls: [], labels: [], meta: [], ratios: [], keys: [] };
+    for (let i = 0; i < insertImageUrls.length; i++) {
+      if (!insertImageUrls[i]) continue;
+      compact.urls.push(insertImageUrls[i]);
+      compact.labels.push(insertSourceLabels[i]);
+      compact.meta.push(insertMetadataJson[i]);
+      compact.ratios.push(insertAspectRatios[i]);
+      compact.keys.push(insertExternalKeys[i]);
+    }
+
     let imported = 0;
-    if (insertImageUrls.length > 0) {
+    if (compact.urls.length > 0) {
       const insertedRows = await pgQuery(`
         INSERT INTO spy_creatives
           (pipeline, status, is_reference, imported_from, external_ref_key,
@@ -7064,8 +7212,11 @@ router.post('/league/brand-configs/:brandId/sync', authenticate, async (req, res
           ) AS t(image_url, source_label, meta_json, aspect_ratio, external_ref_key)
         ON CONFLICT DO NOTHING
         RETURNING id
-      `, [insertImageUrls, insertSourceLabels, insertMetadataJson, insertAspectRatios, insertExternalKeys]);
+      `, [compact.urls, compact.labels, compact.meta, compact.ratios, compact.keys]);
       imported = insertedRows.length;
+    }
+    if (mirrorFailed > 0) {
+      console.log(`[league/autosync ${brandId.slice(0,8)}] mirror stats: imported=${imported} mirrorFailed=${mirrorFailed}`);
     }
 
     // Stamp last_synced_at on the config row (upsert if missing).
@@ -8142,11 +8293,24 @@ async function _doMetaAdsRepairThumbnails(req, res) {
         const newThumb = data?.creative?.thumbnail_url || data?.creative?.image_url || null;
         if (!newThumb) { skipped++; return; }
 
+        // Broken-previews forever-fix: mirror the fresh Meta thumbnail to R2
+        // BEFORE storing. Prior code stored the raw fbcdn URL and rotted
+        // again in days. If mirror fails, still write the fbcdn URL as a
+        // best-effort fallback (repaired count reflects reality — the
+        // caller can re-trigger the repair later).
+        let finalUrl = newThumb;
+        try {
+          const persisted = await persistAnyUrlToR2(newThumb, 'meta-repair-r2');
+          if (persisted?.url) finalUrl = persisted.url;
+        } catch (mirrorErr) {
+          console.warn(`[meta-ads/repair-thumbnails] R2 mirror failed for ${row.meta_ad_id}: ${mirrorErr.message} — storing raw Meta URL`);
+        }
+
         await pgQuery(
           `UPDATE creative_analysis
              SET thumbnail_url = $1
            WHERE creative_id = $2`,
-          [newThumb, row.creative_id]
+          [finalUrl, row.creative_id]
         );
         repaired++;
       } catch (err) {
@@ -8254,8 +8418,43 @@ router.post('/meta-ads/import', authenticate, async (req, res) => {
       ins.externalRefKey.push(extKey);
     }
 
+    // Broken-previews forever-fix: mirror every fbcdn URL to R2 BEFORE INSERT.
+    // Original URL preserved in imported_metadata.original_source_url for
+    // audit / repair paths that need the raw Meta reference.
+    let mirrorFailed = 0;
+    for (let i = 0; i < ins.imageUrl.length; i++) {
+      const src = ins.imageUrl[i];
+      if (!src || isStableImageUrl(src)) continue;
+      try {
+        const persisted = await persistAnyUrlToR2(src, 'meta-import');
+        if (persisted?.url) {
+          const meta = JSON.parse(ins.metaJson[i]);
+          meta.original_source_url = src;
+          ins.metaJson[i] = JSON.stringify(meta);
+          ins.imageUrl[i] = persisted.url;
+        } else {
+          mirrorFailed++;
+          ins.imageUrl[i] = null;
+        }
+      } catch (err) {
+        console.warn(`[meta-ads/import] mirror failed for ${src?.slice(0,80)}: ${err.message}`);
+        mirrorFailed++;
+        ins.imageUrl[i] = null;
+      }
+    }
+    const compact = { imageUrl: [], sourceLabel: [], referenceName: [], angle: [], metaJson: [], externalRefKey: [] };
+    for (let i = 0; i < ins.imageUrl.length; i++) {
+      if (!ins.imageUrl[i]) continue;
+      compact.imageUrl.push(ins.imageUrl[i]);
+      compact.sourceLabel.push(ins.sourceLabel[i]);
+      compact.referenceName.push(ins.referenceName[i]);
+      compact.angle.push(ins.angle[i]);
+      compact.metaJson.push(ins.metaJson[i]);
+      compact.externalRefKey.push(ins.externalRefKey[i]);
+    }
+
     let imported = 0;
-    if (ins.imageUrl.length > 0) {
+    if (compact.imageUrl.length > 0) {
       const insertedRows = await pgQuery(`
         INSERT INTO spy_creatives
           (pipeline, status, is_reference, imported_from, external_ref_key,
@@ -8269,8 +8468,11 @@ router.post('/meta-ads/import', authenticate, async (req, res) => {
             $1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[]
           ) AS t(image_url, source_label, reference_name, angle, meta_json, external_ref_key)
         RETURNING id
-      `, [ins.imageUrl, ins.sourceLabel, ins.referenceName, ins.angle, ins.metaJson, ins.externalRefKey]);
+      `, [compact.imageUrl, compact.sourceLabel, compact.referenceName, compact.angle, compact.metaJson, compact.externalRefKey]);
       imported = insertedRows.length;
+    }
+    if (mirrorFailed > 0) {
+      console.log(`[meta-ads/import] mirror stats: imported=${imported} mirrorFailed=${mirrorFailed}`);
     }
 
     res.json({
