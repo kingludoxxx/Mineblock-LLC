@@ -683,6 +683,32 @@ function linkBelongsToBrand(url, primaryDomain) {
   return host === primaryDomain || host.endsWith('.' + primaryDomain);
 }
 
+// Second-chance attribution when `linkBelongsToBrand` fails. Modern DTC
+// brands often route ad clicks through affiliate trackers, Meta shortlinks
+// (fb.me, l.facebook.com), or attribution services (`?u=<jwt>` redirects)
+// — so `link_url`'s hostname is the tracker, not the brand's own domain.
+// If the ad text (body/caption/title) or the tracker's query string
+// mentions the brand's full domain verbatim, we treat that as evidence
+// this is the real brand's ad. Case-insensitive substring — cheap,
+// avoids any external HTTP call, and picks up patterns like
+// "Get 40% off at seranova.com" or "?dest=https://seranova.com/promo".
+function snapshotMentionsDomain(ad, primaryDomain) {
+  if (!primaryDomain) return false;
+  const needle = primaryDomain.toLowerCase();
+  const s = ad?.snapshot || {};
+  const candidates = [
+    s.body?.text,
+    s.caption,
+    s.title,
+    s.link_description,
+    s.link_url,           // query-string parameters live here
+  ];
+  for (const raw of candidates) {
+    if (typeof raw === 'string' && raw.toLowerCase().includes(needle)) return true;
+  }
+  return false;
+}
+
 // crossDomains: optional Set — collects link_url domains seen in this batch
 // pageNameCache: optional Map — populated with metaPageId → pageName for Phase 2 filtering
 // metaRankStart: optional integer — if provided, each ad in `ads` gets a meta_rank
@@ -799,6 +825,13 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
   const pageCache     = new Map(); // metaPageId → brandPageId (UUID)
   const pageNameCache = new Map(); // metaPageId → pageName (string) — needed for Phase 2 filtering
   const p2Launched    = new Set(); // pages already queued for Phase 2
+  // Pages added by Phase 1.5's `/search/companies` fallback. Common brand
+  // names collide with unrelated companies (e.g. "Seranova" the skincare
+  // brand vs "Seranova Sculpt and Beauty" the medspa vs a dozen dormant
+  // pages that just happen to be named "Seranova"). After Phase 2 finishes,
+  // any of these that yielded zero ads get pruned so they don't inflate
+  // the follow list.
+  const phase15AddedPageIds = new Set(); // brand_pages.id (UUID)
   const p2Promises    = [];
   let p2Blocked       = false;     // set true on first Phase 2 failure to fast-skip remainder
   const crossDomains  = new Set(); // link_url domains seen in ads
@@ -1186,9 +1219,15 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
           // phase1dCoveredEverything skip stays safe — without this fallback
           // we'd lose tens to hundreds of no-link-url ads per brand.
           const metaPageId = String(ad.page_id ?? ad.snapshot?.page_id ?? '');
-          return metaPageId && pageCache.has(metaPageId);
+          if (metaPageId && pageCache.has(metaPageId)) return true;
+          // Second chance for no-link ads: if the text mentions the brand
+          // domain, it's the brand's ad even if we don't yet know the page.
+          return snapshotMentionsDomain(ad, normalizedDomain);
         }
-        return linkBelongsToBrand(url, normalizedDomain);
+        if (linkBelongsToBrand(url, normalizedDomain)) return true;
+        // Redirect / tracker URL — its hostname isn't the brand domain even
+        // though the ad IS the brand's. See snapshotMentionsDomain docstring.
+        return snapshotMentionsDomain(ad, normalizedDomain);
       });
       if (filtered.length > 0) {
         const { d, u } = await upsertAdBatch(brandId, filtered, pageCache, null, crossDomains, pageNameCache, metaRankCursor);
@@ -1277,6 +1316,7 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
         if (!nameMatches) continue;
         const brandPageId = await upsertBrandPage(brandId, metaPageId, pageName, null);
         pageCache.set(metaPageId, brandPageId);
+        phase15AddedPageIds.add(brandPageId);
         if (pageName) pageNameCache.set(metaPageId, pageName);
         p2Launched.add(metaPageId);
         p2Promises.push(runPhase2Page(metaPageId));
@@ -1324,6 +1364,37 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
   // very end so the brands table never displays a transient partial total.
   await Promise.all(p2Promises);
   console.log(`[brand-spy] phase-2 done: ${discovered} new, ${updated} updated, ${pageCache.size} pages, ${creditsUsed} credits`);
+
+  // Prune Phase-1.5 homonym pages: any page added via `/search/companies`
+  // that Phase 2 found ZERO ads for is almost certainly an unrelated
+  // company that just happens to share the brand's name. Leaving them
+  // in the tracked-pages set inflates the follow list and pollutes the
+  // next scrape's known-pages seed. Cheap single-query cleanup.
+  if (phase15AddedPageIds.size > 0) {
+    const ids = [...phase15AddedPageIds];
+    const pruneRes = await query(
+      `DELETE FROM brand_spy.brand_pages bp
+        WHERE bp.id = ANY($1::uuid[])
+          AND NOT EXISTS (
+            SELECT 1 FROM brand_spy.ads a WHERE a.brand_page_id = bp.id
+          )
+        RETURNING bp.id`,
+      [ids],
+    );
+    const prunedIds = new Set((pruneRes.rows || []).map(r => r.id));
+    if (prunedIds.size) {
+      console.log(`[brand-spy] phase-1.5 cleanup: pruned ${prunedIds.size} homonym page(s) with zero ads`);
+      // Mirror the prune in the in-memory caches. Phase 3 (below) may still
+      // upsert ads via pageCache; a stale UUID here would trip an FK
+      // violation. Only drop the IDs that RETURNING confirms were deleted.
+      for (const [metaPageId, brandPageId] of pageCache.entries()) {
+        if (prunedIds.has(brandPageId)) {
+          pageCache.delete(metaPageId);
+          pageNameCache.delete(metaPageId);
+        }
+      }
+    }
+  }
 
   // Phase 3: subdomain keyword search for subdomains discovered in this run.
   // After Phase 2 finishes, crossDomains contains all link_url domains seen in ads.
