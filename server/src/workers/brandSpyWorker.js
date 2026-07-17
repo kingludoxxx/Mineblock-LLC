@@ -687,24 +687,41 @@ function linkBelongsToBrand(url, primaryDomain) {
 // brands often route ad clicks through affiliate trackers, Meta shortlinks
 // (fb.me, l.facebook.com), or attribution services (`?u=<jwt>` redirects)
 // — so `link_url`'s hostname is the tracker, not the brand's own domain.
-// If the ad text (body/caption/title) or the tracker's query string
-// mentions the brand's full domain verbatim, we treat that as evidence
-// this is the real brand's ad. Case-insensitive substring — cheap,
-// avoids any external HTTP call, and picks up patterns like
-// "Get 40% off at seranova.com" or "?dest=https://seranova.com/promo".
+//
+// We look at the ad text (body/caption/title/link_description) for two
+// signals:
+//
+//   1. The full brand domain verbatim ("seranova.com") — strongest,
+//      hard to false-positive.
+//   2. The rootFragment (domain minus TLD, e.g. "seranova") when it is
+//      ≥ 5 chars — captures the common "Save 64% on Seranova" copy
+//      pattern where the ad mentions the brand name but not the URL.
+//      Same 5-char guard Phase 1d uses to avoid firing on generic
+//      fragments ("shop", "get") that would false-positive on every
+//      DTC ad. Case-insensitive substring — cheap, no external HTTP.
+//
+// Deliberately DOESN'T scan link_url with the rootFragment: unrelated
+// brands like "seranovamedspa.com" (a medspa training company) would
+// then match the seranova.com skincare brand. link_url is scanned only
+// for the FULL domain, which is unambiguous.
 function snapshotMentionsDomain(ad, primaryDomain) {
   if (!primaryDomain) return false;
-  const needle = primaryDomain.toLowerCase();
   const s = ad?.snapshot || {};
-  const candidates = [
-    s.body?.text,
-    s.caption,
-    s.title,
-    s.link_description,
-    s.link_url,           // query-string parameters live here
-  ];
-  for (const raw of candidates) {
-    if (typeof raw === 'string' && raw.toLowerCase().includes(needle)) return true;
+  const fullDomain = primaryDomain.toLowerCase();
+  // "seranova.com" → "seranova"; "try-forge.co.uk" → "try-forge".
+  const rootFragment = fullDomain.replace(/\.[a-z]{2,}(\.[a-z]{2,})?$/, '');
+
+  // link_url gets ONLY the strict fullDomain check — see docstring.
+  if (typeof s.link_url === 'string' && s.link_url.toLowerCase().includes(fullDomain)) {
+    return true;
+  }
+
+  const textFields = [s.body?.text, s.caption, s.title, s.link_description];
+  for (const raw of textFields) {
+    if (typeof raw !== 'string' || !raw) continue;
+    const lower = raw.toLowerCase();
+    if (lower.includes(fullDomain)) return true;
+    if (rootFragment.length >= 5 && lower.includes(rootFragment)) return true;
   }
   return false;
 }
@@ -1423,6 +1440,36 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
     // Await Phase 2 workers kicked off by Phase 3 subdomain pages
     await Promise.all(p2Promises);
     console.log(`[brand-spy] phase-3 done: total ${discovered} new, ${updated} updated, ${creditsUsed} credits`);
+  }
+
+  // Broader page cleanup — runs on EVERY scrape (not just first).
+  // Catches:
+  //   • homonym pages left over from scrapes that predate the Phase 1.5
+  //     specific cleanup above (a re-scrape doesn't re-run Phase 1.5,
+  //     so its cleanup never fires and stale homonyms persist forever)
+  //   • pages that legitimately went dormant since their last scrape
+  //     (all ads expired, no new campaign) — Phase 2 touched them and
+  //     found nothing, so they're dead weight in the follow list.
+  // Phase 2 has touched every tracked page by this point, so
+  // "no ads reference this page" ≡ "this page is dead for this brand".
+  const finalCleanupRes = await query(
+    `DELETE FROM brand_spy.brand_pages bp
+      WHERE bp.brand_id = $1
+        AND NOT EXISTS (
+          SELECT 1 FROM brand_spy.ads a WHERE a.brand_page_id = bp.id
+        )
+      RETURNING bp.id`,
+    [brandId],
+  );
+  if (finalCleanupRes.rowCount) {
+    console.log(`[brand-spy] page cleanup: pruned ${finalCleanupRes.rowCount} dead page(s) for "${domain}"`);
+    const gone = new Set(finalCleanupRes.rows.map(r => r.id));
+    for (const [metaPageId, brandPageId] of pageCache.entries()) {
+      if (gone.has(brandPageId)) {
+        pageCache.delete(metaPageId);
+        pageNameCache.delete(metaPageId);
+      }
+    }
   }
 
   // Flush all discovered domains to brand_domains with correct classification.
