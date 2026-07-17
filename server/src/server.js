@@ -9,6 +9,10 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { hashPassword } from './utils/hash.js';
 import { requestShutdown } from './workers/brandSpyWorker.js';
+import {
+  startStaticsQueueWorker,
+  requestShutdown as requestStaticsQueueShutdown,
+} from './workers/staticsQueueWorker.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -144,10 +148,18 @@ const start = async () => {
     logger.info(`Server running on port ${env.PORT} in ${env.NODE_ENV} mode`);
   });
 
+  // 6. Start statics queue worker (server-owned pipeline for /generate-batch).
+  try {
+    await startStaticsQueueWorker();
+  } catch (err) {
+    logger.warn(`Statics queue worker failed to start: ${err.message}`);
+  }
+
   // Graceful shutdown
   const shutdown = async (signal) => {
     logger.info(`${signal} received — shutting down gracefully`);
     requestShutdown(); // signal in-flight brand scrapes to stop after current API call
+    try { requestStaticsQueueShutdown(); } catch (e) { logger.error('statics queue shutdown error:', e.message); }
     server.close(async () => {
       logger.info('HTTP server closed');
       try { await pool.end(); logger.info('pg Pool drained'); } catch (e) { logger.error('pg Pool drain error:', e.message); }

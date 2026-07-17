@@ -79,6 +79,50 @@ function copyToClipboard(text) {
   navigator.clipboard.writeText(text).catch(() => {});
 }
 
+// Normalize a server statics_queue row (snake_case) into the shape the
+// existing queue UI + PipelineView.QueueCard already consume (camelCase
+// productName / angle / progress). Keeping the shape identical means the
+// downstream components need no rewrite when their source flips from
+// client-driven state to server rows.
+function normalizeServerQueueRow(row) {
+  const refsTotal = Number.isInteger(row?.refs_total) ? row.refs_total : (Array.isArray(row?.references) ? row.references.length : 0);
+  const refsDone = Number.isInteger(row?.refs_done) ? row.refs_done : 0;
+  // Map server statuses onto what the UI already renders.
+  //   done / error / cancelled → keep as-is
+  //   generating / queued      → keep as-is
+  // The 'partial' state the old client used doesn't exist server-side; a
+  // partial run lands as 'done' with a result.creatives that has some
+  // per-reference errors. We surface those via row.error if present.
+  return {
+    id: row.id,
+    status: row.status || 'queued',
+    references: Array.isArray(row.references) ? row.references : [],
+    productName: row.product_name || 'Untitled',
+    angle: row.custom_angle || row.angle || '',
+    customAngle: row.custom_angle || '',
+    // Kept snake_case fields for the retry path — enqueueItems reads them back.
+    product_id: row.product_id ?? null,
+    product_name: row.product_name || null,
+    product_image_index: row.product_image_index ?? null,
+    product_payload: row.product_payload || null,
+    angle_data: row.angle_data || null,
+    custom_angle: row.custom_angle || null,
+    image_engine: row.image_engine || 'nanobanana',
+    // Progress + result surface for the queue panel.
+    refsTotal,
+    refsDone,
+    progress: refsTotal > 0 ? `${refsDone}/${refsTotal}` : null,
+    result: row.result ? {
+      creativeCount: Array.isArray(row.result?.creatives)
+        ? row.result.creatives.reduce((sum, c) => sum + 1 + (c?.child_creative_ids?.length || 0), 0)
+        : 0,
+      raw: row.result,
+    } : null,
+    error: row.error || null,
+    createdAt: row.created_at ? Date.parse(row.created_at) : Date.now(),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -1028,6 +1072,13 @@ export default function StaticsGeneration() {
   const [selectedProductObj, setSelectedProductObj] = useState(null);
   const selectedProductRef = useRef(null); // full product object for generation
 
+  // Blocks fetchQueueFromServer while an add/remove/clear mutation is in
+  // flight. The poll would otherwise reconcile against a DB snapshot that
+  // predates the mutation and wipe the optimistic update. Cleared in the
+  // mutation's finally{}; the next 4s tick then picks up the DB truth.
+  // See F5 in the queue forever-fix brief.
+  const mutationInFlight = useRef(false);
+
   // Toast notifications
   const [toasts, setToasts] = useState([]);
   const addToast = useCallback((message, type = 'info', duration = 5000) => {
@@ -1044,21 +1095,13 @@ export default function StaticsGeneration() {
   const [error, setError] = useState(null);
   const [generatingAll, setGeneratingAll] = useState(false);
 
-  // Queue state
+  // Queue state — Phase 1: server-owned queue.
+  // `queue` is the merged render source: `direct-*` local placeholders
+  // (from the manual Generate button) PLUS server rows fetched from
+  // GET /statics-generation/queue every 4s while anything is in-flight.
+  // The legacy client-side processor + concurrency bookkeeping moved to
+  // server/src/workers/staticsQueueWorker.js.
   const [queue, setQueue] = useState([]);
-  const [queueProcessing, setQueueProcessing] = useState(false);
-  const queueProcessingRef = useRef(false); // legacy single-slot guard, retained but no longer the bottleneck
-  const queueRef = useRef([]);
-  // Concurrency: how many queue items can run at the same time. 2 doubles
-  // throughput vs the old single-threaded design while staying comfortably
-  // under OpenAI/NB per-account concurrency caps. Bump cautiously.
-  const MAX_CONCURRENT_QUEUE_ITEMS = 2;
-  const queueInFlightCountRef = useRef(0);
-  // Ref tracking which item IDs are currently being processed — prevents
-  // the same item from being picked up by two parallel processNext calls
-  // during the tiny window between findIndex and the updateStatus setState
-  // that marks the item as 'generating'.
-  const queueInFlightIdsRef = useRef(new Set());
 
   // Creative review state (Standard pipeline)
   const [creatives, setCreatives] = useState([]);
@@ -1264,18 +1307,10 @@ export default function StaticsGeneration() {
       progress: 'Analyzing…',
       createdAt: Date.now(),
     };
-    setQueue(prev => {
-      const next = [...prev, directGenItem];
-      queueRef.current = next;
-      return next;
-    });
+    setQueue(prev => [...prev, directGenItem]);
 
     const removeDirectGen = () => {
-      setQueue(prev => {
-        const next = prev.filter(q => q.id !== directGenId);
-        queueRef.current = next;
-        return next;
-      });
+      setQueue(prev => prev.filter(q => q.id !== directGenId));
     };
 
     try {
@@ -1411,11 +1446,7 @@ export default function StaticsGeneration() {
       }
 
       // Update queue card progress
-      setQueue(prev => {
-        const next = prev.map(q => q.id === directGenId ? { ...q, progress: `Generating ${tasks.length} ratio(s)…` } : q);
-        queueRef.current = next;
-        return next;
-      });
+      setQueue(prev => prev.map(q => q.id === directGenId ? { ...q, progress: `Generating ${tasks.length} ratio(s)…` } : q));
 
       // Step 2: Poll ALL tasks in parallel
       setGenerationStep(2);
@@ -1728,52 +1759,131 @@ export default function StaticsGeneration() {
   // QUEUE HANDLERS
   // =========================================================================
 
-  const handleAddToQueue = () => {
+  // -------------------------------------------------------------------------
+  // Server-owned queue helpers (Phase 1)
+  // -------------------------------------------------------------------------
+
+  // Build the productPayload snapshot the /generate route expects.
+  // Shared between handleAddToQueue and the various onQueueRef callers below.
+  const buildProductPayloadSnapshot = () => {
+    const full = selectedProductRef.current;
+    const profile = {};
+    if (oneliner) profile.oneliner = oneliner;
+    if (customerAvatar) profile.customerAvatar = customerAvatar;
+    if (customerFrustration) profile.customerFrustration = customerFrustration;
+    if (customerDream) profile.customerDream = customerDream;
+    if (bigPromise) profile.bigPromise = bigPromise;
+    if (mechanism) profile.mechanism = mechanism;
+    if (differentiator) profile.differentiator = differentiator;
+    if (voice) profile.voice = voice;
+    if (guarantee) profile.guarantee = guarantee;
+    if (full) {
+      if (full.benefits) profile.benefits = full.benefits;
+      if (full.pain_points) profile.painPoints = full.pain_points;
+      if (full.common_objections) profile.commonObjections = full.common_objections;
+      if (full.winning_angles) profile.winningAngles = full.winning_angles;
+      if (full.custom_angles_text) profile.customAngles = full.custom_angles_text;
+      if (full.competitive_edge) profile.competitiveEdge = full.competitive_edge;
+      if (full.offer_details) profile.offerDetails = full.offer_details;
+      if (full.max_discount) profile.maxDiscount = full.max_discount;
+      if (full.discount_codes) profile.discountCodes = full.discount_codes;
+      if (full.bundle_variants) profile.bundleVariants = full.bundle_variants;
+      if (full.compliance_restrictions) profile.complianceRestrictions = full.compliance_restrictions;
+      if (full.notes) profile.notes = full.notes;
+      if (full.target_demographics) profile.targetDemographics = full.target_demographics;
+      if (full.tagline) profile.tagline = full.tagline;
+      if (full.category) profile.category = full.category;
+      if (full.product_type) profile.productType = full.product_type;
+      if (full.product_url) profile.productUrl = full.product_url;
+      if (full.unit_details) profile.unitDetails = full.unit_details;
+      if (full.short_name) profile.shortName = full.short_name;
+      if (full.offers && full.offers.length > 0) profile.offers = full.offers;
+    }
+    return {
+      name: productName,
+      description: productDescription || undefined,
+      price: productPrice || undefined,
+      product_image_url: productImageUrl || '',
+      product_images: full?.product_images || [],
+      logos: full?.logos || [],
+      logo_url: full?.logo_url || undefined,
+      brand_colors: full?.brand_colors || undefined,
+      fonts: full?.fonts || undefined,
+      profile: Object.keys(profile).length > 0 ? profile : undefined,
+    };
+  };
+
+  // Trim a client-side reference to what /generate-batch consumes.
+  // The server DB-refetches product_profiles anyway; refs only need the URL
+  // + friendly metadata for the pipeline card.
+  const trimReferenceForBatch = (r) => ({
+    id: r?.id ?? null,
+    image_url: r?.image_url || r?.thumbnail || r?.url || '',
+    name: r?.name || r?.label || 'Reference',
+    thumbnail: r?.thumbnail || r?.image_url || r?.url || '',
+    source_label: r?.source_label || r?.label || null,
+  });
+
+  // POST one item shape to /generate-batch. Merges the freshly-inserted
+  // server rows into local `queue` so the operator sees skeleton cards
+  // without waiting for the next 4s poll.
+  const enqueueItems = async (items) => {
+    try {
+      const res = await api.post('/statics-generation/generate-batch', { items });
+      const inserted = res.data?.data?.queued || [];
+      if (inserted.length > 0) {
+        setQueue(prev => {
+          // Keep direct-* placeholders + existing server rows; append new ones.
+          const existingIds = new Set(prev.map(q => q.id));
+          const additions = inserted
+            .filter(r => !existingIds.has(r.id))
+            .map(normalizeServerQueueRow);
+          return [...prev, ...additions];
+        });
+      }
+      return inserted;
+    } catch (err) {
+      const msg = err.response?.data?.error || err.message || 'Failed to enqueue';
+      addToast(`Enqueue failed: ${msg}`, 'error', 6000);
+      return null;
+    }
+  };
+
+  const handleAddToQueue = async () => {
     if (!selectedProductId) return;
     // Accept EITHER references[] (multi-ref / upload / template) OR a single
     // referenceImageUrl (card Select / modal Use as Reference). Mirrors the
     // canGenerate gate in ConfigSidebar.
     if (references.length === 0 && !referenceImageUrl) return;
 
-    // Build the queue item's references array. Prefer references[] when set;
-    // otherwise synthesize one entry from the single-pick referenceImageUrl.
     const itemReferences = references.length > 0
-      ? references.map(r => ({ ...r }))
-      : [{ id: Date.now(), image_url: referenceImageUrl, thumbnail: referencePreview || referenceImageUrl, name: 'Reference' }];
+      ? references.map(trimReferenceForBatch)
+      : [trimReferenceForBatch({ id: Date.now(), image_url: referenceImageUrl, thumbnail: referencePreview || referenceImageUrl, name: 'Reference' })];
+
+    const productImageIndex = productImageIndexTouched
+      ? Math.max(0, (selectedProductRef.current?.product_images || []).indexOf(productImageUrl))
+      : null;
 
     const item = {
-      id: crypto.randomUUID(),
+      product_id: selectedProductId,
+      product_name: productName,
+      product_image_index: productImageIndex,
+      product_payload: buildProductPayloadSnapshot(),
       references: itemReferences,
-      angle: marketingAngle,
-      angleData: !customAngle && selectedAngleData ? selectedAngleData : null,
-      customAngle: customAngle,
-      productId: selectedProductId,
-      productName: productName,
-      productRef: selectedProductRef.current ? { ...selectedProductRef.current } : null,
-      productDescription,
-      productPrice,
-      productImageUrl,
-      // Snapshot the picked shot index at enqueue time — the picker state may
-      // change before the queue runner fires. When operator hasn't locked a
-      // shot (auto mode), null → backend smart-resolves per angle at run time.
-      productImageIndex: productImageIndexTouched
-        ? Math.max(0, (selectedProductRef.current?.product_images || []).indexOf(productImageUrl))
-        : null,
-      aspectRatio,
-      // Profile fields snapshot
-      oneliner, customerAvatar, customerFrustration, customerDream,
-      bigPromise, mechanism, differentiator, voice, guarantee,
-      status: 'queued',
-      result: null,
-      error: null,
-      createdAt: Date.now(),
+      angle: !customAngle ? (marketingAngle || null) : null,
+      angle_data: !customAngle && selectedAngleData ? selectedAngleData : null,
+      custom_angle: customAngle || null,
+      image_engine: imageEngine || 'nanobanana',
     };
 
-    setQueue(prev => {
-      const next = [...prev, item];
-      queueRef.current = next;
-      return next;
-    });
+    mutationInFlight.current = true;
+    let inserted;
+    try {
+      inserted = await enqueueItems([item]);
+    } finally {
+      mutationInFlight.current = false;
+    }
+    if (!inserted) return; // toast already shown
 
     // Clear references after adding to queue so next template selection starts fresh
     setReferences([]);
@@ -1781,316 +1891,127 @@ export default function StaticsGeneration() {
     setReferencePreview('');
     setReferenceFile(null);
 
-    const pendingCount = queue.filter(q => q.status === 'queued').length + 1;
+    const pendingCount = queue.filter(q => q.status === 'queued' && !q.id.startsWith('direct-')).length + inserted.length;
     addToast(`Added to queue (${pendingCount} item${pendingCount > 1 ? 's' : ''} pending)`, 'info');
   };
 
-  const handleRemoveFromQueue = (id) => {
-    setQueue(prev => {
-      const next = prev.filter(q => q.id !== id);
-      queueRef.current = next;
-      return next;
-    });
-  };
-
-  const handleClearQueue = () => {
-    // Only clear done/errored items; keep active (queued, generating) and direct-gen temp items
-    setQueue(prev => {
-      const next = prev.filter(q => q.id.startsWith('direct-') || q.status === 'queued' || q.status === 'generating');
-      queueRef.current = next;
-      return next;
-    });
-  };
-
-  const handleRetryQueueItem = (id) => {
-    setQueue(prev => {
-      const next = prev.map(q => q.id === id ? { ...q, status: 'queued', error: null, result: null } : q);
-      queueRef.current = next;
-      return next;
-    });
-  };
-
-  // Queue processor — runs up to MAX_CONCURRENT_QUEUE_ITEMS in parallel.
-  // Was previously single-threaded (~4 min per queue item × N items).
-  // Parallel-2 typically halves operator-perceived queue completion time.
-  useEffect(() => {
-    const hasQueued = queue.some(q => q.status === 'queued');
-    const generatingCount = queue.filter(q => q.status === 'generating').length;
-
-    // Wait if: nothing queued, the concurrency cap is hit, OR a non-queue
-    // manual /generate is running (the manual button isn't queue-managed
-    // so we don't risk overlapping its output with a queue item).
-    if (!hasQueued) return;
-    if (generatingCount >= MAX_CONCURRENT_QUEUE_ITEMS) return;
-    if (queueInFlightCountRef.current >= MAX_CONCURRENT_QUEUE_ITEMS) return;
-    if (generating) return;
-
-    const processNext = async () => {
-      // Atomic claim: pick an item AND immediately mark it claimed before
-      // any await so a parallel useEffect fire can't grab the same item.
-      const currentQueue = queueRef.current;
-      const item = currentQueue.find(q => q.status === 'queued' && !queueInFlightIdsRef.current.has(q.id));
-      if (!item) return;
-      queueInFlightIdsRef.current.add(item.id);
-      queueInFlightCountRef.current++;
-      // Surface a single global "processing" flag for any UI that relied on it.
-      if (queueInFlightCountRef.current > 0) {
-        queueProcessingRef.current = true;
-        setQueueProcessing(true);
-      }
-
-      // Mark as generating
-      const updateStatus = (id, updates) => {
-        setQueue(prev => {
-          const next = prev.map(q => q.id === id ? { ...q, ...updates } : q);
-          queueRef.current = next;
-          return next;
-        });
-      };
-
-      updateStatus(item.id, { status: 'generating', progress: `0/${item.references.length}` });
-
-      try {
-        const full = item.productRef;
-
-        // Build profile once (shared across all references)
-        const profile = {};
-        if (item.oneliner) profile.oneliner = item.oneliner;
-        if (item.customerAvatar) profile.customerAvatar = item.customerAvatar;
-        if (item.customerFrustration) profile.customerFrustration = item.customerFrustration;
-        if (item.customerDream) profile.customerDream = item.customerDream;
-        if (item.bigPromise) profile.bigPromise = item.bigPromise;
-        if (item.mechanism) profile.mechanism = item.mechanism;
-        if (item.differentiator) profile.differentiator = item.differentiator;
-        if (item.voice) profile.voice = item.voice;
-        if (item.guarantee) profile.guarantee = item.guarantee;
-        if (full) {
-          if (full.benefits) profile.benefits = full.benefits;
-          if (full.pain_points) profile.painPoints = full.pain_points;
-          if (full.common_objections) profile.commonObjections = full.common_objections;
-          if (full.winning_angles) profile.winningAngles = full.winning_angles;
-          if (full.custom_angles_text) profile.customAngles = full.custom_angles_text;
-          if (full.competitive_edge) profile.competitiveEdge = full.competitive_edge;
-          if (full.offer_details) profile.offerDetails = full.offer_details;
-          if (full.max_discount) profile.maxDiscount = full.max_discount;
-          if (full.discount_codes) profile.discountCodes = full.discount_codes;
-          if (full.bundle_variants) profile.bundleVariants = full.bundle_variants;
-          if (full.compliance_restrictions) profile.complianceRestrictions = full.compliance_restrictions;
-          if (full.notes) profile.notes = full.notes;
-          // Previously missing fields from product library
-          if (full.target_demographics) profile.targetDemographics = full.target_demographics;
-          if (full.tagline) profile.tagline = full.tagline;
-          if (full.category) profile.category = full.category;
-          if (full.product_type) profile.productType = full.product_type;
-          if (full.product_url) profile.productUrl = full.product_url;
-          if (full.unit_details) profile.unitDetails = full.unit_details;
-          if (full.short_name) profile.shortName = full.short_name;
-          if (full.offers && full.offers.length > 0) profile.offers = full.offers;
-        }
-
-        const productPayload = {
-          name: item.productName,
-          description: item.productDescription || undefined,
-          price: item.productPrice || undefined,
-          product_image_url: item.productImageUrl || '',
-          product_images: full?.product_images || [],
-          logos: full?.logos || [],
-          logo_url: full?.logo_url || undefined,
-          brand_colors: full?.brand_colors || undefined,
-          fonts: full?.fonts || undefined,
-          profile: Object.keys(profile).length > 0 ? profile : undefined,
-        };
-
-        // Process references with overlapped execution:
-        // While polling reference N's tasks, fire off reference N+1's generate call.
-        // This overlaps the slow polling step with the fast Claude+NanoBanana submission.
-        let totalCreatives = 0;
-        const allErrors = [];
-
-        const pollTask = async (task) => {
-          const maxPolls = 120;
-          let consecutiveNetworkErrors = 0;
-          for (let i = 0; i < maxPolls; i++) {
-            const delay = i < 10 ? 2000 : (i < 60 ? 4000 : 6000);
-            await new Promise(r => setTimeout(r, delay));
-            try {
-              const statusRes = await api.get(`/statics-generation/status/${task.taskId}`);
-              consecutiveNetworkErrors = 0;
-              const statusData = statusRes.data?.data || statusRes.data;
-              if (statusData?.resultImageUrl) {
-                return { ratio: task.ratio, imageUrl: statusData.resultImageUrl, taskId: task.taskId };
-              }
-              if (statusData?.status === 'failed' || statusData?.error) {
-                const errMsg = statusData?.error || `Generation failed (code ${statusData?.successFlag || '?'})`;
-                throw new Error(`Failed for ${task.ratio}: ${errMsg}`);
-              }
-            } catch (err) {
-              if (err.message?.startsWith('Failed for')) throw err;
-              consecutiveNetworkErrors++;
-              if (consecutiveNetworkErrors >= 5) {
-                throw new Error(`Network error polling ${task.ratio}: ${err.message || 'unknown'}`);
-              }
-            }
-          }
-          throw new Error(`Timed out for ${task.ratio}`);
-        };
-
-        // Overlap: fire ref N+1's generate while ref N is still polling.
-        // Each iteration awaits only the fast generate call (Step 1),
-        // then lets polling (Step 2) run in the background.
-        const refPromises = [];
-
-        for (let refIdx = 0; refIdx < item.references.length; refIdx++) {
-          updateStatus(item.id, { progress: `${refIdx + 1}/${item.references.length}` });
-
-          // Start this reference's full pipeline (generate + poll).
-          // The generate call resolves quickly; polling takes 30-60s.
-          // We split so the next iteration can start its generate call
-          // as soon as THIS generate call completes.
-          const refPromise = (async (idx) => {
-            const currentRef = item.references[idx];
-            const refUrl = currentRef?.image_url || currentRef?.thumbnail || currentRef?.url || '';
-
-            try {
-              // Step 1: Submit to server (fast)
-              // Pass template_id if the reference is from the template library (UUID)
-              const refId = currentRef?.id;
-              const isRefTemplate = typeof refId === 'string' && refId.includes('-');
-
-              // Snapshot may be an int (operator locked a shot) or null
-              // (auto mode → backend smart-resolves from the angle at
-              // run time; different angles produce visually distinct statics).
-              const queueImageIndex = Number.isInteger(item.productImageIndex)
-                ? item.productImageIndex
-                : null;
-              const response = await api.post('/statics-generation/generate', {
-                reference_image_url: refUrl,
-                template_id: isRefTemplate ? refId : undefined,
-                product_id: item.productId || undefined,
-                product_image_index: queueImageIndex,
-                product: productPayload,
-                angle: item.customAngle || item.angle || undefined,
-                angle_data: !item.customAngle && item.angleData ? item.angleData : undefined,
-                ratio: 'all',
-              });
-
-              const genResult = response.data?.data || response.data;
-              const tasks = genResult.tasks || (genResult.taskId ? [{ taskId: genResult.taskId, ratio: '1:1' }] : []);
-
-              // Signal that generate is done — next ref can start
-              return { genDone: true, pollPromise: (async () => {
-                if (tasks.length === 0) return;
-
-                // Step 2: Poll tasks (slow)
-                const taskResults = await Promise.allSettled(tasks.map(pollTask));
-                const completedTasks = taskResults.filter(r => r.status === 'fulfilled').map(r => r.value);
-                const failedTasks = taskResults.filter(r => r.status === 'rejected').map(r => r.reason?.message);
-
-                if (failedTasks.length > 0) allErrors.push(...failedTasks);
-                if (completedTasks.length === 0) return;
-
-                // Step 3: Save creatives — 1:1 as parent, 9:16 as child of 1:1.
-                const groupId = crypto.randomUUID();
-                const resolvedRefUrl = currentRef?.image_url || currentRef?.thumbnail || currentRef?.url || refUrl;
-
-                const parentTask = completedTasks.find(t => t.ratio === '1:1') || completedTasks[0];
-                const childTasks = completedTasks.filter(t => t !== parentTask);
-
-                const buildPayload = (task, parentId) => ({
-                  product_id: item.productId || null,
-                  product_name: item.productName,
-                  image_url: task.imageUrl,
-                  angle: item.angle || null,
-                  aspect_ratio: task.ratio,
-                  group_id: groupId,
-                  generation_task_id: task.taskId,
-                  adapted_text: task.claudeAnalysis?.adapted_text || genResult.adaptedText || genResult.claudeAnalysis?.adapted_text,
-                  swap_pairs: task.swapPairs || genResult.swapPairs,
-                  claude_analysis: task.claudeAnalysis || genResult.claudeAnalysis,
-                  reference_thumbnail: resolvedRefUrl,
-                  reference_name: currentRef?.name || 'Reference',
-                  source_label: currentRef?.source_label || currentRef?.name || null,
-                  pipeline: 'standard',
-                  parent_creative_id: parentId || null,
-                  // Prefer the resolved index from /status (backend
-                  // smart-resolved from the angle). Fall back to enqueue-
-                  // time snapshot, else 0.
-                  product_image_index: Number.isInteger(task.productImageIndex)
-                    ? task.productImageIndex
-                    : (Number.isInteger(queueImageIndex) ? queueImageIndex : 0),
-                });
-
-                const parentRes = await api.post('/statics-generation/creatives', buildPayload(parentTask, null));
-                const parentRow = parentRes.data?.data || parentRes.data;
-                const parentId = parentRow?.id;
-
-                const childRows = await Promise.all(childTasks.map(async (task) => {
-                  const r = await api.post('/statics-generation/creatives', buildPayload(task, parentId));
-                  return r.data?.data || r.data;
-                }));
-
-                const savedCreatives = [parentRow, ...childRows];
-
-                setCreatives(prev => [...savedCreatives, ...prev]);
-                totalCreatives += completedTasks.length;
-              })() };
-            } catch (refErr) {
-              allErrors.push(`Ref ${idx + 1}: ${refErr.response?.data?.error || refErr.message}`);
-              return { genDone: true, pollPromise: Promise.resolve() };
-            }
-          })(refIdx);
-
-          // Wait for this ref's generate (Step 1) to finish before starting the next.
-          // But do NOT wait for its polling (Step 2) — that runs in the background.
-          const result = await refPromise;
-          refPromises.push(result.pollPromise);
-        }
-
-        // Wait for all polling + saving to complete
-        await Promise.allSettled(refPromises);
-
-        if (totalCreatives === 0 && allErrors.length > 0) {
-          throw new Error(allErrors.join('; '));
-        }
-
-        updateStatus(item.id, {
-          status: allErrors.length > 0 ? 'partial' : 'done',
-          result: { creativeCount: totalCreatives },
-          error: allErrors.length > 0 ? allErrors.join('; ') : null,
-        });
-
-        if (allErrors.length > 0) {
-          addToast(`Queue: ${totalCreatives} creatives done, ${allErrors.length} error(s): ${allErrors.join('; ')}`, 'warning', 6000);
-        } else {
-          addToast(`Queue: ${totalCreatives} creative${totalCreatives !== 1 ? 's' : ''} generated from ${item.references.length} ref${item.references.length !== 1 ? 's' : ''}`, 'success', 4000);
-        }
-      } catch (err) {
-        const message = err.response?.data?.error || err.response?.data?.message || err.message || 'An unexpected error occurred';
-        updateStatus(item.id, { status: 'error', error: message });
-        addToast(`Queue item failed: ${message}`, 'error', 6000);
-      } finally {
-        // Release the slot
-        queueInFlightCountRef.current = Math.max(0, queueInFlightCountRef.current - 1);
-        queueInFlightIdsRef.current.delete(item.id);
-        if (queueInFlightCountRef.current === 0) {
-          queueProcessingRef.current = false;
-          setQueueProcessing(false);
-        }
-        // Catch-up fetch after queue item to pick up server-side 9:16 variants
-        setTimeout(() => fetchCreatives(true), 3000);
-      }
-    };
-
-    // Try to start as many items as the concurrency budget allows in this
-    // effect fire. Each call increments queueInFlightCountRef before any
-    // await so subsequent calls in the same tick honor the cap correctly.
-    while (
-      queueInFlightCountRef.current < MAX_CONCURRENT_QUEUE_ITEMS &&
-      queueRef.current.some(q => q.status === 'queued' && !queueInFlightIdsRef.current.has(q.id))
-    ) {
-      processNext();
+  const handleRemoveFromQueue = async (id) => {
+    // direct-* placeholders never hit the server — drop from local state only.
+    if (typeof id === 'string' && id.startsWith('direct-')) {
+      setQueue(prev => prev.filter(q => q.id !== id));
+      return;
     }
-  }, [queue, queueProcessing, generating]);
+    // Optimistic: pull the row so the card disappears immediately; the poll
+    // will drop it too on the next tick if the DELETE succeeded (or restore
+    // it if the server 404'd).
+    setQueue(prev => prev.filter(q => q.id !== id));
+    mutationInFlight.current = true;
+    try {
+      await api.delete(`/statics-generation/queue/${id}`);
+    } catch (err) {
+      const msg = err.response?.data?.error || err.message || 'Delete failed';
+      addToast(`Could not remove queue item: ${msg}`, 'error', 5000);
+      // Poll will re-hydrate the row on next tick if it still exists server-side.
+    } finally {
+      mutationInFlight.current = false;
+    }
+  };
+
+  const handleClearQueue = async () => {
+    // Only clear terminal rows (done/error/cancelled). Active (queued/generating)
+    // and direct-* placeholders are preserved. Fire DELETEs in parallel; the
+    // 4s poll reconciles anything that fails.
+    const terminal = queue.filter(q => !q.id.startsWith('direct-')
+      && (q.status === 'done' || q.status === 'error' || q.status === 'partial' || q.status === 'cancelled'));
+    if (terminal.length === 0) return;
+    // Optimistic drop.
+    setQueue(prev => prev.filter(q => !terminal.some(t => t.id === q.id)));
+    mutationInFlight.current = true;
+    try {
+      await Promise.allSettled(
+        terminal.map(t => api.delete(`/statics-generation/queue/${t.id}`))
+      );
+    } finally {
+      mutationInFlight.current = false;
+    }
+  };
+
+  const handleRetryQueueItem = async (id) => {
+    // Server rows can't be mutated back to 'queued' — the row's task_ids are
+    // stale. Re-enqueue a fresh item using the failed row's snapshotted fields,
+    // then delete the failed row.
+    const src = queue.find(q => q.id === id);
+    if (!src) return;
+    const refs = Array.isArray(src.references) ? src.references.map(trimReferenceForBatch) : [];
+    if (refs.length === 0) {
+      addToast('Cannot retry — original references are missing', 'error', 5000);
+      return;
+    }
+    const item = {
+      product_id: src.product_id ?? src.productId ?? selectedProductId,
+      product_name: src.product_name || src.productName || productName,
+      product_image_index: Number.isInteger(src.product_image_index) ? src.product_image_index : null,
+      product_payload: src.product_payload || buildProductPayloadSnapshot(),
+      references: refs,
+      angle: src.angle || null,
+      angle_data: src.angle_data || src.angleData || null,
+      custom_angle: src.custom_angle || src.customAngle || null,
+      image_engine: src.image_engine || imageEngine || 'nanobanana',
+    };
+    mutationInFlight.current = true;
+    let inserted;
+    try {
+      inserted = await enqueueItems([item]);
+      if (!inserted) return;
+      // Best-effort: drop the failed row.
+      try { await api.delete(`/statics-generation/queue/${id}`); } catch { /* ignore */ }
+      setQueue(prev => prev.filter(q => q.id !== id));
+    } finally {
+      mutationInFlight.current = false;
+    }
+  };
+
+  // -------------------------------------------------------------------------
+  // Server-queue polling — GET /statics-generation/queue every 4s while any
+  // row is queued|generating, back off to 15s when everything is terminal.
+  // Merges server rows with the local `direct-*` placeholders that live
+  // outside the server queue (they represent the manual /generate button).
+  // -------------------------------------------------------------------------
+
+  const fetchQueueFromServer = useCallback(async () => {
+    // F5: skip the poll if an add/remove/clear mutation is mid-flight. Its
+    // reconciliation would wipe the optimistic update. The next 4s tick
+    // picks up the DB truth once the mutation resolves.
+    if (mutationInFlight.current) return null;
+    try {
+      const res = await api.get('/statics-generation/queue');
+      const items = res.data?.data?.items || [];
+      const normalized = items.map(normalizeServerQueueRow);
+      setQueue(prev => {
+        const directGens = prev.filter(q => typeof q.id === 'string' && q.id.startsWith('direct-'));
+        return [...directGens, ...normalized];
+      });
+      return normalized;
+    } catch {
+      // Transient network error — next tick will retry.
+      return null;
+    }
+  }, []);
+
+  useEffect(() => {
+    // First fetch on mount so returning to the tab shows any in-flight items.
+    fetchQueueFromServer();
+  }, [fetchQueueFromServer]);
+
+  useEffect(() => {
+    // Fast poll while anything is in-flight; slow poll otherwise.
+    const anyInFlight = queue.some(q =>
+      (q.status === 'queued' || q.status === 'generating')
+      && !(typeof q.id === 'string' && q.id.startsWith('direct-'))
+    );
+    const interval = setInterval(fetchQueueFromServer, anyInFlight ? 4000 : 15000);
+    return () => clearInterval(interval);
+  }, [queue, fetchQueueFromServer]);
 
   // Fetch creatives for pipeline
   // `silent` skips the loading spinner — used by auto-refresh so the UI
@@ -2778,11 +2699,8 @@ export default function StaticsGeneration() {
                     setReferenceFile(null);
                   }}
                   productAngles={productAngles}
-                  onQueueRefWithAngles={(ref, anglesPicked) => {
-                    // One reference image × N angles → N queue items.
-                    // Each item carries its own angle / angleData snapshot
-                    // so the queue runner's existing per-item path generates
-                    // the correct creative without any cross-item leakage.
+                  onQueueRefWithAngles={async (ref, anglesPicked) => {
+                    // One reference image × N angles → N /generate-batch items.
                     if (!selectedProductId) {
                       addToast('Pick a product first before queueing angles', 'error');
                       return;
@@ -2796,7 +2714,6 @@ export default function StaticsGeneration() {
                       addToast('Pick at least one angle', 'error');
                       return;
                     }
-                    // Deduplicate angles defensively by name (cap to actual list).
                     const seen = new Set();
                     const uniqueAngles = anglesPicked.filter(a => {
                       const key = (a?.name || '').trim().toLowerCase();
@@ -2809,81 +2726,61 @@ export default function StaticsGeneration() {
                       return;
                     }
                     const refLabel = ref.reference_name || ref.source_label || 'Reference';
-                    const newItems = uniqueAngles.map((angleObj) => ({
-                      id: crypto.randomUUID(),
-                      references: [{ url: refUrl, image_url: refUrl, thumbnail: refUrl, label: refLabel, name: refLabel }],
-                      angle: angleObj.name || '',
-                      angleData: angleObj,
-                      customAngle: '',
-                      productId: selectedProductId,
-                      productName: productName,
-                      productRef: selectedProductRef.current ? { ...selectedProductRef.current } : null,
-                      productDescription,
-                      productPrice,
-                      productImageUrl,
-                      productImageIndex: productImageIndexTouched
-                        ? Math.max(0, (selectedProductRef.current?.product_images || []).indexOf(productImageUrl))
-                        : null,
-                      aspectRatio,
-                      oneliner, customerAvatar, customerFrustration, customerDream,
-                      bigPromise, mechanism, differentiator, voice, guarantee,
-                      status: 'queued',
-                      result: null,
-                      error: null,
-                      createdAt: Date.now(),
+                    const productImageIndex = productImageIndexTouched
+                      ? Math.max(0, (selectedProductRef.current?.product_images || []).indexOf(productImageUrl))
+                      : null;
+                    const productPayload = buildProductPayloadSnapshot();
+                    const items = uniqueAngles.map((angleObj) => ({
+                      product_id: selectedProductId,
+                      product_name: productName,
+                      product_image_index: productImageIndex,
+                      product_payload: productPayload,
+                      references: [trimReferenceForBatch({ image_url: refUrl, thumbnail: refUrl, name: refLabel, source_label: refLabel })],
+                      angle: angleObj?.name || null,
+                      angle_data: angleObj || null,
+                      custom_angle: null,
+                      image_engine: imageEngine || 'nanobanana',
                     }));
-                    setQueue(prev => {
-                      const next = [...prev, ...newItems];
-                      queueRef.current = next;
-                      return next;
-                    });
-                    addToast(`Queued ${newItems.length} angle${newItems.length > 1 ? 's' : ''} from "${refLabel}"`, 'success');
+                    const inserted = await enqueueItems(items);
+                    if (inserted) {
+                      addToast(`Queued ${inserted.length} angle${inserted.length > 1 ? 's' : ''} from "${refLabel}"`, 'success');
+                    }
                   }}
-                  onAddSelectedToQueue={(picked) => {
-                    // Batch: each selected reference becomes its own queue item.
-                    // The existing queue runner picks them up sequentially.
+                  onAddSelectedToQueue={async (picked) => {
+                    // Batch: each selected reference becomes its own /generate-batch item.
                     if (!selectedProductId) {
                       addToast('Pick a product first before queueing references', 'error');
                       return;
                     }
                     if (!Array.isArray(picked) || picked.length === 0) return;
-                    const newItems = picked.map((ref) => {
+                    const productPayload = buildProductPayloadSnapshot();
+                    const productImageIndex = productImageIndexTouched
+                      ? Math.max(0, (selectedProductRef.current?.product_images || []).indexOf(productImageUrl))
+                      : null;
+                    const items = picked.map((ref) => {
                       const url = ref?.image_url || ref?.thumbnail_url || ref?.reference_thumbnail;
                       if (!url) return null;
+                      const label = ref.reference_name || ref.source_label || 'Reference';
                       return {
-                        id: crypto.randomUUID(),
-                        references: [{ url, label: ref.reference_name || ref.source_label || 'Reference' }],
-                        angle: marketingAngle,
-                        angleData: !customAngle && selectedAngleData ? selectedAngleData : null,
-                        customAngle: customAngle,
-                        productId: selectedProductId,
-                        productName: productName,
-                        productRef: selectedProductRef.current ? { ...selectedProductRef.current } : null,
-                        productDescription,
-                        productPrice,
-                        productImageUrl,
-                        productImageIndex: productImageIndexTouched
-                          ? Math.max(0, (ref.product_images || selectedProductRef.current?.product_images || []).indexOf(productImageUrl))
-                          : null,
-                        aspectRatio,
-                        oneliner, customerAvatar, customerFrustration, customerDream,
-                        bigPromise, mechanism, differentiator, voice, guarantee,
-                        status: 'queued',
-                        result: null,
-                        error: null,
-                        createdAt: Date.now(),
+                        product_id: selectedProductId,
+                        product_name: productName,
+                        product_image_index: productImageIndex,
+                        product_payload: productPayload,
+                        references: [trimReferenceForBatch({ image_url: url, thumbnail: url, name: label, source_label: label })],
+                        angle: !customAngle ? (marketingAngle || null) : null,
+                        angle_data: !customAngle && selectedAngleData ? selectedAngleData : null,
+                        custom_angle: customAngle || null,
+                        image_engine: imageEngine || 'nanobanana',
                       };
                     }).filter(Boolean);
-                    if (newItems.length === 0) {
+                    if (items.length === 0) {
                       addToast('Selected references had no usable image URL', 'error');
                       return;
                     }
-                    setQueue(prev => {
-                      const next = [...prev, ...newItems];
-                      queueRef.current = next;
-                      return next;
-                    });
-                    addToast(`Added ${newItems.length} reference${newItems.length > 1 ? 's' : ''} to queue`, 'info');
+                    const inserted = await enqueueItems(items);
+                    if (inserted) {
+                      addToast(`Added ${inserted.length} reference${inserted.length > 1 ? 's' : ''} to queue`, 'info');
+                    }
                   }}
                   onStatusChange={async (id, newStatus) => {
                     try {
@@ -2910,27 +2807,37 @@ export default function StaticsGeneration() {
                       return;
                     }
                     try {
-                      // Fetch product data from library
+                      // Fetch product data from library so we can build a
+                      // product_payload snapshot for /generate-batch. The
+                      // server will DB-refetch anyway, but sending a payload
+                      // is defensive in case the row is edited/deleted before
+                      // the worker picks the item up.
                       const prodRes = await api.get(`/product-library/products/${creative.product_id}`);
-                      const prod = prodRes.data?.data || prodRes.data;
-                      // Add to queue with status 'queued' so the queue processor handles
-                      // polling and saving — same as ADD TO QUEUE
-                      const queueId = `regen-${creative.id}-${Date.now()}`;
-                      setQueue(prev => {
-                        const next = [...prev, {
-                          id: queueId,
-                          productId: creative.product_id,
-                          productName: creative.product_name || prod.name || 'Untitled',
-                          productImageUrl: prod.main_image_url || prod.product_images?.[0] || '',
-                          productRef: prod,
-                          angle: creative.angle || null,
-                          aspectRatio: creative.aspect_ratio || '4:5',
-                          references: [{ image_url: creative.reference_thumbnail, name: 'Regenerate' }],
-                          status: 'queued',
-                        }];
-                        queueRef.current = next;
-                        return next;
-                      });
+                      const prod = prodRes.data?.data || prodRes.data || {};
+                      const payload = {
+                        name: creative.product_name || prod.name || 'Untitled',
+                        product_image_url: prod.main_image_url || prod.product_images?.[0] || '',
+                        product_images: prod.product_images || [],
+                        logos: prod.logos || [],
+                        logo_url: prod.logo_url || undefined,
+                        brand_colors: prod.brand_colors || undefined,
+                        fonts: prod.fonts || undefined,
+                      };
+                      const item = {
+                        product_id: creative.product_id,
+                        product_name: creative.product_name || prod.name || 'Untitled',
+                        product_image_index: Number.isInteger(creative.product_image_index) ? creative.product_image_index : null,
+                        product_payload: payload,
+                        references: [trimReferenceForBatch({ image_url: creative.reference_thumbnail, name: 'Regenerate', source_label: 'Regenerate' })],
+                        angle: creative.angle || null,
+                        angle_data: null,
+                        custom_angle: null,
+                        image_engine: creative.image_engine || imageEngine || 'nanobanana',
+                      };
+                      const inserted = await enqueueItems([item]);
+                      if (inserted) {
+                        addToast(`Regenerating "${creative.product_name || 'creative'}"`, 'info');
+                      }
                     } catch (err) {
                       console.error('[Pipeline] Regenerate failed:', err.message);
                     }

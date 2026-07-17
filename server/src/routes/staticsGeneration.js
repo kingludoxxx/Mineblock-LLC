@@ -2720,6 +2720,170 @@ router.post('/generate', authenticate, async (req, res) => {
         swapPairs: [],
       });
 
+      // ── PHASE 2 AUTO-SAVE ──────────────────────────────────────────────
+      // Persist every ratio to spy_creatives server-side, regardless of who
+      // called /generate. Mirrors the client's Step 3 (StaticsGeneration.jsx
+      // 1993–2030) but fires from the pipeline itself so tab-close, server
+      // queue worker calls, and any future caller all get durable results.
+      //
+      // Idempotency: legacy client-driven POST /creatives may race this
+      // auto-save with the same generation_task_id. Race-safety is enforced
+      // at the DB layer by the unique partial index in migration 085 +
+      // ON CONFLICT (generation_task_id) DO NOTHING on both INSERTs, so
+      // whichever writer arrives second no-ops silently. The SELECT-then-
+      // INSERT pre-check kept here as a short-circuit — it saves the doomed
+      // INSERT round-trip in the common case where the client already saved
+      // — but is no longer load-bearing for correctness.
+      try {
+        if (tasks.length > 0) {
+          const parentTask =
+            tasks.find(t => t.ratio === '1:1') || tasks[0];
+          const childrenTasks = tasks.filter(t => t.taskId !== parentTask.taskId);
+
+          // Fast-path check — key on parent taskId. Correctness now lives
+          // in the ON CONFLICT clauses on the two INSERTs below.
+          const already = await pgQuery(
+            'SELECT id FROM spy_creatives WHERE generation_task_id = $1 LIMIT 1',
+            [parentTask.taskId],
+          ).catch(() => []);
+
+          if (!already.length) {
+            const groupId = crypto.randomUUID();
+
+            // Reference thumbnail — reuse the same volatile-URL gate the
+            // manual POST /creatives has at ~line 4053. All resultImageUrl
+            // values already went through persistNanoBananaImage above so
+            // they should be R2, but this catches regressions.
+            const rawRefThumb = req.body.reference_image_url || null;
+
+            // Match POST /creatives' copy-set + generated-copy shape so
+            // the pipeline UI + copy set assignment are consistent with
+            // client-driven saves.
+            let matchedCopySetId = null;
+            if (product?.id && (angle_data?.name || angle)) {
+              try {
+                const csRows = await pgQuery(
+                  'SELECT id FROM brief_copy_sets WHERE product_id = $1 AND LOWER(angle) = LOWER($2) LIMIT 1',
+                  [product.id, angle_data?.name || angle],
+                );
+                if (csRows.length) matchedCopySetId = csRows[0].id;
+              } catch (_) { /* non-blocking */ }
+            }
+
+            let generatedCopy = null;
+            if (claudeResult?.adapted_text) {
+              const at = claudeResult.adapted_text;
+              generatedCopy = {
+                primary_texts: [at.body || at.headline || ''].filter(Boolean),
+                headlines: [at.headline || at.subheadline || ''].filter(Boolean),
+                descriptions: [at.subheadline || at.cta || ''].filter(Boolean),
+                cta: at.cta || '',
+              };
+            }
+
+            const parentImageUrl = parentTask.resultImageUrl;
+            if (parentImageUrl && !isVolatileImageUrl(parentImageUrl)) {
+              const parentRows = await pgQuery(
+                `INSERT INTO spy_creatives
+                   (product_id, product_name, angle, aspect_ratio, image_url,
+                    reference_image_id, source_label, reference_name, reference_thumbnail,
+                    adapted_text, claude_analysis, swap_pairs, generation_prompt,
+                    generation_task_id, pipeline, status, group_id, generated_copy, copy_set_id,
+                    quality_warning, parent_creative_id, image_engine, product_image_index)
+                  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
+                  ON CONFLICT (generation_task_id) WHERE generation_task_id IS NOT NULL DO NOTHING
+                  RETURNING id`,
+                [
+                  product?.id || null,
+                  product?.name || null,
+                  angle_data?.name || angle || null,
+                  parentTask.ratio || '1:1',
+                  parentImageUrl,
+                  null,
+                  req.body.source_label || 'auto-save',
+                  null,
+                  rawRefThumb && !isVolatileImageUrl(rawRefThumb) ? rawRefThumb : null,
+                  JSON.stringify(claudeResult?.adapted_text || {}),
+                  JSON.stringify(claudeResult),
+                  JSON.stringify([]),
+                  null,
+                  parentTask.taskId,
+                  'standard',
+                  'review',
+                  groupId,
+                  generatedCopy ? JSON.stringify(generatedCopy) : null,
+                  matchedCopySetId,
+                  null,
+                  null,
+                  imageEngineName,
+                  productImageIndex,
+                ],
+              );
+
+              const parentCreativeId = parentRows[0]?.id;
+
+              if (parentCreativeId && childrenTasks.length > 0) {
+                await Promise.all(childrenTasks.map(async (ct) => {
+                  if (!ct.resultImageUrl || isVolatileImageUrl(ct.resultImageUrl)) {
+                    console.warn(`[staticsGeneration] auto-save: skipping child ${ct.ratio} — missing/volatile URL`);
+                    return;
+                  }
+                  try {
+                    await pgQuery(
+                      `INSERT INTO spy_creatives
+                         (product_id, product_name, angle, aspect_ratio, image_url,
+                          reference_image_id, source_label, reference_name, reference_thumbnail,
+                          adapted_text, claude_analysis, swap_pairs, generation_prompt,
+                          generation_task_id, pipeline, status, group_id, generated_copy, copy_set_id,
+                          quality_warning, parent_creative_id, image_engine, product_image_index)
+                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
+                        ON CONFLICT (generation_task_id) WHERE generation_task_id IS NOT NULL DO NOTHING`,
+                      [
+                        product?.id || null,
+                        product?.name || null,
+                        angle_data?.name || angle || null,
+                        ct.ratio,
+                        ct.resultImageUrl,
+                        null,
+                        req.body.source_label || 'auto-save',
+                        null,
+                        rawRefThumb && !isVolatileImageUrl(rawRefThumb) ? rawRefThumb : null,
+                        JSON.stringify(claudeResult?.adapted_text || {}),
+                        JSON.stringify(claudeResult),
+                        JSON.stringify([]),
+                        null,
+                        ct.taskId,
+                        'standard',
+                        'review',
+                        groupId,
+                        generatedCopy ? JSON.stringify(generatedCopy) : null,
+                        matchedCopySetId,
+                        null,
+                        parentCreativeId,
+                        imageEngineName,
+                        productImageIndex,
+                      ],
+                    );
+                  } catch (childErr) {
+                    console.error(`[staticsGeneration] auto-save child (${ct.ratio}) INSERT failed:`, childErr.message);
+                  }
+                }));
+              }
+
+              console.log(`[staticsGeneration] auto-save: persisted parent=${parentCreativeId} + ${childrenTasks.length} child(ren) for ${earlyTaskId}`);
+            } else {
+              console.warn(`[staticsGeneration] auto-save: skipping — parent URL missing or volatile (${parentImageUrl?.slice(0, 80)})`);
+            }
+          } else {
+            console.log(`[staticsGeneration] auto-save: skipped — spy_creatives row already exists for ${parentTask.taskId} (client-driven save beat us)`);
+          }
+        }
+      } catch (saveErr) {
+        // Auto-save failure must NOT turn a successful generation into a
+        // 500, and must NOT skip logGenerationEvent below.
+        console.error(`[staticsGeneration] auto-save block failed for ${earlyTaskId}:`, saveErr);
+      }
+
       logGenerationEvent({
         template_id: template_id || null,
         product_id: product?.id || null,
@@ -2899,6 +3063,169 @@ async function assignNextImNumber() {
   }
   return rows[0].assigned;
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// Server-owned STATICS QUEUE (Phase 1 of the forever-fix)
+//
+// Replaces client-side React queue state that vanished on tab close. The
+// worker (server/src/workers/staticsQueueWorker.js) claims rows here and
+// drives the /generate pipeline; the auto-save block above persists results
+// to spy_creatives.
+//
+//   POST   /generate-batch   — enqueue one or more items
+//   GET    /queue            — list items for this user
+//   DELETE /queue/:id        — cancel (queued) or delete (terminal)
+// ─────────────────────────────────────────────────────────────────────────
+
+const STATICS_QUEUE_MAX_REFS = 20;
+
+router.post('/generate-batch', authenticate, async (req, res) => {
+  try {
+    let items = req.body?.items;
+    if (!items) return res.status(400).json({ success: false, error: { message: 'items is required' } });
+    if (!Array.isArray(items)) items = [items];
+    if (items.length === 0) {
+      return res.status(400).json({ success: false, error: { message: 'items must be non-empty' } });
+    }
+
+    // Validate every item BEFORE inserting so we don't partial-enqueue.
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i] || {};
+      if (!it.product_id) {
+        return res.status(400).json({ success: false, error: { message: `items[${i}].product_id is required` } });
+      }
+      if (!Array.isArray(it.references) || it.references.length === 0) {
+        return res.status(400).json({ success: false, error: { message: `items[${i}].references must be a non-empty array` } });
+      }
+      if (it.references.length > STATICS_QUEUE_MAX_REFS) {
+        return res.status(400).json({
+          success: false,
+          error: { message: `items[${i}].references.length (${it.references.length}) exceeds max ${STATICS_QUEUE_MAX_REFS}` },
+        });
+      }
+    }
+
+    const inserted = [];
+    for (const it of items) {
+      const refsTotal = it.references.length;
+      const rows = await pgQuery(
+        `INSERT INTO statics_queue
+           (status, product_id, product_name, product_image_index, product_payload,
+            "references", angle, angle_data, custom_angle, image_engine,
+            user_id, refs_total)
+         VALUES ('queued', $1, $2, $3, $4::jsonb, $5::jsonb, $6, $7::jsonb, $8, $9, $10, $11)
+         RETURNING id, status, refs_total, created_at`,
+        [
+          it.product_id,
+          it.product_name || null,
+          Number.isInteger(it.product_image_index) ? it.product_image_index : null,
+          it.product_payload ? JSON.stringify(it.product_payload) : null,
+          JSON.stringify(it.references),
+          it.angle || null,
+          it.angle_data ? JSON.stringify(it.angle_data) : null,
+          it.custom_angle || null,
+          (it.image_engine || 'nanobanana').toLowerCase(),
+          req.user?.id || null,
+          refsTotal,
+        ],
+      );
+      inserted.push(rows[0]);
+    }
+
+    return res.json({ success: true, data: { queued: inserted } });
+  } catch (err) {
+    console.error('[staticsGeneration] POST /generate-batch error:', err);
+    return res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+router.get('/queue', authenticate, async (req, res) => {
+  try {
+    const limitRaw = parseInt(req.query.limit, 10);
+    const limit = Math.max(1, Math.min(Number.isFinite(limitRaw) ? limitRaw : 50, 200));
+
+    // Default: return active items PLUS recent errors (last 1h) so failures
+    // stay visible briefly. Client can override with ?status=queued,generating.
+    let statusFilter = null;
+    if (req.query.status) {
+      statusFilter = String(req.query.status).split(',').map(s => s.trim()).filter(Boolean);
+    }
+
+    let rows;
+    if (statusFilter) {
+      rows = await pgQuery(
+        `SELECT id, status, product_id, product_name, angle, custom_angle,
+                "references", refs_done, refs_total, image_engine,
+                result, error, created_at, started_at, finished_at
+           FROM statics_queue
+          WHERE user_id = $1
+            AND status = ANY($2::text[])
+          ORDER BY created_at DESC
+          LIMIT $3`,
+        [req.user.id, statusFilter, limit],
+      );
+    } else {
+      rows = await pgQuery(
+        `SELECT id, status, product_id, product_name, angle, custom_angle,
+                "references", refs_done, refs_total, image_engine,
+                result, error, created_at, started_at, finished_at
+           FROM statics_queue
+          WHERE user_id = $1
+            AND (
+              status IN ('queued','generating')
+              OR (status = 'error' AND finished_at > NOW() - INTERVAL '1 hour')
+              OR (status = 'done'  AND finished_at > NOW() - INTERVAL '15 minutes')
+            )
+          ORDER BY created_at DESC
+          LIMIT $2`,
+        [req.user.id, limit],
+      );
+    }
+
+    return res.json({ success: true, data: { items: rows } });
+  } catch (err) {
+    console.error('[staticsGeneration] GET /queue error:', err);
+    return res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
+router.delete('/queue/:id', authenticate, async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!id) return res.status(400).json({ success: false, error: { message: 'id required' } });
+
+    const rows = await pgQuery(
+      `SELECT id, status, user_id FROM statics_queue WHERE id = $1`,
+      [id],
+    );
+    if (rows.length === 0) {
+      return res.status(404).json({ success: false, error: { message: 'queue row not found' } });
+    }
+    const row = rows[0];
+    const roles = Array.isArray(req.user?.roles) ? req.user.roles : [];
+    const isAdmin = roles.some(r => r?.name === 'SuperAdmin' || r?.name === 'Admin');
+    if (row.user_id !== req.user?.id && !isAdmin) {
+      return res.status(404).json({ success: false, error: { message: 'queue row not found' } });
+    }
+
+    if (row.status === 'queued' || row.status === 'generating') {
+      // Soft-cancel: worker skips it on next tick; if generating, the
+      // pipeline still completes but the row is marked cancelled.
+      await pgQuery(
+        `UPDATE statics_queue SET status = 'cancelled', finished_at = NOW() WHERE id = $1`,
+        [id],
+      );
+      return res.json({ success: true, data: { id, action: 'cancelled' } });
+    }
+
+    // Terminal: hard delete
+    await pgQuery(`DELETE FROM statics_queue WHERE id = $1`, [id]);
+    return res.json({ success: true, data: { id, action: 'deleted' } });
+  } catch (err) {
+    console.error('[staticsGeneration] DELETE /queue/:id error:', err);
+    return res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
 
 router.get('/iterations', authenticate, async (req, res) => {
   try {
@@ -4092,7 +4419,12 @@ router.post('/creatives', authenticate, async (req, res) => {
       if (csRows.length) matchedCopySetId = csRows[0].id;
     }
 
-    const rows = await pgQuery(
+    // ON CONFLICT DO NOTHING vs. the /generate auto-save race — see F3 in
+    // the queue forever-fix brief. When the pipeline's server-side auto-save
+    // beat this handler to the row, we return the existing row instead of
+    // creating a duplicate. `rows` is empty on conflict → fall back to a
+    // SELECT so the client still gets a usable creative back.
+    let rows = await pgQuery(
       `INSERT INTO spy_creatives
         (product_id, product_name, angle, aspect_ratio, image_url,
          reference_image_id, source_label, reference_name, reference_thumbnail,
@@ -4100,6 +4432,7 @@ router.post('/creatives', authenticate, async (req, res) => {
          generation_task_id, pipeline, status, group_id, generated_copy, copy_set_id,
          quality_warning, parent_creative_id, image_engine, product_image_index)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
+       ON CONFLICT (generation_task_id) WHERE generation_task_id IS NOT NULL DO NOTHING
        RETURNING *`,
       [
         product_id || null,
@@ -4127,6 +4460,19 @@ router.post('/creatives', authenticate, async (req, res) => {
         productImageIndex,
       ]
     );
+
+    // Conflict fallback — auto-save wrote this row first. Return the row it
+    // wrote instead of a 500 or an empty payload so the client's optimistic
+    // navigation still lands somewhere real.
+    if (!rows.length && generation_task_id) {
+      rows = await pgQuery(
+        'SELECT * FROM spy_creatives WHERE generation_task_id = $1 LIMIT 1',
+        [generation_task_id],
+      ).catch(() => []);
+      if (rows.length) {
+        console.log(`[POST /creatives] ON CONFLICT DO NOTHING — returning existing row for task ${generation_task_id}`);
+      }
+    }
 
     res.json({ success: true, data: rows[0] });
   } catch (err) {
