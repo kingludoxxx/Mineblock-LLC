@@ -61,7 +61,8 @@ CREATE TABLE IF NOT EXISTS statics_queue (
   error TEXT,
 
   -- Owner + ordering.
-  user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  -- users.id is UUID (migration 002_create_users.sql) — must match FK column type.
+  user_id UUID REFERENCES users(id) ON DELETE SET NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   started_at TIMESTAMPTZ,            -- worker set NOW() on claim
   finished_at TIMESTAMPTZ,           -- worker set NOW() on done/error
