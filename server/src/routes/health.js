@@ -31,11 +31,21 @@ router.get('/', async (req, res) => {
     redisStatus = 'error';
   }
 
-  const overall = dbStatus === 'ok' && redisStatus === 'ok' ? 'healthy' : 'degraded';
-  const httpCode = overall === 'healthy' ? 200 : 503;
+  // Redis is intentionally unprovisioned (`render.yaml:27` sets REDIS_URL="")
+  // — the app degrades gracefully to in-memory. A missing Redis MUST NOT flip
+  // the health endpoint to 503, because Render's own health probe reads 503
+  // as "app dead" and kills the pod every ~30-40 min, producing 502 storms
+  // across every endpoint (queue, generate, transcribe) during each cycle.
+  //
+  // Only DB failure warrants 503. Redis status is reported in the body so
+  // the trap remains visible if we ever add a real Redis and it goes down.
+  const overall = dbStatus === 'ok'
+    ? (redisStatus === 'ok' ? 'healthy' : 'healthy_redis_degraded')
+    : 'unhealthy';
+  const httpCode = dbStatus === 'ok' ? 200 : 503;
 
   res.status(httpCode).json({
-    success: overall === 'healthy',
+    success: dbStatus === 'ok',
     data: {
       status: overall,
       uptime: process.uptime(),
