@@ -3551,7 +3551,22 @@ async function pushBriefToClickUp(generatedBrief, parentClickupTaskId, overrides
   // operator does not want on the board.
   if (referenceVideoUrl) sections.push(`Reference video: ${referenceVideoUrl}`);
   sections.push(`HOOKS:\n\n${hooksFormatted || '(no hooks)'}`);
-  sections.push(`BODY:\n\n${body || ''}`);
+  // The push modal sends its combined "Brief Text" field (the hooks, then a
+  // "--- Body ---" marker, then the body) as `body`. HOOKS is already rendered
+  // above from the hooks array, so emitting that blob verbatim duplicated every
+  // hook inside BODY and leaked the "--- Body ---" marker onto the card. Keep
+  // only the body: take everything after the marker the prefill inserts; if
+  // there is no marker (a clean stored body, or a batch push), drop any leading
+  // "Hook N:" lines that may have leaked in, else pass through untouched.
+  let bodyText = String(body || '');
+  const bodyMarker = bodyText.lastIndexOf('--- Body ---');
+  if (bodyMarker !== -1) {
+    bodyText = bodyText.slice(bodyMarker + '--- Body ---'.length);
+  } else {
+    bodyText = bodyText.replace(/^(?:[ \t]*Hook \d+:.*(?:\r?\n|$))+/i, '');
+  }
+  bodyText = bodyText.trim();
+  sections.push(`BODY:\n\n${bodyText}`);
   const description = sections.join('\n\n');
 
   // Resolve dropdown option IDs against the TARGET list (ids differ per list).
