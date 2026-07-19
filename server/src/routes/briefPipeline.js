@@ -4761,6 +4761,43 @@ router.post('/generated/:id/enhance', authenticate, async (req, res) => {
 
     const brief = rows[0];
 
+    // Load the competitor source this brief was cloned from, so the editor can
+    // restore/readapt the source's signature hook on request. Without this the
+    // enhance prompt only sees our own current hooks and can never recover the
+    // competitor's proven scroll stopper. Manual briefs have no winner_id and
+    // simply get no source block (best-effort — never blocks the edit).
+    let sourceBlock = '';
+    if (brief.winner_id) {
+      try {
+        const srcRows = await pgQuery(
+          `SELECT w.parsed_script, w.raw_script, r.headline AS ref_headline
+             FROM brief_pipeline_winners w
+             LEFT JOIN brief_pipeline_references r ON w.reference_id = r.id
+            WHERE w.id = $1 LIMIT 1`,
+          [brief.winner_id]
+        );
+        if (srcRows.length) {
+          const parsed = parseJsonb(srcRows[0].parsed_script) || {};
+          const srcHooks = Array.isArray(parsed.hooks)
+            ? parsed.hooks.map((h, i) => `${(h && h.id) || 'H' + (i + 1)}: ${(h && h.text) || h}`).join('\n')
+            : '';
+          const srcBodyOpen = typeof parsed.body === 'string' ? parsed.body.slice(0, 320) : '';
+          const srcOverlays = extractOnScreenText(srcRows[0].raw_script) || '';
+          sourceBlock = `ORIGINAL COMPETITOR AD (the proven winner this brief was cloned from. Use ONLY if the edit instruction asks to restore/fix/readapt the source's hook):
+--- Source hooks ---
+${srcHooks || '(none parsed)'}
+--- Source body opening ---
+${srcBodyOpen || '(none)'}
+--- Source on-screen overlays ---
+${srcOverlays || '(none detected)'}
+
+`;
+        }
+      } catch (srcErr) {
+        console.warn('[BriefPipeline] enhance: could not load source reference:', srcErr.message);
+      }
+    }
+
     // Fetch product profile for context
     let productContextStr = '';
     try {
@@ -4788,7 +4825,7 @@ router.post('/generated/:id/enhance', authenticate, async (req, res) => {
 
 Read the full existing copy first. Understand its structure, tone, perspective, avatar, and emotional flow before making any change. Then apply only the edit requested.
 
-${productContextStr ? `PRODUCT CONTEXT:\n${productContextStr}\n\n` : ''}EXISTING COPY:
+${productContextStr ? `PRODUCT CONTEXT:\n${productContextStr}\n\n` : ''}${sourceBlock}EXISTING COPY:
 --- Highlighted Text (on-screen overlays) ---
 ${highlightedFormatted}
 
@@ -4815,6 +4852,8 @@ EDIT RULES:
 4. COMPLIANCE: Never directly promise the viewer will win or earn money. Never use em dashes or hyphens. All pricing in USD. Never invent product claims not present in the product profile.
 
 5. HOOK SPECIFIC RULES: If the edit target is a hook, the new version must still pass: perspective matches the body opener, tension created by the hook is resolved by the first line of the body, no bridge line is needed between hook and body. If any check fails, rewrite before outputting.
+
+5B. SIGNATURE HOOK RESTORE: If the instruction asks to restore, fix, bring back, or use the competitor's main / original / signature hook, read the ORIGINAL COMPETITOR AD block above and find its single strongest scroll stopper. It may be one of the source hooks, the source body's opening line, or an ALL CAPS overlay (e.g. "EVERYTHING YOU'VE BEEN TOLD ABOUT FIRMING ARM SKIN"). Rewrite THAT hook for OUR product in spoken sentence case form, product noun and category swapped, its contrarian / curiosity / myth bust shape kept otherwise, and make it H1. Keep all other hooks unchanged unless the instruction says otherwise, and return the full hook list. If no ORIGINAL COMPETITOR AD block is present, make no change and say so in edit_summary.
 
 6. HIGHLIGHTED TEXT RULES: If the instruction targets the on-screen labels (e.g. "make the discount label more aggressive", "add an apology overlay", "shorten the comment-reply"), edit only highlighted_text. Each label: ≤ 5 words, ALL CAPS where appropriate, exactly 1 emoji at the end. Operator may explicitly request adding overlays even if none currently exist — that is allowed. If the instruction does not touch highlighted_text, return it unchanged.
 
