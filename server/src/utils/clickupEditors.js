@@ -20,18 +20,21 @@ const OWNER_ID = 266421907; // Ludovico — always excluded from editor list
 const EXCLUDED_EDITORS = new Set(['Jesame', 'Roman', 'Ultino', 'Abdullah', 'Aleksandra']);
 
 // Cache
-let editorsCache = { editors: null, timestamp: 0 };
+const editorsCache = new Map(); // listId → { editors, timestamp } (per-list: MB and Puure have different rosters)
 const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
 /**
- * Fetch editors from ClickUp list members.
- * Returns a Map-like object { DisplayName: numericId }.
- * Excludes Ludovico (the owner/strategist).
+ * Fetch editors from a ClickUp list's members.
+ * @param {string} listId - the ClickUp list to read members from. Defaults to
+ *   the MinerForge Video Ads list. Puure briefs must pass the Puure list id so
+ *   editors on that pipeline (Harmain, Sajal, ...) are recognized too.
+ * Returns a Map-like object { DisplayName: numericId }. Excludes Ludovico.
  */
-export async function getEditors() {
-  // Return cached if fresh
-  if (editorsCache.editors && (Date.now() - editorsCache.timestamp < CACHE_TTL)) {
-    return editorsCache.editors;
+export async function getEditors(listId = VIDEO_ADS_LIST_ID) {
+  // Return cached if fresh (cache is keyed per-list)
+  const cached = editorsCache.get(listId);
+  if (cached && (Date.now() - cached.timestamp < CACHE_TTL)) {
+    return cached.editors;
   }
 
   if (!CLICKUP_TOKEN) {
@@ -40,7 +43,7 @@ export async function getEditors() {
   }
 
   try {
-    const res = await fetch(`${CLICKUP_API}/list/${VIDEO_ADS_LIST_ID}/member`, {
+    const res = await fetch(`${CLICKUP_API}/list/${listId}/member`, {
       headers: { Authorization: CLICKUP_TOKEN, 'Content-Type': 'application/json' },
       signal: AbortSignal.timeout(10000),
     });
@@ -49,7 +52,7 @@ export async function getEditors() {
       const text = await res.text();
       console.error(`[ClickUp Editors] API error ${res.status}: ${text.slice(0, 200)}`);
       // Return stale cache if available, otherwise empty
-      return editorsCache.editors || {};
+      return cached?.editors || {};
     }
 
     const data = await res.json();
@@ -84,7 +87,7 @@ export async function getEditors() {
     }
 
     console.log(`[ClickUp Editors] Fetched ${Object.keys(editors).length} editors: ${Object.keys(editors).join(', ')}`);
-    editorsCache = { editors, timestamp: Date.now() };
+    editorsCache.set(listId, { editors, timestamp: Date.now() });
     return editors;
   } catch (err) {
     console.error('[ClickUp Editors] Fetch error:', err.message);
@@ -96,8 +99,8 @@ export async function getEditors() {
 /**
  * Get just the editor names (for dropdowns).
  */
-export async function getEditorNames() {
-  const editors = await getEditors();
+export async function getEditorNames(listId = VIDEO_ADS_LIST_ID) {
+  const editors = await getEditors(listId);
   return Object.keys(editors);
 }
 
@@ -105,7 +108,7 @@ export async function getEditorNames() {
  * Force cache invalidation (e.g. after creating a brief).
  */
 export function invalidateEditorCache() {
-  editorsCache = { editors: null, timestamp: 0 };
+  editorsCache.clear();
 }
 
 export { OWNER_ID };

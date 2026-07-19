@@ -3562,7 +3562,7 @@ async function pushBriefToClickUp(generatedBrief, parentClickupTaskId, overrides
   const creativeTypeUuid = listCfg.optionId('Creative Type', format) || listCfg.optionId('Creative Type', 'Mashup');
   const fbPageUuid      = pipeline.fbPage ? listCfg.optionId('FB Page', pipeline.fbPage) : null;
 
-  const editorMap = await getEditors();
+  const editorMap = await getEditors(pipeline.listId);
   // Only treat it as a real editor when the brief actually names one AND that
   // name resolves to a ClickUp user. 'NA' / unknown means NO editor yet — we
   // must NOT stamp the owner into the Editor field, because reconcilePlName
@@ -5156,7 +5156,7 @@ router.get('/generated/:id/clickup-prefill', authenticate, async (req, res) => {
     // Editor list — use cached/dynamic editor map
     let editors = [];
     try {
-      const editorMap = await getEditors();
+      const editorMap = await getEditors(pipelineForProduct(brief.product_code).listId);
       editors = Object.keys(editorMap).sort();
     } catch (e) {
       console.warn('[BriefPipeline] prefill: editor list fetch failed:', e.message);
