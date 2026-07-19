@@ -334,6 +334,134 @@ router.post('/generated/dedupe-recent', dedupeAuthOrAuthenticate, async (req, re
   }
 });
 
+// ── POST /generated/restore-signature-hooks (maintenance) ────────────
+// One-shot batch: for every CLONED, not-yet-pushed generated brief, rewrite
+// H1 into the competitor source's signature hook, readapted to our product,
+// in place — same brief number, same body, H2-H5 untouched. Fixes briefs
+// generated BEFORE the signature-hook rule shipped. Shares the DEDUPE_SECRET
+// bypass (x-dedupe-secret header or ?secret=) so it can run headless, and
+// defaults to dryRun=true: it returns the proposed old->new H1 for every
+// brief WITHOUT saving. Re-run with ?dryRun=false to persist.
+//
+// Scope guards (deliberate): winner_id required (manual briefs have no source
+// to mirror → skipped); clickup_task_id must be null by default (a pushed
+// brief's live copy is its ClickUp card, so a DB-only hook change would never
+// reach the editor → skipped unless ?includePushed=true).
+router.post('/generated/restore-signature-hooks', dedupeAuthOrAuthenticate, async (req, res) => {
+  try {
+    await ensureTables();
+    const dryRun = String(req.query.dryRun ?? 'true').toLowerCase() !== 'false';
+    const statusFilter = String(req.query.status ?? 'generated'); // 'ANY' = all non-rejected
+    const limit = Math.min(200, Math.max(1, parseInt(String(req.query.limit ?? '100'), 10) || 100));
+    const includePushed = String(req.query.includePushed ?? 'false').toLowerCase() === 'true';
+
+    const rows = await pgQuery(
+      `SELECT g.id, g.brief_number, g.naming_convention, g.status, g.product_code,
+              g.body, g.hooks, g.clickup_task_id, g.winner_id,
+              w.parsed_script, w.raw_script
+         FROM brief_pipeline_generated g
+         JOIN brief_pipeline_winners w ON w.id = g.winner_id
+        WHERE g.status != 'rejected'
+          AND ($1::text = 'ANY' OR g.status = $1)
+          AND ($2::boolean OR g.clickup_task_id IS NULL)
+        ORDER BY g.created_at ASC
+        LIMIT $3`,
+      [statusFilter, includePushed, limit],
+    );
+
+    const changed = [];
+    const skipped = [];
+
+    for (const b of rows) {
+      const currentHooks = parseJsonb(b.hooks);
+      if (!Array.isArray(currentHooks) || currentHooks.length === 0) {
+        skipped.push({ briefNumber: b.brief_number, reason: 'no hooks on brief' });
+        continue;
+      }
+      const parsed = parseJsonb(b.parsed_script) || {};
+      const srcHooks = Array.isArray(parsed.hooks)
+        ? parsed.hooks.map((h, i) => `${(h && h.id) || 'H' + (i + 1)}: ${(h && h.text) || h}`).join('\n')
+        : '';
+      const srcBodyOpen = typeof parsed.body === 'string' ? parsed.body.slice(0, 320) : '';
+      const srcOverlays = extractOnScreenText(b.raw_script) || '';
+      if (!srcHooks && !srcBodyOpen && !srcOverlays) {
+        skipped.push({ briefNumber: b.brief_number, reason: 'source has no parseable hook/body/overlay' });
+        continue;
+      }
+
+      let productContextStr = '';
+      try {
+        const profile = await fetchProductProfile(b.product_code || 'MR');
+        if (profile) productContextStr = buildProductContextForBrief(profile);
+      } catch { /* best-effort — proceed without product context */ }
+
+      const oldH1 = currentHooks[0]?.text || '';
+      const sys = `You are a direct-response copywriter. You rewrite ONE hook (H1) so it mirrors a proven competitor ad's signature hook, readapted to our product. You never use dashes or hyphens. Return only JSON.`;
+      const usr = `ORIGINAL COMPETITOR AD (the proven winner this brief was cloned from):
+--- Source hooks ---
+${srcHooks || '(none parsed)'}
+--- Source body opening ---
+${srcBodyOpen || '(none)'}
+--- Source on-screen overlays ---
+${srcOverlays || '(none detected)'}
+
+${productContextStr ? `OUR PRODUCT CONTEXT:\n${productContextStr}\n\n` : ''}OUR BRIEF BODY (do NOT change it — the new H1 must blend into its first line):
+${b.body || '(no body)'}
+
+OUR CURRENT H1: ${oldH1}
+
+TASK: Find the competitor source's single strongest scroll stopper (from the source hooks, the source body opening, or an ALL CAPS overlay). Rewrite THAT hook for OUR product in spoken sentence case form: product noun and category swapped, its contrarian / curiosity / myth bust shape kept otherwise. This becomes our new H1. It must blend seamlessly into our body's first line with no bridge line. Under 20 words. No dashes or hyphens.
+
+Return ONLY JSON: { "new_h1": "the readapted hook", "mechanism": "short label", "source_basis": "which source line you readapted" }`;
+
+      let result;
+      try {
+        result = await callClaude(sys, usr, 800);
+      } catch (e) {
+        skipped.push({ briefNumber: b.brief_number, reason: `AI error: ${e.message}` });
+        continue;
+      }
+      const newH1 = result && typeof result.new_h1 === 'string' ? removeDashes(result.new_h1.trim()) : '';
+      if (!newH1) {
+        skipped.push({ briefNumber: b.brief_number, reason: 'AI returned no hook' });
+        continue;
+      }
+
+      const newHooks = currentHooks.map((h, i) =>
+        i === 0 ? { ...h, text: newH1, mechanism: result.mechanism || h.mechanism } : h);
+
+      if (!dryRun) {
+        await pgQuery(
+          `UPDATE brief_pipeline_generated SET hooks = $1 WHERE id = $2`,
+          [JSON.stringify(newHooks), b.id],
+        );
+      }
+      changed.push({
+        briefNumber: b.brief_number,
+        naming: b.naming_convention,
+        oldH1,
+        newH1,
+        sourceBasis: result.source_basis || null,
+      });
+    }
+
+    console.log(`[BriefPipeline] restore-signature-hooks: dryRun=${dryRun} scanned=${rows.length} changed=${changed.length} skipped=${skipped.length}`);
+    return res.json({
+      success: true,
+      dryRun,
+      scope: { status: statusFilter, includePushed, limit },
+      scanned: rows.length,
+      changedCount: changed.length,
+      skippedCount: skipped.length,
+      changed,
+      skipped,
+    });
+  } catch (err) {
+    console.error('[BriefPipeline] POST /generated/restore-signature-hooks error:', err.message);
+    res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
 router.use(authenticate, requirePermission('brief-pipeline', 'access'));
 
 // ── Config ────────────────────────────────────────────────────────────
