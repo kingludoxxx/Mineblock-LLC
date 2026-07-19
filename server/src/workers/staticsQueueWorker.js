@@ -331,8 +331,32 @@ async function runOneReference({ row, reference, freshToken }) {
  * Full per-row runner. Iterates references[], calls /generate for each,
  * bumps refs_done as each completes, writes final status.
  */
+// Defensive JSONB parse: our pg driver returns JSONB columns as strings for
+// this table (verified live — `references` came back typeof=string, length=197
+// on a 1-ref queue row). Array.isArray() would then evaluate false and the
+// worker would silently no-op the whole item (loop over empty array → 0 refs
+// done → markDone). We parse everything JSONB defensively regardless of shape.
+function _asJsonb(v, fallback) {
+  if (v == null) return fallback;
+  if (typeof v === 'string') {
+    try { return JSON.parse(v); } catch { return fallback; }
+  }
+  return v;
+}
+
 async function runQueueItem(row) {
-  const refs = Array.isArray(row.references) ? row.references : [];
+  const parsedRefs = _asJsonb(row.references, []);
+  const refs = Array.isArray(parsedRefs) ? parsedRefs : [];
+  // Same defensive parse for the other JSONB inputs that runOneReference reads.
+  row.product_payload = _asJsonb(row.product_payload, null);
+  row.angle_data = _asJsonb(row.angle_data, null);
+  if (refs.length === 0) {
+    // Log-and-error rather than silent 0-refs-done → 'done'. Distinguishes
+    // "malformed input" from "legitimately done".
+    console.error(`[statics-queue] row ${row.id} has 0 references after parse (raw typeof=${typeof row.references}) — marking error`);
+    await markError(row.id, 'queue row has no references (JSONB parse produced empty array)');
+    return;
+  }
   if (!row.user_id) {
     console.error(`[statics-queue] row ${row.id} missing user_id — cannot mint JWT`);
     await markError(row.id, 'queue row missing user_id — cannot mint JWT');
