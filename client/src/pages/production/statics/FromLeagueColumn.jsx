@@ -29,7 +29,7 @@ function writePersisted(brandIds) {
  * No queueing or generation happens directly from this column — it's a
  * discovery surface, generation always flows through Reference.
  */
-export function FromLeagueColumn({ onUseAsReference, refreshTick = 0 }) {
+export function FromLeagueColumn({ onUseAsReference, onQueueLeagueRef, refreshTick = 0 }) {
   const [brands, setBrands] = useState([]);
   const [selectedBrands, setSelectedBrands] = useState(() => readPersisted() || []);
   const [ads, setAds] = useState([]); // { ...ad, brand_id, brand_name }[]
@@ -167,6 +167,7 @@ export function FromLeagueColumn({ onUseAsReference, refreshTick = 0 }) {
             key={ad.id}
             ad={ad}
             onUseAsReference={onUseAsReference}
+            onQueueLeagueRef={onQueueLeagueRef}
             onDismiss={async () => {
               // Hard-delete the spy_creatives row so the card never comes
               // back. Optimistic hide first; rollback on failure.
@@ -193,7 +194,7 @@ export function FromLeagueColumn({ onUseAsReference, refreshTick = 0 }) {
   );
 }
 
-function LeagueAdCard({ ad, onUseAsReference, onDismiss }) {
+function LeagueAdCard({ ad, onUseAsReference, onQueueLeagueRef, onDismiss }) {
   const [busy, setBusy] = useState(false);
   const [picked, setPicked] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
@@ -208,19 +209,24 @@ function LeagueAdCard({ ad, onUseAsReference, onDismiss }) {
     return () => window.removeEventListener('keydown', h);
   }, [previewOpen]);
 
-  // PIPELINE-V2 BEHAVIOR: clicking "Use" just sets this ad as the active
-  // single-pick reference for the next generation. It does NOT persist
-  // into spy_creatives. The Reference column is reserved for the
-  // operator's OWN winners (Meta-imported + uploads); league ads are
-  // inspiration-only, used inline from this column.
-  const handleUse = () => {
+  // Prefer the bulk-queue behaviour when wired: clicking Select on a card
+  // immediately enqueues one /generate-batch item using the current sidebar
+  // angle + product, so clicking Select on N cards queues N generations —
+  // matches the operator's mental model. Falls back to the legacy single-
+  // pick sidebar-reference behaviour when onQueueLeagueRef isn't provided
+  // (e.g. legacy views that don't wire the new prop).
+  const handleUse = async () => {
     if (busy) return;
     setBusy(true);
     try {
-      onUseAsReference?.(ad);
+      if (onQueueLeagueRef) {
+        await onQueueLeagueRef(ad);
+      } else {
+        onUseAsReference?.(ad);
+      }
       setPicked(true);
       // Visual confirmation flashes for 2s then resets so the same card
-      // can be re-picked if the operator wants to regenerate with it.
+      // can be re-queued if the operator wants another generation from it.
       setTimeout(() => setPicked(false), 2000);
     } finally {
       setBusy(false);
@@ -371,10 +377,12 @@ function LeagueAdCard({ ad, onUseAsReference, onDismiss }) {
                 ? 'bg-emerald-500/15 border-emerald-400/40 text-emerald-300'
                 : 'bg-emerald-500/10 border-emerald-400/30 text-emerald-300 hover:bg-emerald-500/20'
             }`}
-            title="Set as the single-pick reference for the next generation"
+            title={onQueueLeagueRef
+              ? 'Queue a generation for this reference using the sidebar\'s current angle'
+              : 'Set as the single-pick reference for the next generation'}
           >
             <CheckCircle2 className="w-3 h-3" />
-            {picked ? 'Picked' : 'Select'}
+            {picked ? (onQueueLeagueRef ? 'Queued' : 'Picked') : (onQueueLeagueRef ? 'Queue' : 'Select')}
           </button>
           <button
             type="button"

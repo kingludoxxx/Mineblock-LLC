@@ -1895,6 +1895,60 @@ export default function StaticsGeneration() {
     addToast(`Added to queue (${pendingCount} item${pendingCount > 1 ? 's' : ''} pending)`, 'info');
   };
 
+  // League-card Select handler. Previously each Select click just overwrote
+  // the single-pick sidebar reference — clicking Select on 5 cards left only
+  // the last one selected, with no bulk-queue path. Operators expected "click
+  // Select on N cards → N generations queued." This makes that literal: each
+  // click enqueues one /generate-batch item with the current sidebar angle +
+  // product, using the clicked ad's image as the reference. No modal, no
+  // extra clicks.
+  const handleQueueLeagueRef = async (ad) => {
+    if (!selectedProductId) {
+      addToast('Pick a product first before queueing from League', 'error');
+      return;
+    }
+    const refUrl = ad?.image_url || ad?.thumbnail || ad?.reference_thumbnail;
+    if (!refUrl) {
+      addToast('That League ad has no image URL', 'error');
+      return;
+    }
+    const productImageIndex = productImageIndexTouched
+      ? Math.max(0, (selectedProductRef.current?.product_images || []).indexOf(productImageUrl))
+      : null;
+    const refName = ad.headline
+      || (typeof ad.body_text === 'string' ? ad.body_text.slice(0, 40) : null)
+      || ad.ad_archive_id
+      || 'League Ref';
+    const sourceLabel = ad.brand_name ? `${ad.brand_name} • League` : 'League';
+    const item = {
+      product_id: selectedProductId,
+      product_name: productName,
+      product_image_index: productImageIndex,
+      product_payload: buildProductPayloadSnapshot(),
+      references: [trimReferenceForBatch({
+        id: ad.id || `league-${Date.now()}`,
+        image_url: refUrl,
+        thumbnail: refUrl,
+        name: refName,
+        source_label: sourceLabel,
+      })],
+      angle: !customAngle ? (marketingAngle || null) : null,
+      angle_data: !customAngle && selectedAngleData ? selectedAngleData : null,
+      custom_angle: customAngle || null,
+      image_engine: imageEngine || 'nanobanana',
+    };
+    mutationInFlight.current = true;
+    try {
+      const inserted = await enqueueItems([item]);
+      if (inserted && inserted.length > 0) {
+        const angleLabel = customAngle || marketingAngle || 'default angle';
+        addToast(`Queued for "${angleLabel}"`, 'success', 3000);
+      }
+    } finally {
+      mutationInFlight.current = false;
+    }
+  };
+
   const handleRemoveFromQueue = async (id) => {
     // direct-* placeholders never hit the server — drop from local state only.
     if (typeof id === 'string' && id.startsWith('direct-')) {
@@ -2698,6 +2752,7 @@ export default function StaticsGeneration() {
                     setReferencePreview(url);
                     setReferenceFile(null);
                   }}
+                  onQueueLeagueRef={handleQueueLeagueRef}
                   productAngles={productAngles}
                   onQueueRefWithAngles={async (ref, anglesPicked) => {
                     // One reference image × N angles → N /generate-batch items.

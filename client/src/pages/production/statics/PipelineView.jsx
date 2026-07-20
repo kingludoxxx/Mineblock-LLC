@@ -1117,7 +1117,7 @@ function LaunchedColumn({ column, items, onCardClick, onStatusChange, onRefresh 
 // Main PipelineView component
 // ---------------------------------------------------------------------------
 
-export function PipelineView({ creatives = [], onStatusChange, onAngleChange, onCardClick, onRegenerate, onRefresh, loading, onOpenTemplates, onEditTemplate, onOpenCopySets, queue = [], onRemoveFromQueue, productId = null, onSelectReference, onAddSelectedToQueue, productAngles = [], onQueueRefWithAngles, templatesVersion = 0, onEditClick }) {
+export function PipelineView({ creatives = [], onStatusChange, onAngleChange, onCardClick, onRegenerate, onRefresh, loading, onOpenTemplates, onEditTemplate, onOpenCopySets, queue = [], onRemoveFromQueue, productId = null, onSelectReference, onQueueLeagueRef, onAddSelectedToQueue, productAngles = [], onQueueRefWithAngles, templatesVersion = 0, onEditClick }) {
   // Bucket creatives into columns by status.
   // Phase A: 'generating' rows are folded into the review column (the
   // dedicated Generating column was removed). The CreativeCard already
@@ -1388,7 +1388,11 @@ export function PipelineView({ creatives = [], onStatusChange, onAngleChange, on
             refreshTick bumps when LeagueImportModal completes so the column
             re-fetches /league/imported-refs without the operator having to
             manually refresh the page. */}
-        <FromLeagueColumn onUseAsReference={onSelectReference} refreshTick={leagueRefreshTick} />
+        <FromLeagueColumn
+          onUseAsReference={onSelectReference}
+          onQueueLeagueRef={onQueueLeagueRef}
+          refreshTick={leagueRefreshTick}
+        />
 
         {/* Standard columns: review (generating was removed in Phase A — in-flight
             queue items are merged into review's queueItems prop, rendered as
