@@ -3457,12 +3457,24 @@ async function pushBriefToClickUp(generatedBrief, parentClickupTaskId, overrides
   const listCfg = await resolveListConfig(targetListId);
 
   const weekLabel = getCurrentWeekLabel();
-  const namingConvention = namingOverride
-    || generatedBrief.naming_convention
-    || buildNamingConvention({
-      product_code: namingProductCode(product_code), brief_number, parent_creative_id,
-      avatar, angle, format, strategist, creator, editor, week: weekLabel, brief_type,
-    });
+  // PL cards have a strict 9-slot canonical shape that reconcilePlName rebuilds
+  // from ClickUp fields. The push modal used to send a legacy 6-slot preview
+  // string as naming_convention, which produced malformed cards like
+  // "PL - B0029 - VL - NN - NA - WK30_2026". For PL, ALWAYS rebuild the name
+  // canonically from the resolved fields (avatar/angle/format/editor already
+  // fall back to the brief's stored values, so operator edits are reflected)
+  // and IGNORE any client-supplied naming string. MB keeps its prior precedence.
+  const namingConvention = (namingProductCode(product_code) === 'PL')
+    ? buildNamingConvention({
+        product_code: 'PL', brief_number, parent_creative_id,
+        avatar, angle, format, strategist, creator, editor, week: weekLabel, brief_type,
+      })
+    : (namingOverride
+        || generatedBrief.naming_convention
+        || buildNamingConvention({
+          product_code: namingProductCode(product_code), brief_number, parent_creative_id,
+          avatar, angle, format, strategist, creator, editor, week: weekLabel, brief_type,
+        }));
 
   // Resolve the Reference link via a four-step fallback chain. Every brief
   // gets one regardless of how the source was imported — this matches the

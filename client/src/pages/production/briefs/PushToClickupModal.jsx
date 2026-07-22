@@ -32,6 +32,20 @@ function getCurrentWeekStr() {
 // Creatives) while its product_code remains PUURE.
 const NAMING_CODE_BY_PRODUCT = { PUURE: 'PL' };
 
+// Angle abbreviation for the naming preview. MUST mirror the server's
+// abbreviateAngle() in briefPipeline.js so the preview matches the card that
+// pushBriefToClickUp actually builds.
+const ANGLE_ABBREV = {
+  'pain point': 'PP', 'social proof': 'SP', 'before/after': 'BA',
+  'curiosity hook': 'CH', 'direct offer': 'DO', 'authority': 'AU', 'promo': 'Promo',
+};
+function abbreviateAngle(angle) {
+  if (!angle || angle === 'NA') return 'NA';
+  const key = String(angle).toLowerCase().trim();
+  if (ANGLE_ABBREV[key]) return ANGLE_ABBREV[key];
+  return String(angle).split(/\s+/).slice(0, 3).map((w) => w[0]?.toUpperCase()).join('') || String(angle).slice(0, 6);
+}
+
 const EMPTY_FORM = {
   product:        'MR',
   angle:          '',
@@ -98,14 +112,33 @@ export default function PushToClickupModal({ briefId, briefTitle, isOpen, onClos
   //   product_code sent to the server stays as selected (PUURE) so routing
   //   and the Product relationship resolve correctly.
   const taskPreview = useMemo(() => {
-    const code = options.creativeTypeCodes?.[form.creativeType] || 'HX';
     const num = form.briefNumber ? `B${String(form.briefNumber).padStart(4, '0')}` : 'B????';
     const briefType = form.briefType || 'IT';
+    const weekStr = getCurrentWeekStr();
+    const namingCode = NAMING_CODE_BY_PRODUCT[form.product] || form.product || 'MR';
+
+    // PL canonical — 9 slots, mirroring the server's buildNamingConvention PL
+    // branch (which reconcilePlName also enforces on ClickUp):
+    //   PL - B#### - BriefType - Avatar - Angle - CreativeType - Strategist - Editor - WK##_####
+    if (namingCode === 'PL') {
+      return [
+        'PL',
+        num,
+        briefType,
+        form.avatar || 'NA',
+        abbreviateAngle(form.angle),
+        form.creativeType || 'Mashup',
+        'Ludovico',
+        form.editor || 'NA',
+        weekStr,
+      ].map((s) => String(s).trim() || 'NA').join(' - ');
+    }
+
+    // MB / other products — existing shape (creative-type code + optional parent)
+    const code = options.creativeTypeCodes?.[form.creativeType] || 'HX';
     const rawParent = briefType === 'IT' ? form.parentBriefId : null;
     const isSyntheticParent = !rawParent || /^MANUAL[-_]/i.test(String(rawParent));
     const dropParent = briefType === 'NN' || isSyntheticParent;
-    const weekStr = getCurrentWeekStr();
-    const namingCode = NAMING_CODE_BY_PRODUCT[form.product] || form.product || 'MR';
     const slots = [
       namingCode,
       num,
