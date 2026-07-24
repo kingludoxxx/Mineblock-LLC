@@ -3553,19 +3553,21 @@ async function pushBriefToClickUp(generatedBrief, parentClickupTaskId, overrides
     .join('\n\n');
 
   const sections = [];
-  // Reference link ALWAYS leads the description. Operator rule: the competitor
-  // link slot must be visible on every card — even for manual / pasted-script
-  // briefs that carry no source URL — so the editor immediately sees where the
-  // competitor video link belongs and can paste it in if the resolver had none.
-  sections.push(referenceLink
-    ? `Reference: ${referenceLink}`
-    : 'Reference: (paste competitor video link here)');
-  // Durable playable link to OUR stored copy of the reference video (R2 URLs
-  // never expire, so editors keep the source even after the competitor turns
-  // the ad off). We LINK it rather than attach the file: a file attachment
-  // makes ClickUp render a video-frame thumbnail as the card cover, which the
-  // operator does not want on the board.
-  if (referenceVideoUrl) sections.push(`Reference video: ${referenceVideoUrl}`);
+  // Editors only need ONE permanent, playable reference: our durable R2 copy
+  // (R2 URLs never expire, so it survives the competitor turning the ad off).
+  // Operator rule (updated): the Facebook library "Reference:" line is dropped
+  // whenever we have that R2 video, because the FB library is often unavailable
+  // to editors. Fall back to the FB library link (or a paste-prompt) ONLY when
+  // no durable video exists, so a card is never left with no reference at all.
+  // We LINK the video rather than attach it: an attachment makes ClickUp render
+  // a video-frame thumbnail as the card cover, which the operator doesn't want.
+  if (referenceVideoUrl) {
+    sections.push(`Reference video: ${referenceVideoUrl}`);
+  } else {
+    sections.push(referenceLink
+      ? `Reference: ${referenceLink}`
+      : 'Reference: (paste competitor video link here)');
+  }
   sections.push(`HOOKS:\n\n${hooksFormatted || '(no hooks)'}`);
   // The push modal sends its combined "Brief Text" field (the hooks, then a
   // "--- Body ---" marker, then the body) as `body`. HOOKS is already rendered
