@@ -307,6 +307,19 @@ function BrandRow({ brand, onOpen, onScrape, onDelete }) {
             </span>
             <p className="text-[10px] text-text-faint mt-0.5">{relTime(brand.lastScrapedAt)}</p>
           </div>
+        ) : brand.lastScrapeStatus === 'SUSPECT' ? (
+          // Ad-count regression detected server-side (see suspect-scrape gate
+          // in brandSpyWorker.js). We still show the current active count —
+          // it's real data, just possibly under-scraped. Amber, not red, so
+          // it's visually distinct from a hard ERROR: this scrape RAN, it
+          // just doesn't smell right.
+          <div title={brand.lastScrapeError || 'Scrape looks incomplete — inspect and re-run if needed'}>
+            <p className="text-sm font-semibold text-text-primary tabular-nums">{fmtCount(brand.totalAdsCount)}</p>
+            <p className="text-xs text-amber-400 tabular-nums">{fmtCount(brand.activeAdsCount)} active</p>
+            <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-amber-400 bg-amber-500/10 border border-amber-500/30 rounded-md px-1.5 py-0.5 mt-0.5">
+              ⚠ Looks incomplete
+            </span>
+          </div>
         ) : (
           <>
             <p className="text-sm font-semibold text-text-primary tabular-nums">{fmtCount(brand.totalAdsCount)}</p>

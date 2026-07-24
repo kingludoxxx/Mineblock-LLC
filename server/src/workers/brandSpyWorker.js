@@ -492,11 +492,16 @@ export async function runBrandScrape({ brandId, trigger, client: scClient, force
   }
 
   const brandRow = await query(
-    `SELECT id, domain, display_name FROM brand_spy.brands WHERE id = $1`,
+    `SELECT id, domain, display_name, active_ads_count AS previous_active_ads_count
+       FROM brand_spy.brands WHERE id = $1`,
     [brandId],
   );
   if (!brandRow.rows.length) throw new Error(`Brand ${brandId} not found`);
   const brand = brandRow.rows[0];
+  // Snapshot before scrape so we can compare after and flag SUSPECT if
+  // this run's numbers collapse relative to what the DB had (silent-zero
+  // regression detector — see suspect-scrape gate below).
+  const previousActiveCount = Number(brand.previous_active_ads_count) || 0;
 
   const jobRow = await query(
     `INSERT INTO brand_spy.scrape_jobs (brand_id, job_type, status, trigger, started_at)
@@ -557,6 +562,32 @@ export async function runBrandScrape({ brandId, trigger, client: scClient, force
       console.error(`[brand-spy] scoreBrand FAILED for ${brand.id}:`, scoreErr?.message, scoreErr?.stack);
     }
 
+    // ── Suspect-scrape gate ─────────────────────────────────────────────
+    // Compare new active-ad count to what the brand had BEFORE this scrape.
+    // A collapse (0 ads when we used to have hundreds, or >50% regression)
+    // almost always means a silent bug — filter too strict, SC upstream
+    // hiccup swallowed silently, homonym pages taking over, etc. Mark the
+    // scrape SUSPECT (not DONE) so the operator sees a red flag and the
+    // previous data stays visible in the UI. First scrapes (previous=0)
+    // never trigger this gate. Small brands (<= 20 previous ads) skip it
+    // to avoid noise on legitimately-quiet advertisers.
+    const newActiveRes = await query(
+      `SELECT active_ads_count FROM brand_spy.brands WHERE id = $1`,
+      [brand.id],
+    );
+    const newActiveCount = Number(newActiveRes.rows[0]?.active_ads_count) || 0;
+    const REGRESSION_MIN_PREVIOUS = 20;    // don't flag tiny brands
+    const REGRESSION_FRACTION     = 0.5;   // flag if <50% of previous
+    const isRegression = previousActiveCount >= REGRESSION_MIN_PREVIOUS &&
+                         newActiveCount < previousActiveCount * REGRESSION_FRACTION;
+    const finalStatus = isRegression ? 'SUSPECT' : 'DONE';
+    const suspectMsg  = isRegression
+      ? `Active ads dropped from ${previousActiveCount} to ${newActiveCount} (${Math.round(100 * newActiveCount / previousActiveCount)}%). Scrape not confirmed — inspect logs / re-run.`
+      : null;
+    if (isRegression) {
+      console.warn(`[brand-spy] SUSPECT scrape for "${brand.domain}": ${previousActiveCount} → ${newActiveCount} active ads`);
+    }
+
     await query(
       `UPDATE brand_spy.scrape_jobs
           SET status = 'DONE', finished_at = NOW(),
@@ -566,14 +597,17 @@ export async function runBrandScrape({ brandId, trigger, client: scClient, force
     );
     // Preserve scoreBrand error if scoring failed — don't overwrite with NULL.
     // Clear it only when scoring also succeeded so the error stays visible via the API.
+    // last_scrape_error carries either the scoreBrand error (if scoring failed) OR
+    // the suspect-regression message (if the gate tripped). Both are informative
+    // signals for the operator, but suspect wins because it's what changed status.
     await query(
       `UPDATE brand_spy.brands
-          SET last_scraped_at = NOW(), last_scrape_status = 'DONE', last_scrape_error = $2
+          SET last_scraped_at = NOW(), last_scrape_status = $2, last_scrape_error = $3
         WHERE id = $1`,
-      [brand.id, scoreBrandError],
+      [brand.id, finalStatus, suspectMsg || scoreBrandError],
     );
 
-    return { jobId, status: 'DONE', pagesDiscovered, adsDiscovered: stats.discovered, adsUpdated: stats.updated, creditsUsed, scoreBrandError };
+    return { jobId, status: finalStatus, pagesDiscovered, adsDiscovered: stats.discovered, adsUpdated: stats.updated, creditsUsed, scoreBrandError, suspect: isRegression, previousActiveCount, newActiveCount };
   } catch (err) {
     const isShutdown  = err?.isShutdown === true;
     const jobStatus   = isShutdown ? 'INTERRUPTED' : 'ERROR';
@@ -850,7 +884,12 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
   // the follow list.
   const phase15AddedPageIds = new Set(); // brand_pages.id (UUID)
   const p2Promises    = [];
-  let p2Blocked       = false;     // set true on first Phase 2 failure to fast-skip remainder
+  let p2Blocked       = false;     // circuit breaker — see p2ConsecutiveErrors below
+  // Phase 2 consecutive-failure counter. One flaky page (transient SC 5xx)
+  // shouldn't abort the whole brand's Phase 2. But N in a row means SC is
+  // truly degraded and continuing wastes credits + wall-clock. Trip after
+  // 3 back-to-back failures across different pages; reset on any success.
+  let p2ConsecutiveErrors = 0;
   const crossDomains  = new Set(); // link_url domains seen in ads
   // Set true after Phase 1d if it walked the cursor to exhaustion (batch
   // count < maxPages cap), meaning every active ad for the brand was
@@ -1066,6 +1105,9 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
             discovered += d; updated += u;
           }
         }
+        // Page completed cleanly — reset the consecutive-failure counter so
+        // one flaky page earlier in the run doesn't count toward the circuit.
+        p2ConsecutiveErrors = 0;
       }
 
       // ALL/US pass — REMOVED. We used to run a full status=ALL walk for
@@ -1088,11 +1130,20 @@ async function scrapeAdsByDomain(brandId, domain, sc, onPhase1Done) {
         );
       }
     } catch (p2Err) {
-      // Phase 2 failures (e.g. 431 rate-limit from ScrapeCreators /company/ads endpoint)
-      // are non-fatal. Phase 1 keyword searches already capture active ad counts accurately.
-      // Set p2Blocked so all remaining queued workers skip immediately rather than timing out.
-      p2Blocked = true;
-      console.warn(`[brand-spy] phase-2 blocked after page ${metaPageId}: ${p2Err.message} — remaining pages will be skipped`);
+      // Transport-layer already retried on 429/5xx (scrapeCreators.js
+      // MAX_RETRIES). Getting here means the page failed persistently.
+      // Skip THIS page and keep processing other pages — one flaky page
+      // shouldn't abort the whole brand (that was the pre-fix behavior
+      // and left brands with 500+ ads showing as under-scraped for weeks).
+      p2ConsecutiveErrors++;
+      console.warn(`[brand-spy] phase-2 page ${metaPageId} failed (${p2ConsecutiveErrors} in a row): ${p2Err.message}`);
+      // Trip the brand-level circuit breaker only if SC keeps failing.
+      // Threshold of 3 gives us breathing room for isolated flakiness
+      // without letting a truly-down endpoint burn through every page.
+      if (p2ConsecutiveErrors >= 3) {
+        p2Blocked = true;
+        console.warn(`[brand-spy] phase-2 circuit tripped after 3 consecutive failures — SC degraded, skipping remaining pages for "${domain}"`);
+      }
     } finally {
       releaseP2();
     }
