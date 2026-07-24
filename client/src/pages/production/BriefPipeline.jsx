@@ -262,7 +262,7 @@ export default function BriefPipeline() {
   // ---------------------------------------------------------------------------
 
   const pollGenerationStatus = useCallback(async (winnerId, stepMessages, stepInterval, setStepFn) => {
-    const maxAttempts = 40; // 40 × 3s = 2 min max
+    const maxAttempts = 100; // 100 × 3s = 5 min max (Opus generation runs ~120s, plus fallback tail — must outlast it)
     let attempts = 0;
     let stepIdx = 1;
 

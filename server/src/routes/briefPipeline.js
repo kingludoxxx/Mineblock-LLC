@@ -1417,13 +1417,14 @@ async function callClaude(systemPrompt, userPrompt, maxTokens = 3000, { fast = f
   ];
 
   // Model routing:
-  //   opus → opt-in quality mode for long-instruction fidelity. Slower and
-  //   pricier; used as fallback (or explicit choice), not the default.
+  //   opus → highest-quality mode. Operator directive: ALL script generation
+  //   (clone body+hooks, hook rewrite) runs on Opus, never Sonnet. Slower
+  //   (~120s) so generation callers pass a generous timeoutMs.
   //   fast → quick parses (script parser, hook extractor) where Haiku is fine.
-  //   default → Sonnet for general work (clone, iterate, enhance, win-analysis).
+  //   default → Sonnet for non-generation work (judges, enhance, win-analysis).
   // Aliases used throughout this codebase — matches the CLAUDE_MODEL pattern.
   const model = opus
-    ? 'claude-opus-4-1'
+    ? 'claude-opus-4-8'
     : (fast ? 'claude-haiku-4-5-20251001' : CLAUDE_MODEL);
   const body = {
     model,
@@ -3079,13 +3080,13 @@ Decide how the machine rebuilds around OUR product (think through ALL of this; e
 - CTA: a true CLONE of the source's close, adapted — carry over EVERY pressure device the source uses (scarcity, sell-out warnings, deadlines, "before inventory runs out", price anchors) adapted to our product, and layer our real offer facts (discount, price, guarantee, counterfeit/official-site warning) ON TOP. Never trade one of the source's urgency devices away for an offer fact — stack them. A close that drops the source's scarcity is not a clone of that close.
 
 ## HOOKS — written AFTER the body (emitted after it in the JSON)
-A hook is the first line of the finished video, spoken by the SAME narrator as the body. THE BLEND TEST: read the hook aloud, then the body's first sentence — one person, one take, no seam.
+A hook is the first line of the finished video, spoken by the SAME narrator as the body. THE BLEND TEST (this is the whole game): read the hook aloud, then the body's FIRST SENTENCE. They must read as two consecutive lines of ONE script — same narrator AND same thread. The body's first sentence must be the natural next thing this exact hook's speaker would say. If the hook opens a topic the body's first sentence does not continue (hook names a clinical mechanism but the body opens on an offer; hook promises a week-by-week result but the body opens on a mistake), that is a SEAM and the hook has FAILED, even when the voice matches. Blend is about the THREAD, not only the voice.
 - Exactly 5 hooks. Full sentences, sentence case, no emoji, no ALL-CAPS. Each ≤ 20 words; H5 is the shortest punch, under 12.
 - ALL FIVE must be speakable by the body's narrator. Third-person founder story → every hook is third-person founder framing. First-person testimonial → every hook is that person speaking. NEVER mix POVs across hooks or between hooks and body.
-- Vary hooks by ENTRY POINT, not by voice: the pivot moment, the credibility stat, the outcome promise, the mechanism, the short punch — all in the body's voice.
+- THE 5 HOOKS ARE 5 WAYS THROUGH THE SAME DOOR, NOT 5 DIFFERENT DOORS. FIRST read the body's actual FIRST SENTENCE. Then write 5 hooks that each hand off straight into that exact sentence with no bridge line — every hook's final beat sets up precisely what that first sentence delivers. Vary them by EMOTIONAL ANGLE and PHRASING on the SAME setup, NEVER by topic: the blunt version, the contrarian version, the pain/callout version, the curiosity version, and the short punch. Do NOT open a hook on a subject the body's first sentence does not immediately continue (a clinical stat, a deep-mechanism fact, a week-by-week results timeline) — that is the single most common cause of a seam. Concrete test: if the body opens on "these two mistakes", ALL five hooks funnel into "these two mistakes" and the body's first sentence reads as the natural next line after each; they simply say it five different ways. A hook that is technically true and on-brand but leaves the body's first sentence sounding like a topic change has failed, no matter how punchy it is.
 - H1 IS THE SOURCE'S SIGNATURE HOOK, READAPTED — never a brand-new invention. Before writing the other four, find the source's single strongest scroll-stopper: the ONE line that made this ad worth cloning. It may live in the spoken hooks, in the body's opening line, OR in a burned-in ALL-CAPS overlay (e.g. "EVERYTHING YOU'VE BEEN TOLD ABOUT FIRMING ARM SKIN"). Rewrite THAT hook for our product in spoken, sentence-case form and make it H1 — product noun and category swapped, its exact contrarian/curiosity/myth-bust shape kept otherwise. Example: "Everything you've been told about firming arm skin..." → "Everything you've been told about lifting sagging breasts...". When the source hands you a proven hook, cloning it as H1 is the whole point; do NOT discard it in favor of a fresh angle. An ALL-CAPS overlay that is a full contrarian clause (not a sticker fragment) is a HOOK for this purpose — readapt it into H1 as a spoken sentence, even though its label copy may also appear in highlighted_text. H2 through H5 are then the fresh alternative doors described below.
 - Do not pre-spend the body's reveal, and do not reuse body sentences verbatim.
-- NO HOOK MAY RESTATE THE BODY'S OPENING LINE — with ONE deliberate exception: H1 when it carries the readapted signature hook per the rule above. If the body would otherwise open on that same signature line, the BODY instead resumes on the NEXT beat, so H1 then the body's first sentence read as two consecutive, NON-repeating lines. For H2 through H5 the ban is absolute. The hooks are 5 different DOORS into the body — never a copy of the door the body already uses. This overrides the keep-signature-device-verbatim rule for the HOOKS only: even when the body opens ON the signature device (e.g. body starts "We spent a year planning our Black Friday sale. Our intern launched it this morning by accident."), NONE of the 5 hooks may be that opening line reworded, re-punctuated, or sentence-joined. The BODY keeps the signature opening word-for-word; the HOOKS are 5 alternative ways IN that lead to it (the intern's panic, the deadline, the price reveal, a customer's reaction, a blunt one-liner) — so that hook-then-body reads as two consecutive lines, never the same line twice. If H1 is your body's first sentence with the period swapped for "and", you have failed this rule.
+- NO HOOK MAY RESTATE THE BODY'S OPENING LINE — with ONE deliberate exception: H1 when it carries the readapted signature hook per the rule above. If the body would otherwise open on that same signature line, the BODY instead resumes on the NEXT beat, so H1 then the body's first sentence read as two consecutive, NON-repeating lines. For H2 through H5 the ban is absolute. The hooks are 5 different ways IN that all lead to the body's first sentence — never a verbatim copy of that sentence. This overrides the keep-signature-device-verbatim rule for the HOOKS only: even when the body opens ON the signature device (e.g. body starts "We spent a year planning our Black Friday sale. Our intern launched it this morning by accident."), NONE of the 5 hooks may be that opening line reworded, re-punctuated, or sentence-joined. The BODY keeps the signature opening word-for-word; the HOOKS are 5 alternative ways IN that lead to it (the intern's panic, the deadline, the price reveal, a customer's reaction, a blunt one-liner) — so that hook-then-body reads as two consecutive lines, never the same line twice. If H1 is your body's first sentence with the period swapped for "and", you have failed this rule.
 
 # NON-NEGOTIABLE PRINCIPLES
 - POV coherence is absolute: hooks, body, CTA — one narrator, start to finish.
@@ -3389,32 +3390,35 @@ async function buildScriptClonePrompt(parsedScript, deepAnalysis, productContext
 async function buildBlendValidationPrompt(generatedBrief) {
   const hooks = (generatedBrief.hooks || []).map(h => h.text).filter(Boolean);
   const body = generatedBrief.body || '';
-  const bodyFirstLine = body.split('\n').find(l => l.trim().length > 10) || body.slice(0, 200);
+  // The hook must hand off to the body's FIRST SENTENCE, so judge against that
+  // (not the whole first paragraph). Split on the first sentence end; fall back.
+  const flatBody = body.replace(/\s+/g, ' ').trim();
+  const bodyFirstLine = (flatBody.match(/^.*?[.!?](\s|$)/)?.[0] || flatBody.slice(0, 160)).trim();
 
-  let system = `You are a continuity editor for direct response ad scripts. Your ONLY job is to check if hooks flow naturally into the body.`;
+  let system = `You are a continuity editor for direct response ad scripts. You judge ONE thing: does the body's FIRST SENTENCE read as the natural next line right after each hook — same narrator AND same thread. A matching voice is NOT enough. If the hook opens a topic the first sentence does not continue, that is a seam and scores low.`;
 
-  let user = `Read each hook below, then immediately read the body's opening. Judge if they sound like one continuous script written by the same person.
+  let user = `For each hook, read the hook, then immediately read the body's first sentence. Would one person say these two lines back to back, on the same thread, with no bridge line needed?
 
 ${hooks.map((h, i) => `HOOK ${i + 1}: "${h}"
-→ BODY STARTS: "${bodyFirstLine}"`).join('\n\n')}
+→ BODY FIRST SENTENCE: "${bodyFirstLine}"`).join('\n\n')}
 
-For each hook, return:
-- blend_score (1-10): 1 = jarring disconnect, 10 = perfectly seamless
-- issue: null if score >= 7, otherwise describe the disconnect in one sentence
-- fix_suggestion: null if score >= 7, otherwise suggest a one-sentence fix
+Score each hook on THREAD CONTINUITY, not voice:
+- blend_score (1-10): 10 = the first sentence is obviously the next thing this speaker says (same setup, same subject). 5 = same voice but the subject JUMPS (e.g. the hook is about a deep clinical mechanism or a week-by-week results timeline, but the first sentence is about "two mistakes" or an offer). 1 = jarring disconnect.
+- A hook that is punchy and on-brand but leaves the first sentence sounding like a topic change is a 4-5, NOT a 7.
+- issue: null if score >= 8, else name the THREAD break in one sentence (what the hook set up vs what the body actually continues).
+- fix_suggestion: null if score >= 8, else how to re-aim the HOOK so it funnels into the body's first sentence. NEVER suggest changing the body.
 
 Return ONLY valid JSON:
 {
   "hooks": [
-    { "id": 1, "blend_score": 8, "issue": null, "fix_suggestion": null },
-    { "id": 2, "blend_score": 5, "issue": "Hook uses casual UGC tone but body opens with authoritative data", "fix_suggestion": "Soften the body's opening to match the casual hook tone" },
-    { "id": 3, "blend_score": 9, "issue": null, "fix_suggestion": null }
+    { "id": 1, "blend_score": 9, "issue": null, "fix_suggestion": null },
+    { "id": 2, "blend_score": 5, "issue": "Hook opens on an 8mm collagen-depth mechanism, but the body's first sentence starts listing the two mistakes — different subject, so it reads as a topic change.", "fix_suggestion": "Re-aim the hook to tee up the two mistakes instead of the mechanism." }
   ],
-  "overall_blend": 7.3,
-  "pass": true
+  "overall_blend": 7.0,
+  "pass": false
 }
 
-A brief PASSES if overall_blend >= 6.5.`;
+A brief PASSES only if overall_blend >= 7.5 AND no single hook scores below 7.`;
 
 
   return { system, user };
@@ -4298,18 +4302,18 @@ async function executeGenerationJob({
             generated = await callOpenAI(cloneSystem, enhancedCloneUser, 12000);
           } catch (openaiErr) {
             lastErr = `openai: ${openaiErr.message}`;
-            console.warn(`[BriefPipeline] OpenAI clone attempt failed (${openaiErr.message}) — falling back to Claude (Sonnet first).`);
+            console.warn(`[BriefPipeline] OpenAI clone attempt failed (${openaiErr.message}) — falling back to Claude (Opus).`);
             try {
-              modelUsed = 'sonnet';
-              generated = await callClaude(cloneSystem, cloneUserContent, 12000, { timeoutMs: 90000 });
-            } catch (sonnetErr) {
-              lastErr = `${lastErr}; sonnet: ${sonnetErr.message}`;
-              console.warn(`[BriefPipeline] Sonnet fallback failed (${sonnetErr.message}) — trying Opus.`);
+              modelUsed = 'opus';
+              generated = await callClaude(cloneSystem, cloneUserContent, 12000, { opus: true, timeoutMs: 180000 });
+            } catch (opusErr) {
+              lastErr = `${lastErr}; opus: ${opusErr.message}`;
+              console.warn(`[BriefPipeline] Opus fallback failed (${opusErr.message}) — last-resort Sonnet.`);
               try {
-                modelUsed = 'opus';
-                generated = await callClaude(cloneSystem, cloneUserContent, 12000, { opus: true });
-              } catch (opusErr) {
-                lastErr = `${lastErr}; opus: ${opusErr.message}`;
+                modelUsed = 'sonnet-fallback';
+                generated = await callClaude(cloneSystem, cloneUserContent, 12000, { timeoutMs: 90000 });
+              } catch (sonnetErr) {
+                lastErr = `${lastErr}; sonnet: ${sonnetErr.message}`;
                 await pgQuery(
                   `UPDATE brief_pipeline_winners SET generation_error = $1, generation_model = $2 WHERE id = $3`,
                   [lastErr, 'openai-fallback-both-failed', winner.id]
@@ -4320,23 +4324,26 @@ async function executeGenerationJob({
             }
           }
         } else {
-          // Default Claude: Sonnet-first (fast) with Opus fallback (quality)
+          // Operator directive: script generation runs on OPUS (highest
+          // quality), not Sonnet. Opus takes ~120s, so the primary attempt gets
+          // a 180s timeout. Sonnet stays ONLY as a last-resort error fallback so
+          // a transient Opus failure still yields a brief instead of hard-failing.
           try {
-            modelUsed = 'sonnet';
-            generated = await callClaude(cloneSystem, cloneUserContent, 12000, { timeoutMs: 90000 });
-          } catch (sonnetErr) {
-            lastErr = `sonnet: ${sonnetErr.message}`;
-            console.warn(`[BriefPipeline] Sonnet clone attempt failed (${sonnetErr.message}) — falling back to Opus.`);
+            modelUsed = 'opus';
+            generated = await callClaude(cloneSystem, cloneUserContent, 12000, { opus: true, timeoutMs: 180000 });
+          } catch (opusErr) {
+            lastErr = `opus: ${opusErr.message}`;
+            console.warn(`[BriefPipeline] Opus clone attempt failed (${opusErr.message}) — last-resort Sonnet fallback.`);
             try {
-              modelUsed = 'opus';
-              generated = await callClaude(cloneSystem, cloneUserContent, 12000, { opus: true });
-            } catch (opusErr) {
-              lastErr = `${lastErr}; opus: ${opusErr.message}`;
+              modelUsed = 'sonnet-fallback';
+              generated = await callClaude(cloneSystem, cloneUserContent, 12000, { timeoutMs: 90000 });
+            } catch (sonnetErr) {
+              lastErr = `${lastErr}; sonnet: ${sonnetErr.message}`;
               await pgQuery(
                 `UPDATE brief_pipeline_winners SET generation_error = $1, generation_model = $2 WHERE id = $3`,
                 [lastErr, 'both-failed', winner.id]
               ).catch(() => {});
-              console.error(`[BriefPipeline] clone — both Sonnet and Opus failed: ${lastErr}`);
+              console.error(`[BriefPipeline] clone — both Opus and Sonnet failed: ${lastErr}`);
               return { direction: { id: 1, name: '1:1 Clone' }, success: false };
             }
           }
@@ -4553,22 +4560,27 @@ async function executeGenerationJob({
         (async () => {
           try {
             const { system: bvSys, user: bvUser } = await buildBlendValidationPrompt(gen);
-            const blend = await callClaude(bvSys, bvUser, 1500, { fast: true });
+            // Judge on Sonnet (default), not Haiku — thread-continuity is subtle.
+            const blend = await callClaude(bvSys, bvUser, 1500);
             const blendScore = typeof blend?.overall_blend === 'number' ? blend.overall_blend : null;
+            const perHook = Array.isArray(blend?.hooks) ? blend.hooks : [];
+            const lowHook = perHook.some(h => typeof h?.blend_score === 'number' && h.blend_score < 7);
             const dupIdx = gen.hooks
               .map((h, i) => (hookDupesOpening(h.text || h, gen.body) ? i + 1 : null))
               .filter(Boolean);
-            const blendFail = blendScore !== null && blendScore < 6.5;
-            if (blendScore === null && !dupIdx.length) return;
+            // Pass bar: overall >= 7.5 AND every hook >= 7. Anything less rewrites.
+            const blendFail = (blendScore !== null && blendScore < 7.5) || lowHook;
+            if (blendScore === null && !lowHook && !dupIdx.length) return;
             let hooks = gen.hooks;
             if (blendFail || dupIdx.length) {
               const reasons = [];
-              if (blendFail) reasons.push(`blend check failed (${blendScore}) — likely a POV mismatch vs the body`);
+              if (blendFail) reasons.push(`blend below bar (overall ${blendScore ?? '?'}${lowHook ? ', a hook scored < 7' : ''}) — thread/topic seam vs the body`);
               if (dupIdx.length) reasons.push(`hook(s) ${dupIdx.map(i => 'H' + i).join(', ')} restate the body's opening line verbatim`);
               console.warn(`[BriefPipeline] brief ${brief.id}: rewriting hooks — ${reasons.join('; ')}`);
               const rewriteSys = 'You are a direct response copywriter. You fix hooks so they blend seamlessly into an existing ad script body. You never change the body.';
-              const rewriteUser = `The 5 hooks below need fixing. Rewrite all 5 so each is speakable by the body's narrator, in the body's voice, and reads seamlessly into the body's first sentence. Keep them <= 20 words (H5 under 12), sentence case, no emoji, no dashes. Vary them by ENTRY POINT (pivot moment, credibility stat, promise, mechanism, short punch) — never by voice.\n\nCRITICAL: NONE of the 5 hooks may restate the body's OPENING LINE. The hooks are 5 different doors into the body, never a copy of the door the body already uses. Even if the body opens on a signature gimmick, the hooks are alternative ways IN that lead to it — never the same sentence reworded, re-punctuated, or joined with "and".\n\nBODY:\n${gen.body}\n\nCURRENT HOOKS:\n${gen.hooks.map(h => `${h.id}: ${h.text || h}`).join('\n')}\n\nIssues:\n${blendFail ? `Blend issues: ${JSON.stringify(blend?.hooks || [])}\n` : ''}${dupIdx.length ? `Duplicate-of-opening: ${dupIdx.map(i => 'H' + i).join(', ')}\n` : ''}\nReturn ONLY valid JSON: { "hooks": [ { "id": "H1", "text": "..." }, ... 5 items ] }`;
-              const fixed = await callClaude(rewriteSys, rewriteUser, 2000, { fast: true });
+              const rewriteUser = `The 5 hooks below need fixing. Rewrite all 5 so each is speakable by the body's narrator, in the body's voice, and reads seamlessly into the body's first sentence. Keep them <= 20 words (H5 under 12), sentence case, no emoji, no dashes. The 5 hooks are 5 WAYS THROUGH THE SAME DOOR: every hook's final beat must set up the body's FIRST SENTENCE so it reads as the natural next line, no bridge. Vary them by EMOTIONAL ANGLE and PHRASING on that SAME setup (blunt, contrarian, pain callout, curiosity, short punch), NEVER by topic. Do not open a hook on a subject the body's first sentence does not continue (a clinical mechanism, a stat, a results timeline) — that is exactly the seam you are fixing.\n\nCRITICAL: NONE of the 5 hooks may restate the body's OPENING LINE. The hooks are 5 ways IN that all lead to the body's first sentence, never a verbatim copy of it. Even if the body opens on a signature gimmick, the hooks are alternative ways IN that lead to it — never the same sentence reworded, re-punctuated, or joined with "and".\n\nBODY:\n${gen.body}\n\nCURRENT HOOKS:\n${gen.hooks.map(h => `${h.id}: ${h.text || h}`).join('\n')}\n\nIssues:\n${blendFail ? `Blend issues: ${JSON.stringify(blend?.hooks || [])}\n` : ''}${dupIdx.length ? `Duplicate-of-opening: ${dupIdx.map(i => 'H' + i).join(', ')}\n` : ''}\nReturn ONLY valid JSON: { "hooks": [ { "id": "H1", "text": "..." }, ... 5 items ] }`;
+              // Rewriting hooks is script generation → Opus, per operator directive.
+              const fixed = await callClaude(rewriteSys, rewriteUser, 2000, { opus: true, timeoutMs: 180000 });
               if (Array.isArray(fixed?.hooks) && fixed.hooks.length === 5 && fixed.hooks.every(h => h?.text)) {
                 hooks = gen.hooks.map((h, i) => ({ ...h, text: removeDashes(fixed.hooks[i].text) }));
               }
