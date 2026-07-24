@@ -284,6 +284,10 @@ export default function PushToClickupModal({ briefId, briefTitle, isOpen, onClos
                 onChange={(v) => updateField('editor', v)}
                 options={options.editors}
                 placeholder="Select editor..."
+                labelFor={(name) => {
+                  const n = (options.editorQueueCounts || {})[name];
+                  return (n === undefined || n === null) ? name : `${name} (${n} in queue)`;
+                }}
               />
               <FieldSelect
                 label="Avatar"

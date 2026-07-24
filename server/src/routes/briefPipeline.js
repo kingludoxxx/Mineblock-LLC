@@ -4,7 +4,7 @@ import { requirePermission } from '../middleware/rbac.js';
 import { pgQuery } from '../db/pg.js';
 import { transcribeVideoUrl } from '../services/videoTranscribe.js';
 // Temp imports for PestLab E2E test endpoints — removed after verification
-import { getEditors, OWNER_ID } from '../utils/clickupEditors.js';
+import { getEditors, getEditorQueueCounts, OWNER_ID } from '../utils/clickupEditors.js';
 import crypto from 'crypto';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
@@ -5192,13 +5192,34 @@ router.get('/generated/:id/clickup-prefill', authenticate, async (req, res) => {
       brief.body ? `\n--- Body ---\n${brief.body}` : '',
     ].filter(Boolean).join('\n').trim();
 
-    // Editor list — use cached/dynamic editor map
+    // Editors, angle options, and per-editor edit-queue counts — ALL sourced
+    // from THIS product's own ClickUp list, so a Puure brief never shows
+    // MinerForge angles/editors (and vice versa).
+    const productListId = pipelineForProduct(brief.product_code).listId;
     let editors = [];
+    let editorQueueCounts = {};
+    let productAngles = [];
     try {
-      const editorMap = await getEditors(pipelineForProduct(brief.product_code).listId);
+      const editorMap = await getEditors(productListId);
       editors = Object.keys(editorMap).sort();
     } catch (e) {
       console.warn('[BriefPipeline] prefill: editor list fetch failed:', e.message);
+    }
+    try {
+      editorQueueCounts = await getEditorQueueCounts(productListId);
+    } catch (e) {
+      console.warn('[BriefPipeline] prefill: editor queue counts failed:', e.message);
+    }
+    try {
+      // Puure's real angles live on its PRODUCT PROFILE (the "7 from PU" set the
+      // Script Generator shows) — NOT the ClickUp list's Angle field, which
+      // carries the shared MinerForge set. Source the dropdown from the profile.
+      const profile = await fetchProductProfile(brief.product_code || 'MR');
+      if (Array.isArray(profile?.angles)) {
+        productAngles = profile.angles.map((a) => (typeof a === 'string' ? a : a?.name)).filter(Boolean);
+      }
+    } catch (e) {
+      console.warn('[BriefPipeline] prefill: product angle options fetch failed:', e.message);
     }
 
     // highlighted_text is stored as JSONB[]. Default to empty array so the
@@ -5238,10 +5259,13 @@ router.get('/generated/:id/clickup-prefill', authenticate, async (req, res) => {
         namingConvention: brief.naming_convention || '',
       },
       options: {
-        angles:        Object.keys(ANGLE_OPTIONS),
+        // Product's own list angles; fall back to the global set only if the
+        // list has no Angle field options (safety, never empty the dropdown).
+        angles:        (productAngles && productAngles.length) ? productAngles : Object.keys(ANGLE_OPTIONS),
         creativeTypes: Object.keys(CREATIVE_TYPE_OPTIONS),
         briefTypes:    Object.keys(BRIEF_TYPE_OPTIONS),
         editors,
+        editorQueueCounts,
         avatars:       Object.keys(AVATAR_TASK_IDS),
         products:      Object.keys(PRODUCT_TASK_IDS),
         creativeTypeCodes: CREATIVE_TYPE_CODES,

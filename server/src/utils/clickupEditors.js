@@ -111,4 +111,49 @@ export function invalidateEditorCache() {
   editorsCache.clear();
 }
 
+// Per-editor count of tasks currently in the "edit queue" status of a given
+// ClickUp list, so the push modal can show each editor's backlog without the
+// operator opening ClickUp. Groups edit-queue tasks by assignee and maps the
+// assignee id back to the editor display name. Cached briefly (60s) per list.
+const queueCountsCache = new Map(); // listId -> { counts, timestamp }
+const QUEUE_CACHE_TTL = 60 * 1000;
+
+export async function getEditorQueueCounts(listId = VIDEO_ADS_LIST_ID) {
+  const cached = queueCountsCache.get(listId);
+  if (cached && (Date.now() - cached.timestamp < QUEUE_CACHE_TTL)) return cached.counts;
+  if (!CLICKUP_TOKEN) return {};
+  try {
+    const editors = await getEditors(listId);        // { Name: numericId }
+    const idToName = {};
+    for (const [name, id] of Object.entries(editors)) idToName[String(id)] = name;
+    const counts = {};
+    for (const name of Object.keys(editors)) counts[name] = 0;
+
+    let page = 0;
+    for (;;) {
+      const res = await fetch(
+        `${CLICKUP_API}/list/${listId}/task?statuses%5B%5D=edit%20queue&include_closed=false&subtasks=false&page=${page}`,
+        { headers: { Authorization: CLICKUP_TOKEN, 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(10000) },
+      );
+      if (!res.ok) break;
+      const data = await res.json();
+      const tasks = data.tasks || [];
+      for (const t of tasks) {
+        for (const a of (t.assignees || [])) {
+          const nm = idToName[String(a.id)];
+          if (nm) counts[nm] = (counts[nm] || 0) + 1;
+        }
+      }
+      if (data.last_page || tasks.length === 0) break;
+      page++;
+      if (page > 20) break; // safety cap
+    }
+    queueCountsCache.set(listId, { counts, timestamp: Date.now() });
+    return counts;
+  } catch (err) {
+    console.error('[ClickUp Editors] queue-count fetch error:', err.message);
+    return queueCountsCache.get(listId)?.counts || {};
+  }
+}
+
 export { OWNER_ID };
