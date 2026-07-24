@@ -6179,6 +6179,14 @@ router.get('/league/ads', authenticate, async (req, res) => {
           SELECT 1 FROM brief_pipeline_references bpr
           WHERE bpr.ad_archive_id = a.ad_archive_id::text
         ) AS already_imported,
+        COALESCE((
+          SELECT array_agg(DISTINCT bpg.brief_number ORDER BY bpg.brief_number)
+            FROM brief_pipeline_references bpr
+            JOIN brief_pipeline_winners bpw ON bpw.reference_id = bpr.id
+            JOIN brief_pipeline_generated bpg ON bpg.winner_id = bpw.id
+           WHERE bpr.ad_archive_id = a.ad_archive_id::text
+             AND bpg.clickup_task_id IS NOT NULL
+        ), '{}') AS pushed_brief_numbers,
         COUNT(*) OVER () AS total_count
       FROM brand_spy.ads a
       WHERE a.brand_id = $1
@@ -6209,6 +6217,8 @@ router.get('/league/ads', authenticate, async (req, res) => {
       videoUrl: r.video_hd_url || r.video_sd_url || null,
       thumbnailUrl: r.thumbnail_url || null,
       alreadyImported: r.already_imported === true,
+      pushedBriefNumbers: Array.isArray(r.pushed_brief_numbers) ? r.pushed_brief_numbers : [],
+      alreadyPushed: Array.isArray(r.pushed_brief_numbers) && r.pushed_brief_numbers.length > 0,
     }));
     res.json({ success: true, ads, total, page, limit });
   } catch (err) {
@@ -6768,11 +6778,30 @@ router.post('/references', authenticate, async (req, res) => {
 router.get('/references', authenticate, async (req, res) => {
   try {
     const includeQuarantined = String(req.query.include_quarantined || '').toLowerCase() === 'true';
+    // pushed_brief_numbers: the brief numbers this reference produced that were
+    // actually PUSHED to ClickUp (clickup_task_id set). Lets the UI flag a
+    // reference as "already used" so the same competitor video isn't cloned
+    // twice. Chain: reference -> winner(reference_id) -> generated(winner_id)
+    // with a ClickUp task. A brief generated locally but NOT pushed is
+    // deliberately not counted (per operator: only a confirmed push counts).
+    const pushedAgg = `COALESCE((
+        SELECT array_agg(DISTINCT bpg.brief_number ORDER BY bpg.brief_number)
+          FROM brief_pipeline_winners bpw
+          JOIN brief_pipeline_generated bpg ON bpg.winner_id = bpw.id
+         WHERE bpw.reference_id = r.id
+           AND bpg.clickup_task_id IS NOT NULL
+      ), '{}') AS pushed_brief_numbers`;
     const sql = includeQuarantined
-      ? `SELECT * FROM brief_pipeline_references ORDER BY created_at DESC`
-      : `SELECT * FROM brief_pipeline_references WHERE is_quarantined IS NOT TRUE ORDER BY created_at DESC`;
+      ? `SELECT r.*, ${pushedAgg} FROM brief_pipeline_references r ORDER BY r.created_at DESC`
+      : `SELECT r.*, ${pushedAgg} FROM brief_pipeline_references r WHERE r.is_quarantined IS NOT TRUE ORDER BY r.created_at DESC`;
     const rows = await pgQuery(sql);
-    res.json({ success: true, references: rows.map(mapReferenceRow) });
+    res.json({
+      success: true,
+      references: rows.map((r) => {
+        const pushed = Array.isArray(r.pushed_brief_numbers) ? r.pushed_brief_numbers : [];
+        return { ...mapReferenceRow(r), pushedBriefNumbers: pushed, usedInPushedBrief: pushed.length > 0 };
+      }),
+    });
   } catch (err) {
     console.error('[BriefPipeline] GET /references error:', err.message);
     res.status(500).json({ success: false, error: { message: err.message } });

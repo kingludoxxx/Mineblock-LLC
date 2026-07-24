@@ -11,6 +11,7 @@ import {
   Loader2,
   Upload,
   TrendingUp,
+  CheckCircle2,
 } from 'lucide-react';
 
 const TIER_META = {
@@ -60,6 +61,15 @@ export default function ReferenceCard({ reference, onPreview, onGenerateFromRefe
   const isInProgress   = isPending || isExtracting || isTranscribing;
   const transcribeError = !hasTranscript && reference.analysisError && !isInProgress;
   const md = reference.importedMetadata || {};
+  // "Used" = this reference already produced a brief that was PUSHED to ClickUp.
+  // Lets the operator see, at a glance, which competitor videos they've already
+  // cloned so they don't do it twice. Locally-generated-but-unpushed briefs
+  // don't count (set server-side).
+  const pushedBriefNumbers = Array.isArray(reference.pushedBriefNumbers) ? reference.pushedBriefNumbers : [];
+  const usedInPushedBrief = reference.usedInPushedBrief || pushedBriefNumbers.length > 0;
+  const usedBriefLabel = pushedBriefNumbers.length
+    ? `B${String(pushedBriefNumbers[0]).padStart(4, '0')}${pushedBriefNumbers.length > 1 ? ` +${pushedBriefNumbers.length - 1}` : ''}`
+    : '';
 
   const handleGenerate = (e) => {
     e.stopPropagation();
@@ -88,7 +98,7 @@ export default function ReferenceCard({ reference, onPreview, onGenerateFromRefe
     : null;
 
   return (
-    <div className="group relative bg-white/[0.02] border border-white/[0.06] hover:border-white/[0.12] rounded-lg overflow-hidden transition-all duration-200 hover:bg-white/[0.03]">
+    <div className={`group relative bg-white/[0.02] border rounded-lg overflow-hidden transition-all duration-200 hover:bg-white/[0.03] ${usedInPushedBrief ? 'border-emerald-500/40 hover:border-emerald-500/60' : 'border-white/[0.06] hover:border-white/[0.12]'}`}>
       {/* Thumbnail — click to preview */}
       <button
         type="button"
@@ -150,6 +160,15 @@ export default function ReferenceCard({ reference, onPreview, onGenerateFromRefe
             <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold uppercase tracking-wider bg-amber-500/15 border border-amber-500/40 text-amber-300 backdrop-blur-sm whitespace-nowrap">
               <Loader2 className="w-2.5 h-2.5 animate-spin" />
               Transcribing
+            </span>
+          )}
+          {usedInPushedBrief && (
+            <span
+              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold uppercase tracking-wider bg-emerald-500/20 border border-emerald-500/50 text-emerald-300 backdrop-blur-sm whitespace-nowrap"
+              title={`Already used to push ${pushedBriefNumbers.length} brief(s) to ClickUp: ${pushedBriefNumbers.map((n) => 'B' + String(n).padStart(4, '0')).join(', ')}`}
+            >
+              <CheckCircle2 className="w-2.5 h-2.5" />
+              {usedBriefLabel ? `Used · ${usedBriefLabel}` : 'Used'}
             </span>
           )}
         </div>

@@ -771,7 +771,17 @@ export default function LeagueImportModal({ open, onClose, onImported, onQueued 
                     <div className="flex-1 min-w-0 flex flex-col gap-1 pr-5">
                       <div className="flex items-center gap-1.5">
                         <TierBadge tier={ad.tier} />
-                        {imported && (
+                        {ad.alreadyPushed ? (
+                          <span
+                            className="inline-flex items-center gap-1 text-[10px] font-mono font-semibold uppercase tracking-wider text-emerald-200 bg-emerald-500/25 border border-emerald-500/50 rounded px-1.5 py-0.5"
+                            title={`Already used to push brief(s) to ClickUp: ${(ad.pushedBriefNumbers || []).map(n => 'B' + String(n).padStart(4, '0')).join(', ')}`}
+                          >
+                            <CheckCircle2 className="w-2.5 h-2.5" />
+                            {(ad.pushedBriefNumbers || []).length
+                              ? `Used · B${String(ad.pushedBriefNumbers[0]).padStart(4, '0')}${ad.pushedBriefNumbers.length > 1 ? ` +${ad.pushedBriefNumbers.length - 1}` : ''}`
+                              : 'Used'}
+                          </span>
+                        ) : imported && (
                           <span className="inline-flex items-center gap-1 text-[10px] font-mono uppercase tracking-wider text-emerald-400 bg-emerald-500/10 border border-emerald-500/25 rounded px-1.5 py-0.5">
                             <CheckCircle2 className="w-2.5 h-2.5" />
                             Imported
