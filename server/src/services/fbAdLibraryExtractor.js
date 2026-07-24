@@ -58,6 +58,7 @@ const MAX_CONCURRENT_TABS = 3;
 const _waitQueue = [];
 
 async function acquireSlot() {
+  cancelIdleClose(); // extraction starting — keep the browser alive
   if (_activeTabs < MAX_CONCURRENT_TABS) {
     _activeTabs += 1;
     return;
@@ -71,6 +72,29 @@ function releaseSlot() {
   _activeTabs = Math.max(0, _activeTabs - 1);
   const next = _waitQueue.shift();
   if (next) next();
+  else if (_activeTabs === 0) scheduleIdleClose(); // idle — free the browser soon
+}
+
+// ── Idle teardown ─────────────────────────────────────────────────────────
+// The warm Chromium is ~150-250MB resident. Holding it from boot forever is a
+// big chunk of the memory ceiling on a small dyno and is what tips us into OOM
+// restarts (which 502 every endpoint). So we close it after BROWSER_IDLE_MS of
+// no active extraction and relaunch on the next call — paying the ~2.4s warm
+// launch only after an idle gap, in exchange for freeing the RAM in between.
+let _idleTimer = null;
+const BROWSER_IDLE_MS = 90_000;
+function cancelIdleClose() {
+  if (_idleTimer) { clearTimeout(_idleTimer); _idleTimer = null; }
+}
+function scheduleIdleClose() {
+  cancelIdleClose();
+  _idleTimer = setTimeout(() => {
+    _idleTimer = null;
+    if (_activeTabs === 0 && _waitQueue.length === 0) {
+      closeBrowser().catch(() => {});
+    }
+  }, BROWSER_IDLE_MS);
+  if (_idleTimer.unref) _idleTimer.unref(); // don't keep the process alive
 }
 
 function ensureChromium() {
@@ -98,6 +122,7 @@ function ensureChromium() {
 }
 
 async function getBrowser() {
+  cancelIdleClose(); // about to use it — don't let a pending idle timer close it
   if (_browser && _browser.isConnected()) return _browser;
   const exePath = ensureChromium();
   if (!exePath) {
@@ -138,7 +163,10 @@ let _warmupStarted = false;
 export function warmupBrowser() {
   if (_warmupStarted) return;
   _warmupStarted = true;
-  getBrowser().catch((e) => {
+  getBrowser().then(() => {
+    // Warmed but idle after boot — let it free itself if nothing uses it.
+    scheduleIdleClose();
+  }).catch((e) => {
     console.warn('[fbExtractor] Boot warmup failed (will retry on first call):', e.message);
     _warmupStarted = false;
   });
