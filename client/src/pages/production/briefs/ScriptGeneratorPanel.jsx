@@ -120,19 +120,23 @@ const ScriptGeneratorPanel = forwardRef(function ScriptGeneratorPanel({
     }
   }, [initialScript, initialMode, initialReferenceId]);
 
-  // ── MR (Miner Forge Pro) is the default product, always ───────────────
-  // Auto-snaps the selection back to MR whenever the field is empty AND
-  // the product list has loaded. Triggered on first load AND after the
-  // user clicks the X clear button — MR is sticky by design.
+  // ── Puure is the default product ──────────────────────────────────────
+  // Auto-snaps the selection to Puure whenever the field is empty AND the
+  // product list has loaded. Triggered on first load AND after the user
+  // clicks the X clear button. Falls back to Miner Forge (MR), then the
+  // first product, so the field is never left empty.
   useEffect(() => {
     if (selectedProduct) return;
     if (!productList || productList.length === 0) return;
-    const mr = productList.find(p =>
+    const isPuure = (p) =>
+      (p.short_name || '').toUpperCase() === 'PU'
+      || ['PUURE', 'PL'].includes((p.product_code || '').toUpperCase())
+      || (p.name || '').toLowerCase().includes('puure');
+    const isMr = (p) =>
       (p.short_name || '').toUpperCase() === 'MR'
       || (p.product_code || '').toUpperCase() === 'MR'
-      || (p.name || '').toLowerCase().includes('miner forge')
-    );
-    const pick = mr || productList[0];
+      || (p.name || '').toLowerCase().includes('miner forge');
+    const pick = productList.find(isPuure) || productList.find(isMr) || productList[0];
     if (pick) setSelectedProduct(pick);
   }, [selectedProduct, productList]);
 
