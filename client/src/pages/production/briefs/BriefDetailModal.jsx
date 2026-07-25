@@ -315,6 +315,16 @@ export default function BriefDetailModal({
     }
   };
 
+  // Commit any pending hook/body/label edits BEFORE a forward action (approve,
+  // push, skip-form) so the DB — and therefore the ClickUp card — reflects the
+  // CURRENT card, not the originally generated copy. Without this, editing or
+  // deleting a hook and then approving/pushing silently kept the old hooks.
+  // If the save fails we don't proceed (better than pushing stale content).
+  const saveThen = async (fn) => {
+    if (hasChanges) await handleSave();
+    await fn?.();
+  };
+
 
   return (
     <div
@@ -582,7 +592,7 @@ export default function BriefDetailModal({
               </button>
               <button
                 type="button"
-                onClick={() => onApprove?.(brief.id)}
+                onClick={() => saveThen(() => onApprove?.(brief.id))}
                 className="flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 border border-emerald-500/20 hover:border-emerald-500/40 shadow-[0_0_15px_rgba(16,185,129,0.1)] text-sm font-medium transition-all cursor-pointer"
               >
                 <Check className="w-4 h-4" /> Approve
@@ -594,7 +604,7 @@ export default function BriefDetailModal({
             <>
               <button
                 type="button"
-                onClick={() => onMoveToReady?.(brief.id)}
+                onClick={() => saveThen(() => onMoveToReady?.(brief.id))}
                 aria-label="Move brief to Ready ClickUp column without opening ClickUp form"
                 className="flex items-center gap-2 px-3 py-2 rounded-lg bg-blue-500/10 text-blue-400 hover:bg-blue-500/15 border border-blue-500/25 text-xs font-mono uppercase tracking-wide transition-all cursor-pointer"
               >
@@ -603,7 +613,7 @@ export default function BriefDetailModal({
               {onPushToClickup && (
                 <button
                   type="button"
-                  onClick={() => onPushToClickup?.(brief.id)}
+                  onClick={() => saveThen(() => onPushToClickup?.(brief.id))}
                   aria-label="Push this brief to ClickUp and assign editor"
                   className="flex items-center gap-2 px-4 py-2 rounded-lg bg-amber-500/15 text-amber-300 hover:bg-amber-500/25 border border-amber-500/30 hover:border-amber-500/50 shadow-[0_0_15px_rgba(245,158,11,0.1)] text-sm font-mono font-semibold uppercase tracking-wide transition-all cursor-pointer"
                 >
