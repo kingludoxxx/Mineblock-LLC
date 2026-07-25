@@ -477,7 +477,7 @@ const MEDIA_BUYING_LIST = '901518769621';
 // resolveListConfig(listId) instead of a single hardcoded FIELD_IDS map.
 const CLICKUP_PIPELINES = {
   MB: { listId: VIDEO_ADS_LIST,   initialStatus: 'edit queue', namingCode: null },   // default
-  PL: { listId: PUURE_VIDEO_LIST, initialStatus: 'copy queue', namingCode: 'PL', fbPage: 'Puure' }, // Puure
+  PL: { listId: PUURE_VIDEO_LIST, initialStatus: 'edit queue', namingCode: 'PL', fbPage: 'Puure' }, // Puure — pushes land straight in edit queue (operator request)
 };
 
 // Product → pipeline. Puure (code PUURE / naming PL) routes to PL | Video
