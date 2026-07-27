@@ -6808,6 +6808,15 @@ async function importLeagueAdAsReference({
   brandSpyAdId, adArchiveId, brandId, brandName, tier,
   videoUrl, thumbnailUrl, headline, bodyText, transcript, transcriptAt,
 }) {
+  // brief_pipeline_references.tier is NOT NULL with a CHECK limited to
+  // ('BANGER','CHAMP','A','OUR','UPLOAD'). brand_spy tiers also include
+  // 'B'/'C'/'MID'/'TEST', which violate that CHECK and aborted the upsert
+  // (pasted lower-tier ads left the card with no Source Reference). Map any
+  // out-of-set / null tier to 'A' — the same default the batch worker uses.
+  const ALLOWED_REF_TIERS = ['BANGER', 'CHAMP', 'A', 'OUR', 'UPLOAD'];
+  const tierVal = ALLOWED_REF_TIERS.includes(String(tier || '').toUpperCase())
+    ? String(tier).toUpperCase()
+    : 'A';
   // Check if it already exists (so callers can report alreadyExists: true)
   const existing = await pgQuery(
     `SELECT id FROM brief_pipeline_references WHERE ad_archive_id = $1`,
@@ -6860,7 +6869,7 @@ async function importLeagueAdAsReference({
       // Never let a null reach the INSERT — it aborted the whole upsert and
       // the pasted ad's card showed no Source Reference.
       (brandName && String(brandName).trim()) ? brandName : 'Unknown',
-      tier,
+      tierVal,
       videoUrl || null,
       thumbnailUrl || null,
       headline || null,
