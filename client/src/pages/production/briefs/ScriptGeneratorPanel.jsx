@@ -223,10 +223,12 @@ const ScriptGeneratorPanel = forwardRef(function ScriptGeneratorPanel({
         angle: selectedAngle || customAngle || null,
         mode: outputMode,
         numVariations: variantCount,
-        // appliedReferenceId was captured in the SAME state update as the
-        // script text — the live initialReferenceId prop can be newer than
-        // the textarea contents (the wrong-reference bug).
-        referenceId: appliedReferenceId || null,
+        // appliedReferenceId only applies to a reference-card script prefilled
+        // into TEXT mode. In URL mode the pasted link IS the source, so a stale
+        // appliedReferenceId left over from a previously-clicked reference card
+        // must NOT ride along — that linked the brief to the wrong reference
+        // (e.g. showed a different competitor's video than the one pasted).
+        referenceId: inputMode === 'url' ? null : (appliedReferenceId || null),
         model: selectedModel,
         // Only send vectorsSelected on iterate mode — clone mode ignores it.
         vectorsSelected: outputMode === 'iterate' ? buildVectorsPayload() : undefined,

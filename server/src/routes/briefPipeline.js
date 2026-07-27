@@ -4065,7 +4065,46 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
     // be filled" rule depends on this. NULL is fine when the operator
     // pasted a script with no reference (raw-text flow).
     const creativeId = `MANUAL-${Date.now().toString(36).toUpperCase()}`;
-    const referenceIdForWinner = (referenceId && /^[0-9a-f-]{36}$/i.test(String(referenceId))) ? referenceId : null;
+    let referenceIdForWinner = (referenceId && /^[0-9a-f-]{36}$/i.test(String(referenceId))) ? referenceId : null;
+
+    // Pasted Facebook Ad Library URL with no reference card selected: upsert a
+    // reference for THAT exact ad (from the brand-spy record the extractor
+    // already uses) and link the winner to it — so the card's Source Reference
+    // shows the video the operator actually pasted, not a stale/wrong one.
+    if (!referenceIdForWinner && url) {
+      try {
+        let pastedAdId = null;
+        try { pastedAdId = new URL(url).searchParams.get('id'); } catch { /* not a URL */ }
+        if (!pastedAdId) pastedAdId = (url.match(/[?&]id=(\d+)/i) || [])[1] || null;
+        if (pastedAdId && /^\d+$/.test(pastedAdId)) {
+          const bs = await pgQuery(
+            `SELECT id, brand_id, brand_name, tier, headline, body_text,
+                    raw_snapshot->'videos'->0->>'video_hd_url'            AS hd,
+                    raw_snapshot->'videos'->0->>'video_sd_url'            AS sd,
+                    raw_snapshot->'videos'->0->>'video_preview_image_url' AS thumb
+               FROM brand_spy.ads WHERE ad_archive_id = $1::text LIMIT 1`,
+            [pastedAdId],
+          );
+          const a = bs[0] || {};
+          const ref = await importLeagueAdAsReference({
+            brandSpyAdId: a.id || null,
+            adArchiveId: pastedAdId,
+            brandId: a.brand_id || null,
+            brandName: a.brand_name || null,
+            tier: a.tier || null,
+            videoUrl: a.hd || a.sd || null,
+            thumbnailUrl: a.thumb || null,
+            headline: a.headline || null,
+            bodyText: a.body_text || null,
+            transcript: rawScript || null,
+            transcriptAt: new Date().toISOString(),
+          });
+          if (ref?.id) referenceIdForWinner = ref.id;
+        }
+      } catch (e) {
+        console.warn('[BriefPipeline] pasted-URL reference upsert failed (non-fatal):', e.message);
+      }
+    }
     const insertedWinner = await pgQuery(`
       INSERT INTO brief_pipeline_winners (
         creative_id, ad_name, product_code, angle, format, raw_script,
