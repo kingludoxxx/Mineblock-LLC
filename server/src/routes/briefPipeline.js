@@ -2200,6 +2200,34 @@ async function extractScriptFromUrl(url) {
   if (fbAdMatch) {
     const adId = fbAdMatch[1];
     console.log(`[BriefPipeline] Facebook Ad Library detected, ad ID: ${adId}`);
+    // Per-layer breadcrumb so a failed extraction self-reports WHICH layer
+    // failed and why (surfaced in the final error + logs). No more fixing blind.
+    const diag = [];
+
+    // Step 0 (L0): reuse media the brand-spy scraper already captured for this
+    // exact ad. Bypasses FB's bot-blocking entirely for any followed-brand ad
+    // (the common case) — the most reliable path by far.
+    try {
+      const bsRows = await pgQuery(
+        `SELECT raw_snapshot->'videos'->0->>'video_hd_url' AS hd,
+                raw_snapshot->'videos'->0->>'video_sd_url' AS sd
+           FROM brand_spy.ads WHERE ad_archive_id = $1::text LIMIT 1`,
+        [adId],
+      );
+      const bsUrl = bsRows[0]?.hd || bsRows[0]?.sd || null;
+      if (bsUrl) {
+        console.log('[BriefPipeline] L0 brand-spy media hit — transcribing stored video.');
+        try {
+          return await transcribeWithGemini(bsUrl);
+        } catch (e) {
+          diag.push(`L0 brand-spy url found but transcribe failed: ${e.message}`);
+        }
+      } else {
+        diag.push(bsRows.length ? 'L0 brand-spy: row exists but no video url' : 'L0 brand-spy: ad not in scraper store');
+      }
+    } catch (e) {
+      diag.push(`L0 brand-spy lookup error: ${e.message}`);
+    }
 
     // Step 1: Extract metadata (title, description, ad copy) — instant, no API calls
     const metadata = await extractMetadataWithYtdlp(url);
@@ -2266,11 +2294,16 @@ async function extractScriptFromUrl(url) {
       const pwUrl = await extractVideoUrlFromAdLibrary(url);
       if (pwUrl) {
         console.log('[BriefPipeline] Playwright captured video URL — transcribing.');
-        return await transcribeWithGemini(pwUrl);
+        try {
+          return await transcribeWithGemini(pwUrl);
+        } catch (e) {
+          diag.push(`L1 playwright url found but transcribe failed: ${e.message}`);
+        }
+      } else {
+        diag.push('L1 playwright: no video url captured (bot wall / consent / no .mp4 fired)');
       }
-      console.warn('[BriefPipeline] Playwright extraction returned no video URL.');
     } catch (pwErr) {
-      console.warn('[BriefPipeline] Playwright extraction failed:', pwErr.message);
+      diag.push(`L1 playwright error: ${pwErr.message}`);
     }
 
     // Step 4: Fallback to Meta API
@@ -2282,7 +2315,8 @@ async function extractScriptFromUrl(url) {
         const adCopy = [metadata.title, metadata.description].filter(Boolean).join('\n\n').trim();
         if (adCopy.length > 20) return `[AD COPY FROM METADATA — all extraction methods failed]\n${adCopy}`;
       }
-      console.error(`[BriefPipeline] All extraction failed for FB ad ${adId}. yt-dlp: ${existsSync(YTDLP_PATH) ? 'installed' : 'NOT INSTALLED'}, META_ACCESS_TOKEN: ${META_ACCESS_TOKEN ? 'set' : 'NOT SET'}`);
+      diag.push(`L3 meta api error: ${apiErr.message}`);
+      console.error(`[BriefPipeline] All extraction failed for FB ad ${adId}. yt-dlp: ${existsSync(YTDLP_PATH) ? 'installed' : 'NOT INSTALLED'}, META_ACCESS_TOKEN: ${META_ACCESS_TOKEN ? 'set' : 'NOT SET'}. Layer diagnostics: ${JSON.stringify(diag)}`);
       throw new Error(`Could not extract ad ${adId}. This is a video ad that requires transcription. Try: (1) Right-click the video → "Copy video address" and paste the direct .mp4 link, or (2) Use "Paste Text" to paste the script manually.`);
     }
   }
