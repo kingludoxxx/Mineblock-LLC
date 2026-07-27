@@ -2195,11 +2195,27 @@ async function extractVideoUrlWithYtdlp(pageUrl, { audioOnly = false } = {}) {
 
 async function extractScriptFromUrl(url) {
   // Strategy 1: Facebook Ad Library URL → yt-dlp extract video → Gemini transcribe
-  const fbAdMatch = url.match(/facebook\.com\/ads\/library\/?\?.*id=(\d+)/i)
-    || url.match(/fb\.com\/ads\/library\/?\?.*id=(\d+)/i);
-  if (fbAdMatch) {
-    const adId = fbAdMatch[1];
-    console.log(`[BriefPipeline] Facebook Ad Library detected, ad ID: ${adId}`);
+  // Parse the AD id specifically. The old greedy /.*id=(\d+)/ grabbed the LAST
+  // id= in the query string — for a page-view URL that is view_all_page_id (the
+  // PAGE), not the ad — so every layer ran against the wrong id and failed with
+  // "Could not extract ad <page_id>". Use URLSearchParams (param-boundary regex
+  // as fallback) and normalize to the canonical single-ad URL.
+  const isFbLibrary = /(facebook|fb)\.com\/ads\/library/i.test(url);
+  let adId = null;
+  let fbCountry = null;
+  if (isFbLibrary) {
+    try {
+      const sp = new URL(url).searchParams;
+      adId = sp.get('id');
+      fbCountry = sp.get('country');
+    } catch { /* unparseable — fall back to regex */ }
+    if (!adId) adId = (url.match(/[?&]id=(\d+)/i) || [])[1] || null;
+  }
+  if (isFbLibrary && adId && /^\d+$/.test(adId)) {
+    // Canonical single-ad URL so downstream extractors load a clean ad page,
+    // not a geo-filtered page grid. Keep country for geo-fenced ads.
+    const canonicalUrl = `https://www.facebook.com/ads/library/?id=${adId}` + (fbCountry ? `&country=${encodeURIComponent(fbCountry)}` : '');
+    console.log(`[BriefPipeline] Facebook Ad Library detected, ad ID: ${adId} (canonical: ${canonicalUrl})`);
     // Per-layer breadcrumb so a failed extraction self-reports WHICH layer
     // failed and why (surfaced in the final error + logs). No more fixing blind.
     const diag = [];
@@ -2230,7 +2246,7 @@ async function extractScriptFromUrl(url) {
     }
 
     // Step 1: Extract metadata (title, description, ad copy) — instant, no API calls
-    const metadata = await extractMetadataWithYtdlp(url);
+    const metadata = await extractMetadataWithYtdlp(canonicalUrl);
     if (metadata) {
       const adCopy = [metadata.title, metadata.description].filter(Boolean).join('\n\n').trim();
       if (adCopy.length > 50) {
@@ -2245,7 +2261,7 @@ async function extractScriptFromUrl(url) {
     }
 
     // Step 2: Try audio transcription with yt-dlp + Gemini (audio-only = small file)
-    const audioUrl = await extractVideoUrlWithYtdlp(url, { audioOnly: true });
+    const audioUrl = await extractVideoUrlWithYtdlp(canonicalUrl, { audioOnly: true });
     if (audioUrl) {
       try {
         const transcript = await transcribeWithGemini(audioUrl);
@@ -2268,7 +2284,7 @@ async function extractScriptFromUrl(url) {
     }
 
     // Step 3: Try full video transcription
-    const videoUrl = await extractVideoUrlWithYtdlp(url);
+    const videoUrl = await extractVideoUrlWithYtdlp(canonicalUrl);
     if (videoUrl) {
       try {
         return await transcribeWithGemini(videoUrl);
@@ -2291,7 +2307,7 @@ async function extractScriptFromUrl(url) {
     // usually fails; it was previously wired into the reference-import flow but
     // NOT into this transcription path, which is why pasted links failed here.
     try {
-      const pwUrl = await extractVideoUrlFromAdLibrary(url);
+      const pwUrl = await extractVideoUrlFromAdLibrary(canonicalUrl);
       if (pwUrl) {
         console.log('[BriefPipeline] Playwright captured video URL — transcribing.');
         try {
