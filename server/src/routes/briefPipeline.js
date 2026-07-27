@@ -4088,7 +4088,8 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
             // on brand_spy.brands.display_name (joined via brand_id). Selecting
             // a.brand_name threw "column brand_name does not exist" and killed
             // the whole reference upsert (card showed no Source Reference).
-            `SELECT a.id, a.brand_id, b.display_name AS brand_name, a.tier,
+            `SELECT a.id, a.brand_id,
+                    COALESCE(b.display_name, b.domain) AS brand_name, a.tier,
                     a.headline, a.body_text,
                     a.raw_snapshot->'videos'->0->>'video_hd_url'            AS hd,
                     a.raw_snapshot->'videos'->0->>'video_sd_url'            AS sd,
@@ -6854,7 +6855,11 @@ async function importLeagueAdAsReference({
       brandSpyAdId,
       String(adArchiveId),
       brandId,
-      brandName,
+      // brief_pipeline_references.brand_name is NOT NULL, but a brand's
+      // display_name can be null (e.g. brand auto-created from a scrape).
+      // Never let a null reach the INSERT — it aborted the whole upsert and
+      // the pasted ad's card showed no Source Reference.
+      (brandName && String(brandName).trim()) ? brandName : 'Unknown',
       tier,
       videoUrl || null,
       thumbnailUrl || null,
