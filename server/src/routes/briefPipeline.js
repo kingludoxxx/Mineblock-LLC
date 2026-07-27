@@ -1943,9 +1943,13 @@ async function transcribeWithGemini(mediaUrl) {
   console.log(`[BriefPipeline] Media downloaded: ${sizeMB.toFixed(1)}MB (${contentType})`);
 
   const transcriptionPrompt = `Transcribe ALL spoken words in this video/audio. Return ONLY the transcript as plain text — no timestamps, no speaker labels, no commentary, no formatting. Just the exact words spoken, preserving the natural flow and paragraph breaks. If there are multiple speakers, separate their lines with paragraph breaks.`;
-  // Use current Gemini models — 1.5 models are deprecated (404)
-  // Use stable Gemini model names (bare 'gemini-2.0-flash' returns 404)
-  const models = ['gemini-2.0-flash-001', 'gemini-1.5-flash'];
+  // Current generativelanguage (key-based) API models. The old list
+  // ['gemini-2.0-flash-001','gemini-1.5-flash'] was BOTH dead — the -001
+  // suffix and all 1.5 models return 404 on this endpoint, so every video
+  // paste silently fell back to yt-dlp ad-copy text. 2.5-flash is the current
+  // flagship on this endpoint; 'gemini-flash-latest' is an alias that tracks
+  // the current flash model so this list won't rot when Google rotates versions.
+  const models = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-flash-latest'];
   const mime = contentType.split(';')[0];
 
   // For files > 15MB, use Gemini File API (upload first, then reference)
@@ -2088,7 +2092,9 @@ async function callGeminiWithRetry(models, requestBody) {
         if (geminiRes.status === 404) {
           console.warn(`[BriefPipeline] ${model} not found (404), skipping model...`);
           lastError = `${model}: Model not found`;
-          break; // Skip this model entirely, try next
+          continue; // 404 is model-specific — try the NEXT model, not break the
+                    // ladder. (break jumped to the next key, abandoning every
+                    // remaining model, so one dead model killed transcription.)
         }
 
         if (!geminiRes.ok) {
@@ -4078,11 +4084,18 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
         if (!pastedAdId) pastedAdId = (url.match(/[?&]id=(\d+)/i) || [])[1] || null;
         if (pastedAdId && /^\d+$/.test(pastedAdId)) {
           const bs = await pgQuery(
-            `SELECT id, brand_id, brand_name, tier, headline, body_text,
-                    raw_snapshot->'videos'->0->>'video_hd_url'            AS hd,
-                    raw_snapshot->'videos'->0->>'video_sd_url'            AS sd,
-                    raw_snapshot->'videos'->0->>'video_preview_image_url' AS thumb
-               FROM brand_spy.ads WHERE ad_archive_id = $1::text LIMIT 1`,
+            // brand_spy.ads has NO brand_name column — the brand's name lives
+            // on brand_spy.brands.display_name (joined via brand_id). Selecting
+            // a.brand_name threw "column brand_name does not exist" and killed
+            // the whole reference upsert (card showed no Source Reference).
+            `SELECT a.id, a.brand_id, b.display_name AS brand_name, a.tier,
+                    a.headline, a.body_text,
+                    a.raw_snapshot->'videos'->0->>'video_hd_url'            AS hd,
+                    a.raw_snapshot->'videos'->0->>'video_sd_url'            AS sd,
+                    a.raw_snapshot->'videos'->0->>'video_preview_image_url' AS thumb
+               FROM brand_spy.ads a
+               LEFT JOIN brand_spy.brands b ON b.id = a.brand_id
+              WHERE a.ad_archive_id = $1::text LIMIT 1`,
             [pastedAdId],
           );
           const a = bs[0] || {};
@@ -8504,9 +8517,10 @@ async function analyzeWholeVideoWithGemini(mediaUrl, promptText) {
   console.log(`[BriefPipeline:analyze] downloaded ${sizeMB.toFixed(1)}MB (${contentType})`);
 
   const mime = contentType.split(';')[0];
-  // 2.0-flash supports video; 1.5-flash is deprecated and returns 404 on most
-  // keys now (see transcription path) so we skip it here.
-  const models = ['gemini-2.0-flash-001', 'gemini-2.5-flash', 'gemini-2.0-flash'];
+  // Live generativelanguage models, good one first. 'gemini-2.0-flash-001'
+  // (the -001 suffix) and all 1.5 models 404 on this endpoint — leading with a
+  // dead model wasted a call, and the break-on-404 below abandoned the ladder.
+  const models = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-flash-latest'];
 
   let requestBody;
   if (sizeMB > 15) {
@@ -8553,7 +8567,7 @@ async function analyzeWholeVideoWithGemini(mediaUrl, promptText) {
           }
         );
         if (res.status === 429) { lastError = `${model}: 429`; continue; }
-        if (res.status === 404) { lastError = `${model}: 404`; break; }
+        if (res.status === 404) { lastError = `${model}: 404`; continue; } // next model, not next key
         if (!res.ok) {
           const txt = await res.text();
           lastError = `${model}: HTTP ${res.status} — ${txt.slice(0, 400)}`;
