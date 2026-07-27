@@ -221,13 +221,11 @@ export async function extractVideoUrlFromAdLibrary(adLibraryUrl) {
       } catch { /* ignore */ }
     });
 
-    // Block heavy stuff we don't need (images, fonts, stylesheets) — speeds
-    // up the page load + reduces RAM. Keep scripts + xhr + media.
+    // Block only images + fonts — NOT stylesheets (blocking CSS can break the
+    // player's init). Keep scripts + xhr + media so the .mp4 request can fire.
     await ctx.route('**/*', (route) => {
       const t = route.request().resourceType();
-      if (t === 'image' || t === 'font' || t === 'stylesheet') {
-        return route.abort();
-      }
+      if (t === 'image' || t === 'font') return route.abort();
       return route.continue();
     });
 
@@ -235,13 +233,33 @@ export async function extractVideoUrlFromAdLibrary(adLibraryUrl) {
     // for domcontentloaded then poll for video URLs.
     await page.goto(adLibraryUrl, {
       waitUntil: 'domcontentloaded',
-      timeout: 12000,
+      timeout: 20000,
     });
 
-    // Wait up to 10 seconds for a video URL to surface in the network log
-    const deadline = Date.now() + 10000;
+    // KEY FIX: FB Ad Library only fetches the .mp4 once the video actually
+    // PLAYS, and it may throw up a cookie/consent wall first. Passively waiting
+    // (the old behavior) meant the request never fired → null. So on every poll
+    // tick we dismiss consent dialogs and force each <video> to play + scroll
+    // into view, which triggers the CDN request our listener is watching for.
+    const kick = async () => {
+      try {
+        await page.evaluate(() => {
+          const labels = ['allow all cookies', 'allow all', 'accept all', 'only allow essential cookies', 'close'];
+          for (const b of Array.from(document.querySelectorAll('[role="button"],button'))) {
+            const t = (b.textContent || '').trim().toLowerCase();
+            if (labels.some((l) => t === l || t.includes(l))) { try { b.click(); } catch { /* ignore */ } }
+          }
+          for (const v of Array.from(document.querySelectorAll('video'))) {
+            try { v.muted = true; v.scrollIntoView(); const p = v.play(); if (p && p.catch) p.catch(() => {}); } catch { /* ignore */ }
+          }
+        });
+      } catch { /* page may be mid-navigation — ignore */ }
+    };
+
+    // Poll up to 20s for a real video chunk, kicking playback each tick.
+    const deadline = Date.now() + 20000;
     while (Date.now() < deadline && !foundUrl) {
-      // Pick the first candidate that looks like a real video chunk
+      await kick();
       const real = videoCandidates.find(v =>
         v.status >= 200 && v.status < 400 &&
         (v.contentLength > 50_000 || v.contentType.includes('video'))
@@ -250,16 +268,18 @@ export async function extractVideoUrlFromAdLibrary(adLibraryUrl) {
         foundUrl = real.url;
         break;
       }
-      await page.waitForTimeout(300);
+      await page.waitForTimeout(500);
     }
 
-    // Fallback: try to extract <video src> directly from DOM
+    // DOM fallback: read the resolved source straight off the <video> element
+    // (some ads expose a direct .mp4 in currentSrc; blob: URLs are skipped).
     if (!foundUrl) {
       try {
-        foundUrl = await page.evaluate(() => {
-          const v = document.querySelector('video[src]');
-          return v?.src || null;
+        const domSrc = await page.evaluate(() => {
+          const v = document.querySelector('video');
+          return v?.currentSrc || v?.src || null;
         });
+        if (domSrc && !/^blob:/i.test(domSrc)) foundUrl = domSrc;
       } catch { /* ignore */ }
     }
 

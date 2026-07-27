@@ -2257,6 +2257,22 @@ async function extractScriptFromUrl(url) {
       }
     }
 
+    // Step 3.5: Playwright network interception — open the ad page in Chromium
+    // and capture the .mp4 CDN URL directly, then transcribe it. This is the
+    // most reliable method for FB Ad Library single-ad pages, where yt-dlp
+    // usually fails; it was previously wired into the reference-import flow but
+    // NOT into this transcription path, which is why pasted links failed here.
+    try {
+      const pwUrl = await extractVideoUrlFromAdLibrary(url);
+      if (pwUrl) {
+        console.log('[BriefPipeline] Playwright captured video URL — transcribing.');
+        return await transcribeWithGemini(pwUrl);
+      }
+      console.warn('[BriefPipeline] Playwright extraction returned no video URL.');
+    } catch (pwErr) {
+      console.warn('[BriefPipeline] Playwright extraction failed:', pwErr.message);
+    }
+
     // Step 4: Fallback to Meta API
     try {
       return await extractFromMetaAdId(adId);
