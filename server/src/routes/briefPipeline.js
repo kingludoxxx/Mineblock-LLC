@@ -4657,7 +4657,9 @@ async function executeGenerationJob({
             await pgQuery(
               `UPDATE brief_pipeline_generated
                   SET hooks = $1,
-                      scores_json = jsonb_set(COALESCE(scores_json, '{}'::jsonb), '{hook_body_blend}',
+                      scores_json = jsonb_set(
+                        CASE WHEN jsonb_typeof(scores_json) = 'object' THEN scores_json ELSE '{}'::jsonb END,
+                        '{hook_body_blend}',
                         jsonb_build_object('score', $2::int, 'rationale', 'Measured by blend validation agent post-insert'))
                 WHERE id = $3`,
               [JSON.stringify(hooks), recordScore, brief.id]
