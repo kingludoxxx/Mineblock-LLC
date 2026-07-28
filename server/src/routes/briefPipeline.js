@@ -4113,7 +4113,13 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
             transcript: rawScript || null,
             transcriptAt: new Date().toISOString(),
           });
-          if (ref?.id) referenceIdForWinner = ref.id;
+          // importLeagueAdAsReference returns { reference, alreadyExists } — the
+          // id is ref.reference.id, NOT ref.id. Reading ref.id left the winner's
+          // reference_id NULL, so the created reference row (video mirrored to R2)
+          // never linked to the brief: no Source Reference panel in the modal and
+          // ClickUp showed the "(paste competitor video link here)" placeholder
+          // instead of "Reference video: <url>".
+          if (ref?.reference?.id) referenceIdForWinner = ref.reference.id;
         }
       } catch (e) {
         console.warn('[BriefPipeline] pasted-URL reference upsert failed (non-fatal):', e.message);
