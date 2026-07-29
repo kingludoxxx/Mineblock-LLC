@@ -2199,7 +2199,10 @@ async function extractVideoUrlWithYtdlp(pageUrl, { audioOnly = false } = {}) {
   return null;
 }
 
-async function extractScriptFromUrl(url) {
+async function extractScriptFromUrl(url, capture = {}) {
+  // `capture` is an out-param: we set capture.videoUrl to the URL of the video
+  // we actually transcribed, so callers can attach a playable reference video
+  // (esp. for ads not in brand-spy, whose only video comes from Playwright/yt-dlp).
   // Strategy 1: Facebook Ad Library URL → yt-dlp extract video → Gemini transcribe
   // Parse the AD id specifically. The old greedy /.*id=(\d+)/ grabbed the LAST
   // id= in the query string — for a page-view URL that is view_all_page_id (the
@@ -2240,6 +2243,7 @@ async function extractScriptFromUrl(url) {
       if (bsUrl) {
         console.log('[BriefPipeline] L0 brand-spy media hit — transcribing stored video.');
         try {
+          capture.videoUrl = bsUrl;
           return await transcribeWithGemini(bsUrl);
         } catch (e) {
           diag.push(`L0 brand-spy url found but transcribe failed: ${e.message}`);
@@ -2293,6 +2297,7 @@ async function extractScriptFromUrl(url) {
     const videoUrl = await extractVideoUrlWithYtdlp(canonicalUrl);
     if (videoUrl) {
       try {
+        capture.videoUrl = videoUrl;
         return await transcribeWithGemini(videoUrl);
       } catch (videoErr) {
         console.warn(`[BriefPipeline] Video transcription failed:`, videoErr.message);
@@ -2317,6 +2322,7 @@ async function extractScriptFromUrl(url) {
       if (pwUrl) {
         console.log('[BriefPipeline] Playwright captured video URL — transcribing.');
         try {
+          capture.videoUrl = pwUrl;
           return await transcribeWithGemini(pwUrl);
         } catch (e) {
           diag.push(`L1 playwright url found but transcribe failed: ${e.message}`);
@@ -4049,11 +4055,17 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
     }
 
     let rawScript = script || '';
+    // extractScriptFromUrl populates this with the actual video URL it used to
+    // build the transcript (brand-spy stored URL, yt-dlp, or Playwright-
+    // intercepted fbcdn .mp4). We attach it to the pasted-ad reference below so
+    // ads NOT in brand-spy still get a playable Source Reference video — before
+    // this, that URL was discarded and the reference had no video (broken player).
+    const extractCapture = {};
 
     // URL mode: smart multi-strategy extraction
     if (url && !rawScript) {
       try {
-        rawScript = await extractScriptFromUrl(url);
+        rawScript = await extractScriptFromUrl(url, extractCapture);
       } catch (urlErr) {
         return res.status(400).json({ success: false, error: { message: urlErr.message || 'Failed to process URL' } });
       }
@@ -4106,7 +4118,12 @@ router.post('/generate-from-script', authenticate, async (req, res) => {
             brandId: a.brand_id || null,
             brandName: a.brand_name || null,
             tier: a.tier || null,
-            videoUrl: a.hd || a.sd || null,
+            // Prefer the brand-spy stored URL; fall back to the video the
+            // extractor just used (Playwright/yt-dlp). Without this, ads not in
+            // brand-spy got a reference with no video → broken player. The R2
+            // mirror in importLeagueAdAsReference durable-izes whichever we pass
+            // (fbcdn URLs expire, so the mirror is what keeps the video alive).
+            videoUrl: a.hd || a.sd || extractCapture.videoUrl || null,
             thumbnailUrl: a.thumb || null,
             headline: a.headline || null,
             bodyText: a.body_text || null,
