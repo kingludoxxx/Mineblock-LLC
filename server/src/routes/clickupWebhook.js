@@ -778,6 +778,11 @@ function generatePlNamingConvention(task, briefNumber, weekLabel, existingName) 
   // A field only overrides a name segment when it resolves to a real value.
   const oldSegs = (existingName || '').split(' - ');
   const conforms = oldSegs.length >= 9 && /^WK\d+_\d{4}$/i.test(oldSegs[oldSegs.length - 1]);
+  // Iteration names carry an extra parent-brief slot right after the brief
+  // type, so a conforming IT name is 10 segments (NN names are 9). Index the
+  // name fallbacks FROM THE END — every slot except the leading brief-type
+  // aligns whether or not the parent slot is present.
+  const hadParentSlot = conforms && oldSegs.length >= 10;
   const oldAt = (idxFromEnd) => (conforms ? oldSegs[oldSegs.length - idxFromEnd] : null);
 
   const pick = (fieldVal, oldSeg, fallback) => {
@@ -786,7 +791,7 @@ function generatePlNamingConvention(task, briefNumber, weekLabel, existingName) 
     return fieldVal || fallback;
   };
 
-  const briefType    = pick(getFieldValue(task, PL_FIELD_IDS.briefType), oldAt(7), 'NA');
+  const briefType    = pick(getFieldValue(task, PL_FIELD_IDS.briefType), oldAt(hadParentSlot ? 8 : 7), 'NA');
   const avatar       = pick(getFieldValue(task, PL_FIELD_IDS.avatar), oldAt(6), 'NA');
   const angle        = pick(getFieldValue(task, PL_FIELD_IDS.angle), oldAt(5), 'NA');
   const creativeType = pick(getFieldValue(task, PL_FIELD_IDS.creativeType), oldAt(4), 'NA');
@@ -794,9 +799,24 @@ function generatePlNamingConvention(task, briefNumber, weekLabel, existingName) 
   const editor       = pick(firstNameOf(getFieldValue(task, PL_EDITOR_FIELD)), oldAt(2), 'NA');
   const week = weekLabel || getWeekLabel();
 
-  return ['PL', briefId, briefType, avatar, angle, creativeType, strategist, editor, week]
-    .map((p) => String(p).trim() || 'NA')
-    .join(' - ');
+  const slots = ['PL', briefId, briefType];
+
+  // Iterations (Brief Type = IT) carry the parent brief id as a slot right
+  // after the brief type — e.g. PL - B0069 - IT - B0007 - Menopause - ...
+  // NN (new-new) cards have no parent slot. Without this the parent id was
+  // silently dropped from every iteration name, and this webhook then reverted
+  // any manual correction on the next task update.
+  if (briefType === 'IT') {
+    const parentRaw = pick(getFieldValue(task, FIELD_IDS.parentBriefId), hadParentSlot ? oldAt(7) : null, null);
+    if (parentRaw && parentRaw !== 'NA') {
+      const p = String(parentRaw).trim();
+      slots.push(/^\d+$/.test(p) ? `B${p.padStart(4, '0')}` : p);
+    }
+  }
+
+  slots.push(avatar, angle, creativeType, strategist, editor, week);
+
+  return slots.map((p) => String(p).trim() || 'NA').join(' - ');
 }
 
 async function reconcilePlName(task, { assignNumberIfMissing = false } = {}) {
