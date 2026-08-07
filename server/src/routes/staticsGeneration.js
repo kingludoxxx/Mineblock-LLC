@@ -972,6 +972,59 @@ router.post('/admin-clone-schema-to-puure', async (req, res) => {
   }
 });
 
+// ─── /admin-pgdump-data-copy — pg_dump --data-only for wholesale tables ─
+// Uses pg_dump/psql on the Render container to copy DATA for specific
+// tables from source → puure-db. Way faster than SELECT/INSERT-round-trip
+// for tables with heavy binary blobs (image_store BYTEA, brand_spy.ads).
+// Truncates the target table first so it can safely rerun.
+router.post('/admin-pgdump-data-copy', async (req, res) => {
+  const cronSecret = process.env.CRON_SECRET;
+  const provided   = req.headers['x-cron-secret'];
+  if (!cronSecret || provided !== cronSecret) {
+    return res.status(403).json({ success: false, error: { message: 'Forbidden' } });
+  }
+  const sourceUrl = process.env.DATABASE_URL;
+  const targetUrl = process.env.PUURE_DATABASE_URL;
+  if (!sourceUrl || !targetUrl) return res.status(400).json({ success: false, error: { message: 'DATABASE_URL and PUURE_DATABASE_URL required' } });
+  const { tables } = req.body || {};
+  if (!Array.isArray(tables) || tables.length === 0) return res.status(400).json({ success: false, error: { message: 'tables[] required' } });
+  try {
+    const { spawn } = await import('node:child_process');
+    const results = [];
+    for (const table of tables) {
+      const started = new Date().toISOString();
+      // Truncate target first (safe because we're copying wholesale)
+      const truncArgs = ['-c', `TRUNCATE TABLE ${table} CASCADE`, targetUrl];
+      const trunc = spawn('psql', truncArgs);
+      let truncErr = '';
+      trunc.stderr.on('data', d => { truncErr += d.toString(); });
+      const truncExit = await new Promise(r => trunc.on('close', r));
+      // pg_dump --data-only --table=<name> piped to psql
+      const dump = spawn('pg_dump', ['--data-only', `--table=${table}`, '--no-owner', '--no-privileges', sourceUrl]);
+      const restore = spawn('psql', [targetUrl]);
+      dump.stdout.pipe(restore.stdin);
+      let dumpErr = ''; let restoreErr = '';
+      dump.stderr.on('data', d => { dumpErr += d.toString(); });
+      restore.stderr.on('data', d => { restoreErr += d.toString(); });
+      const [dumpExit, restoreExit] = await Promise.all([
+        new Promise(r => dump.on('close', r)),
+        new Promise(r => restore.on('close', r)),
+      ]);
+      results.push({
+        table, started, finished: new Date().toISOString(),
+        truncate_exit: truncExit, truncate_stderr_tail: truncErr.slice(-500),
+        dump_exit: dumpExit, dump_stderr_tail: dumpErr.slice(-500),
+        restore_exit: restoreExit, restore_stderr_tail: restoreErr.slice(-500),
+        success: truncExit === 0 && dumpExit === 0 && restoreExit === 0,
+      });
+    }
+    return res.json({ success: results.every(r => r.success), results });
+  } catch (err) {
+    console.error('[admin-pgdump-data-copy] error:', err);
+    return res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
 // ─── /admin-init-puure-schema — run all SQL migrations against Puure DB ─
 // Idempotent: uses _migrations tracking table like npm run migrate does.
 router.post('/admin-init-puure-schema', async (req, res) => {
