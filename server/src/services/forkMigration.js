@@ -104,7 +104,11 @@ function coerceForInsert(value, dataType) {
   if (value === null || value === undefined) return null;
   const t = (dataType || '').toLowerCase();
   if (t === 'jsonb' || t === 'json') {
-    return typeof value === 'string' ? value : JSON.stringify(value);
+    // ALWAYS JSON.stringify — pg returns JSONB values pre-parsed (strings
+    // come back naked, e.g. JSONB '"foo"' → JS 'foo'). Skipping stringify
+    // for strings would produce invalid JSON on re-insert (`foo` fails
+    // parse). JSON.stringify handles all cases correctly.
+    return JSON.stringify(value);
   }
   // For ARRAY types (data_type='ARRAY'), pg driver handles JS arrays natively,
   // but if any element is a JS object (e.g. jsonb[]), stringify each.
