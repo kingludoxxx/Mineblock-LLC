@@ -95,14 +95,29 @@ async function getColumns(pool, tableName) {
 }
 
 // Coerce a value pulled from source to a format the target pg driver can
-// insert. JSONB / JSON columns come out of pg as JS objects/arrays but must
-// go BACK IN as JSON strings, otherwise Postgres rejects with "invalid
-// input syntax for type json".
+// insert. Handles:
+//   - JSONB / JSON columns: source returns JS objects/arrays, target needs
+//     JSON string (else "invalid input syntax for type json")
+//   - JSONB[] / JSON[] arrays: same but per-element
+//   - Any plain object leaking into a text column: JSON.stringify defensively
 function coerceForInsert(value, dataType) {
   if (value === null || value === undefined) return null;
   const t = (dataType || '').toLowerCase();
   if (t === 'jsonb' || t === 'json') {
     return typeof value === 'string' ? value : JSON.stringify(value);
+  }
+  // For ARRAY types (data_type='ARRAY'), pg driver handles JS arrays natively,
+  // but if any element is a JS object (e.g. jsonb[]), stringify each.
+  if (t === 'array' && Array.isArray(value)) {
+    return value.map(el => (el !== null && typeof el === 'object' && !(el instanceof Date) && !Buffer.isBuffer(el))
+      ? JSON.stringify(el)
+      : el);
+  }
+  // Defensive fallback: any plain object/array reaching this point on a
+  // non-JSON column means source has a JSONB-typed column my metadata scan
+  // missed (custom domains, computed columns, etc.). Stringify safely.
+  if (typeof value === 'object' && !(value instanceof Date) && !Buffer.isBuffer(value) && !Array.isArray(value)) {
+    return JSON.stringify(value);
   }
   return value;
 }
@@ -129,7 +144,9 @@ async function rowCount(pool, tableName) {
 // Batch-copy rows from source to target using COPY-style INSERT.
 // Handles column list matching between source and target (uses intersection)
 // AND JSONB re-serialization (source returns objects, target needs strings).
-async function copyRows(source, target, tableName, whereClause = '', params = []) {
+// Supports offset/limit for chunked migration of large tables (avoids
+// Cloudflare/Render 100s edge-timeout on the endpoint).
+async function copyRows(source, target, tableName, whereClause = '', params = [], sliceOpts = null) {
   const [srcCols, tgtCols] = await Promise.all([
     getColumns(source, tableName),
     getColumns(target, tableName),
@@ -143,7 +160,10 @@ async function copyRows(source, target, tableName, whereClause = '', params = []
     throw new Error(`No common columns between source and target for ${tableName}`);
   }
   const colList = commonCols.map(c => `"${c.name}"`).join(', ');
-  const sql = `SELECT ${colList} FROM ${tableName} ${whereClause}`;
+  const sliceSql = sliceOpts?.orderBy && Number.isFinite(sliceOpts.offset) && Number.isFinite(sliceOpts.limit)
+    ? ` ORDER BY ${sliceOpts.orderBy} OFFSET ${sliceOpts.offset} LIMIT ${sliceOpts.limit}`
+    : '';
+  const sql = `SELECT ${colList} FROM ${tableName} ${whereClause}${sliceSql}`;
   const src = await source.query(sql, params);
   if (src.rows.length === 0) return { copied: 0, columns: commonCols.length };
 
@@ -180,7 +200,11 @@ async function copyRows(source, target, tableName, whereClause = '', params = []
 }
 
 // Main migration entry point.
-export async function migrateForkToPuure({ dryRun = true, onlyTables = null, force = false } = {}) {
+// `slice`: optional { orderBy, offset, limit } — copy only a range of rows.
+//   Only meaningful when onlyTables is a single-table array. Used to chunk
+//   large tables (image_store, statics_templates, brand_spy.ads) across
+//   multiple HTTP calls to avoid the Render/Cloudflare 100s edge-timeout.
+export async function migrateForkToPuure({ dryRun = true, onlyTables = null, force = false, slice = null } = {}) {
   const sourceUrl = process.env.DATABASE_URL;
   const targetUrl = process.env.PUURE_DATABASE_URL;
   if (!sourceUrl) throw new Error('DATABASE_URL env var missing on source');
@@ -210,8 +234,10 @@ export async function migrateForkToPuure({ dryRun = true, onlyTables = null, for
         }
 
         const targetCount = await rowCount(target, spec.name);
-        if (targetCount > 0 && !force) {
-          results.push({ table: spec.name, status: 'skipped', reason: `target already has ${targetCount} rows (use force:true to append)`, startedAt });
+        // For sliced copies, don't skip on existing rows — that's the whole
+        // point: append additional slices to an already-partial target.
+        if (targetCount > 0 && !force && !slice) {
+          results.push({ table: spec.name, status: 'skipped', reason: `target already has ${targetCount} rows (use force:true to append or use slice)`, startedAt });
           continue;
         }
 
@@ -247,8 +273,10 @@ export async function migrateForkToPuure({ dryRun = true, onlyTables = null, for
           continue;
         }
 
-        // Real copy
-        const { copied, columns } = await copyRows(source, target, spec.name, whereClause, params);
+        // Real copy — pass slice opts only when caller requested and this
+        // is the sole table (slice semantics ambiguous across multiple).
+        const sliceOpts = slice && strategies.length === 1 ? slice : null;
+        const { copied, columns } = await copyRows(source, target, spec.name, whereClause, params, sliceOpts);
         const finalCount = await rowCount(target, spec.name);
         results.push({
           table: spec.name,

@@ -1028,12 +1028,13 @@ router.post('/admin-migrate-fork', async (req, res) => {
     return res.status(403).json({ success: false, error: { message: 'Forbidden' } });
   }
   try {
-    const { dry_run = true, only_tables = null, force = false } = req.body || {};
+    const { dry_run = true, only_tables = null, force = false, slice = null } = req.body || {};
     const { migrateForkToPuure } = await import('../services/forkMigration.js');
     const result = await migrateForkToPuure({
       dryRun: dry_run !== false,
       onlyTables: Array.isArray(only_tables) && only_tables.length ? only_tables : null,
       force: force === true,
+      slice: slice && typeof slice === 'object' ? slice : null,
     });
     return res.json(result);
   } catch (err) {
