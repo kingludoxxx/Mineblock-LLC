@@ -985,28 +985,34 @@ router.post('/admin-pgdump-data-copy', async (req, res) => {
   const sourceUrl = process.env.DATABASE_URL;
   const targetUrl = process.env.PUURE_DATABASE_URL;
   if (!sourceUrl || !targetUrl) return res.status(400).json({ success: false, error: { message: 'DATABASE_URL and PUURE_DATABASE_URL required' } });
-  const { tables, truncate = true } = req.body || {};
-  if (!Array.isArray(tables) || tables.length === 0) return res.status(400).json({ success: false, error: { message: 'tables[] required' } });
+  const { tables, schemas, truncate = true } = req.body || {};
+  const targets = [];
+  if (Array.isArray(tables)) targets.push(...tables.map(t => ({ kind: 'table', name: t })));
+  if (Array.isArray(schemas)) targets.push(...schemas.map(s => ({ kind: 'schema', name: s })));
+  if (targets.length === 0) return res.status(400).json({ success: false, error: { message: 'tables[] or schemas[] required' } });
 
   const jobId = 'pgd_' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
-  const job = { jobId, status: 'running', started: new Date().toISOString(), tables, results: [] };
+  const job = { jobId, status: 'running', started: new Date().toISOString(), targets, results: [] };
   _pgdumpJobs.set(jobId, job);
 
   // Fire and forget — worker updates job in-memory
   (async () => {
     try {
       const { spawn } = await import('node:child_process');
-      for (const table of tables) {
+      for (const t of targets) {
         const started = new Date().toISOString();
-        const entry = { table, started };
-        if (truncate) {
-          const trunc = spawn('psql', ['-c', `TRUNCATE TABLE ${table} CASCADE`, targetUrl]);
+        const entry = { target: `${t.kind}:${t.name}`, started };
+        if (truncate && t.kind === 'table') {
+          const trunc = spawn('psql', ['-c', `TRUNCATE TABLE ${t.name} CASCADE`, targetUrl]);
           let truncErr = '';
           trunc.stderr.on('data', d => { truncErr += d.toString(); });
           entry.truncate_exit = await new Promise(r => trunc.on('close', r));
           entry.truncate_stderr_tail = truncErr.slice(-500);
         }
-        const dump = spawn('pg_dump', ['--data-only', `--table=${table}`, '--no-owner', '--no-privileges', sourceUrl]);
+        const dumpArgs = t.kind === 'schema'
+          ? ['--data-only', `--schema=${t.name}`, '--no-owner', '--no-privileges', '--disable-triggers', sourceUrl]
+          : ['--data-only', `--table=${t.name}`, '--no-owner', '--no-privileges', sourceUrl];
+        const dump = spawn('pg_dump', dumpArgs);
         const restore = spawn('psql', [targetUrl]);
         dump.stdout.pipe(restore.stdin);
         let dumpErr = '', restoreErr = '';
