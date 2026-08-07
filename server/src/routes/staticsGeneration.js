@@ -841,6 +841,83 @@ router.post('/admin-launch', async (req, res) => {
   }
 });
 
+// ─── /admin-db-audit — CRON_SECRET-gated read-only DB inspection ────────
+// Enumerates products, row counts, brand distribution. Used during the
+// Mineblock ↔ Puure fork to plan data separation. Read-only — no mutations.
+router.post('/admin-db-audit', async (req, res) => {
+  const cronSecret = process.env.CRON_SECRET;
+  const provided   = req.headers['x-cron-secret'];
+  if (!cronSecret || provided !== cronSecret) {
+    return res.status(403).json({ success: false, error: { message: 'Forbidden' } });
+  }
+  try {
+    const products = await pgQuery(
+      `SELECT id, name, short_name, product_code, product_group, product_type,
+              created_at::date AS created
+         FROM product_profiles
+        ORDER BY product_code NULLS LAST, id`,
+      []
+    );
+    const productBrand = {};
+    for (const p of products) {
+      const code = (p.product_code || '').toUpperCase();
+      const isPuure = code === 'PUURE' || code === 'PL' ||
+                      (p.name || '').toLowerCase().includes('puure') ||
+                      (p.short_name || '').toLowerCase() === 'pl';
+      productBrand[p.id] = isPuure ? 'PUURE' : 'MINEBLOCK';
+    }
+    const puureIds = products.filter(p => productBrand[p.id] === 'PUURE').map(p => p.id);
+    const mineblockIds = products.filter(p => productBrand[p.id] === 'MINEBLOCK').map(p => p.id);
+
+    // Row counts per brand for the tables that carry product_id
+    const productScopedTables = [
+      'spy_creatives', 'spy_custom_images', 'advertorial_copies',
+      'organic_images', 'image_scrape_jobs', 'ad_batches', 'ad_launches',
+      'spy_brand_follows', 'launch_templates', 'brief_copy_sets',
+      'statics_launches', 'statics_generation_events', 'image_store',
+      'statics_queue', 'brief_pipeline_references', 'brief_generation_jobs',
+      'dismissed_iteration_winners',
+    ];
+    const tableCounts = {};
+    for (const t of productScopedTables) {
+      try {
+        // Not every table has product_id — probe schema first
+        const hasProductId = await pgQuery(
+          `SELECT column_name FROM information_schema.columns
+            WHERE table_name = $1 AND column_name = 'product_id' LIMIT 1`,
+          [t]
+        );
+        if (!hasProductId.length) {
+          const total = await pgQuery(`SELECT COUNT(*)::int AS n FROM "${t}"`, []).catch(() => [{ n: 'ERR' }]);
+          tableCounts[t] = { total: total[0]?.n ?? 'ERR', puure: 'no product_id column', mineblock: 'no product_id column' };
+          continue;
+        }
+        const puureCount = puureIds.length
+          ? (await pgQuery(`SELECT COUNT(*)::int AS n FROM "${t}" WHERE product_id = ANY($1::int[])`, [puureIds]))[0]?.n ?? 0
+          : 0;
+        const mbCount = mineblockIds.length
+          ? (await pgQuery(`SELECT COUNT(*)::int AS n FROM "${t}" WHERE product_id = ANY($1::int[])`, [mineblockIds]))[0]?.n ?? 0
+          : 0;
+        const total = (await pgQuery(`SELECT COUNT(*)::int AS n FROM "${t}"`, []))[0]?.n ?? 0;
+        tableCounts[t] = { total, puure: puureCount, mineblock: mbCount, orphan: total - puureCount - mbCount };
+      } catch (e) {
+        tableCounts[t] = { error: e.message };
+      }
+    }
+
+    return res.json({
+      success: true,
+      products: products.map(p => ({ ...p, brand: productBrand[p.id] })),
+      puure_product_ids: puureIds,
+      mineblock_product_ids: mineblockIds,
+      table_counts: tableCounts,
+    });
+  } catch (err) {
+    console.error('[admin-db-audit] error:', err);
+    return res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
 router.use(authenticate, requirePermission('statics-generation', 'access'));
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
