@@ -631,7 +631,7 @@ router.post('/re-notify', authenticate, async (req, res) => {
 });
 
 // ── Keep-alive ping (prevents Render free tier from sleeping) ──────
-const RENDER_URL = process.env.RENDER_EXTERNAL_URL || 'https://mineblock-dashboard.onrender.com';
+const RENDER_URL = process.env.RENDER_EXTERNAL_URL || process.env.PUBLIC_APP_URL || 'http://localhost:3000';
 setInterval(async () => {
   try { await fetch(`${RENDER_URL}/api/health`); } catch {}
 }, 5 * 60 * 1000); // FIX #4: Every 5 min instead of 10 to prevent sleep

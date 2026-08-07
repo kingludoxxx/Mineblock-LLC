@@ -209,7 +209,8 @@ router.post('/register', authenticate, async (req, res) => {
       return res.status(400).json({ success: false, error: { message: 'SHOPIFY_ACCESS_TOKEN not configured' } });
     }
 
-    const webhookAddress = 'https://mineblock-dashboard.onrender.com/api/v1/shopify-webhook/orders';
+    const baseUrl = process.env.RENDER_EXTERNAL_URL || process.env.PUBLIC_APP_URL || 'http://localhost:3000';
+    const webhookAddress = `${baseUrl}/api/v1/shopify-webhook/orders`;
 
     const topics = ['orders/create', 'orders/updated', 'orders/paid'];
     const results = [];

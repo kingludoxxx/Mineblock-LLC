@@ -583,8 +583,8 @@ async function launchVideoToAdset({ video, template, adsetId, adsetName, page, a
     const headline = globalCopy.headline || videoCopy.headline || 'Shop Now';
     const description = globalCopy.description || videoCopy.description || '';
     const cta = globalCopy.cta || videoCopy.cta || 'SHOP_NOW';
-    // NB: fallback uses the correct `.co` TLD — `mineblock.com` is NOT our store.
-    const link = globalCopy.landing_page_url || template.landing_page_url || process.env.SHOPIFY_STORE_URL || 'https://mineblock.co';
+    // SHOPIFY_STORE_URL is a REQUIRED per-brand env var; placeholder catches missing config.
+    const link = globalCopy.landing_page_url || template.landing_page_url || process.env.SHOPIFY_STORE_URL || 'https://example.com';
 
     // Create ad creative with video
     const videoData = {

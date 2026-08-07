@@ -358,7 +358,13 @@ async function sendSlackAlert(logEntry) {
   await fetch('https://slack.com/api/chat.postMessage', {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${SLACK_BOT_TOKEN}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ channel: SLACK_PNL_CHANNEL, text: `Ad Automation: ${logEntry.action} - ${logEntry.ad_name}`, blocks, username: 'Mineblock Bot', icon_url: 'https://mineblock-dashboard.onrender.com/logo-white.png' }),
+    body: JSON.stringify({
+      channel: SLACK_PNL_CHANNEL,
+      text: `Ad Automation: ${logEntry.action} - ${logEntry.ad_name}`,
+      blocks,
+      username: process.env.BRAND_NAME ? `${process.env.BRAND_NAME} Bot` : 'Ads Bot',
+      icon_url: process.env.BRAND_LOGO_URL || `${process.env.RENDER_EXTERNAL_URL || process.env.PUBLIC_APP_URL || 'http://localhost:3000'}/logo-white.png`,
+    }),
   }).catch(err => console.error('[Ads Control] Slack error:', err.message));
 }
 

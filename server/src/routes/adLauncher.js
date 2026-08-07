@@ -108,8 +108,9 @@ function safeObj(v) {
 }
 
 function defaultStoreUrl() {
-  // NB: fallback uses the correct `.co` TLD — `mineblock.com` is NOT our store.
-  return process.env.SHOPIFY_STORE_URL || 'https://mineblock.co';
+  // SHOPIFY_STORE_URL is a REQUIRED per-brand env var (Mineblock: https://mineblock.co,
+  // Puure: https://trypuure.co, etc.). Placeholder fallback catches missing config.
+  return process.env.SHOPIFY_STORE_URL || 'https://example.com';
 }
 
 // Resolve the landing page URL for an ad, in priority order:

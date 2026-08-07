@@ -11,7 +11,7 @@ export async function analyzeTemplate(template) {
   // Build the full URL if it's a relative path
   let fullImageUrl = imageUrl;
   if (imageUrl.startsWith('/')) {
-    fullImageUrl = `${process.env.RENDER_EXTERNAL_URL || 'https://mineblock-dashboard.onrender.com'}${imageUrl}`;
+    fullImageUrl = `${process.env.RENDER_EXTERNAL_URL || process.env.PUBLIC_APP_URL || 'http://localhost:3000'}${imageUrl}`;
   }
 
   // Fetch the image and convert to base64
@@ -152,7 +152,7 @@ export async function analyzeTemplateFast(template) {
 
   let fullImageUrl = imageUrl;
   if (imageUrl.startsWith('/')) {
-    fullImageUrl = `${process.env.RENDER_EXTERNAL_URL || 'https://mineblock-dashboard.onrender.com'}${imageUrl}`;
+    fullImageUrl = `${process.env.RENDER_EXTERNAL_URL || process.env.PUBLIC_APP_URL || 'http://localhost:3000'}${imageUrl}`;
   }
 
   let imageBase64, mediaType;

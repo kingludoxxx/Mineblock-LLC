@@ -6175,7 +6175,7 @@ router.post('/launch', authenticate, async (req, res) => {
           headlines: headlines.length ? headlines : ['Shop Now'],
           descriptions,
           cta,
-          link: link || 'https://mineblock.com',
+          link: link || process.env.SHOPIFY_STORE_URL || 'https://example.com',
           pageId: page?.id || selectedPages[0]?.id,
           utmParameters: template.utm_parameters,
         });

@@ -5406,10 +5406,9 @@ async function _doLaunch(req, res) {
           : safeArr(genCopy.descriptions).length ? safeArr(genCopy.descriptions)
           : [''];
         const cta  = copySet?.cta_button || genCopy.cta || 'SHOP_NOW';
-        // FIX: previous fallback was 'https://mineblock.com' — a DEAD domain
-        // (our store is mineblock.co). Now reads SHOPIFY_STORE_URL env var
-        // with the correct .co TLD as the final fallback.
-        const link = copySet?.landing_page_url || template.landing_page_url || process.env.SHOPIFY_STORE_URL || 'https://mineblock.co';
+        // SHOPIFY_STORE_URL is a REQUIRED per-brand env var (Mineblock: https://mineblock.co,
+        // Puure: https://trypuure.co, etc.). Placeholder catches missing config.
+        const link = copySet?.landing_page_url || template.landing_page_url || process.env.SHOPIFY_STORE_URL || 'https://example.com';
 
         const existingMeta = safeArr(creative.meta_ad_ids);
 

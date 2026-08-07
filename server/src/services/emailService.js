@@ -10,7 +10,7 @@
  * flow or a real email flow — same function signature.
  */
 
-const DEFAULT_APP_BASE_URL = 'https://mineblock-dashboard.onrender.com';
+const DEFAULT_APP_BASE_URL = process.env.RENDER_EXTERNAL_URL || process.env.PUBLIC_APP_URL || 'http://localhost:3000';
 
 function getAppBaseUrl() {
   const raw = (process.env.APP_BASE_URL || DEFAULT_APP_BASE_URL).trim();

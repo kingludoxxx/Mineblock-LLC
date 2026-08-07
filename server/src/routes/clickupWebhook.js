@@ -266,10 +266,12 @@ function generateNamingConvention(task, listId, briefNumber) {
 
 // ── Frame.io helpers ──────────────────────────────────────────────
 const FRAMEIO_API_V4 = 'https://api.frame.io/v4';
-const FRAMEIO_ACCOUNT_ID = '4d65ef83-9323-4ef2-ae6a-585d38cce2af'; // Ludovico's Account (Mineblock). Stable per account.
+// FRAMEIO_ACCOUNT_ID is per-brand — set to your Adobe/Frame.io account ID in env.
+// For Mineblock (Ludovico's Account): 4d65ef83-9323-4ef2-ae6a-585d38cce2af
+const FRAMEIO_ACCOUNT_ID = process.env.FRAMEIO_ACCOUNT_ID || '';
 const FRAMEIO_CLIENT_ID = process.env.FRAMEIO_CLIENT_ID || '';
 const FRAMEIO_CLIENT_SECRET = process.env.FRAMEIO_CLIENT_SECRET || '';
-const FRAMEIO_REDIRECT_URI = 'https://mineblock-dashboard.onrender.com/api/v1/webhook/frameio-oauth-callback';
+const FRAMEIO_REDIRECT_URI = `${process.env.RENDER_EXTERNAL_URL || process.env.PUBLIC_APP_URL || 'http://localhost:3000'}/api/v1/webhook/frameio-oauth-callback`;
 const ADOBE_IMS_AUTHORIZE = 'https://ims-na1.adobelogin.com/ims/authorize/v2';
 const ADOBE_IMS_TOKEN = 'https://ims-na1.adobelogin.com/ims/token/v3';
 
@@ -2024,7 +2026,7 @@ router.get('/frameio-stray-check', async (req, res) => {
           fields: {
             stray_count: String(strays.length),
             strays: strays.map(s => `• ${s.name} (${s.id})`).join('\n'),
-            cleanup_cmd: 'curl -X POST -H "x-admin-secret: $FRAMEIO_CLEANUP_SECRET" https://mineblock-dashboard.onrender.com/api/v1/webhook/admin-frameio-cleanup',
+            cleanup_cmd: `curl -X POST -H "x-admin-secret: $FRAMEIO_CLEANUP_SECRET" ${process.env.RENDER_EXTERNAL_URL || process.env.PUBLIC_APP_URL || 'http://localhost:3000'}/api/v1/webhook/admin-frameio-cleanup`,
           },
         },
       );
