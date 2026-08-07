@@ -972,11 +972,10 @@ router.post('/admin-clone-schema-to-puure', async (req, res) => {
   }
 });
 
-// ─── /admin-pgdump-data-copy — pg_dump --data-only for wholesale tables ─
-// Uses pg_dump/psql on the Render container to copy DATA for specific
-// tables from source → puure-db. Way faster than SELECT/INSERT-round-trip
-// for tables with heavy binary blobs (image_store BYTEA, brand_spy.ads).
-// Truncates the target table first so it can safely rerun.
+// ─── /admin-pgdump-data-copy — async pg_dump for wholesale tables ────────
+// Fires pg_dump/psql in background, returns job_id immediately (Cloudflare
+// caps sync requests at ~100s). Poll /admin-pgdump-data-status?job_id=X.
+const _pgdumpJobs = new Map(); // jobId → { status, results, tables }
 router.post('/admin-pgdump-data-copy', async (req, res) => {
   const cronSecret = process.env.CRON_SECRET;
   const provided   = req.headers['x-cron-secret'];
@@ -986,43 +985,66 @@ router.post('/admin-pgdump-data-copy', async (req, res) => {
   const sourceUrl = process.env.DATABASE_URL;
   const targetUrl = process.env.PUURE_DATABASE_URL;
   if (!sourceUrl || !targetUrl) return res.status(400).json({ success: false, error: { message: 'DATABASE_URL and PUURE_DATABASE_URL required' } });
-  const { tables } = req.body || {};
+  const { tables, truncate = true } = req.body || {};
   if (!Array.isArray(tables) || tables.length === 0) return res.status(400).json({ success: false, error: { message: 'tables[] required' } });
-  try {
-    const { spawn } = await import('node:child_process');
-    const results = [];
-    for (const table of tables) {
-      const started = new Date().toISOString();
-      // Truncate target first (safe because we're copying wholesale)
-      const truncArgs = ['-c', `TRUNCATE TABLE ${table} CASCADE`, targetUrl];
-      const trunc = spawn('psql', truncArgs);
-      let truncErr = '';
-      trunc.stderr.on('data', d => { truncErr += d.toString(); });
-      const truncExit = await new Promise(r => trunc.on('close', r));
-      // pg_dump --data-only --table=<name> piped to psql
-      const dump = spawn('pg_dump', ['--data-only', `--table=${table}`, '--no-owner', '--no-privileges', sourceUrl]);
-      const restore = spawn('psql', [targetUrl]);
-      dump.stdout.pipe(restore.stdin);
-      let dumpErr = ''; let restoreErr = '';
-      dump.stderr.on('data', d => { dumpErr += d.toString(); });
-      restore.stderr.on('data', d => { restoreErr += d.toString(); });
-      const [dumpExit, restoreExit] = await Promise.all([
-        new Promise(r => dump.on('close', r)),
-        new Promise(r => restore.on('close', r)),
-      ]);
-      results.push({
-        table, started, finished: new Date().toISOString(),
-        truncate_exit: truncExit, truncate_stderr_tail: truncErr.slice(-500),
-        dump_exit: dumpExit, dump_stderr_tail: dumpErr.slice(-500),
-        restore_exit: restoreExit, restore_stderr_tail: restoreErr.slice(-500),
-        success: truncExit === 0 && dumpExit === 0 && restoreExit === 0,
-      });
+
+  const jobId = 'pgd_' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+  const job = { jobId, status: 'running', started: new Date().toISOString(), tables, results: [] };
+  _pgdumpJobs.set(jobId, job);
+
+  // Fire and forget — worker updates job in-memory
+  (async () => {
+    try {
+      const { spawn } = await import('node:child_process');
+      for (const table of tables) {
+        const started = new Date().toISOString();
+        const entry = { table, started };
+        if (truncate) {
+          const trunc = spawn('psql', ['-c', `TRUNCATE TABLE ${table} CASCADE`, targetUrl]);
+          let truncErr = '';
+          trunc.stderr.on('data', d => { truncErr += d.toString(); });
+          entry.truncate_exit = await new Promise(r => trunc.on('close', r));
+          entry.truncate_stderr_tail = truncErr.slice(-500);
+        }
+        const dump = spawn('pg_dump', ['--data-only', `--table=${table}`, '--no-owner', '--no-privileges', sourceUrl]);
+        const restore = spawn('psql', [targetUrl]);
+        dump.stdout.pipe(restore.stdin);
+        let dumpErr = '', restoreErr = '';
+        dump.stderr.on('data', d => { dumpErr += d.toString(); });
+        restore.stderr.on('data', d => { restoreErr += d.toString(); });
+        const [dumpExit, restoreExit] = await Promise.all([
+          new Promise(r => dump.on('close', r)),
+          new Promise(r => restore.on('close', r)),
+        ]);
+        entry.dump_exit = dumpExit;
+        entry.dump_stderr_tail = dumpErr.slice(-500);
+        entry.restore_exit = restoreExit;
+        entry.restore_stderr_tail = restoreErr.slice(-500);
+        entry.finished = new Date().toISOString();
+        entry.success = (entry.truncate_exit ?? 0) === 0 && dumpExit === 0 && restoreExit === 0;
+        job.results.push(entry);
+      }
+      job.status = 'done';
+      job.finished = new Date().toISOString();
+    } catch (err) {
+      job.status = 'error';
+      job.error = err.message;
     }
-    return res.json({ success: results.every(r => r.success), results });
-  } catch (err) {
-    console.error('[admin-pgdump-data-copy] error:', err);
-    return res.status(500).json({ success: false, error: { message: err.message } });
+  })();
+
+  return res.json({ success: true, job_id: jobId, poll: `/api/v1/statics-generation/admin-pgdump-data-status?job_id=${jobId}` });
+});
+
+router.get('/admin-pgdump-data-status', (req, res) => {
+  const cronSecret = process.env.CRON_SECRET;
+  const provided   = req.headers['x-cron-secret'];
+  if (!cronSecret || provided !== cronSecret) {
+    return res.status(403).json({ success: false, error: { message: 'Forbidden' } });
   }
+  const jobId = req.query.job_id;
+  const job = _pgdumpJobs.get(jobId);
+  if (!job) return res.status(404).json({ success: false, error: { message: 'unknown job_id' } });
+  return res.json(job);
 });
 
 // ─── /admin-init-puure-schema — run all SQL migrations against Puure DB ─
