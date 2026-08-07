@@ -918,6 +918,30 @@ router.post('/admin-db-audit', async (req, res) => {
   }
 });
 
+// ─── /admin-migrate-fork — CRON_SECRET-gated Mineblock↔Puure migration ─
+// Copies data from this DB (mineblock-db) to the Puure DB per split rules.
+// Requires PUURE_DATABASE_URL env var on this service.
+router.post('/admin-migrate-fork', async (req, res) => {
+  const cronSecret = process.env.CRON_SECRET;
+  const provided   = req.headers['x-cron-secret'];
+  if (!cronSecret || provided !== cronSecret) {
+    return res.status(403).json({ success: false, error: { message: 'Forbidden' } });
+  }
+  try {
+    const { dry_run = true, only_tables = null, force = false } = req.body || {};
+    const { migrateForkToPuure } = await import('../services/forkMigration.js');
+    const result = await migrateForkToPuure({
+      dryRun: dry_run !== false,
+      onlyTables: Array.isArray(only_tables) && only_tables.length ? only_tables : null,
+      force: force === true,
+    });
+    return res.json(result);
+  } catch (err) {
+    console.error('[admin-migrate-fork] error:', err);
+    return res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
 router.use(authenticate, requirePermission('statics-generation', 'access'));
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
