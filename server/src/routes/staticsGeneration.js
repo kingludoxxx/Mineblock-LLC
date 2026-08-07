@@ -972,6 +972,107 @@ router.post('/admin-clone-schema-to-puure', async (req, res) => {
   }
 });
 
+// ─── /admin-delete-puure-from-mineblock — Phase 4.5 destructive purge ────
+// Deletes Puure rows from THIS DB (mineblock-db) so the DB going to the
+// buyer is Mineblock-only. Runs in a transaction — all-or-nothing.
+// Dry-run mode returns counts without deleting.
+//
+// Order (child → parent so FKs don't block):
+//   spy_creatives, spy_custom_images, organic_images, spy_brand_follows,
+//   brief_copy_sets, brief_generation_jobs, statics_queue,
+//   statics_generation_events, advertorial_copies, image_scrape_jobs,
+//   ad_batches, ad_launches, dismissed_iteration_winners, launch_templates
+//     (all filtered by product_id IN Puure IDs)
+//   → product_profiles (Puure IDs) — LAST
+router.post('/admin-delete-puure-from-mineblock', async (req, res) => {
+  const cronSecret = process.env.CRON_SECRET;
+  const provided   = req.headers['x-cron-secret'];
+  if (!cronSecret || provided !== cronSecret) {
+    return res.status(403).json({ success: false, error: { message: 'Forbidden' } });
+  }
+  const { dry_run = true, puure_product_ids = [37] } = req.body || {};
+  if (!Array.isArray(puure_product_ids) || puure_product_ids.length === 0) {
+    return res.status(400).json({ success: false, error: { message: 'puure_product_ids[] required' } });
+  }
+  const childTables = [
+    'spy_creatives', 'spy_custom_images', 'organic_images',
+    'spy_brand_follows', 'brief_copy_sets', 'brief_generation_jobs',
+    'statics_queue', 'statics_generation_events', 'advertorial_copies',
+    'image_scrape_jobs', 'ad_batches', 'ad_launches',
+    'dismissed_iteration_winners', 'launch_templates',
+  ];
+  try {
+    const { default: pg } = await import('pg');
+    const pool = new pg.Pool({
+      connectionString: process.env.DATABASE_URL,
+      ssl: { rejectUnauthorized: false },
+      max: 3,
+    });
+    const client = await pool.connect();
+    const results = [];
+    try {
+      await client.query('BEGIN');
+      // Delete children first
+      for (const t of childTables) {
+        try {
+          // Check the table has a product_id column first
+          const hasCol = await client.query(
+            `SELECT 1 FROM information_schema.columns
+              WHERE table_schema='public' AND table_name=$1 AND column_name='product_id' LIMIT 1`,
+            [t]
+          );
+          if (hasCol.rowCount === 0) {
+            results.push({ table: t, skipped: 'no product_id column' });
+            continue;
+          }
+          if (dry_run) {
+            const c = await client.query(
+              `SELECT COUNT(*)::int AS n FROM ${t} WHERE product_id = ANY($1::int[])`,
+              [puure_product_ids]
+            );
+            results.push({ table: t, would_delete: c.rows[0].n });
+          } else {
+            const del = await client.query(
+              `DELETE FROM ${t} WHERE product_id = ANY($1::int[]) RETURNING id`,
+              [puure_product_ids]
+            );
+            results.push({ table: t, deleted: del.rowCount });
+          }
+        } catch (e) {
+          results.push({ table: t, error: e.message });
+          if (!dry_run) throw e;
+        }
+      }
+      // Parent: product_profiles
+      if (dry_run) {
+        const c = await client.query(
+          `SELECT COUNT(*)::int AS n FROM product_profiles WHERE id = ANY($1::int[])`,
+          [puure_product_ids]
+        );
+        results.push({ table: 'product_profiles', would_delete: c.rows[0].n });
+        await client.query('ROLLBACK');
+      } else {
+        const del = await client.query(
+          `DELETE FROM product_profiles WHERE id = ANY($1::int[]) RETURNING id, name`,
+          [puure_product_ids]
+        );
+        results.push({ table: 'product_profiles', deleted: del.rowCount, rows: del.rows });
+        await client.query('COMMIT');
+      }
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+      await pool.end();
+    }
+    return res.json({ success: true, dry_run, puure_product_ids, results });
+  } catch (err) {
+    console.error('[admin-delete-puure-from-mineblock] error:', err);
+    return res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
 // ─── /admin-puure-audit — row counts in puure-db, no data leakage risk ──
 // Runs psql -c "SELECT ..." against PUURE_DATABASE_URL and returns row
 // counts for the tables that matter for the fork audit. Read-only, no
