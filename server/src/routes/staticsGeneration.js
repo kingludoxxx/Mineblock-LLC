@@ -918,6 +918,52 @@ router.post('/admin-db-audit', async (req, res) => {
   }
 });
 
+// ─── /admin-init-puure-schema — run all SQL migrations against Puure DB ─
+// Idempotent: uses _migrations tracking table like npm run migrate does.
+router.post('/admin-init-puure-schema', async (req, res) => {
+  const cronSecret = process.env.CRON_SECRET;
+  const provided   = req.headers['x-cron-secret'];
+  if (!cronSecret || provided !== cronSecret) {
+    return res.status(403).json({ success: false, error: { message: 'Forbidden' } });
+  }
+  const targetUrl = process.env.PUURE_DATABASE_URL;
+  if (!targetUrl) return res.status(400).json({ success: false, error: { message: 'PUURE_DATABASE_URL not set' } });
+  try {
+    const { default: pg } = await import('pg');
+    const { readdirSync, readFileSync } = await import('node:fs');
+    const path = await import('node:path');
+    const { fileURLToPath } = await import('node:url');
+    const migrationsDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'migrations');
+    const pool = new pg.Pool({ connectionString: targetUrl, ssl: { rejectUnauthorized: false } });
+    const client = await pool.connect();
+    const result = { ran: [], skipped: [], failed: null };
+    try {
+      await client.query(`CREATE TABLE IF NOT EXISTS _migrations (id SERIAL PRIMARY KEY, filename VARCHAR(255) UNIQUE NOT NULL, executed_at TIMESTAMPTZ DEFAULT NOW())`);
+      const executed = new Set((await client.query('SELECT filename FROM _migrations')).rows.map(r => r.filename));
+      const files = readdirSync(migrationsDir).filter(f => f.endsWith('.sql')).sort();
+      for (const file of files) {
+        if (executed.has(file)) { result.skipped.push(file); continue; }
+        const sql = readFileSync(path.join(migrationsDir, file), 'utf-8');
+        try {
+          await client.query('BEGIN');
+          await client.query(sql);
+          await client.query('INSERT INTO _migrations (filename) VALUES ($1)', [file]);
+          await client.query('COMMIT');
+          result.ran.push(file);
+        } catch (err) {
+          await client.query('ROLLBACK').catch(() => {});
+          result.failed = { file, error: err.message };
+          break;
+        }
+      }
+    } finally { client.release(); await pool.end(); }
+    return res.json({ success: !result.failed, ...result });
+  } catch (err) {
+    console.error('[admin-init-puure-schema] error:', err);
+    return res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
 // ─── /admin-migrate-fork — CRON_SECRET-gated Mineblock↔Puure migration ─
 // Copies data from this DB (mineblock-db) to the Puure DB per split rules.
 // Requires PUURE_DATABASE_URL env var on this service.
