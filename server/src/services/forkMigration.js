@@ -79,18 +79,32 @@ function makePool(connStr) {
 }
 
 // Get list of columns for a table (fully-qualified, e.g. brand_spy.brands
-// works too since we split schema.table).
+// works too since we split schema.table). Also returns the data_type for
+// each column so JSONB values can be re-serialized before INSERT.
 async function getColumns(pool, tableName) {
   const [schema, table] = tableName.includes('.')
     ? tableName.split('.')
     : ['public', tableName];
   const r = await pool.query(
-    `SELECT column_name FROM information_schema.columns
+    `SELECT column_name, data_type FROM information_schema.columns
       WHERE table_schema = $1 AND table_name = $2
       ORDER BY ordinal_position`,
     [schema, table]
   );
-  return r.rows.map(row => row.column_name);
+  return r.rows;
+}
+
+// Coerce a value pulled from source to a format the target pg driver can
+// insert. JSONB / JSON columns come out of pg as JS objects/arrays but must
+// go BACK IN as JSON strings, otherwise Postgres rejects with "invalid
+// input syntax for type json".
+function coerceForInsert(value, dataType) {
+  if (value === null || value === undefined) return null;
+  const t = (dataType || '').toLowerCase();
+  if (t === 'jsonb' || t === 'json') {
+    return typeof value === 'string' ? value : JSON.stringify(value);
+  }
+  return value;
 }
 
 // Check if a table exists in target
@@ -113,22 +127,27 @@ async function rowCount(pool, tableName) {
 }
 
 // Batch-copy rows from source to target using COPY-style INSERT.
-// Handles column list matching between source and target (uses intersection).
+// Handles column list matching between source and target (uses intersection)
+// AND JSONB re-serialization (source returns objects, target needs strings).
 async function copyRows(source, target, tableName, whereClause = '', params = []) {
   const [srcCols, tgtCols] = await Promise.all([
     getColumns(source, tableName),
     getColumns(target, tableName),
   ]);
-  const commonCols = srcCols.filter(c => tgtCols.includes(c));
+  // Intersect by name, take target's data_type as authoritative for coercion.
+  const tgtByName = new Map(tgtCols.map(c => [c.column_name, c.data_type]));
+  const commonCols = srcCols
+    .filter(c => tgtByName.has(c.column_name))
+    .map(c => ({ name: c.column_name, dataType: tgtByName.get(c.column_name) }));
   if (commonCols.length === 0) {
     throw new Error(`No common columns between source and target for ${tableName}`);
   }
-  const colList = commonCols.map(c => `"${c}"`).join(', ');
+  const colList = commonCols.map(c => `"${c.name}"`).join(', ');
   const sql = `SELECT ${colList} FROM ${tableName} ${whereClause}`;
   const src = await source.query(sql, params);
   if (src.rows.length === 0) return { copied: 0, columns: commonCols.length };
 
-  // Batched INSERT
+  // Batched INSERT with per-column type coercion (JSONB → string)
   const BATCH = 500;
   let copied = 0;
   const tclient = await target.connect();
@@ -142,7 +161,7 @@ async function copyRows(source, target, tableName, whereClause = '', params = []
       for (const row of chunk) {
         const rowPlaceholders = commonCols.map(() => `$${p++}`);
         placeholders.push(`(${rowPlaceholders.join(', ')})`);
-        for (const c of commonCols) values.push(row[c]);
+        for (const c of commonCols) values.push(coerceForInsert(row[c.name], c.dataType));
       }
       await tclient.query(
         `INSERT INTO ${tableName} (${colList}) VALUES ${placeholders.join(', ')} ON CONFLICT DO NOTHING`,
