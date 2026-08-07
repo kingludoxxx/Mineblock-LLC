@@ -24,7 +24,11 @@
  * Exit codes: 0 always (a bad-URL rescue attempt shouldn't page anyone).
  */
 
-const HOST = process.env.RENDER_EXTERNAL_URL || 'https://mineblock-dashboard.onrender.com';
+// TARGET_APP_URL overrides RENDER_EXTERNAL_URL when this script runs from a
+// cron service (Render sets RENDER_EXTERNAL_URL to the cron's own URL, but
+// this script needs the WEB SERVICE URL). Set TARGET_APP_URL on the cron env
+// to the sibling web service's URL.
+const HOST = process.env.TARGET_APP_URL || process.env.RENDER_EXTERNAL_URL || process.env.PUBLIC_APP_URL || 'http://localhost:3000';
 const SECRET = process.env.CRON_SECRET;
 const SLACK = process.env.SLACK_WEBHOOK_URL;
 
