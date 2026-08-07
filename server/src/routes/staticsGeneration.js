@@ -972,6 +972,48 @@ router.post('/admin-clone-schema-to-puure', async (req, res) => {
   }
 });
 
+// ─── /admin-puure-audit — row counts in puure-db, no data leakage risk ──
+// Runs psql -c "SELECT ..." against PUURE_DATABASE_URL and returns row
+// counts for the tables that matter for the fork audit. Read-only, no
+// mutations. No product-scoped filtering — just raw target counts.
+router.post('/admin-puure-audit', async (req, res) => {
+  const cronSecret = process.env.CRON_SECRET;
+  const provided   = req.headers['x-cron-secret'];
+  if (!cronSecret || provided !== cronSecret) {
+    return res.status(403).json({ success: false, error: { message: 'Forbidden' } });
+  }
+  const targetUrl = process.env.PUURE_DATABASE_URL;
+  if (!targetUrl) return res.status(400).json({ success: false, error: { message: 'PUURE_DATABASE_URL not set' } });
+  try {
+    const { default: pg } = await import('pg');
+    const pool = new pg.Pool({ connectionString: targetUrl, ssl: { rejectUnauthorized: false }, max: 3 });
+    const tables = [
+      'product_profiles', 'spy_creatives', 'brief_generation_jobs',
+      'statics_generation_events', 'launch_templates', 'brief_copy_sets',
+      'statics_launches', 'statics_queue', 'image_store',
+      'brief_pipeline_references', 'statics_templates', 'system_settings',
+      'roles', 'users', 'user_roles', 'audit_logs', 'departments',
+      'api_keys', 'integrations',
+      'brand_spy.brands', 'brand_spy.brand_pages', 'brand_spy.brand_domains',
+      'brand_spy.ads', 'brand_spy.scrape_jobs', 'brand_spy.ad_rank_snapshots',
+    ];
+    const counts = {};
+    for (const t of tables) {
+      try {
+        const r = await pool.query(`SELECT COUNT(*)::int AS n FROM ${t}`);
+        counts[t] = r.rows[0].n;
+      } catch (e) {
+        counts[t] = { error: e.message };
+      }
+    }
+    await pool.end();
+    return res.json({ success: true, target: 'puure-db', counts });
+  } catch (err) {
+    console.error('[admin-puure-audit] error:', err);
+    return res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
 // ─── /admin-pgdump-data-copy — async pg_dump for wholesale tables ────────
 // Fires pg_dump/psql in background, returns job_id immediately (Cloudflare
 // caps sync requests at ~100s). Poll /admin-pgdump-data-status?job_id=X.
