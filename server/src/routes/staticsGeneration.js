@@ -918,6 +918,60 @@ router.post('/admin-db-audit', async (req, res) => {
   }
 });
 
+// ─── /admin-clone-schema-to-puure — pg_dump source schema → puure-db ─────
+// Uses pg_dump / psql on the Render container to clone the source schema
+// (structure only, no data) into puure-db. Solves the lazy-created-table
+// problem where SQL migrations reference tables created at runtime by
+// route modules (product_profiles, ad_batches, image_store, etc.).
+router.post('/admin-clone-schema-to-puure', async (req, res) => {
+  const cronSecret = process.env.CRON_SECRET;
+  const provided   = req.headers['x-cron-secret'];
+  if (!cronSecret || provided !== cronSecret) {
+    return res.status(403).json({ success: false, error: { message: 'Forbidden' } });
+  }
+  const sourceUrl = process.env.DATABASE_URL;
+  const targetUrl = process.env.PUURE_DATABASE_URL;
+  if (!sourceUrl || !targetUrl) return res.status(400).json({ success: false, error: { message: 'DATABASE_URL and PUURE_DATABASE_URL required' } });
+  try {
+    const { spawn } = await import('node:child_process');
+    // pg_dump the source schema-only, pipe to psql on target.
+    const dump = spawn('pg_dump', [
+      '--schema-only',
+      '--no-owner',
+      '--no-privileges',
+      '--if-exists',
+      '--clean',
+      sourceUrl,
+    ]);
+    const restore = spawn('psql', [targetUrl]);
+    dump.stdout.pipe(restore.stdin);
+
+    let dumpErr = '';
+    let restoreErr = '';
+    let restoreOut = '';
+    dump.stderr.on('data', d => { dumpErr += d.toString(); });
+    restore.stderr.on('data', d => { restoreErr += d.toString(); });
+    restore.stdout.on('data', d => { restoreOut += d.toString(); });
+
+    const [dumpExit, restoreExit] = await Promise.all([
+      new Promise(r => dump.on('close', r)),
+      new Promise(r => restore.on('close', r)),
+    ]);
+
+    return res.json({
+      success: dumpExit === 0 && restoreExit === 0,
+      dump_exit_code: dumpExit,
+      restore_exit_code: restoreExit,
+      dump_stderr_tail: dumpErr.slice(-2000),
+      restore_stderr_tail: restoreErr.slice(-2000),
+      restore_stdout_tail: restoreOut.slice(-500),
+    });
+  } catch (err) {
+    console.error('[admin-clone-schema-to-puure] error:', err);
+    return res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
 // ─── /admin-init-puure-schema — run all SQL migrations against Puure DB ─
 // Idempotent: uses _migrations tracking table like npm run migrate does.
 router.post('/admin-init-puure-schema', async (req, res) => {
