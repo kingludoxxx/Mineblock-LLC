@@ -23,8 +23,8 @@ router.use(authenticate, requirePermission('languages-pipeline', 'access'));
 // ── ClickUp config ──────────────────────────────────────────────────────────
 const CLICKUP_TOKEN = process.env.CLICKUP_API_TOKEN || '';
 const CLICKUP_API = 'https://api.clickup.com/api/v2';
-const VIDEO_ADS_LIST_ID = '901518716584';   // Source: "Video Ad Pipeline"
-const LANGUAGES_LIST_ID = '901523010131';   // Target: "Video Ads Languages"
+const VIDEO_ADS_LIST_ID = process.env.CLICKUP_MB_VIDEO_LIST_ID || '';   // Source: "Video Ad Pipeline"
+const LANGUAGES_LIST_ID = process.env.CLICKUP_LANGUAGES_LIST_ID || '';   // Target: "Video Ads Languages"
 
 // ── Custom field IDs (source list — Video Ad Pipeline) ───────────────────────
 const SOURCE_FIELDS = {

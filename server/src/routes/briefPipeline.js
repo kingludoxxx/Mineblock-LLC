@@ -466,9 +466,10 @@ router.use(authenticate, requirePermission('brief-pipeline', 'access'));
 
 // ── Config ────────────────────────────────────────────────────────────
 const CLICKUP_TOKEN = process.env.CLICKUP_API_TOKEN || '';
-const VIDEO_ADS_LIST = '901518716584';           // MB | Video Ads (MinerForge etc.)
-const PUURE_VIDEO_LIST = '901524484514';          // PL | Video Creatives (Puure)
-const MEDIA_BUYING_LIST = '901518769621';
+// Per-brand ClickUp lists — see clickupWebhook.js for env-var explanation.
+const VIDEO_ADS_LIST    = process.env.CLICKUP_MB_VIDEO_LIST_ID        || '';  // MB | Video Ads
+const PUURE_VIDEO_LIST  = process.env.CLICKUP_PUURE_VIDEO_LIST_ID     || '';  // PL | Video Creatives (Puure)
+const MEDIA_BUYING_LIST = process.env.CLICKUP_MB_MEDIA_BUYING_LIST_ID || '';
 
 // ── ClickUp pipeline routing ──────────────────────────────────────────
 // Each product-family pushes to its own ClickUp list. Fields differ PER
@@ -1036,10 +1037,11 @@ const CREATOR_NA_TASK_ID = '86c7n9cvr';
 // silently landed with Product=MR because 'PUURE' wasn't in the map). When
 // a name isn't in the static map we search the ClickUp relationship list by
 // normalized name and, for products/avatars, create the task if missing.
+// Per-brand relationship lists (Mineblock defaults shown as comments)
 const REL_LISTS = {
-  product: '901518716744',  // Products
-  avatar:  '901518784383',  // Avatars
-  creator: '901518769701',  // Creators Database
+  product: process.env.CLICKUP_MB_PRODUCTS_LIST_ID || '',  // MB: 901518716744
+  avatar:  process.env.CLICKUP_MB_AVATARS_LIST_ID  || '',  // MB: 901518784383
+  creator: process.env.CLICKUP_MB_CREATORS_LIST_ID || '',  // MB: 901518769701
 };
 const relTaskCache = { data: {}, ts: 0 };
 const relSlug = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');

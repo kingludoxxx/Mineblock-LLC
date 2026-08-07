@@ -6,7 +6,7 @@ const router = express.Router();
 router.use(authenticate, requirePermission('iteration-king', 'access'));
 
 const CLICKUP_TOKEN = process.env.CLICKUP_API_TOKEN || '';
-const VIDEO_ADS_LIST_ID = '901518716584';
+const VIDEO_ADS_LIST_ID = process.env.CLICKUP_MB_VIDEO_LIST_ID || '';
 const CLICKUP_API = 'https://api.clickup.com/api/v2';
 
 const clickupHeaders = {

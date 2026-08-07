@@ -14,8 +14,8 @@ const TW_SHOP_ID     = process.env.TRIPLEWHALE_SHOP_ID || '17cca0-2.myshopify.co
 const CLICKUP_BASE   = 'https://api.clickup.com/api/v2';
 const TW_SQL_URL     = 'https://api.triplewhale.com/api/v2/orcabase/api/sql';
 
-const VIDEO_LIST_ID  = '901518716584';
-const STATIC_LIST_ID = '901518769479';
+const VIDEO_LIST_ID  = process.env.CLICKUP_MB_VIDEO_LIST_ID || '';
+const STATIC_LIST_ID = process.env.CLICKUP_MB_STATIC_LIST_ID || '';
 
 // ClickUp custom field ID for Frame link
 const FRAME_LINK_FIELD_ID = 'd90f9f25-d7a0-4eb4-9ded-aca0b4519a3b';

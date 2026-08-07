@@ -8,7 +8,7 @@ const router = express.Router();
 router.use(authenticate, requirePermission('brief-agent', 'access'));
 
 const CLICKUP_TOKEN = process.env.CLICKUP_API_TOKEN || '';
-const VIDEO_ADS_LIST_ID = '901518716584';
+const VIDEO_ADS_LIST_ID = process.env.CLICKUP_MB_VIDEO_LIST_ID || '';
 const CLICKUP_API = 'https://api.clickup.com/api/v2';
 const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN || '';
 
@@ -964,7 +964,7 @@ router.get('/monthly-report/:editor/:year/:month', async (req, res) => {
     const monthEnd = new Date(Date.UTC(y, m, 1)).getTime();
 
     // Search BOTH lists (Video Ads + Media Buying) and ALL completion statuses
-    const LISTS = [VIDEO_ADS_LIST_ID, '901518769621'];
+    const LISTS = [VIDEO_ADS_LIST_ID, process.env.CLICKUP_MB_MEDIA_BUYING_LIST_ID || ''].filter(Boolean);
     const STATUSES = ['ready%20to%20launch', 'launched', 'launched%20fb'];
 
     const allTasks = [];

@@ -26,23 +26,33 @@ function adminOrSuperAdmin(req, res, next) {
 // ClickUp API config
 const CLICKUP_TOKEN = process.env.CLICKUP_API_TOKEN || '';
 const CLICKUP_API = 'https://api.clickup.com/api/v2';
-const TEAM_ID = '90152075024';
+const TEAM_ID = process.env.CLICKUP_TEAM_ID || '';
 
-// Frame.io config
+// Frame.io config — per-brand env vars, each instance sets only its own.
+// Mineblock defaults (originals):
+//   FRAMEIO_MB_PROJECT_ID='19c0ce1f-f357-4da8-ba1f-bd7eb201e660'
+//   FRAMEIO_MB_EDITING_FOLDER='2eb1701e-fd39-45fa-a981-947a565f9093' (MR|Creatives)
+//   FRAMEIO_MB_STATIC_EDITING_FOLDER='c9440b5e-beb0-416a-91bf-27cfb8dad2e9' (MR|Static Ads)
+// Puure defaults:
+//   FRAMEIO_PUURE_PROJECT_ID='b38fbf28-9004-422d-902b-8cb4abed214b'
+//   FRAMEIO_PUURE_EDITING_FOLDER='51ec2ac5-4e55-4281-bfaa-26776fc81d10'
 const FRAMEIO_TOKEN = process.env.FRAMEIO_TOKEN || '';
-const FRAMEIO_PROJECT_ID = '19c0ce1f-f357-4da8-ba1f-bd7eb201e660';
-const FRAMEIO_EDITING_FOLDER = '2eb1701e-fd39-45fa-a981-947a565f9093';        // "MR | Creatives" (video pipeline)
-const FRAMEIO_STATIC_EDITING_FOLDER = 'c9440b5e-beb0-416a-91bf-27cfb8dad2e9'; // "MR | Static Ads" (static pipeline)
-// Puure (PL | Video Creatives) — separate Frame.io project
-const PL_FRAMEIO_PROJECT_ID = 'b38fbf28-9004-422d-902b-8cb4abed214b';
-const PL_FRAMEIO_EDITING_FOLDER = '51ec2ac5-4e55-4281-bfaa-26776fc81d10';
+const FRAMEIO_PROJECT_ID           = process.env.FRAMEIO_MB_PROJECT_ID           || '';
+const FRAMEIO_EDITING_FOLDER       = process.env.FRAMEIO_MB_EDITING_FOLDER       || '';
+const FRAMEIO_STATIC_EDITING_FOLDER = process.env.FRAMEIO_MB_STATIC_EDITING_FOLDER || '';
+const PL_FRAMEIO_PROJECT_ID        = process.env.FRAMEIO_PUURE_PROJECT_ID        || '';
+const PL_FRAMEIO_EDITING_FOLDER    = process.env.FRAMEIO_PUURE_EDITING_FOLDER    || '';
 const FRAMEIO_API = 'https://api.frame.io/v2';
 
-// List IDs
-const MEDIA_BUYING_LIST = '901518769621';
-const VIDEO_ADS_LIST = '901518716584';
-const STATIC_ADS_LIST = '901518769479';
-const PL_VIDEO_LIST = '901524484514'; // PL | Video Creatives (Puure)
+// List IDs — per-brand env vars. Each instance sets only its own.
+//   Mineblock (originals): MB_MEDIA_BUYING=901518769621, MB_VIDEO=901518716584,
+//                          MB_STATIC=901518769479
+//   Puure   (originals):   PUURE_VIDEO=901524484514
+// Dual-brand routing code below stays inert for whichever brand is unset.
+const MEDIA_BUYING_LIST = process.env.CLICKUP_MB_MEDIA_BUYING_LIST_ID || '';
+const VIDEO_ADS_LIST    = process.env.CLICKUP_MB_VIDEO_LIST_ID        || '';
+const STATIC_ADS_LIST   = process.env.CLICKUP_MB_STATIC_LIST_ID       || '';
+const PL_VIDEO_LIST     = process.env.CLICKUP_PUURE_VIDEO_LIST_ID     || '';
 // Lists whose status changes the webhook processes (frame folder auto-create,
 // YT-counterpart duplication, etc.). Static Ads only uses the frame folder
 // piece — YT duplication is video-only.
@@ -2012,7 +2022,10 @@ router.get('/frameio-stray-check', async (req, res) => {
     );
     const projects = projectsResp?.data || [];
 
-    const LEGIT_NAMES = new Set(['Mineblock LLC', 'mineblock llc']);
+    // Frame.io project allow-list. Env var: FRAMEIO_LEGIT_PROJECT_NAMES (comma-separated).
+    // Falls back to Mineblock's original allow-list for back-compat.
+    const _legitCsv = (process.env.FRAMEIO_LEGIT_PROJECT_NAMES || 'Mineblock LLC').split(',').map(s => s.trim()).filter(Boolean);
+    const LEGIT_NAMES = new Set([..._legitCsv, ..._legitCsv.map(s => s.toLowerCase())]);
     const strays = projects.filter(
       p => !LEGIT_NAMES.has((p.name || '').trim()) && p.id !== FRAMEIO_PROJECT_ID,
     );
@@ -2162,7 +2175,10 @@ router.post('/admin-frameio-cleanup', adminOrSuperAdmin, async (req, res) => {
     report.discovered = projects.map(p => ({ id: p.id, name: p.name, storage: p.storage, root_folder_id: p.root_folder_id }));
 
     // 3. Strays = everything except the canonical Mineblock LLC project.
-    const LEGIT_NAMES = new Set(['Mineblock LLC', 'mineblock llc']);
+    // Frame.io project allow-list. Env var: FRAMEIO_LEGIT_PROJECT_NAMES (comma-separated).
+    // Falls back to Mineblock's original allow-list for back-compat.
+    const _legitCsv = (process.env.FRAMEIO_LEGIT_PROJECT_NAMES || 'Mineblock LLC').split(',').map(s => s.trim()).filter(Boolean);
+    const LEGIT_NAMES = new Set([..._legitCsv, ..._legitCsv.map(s => s.toLowerCase())]);
     const strays = projects.filter(p =>
       !LEGIT_NAMES.has((p.name || '').trim()) &&
       p.id !== FRAMEIO_PROJECT_ID

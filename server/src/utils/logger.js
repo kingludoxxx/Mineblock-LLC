@@ -10,7 +10,7 @@ const logger = winston.createLogger({
     timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
     json()
   ),
-  defaultMeta: { service: 'mineblock-admin' },
+  defaultMeta: { service: process.env.BRAND_APP_NAME || process.env.BRAND_NAME || 'admin-app' },
   transports: [
     new winston.transports.Console(),
   ],

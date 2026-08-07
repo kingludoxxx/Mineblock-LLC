@@ -83,8 +83,11 @@ async function runSeeds() {
   }
   logger.info('Roles seeded');
 
-  const email = process.env.SUPERADMIN_EMAIL || 'admin@try-mineblock.com';
-  const password = process.env.SUPERADMIN_PASSWORD || 'MineblockAdmin2026!';
+  // SUPERADMIN_EMAIL + SUPERADMIN_PASSWORD are REQUIRED env vars per instance.
+  // Dev defaults kept so local `npm run dev` still bootstraps; production
+  // startup below warns when env vars are missing.
+  const email = process.env.SUPERADMIN_EMAIL || 'admin@example.com';
+  const password = process.env.SUPERADMIN_PASSWORD || 'ChangeMeInProduction!';
   if (env.NODE_ENV === 'production' && (!process.env.SUPERADMIN_EMAIL || !process.env.SUPERADMIN_PASSWORD)) {
     logger.warn('SUPERADMIN_EMAIL and/or SUPERADMIN_PASSWORD not set — using hard-coded defaults in production is a security risk');
   }

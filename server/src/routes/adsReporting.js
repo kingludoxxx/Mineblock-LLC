@@ -16,8 +16,8 @@ const CRON_SECRET          = process.env.CRON_SECRET || '';
 const META_ACCESS_TOKEN    = process.env.META_ACCESS_TOKEN || '';
 const META_GRAPH_URL       = 'https://graph.facebook.com/v22.0';
 const CLICKUP_TOKEN        = process.env.CLICKUP_API_TOKEN || '';
-const CLICKUP_LIST_ID      = '901518716584';
-const CLICKUP_TEAM_ID      = '90152075024';
+const CLICKUP_LIST_ID      = process.env.CLICKUP_MB_VIDEO_LIST_ID || '';
+const CLICKUP_TEAM_ID      = process.env.CLICKUP_TEAM_ID || '';
 const CLICKUP_BRIEF_FIELD  = '62b61cc4-2d35-4dfc-86f4-a3913e2bbca3';
 
 // Payment fee deduction applied to TripleWhale gross revenue so the reported
