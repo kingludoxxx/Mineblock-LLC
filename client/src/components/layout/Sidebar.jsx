@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
 import { useSidebar } from './AppLayout';
+import { BRAND_SHORT_NAME, BRAND_LOGO_WHITE, BRAND_LOGO_SYMBOL } from '../../config/brand';
 import {
   ChevronLeft,
   ChevronRight,
@@ -126,11 +127,11 @@ export default function Sidebar() {
       <div className="flex items-center justify-between px-3 h-[var(--topbar-h)] border-b border-border-subtle shrink-0">
         {!collapsed && (
           <div className="flex items-center gap-2.5">
-            <img src="/logo-white.png" alt="Mineblock" className="h-5 w-auto" />
+            <img src={BRAND_LOGO_WHITE} alt={BRAND_SHORT_NAME} className="h-5 w-auto" />
           </div>
         )}
         {collapsed && (
-          <img src="/logo-symbol-white.png" alt="Mineblock" className="h-4 w-auto mx-auto" />
+          <img src={BRAND_LOGO_SYMBOL} alt={BRAND_SHORT_NAME} className="h-4 w-auto mx-auto" />
         )}
         <button
           onClick={() => setCollapsed(!collapsed)}

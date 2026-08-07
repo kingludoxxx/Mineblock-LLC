@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useSearchParams, Link } from 'react-router-dom';
 import { Mail } from 'lucide-react';
 import api from '../services/api';
+import { BRAND_SHORT_NAME } from '../config/brand';
 
 export default function VerifyEmail() {
   const [searchParams] = useSearchParams();
@@ -51,7 +52,7 @@ export default function VerifyEmail() {
         {/* Brand */}
         <div className="mb-8">
           <h1 className="text-2xl font-bold text-white tracking-tight">
-            Mineblock
+            {BRAND_SHORT_NAME}
           </h1>
         </div>
 

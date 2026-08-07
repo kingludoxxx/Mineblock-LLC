@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useSearchParams, useNavigate, Link } from 'react-router-dom';
 import { User, Lock, Eye, EyeOff, ArrowLeft, Loader2 } from 'lucide-react';
 import api from '../services/api';
+import { BRAND_SHORT_NAME } from '../config/brand';
 
 // Match ResetPassword.jsx conventions so styling and strength meter are
 // visually consistent with the rest of the auth flow.
@@ -150,7 +151,7 @@ export default function AcceptInvite() {
         <h1 className="text-2xl font-semibold text-white mb-1">Welcome</h1>
         <p className="text-zinc-400 text-sm mb-6">
           <span className="text-white">{inviteInfo.inviterName}</span> invited you to
-          the Mineblock Dashboard as <span className="text-white">{inviteInfo.email}</span>.
+          the {BRAND_SHORT_NAME} Dashboard as <span className="text-white">{inviteInfo.email}</span>.
           Set up your account below.
         </p>
 

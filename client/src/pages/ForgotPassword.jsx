@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Mail, ArrowLeft } from 'lucide-react';
 import api from '../services/api';
+import { BRAND_SHORT_NAME } from '../config/brand';
 
 export default function ForgotPassword() {
   const [email, setEmail] = useState('');
@@ -33,7 +34,7 @@ export default function ForgotPassword() {
         {/* Brand */}
         <div className="text-center mb-8">
           <h1 className="text-2xl font-bold text-white tracking-tight">
-            Mineblock
+            {BRAND_SHORT_NAME}
           </h1>
           <p className="text-white/50 text-sm mt-1">Reset your password</p>
         </div>

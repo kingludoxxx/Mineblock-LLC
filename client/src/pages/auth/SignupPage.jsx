@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import Input from '../../components/ui/Input';
 import Button from '../../components/ui/Button';
 import api from '../../services/api';
+import { BRAND_SHORT_NAME } from '../../config/brand';
 
 export default function SignupPage() {
   const navigate = useNavigate();
@@ -36,7 +37,7 @@ export default function SignupPage() {
             M
           </div>
           <h1 className="text-xl font-semibold text-text-primary">Create your account</h1>
-          <p className="text-sm text-text-muted mt-1">Get started with Mineblock</p>
+          <p className="text-sm text-text-muted mt-1">Get started with {BRAND_SHORT_NAME}</p>
         </div>
         <form onSubmit={handleSubmit} className="space-y-4">
           <Input label="Full name" placeholder="John Doe" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />

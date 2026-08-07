@@ -424,9 +424,17 @@ ensureTable().then(seedMinerAngles).catch(console.error);
 // Runs once per server start. Uses ID-based merge: only appends angles whose
 // id is not already in the DB. Never overwrites existing angles so user edits
 // (e.g. copy_directives fixes) are always preserved across redeploys.
+//
+// FORK NOTE: this seed targets the MinerForge product only (ILIKE match). On a
+// non-Mineblock instance (e.g. Puure) the query returns 0 rows and the function
+// exits early — inert. Set SEED_MINERFORGE_ANGLES=false to skip entirely.
 
 async function seedMinerAngles() {
   try {
+    if (process.env.SEED_MINERFORGE_ANGLES === 'false') {
+      console.log('[productProfiles] seedMinerAngles: disabled via SEED_MINERFORGE_ANGLES=false');
+      return;
+    }
     const products = await pgQuery(
       `SELECT id, angles FROM product_profiles WHERE name ILIKE '%miner%forge%' ORDER BY updated_at DESC LIMIT 1`
     );

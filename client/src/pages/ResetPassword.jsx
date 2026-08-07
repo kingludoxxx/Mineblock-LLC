@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useSearchParams, useNavigate, Link } from 'react-router-dom';
 import { Lock, Eye, EyeOff, ArrowLeft } from 'lucide-react';
 import api from '../services/api';
+import { BRAND_SHORT_NAME } from '../config/brand';
 
 function getPasswordStrength(password) {
   let score = 0;
@@ -99,7 +100,7 @@ export default function ResetPassword() {
         {/* Brand */}
         <div className="text-center mb-8">
           <h1 className="text-2xl font-bold text-white tracking-tight">
-            Mineblock
+            {BRAND_SHORT_NAME}
           </h1>
           <p className="text-white/50 text-sm mt-1">Set a new password</p>
         </div>

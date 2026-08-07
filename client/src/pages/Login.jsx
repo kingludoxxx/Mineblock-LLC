@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { Mail, Lock, Eye, EyeOff } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
 import DottedSurface from '../components/DottedSurface';
+import { BRAND_SHORT_NAME, BRAND_LOGO_WHITE } from '../config/brand';
 
 export default function Login() {
   const navigate = useNavigate();
@@ -45,7 +46,7 @@ export default function Login() {
       <div className="relative glass-card border border-white/[0.06] rounded-xl p-8 w-full max-w-md shadow-2xl" style={{ zIndex: 1 }}>
         {/* Brand */}
         <div className="text-center mb-8">
-          <img src="/logo-white.png" alt="Mineblock" className="h-6 w-auto mx-auto mb-4" />
+          <img src={BRAND_LOGO_WHITE} alt={BRAND_SHORT_NAME} className="h-6 w-auto mx-auto mb-4" />
           <p className="text-text-muted text-sm mt-1">
             Sign in to your account
           </p>

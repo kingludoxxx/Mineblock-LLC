@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Lock, Mail } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
 import Button from '../shared/Button';
+import { BRAND_NAME, BRAND_EMAIL_DOMAIN } from '../../config/brand';
 
 export default function LoginPage() {
   const [email, setEmail] = useState('');
@@ -30,7 +31,7 @@ export default function LoginPage() {
     <div className="min-h-screen bg-bg-main flex items-center justify-center p-4">
       <div className="w-full max-w-md">
         <div className="text-center mb-8">
-          <h1 className="text-3xl font-bold text-text-primary">Mineblock LLC</h1>
+          <h1 className="text-3xl font-bold text-text-primary">{BRAND_NAME}</h1>
           <p className="text-text-muted mt-2">Admin Dashboard</p>
         </div>
         <form
@@ -54,7 +55,7 @@ export default function LoginPage() {
                   onChange={(e) => setEmail(e.target.value)}
                   className="w-full pl-10 pr-4 py-2.5 bg-bg-elevated border border-border-default rounded-lg
                     text-text-primary placeholder:text-text-faint focus:outline-none focus:border-accent/50 focus:ring-1 focus:ring-accent/25"
-                  placeholder="you@mineblock.com"
+                  placeholder={`you@${BRAND_EMAIL_DOMAIN}`}
                   required
                 />
               </div>
