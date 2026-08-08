@@ -26,6 +26,7 @@ import brandSpyRouter from './routes/brandSpy.js';
 import funnelPublicRoutes from './routes/funnelPublic.js';
 import gatewayWebhookRoutes from './routes/gatewayWebhooks.js';
 import checkoutPublicRoutes from './routes/checkoutPublic.js';
+import trackingPublicRoutes from './routes/trackingPublic.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -82,6 +83,12 @@ app.use('/api/v1/shopify-webhook', shopifyWebhookRoutes);
 // server-side re-pricing). After the global JSON parser; before the admin
 // /api/v1/checkout mount so /checkout/public is not shadowed by the authed router.
 app.use('/api/v1/checkout/public', checkoutPublicRoutes);
+
+// Public tracking intake — unauthenticated by necessity (the visitor is not a
+// user), defended inside the router (per-IP limiter, origin allow-list,
+// server-side consent gate, fail-open). Before the global apiLimiter, like the
+// other public mounts.
+app.use('/api/v1/track', trackingPublicRoutes);
 
 // Public funnel pages — unauthenticated, gated by FUNNEL_PUBLIC_ENABLED at
 // request time inside the router (before API routes, outside auth).
