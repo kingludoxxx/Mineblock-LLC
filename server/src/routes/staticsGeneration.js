@@ -1002,27 +1002,21 @@ router.post('/admin-upsert-superadmin', async (req, res) => {
       [email, first_name, last_name, hash]
     );
     const userId = upsert[0].id;
-    // Find a superadmin-ish role
-    const roles = await pgQuery(
-      `SELECT id, name FROM roles
-        WHERE name IN ('super_admin','superadmin','admin','owner')
-        ORDER BY (name='super_admin')::int DESC,
-                 (name='superadmin')::int DESC,
-                 (name='admin')::int DESC
-        LIMIT 1`,
-      []
-    );
-    if (roles.length) {
+    // Grant EVERY role in the roles table — true superadmin.
+    const roles = await pgQuery(`SELECT id, name FROM roles`, []);
+    const granted = [];
+    for (const r of roles) {
       await pgQuery(
         `INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2)
          ON CONFLICT DO NOTHING`,
-        [userId, roles[0].id]
+        [userId, r.id]
       );
+      granted.push(r.name);
     }
     return res.json({
       success: true,
       user: { id: userId, email: upsert[0].email },
-      role_assigned: roles[0]?.name || 'NONE (no admin-tier role found in DB)',
+      roles_granted: granted,
     });
   } catch (err) {
     console.error('[admin-upsert-superadmin] error:', err);
