@@ -138,12 +138,21 @@ export async function settleSessionPaid({
  * no-op and a decline marker (status 'declined', declined_by_user) can never
  * be settled. Amount authority: the gateway-reported amount must match the
  * claimed row within a cent, else the row parks at needs_review.
+ *
+ * SECURITY: `expectedSessionId` MUST be the id of the session whose signature
+ * authenticated the webhook. The charge row is required to belong to it — a
+ * caller can never settle a row it did not prove ownership of (a webhook body
+ * naming an arbitrary charge_row, possibly another funnel's, is rejected).
  */
-export async function settleUpsellCharge({ chargeRowId, gatewayPaymentId, amount = null }) {
+export async function settleUpsellCharge({ chargeRowId, gatewayPaymentId, amount = null, expectedSessionId }) {
   await ensureCheckoutTables();
+  if (!expectedSessionId) return { ok: false, error: 'session_scope_required' };
   const rows = await pgQuery(`SELECT * FROM co_upsell_charges WHERE id = $1`, [chargeRowId]);
   if (!rows.length) return { ok: false, error: 'charge_not_found' };
   const row = rows[0];
+  // The row must belong to the verified session — never trust a body-supplied
+  // charge_row that points outside the authenticated session.
+  if (row.session_id !== expectedSessionId) return { ok: false, error: 'charge_session_mismatch' };
   if (row.status === 'settled') return { ok: true, already: true };
   if (amount !== null && Math.abs(round2(amount) - round2(row.amount)) > 0.01) {
     await pgQuery(
@@ -180,14 +189,18 @@ export async function settleUpsellCharge({ chargeRowId, gatewayPaymentId, amount
 
 // Terminal failure for a non-terminal upsell charge (async decline via
 // payment.failed, or sweep-discovered). Never touches settled rows.
-export async function failUpsellCharge({ chargeRowId, reason }) {
+// SECURITY: `expectedSessionId` scopes the row to the authenticated session,
+// exactly as settleUpsellCharge — a body-supplied charge_row from another
+// funnel can't be force-declined (which would strand a real charge).
+export async function failUpsellCharge({ chargeRowId, reason, expectedSessionId }) {
   await ensureCheckoutTables();
+  if (!expectedSessionId) return { ok: false, error: 'session_scope_required' };
   const flipped = await pgQuery(
     `UPDATE co_upsell_charges
      SET status = 'declined', error = $2, updated_at = NOW()
-     WHERE id = $1 AND status IN ('charging', 'pending_settlement')
+     WHERE id = $1 AND session_id = $3 AND status IN ('charging', 'pending_settlement')
      RETURNING id, session_id, offer_id`,
-    [chargeRowId, String(reason || 'declined').slice(0, 200)]
+    [chargeRowId, String(reason || 'declined').slice(0, 200), expectedSessionId]
   );
   if (!flipped.length) return { ok: false, error: 'not_failable' };
   try {

@@ -34,6 +34,29 @@ const priceCache = new Map();
 const PRICE_CACHE_TTL_MS = 60_000; // brief — never mask a real price change for long
 const MAX_VARIANTS_PER_QUERY = 100;
 const FETCH_TIMEOUT_MS = 6_000;
+// Hard bound: the create-session endpoint is public and its variant ids are
+// attacker-chosen, so a stream of distinct (mostly known-bad) gids would grow
+// this Map without limit. When full we evict expired entries, then the oldest
+// insertions, so the cache stays bounded by the ACTIVE catalog, not the
+// all-time set of ids ever probed.
+const PRICE_CACHE_MAX = 5_000;
+
+function cacheSet(gid, entry) {
+  if (priceCache.size >= PRICE_CACHE_MAX && !priceCache.has(gid)) {
+    const now = Date.now();
+    for (const [k, v] of priceCache) {
+      if (v.expires <= now) priceCache.delete(k);
+    }
+    // Still over budget (a burst of live keys) — drop oldest-first (Map keeps
+    // insertion order) until under the cap.
+    while (priceCache.size >= PRICE_CACHE_MAX) {
+      const oldest = priceCache.keys().next().value;
+      if (oldest === undefined) break;
+      priceCache.delete(oldest);
+    }
+  }
+  priceCache.set(gid, entry);
+}
 
 export function toVariantGid(variantId) {
   const v = String(variantId).trim();
@@ -156,7 +179,7 @@ export async function resolveVariantPrices(variantIds) {
       const purchasable = Boolean(node.availableForSale);
       const price = Number(node.price);
       if (!statusOk || !purchasable || !Number.isFinite(price) || price < 0) {
-        priceCache.set(gid, { expires: now + PRICE_CACHE_TTL_MS, info: null });
+        cacheSet(gid, { expires: now + PRICE_CACHE_TTL_MS, info: null });
         continue;
       }
       // A compare-at at/below the sale price is not a real "was" price.
@@ -173,13 +196,13 @@ export async function resolveVariantPrices(variantIds) {
         variant_title: node.title || '',
         image: node.image?.url || product.featuredImage?.url || '',
       };
-      priceCache.set(gid, { expires: now + PRICE_CACHE_TTL_MS, info });
+      cacheSet(gid, { expires: now + PRICE_CACHE_TTL_MS, info });
       resolved[gid] = { ...info };
     }
     // A null node (id not returned at all) = unknown variant → known-bad.
     for (const gid of batch) {
       if (!returnedIds.has(gid)) {
-        priceCache.set(gid, { expires: now + PRICE_CACHE_TTL_MS, info: null });
+        cacheSet(gid, { expires: now + PRICE_CACHE_TTL_MS, info: null });
       }
     }
   }

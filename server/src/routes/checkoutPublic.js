@@ -10,7 +10,8 @@
 // Mount (integrator-owned, app.js): BEFORE the global apiLimiter, like the
 // other webhook/public mounts:
 //   app.use('/api/v1/checkout/public', checkoutPublicRoutes);
-import { Router } from 'express';
+import { Router, json } from 'express';
+import cookieParser from 'cookie-parser';
 import crypto from 'crypto';
 import { pgQuery } from '../db/pg.js';
 import { checkRateLimit } from '../middleware/rateLimiter.js';
@@ -23,6 +24,15 @@ import {
 } from '../services/checkoutPricing.js';
 
 const router = Router();
+
+// This router is mounted BEFORE the app-level body/cookie parsers (auth
+// boundary = file boundary), so it parses its OWN body and cookies — never
+// assume an upstream parser ran. Idempotent if one did: express.json is a
+// no-op when Content-Type isn't JSON or the body was already read, and
+// cookieParser re-parsing is harmless. This makes the mount position safe
+// either way and keeps the _fbp/_fbc tracking snapshot working.
+router.use(json({ limit: '1mb' }));
+router.use(cookieParser());
 
 const MAX_LINES = 50;
 const MAX_QTY_PER_LINE = 100;
@@ -242,7 +252,8 @@ router.post('/stripe/create-intent', async (req, res) => {
       return res.status(422).json({ success: false, error: { code: 'session_required' } });
     }
     const rows = await pgQuery(
-      `SELECT id, funnel_id, status, total, currency, customer, gateway_session_id, gateway
+      `SELECT id, funnel_id, status, total, currency, customer, gateway_session_id,
+              gateway, gateway_customer_id
        FROM co_sessions WHERE id = $1`, [sessionId]
     );
     if (!rows.length) {
@@ -260,16 +271,37 @@ router.post('/stripe/create-intent', async (req, res) => {
       return res.status(503).json({ success: false, error: { code: 'gateway_not_configured' } });
     }
 
-    const cust = session.customer || {};
-    const customer = await createCustomer(secretKey, {
-      email: cust.email || '',
-      name: [cust.first_name, cust.last_name].filter(Boolean).join(' '),
-      phone: cust.phone || '',
-      metadata: { co_session_id: session.id },
-    });
-    // A failed customer create degrades to a PI without saved-card upsells —
-    // never blocks the sale.
-    const customerId = customer.ok ? customer.customer_id : '';
+    // Reuse the customer minted on a prior create-intent for THIS session.
+    // Minting a fresh customer on every call both leaks orphan customers AND
+    // changes the PaymentIntent params under the fixed idempotency key
+    // `ci_<session>` — Stripe then rejects the retry (idempotency_error) and
+    // the session becomes unpayable for the key's 24h life. A stable customer
+    // makes the retried create-intent return the same PI, as intended.
+    let customerId = session.gateway_customer_id || '';
+    if (!customerId) {
+      const cust = session.customer || {};
+      const customer = await createCustomer(secretKey, {
+        email: cust.email || '',
+        name: [cust.first_name, cust.last_name].filter(Boolean).join(' '),
+        phone: cust.phone || '',
+        metadata: { co_session_id: session.id },
+      });
+      // A failed customer create degrades to a PI without saved-card upsells —
+      // never blocks the sale (but then setup_future_usage is off, so no
+      // 1-click; that is the correct trade, not an error).
+      customerId = customer.ok ? customer.customer_id : '';
+      // Persist immediately so a retry reuses it even if the PI call below
+      // fails — otherwise the retry mints another customer and hits the
+      // idempotency-param mismatch we are avoiding.
+      if (customerId) {
+        await pgQuery(
+          `UPDATE co_sessions SET gateway_customer_id = COALESCE(gateway_customer_id, $2),
+             updated_at = NOW()
+           WHERE id = $1 AND status = 'processing'`,
+          [session.id, customerId]
+        );
+      }
+    }
 
     const pi = await createPaymentIntent(secretKey, {
       amount: Number(session.total),
@@ -284,10 +316,13 @@ router.post('/stripe/create-intent', async (req, res) => {
       return res.status(502).json({ success: false, error: { code: 'gateway_error' } });
     }
 
+    // Guarded on 'processing': the status read above is stale by now, and
+    // overwriting a settled session's gateway_session_id would break refund
+    // matching and the sweep's order-key derivation.
     await pgQuery(
       `UPDATE co_sessions SET gateway = 'stripe', gateway_session_id = $2,
          gateway_customer_id = COALESCE($3, gateway_customer_id), updated_at = NOW()
-       WHERE id = $1`,
+       WHERE id = $1 AND status = 'processing'`,
       [session.id, pi.id, customerId || null]
     );
     const publishableKey = await resolveCredential(
@@ -359,9 +394,10 @@ router.post('/whop/create-session', async (req, res) => {
         error: { code: result.error === 'not_configured' ? 'gateway_not_configured' : 'gateway_error' },
       });
     }
+    // Guarded on 'processing' — see the Stripe mint above.
     await pgQuery(
       `UPDATE co_sessions SET gateway = 'whop', gateway_session_id = $2, updated_at = NOW()
-       WHERE id = $1`,
+       WHERE id = $1 AND status = 'processing'`,
       [session.id, result.session_id]
     );
     return res.json({
@@ -392,13 +428,22 @@ const UPSELL_MIN_CHARGE = 1.0;
 async function loadPaidSession(sessionId) {
   const rows = await pgQuery(
     `SELECT id, funnel_id, status, gateway, currency, payment_method_id,
-            gateway_customer_id
+            gateway_customer_id, refunds
      FROM co_sessions WHERE id = $1`,
     [String(sessionId || '').slice(0, 80)]
   );
   if (!rows.length) return { error: { status: 404, code: 'session_not_found' } };
-  if (rows[0].status !== 'paid') return { error: { status: 409, code: 'session_not_paid' } };
-  return { session: rows[0] };
+  const s = rows[0];
+  if (s.status !== 'paid') return { error: { status: 409, code: 'session_not_paid' } };
+  // A chargeback must never trigger another off-session charge on that card —
+  // cancelling in-flight charges (the dispute handler) is not enough if the
+  // page can simply start a NEW one.
+  const reversals = Array.isArray(s.refunds) ? s.refunds : [];
+  if (reversals.some((r) => r && r.dispute)) {
+    return { error: { status: 409, code: 'session_disputed' } };
+  }
+  if (reversals.length) return { error: { status: 409, code: 'session_refunded' } };
+  return { session: s };
 }
 
 async function loadOffer(offerId, session) {
@@ -408,8 +453,10 @@ async function loadOffer(offerId, session) {
   );
   const offer = rows[0];
   if (!offer || !offer.enabled) return { error: { status: 404, code: 'offer_not_found' } };
-  // An offer pinned to a funnel only serves that funnel's sessions.
-  if (offer.funnel_id && session.funnel_id && offer.funnel_id !== session.funnel_id) {
+  // An offer pinned to a funnel only serves that funnel's sessions. Strict
+  // equality (not "both truthy"): a NULL-funnel offer is global by design,
+  // but a PINNED offer must never be reachable from a funnel-less session.
+  if (offer.funnel_id && offer.funnel_id !== (session.funnel_id || '')) {
     return { error: { status: 404, code: 'offer_not_found' } };
   }
   return { offer };
@@ -427,7 +474,9 @@ router.post('/upsell/accept', async (req, res) => {
 
     // variant_id '' on the offer = "charge whatever the on-page selection
     // control resolves to" — the client picks WHICH variant, never the price.
-    const variantId = offer.variant_id || String(body.variant_id || '').trim();
+    // Bound the client-supplied id (it lands in the charge_id claim slot) —
+    // the offer-side id is already stored bounded.
+    const variantId = offer.variant_id || String(body.variant_id || '').trim().slice(0, 80);
     if (!variantId) {
       return res.status(422).json({ success: false, error: { code: 'variant_required' } });
     }
@@ -506,14 +555,20 @@ router.post('/upsell/accept', async (req, res) => {
         // page keeps POLLING; never re-drive a possibly-succeeding charge.
         return res.json({ success: true, data: { status: 'processing', duplicate: true } });
       }
-      // Prior attempt failed — re-claim the SAME row for a fresh attempt.
+      // Prior attempt DECLINED — re-claim the SAME row for a fresh attempt.
       // Idempotency stays keyed to the row + the deterministic gateway key,
       // so this can never double-charge a success.
+      // Only a CLEAN terminal failure is re-claimable. 'needs_review' is the
+      // state that means "we cannot prove whether the gateway charged"
+      // (stale claim / amount mismatch) and 'canceled' means a dispute killed
+      // it — re-driving either would be exactly the auto-retry that mints
+      // duplicate charges (DECISIONS rule 3). Those need a human, not a retry.
       const reclaimed = await pgQuery(
         `UPDATE co_upsell_charges
          SET status = 'charging', error = NULL, amount = $4, line_items = $5, updated_at = NOW()
          WHERE session_id = $1 AND offer_id = $2 AND charge_id = $3
-           AND status NOT IN ('settled', 'charging', 'pending_settlement')
+           AND status NOT IN ('settled', 'charging', 'pending_settlement',
+                              'needs_review', 'canceled')
          RETURNING id`,
         [session.id, offer.id, claimSlot, amount, lineItems]
       );
@@ -539,7 +594,11 @@ router.post('/upsell/accept', async (req, res) => {
         idempotencyKey: idemKey,
       });
       if (r.ok) outcome = { status: 'settled', paymentId: r.id };
-      else if (r.error === 'network' || r.error === 'timeout') outcome = { status: 'pending', paymentId: r.id || '' };
+      // TRANSPORT failure ≠ decline: the charge may have succeeded with the
+      // response lost. Hold non-terminal so the webhook/sweep decides — never
+      // mark it declined (that would strand a real charge, and a later
+      // re-accept could double-bill once Stripe's idempotency key expires).
+      else if (r.transport) outcome = { status: 'pending', paymentId: r.id || '' };
       else outcome = { status: 'declined', reason: r.decline_code || r.error, requiresAction: Boolean(r.requires_action) };
     } else {
       const whop = await import('../services/gateways/whop.js');
@@ -561,7 +620,31 @@ router.post('/upsell/accept', async (req, res) => {
 
     if (outcome.status === 'settled') {
       const { settleUpsellCharge } = await import('../services/checkoutSettle.js');
-      await settleUpsellCharge({ chargeRowId: rowId, gatewayPaymentId: outcome.paymentId, amount });
+      const settled = await settleUpsellCharge({
+        chargeRowId: rowId, gatewayPaymentId: outcome.paymentId, amount,
+        expectedSessionId: session.id,
+      });
+      if (!settled.ok) {
+        // Money MOVED but the row could not be flipped (a concurrent dispute
+        // canceled it, or an async payment.failed already declined it). Never
+        // report a clean 'settled' over a charge the books don't reflect —
+        // park it for a human with the gateway id attached.
+        console.error(
+          `[checkout] upsell charged but not recorded row=${rowId} payment=${outcome.paymentId} err=${settled.error}`
+        );
+        await pgQuery(
+          `UPDATE co_upsell_charges
+           SET status = 'needs_review',
+               gateway_payment_id = COALESCE($2, gateway_payment_id),
+               error = $3, updated_at = NOW()
+           WHERE id = $1 AND status <> 'settled'`,
+          [rowId, outcome.paymentId || null, `charged_not_recorded:${settled.error}`.slice(0, 200)]
+        );
+        return res.json({
+          success: true,
+          data: { status: 'needs_review', charge_row: rowId, amount, currency: session.currency },
+        });
+      }
       return res.json({
         success: true,
         data: { status: 'settled', charge_row: rowId, amount, currency: session.currency },
@@ -579,7 +662,7 @@ router.post('/upsell/accept', async (req, res) => {
       return res.json({ success: true, data: { status: 'processing', charge_row: rowId } });
     }
     const { failUpsellCharge } = await import('../services/checkoutSettle.js');
-    await failUpsellCharge({ chargeRowId: rowId, reason: outcome.reason });
+    await failUpsellCharge({ chargeRowId: rowId, reason: outcome.reason, expectedSessionId: session.id });
     return res.json({
       success: true,
       data: {

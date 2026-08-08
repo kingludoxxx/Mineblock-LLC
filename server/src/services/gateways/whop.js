@@ -46,9 +46,15 @@ async function whopFetch(apiKey, method, path, { body, sandbox, idempotencyKey, 
       body: body ? JSON.stringify(body) : undefined,
       signal: controller.signal,
     });
+    // Read the body ONCE as text, then try to parse — calling resp.json()
+    // then resp.text() double-consumes the stream (the second throws), which
+    // would blank the decline detail on a non-JSON error body.
     let json = null;
     let text = null;
-    try { json = await resp.json(); } catch { try { text = await resp.text(); } catch {} }
+    try {
+      text = await resp.text();
+      if (text) { try { json = JSON.parse(text); } catch { /* non-JSON body */ } }
+    } catch { /* body unreadable */ }
     return { ok: resp.ok, status: resp.status, json, text: resp.ok ? null : text };
   } catch (err) {
     return { ok: false, status: null, json: null, error: 'network', text: String(err?.message || err) };

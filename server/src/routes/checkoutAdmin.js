@@ -25,7 +25,10 @@ router.get('/', async (req, res) => {
       where.push(`status = $${params.length}`);
     }
     if (req.query.q) {
-      params.push(`%${String(req.query.q).slice(0, 100)}%`);
+      // Escape ILIKE metacharacters so a literal % / _ in the search box
+      // matches literally instead of broadening the query.
+      const q = String(req.query.q).slice(0, 100).replace(/([\\%_])/g, '\\$1');
+      params.push(`%${q}%`);
       where.push(`(id ILIKE $${params.length} OR customer->>'email' ILIKE $${params.length})`);
     }
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
@@ -192,7 +195,17 @@ router.put('/upsells/:id', async (req, res) => {
     if (b.title !== undefined) set('title', String(b.title || '').slice(0, 200));
     if (b.variant_id !== undefined) set('variant_id', String(b.variant_id ?? '').slice(0, 80));
     if (b.price !== undefined) {
-      set('price', b.price === null || b.price === '' ? null : Math.round(Number(b.price) * 100) / 100);
+      if (b.price === null || b.price === '') set('price', null);
+      else {
+        // Same validation as POST — an unvalidated NaN/negative reaches
+        // NUMERIC as 'NaN' and slips past the accept path's minimum-charge
+        // guard (NaN < 1 is false).
+        const p = Math.round(Number(b.price) * 100) / 100;
+        if (!Number.isFinite(p) || p < 0) {
+          return res.status(422).json({ success: false, error: { code: 'invalid_price' } });
+        }
+        set('price', p);
+      }
     }
     if (b.enabled !== undefined) set('enabled', Boolean(b.enabled));
     if (b.page_id !== undefined) set('page_id', b.page_id ? String(b.page_id).slice(0, 64) : null);

@@ -12,6 +12,7 @@
 // (an operator queue), never a silent drop.
 import { Router, json } from 'express';
 import { pgQuery } from '../db/pg.js';
+import { checkRateLimit } from '../middleware/rateLimiter.js';
 import { ensureCheckoutTables } from '../services/checkoutSchema.js';
 import { resolveCredential } from '../services/gatewayConfigs.js';
 import {
@@ -37,6 +38,27 @@ router.use(json({
   limit: '1mb',
   verify: (req, _res, buf) => { req.rawBody = buf; },
 }));
+
+// Per-IP ceiling on webhook intake. These routes are unauthenticated (the
+// signature is the auth) and each request costs DB round-trips BEFORE the
+// signature can be checked — the session lookup and the credential load are
+// needed to know WHICH secret verifies it. Without a ceiling that is a cheap
+// DB-exhaustion vector. The limit is far above any real gateway's delivery
+// rate, so genuine bursts (redeliveries, backfills) pass untouched.
+router.use(async (req, res, next) => {
+  try {
+    const ip = req.ip || req.socket?.remoteAddress || 'unknown';
+    const { allowed, retryAfter } = await checkRateLimit(`gwhook:${ip}`, 600, 60);
+    if (!allowed) {
+      return res.status(429).json({ success: false, error: { code: 'rate_limited', retryAfter } });
+    }
+  } catch (err) {
+    // Limiter trouble must never drop a real settlement event — fail open
+    // here (the signature check is the actual security boundary).
+    console.error('[gatewayWebhooks] rate limit check failed (fail-open):', err.message);
+  }
+  return next();
+});
 
 // Forensics row for an AUTHENTIC webhook (post-signature). Idempotent on
 // (gateway, id); returns false when the event id was already recorded AND
@@ -196,13 +218,61 @@ router.post('/stripe', async (req, res) => {
 
     if (eventId) await recordWebhookEvent('stripe', eventId, etype, event);
 
+    // ── kind=upsell: settle/fail the 1-click charge row (mirrors the Whop
+    // branch). Without this, a Stripe upsell whose sync response was lost is
+    // settled by nothing — the session is already 'paid', so the base path
+    // below would ack it as already_paid and drop it.
+    if (!isRefund && (obj.metadata?.kind || '') === 'upsell') {
+      const chargeRowId = String(obj.metadata?.charge_row || '');
+      if (!chargeRowId) {
+        if (eventId) await markProcessed('stripe', eventId, 'upsell_missing_charge_row');
+        return res.json({ success: true, ignored: 'missing_charge_row' });
+      }
+      // Authoritative re-fetch — never trust the posted amount for money.
+      const secretKeyUp = await resolveCredential(session.funnel_id || '', 'stripe', 'secret_key');
+      const piUp = await stripeGw.retrievePaymentIntent(secretKeyUp, obj.id || '');
+      if (!piUp.ok) {
+        return res.status(502).json({ success: false, error: { code: 'pi_fetch_failed' } });
+      }
+      if (piUp.status !== 'succeeded') {
+        if (eventId) await markProcessed('stripe', eventId, `upsell_pi_${piUp.status}`);
+        return res.json({ success: true, ignored: `pi_status_${piUp.status}` });
+      }
+      const upRes = await settleUpsellCharge({
+        chargeRowId,
+        gatewayPaymentId: piUp.id,
+        amount: piUp.amount,
+        expectedSessionId: session.id,
+      });
+      if (eventId) {
+        await markProcessed('stripe', eventId, upRes.ok ? (upRes.already ? 'upsell_already' : 'upsell_settled') : `upsell_${upRes.error}`);
+      }
+      return res.json({ success: true, upsell: upRes.ok ? 'settled' : upRes.error });
+    }
+
     if (isRefund) {
-      // amount_refunded is CUMULATIVE on the charge; each refund entry in
-      // refunds.data is idempotent by its own re_… id. Apply each.
+      // Preferred: per-refund breakdown (re_… ids), each idempotent by its own
+      // id — apply each. Fallback: current Stripe API versions omit
+      // refunds.data, leaving only the CUMULATIVE amount_refunded. Booking
+      // that cumulative figure as a fresh ledger entry on every event would
+      // double-count across partial refunds ($10 then cumulative $30 → 40), so
+      // instead book only the DELTA versus what this session already records
+      // for Stripe.
       const refunds = obj.refunds?.data || [];
-      const entries = refunds.length
-        ? refunds.map((r) => ({ ref: String(r.id), amount: stripeGw.minorToAmount(r.amount, r.currency || obj.currency) }))
-        : [{ ref: eventId || `chrf_${obj.id}`, amount: stripeGw.minorToAmount(obj.amount_refunded ?? 0, obj.currency) }];
+      let entries;
+      if (refunds.length) {
+        entries = refunds.map((r) => ({
+          ref: String(r.id), amount: stripeGw.minorToAmount(r.amount, r.currency || obj.currency),
+        }));
+      } else {
+        const cumulative = stripeGw.minorToAmount(obj.amount_refunded ?? 0, obj.currency);
+        const [cur] = await pgQuery(`SELECT refunds FROM co_sessions WHERE id = $1`, [session.id]);
+        const priorSum = (Array.isArray(cur?.refunds) ? cur.refunds : [])
+          .filter((r) => r && r.gateway === 'stripe')
+          .reduce((s, r) => s + Number(r.amount || 0), 0);
+        const delta = Math.round((cumulative - priorSum) * 100) / 100;
+        entries = delta > 0 ? [{ ref: eventId || `chrf_${obj.id}`, amount: delta }] : [];
+      }
       let applied = 0;
       for (const e of entries) {
         const r = await applyRefund({
@@ -248,11 +318,14 @@ router.post('/stripe', async (req, res) => {
 
     if (!result.ok) {
       if (eventId) await markProcessed('stripe', eventId, `error_${result.error}`);
-      if (result.error === 'amount_mismatch') {
-        // Parked at needs_review — ack (409 would make Stripe hammer a
-        // mismatch that needs a human, not a retry).
-        return res.status(409).json({ success: false, error: { code: 'amount_mismatch' } });
+      // These outcomes are PERMANENT for this event — the session is parked
+      // for a human (amount_mismatch) or is in a terminal state a redelivery
+      // can never change (refunded/failed). ACK (200) so the gateway stops
+      // retrying; retrying changes nothing and just floods the endpoint.
+      if (result.error === 'amount_mismatch' || String(result.error).startsWith('unsettleable_status')) {
+        return res.json({ success: true, needs_review: result.error === 'amount_mismatch', noop: true });
       }
+      // Anything else is treated as transient → 500 so the gateway retries.
       return res.status(500).json({ success: false, error: { code: result.error } });
     }
     if (eventId) {
@@ -286,12 +359,29 @@ router.post('/whop', async (req, res) => {
     // metadata.co_session_id resolves (server-side) to its funnel, whose
     // stored secret — or the platform env secret — verifies the event.
     const sessionId = String(metadata.co_session_id || '');
-    const sessions = sessionId
+    let sessions = sessionId
       ? await pgQuery(
         `SELECT id, funnel_id, status, total, currency FROM co_sessions WHERE id = $1`,
         [sessionId]
       )
       : [];
+    // Refund/dispute events routinely omit our metadata, so resolve the funnel
+    // (for the per-funnel secret) via the referenced payment id — otherwise a
+    // per-funnel deployment with no env fallback would 401 every reversal.
+    // This is a READ to pick the verification key; nothing acts on it until
+    // after the signature passes.
+    if (!sessions.length) {
+      const refPaymentId = String(
+        data.payment_id || (typeof data.payment === 'object' && data.payment?.id) || ''
+      );
+      if (refPaymentId) {
+        sessions = await pgQuery(
+          `SELECT id, funnel_id, status, total, currency FROM co_sessions
+           WHERE gateway_session_id = $1 AND gateway = 'whop'`,
+          [refPaymentId]
+        );
+      }
+    }
     const session = sessions[0] || null;
     const secret = await resolveCredential(session?.funnel_id || '', 'whop', 'webhook_secret');
     if (!secret || !whopGw.verifyWebhookSignature(raw, req.headers, secret)) {
@@ -362,6 +452,14 @@ router.post('/whop', async (req, res) => {
 
     // ── kind=upsell: settle/fail the pending 1-click charge row ──
     if (kind === 'upsell') {
+      // The charge row is scoped to the session the signature authenticated —
+      // an upsell event MUST carry a resolvable co_session_id, and the row
+      // must belong to it. Without a verified session there is nothing to
+      // scope the body-supplied charge_row against, so refuse.
+      if (!session) {
+        await markProcessed('whop', webhookId, 'upsell_unknown_session');
+        return res.json({ success: true, unknown_session: true });
+      }
       const chargeRowId = String(metadata.charge_row || '');
       if (!chargeRowId) {
         await markProcessed('whop', webhookId, 'upsell_missing_charge_row');
@@ -369,7 +467,7 @@ router.post('/whop', async (req, res) => {
       }
       if (eventType === 'payment.failed') {
         const { reason } = whopGw.extractDecline(data);
-        await failUpsellCharge({ chargeRowId, reason: reason || 'payment_failed' });
+        await failUpsellCharge({ chargeRowId, reason: reason || 'payment_failed', expectedSessionId: session.id });
         await markProcessed('whop', webhookId, 'upsell_failed');
         return res.json({ success: true, upsell: 'failed' });
       }
@@ -377,7 +475,18 @@ router.post('/whop', async (req, res) => {
         chargeRowId,
         gatewayPaymentId: paymentId,
         amount: whopGw.extractGrossAmount(data),
+        expectedSessionId: session.id,
       });
+      // Money moved but the row is already terminal (a prior async failure /
+      // sweep decline flipped it): recording NOTHING would make a real charge
+      // invisible. Queue it for an operator instead of silently acking.
+      if (!result.ok && String(result.error).startsWith('unsettleable_status')) {
+        await recordUnmatched(
+          paymentId || `whupx_${webhookId}`, 'whop',
+          whopGw.extractGrossAmount(data), String(data.currency || 'USD').toUpperCase(),
+          event, `upsell_settled_on_terminal_row:${chargeRowId}:${result.error}`
+        );
+      }
       await markProcessed(
         'whop', webhookId,
         result.ok ? (result.already ? 'upsell_already' : 'upsell_settled') : `upsell_${result.error}`
@@ -440,11 +549,16 @@ router.post('/whop', async (req, res) => {
       return res.json({ success: true, needs_review: true });
     }
 
+    // The order key is derived from the SAME value stored in
+    // gateway_session_id, so the sweep's backfill (`wh_${gateway_session_id}`)
+    // reconstructs an identical key. Deriving them differently would let a
+    // crash-then-redeliver sequence write two orders for one payment.
+    const whopGatewayId = paymentId || `whwh_${webhookId}`;
     const result = await settleSessionPaid({
       sessionId: session.id,
       gateway: 'whop',
-      gatewayId: paymentId || `whwh_${webhookId}`,
-      idempotencyKey: `wh_${paymentId || webhookId}`,
+      gatewayId: whopGatewayId,
+      idempotencyKey: `wh_${whopGatewayId}`,
       amount: Number(session.total), // reconciled above — snapshot is the book value
       currency: session.currency,
       paymentMethodId: whopGw.extractPaymentMethodId(data),
@@ -457,6 +571,11 @@ router.post('/whop', async (req, res) => {
       result.ok ? (result.settled ? 'settled' : 'already_settled') : `error_${result.error}`
     );
     if (!result.ok) {
+      // A terminal session state (refunded/failed) can't be settled by a
+      // redelivery — ACK so Whop stops retrying. Anything else is transient.
+      if (String(result.error).startsWith('unsettleable_status')) {
+        return res.json({ success: true, noop: true });
+      }
       return res.status(500).json({ success: false, error: { code: result.error } });
     }
     return res.json({ success: true, settled: result.settled, already: result.already });

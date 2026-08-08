@@ -76,6 +76,10 @@ async function stripeFetch(secretKey, method, path, { data, params, idempotencyK
     try { body = await resp.json(); } catch { body = {}; }
     return { status: resp.status, body };
   } catch (err) {
+    // TRANSPORT failure: the request may or may not have reached Stripe, so a
+    // caller must NEVER treat this as a decline (the charge could have
+    // succeeded with the response lost). Callers key off `transport: true`,
+    // not the error string.
     const kind = err?.name === 'AbortError' ? 'timeout' : `network:${err?.name || 'Error'}`;
     return { status: 0, body: {}, transportError: kind };
   } finally {
@@ -96,7 +100,7 @@ export async function createCustomer(secretKey, { email = '', name = '', phone =
   if (phone) data.phone = phone.slice(0, 40);
   for (const [k, v] of Object.entries(metadata)) data[`metadata[${k}]`] = String(v).slice(0, 500);
   const r = await stripeFetch(secretKey, 'POST', '/customers', { data });
-  if (r.transportError) return { ok: false, error: r.transportError };
+  if (r.transportError) return { ok: false, error: r.transportError, transport: true };
   if ((r.status === 200 || r.status === 201) && r.body?.id) {
     return { ok: true, customer_id: r.body.id };
   }
@@ -125,7 +129,7 @@ export async function createPaymentIntent(secretKey, {
   }
   for (const [k, v] of Object.entries(metadata)) data[`metadata[${k}]`] = String(v).slice(0, 500);
   const r = await stripeFetch(secretKey, 'POST', '/payment_intents', { data, idempotencyKey });
-  if (r.transportError) return { ok: false, error: r.transportError };
+  if (r.transportError) return { ok: false, error: r.transportError, transport: true };
   if ((r.status === 200 || r.status === 201) && r.body?.id) {
     return {
       ok: true,
@@ -143,7 +147,7 @@ export async function retrievePaymentIntent(secretKey, piId) {
   const r = await stripeFetch(secretKey, 'GET', `/payment_intents/${encodeURIComponent(piId)}`, {
     params: { 'expand[]': 'latest_charge' },
   });
-  if (r.transportError) return { ok: false, error: r.transportError };
+  if (r.transportError) return { ok: false, error: r.transportError, transport: true };
   if (r.status === 200 && r.body?.id) return { ok: true, id: r.body.id, ...parseIntent(r.body) };
   return { ok: false, error: `pi_http_${r.status}`, detail: errDetail(r.body) };
 }
@@ -168,7 +172,7 @@ export async function chargeOffSession(secretKey, {
   };
   for (const [k, v] of Object.entries(metadata)) data[`metadata[${k}]`] = String(v).slice(0, 500);
   const r = await stripeFetch(secretKey, 'POST', '/payment_intents', { data, idempotencyKey });
-  if (r.transportError) return { ok: false, error: r.transportError };
+  if (r.transportError) return { ok: false, error: r.transportError, transport: true };
   if ((r.status === 200 || r.status === 201) && r.body?.id) {
     const status = r.body.status;
     if (status === 'succeeded') return { ok: true, id: r.body.id, status, ...parseIntent(r.body) };

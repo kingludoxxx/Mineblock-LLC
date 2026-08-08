@@ -1826,3 +1826,36 @@ STATUS: COMPLETE — Whop fully verified. Remaining gates are integrator
 merge + Render env vars (WHOP_API_KEY, WHOP_COMPANY_ID,
 WHOP_WEBHOOK_SECRET) + one live low-value purchase post-deploy.
 ---
+
+---
+TIMESTAMP: 2026-08-09 02:30
+TASK: Integration lane — adversarial review of the money path (3 reviewers) + fixes
+BUILT: Fixed 18 verified issues from a 3-lens adversarial review (money/
+concurrency, security, platform). Criticals: F1 cross-funnel upsell
+charge_row forgery (scoped settle to authenticated session); C1 Stripe
+transport-fail misread as decline (transport flag, hold pending); C2 missing
+Stripe upsell webhook branch (added); C3 reclaim resurrecting needs_review/
+canceled rows (excluded); #2 checkoutPublic had no body parser under prod
+mount order (self-parses now); #4 create-intent new-customer-per-call broke
+retries (reuse session customer). Mediums: stranded-session sweep pass (M2),
+dispute blocks new charges (M5), sweep env clamps (#5), ack-not-retry-storm
+(#8), webhook rate limit (F4), bounded price cache (F5), PUT price validation
+(F6), ILIKE escaping (F8), Whop per-funnel refund verify (#7), Stripe
+cumulative-refund delta (#6), sweep in-flight guard (#10), whop body
+double-consume + variant_id bound (#14). REJECTED one critical false positive
+(JSONB [object Object] claim — proven false vs live DB; the proposed fix would
+have double-encoded and broken everything).
+TESTED: New 16-check review-lock battery (server/tests/money-path/
+review-regression.mjs) reproducing each confirmed failure path + asserting the
+fix. FULL regression after fixes: 29+44+39+16+16 = 144 passed, 0 failed
+across all 5 batteries, run under the EXACT production mount order (public +
+webhooks before global json). Real server boots healthy on branch; db ok.
+OUTPUT: RESULT 144 passed, 0 failed (all batteries). Boot health:
+healthy_redis_degraded, db ok.
+DECISIONS: Verified every finding against running code/DB before changing it;
+1 critical claim rejected as false positive with proof. Report:
+docs/MONEY-PATH-REVIEW.md. Out-of-lane items (pg.js timeout-cancel, global
+error envelope, currency comparison) noted, not changed. DECISION MADE.
+STATUS: COMPLETE — review closed, lane hardened, still on branch pending
+integrator merge.
+---
