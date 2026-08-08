@@ -1,0 +1,211 @@
+// PAGE BUILDER — center canvas.
+// Light buyer-theme surface rendering BlockPreview per block, with:
+//   click-to-select · drag-to-reorder · drop-from-palette · hover quick-insert
+//   between blocks · double-click inline text editing (heading/text/button).
+import { useEffect, useRef, useState } from 'react';
+import { Plus, GripVertical } from 'lucide-react';
+import BlockPreview from './BlockPreview';
+import { BLOCK_DEFS, blockLabel } from './blockRegistry';
+import { DRAG_MIME } from './LeftPanel';
+
+const QUICK_TYPES = ['heading', 'text', 'button', 'image', 'divider', 'spacer', 'section', 'custom_html'];
+
+function QuickInsert({ index, onInsert, disabled }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div
+      className="relative h-2 -my-1 group/qi flex items-center justify-center z-10"
+      onMouseLeave={() => setOpen(false)}
+    >
+      <div className="absolute inset-x-0 top-1/2 h-px bg-transparent group-hover/qi:bg-sky-400/60" />
+      <button
+        onClick={() => !disabled && setOpen((o) => !o)}
+        title={disabled ? 'Block limit reached' : 'Insert block here'}
+        className={`relative opacity-0 group-hover/qi:opacity-100 transition-opacity w-5 h-5 rounded-full
+          bg-sky-500 text-white flex items-center justify-center shadow ${disabled ? 'cursor-not-allowed bg-gray-400' : 'cursor-pointer hover:bg-sky-600'}`}
+      >
+        <Plus className="w-3 h-3" />
+      </button>
+      {open && !disabled && (
+        <div className="absolute top-4 z-30 bg-bg-card border border-border-default rounded-lg shadow-xl p-1 flex flex-wrap gap-0.5 w-64">
+          {QUICK_TYPES.map((t) => {
+            const def = BLOCK_DEFS[t];
+            const Icon = def.icon;
+            return (
+              <button
+                key={t}
+                onClick={() => { onInsert(index, t); setOpen(false); }}
+                className="flex items-center gap-1.5 px-2 py-1 rounded-md text-xs text-text-muted hover:text-text-primary hover:bg-bg-hover cursor-pointer"
+              >
+                <Icon className="w-3 h-3" /> {def.label}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Inline editor for simple text props — swaps the preview for a textarea on
+// double-click; commits on blur / Enter, cancels on Escape.
+function InlineEditor({ value, onCommit, onCancel, multiline }) {
+  const ref = useRef(null);
+  const [text, setText] = useState(value ?? '');
+  useEffect(() => {
+    ref.current?.focus();
+    ref.current?.select();
+  }, []);
+  const commit = () => onCommit(text);
+  return (
+    <textarea
+      ref={ref}
+      value={text}
+      rows={multiline ? 3 : 1}
+      onChange={(e) => setText(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' && !multiline) { e.preventDefault(); commit(); }
+        if (e.key === 'Escape') { e.preventDefault(); onCancel(); }
+      }}
+      className="w-full text-sm p-2 rounded-md resize-y focus:outline-none"
+      style={{ background: '#fff', color: '#111827', border: '2px solid #38bdf8', fontFamily: 'inherit' }}
+    />
+  );
+}
+
+export default function CanvasArea({
+  blocks,
+  selectedId,
+  onSelect,
+  onInsertAt,
+  onMove,
+  onProp,
+  showOutlines,
+  deviceWidth,
+  atLimit,
+  pageCss,
+}) {
+  const [dragId, setDragId] = useState(null);
+  const [dropIndex, setDropIndex] = useState(null);
+  const [editingId, setEditingId] = useState(null);
+  const listRef = useRef(null);
+
+  // Compute insertion index from pointer Y over the block wrappers.
+  const indexFromEvent = (e) => {
+    const nodes = Array.from(listRef.current?.querySelectorAll('[data-blk-idx]') || []);
+    for (let i = 0; i < nodes.length; i++) {
+      const r = nodes[i].getBoundingClientRect();
+      if (e.clientY < r.top + r.height / 2) return i;
+    }
+    return nodes.length;
+  };
+
+  const handleDragOver = (e) => {
+    if (!e.dataTransfer.types.includes(DRAG_MIME)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = dragId ? 'move' : 'copy';
+    setDropIndex(indexFromEvent(e));
+  };
+
+  const handleDrop = (e) => {
+    if (!e.dataTransfer.types.includes(DRAG_MIME)) return;
+    e.preventDefault();
+    let payload = null;
+    try { payload = JSON.parse(e.dataTransfer.getData(DRAG_MIME)); } catch { payload = null; }
+    const idx = indexFromEvent(e);
+    if (payload?.kind === 'new' && payload.type) {
+      if (!atLimit) onInsertAt(idx, payload.type);
+    } else if (payload?.kind === 'move' && payload.id) {
+      const from = blocks.findIndex((b) => b.id === payload.id);
+      if (from !== -1) onMove(from, idx > from ? idx - 1 : idx);
+    }
+    setDragId(null);
+    setDropIndex(null);
+  };
+
+  return (
+    <div className="flex-1 min-w-0 overflow-y-auto bg-bg-main relative" onDragOver={handleDragOver} onDrop={handleDrop} onDragLeave={() => setDropIndex(null)}>
+      <div className="py-8 px-4 flex justify-center min-h-full">
+        {/* Light buyer-theme page surface */}
+        <div
+          className="transition-all duration-200 shadow-2xl rounded-lg overflow-visible self-start"
+          style={{ width: deviceWidth, maxWidth: '100%', background: '#ffffff', minHeight: 480 }}
+        >
+          <div ref={listRef} className="p-5" onClick={() => onSelect(null)}>
+            {!blocks.length && (
+              <div
+                className="border-2 border-dashed rounded-xl p-12 text-center text-sm"
+                style={{ borderColor: '#d1d5db', color: '#9ca3af' }}
+              >
+                Empty page — drag an element here to start.
+              </div>
+            )}
+            {blocks.map((b, i) => {
+              const def = BLOCK_DEFS[b.type];
+              const selected = selectedId === b.id;
+              const inlineProp = def?.inlineEditProp;
+              return (
+                <div key={b.id}>
+                  <QuickInsert index={i} onInsert={onInsertAt} disabled={atLimit} />
+                  {dropIndex === i && <div className="h-0.5 bg-sky-400 rounded-full my-0.5" />}
+                  <div
+                    data-blk-idx={i}
+                    draggable={editingId !== b.id}
+                    onDragStart={(e) => {
+                      setDragId(b.id);
+                      e.dataTransfer.setData(DRAG_MIME, JSON.stringify({ kind: 'move', id: b.id }));
+                      e.dataTransfer.effectAllowed = 'move';
+                    }}
+                    onDragEnd={() => { setDragId(null); setDropIndex(null); }}
+                    onClick={(e) => { e.stopPropagation(); onSelect(b.id); }}
+                    onDoubleClick={(e) => {
+                      if (inlineProp) { e.stopPropagation(); onSelect(b.id); setEditingId(b.id); }
+                    }}
+                    className={`relative group/blk rounded-md transition-shadow ${dragId === b.id ? 'opacity-40' : ''}`}
+                    style={{
+                      outline: selected
+                        ? '2px solid #38bdf8'
+                        : showOutlines
+                          ? '1px dashed #d1d5db'
+                          : '1px solid transparent',
+                      outlineOffset: 2,
+                      margin: '6px 0',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {/* Hover/selected block chrome */}
+                    <div
+                      className={`absolute -top-2.5 left-1 z-20 flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-semibold uppercase tracking-wider
+                        ${selected ? 'opacity-100' : 'opacity-0 group-hover/blk:opacity-100'}`}
+                      style={{ background: '#38bdf8', color: '#fff' }}
+                    >
+                      <GripVertical className="w-2.5 h-2.5 cursor-grab" />
+                      {blockLabel(b)}
+                    </div>
+                    {editingId === b.id && inlineProp ? (
+                      <InlineEditor
+                        value={b.props?.[inlineProp]}
+                        multiline={b.type === 'text'}
+                        onCommit={(v) => { onProp(b.id, inlineProp, v); setEditingId(null); }}
+                        onCancel={() => setEditingId(null)}
+                      />
+                    ) : (
+                      <BlockPreview block={b} pageCss={pageCss} />
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+            {blocks.length > 0 && (
+              <>
+                {dropIndex === blocks.length && <div className="h-0.5 bg-sky-400 rounded-full my-0.5" />}
+                <QuickInsert index={blocks.length} onInsert={onInsertAt} disabled={atLimit} />
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
