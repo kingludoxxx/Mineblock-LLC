@@ -1519,3 +1519,27 @@ granted only to Team - Full Access (revenue data; SuperAdmin has wildcard).
 both for now") — no repo split.
 STATUS: COMPLETE (local). Deploy to puure-dashboard pending Ludo's go.
 ---
+
+---
+TIMESTAMP: 2026-08-08 19:55
+TASK: CRM Phase 1b — Connect Puure Shopify store, full order sync
+BUILT: POST /api/v1/orders/sync-shopify (paginated full import via Admin REST,
+Link/page_info cursor, 429 retry, authoritative count check); cache backfill
+made OPT-IN (CRM_BACKFILL_FROM_CACHE=1) after discovering the local/prod KPI
+cache can hold the OTHER brand's orders (8,723 Mineblock rows locally) and
+hardened for double-encoded legacy line_items; shopifyWebhook.js store domain
+now env-driven (SHOPIFY_STORE_DOMAIN, default = Mineblock).
+TESTED: Token verified against store 9jn59g-x7.myshopify.com ("Puure") with
+positive (200 shop.json) and negative (garbage token -> 401) controls. Removed
+6 fake sample orders. Full sync: shopify_total=117, imported=117, failed=0,
+complete=true; DB spot checks (113 unique customers, $14,362.47 lifetime,
+104 paid / 13 refunded, all line_items proper jsonb arrays); UI verified in
+browser: real orders (#1119 Kelly Duran etc.) render with correct pills,
+destinations, Shopify ids; detail page spot-checked via API.
+OUTPUT: Local Orders page mirrors the live Puure store exactly (117/117).
+DECISIONS: Sync-from-Shopify is the canonical import path (works identically
+on the deployed service); cache backfill demoted to opt-in to prevent
+cross-brand pollution. Shopify creds live in ~/.config/puure/shopify.env
+locally; on Render they will be service env vars.
+STATUS: COMPLETE (local). Live webhook connection requires deploy (Ludo-gated).
+---

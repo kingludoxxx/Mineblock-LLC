@@ -88,10 +88,17 @@ async function ensureTables() {
   `);
   await pgQuery(`CREATE INDEX IF NOT EXISTS idx_crm_order_events_order ON crm_order_events (order_id, created_at DESC)`);
 
-  // One-time backfill from the KPI system's Shopify cache, if it exists.
+  // Optional backfill from the KPI system's Shopify cache. OPT-IN via
+  // CRM_BACKFILL_FROM_CACHE=1 — the cache may belong to a different store
+  // than this deployment's (e.g. Mineblock cache on the Puure service), so
+  // it must never run implicitly. Prefer POST /sync-shopify, which pulls
+  // from the store this deployment is actually configured for.
   // ON CONFLICT DO NOTHING makes re-runs harmless.
   try {
-    const reg = await pgQuery(`SELECT to_regclass('shopify_orders_cache') AS t`);
+    const reg =
+      process.env.CRM_BACKFILL_FROM_CACHE === '1'
+        ? await pgQuery(`SELECT to_regclass('shopify_orders_cache') AS t`)
+        : null;
     if (reg?.[0]?.t) {
       await pgQuery(`
         INSERT INTO crm_orders (
@@ -103,8 +110,15 @@ async function ensureTables() {
         SELECT
           order_id, '#' || order_number::text, created_at, financial_status, fulfillment_status,
           total_price, subtotal_price, total_discounts, currency,
-          country, customer_email, COALESCE(line_items, '[]'::jsonb),
-          COALESCE(jsonb_array_length(COALESCE(line_items, '[]'::jsonb)), 0),
+          country, customer_email,
+          -- line_items may be double-encoded (jsonb string) in legacy cache rows
+          CASE WHEN jsonb_typeof(line_items) = 'array' THEN line_items
+               WHEN jsonb_typeof(line_items) = 'string' THEN (line_items #>> '{}')::jsonb
+               ELSE '[]'::jsonb END,
+          COALESCE(jsonb_array_length(
+            CASE WHEN jsonb_typeof(line_items) = 'array' THEN line_items
+                 WHEN jsonb_typeof(line_items) = 'string' THEN (line_items #>> '{}')::jsonb
+                 ELSE '[]'::jsonb END), 0),
           cogs, COALESCE(refund_amount, 0), refunded_at, order_id, synced_at
         FROM shopify_orders_cache
         ON CONFLICT (order_id) DO NOTHING
@@ -356,6 +370,94 @@ router.get('/stats/today', async (req, res) => {
 // GET /api/v1/orders/subscriptions — placeholder until the subscriptions phase
 router.get('/subscriptions', async (req, res) => {
   res.json({ success: true, data: { subscriptions: [], total: 0 } });
+});
+
+// POST /api/v1/orders/sync-shopify — pull ALL orders from the configured
+// Shopify store into crm_orders. Paginates via Link/page_info, respects the
+// 2 req/s REST limit. Idempotent: upserts by order_id. Used for the initial
+// import and as a manual catch-up; webhooks keep it live afterwards.
+router.post('/sync-shopify', async (req, res) => {
+  const store = process.env.PUURE_SHOPIFY_STORE || process.env.SHOPIFY_STORE_DOMAIN;
+  const token = process.env.PUURE_SHOPIFY_TOKEN || process.env.SHOPIFY_ACCESS_TOKEN;
+  const apiVersion = process.env.SHOPIFY_API_VERSION || '2024-01';
+  if (!store || !token) {
+    return res.status(400).json({
+      error:
+        'Shopify not configured: set PUURE_SHOPIFY_STORE (or SHOPIFY_STORE_DOMAIN) and PUURE_SHOPIFY_TOKEN (or SHOPIFY_ACCESS_TOKEN)',
+    });
+  }
+  try {
+    await ensureTables();
+
+    // Authoritative total for the success check
+    const countRes = await fetch(
+      `https://${store}/admin/api/${apiVersion}/orders/count.json?status=any`,
+      { headers: { 'X-Shopify-Access-Token': token } }
+    );
+    if (!countRes.ok) {
+      const body = (await countRes.text()).slice(0, 200);
+      return res
+        .status(502)
+        .json({ error: `Shopify count failed: HTTP ${countRes.status} ${body}` });
+    }
+    const shopifyTotal = (await countRes.json()).count;
+
+    let url = `https://${store}/admin/api/${apiVersion}/orders.json?status=any&limit=250`;
+    let imported = 0;
+    let failed = 0;
+    const failures = [];
+    let pages = 0;
+
+    while (url && pages < 200) {
+      const resp = await fetch(url, { headers: { 'X-Shopify-Access-Token': token } });
+      if (resp.status === 429) {
+        // Rate limited — honor Retry-After and retry the same page
+        const wait = parseFloat(resp.headers.get('retry-after') || '2') * 1000;
+        await new Promise((r) => setTimeout(r, wait));
+        continue;
+      }
+      if (!resp.ok) {
+        const body = (await resp.text()).slice(0, 200);
+        return res
+          .status(502)
+          .json({ error: `Shopify orders fetch failed: HTTP ${resp.status} ${body}`, imported });
+      }
+      const { orders } = await resp.json();
+      for (const o of orders) {
+        try {
+          await upsertOrderFromShopify(o);
+          imported += 1;
+        } catch (e) {
+          failed += 1;
+          if (failures.length < 5) failures.push({ order: o.name, error: e.message });
+        }
+      }
+      pages += 1;
+
+      // Cursor pagination via the Link header
+      const link = resp.headers.get('link') || '';
+      const next = link.split(',').find((p) => p.includes('rel="next"'));
+      url = next ? next.match(/<([^>]+)>/)?.[1] : null;
+      if (url) await new Promise((r) => setTimeout(r, 550)); // stay under 2 req/s
+    }
+
+    const local = await pgQuery(`SELECT COUNT(*)::int AS n FROM crm_orders WHERE archived = FALSE`);
+    res.json({
+      success: true,
+      data: {
+        shopify_total: shopifyTotal,
+        imported,
+        failed,
+        failures,
+        pages,
+        crm_orders_total: local[0].n,
+        complete: failed === 0 && imported >= shopifyTotal,
+      },
+    });
+  } catch (err) {
+    console.error('[orders] sync-shopify failed:', err);
+    res.status(500).json({ error: 'Sync failed: ' + err.message });
+  }
 });
 
 // GET /api/v1/orders/export — CSV of the current filter set
