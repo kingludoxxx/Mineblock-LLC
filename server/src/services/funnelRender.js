@@ -417,13 +417,107 @@ img { max-width: 100%; height: auto; }
 `;
 
 // ---------------------------------------------------------------------------
+// Flow compilation (slice 4)
+//
+// The canvas edges (funnel.flow_layout.edges, keyed by PAGE ID) become a
+// path-based routing object the page runtime reads. For the page being
+// rendered we resolve:
+//   • next_path     — slug of the 'main' edge's target page
+//   • fallback_path — slug of the 'fallback' edge's target (the decline path
+//                     on an upsell/downsell)
+//   • routes        — { <button/block id>: <target slug> } for any per-button
+//                     edge bindings (edge.buttons[]), when present
+// Fail-open: an edge whose target is archived/missing is simply OMITTED — a
+// stale flow_layout must never crash a serve. `pagesById` maps live page id →
+// { slug }. When it is absent (renderer called without page context) the flow
+// compiles to nulls rather than throwing.
+// ---------------------------------------------------------------------------
+
+export function compileFlow(page, funnel, pagesById) {
+  const empty = { next_path: null, fallback_path: null, routes: {} };
+  try {
+    const flow = isPlainObject((funnel || {}).flow_layout) ? funnel.flow_layout : {};
+    const edges = Array.isArray(flow.edges) ? flow.edges : [];
+    const map = pagesById instanceof Map ? pagesById : new Map();
+    const pid = String((page || {}).id ?? '');
+    if (!pid) return empty;
+
+    const slugOf = (id) => {
+      const p = map.get(String(id));
+      return p && typeof p.slug === 'string' ? p.slug : null;
+    };
+
+    let next_path = null;
+    let fallback_path = null;
+    const routes = {};
+
+    for (const e of edges) {
+      if (!isPlainObject(e)) continue;
+      if (String(e.source) !== pid) continue;
+      const kind = e.kind === 'fallback' ? 'fallback' : 'main';
+      const targetSlug = slugOf(e.target);
+      if (kind === 'main' && next_path === null && targetSlug) next_path = targetSlug;
+      if (kind === 'fallback' && fallback_path === null && targetSlug) fallback_path = targetSlug;
+      // Per-button bindings (optional; not persisted by the slice-3 canvas but
+      // honoured here if a caller/import supplies them on the edge).
+      const buttons = Array.isArray(e.buttons) ? e.buttons : [];
+      for (const b of buttons) {
+        if (!isPlainObject(b)) continue;
+        const bid = b.id != null ? String(b.id) : '';
+        const bslug = slugOf(b.target);
+        if (bid && bslug && routes[bid] === undefined) routes[bid] = bslug;
+      }
+    }
+    return { next_path, fallback_path, routes };
+  } catch {
+    return empty;
+  }
+}
+
+// JSON for inline <script> embedding — escape the characters that could break
+// out of the script element or the surrounding markup. Replacing '<' alone
+// defeats '</script>'; '>' and '&' are escaped for defence-in-depth and the
+// U+2028/U+2029 line separators because they are raw newlines in JS strings.
+function jsonForScript(value) {
+  return JSON.stringify(value)
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e')
+    .replace(/&/g, '\\u0026')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
+}
+
+// Minimal, defensive page runtime: publishes the flow data as window.__fos_flow
+// and wires the common controls WITHOUT a framework —
+//   • <a href="#fos-next">         → next_path
+//   • <a href="#fos-fallback"> / [data-fos-decline] → fallback_path
+//   • [data-lb-btn="<id>"] / [data-fos-route="<id>"] → routes[id]
+// The point of this slice is that the DATA is emitted and correct; this wiring
+// is a thin convenience, guarded so a malformed DOM can never throw.
+function flowRuntimeScript(flow) {
+  const json = jsonForScript(flow);
+  return (
+    `<script>window.__fos_flow=${json};` +
+    `(function(){try{var F=window.__fos_flow||{};` +
+    `function setHref(el,p){if(el&&p){el.setAttribute('href',p);}}` +
+    `document.addEventListener('DOMContentLoaded',function(){try{` +
+    `document.querySelectorAll('a[href="#fos-next"]').forEach(function(a){setHref(a,F.next_path);});` +
+    `document.querySelectorAll('a[href="#fos-fallback"],[data-fos-decline]').forEach(function(a){setHref(a,F.fallback_path);});` +
+    `var R=F.routes||{};` +
+    `document.querySelectorAll('[data-fos-route]').forEach(function(a){setHref(a,R[a.getAttribute('data-fos-route')]);});` +
+    `document.querySelectorAll('[data-lb-btn]').forEach(function(a){var id=a.getAttribute('data-lb-btn');if(id&&R[id])setHref(a,R[id]);});` +
+    `}catch(e){}});}catch(e){}})();</script>`
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Document assembly (port of render_page_html's skeleton).
 // Pipeline order matches the reference:
 //   head: charset/viewport → title/meta/og → theme css → custom_css → head_html
 //   body: custom_html → <main>blocks</main> → custom_js → body_end_html
 // ---------------------------------------------------------------------------
 
-export function renderPageHtml(page, funnel) {
+export function renderPageHtml(page, funnel, pagesById) {
   const pageSeo = isPlainObject((page || {}).seo) ? page.seo : {};
   const siteSeo = isPlainObject((funnel || {}).seo) ? funnel.seo : {};
   const title =
@@ -448,6 +542,10 @@ export function renderPageHtml(page, funnel) {
   const headHtml = String((page || {}).head_html || '');
   const bodyEndHtml = String((page || {}).body_end_html || '');
 
+  // Slice 4: compile the canvas flow for THIS page into window.__fos_flow.
+  const flow = compileFlow(page, funnel, pagesById);
+  const flowScript = flowRuntimeScript(flow);
+
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -462,6 +560,7 @@ ${favicon ? `<link rel="icon" href="${esc(favicon)}"/>` : '<link rel="icon" href
 ${og ? `<meta property="og:image" content="${esc(og)}"/>` : ''}
 <style>${THEME_CSS}</style>
 ${pageCss ? `<style id="lb-page-css">${pageCss}</style>` : ''}
+${flowScript}
 ${headHtml}
 </head>
 <body>
@@ -475,4 +574,4 @@ ${bodyEndHtml}
 </html>`;
 }
 
-export default { renderPageHtml, renderBlock, escapeHtml };
+export default { renderPageHtml, renderBlock, escapeHtml, compileFlow };

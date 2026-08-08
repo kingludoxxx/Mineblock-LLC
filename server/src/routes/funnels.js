@@ -76,6 +76,29 @@ async function createTables() {
   await pgQuery(
     `CREATE INDEX IF NOT EXISTS idx_funnel_pages_serve ON funnel_pages (funnel_id, slug)`
   );
+
+  // Slice 4 — funnel-relative redirects. `from_path`/`to_path` are funnel-root
+  // relative ('/old' → serves under /f/<slug>/old). `match` decides exact vs
+  // longest-prefix; exact always beats prefix at resolution time (funnel-os
+  // DECISIONS/DATA-FLOW: "exact beats longest prefix"). Only `enabled` rows are
+  // consulted. No unique index on from_path: an operator may legitimately keep
+  // an exact and a prefix rule on the same left-hand side (the resolver
+  // disambiguates), and a disabled duplicate is harmless.
+  await pgQuery(`
+    CREATE TABLE IF NOT EXISTS funnel_redirects (
+      id TEXT PRIMARY KEY,
+      funnel_id TEXT NOT NULL REFERENCES funnels(id),
+      from_path TEXT NOT NULL,
+      to_path TEXT NOT NULL,
+      match TEXT NOT NULL DEFAULT 'exact',
+      code INTEGER NOT NULL DEFAULT 301,
+      enabled BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await pgQuery(
+    `CREATE INDEX IF NOT EXISTS idx_funnel_redirects_funnel ON funnel_redirects (funnel_id)`
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -489,6 +512,211 @@ router.patch('/:id/flow', async (req, res) => {
   } catch (err) {
     console.error('[funnels] flow update failed:', err);
     res.status(500).json({ error: 'Failed to save flow layout' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Redirects (slice 4)
+// ---------------------------------------------------------------------------
+
+const REDIRECT_MATCHES = new Set(['exact', 'prefix']);
+const REDIRECT_CODES = new Set([301, 302]);
+// A path must be funnel-root relative: start with '/', no scheme/host, no
+// whitespace, and no '?'/'#' — the query string is carried from the *request*
+// at resolution time, so a stored query would double up. Length-capped.
+const REDIRECT_PATH_RE = /^\/[^\s?#]*$/;
+const REDIRECT_PATH_MAX = 2048;
+
+function validatePath(label, value) {
+  if (typeof value !== 'string') return `${label} must be a string`;
+  const v = value.trim();
+  if (!v.startsWith('/')) return `${label} must start with '/'`;
+  if (v.length > REDIRECT_PATH_MAX) return `${label} is too long`;
+  if (!REDIRECT_PATH_RE.test(v))
+    return `${label} must be a path (no protocol, host, query or fragment)`;
+  return null;
+}
+
+// Shared, pure resolver — exact beats longest-prefix; only enabled rows. A
+// prefix rule matches its own path exactly OR any deeper segment ('/p' covers
+// '/p' and '/p/x' but NOT '/products'). Exported so the public serving router
+// applies IDENTICAL semantics. `reqPath` is the funnel-relative path WITHOUT
+// query string. Returns the winning row or null.
+export function pickRedirect(redirects, reqPath) {
+  if (!Array.isArray(redirects) || !redirects.length) return null;
+  let exact = null;
+  let bestPrefix = null;
+  for (const r of redirects) {
+    if (!r || r.enabled === false) continue;
+    const from = String(r.from_path || '');
+    if (r.match === 'prefix') {
+      const covers = reqPath === from || reqPath.startsWith(from.endsWith('/') ? from : `${from}/`);
+      if (covers && (!bestPrefix || from.length > String(bestPrefix.from_path).length)) {
+        bestPrefix = r;
+      }
+    } else {
+      // treat any non-'prefix' match (default 'exact') as exact
+      if (from === reqPath && !exact) exact = r;
+    }
+  }
+  return exact || bestPrefix || null;
+}
+
+// Load enabled redirects for a funnel — used by the public serving router.
+export async function getEnabledRedirects(funnelId) {
+  return pgQuery(
+    `SELECT * FROM funnel_redirects WHERE funnel_id = $1 AND enabled = TRUE
+     ORDER BY created_at ASC`,
+    [funnelId]
+  );
+}
+
+// GET /api/v1/funnels/:id/redirects — all rows (enabled + disabled)
+router.get('/:id/redirects', async (req, res) => {
+  try {
+    await ensureTables();
+    const funnel = await getFunnel(req.params.id);
+    if (!funnel) return res.status(404).json({ error: 'Funnel not found' });
+    const rows = await pgQuery(
+      `SELECT * FROM funnel_redirects WHERE funnel_id = $1 ORDER BY created_at ASC`,
+      [req.params.id]
+    );
+    res.json({ success: true, data: { redirects: rows } });
+  } catch (err) {
+    console.error('[funnels] redirects list failed:', err);
+    res.status(500).json({ error: 'Failed to load redirects' });
+  }
+});
+
+// POST /api/v1/funnels/:id/redirects — { from_path, to_path, match?, code?, enabled? }
+router.post('/:id/redirects', async (req, res) => {
+  try {
+    await ensureTables();
+    const funnel = await getFunnel(req.params.id);
+    if (!funnel) return res.status(404).json({ error: 'Funnel not found' });
+    if (funnel.archived) {
+      return res.status(400).json({ error: 'Funnel is archived — restore it before adding redirects' });
+    }
+    const body = req.body || {};
+    const fromErr = validatePath('from_path', body.from_path);
+    if (fromErr) return res.status(400).json({ error: fromErr });
+    const toErr = validatePath('to_path', body.to_path);
+    if (toErr) return res.status(400).json({ error: toErr });
+
+    const match = body.match === undefined ? 'exact' : String(body.match);
+    if (!REDIRECT_MATCHES.has(match))
+      return res.status(400).json({ error: `match must be one of: ${[...REDIRECT_MATCHES].join(', ')}` });
+
+    const code = body.code === undefined ? 301 : Number(body.code);
+    if (!REDIRECT_CODES.has(code))
+      return res.status(400).json({ error: 'code must be 301 or 302' });
+
+    let enabled = true;
+    if (body.enabled !== undefined) {
+      if (typeof body.enabled !== 'boolean')
+        return res.status(400).json({ error: 'enabled must be a boolean' });
+      enabled = body.enabled;
+    }
+
+    const id = genId('fr');
+    const rows = await pgQuery(
+      `INSERT INTO funnel_redirects (id, funnel_id, from_path, to_path, match, code, enabled)
+       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+      [id, req.params.id, String(body.from_path).trim(), String(body.to_path).trim(), match, code, enabled]
+    );
+    res.status(201).json({ success: true, data: rows[0] });
+  } catch (err) {
+    console.error('[funnels] redirect create failed:', err);
+    res.status(500).json({ error: 'Failed to create redirect' });
+  }
+});
+
+// PATCH /api/v1/funnels/:id/redirects/:rid
+router.patch('/:id/redirects/:rid', async (req, res) => {
+  try {
+    await ensureTables();
+    const funnel = await getFunnel(req.params.id);
+    if (!funnel) return res.status(404).json({ error: 'Funnel not found' });
+    if (funnel.archived) {
+      return res.status(400).json({ error: 'Funnel is archived — restore it before editing redirects' });
+    }
+    const existing = await pgQuery(
+      `SELECT id FROM funnel_redirects WHERE id = $1 AND funnel_id = $2`,
+      [req.params.rid, req.params.id]
+    );
+    if (!existing.length) return res.status(404).json({ error: 'Redirect not found' });
+
+    const body = req.body || {};
+    const sets = [];
+    const params = [];
+    let i = 1;
+
+    if (body.from_path !== undefined) {
+      const err = validatePath('from_path', body.from_path);
+      if (err) return res.status(400).json({ error: err });
+      sets.push(`from_path = $${i}`);
+      params.push(String(body.from_path).trim());
+      i += 1;
+    }
+    if (body.to_path !== undefined) {
+      const err = validatePath('to_path', body.to_path);
+      if (err) return res.status(400).json({ error: err });
+      sets.push(`to_path = $${i}`);
+      params.push(String(body.to_path).trim());
+      i += 1;
+    }
+    if (body.match !== undefined) {
+      const match = String(body.match);
+      if (!REDIRECT_MATCHES.has(match))
+        return res.status(400).json({ error: `match must be one of: ${[...REDIRECT_MATCHES].join(', ')}` });
+      sets.push(`match = $${i}`);
+      params.push(match);
+      i += 1;
+    }
+    if (body.code !== undefined) {
+      const code = Number(body.code);
+      if (!REDIRECT_CODES.has(code))
+        return res.status(400).json({ error: 'code must be 301 or 302' });
+      sets.push(`code = $${i}`);
+      params.push(code);
+      i += 1;
+    }
+    if (body.enabled !== undefined) {
+      if (typeof body.enabled !== 'boolean')
+        return res.status(400).json({ error: 'enabled must be a boolean' });
+      sets.push(`enabled = $${i}`);
+      params.push(body.enabled);
+      i += 1;
+    }
+    if (!sets.length) return res.status(400).json({ error: 'No fields to update' });
+
+    params.push(req.params.rid, req.params.id);
+    const rows = await pgQuery(
+      `UPDATE funnel_redirects SET ${sets.join(', ')}
+       WHERE id = $${i} AND funnel_id = $${i + 1} RETURNING *`,
+      params
+    );
+    res.json({ success: true, data: rows[0] });
+  } catch (err) {
+    console.error('[funnels] redirect update failed:', err);
+    res.status(500).json({ error: 'Failed to update redirect' });
+  }
+});
+
+// DELETE /api/v1/funnels/:id/redirects/:rid — redirects are cheap config, so
+// this is a hard delete (unlike pages/funnels, which archive).
+router.delete('/:id/redirects/:rid', async (req, res) => {
+  try {
+    await ensureTables();
+    const rows = await pgQuery(
+      `DELETE FROM funnel_redirects WHERE id = $1 AND funnel_id = $2 RETURNING id`,
+      [req.params.rid, req.params.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Redirect not found' });
+    res.json({ success: true, data: { id: rows[0].id } });
+  } catch (err) {
+    console.error('[funnels] redirect delete failed:', err);
+    res.status(500).json({ error: 'Failed to delete redirect' });
   }
 });
 
