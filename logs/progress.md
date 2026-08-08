@@ -1907,3 +1907,27 @@ button wired to the same session purchase_url in custom_js. Savings row only
 renders if the server session ever carries a discount amount (no fabricated
 numbers). Trust badges are styled text chips, not logo artwork.
 STATUS: COMPLETE
+
+---
+TIMESTAMP: 2026-08-09 02:05
+TASK: Domain Hub lane — buy/attach/manage custom domains per funnel (feat/domain-hub)
+BUILT: lb_domains + domain_events + whois-contact schema; attach/verify/detach state
+machine (pending_dns → verifying → connected | error, bounded retries, idempotent
+Render registration); node:dns provider detection + required-records engine; optional
+Cloudflare auto-DNS; Namecheap registrar adapter (XML, POST body, confirm-gated
+purchase) + cloudflare stub; background verify sweep (moneySweeps pattern);
+resolveCustomHost + customDomainMiddleware (30s cached, fail-open, documented hook —
+NOT wired); routes/domainHub.js (authed funnels:access); DomainHubPage UI (5 tabs).
+TESTED: test-domain-hub.mjs — 93 assertions on embedded PG :5433 (db puure_domains),
+app :4026, mocked Render/Namecheap/Cloudflare via env base seams, injected DNS
+resolver. Edge cases: DNS resolver outage, Render 500 + recovery, retry exhaustion,
+double-attach, double-purchase, detach with failed unregister. vite build green.
+UI verified in browser against demo backend (all tabs + modals screenshotted).
+OUTPUT: 93 passed, 0 failed. Render create called exactly once across repeated
+verifies; purchase refused without confirm/creds; homoglyph + own-host domains 400.
+DECISIONS: connected-without-Render-creds allowed in local/dev but logged as
+degraded; domain unique 1:1 to funnel (friend's tool allows multi-funnel hosts —
+simplified); logs/progress.md append is the only shared-file write beyond the two
+flagged App.jsx/Sidebar lines.
+STATUS: COMPLETE (module-only; integration hooks documented, wired at merge)
+---

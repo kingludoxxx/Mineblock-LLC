@@ -20,6 +20,7 @@ import AbandonedCheckoutsPage from './pages/orders/AbandonedCheckoutsPage';
 import CustomersPage from './pages/customers/CustomersPage';
 import CustomerDetailPage from './pages/customers/CustomerDetailPage';
 import FunnelsPage from './pages/funnels/FunnelsPage';
+import DomainHubPage from './pages/domains/DomainHubPage'; // DOMAIN-HUB LANE: single additive import
 import FunnelCanvasPage from './pages/funnels/FunnelCanvasPage';
 import FunnelPageEditorPage from './pages/funnels/FunnelPageEditorPage';
 import Settings from './pages/Settings';
@@ -126,6 +127,7 @@ export default function App() {
           <Route path="customers" element={<PageGate permission="customers:access"><CustomersPage /></PageGate>} />
           <Route path="customers/:email" element={<PageGate permission="customers:access"><CustomerDetailPage /></PageGate>} />
           <Route path="abandoned" element={<PageGate permission="orders:access"><AbandonedCheckoutsPage /></PageGate>} />
+          <Route path="domains" element={<PageGate permission="funnels:access"><DomainHubPage /></PageGate>} /> {/* DOMAIN-HUB LANE: single additive route line */}
           <Route path="funnels" element={<PageGate permission="funnels:access"><FunnelsPage /></PageGate>} />
           <Route path="funnels/:id" element={<PageGate permission="funnels:access"><FunnelCanvasPage /></PageGate>} />
           <Route path="funnels/:id/pages/:pageId" element={<PageGate permission="funnels:access"><FunnelPageEditorPage /></PageGate>} />
