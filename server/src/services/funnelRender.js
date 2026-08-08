@@ -861,11 +861,11 @@ function cktOptions(pairs, selected) {
 // any other block the operator later drops onto the page.
 const CKT_TEMPLATE_CSS = `/* Checkout template (seeded) — buyer-facing LIGHT theme */
 body{background:#fff;color:#111827;}
-main{display:grid;grid-template-columns:minmax(0,1fr) 420px;column-gap:56px;row-gap:0;max-width:1180px;margin:0 auto;padding:28px 24px 64px;align-items:start;}
+main{display:grid;grid-template-columns:minmax(0,1fr) 420px;column-gap:56px;row-gap:0;max-width:1180px;margin:0 auto;padding:0 24px 64px;align-items:start;}
 main>.lb-blk{grid-column:1;min-width:0;margin:0 0 26px;}
 main>[data-blk-id='ckt_summary']{grid-column:2;grid-row:1/span 40;margin:0;align-self:stretch;border-left:1px solid #e2e2e2;background:#f7f7f7;padding-left:36px;}
 /* Brand */
-.ckt-brand{text-align:center;padding:8px 0 4px;}
+.ckt-brand{text-align:center;padding:30px 0 4px;}
 .ckt-brand-link{display:inline-block;line-height:0;}
 .ckt-brand-logo{height:36px;width:auto;display:inline-block;}
 /* Urgency banner */
