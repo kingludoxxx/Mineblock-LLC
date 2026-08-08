@@ -1669,3 +1669,37 @@ than empty-props degrade (reference behavior); form + quiz_embed included in
 the placeholder set per lane brief.
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-08-08 21:35
+TASK: Integration lane slice 1 — checkout sessions + authoritative pricing
+BUILT: co_* schema module (server/src/services/checkoutSchema.js — all 7
+money tables with unique keys: co_orders.idempotency_key UNIQUE, upsell
+TRIPLE (session,offer,charge), webhook (gateway,id) PK, unmatched webhook_id
+PK); checkoutPricing.js (Shopify GraphQL nodes re-pricing, 60s TTL cache
+incl. known-bad, PricingUnavailableError 503 vs omitted-variant 422 split,
+creds read at call time); routes/checkoutPublic.js (POST create-session:
+20/min per-IP limit via house checkRateLimit, optional origin allow-list,
+qty clamp 1..100, max 50 lines, $1 min total, client prices never read,
+tracking snapshot nullable; GET session/:id safe allow-list snapshot);
+routes/checkoutAdmin.js (authenticate + requirePermission('checkout',
+'access'): list w/ filters, stats with paid-only revenue, detail w/ events/
+orders/charges); migration 090 checkout permission.
+TESTED: 29-check battery (scratchpad test_slice1.mjs) against 3 harnesses:
+live Shopify (:4003), dead Shopify host (:4005), EUR base currency (:4006),
+plus direct DB assertions on puure_money. Edge cases: tampered client price
+ignored (0.01→89.00 server), unknown + draft variant 422, empty/malformed/
+missing carts 4xx no crash, qty clamp 0→1 5000→100, dead Shopify → 503
+pricing_unavailable (never 422), currency mismatch → 422, admin 401 unauth,
+rate limit 429, replayed create mints new session, GET leaks no PII.
+OUTPUT: RESULT: 29 passed, 0 failed. Migration 090 verified: Team - Full
+Access gains {"checkout":["access"]}.
+DECISIONS: (1) No co_stores port — sessions carry funnel_id/page_id TEXT
+(builder lane's funnels.id type), currency authority = Shopify shop currency
+w/ optional CHECKOUT_BASE_CURRENCY fail-closed guard. (2) All co_ DDL lives
+in one schema module shared by the three checkout route files so constraint
+definitions can't drift. (3) Local verification via scratchpad harness
+mounting only lane files — shared app.js untouched; mount hunks go in the
+integrator report. DECISION MADE on all three.
+STATUS: COMPLETE (local verification; integrator merge pending)
+---
