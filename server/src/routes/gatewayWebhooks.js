@@ -21,8 +21,14 @@ import {
 } from '../services/checkoutSettle.js';
 import * as stripeGw from '../services/gateways/stripe.js';
 import * as whopGw from '../services/gateways/whop.js';
+import { startMoneySweeps } from '../services/moneySweeps.js';
 
 const router = Router();
+
+// The 10-minute reconciliation cron rides this module's load (same pattern
+// as brandSpy's media-mirror worker) — webhooks settle, the sweep catches
+// what they missed.
+startMoneySweeps();
 
 // Raw-body capture. If an upstream parser already consumed the stream this
 // is a no-op, req.rawBody stays undefined, and signature checks fail closed —
@@ -68,6 +74,68 @@ async function recordUnmatched(webhookId, gateway, amount, currency, payload, re
   );
 }
 
+// ── Refund / dispute writeback (shared by both gateways) ───────────────────
+// Appends an idempotent refund entry to co_sessions.refunds (keyed by the
+// gateway's refund/dispute ref) and flips status to 'refunded' when the
+// cumulative refunded amount covers the total — computed inside the UPDATE
+// so concurrent partial refunds can't race the status. A dispute
+// additionally parks the session and cancels outstanding upsell charges so
+// a chargeback never triggers another off-session charge.
+async function applyRefund({ sessionId, ref, amount, gateway, isDispute }) {
+  if (amount === null || amount === undefined) {
+    await pgQuery(
+      `UPDATE co_sessions SET needs_review_reason = $2, updated_at = NOW()
+       WHERE id = $1 AND needs_review_reason IS NULL`,
+      [sessionId, `refund_amount_unknown:${ref}`.slice(0, 300)]
+    );
+    return { ok: false, error: 'refund_amount_unknown' };
+  }
+  // Raw JS arrays — postgres.js serializes them to jsonb itself; a
+  // JSON.stringify here double-encodes into string elements (repo-wide rule).
+  const entry = [{
+    id: ref,
+    amount: Math.round(Number(amount) * 100) / 100,
+    gateway,
+    dispute: Boolean(isDispute),
+    at: new Date().toISOString(),
+  }];
+  const guard = [{ id: ref }];
+  const rows = await pgQuery(
+    `UPDATE co_sessions
+     SET refunds = refunds || $2::jsonb,
+         status = CASE WHEN (
+           SELECT COALESCE(SUM((r->>'amount')::numeric), 0)
+           FROM jsonb_array_elements(refunds || $2::jsonb) r
+         ) >= total - 0.01 THEN 'refunded' ELSE status END,
+         updated_at = NOW()
+     WHERE id = $1 AND NOT refunds @> $3::jsonb
+     RETURNING status`,
+    [sessionId, entry, guard]
+  );
+  if (rows.length) {
+    try {
+      await pgQuery(
+        `INSERT INTO co_events (session_id, kind, data) VALUES ($1, $2, $3)`,
+        [sessionId, isDispute ? 'dispute' : 'refund', { ref, amount: Number(amount), gateway }]
+      );
+    } catch { /* non-fatal */ }
+  }
+  if (isDispute) {
+    await pgQuery(
+      `UPDATE co_sessions SET needs_review_reason = $2, updated_at = NOW()
+       WHERE id = $1 AND needs_review_reason IS NULL`,
+      [sessionId, `dispute:${ref}`.slice(0, 300)]
+    );
+    await pgQuery(
+      `UPDATE co_upsell_charges SET status = 'canceled',
+         error = 'canceled_by_dispute', updated_at = NOW()
+       WHERE session_id = $1 AND status IN ('charging', 'pending_settlement')`,
+      [sessionId]
+    );
+  }
+  return { ok: true, duplicate: !rows.length, status: rows[0]?.status };
+}
+
 // ── Stripe: payment_intent.succeeded → settle processing → paid ────────────
 router.post('/stripe', async (req, res) => {
   try {
@@ -81,16 +149,24 @@ router.post('/stripe', async (req, res) => {
     const etype = event.type || '';
     const eventId = String(event.id || '');
     const obj = event.data?.object || {};
-    if (etype !== 'payment_intent.succeeded') {
+    const isRefund = etype === 'charge.refunded';
+    if (etype !== 'payment_intent.succeeded' && !isRefund) {
       return res.json({ success: true, ignored: etype });
     }
 
     // Locate the session FIRST — its funnel decides which signing secret
-    // verifies this event (per-funnel creds, env fallback).
+    // verifies this event (per-funnel creds, env fallback). A refund's
+    // charge object references the PI; sessions store that PI id.
     const sessionId = obj.metadata?.co_session_id || '';
-    const sessions = sessionId
+    let sessions = sessionId
       ? await pgQuery(`SELECT id, funnel_id, status FROM co_sessions WHERE id = $1`, [sessionId])
       : [];
+    if (!sessions.length && isRefund && obj.payment_intent) {
+      sessions = await pgQuery(
+        `SELECT id, funnel_id, status FROM co_sessions WHERE gateway_session_id = $1`,
+        [String(obj.payment_intent)]
+      );
+    }
     const session = sessions[0] || null;
 
     const signingSecret = await resolveCredential(
@@ -101,6 +177,11 @@ router.post('/stripe', async (req, res) => {
       return res.status(403).json({ success: false, error: { code: 'bad_signature' } });
     }
 
+    if (!session && isRefund) {
+      // A refund for a session we don't know is money OUT, not in — nothing
+      // to write back; ack so Stripe stops retrying.
+      return res.json({ success: true, unknown_session: true, refund: true });
+    }
     if (!session) {
       // AUTHENTIC payment with no session we know — real money we cannot
       // attribute. Queue for an operator, ack so Stripe stops retrying.
@@ -114,6 +195,24 @@ router.post('/stripe', async (req, res) => {
     }
 
     if (eventId) await recordWebhookEvent('stripe', eventId, etype, event);
+
+    if (isRefund) {
+      // amount_refunded is CUMULATIVE on the charge; each refund entry in
+      // refunds.data is idempotent by its own re_… id. Apply each.
+      const refunds = obj.refunds?.data || [];
+      const entries = refunds.length
+        ? refunds.map((r) => ({ ref: String(r.id), amount: stripeGw.minorToAmount(r.amount, r.currency || obj.currency) }))
+        : [{ ref: eventId || `chrf_${obj.id}`, amount: stripeGw.minorToAmount(obj.amount_refunded ?? 0, obj.currency) }];
+      let applied = 0;
+      for (const e of entries) {
+        const r = await applyRefund({
+          sessionId: session.id, ref: e.ref, amount: e.amount, gateway: 'stripe', isDispute: false,
+        });
+        if (r.ok && !r.duplicate) applied++;
+      }
+      if (eventId) await markProcessed('stripe', eventId, `refund_applied_${applied}`);
+      return res.json({ success: true, refund: true, applied });
+    }
 
     if (session.status === 'paid') {
       // Redelivery guard — settle already ran for this session.
@@ -217,6 +316,39 @@ router.post('/whop', async (req, res) => {
       if (existing?.processed_at) {
         return res.json({ success: true, duplicate: true });
       }
+    }
+
+    // Refund / dispute writeback: reverses money out-of-band and routinely
+    // lacks our metadata — resolve the session by the referenced payment id
+    // when metadata is absent.
+    const et = String(eventType).toLowerCase();
+    const isWhopRefund = et.startsWith('refund.') || et === 'payment.refunded';
+    const isWhopDispute = et.startsWith('dispute.') || et.startsWith('charge.dispute') || et === 'payment.disputed';
+    if (isWhopRefund || isWhopDispute) {
+      let target = session;
+      const refPaymentId = String(
+        data.payment_id || (typeof data.payment === 'object' && data.payment?.id) || ''
+      );
+      if (!target && refPaymentId) {
+        const bySession = await pgQuery(
+          `SELECT id, funnel_id, status FROM co_sessions WHERE gateway_session_id = $1 AND gateway = 'whop'`,
+          [refPaymentId]
+        );
+        target = bySession[0] || null;
+      }
+      if (!target) {
+        await markProcessed('whop', webhookId, 'reversal_unknown_session');
+        return res.json({ success: true, unknown_session: true, reversal: true });
+      }
+      const ref = String(data.id || webhookId);
+      const amount = whopGw.extractGrossAmount(data);
+      const r = await applyRefund({
+        sessionId: target.id, ref,
+        amount: isWhopDispute && amount === null ? 0 : amount, // a dispute parks even amount-less
+        gateway: 'whop', isDispute: isWhopDispute,
+      });
+      await markProcessed('whop', webhookId, isWhopDispute ? 'dispute_applied' : `refund_${r.ok ? 'applied' : r.error}`);
+      return res.json({ success: true, reversal: true, dispute: isWhopDispute, applied: r.ok && !r.duplicate });
     }
 
     if (eventType !== 'payment.succeeded' && eventType !== 'payment.failed') {

@@ -213,6 +213,19 @@ router.put('/upsells/:id', async (req, res) => {
   }
 });
 
+// POST /sweeps/run — manual reconciliation trigger (ops). Same code path as
+// the 10-minute cron.
+router.post('/sweeps/run', async (req, res) => {
+  try {
+    const { runMoneySweepOnce } = await import('../services/moneySweeps.js');
+    const stats = await runMoneySweepOnce();
+    return res.json({ success: true, data: stats });
+  } catch (err) {
+    console.error('[checkoutAdmin] sweep run failed:', err.message);
+    return res.status(500).json({ success: false, error: { code: 'internal_error' } });
+  }
+});
+
 // GET /unmatched-payments — the operator queue of real money the system
 // could not attribute. Check this queue.
 router.get('/unmatched-payments', async (req, res) => {

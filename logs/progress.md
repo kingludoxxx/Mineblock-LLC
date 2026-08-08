@@ -1774,3 +1774,32 @@ same pattern as Stripe. DECISION MADE on all four.
 STATUS: COMPLETE (local verification; live Whop test-mode BLOCKED on
 operator credentials — same errors.md entry as slice 2)
 ---
+
+---
+TIMESTAMP: 2026-08-08 23:50
+TASK: Integration lane slice 4 — money sweeps + refunds/disputes writeback
+BUILT: moneySweeps.js (10-min in-process cron, self-starts from
+gatewayWebhooks import, MONEY_SWEEP_DISABLED kill-switch; reconciles
+stuck pending_settlement via read-only gateway fetch REUSING checkoutSettle
+helpers, parks orphan/stale-charging ambiguity at needs_review per
+DECISIONS #3, backfills paid-but-orderless sessions idempotently);
+refund/dispute writeback in both webhooks (idempotent per refund ref via
+jsonb @> guard, cumulative-total → 'refunded' computed inside the UPDATE,
+Whop metadata-less reversals resolved by payment id, amount-less refunds
+park, disputes cancel outstanding charges); admin POST /sweeps/run.
+TESTED: 16-check slice battery + FULL 4-slice regression on final code:
+29+44+39+16 = 128 passed, 0 failed. Edge cases: lost-webhook settle,
+gateway-failed decline, still-pending untouched, orphan >24h parked, stale
+charging parked, double sweep → no dup order, refund replay → no double
+append, partial→full refund status flip, dispute cancels pending charges +
+sweep never resurrects them, idle sweep all-zeros. Real server boot on
+branch: healthy, migration 090 applied.
+OUTPUT: RESULT: 16 passed, 0 failed; regression EXIT=0 (128/128).
+DECISIONS: (1) Fixed a JSONB double-encode (JSON.stringify on refunds
+param — repo rule violation caught by test, switched to raw arrays). (2)
+charge.refunded is now handled (was ignored) — slice-2 test updated
+accordingly. (3) Sweep starts from gatewayWebhooks module load (brandSpy
+worker pattern) so no shared-file edit is needed. DECISION MADE on all.
+STATUS: COMPLETE — lane finished. Report: docs/MONEY-PATH-REPORT.md.
+Integrator: apply mount hunks + rerun replay proof before merge.
+---

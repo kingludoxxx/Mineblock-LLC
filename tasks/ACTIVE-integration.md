@@ -12,5 +12,5 @@ Local env: Postgres 127.0.0.1:5433 db `puure_money`, server :4003.
     EXIT BAR: same webhook event twice → exactly one order, second no-op.
 [x] Slice 3: Whop — client port (embedded checkout + saved payment method),
     settlement webhook, 1-click upsell charges (TRIPLE key), decline marker.
-[ ] Slice 4: Sweeps + refunds — 10-min reconciliation cron, stuck
+[x] Slice 4: Sweeps + refunds — 10-min reconciliation cron, stuck
     pending_settlement recovery, refunds writeback, co_unmatched_payments.
