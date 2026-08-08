@@ -7,7 +7,7 @@ import { Router } from 'express';
 import { pgQuery } from '../db/pg.js';
 import { authenticate } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/rbac.js';
-import { checkoutPageTemplate } from '../services/funnelRender.js';
+import { checkoutPageTemplate, upsellPageTemplate } from '../services/funnelRender.js';
 
 const router = Router();
 
@@ -792,17 +792,17 @@ router.post('/:id/pages', async (req, res) => {
     // if the seed cannot be built or does not validate, the page is created
     // empty exactly as before — template trouble must never block page create.
     let seed = null;
-    if (type === 'checkout') {
+    if (type === 'checkout' || type === 'upsell') {
       try {
-        const tpl = checkoutPageTemplate();
+        const tpl = type === 'upsell' ? upsellPageTemplate() : checkoutPageTemplate();
         const seedErr = validateBlocks(tpl.blocks);
         if (seedErr) {
-          console.error('[funnels] checkout template seed invalid (fail-open):', seedErr);
+          console.error(`[funnels] ${type} template seed invalid (fail-open):`, seedErr);
         } else {
           seed = tpl;
         }
       } catch (err) {
-        console.error('[funnels] checkout template seed failed (fail-open):', err.message);
+        console.error(`[funnels] ${type} template seed failed (fail-open):`, err.message);
       }
     }
 
