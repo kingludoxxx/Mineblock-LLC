@@ -1877,3 +1877,33 @@ error envelope, currency comparison) noted, not changed. DECISION MADE.
 STATUS: COMPLETE — review closed, lane hardened, still on branch pending
 integrator merge.
 ---
+
+---
+TIMESTAMP: 2026-08-08 23:45
+TASK: Checkout page template (Lane 2, funnels/checkout-template)
+BUILT: Default styled checkout-page template (Approach A: page-create seed). New
+`checkoutPageTemplate()` in server/src/services/funnelRender.js returns 13 seed
+blocks + custom_css + custom_js replicating the live two-column Whop checkout
+(docs/CHECKOUT-TEMPLATE-SPEC.md): brand, urgency banner, Contact, Delivery,
+Shipping method, Billing checkbox, Payment card hosting the LIVE whop_checkout
+block, Complete-checkout button, trust badges, footer links | right sticky
+order summary with promo input. funnels.js POST /:id/pages seeds it when
+type='checkout' (fail-open: template trouble creates an empty page, never 500s).
+TESTED: Fresh DB puure_tmpl on 127.0.0.1:5433, server on :4011,
+FUNNEL_PUBLIC_ENABLED=1. 32/32 automated checks passed (.tmpl-scratch/verify.mjs):
+seeded create, non-checkout control unseeded, public GET 200 with both columns +
+whop mount + create-session runtime + loader URL, XSS (hostile button_text /
+variant_id </script> breakout / order_summary title all escaped), fail-open
+(no-variant and empty-props whop block still 200 with inline message, layout
+intact). Browser-verified desktop 1440px + mobile 375px (stacks, summary first,
+no horizontal overflow); billing checkbox reveal verified via computed styles.
+`npx vite build` passes (client untouched).
+OUTPUT: GET /f/tmpl-verify/checkout → 200 HTML, two-column grid, payment card
+join seamless, black Complete-checkout button, badges + footer present.
+DECISIONS: Approach A over B (seeded blocks stay individually editable on the
+canvas; a monolithic checkout_layout block would not be). Whop embed's fallback
+purchase link hidden via CSS and replaced by the template's Complete-checkout
+button wired to the same session purchase_url in custom_js. Savings row only
+renders if the server session ever carries a discount amount (no fabricated
+numbers). Trust badges are styled text chips, not logo artwork.
+STATUS: COMPLETE

@@ -7,6 +7,7 @@ import { Router } from 'express';
 import { pgQuery } from '../db/pg.js';
 import { authenticate } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/rbac.js';
+import { checkoutPageTemplate } from '../services/funnelRender.js';
 
 const router = Router();
 
@@ -785,12 +786,38 @@ router.post('/:id/pages', async (req, res) => {
     );
     const isHome = existing[0].n === 0;
 
+    // CHECKOUT-TEMPLATE: a new 'checkout' page starts from the default styled
+    // template (two-column layout replicating the live checkout — see
+    // docs/CHECKOUT-TEMPLATE-SPEC.md) instead of an empty canvas. Fail-open:
+    // if the seed cannot be built or does not validate, the page is created
+    // empty exactly as before — template trouble must never block page create.
+    let seed = null;
+    if (type === 'checkout') {
+      try {
+        const tpl = checkoutPageTemplate();
+        const seedErr = validateBlocks(tpl.blocks);
+        if (seedErr) {
+          console.error('[funnels] checkout template seed invalid (fail-open):', seedErr);
+        } else {
+          seed = tpl;
+        }
+      } catch (err) {
+        console.error('[funnels] checkout template seed failed (fail-open):', err.message);
+      }
+    }
+
     const id = genId('fpg');
-    const rows = await pgQuery(
-      `INSERT INTO funnel_pages (id, funnel_id, slug, type, title, is_home)
-       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-      [id, req.params.id, slug, type, title, isHome]
-    );
+    const rows = seed
+      ? await pgQuery(
+          `INSERT INTO funnel_pages (id, funnel_id, slug, type, title, is_home, blocks, custom_css, custom_js)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+          [id, req.params.id, slug, type, title, isHome, seed.blocks, seed.custom_css, seed.custom_js]
+        )
+      : await pgQuery(
+          `INSERT INTO funnel_pages (id, funnel_id, slug, type, title, is_home)
+           VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+          [id, req.params.id, slug, type, title, isHome]
+        );
     res.status(201).json({ success: true, data: rows[0] });
   } catch (err) {
     if (err?.code === UNIQUE_VIOLATION) {
