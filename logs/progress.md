@@ -1568,3 +1568,23 @@ DECISIONS: Customers derived by aggregation (no customer table) until the
 funnel identity spine lands; identity fields = latest order wins. NONE else.
 STATUS: COMPLETE (local). Rides the same pending deploy as Orders.
 ---
+
+---
+TIMESTAMP: 2026-08-08 20:55
+TASK: CRM Phase 1 — PRODUCTION DEPLOY (puure-dashboard.onrender.com)
+BUILT: Merged feature/orders-page -> main (e4986c1), pushed. Set Shopify env
+vars on srv-d9r4elcs728c73d01gug via per-key upsert (SHOPIFY_STORE_DOMAIN=
+Puure store 9jn59g-x7, ACCESS_TOKEN, WEBHOOK_SECRET; existing 16 vars
+untouched, verified 19 after). Triggered manual deploy dep-d9rng4142hec738t5bag.
+TESTED: Deploy status live @18:41:51Z. New code confirmed serving (401 not
+404 on /orders,/customers). Prod login OK. Webhooks registered on Puure
+store: orders/create=2003875987759, orders/updated=2003876020527,
+orders/paid=2003876053295. Production sync: 117/117 imported, 0 failed,
+complete=true. Prod list + customers stats verified (113 customers,
+$14,362.47 — matches local exactly).
+OUTPUT: Orders + Customers + Operations menu LIVE with real-time webhook
+connection to the Puure store. Awaiting Ludo's live test order as final proof.
+DECISIONS: Env vars upserted per-key (never bulk PUT) to protect the live
+service. NONE else.
+STATUS: COMPLETE (production). Builder slice 1 in progress (worktree agent).
+---
