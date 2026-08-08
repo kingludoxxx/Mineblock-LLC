@@ -1907,3 +1907,13 @@ button wired to the same session purchase_url in custom_js. Savings row only
 renders if the server session ever carries a discount amount (no fabricated
 numbers). Trust badges are styled text chips, not logo artwork.
 STATUS: COMPLETE
+
+---
+TIMESTAMP: 2026-08-09 01:58
+TASK: Funnel page types (feat/page-types) — Thank You, Downsell, Opt-in, Storefront, Quiz, Advertorial + countdown runtime
+BUILT: 6 new seed templates + 4 new XSS-safe block renderers (order_confirmation, optin_form, storefront_grid, quiz_steps) + 4 conditional runtimes (thank-you session fill via EXISTING GET /session/:id, optin submit, quiz steps, countdown tick) in funnelRender.js (purely additive, 0 deletions); PAGE_SEED_TEMPLATES switch in funnels.js; NEW routes/optinPublic.js (leads intake: honeypot, 10/min rate limit, origin allow-list) + services/optinLeads.js (optin_leads DDL). Downsell = upsell_offer block + existing /upsell/* endpoints, zero new money code.
+TESTED: server/tests/page-types/page-types.mjs — 81 checks (real authed page-create route per type, serve 200 per type, hostile-prop XSS probes on every new block, downsell double-click exactly-once vs mock Whop, optin honeypot/rate-limit/origin/bounds, session snapshot edge cases). Browser click-through (Playwright): optin submit advance + lead row, quiz 3-step + sessionStorage + no answers in URL + finish advance, countdown tick + expired text — 9/9. Regressions: shopify-order-create 56/56, upsell-page 49/49. 12 screenshots desktop+mobile.
+OUTPUT: 81 passed 0 failed; 9/9 click-through; regressions green; screenshots in scratchpad shots/.
+DECISIONS: DECISION MADE — used existing enum value 'thankyou' (not 'thank_you'); seeded advertorial under existing 'lead' type instead of adding an 'advertorial' enum; added 'optin'+'storefront' to PAGE_TYPES; advertorial quote uses own html block because the native testimonial renderer hardcodes an em-dash (ban on Puure buyer copy); downsell CSS carries .lb-upsell-status[hidden]{display:none} fix (upsell template has the same pre-existing bug — spawned follow-up task).
+STATUS: COMPLETE
+---
