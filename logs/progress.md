@@ -1568,3 +1568,36 @@ DECISIONS: Customers derived by aggregation (no customer table) until the
 funnel identity spine lands; identity fields = latest order wins. NONE else.
 STATUS: COMPLETE (local). Rides the same pending deploy as Orders.
 ---
+
+---
+TIMESTAMP: 2026-08-08 20:56
+TASK: Funnel Builder — SLICE 1 (funnel + page CRUD, JSON blocks editor)
+BUILT: server/src/routes/funnels.js (funnels + funnel_pages tables via
+serialized ensureTables; list w/ page counts, create w/ auto-slug, detail,
+PATCH, archive; pages: create w/ auto is_home, PATCH w/ blocks validation,
+2MB escape-hatch caps, type/slug validation, single-UPDATE is_home switch,
+archive). Migration 088 (funnels:access for Team - Full Access). Mounted at
+/api/v1/funnels. Client: pages/funnels/FunnelsPage.jsx (list + create modal
+w/ slug preview), FunnelDetailPage.jsx (header, pages table, add-page modal,
+editor drawer w/ raw JSON blocks textarea + client-side JSON validation).
+Routes funnels + funnels/:id under /app (repointed from the lab placeholder),
+sidebar entry in Production group (Waypoints icon) per integrator override.
+TESTED: Fresh DB puure_funnels on 127.0.0.1:5433; all 92 migrations
+applied/marked (19 marked-executed on 'does not exist', mirroring prod);
+server on :4002 with seeded superadmin. 33/33 automated API checks passed:
+login, 401 unauth, create/409 dup slug/400 bad inputs, page CRUD, blocks
+props:null|[]|non-array|missing-type all 400, valid blocks 200 + JSONB
+round-trip (jsonb_typeof=array in DB), 2MB cap 400, is_home switch leaves
+exactly one home, archive frees slug for recreate (page + funnel), 404s,
+malformed JSON body 400, search. UI verified in browser on worktree Vite
+(:5199 proxying :4002): list, create, detail, add page (home badge), editor
+drawer invalid-JSON error + save persisted to DB. `npx vite build` green.
+OUTPUT: RESULT: 33 passed, 0 failed; blocks stored as jsonb array; build
+"✓ built in 521ms".
+DECISIONS: Existing /app/funnels lab placeholder route repointed to the new
+module (left pages/lab/FunnelsPage.jsx in place, now unused). Funnel slug
+format [a-z0-9-]+; status free-form string <=64 chars (spec silent).
+Sidebar entry moved Operations -> Production per integrator mid-task
+override. DECISION MADE on all three.
+STATUS: COMPLETE (local verification; no deploy).
+---
