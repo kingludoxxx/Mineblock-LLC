@@ -95,6 +95,27 @@ async function createTables() {
   `);
   await pgQuery(`CREATE INDEX IF NOT EXISTS idx_co_orders_session ON co_orders (session_id)`);
 
+  // Shopify order mirror (shopifyOrderCreate.js). A settled base order is
+  // pushed into the store as a real, paid Shopify order so the already-live
+  // orders/create webhook ingests it into shopify_orders_cache. Exactly-once
+  // is arbitrated on THIS row, not a read:
+  //   - shopify_order_id set          → an order was created; never create again
+  //   - shopify_status 'creating'     → an attempt is in flight (claim marker)
+  //   - shopify_status 'needs_review' → an attempt failed; a human owns it
+  //     (money already moved) — never auto-retried, so no duplicate store order
+  // The claim UPDATE (…WHERE shopify_order_id IS NULL AND …) is the concurrency
+  // guard: of N racing settlers exactly one wins the row lock and creates.
+  await pgQuery(`ALTER TABLE co_orders ADD COLUMN IF NOT EXISTS shopify_order_id TEXT`);
+  await pgQuery(`ALTER TABLE co_orders ADD COLUMN IF NOT EXISTS shopify_order_number TEXT`);
+  await pgQuery(`ALTER TABLE co_orders ADD COLUMN IF NOT EXISTS shopify_status TEXT`);
+  await pgQuery(`ALTER TABLE co_orders ADD COLUMN IF NOT EXISTS shopify_error TEXT`);
+  await pgQuery(`ALTER TABLE co_orders ADD COLUMN IF NOT EXISTS shopify_claimed_at TIMESTAMPTZ`);
+  await pgQuery(`ALTER TABLE co_orders ADD COLUMN IF NOT EXISTS shopify_created_at TIMESTAMPTZ`);
+  await pgQuery(`
+    CREATE INDEX IF NOT EXISTS idx_co_orders_shopify_status
+    ON co_orders (shopify_status) WHERE shopify_status IS NOT NULL
+  `);
+
   // Upsell offer definitions. variant_id '' = "charge whatever the on-page
   // selection control resolves to" (reference semantics).
   await pgQuery(`

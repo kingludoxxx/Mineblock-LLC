@@ -14,6 +14,7 @@ import crypto from 'crypto';
 import { pgQuery } from '../db/pg.js';
 import { ensureCheckoutTables } from './checkoutSchema.js';
 import { REUSABLE_PM_TYPES } from './gateways/stripe.js';
+import { createShopifyOrderForSession } from './shopifyOrderCreate.js';
 
 const round2 = (n) => Math.round(Number(n) * 100) / 100;
 
@@ -121,6 +122,20 @@ export async function settleSessionPaid({
     } catch (err) {
       console.error('[settle] co_events write failed (non-fatal):', err.message);
     }
+  }
+
+  // Mirror the settled BASE order into the Shopify store, exactly once. The
+  // co_orders row is now claimed/created (above), so this rides its own atomic
+  // claim keyed on the same idempotency_key. Runs on EVERY settle — first
+  // delivery, redelivery, and sweep backfill — because it self-no-ops when the
+  // order already exists; a redelivery is how a create that was lost between
+  // the order write and the store push self-heals. NON-FATAL and never throws:
+  // the card is already charged, so a store-write failure parks needs_review
+  // and is surfaced to a human — it can never fail the settlement.
+  try {
+    await createShopifyOrderForSession({ sessionId, idempotencyKey });
+  } catch (err) {
+    console.error('[settle] shopify order create threw (non-fatal):', err.message);
   }
 
   return {
