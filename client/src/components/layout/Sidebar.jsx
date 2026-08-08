@@ -31,11 +31,21 @@ import {
   Bug,
   Signal,
   Video,
+  ShoppingCart,
+  Store,
 } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
 import { usePermissions } from '../../hooks/usePermissions';
 
 const navGroups = [
+  {
+    label: 'Operations',
+    icon: Store,
+    items: [
+      { to: '/app/orders', icon: ShoppingCart, label: 'Orders', permission: 'orders:access' },
+      { to: '/app/customers', icon: UsersRound, label: 'Customers', permission: 'customers:access' },
+    ],
+  },
   {
     label: 'Production',
     icon: Factory,
@@ -142,7 +152,7 @@ export default function Sidebar() {
         </button>
       </div>
 
-      <div className="px-2 pt-2 shrink-0">
+      <div className="px-2 pt-2 shrink-0 space-y-0.5">
         <NavLink
           to="/app/dashboard"
           className={({ isActive }) =>

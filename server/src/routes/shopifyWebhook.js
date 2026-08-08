@@ -9,10 +9,13 @@ import {
   seedStaticData,
   MIN_ORDER_NUMBER,
 } from './kpiSystem.js';
+import { upsertOrderFromShopify } from './orders.js';
 
 const router = Router();
 
-const SHOPIFY_STORE = '17cca0-2.myshopify.com';
+// Env-driven so each deployment (Mineblock, Puure) points at its own store.
+// Default preserves the original Mineblock behavior.
+const SHOPIFY_STORE = process.env.SHOPIFY_STORE_DOMAIN || '17cca0-2.myshopify.com';
 const SHOPIFY_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN || '';
 const SHOPIFY_API_VERSION = '2024-01';
 const SHOPIFY_WEBHOOK_SECRET = process.env.SHOPIFY_WEBHOOK_SECRET || '';
@@ -190,6 +193,13 @@ router.post('/orders', async (req, res) => {
     await seedStaticData();
 
     const costs = await upsertOrder(order);
+
+    // Enrich the CRM orders table (fail-open — must never break the KPI write)
+    try {
+      await upsertOrderFromShopify(order);
+    } catch (crmErr) {
+      logger.error(`[Shopify Webhook] CRM orders upsert failed (non-fatal): ${crmErr.message}`);
+    }
 
     // Recalculate the daily snapshot for this order's date
     // Use Europe/Berlin timezone to match Shopify store and snapshot grouping

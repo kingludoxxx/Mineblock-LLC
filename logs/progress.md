@@ -1483,3 +1483,88 @@ TESTED: node --check passed. Unit-compared the new PL builder against reconcileP
 OUTPUT: no-editor -> "PL - B0022 - NN - Product Aware - Promo - Mashup - Ludovico - NA - WK29_2026" (unchanged, no regression); with-editor -> "PL - B0022 - NN - Product Aware - Promo - Mashup - Ludovico - Uly - WK29_2026" (9 slots, was 10 with a stray NA).
 DECISIONS: DECISION MADE — branch on product_code === 'PL' rather than changing the shared builder, so the MB pipeline's naming is untouched. Left abbreviateAngle() in place: every angle the PL detector can emit (TSS/TCS/$V$/Promo) is absent from the ClickUp Angle dropdown, so reconcilePlName falls back to the name segment and preserves the abbreviation — no drift. (A drift would only appear if an angle were BOTH auto-detected AND an existing dropdown option, which none currently are.)
 STATUS: COMPLETE
+
+---
+TIMESTAMP: 2026-08-08 19:30
+TASK: CRM Phase 1 — Orders page (list + detail) in Puure dashboard
+BUILT: New `orders` module modeled on the friend's Funnel OS Orders screens.
+Server: server/src/routes/orders.js (crm_orders/crm_order_comments/crm_order_events
+tables + backfill from shopify_orders_cache; endpoints: list w/ search+filters+
+pagination, today-KPI stats, detail w/ comments+events+neighbors, CSV export,
+comments, fulfill, archive, tags; subscriptions placeholder), mounted at
+/api/v1/orders; shopifyWebhook.js now also enriches crm_orders (fail-open);
+migration 086 grants orders:access to Team - Full Access. Client: pages/orders/
+OrdersPage.jsx + OrderDetailPage.jsx, routes in App.jsx behind PageGate
+orders:access, "Orders" item in Sidebar under Dashboard. vite.config.js proxy
+target now overridable via VITE_PROXY_TARGET (client/.env.local, untracked).
+TESTED: Local stack: embedded Postgres 18 (port 5433, isolated puure_local DB —
+prod DB untouched), server on :4001, Vite on :5173 proxying local. All 86
+migrations resolved (17 brief-pipeline data migrations skipped locally — they
+reference lazily-created feature tables absent on a fresh DB; recorded as
+executed; pre-existing repo issue, unaffected in prod). Seeded 6 sample orders
+through the real upsert path. Verified by execution: login → list (KPI strip
+Orders 6 / Items 13 / Revenue $995.89 / Avg fulfillment 2.0h), search q=Candace,
+filter gateway=Stripe, CSV export, detail page (line items, payment summary,
+cost-withheld rule, UTM attribution, timeline comment posted, mark-as-fulfilled,
+tags), plus edge cases: 404 missing order, 400 empty comment, 401 no token.
+Browser-verified with screenshots at 1500px.
+OUTPUT: Orders list + detail render matching the reference screenshots (dark
+Puure theme); API returns correct data end to end.
+DECISIONS: (1) Own crm_orders table instead of widening shopify_orders_cache —
+keeps KPI lane untouched, webhook enrichment fail-open. (2) orders:access
+granted only to Team - Full Access (revenue data; SuperAdmin has wildcard).
+(3) Fixed pgQuery result-shape misuse (.rows) and jsonb double-encoding
+(postgres.js serializes objects itself); verified down the failure path.
+(4) DECISION MADE: kept shared Mineblock-LLC repo per Ludo ("keep them inside
+both for now") — no repo split.
+STATUS: COMPLETE (local). Deploy to puure-dashboard pending Ludo's go.
+---
+
+---
+TIMESTAMP: 2026-08-08 19:55
+TASK: CRM Phase 1b — Connect Puure Shopify store, full order sync
+BUILT: POST /api/v1/orders/sync-shopify (paginated full import via Admin REST,
+Link/page_info cursor, 429 retry, authoritative count check); cache backfill
+made OPT-IN (CRM_BACKFILL_FROM_CACHE=1) after discovering the local/prod KPI
+cache can hold the OTHER brand's orders (8,723 Mineblock rows locally) and
+hardened for double-encoded legacy line_items; shopifyWebhook.js store domain
+now env-driven (SHOPIFY_STORE_DOMAIN, default = Mineblock).
+TESTED: Token verified against store 9jn59g-x7.myshopify.com ("Puure") with
+positive (200 shop.json) and negative (garbage token -> 401) controls. Removed
+6 fake sample orders. Full sync: shopify_total=117, imported=117, failed=0,
+complete=true; DB spot checks (113 unique customers, $14,362.47 lifetime,
+104 paid / 13 refunded, all line_items proper jsonb arrays); UI verified in
+browser: real orders (#1119 Kelly Duran etc.) render with correct pills,
+destinations, Shopify ids; detail page spot-checked via API.
+OUTPUT: Local Orders page mirrors the live Puure store exactly (117/117).
+DECISIONS: Sync-from-Shopify is the canonical import path (works identically
+on the deployed service); cache backfill demoted to opt-in to prevent
+cross-brand pollution. Shopify creds live in ~/.config/puure/shopify.env
+locally; on Render they will be service env vars.
+STATUS: COMPLETE (local). Live webhook connection requires deploy (Ludo-gated).
+---
+
+---
+TIMESTAMP: 2026-08-08 20:45
+TASK: CRM Lane 1 — Customers module + Operations nav group
+BUILT: server/src/routes/customers.js (customers derived from crm_orders by
+email: list w/ search+sort+pagination, stats strip, detail w/ profile + order
+history + latest addresses, notes via crm_customer_notes), mounted at
+/api/v1/customers; migration 087 customers:access -> Team - Full Access.
+Client: pages/customers/CustomersPage.jsx + CustomerDetailPage.jsx, routes in
+App.jsx behind PageGate. Sidebar restructured per Ludo: new collapsible
+"Operations" group (Store icon) holding Orders + Customers, replacing the two
+standalone links. Lane 2 (Funnel Builder) scoping spec produced by background
+agent (schema mapping, 35-block inventory, 6-slice plan, constraint checklist)
+— saved in task output; its permission migration renumbered to 088.
+TESTED: By execution against the 117 real Puure orders: 113 customers, top
+spender $498.06/3 orders, stats (2 new today, 87 new 30d, 2.7% repeat,
+$127.10 avg LTV, $14,362.47 lifetime revenue = exact match with orders sum),
+detail + note add, edge cases 404/400/401, search. Client vite build clean
+(2485 modules). Browser-verified: list, repeat badges, customer detail
+(Georgene Alwin 2 orders/$369.88), Operations group rendering.
+OUTPUT: Customers page live locally on real data; nav grouped per spec.
+DECISIONS: Customers derived by aggregation (no customer table) until the
+funnel identity spine lands; identity fields = latest order wins. NONE else.
+STATUS: COMPLETE (local). Rides the same pending deploy as Orders.
+---
