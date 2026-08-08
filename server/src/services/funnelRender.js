@@ -793,4 +793,277 @@ ${bodyEndHtml}
 </html>`;
 }
 
-export default { renderPageHtml, renderBlock, escapeHtml, compileFlow };
+// ---------------------------------------------------------------------------
+// CHECKOUT PAGE TEMPLATE (checkout-template slice).
+//
+// Default seed for a page created with type='checkout' (funnels.js
+// POST /:id/pages). Replicates the operator's live Whop checkout layout
+// (docs/CHECKOUT-TEMPLATE-SPEC.md): two columns — left form (brand, urgency
+// banner, Contact, Delivery, Shipping method, Billing checkbox, Payment card
+// hosting the LIVE whop_checkout block, Complete-checkout button, trust
+// badges, footer links), right order summary — stacking on mobile.
+//
+// Postures:
+//  • This is CONTENT, not machinery: plain blocks[] + custom_css + custom_js,
+//    stored on the page row like any operator-authored page. The operator
+//    edits it on the canvas; deleting any block never breaks the others.
+//  • The payment slot is the EXISTING whop_checkout block (untouched runtime).
+//    It ships with NO variant_id — until the operator sets one, the block
+//    renders its inline "no product configured" message and the page still
+//    serves 200 (fail-open, same posture as the rest of the renderer).
+//  • The two-column shell is pure CSS (grid on <main>, keyed off the seeded
+//    data-blk-id wrappers). Blocks stay a flat, valid list — no unbalanced
+//    tags across blocks, so the canvas can reorder/remove them safely.
+//  • LIGHT theme on purpose: this is the buyer-facing page (its own theme),
+//    even though the admin app is dark.
+//  • All numbers shown are SERVER numbers: the order summary is filled by the
+//    existing checkout runtime from the create-session response; the seeded
+//    custom_js only ENRICHES it (Subtotal/Shipping rows, thumbnails) from the
+//    same session object. Nothing is fabricated client-side; a Savings row is
+//    only shown if the server ever supplies a discount amount.
+//  • The static form fields are believable markup for now — the Whop embed
+//    collects what it needs to charge (spec: "static markup in the template
+//    for now").
+// ---------------------------------------------------------------------------
+
+const CKT_US_STATES = [
+  ['AL','Alabama'],['AK','Alaska'],['AZ','Arizona'],['AR','Arkansas'],['CA','California'],
+  ['CO','Colorado'],['CT','Connecticut'],['DE','Delaware'],['DC','District of Columbia'],
+  ['FL','Florida'],['GA','Georgia'],['HI','Hawaii'],['ID','Idaho'],['IL','Illinois'],
+  ['IN','Indiana'],['IA','Iowa'],['KS','Kansas'],['KY','Kentucky'],['LA','Louisiana'],
+  ['ME','Maine'],['MD','Maryland'],['MA','Massachusetts'],['MI','Michigan'],['MN','Minnesota'],
+  ['MS','Mississippi'],['MO','Missouri'],['MT','Montana'],['NE','Nebraska'],['NV','Nevada'],
+  ['NH','New Hampshire'],['NJ','New Jersey'],['NM','New Mexico'],['NY','New York'],
+  ['NC','North Carolina'],['ND','North Dakota'],['OH','Ohio'],['OK','Oklahoma'],['OR','Oregon'],
+  ['PA','Pennsylvania'],['RI','Rhode Island'],['SC','South Carolina'],['SD','South Dakota'],
+  ['TN','Tennessee'],['TX','Texas'],['UT','Utah'],['VT','Vermont'],['VA','Virginia'],
+  ['WA','Washington'],['WV','West Virginia'],['WI','Wisconsin'],['WY','Wyoming'],
+];
+
+const CKT_COUNTRIES = [
+  ['US','United States'],['CA','Canada'],['GB','United Kingdom'],['AU','Australia'],
+  ['DE','Germany'],['FR','France'],['IT','Italy'],['ES','Spain'],['NL','Netherlands'],
+  ['NZ','New Zealand'],
+];
+
+function cktOptions(pairs, selected) {
+  return pairs
+    .map(
+      ([v, label]) =>
+        `<option value='${esc(v)}'${v === selected ? ' selected' : ''}>${esc(label)}</option>`
+    )
+    .join('');
+}
+
+// The template's layout + light-theme styles. Lives in page.custom_css so the
+// operator can restyle without code. Selectors key off the seeded block ids
+// (data-blk-id) and ckt-* classes only — native lb-* styles stay intact for
+// any other block the operator later drops onto the page.
+const CKT_TEMPLATE_CSS = `/* Checkout template (seeded) — buyer-facing LIGHT theme */
+body{background:#fff;color:#111827;}
+main{display:grid;grid-template-columns:minmax(0,1fr) 420px;column-gap:56px;row-gap:0;max-width:1180px;margin:0 auto;padding:28px 24px 64px;align-items:start;}
+main>.lb-blk{grid-column:1;min-width:0;margin:0 0 26px;}
+main>[data-blk-id='ckt_summary']{grid-column:2;grid-row:1/span 40;margin:0;}
+/* Brand */
+.ckt-brand{text-align:center;padding:6px 0 0;}
+.ckt-brand-link{font-size:2rem;font-weight:800;color:#111;letter-spacing:-0.02em;}
+/* Urgency banner */
+.ckt-banner{background:#fde8ef;color:#b4004e;border-radius:12px;padding:12px 18px;font-size:.95rem;font-weight:600;text-align:center;line-height:1.45;}
+/* Sections + fields */
+.ckt-h2{font-size:1.25rem;font-weight:700;color:#111;margin:0 0 12px;}
+.ckt-note{color:#6b7280;font-size:.9rem;margin:-6px 0 12px;}
+.ckt-field{margin-bottom:12px;}
+.ckt-two{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;}
+.ckt-input{width:100%;box-sizing:border-box;border:1px solid #dedede;border-radius:8px;padding:13px 12px;font:400 15px/1.3 Inter,system-ui,sans-serif;color:#111;background:#fff;}
+.ckt-input:focus{outline:2px solid rgba(37,99,235,.2);border-color:#2563eb;}
+.ckt-input::placeholder{color:#9ca3af;}
+.ckt-select{appearance:none;-webkit-appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' fill='none' stroke='%236b7280' stroke-width='1.6'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 12px center;padding-right:34px;}
+.ckt-phone{display:flex;align-items:stretch;}
+.ckt-phone-prefix{display:flex;align-items:center;gap:5px;border:1px solid #dedede;border-right:0;border-radius:8px 0 0 8px;padding:0 12px;background:#fff;color:#374151;font-size:14px;white-space:nowrap;}
+.ckt-phone .ckt-input{border-radius:0 8px 8px 0;}
+/* Shipping method */
+.ckt-ship{display:flex;flex-direction:column;gap:10px;}
+.ckt-ship-option{display:flex;align-items:center;gap:12px;border:1px solid #dedede;border-radius:10px;padding:14px 16px;cursor:pointer;background:#fff;}
+.ckt-ship-option input{accent-color:#2563eb;margin:0;}
+.ckt-ship-option:has(input:checked){border-color:#2563eb;background:#eff3fe;box-shadow:inset 0 0 0 1px #2563eb;}
+.ckt-ship-info{flex:1;display:flex;flex-direction:column;}
+.ckt-ship-name{font-weight:600;color:#111;}
+.ckt-ship-eta{color:#6b7280;font-size:.9rem;}
+.ckt-ship-price{font-weight:700;color:#111;}
+/* Billing checkbox (unchecking reveals the billing block — pure CSS) */
+.ckt-checkline{display:flex;align-items:center;gap:10px;color:#111;font-size:.95rem;cursor:pointer;}
+.ckt-check{width:18px;height:18px;accent-color:#2563eb;margin:0;}
+.ckt-billing-fields{display:none;margin-top:14px;padding:16px;border:1px solid #ececec;border-radius:10px;background:#fafafa;}
+.ckt-billing:has(.ckt-check:not(:checked)) .ckt-billing-fields{display:block;}
+/* Payment card (head + whop mount + foot join into one visual card) */
+main>[data-blk-id='ckt_payhead']{margin-bottom:0;}
+main>[data-blk-id='ckt_whop']{margin-bottom:0;}
+.ckt-pay-card{border:1px solid #dedede;background:#fff;}
+.ckt-pay-card-top{border-radius:10px 10px 0 0;}
+.ckt-pay-card-bottom{border-radius:0 0 10px 10px;border-top:0;}
+.ckt-pay-option{display:flex;align-items:center;gap:10px;padding:14px 16px;cursor:pointer;font-weight:500;color:#111;border-bottom:0;}
+.ckt-pay-card-bottom .ckt-pay-option{border-top:1px solid #ececec;}
+.ckt-pay-option input{accent-color:#2563eb;margin:0;}
+.ckt-pay-brands{margin-left:auto;display:flex;gap:6px;}
+.ckt-brand-chip{border:1px solid #e3e3e3;border-radius:4px;padding:2px 7px;font-size:.68rem;font-weight:700;color:#374151;background:#fff;letter-spacing:.03em;}
+.ckt-fineprint{color:#6b7280;font-size:.85rem;margin:12px 2px 0;}
+main>[data-blk-id='ckt_whop'] .lb-checkout{max-width:none;margin:0;border:1px solid #dedede;border-top:1px solid #ececec;border-bottom:0;border-radius:0;padding:16px;background:#fafafa;}
+main>[data-blk-id='ckt_whop'] .lb-checkout-summary{display:none;}
+main>[data-blk-id='ckt_whop'] .lb-checkout-fallback{display:none;} /* replaced by the Complete checkout button below */
+/* Complete checkout */
+.ckt-complete{display:block;width:100%;background:#111;color:#fff;border:0;border-radius:10px;padding:16px;font:700 1.05rem/1.2 Inter,system-ui,sans-serif;cursor:pointer;}
+.ckt-complete:hover{background:#000;}
+/* Trust badges */
+.ckt-badges{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;}
+.ckt-badge{border:1px solid #e3e3e3;border-radius:6px;padding:6px 12px;font-size:.8rem;font-weight:700;color:#374151;background:#fff;letter-spacing:.02em;}
+/* Footer links */
+.ckt-footer{display:flex;gap:18px;border-top:1px solid #ececec;padding-top:16px;font-size:.85rem;}
+.ckt-footer a{color:#2563eb;text-decoration:underline;}
+/* Right column: order summary */
+.ckt-summary-inner{position:sticky;top:24px;background:#fafafa;border:1px solid #ececec;border-radius:12px;padding:20px 20px 24px;}
+.ckt-summary-top{display:flex;justify-content:flex-end;margin-bottom:4px;}
+.ckt-continue{display:inline-flex;align-items:center;gap:6px;color:#2563eb;font-size:.9rem;font-weight:600;}
+.ckt-lines .fos-os-row{border-bottom:0;padding:10px 0;align-items:center;}
+.ckt-lines .fos-os-total{font-size:1.1rem;border-top:1px solid #e2e2e2;}
+.ckt-os-img{width:44px;height:44px;border-radius:8px;object-fit:cover;border:1px solid #e5e5e5;margin-right:10px;vertical-align:middle;}
+.ckt-promo{display:flex;gap:8px;margin:10px 0 4px;}
+.ckt-promo .ckt-input{flex:1;}
+.ckt-promo-apply{border:1px solid #d4d4d4;background:#f1f1f1;color:#555;border-radius:8px;padding:0 18px;font-weight:600;cursor:pointer;}
+/* Mobile: single column, order summary first */
+@media (max-width:900px){
+  main{grid-template-columns:1fr;column-gap:0;padding:20px 16px 48px;}
+  main>[data-blk-id='ckt_summary']{grid-column:1;grid-row:auto;order:-1;margin:0 0 28px;}
+  .ckt-summary-inner{position:static;}
+}`;
+
+// Seeded page-level JS. Two jobs, both defensive and both reading ONLY the
+// server-created session the existing checkout runtime already holds:
+//  1. "Complete checkout" button → opens the session's purchase_url (the same
+//     href the runtime put on its fallback link, which the template hides).
+//  2. Enrich the right-column summary with Subtotal/Shipping rows + line-item
+//     thumbnails once the runtime has filled it. Text via textContent only.
+const CKT_TEMPLATE_JS = `(function(){
+  function q(s,r){return (r||document).querySelector(s);}
+  document.addEventListener('click',function(ev){
+    var btn=ev.target&&ev.target.closest&&ev.target.closest('[data-ckt-complete]');
+    if(!btn)return;
+    try{
+      var fb=q('[data-fos-fallback]');
+      var href=fb&&fb.getAttribute('href');
+      if(href&&href!=='#'){window.open(href,'_blank','noopener');return;}
+      var mount=q('[data-fos-whop-mount]');
+      if(mount&&mount.scrollIntoView){mount.scrollIntoView({behavior:'smooth',block:'center'});}
+    }catch(e){}
+  });
+  var tries=0;
+  var timer=setInterval(function(){
+    tries++;
+    try{
+      var s=window.__fos_checkout&&window.__fos_checkout.session;
+      var box=q('.ckt-summary [data-fos-order-summary]');
+      var totalRow=box&&box.querySelector('.fos-os-total');
+      if(s&&box&&totalRow&&!box.querySelector('.ckt-os-extra')){
+        clearInterval(timer);
+        var totals=s.totals||{};var cur=s.currency||'USD';
+        function money(n){try{return new Intl.NumberFormat(undefined,{style:'currency',currency:cur}).format(Number(n));}catch(e){return cur+' '+Number(n||0).toFixed(2);}}
+        function row(label,value){var d=document.createElement('div');d.className='fos-os-row ckt-os-extra';var a=document.createElement('span');a.textContent=label;var b=document.createElement('span');b.textContent=value;d.appendChild(a);d.appendChild(b);return d;}
+        var items=s.line_items||[];
+        var rows=box.querySelectorAll('.fos-os-row:not(.fos-os-total)');
+        for(var i=0;i<rows.length&&i<items.length;i++){
+          var img=items[i]&&items[i].image;
+          if(img&&/^https?:\\/\\//i.test(String(img))){
+            var el=document.createElement('img');el.className='ckt-os-img';el.alt='';el.src=String(img);
+            rows[i].insertBefore(el,rows[i].firstChild);
+          }
+        }
+        if(totals.subtotal!=null){box.insertBefore(row('Subtotal',money(totals.subtotal)),totalRow);}
+        var savings=(totals.savings!=null)?totals.savings:totals.discount;
+        if(savings!=null&&Number(savings)>0){box.insertBefore(row('Savings','-'+money(savings)),totalRow);}
+        if(totals.shipping!=null){box.insertBefore(row('Shipping',Number(totals.shipping)===0?'FREE':money(totals.shipping)),totalRow);}
+      }
+      if(tries>240){clearInterval(timer);}
+    }catch(e){if(tries>240){clearInterval(timer);}}
+  },250);
+})();`;
+
+// Returns { blocks, custom_css, custom_js } for a fresh 'checkout' page.
+// Deliberately a function (not a frozen constant): every call mints fresh
+// objects so one page's canvas edits can never alias another's seed.
+export function checkoutPageTemplate() {
+  const html = (id, name, markup) => ({
+    id,
+    type: 'html',
+    props: { block_name: name, html: markup },
+  });
+
+  const blocks = [
+    html('ckt_brand', 'checkout-brand',
+      `<header class='ckt-brand'><a class='ckt-brand-link' href='#'>Puure.</a></header>`),
+    html('ckt_banner', 'checkout-urgency-banner',
+      `<div class='ckt-banner'>Our most-loved breast lift device is currently in high demand. Order today while inventory lasts</div>`),
+    html('ckt_contact', 'checkout-contact',
+      `<section class='ckt-section'><h2 class='ckt-h2'>Contact</h2>` +
+      `<div class='ckt-field'><input class='ckt-input' type='email' name='email' placeholder='Email' autocomplete='email' required></div>` +
+      `<div class='ckt-field ckt-phone'><span class='ckt-phone-prefix'>\u{1F1FA}\u{1F1F8} +1</span><input class='ckt-input' type='tel' name='phone' placeholder='Phone (optional)' autocomplete='tel'></div>` +
+      `</section>`),
+    html('ckt_delivery', 'checkout-delivery',
+      `<section class='ckt-section'><h2 class='ckt-h2'>Delivery</h2>` +
+      `<div class='ckt-field'><select class='ckt-input ckt-select' name='country' autocomplete='country'>${cktOptions(CKT_COUNTRIES, 'US')}</select></div>` +
+      `<div class='ckt-two'><input class='ckt-input' type='text' name='first_name' placeholder='First name' autocomplete='given-name'><input class='ckt-input' type='text' name='last_name' placeholder='Last name' autocomplete='family-name'></div>` +
+      `<div class='ckt-field'><input class='ckt-input' type='text' name='address1' placeholder='Address' autocomplete='address-line1'></div>` +
+      `<div class='ckt-field'><input class='ckt-input' type='text' name='address2' placeholder='Apartment, suite, etc. (optional)' autocomplete='address-line2'></div>` +
+      `<div class='ckt-field'><input class='ckt-input' type='text' name='city' placeholder='City' autocomplete='address-level2'></div>` +
+      `<div class='ckt-two'><select class='ckt-input ckt-select' name='state' autocomplete='address-level1'><option value='' selected disabled>State</option>${cktOptions(CKT_US_STATES)}</select><input class='ckt-input' type='text' name='postal' placeholder='ZIP code' autocomplete='postal-code'></div>` +
+      `</section>`),
+    html('ckt_shipping', 'checkout-shipping-method',
+      `<section class='ckt-section'><h2 class='ckt-h2'>Shipping method</h2>` +
+      `<div class='ckt-ship'>` +
+      `<label class='ckt-ship-option'><input type='radio' name='ckt-ship' checked><span class='ckt-ship-info'><span class='ckt-ship-name'>Free tracked Shipping</span><span class='ckt-ship-eta'>6-8 business days</span></span><span class='ckt-ship-price'>FREE</span></label>` +
+      `</div></section>`),
+    html('ckt_billing', 'checkout-billing',
+      `<section class='ckt-section ckt-billing'>` +
+      `<label class='ckt-checkline'><input type='checkbox' class='ckt-check' checked><span>Billing address same as shipping address</span></label>` +
+      `<div class='ckt-billing-fields'>` +
+      `<div class='ckt-two'><input class='ckt-input' type='text' name='billing_first_name' placeholder='First name'><input class='ckt-input' type='text' name='billing_last_name' placeholder='Last name'></div>` +
+      `<div class='ckt-field'><input class='ckt-input' type='text' name='billing_address1' placeholder='Address'></div>` +
+      `<div class='ckt-two'><input class='ckt-input' type='text' name='billing_city' placeholder='City'><input class='ckt-input' type='text' name='billing_postal' placeholder='ZIP code'></div>` +
+      `</div></section>`),
+    html('ckt_payhead', 'checkout-payment-heading',
+      `<section class='ckt-section'><h2 class='ckt-h2'>Payment</h2><p class='ckt-note'>All transactions are secure and encrypted.</p>` +
+      `<div class='ckt-pay-card ckt-pay-card-top'>` +
+      `<label class='ckt-pay-option'><input type='radio' name='ckt-pay' checked><span>Card</span>` +
+      `<span class='ckt-pay-brands'><span class='ckt-brand-chip'>VISA</span><span class='ckt-brand-chip'>MC</span><span class='ckt-brand-chip'>AMEX</span><span class='ckt-brand-chip'>DISC</span></span>` +
+      `</label></div></section>`),
+    {
+      id: 'ckt_whop',
+      type: 'whop_checkout',
+      props: { block_name: 'checkout-payment', quantity: 1, button_text: 'Complete checkout' },
+    },
+    html('ckt_payfoot', 'checkout-payment-options',
+      `<section class='ckt-section'><div class='ckt-pay-card ckt-pay-card-bottom'>` +
+      `<label class='ckt-pay-option'><input type='radio' name='ckt-pay'><span>Pay with Crypto</span></label>` +
+      `<label class='ckt-pay-option'><input type='radio' name='ckt-pay'><span>Bank transfer</span></label>` +
+      `</div>` +
+      `<p class='ckt-fineprint'>By purchasing, you agree to Puure's terms and conditions.</p></section>`),
+    html('ckt_button', 'checkout-complete-button',
+      `<button type='button' class='ckt-complete' data-ckt-complete>Complete checkout</button>`),
+    html('ckt_badges', 'checkout-trust-badges',
+      `<div class='ckt-badges' aria-label='Accepted payment methods'>` +
+      `<span class='ckt-badge'>Apple Pay</span><span class='ckt-badge'>G Pay</span><span class='ckt-badge'>PayPal</span>` +
+      `<span class='ckt-badge'>VISA</span><span class='ckt-badge'>Mastercard</span><span class='ckt-badge'>AMEX</span><span class='ckt-badge'>Discover</span>` +
+      `</div>`),
+    html('ckt_footer', 'checkout-footer-links',
+      `<footer class='ckt-footer'><a href='#'>Return policy</a><a href='#'>Privacy policy</a><a href='#'>Terms of service</a></footer>`),
+    html('ckt_summary', 'checkout-order-summary',
+      `<aside class='ckt-summary'><div class='ckt-summary-inner'>` +
+      `<div class='ckt-summary-top'><a class='ckt-continue' href='#'><svg width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' aria-hidden='true'><circle cx='9' cy='21' r='1'/><circle cx='20' cy='21' r='1'/><path d='M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6'/></svg> Continue shopping</a></div>` +
+      `<h2 class='ckt-h2'>Order summary</h2>` +
+      `<div class='ckt-lines fos-order-summary' data-fos-order-summary><div class='fos-os-empty'>Your order will appear here.</div></div>` +
+      `<div class='ckt-promo'><input class='ckt-input' type='text' name='promo' placeholder='Promo code'><button type='button' class='ckt-promo-apply'>Apply</button></div>` +
+      `</div></aside>`),
+  ];
+
+  return { blocks, custom_css: CKT_TEMPLATE_CSS, custom_js: CKT_TEMPLATE_JS };
+}
+
+export default { renderPageHtml, renderBlock, escapeHtml, compileFlow, checkoutPageTemplate };
