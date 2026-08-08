@@ -33,6 +33,7 @@ import {
   Video,
   ShoppingCart,
   Store,
+  Waypoints,
 } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
 import { usePermissions } from '../../hooks/usePermissions';
@@ -51,6 +52,7 @@ const navGroups = [
     label: 'Production',
     icon: Factory,
     items: [
+      { to: '/app/funnels', icon: Waypoints, label: 'Funnels', permission: 'funnels:access' },
       { to: '/app/brief-agent', icon: Sparkles, label: 'Brief Agent', permission: 'brief-agent:access' },
       { to: '/app/iteration-king', icon: Crown, label: 'Iteration King', permission: 'iteration-king:access' },
       { to: '/app/statics-generation', icon: Layers, label: 'Statics Generation', permission: 'statics-generation:access' },

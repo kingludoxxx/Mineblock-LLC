@@ -19,6 +19,8 @@ import OrderDetailPage from './pages/orders/OrderDetailPage';
 import AbandonedCheckoutsPage from './pages/orders/AbandonedCheckoutsPage';
 import CustomersPage from './pages/customers/CustomersPage';
 import CustomerDetailPage from './pages/customers/CustomerDetailPage';
+import FunnelsPage from './pages/funnels/FunnelsPage';
+import FunnelDetailPage from './pages/funnels/FunnelDetailPage';
 import Settings from './pages/Settings';
 import NotFound from './pages/NotFound';
 import SupplierPublicSheet from './pages/public/SupplierPublicSheet';
@@ -41,7 +43,6 @@ import AvatarsPage from './pages/lab/AvatarsPage';
 import MechanismsPage from './pages/lab/MechanismsPage';
 import OffersPage from './pages/lab/OffersPage';
 import ProductsPage from './pages/lab/ProductsPage';
-import FunnelsPage from './pages/lab/FunnelsPage';
 
 // Production
 import BriefAgentPage from './pages/production/BriefAgentPage';
@@ -124,6 +125,8 @@ export default function App() {
           <Route path="customers" element={<PageGate permission="customers:access"><CustomersPage /></PageGate>} />
           <Route path="customers/:email" element={<PageGate permission="customers:access"><CustomerDetailPage /></PageGate>} />
           <Route path="abandoned" element={<PageGate permission="orders:access"><AbandonedCheckoutsPage /></PageGate>} />
+          <Route path="funnels" element={<PageGate permission="funnels:access"><FunnelsPage /></PageGate>} />
+          <Route path="funnels/:id" element={<PageGate permission="funnels:access"><FunnelDetailPage /></PageGate>} />
 
           {/* Intel */}
           <Route path="meta" element={<PageGate permission="meta-ads:access"><MetaPage /></PageGate>} />
@@ -143,7 +146,6 @@ export default function App() {
           <Route path="mechanisms" element={<PageGate permission="mechanisms:access"><MechanismsPage /></PageGate>} />
           <Route path="offers" element={<PageGate permission="offers:access"><OffersPage /></PageGate>} />
           <Route path="products" element={<PageGate permission="products:access"><ProductsPage /></PageGate>} />
-          <Route path="funnels" element={<PageGate permission="funnels:access"><FunnelsPage /></PageGate>} />
 
           {/* Production */}
           <Route path="brief-agent" element={<PageGate permission="brief-agent:access"><BriefAgentPage /></PageGate>} />
