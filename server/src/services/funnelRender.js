@@ -100,6 +100,11 @@ const PLACEHOLDER_TYPES = new Set([
 // byte-for-byte unchanged from before this slice.
 const COMMERCE_RUNTIME_TYPES = new Set(['whop_checkout', 'order_summary']);
 
+// Upsell block types that require the 1-click upsell runtime + page context
+// (funnel_id / page_id). Presence of any of these turns on upsellRuntimeScript();
+// a page without them never loads the upsell code.
+const UPSELL_RUNTIME_TYPES = new Set(['upsell_offer']);
+
 // ---------------------------------------------------------------------------
 // whop_checkout block config (operator-authored, set as block.props on the
 // canvas page editor — no new UI needed; it accepts blocks JSON directly).
@@ -209,6 +214,59 @@ function renderBlockInner(block) {
         `<div class='fos-order-summary' data-fos-order-summary>` +
         `<div class='fos-os-empty'>Your order will appear here.</div>` +
         `</div></section>`
+      );
+    }
+    case 'upsell_offer': {
+      // Buyer-facing 1-CLICK post-purchase upsell. Emits ONLY structure + a
+      // JSON config of {offer_id?} — the price, image and name are filled at
+      // runtime from the SERVER-priced /upsell/offer endpoint, NEVER from block
+      // config (a price on props is ignored, exactly like whop_checkout). The
+      // two controls are a prominent one-click Accept (charges the saved PM off
+      // the paid base session) and a plain Decline; both advance via the
+      // compiled funnel flow. No card fields — the whole point is one click on
+      // the already-saved method. The driving runtime is upsellRuntimeScript(),
+      // emitted once at page level when any upsell_offer block is present.
+      const offerId = p.offer_id != null ? String(p.offer_id).trim().slice(0, 80) : '';
+      // jsonForScript() escapes '<' so an offer id containing '</script>' can
+      // never break out of the application/json island.
+      const cfgJson = jsonForScript({ offer_id: offerId || null });
+      const headline = esc(String(p.headline || 'Wait — one exclusive offer before you go'));
+      const sub = esc(
+        String(p.subheadline || 'Add this to your order with one click. No need to re-enter your details.')
+      );
+      const acceptText = esc(String(p.accept_text || 'Add this to my order'));
+      const declineText = esc(String(p.decline_text || 'No thanks, I’ll pass on this one-time offer'));
+      const fine = esc(
+        String(
+          p.fine_print ||
+            'This is a one-time charge to the payment method from your original order — not a subscription. ' +
+              'By clicking, you authorize the charge shown above.'
+        )
+      );
+      return (
+        `<section class='lb-upsell fos-upsell' data-fos-upsell>` +
+        `<div class='lb-upsell-headline' data-el='headline'>${headline}</div>` +
+        `<p class='lb-upsell-sub' data-el='subheadline'>${sub}</p>` +
+        `<div class='lb-upsell-card'>` +
+        `<div class='lb-upsell-media'><img class='lb-upsell-img' data-fos-up-image alt='' loading='lazy' hidden/></div>` +
+        `<div class='lb-upsell-info'>` +
+        `<div class='lb-upsell-name' data-fos-up-title>Loading your offer…</div>` +
+        `<div class='lb-upsell-pricing'>` +
+        `<span class='lb-upsell-price' data-fos-up-price></span>` +
+        `<span class='lb-upsell-original' data-fos-up-original hidden></span>` +
+        `<span class='lb-upsell-save' data-fos-up-badge hidden></span>` +
+        `</div></div></div>` +
+        `<div class='lb-upsell-error' data-fos-up-error hidden></div>` +
+        `<div class='lb-upsell-actions'>` +
+        `<button type='button' class='lb-upsell-accept' data-fos-up-accept disabled>${acceptText}</button>` +
+        `<button type='button' class='lb-upsell-decline' data-fos-up-decline>${declineText}</button>` +
+        `</div>` +
+        `<div class='lb-upsell-status' data-fos-up-status hidden>` +
+        `<span class='lb-upsell-spinner' aria-hidden='true'></span>` +
+        `<span data-fos-up-status-msg>Processing…</span></div>` +
+        `<p class='lb-upsell-fine'>${fine}</p>` +
+        `<script type='application/json' class='fos-upsell-cfg'>${cfgJson}</script>` +
+        `</section>`
       );
     }
     case 'section': {
@@ -701,6 +759,13 @@ function ready(fn){if(document.readyState!=='loading'){fn();}else{document.addEv
 function money(n,c){try{return new Intl.NumberFormat(undefined,{style:'currency',currency:(c||'USD')}).format(Number(n));}catch(e){return (c||'')+' '+Number(n||0).toFixed(2);}}
 function showError(root,msg){try{var e=root.querySelector('[data-fos-error]');if(e){e.hidden=false;e.textContent=msg;}}catch(e){}}
 function fillSummaries(session){try{var nodes=document.querySelectorAll('[data-fos-order-summary]');Array.prototype.forEach.call(nodes,function(node){try{node.innerHTML='';var cur=session.currency;(session.line_items||[]).forEach(function(li){var row=document.createElement('div');row.className='fos-os-row';var name=document.createElement('span');name.className='fos-os-name';name.textContent=(li.product_title||li.title||'Item')+((li.quantity>1)?(' \\u00d7 '+li.quantity):'');var price=document.createElement('span');price.className='fos-os-price';var lt=(li.line_total!=null)?li.line_total:(Number(li.price)*Number(li.quantity||1));price.textContent=money(lt,cur);row.appendChild(name);row.appendChild(price);node.appendChild(row);});var t=(session.totals||{});var trow=document.createElement('div');trow.className='fos-os-row fos-os-total';var tl=document.createElement('span');tl.textContent='Total';var tv=document.createElement('span');tv.textContent=money(t.total!=null?t.total:0,cur);trow.appendChild(tl);trow.appendChild(tv);node.appendChild(trow);}catch(e){}});}catch(e){}}
+// Persist the created session id so downstream funnel steps (the 1-click
+// upsell page, the thank-you page) can carry it after navigation — the base
+// checkout holds the session only in memory, which does not survive a page
+// change. Stored id ONLY (never a price): the upsell runtime re-reads the
+// server-priced amount itself. Storage failures (private mode / disabled) are
+// non-fatal — the id also rides the URL as ?s=.
+function persistSession(session){try{if(session&&session.session_id){try{window.sessionStorage.setItem('__fos_session',session.session_id);}catch(e){}try{window.localStorage.setItem('__fos_session',session.session_id);}catch(e){}}}catch(e){}}
 var whopLoaderStarted=false;
 function loadWhopLoader(){if(whopLoaderStarted)return;whopLoaderStarted=true;var s=document.createElement('script');s.async=true;s.defer=true;s.src='https://js.whop.com/static/checkout/loader.js';(document.head||document.body).appendChild(s);}
 function post(path,payload){return fetch(API+path,{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify(payload)}).then(function(r){return r.json().catch(function(){return {};}).then(function(j){return {status:r.status,json:j};});});}
@@ -708,10 +773,139 @@ function sessErr(code){if(code==='pricing_unavailable')return 'Payment is tempor
 function embedErr(code){if(code==='gateway_not_configured')return 'Checkout is not fully set up yet. Please contact support.';if(code==='session_not_payable')return 'This checkout session has expired. Please refresh the page.';if(code==='gateway_error')return 'The payment provider is temporarily unavailable. Please try again shortly.';return 'We could not start the payment ('+code+').';}
 function mountEmbed(root,embed){try{var mount=root.querySelector('[data-fos-whop-mount]');if(mount&&embed.whop_session_id){mount.setAttribute('data-whop-checkout-session',embed.whop_session_id);}var fb=root.querySelector('[data-fos-fallback]');if(fb&&embed.purchase_url){fb.setAttribute('href',embed.purchase_url);fb.hidden=false;}loadWhopLoader();}catch(e){showError(root,'Could not initialize the payment form.');}}
 function initBlock(root){var cfg={};try{cfg=JSON.parse((root.querySelector('.fos-checkout-cfg')||{}).textContent||'{}');}catch(e){cfg={};}var items=(cfg&&cfg.line_items)||[];if(!items.length){showError(root,'This checkout has no product configured yet.');return;}
-post('/create-session',{funnel_id:CTX.funnel_id,page_id:CTX.page_id,gateway:'whop',line_items:items}).then(function(res){if(res.status!==200||!res.json||!res.json.success){showError(root,sessErr((res.json&&res.json.error&&res.json.error.code)||('http_'+res.status)));return;}var session=res.json.data;window.__fos_checkout.session=session;fillSummaries(session);return post('/whop/create-session',{session_id:session.session_id}).then(function(er){if(er.status!==200||!er.json||!er.json.success){showError(root,embedErr((er.json&&er.json.error&&er.json.error.code)||('http_'+er.status)));return;}var embed=er.json.data;if(!embed||!embed.whop_session_id){showError(root,'Checkout is not fully set up yet (no session).');return;}mountEmbed(root,embed);});}).catch(function(){showError(root,'Network error starting checkout. Please try again.');});}
+post('/create-session',{funnel_id:CTX.funnel_id,page_id:CTX.page_id,gateway:'whop',line_items:items}).then(function(res){if(res.status!==200||!res.json||!res.json.success){showError(root,sessErr((res.json&&res.json.error&&res.json.error.code)||('http_'+res.status)));return;}var session=res.json.data;window.__fos_checkout.session=session;persistSession(session);fillSummaries(session);return post('/whop/create-session',{session_id:session.session_id}).then(function(er){if(er.status!==200||!er.json||!er.json.success){showError(root,embedErr((er.json&&er.json.error&&er.json.error.code)||('http_'+er.status)));return;}var embed=er.json.data;if(!embed||!embed.whop_session_id){showError(root,'Checkout is not fully set up yet (no session).');return;}mountEmbed(root,embed);});}).catch(function(){showError(root,'Network error starting checkout. Please try again.');});}
 ready(function(){try{var blocks=document.querySelectorAll('[data-fos-checkout]');if(!blocks.length){return;}Array.prototype.forEach.call(blocks,function(b){try{initBlock(b);}catch(e){}});}catch(e){}});
 })();`;
   return `<script>window.__fos_checkout=Object.assign(window.__fos_checkout||{},${json});${body}</script>`;
+}
+
+// ---------------------------------------------------------------------------
+// 1-CLICK UPSELL runtime (buyer-facing post-purchase offer page).
+//
+// Emitted ONCE per page, only when an upsell_offer block is present. It
+// publishes window.__fos_upsell = { funnel_id, page_id, api_base } and drives
+// every [data-fos-upsell] block through the EXISTING money path:
+//
+//  Session id — carried across the funnel (the base checkout only holds it in
+//  memory): resolved from, in order, the ?s= URL param, the __fos_session
+//  storage the base checkout wrote, then window.__fos_checkout.session.
+//
+//  Load    GET  {api_base}/upsell/offer?session_id&offer_id?&page_id
+//          200 → { offer_id, variant_id, title, image, price, original_price,
+//                  discount_pct, currency }   ← SERVER-priced, client never sends
+//                  a price. 404 offer/session_not_found · 503 pricing_unavailable
+//  Accept  POST {api_base}/upsell/accept  { session_id, offer_id, variant_id }
+//          data.status ∈ settled | already_purchased | processing |
+//                        requires_payment_method | requires_action | declined |
+//                        needs_review        (see checkoutPublic.js contract)
+//  Decline POST {api_base}/upsell/decline { session_id, offer_id }
+//
+// Money postures (mirror the checkout runtime):
+//  • The client NEVER sends a trusted price. The amount charged is re-priced
+//    server-side by /upsell/accept; the shown amount comes from /upsell/offer,
+//    also server-side. A 2xx from accept is NOT proof money moved — only
+//    'settled'/'already_purchased' advance immediately; 'processing' POLLS
+//    (re-calling accept is idempotent — the unique (session,offer,slot) index
+//    makes a repeat return 'processing', never a second charge) and never
+//    advances on trust until it flips or a bounded timeout elapses (the charge
+//    stays pending_settlement server-side; the webhook/sweep is the authority).
+//  • XSS: the offer title is written with textContent, the image via a
+//    scheme-checked setAttribute, the amount via textContent — a hostile offer
+//    field is inert.
+//  • Fail-visible: any load error shows an inline message and offers Decline so
+//    the buyer is never stuck; the whole runtime is try/guarded.
+// ---------------------------------------------------------------------------
+function upsellRuntimeScript(ctx) {
+  const json = jsonForScript({
+    funnel_id: ctx.funnel_id != null ? String(ctx.funnel_id) : null,
+    page_id: ctx.page_id != null ? String(ctx.page_id) : null,
+    api_base: '/api/v1/checkout/public',
+  });
+  const body = `(function(){
+var CTX=window.__fos_upsell;var API=(CTX&&CTX.api_base)||'/api/v1/checkout/public';
+var POLL_MS=2500;var POLL_MAX=12;
+function ready(fn){if(document.readyState!=='loading'){fn();}else{document.addEventListener('DOMContentLoaded',fn);}}
+function money(n,c){try{return new Intl.NumberFormat(undefined,{style:'currency',currency:(c||'USD')}).format(Number(n));}catch(e){return (c||'')+' '+Number(n||0).toFixed(2);}}
+function sid(){try{var u=new URL(window.location.href);var q=u.searchParams.get('s')||u.searchParams.get('session')||u.searchParams.get('session_id');if(q)return q;}catch(e){}try{var s=window.sessionStorage.getItem('__fos_session');if(s)return s;}catch(e){}try{var l=window.localStorage.getItem('__fos_session');if(l)return l;}catch(e){}try{var m=window.__fos_checkout&&window.__fos_checkout.session;if(m&&m.session_id)return m.session_id;}catch(e){}return '';}
+var SID=sid();
+function flow(){return window.__fos_flow||{};}
+function go(path){if(!path){return;}try{var u=new URL(path,window.location.origin);if(SID&&!u.searchParams.get('s'))u.searchParams.set('s',SID);window.location.assign(u.pathname+u.search+u.hash);}catch(e){try{window.location.assign(path);}catch(e2){}}}
+function advanceMain(){go(flow().next_path);}
+function advanceDecline(){var f=flow();go(f.fallback_path||f.next_path);}
+function q(root,sel){try{return root.querySelector(sel);}catch(e){return null;}}
+function setText(root,sel,txt){var el=q(root,sel);if(el){el.textContent=txt;}}
+function showError(root,msg){var e=q(root,'[data-fos-up-error]');if(e){e.hidden=false;e.textContent=msg;}}
+function setStatus(root,msg,on){var s=q(root,'[data-fos-up-status]');var m=q(root,'[data-fos-up-status-msg]');if(m&&msg!=null)m.textContent=msg;if(s)s.hidden=!on;}
+function setBusy(root,on){var a=q(root,'[data-fos-up-accept]');var d=q(root,'[data-fos-up-decline]');if(a)a.disabled=on;if(d)d.disabled=on;}
+function post(path,payload){return fetch(API+path,{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify(payload)}).then(function(r){return r.json().catch(function(){return {};}).then(function(j){return {status:r.status,json:j};});});}
+function getJson(url){return fetch(url,{credentials:'same-origin'}).then(function(r){return r.json().catch(function(){return {};}).then(function(j){return {status:r.status,json:j};});});}
+function offerErr(code){if(code==='pricing_unavailable')return 'This offer is temporarily unavailable. Please continue.';if(code==='offer_not_found'||code==='invalid_variant')return 'No offer is available right now. Please continue.';if(code==='session_not_found')return 'We could not find your order. Please continue.';return 'This offer could not be loaded. Please continue.';}
+function acceptErr(code){if(code==='session_not_paid')return 'Your original order is still being confirmed. Please try again in a moment.';if(code==='session_disputed'||code==='session_refunded')return 'This offer is no longer available on your order.';if(code==='pricing_unavailable')return 'This offer is temporarily unavailable. Please continue.';if(code==='rate_limited')return 'Too many attempts. Please wait a moment.';return 'We could not add this to your order ('+code+').';}
+function fill(root,offer){try{
+  setText(root,'[data-fos-up-title]',offer.title||'Special offer');
+  var img=q(root,'[data-fos-up-image]');
+  if(img&&offer.image&&/^https?:\\/\\//i.test(String(offer.image))){img.setAttribute('src',String(offer.image));img.hidden=false;}
+  setText(root,'[data-fos-up-price]',money(offer.price,offer.currency));
+  var orig=q(root,'[data-fos-up-original]');
+  if(orig&&offer.original_price!=null&&Number(offer.original_price)>Number(offer.price)){orig.textContent=money(offer.original_price,offer.currency);orig.hidden=false;}
+  var badge=q(root,'[data-fos-up-badge]');
+  if(badge&&offer.discount_pct!=null&&Number(offer.discount_pct)>0){badge.textContent='Save '+Number(offer.discount_pct)+'%';badge.hidden=false;}
+  root.setAttribute('data-offer-id',offer.offer_id||'');
+  root.setAttribute('data-variant-id',offer.variant_id||'');
+  var a=q(root,'[data-fos-up-accept]');if(a)a.disabled=false;
+}catch(e){}}
+function poll(root,tries){setStatus(root,'Finishing up your order…',true);
+  post('/upsell/accept',{session_id:SID,offer_id:root.getAttribute('data-offer-id'),variant_id:root.getAttribute('data-variant-id')||undefined}).then(function(res){
+    var d=(res.json&&res.json.data)||{};var st=d.status;
+    if(st==='settled'||st==='already_purchased'){advanceMain();return;}
+    if(st==='declined'||st==='requires_action'||st==='requires_payment_method'){advanceMain();return;}
+    if(st==='processing'||st==='needs_review'){
+      if(tries<POLL_MAX){setTimeout(function(){poll(root,tries+1);},POLL_MS);return;}
+      // Bounded out — the charge is held server-side (pending_settlement); the
+      // webhook/sweep settles it. Do not strand the buyer on this page.
+      advanceMain();return;
+    }
+    advanceMain();
+  }).catch(function(){ if(tries<POLL_MAX){setTimeout(function(){poll(root,tries+1);},POLL_MS);} else {advanceMain();} });
+}
+function onAccept(root){if(!SID){showError(root,'We could not find your order. Please continue.');return;}
+  var oid=root.getAttribute('data-offer-id');if(!oid){showError(root,'No offer is available right now. Please continue.');return;}
+  setBusy(root,true);setStatus(root,'Adding to your order…',true);
+  post('/upsell/accept',{session_id:SID,offer_id:oid,variant_id:root.getAttribute('data-variant-id')||undefined}).then(function(res){
+    if(res.status!==200||!res.json||!res.json.success){var c=(res.json&&res.json.error&&res.json.error.code)||('http_'+res.status);setStatus(root,null,false);setBusy(root,false);showError(root,acceptErr(c));return;}
+    var d=res.json.data||{};var st=d.status;
+    if(st==='settled'||st==='already_purchased'){advanceMain();return;}
+    if(st==='requires_payment_method'){
+      // 1-click impossible (base paid but no reusable saved method). A full
+      // card re-entry lane is out of scope here — inform and advance so the
+      // funnel is never dead-ended. (Integration point: mount a card-entry
+      // fallback that re-collects a method, then re-POST /upsell/accept.)
+      setStatus(root,null,false);showError(root,'We could not use your saved payment method for this one-click offer. Continuing to the next step.');setTimeout(advanceMain,1800);return;}
+    if(st==='requires_action'){setStatus(root,null,false);showError(root,'This payment needs extra verification we cannot complete here. Continuing.');setTimeout(advanceMain,1800);return;}
+    if(st==='declined'){setStatus(root,null,false);showError(root,'That payment was declined. Continuing to the next step.');setTimeout(advanceMain,1800);return;}
+    if(st==='processing'||st==='needs_review'){poll(root,0);return;}
+    advanceMain();
+  }).catch(function(){setStatus(root,null,false);setBusy(root,false);showError(root,'Network error. Please try again.');});
+}
+function onDecline(root){setBusy(root,true);setStatus(root,'One moment…',true);
+  post('/upsell/decline',{session_id:SID,offer_id:root.getAttribute('data-offer-id')||undefined}).then(function(){advanceDecline();}).catch(function(){advanceDecline();});}
+function initBlock(root){
+  var a=q(root,'[data-fos-up-accept]');var d=q(root,'[data-fos-up-decline]');
+  if(a)a.addEventListener('click',function(){onAccept(root);});
+  if(d)d.addEventListener('click',function(){onDecline(root);});
+  var cfg={};try{cfg=JSON.parse((q(root,'.fos-upsell-cfg')||{}).textContent||'{}');}catch(e){cfg={};}
+  if(!SID){showError(root,'We could not find your order.');setText(root,'[data-fos-up-title]','No offer available');return;}
+  var url=API+'/upsell/offer?session_id='+encodeURIComponent(SID);
+  if(cfg&&cfg.offer_id){url+='&offer_id='+encodeURIComponent(cfg.offer_id);}
+  if(CTX&&CTX.page_id){url+='&page_id='+encodeURIComponent(CTX.page_id);}
+  getJson(url).then(function(res){
+    if(res.status!==200||!res.json||!res.json.success){setText(root,'[data-fos-up-title]','No offer available');showError(root,offerErr((res.json&&res.json.error&&res.json.error.code)||('http_'+res.status)));return;}
+    fill(root,res.json.data);
+  }).catch(function(){setText(root,'[data-fos-up-title]','No offer available');showError(root,'This offer could not be loaded. Please continue.');});
+}
+ready(function(){try{var blocks=document.querySelectorAll('[data-fos-upsell]');if(!blocks.length)return;Array.prototype.forEach.call(blocks,function(b){try{initBlock(b);}catch(e){}});}catch(e){}});
+})();`;
+  return `<script>window.__fos_upsell=Object.assign(window.__fos_upsell||{},${json});${body}</script>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -764,6 +958,19 @@ export function renderPageHtml(page, funnel, pagesById) {
       })
     : '';
 
+  // 1-CLICK UPSELL: emit the upsell runtime ONLY when the page carries an
+  // upsell_offer block. funnel_id/page_id thread into /upsell/offer so the
+  // right offer resolves + prices server-side.
+  const hasUpsell = blocks.some(
+    (b) => isPlainObject(b) && UPSELL_RUNTIME_TYPES.has(b.type)
+  );
+  const upsellScript = hasUpsell
+    ? upsellRuntimeScript({
+        funnel_id: (funnel || {}).id ?? null,
+        page_id: (page || {}).id ?? null,
+      })
+    : '';
+
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -787,6 +994,7 @@ ${customHtml}
 ${blocksHtml}
 </main>
 ${checkoutScript}
+${upsellScript}
 ${pageJs ? `<script>${pageJs}</script>` : ''}
 ${bodyEndHtml}
 </body>
@@ -1110,4 +1318,91 @@ export function checkoutPageTemplate() {
   return { blocks, custom_css: CKT_TEMPLATE_CSS, custom_js: CKT_TEMPLATE_JS };
 }
 
-export default { renderPageHtml, renderBlock, escapeHtml, compileFlow, checkoutPageTemplate };
+// ---------------------------------------------------------------------------
+// UPSELL PAGE TEMPLATE (1-click post-purchase offer).
+//
+// Default seed for a page created with type='upsell'. Buyer-facing LIGHT theme,
+// consistent with the checkout template. A flat, valid blocks[] list so the
+// canvas can reorder/remove pieces safely. The offer itself is the LIVE
+// upsell_offer block (its runtime resolves + server-prices the bound offer);
+// it ships with NO offer_id, so until the operator attaches an offer (POST
+// /api/v1/checkout/upsells with page_id, OR set props.offer_id on the block)
+// the runtime resolves the offer bound to this page/funnel, else shows a clean
+// "no offer available" state and the page still serves 200 (fail-open).
+// ---------------------------------------------------------------------------
+const UPSELL_TEMPLATE_CSS = `/* Upsell template (seeded) — buyer-facing LIGHT theme */
+body{background:#f6f7f9;color:#111827;}
+main{max-width:600px;margin:0 auto;padding:40px 20px 64px;}
+main>.lb-blk{margin:0 0 20px;}
+.lb-upsell-progress{display:flex;align-items:center;justify-content:center;gap:8px;color:#16a34a;font-weight:600;font-size:.9rem;margin-bottom:8px;}
+.lb-upsell-progress svg{display:block;}
+.lb-upsell{background:#fff;border:1px solid #e5e7eb;border-radius:16px;padding:28px 26px;box-shadow:0 10px 30px rgba(17,24,39,.06);}
+.lb-upsell-headline{font-size:1.6rem;font-weight:800;line-height:1.2;color:#0f172a;text-align:center;margin-bottom:8px;}
+.lb-upsell-sub{color:#6b7280;text-align:center;margin:0 0 20px;font-size:1rem;}
+.lb-upsell-card{display:flex;gap:18px;align-items:center;border:1px solid #eef0f3;border-radius:12px;padding:16px;background:#fafbfc;margin-bottom:18px;}
+.lb-upsell-media{flex:0 0 auto;}
+.lb-upsell-img{width:96px;height:96px;object-fit:cover;border-radius:10px;border:1px solid #e5e7eb;display:block;background:#fff;}
+.lb-upsell-info{flex:1;min-width:0;}
+.lb-upsell-name{font-weight:700;font-size:1.15rem;color:#0f172a;line-height:1.3;margin-bottom:8px;}
+.lb-upsell-pricing{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;}
+.lb-upsell-price{font-size:1.5rem;font-weight:800;color:#111827;}
+.lb-upsell-original{color:#9ca3af;text-decoration:line-through;font-size:1.05rem;}
+.lb-upsell-save{background:#dcfce7;color:#166534;border-radius:999px;padding:3px 10px;font-size:.78rem;font-weight:700;}
+.lb-upsell-error{color:#b91c1c;background:#fef2f2;border:1px solid #fecaca;border-radius:10px;padding:11px 14px;margin-bottom:14px;font-size:.95rem;}
+.lb-upsell-actions{display:flex;flex-direction:column;gap:12px;}
+.lb-upsell-accept{display:block;width:100%;background:#16a34a;color:#fff;border:0;border-radius:12px;padding:17px;font:800 1.1rem/1.2 Inter,system-ui,sans-serif;cursor:pointer;box-shadow:0 6px 16px rgba(22,163,74,.28);transition:background .15s,transform .05s;}
+.lb-upsell-accept:hover:not(:disabled){background:#15803d;}
+.lb-upsell-accept:active:not(:disabled){transform:translateY(1px);}
+.lb-upsell-accept:disabled{background:#a7d7bb;cursor:not-allowed;box-shadow:none;}
+.lb-upsell-decline{display:block;width:100%;background:transparent;color:#6b7280;border:0;padding:6px;font:500 .95rem/1.2 Inter,system-ui,sans-serif;cursor:pointer;text-decoration:underline;}
+.lb-upsell-decline:hover:not(:disabled){color:#111827;}
+.lb-upsell-decline:disabled{opacity:.5;cursor:not-allowed;}
+.lb-upsell-status{display:flex;align-items:center;justify-content:center;gap:10px;color:#374151;font-size:.95rem;margin-top:14px;}
+.lb-upsell-spinner{width:18px;height:18px;border:2px solid #d1d5db;border-top-color:#16a34a;border-radius:50%;display:inline-block;animation:lbupspin .7s linear infinite;}
+@keyframes lbupspin{to{transform:rotate(360deg);}}
+.lb-upsell-fine{color:#9ca3af;font-size:.8rem;line-height:1.5;text-align:center;margin:18px 4px 0;}
+@media (max-width:520px){
+  .lb-upsell-card{flex-direction:column;text-align:center;}
+  .lb-upsell-pricing{justify-content:center;}
+  .lb-upsell-headline{font-size:1.35rem;}
+}`;
+
+// Returns { blocks, custom_css, custom_js } for a fresh 'upsell' page. Fresh
+// objects per call (never a frozen constant) so one page's canvas edits can
+// never alias another's seed.
+export function upsellPageTemplate() {
+  const html = (id, name, markup) => ({
+    id,
+    type: 'html',
+    props: { block_name: name, html: markup },
+  });
+  const blocks = [
+    html('ups_progress', 'upsell-progress',
+      `<div class='lb-upsell-progress'>` +
+      `<svg width='18' height='18' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round' aria-hidden='true'><path d='M20 6 9 17l-5-5'/></svg>` +
+      `Payment confirmed — one quick thing before your receipt</div>`),
+    {
+      id: 'ups_offer',
+      type: 'upsell_offer',
+      props: {
+        block_name: 'upsell-offer',
+        headline: 'Wait — add this to your order at a one-time discount',
+        subheadline:
+          'Because you just ordered, you can add this now with a single click. ' +
+          'No need to re-enter your payment or shipping details.',
+        accept_text: 'Yes — add this to my order',
+        decline_text: 'No thanks, I’ll pass on this one-time offer',
+      },
+    },
+  ];
+  return { blocks, custom_css: UPSELL_TEMPLATE_CSS, custom_js: '' };
+}
+
+export default {
+  renderPageHtml,
+  renderBlock,
+  escapeHtml,
+  compileFlow,
+  checkoutPageTemplate,
+  upsellPageTemplate,
+};

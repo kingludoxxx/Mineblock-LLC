@@ -707,6 +707,136 @@ router.post('/upsell/decline', async (req, res) => {
   }
 });
 
+// GET /upsell/offer — server-priced DISPLAY data for the buyer-facing 1-click
+// upsell page. Read-only: it NEVER writes a charge (accept does that). Prices
+// are resolved SERVER-SIDE (the operator-set offer price, else the live
+// Shopify price); the client never sends, and cannot influence, an amount — it
+// only names WHICH offer (by explicit id, else the offer bound to the page,
+// else the offer bound to the session's funnel). The accept path re-prices
+// independently and is the authority for what is charged.
+router.get('/upsell/offer', async (req, res) => {
+  try {
+    if (!(await rateLimit(req, res, 'upsell-offer', 60))) return;
+    await ensureCheckoutTables();
+    const sessionId = String(req.query.session_id || '').slice(0, 80);
+    if (!sessionId) {
+      return res.status(422).json({ success: false, error: { code: 'session_required' } });
+    }
+    const srows = await pgQuery(
+      `SELECT id, funnel_id, currency FROM co_sessions WHERE id = $1`,
+      [sessionId]
+    );
+    const session = srows[0];
+    if (!session) {
+      return res.status(404).json({ success: false, error: { code: 'session_not_found' } });
+    }
+
+    // Resolve WHICH offer to show: explicit offer_id wins; else the enabled
+    // offer bound to the page (page_id); else the enabled offer bound to the
+    // session's funnel. Newest wins when several are bound.
+    const offerId = String(req.query.offer_id || '').slice(0, 80);
+    const pageId = String(req.query.page_id || '').slice(0, 64);
+    let offer = null;
+    if (offerId) {
+      const r = await pgQuery(
+        `SELECT id, funnel_id, variant_id, price, title, enabled FROM co_upsells WHERE id = $1`,
+        [offerId]
+      );
+      offer = r[0] || null;
+    } else if (pageId) {
+      const r = await pgQuery(
+        `SELECT id, funnel_id, variant_id, price, title, enabled FROM co_upsells
+         WHERE page_id = $1 AND enabled = TRUE ORDER BY created_at DESC LIMIT 1`,
+        [pageId]
+      );
+      offer = r[0] || null;
+    } else if (session.funnel_id) {
+      const r = await pgQuery(
+        `SELECT id, funnel_id, variant_id, price, title, enabled FROM co_upsells
+         WHERE funnel_id = $1 AND enabled = TRUE ORDER BY created_at DESC LIMIT 1`,
+        [session.funnel_id]
+      );
+      offer = r[0] || null;
+    }
+    if (!offer || !offer.enabled) {
+      return res.status(404).json({ success: false, error: { code: 'offer_not_found' } });
+    }
+    // Same funnel-pin gate as the accept path: a pinned offer only serves its
+    // own funnel's sessions (a NULL-funnel offer is global by design).
+    if (offer.funnel_id && offer.funnel_id !== (session.funnel_id || '')) {
+      return res.status(404).json({ success: false, error: { code: 'offer_not_found' } });
+    }
+
+    const variantId = offer.variant_id || '';
+    const hasFixedPrice = offer.price !== null && offer.price !== undefined;
+
+    // Live variant data (image + regular price to strike through) — best
+    // effort. The charged price is authoritative from offer.price when set;
+    // only when it is NULL must we resolve the live price (and a pricing outage
+    // there is a RETRYABLE 503, never a silent wrong price).
+    let live = null;
+    if (variantId) {
+      try {
+        const priced = await resolveVariantPrices([variantId]);
+        live = priced[toVariantGid(variantId)] || null;
+      } catch (err) {
+        if (err instanceof PricingUnavailableError) {
+          if (!hasFixedPrice) {
+            return res.status(503).json({ success: false, error: { code: 'pricing_unavailable' } });
+          }
+          // Fixed price set → we can still show the charged amount with no
+          // image/original; degrade rather than block the offer.
+        } else {
+          throw err;
+        }
+      }
+    }
+
+    let charged;
+    let original = null;
+    if (hasFixedPrice) {
+      charged = round2(Number(offer.price));
+      if (live && Number(live.price) > charged) original = round2(Number(live.price));
+      else if (live && live.compare_at_price) original = round2(Number(live.compare_at_price));
+    } else {
+      if (!live) {
+        // variant_id '' (client-selected) with no fixed price → nothing to show.
+        return res.status(422).json({ success: false, error: { code: 'invalid_variant' } });
+      }
+      charged = round2(Number(live.price));
+      original = live.compare_at_price ? round2(Number(live.compare_at_price)) : null;
+    }
+    if (!Number.isFinite(charged) || charged < 0) {
+      return res.status(422).json({ success: false, error: { code: 'invalid_price' } });
+    }
+
+    const currency = (live && live.currency) || session.currency || 'USD';
+    const title = offer.title || (live && (live.product_title || live.title)) || 'Special offer';
+    const image = (live && live.image) || '';
+    const discountPct =
+      original && original > charged
+        ? Math.round(((original - charged) / original) * 100)
+        : null;
+
+    return res.json({
+      success: true,
+      data: {
+        offer_id: offer.id,
+        variant_id: variantId,
+        title,
+        image,
+        price: charged,
+        original_price: original,
+        discount_pct: discountPct,
+        currency,
+      },
+    });
+  } catch (err) {
+    console.error('[checkout] upsell offer failed:', err.message);
+    return res.status(500).json({ success: false, error: { code: 'internal_error' } });
+  }
+});
+
 // GET /session/:id — safe public snapshot (thank-you / upsell pages poll
 // this). Hand-picked fields, an allow-list: no tracking net, no customer PII
 // beyond nothing, no gateway internals.
