@@ -18,32 +18,71 @@ process.env.MONEY_SWEEP_DISABLED = '1';
 process.env.PUURE_SHOPIFY_STORE = 'mock-puure.myshopify.com';
 process.env.PUURE_SHOPIFY_TOKEN = 'shpat_mock_token';
 process.env.SHOPIFY_API_VERSION = '2024-01';
+process.env.SHOPIFY_ORDER_CREATE_ENABLED = '1'; // explicit opt-in (cross-store guard)
 
 const NM = '/Users/ludo/Mineblock-LLC/node_modules';
 const postgres = (await import(`${NM}/postgres/src/index.js`)).default;
 const sql = postgres(process.env.DATABASE_URL, { onnotice: () => {} });
 
 // ── Mock Shopify Admin API ───────────────────────────────────────────────
-// Modes: 'ok' → 201 with a fresh order id; '500' → server error; 'timeout' →
-// never responds (client aborts). Every order-create call is recorded.
+// Faithful-enough to catch mispricing: on POST it COMPUTES total_price from the
+// payload line prices (× qty) + shipping_lines + tax_lines — pricing a line at
+// livePrice ONLY when the payload omits a price (proving that sending an explicit
+// price makes live≠funnel irrelevant) — then resolves financial_status by
+// comparing the summed sale transactions to total_price (paid / partially_paid /
+// pending). Created orders are stored and served on GET orders.json so the
+// reclaim-adopt path can find them by note_attributes.
+// Modes: 'ok' → 201; '500' → server error (POST+GET); 'timeout' → hang.
 const mock = {
   mode: 'ok',
-  calls: [],           // recorded { path, body } for each orders.json POST
+  calls: [],                 // recorded { body } for each orders.json POST
+  getCalls: 0,               // count of GET orders.json (reclaim lookups)
+  orders: [],                // created order records (served on GET)
+  livePrice: {},             // variantId -> live unit price (used only if payload omits price)
   nextId: 5500000001,
 };
+const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
+function computeOrder(o) {
+  let lineSum = 0;
+  for (const li of o.line_items || []) {
+    const unit = li.price != null ? num(li.price) : num(mock.livePrice[String(li.variant_id)]);
+    lineSum += unit * num(li.quantity);
+  }
+  const shipSum = (o.shipping_lines || []).reduce((s, l) => s + num(l.price), 0);
+  const taxSum = (o.tax_lines || []).reduce((s, l) => s + num(l.price), 0);
+  const totalPrice = Math.round((lineSum + shipSum + taxSum) * 100) / 100;
+  const paid = (o.transactions || [])
+    .filter((t) => ['sale', 'capture'].includes(t.kind) && t.status === 'success')
+    .reduce((s, t) => s + num(t.amount), 0);
+  const financial_status = paid >= totalPrice - 0.001 ? (paid > totalPrice + 0.001 ? 'paid' : 'paid') : (paid > 0 ? 'partially_paid' : 'pending');
+  return { totalPrice, paid, financial_status };
+}
 const mockServer = http.createServer((req, res) => {
   let raw = '';
   req.on('data', (c) => { raw += c; });
   req.on('end', () => {
-    if (!/\/orders\.json$/.test(req.url)) { res.writeHead(404).end('{}'); return; }
+    if (!/\/orders\.json/.test(req.url)) { res.writeHead(404).end('{}'); return; }
+    if (req.method === 'GET') {
+      mock.getCalls++;
+      if (mock.mode === 'timeout') return;
+      if (mock.mode === '500') { res.writeHead(500).end('{}'); return; }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ orders: mock.orders.map((r) => ({ id: r.id, order_number: r.order_number, note_attributes: r.note_attributes, tags: r.tags })) }));
+      return;
+    }
+    // POST create
     let body = {};
     try { body = JSON.parse(raw); } catch {}
-    mock.calls.push({ path: req.url, body: body.order || {} });
+    const o = body.order || {};
+    mock.calls.push({ body: o });
     if (mock.mode === 'timeout') return; // hang → client-side AbortController fires
     if (mock.mode === '500') { res.writeHead(500, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ errors: 'internal' })); return; }
     const id = mock.nextId++;
+    const order_number = 1000 + (id % 1000);
+    const { totalPrice, financial_status } = computeOrder(o);
+    mock.orders.push({ id, order_number, note_attributes: o.note_attributes || [], tags: o.tags || '', total_price: totalPrice.toFixed(2), financial_status });
     res.writeHead(201, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ order: { id, order_number: 1000 + (id % 1000), financial_status: 'paid' } }));
+    res.end(JSON.stringify({ order: { id, order_number, financial_status, total_price: totalPrice.toFixed(2) } }));
   });
 });
 await new Promise((r) => mockServer.listen(0, '127.0.0.1', r));
@@ -106,8 +145,13 @@ const settleArgs = (id, payId) => ({
   const o = call?.body || {};
   check('T2 financial_status paid', o.financial_status === 'paid', JSON.stringify(o.financial_status));
   check('T2 manual sale transaction paid (amount+currency)', Array.isArray(o.transactions) && o.transactions[0]?.kind === 'sale' && o.transactions[0]?.status === 'success' && o.transactions[0]?.amount === '89.00' && o.transactions[0]?.currency === 'USD', JSON.stringify(o.transactions));
-  check('T2 line_items numeric variant_id + qty', Array.isArray(o.line_items) && o.line_items[0]?.variant_id === 58222941077807 && o.line_items[0]?.quantity === 1, JSON.stringify(o.line_items));
+  check('T2 line_items variant_id as numeric STRING + qty + server price', Array.isArray(o.line_items) && o.line_items[0]?.variant_id === '58222941077807' && o.line_items[0]?.quantity === 1 && o.line_items[0]?.price === '89.00', JSON.stringify(o.line_items));
   check('T2 currency USD', o.currency === 'USD', JSON.stringify(o.currency));
+  // Reconciliation: the mock's COMPUTED total_price (from line prices+ship+tax)
+  // must equal the charged transaction amount and resolve to fully paid.
+  const rec1 = mock.orders[mock.orders.length - 1];
+  check('T2 total_price == transaction amount (reconciles)', rec1?.total_price === o.transactions[0].amount && rec1?.total_price === '89.00', JSON.stringify(rec1));
+  check('T2 financial_status resolves fully PAID (not partially_paid)', rec1?.financial_status === 'paid', JSON.stringify(rec1));
   check('T2 email present', o.email === 'buyer@example.com', JSON.stringify(o.email));
   check('T2 receipts suppressed', o.send_receipt === false && o.send_fulfillment_receipt === false, JSON.stringify({ r: o.send_receipt, f: o.send_fulfillment_receipt }));
   check('T2 puure-checkout tag + source', o.tags === 'puure-checkout' && o.source_name === 'puure-checkout', JSON.stringify({ t: o.tags, s: o.source_name }));
@@ -242,7 +286,7 @@ const settleArgs = (id, payId) => ({
   {
     mock.calls.length = 0;
     const id = 'co_curmis';
-    await sql`INSERT INTO co_sessions ${sql({ id, funnel_id: 'fn_test', status: 'processing', line_items: sql.json([{ variant_id: '58222941077807', quantity: 1 }]), subtotal: 89, shipping: 0, tax: 0, total: 89, currency: 'USD', customer: sql.json({ email: 'x@y.com' }) })}`;
+    await sql`INSERT INTO co_sessions ${sql({ id, funnel_id: 'fn_test', status: 'processing', line_items: sql.json([{ variant_id: '58222941077807', quantity: 1, price: 89 }]), subtotal: 89, shipping: 0, tax: 0, total: 89, currency: 'USD', customer: sql.json({ email: 'x@y.com' }) })}`;
     await sql`INSERT INTO co_orders ${sql({ id: 'ord_curmis', session_id: id, idempotency_key: 'k_curmis', gateway: 'whop', line_items: sql.json([]), total: 89, currency: 'EUR' })}`;
     const r = await createShopifyOrderForSession({ sessionId: id, idempotencyKey: 'k_curmis' });
     check('T8d currency mismatch → needs_review, no call', /currency_mismatch/.test(r.error || '') && mock.calls.length === 0, JSON.stringify({ r, calls: mock.calls.length }));
@@ -260,6 +304,101 @@ const settleArgs = (id, payId) => ({
   check('T9 disabled: NO orders.json call', mock.calls.length === 0, `calls=${mock.calls.length}`);
   check('T9 disabled: co_orders untouched by mirror', !ord?.shopify_status && !ord?.shopify_order_id, JSON.stringify(ord));
   delete process.env.SHOPIFY_ORDER_CREATE_DISABLED;
+}
+
+// ══ TEST 10 — multi-line, live price ≠ funnel price, shipping+tax > 0 ══
+// Two lines at DIFFERENT server prices + shipping + tax. The mock's live price
+// for the variant is deliberately wrong (999) — because the payload carries our
+// server price, the computed total_price still reconciles to the charged amount
+// and resolves fully PAID. This is the case the old hard-coded mock could not
+// catch.
+{
+  mock.mode = 'ok'; mock.calls.length = 0;
+  mock.livePrice = { '58222941077807': 999, '58224832807215': 999 }; // live ≠ funnel
+  const id = 'co_multi';
+  const lines = [
+    { variant_id: '58222941077807', quantity: 1, price: 50, currency: 'USD' },
+    { variant_id: '58224832807215', quantity: 2, price: 30, currency: 'USD' }, // 60
+  ];
+  const total = 125; // 50 + 60 = 110 subtotal + 10 ship + 5 tax
+  await sql`INSERT INTO co_sessions ${sql({ id, funnel_id: 'fn_test', status: 'processing', line_items: sql.json(lines), subtotal: 110, shipping: 10, tax: 5, total, currency: 'USD', customer: sql.json({ email: 'multi@example.com', first_name: 'M', last_name: 'L' }) })}`;
+  const r = await settleSessionPaid({ sessionId: id, gateway: 'whop', gatewayId: 'pay_multi', idempotencyKey: 'wh_pay_multi', amount: total, currency: 'USD' });
+  const call = mock.calls[0]?.body || {};
+  const rec = mock.orders[mock.orders.length - 1];
+  check('T10 multi-line settle ok', r.ok && r.settled, JSON.stringify(r));
+  check('T10 each line carries its own server price', call.line_items?.[0]?.price === '50.00' && call.line_items?.[1]?.price === '30.00', JSON.stringify(call.line_items));
+  check('T10 shipping_lines + tax_lines present', call.shipping_lines?.[0]?.price === '10.00' && call.tax_lines?.[0]?.price === '5.00', JSON.stringify({ s: call.shipping_lines, t: call.tax_lines }));
+  check('T10 computed total_price == charged amount (125.00), NOT live-priced', rec?.total_price === '125.00' && rec?.total_price === call.transactions[0].amount, JSON.stringify(rec));
+  check('T10 resolves fully PAID despite live≠funnel price', rec?.financial_status === 'paid', JSON.stringify(rec));
+}
+
+// ══ TEST 11 — total composition mismatch parks needs_review (fail closed) ══
+// A snapshot whose lines+ship+tax do NOT sum to the charged total must NOT post
+// a mispriced order — it parks for a human.
+{
+  mock.mode = 'ok'; mock.calls.length = 0; mock.livePrice = {};
+  const id = 'co_badcompose';
+  // lines sum to 100 but charged total says 125 (e.g. a dropped shipping line).
+  await sql`INSERT INTO co_sessions ${sql({ id, funnel_id: 'fn_test', status: 'processing', line_items: sql.json([{ variant_id: '58222941077807', quantity: 1, price: 100 }]), subtotal: 100, shipping: 0, tax: 0, total: 125, currency: 'USD', customer: sql.json({ email: 'bad@example.com' }) })}`;
+  await sql`INSERT INTO co_orders ${sql({ id: 'ord_badcompose', session_id: id, idempotency_key: 'k_badcompose', gateway: 'whop', line_items: sql.json([]), total: 125, currency: 'USD' })}`;
+  const r = await createShopifyOrderForSession({ sessionId: id, idempotencyKey: 'k_badcompose' });
+  const [ord] = await sql`SELECT shopify_status, shopify_error FROM co_orders WHERE idempotency_key = 'k_badcompose'`;
+  check('T11 composition mismatch → needs_review, no POST', /total_composition_mismatch/.test(r.error || '') && ord.shopify_status === 'needs_review' && mock.calls.length === 0, JSON.stringify({ r, ord, calls: mock.calls.length }));
+}
+
+// ══ TEST 12 — reclaim ADOPTS an existing order (SIGKILL-after-201 window) ══
+// Create an order, then simulate the id-write being lost (row back to a STALE
+// 'creating'). A reclaim must find the existing order at Shopify by our
+// idempotency-key note_attribute and adopt it — ZERO new POST, no duplicate.
+{
+  mock.mode = 'ok'; mock.calls.length = 0; mock.getCalls = 0; mock.livePrice = {};
+  const id = await seedSession({ id: 'co_adopt', total: 89 });
+  const r0 = await settleSessionPaid(settleArgs(id, 'pay_adopt'));
+  const [before] = await sql`SELECT shopify_order_id FROM co_orders WHERE idempotency_key = 'wh_pay_adopt'`;
+  const origId = before.shopify_order_id;
+  check('T12 setup: first create produced an id', Boolean(origId) && mock.calls.length === 1, JSON.stringify({ origId, calls: mock.calls.length }));
+  // Simulate the lost id-write: row reverts to a STALE 'creating' claim.
+  await sql`UPDATE co_orders SET shopify_order_id = NULL, shopify_order_number = NULL, external_order_id = NULL, shopify_status = 'creating', shopify_claimed_at = NOW() - INTERVAL '4 minutes' WHERE idempotency_key = 'wh_pay_adopt'`;
+  mock.calls.length = 0; mock.getCalls = 0;
+  const rAdopt = await createShopifyOrderForSession({ sessionId: id, idempotencyKey: 'wh_pay_adopt' });
+  const [after] = await sql`SELECT shopify_order_id, shopify_status FROM co_orders WHERE idempotency_key = 'wh_pay_adopt'`;
+  check('T12 reclaim ADOPTED existing order (no new POST)', rAdopt.adopted === true && mock.calls.length === 0, JSON.stringify({ rAdopt, posts: mock.calls.length }));
+  check('T12 reclaim did a GET lookup', mock.getCalls === 1, `getCalls=${mock.getCalls}`);
+  check('T12 adopted id matches original, status created', after.shopify_order_id === origId && after.shopify_status === 'created', JSON.stringify({ after, origId }));
+}
+
+// ══ TEST 13 — reclaim lookup FAILS → fail closed (needs_review, no POST) ══
+// If the dedup GET can't confirm the order is absent, a reclaim must NOT create
+// (could duplicate) — it parks for a human.
+{
+  const id = await seedSession({ id: 'co_adoptfail', total: 89 });
+  await sql`INSERT INTO co_orders ${sql({ id: 'ord_adoptfail', session_id: id, idempotency_key: 'wh_pay_adoptfail', gateway: 'whop', line_items: sql.json([]), total: 89, currency: 'USD', shopify_status: 'creating' })}`;
+  await sql`UPDATE co_orders SET shopify_claimed_at = NOW() - INTERVAL '4 minutes' WHERE idempotency_key = 'wh_pay_adoptfail'`;
+  mock.mode = '500'; mock.calls.length = 0; mock.getCalls = 0; // GET returns 500
+  const r = await createShopifyOrderForSession({ sessionId: id, idempotencyKey: 'wh_pay_adoptfail' });
+  const [ord] = await sql`SELECT shopify_order_id, shopify_status, shopify_error FROM co_orders WHERE idempotency_key = 'wh_pay_adoptfail'`;
+  check('T13 reclaim lookup error → needs_review, NO POST, no id', r.needsReview === true && mock.calls.length === 0 && !ord.shopify_order_id && ord.shopify_status === 'needs_review' && /reclaim_lookup_server/.test(ord.shopify_error || ''), JSON.stringify({ r, ord, posts: mock.calls.length }));
+  mock.mode = 'ok';
+}
+
+// ══ TEST 14 — enablement gate: opt-in REQUIRED (cross-store guard) ══
+{
+  mock.calls.length = 0;
+  delete process.env.SHOPIFY_ORDER_CREATE_ENABLED; // creds present, kill switch off, but NOT opted in
+  const { shopifyOrderCreateEnabled } = await import('../../src/services/shopifyOrderCreate.js');
+  check('T14 not opted in → enabled() false', shopifyOrderCreateEnabled() === false);
+  const id = await seedSession({ id: 'co_gate', total: 89 });
+  const rOff = await settleSessionPaid(settleArgs(id, 'pay_gate'));
+  const [ordOff] = await sql`SELECT shopify_status, shopify_order_id FROM co_orders WHERE idempotency_key = 'wh_pay_gate'`;
+  check('T14 not opted in → settle ok but NO order created', rOff.ok && rOff.settled && mock.calls.length === 0 && !ordOff?.shopify_status, JSON.stringify({ rOff, calls: mock.calls.length, ordOff }));
+  // Now opt in → it creates.
+  process.env.SHOPIFY_ORDER_CREATE_ENABLED = '1';
+  check('T14 opted in → enabled() true', shopifyOrderCreateEnabled() === true);
+  mock.calls.length = 0;
+  const id2 = await seedSession({ id: 'co_gate2', total: 89 });
+  await settleSessionPaid(settleArgs(id2, 'pay_gate2'));
+  const [ordOn] = await sql`SELECT shopify_status, shopify_order_id FROM co_orders WHERE idempotency_key = 'wh_pay_gate2'`;
+  check('T14 opted in → order created', mock.calls.length === 1 && ordOn?.shopify_status === 'created' && Boolean(ordOn?.shopify_order_id), JSON.stringify({ calls: mock.calls.length, ordOn }));
 }
 
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`);

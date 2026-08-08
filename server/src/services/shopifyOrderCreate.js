@@ -47,12 +47,15 @@ export function shopifyOrderCreds() {
   };
 }
 
-// The feature is active when the kill switch is off AND the store is
-// configured. Missing creds => inert (a deployment that never intended funnel
-// order-mirroring — e.g. a non-Puure store — creates nothing), never a flood of
-// needs_review. SHOPIFY_ORDER_CREATE_DISABLED=1 turns it off without a deploy.
+// The feature is active only on an EXPLICIT opt-in — SHOPIFY_ORDER_CREATE_
+// ENABLED=1 — AND with the store configured AND the kill switch off. The
+// explicit opt-in is a hard cross-store guard: a shared-codebase deploy on the
+// Mineblock service can never create orders in the Mineblock store by accident
+// (it simply won't set the flag). SHOPIFY_ORDER_CREATE_DISABLED=1 still turns it
+// off without a deploy even where the flag is set.
 export function shopifyOrderCreateEnabled() {
   if (process.env.SHOPIFY_ORDER_CREATE_DISABLED === '1') return false;
+  if (process.env.SHOPIFY_ORDER_CREATE_ENABLED !== '1') return false;
   const { store, token } = shopifyOrderCreds();
   return Boolean(store && token);
 }
@@ -74,13 +77,30 @@ function buildOrderPayload(session, order, { idempotencyKey }) {
   const lines = Array.isArray(session.line_items) ? session.line_items : [];
   if (!lines.length) return { error: 'empty_line_items' };
 
+  // Each line carries its SERVER-priced unit price (session.line_items[].price)
+  // so Shopify prices the line at the funnel price we charged, NOT the current
+  // live variant price. Without this, a funnel price ≠ live variant price makes
+  // Shopify compute a different total_price and mark the order partially_paid /
+  // over-paid, misstating revenue in shopify_orders_cache. variant_id is the
+  // numeric STRING (never Number()) so a 16+-digit id can't lose precision.
   const lineItems = [];
+  let lineSubtotal = 0;
   for (const li of lines) {
     const variantId = numericVariantId(li?.variant_id);
     if (!variantId) return { error: 'missing_variant_id' };
     const quantity = Math.max(1, parseInt(li?.quantity, 10) || 0);
     if (!quantity) return { error: 'bad_quantity' };
-    lineItems.push({ variant_id: Number(variantId), quantity });
+    // Server-priced unit price only — never a client value. Fall back to
+    // line_total/qty when a snapshot predates the price field.
+    let unit = Number(li?.price);
+    if (!Number.isFinite(unit) || unit < 0) {
+      const lt = Number(li?.line_total);
+      unit = Number.isFinite(lt) && lt >= 0 ? lt / quantity : NaN;
+    }
+    if (!Number.isFinite(unit) || unit < 0) return { error: 'missing_line_price' };
+    unit = round2(unit);
+    lineSubtotal = round2(lineSubtotal + unit * quantity);
+    lineItems.push({ variant_id: variantId, quantity, price: unit.toFixed(2) });
   }
 
   const customer = (session.customer && typeof session.customer === 'object') ? session.customer : {};
@@ -95,6 +115,16 @@ function buildOrderPayload(session, order, { idempotencyKey }) {
   if (!currency) return { error: 'missing_currency' };
 
   const total = round2(order.total ?? session.total);
+  const shipAmt = round2(session.shipping || 0);
+  const taxAmt = round2(session.tax || 0);
+  // The line-derived total MUST equal the amount we book as paid, else Shopify
+  // resolves the order to partially_paid/over-paid. Reconcile the snapshot's
+  // components against the authoritative charged total and fail CLOSED (park
+  // needs_review) on any drift rather than post a mispriced order.
+  const composedTotal = round2(lineSubtotal + shipAmt + taxAmt);
+  if (Math.abs(composedTotal - total) > 0.01) {
+    return { error: `total_composition_mismatch:lines+ship+tax=${composedTotal}!=charged=${total}` };
+  }
   const gatewayRef = String(session.gateway_session_id || '').slice(0, 120);
   const gatewayName = String(session.gateway || order.gateway || 'puure');
 
@@ -119,6 +149,10 @@ function buildOrderPayload(session, order, { idempotencyKey }) {
     financial_status: 'paid',
     currency,
     line_items: lineItems,
+    // Shipping/tax carried as explicit lines so Shopify's computed total_price
+    // == the charged transaction amount (fully paid), not partially_paid.
+    ...(shipAmt > 0 ? { shipping_lines: [{ title: 'Shipping', price: shipAmt.toFixed(2), code: 'puure-checkout' }] } : {}),
+    ...(taxAmt > 0 ? { tax_lines: [{ title: 'Tax', price: taxAmt.toFixed(2), rate: 0 }], total_tax: taxAmt.toFixed(2) } : {}),
     transactions: [{
       kind: 'sale',
       status: 'success',
@@ -193,6 +227,50 @@ async function postShopifyOrder(order) {
   return { ok: false, kind: resp.status >= 500 ? 'server' : 'client', detail };
 }
 
+// Reclaim-only dedup: look for an order this system already created for this
+// idempotency key, keyed on the note_attribute we stamp on every order. Closes
+// the SIGKILL-between-201-and-id-write window — a stale-claim reclaim must never
+// POST a second PAID order for a payment whose order already exists at Shopify.
+// Returns { ok, id, number } on a confident find, { ok:false } otherwise. On any
+// lookup failure returns notFound WITHOUT error so the caller can decide (a
+// reclaim then fails CLOSED to needs_review rather than risk a duplicate).
+async function findExistingShopifyOrder(idempotencyKey) {
+  const { store, token, apiVersion, apiBase } = shopifyOrderCreds();
+  if (!store || !token) return { ok: false, kind: 'config' };
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), CREATE_TIMEOUT_MS);
+  if (timer.unref) timer.unref();
+  let resp;
+  try {
+    // status=any so an archived/closed order still matches; recent window is
+    // enough (a reclaim is minutes after the lost write). tags filter narrows
+    // to our own orders; note_attributes is matched exactly below.
+    const url = `${apiBase}/admin/api/${apiVersion}/orders.json`
+      + `?status=any&limit=250&order=created_at+desc`
+      + `&fields=id,order_number,note_attributes,tags`;
+    resp = await fetch(url, {
+      method: 'GET',
+      headers: { 'X-Shopify-Access-Token': token },
+      signal: controller.signal,
+    });
+  } catch (err) {
+    return { ok: false, kind: 'transport', detail: err?.name === 'AbortError' ? 'timeout' : `network:${err?.name || 'Error'}` };
+  } finally {
+    clearTimeout(timer);
+  }
+  if (!resp.ok) return { ok: false, kind: resp.status >= 500 ? 'server' : 'client', detail: `http_${resp.status}` };
+  let body = {};
+  try { body = await resp.json(); } catch { return { ok: false, kind: 'bad_json' }; }
+  const want = String(idempotencyKey);
+  for (const o of Array.isArray(body?.orders) ? body.orders : []) {
+    const attrs = Array.isArray(o?.note_attributes) ? o.note_attributes : [];
+    if (attrs.some((a) => a?.name === 'co_order_idempotency_key' && String(a?.value) === want)) {
+      return { ok: true, id: String(o.id), number: String(o.order_number ?? '') };
+    }
+  }
+  return { ok: false, kind: 'not_found' };
+}
+
 async function parkNeedsReview({ idempotencyKey, sessionId, reason }) {
   const safe = String(reason || 'shopify_create_failed').slice(0, 300);
   try {
@@ -236,9 +314,11 @@ async function parkNeedsReview({ idempotencyKey, sessionId, reason }) {
  * @param {object} p
  * @param {string} p.sessionId       co_sessions.id
  * @param {string} p.idempotencyKey  co_orders.idempotency_key (the settle key)
- * @returns {Promise<{ok:boolean, created?:boolean, already?:boolean,
- *   skipped?:string, needsReview?:boolean, shopifyOrderId?:string,
- *   error?:string}>}
+ * @returns {Promise<{ok:boolean, created?:boolean, adopted?:boolean,
+ *   already?:boolean, skipped?:string, needsReview?:boolean,
+ *   shopifyOrderId?:string, error?:string}>}
+ *   adopted=true → a reclaim found an already-created order and took its id
+ *   (no new POST) instead of creating a duplicate.
  */
 export async function createShopifyOrderForSession({ sessionId, idempotencyKey }) {
   try {
@@ -246,25 +326,36 @@ export async function createShopifyOrderForSession({ sessionId, idempotencyKey }
     if (!shopifyOrderCreateEnabled()) return { ok: true, skipped: 'disabled_or_unconfigured' };
     await ensureCheckoutTables();
 
-    // Atomic claim. Of N concurrent callers exactly one flips NULL→'creating'
-    // (Postgres row lock serializes; losers re-check the predicate against the
-    // freshly-updated row and match zero rows). A stale 'creating' (a prior
-    // attempt that died before resolving) is reclaimable after STALE_CLAIM_MS;
-    // 'needs_review' and an already-set shopify_order_id are NEVER reclaimed.
-    const claim = await pgQuery(
+    // Atomic claim, split into FRESH (never attempted) and RECLAIM (a prior
+    // 'creating' that died before resolving). Of N concurrent callers exactly
+    // one flips the row (Postgres row lock serializes; losers re-check the
+    // predicate against the freshly-updated row and match zero rows). Splitting
+    // lets the reclaim path run a dedup lookup BEFORE re-POSTing — 'needs_review'
+    // and an already-set shopify_order_id are NEVER claimed by either.
+    let claim = await pgQuery(
       `UPDATE co_orders
          SET shopify_status = 'creating', shopify_claimed_at = NOW()
        WHERE idempotency_key = $1
          AND shopify_order_id IS NULL
-         AND (
-           shopify_status IS NULL
-           OR (shopify_status = 'creating'
-               AND shopify_claimed_at IS NOT NULL
-               AND shopify_claimed_at < NOW() - ($2::int * INTERVAL '1 millisecond'))
-         )
+         AND shopify_status IS NULL
        RETURNING id, session_id`,
-      [idempotencyKey, STALE_CLAIM_MS]
+      [idempotencyKey]
     );
+    let isReclaim = false;
+    if (!claim.length) {
+      claim = await pgQuery(
+        `UPDATE co_orders
+           SET shopify_status = 'creating', shopify_claimed_at = NOW()
+         WHERE idempotency_key = $1
+           AND shopify_order_id IS NULL
+           AND shopify_status = 'creating'
+           AND shopify_claimed_at IS NOT NULL
+           AND shopify_claimed_at < NOW() - ($2::int * INTERVAL '1 millisecond')
+         RETURNING id, session_id`,
+        [idempotencyKey, STALE_CLAIM_MS]
+      );
+      isReclaim = claim.length > 0;
+    }
 
     if (!claim.length) {
       // Either no co_orders row yet (shouldn't happen post-settle), or the
@@ -281,6 +372,42 @@ export async function createShopifyOrderForSession({ sessionId, idempotencyKey }
     }
 
     const claimedSessionId = claim[0].session_id || sessionId;
+
+    // RECLAIM dedup: a stale 'creating' means a prior attempt died. If it died
+    // in the window AFTER Shopify returned 201 but BEFORE our id write, the
+    // PAID order already exists at Shopify — re-POSTing would duplicate it. Ask
+    // Shopify (by our stamped idempotency-key note_attribute) and ADOPT the id
+    // instead of creating. Fail CLOSED: if the lookup can't confirm absence
+    // (transport/HTTP error), park needs_review rather than risk a duplicate.
+    if (isReclaim) {
+      const found = await findExistingShopifyOrder(idempotencyKey);
+      if (found.ok) {
+        const saved = await pgQuery(
+          `UPDATE co_orders
+             SET shopify_order_id = $2, shopify_order_number = $3, external_order_id = $2,
+                 shopify_status = 'created', shopify_error = NULL, shopify_created_at = NOW()
+           WHERE idempotency_key = $1 AND shopify_order_id IS NULL
+           RETURNING id`,
+          [idempotencyKey, found.id, found.number || null]
+        );
+        try {
+          await pgQuery(
+            `INSERT INTO co_events (session_id, kind, data) VALUES ($1, 'shopify_order_adopted', $2)`,
+            [claimedSessionId, { idempotency_key: idempotencyKey, shopify_order_id: found.id }]
+          );
+        } catch { /* non-fatal */ }
+        return { ok: true, adopted: true, created: false, already: !saved.length, shopifyOrderId: found.id };
+      }
+      if (found.kind !== 'not_found') {
+        // Ambiguous — could not prove the order is absent. Do NOT create.
+        await parkNeedsReview({
+          idempotencyKey, sessionId: claimedSessionId,
+          reason: `reclaim_lookup_${found.kind}:${found.detail || ''}`,
+        });
+        return { ok: false, needsReview: true, error: `reclaim_lookup_${found.kind}` };
+      }
+      // found.kind === 'not_found' → order truly absent, safe to create below.
+    }
     const [session] = await pgQuery(`SELECT * FROM co_sessions WHERE id = $1`, [claimedSessionId]);
     const [order] = await pgQuery(
       `SELECT total, currency, gateway FROM co_orders WHERE idempotency_key = $1`,
