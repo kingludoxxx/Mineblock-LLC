@@ -24,6 +24,8 @@ import briefPipelineRouter from './routes/briefPipeline.js';
 import salesToolsRouter from './routes/salesTools.js';
 import brandSpyRouter from './routes/brandSpy.js';
 import funnelPublicRoutes from './routes/funnelPublic.js';
+import gatewayWebhookRoutes from './routes/gatewayWebhooks.js';
+import checkoutPublicRoutes from './routes/checkoutPublic.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -55,6 +57,12 @@ app.use('/api/v1/shopify-webhook', express.json({
   },
 }));
 
+// Gateway (Stripe/Whop) settlement webhooks — MUST be before the global JSON
+// parser: the router installs its own express.json({verify}) to capture
+// req.rawBody for signature verification. Behind the global parser, rawBody
+// is never set and every signed webhook fails closed (silent no-settle).
+app.use('/api/v1/gateway-webhooks', gatewayWebhookRoutes);
+
 // Body parsing
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
@@ -68,6 +76,12 @@ app.use('/api/v1/clickup-webhook', clickupWebhookRoutes);
 app.use('/api/v1/webhook', clickupWebhookRoutes);
 app.use('/api/v1/meta-webhook', metaWebhookRoutes);
 app.use('/api/v1/shopify-webhook', shopifyWebhookRoutes);
+
+// Public checkout intake — unauthenticated by necessity (the buyer is not a
+// user), defended inside the router (per-IP limiter, origin allow-list,
+// server-side re-pricing). After the global JSON parser; before the admin
+// /api/v1/checkout mount so /checkout/public is not shadowed by the authed router.
+app.use('/api/v1/checkout/public', checkoutPublicRoutes);
 
 // Public funnel pages — unauthenticated, gated by FUNNEL_PUBLIC_ENABLED at
 // request time inside the router (before API routes, outside auth).
