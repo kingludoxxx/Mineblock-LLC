@@ -130,6 +130,17 @@ async function createTables() {
       UNIQUE (session_id, offer_id, charge_id)
     )
   `);
+  // charge_id is the CLAIM SLOT of the triple: `v:<variant>` for an accept,
+  // 'decline' for the decline marker — deterministic, so the unique index is
+  // the concurrency guard for double-clicks and replays. The gateway's own
+  // payment id lives here:
+  await pgQuery(`ALTER TABLE co_upsell_charges ADD COLUMN IF NOT EXISTS gateway_payment_id TEXT`);
+  await pgQuery(`ALTER TABLE co_upsell_charges ADD COLUMN IF NOT EXISTS error TEXT`);
+  await pgQuery(`
+    CREATE INDEX IF NOT EXISTS idx_co_upsell_charges_gateway_payment
+    ON co_upsell_charges (gateway_payment_id) WHERE gateway_payment_id IS NOT NULL
+  `);
+  await pgQuery(`CREATE INDEX IF NOT EXISTS idx_co_upsell_charges_status ON co_upsell_charges (status)`);
 
   // Raw inbound gateway webhooks, for replay and forensics. (gateway, id) PK
   // makes intake idempotent: a replayed event upserts, never duplicates.

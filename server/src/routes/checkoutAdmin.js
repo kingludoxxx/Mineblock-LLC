@@ -129,6 +129,107 @@ router.put('/gateways/:funnelId/:gateway', async (req, res) => {
   }
 });
 
+// ── Upsell offers (co_upsells) — the CRM's offer definitions ───────────────
+// variant_id '' = "charge whatever the on-page selection control resolves
+// to"; price NULL = re-price the variant live from Shopify at accept time.
+
+router.get('/upsells', async (req, res) => {
+  try {
+    await ensureCheckoutTables();
+    const params = [];
+    let where = '';
+    if (req.query.funnel_id) {
+      params.push(String(req.query.funnel_id).slice(0, 64));
+      where = `WHERE funnel_id = $1`;
+    }
+    const rows = await pgQuery(
+      `SELECT * FROM co_upsells ${where} ORDER BY created_at DESC LIMIT 200`, params
+    );
+    return res.json({ success: true, data: { upsells: rows } });
+  } catch (err) {
+    console.error('[checkoutAdmin] upsells list failed:', err.message);
+    return res.status(500).json({ success: false, error: { code: 'internal_error' } });
+  }
+});
+
+router.post('/upsells', async (req, res) => {
+  try {
+    await ensureCheckoutTables();
+    const b = req.body || {};
+    const price = b.price === null || b.price === undefined || b.price === ''
+      ? null
+      : Math.round(Number(b.price) * 100) / 100;
+    if (price !== null && (!Number.isFinite(price) || price < 0)) {
+      return res.status(422).json({ success: false, error: { code: 'invalid_price' } });
+    }
+    const { randomBytes } = await import('crypto');
+    const id = `up_${randomBytes(8).toString('hex')}`;
+    const [row] = await pgQuery(
+      `INSERT INTO co_upsells (id, funnel_id, page_id, variant_id, price, title, enabled)
+       VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, TRUE)) RETURNING *`,
+      [id,
+        b.funnel_id ? String(b.funnel_id).slice(0, 64) : null,
+        b.page_id ? String(b.page_id).slice(0, 64) : null,
+        String(b.variant_id ?? '').slice(0, 80),
+        price,
+        String(b.title || '').slice(0, 200),
+        typeof b.enabled === 'boolean' ? b.enabled : null]
+    );
+    return res.json({ success: true, data: row });
+  } catch (err) {
+    console.error('[checkoutAdmin] upsell create failed:', err.message);
+    return res.status(500).json({ success: false, error: { code: 'internal_error' } });
+  }
+});
+
+router.put('/upsells/:id', async (req, res) => {
+  try {
+    await ensureCheckoutTables();
+    const b = req.body || {};
+    const sets = [];
+    const params = [String(req.params.id).slice(0, 80)];
+    const set = (sql, v) => { params.push(v); sets.push(`${sql} = $${params.length}`); };
+    if (b.title !== undefined) set('title', String(b.title || '').slice(0, 200));
+    if (b.variant_id !== undefined) set('variant_id', String(b.variant_id ?? '').slice(0, 80));
+    if (b.price !== undefined) {
+      set('price', b.price === null || b.price === '' ? null : Math.round(Number(b.price) * 100) / 100);
+    }
+    if (b.enabled !== undefined) set('enabled', Boolean(b.enabled));
+    if (b.page_id !== undefined) set('page_id', b.page_id ? String(b.page_id).slice(0, 64) : null);
+    if (!sets.length) {
+      return res.status(422).json({ success: false, error: { code: 'nothing_to_update' } });
+    }
+    const rows = await pgQuery(
+      `UPDATE co_upsells SET ${sets.join(', ')}, updated_at = NOW() WHERE id = $1 RETURNING *`,
+      params
+    );
+    if (!rows.length) {
+      return res.status(404).json({ success: false, error: { code: 'not_found' } });
+    }
+    return res.json({ success: true, data: rows[0] });
+  } catch (err) {
+    console.error('[checkoutAdmin] upsell update failed:', err.message);
+    return res.status(500).json({ success: false, error: { code: 'internal_error' } });
+  }
+});
+
+// GET /unmatched-payments — the operator queue of real money the system
+// could not attribute. Check this queue.
+router.get('/unmatched-payments', async (req, res) => {
+  try {
+    await ensureCheckoutTables();
+    const rows = await pgQuery(
+      `SELECT webhook_id, gateway, amount, currency, reason, resolved, created_at
+       FROM co_unmatched_payments
+       ORDER BY created_at DESC LIMIT 200`
+    );
+    return res.json({ success: true, data: { payments: rows } });
+  } catch (err) {
+    console.error('[checkoutAdmin] unmatched list failed:', err.message);
+    return res.status(500).json({ success: false, error: { code: 'internal_error' } });
+  }
+});
+
 // GET /:id — full session detail: row + event trail + orders + upsell charges.
 router.get('/:id', async (req, res) => {
   try {

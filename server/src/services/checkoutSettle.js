@@ -130,3 +130,71 @@ export async function settleSessionPaid({
     orderId: inserted.length ? orderId : null,
   };
 }
+
+/**
+ * Settle an upsell charge that a gateway accepted asynchronously
+ * (pending_settlement) or synchronously (charging). Atomic claim: only a
+ * non-terminal row flips to settled, so a replayed payment.succeeded is a
+ * no-op and a decline marker (status 'declined', declined_by_user) can never
+ * be settled. Amount authority: the gateway-reported amount must match the
+ * claimed row within a cent, else the row parks at needs_review.
+ */
+export async function settleUpsellCharge({ chargeRowId, gatewayPaymentId, amount = null }) {
+  await ensureCheckoutTables();
+  const rows = await pgQuery(`SELECT * FROM co_upsell_charges WHERE id = $1`, [chargeRowId]);
+  if (!rows.length) return { ok: false, error: 'charge_not_found' };
+  const row = rows[0];
+  if (row.status === 'settled') return { ok: true, already: true };
+  if (amount !== null && Math.abs(round2(amount) - round2(row.amount)) > 0.01) {
+    await pgQuery(
+      `UPDATE co_upsell_charges SET status = 'needs_review', error = $2, updated_at = NOW()
+       WHERE id = $1 AND status IN ('charging', 'pending_settlement')`,
+      [chargeRowId, `amount_mismatch: gateway=${round2(amount)} expected=${round2(row.amount)}`]
+    );
+    return { ok: false, error: 'amount_mismatch' };
+  }
+  const flipped = await pgQuery(
+    `UPDATE co_upsell_charges
+     SET status = 'settled',
+         gateway_payment_id = COALESCE($2, gateway_payment_id),
+         error = NULL, updated_at = NOW()
+     WHERE id = $1 AND status IN ('charging', 'pending_settlement')
+     RETURNING id, session_id, offer_id, amount, currency`,
+    [chargeRowId, gatewayPaymentId || null]
+  );
+  if (!flipped.length) return { ok: false, error: `unsettleable_status:${row.status}` };
+  try {
+    await pgQuery(
+      `INSERT INTO co_events (session_id, kind, data) VALUES ($1, 'upsell_settled', $2)`,
+      [row.session_id, {
+        offer_id: row.offer_id, charge_row: chargeRowId,
+        gateway_payment_id: gatewayPaymentId || row.gateway_payment_id,
+        amount: Number(row.amount), currency: row.currency,
+      }]
+    );
+  } catch (err) {
+    console.error('[settle] upsell event write failed (non-fatal):', err.message);
+  }
+  return { ok: true, settled: true };
+}
+
+// Terminal failure for a non-terminal upsell charge (async decline via
+// payment.failed, or sweep-discovered). Never touches settled rows.
+export async function failUpsellCharge({ chargeRowId, reason }) {
+  await ensureCheckoutTables();
+  const flipped = await pgQuery(
+    `UPDATE co_upsell_charges
+     SET status = 'declined', error = $2, updated_at = NOW()
+     WHERE id = $1 AND status IN ('charging', 'pending_settlement')
+     RETURNING id, session_id, offer_id`,
+    [chargeRowId, String(reason || 'declined').slice(0, 200)]
+  );
+  if (!flipped.length) return { ok: false, error: 'not_failable' };
+  try {
+    await pgQuery(
+      `INSERT INTO co_events (session_id, kind, data) VALUES ($1, 'upsell_declined', $2)`,
+      [flipped[0].session_id, { offer_id: flipped[0].offer_id, charge_row: chargeRowId, reason }]
+    );
+  } catch { /* non-fatal */ }
+  return { ok: true };
+}

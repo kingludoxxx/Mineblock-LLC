@@ -1738,3 +1738,39 @@ DECISION MADE on all four.
 STATUS: COMPLETE (local verification; live Stripe test-mode run BLOCKED on
 operator-supplied sk_test key — see errors.md)
 ---
+
+---
+TIMESTAMP: 2026-08-08 22:50
+TASK: Integration lane slice 3 — Whop client, settlement webhook, 1-click upsells
+BUILT: gateways/whop.js (createCheckoutSession w/ inline one-time plan,
+Standard-Webhooks HMAC verify fail-closed w/ BOTH ws_-raw and whsec_-b64 key
+derivations, chargeSavedPaymentMethod w/ Idempotency-Key + settled-status
+gate (2xx ≠ money moved), getPayment, decline extraction, gross/net fee-band
+amount reconciliation); POST /gateway-webhooks/whop (trust anchor from the
+session's funnel never the body, webhook-id two-phase idempotency w/
+re-drive, kind routing base/upsell, payment.failed → last_failed_payment_id,
+unmatched queue); public POST /whop/create-session, POST /upsell/accept +
+/upsell/decline (TRIPLE-key claim slots v:<variant>/'decline', server-side
+offer pricing, same-processor rule, pending_settlement holds, re-claim after
+decline); settleUpsellCharge/failUpsellCharge in checkoutSettle (sweep will
+reuse); admin co_upsells CRUD + unmatched-payments queue view.
+TESTED: 39-check battery vs mock Whop (:4010) + mock Stripe (:4009) + live
+Shopify pricing. Replay proofs: same webhook-id → duplicate ack; same
+payment new webhook-id → already_paid; exactly one co_orders row. 3
+PARALLEL upsell accepts → exactly 1 gateway charge call, 1 row. Failure
+paths: bad/missing/stale signature 401 untouched session, gross mismatch +
+net-below-band → needs_review no order, sync decline surfaced w/ code +
+re-accept recovery on the SAME row, async payment.failed → declined,
+decline marker $0 coexists with settled accept, unpaid session 409, no
+saved PM → requires_payment_method, cross-funnel offer 404.
+OUTPUT: RESULT: 39 passed, 0 failed.
+DECISIONS: (1) TRIPLE key implemented as deterministic claim slots
+(charge_id = v:<variant> | 'decline') so the unique index is the
+concurrency guard; gateway payment id lives in gateway_payment_id. (2)
+Whop member_id stored in the generic gateway_customer_id column. (3)
+Session-less Whop events verify against env secret only (per-funnel scan
+deferred to refunds work in slice 4). (4) WHOP_API_BASE env test seam,
+same pattern as Stripe. DECISION MADE on all four.
+STATUS: COMPLETE (local verification; live Whop test-mode BLOCKED on
+operator credentials — same errors.md entry as slice 2)
+---

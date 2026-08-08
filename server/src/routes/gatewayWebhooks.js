@@ -14,8 +14,13 @@ import { Router, json } from 'express';
 import { pgQuery } from '../db/pg.js';
 import { ensureCheckoutTables } from '../services/checkoutSchema.js';
 import { resolveCredential } from '../services/gatewayConfigs.js';
-import { settleSessionPaid } from '../services/checkoutSettle.js';
+import {
+  settleSessionPaid,
+  settleUpsellCharge,
+  failUpsellCharge,
+} from '../services/checkoutSettle.js';
 import * as stripeGw from '../services/gateways/stripe.js';
+import * as whopGw from '../services/gateways/whop.js';
 
 const router = Router();
 
@@ -157,6 +162,174 @@ router.post('/stripe', async (req, res) => {
     return res.json({ success: true, settled: result.settled, already: result.already });
   } catch (err) {
     console.error('[gatewayWebhooks] stripe failed:', err.message);
+    return res.status(500).json({ success: false, error: { code: 'internal_error' } });
+  }
+});
+
+// ── Whop: payment.succeeded / payment.failed (Standard-Webhooks signed) ────
+// metadata.kind discriminates WHICH charge settled: absent/'0' = the base
+// checkout payment, 'upsell' = an async 1-click charge previously held at
+// pending_settlement. The webhook is the authority that settles or fails it.
+router.post('/whop', async (req, res) => {
+  try {
+    await ensureCheckoutTables();
+    const raw = req.rawBody;
+    const event = req.body;
+    if (!raw || !event || typeof event !== 'object') {
+      return res.status(400).json({ success: false, error: { code: 'bad_payload' } });
+    }
+    const eventType = event.type || '';
+    const data = event.data && typeof event.data === 'object' ? event.data : {};
+    const metadata = data.metadata && typeof data.metadata === 'object' ? data.metadata : {};
+    const webhookId = req.get('webhook-id') || '';
+
+    // The trust anchor is NEVER body-picked: the session referenced by
+    // metadata.co_session_id resolves (server-side) to its funnel, whose
+    // stored secret — or the platform env secret — verifies the event.
+    const sessionId = String(metadata.co_session_id || '');
+    const sessions = sessionId
+      ? await pgQuery(
+        `SELECT id, funnel_id, status, total, currency FROM co_sessions WHERE id = $1`,
+        [sessionId]
+      )
+      : [];
+    const session = sessions[0] || null;
+    const secret = await resolveCredential(session?.funnel_id || '', 'whop', 'webhook_secret');
+    if (!secret || !whopGw.verifyWebhookSignature(raw, req.headers, secret)) {
+      return res.status(401).json({ success: false, error: { code: 'invalid_signature' } });
+    }
+    if (!webhookId) {
+      // Verified but nothing to dedupe on — refuse rather than risk a double
+      // fulfillment (Whop always sends webhook-id; absence is anomalous).
+      return res.status(400).json({ success: false, error: { code: 'missing_webhook_id' } });
+    }
+
+    // Idempotency on the webhook id: first delivery inserts, a redelivery of
+    // a PROCESSED id acks; a redelivery of an unprocessed id (prior attempt
+    // died mid-flight) re-drives the handler — every handler is idempotent on
+    // its own per-charge key, so a re-drive can never double-move money.
+    const fresh = await recordWebhookEvent('whop', webhookId, eventType, event);
+    if (!fresh) {
+      const [existing] = await pgQuery(
+        `SELECT processed_at FROM co_webhook_events WHERE gateway = 'whop' AND id = $1`,
+        [webhookId]
+      );
+      if (existing?.processed_at) {
+        return res.json({ success: true, duplicate: true });
+      }
+    }
+
+    if (eventType !== 'payment.succeeded' && eventType !== 'payment.failed') {
+      await markProcessed('whop', webhookId, `ignored_${eventType || 'unknown'}`);
+      return res.json({ success: true, ignored: eventType });
+    }
+
+    const kindRaw = String(metadata.kind || '').trim();
+    const kind = kindRaw === '0' ? '' : kindRaw;
+    const paymentId = String(data.id || '');
+
+    // ── kind=upsell: settle/fail the pending 1-click charge row ──
+    if (kind === 'upsell') {
+      const chargeRowId = String(metadata.charge_row || '');
+      if (!chargeRowId) {
+        await markProcessed('whop', webhookId, 'upsell_missing_charge_row');
+        return res.json({ success: true, ignored: 'missing_charge_row' });
+      }
+      if (eventType === 'payment.failed') {
+        const { reason } = whopGw.extractDecline(data);
+        await failUpsellCharge({ chargeRowId, reason: reason || 'payment_failed' });
+        await markProcessed('whop', webhookId, 'upsell_failed');
+        return res.json({ success: true, upsell: 'failed' });
+      }
+      const result = await settleUpsellCharge({
+        chargeRowId,
+        gatewayPaymentId: paymentId,
+        amount: whopGw.extractGrossAmount(data),
+      });
+      await markProcessed(
+        'whop', webhookId,
+        result.ok ? (result.already ? 'upsell_already' : 'upsell_settled') : `upsell_${result.error}`
+      );
+      return res.json({ success: true, upsell: result.ok ? 'settled' : result.error });
+    }
+
+    // ── base payment ──
+    if (!session) {
+      if (eventType === 'payment.succeeded') {
+        await recordUnmatched(
+          webhookId, 'whop',
+          whopGw.extractGrossAmount(data) ?? whopGw.extractAmountAfterFees(data),
+          String(data.currency || 'USD').toUpperCase(),
+          event, sessionId ? 'unknown_session' : 'no_session_metadata'
+        );
+      }
+      await markProcessed('whop', webhookId, 'unknown_session');
+      return res.json({ success: true, unknown_session: true });
+    }
+
+    if (eventType === 'payment.failed') {
+      // Not money moved — remember the failed payment id (recovered-payment
+      // matching) and leave the session at processing.
+      await pgQuery(
+        `UPDATE co_sessions SET last_failed_payment_id = $2, updated_at = NOW() WHERE id = $1`,
+        [session.id, paymentId || null]
+      );
+      try {
+        const { reason } = whopGw.extractDecline(data);
+        await pgQuery(
+          `INSERT INTO co_events (session_id, kind, data) VALUES ($1, 'payment_failed', $2)`,
+          [session.id, { gateway: 'whop', payment_id: paymentId, reason }]
+        );
+      } catch { /* non-fatal */ }
+      await markProcessed('whop', webhookId, 'payment_failed');
+      return res.json({ success: true, failed: true });
+    }
+
+    if (session.status === 'paid') {
+      await markProcessed('whop', webhookId, 'already_paid');
+      return res.json({ success: true, already: true });
+    }
+
+    // Amount authority: the Whop-reported amount reconciles against the
+    // session snapshot (gross exact; net within the fee band). A mismatch
+    // parks for a human and ACKS — a redelivery cannot fix a wrong amount.
+    const recon = whopGw.reconcileAmount({
+      expectedTotal: Number(session.total),
+      grossCharged: whopGw.extractGrossAmount(data),
+      amountAfterFees: whopGw.extractAmountAfterFees(data),
+    });
+    if (!recon.ok) {
+      await pgQuery(
+        `UPDATE co_sessions SET needs_review_reason = $2, updated_at = NOW()
+         WHERE id = $1 AND needs_review_reason IS NULL`,
+        [session.id, `whop_${recon.reason}`.slice(0, 300)]
+      );
+      await markProcessed('whop', webhookId, `amount_mismatch`);
+      return res.json({ success: true, needs_review: true });
+    }
+
+    const result = await settleSessionPaid({
+      sessionId: session.id,
+      gateway: 'whop',
+      gatewayId: paymentId || `whwh_${webhookId}`,
+      idempotencyKey: `wh_${paymentId || webhookId}`,
+      amount: Number(session.total), // reconciled above — snapshot is the book value
+      currency: session.currency,
+      paymentMethodId: whopGw.extractPaymentMethodId(data),
+      paymentMethodType: '', // Whop saved methods are card-backed; '' fails open to save
+      customerId: whopGw.extractMemberId(data),
+      payerEmail: data.user?.email || '',
+    });
+    await markProcessed(
+      'whop', webhookId,
+      result.ok ? (result.settled ? 'settled' : 'already_settled') : `error_${result.error}`
+    );
+    if (!result.ok) {
+      return res.status(500).json({ success: false, error: { code: result.error } });
+    }
+    return res.json({ success: true, settled: result.settled, already: result.already });
+  } catch (err) {
+    console.error('[gatewayWebhooks] whop failed:', err.message);
     return res.status(500).json({ success: false, error: { code: 'internal_error' } });
   }
 });

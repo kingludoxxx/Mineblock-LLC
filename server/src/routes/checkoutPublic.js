@@ -310,6 +310,320 @@ router.post('/stripe/create-intent', async (req, res) => {
   }
 });
 
+// POST /whop/create-session — mint the Whop embedded-checkout configuration
+// for a processing session. Amount comes from the SESSION (server-priced);
+// metadata carries co_session_id so payment.succeeded maps back. The embed
+// mounts with setupFutureUsage=off_session (an embed prop, not an API field)
+// which tokenizes the card for 1-click upsells.
+router.post('/whop/create-session', async (req, res) => {
+  try {
+    if (!(await rateLimit(req, res, 'whop-create', 20))) return;
+    await ensureCheckoutTables();
+    const sessionId = String(req.body?.session_id || '').slice(0, 80);
+    if (!sessionId) {
+      return res.status(422).json({ success: false, error: { code: 'session_required' } });
+    }
+    const rows = await pgQuery(
+      `SELECT id, funnel_id, status, total, currency FROM co_sessions WHERE id = $1`,
+      [sessionId]
+    );
+    if (!rows.length) {
+      return res.status(404).json({ success: false, error: { code: 'not_found' } });
+    }
+    const session = rows[0];
+    if (session.status !== 'processing') {
+      return res.status(409).json({ success: false, error: { code: 'session_not_payable' } });
+    }
+    const { resolveCredential } = await import('../services/gatewayConfigs.js');
+    const whop = await import('../services/gateways/whop.js');
+    const creds = {
+      api_key: await resolveCredential(session.funnel_id || '', 'whop', 'api_key'),
+      company_id: await resolveCredential(session.funnel_id || '', 'whop', 'company_id'),
+    };
+    if (!creds.api_key || !creds.company_id) {
+      return res.status(503).json({ success: false, error: { code: 'gateway_not_configured' } });
+    }
+    const result = await whop.createCheckoutSession(creds, {
+      amount: Number(session.total),
+      currency: session.currency,
+      metadata: { co_session_id: session.id, kind: '0' },
+      redirectUrl: (process.env.CHECKOUT_BASE_URL || '').replace(/\/$/, '')
+        ? `${(process.env.CHECKOUT_BASE_URL || '').replace(/\/$/, '')}/checkout/complete`
+        : '',
+    });
+    if (!result.ok) {
+      console.error('[checkout] whop create-session failed:', result.error, result.detail || '');
+      const code = result.error === 'not_configured' ? 503 : 502;
+      return res.status(code).json({
+        success: false,
+        error: { code: result.error === 'not_configured' ? 'gateway_not_configured' : 'gateway_error' },
+      });
+    }
+    await pgQuery(
+      `UPDATE co_sessions SET gateway = 'whop', gateway_session_id = $2, updated_at = NOW()
+       WHERE id = $1`,
+      [session.id, result.session_id]
+    );
+    return res.json({
+      success: true,
+      data: {
+        whop_session_id: result.session_id, // ch_… → embed sessionId
+        purchase_url: result.purchase_url,
+        amount: Number(session.total),
+        currency: session.currency,
+      },
+    });
+  } catch (err) {
+    console.error('[checkout] whop create-session failed:', err.message);
+    return res.status(500).json({ success: false, error: { code: 'internal_error' } });
+  }
+});
+
+// ── 1-click post-purchase upsells ───────────────────────────────────────────
+// Charged against the saved payment method of the PAID base session, through
+// the SAME gateway the base paid with. Priced server-side from the linked
+// co_upsells offer. Accept AND decline both write co_upsell_charges under the
+// TRIPLE (session, offer, charge-slot): accepts claim `v:<variant>`, declines
+// claim 'decline' — the deterministic slot makes the unique index the
+// double-click/replay guard, and a $0 decline marker can never be settled.
+
+const UPSELL_MIN_CHARGE = 1.0;
+
+async function loadPaidSession(sessionId) {
+  const rows = await pgQuery(
+    `SELECT id, funnel_id, status, gateway, currency, payment_method_id,
+            gateway_customer_id
+     FROM co_sessions WHERE id = $1`,
+    [String(sessionId || '').slice(0, 80)]
+  );
+  if (!rows.length) return { error: { status: 404, code: 'session_not_found' } };
+  if (rows[0].status !== 'paid') return { error: { status: 409, code: 'session_not_paid' } };
+  return { session: rows[0] };
+}
+
+async function loadOffer(offerId, session) {
+  const rows = await pgQuery(
+    `SELECT id, funnel_id, variant_id, price, title, enabled FROM co_upsells WHERE id = $1`,
+    [String(offerId || '').slice(0, 80)]
+  );
+  const offer = rows[0];
+  if (!offer || !offer.enabled) return { error: { status: 404, code: 'offer_not_found' } };
+  // An offer pinned to a funnel only serves that funnel's sessions.
+  if (offer.funnel_id && session.funnel_id && offer.funnel_id !== session.funnel_id) {
+    return { error: { status: 404, code: 'offer_not_found' } };
+  }
+  return { offer };
+}
+
+router.post('/upsell/accept', async (req, res) => {
+  try {
+    if (!(await rateLimit(req, res, 'upsell-accept', 20))) return;
+    await ensureCheckoutTables();
+    const body = req.body || {};
+    const { session, error: sErr } = await loadPaidSession(body.session_id);
+    if (sErr) return res.status(sErr.status).json({ success: false, error: { code: sErr.code } });
+    const { offer, error: oErr } = await loadOffer(body.offer_id, session);
+    if (oErr) return res.status(oErr.status).json({ success: false, error: { code: oErr.code } });
+
+    // variant_id '' on the offer = "charge whatever the on-page selection
+    // control resolves to" — the client picks WHICH variant, never the price.
+    const variantId = offer.variant_id || String(body.variant_id || '').trim();
+    if (!variantId) {
+      return res.status(422).json({ success: false, error: { code: 'variant_required' } });
+    }
+    const qty = Math.max(1, Math.min(parseInt(body.quantity, 10) || 1, MAX_QTY_PER_LINE));
+
+    // Server-side price authority: the operator-configured offer price, else
+    // the live Shopify price. Client-sent prices are never read.
+    let unit;
+    let title = offer.title || '';
+    if (offer.price !== null && offer.price !== undefined) {
+      unit = round2(Number(offer.price));
+    } else {
+      let priced;
+      try {
+        priced = await resolveVariantPrices([variantId]);
+      } catch (err) {
+        if (err instanceof PricingUnavailableError) {
+          return res.status(503).json({ success: false, error: { code: 'pricing_unavailable' } });
+        }
+        throw err;
+      }
+      const info = priced[toVariantGid(variantId)];
+      if (!info) {
+        return res.status(422).json({ success: false, error: { code: 'invalid_variant' } });
+      }
+      unit = round2(Number(info.price));
+      title = title || info.title || '';
+    }
+    const amount = round2(unit * qty);
+    if (amount < UPSELL_MIN_CHARGE) {
+      return res.status(422).json({ success: false, error: { code: 'upsell_below_minimum' } });
+    }
+
+    // Saved-method check BEFORE any claim: base paid but no reusable PM →
+    // 1-click impossible; the UI falls back to on-session card entry.
+    const provider = (session.gateway || 'whop').toLowerCase();
+    const savedPmOk = Boolean(session.gateway_customer_id && session.payment_method_id);
+    if (!savedPmOk) {
+      return res.json({
+        success: true,
+        data: { status: 'requires_payment_method', provider, amount, currency: session.currency },
+      });
+    }
+
+    // Atomic CLAIM of the (session, offer, `v:<variant>`) slot — the unique
+    // index arbitrates double-clicks, replays and concurrent tabs.
+    const chargeRowId = `ux_${crypto.randomBytes(12).toString('hex')}`;
+    const claimSlot = `v:${variantId}`;
+    const lineItems = [{ variant_id: variantId, quantity: qty, unit_price: unit, title }];
+    let claimed = await pgQuery(
+      `INSERT INTO co_upsell_charges
+         (id, session_id, offer_id, charge_id, amount, currency, status, line_items)
+       VALUES ($1, $2, $3, $4, $5, $6, 'charging', $7)
+       ON CONFLICT (session_id, offer_id, charge_id) DO NOTHING
+       RETURNING id`,
+      [chargeRowId, session.id, offer.id, claimSlot, amount, session.currency, lineItems]
+    );
+    let rowId = chargeRowId;
+    if (!claimed.length) {
+      const [existing] = await pgQuery(
+        `SELECT id, status, amount, currency, gateway_payment_id FROM co_upsell_charges
+         WHERE session_id = $1 AND offer_id = $2 AND charge_id = $3`,
+        [session.id, offer.id, claimSlot]
+      );
+      if (existing?.status === 'settled') {
+        return res.json({
+          success: true,
+          data: {
+            status: 'already_purchased', duplicate: true,
+            charge_row: existing.id, amount: Number(existing.amount), currency: existing.currency,
+          },
+        });
+      }
+      if (existing?.status === 'charging' || existing?.status === 'pending_settlement') {
+        // Another request is mid-charge / awaiting async settlement — the
+        // page keeps POLLING; never re-drive a possibly-succeeding charge.
+        return res.json({ success: true, data: { status: 'processing', duplicate: true } });
+      }
+      // Prior attempt failed — re-claim the SAME row for a fresh attempt.
+      // Idempotency stays keyed to the row + the deterministic gateway key,
+      // so this can never double-charge a success.
+      const reclaimed = await pgQuery(
+        `UPDATE co_upsell_charges
+         SET status = 'charging', error = NULL, amount = $4, line_items = $5, updated_at = NOW()
+         WHERE session_id = $1 AND offer_id = $2 AND charge_id = $3
+           AND status NOT IN ('settled', 'charging', 'pending_settlement')
+         RETURNING id`,
+        [session.id, offer.id, claimSlot, amount, lineItems]
+      );
+      if (!reclaimed.length) {
+        return res.json({ success: true, data: { status: 'processing', duplicate: true } });
+      }
+      rowId = reclaimed[0].id;
+    }
+
+    // Charge OFF-SESSION through the base session's own gateway, idempotent
+    // on a deterministic key (a network retry can never double-bill).
+    const idemKey = `upsell:${session.id}:${offer.id}:${variantId}`;
+    const { resolveCredential } = await import('../services/gatewayConfigs.js');
+    let outcome;
+    if (provider === 'stripe') {
+      const { chargeOffSession } = await import('../services/gateways/stripe.js');
+      const secretKey = await resolveCredential(session.funnel_id || '', 'stripe', 'secret_key');
+      const r = await chargeOffSession(secretKey, {
+        amount, currency: session.currency,
+        customerId: session.gateway_customer_id,
+        paymentMethodId: session.payment_method_id,
+        metadata: { co_session_id: session.id, kind: 'upsell', charge_row: rowId },
+        idempotencyKey: idemKey,
+      });
+      if (r.ok) outcome = { status: 'settled', paymentId: r.id };
+      else if (r.error === 'network' || r.error === 'timeout') outcome = { status: 'pending', paymentId: r.id || '' };
+      else outcome = { status: 'declined', reason: r.decline_code || r.error, requiresAction: Boolean(r.requires_action) };
+    } else {
+      const whop = await import('../services/gateways/whop.js');
+      const creds = {
+        api_key: await resolveCredential(session.funnel_id || '', 'whop', 'api_key'),
+        company_id: await resolveCredential(session.funnel_id || '', 'whop', 'company_id'),
+      };
+      const r = await whop.chargeSavedPaymentMethod(creds, {
+        amount, currency: session.currency,
+        memberId: session.gateway_customer_id,
+        paymentMethodId: session.payment_method_id,
+        metadata: { co_session_id: session.id, kind: 'upsell', charge_row: rowId, offer_id: offer.id },
+        idempotencyKey: idemKey,
+      });
+      if (r.ok) outcome = { status: 'settled', paymentId: r.payment_id };
+      else if (r.pending || r.error === 'network') outcome = { status: 'pending', paymentId: r.payment_id || '' };
+      else outcome = { status: 'declined', reason: r.decline_code || r.error, requiresAction: r.error === 'requires_action' };
+    }
+
+    if (outcome.status === 'settled') {
+      const { settleUpsellCharge } = await import('../services/checkoutSettle.js');
+      await settleUpsellCharge({ chargeRowId: rowId, gatewayPaymentId: outcome.paymentId, amount });
+      return res.json({
+        success: true,
+        data: { status: 'settled', charge_row: rowId, amount, currency: session.currency },
+      });
+    }
+    if (outcome.status === 'pending') {
+      // Gateway ACCEPTED but hasn't settled — hold non-terminal; the
+      // payment.succeeded/failed webhook (or the sweep) is the authority.
+      await pgQuery(
+        `UPDATE co_upsell_charges
+         SET status = 'pending_settlement', gateway_payment_id = $2, updated_at = NOW()
+         WHERE id = $1 AND status = 'charging'`,
+        [rowId, outcome.paymentId || null]
+      );
+      return res.json({ success: true, data: { status: 'processing', charge_row: rowId } });
+    }
+    const { failUpsellCharge } = await import('../services/checkoutSettle.js');
+    await failUpsellCharge({ chargeRowId: rowId, reason: outcome.reason });
+    return res.json({
+      success: true,
+      data: {
+        status: outcome.requiresAction ? 'requires_action' : 'declined',
+        charge_row: rowId, reason: outcome.reason,
+      },
+    });
+  } catch (err) {
+    console.error('[checkout] upsell accept failed:', err.message);
+    return res.status(500).json({ success: false, error: { code: 'internal_error' } });
+  }
+});
+
+// POST /upsell/decline — record the decline marker (the take-rate
+// denominator). Idempotent on the TRIPLE (session, offer, 'decline'); a $0
+// declined_by_user row that settlement can never touch.
+router.post('/upsell/decline', async (req, res) => {
+  try {
+    if (!(await rateLimit(req, res, 'upsell-decline', 30))) return;
+    await ensureCheckoutTables();
+    const { session, error: sErr } = await loadPaidSession(req.body?.session_id);
+    if (sErr) return res.status(sErr.status).json({ success: false, error: { code: sErr.code } });
+    const { offer, error: oErr } = await loadOffer(req.body?.offer_id, session);
+    if (oErr) return res.status(oErr.status).json({ success: false, error: { code: oErr.code } });
+    await pgQuery(
+      `INSERT INTO co_upsell_charges
+         (id, session_id, offer_id, charge_id, amount, currency, status, declined_by_user)
+       VALUES ($1, $2, $3, 'decline', 0, $4, 'declined', TRUE)
+       ON CONFLICT (session_id, offer_id, charge_id) DO NOTHING`,
+      [`ux_${crypto.randomBytes(12).toString('hex')}`, session.id, offer.id, session.currency]
+    );
+    try {
+      await pgQuery(
+        `INSERT INTO co_events (session_id, kind, data) VALUES ($1, 'upsell_declined_by_user', $2)`,
+        [session.id, { offer_id: offer.id }]
+      );
+    } catch { /* non-fatal */ }
+    return res.json({ success: true, data: { status: 'declined' } });
+  } catch (err) {
+    console.error('[checkout] upsell decline failed:', err.message);
+    return res.status(500).json({ success: false, error: { code: 'internal_error' } });
+  }
+});
+
 // GET /session/:id — safe public snapshot (thank-you / upsell pages poll
 // this). Hand-picked fields, an allow-list: no tracking net, no customer PII
 // beyond nothing, no gateway internals.
