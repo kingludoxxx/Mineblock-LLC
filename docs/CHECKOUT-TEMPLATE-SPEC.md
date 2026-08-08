@@ -1,7 +1,7 @@
-# Checkout page template — replicate Ludo's live Puure checkout (Stripe-powered)
+# Checkout page template — replicate Ludo's live Puure checkout (Whop-powered)
 _Design spec from Ludo's actual checkout screenshot (2026-08-08). The live page
 is Whop-hosted; we rebuild the SAME layout as our own editable funnel-builder
-checkout page, with the Stripe Payment Element in the payment slot. Do NOT
+checkout page, with the Whop embedded checkout in the payment slot. Do NOT
 scrape the live URL (live session token + Whop SPA)._
 
 ## Layout: two columns (left form ~60%, right order-summary ~40%; stacks on mobile)
@@ -17,13 +17,13 @@ scrape the live URL (live session token + Whop SPA)._
    days · FREE" (radio, blue-highlighted when selected). Support N methods.
 6. **Billing address** — checkbox "Billing address same as shipping address"
    (checked by default); unchecking reveals a billing address block.
-7. **Payment method** — a card container:
-   - **Card** (radio, selected) → **Stripe Payment Element** mounts here
-     (card number / MM·YY / CVC). This REPLACES Whop's card field.
-   - Pay with Crypto (radio) — visual option; wire later (placeholder now).
+7. **Payment method** — a card container (GATEWAY = WHOP; operator has no Stripe):
+   - **Card** (radio, selected) → **Whop embedded checkout** mounts here
+     (card number / MM·YY / CVC), exactly as the current live page.
+   - Pay with Crypto (radio) — Whop supports it; wire via the Whop embed later.
    - Bank transfer (radio) — visual option; placeholder now.
    - Fine print: "By purchasing, you agree to Puure's terms and conditions."
-   - (Remove "Powered by Whop" — this is our own checkout.)
+   - "Powered by Whop" may stay (it IS Whop) or be hidden — operator's choice.
 8. **Complete checkout** — full-width black button → confirms the Stripe payment.
 9. **Trust badges row** — Apple Pay, GPay, PayPal, Visa, MC, Amex, Discover.
 10. **Footer links** — Return policy · Privacy policy · Terms of service.
