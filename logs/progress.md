@@ -1689,3 +1689,191 @@ DECISIONS: F8 (funnels-LIST filter chips) and F11 (Storefront/Portal render as
 GENERIC node header — no such type in enum) DEFERRED as documented polish, not
 canvas-blocking. F10 numeric coercion left lenient (finite-after-coerce is safe).
 STATUS: COMPLETE. Slice 4 (flow routing + redirects) next.
+TIMESTAMP: 2026-08-08 21:35
+TASK: Integration lane slice 1 — checkout sessions + authoritative pricing
+BUILT: co_* schema module (server/src/services/checkoutSchema.js — all 7
+money tables with unique keys: co_orders.idempotency_key UNIQUE, upsell
+TRIPLE (session,offer,charge), webhook (gateway,id) PK, unmatched webhook_id
+PK); checkoutPricing.js (Shopify GraphQL nodes re-pricing, 60s TTL cache
+incl. known-bad, PricingUnavailableError 503 vs omitted-variant 422 split,
+creds read at call time); routes/checkoutPublic.js (POST create-session:
+20/min per-IP limit via house checkRateLimit, optional origin allow-list,
+qty clamp 1..100, max 50 lines, $1 min total, client prices never read,
+tracking snapshot nullable; GET session/:id safe allow-list snapshot);
+routes/checkoutAdmin.js (authenticate + requirePermission('checkout',
+'access'): list w/ filters, stats with paid-only revenue, detail w/ events/
+orders/charges); migration 090 checkout permission.
+TESTED: 29-check battery (scratchpad test_slice1.mjs) against 3 harnesses:
+live Shopify (:4003), dead Shopify host (:4005), EUR base currency (:4006),
+plus direct DB assertions on puure_money. Edge cases: tampered client price
+ignored (0.01→89.00 server), unknown + draft variant 422, empty/malformed/
+missing carts 4xx no crash, qty clamp 0→1 5000→100, dead Shopify → 503
+pricing_unavailable (never 422), currency mismatch → 422, admin 401 unauth,
+rate limit 429, replayed create mints new session, GET leaks no PII.
+OUTPUT: RESULT: 29 passed, 0 failed. Migration 090 verified: Team - Full
+Access gains {"checkout":["access"]}.
+DECISIONS: (1) No co_stores port — sessions carry funnel_id/page_id TEXT
+(builder lane's funnels.id type), currency authority = Shopify shop currency
+w/ optional CHECKOUT_BASE_CURRENCY fail-closed guard. (2) All co_ DDL lives
+in one schema module shared by the three checkout route files so constraint
+definitions can't drift. (3) Local verification via scratchpad harness
+mounting only lane files — shared app.js untouched; mount hunks go in the
+integrator report. DECISION MADE on all three.
+STATUS: COMPLETE (local verification; integrator merge pending)
+---
+
+---
+TIMESTAMP: 2026-08-08 22:05
+TASK: Integration lane slice 2 — Stripe test-mode settle + idempotent orders
+BUILT: gateways/stripe.js (PaymentIntents adapter port: customer, intent w/
+setup_future_usage, off-session charge, local Stripe-Signature HMAC verify
+w/ 300s tolerance + multi-v1 rotation support, PI parser w/ BNPL reuse
+gate; STRIPE_API_BASE test seam read at call time); gatewayConfigs.js
+(per-funnel creds in co_gateway_configs, AES-256-GCM at rest, write-only
+patch null-keeps/""-clears/value-replaces, reads only *_set booleans, env
+fallback); checkoutSettle.js (THE settle path: atomic processing→paid
+claim + co_orders ON CONFLICT(idempotency_key) DO NOTHING — sweeps must
+reuse these); gatewayWebhooks.js (POST /stripe: raw-body sig verify
+fail-closed, authoritative PI re-fetch, unmatched-payment queue, forensics
+rows w/ first-outcome-wins); public POST /stripe/create-intent; admin
+GET/PUT /gateways.
+TESTED: 43-check battery vs mock Stripe (:4009) implementing the exact API
+surface. EXIT BAR PROVEN: same signed event twice → exactly one co_orders
+row, second delivery no-op ack; 5 CONCURRENT deliveries → 1 settled/1
+order (DB arbitration). Failure paths: bad/missing/stale signature 403 +
+session untouched, PI-fetch outage 502 + nothing written, amount mismatch
+409 + needs_review + no order, BNPL PM not saved, unknown-session valid-
+sig payment → co_unmatched_payments (idempotent), malformed JSON 4xx,
+env-signed event rejected when per-funnel secret set.
+OUTPUT: RESULT: 43 passed, 0 failed.
+DECISIONS: (1) Settle order-of-writes: session flip then order insert, both
+independently idempotent, crash between them heals on redelivery/sweep.
+(2) Unknown-session events verify against env-level secret; only authentic
+ones enter the unmatched queue (prevents unauthenticated spam). (3) Creds
+cipher key = CHECKOUT_CREDS_KEY else sha256(JWT_SECRET) fallback so prod
+works without new env. (4) STRIPE_API_BASE env override as the mock seam.
+DECISION MADE on all four.
+STATUS: COMPLETE (local verification; live Stripe test-mode run BLOCKED on
+operator-supplied sk_test key — see errors.md)
+---
+
+---
+TIMESTAMP: 2026-08-08 22:50
+TASK: Integration lane slice 3 — Whop client, settlement webhook, 1-click upsells
+BUILT: gateways/whop.js (createCheckoutSession w/ inline one-time plan,
+Standard-Webhooks HMAC verify fail-closed w/ BOTH ws_-raw and whsec_-b64 key
+derivations, chargeSavedPaymentMethod w/ Idempotency-Key + settled-status
+gate (2xx ≠ money moved), getPayment, decline extraction, gross/net fee-band
+amount reconciliation); POST /gateway-webhooks/whop (trust anchor from the
+session's funnel never the body, webhook-id two-phase idempotency w/
+re-drive, kind routing base/upsell, payment.failed → last_failed_payment_id,
+unmatched queue); public POST /whop/create-session, POST /upsell/accept +
+/upsell/decline (TRIPLE-key claim slots v:<variant>/'decline', server-side
+offer pricing, same-processor rule, pending_settlement holds, re-claim after
+decline); settleUpsellCharge/failUpsellCharge in checkoutSettle (sweep will
+reuse); admin co_upsells CRUD + unmatched-payments queue view.
+TESTED: 39-check battery vs mock Whop (:4010) + mock Stripe (:4009) + live
+Shopify pricing. Replay proofs: same webhook-id → duplicate ack; same
+payment new webhook-id → already_paid; exactly one co_orders row. 3
+PARALLEL upsell accepts → exactly 1 gateway charge call, 1 row. Failure
+paths: bad/missing/stale signature 401 untouched session, gross mismatch +
+net-below-band → needs_review no order, sync decline surfaced w/ code +
+re-accept recovery on the SAME row, async payment.failed → declined,
+decline marker $0 coexists with settled accept, unpaid session 409, no
+saved PM → requires_payment_method, cross-funnel offer 404.
+OUTPUT: RESULT: 39 passed, 0 failed.
+DECISIONS: (1) TRIPLE key implemented as deterministic claim slots
+(charge_id = v:<variant> | 'decline') so the unique index is the
+concurrency guard; gateway payment id lives in gateway_payment_id. (2)
+Whop member_id stored in the generic gateway_customer_id column. (3)
+Session-less Whop events verify against env secret only (per-funnel scan
+deferred to refunds work in slice 4). (4) WHOP_API_BASE env test seam,
+same pattern as Stripe. DECISION MADE on all four.
+STATUS: COMPLETE (local verification; live Whop test-mode BLOCKED on
+operator credentials — same errors.md entry as slice 2)
+---
+
+---
+TIMESTAMP: 2026-08-08 23:50
+TASK: Integration lane slice 4 — money sweeps + refunds/disputes writeback
+BUILT: moneySweeps.js (10-min in-process cron, self-starts from
+gatewayWebhooks import, MONEY_SWEEP_DISABLED kill-switch; reconciles
+stuck pending_settlement via read-only gateway fetch REUSING checkoutSettle
+helpers, parks orphan/stale-charging ambiguity at needs_review per
+DECISIONS #3, backfills paid-but-orderless sessions idempotently);
+refund/dispute writeback in both webhooks (idempotent per refund ref via
+jsonb @> guard, cumulative-total → 'refunded' computed inside the UPDATE,
+Whop metadata-less reversals resolved by payment id, amount-less refunds
+park, disputes cancel outstanding charges); admin POST /sweeps/run.
+TESTED: 16-check slice battery + FULL 4-slice regression on final code:
+29+44+39+16 = 128 passed, 0 failed. Edge cases: lost-webhook settle,
+gateway-failed decline, still-pending untouched, orphan >24h parked, stale
+charging parked, double sweep → no dup order, refund replay → no double
+append, partial→full refund status flip, dispute cancels pending charges +
+sweep never resurrects them, idle sweep all-zeros. Real server boot on
+branch: healthy, migration 090 applied.
+OUTPUT: RESULT: 16 passed, 0 failed; regression EXIT=0 (128/128).
+DECISIONS: (1) Fixed a JSONB double-encode (JSON.stringify on refunds
+param — repo rule violation caught by test, switched to raw arrays). (2)
+charge.refunded is now handled (was ignored) — slice-2 test updated
+accordingly. (3) Sweep starts from gatewayWebhooks module load (brandSpy
+worker pattern) so no shared-file edit is needed. DECISION MADE on all.
+STATUS: COMPLETE — lane finished. Report: docs/MONEY-PATH-REPORT.md.
+Integrator: apply mount hunks + rerun replay proof before merge.
+---
+
+---
+TIMESTAMP: 2026-08-09 00:45
+TASK: Integration lane — live Whop credential verification (unblocks slice 3 BLOCKED item)
+BUILT: Nothing new — verification only. Operator supplied Whop API key,
+company id (biz_wDMmDEXWGxCkim), and webhook signing secret (ws_ form);
+stored in ~/.config/puure/whop.env (chmod 600, outside repo).
+TESTED: (1) Key authenticates against live api.whop.com. (2) LIVE
+checkout-configuration mint through our code path: co_session $89 →
+POST /whop/create-session → ch_apyGj8jCw51rPpX + purchase_url +
+plan_UhjiQU6NELdgX (inert, no charge). (3) Local settle webhook signed
+with the REAL ws_ secret → settled:true; replay → duplicate:true;
+tampered payload → 401 invalid_signature. Webhook registered by operator
+in Whop dashboard pointing at prod /api/v1/gateway-webhooks/whop.
+OUTPUT: settle 200 {settled:true} / replay 200 {duplicate:true} /
+tampered 401 invalid_signature.
+DECISIONS: Key was pasted in chat and is admin-scoped — flagged to
+operator to rotate to a scoped key after go-live. Stripe deferred by
+operator decision (not used). DECISION MADE.
+STATUS: COMPLETE — Whop fully verified. Remaining gates are integrator
+merge + Render env vars (WHOP_API_KEY, WHOP_COMPANY_ID,
+WHOP_WEBHOOK_SECRET) + one live low-value purchase post-deploy.
+---
+
+---
+TIMESTAMP: 2026-08-09 02:30
+TASK: Integration lane — adversarial review of the money path (3 reviewers) + fixes
+BUILT: Fixed 18 verified issues from a 3-lens adversarial review (money/
+concurrency, security, platform). Criticals: F1 cross-funnel upsell
+charge_row forgery (scoped settle to authenticated session); C1 Stripe
+transport-fail misread as decline (transport flag, hold pending); C2 missing
+Stripe upsell webhook branch (added); C3 reclaim resurrecting needs_review/
+canceled rows (excluded); #2 checkoutPublic had no body parser under prod
+mount order (self-parses now); #4 create-intent new-customer-per-call broke
+retries (reuse session customer). Mediums: stranded-session sweep pass (M2),
+dispute blocks new charges (M5), sweep env clamps (#5), ack-not-retry-storm
+(#8), webhook rate limit (F4), bounded price cache (F5), PUT price validation
+(F6), ILIKE escaping (F8), Whop per-funnel refund verify (#7), Stripe
+cumulative-refund delta (#6), sweep in-flight guard (#10), whop body
+double-consume + variant_id bound (#14). REJECTED one critical false positive
+(JSONB [object Object] claim — proven false vs live DB; the proposed fix would
+have double-encoded and broken everything).
+TESTED: New 16-check review-lock battery (server/tests/money-path/
+review-regression.mjs) reproducing each confirmed failure path + asserting the
+fix. FULL regression after fixes: 29+44+39+16+16 = 144 passed, 0 failed
+across all 5 batteries, run under the EXACT production mount order (public +
+webhooks before global json). Real server boots healthy on branch; db ok.
+OUTPUT: RESULT 144 passed, 0 failed (all batteries). Boot health:
+healthy_redis_degraded, db ok.
+DECISIONS: Verified every finding against running code/DB before changing it;
+1 critical claim rejected as false positive with proof. Report:
+docs/MONEY-PATH-REVIEW.md. Out-of-lane items (pg.js timeout-cancel, global
+error envelope, currency comparison) noted, not changed. DECISION MADE.
+STATUS: COMPLETE — review closed, lane hardened, still on branch pending
+integrator merge.
+---

@@ -1,0 +1,754 @@
+// PUBLIC checkout endpoints — unauthenticated BY NECESSITY (the buyer is not
+// a user of this system), therefore defensive by construction:
+//   1. per-IP rate limit (checkRateLimit — Redis with in-memory fallback)
+//   2. optional Origin/Referer allow-list (CHECKOUT_ALLOWED_ORIGINS env)
+//   3. every line re-priced server-side against Shopify; client prices are
+//      NEVER read; quantities clamped; minimum total enforced
+// Auth boundary = file boundary: nothing in this file may require a session,
+// and nothing outside it may mount unauthenticated checkout surface.
+//
+// Mount (integrator-owned, app.js): BEFORE the global apiLimiter, like the
+// other webhook/public mounts:
+//   app.use('/api/v1/checkout/public', checkoutPublicRoutes);
+import { Router, json } from 'express';
+import cookieParser from 'cookie-parser';
+import crypto from 'crypto';
+import { pgQuery } from '../db/pg.js';
+import { checkRateLimit } from '../middleware/rateLimiter.js';
+import { ensureCheckoutTables } from '../services/checkoutSchema.js';
+import {
+  resolveVariantPrices,
+  toVariantGid,
+  currencyMismatch,
+  PricingUnavailableError,
+} from '../services/checkoutPricing.js';
+
+const router = Router();
+
+// This router is mounted BEFORE the app-level body/cookie parsers (auth
+// boundary = file boundary), so it parses its OWN body and cookies — never
+// assume an upstream parser ran. Idempotent if one did: express.json is a
+// no-op when Content-Type isn't JSON or the body was already read, and
+// cookieParser re-parsing is harmless. This makes the mount position safe
+// either way and keeps the _fbp/_fbc tracking snapshot working.
+router.use(json({ limit: '1mb' }));
+router.use(cookieParser());
+
+const MAX_LINES = 50;
+const MAX_QTY_PER_LINE = 100;
+const MIN_TOTAL = 1.0; // gateway documented minimum — sub-$1 sessions can't charge
+
+const round2 = (n) => Math.round(n * 100) / 100;
+
+function clientIp(req) {
+  // app.js sets `trust proxy 1` (Render), so req.ip is the client address as
+  // the platform proxy saw it — not a client-forgeable left-most XFF entry.
+  return req.ip || req.socket?.remoteAddress || 'unknown';
+}
+
+async function rateLimit(req, res, bucket, limit, windowSec = 60) {
+  const { allowed, retryAfter } = await checkRateLimit(
+    `checkout:${bucket}:${clientIp(req)}`, limit, windowSec
+  );
+  if (!allowed) {
+    res.status(429).json({ success: false, error: { code: 'rate_limited', retryAfter } });
+    return false;
+  }
+  return true;
+}
+
+// Origin/Referer allow-list — defence-in-depth only (server-side re-pricing
+// already makes a forged session worthless). Read at request time (rollback =
+// unset the var). Absent/unparseable headers don't block: many legitimate
+// clients strip them, and the check must never be load-bearing.
+function originAllowed(req) {
+  const allowed = (process.env.CHECKOUT_ALLOWED_ORIGINS || '')
+    .split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+  if (!allowed.length) return true;
+  const raw = req.get('origin') || req.get('referer') || '';
+  if (!raw) return true;
+  try {
+    return allowed.includes(new URL(raw).hostname.toLowerCase());
+  } catch {
+    return true;
+  }
+}
+
+function cleanCustomer(body) {
+  const c = body?.customer;
+  if (!c || typeof c !== 'object' || Array.isArray(c)) return {};
+  const s = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
+  const out = {
+    email: s(c.email, 254),
+    first_name: s(c.first_name, 100),
+    last_name: s(c.last_name, 100),
+    phone: s(c.phone, 40),
+  };
+  const sh = c.shipping;
+  if (sh && typeof sh === 'object' && !Array.isArray(sh)) {
+    out.shipping = {
+      address1: s(sh.address1, 200),
+      address2: s(sh.address2, 200),
+      city: s(sh.city, 100),
+      state: s(sh.state, 100),
+      zip: s(sh.zip, 20),
+      country: s(sh.country, 60),
+    };
+  }
+  return out;
+}
+
+// Five-key tracking snapshot, captured at session creation because these
+// values are gone by the time the settlement webhook fires. All nullable —
+// the tracking lane wires real values later.
+function trackingSnapshot(req) {
+  return {
+    fbp: (req.cookies?._fbp || '').slice(0, 80) || null,
+    fbc: (req.cookies?._fbc || '').slice(0, 200) || null,
+    ip: clientIp(req),
+    ua: (req.get('user-agent') || '').slice(0, 300) || null,
+    url: (req.get('referer') || '').slice(0, 500) || null,
+  };
+}
+
+// POST /create-session — validate the cart SERVER-SIDE, persist a co_sessions
+// row at status 'processing' (= payment INTENT, not money), return the
+// session snapshot. Sessions are deliberately NOT idempotent — a replayed
+// create mints a fresh session; only settlement writes (orders/charges) carry
+// idempotency keys.
+router.post('/create-session', async (req, res) => {
+  try {
+    if (!(await rateLimit(req, res, 'create-session', 20))) return;
+    if (!originAllowed(req)) {
+      return res.status(403).json({ success: false, error: { code: 'origin_not_allowed' } });
+    }
+    await ensureCheckoutTables();
+
+    const body = req.body || {};
+    const rawLines = Array.isArray(body.line_items) ? body.line_items : [];
+    const requested = [];
+    for (const li of rawLines.slice(0, MAX_LINES)) {
+      const vid = li && li.variant_id != null ? String(li.variant_id).trim() : '';
+      if (!vid) continue;
+      const qty = Math.max(1, Math.min(parseInt(li.quantity, 10) || 1, MAX_QTY_PER_LINE));
+      requested.push({ variantId: vid, qty });
+    }
+    if (!requested.length) {
+      return res.status(422).json({ success: false, error: { code: 'empty_cart' } });
+    }
+
+    // AUTHORITATIVE re-pricing. Client-sent prices are never read. A Shopify
+    // transport failure throws PricingUnavailableError → retryable 503,
+    // DISTINCT from the 422 invalid_variant below (unknown/unpurchasable).
+    let priced;
+    try {
+      priced = await resolveVariantPrices(requested.map((r) => r.variantId));
+    } catch (err) {
+      if (err instanceof PricingUnavailableError) {
+        console.error('[checkout] pricing unavailable:', err.message);
+        return res.status(503).json({ success: false, error: { code: 'pricing_unavailable' } });
+      }
+      throw err;
+    }
+
+    // Fail closed if the shop currency differs from a configured base
+    // currency — the whole store is mispriced; never mint at a wrong amount.
+    const baseCurrency = (process.env.CHECKOUT_BASE_CURRENCY || '').toUpperCase();
+    const mismatch = currencyMismatch(priced, baseCurrency);
+    if (mismatch) {
+      console.error(
+        `[checkout] currency mismatch: shop=${mismatch} base=${baseCurrency} — refusing to mint`
+      );
+      return res.status(422).json({ success: false, error: { code: 'currency_mismatch' } });
+    }
+
+    const cleanItems = [];
+    let currency = baseCurrency || '';
+    for (const { variantId, qty } of requested) {
+      const info = priced[toVariantGid(variantId)];
+      if (!info) {
+        // Unknown / unpublished / unpurchasable — reject the cart rather than
+        // silently drop the line (the buyer thinks they're buying it).
+        return res.status(422).json({ success: false, error: { code: 'invalid_variant' } });
+      }
+      currency = currency || info.currency || 'USD';
+      cleanItems.push({
+        variant_id: variantId,
+        quantity: qty,
+        price: round2(Number(info.price)), // AUTHORITATIVE Shopify price
+        currency,
+        title: info.title || '',
+        product_title: info.product_title || '',
+        image: info.image || null,
+        line_total: round2(Number(info.price) * qty),
+      });
+    }
+
+    const subtotal = round2(cleanItems.reduce((s, i) => s + i.price * i.quantity, 0));
+    const shipping = 0; // shipping/tax lanes land with the page config port
+    const tax = 0;
+    const total = round2(subtotal + shipping + tax);
+    if (total < MIN_TOTAL) {
+      return res.status(422).json({ success: false, error: { code: 'total_below_minimum' } });
+    }
+
+    const sessionId = `co_${crypto.randomBytes(16).toString('hex')}`;
+    // JSONB params are raw JS values — pgQuery/postgres.js serializes them.
+    await pgQuery(
+      `INSERT INTO co_sessions (
+         id, funnel_id, page_id, status, line_items,
+         subtotal, shipping, tax, total, currency, customer, tracking_net
+       ) VALUES ($1, $2, $3, 'processing', $4, $5, $6, $7, $8, $9, $10, $11)`,
+      [
+        sessionId,
+        body.funnel_id ? String(body.funnel_id).slice(0, 64) : null,
+        body.page_id ? String(body.page_id).slice(0, 64) : null,
+        cleanItems,
+        subtotal, shipping, tax, total,
+        currency,
+        cleanCustomer(body),
+        trackingSnapshot(req),
+      ]
+    );
+
+    // Event trail — analytics side of the fail-open/fail-closed line: a
+    // failed event write must never fail the mint.
+    try {
+      await pgQuery(
+        `INSERT INTO co_events (session_id, kind, data) VALUES ($1, 'session_created', $2)`,
+        [sessionId, { total, currency, lines: cleanItems.length }]
+      );
+    } catch (err) {
+      console.error('[checkout] co_events write failed (non-fatal):', err.message);
+    }
+
+    return res.json({
+      success: true,
+      data: {
+        session_id: sessionId,
+        status: 'processing',
+        line_items: cleanItems,
+        totals: { subtotal, shipping, tax, total },
+        currency,
+      },
+    });
+  } catch (err) {
+    console.error('[checkout] create-session failed:', err.message);
+    return res.status(500).json({ success: false, error: { code: 'internal_error' } });
+  }
+});
+
+// POST /stripe/create-intent — mint the PaymentIntent for a processing
+// session. Amount comes from the SESSION (already server-priced) — the
+// client sends only the session id. Customer + setup_future_usage tokenize
+// the card for 1-click upsells. Deterministic Stripe Idempotency-Key means a
+// replayed call returns the same PI, not a second charge surface.
+router.post('/stripe/create-intent', async (req, res) => {
+  try {
+    if (!(await rateLimit(req, res, 'create-intent', 20))) return;
+    await ensureCheckoutTables();
+    const sessionId = String(req.body?.session_id || '').slice(0, 80);
+    if (!sessionId) {
+      return res.status(422).json({ success: false, error: { code: 'session_required' } });
+    }
+    const rows = await pgQuery(
+      `SELECT id, funnel_id, status, total, currency, customer, gateway_session_id,
+              gateway, gateway_customer_id
+       FROM co_sessions WHERE id = $1`, [sessionId]
+    );
+    if (!rows.length) {
+      return res.status(404).json({ success: false, error: { code: 'not_found' } });
+    }
+    const session = rows[0];
+    if (session.status !== 'processing') {
+      return res.status(409).json({ success: false, error: { code: 'session_not_payable' } });
+    }
+    const { resolveCredential } = await import('../services/gatewayConfigs.js');
+    const { createCustomer, createPaymentIntent, modeOf } =
+      await import('../services/gateways/stripe.js');
+    const secretKey = await resolveCredential(session.funnel_id || '', 'stripe', 'secret_key');
+    if (!secretKey) {
+      return res.status(503).json({ success: false, error: { code: 'gateway_not_configured' } });
+    }
+
+    // Reuse the customer minted on a prior create-intent for THIS session.
+    // Minting a fresh customer on every call both leaks orphan customers AND
+    // changes the PaymentIntent params under the fixed idempotency key
+    // `ci_<session>` — Stripe then rejects the retry (idempotency_error) and
+    // the session becomes unpayable for the key's 24h life. A stable customer
+    // makes the retried create-intent return the same PI, as intended.
+    let customerId = session.gateway_customer_id || '';
+    if (!customerId) {
+      const cust = session.customer || {};
+      const customer = await createCustomer(secretKey, {
+        email: cust.email || '',
+        name: [cust.first_name, cust.last_name].filter(Boolean).join(' '),
+        phone: cust.phone || '',
+        metadata: { co_session_id: session.id },
+      });
+      // A failed customer create degrades to a PI without saved-card upsells —
+      // never blocks the sale (but then setup_future_usage is off, so no
+      // 1-click; that is the correct trade, not an error).
+      customerId = customer.ok ? customer.customer_id : '';
+      // Persist immediately so a retry reuses it even if the PI call below
+      // fails — otherwise the retry mints another customer and hits the
+      // idempotency-param mismatch we are avoiding.
+      if (customerId) {
+        await pgQuery(
+          `UPDATE co_sessions SET gateway_customer_id = COALESCE(gateway_customer_id, $2),
+             updated_at = NOW()
+           WHERE id = $1 AND status = 'processing'`,
+          [session.id, customerId]
+        );
+      }
+    }
+
+    const pi = await createPaymentIntent(secretKey, {
+      amount: Number(session.total),
+      currency: session.currency,
+      customerId,
+      metadata: { co_session_id: session.id },
+      idempotencyKey: `ci_${session.id}`,
+      setupFutureUsage: Boolean(customerId),
+    });
+    if (!pi.ok) {
+      console.error('[checkout] create-intent failed:', pi.error, pi.detail || '');
+      return res.status(502).json({ success: false, error: { code: 'gateway_error' } });
+    }
+
+    // Guarded on 'processing': the status read above is stale by now, and
+    // overwriting a settled session's gateway_session_id would break refund
+    // matching and the sweep's order-key derivation.
+    await pgQuery(
+      `UPDATE co_sessions SET gateway = 'stripe', gateway_session_id = $2,
+         gateway_customer_id = COALESCE($3, gateway_customer_id), updated_at = NOW()
+       WHERE id = $1 AND status = 'processing'`,
+      [session.id, pi.id, customerId || null]
+    );
+    const publishableKey = await resolveCredential(
+      session.funnel_id || '', 'stripe', 'publishable_key'
+    );
+    return res.json({
+      success: true,
+      data: {
+        payment_intent_id: pi.id,
+        client_secret: pi.client_secret,
+        publishable_key: publishableKey || null,
+        mode: modeOf(secretKey),
+        amount: Number(session.total),
+        currency: session.currency,
+      },
+    });
+  } catch (err) {
+    console.error('[checkout] create-intent failed:', err.message);
+    return res.status(500).json({ success: false, error: { code: 'internal_error' } });
+  }
+});
+
+// POST /whop/create-session — mint the Whop embedded-checkout configuration
+// for a processing session. Amount comes from the SESSION (server-priced);
+// metadata carries co_session_id so payment.succeeded maps back. The embed
+// mounts with setupFutureUsage=off_session (an embed prop, not an API field)
+// which tokenizes the card for 1-click upsells.
+router.post('/whop/create-session', async (req, res) => {
+  try {
+    if (!(await rateLimit(req, res, 'whop-create', 20))) return;
+    await ensureCheckoutTables();
+    const sessionId = String(req.body?.session_id || '').slice(0, 80);
+    if (!sessionId) {
+      return res.status(422).json({ success: false, error: { code: 'session_required' } });
+    }
+    const rows = await pgQuery(
+      `SELECT id, funnel_id, status, total, currency FROM co_sessions WHERE id = $1`,
+      [sessionId]
+    );
+    if (!rows.length) {
+      return res.status(404).json({ success: false, error: { code: 'not_found' } });
+    }
+    const session = rows[0];
+    if (session.status !== 'processing') {
+      return res.status(409).json({ success: false, error: { code: 'session_not_payable' } });
+    }
+    const { resolveCredential } = await import('../services/gatewayConfigs.js');
+    const whop = await import('../services/gateways/whop.js');
+    const creds = {
+      api_key: await resolveCredential(session.funnel_id || '', 'whop', 'api_key'),
+      company_id: await resolveCredential(session.funnel_id || '', 'whop', 'company_id'),
+    };
+    if (!creds.api_key || !creds.company_id) {
+      return res.status(503).json({ success: false, error: { code: 'gateway_not_configured' } });
+    }
+    const result = await whop.createCheckoutSession(creds, {
+      amount: Number(session.total),
+      currency: session.currency,
+      metadata: { co_session_id: session.id, kind: '0' },
+      redirectUrl: (process.env.CHECKOUT_BASE_URL || '').replace(/\/$/, '')
+        ? `${(process.env.CHECKOUT_BASE_URL || '').replace(/\/$/, '')}/checkout/complete`
+        : '',
+    });
+    if (!result.ok) {
+      console.error('[checkout] whop create-session failed:', result.error, result.detail || '');
+      const code = result.error === 'not_configured' ? 503 : 502;
+      return res.status(code).json({
+        success: false,
+        error: { code: result.error === 'not_configured' ? 'gateway_not_configured' : 'gateway_error' },
+      });
+    }
+    // Guarded on 'processing' — see the Stripe mint above.
+    await pgQuery(
+      `UPDATE co_sessions SET gateway = 'whop', gateway_session_id = $2, updated_at = NOW()
+       WHERE id = $1 AND status = 'processing'`,
+      [session.id, result.session_id]
+    );
+    return res.json({
+      success: true,
+      data: {
+        whop_session_id: result.session_id, // ch_… → embed sessionId
+        purchase_url: result.purchase_url,
+        amount: Number(session.total),
+        currency: session.currency,
+      },
+    });
+  } catch (err) {
+    console.error('[checkout] whop create-session failed:', err.message);
+    return res.status(500).json({ success: false, error: { code: 'internal_error' } });
+  }
+});
+
+// ── 1-click post-purchase upsells ───────────────────────────────────────────
+// Charged against the saved payment method of the PAID base session, through
+// the SAME gateway the base paid with. Priced server-side from the linked
+// co_upsells offer. Accept AND decline both write co_upsell_charges under the
+// TRIPLE (session, offer, charge-slot): accepts claim `v:<variant>`, declines
+// claim 'decline' — the deterministic slot makes the unique index the
+// double-click/replay guard, and a $0 decline marker can never be settled.
+
+const UPSELL_MIN_CHARGE = 1.0;
+
+async function loadPaidSession(sessionId) {
+  const rows = await pgQuery(
+    `SELECT id, funnel_id, status, gateway, currency, payment_method_id,
+            gateway_customer_id, refunds
+     FROM co_sessions WHERE id = $1`,
+    [String(sessionId || '').slice(0, 80)]
+  );
+  if (!rows.length) return { error: { status: 404, code: 'session_not_found' } };
+  const s = rows[0];
+  if (s.status !== 'paid') return { error: { status: 409, code: 'session_not_paid' } };
+  // A chargeback must never trigger another off-session charge on that card —
+  // cancelling in-flight charges (the dispute handler) is not enough if the
+  // page can simply start a NEW one.
+  const reversals = Array.isArray(s.refunds) ? s.refunds : [];
+  if (reversals.some((r) => r && r.dispute)) {
+    return { error: { status: 409, code: 'session_disputed' } };
+  }
+  if (reversals.length) return { error: { status: 409, code: 'session_refunded' } };
+  return { session: s };
+}
+
+async function loadOffer(offerId, session) {
+  const rows = await pgQuery(
+    `SELECT id, funnel_id, variant_id, price, title, enabled FROM co_upsells WHERE id = $1`,
+    [String(offerId || '').slice(0, 80)]
+  );
+  const offer = rows[0];
+  if (!offer || !offer.enabled) return { error: { status: 404, code: 'offer_not_found' } };
+  // An offer pinned to a funnel only serves that funnel's sessions. Strict
+  // equality (not "both truthy"): a NULL-funnel offer is global by design,
+  // but a PINNED offer must never be reachable from a funnel-less session.
+  if (offer.funnel_id && offer.funnel_id !== (session.funnel_id || '')) {
+    return { error: { status: 404, code: 'offer_not_found' } };
+  }
+  return { offer };
+}
+
+router.post('/upsell/accept', async (req, res) => {
+  try {
+    if (!(await rateLimit(req, res, 'upsell-accept', 20))) return;
+    await ensureCheckoutTables();
+    const body = req.body || {};
+    const { session, error: sErr } = await loadPaidSession(body.session_id);
+    if (sErr) return res.status(sErr.status).json({ success: false, error: { code: sErr.code } });
+    const { offer, error: oErr } = await loadOffer(body.offer_id, session);
+    if (oErr) return res.status(oErr.status).json({ success: false, error: { code: oErr.code } });
+
+    // variant_id '' on the offer = "charge whatever the on-page selection
+    // control resolves to" — the client picks WHICH variant, never the price.
+    // Bound the client-supplied id (it lands in the charge_id claim slot) —
+    // the offer-side id is already stored bounded.
+    const variantId = offer.variant_id || String(body.variant_id || '').trim().slice(0, 80);
+    if (!variantId) {
+      return res.status(422).json({ success: false, error: { code: 'variant_required' } });
+    }
+    const qty = Math.max(1, Math.min(parseInt(body.quantity, 10) || 1, MAX_QTY_PER_LINE));
+
+    // Server-side price authority: the operator-configured offer price, else
+    // the live Shopify price. Client-sent prices are never read.
+    let unit;
+    let title = offer.title || '';
+    if (offer.price !== null && offer.price !== undefined) {
+      unit = round2(Number(offer.price));
+    } else {
+      let priced;
+      try {
+        priced = await resolveVariantPrices([variantId]);
+      } catch (err) {
+        if (err instanceof PricingUnavailableError) {
+          return res.status(503).json({ success: false, error: { code: 'pricing_unavailable' } });
+        }
+        throw err;
+      }
+      const info = priced[toVariantGid(variantId)];
+      if (!info) {
+        return res.status(422).json({ success: false, error: { code: 'invalid_variant' } });
+      }
+      unit = round2(Number(info.price));
+      title = title || info.title || '';
+    }
+    const amount = round2(unit * qty);
+    if (amount < UPSELL_MIN_CHARGE) {
+      return res.status(422).json({ success: false, error: { code: 'upsell_below_minimum' } });
+    }
+
+    // Saved-method check BEFORE any claim: base paid but no reusable PM →
+    // 1-click impossible; the UI falls back to on-session card entry.
+    const provider = (session.gateway || 'whop').toLowerCase();
+    const savedPmOk = Boolean(session.gateway_customer_id && session.payment_method_id);
+    if (!savedPmOk) {
+      return res.json({
+        success: true,
+        data: { status: 'requires_payment_method', provider, amount, currency: session.currency },
+      });
+    }
+
+    // Atomic CLAIM of the (session, offer, `v:<variant>`) slot — the unique
+    // index arbitrates double-clicks, replays and concurrent tabs.
+    const chargeRowId = `ux_${crypto.randomBytes(12).toString('hex')}`;
+    const claimSlot = `v:${variantId}`;
+    const lineItems = [{ variant_id: variantId, quantity: qty, unit_price: unit, title }];
+    let claimed = await pgQuery(
+      `INSERT INTO co_upsell_charges
+         (id, session_id, offer_id, charge_id, amount, currency, status, line_items)
+       VALUES ($1, $2, $3, $4, $5, $6, 'charging', $7)
+       ON CONFLICT (session_id, offer_id, charge_id) DO NOTHING
+       RETURNING id`,
+      [chargeRowId, session.id, offer.id, claimSlot, amount, session.currency, lineItems]
+    );
+    let rowId = chargeRowId;
+    if (!claimed.length) {
+      const [existing] = await pgQuery(
+        `SELECT id, status, amount, currency, gateway_payment_id FROM co_upsell_charges
+         WHERE session_id = $1 AND offer_id = $2 AND charge_id = $3`,
+        [session.id, offer.id, claimSlot]
+      );
+      if (existing?.status === 'settled') {
+        return res.json({
+          success: true,
+          data: {
+            status: 'already_purchased', duplicate: true,
+            charge_row: existing.id, amount: Number(existing.amount), currency: existing.currency,
+          },
+        });
+      }
+      if (existing?.status === 'charging' || existing?.status === 'pending_settlement') {
+        // Another request is mid-charge / awaiting async settlement — the
+        // page keeps POLLING; never re-drive a possibly-succeeding charge.
+        return res.json({ success: true, data: { status: 'processing', duplicate: true } });
+      }
+      // Prior attempt DECLINED — re-claim the SAME row for a fresh attempt.
+      // Idempotency stays keyed to the row + the deterministic gateway key,
+      // so this can never double-charge a success.
+      // Only a CLEAN terminal failure is re-claimable. 'needs_review' is the
+      // state that means "we cannot prove whether the gateway charged"
+      // (stale claim / amount mismatch) and 'canceled' means a dispute killed
+      // it — re-driving either would be exactly the auto-retry that mints
+      // duplicate charges (DECISIONS rule 3). Those need a human, not a retry.
+      const reclaimed = await pgQuery(
+        `UPDATE co_upsell_charges
+         SET status = 'charging', error = NULL, amount = $4, line_items = $5, updated_at = NOW()
+         WHERE session_id = $1 AND offer_id = $2 AND charge_id = $3
+           AND status NOT IN ('settled', 'charging', 'pending_settlement',
+                              'needs_review', 'canceled')
+         RETURNING id`,
+        [session.id, offer.id, claimSlot, amount, lineItems]
+      );
+      if (!reclaimed.length) {
+        return res.json({ success: true, data: { status: 'processing', duplicate: true } });
+      }
+      rowId = reclaimed[0].id;
+    }
+
+    // Charge OFF-SESSION through the base session's own gateway, idempotent
+    // on a deterministic key (a network retry can never double-bill).
+    const idemKey = `upsell:${session.id}:${offer.id}:${variantId}`;
+    const { resolveCredential } = await import('../services/gatewayConfigs.js');
+    let outcome;
+    if (provider === 'stripe') {
+      const { chargeOffSession } = await import('../services/gateways/stripe.js');
+      const secretKey = await resolveCredential(session.funnel_id || '', 'stripe', 'secret_key');
+      const r = await chargeOffSession(secretKey, {
+        amount, currency: session.currency,
+        customerId: session.gateway_customer_id,
+        paymentMethodId: session.payment_method_id,
+        metadata: { co_session_id: session.id, kind: 'upsell', charge_row: rowId },
+        idempotencyKey: idemKey,
+      });
+      if (r.ok) outcome = { status: 'settled', paymentId: r.id };
+      // TRANSPORT failure ≠ decline: the charge may have succeeded with the
+      // response lost. Hold non-terminal so the webhook/sweep decides — never
+      // mark it declined (that would strand a real charge, and a later
+      // re-accept could double-bill once Stripe's idempotency key expires).
+      else if (r.transport) outcome = { status: 'pending', paymentId: r.id || '' };
+      else outcome = { status: 'declined', reason: r.decline_code || r.error, requiresAction: Boolean(r.requires_action) };
+    } else {
+      const whop = await import('../services/gateways/whop.js');
+      const creds = {
+        api_key: await resolveCredential(session.funnel_id || '', 'whop', 'api_key'),
+        company_id: await resolveCredential(session.funnel_id || '', 'whop', 'company_id'),
+      };
+      const r = await whop.chargeSavedPaymentMethod(creds, {
+        amount, currency: session.currency,
+        memberId: session.gateway_customer_id,
+        paymentMethodId: session.payment_method_id,
+        metadata: { co_session_id: session.id, kind: 'upsell', charge_row: rowId, offer_id: offer.id },
+        idempotencyKey: idemKey,
+      });
+      if (r.ok) outcome = { status: 'settled', paymentId: r.payment_id };
+      else if (r.pending || r.error === 'network') outcome = { status: 'pending', paymentId: r.payment_id || '' };
+      else outcome = { status: 'declined', reason: r.decline_code || r.error, requiresAction: r.error === 'requires_action' };
+    }
+
+    if (outcome.status === 'settled') {
+      const { settleUpsellCharge } = await import('../services/checkoutSettle.js');
+      const settled = await settleUpsellCharge({
+        chargeRowId: rowId, gatewayPaymentId: outcome.paymentId, amount,
+        expectedSessionId: session.id,
+      });
+      if (!settled.ok) {
+        // Money MOVED but the row could not be flipped (a concurrent dispute
+        // canceled it, or an async payment.failed already declined it). Never
+        // report a clean 'settled' over a charge the books don't reflect —
+        // park it for a human with the gateway id attached.
+        console.error(
+          `[checkout] upsell charged but not recorded row=${rowId} payment=${outcome.paymentId} err=${settled.error}`
+        );
+        await pgQuery(
+          `UPDATE co_upsell_charges
+           SET status = 'needs_review',
+               gateway_payment_id = COALESCE($2, gateway_payment_id),
+               error = $3, updated_at = NOW()
+           WHERE id = $1 AND status <> 'settled'`,
+          [rowId, outcome.paymentId || null, `charged_not_recorded:${settled.error}`.slice(0, 200)]
+        );
+        return res.json({
+          success: true,
+          data: { status: 'needs_review', charge_row: rowId, amount, currency: session.currency },
+        });
+      }
+      return res.json({
+        success: true,
+        data: { status: 'settled', charge_row: rowId, amount, currency: session.currency },
+      });
+    }
+    if (outcome.status === 'pending') {
+      // Gateway ACCEPTED but hasn't settled — hold non-terminal; the
+      // payment.succeeded/failed webhook (or the sweep) is the authority.
+      await pgQuery(
+        `UPDATE co_upsell_charges
+         SET status = 'pending_settlement', gateway_payment_id = $2, updated_at = NOW()
+         WHERE id = $1 AND status = 'charging'`,
+        [rowId, outcome.paymentId || null]
+      );
+      return res.json({ success: true, data: { status: 'processing', charge_row: rowId } });
+    }
+    const { failUpsellCharge } = await import('../services/checkoutSettle.js');
+    await failUpsellCharge({ chargeRowId: rowId, reason: outcome.reason, expectedSessionId: session.id });
+    return res.json({
+      success: true,
+      data: {
+        status: outcome.requiresAction ? 'requires_action' : 'declined',
+        charge_row: rowId, reason: outcome.reason,
+      },
+    });
+  } catch (err) {
+    console.error('[checkout] upsell accept failed:', err.message);
+    return res.status(500).json({ success: false, error: { code: 'internal_error' } });
+  }
+});
+
+// POST /upsell/decline — record the decline marker (the take-rate
+// denominator). Idempotent on the TRIPLE (session, offer, 'decline'); a $0
+// declined_by_user row that settlement can never touch.
+router.post('/upsell/decline', async (req, res) => {
+  try {
+    if (!(await rateLimit(req, res, 'upsell-decline', 30))) return;
+    await ensureCheckoutTables();
+    const { session, error: sErr } = await loadPaidSession(req.body?.session_id);
+    if (sErr) return res.status(sErr.status).json({ success: false, error: { code: sErr.code } });
+    const { offer, error: oErr } = await loadOffer(req.body?.offer_id, session);
+    if (oErr) return res.status(oErr.status).json({ success: false, error: { code: oErr.code } });
+    await pgQuery(
+      `INSERT INTO co_upsell_charges
+         (id, session_id, offer_id, charge_id, amount, currency, status, declined_by_user)
+       VALUES ($1, $2, $3, 'decline', 0, $4, 'declined', TRUE)
+       ON CONFLICT (session_id, offer_id, charge_id) DO NOTHING`,
+      [`ux_${crypto.randomBytes(12).toString('hex')}`, session.id, offer.id, session.currency]
+    );
+    try {
+      await pgQuery(
+        `INSERT INTO co_events (session_id, kind, data) VALUES ($1, 'upsell_declined_by_user', $2)`,
+        [session.id, { offer_id: offer.id }]
+      );
+    } catch { /* non-fatal */ }
+    return res.json({ success: true, data: { status: 'declined' } });
+  } catch (err) {
+    console.error('[checkout] upsell decline failed:', err.message);
+    return res.status(500).json({ success: false, error: { code: 'internal_error' } });
+  }
+});
+
+// GET /session/:id — safe public snapshot (thank-you / upsell pages poll
+// this). Hand-picked fields, an allow-list: no tracking net, no customer PII
+// beyond nothing, no gateway internals.
+router.get('/session/:id', async (req, res) => {
+  try {
+    if (!(await rateLimit(req, res, 'get-session', 60))) return;
+    await ensureCheckoutTables();
+    const rows = await pgQuery(
+      `SELECT id, status, line_items, subtotal, shipping, tax, total, currency, created_at
+       FROM co_sessions WHERE id = $1`,
+      [String(req.params.id || '').slice(0, 80)]
+    );
+    if (!rows.length) {
+      return res.status(404).json({ success: false, error: { code: 'not_found' } });
+    }
+    const s = rows[0];
+    return res.json({
+      success: true,
+      data: {
+        session_id: s.id,
+        status: s.status,
+        line_items: (Array.isArray(s.line_items) ? s.line_items : []).map((li) => ({
+          title: li.title,
+          product_title: li.product_title,
+          quantity: li.quantity,
+          price: li.price,
+          image: li.image,
+        })),
+        totals: {
+          subtotal: Number(s.subtotal),
+          shipping: Number(s.shipping),
+          tax: Number(s.tax),
+          total: Number(s.total),
+        },
+        currency: s.currency,
+        created_at: s.created_at,
+      },
+    });
+  } catch (err) {
+    console.error('[checkout] get-session failed:', err.message);
+    return res.status(500).json({ success: false, error: { code: 'internal_error' } });
+  }
+});
+
+export default router;
