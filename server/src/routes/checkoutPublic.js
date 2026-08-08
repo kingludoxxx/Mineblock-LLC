@@ -22,6 +22,27 @@ import {
   currencyMismatch,
   PricingUnavailableError,
 } from '../services/checkoutPricing.js';
+// SPLIT-LANE HOOK: exposure denominators are recorded fail-open at session
+// mint (page scope) and at the upsell decision point (offer scope).
+import { resolveArm } from '../services/splitResolver.js';
+import { recordExposure } from '../services/splitCredits.js';
+
+// Resolve the one live test for (funnel, scope), hash the visitor to an arm,
+// and write the exposure denominator. Every failure is swallowed: a split
+// outage must never block a mint or an upsell decision (fail-open serving).
+async function recordSplitExposure({ funnelId, sessionId, visitorId, scope }) {
+  if (!funnelId || !sessionId || !visitorId) return;
+  const [test] = await pgQuery(
+    `SELECT id FROM lb_split_tests
+     WHERE funnel_id = $1 AND scope = $2 AND enabled AND NOT archived
+     ORDER BY created_at ASC LIMIT 1`,
+    [String(funnelId).slice(0, 64), scope]
+  );
+  if (!test) return;
+  const { armKey } = await resolveArm({ visitorId, testId: test.id });
+  if (!armKey) return;
+  await recordExposure({ sessionId, testId: test.id, armKey });
+}
 
 const router = Router();
 
@@ -221,6 +242,15 @@ router.post('/create-session', async (req, res) => {
     } catch (err) {
       console.error('[checkout] co_events write failed (non-fatal):', err.message);
     }
+
+    // SPLIT-LANE HOOK: record the page-scope exposure (denominator) for any
+    // live test on this funnel. Fail-open: a split failure never blocks a mint.
+    recordSplitExposure({
+      funnelId: body.funnel_id ? String(body.funnel_id) : '',
+      sessionId,
+      visitorId: String(req.cookies?._fos_vid || ''),
+      scope: 'page',
+    }).catch(() => {});
 
     return res.json({
       success: true,
@@ -472,6 +502,14 @@ router.post('/upsell/accept', async (req, res) => {
     const { offer, error: oErr } = await loadOffer(body.offer_id, session);
     if (oErr) return res.status(oErr.status).json({ success: false, error: { code: oErr.code } });
 
+    // SPLIT-LANE HOOK (STEP 0): the offer-scope exposure denominator lands
+    // BEFORE any charge claim, so the credit path can never see a credited
+    // leg with no offer-arm denominator. Fail-open.
+    recordSplitExposure({
+      funnelId: session.funnel_id || '', sessionId: session.id,
+      visitorId: String(req.cookies?._fos_vid || ''), scope: 'offer',
+    }).catch(() => {});
+
     // variant_id '' on the offer = "charge whatever the on-page selection
     // control resolves to" — the client picks WHICH variant, never the price.
     // Bound the client-supplied id (it lands in the charge_id claim slot) —
@@ -687,6 +725,13 @@ router.post('/upsell/decline', async (req, res) => {
     if (sErr) return res.status(sErr.status).json({ success: false, error: { code: sErr.code } });
     const { offer, error: oErr } = await loadOffer(req.body?.offer_id, session);
     if (oErr) return res.status(oErr.status).json({ success: false, error: { code: oErr.code } });
+    // SPLIT-LANE HOOK: a decline is an exposure too — the arm was SHOWN. The
+    // denominator must count it or the shown-but-declined arm looks better
+    // than it is. Fail-open.
+    recordSplitExposure({
+      funnelId: session.funnel_id || '', sessionId: session.id,
+      visitorId: String(req.cookies?._fos_vid || ''), scope: 'offer',
+    }).catch(() => {});
     await pgQuery(
       `INSERT INTO co_upsell_charges
          (id, session_id, offer_id, charge_id, amount, currency, status, declined_by_user)

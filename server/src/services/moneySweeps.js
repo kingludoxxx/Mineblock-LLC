@@ -19,6 +19,9 @@ import {
 import { resolveCredential } from './gatewayConfigs.js';
 import * as whopGw from './gateways/whop.js';
 import * as stripeGw from './gateways/stripe.js';
+// SPLIT-LANE HOOK: sweep-settled legs must credit identically to
+// webhook-settled ones, and parked pending credits get retried each tick.
+import { creditSessionConversions, retrySplitPendingCredits } from './splitCredits.js';
 
 // Env-tunable, but CLAMPED: a garbage or "0" value must never turn the sweep
 // into a tight loop hammering the DB and gateway APIs. posInt(v, default, min).
@@ -90,7 +93,14 @@ async function reconcilePendingSettlements(stats) {
             amount: whopGw.extractGrossAmount(pay.json) ?? Number(row.amount),
             expectedSessionId: row.session_id,
           });
-          if (res.ok) stats.settled++;
+          if (res.ok) {
+            stats.settled++;
+            // SPLIT-LANE HOOK: offer-scope arm credit (idempotent on the triple).
+            creditSessionConversions({
+              sessionId: row.session_id, chargeId: row.id,
+              value: Number(row.amount), scope: 'offer',
+            }).catch(() => {});
+          }
         } else if (pay.status === 'refunded') {
           // Money MOVED and was returned — 'declined' would erase that trail.
           // Settle it (so the books show the charge) and let the refund
@@ -101,7 +111,14 @@ async function reconcilePendingSettlements(stats) {
             amount: whopGw.extractGrossAmount(pay.json) ?? Number(row.amount),
             expectedSessionId: row.session_id,
           });
-          if (res.ok) stats.settled++;
+          if (res.ok) {
+            stats.settled++;
+            // SPLIT-LANE HOOK: offer-scope arm credit (idempotent on the triple).
+            creditSessionConversions({
+              sessionId: row.session_id, chargeId: row.id,
+              value: Number(row.amount), scope: 'offer',
+            }).catch(() => {});
+          }
         } else if (WHOP_FAILED_STATUSES.has(pay.status)) {
           await failUpsellCharge({
             chargeRowId: row.id, reason: `sweep:${pay.status}`, expectedSessionId: row.session_id,
@@ -128,7 +145,14 @@ async function reconcilePendingSettlements(stats) {
             chargeRowId: row.id, gatewayPaymentId: pi.id, amount: pi.amount,
             expectedSessionId: row.session_id,
           });
-          if (res.ok) stats.settled++;
+          if (res.ok) {
+            stats.settled++;
+            // SPLIT-LANE HOOK: offer-scope arm credit (idempotent on the triple).
+            creditSessionConversions({
+              sessionId: row.session_id, chargeId: row.id,
+              value: Number(row.amount), scope: 'offer',
+            }).catch(() => {});
+          }
         } else if (['canceled', 'requires_payment_method'].includes(pi.status)) {
           await failUpsellCharge({
             chargeRowId: row.id, reason: `sweep:pi_${pi.status}`, expectedSessionId: row.session_id,
@@ -181,6 +205,13 @@ async function backfillMissingOrders(stats) {
         currency: s.currency,
       });
       if (res.ok && res.orderId) stats.ordersBackfilled++;
+      // SPLIT-LANE HOOK: page-scope base credit, parity with the webhook path.
+      if (res.ok) {
+        creditSessionConversions({
+          sessionId: s.id, chargeId: `base:${s.id}`,
+          value: Number(s.total), currency: s.currency, scope: 'page',
+        }).catch(() => {});
+      }
     } catch (err) {
       console.error(`[money-sweep] order backfill ${s.id} error:`, err.message);
     }
@@ -223,6 +254,13 @@ async function reconcileStrandedSessions(stats) {
           payerEmail: pi.payer_email,
         });
         if (res.ok && res.settled) stats.strandedSettled++;
+        // SPLIT-LANE HOOK: page-scope base credit, parity with the webhook path.
+        if (res.ok) {
+          creditSessionConversions({
+            sessionId: s.id, chargeId: `base:${s.id}`,
+            value: Number(s.total), currency: s.currency, scope: 'page',
+          }).catch(() => {});
+        }
       } else if (s.gateway === 'whop') {
         // A Whop session id is the checkout config (ch_…), not a payment, so
         // there is nothing read-only to resolve it to a payment here. Park it
@@ -264,6 +302,9 @@ export async function runMoneySweepOnce() {
     await parkStaleChargingClaims(stats);
     await reconcileStrandedSessions(stats);
     await backfillMissingOrders(stats);
+    // SPLIT-LANE HOOK: re-credit legs that settled before their exposure row
+    // landed (parked as pending; exactly-once still held by the unique triple).
+    try { await retrySplitPendingCredits(); } catch { /* fail-open: next tick */ }
     const summary = Object.entries(stats).map(([k, v]) => `${k}=${v}`).join(' ');
     if (Object.values(stats).some(Boolean)) console.log(`[money-sweep] ${summary}`);
     return stats;

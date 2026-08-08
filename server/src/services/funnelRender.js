@@ -836,7 +836,10 @@ function sid(){try{var u=new URL(window.location.href);var q=u.searchParams.get(
 var SID=sid();
 function flow(){return window.__fos_flow||{};}
 function go(path){if(!path){return;}try{var u=new URL(path,window.location.origin);if(SID&&!u.searchParams.get('s'))u.searchParams.set('s',SID);window.location.assign(u.pathname+u.search+u.hash);}catch(e){try{window.location.assign(path);}catch(e2){}}}
-function advanceMain(){go(flow().next_path);}
+function advanceMain(){var p=flow().next_path;if(p){go(p);return;}
+/* R2: no main edge configured. A charged buyer must never be left on a
+   spinner: show a clear confirmation instead of a dead-end. */
+try{var s=document.querySelector('[data-fos-up-status-msg]');if(s)s.textContent='You are all set. Your order is confirmed.';var box=document.querySelector('[data-fos-up-status]');if(box)box.hidden=false;var a=document.querySelector('[data-fos-up-accept]');if(a)a.hidden=true;var d=document.querySelector('[data-fos-up-decline]');if(d)d.hidden=true;}catch(e){}}
 function advanceDecline(){var f=flow();go(f.fallback_path||f.next_path);}
 function q(root,sel){try{return root.querySelector(sel);}catch(e){return null;}}
 function setText(root,sel,txt){var el=q(root,sel);if(el){el.textContent=txt;}}
@@ -982,6 +985,8 @@ export function renderPageHtml(page, funnel, pagesById) {
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="referrer" content="same-origin" /><!-- R1: the ?s= session capability must never leak cross-origin via Referer -->
+
 ${trackingHeadScript({ funnel_id: (funnel || {}).id ?? null, page_id: (page || {}).id ?? null })}
 <title>${esc(title)}</title>
 <meta name="description" content="${esc(desc)}" />

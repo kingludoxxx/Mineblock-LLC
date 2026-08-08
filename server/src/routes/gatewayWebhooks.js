@@ -29,6 +29,9 @@ import { startMoneySweeps } from '../services/moneySweeps.js';
 // a tracking failure can never block or fail settlement (DECISIONS #16). The
 // two call sites below are the only tracking-lane edits in this file.
 import { firePurchaseConversion } from '../services/trackingService.js';
+// SPLIT-LANE HOOK: arm crediting fires from the same post-settle points as the
+// Purchase relay (both idempotent; failures never touch the webhook response).
+import { creditSessionConversions, voidSessionRefund } from '../services/splitCredits.js';
 
 const router = Router();
 
@@ -253,6 +256,14 @@ router.post('/stripe', async (req, res) => {
       if (eventId) {
         await markProcessed('stripe', eventId, upRes.ok ? (upRes.already ? 'upsell_already' : 'upsell_settled') : `upsell_${upRes.error}`);
       }
+      // SPLIT-LANE HOOK: credit the offer-scope arm for this settled leg
+      // (idempotent on (session, group, chargeRowId)).
+      if (upRes.ok) {
+        creditSessionConversions({
+          sessionId: session.id, chargeId: chargeRowId,
+          value: piUp.amount, currency: session.currency, scope: 'offer',
+        }).catch(() => {});
+      }
       return res.json({ success: true, upsell: upRes.ok ? 'settled' : upRes.error });
     }
 
@@ -284,7 +295,15 @@ router.post('/stripe', async (req, res) => {
         const r = await applyRefund({
           sessionId: session.id, ref: e.ref, amount: e.amount, gateway: 'stripe', isDispute: false,
         });
-        if (r.ok && !r.duplicate) applied++;
+        if (r.ok && !r.duplicate) {
+          applied++;
+          // SPLIT-LANE HOOK: net the refund against the base leg's arm credit
+          // (idempotent per refundKey; per-leg capped inside voidSessionRefund).
+          voidSessionRefund({
+            sessionId: session.id, chargeId: `base:${session.id}`,
+            amount: e.amount, refundKey: e.ref,
+          }).catch(() => {});
+        }
       }
       if (eventId) await markProcessed('stripe', eventId, `refund_applied_${applied}`);
       return res.json({ success: true, refund: true, applied });
@@ -339,6 +358,14 @@ router.post('/stripe', async (req, res) => {
     }
     // TRACKING-LANE HOOK: fire Purchase (fire-and-forget, idempotent).
     if (result.ok) firePurchaseConversion(session.id).catch(() => {});
+    // SPLIT-LANE HOOK: credit the page-scope arm for the base order (idempotent
+    // on (session, group, base:<session>); fires on settled AND already).
+    if (result.ok) {
+      creditSessionConversions({
+        sessionId: session.id, chargeId: `base:${session.id}`,
+        value: Number(session.total), currency: session.currency, scope: 'page',
+      }).catch(() => {});
+    }
     return res.json({ success: true, settled: result.settled, already: result.already });
   } catch (err) {
     console.error('[gatewayWebhooks] stripe failed:', err.message);
@@ -499,6 +526,16 @@ router.post('/whop', async (req, res) => {
         'whop', webhookId,
         result.ok ? (result.already ? 'upsell_already' : 'upsell_settled') : `upsell_${result.error}`
       );
+      // SPLIT-LANE HOOK: credit the offer-scope arm for this settled leg
+      // (idempotent on (session, group, chargeRowId)).
+      if (result.ok) {
+        creditSessionConversions({
+          sessionId: session.id, chargeId: chargeRowId,
+          value: whopGw.extractGrossAmount(data),
+          currency: String(data.currency || session.currency || 'USD').toUpperCase(),
+          scope: 'offer',
+        }).catch(() => {});
+      }
       return res.json({ success: true, upsell: result.ok ? 'settled' : result.error });
     }
 
@@ -588,6 +625,14 @@ router.post('/whop', async (req, res) => {
     }
     // TRACKING-LANE HOOK: fire Purchase (fire-and-forget, idempotent).
     if (result.ok) firePurchaseConversion(session.id).catch(() => {});
+    // SPLIT-LANE HOOK: credit the page-scope arm for the base order (idempotent
+    // on (session, group, base:<session>); fires on settled AND already).
+    if (result.ok) {
+      creditSessionConversions({
+        sessionId: session.id, chargeId: `base:${session.id}`,
+        value: Number(session.total), currency: session.currency, scope: 'page',
+      }).catch(() => {});
+    }
     return res.json({ success: true, settled: result.settled, already: result.already });
   } catch (err) {
     console.error('[gatewayWebhooks] whop failed:', err.message);
