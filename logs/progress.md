@@ -1803,3 +1803,26 @@ worker pattern) so no shared-file edit is needed. DECISION MADE on all.
 STATUS: COMPLETE — lane finished. Report: docs/MONEY-PATH-REPORT.md.
 Integrator: apply mount hunks + rerun replay proof before merge.
 ---
+
+---
+TIMESTAMP: 2026-08-09 00:45
+TASK: Integration lane — live Whop credential verification (unblocks slice 3 BLOCKED item)
+BUILT: Nothing new — verification only. Operator supplied Whop API key,
+company id (biz_wDMmDEXWGxCkim), and webhook signing secret (ws_ form);
+stored in ~/.config/puure/whop.env (chmod 600, outside repo).
+TESTED: (1) Key authenticates against live api.whop.com. (2) LIVE
+checkout-configuration mint through our code path: co_session $89 →
+POST /whop/create-session → ch_apyGj8jCw51rPpX + purchase_url +
+plan_UhjiQU6NELdgX (inert, no charge). (3) Local settle webhook signed
+with the REAL ws_ secret → settled:true; replay → duplicate:true;
+tampered payload → 401 invalid_signature. Webhook registered by operator
+in Whop dashboard pointing at prod /api/v1/gateway-webhooks/whop.
+OUTPUT: settle 200 {settled:true} / replay 200 {duplicate:true} /
+tampered 401 invalid_signature.
+DECISIONS: Key was pasted in chat and is admin-scoped — flagged to
+operator to rotate to a scoped key after go-live. Stripe deferred by
+operator decision (not used). DECISION MADE.
+STATUS: COMPLETE — Whop fully verified. Remaining gates are integrator
+merge + Render env vars (WHOP_API_KEY, WHOP_COMPANY_ID,
+WHOP_WEBHOOK_SECRET) + one live low-value purchase post-deploy.
+---

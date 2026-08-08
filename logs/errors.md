@@ -95,3 +95,12 @@ ATTEMPTED: Built + verified against a local mock implementing the exact API surf
 FIX TRIED: n/a — external dependency
 STATUS: BLOCKED (only the against-live-test-mode rerun; all code paths verified locally. Unblock: operator supplies sk_test_/whsec_ and Whop test API key, then rerun test_slice2/3 batteries with STRIPE_API_BASE unset)
 ---
+
+---
+TIMESTAMP: 2026-08-09 00:45
+TASK: Integration lane — gateway credential blocker (update)
+ERROR: (resolution of 2026-08-08 22:05 blocker)
+ATTEMPTED: Whop credentials supplied by operator and verified live (checkout mint + real-secret signature round-trip). Stripe intentionally deferred — operator does not use Stripe.
+FIX TRIED: n/a
+STATUS: FIXED (Whop). Stripe half remains parked by operator choice; code dormant until keys exist.
+---
