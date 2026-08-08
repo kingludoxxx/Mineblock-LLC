@@ -9,6 +9,7 @@ import {
   seedStaticData,
   MIN_ORDER_NUMBER,
 } from './kpiSystem.js';
+import { upsertOrderFromShopify } from './orders.js';
 
 const router = Router();
 
@@ -190,6 +191,13 @@ router.post('/orders', async (req, res) => {
     await seedStaticData();
 
     const costs = await upsertOrder(order);
+
+    // Enrich the CRM orders table (fail-open — must never break the KPI write)
+    try {
+      await upsertOrderFromShopify(order);
+    } catch (crmErr) {
+      logger.error(`[Shopify Webhook] CRM orders upsert failed (non-fatal): ${crmErr.message}`);
+    }
 
     // Recalculate the daily snapshot for this order's date
     // Use Europe/Berlin timezone to match Shopify store and snapshot grouping

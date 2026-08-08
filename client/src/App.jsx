@@ -14,6 +14,8 @@ import AcceptInvite from './pages/AcceptInvite';
 
 // App pages
 import Dashboard from './pages/Dashboard';
+import OrdersPage from './pages/orders/OrdersPage';
+import OrderDetailPage from './pages/orders/OrderDetailPage';
 import Settings from './pages/Settings';
 import NotFound from './pages/NotFound';
 import SupplierPublicSheet from './pages/public/SupplierPublicSheet';
@@ -112,6 +114,10 @@ export default function App() {
           <Route index element={<Navigate to="dashboard" replace />} />
           <Route path="dashboard" element={<Dashboard />} />
           <Route path="settings" element={<Settings />} />
+
+          {/* CRM */}
+          <Route path="orders" element={<PageGate permission="orders:access"><OrdersPage /></PageGate>} />
+          <Route path="orders/:id" element={<PageGate permission="orders:access"><OrderDetailPage /></PageGate>} />
 
           {/* Intel */}
           <Route path="meta" element={<PageGate permission="meta-ads:access"><MetaPage /></PageGate>} />

@@ -19,6 +19,7 @@ import teamRoutes from './team.js';
 import languagesPipelineRoutes from './languagesPipeline.js';
 import adsReportingRoutes from './adsReporting.js';
 import brandSpyRoutes from './brandSpy.js';
+import ordersRoutes from './orders.js';
 
 const mountRoutes = (app) => {
   app.use('/api/v1/users', userRoutes);
@@ -42,6 +43,7 @@ const mountRoutes = (app) => {
   app.use('/api/v1/languages-pipeline', languagesPipelineRoutes);
   app.use('/api/v1/ads-reporting', adsReportingRoutes);
   app.use('/api/v1/brand-spy', brandSpyRoutes);
+  app.use('/api/v1/orders', ordersRoutes);
 };
 
 export default mountRoutes;

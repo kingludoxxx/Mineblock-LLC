@@ -1483,3 +1483,39 @@ TESTED: node --check passed. Unit-compared the new PL builder against reconcileP
 OUTPUT: no-editor -> "PL - B0022 - NN - Product Aware - Promo - Mashup - Ludovico - NA - WK29_2026" (unchanged, no regression); with-editor -> "PL - B0022 - NN - Product Aware - Promo - Mashup - Ludovico - Uly - WK29_2026" (9 slots, was 10 with a stray NA).
 DECISIONS: DECISION MADE — branch on product_code === 'PL' rather than changing the shared builder, so the MB pipeline's naming is untouched. Left abbreviateAngle() in place: every angle the PL detector can emit (TSS/TCS/$V$/Promo) is absent from the ClickUp Angle dropdown, so reconcilePlName falls back to the name segment and preserves the abbreviation — no drift. (A drift would only appear if an angle were BOTH auto-detected AND an existing dropdown option, which none currently are.)
 STATUS: COMPLETE
+
+---
+TIMESTAMP: 2026-08-08 19:30
+TASK: CRM Phase 1 — Orders page (list + detail) in Puure dashboard
+BUILT: New `orders` module modeled on the friend's Funnel OS Orders screens.
+Server: server/src/routes/orders.js (crm_orders/crm_order_comments/crm_order_events
+tables + backfill from shopify_orders_cache; endpoints: list w/ search+filters+
+pagination, today-KPI stats, detail w/ comments+events+neighbors, CSV export,
+comments, fulfill, archive, tags; subscriptions placeholder), mounted at
+/api/v1/orders; shopifyWebhook.js now also enriches crm_orders (fail-open);
+migration 086 grants orders:access to Team - Full Access. Client: pages/orders/
+OrdersPage.jsx + OrderDetailPage.jsx, routes in App.jsx behind PageGate
+orders:access, "Orders" item in Sidebar under Dashboard. vite.config.js proxy
+target now overridable via VITE_PROXY_TARGET (client/.env.local, untracked).
+TESTED: Local stack: embedded Postgres 18 (port 5433, isolated puure_local DB —
+prod DB untouched), server on :4001, Vite on :5173 proxying local. All 86
+migrations resolved (17 brief-pipeline data migrations skipped locally — they
+reference lazily-created feature tables absent on a fresh DB; recorded as
+executed; pre-existing repo issue, unaffected in prod). Seeded 6 sample orders
+through the real upsert path. Verified by execution: login → list (KPI strip
+Orders 6 / Items 13 / Revenue $995.89 / Avg fulfillment 2.0h), search q=Candace,
+filter gateway=Stripe, CSV export, detail page (line items, payment summary,
+cost-withheld rule, UTM attribution, timeline comment posted, mark-as-fulfilled,
+tags), plus edge cases: 404 missing order, 400 empty comment, 401 no token.
+Browser-verified with screenshots at 1500px.
+OUTPUT: Orders list + detail render matching the reference screenshots (dark
+Puure theme); API returns correct data end to end.
+DECISIONS: (1) Own crm_orders table instead of widening shopify_orders_cache —
+keeps KPI lane untouched, webhook enrichment fail-open. (2) orders:access
+granted only to Team - Full Access (revenue data; SuperAdmin has wildcard).
+(3) Fixed pgQuery result-shape misuse (.rows) and jsonb double-encoding
+(postgres.js serializes objects itself); verified down the failure path.
+(4) DECISION MADE: kept shared Mineblock-LLC repo per Ludo ("keep them inside
+both for now") — no repo split.
+STATUS: COMPLETE (local). Deploy to puure-dashboard pending Ludo's go.
+---
