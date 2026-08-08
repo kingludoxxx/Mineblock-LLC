@@ -23,7 +23,7 @@ import { Router } from 'express';
 import { pgQuery } from '../db/pg.js';
 import { verifyAccessToken } from '../utils/jwt.js';
 import { renderPageHtml } from '../services/funnelRender.js';
-import { ensureTables } from './funnels.js';
+import { ensureTables, getEnabledRedirects, pickRedirect } from './funnels.js';
 
 const router = Router();
 
@@ -53,6 +53,22 @@ const notFound = (res) => {
   res.status(404).type('text/plain').send('Not found');
 };
 
+// Funnel-relative path (no query string) for redirect matching. `req.path` is
+// mount-relative ('/f' already stripped), e.g. '/slug/old' → '/old'. The funnel
+// root ('/f/slug') maps to '/'.
+function relativePath(req, funnelSlug) {
+  const rel = String(req.path || '').slice(1 + funnelSlug.length);
+  return rel || '/';
+}
+
+// Raw query string preserved verbatim from the request (attribution depends on
+// it surviving the redirect). Returns '' or 'a=1&b=2' (no leading '?').
+function rawQueryString(req) {
+  const url = String(req.originalUrl || req.url || '');
+  const q = url.indexOf('?');
+  return q === -1 ? '' : url.slice(q + 1);
+}
+
 async function servePage(req, res, resolvePage) {
   // Flag check FIRST — flag off means this surface does not exist.
   if (!publicEnabled()) return notFound(res);
@@ -66,12 +82,42 @@ async function servePage(req, res, resolvePage) {
     const funnel = funnels[0];
     if (!funnel) return notFound(res);
 
+    // ---- Redirect resolution BEFORE page lookup ----
+    // Exact beats longest-prefix; only enabled rows; the request's query string
+    // is carried through to the destination. Fail-open: a redirect-load error
+    // must degrade to normal serving, never 500 a live page.
+    const relPath = relativePath(req, funnelSlug);
+    try {
+      const redirects = await getEnabledRedirects(funnel.id);
+      const hit = pickRedirect(redirects, relPath);
+      if (hit) {
+        const qs = rawQueryString(req);
+        let location = String(hit.to_path);
+        if (qs) location += (location.includes('?') ? '&' : '?') + qs;
+        const code = Number(hit.code) === 302 ? 302 : 301;
+        res.set('Cache-Control', 'no-store'); // non-200 stays no-store
+        res.set('Location', location);
+        return res.status(code).type('text/plain').send('Redirecting');
+      }
+    } catch (rErr) {
+      console.error('[funnelPublic] redirect resolution failed (fail-open):', rErr.message);
+    }
+
     const preview = isPreviewAuthorized(req);
     const page = await resolvePage(funnel);
     if (!page || page.archived) return notFound(res);
     if (!preview && page.status !== 'published') return notFound(res);
 
-    const html = renderPageHtml(page, funnel);
+    // Live-page slug map so the renderer can turn flow_layout edges (keyed by
+    // page id) into path-based routing. Archived/missing targets are absent →
+    // the flow compiler omits them (fail-open).
+    const allPages = await pgQuery(
+      `SELECT id, slug FROM funnel_pages WHERE funnel_id = $1 AND archived = FALSE`,
+      [funnel.id]
+    );
+    const pagesById = new Map(allPages.map((p) => [p.id, { slug: p.slug }]));
+
+    const html = renderPageHtml(page, funnel, pagesById);
     // No caching until the cache slice: private + no-store on every 200.
     res.set('Cache-Control', 'private, no-store');
     res.status(200).type('text/html; charset=utf-8').send(html);
@@ -115,6 +161,15 @@ router.get('/:funnelSlug/:pageSlug', (req, res) => {
     );
     return rows[0] || null;
   });
+});
+
+// GET /f/:funnelSlug/<nested...> — page slugs are single-segment, so a deeper
+// path can only be a (prefix) redirect target. servePage runs redirect
+// resolution first; with no page here, a miss falls through to 404 (no-store).
+// Declared LAST so the single-segment page route above wins for two-segment
+// requests.
+router.get('/:funnelSlug/{*splat}', (req, res) => {
+  servePage(req, res, async () => null);
 });
 
 export default router;

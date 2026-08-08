@@ -37,6 +37,7 @@ import {
   Trash2,
   Home,
   Copy as CopyIcon,
+  Shuffle,
 } from 'lucide-react';
 import api from '../../services/api';
 import Button from '../../components/ui/Button';
@@ -564,6 +565,14 @@ function CanvasInner() {
         >
           <Rows3 className="w-3.5 h-3.5" /> Pages ({pages.length})
         </button>
+        <button
+          onClick={() => setView('redirects')}
+          className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs cursor-pointer transition-colors ${
+            view === 'redirects' ? 'bg-bg-elevated text-text-primary' : 'text-text-muted hover:text-text-primary'
+          }`}
+        >
+          <Shuffle className="w-3.5 h-3.5" /> Redirects
+        </button>
         {error && <span className="ml-3 text-xs text-danger">{error}</span>}
       </div>
 
@@ -704,7 +713,7 @@ function CanvasInner() {
             </ReactFlow>
           </div>
         </div>
-      ) : (
+      ) : view === 'pages' ? (
         <PagesListTab
           pages={pages}
           onEdit={editPage}
@@ -712,6 +721,8 @@ function CanvasInner() {
           onDuplicate={duplicatePage}
           onDelete={deletePage}
         />
+      ) : (
+        <RedirectsTab funnelId={id} />
       )}
     </div>
   );
@@ -773,6 +784,255 @@ function PagesListTab({ pages, onEdit, onPreview, onDuplicate, onDelete }) {
                 </tr>
               ))
             )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ── Redirects tab ──────────────────────────────────────────────────────────
+// Simple CRUD over /api/v1/funnels/:id/redirects. Exact match beats
+// longest-prefix at serve time; the query string is preserved through the hop.
+function RedirectsTab({ funnelId }) {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [draft, setDraft] = useState({ from_path: '', to_path: '', match: 'exact', code: 301 });
+  const [adding, setAdding] = useState(false);
+
+  const load = useCallback(async () => {
+    setError(null);
+    try {
+      const res = await api.get(`/funnels/${funnelId}/redirects`);
+      setRows(res.data?.data?.redirects || []);
+    } catch (err) {
+      setError(err.response?.data?.error || 'Failed to load redirects');
+    } finally {
+      setLoading(false);
+    }
+  }, [funnelId]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const addRow = useCallback(async () => {
+    if (adding) return;
+    setAdding(true);
+    setError(null);
+    try {
+      const res = await api.post(`/funnels/${funnelId}/redirects`, {
+        from_path: draft.from_path.trim(),
+        to_path: draft.to_path.trim(),
+        match: draft.match,
+        code: Number(draft.code),
+      });
+      setRows((prev) => [...prev, res.data?.data]);
+      setDraft({ from_path: '', to_path: '', match: 'exact', code: 301 });
+    } catch (err) {
+      setError(err.response?.data?.error || 'Failed to add redirect');
+    } finally {
+      setAdding(false);
+    }
+  }, [adding, draft, funnelId]);
+
+  const patchRow = useCallback(
+    async (rid, patch) => {
+      setError(null);
+      // optimistic
+      setRows((prev) => prev.map((r) => (r.id === rid ? { ...r, ...patch } : r)));
+      try {
+        const res = await api.patch(`/funnels/${funnelId}/redirects/${rid}`, patch);
+        setRows((prev) => prev.map((r) => (r.id === rid ? res.data?.data : r)));
+      } catch (err) {
+        setError(err.response?.data?.error || 'Failed to update redirect');
+        load(); // reconcile from server
+      }
+    },
+    [funnelId, load]
+  );
+
+  const deleteRow = useCallback(
+    async (rid) => {
+      setError(null);
+      try {
+        await api.delete(`/funnels/${funnelId}/redirects/${rid}`);
+        setRows((prev) => prev.filter((r) => r.id !== rid));
+      } catch (err) {
+        setError(err.response?.data?.error || 'Failed to delete redirect');
+      }
+    },
+    [funnelId]
+  );
+
+  const inputCls =
+    'w-full px-2 py-1 text-sm bg-bg-elevated border border-border-default rounded-md text-text-primary font-mono focus:outline-none focus:border-border-strong';
+  const selectCls =
+    'px-2 py-1 text-sm bg-bg-elevated border border-border-default rounded-md text-text-primary focus:outline-none focus:border-border-strong cursor-pointer';
+
+  return (
+    <div className="flex-1 overflow-auto p-6">
+      <div className="mb-4">
+        <h2 className="text-sm font-semibold text-text-primary">Redirects</h2>
+        <p className="text-xs text-text-faint mt-0.5">
+          Funnel-relative paths. Exact match beats longest prefix; the query string is preserved through the redirect.
+        </p>
+      </div>
+      {error && <div className="mb-3 text-xs text-danger">{error}</div>}
+      <div className="bg-bg-card border border-border-default rounded-xl overflow-hidden">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-[11px] uppercase tracking-wider text-text-faint border-b border-border-subtle">
+              <th className="text-left font-medium px-4 py-3">From</th>
+              <th className="text-left font-medium px-4 py-3">To</th>
+              <th className="text-left font-medium px-4 py-3">Match</th>
+              <th className="text-left font-medium px-4 py-3">Code</th>
+              <th className="text-left font-medium px-4 py-3">Enabled</th>
+              <th className="text-right font-medium px-4 py-3">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? (
+              <tr>
+                <td colSpan={6} className="px-4 py-12 text-center text-text-muted">
+                  Loading…
+                </td>
+              </tr>
+            ) : rows.length === 0 ? (
+              <tr>
+                <td colSpan={6} className="px-4 py-8 text-center text-text-muted">
+                  No redirects yet. Add one below.
+                </td>
+              </tr>
+            ) : (
+              rows.map((r) => (
+                <tr key={r.id} className="border-b border-border-subtle last:border-0">
+                  <td className="px-4 py-2">
+                    <input
+                      className={inputCls}
+                      defaultValue={r.from_path}
+                      key={`from-${r.id}-${r.from_path}`}
+                      onBlur={(e) => {
+                        const v = e.target.value.trim();
+                        if (v && v !== r.from_path) patchRow(r.id, { from_path: v });
+                      }}
+                    />
+                  </td>
+                  <td className="px-4 py-2">
+                    <input
+                      className={inputCls}
+                      defaultValue={r.to_path}
+                      key={`to-${r.id}-${r.to_path}`}
+                      onBlur={(e) => {
+                        const v = e.target.value.trim();
+                        if (v && v !== r.to_path) patchRow(r.id, { to_path: v });
+                      }}
+                    />
+                  </td>
+                  <td className="px-4 py-2">
+                    <select
+                      className={selectCls}
+                      value={r.match}
+                      onChange={(e) => patchRow(r.id, { match: e.target.value })}
+                    >
+                      <option value="exact">exact</option>
+                      <option value="prefix">prefix</option>
+                    </select>
+                  </td>
+                  <td className="px-4 py-2">
+                    <select
+                      className={selectCls}
+                      value={r.code}
+                      onChange={(e) => patchRow(r.id, { code: Number(e.target.value) })}
+                    >
+                      <option value={301}>301</option>
+                      <option value={302}>302</option>
+                    </select>
+                  </td>
+                  <td className="px-4 py-2">
+                    <button
+                      onClick={() => patchRow(r.id, { enabled: !r.enabled })}
+                      className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors cursor-pointer ${
+                        r.enabled ? 'bg-success' : 'bg-bg-elevated border border-border-default'
+                      }`}
+                      title={r.enabled ? 'Enabled' : 'Disabled'}
+                    >
+                      <span
+                        className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${
+                          r.enabled ? 'translate-x-4' : 'translate-x-1'
+                        }`}
+                      />
+                    </button>
+                  </td>
+                  <td className="px-4 py-2">
+                    <span className="flex items-center justify-end gap-1">
+                      <button
+                        onClick={() => deleteRow(r.id)}
+                        className="p-1.5 rounded-md text-text-muted hover:text-danger hover:bg-bg-hover cursor-pointer"
+                        title="Delete redirect"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </span>
+                  </td>
+                </tr>
+              ))
+            )}
+            {/* Add-row */}
+            <tr className="bg-bg-elevated/40">
+              <td className="px-4 py-2">
+                <input
+                  className={inputCls}
+                  placeholder="/old"
+                  value={draft.from_path}
+                  onChange={(e) => setDraft((d) => ({ ...d, from_path: e.target.value }))}
+                  onKeyDown={(e) => e.key === 'Enter' && addRow()}
+                />
+              </td>
+              <td className="px-4 py-2">
+                <input
+                  className={inputCls}
+                  placeholder="/new"
+                  value={draft.to_path}
+                  onChange={(e) => setDraft((d) => ({ ...d, to_path: e.target.value }))}
+                  onKeyDown={(e) => e.key === 'Enter' && addRow()}
+                />
+              </td>
+              <td className="px-4 py-2">
+                <select
+                  className={selectCls}
+                  value={draft.match}
+                  onChange={(e) => setDraft((d) => ({ ...d, match: e.target.value }))}
+                >
+                  <option value="exact">exact</option>
+                  <option value="prefix">prefix</option>
+                </select>
+              </td>
+              <td className="px-4 py-2">
+                <select
+                  className={selectCls}
+                  value={draft.code}
+                  onChange={(e) => setDraft((d) => ({ ...d, code: Number(e.target.value) }))}
+                >
+                  <option value={301}>301</option>
+                  <option value={302}>302</option>
+                </select>
+              </td>
+              <td className="px-4 py-2 text-text-faint text-xs">—</td>
+              <td className="px-4 py-2">
+                <span className="flex items-center justify-end">
+                  <Button
+                    size="sm"
+                    onClick={addRow}
+                    loading={adding}
+                    disabled={!draft.from_path.trim() || !draft.to_path.trim()}
+                  >
+                    <Plus className="w-4 h-4" /> Add
+                  </Button>
+                </span>
+              </td>
+            </tr>
           </tbody>
         </table>
       </div>
