@@ -23,6 +23,7 @@ import departmentRegistry from './departments/registry.js';
 import briefPipelineRouter from './routes/briefPipeline.js';
 import salesToolsRouter from './routes/salesTools.js';
 import brandSpyRouter from './routes/brandSpy.js';
+import funnelPublicRoutes from './routes/funnelPublic.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -67,6 +68,10 @@ app.use('/api/v1/clickup-webhook', clickupWebhookRoutes);
 app.use('/api/v1/webhook', clickupWebhookRoutes);
 app.use('/api/v1/meta-webhook', metaWebhookRoutes);
 app.use('/api/v1/shopify-webhook', shopifyWebhookRoutes);
+
+// Public funnel pages — unauthenticated, gated by FUNNEL_PUBLIC_ENABLED at
+// request time inside the router (before API routes, outside auth).
+app.use('/f', funnelPublicRoutes);
 
 // Rate limiting on all API routes
 app.use('/api', apiLimiter);
