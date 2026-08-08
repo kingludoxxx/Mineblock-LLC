@@ -15,7 +15,13 @@
 //     {
 //       enabled: bool,                 // gateway offered on this funnel
 //       allow_sandbox_on_live: bool,   // let the sandbox app run on the real
-//                                      //   host for staging (default false)
+//                                      //   host for staging (default false).
+//                                      //   STORED BUT NOT YET CONSULTED — the
+//                                      //   future preview-mode wiring (the
+//                                      //   caller that passes {mode:'sandbox'}
+//                                      //   from the live host) must check this
+//                                      //   flag before honoring sandbox there.
+//                                      //   The UI labels it "coming soon".
 //       live:    { <field>: value|ciphertext, ... },
 //       sandbox: { <field>: value|ciphertext, ... },
 //     }
@@ -165,13 +171,37 @@ function canonical(norm) {
   };
 }
 
+// The stored (per-funnel) config in canonical dual-app form, or null when no
+// row exists. Lets callers (gatewayStatus) distinguish "this funnel has creds
+// stored" from "only an env fallback would resolve" — the card pill's job is
+// "is THIS funnel set up", so env-only must not read as configured.
+export async function getStoredConfig(funnelId, gateway) {
+  if (!GATEWAYS[gateway]) return null;
+  await ensureCheckoutTables();
+  const cfg = funnelId ? await loadConfig(funnelId, gateway) : null;
+  return cfg ? normalize(gateway, cfg) : null;
+}
+
 // Write-only merge into ONE credential set (mode). `body` fields: null/undefined
 // keep, "" clears, value replaces (secrets encrypted). Root toggles (`enabled`,
 // `allow_sandbox_on_live`) patch regardless of mode. Upserts the canonical
 // dual-app row (migrating a legacy config on the way).
+//
+// MODE IS EXPLICIT for credential writes: a body carrying any credential field
+// must name mode 'live' or 'sandbox' — silently defaulting a credential write
+// to LIVE is how a sandbox key ends up charging real buyers. Toggles-only
+// patches (enabled / allow_sandbox_on_live, no cred fields) may omit mode.
+// Throws Error('mode_required') → the route maps it to a 422.
 export async function patchConfig(funnelId, gateway, body) {
   const spec = GATEWAYS[gateway];
   if (!spec) throw new Error(`unknown_gateway:${gateway}`);
+  const modeGiven = body.mode !== undefined && body.mode !== null;
+  const validMode = body.mode === 'live' || body.mode === 'sandbox';
+  const hasCredField = [...spec.secrets, ...spec.plain]
+    .some((f) => body[f] !== undefined && body[f] !== null);
+  if ((modeGiven && !validMode) || (hasCredField && !validMode)) {
+    throw new Error('mode_required');
+  }
   await ensureCheckoutTables();
   const norm = normalize(gateway, await loadConfig(funnelId, gateway));
   const mode = pickMode(body.mode);
@@ -246,6 +276,12 @@ export async function getPublicConfig(funnelId, gateway) {
  * but env fallback applies to LIVE ONLY (env holds the operator's real keys,
  * which must never stand in for a sandbox app). Returns '' when unset.
  *
+ * DISABLED GATES EVERYTHING: when a config row EXISTS for this funnel and the
+ * operator has toggled the gateway OFF, resolution returns '' BEFORE the env
+ * fallback — matching the UI promise "Off → checkout won't offer it even with
+ * valid credentials". A funnel with NO row at all still falls through to env
+ * (today's cross-funnel platform-default behavior, unchanged).
+ *
  * Callers that want the preview/test app pass { mode: 'sandbox' }; everyone
  * else (incl. checkoutPublic.js, unchanged) gets live, so the money path is
  * unaffected.
@@ -258,11 +294,12 @@ export async function resolveCredential(funnelId, gateway, field, opts = {}) {
   const cfg = funnelId ? await loadConfig(funnelId, gateway) : null;
   if (cfg) {
     const norm = normalize(gateway, cfg);
-    if (norm.enabled !== false) {
-      const set = norm[mode];
-      if (set && set[field]) {
-        return spec.secrets.includes(field) ? decryptSecret(set[field]) : String(set[field]);
-      }
+    // Explicitly disabled: no credential resolves for this funnel — not the
+    // stored set, not the env fallback.
+    if (norm.enabled === false) return '';
+    const set = norm[mode];
+    if (set && set[field]) {
+      return spec.secrets.includes(field) ? decryptSecret(set[field]) : String(set[field]);
     }
   }
   if (mode === 'live') {

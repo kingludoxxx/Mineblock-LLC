@@ -6,12 +6,26 @@
 //   paypal / nmi   — no charge adapter exists yet, so report configured-or-not
 //                    from the stored creds only (never claims "connected").
 //
+// PING DISCIPLINE:
+//   - A gateway with NO stored credentials for the funnel+mode reports
+//     'not_configured' WITHOUT any outbound call — the pill's job is "is THIS
+//     funnel set up", not "does a platform env key exist". (Pass
+//     { envInclusive: true } to opt into env-resolved status explicitly.)
+//   - Results are cached in-memory for STATUS_TTL_MS keyed
+//     (funnelId, gateway, mode) so reopening the modal doesn't hammer the
+//     processors. { force: true } bypasses the cache (the Re-check button).
+//
 // Statuses returned: 'connected' | 'configured' | 'not_configured' | 'error'
 // | 'unknown'. Credentials are read via resolveGatewayCreds (mode-scoped) and
 // are NEVER echoed back to the caller — only the status + a coarse detail code.
-import { GATEWAYS, resolveGatewayCreds } from './gatewayConfigs.js';
+import { GATEWAYS, resolveGatewayCreds, getStoredConfig } from './gatewayConfigs.js';
 
 const PING_TIMEOUT_MS = 6_000;
+export const STATUS_TTL_MS = 45_000;
+
+// (funnelId|gateway|mode) -> { at, result }. Small by construction (funnels ×
+// 4 gateways × 2 modes); staleness is checked on read.
+const statusCache = new Map();
 
 async function timedFetch(url, opts = {}) {
   const controller = new AbortController();
@@ -47,9 +61,11 @@ function classify(res) {
 async function pingWhop(creds, mode) {
   if (!creds.api_key || !creds.company_id) return NOT_CONFIGURED;
   try {
-    // GET /me — cheapest authenticated read; verifies the key without moving
-    // money or mutating anything.
-    const res = await timedFetch(`${whopBase(mode)}/me`, {
+    // GET /payments?per=1 — the cheapest authenticated read on a route family
+    // the WORKING adapter already uses (whop.js getPayment GETs
+    // /payments/{id}; charges POST /payments). A 2xx proves the key + host;
+    // 401/403 is a bad key. Read-only, never moves money.
+    const res = await timedFetch(`${whopBase(mode)}/payments?per=1`, {
       headers: { Authorization: `Bearer ${creds.api_key}`, Accept: 'application/json' },
     });
     return classify(res);
@@ -77,19 +93,29 @@ function configuredOrNot(gateway, creds) {
   return ok ? { status: 'configured' } : NOT_CONFIGURED;
 }
 
-// Status for ONE gateway in ONE mode.
-export async function checkGatewayMode(funnelId, gateway, mode) {
-  if (!GATEWAYS[gateway]) return { status: 'unknown' };
-  const m = mode === 'sandbox' ? 'sandbox' : 'live';
+async function computeGatewayMode(funnelId, gateway, mode, opts) {
+  // No stored credentials for this funnel+mode → not_configured with ZERO
+  // outbound calls. This keeps an unconfigured funnel from pinging the
+  // processors with the platform's env production key on every modal open.
+  if (!opts.envInclusive) {
+    let stored;
+    try {
+      stored = await getStoredConfig(funnelId, gateway);
+    } catch {
+      return { status: 'error', detail: 'resolve_failed' };
+    }
+    const set = stored ? stored[mode] : null;
+    if (!set || Object.keys(set).length === 0) return NOT_CONFIGURED;
+  }
   let creds;
   try {
-    creds = await resolveGatewayCreds(funnelId, gateway, { mode: m });
-  } catch (err) {
+    creds = await resolveGatewayCreds(funnelId, gateway, { mode });
+  } catch {
     return { status: 'error', detail: 'resolve_failed' };
   }
   switch (gateway) {
     case 'whop':
-      return pingWhop(creds, m);
+      return pingWhop(creds, mode);
     case 'stripe':
       return pingStripe(creds);
     case 'paypal':
@@ -100,6 +126,23 @@ export async function checkGatewayMode(funnelId, gateway, mode) {
   }
 }
 
+// Status for ONE gateway in ONE mode. Cached (TTL) unless opts.force.
+export async function checkGatewayMode(funnelId, gateway, mode, opts = {}) {
+  if (!GATEWAYS[gateway]) return { status: 'unknown' };
+  const m = mode === 'sandbox' ? 'sandbox' : 'live';
+  const key = `${funnelId}|${gateway}|${m}`;
+  const hit = statusCache.get(key);
+  if (!opts.force && hit && Date.now() - hit.at < STATUS_TTL_MS) return hit.result;
+  const result = await computeGatewayMode(funnelId, gateway, m, opts);
+  statusCache.set(key, { at: Date.now(), result });
+  return result;
+}
+
+// Test seam: drop all cached statuses.
+export function clearStatusCache() {
+  statusCache.clear();
+}
+
 function aggregate(live, sandbox) {
   if (live.status === 'connected' || sandbox.status === 'connected') return 'connected';
   if (live.status === 'configured' || sandbox.status === 'configured') return 'configured';
@@ -108,21 +151,21 @@ function aggregate(live, sandbox) {
 }
 
 // Status for ONE gateway across BOTH modes (+ an aggregate for the card pill).
-export async function checkGateway(funnelId, gateway) {
+export async function checkGateway(funnelId, gateway, opts = {}) {
   if (!GATEWAYS[gateway]) return { gateway, aggregate: 'unknown', live: { status: 'unknown' }, sandbox: { status: 'unknown' } };
   const [live, sandbox] = await Promise.all([
-    checkGatewayMode(funnelId, gateway, 'live'),
-    checkGatewayMode(funnelId, gateway, 'sandbox'),
+    checkGatewayMode(funnelId, gateway, 'live', opts),
+    checkGatewayMode(funnelId, gateway, 'sandbox', opts),
   ]);
   return { gateway, aggregate: aggregate(live, sandbox), live, sandbox };
 }
 
-// Status for EVERY configured gateway on a funnel.
-export async function checkAll(funnelId) {
+// Status for EVERY gateway on a funnel.
+export async function checkAll(funnelId, opts = {}) {
   const out = {};
   for (const gw of Object.keys(GATEWAYS)) {
     // eslint-disable-next-line no-await-in-loop
-    out[gw] = await checkGateway(funnelId, gw);
+    out[gw] = await checkGateway(funnelId, gw, opts);
   }
   return out;
 }

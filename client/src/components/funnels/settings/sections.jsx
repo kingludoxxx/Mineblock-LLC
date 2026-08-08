@@ -138,13 +138,16 @@ export function HealthSection({ funnelId }) {
   const [status, setStatus] = useState(null);
   const [err, setErr] = useState('');
 
-  const load = useCallback(async () => {
+  // force=true bypasses the server's 45s status cache (Re-check button only).
+  const load = useCallback(async (force = false) => {
     setStatus(null); setErr('');
     try {
       // Served by the lane-owned checkoutAdmin router (always mounted). The
       // standalone /api/v1/funnel-health route returns identical data once its
       // routes/index.js mount lands.
-      const res = await api.get(`/checkout/gateways/${encodeURIComponent(funnelId)}/status`);
+      const res = await api.get(
+        `/checkout/gateways/${encodeURIComponent(funnelId)}/status${force ? '?force=1' : ''}`
+      );
       setStatus(res.data?.data || {});
     } catch (e) {
       setErr(e.response?.data?.error?.code || 'Failed to load health');
@@ -158,7 +161,7 @@ export function HealthSection({ funnelId }) {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h3 className="text-base font-semibold text-text-primary">Health</h3>
-        <button onClick={load} className="flex items-center gap-1.5 text-xs text-text-muted hover:text-text-primary cursor-pointer">
+        <button onClick={() => load(true)} className="flex items-center gap-1.5 text-xs text-text-muted hover:text-text-primary cursor-pointer">
           <RefreshCw className="w-3.5 h-3.5" /> Re-check
         </button>
       </div>

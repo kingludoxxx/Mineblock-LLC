@@ -28,10 +28,14 @@ export default function PaymentsSection({ funnelId }) {
     }
   }, [funnelId]);
 
-  const loadStatus = useCallback(async () => {
+  // force=true bypasses the server's 45s status cache (the Re-check button);
+  // a plain modal open rides the cache so it never hammers the processors.
+  const loadStatus = useCallback(async (force = false) => {
     setStatus(null);
     try {
-      const res = await api.get(`/checkout/gateways/${encodeURIComponent(funnelId)}/status`);
+      const res = await api.get(
+        `/checkout/gateways/${encodeURIComponent(funnelId)}/status${force ? '?force=1' : ''}`
+      );
       setStatus(res.data?.data || {});
     } catch {
       setStatus({}); // resolve to "unknown" pills rather than spinning forever
@@ -74,9 +78,9 @@ export default function PaymentsSection({ funnelId }) {
           </p>
         </div>
         <button
-          onClick={() => loadStatus()}
+          onClick={() => loadStatus(true)}
           className="flex items-center gap-1.5 text-xs text-text-muted hover:text-text-primary cursor-pointer shrink-0"
-          title="Re-check connections"
+          title="Re-check connections (bypasses the status cache)"
         >
           <RefreshCw className="w-3.5 h-3.5" /> Re-check
         </button>
@@ -241,11 +245,14 @@ function GatewayDetail({ gateway, funnelId, config, status, onBack, onSaved }) {
           checked={enabled}
           onChange={setEnabled}
         />
+        {/* Stored but not yet consulted anywhere — disabled until the
+            preview-mode wiring lands, so the operator is never lied to. */}
         <ToggleRow
-          label="Allow sandbox on the live funnel"
-          hint="Off by default — lets the sandbox app run on the real host for staging."
+          label="Allow sandbox on the live funnel (coming soon — preview wiring)"
+          hint="Off by default — will let the sandbox app run on the real host for staging once preview mode ships."
           checked={allowSandbox}
           onChange={setAllowSandbox}
+          disabled
         />
       </div>
 
@@ -285,14 +292,14 @@ function GatewayDetail({ gateway, funnelId, config, status, onBack, onSaved }) {
   );
 }
 
-function ToggleRow({ label, hint, checked, onChange }) {
+function ToggleRow({ label, hint, checked, onChange, disabled = false }) {
   return (
     <div className="flex items-center justify-between gap-4">
-      <div>
+      <div className={disabled ? 'opacity-60' : ''}>
         <div className="text-sm text-text-primary">{label}</div>
         <div className="text-xs text-text-faint">{hint}</div>
       </div>
-      <Toggle checked={checked} onChange={onChange} />
+      <Toggle checked={checked} onChange={onChange} disabled={disabled} />
     </div>
   );
 }
