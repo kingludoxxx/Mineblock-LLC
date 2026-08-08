@@ -972,6 +972,64 @@ router.post('/admin-clone-schema-to-puure', async (req, res) => {
   }
 });
 
+// ─── /admin-upsert-superadmin — create/update a superadmin user ─────────
+// Escape hatch for when the seed didn't fire (e.g. users table already had
+// rows on first boot). Upserts a user by email, bcrypt-hashes the password,
+// grants the 'super_admin' role (or first admin-tier role found).
+router.post('/admin-upsert-superadmin', async (req, res) => {
+  const cronSecret = process.env.CRON_SECRET;
+  const provided   = req.headers['x-cron-secret'];
+  if (!cronSecret || provided !== cronSecret) {
+    return res.status(403).json({ success: false, error: { message: 'Forbidden' } });
+  }
+  const { email, password, first_name = 'Admin', last_name = 'User' } = req.body || {};
+  if (!email || !password || password.length < 8) {
+    return res.status(400).json({ success: false, error: { message: 'email + password (>=8 chars) required' } });
+  }
+  try {
+    const { hashPassword } = await import('../utils/hash.js');
+    const hash = await hashPassword(password);
+    // Upsert user
+    const upsert = await pgQuery(
+      `INSERT INTO users (id, email, first_name, last_name, password_hash, is_active, email_verified, created_at, updated_at)
+       VALUES (gen_random_uuid(), $1, $2, $3, $4, true, true, NOW(), NOW())
+       ON CONFLICT (email) DO UPDATE SET
+         password_hash = EXCLUDED.password_hash,
+         is_active = true,
+         email_verified = true,
+         updated_at = NOW()
+       RETURNING id, email`,
+      [email, first_name, last_name, hash]
+    );
+    const userId = upsert[0].id;
+    // Find a superadmin-ish role
+    const roles = await pgQuery(
+      `SELECT id, name FROM roles
+        WHERE name IN ('super_admin','superadmin','admin','owner')
+        ORDER BY (name='super_admin')::int DESC,
+                 (name='superadmin')::int DESC,
+                 (name='admin')::int DESC
+        LIMIT 1`,
+      []
+    );
+    if (roles.length) {
+      await pgQuery(
+        `INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2)
+         ON CONFLICT DO NOTHING`,
+        [userId, roles[0].id]
+      );
+    }
+    return res.json({
+      success: true,
+      user: { id: userId, email: upsert[0].email },
+      role_assigned: roles[0]?.name || 'NONE (no admin-tier role found in DB)',
+    });
+  } catch (err) {
+    console.error('[admin-upsert-superadmin] error:', err);
+    return res.status(500).json({ success: false, error: { message: err.message } });
+  }
+});
+
 // ─── /admin-delete-puure-from-mineblock — Phase 4.5 destructive purge ────
 // Deletes Puure rows from THIS DB (mineblock-db) so the DB going to the
 // buyer is Mineblock-only. Runs in a transaction — all-or-nothing.
