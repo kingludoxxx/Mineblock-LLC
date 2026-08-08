@@ -531,6 +531,9 @@ function validatePath(label, value) {
   if (typeof value !== 'string') return `${label} must be a string`;
   const v = value.trim();
   if (!v.startsWith('/')) return `${label} must start with '/'`;
+  // Reject protocol-relative ('//host') and backslash variants ('/\\host'):
+  // browsers resolve those to an EXTERNAL origin → open-redirect vector.
+  if (v.startsWith('//') || v.startsWith('/\\')) return `${label} must be a same-site path`;
   if (v.length > REDIRECT_PATH_MAX) return `${label} is too long`;
   if (!REDIRECT_PATH_RE.test(v))
     return `${label} must be a path (no protocol, host, query or fragment)`;
