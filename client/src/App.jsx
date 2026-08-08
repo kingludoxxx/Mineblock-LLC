@@ -16,6 +16,8 @@ import AcceptInvite from './pages/AcceptInvite';
 import Dashboard from './pages/Dashboard';
 import OrdersPage from './pages/orders/OrdersPage';
 import OrderDetailPage from './pages/orders/OrderDetailPage';
+import CustomersPage from './pages/customers/CustomersPage';
+import CustomerDetailPage from './pages/customers/CustomerDetailPage';
 import Settings from './pages/Settings';
 import NotFound from './pages/NotFound';
 import SupplierPublicSheet from './pages/public/SupplierPublicSheet';
@@ -118,6 +120,8 @@ export default function App() {
           {/* CRM */}
           <Route path="orders" element={<PageGate permission="orders:access"><OrdersPage /></PageGate>} />
           <Route path="orders/:id" element={<PageGate permission="orders:access"><OrderDetailPage /></PageGate>} />
+          <Route path="customers" element={<PageGate permission="customers:access"><CustomersPage /></PageGate>} />
+          <Route path="customers/:email" element={<PageGate permission="customers:access"><CustomerDetailPage /></PageGate>} />
 
           {/* Intel */}
           <Route path="meta" element={<PageGate permission="meta-ads:access"><MetaPage /></PageGate>} />

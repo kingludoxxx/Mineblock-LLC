@@ -32,11 +32,20 @@ import {
   Signal,
   Video,
   ShoppingCart,
+  Store,
 } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
 import { usePermissions } from '../../hooks/usePermissions';
 
 const navGroups = [
+  {
+    label: 'Operations',
+    icon: Store,
+    items: [
+      { to: '/app/orders', icon: ShoppingCart, label: 'Orders', permission: 'orders:access' },
+      { to: '/app/customers', icon: UsersRound, label: 'Customers', permission: 'customers:access' },
+    ],
+  },
   {
     label: 'Production',
     icon: Factory,
@@ -156,20 +165,6 @@ export default function Sidebar() {
           <LayoutDashboard className="w-4 h-4 shrink-0" />
           {!collapsed && <span>Dashboard</span>}
         </NavLink>
-        {hasPermission('orders:access') && (
-          <NavLink
-            to="/app/orders"
-            className={({ isActive }) =>
-              `flex items-center gap-2.5 px-2.5 py-1.5 rounded-md text-sm transition-colors
-              ${isActive ? 'bg-accent-muted text-accent-text font-semibold border border-accent/20' : 'text-text-muted hover:text-text-primary hover:bg-bg-hover'}
-              ${collapsed ? 'justify-center' : ''}`
-            }
-            title={collapsed ? 'Orders' : undefined}
-          >
-            <ShoppingCart className="w-4 h-4 shrink-0" />
-            {!collapsed && <span>Orders</span>}
-          </NavLink>
-        )}
       </div>
 
       <nav className="flex-1 overflow-y-auto px-2 py-2 space-y-0.5">

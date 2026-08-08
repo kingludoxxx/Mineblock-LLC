@@ -1543,3 +1543,28 @@ cross-brand pollution. Shopify creds live in ~/.config/puure/shopify.env
 locally; on Render they will be service env vars.
 STATUS: COMPLETE (local). Live webhook connection requires deploy (Ludo-gated).
 ---
+
+---
+TIMESTAMP: 2026-08-08 20:45
+TASK: CRM Lane 1 — Customers module + Operations nav group
+BUILT: server/src/routes/customers.js (customers derived from crm_orders by
+email: list w/ search+sort+pagination, stats strip, detail w/ profile + order
+history + latest addresses, notes via crm_customer_notes), mounted at
+/api/v1/customers; migration 087 customers:access -> Team - Full Access.
+Client: pages/customers/CustomersPage.jsx + CustomerDetailPage.jsx, routes in
+App.jsx behind PageGate. Sidebar restructured per Ludo: new collapsible
+"Operations" group (Store icon) holding Orders + Customers, replacing the two
+standalone links. Lane 2 (Funnel Builder) scoping spec produced by background
+agent (schema mapping, 35-block inventory, 6-slice plan, constraint checklist)
+— saved in task output; its permission migration renumbered to 088.
+TESTED: By execution against the 117 real Puure orders: 113 customers, top
+spender $498.06/3 orders, stats (2 new today, 87 new 30d, 2.7% repeat,
+$127.10 avg LTV, $14,362.47 lifetime revenue = exact match with orders sum),
+detail + note add, edge cases 404/400/401, search. Client vite build clean
+(2485 modules). Browser-verified: list, repeat badges, customer detail
+(Georgene Alwin 2 orders/$369.88), Operations group rendering.
+OUTPUT: Customers page live locally on real data; nav grouped per spec.
+DECISIONS: Customers derived by aggregation (no customer table) until the
+funnel identity spine lands; identity fields = latest order wins. NONE else.
+STATUS: COMPLETE (local). Rides the same pending deploy as Orders.
+---
