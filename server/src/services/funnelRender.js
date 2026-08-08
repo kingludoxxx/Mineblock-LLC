@@ -262,12 +262,12 @@ function renderBlockInner(block) {
       return `<div class='lb-text'>${body}</div>`;
     }
     case 'image': {
-      const src = esc(p.src || '');
+      const src = safeHref(p.src || '');
       const alt = esc(p.alt || '');
       return `<figure class='lb-image'><img data-el='image' src='${src}' alt='${alt}' loading='lazy'/></figure>`;
     }
     case 'video': {
-      const src = esc(p.src || '');
+      const src = safeHref(p.src || '');
       return `<div class='lb-video'><video data-el='video' src='${src}' controls></video></div>`;
     }
     case 'button': {
