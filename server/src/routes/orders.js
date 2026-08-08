@@ -12,10 +12,23 @@ const router = Router();
 
 router.use(authenticate, requirePermission('orders', 'access'));
 
-let tablesReady = false;
+// Concurrent requests must not run the DDL simultaneously — Postgres throws
+// on parallel CREATE TABLE IF NOT EXISTS (pg_type unique violation). A single
+// in-flight promise serializes setup; on failure it resets so the next
+// request retries.
+let tablesReadyPromise = null;
 
-async function ensureTables() {
-  if (tablesReady) return;
+function ensureTables() {
+  if (!tablesReadyPromise) {
+    tablesReadyPromise = createTables().catch((err) => {
+      tablesReadyPromise = null;
+      throw err;
+    });
+  }
+  return tablesReadyPromise;
+}
+
+async function createTables() {
 
   await pgQuery(`
     CREATE TABLE IF NOT EXISTS crm_orders (
@@ -62,6 +75,8 @@ async function ensureTables() {
     )
   `);
   await pgQuery(`CREATE INDEX IF NOT EXISTS idx_crm_orders_created ON crm_orders (created_at DESC)`);
+  // Added after initial table creation — safe on both fresh and existing DBs
+  await pgQuery(`ALTER TABLE crm_orders ADD COLUMN IF NOT EXISTS fulfillments JSONB DEFAULT '[]'`);
   await pgQuery(`CREATE INDEX IF NOT EXISTS idx_crm_orders_email ON crm_orders (customer_email)`);
   await pgQuery(`CREATE INDEX IF NOT EXISTS idx_crm_orders_archived ON crm_orders (archived)`);
 
@@ -87,6 +102,17 @@ async function ensureTables() {
     )
   `);
   await pgQuery(`CREATE INDEX IF NOT EXISTS idx_crm_order_events_order ON crm_order_events (order_id, created_at DESC)`);
+
+  // Product image cache — Shopify order payloads carry no image URLs, so the
+  // detail endpoint resolves them via the Products API and caches here.
+  await pgQuery(`
+    CREATE TABLE IF NOT EXISTS crm_product_images (
+      product_id BIGINT PRIMARY KEY,
+      image_src TEXT,
+      variant_images JSONB DEFAULT '{}',
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
 
   // Optional backfill from the KPI system's Shopify cache. OPT-IN via
   // CRM_BACKFILL_FROM_CACHE=1 — the cache may belong to a different store
@@ -129,7 +155,6 @@ async function ensureTables() {
     console.error('[orders] backfill from shopify_orders_cache failed:', err.message);
   }
 
-  tablesReady = true;
 }
 
 // Upsert one order from a raw Shopify webhook payload. Called by
@@ -149,10 +174,10 @@ export async function upsertOrderFromShopify(order) {
       shipping_address, billing_address,
       destination_city, destination_state, destination_country,
       line_items, item_count, gateway, utm, client_order_id, order_type,
-      customer_ip, refund_amount, tags, shopify_order_id, raw, synced_at
+      customer_ip, refund_amount, tags, shopify_order_id, raw, fulfillments, synced_at
     ) VALUES (
       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,
-      $20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,NOW()
+      $20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,NOW()
     )
     ON CONFLICT (order_id) DO UPDATE SET
       financial_status = EXCLUDED.financial_status,
@@ -176,6 +201,7 @@ export async function upsertOrderFromShopify(order) {
       utm = COALESCE(EXCLUDED.utm, crm_orders.utm),
       refund_amount = EXCLUDED.refund_amount,
       raw = EXCLUDED.raw,
+      fulfillments = EXCLUDED.fulfillments,
       synced_at = NOW()
     `,
     [
@@ -218,8 +244,87 @@ export async function upsertOrderFromShopify(order) {
         .filter(Boolean),
       order.id,
       order,
+      (order.fulfillments || []).map((f) => ({
+        id: f.id,
+        status: f.status,
+        shipment_status: f.shipment_status || null,
+        tracking_number: f.tracking_number || (f.tracking_numbers || [])[0] || null,
+        tracking_company: f.tracking_company || null,
+        tracking_url: f.tracking_url || (f.tracking_urls || [])[0] || null,
+        created_at: f.created_at,
+      })),
     ]
   );
+}
+
+// Resolve product images for line items via the Products API, cached in
+// crm_product_images. Fail-open: image resolution must never break the page.
+async function resolveLineItemImages(lineItems) {
+  const store = process.env.PUURE_SHOPIFY_STORE || process.env.SHOPIFY_STORE_DOMAIN;
+  const token = process.env.PUURE_SHOPIFY_TOKEN || process.env.SHOPIFY_ACCESS_TOKEN;
+  const apiVersion = process.env.SHOPIFY_API_VERSION || '2024-01';
+  const items = Array.isArray(lineItems) ? lineItems : [];
+  const productIds = [...new Set(items.map((li) => li.product_id).filter(Boolean))];
+  if (!productIds.length) return items;
+
+  const imageMap = {}; // product_id -> { image_src, variant_images }
+  try {
+    const cached = await pgQuery(
+      `SELECT product_id, image_src, variant_images FROM crm_product_images WHERE product_id = ANY($1)`,
+      [productIds]
+    );
+    for (const row of cached) imageMap[row.product_id] = row;
+
+    const missing = productIds.filter((id) => !imageMap[id]);
+    if (missing.length && store && token) {
+      for (const pid of missing.slice(0, 10)) {
+        try {
+          const resp = await fetch(
+            `https://${store}/admin/api/${apiVersion}/products/${pid}.json?fields=id,image,images,variants`,
+            { headers: { 'X-Shopify-Access-Token': token } }
+          );
+          if (!resp.ok) continue; // deleted product, permissions, etc.
+          const { product } = await resp.json();
+          const variantImages = {};
+          const imagesById = {};
+          for (const img of product.images || []) imagesById[img.id] = img.src;
+          for (const v of product.variants || []) {
+            if (v.image_id && imagesById[v.image_id]) variantImages[v.id] = imagesById[v.image_id];
+          }
+          const row = {
+            product_id: pid,
+            image_src: product.image?.src || null,
+            variant_images: variantImages,
+          };
+          imageMap[pid] = row;
+          await pgQuery(
+            `INSERT INTO crm_product_images (product_id, image_src, variant_images, updated_at)
+             VALUES ($1, $2, $3, NOW())
+             ON CONFLICT (product_id) DO UPDATE SET
+               image_src = EXCLUDED.image_src,
+               variant_images = EXCLUDED.variant_images,
+               updated_at = NOW()`,
+            [pid, row.image_src, row.variant_images]
+          );
+        } catch {
+          /* per-product fail-open */
+        }
+      }
+    }
+  } catch (err) {
+    console.error('[orders] image resolution failed (non-fatal):', err.message);
+    return items;
+  }
+
+  return items.map((li) => {
+    const entry = li.product_id ? imageMap[li.product_id] : null;
+    if (!entry) return li;
+    const vimgs =
+      typeof entry.variant_images === 'string'
+        ? JSON.parse(entry.variant_images)
+        : entry.variant_images || {};
+    return { ...li, image_url: vimgs[li.variant_id] || entry.image_src || null };
+  });
 }
 
 function extractUtms(order) {
@@ -542,6 +647,8 @@ router.get('/:id', async (req, res) => {
       ),
     ]);
     const row = order[0];
+    // Decorate line items with product images (cached; fail-open)
+    row.line_items = await resolveLineItemImages(row.line_items);
     const customerOrders = row.customer_email
       ? await pgQuery(
           `SELECT COUNT(*)::int AS n FROM crm_orders WHERE customer_email = $1`,

@@ -244,7 +244,7 @@ export default function OrdersPage() {
   const activeFilters = Object.entries(filters).filter(([, v]) => v);
 
   return (
-    <div className="space-y-5">
+    <div className="p-6 space-y-5">
       {/* Header */}
       <div className="flex items-start justify-between gap-4">
         <div>
@@ -292,10 +292,38 @@ export default function OrdersPage() {
       </div>
 
       {tab === 'subscriptions' ? (
-        <div className="bg-bg-card border border-border-default rounded-xl p-12 text-center text-text-muted text-sm">
-          No subscriptions yet. Recurring plans will appear here once subscription checkout is
-          live.
-        </div>
+        <>
+          <div className="flex bg-bg-card border border-border-default rounded-xl overflow-hidden">
+            {['Active subscriptions', 'MRR', 'Churn (30d)', 'Next 7 days charges'].map((label, i) => (
+              <div key={label} className={`flex-1 px-5 py-3.5 min-w-0 ${i > 0 ? 'border-l border-border-subtle' : ''}`}>
+                <div className="text-[11px] uppercase tracking-wider text-text-faint truncate">{label}</div>
+                <div className="mt-1 text-xl font-semibold text-text-primary">—</div>
+              </div>
+            ))}
+          </div>
+          <div className="bg-bg-card border border-border-default rounded-xl overflow-hidden">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-[11px] uppercase tracking-wider text-text-faint border-b border-border-subtle">
+                  <th className="text-left font-medium px-4 py-3">Subscription</th>
+                  <th className="text-left font-medium px-4 py-3">Customer</th>
+                  <th className="text-left font-medium px-4 py-3">Plan</th>
+                  <th className="text-right font-medium px-4 py-3">Amount</th>
+                  <th className="text-left font-medium px-4 py-3">Status</th>
+                  <th className="text-left font-medium px-4 py-3">Next charge</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td colSpan={6} className="px-4 py-16 text-center text-text-muted">
+                    No subscriptions yet. Recurring plans will appear here once subscription
+                    checkout is live.
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </>
       ) : (
         <>
           <KpiStrip stats={stats} />
