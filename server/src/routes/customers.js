@@ -38,6 +38,8 @@ async function createTables() {
   );
 }
 
+const escapeLike = (s) => String(s).replace(/[\\%_]/g, '\\$&');
+
 // Aggregation source: one row per customer_email. Identity fields come from
 // the most recent order (latest name/phone/address wins).
 const CUSTOMER_AGG = `
@@ -67,7 +69,7 @@ router.get('/', async (req, res) => {
     const params = [];
     let having = '';
     if (req.query.q) {
-      params.push(`%${req.query.q}%`);
+      params.push(`%${escapeLike(req.query.q)}%`);
       having = `HAVING o.customer_email ILIKE $1
         OR (COALESCE((ARRAY_AGG(o.customer_first_name ORDER BY o.created_at DESC))[1], '') || ' ' ||
             COALESCE((ARRAY_AGG(o.customer_last_name ORDER BY o.created_at DESC))[1], '')) ILIKE $1`;

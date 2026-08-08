@@ -52,6 +52,8 @@ async function createTables() {
   );
 }
 
+const escapeLike = (s) => String(s).replace(/[\\%_]/g, '\\$&');
+
 async function syncFromShopify() {
   const store = process.env.PUURE_SHOPIFY_STORE || process.env.SHOPIFY_STORE_DOMAIN;
   const token = process.env.PUURE_SHOPIFY_TOKEN || process.env.SHOPIFY_ACCESS_TOKEN;
@@ -147,7 +149,7 @@ router.get('/', async (req, res) => {
     const params = [];
     let where = `WHERE completed_at IS NULL`;
     if (req.query.q) {
-      params.push(`%${req.query.q}%`);
+      params.push(`%${escapeLike(req.query.q)}%`);
       where += ` AND (email ILIKE $1 OR (COALESCE(customer_first_name,'') || ' ' || COALESCE(customer_last_name,'')) ILIKE $1)`;
     }
     const total = await pgQuery(

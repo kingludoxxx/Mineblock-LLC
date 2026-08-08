@@ -349,6 +349,8 @@ function extractUtms(order) {
   return Object.keys(utm).length ? utm : null;
 }
 
+const escapeLike = (s) => String(s).replace(/[\\%_]/g, '\\$&');
+
 function buildFilters(query) {
   const where = [];
   const params = [];
@@ -364,7 +366,7 @@ function buildFilters(query) {
       order_number ILIKE $${i} OR customer_email ILIKE $${i}
       OR (COALESCE(customer_first_name,'') || ' ' || COALESCE(customer_last_name,'')) ILIKE $${i}
     )`);
-    params.push(`%${query.q}%`);
+    params.push(`%${escapeLike(query.q)}%`);
     i += 1;
   }
   if (query.payment) {

@@ -110,9 +110,44 @@ const isPlainObject = (v) =>
 
 // Blocks must be an array of {type: string, props: plain object}. Returns an
 // error string or null. Rejecting bad shapes here is what keeps the public
-// renderer from 500ing later.
+// renderer from 500ing later. Bounded (count/bytes/depth) and scanned for
+// prototype-pollution keys because this exact payload is what the renderer
+// will walk — an unbounded or poisoned blob written today is a render-time
+// DoS seeded at write time.
+const BLOCKS_MAX_COUNT = 500;
+const BLOCKS_MAX_BYTES = 2 * 1024 * 1024; // 2MB, same cap as escape hatches
+const BLOCKS_MAX_DEPTH = 20;
+const FORBIDDEN_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
+function scanValue(value, depth) {
+  if (depth > BLOCKS_MAX_DEPTH) return 'blocks nesting exceeds the depth limit';
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const err = scanValue(item, depth + 1);
+      if (err) return err;
+    }
+  } else if (value != null && typeof value === 'object') {
+    for (const key of Object.keys(value)) {
+      if (FORBIDDEN_KEYS.has(key)) return `blocks contain a forbidden key: ${key}`;
+      const err = scanValue(value[key], depth + 1);
+      if (err) return err;
+    }
+  }
+  return null;
+}
+
 function validateBlocks(blocks) {
   if (!Array.isArray(blocks)) return 'blocks must be an array';
+  if (blocks.length > BLOCKS_MAX_COUNT)
+    return `blocks cannot exceed ${BLOCKS_MAX_COUNT} entries`;
+  let serialized;
+  try {
+    serialized = JSON.stringify(blocks);
+  } catch {
+    return 'blocks must be serializable JSON';
+  }
+  if (Buffer.byteLength(serialized, 'utf8') > BLOCKS_MAX_BYTES)
+    return 'blocks exceed the 2MB limit';
   for (let i = 0; i < blocks.length; i++) {
     const b = blocks[i];
     if (!isPlainObject(b)) return `blocks[${i}] must be an object`;
@@ -121,7 +156,28 @@ function validateBlocks(blocks) {
     if (!isPlainObject(b.props))
       return `blocks[${i}].props must be a plain object`;
   }
-  return null;
+  return scanValue(blocks, 0);
+}
+
+// Escape LIKE metacharacters so ?q=% cannot act as a wildcard.
+const escapeLike = (s) => String(s).replace(/[\\%_]/g, '\\$&');
+
+// Exactly-one-home repair: if a funnel has live pages but no home (after an
+// archive or an un-home), promote the oldest live page. Fail-open caller-side.
+async function ensureHomeInvariant(funnelId) {
+  await pgQuery(
+    `UPDATE funnel_pages SET is_home = TRUE, updated_at = NOW()
+     WHERE id = (
+       SELECT id FROM funnel_pages
+       WHERE funnel_id = $1 AND archived = FALSE
+       ORDER BY created_at ASC LIMIT 1
+     )
+     AND NOT EXISTS (
+       SELECT 1 FROM funnel_pages
+       WHERE funnel_id = $1 AND archived = FALSE AND is_home = TRUE
+     )`,
+    [funnelId]
+  );
 }
 
 async function getFunnel(id) {
@@ -143,9 +199,15 @@ router.get('/', async (req, res) => {
     where.push(req.query.archived === 'true' ? `f.archived = TRUE` : `f.archived = FALSE`);
     if (req.query.q) {
       where.push(`(f.name ILIKE $${i} OR f.slug ILIKE $${i})`);
-      params.push(`%${req.query.q}%`);
+      params.push(`%${escapeLike(req.query.q)}%`);
       i += 1;
     }
+    const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 100, 1), 200);
+    const totalRows = await pgQuery(
+      `SELECT COUNT(*)::int AS n FROM funnels f WHERE ${where.join(' AND ')}`,
+      params
+    );
     const rows = await pgQuery(
       `SELECT f.*,
               COALESCE(p.n, 0)::int AS pages_count
@@ -155,10 +217,19 @@ router.get('/', async (req, res) => {
          FROM funnel_pages WHERE archived = FALSE GROUP BY funnel_id
        ) p ON p.funnel_id = f.id
        WHERE ${where.join(' AND ')}
-       ORDER BY f.updated_at DESC`,
-      params
+       ORDER BY f.updated_at DESC
+       LIMIT $${i} OFFSET $${i + 1}`,
+      [...params, limit, (page - 1) * limit]
     );
-    res.json({ success: true, data: { funnels: rows, total: rows.length } });
+    res.json({
+      success: true,
+      data: {
+        funnels: rows,
+        total: totalRows[0].n,
+        page,
+        pages: Math.max(Math.ceil(totalRows[0].n / limit), 1),
+      },
+    });
   } catch (err) {
     console.error('[funnels] list failed:', err);
     res.status(500).json({ error: 'Failed to load funnels' });
@@ -329,6 +400,9 @@ router.post('/:id/pages', async (req, res) => {
     await ensureTables();
     const funnel = await getFunnel(req.params.id);
     if (!funnel) return res.status(404).json({ error: 'Funnel not found' });
+    if (funnel.archived) {
+      return res.status(400).json({ error: 'Funnel is archived — restore it before adding pages' });
+    }
 
     const title = String(req.body?.title || '').trim();
     const slug = String(req.body?.slug || '').trim();
@@ -374,6 +448,11 @@ router.post('/:id/pages', async (req, res) => {
 router.patch('/:id/pages/:pageId', async (req, res) => {
   try {
     await ensureTables();
+    const funnel = await getFunnel(req.params.id);
+    if (!funnel) return res.status(404).json({ error: 'Funnel not found' });
+    if (funnel.archived) {
+      return res.status(400).json({ error: 'Funnel is archived — restore it before editing pages' });
+    }
     const pageRows = await pgQuery(
       `SELECT * FROM funnel_pages WHERE id = $1 AND funnel_id = $2`,
       [req.params.pageId, req.params.id]
@@ -476,6 +555,11 @@ router.patch('/:id/pages/:pageId', async (req, res) => {
         [req.params.id, req.params.pageId]
       );
     }
+    // Un-homing the current home must not orphan the funnel: promote the
+    // oldest live sibling so exactly-one-home survives (review finding #1).
+    if (body.is_home === false) {
+      await ensureHomeInvariant(req.params.id);
+    }
 
     const updated = await pgQuery(
       `SELECT * FROM funnel_pages WHERE id = $1`,
@@ -505,6 +589,21 @@ router.post('/:id/pages/:pageId/archive', async (req, res) => {
       [req.params.pageId, req.params.id, archived]
     );
     if (!rows.length) return res.status(404).json({ error: 'Page not found' });
+    if (archived) {
+      // Review findings #1/#4: archiving the home page must promote a live
+      // sibling, and a default_page_id pointing at the archived page must not
+      // dangle. Both are repair operations — fail-open, never block the archive.
+      try {
+        await ensureHomeInvariant(req.params.id);
+        await pgQuery(
+          `UPDATE funnels SET default_page_id = NULL, updated_at = NOW()
+           WHERE id = $1 AND default_page_id = $2`,
+          [req.params.id, req.params.pageId]
+        );
+      } catch (repairErr) {
+        console.error('[funnels] post-archive repair failed:', repairErr.message);
+      }
+    }
     res.json({ success: true, data: rows[0] });
   } catch (err) {
     if (err?.code === UNIQUE_VIOLATION) {
