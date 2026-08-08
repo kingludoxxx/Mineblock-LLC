@@ -1907,3 +1907,12 @@ button wired to the same session purchase_url in custom_js. Savings row only
 renders if the server session ever carries a discount amount (no fabricated
 numbers). Trust badges are styled text chips, not logo artwork.
 STATUS: COMPLETE
+
+---
+TIMESTAMP: 2026-08-09 01:55
+TASK: Page Builder — drag-and-drop block editor for funnel pages
+BUILT: New route /app/funnels/:id/pages/:pageId/builder (PageGate funnels:access). Client-only slice: block registry mapped 1:1 to funnelRender.js renderable types, palette (Basic/Layout/Blocks incl. money blocks with wiring guardrails), outline with drag-reorder/delete, canvas with light buyer theme, structural previews (operator HTML sandboxed in sandbox="" iframes), quick-insert, inline text edit, schema-driven props panel, page settings, Code tab (custom_css/custom_js + read-only blocks JSON), undo/redo history, debounced serialized autosave via existing PATCH pages API, device width toggles, Preview via existing preview-url, Re-publish (status→published). One additive edit to client/src/App.jsx (import + route).
+TESTED: Own stack (puure_builder DB on embedded PG :5433, API :4025 FUNNEL_PUBLIC_ENABLED=1, Vite :5185). vite build green. Browser E2E: login, builder open on seeded checkout template (12 blocks), block select, money wiring panel, heading insert + prop edit autosaved and verified via GET + public /f/builder-demo; XSS text round-tripped INERT (server-escaped on /f, text-node in admin); outline drag-reorder persisted; palette drag-drop insert persisted; quick-insert persisted; delete + undo restore persisted; redo persisted; invalid slug → server 400 surfaced inline with Retry, editor not wedged, recovery to Saved; custom_css edit persisted and renders on /f; device toggle = exact 375px surface; Re-publish PATCHed status (updated_at verified).
+OUTPUT: All checks green. Found+fixed by execution: undo/redo computed inside React state updater never scheduled the autosave (UI reverted, server kept stale state) — rewrote useHistory to synchronous ref-based stacks; re-verified undo AND redo persist.
+DECISIONS: Renderer-placeholder types (stripe/nmi/express checkout, product, order_bump, shipping_method, form, quiz_embed, checkout_template) OMITTED from palette rather than grayed out — editor must not insert unrenderable types. "Checkout Template" palette item omitted (seed only exists at page-create time server-side). AI Developer / AI-generate = disabled stubs. Complex list props (faq items, rows, line_items) edited as validated JSON sub-fields.
+STATUS: COMPLETE
