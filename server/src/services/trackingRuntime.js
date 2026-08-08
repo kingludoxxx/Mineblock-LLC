@@ -29,10 +29,17 @@ function jsonForScript(value) {
 const CONSENT_VALUES = ['granted', 'denied'];
 
 // The default consent posture when no stored signal and no CMP has spoken.
-// Read at REQUEST time (rollback = unset the var; DECISIONS #1). Default
-// 'granted' — this deployment has no geo edge, so an operator serving EEA
-// traffic wires a CMP that calls window.__fosConsent.set(...). Set
-// TRACKING_DEFAULT_CONSENT=denied to make the whole surface deny-by-default.
+// Read at REQUEST time (rollback = unset the var; DECISIONS #1).
+//
+// ⚠ GO-LIVE COMPLIANCE REQUIREMENT: for consent-regulated traffic (EEA/UK,
+// or any GDPR-style jurisdiction) TRACKING_DEFAULT_CONSENT MUST be set to
+// 'denied'. The default 'granted' fires the identity pipeline immediately on
+// page load and therefore RACES a CMP: identity is captured before the banner
+// can answer, which is a consent violation in-region. 'denied' is the
+// reference posture (edge_consent.py defaults deny in-region); with it set,
+// nothing identifying runs until the CMP calls
+// window.__fosConsent.set('granted'). 'granted' is only acceptable for
+// deployments that serve no consent-regulated traffic.
 function defaultConsent() {
   const v = String(process.env.TRACKING_DEFAULT_CONSENT || 'granted').trim().toLowerCase();
   return CONSENT_VALUES.includes(v) ? v : 'granted';

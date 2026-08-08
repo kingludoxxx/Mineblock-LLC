@@ -210,17 +210,35 @@ export async function stampConversion(sessionId, vids, clickIds = {}, { funnelId
     const scopeSql = scope.length ? ` AND ${scope.join(' AND ')}` : '';
 
     // 1) EXACT click-id match from the captured vault (last-click revenue).
+    // Review fix #2: WITHOUT a vid scope, the same click_id can exist under
+    // multiple vids (shared/forwarded ad links, cookie resets) — an unbounded
+    // UPDATE would stamp them ALL and double-count one order across visitors
+    // (the exact mass-mark DECISIONS #10 forbids). And no-vid IS the default
+    // production path today. So: with a vid, match all of THAT visitor's
+    // vault rows (reference update_many semantics); without one, stamp at
+    // most ONE row — the single most recent matching click.
     if (vals.length) {
       params.push(vals);
       const valIdx = params.length;
-      const rows = await pgQuery(
-        `UPDATE lb_clicks
-         SET converted = TRUE, session_id = $1, converted_at = NOW()
-         WHERE converted = FALSE AND click_id = ANY($${valIdx})${scopeSql}
-           ${vidClause ? `AND ${vidClause}` : ''}
-         RETURNING id`,
-        params
-      );
+      const where = `converted = FALSE AND click_id = ANY($${valIdx})${scopeSql}`;
+      const rows = vidClause
+        ? await pgQuery(
+          `UPDATE lb_clicks
+           SET converted = TRUE, session_id = $1, converted_at = NOW()
+           WHERE ${where} AND ${vidClause}
+           RETURNING id`,
+          params
+        )
+        : await pgQuery(
+          `UPDATE lb_clicks
+           SET converted = TRUE, session_id = $1, converted_at = NOW()
+           WHERE id = (
+             SELECT id FROM lb_clicks WHERE ${where}
+             ORDER BY ts DESC LIMIT 1
+           )
+           RETURNING id`,
+          params
+        );
       if (rows.length) return { stamped: rows.length, mode: 'exact' };
     }
 

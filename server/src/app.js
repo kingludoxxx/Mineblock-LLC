@@ -64,6 +64,14 @@ app.use('/api/v1/shopify-webhook', express.json({
 // is never set and every signed webhook fails closed (silent no-settle).
 app.use('/api/v1/gateway-webhooks', gatewayWebhookRoutes);
 
+// TRACKING-LANE HOOK: public tracking intake — unauthenticated by necessity
+// (the visitor is not a user), defended inside the router (per-IP limiter,
+// origin allow-list, server-side consent gate, fail-open). Mounted BEFORE the
+// global 50mb JSON parser so the router's OWN 256kb body cap actually applies
+// (behind the global parser it would be a no-op), and before the apiLimiter
+// like the other public mounts.
+app.use('/api/v1/track', trackingPublicRoutes);
+
 // Body parsing
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
@@ -83,12 +91,6 @@ app.use('/api/v1/shopify-webhook', shopifyWebhookRoutes);
 // server-side re-pricing). After the global JSON parser; before the admin
 // /api/v1/checkout mount so /checkout/public is not shadowed by the authed router.
 app.use('/api/v1/checkout/public', checkoutPublicRoutes);
-
-// Public tracking intake — unauthenticated by necessity (the visitor is not a
-// user), defended inside the router (per-IP limiter, origin allow-list,
-// server-side consent gate, fail-open). Before the global apiLimiter, like the
-// other public mounts.
-app.use('/api/v1/track', trackingPublicRoutes);
 
 // Public funnel pages — unauthenticated, gated by FUNNEL_PUBLIC_ENABLED at
 // request time inside the router (before API routes, outside auth).

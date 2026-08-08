@@ -16,10 +16,26 @@ import { stampConversion, fbclidFromFbc } from './trackingClicks.js';
 
 // The relay's fixed allow-list. A forged beacon must not let a stranger drive
 // arbitrary conversion-API calls on the ad account (TRACKING.md §1).
+//
+// SECURITY (review fix #1a): 'Purchase' is DELIBERATELY ABSENT. Money events
+// are owned exclusively by the deterministic server path
+// (firePurchaseConversion, event_id = pur_<session_id>, fired from the
+// settlement webhook). A client-relayable Purchase would let anyone with a
+// funnel_id inject forged server-trusted Purchase events (arbitrary
+// value/email) into the operator's CAPI. The browser pixel may still fire
+// its own native Purchase with the derived pur_<session> id — the shared
+// lb_tracking_sent claim dedupes it against the webhook — but the SERVER
+// relay never mints one from a beacon.
 export const ALLOWED_CLIENT_EVENTS = new Set([
   'PageView', 'ViewContent', 'AddToCart', 'InitiateCheckout',
-  'AddPaymentInfo', 'Lead', 'CompleteRegistration', 'Purchase', 'UpsellView',
+  'AddPaymentInfo', 'Lead', 'CompleteRegistration', 'UpsellView',
 ]);
+
+// SECURITY (review fix #1b): every client-relayed event_id is namespaced with
+// this prefix so a beacon can NEVER collide with — and therefore never
+// pre-claim/suppress — a server-derived id like pur_<session_id> in the
+// shared lb_tracking_sent (pixel_id, event_id) ledger.
+export const CLIENT_EVENT_ID_PREFIX = 'cl_';
 
 // Server-side pixels for a funnel = enabled pixels whose mode relays server
 // events ('s2s' or 'hybrid'). 'native' pixels fire browser-only.
@@ -107,23 +123,34 @@ export async function firePurchaseConversion(sessionId, { source = 'webhook' } =
 // against the allow-list; the event_id echoes the browser's so native+relay
 // dedupe. Consent-denied beacons legitimately carry no identity → the delivery
 // layer records them as skipped 'no_identity' WITHOUT tripping the breaker.
+//
+// SECURITY (review fix #1b): the client-supplied event_id is ALWAYS namespaced
+// under CLIENT_EVENT_ID_PREFIX before it reaches the lb_tracking_sent ledger.
+// A beacon claiming event_id 'pur_<session>' is therefore stored as
+// 'cl_pur_<session>' and can never pre-claim (suppress) the real webhook
+// Purchase. Browser-native pixels that need the pur_ id for platform-side
+// dedupe fire it client-side; the SERVER ledger namespace stays partitioned.
 export async function relayBrowserEvent({ funnelId, eventName, eventId, identity = {}, customData = {}, consent = 'granted', eventSourceUrl = '' }) {
   if (!ALLOWED_CLIENT_EVENTS.has(eventName)) return { ok: false, reason: 'event_not_allowed' };
   try {
     await ensureTrackingTables();
+    const rawId = String(eventId || `${eventName}_${Date.now()}`);
+    const namespacedId = rawId.startsWith(CLIENT_EVENT_ID_PREFIX)
+      ? rawId
+      : `${CLIENT_EVENT_ID_PREFIX}${rawId}`;
     const { user_data, idk } = buildUserData(identity);
     const pixels = await serverPixels(funnelId);
     if (!pixels.length) return { ok: true, fired: 0, reason: 'no_server_pixel', idk };
     const results = [];
     for (const px of pixels) {
       const r = await deliverToPixel({
-        funnelId, pixel: px, eventName, eventId: eventId || `${eventName}_${Date.now()}`,
+        funnelId, pixel: px, eventName, eventId: namespacedId,
         userData: user_data, idk, customData,
         source: 'relay', eventSourceUrl,
       });
       results.push(r);
     }
-    return { ok: true, fired: results.length, idk, consent };
+    return { ok: true, fired: results.length, idk, consent, event_id: namespacedId };
   } catch (err) {
     console.error('[tracking] relayBrowserEvent failed (fail-open):', err.message);
     return { ok: false, reason: 'error' };
