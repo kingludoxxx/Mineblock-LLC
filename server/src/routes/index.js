@@ -24,6 +24,7 @@ import customersRoutes from './customers.js';
 import abandonedRoutes from './abandonedCheckouts.js';
 import checkoutAdminRoutes from './checkoutAdmin.js';
 import funnelsRoutes from './funnels.js';
+import trackingAdminRoutes from './trackingAdmin.js';
 
 const mountRoutes = (app) => {
   app.use('/api/v1/users', userRoutes);
@@ -52,6 +53,7 @@ const mountRoutes = (app) => {
   app.use('/api/v1/abandoned', abandonedRoutes);
   app.use('/api/v1/funnels', funnelsRoutes);
   app.use('/api/v1/checkout', checkoutAdminRoutes); // authed CRM surface (public /checkout/public mounted earlier in app.js)
+  app.use('/api/v1/tracking-admin', trackingAdminRoutes); // authed attribution read surface (public /track mounted earlier in app.js)
 };
 
 export default mountRoutes;

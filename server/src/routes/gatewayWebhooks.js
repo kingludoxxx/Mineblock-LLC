@@ -23,6 +23,12 @@ import {
 import * as stripeGw from '../services/gateways/stripe.js';
 import * as whopGw from '../services/gateways/whop.js';
 import { startMoneySweeps } from '../services/moneySweeps.js';
+// TRACKING-LANE HOOK (feat/tracking-attribution): fire the deterministic
+// Purchase conversion (event_id = pur_<session_id>) on a base settle. Idempotent
+// via lb_tracking_sent (pixel_id, event_id) UNIQUE and FULLY fire-and-forget —
+// a tracking failure can never block or fail settlement (DECISIONS #16). The
+// two call sites below are the only tracking-lane edits in this file.
+import { firePurchaseConversion } from '../services/trackingService.js';
 
 const router = Router();
 
@@ -331,6 +337,8 @@ router.post('/stripe', async (req, res) => {
     if (eventId) {
       await markProcessed('stripe', eventId, result.settled ? 'settled' : 'already_settled');
     }
+    // TRACKING-LANE HOOK: fire Purchase (fire-and-forget, idempotent).
+    if (result.ok) firePurchaseConversion(session.id).catch(() => {});
     return res.json({ success: true, settled: result.settled, already: result.already });
   } catch (err) {
     console.error('[gatewayWebhooks] stripe failed:', err.message);
@@ -578,6 +586,8 @@ router.post('/whop', async (req, res) => {
       }
       return res.status(500).json({ success: false, error: { code: result.error } });
     }
+    // TRACKING-LANE HOOK: fire Purchase (fire-and-forget, idempotent).
+    if (result.ok) firePurchaseConversion(session.id).catch(() => {});
     return res.json({ success: true, settled: result.settled, already: result.already });
   } catch (err) {
     console.error('[gatewayWebhooks] whop failed:', err.message);

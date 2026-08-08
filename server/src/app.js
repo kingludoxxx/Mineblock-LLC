@@ -26,6 +26,7 @@ import brandSpyRouter from './routes/brandSpy.js';
 import funnelPublicRoutes from './routes/funnelPublic.js';
 import gatewayWebhookRoutes from './routes/gatewayWebhooks.js';
 import checkoutPublicRoutes from './routes/checkoutPublic.js';
+import trackingPublicRoutes from './routes/trackingPublic.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -62,6 +63,14 @@ app.use('/api/v1/shopify-webhook', express.json({
 // req.rawBody for signature verification. Behind the global parser, rawBody
 // is never set and every signed webhook fails closed (silent no-settle).
 app.use('/api/v1/gateway-webhooks', gatewayWebhookRoutes);
+
+// TRACKING-LANE HOOK: public tracking intake — unauthenticated by necessity
+// (the visitor is not a user), defended inside the router (per-IP limiter,
+// origin allow-list, server-side consent gate, fail-open). Mounted BEFORE the
+// global 50mb JSON parser so the router's OWN 256kb body cap actually applies
+// (behind the global parser it would be a no-op), and before the apiLimiter
+// like the other public mounts.
+app.use('/api/v1/track', trackingPublicRoutes);
 
 // Body parsing
 app.use(express.json({ limit: '50mb' }));

@@ -27,6 +27,12 @@
 //    loader mounts the embed. See the whop_checkout case + checkoutRuntime-
 //    Script below for the full contract + posture.
 
+// TRACKING-LANE HOOK (feat/tracking-attribution): the consent-first tracking
+// runtime is emitted as ONE <head> script by trackingHeadScript(). This is the
+// single injection point the tracking lane touches in this file — see its use
+// in renderPageHtml() below. No other edits here belong to the tracking lane.
+import { trackingHeadScript } from './trackingRuntime.js';
+
 const isPlainObject = (v) =>
   v != null && typeof v === 'object' && !Array.isArray(v);
 
@@ -976,6 +982,7 @@ export function renderPageHtml(page, funnel, pagesById) {
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
+${trackingHeadScript({ funnel_id: (funnel || {}).id ?? null, page_id: (page || {}).id ?? null })}
 <title>${esc(title)}</title>
 <meta name="description" content="${esc(desc)}" />
 <meta name="robots" content="${esc(robots)}" />
