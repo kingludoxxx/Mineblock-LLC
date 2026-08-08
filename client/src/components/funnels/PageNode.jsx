@@ -100,6 +100,12 @@ function PageNodeInner({ data, selected }) {
         </div>
         <div className="text-sm font-medium text-text-primary truncate">{page.title || 'Untitled'}</div>
         <div className="text-[11px] text-text-faint font-mono truncate">{page.slug}</div>
+        {/* F7: the page's public URL */}
+        {data.funnelSlug && (
+          <div className="text-[10px] text-text-faint/70 font-mono truncate" title={`/f/${data.funnelSlug}${page.slug === '/' ? '' : page.slug}`}>
+            /f/{data.funnelSlug}{page.slug === '/' ? '' : page.slug}
+          </div>
+        )}
 
         {/* Placeholder stat chips */}
         <div className="mt-2 flex items-center gap-1.5">

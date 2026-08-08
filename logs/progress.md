@@ -1669,3 +1669,23 @@ than empty-props degrade (reference behavior); form + quiz_embed included in
 the placeholder set per lane brief.
 STATUS: COMPLETE
 ---
+
+---
+TIMESTAMP: 2026-08-08 22:40
+TASK: Funnel Builder slice 3 (canvas) — adversarial review fixes
+BUILT: Applied all confirmed findings from the slice-3 break-it review (verdict:
+sound + secure; all injection/pollution/SQLi/cap attacks correctly defended).
+Fixes: F1 flow endpoint rejects archived funnel (400); F2 reject self-edges;
+F3 dedupe identical edges; F4 archiving a page prunes its node+incident edges
+from flow_layout (no dangling refs / save-wedge); F5 empty flow body -> 400
+(no silent wipe); F6 breadcrumb Lab->Production; F7 node cards show public
+/f/<slug><path> URL; new-page placement offset to stop stacking; F9 deleted
+dead files (FunnelDetailPage.jsx, lab/Funnels.jsx, lab/FunnelsPage.jsx).
+TESTED: 8/8 server regression checks green (F1-F5 + valid-flow + orders
+regression); client rebuilt clean; browser-verified breadcrumb + per-node
+public URLs + intact canvas (main/fallback edges, palette, minimap, Puure brand).
+OUTPUT: Canvas hardened; matches friend's reference tool.
+DECISIONS: F8 (funnels-LIST filter chips) and F11 (Storefront/Portal render as
+GENERIC node header — no such type in enum) DEFERRED as documented polish, not
+canvas-blocking. F10 numeric coercion left lenient (finite-after-coerce is safe).
+STATUS: COMPLETE. Slice 4 (flow routing + redirects) next.

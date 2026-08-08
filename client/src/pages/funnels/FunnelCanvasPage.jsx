@@ -269,8 +269,12 @@ function CanvasInner() {
   // ---- Page CRUD from the canvas ----
   const centerPosition = useCallback(() => {
     const rect = wrapperRef.current?.getBoundingClientRect();
-    if (!rect) return { x: 200, y: 200 };
-    return rf.screenToFlowPosition({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 });
+    const base = rect
+      ? rf.screenToFlowPosition({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 })
+      : { x: 200, y: 200 };
+    // Offset so consecutive "add page" clicks don't stack on the exact same spot
+    const n = rf.getNodes().length;
+    return { x: base.x + (n % 5) * 36, y: base.y + (n % 5) * 36 };
   }, [rf]);
 
   const addPage = useCallback(
@@ -368,6 +372,7 @@ function CanvasInner() {
 
   // Wire the stable action handlers into node.data once.
   actionsRef.current = {
+    funnelSlug: funnel?.slug, // F7: node cards show the page's public URL
     onEdit: editPage,
     onCode: editPage,
     onSettings: editPage,
@@ -379,7 +384,7 @@ function CanvasInner() {
   useEffect(() => {
     setNodes((nds) => nds.map((n) => ({ ...n, data: { ...n.data, ...actionsRef.current } })));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editPage, previewPage, duplicatePage, deletePage, setNodes]);
+  }, [editPage, previewPage, duplicatePage, deletePage, setNodes, funnel?.slug]);
 
   // ---- Publish + rename ----
   const publish = useCallback(async () => {

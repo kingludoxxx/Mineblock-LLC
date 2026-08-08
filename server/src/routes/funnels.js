@@ -432,6 +432,7 @@ function validateFlow(flow, validPageIds) {
   }
 
   const cleanEdges = [];
+  const seenEdges = new Set();
   for (let i = 0; i < edges.length; i++) {
     const e = edges[i];
     if (!isPlainObject(e)) return { error: `flow_layout.edges[${i}] must be an object` };
@@ -441,9 +442,14 @@ function validateFlow(flow, validPageIds) {
       return { error: `flow_layout.edges[${i}].source does not reference a page of this funnel` };
     if (!validPageIds.has(target))
       return { error: `flow_layout.edges[${i}].target does not reference a page of this funnel` };
+    if (source === target)
+      return { error: `flow_layout.edges[${i}] cannot connect a page to itself` }; // F2
     const kind = e.kind === undefined ? 'main' : String(e.kind);
     if (!EDGE_KINDS.has(kind))
       return { error: `flow_layout.edges[${i}].kind must be one of: ${[...EDGE_KINDS].join(', ')}` };
+    const dedupeKey = `${source}|${target}|${kind}`; // F3: drop exact duplicates
+    if (seenEdges.has(dedupeKey)) continue;
+    seenEdges.add(dedupeKey);
     const edge = { source, target, kind };
     if (e.id !== undefined) edge.id = String(e.id).slice(0, 128);
     cleanEdges.push(edge);
@@ -457,6 +463,14 @@ router.patch('/:id/flow', async (req, res) => {
     await ensureTables();
     const funnel = await getFunnel(req.params.id);
     if (!funnel) return res.status(404).json({ error: 'Funnel not found' });
+    if (funnel.archived) {
+      // F1: consistent with the pages endpoints — no writes to a trashed funnel
+      return res.status(400).json({ error: 'Funnel is archived — restore it before editing the flow' });
+    }
+    // F5: an empty body must not silently wipe the layout
+    if (req.body?.nodes === undefined && req.body?.edges === undefined) {
+      return res.status(400).json({ error: 'flow_layout requires nodes and/or edges' });
+    }
 
     const pages = await pgQuery(
       `SELECT id FROM funnel_pages WHERE funnel_id = $1 AND archived = FALSE`,
@@ -737,6 +751,22 @@ router.post('/:id/pages/:pageId/archive', async (req, res) => {
            WHERE id = $1 AND default_page_id = $2`,
           [req.params.id, req.params.pageId]
         );
+        // F4: prune the archived page's node + any incident edges from
+        // flow_layout so the canvas never carries a dangling reference (which
+        // would otherwise wedge the next autosave at "Save failed").
+        const f = await pgQuery(`SELECT flow_layout FROM funnels WHERE id = $1`, [req.params.id]);
+        const fl = f[0]?.flow_layout;
+        if (fl && (Array.isArray(fl.nodes) || Array.isArray(fl.edges))) {
+          const pid = req.params.pageId;
+          const pruned = {
+            nodes: (fl.nodes || []).filter((n) => n.id !== pid),
+            edges: (fl.edges || []).filter((e) => e.source !== pid && e.target !== pid),
+          };
+          await pgQuery(
+            `UPDATE funnels SET flow_layout = $2, updated_at = NOW() WHERE id = $1`,
+            [req.params.id, pruned]
+          );
+        }
       } catch (repairErr) {
         console.error('[funnels] post-archive repair failed:', repairErr.message);
       }

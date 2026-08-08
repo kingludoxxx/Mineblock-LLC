@@ -62,7 +62,7 @@ const sectionLabels = {
   mechanisms: 'Lab',
   offers: 'Lab',
   products: 'Lab',
-  funnels: 'Lab',
+  funnels: 'Production',
   'magic-ads': 'Production',
   images: 'Production',
   video: 'Production',
