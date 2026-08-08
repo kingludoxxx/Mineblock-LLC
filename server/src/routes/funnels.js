@@ -386,6 +386,98 @@ router.post('/:id/publish', async (req, res) => {
   }
 });
 
+// PATCH /api/v1/funnels/:id/flow — persists the canvas layout into
+// funnels.flow_layout. Shape: { nodes: [{id, x, y}], edges: [{source, target,
+// kind}] }. Every node id and every edge endpoint MUST reference a live
+// (non-archived) page of THIS funnel — an unknown id is rejected 400 so the
+// canvas can never persist a dangling reference. Sizes are capped because this
+// blob is read back and walked by the canvas on every open. Coordinates are
+// coerced to finite numbers (NaN/Infinity rejected) — a poisoned x/y would
+// otherwise crash React Flow at render time.
+const FLOW_MAX_NODES = 1000;
+const FLOW_MAX_EDGES = 2000;
+const EDGE_KINDS = new Set(['main', 'fallback']);
+
+function validateFlow(flow, validPageIds) {
+  if (!isPlainObject(flow)) return { error: 'flow_layout must be an object' };
+  const rawNodes = flow.nodes;
+  const rawEdges = flow.edges;
+  if (rawNodes !== undefined && !Array.isArray(rawNodes))
+    return { error: 'flow_layout.nodes must be an array' };
+  if (rawEdges !== undefined && !Array.isArray(rawEdges))
+    return { error: 'flow_layout.edges must be an array' };
+  const nodes = rawNodes || [];
+  const edges = rawEdges || [];
+  if (nodes.length > FLOW_MAX_NODES)
+    return { error: `flow_layout.nodes cannot exceed ${FLOW_MAX_NODES} entries` };
+  if (edges.length > FLOW_MAX_EDGES)
+    return { error: `flow_layout.edges cannot exceed ${FLOW_MAX_EDGES} entries` };
+
+  const cleanNodes = [];
+  const seenNodeIds = new Set();
+  for (let i = 0; i < nodes.length; i++) {
+    const n = nodes[i];
+    if (!isPlainObject(n)) return { error: `flow_layout.nodes[${i}] must be an object` };
+    const id = String(n.id);
+    if (!validPageIds.has(id))
+      return { error: `flow_layout.nodes[${i}].id does not reference a page of this funnel` };
+    if (seenNodeIds.has(id))
+      return { error: `flow_layout.nodes[${i}].id is duplicated` };
+    const x = Number(n.x);
+    const y = Number(n.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y))
+      return { error: `flow_layout.nodes[${i}] x/y must be finite numbers` };
+    seenNodeIds.add(id);
+    cleanNodes.push({ id, x, y });
+  }
+
+  const cleanEdges = [];
+  for (let i = 0; i < edges.length; i++) {
+    const e = edges[i];
+    if (!isPlainObject(e)) return { error: `flow_layout.edges[${i}] must be an object` };
+    const source = String(e.source);
+    const target = String(e.target);
+    if (!validPageIds.has(source))
+      return { error: `flow_layout.edges[${i}].source does not reference a page of this funnel` };
+    if (!validPageIds.has(target))
+      return { error: `flow_layout.edges[${i}].target does not reference a page of this funnel` };
+    const kind = e.kind === undefined ? 'main' : String(e.kind);
+    if (!EDGE_KINDS.has(kind))
+      return { error: `flow_layout.edges[${i}].kind must be one of: ${[...EDGE_KINDS].join(', ')}` };
+    const edge = { source, target, kind };
+    if (e.id !== undefined) edge.id = String(e.id).slice(0, 128);
+    cleanEdges.push(edge);
+  }
+
+  return { value: { nodes: cleanNodes, edges: cleanEdges } };
+}
+
+router.patch('/:id/flow', async (req, res) => {
+  try {
+    await ensureTables();
+    const funnel = await getFunnel(req.params.id);
+    if (!funnel) return res.status(404).json({ error: 'Funnel not found' });
+
+    const pages = await pgQuery(
+      `SELECT id FROM funnel_pages WHERE funnel_id = $1 AND archived = FALSE`,
+      [req.params.id]
+    );
+    const validPageIds = new Set(pages.map((p) => p.id));
+
+    const { error, value } = validateFlow(req.body || {}, validPageIds);
+    if (error) return res.status(400).json({ error });
+
+    const rows = await pgQuery(
+      `UPDATE funnels SET flow_layout = $2, updated_at = NOW() WHERE id = $1 RETURNING *`,
+      [req.params.id, value] // raw object — postgres.js serializes JSONB
+    );
+    res.json({ success: true, data: rows[0] });
+  } catch (err) {
+    console.error('[funnels] flow update failed:', err);
+    res.status(500).json({ error: 'Failed to save flow layout' });
+  }
+});
+
 // POST /api/v1/funnels/:id/archive — { archived: true|false }. Archive is the
 // only "delete" — never hard-delete. Archiving frees the slug (partial index).
 router.post('/:id/archive', async (req, res) => {
