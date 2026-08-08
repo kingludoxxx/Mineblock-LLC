@@ -16,10 +16,16 @@
 //    this by adding a sanitizer.
 //  • User TEXT in structured blocks (heading text, list items, table cells,
 //    FAQ q/a, ranking names…) is HTML-escaped.
-//  • Commerce/quiz blocks (checkout mounts, product, order bump/summary,
-//    shipping, form, quiz_embed) are NOT ported in this slice — they render
-//    an inert, clearly-labelled placeholder so pages containing them still
-//    render.
+//  • Commerce/quiz blocks (product, order bump, shipping, form, quiz_embed,
+//    and the other gateway checkouts — stripe/nmi/express) are NOT ported yet —
+//    they render an inert, clearly-labelled placeholder so pages containing
+//    them still render.
+//  • CHECKOUT-JOIN slice: `whop_checkout` + `order_summary` are LIVE. They
+//    render a real, functional Whop embedded checkout that drives the already-
+//    built public money path (routes/checkoutPublic.js): create-session
+//    (server re-prices) → whop/create-session (embed config) → js.whop.com
+//    loader mounts the embed. See the whop_checkout case + checkoutRuntime-
+//    Script below for the full contract + posture.
 
 const isPlainObject = (v) =>
   v != null && typeof v === 'object' && !Array.isArray(v);
@@ -72,19 +78,60 @@ const toInt = (v, fallback) => {
 };
 
 // Block types deferred to later slices — placeholder, never a 500.
+// NOTE: `whop_checkout` and `order_summary` are NOT here — they are LIVE
+// (see the switch below). The other gateway checkouts stay placeholders this
+// pass (they need their own gateway-specific mount; this slice ships whop end
+// to end, which is the gateway the money path is wired for).
 const PLACEHOLDER_TYPES = new Set([
-  'whop_checkout',
   'stripe_checkout',
   'nmi_checkout',
   'express_checkout',
   'product',
   'order_bump',
-  'order_summary',
   'checkout_template',
   'shipping_method',
   'form',
   'quiz_embed',
 ]);
+
+// Commerce block types that require the checkout runtime + page context
+// (funnel_id / page_id) to be emitted into the document. Presence of any of
+// these on the page turns on checkoutRuntimeScript(); a page without them is
+// byte-for-byte unchanged from before this slice.
+const COMMERCE_RUNTIME_TYPES = new Set(['whop_checkout', 'order_summary']);
+
+// ---------------------------------------------------------------------------
+// whop_checkout block config (operator-authored, set as block.props on the
+// canvas page editor — no new UI needed; it accepts blocks JSON directly).
+//
+//   props.variant_id : "51234567890"    (a Shopify variant id — numeric id or
+//                                         gid://…/ProductVariant/<id>)
+//   props.quantity   : 1                 (optional, default 1, clamped >= 1)
+//   — OR, for a multi-line cart —
+//   props.line_items : [ { variant_id, quantity }, ... ]
+//   props.button_text: "Complete order" (optional; a fallback link label — the
+//                                         Whop embed renders its own pay button)
+//
+// CRITICAL: the block config carries NO price. Prices are resolved SERVER-SIDE
+// by create-session against Shopify; the page never sends, and cannot
+// influence, an amount. A `price` on props is IGNORED (never emitted).
+// ---------------------------------------------------------------------------
+function readCheckoutLineItems(p) {
+  const out = [];
+  if (Array.isArray(p.line_items)) {
+    for (const li of p.line_items) {
+      if (!isPlainObject(li)) continue;
+      const vid = li.variant_id != null ? String(li.variant_id).trim() : '';
+      if (!vid) continue;
+      out.push({ variant_id: vid, quantity: Math.max(1, toInt(li.quantity, 1)) });
+    }
+  }
+  if (!out.length) {
+    const vid = p.variant_id != null ? String(p.variant_id).trim() : '';
+    if (vid) out.push({ variant_id: vid, quantity: Math.max(1, toInt(p.quantity, 1)) });
+  }
+  return out;
+}
 
 // ---------------------------------------------------------------------------
 // Per-block renderers (port of _render_block_inner)
@@ -119,6 +166,50 @@ function renderBlockInner(block) {
       const css = String(p.css || '').trim();
       const style = css ? `<style>${css}</style>` : '';
       return `<div class='lb-customhtml'>${style}${html}</div>`;
+    }
+    case 'whop_checkout': {
+      // Real, functional Whop embedded checkout mount. Emits ONLY structure +
+      // a JSON config of {variant_id, quantity} line items — the driving
+      // runtime (checkoutRuntimeScript, emitted once at page level) does the
+      // work: create-session (server re-prices) → whop/create-session (embed
+      // config, returns a ch_… session id) → the official js.whop.com loader
+      // mounts the embed on [data-fos-whop-mount] via data-whop-checkout-
+      // session. The Whop embed renders its OWN pay button; the fallback <a>
+      // (populated with the session's purchase_url) is the graceful degrade if
+      // the embed script can't load. The config carries NO price.
+      const lineItems = readCheckoutLineItems(p);
+      // jsonForScript() escapes '<' so a variant id containing '</script>' can
+      // never break out of the application/json island.
+      const cfgJson = jsonForScript({ line_items: lineItems });
+      const fbText = esc(String(p.button_text || 'Complete order'));
+      const configured = lineItems.length > 0;
+      const errInit = configured ? '' : 'This checkout has no product configured yet.';
+      return (
+        `<div class='lb-checkout fos-checkout' data-fos-checkout data-fos-gateway='whop'>` +
+        `<div class='lb-checkout-summary fos-order-summary' data-fos-order-summary>` +
+        `<div class='fos-os-empty'>Preparing your order…</div></div>` +
+        `<div class='lb-whop-mount' data-fos-whop-mount></div>` +
+        `<div class='lb-checkout-error' data-fos-error${configured ? ' hidden' : ''}>` +
+        `${esc(errInit)}</div>` +
+        `<a class='lb-btn lb-checkout-fallback' data-fos-fallback rel='noopener noreferrer' ` +
+        `target='_blank' href='#' hidden>${fbText}</a>` +
+        `<script type='application/json' class='fos-checkout-cfg'>${cfgJson}</script>` +
+        `</div>`
+      );
+    }
+    case 'order_summary': {
+      // Renders the line items + total of the created checkout session. The
+      // data comes from the create-session response the checkout runtime
+      // already holds (window.__fos_checkout.session) — the runtime fills
+      // EVERY [data-fos-order-summary] on the page once the session exists.
+      const title = esc(String(p.title || 'Order summary'));
+      return (
+        `<section class='lb-order-summary'>` +
+        `<h3 class='lb-order-summary-title'>${title}</h3>` +
+        `<div class='fos-order-summary' data-fos-order-summary>` +
+        `<div class='fos-os-empty'>Your order will appear here.</div>` +
+        `</div></section>`
+      );
     }
     case 'section': {
       const inner = p.html || '';
@@ -444,6 +535,16 @@ img { max-width: 100%; height: auto; }
 .lb-check { display: inline-block; width: 20px; height: 20px; line-height: 20px; text-align: center; background: var(--lb-secondary); color: #fff; border-radius: 999px; margin-right: 6px; font-size: 0.8rem; }
 .lb-sticky-cta { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--lb-primary); color: #fff; padding: 12px 24px; border-radius: 999px; box-shadow: 0 8px 32px rgba(0,0,0,0.18); z-index: 50; font-weight: 600; }
 .lb-spacer { width: 100%; }
+.lb-checkout, .lb-order-summary { max-width: 520px; margin: 24px auto; padding: 20px; background: var(--lb-bg); border: 1px solid var(--lb-border); border-radius: var(--lb-radius); }
+.lb-order-summary-title { font-size: 1.15rem; margin: 0 0 12px; }
+.fos-order-summary { margin-bottom: 16px; }
+.fos-os-row { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--lb-border); }
+.fos-os-row:last-child { border-bottom: 0; }
+.fos-os-total { font-weight: 700; color: var(--lb-dark); border-top: 2px solid var(--lb-border); margin-top: 4px; padding-top: 12px; }
+.fos-os-empty { color: var(--lb-text-light); font-size: 0.95rem; padding: 8px 0; }
+.lb-whop-mount { min-height: 40px; margin: 8px 0 16px; }
+.lb-checkout-error { color: #b91c1c; background: #fef2f2; border: 1px solid #fecaca; border-radius: 8px; padding: 10px 12px; margin: 8px 0; font-size: 0.95rem; }
+.lb-checkout-fallback { display: block; width: 100%; text-align: center; border: 0; cursor: pointer; font-size: 1rem; box-sizing: border-box; }
 `;
 
 // ---------------------------------------------------------------------------
@@ -550,6 +651,70 @@ function flowRuntimeScript(flow) {
 }
 
 // ---------------------------------------------------------------------------
+// CHECKOUT-JOIN runtime (slice: connect a published page to the money path).
+//
+// Emitted ONCE per page, only when a commerce block is present. It publishes
+// window.__fos_checkout = { funnel_id, page_id, api_base } and then, on DOM
+// ready, drives every whop_checkout block on the page through the EXACT public
+// money-path contract (server/src/routes/checkoutPublic.js):
+//
+//  Hop A  POST {api_base}/create-session
+//         body: { funnel_id, page_id, gateway:'whop',
+//                 line_items:[{variant_id, quantity}] }    ← NO price, ever.
+//         200 → { success, data:{ session_id, line_items[], totals, currency } }
+//         422 empty_cart/invalid_variant/…   503 pricing_unavailable
+//  Hop B  POST {api_base}/whop/create-session
+//         body: { session_id }
+//         200 → { success, data:{ whop_session_id (ch_…), purchase_url, … } }
+//         503 gateway_not_configured   502 gateway_error
+//  Hop C  set data-whop-checkout-session=<ch_…> on the mount div, load
+//         https://js.whop.com/static/checkout/loader.js — the official loader
+//         mounts the embedded checkout (which renders its own pay button).
+//         purchase_url backs a fallback link if the embed script can't load.
+//
+// Postures:
+//  • The client NEVER sends a price. Server re-prices (docs DATA-FLOW hop 6).
+//  • FAIL VISIBLE: any non-200 shows a clear inline message and never hangs.
+//  • FAIL OPEN on render: a misconfigured block already degraded to an inline
+//    error at render time; the runtime is fully try/guarded so a malformed DOM
+//    can never throw a page-wide error.
+//  • XSS: session line-item titles from the server are written with
+//    textContent (never innerHTML) so a hostile product title is inert. The
+//    ch_ session id is written via setAttribute (an attribute value, not markup).
+//
+// NOTE: served pages here carry no CSP. If a CSP is ever added to the public
+// funnel surface, it MUST allowlist Whop's embed origins (script-src
+// https://js.whop.com; the embed also loads js.basistheory.com for card
+// tokenization and talks to api.whop.com) or the embed cannot load.
+// ---------------------------------------------------------------------------
+function checkoutRuntimeScript(ctx) {
+  const json = jsonForScript({
+    funnel_id: ctx.funnel_id != null ? String(ctx.funnel_id) : null,
+    page_id: ctx.page_id != null ? String(ctx.page_id) : null,
+    api_base: '/api/v1/checkout/public',
+  });
+  // Compact, framework-free, fully guarded. Kept as one string so it emits as
+  // a single inline <script>.
+  const body = `(function(){
+var CTX=window.__fos_checkout;var API=(CTX&&CTX.api_base)||'/api/v1/checkout/public';
+function ready(fn){if(document.readyState!=='loading'){fn();}else{document.addEventListener('DOMContentLoaded',fn);}}
+function money(n,c){try{return new Intl.NumberFormat(undefined,{style:'currency',currency:(c||'USD')}).format(Number(n));}catch(e){return (c||'')+' '+Number(n||0).toFixed(2);}}
+function showError(root,msg){try{var e=root.querySelector('[data-fos-error]');if(e){e.hidden=false;e.textContent=msg;}}catch(e){}}
+function fillSummaries(session){try{var nodes=document.querySelectorAll('[data-fos-order-summary]');Array.prototype.forEach.call(nodes,function(node){try{node.innerHTML='';var cur=session.currency;(session.line_items||[]).forEach(function(li){var row=document.createElement('div');row.className='fos-os-row';var name=document.createElement('span');name.className='fos-os-name';name.textContent=(li.product_title||li.title||'Item')+((li.quantity>1)?(' \\u00d7 '+li.quantity):'');var price=document.createElement('span');price.className='fos-os-price';var lt=(li.line_total!=null)?li.line_total:(Number(li.price)*Number(li.quantity||1));price.textContent=money(lt,cur);row.appendChild(name);row.appendChild(price);node.appendChild(row);});var t=(session.totals||{});var trow=document.createElement('div');trow.className='fos-os-row fos-os-total';var tl=document.createElement('span');tl.textContent='Total';var tv=document.createElement('span');tv.textContent=money(t.total!=null?t.total:0,cur);trow.appendChild(tl);trow.appendChild(tv);node.appendChild(trow);}catch(e){}});}catch(e){}}
+var whopLoaderStarted=false;
+function loadWhopLoader(){if(whopLoaderStarted)return;whopLoaderStarted=true;var s=document.createElement('script');s.async=true;s.defer=true;s.src='https://js.whop.com/static/checkout/loader.js';(document.head||document.body).appendChild(s);}
+function post(path,payload){return fetch(API+path,{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify(payload)}).then(function(r){return r.json().catch(function(){return {};}).then(function(j){return {status:r.status,json:j};});});}
+function sessErr(code){if(code==='pricing_unavailable')return 'Payment is temporarily unavailable. Please try again in a moment.';if(code==='invalid_variant'||code==='empty_cart')return 'This item is currently unavailable.';if(code==='total_below_minimum')return 'This order is below the minimum amount.';if(code==='rate_limited')return 'Too many attempts. Please wait a moment and retry.';return 'We could not start checkout ('+code+').';}
+function embedErr(code){if(code==='gateway_not_configured')return 'Checkout is not fully set up yet. Please contact support.';if(code==='session_not_payable')return 'This checkout session has expired. Please refresh the page.';if(code==='gateway_error')return 'The payment provider is temporarily unavailable. Please try again shortly.';return 'We could not start the payment ('+code+').';}
+function mountEmbed(root,embed){try{var mount=root.querySelector('[data-fos-whop-mount]');if(mount&&embed.whop_session_id){mount.setAttribute('data-whop-checkout-session',embed.whop_session_id);}var fb=root.querySelector('[data-fos-fallback]');if(fb&&embed.purchase_url){fb.setAttribute('href',embed.purchase_url);fb.hidden=false;}loadWhopLoader();}catch(e){showError(root,'Could not initialize the payment form.');}}
+function initBlock(root){var cfg={};try{cfg=JSON.parse((root.querySelector('.fos-checkout-cfg')||{}).textContent||'{}');}catch(e){cfg={};}var items=(cfg&&cfg.line_items)||[];if(!items.length){showError(root,'This checkout has no product configured yet.');return;}
+post('/create-session',{funnel_id:CTX.funnel_id,page_id:CTX.page_id,gateway:'whop',line_items:items}).then(function(res){if(res.status!==200||!res.json||!res.json.success){showError(root,sessErr((res.json&&res.json.error&&res.json.error.code)||('http_'+res.status)));return;}var session=res.json.data;window.__fos_checkout.session=session;fillSummaries(session);return post('/whop/create-session',{session_id:session.session_id}).then(function(er){if(er.status!==200||!er.json||!er.json.success){showError(root,embedErr((er.json&&er.json.error&&er.json.error.code)||('http_'+er.status)));return;}var embed=er.json.data;if(!embed||!embed.whop_session_id){showError(root,'Checkout is not fully set up yet (no session).');return;}mountEmbed(root,embed);});}).catch(function(){showError(root,'Network error starting checkout. Please try again.');});}
+ready(function(){try{var blocks=document.querySelectorAll('[data-fos-checkout]');if(!blocks.length){return;}Array.prototype.forEach.call(blocks,function(b){try{initBlock(b);}catch(e){}});}catch(e){}});
+})();`;
+  return `<script>window.__fos_checkout=Object.assign(window.__fos_checkout||{},${json});${body}</script>`;
+}
+
+// ---------------------------------------------------------------------------
 // Document assembly (port of render_page_html's skeleton).
 // Pipeline order matches the reference:
 //   head: charset/viewport → title/meta/og → theme css → custom_css → head_html
@@ -585,6 +750,20 @@ export function renderPageHtml(page, funnel, pagesById) {
   const flow = compileFlow(page, funnel, pagesById);
   const flowScript = flowRuntimeScript(flow);
 
+  // CHECKOUT-JOIN: emit the checkout runtime ONLY when the page carries a
+  // commerce block, so non-commerce pages stay byte-identical (and never load
+  // the checkout code). funnel_id/page_id thread into create-session so the
+  // right gateway credentials resolve server-side.
+  const hasCommerce = blocks.some(
+    (b) => isPlainObject(b) && COMMERCE_RUNTIME_TYPES.has(b.type)
+  );
+  const checkoutScript = hasCommerce
+    ? checkoutRuntimeScript({
+        funnel_id: (funnel || {}).id ?? null,
+        page_id: (page || {}).id ?? null,
+      })
+    : '';
+
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -607,6 +786,7 @@ ${customHtml}
 <main>
 ${blocksHtml}
 </main>
+${checkoutScript}
 ${pageJs ? `<script>${pageJs}</script>` : ''}
 ${bodyEndHtml}
 </body>
