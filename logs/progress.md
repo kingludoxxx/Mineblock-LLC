@@ -1638,3 +1638,34 @@ Sidebar entry moved Operations -> Production per integrator mid-task
 override. DECISION MADE on all three.
 STATUS: COMPLETE (local verification; no deploy).
 ---
+
+---
+TIMESTAMP: 2026-08-08 21:20
+TASK: Funnel Builder slice 2 — public page rendering (Lane 2)
+BUILT: server/src/services/funnelRender.js (renderPageHtml(page, funnel): full HTML
+document from page.blocks; 23 structured block types ported from funnel-os
+_render_block_inner; 11 commerce/quiz types render inert labelled placeholders;
+per-block fail-open with comment stubs; escape hatches head_html/custom_css/
+custom_html/custom_js/body_end_html in reference pipeline order; raw blocks
+custom_html/html/embed verbatim by documented posture). server/src/routes/
+funnelPublic.js (unauthenticated GET /f/:funnelSlug and /f/:funnelSlug/:pageSlug;
+FUNNEL_PUBLIC_ENABLED read at request time; published+non-archived only;
+no-store on every non-200, private,no-store on 200; ?preview=1 + valid Bearer
+token views drafts). funnels.js: exported ensureTables, added POST /:id/publish
+and GET /:id/pages/:pageId/preview-url. app.js: minimal /f mount before API routes.
+TESTED: booted from worktree against fresh puure_render DB (migrations applied
+with record-and-continue on missing cross-lane deps, seeds created superadmin on
+first boot). curl transcripts: published page 200 text/html with hero text, FAQ,
+ranking, escaped <script> heading, whop placeholder div, all five escape hatches,
+verbatim html-block script; draft/unknown-slug/malformed paths 404+no-store;
+flag-off restart 404, flag-on 200; props:null block inserted directly via
+postgres -> 200 + comment stub; malformed comparison_table rows degrade;
+preview=1 with valid token 200 draft, without/garbage token 404;
+default_page_id fallback 200; archived page 404. node --check on all four
+files; client vite build green (untouched).
+OUTPUT: all listed curls returned expected status + Cache-Control headers.
+DECISIONS: props that are not a plain object emit a comment stub (spec) rather
+than empty-props degrade (reference behavior); form + quiz_embed included in
+the placeholder set per lane brief.
+STATUS: COMPLETE
+---

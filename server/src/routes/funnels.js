@@ -18,7 +18,9 @@ router.use(authenticate, requirePermission('funnels', 'access'));
 // request retries.
 let tablesReadyPromise = null;
 
-function ensureTables() {
+// Exported for the public serving router (funnelPublic.js) so both entry
+// points share ONE serialized DDL promise.
+export function ensureTables() {
   if (!tablesReadyPromise) {
     tablesReadyPromise = createTables().catch((err) => {
       tablesReadyPromise = null;
@@ -366,6 +368,24 @@ router.patch('/:id', async (req, res) => {
   }
 });
 
+// POST /api/v1/funnels/:id/publish — flips the funnel to status='published'.
+// (Pages publish individually via PATCH status; this is the funnel-level gate.)
+router.post('/:id/publish', async (req, res) => {
+  try {
+    await ensureTables();
+    const rows = await pgQuery(
+      `UPDATE funnels SET status = 'published', updated_at = NOW()
+       WHERE id = $1 RETURNING *`,
+      [req.params.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Funnel not found' });
+    res.json({ success: true, data: rows[0] });
+  } catch (err) {
+    console.error('[funnels] publish failed:', err);
+    res.status(500).json({ error: 'Failed to publish funnel' });
+  }
+});
+
 // POST /api/v1/funnels/:id/archive — { archived: true|false }. Archive is the
 // only "delete" — never hard-delete. Archiving frees the slug (partial index).
 router.post('/:id/archive', async (req, res) => {
@@ -574,6 +594,31 @@ router.patch('/:id/pages/:pageId', async (req, res) => {
     }
     console.error('[funnels] page update failed:', err);
     res.status(500).json({ error: 'Failed to update page' });
+  }
+});
+
+// GET /api/v1/funnels/:id/pages/:pageId/preview-url — where does this page
+// serve publicly? `preview: true` means the page (or funnel) is not published
+// yet, so the viewer must append ?preview=1 + a Bearer token to see it.
+router.get('/:id/pages/:pageId/preview-url', async (req, res) => {
+  try {
+    await ensureTables();
+    const funnel = await getFunnel(req.params.id);
+    if (!funnel) return res.status(404).json({ error: 'Funnel not found' });
+    const pages = await pgQuery(
+      `SELECT * FROM funnel_pages WHERE id = $1 AND funnel_id = $2`,
+      [req.params.pageId, req.params.id]
+    );
+    const page = pages[0];
+    if (!page) return res.status(404).json({ error: 'Page not found' });
+    // Page slugs are stored as '/' or '/foo' — '/' maps to the funnel root.
+    const suffix = page.slug === '/' ? '' : page.slug;
+    const path = `/f/${funnel.slug}${suffix}`;
+    const preview = page.status !== 'published' || page.archived === true;
+    res.json({ success: true, data: { path, preview } });
+  } catch (err) {
+    console.error('[funnels] preview-url failed:', err);
+    res.status(500).json({ error: 'Failed to build preview URL' });
   }
 });
 
