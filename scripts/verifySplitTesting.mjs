@@ -9,12 +9,12 @@
 import postgres from 'postgres';
 import { ensureSplitTables } from '../server/src/services/splitTestSchema.js';
 import { pickArm, hashFraction, resolveArm } from '../server/src/services/splitResolver.js';
-import { recordExposure, creditConversion, voidCredit, readResults, creditSessionConversions, voidSessionRefund } from '../server/src/services/splitCredits.js';
+import { recordExposure, creditConversion, voidCredit, readResults, creditSessionConversions, voidSessionRefund, retrySplitPendingCredits } from '../server/src/services/splitCredits.js';
 
 const DB = process.env.SPLIT_TEST_DB_URL || 'postgresql://puure@127.0.0.1:5433/puure_split';
-const sql = postgres(DB, { max: 4, idle_timeout: 5 });
+const sql = postgres(DB, { max: 10, idle_timeout: 5 });
 const query = (text, params = []) => sql.unsafe(text, params);
-const deps = { query };
+const deps = { query, sql };
 
 let passed = 0;
 let failed = 0;
@@ -26,6 +26,7 @@ const hr = (t) => console.log(`\n=== ${t} ===`);
 
 async function main() {
   // Clean slate BEFORE the first ensure (the ensure memo caches success).
+  await query(`DROP TABLE IF EXISTS lb_split_pending_credits CASCADE`);
   await query(`DROP TABLE IF EXISTS lb_split_credits CASCADE`);
   await query(`DROP TABLE IF EXISTS lb_split_arms CASCADE`);
   await query(`DROP TABLE IF EXISTS lb_split_tests CASCADE`);
@@ -231,6 +232,105 @@ async function main() {
   assert(pageRes.totals.net_revenue === 49, `page test net = 49 (got ${pageRes.totals.net_revenue})`);
   assert(offerRes.totals.net_revenue === 0 && offerRes.totals.refunded === 29,
     `offer test net = 0 after full refund (refunded=${offerRes.totals.refunded})`);
+
+  // ── 7. HIGH fix: refund-cap TOCTOU under concurrency (loop x20) ──────────
+  hr('7. Concurrent distinct-key refunds are capped at the leg value (20 iterations)');
+  let toctouOk = true;
+  let worstVoided = 0;
+  for (let iter = 0; iter < 20; iter += 1) {
+    const s7 = `co_toctou_${iter}`;
+    await recordExposure({ sessionId: s7, testId, armKey: 'a' }, deps);
+    await creditConversion({ sessionId: s7, testId, chargeId: 'leg100', value: 100 }, deps);
+    // Six CONCURRENT partial refunds of 40, each with a DISTINCT refundKey —
+    // the exact probe from the review (unfixed: up to 240 voided).
+    await Promise.all(
+      Array.from({ length: 6 }, (_, k) =>
+        voidCredit({ sessionId: s7, testId, chargeId: 'leg100', amount: 40, refundKey: `rk_${k}` }, deps)
+      )
+    );
+    const [{ total }] = await query(
+      `SELECT COALESCE(-SUM(value),0)::numeric AS total FROM lb_split_credits
+       WHERE kind='void' AND session_id=$1 AND charge_id='leg100'`, [s7]
+    );
+    const voidedTotal = Number(total);
+    worstVoided = Math.max(worstVoided, voidedTotal);
+    if (voidedTotal !== 100) { toctouOk = false; console.log(`  iter ${iter}: voided ${voidedTotal} (EXPECTED 100)`); }
+  }
+  assert(toctouOk, `6 concurrent distinct-key 40s on a 100 leg → total voided EXACTLY 100, 20/20 iterations (worst=${worstVoided})`);
+  const [{ neg }] = await query(
+    `SELECT COUNT(*)::int AS neg FROM (
+       SELECT session_id, charge_id, SUM(value) AS net FROM lb_split_credits
+       WHERE kind IN ('credit','void') AND session_id LIKE 'co_toctou_%'
+       GROUP BY session_id, charge_id) t WHERE net < 0`
+  );
+  assert(neg === 0, `no leg's net is negative after the concurrent refund storm (negative legs=${neg})`);
+
+  // ── 8. MEDIUM fix: settle-races-exposure parks + retries to ONE credit ───
+  hr('8. Pending credits: settle racing exposure is parked, retried, credited exactly once');
+  await query(`INSERT INTO lb_split_tests (id, name, scope, enabled) VALUES ('lbsg_race','R','offer',TRUE)`);
+  await query(`INSERT INTO lb_split_arms (id,test_id,arm_key,weight,is_control) VALUES ('lbsa_ra','lbsg_race','a',1,TRUE)`);
+  // Deterministic worst case: the settle lands FIRST (no exposure at all yet).
+  const rs = 'co_race_1';
+  const parked = await creditSessionConversions({ sessionId: rs, chargeId: 'ux_race', value: 33, scope: 'offer' }, deps);
+  assert(parked.length === 1 && parked[0].status === 'pending', `settle before exposure parks the leg (${JSON.stringify(parked)})`);
+  const [{ n: pend1 }] = await query(
+    `SELECT COUNT(*)::int AS n FROM lb_split_pending_credits WHERE session_id=$1 AND resolved_at IS NULL`, [rs]
+  );
+  assert(pend1 === 1, `one pending row exists (${pend1})`);
+  // Retry BEFORE the exposure exists → nothing credits, row stays pending.
+  const r0 = await retrySplitPendingCredits({}, deps);
+  const [{ n: credAfter0 }] = await query(
+    `SELECT COUNT(*)::int AS n FROM lb_split_credits WHERE kind='credit' AND session_id=$1`, [rs]
+  );
+  assert(credAfter0 === 0, `retry with no exposure yet credits nothing (scanned=${r0.scanned})`);
+  // The exposure lands; the retry pass now credits EXACTLY once.
+  await recordExposure({ sessionId: rs, testId: 'lbsg_race', armKey: 'a' }, deps);
+  const r1 = await retrySplitPendingCredits({}, deps);
+  const r2 = await retrySplitPendingCredits({}, deps); // second pass must not double-credit
+  const [{ n: credAfter }] = await query(
+    `SELECT COUNT(*)::int AS n FROM lb_split_credits WHERE kind='credit' AND session_id=$1`, [rs]
+  );
+  assert(credAfter === 1 && r1.resolved === 1, `after retry: exactly ONE credit, pending resolved (credits=${credAfter}, resolved=${r1.resolved}, second pass scanned=${r2.scanned})`);
+  // Truly CONCURRENT exposure + settle, then retry → still exactly one credit.
+  const rs2 = 'co_race_2';
+  await Promise.all([
+    recordExposure({ sessionId: rs2, testId: 'lbsg_race', armKey: 'a' }, deps),
+    creditSessionConversions({ sessionId: rs2, chargeId: 'ux_race2', value: 21, scope: 'offer' }, deps),
+  ]);
+  await retrySplitPendingCredits({}, deps);
+  await retrySplitPendingCredits({}, deps);
+  const [{ n: credRace }] = await query(
+    `SELECT COUNT(*)::int AS n FROM lb_split_credits WHERE kind='credit' AND session_id=$1`, [rs2]
+  );
+  assert(credRace === 1, `concurrent exposure+settle → eventually exactly ONE credit, never two (got ${credRace})`);
+  // A session with NO live test of scope does not park (table stays bounded).
+  const noPark = await creditSessionConversions({ sessionId: 'co_nopark', chargeId: 'x', value: 5, scope: 'page' }, deps);
+  const pageLive = await query(`SELECT 1 FROM lb_split_tests WHERE enabled AND NOT archived AND scope='page' LIMIT 1`);
+  if (!pageLive.length) {
+    assert(noPark.length === 0, 'no live test of that scope → no parking');
+  } else {
+    // page-scope test exists from section 6 — parking is the correct behavior.
+    assert(noPark.length === 1 && noPark[0].status === 'pending', 'live page test exists → parked (bounded by live-test gate)');
+  }
+
+  // ── 9. LOW fix: whitespace-only ids are refused ──────────────────────────
+  hr('9. Whitespace-only identifiers are refused');
+  assert(await creditConversion({ sessionId: '  ', testId, chargeId: 'c', value: 1 }, deps) === 'refused', "sessionId '  ' → refused");
+  assert(await creditConversion({ sessionId: 's', testId, chargeId: '  ', value: 1 }, deps) === 'refused', "chargeId '  ' → refused");
+  assert(await voidCredit({ sessionId: 's', testId: '  ', chargeId: 'c', amount: 1 }, deps) === 'refused', "voidCredit testId '  ' → refused");
+  assert(await recordExposure({ sessionId: 's', testId, armKey: ' ' }, deps) === 'refused', "armKey ' ' → refused");
+
+  // ── 10. LOW fix: archived arms' ledger rows stay in results + totals ─────
+  hr('10. Archiving an arm never drops its historical revenue from results');
+  const beforeArchive = await readResults({ testId }, deps);
+  await query(`UPDATE lb_split_arms SET archived = TRUE WHERE test_id = $1 AND arm_key = 'b'`, [testId]);
+  const afterArchive = await readResults({ testId }, deps);
+  const archB = afterArchive.arms.find((a) => a.arm_key === 'b');
+  assert(archB && archB.archived === true && archB.net_revenue === 50,
+    `archived arm b still listed (flagged) with its net 50 (got ${archB && archB.net_revenue})`);
+  assert(afterArchive.totals.net_revenue === beforeArchive.totals.net_revenue,
+    `totals unchanged by archiving (before=${beforeArchive.totals.net_revenue}, after=${afterArchive.totals.net_revenue})`);
+  await query(`UPDATE lb_split_arms SET archived = FALSE WHERE test_id = $1 AND arm_key = 'b'`, [testId]);
 
   hr(`RESULT: ${passed} passed, ${failed} failed`);
   await sql.end();

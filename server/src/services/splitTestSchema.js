@@ -148,6 +148,33 @@ async function createTables(query) {
   // Results reads group by (group, arm); the refund netter reads one leg.
   await query(`CREATE INDEX IF NOT EXISTS idx_split_credits_group_arm ON lb_split_credits (group_id, arm_key)`);
   await query(`CREATE INDEX IF NOT EXISTS idx_split_credits_leg ON lb_split_credits (session_id, group_id, charge_id)`);
+
+  // ── Pending credits — the settle-races-exposure parking lot ─────────────
+  // A settlement can land BEFORE the exposure row (webhook racing the offer
+  // beacon). Refusing outright would lose the numerator permanently (an
+  // undercount — fail-safe, but unrecoverable). Instead the refused leg parks
+  // here and a retry pass (retrySplitPendingCredits) re-attempts it once the
+  // exposure exists. Dedupe: one pending row per (session, charge); the credit
+  // ledger's own UNIQUE triple guarantees the replay can never double-credit.
+  await query(`
+    CREATE TABLE IF NOT EXISTS lb_split_pending_credits (
+      id BIGSERIAL PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      charge_id TEXT NOT NULL,
+      value NUMERIC(14,2) NOT NULL DEFAULT 0,
+      currency TEXT,
+      scope TEXT,
+      attempts INT NOT NULL DEFAULT 0,
+      resolved_at TIMESTAMPTZ,
+      resolution TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (session_id, charge_id)
+    )
+  `);
+  await query(
+    `CREATE INDEX IF NOT EXISTS idx_split_pending_open
+     ON lb_split_pending_credits (created_at) WHERE resolved_at IS NULL`
+  );
 }
 
 export const EXPOSURE_CHARGE_SENTINEL = '__exposure__';

@@ -40,8 +40,11 @@ export function normArm(raw) {
   // truncation could collide two distinct keys onto one arm.
   const arm_key = String(raw?.arm_key ?? '').trim();
   if (!ARM_KEY_RE.test(arm_key)) return { error: 'invalid_arm_key' };
+  // Bad weight degrades to 0 (unified with the PATCH path — one rule): a
+  // 0-weight arm takes no NEW traffic, and if ALL arms are 0 the resolver
+  // degrades to equal weights. Never rejects.
   let weight = Number(raw?.weight);
-  if (!Number.isFinite(weight) || weight < 0) weight = 1; // never rejects — degrades
+  if (!Number.isFinite(weight) || weight < 0) weight = 0;
   weight = Math.round(weight * 10000) / 10000;
   return {
     arm: {
@@ -73,7 +76,11 @@ router.post('/', async (req, res) => {
     if (arms.length && normed.length < 2) {
       return res.status(422).json({ success: false, error: { code: 'need_at_least_two_arms' } });
     }
-    // Exactly one control among provided arms (default first if none flagged).
+    // EXACTLY one control: >1 flagged is rejected (an ambiguous fail-open
+    // target is not a degradable input); none flagged defaults to the first.
+    if (normed.filter((a) => a.is_control).length > 1) {
+      return res.status(422).json({ success: false, error: { code: 'multiple_control_arms' } });
+    }
     if (normed.length && !normed.some((a) => a.is_control)) normed[0].is_control = true;
 
     const testId = newId('lbsg');
@@ -194,6 +201,13 @@ router.post('/:id/arms', async (req, res) => {
       [testId, arm.arm_key]
     );
     if (dup.length) return res.status(409).json({ success: false, error: { code: 'arm_key_exists' } });
+    if (arm.is_control) {
+      const ctrl = await pgQuery(
+        `SELECT 1 FROM lb_split_arms WHERE test_id = $1 AND is_control AND NOT archived`,
+        [testId]
+      );
+      if (ctrl.length) return res.status(422).json({ success: false, error: { code: 'multiple_control_arms' } });
+    }
     const armId = newId('lbsa');
     await pgQuery(
       `INSERT INTO lb_split_arms (id, test_id, arm_key, weight, page_id, offer_id, is_control)
@@ -223,6 +237,15 @@ router.patch('/:id/arms/:armId', async (req, res) => {
     if (b.is_control !== undefined) { sets.push(`is_control = $${i++}`); vals.push(Boolean(b.is_control)); }
     if (b.archived !== undefined) { sets.push(`archived = $${i++}`); vals.push(Boolean(b.archived)); }
     if (!sets.length) return res.status(422).json({ success: false, error: { code: 'nothing_to_update' } });
+    // Flipping an arm TO control while another live arm already holds it is
+    // rejected (mirror of the create-path rule) — unset the old control first.
+    if (b.is_control === true) {
+      const ctrl = await pgQuery(
+        `SELECT 1 FROM lb_split_arms WHERE test_id = $1 AND is_control AND NOT archived AND id <> $2`,
+        [s(req.params.id, 120), s(req.params.armId, 120)]
+      );
+      if (ctrl.length) return res.status(422).json({ success: false, error: { code: 'multiple_control_arms' } });
+    }
     vals.push(s(req.params.armId, 120), s(req.params.id, 120));
     const rows = await pgQuery(
       `UPDATE lb_split_arms SET ${sets.join(', ')} WHERE id = $${i++} AND test_id = $${i} RETURNING id`,
