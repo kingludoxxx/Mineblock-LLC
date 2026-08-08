@@ -39,31 +39,10 @@
   --topbar-h: 48px;
 }
 
-/* ─── Brand light theme (Puure) ─────────────────────────────────
-   Activated when <html data-brand="puure"> is set (see main.jsx —
-   reads import.meta.env.VITE_BRAND_NAME and sets the attr on boot).
-   Overrides every color token to a light palette so no per-component
-   className changes are required. */
-:root[data-brand="puure"] {
-  --color-bg-main: #ffffff;
-  --color-bg-card: #fafafa;
-  --color-bg-elevated: #f4f4f5;
-  --color-bg-hover: #ececee;
-  --color-bg-active: #e4e4e7;
-
-  --color-border-subtle: rgba(0, 0, 0, 0.06);
-  --color-border-default: rgba(0, 0, 0, 0.10);
-  --color-border-strong: rgba(0, 0, 0, 0.16);
-
-  --color-text-primary: #09090b;
-  --color-text-muted: #52525b;
-  --color-text-faint: #a1a1aa;
-
-  --color-accent: #18181b;
-  --color-accent-hover: #000000;
-  --color-accent-muted: rgba(0, 0, 0, 0.06);
-  --color-accent-text: #09090b;
-}
+/* Brand light theme was here — removed by request. Puure now uses the
+   same dark palette as Mineblock. Body/scrollbar still read from the
+   CSS vars so any future brand theme can drop back in as an override
+   without touching per-component classes. */
 
 * {
   box-sizing: border-box;
@@ -77,18 +56,6 @@ body {
   font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-}
-
-/* Light-theme scrollbar override — dark gold on white looks jarring */
-:root[data-brand="puure"] ::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.18);
-}
-:root[data-brand="puure"] ::-webkit-scrollbar-thumb:hover {
-  background: rgba(0, 0, 0, 0.35);
-}
-:root[data-brand="puure"] ::selection {
-  background: rgba(0, 0, 0, 0.15);
-  color: #09090b;
 }
 
 /* ─── Scrollbar ─────────────────────────────────────────────── */
