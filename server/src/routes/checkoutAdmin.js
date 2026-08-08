@@ -95,8 +95,13 @@ router.get('/stats', async (req, res) => {
 // ── Gateway credentials (per-funnel operator data) ─────────────────────────
 // WRITE-ONLY semantics: null keeps the stored value, "" clears it, a value
 // replaces it (encrypted at rest). Reads return only `*_set` booleans.
+//
+// DUAL LIVE + SANDBOX APP MODEL: each gateway keeps a `live` set (real buyers)
+// and a `sandbox` set (previews/tests) at once; the PUT patches ONE set,
+// chosen by `mode` in the body (default 'live'). See gatewayConfigs.js.
 
-// GET /gateways/:funnelId — safe view of every gateway's config state.
+// GET /gateways/:funnelId — safe view of every gateway's config state
+// (per-mode `*_set` booleans + the two toggles).
 router.get('/gateways/:funnelId', async (req, res) => {
   try {
     const { GATEWAYS, getPublicConfig } = await import('../services/gatewayConfigs.js');
@@ -112,7 +117,41 @@ router.get('/gateways/:funnelId', async (req, res) => {
   }
 });
 
-// PUT /gateways/:funnelId/:gateway — write-only patch.
+// GET /gateways/:funnelId/status — live connection status for every gateway
+// (both modes + aggregate). Mirror of the funnelHealth route, served here so
+// the Payments pills work without the shared routes/index.js mount. Placed
+// before the parameterized :gateway PUT; GET vs PUT never collide.
+router.get('/gateways/:funnelId/status', async (req, res) => {
+  try {
+    const { checkAll } = await import('../services/gatewayStatus.js');
+    const funnelId = String(req.params.funnelId || '').slice(0, 64);
+    return res.json({ success: true, data: await checkAll(funnelId) });
+  } catch (err) {
+    console.error('[checkoutAdmin] gateways status failed:', err.message);
+    return res.status(500).json({ success: false, error: { code: 'internal_error' } });
+  }
+});
+
+// GET /gateways/:funnelId/status/:gateway — status for one gateway.
+router.get('/gateways/:funnelId/status/:gateway', async (req, res) => {
+  try {
+    const { GATEWAYS } = await import('../services/gatewayConfigs.js');
+    const { checkGateway } = await import('../services/gatewayStatus.js');
+    const gateway = String(req.params.gateway || '');
+    if (!GATEWAYS[gateway]) {
+      return res.status(404).json({ success: false, error: { code: 'unknown_gateway' } });
+    }
+    const funnelId = String(req.params.funnelId || '').slice(0, 64);
+    return res.json({ success: true, data: await checkGateway(funnelId, gateway) });
+  } catch (err) {
+    console.error('[checkoutAdmin] gateway status failed:', err.message);
+    return res.status(500).json({ success: false, error: { code: 'internal_error' } });
+  }
+});
+
+// PUT /gateways/:funnelId/:gateway — write-only patch of ONE credential set
+// (body.mode 'live' | 'sandbox', default 'live') + the two funnel-level
+// toggles (enabled, allow_sandbox_on_live).
 router.put('/gateways/:funnelId/:gateway', async (req, res) => {
   try {
     const { GATEWAYS, patchConfig } = await import('../services/gatewayConfigs.js');
