@@ -21,6 +21,7 @@ import adsReportingRoutes from './adsReporting.js';
 import brandSpyRoutes from './brandSpy.js';
 import ordersRoutes from './orders.js';
 import customersRoutes from './customers.js';
+import abandonedRoutes from './abandonedCheckouts.js';
 
 const mountRoutes = (app) => {
   app.use('/api/v1/users', userRoutes);
@@ -46,6 +47,7 @@ const mountRoutes = (app) => {
   app.use('/api/v1/brand-spy', brandSpyRoutes);
   app.use('/api/v1/orders', ordersRoutes);
   app.use('/api/v1/customers', customersRoutes);
+  app.use('/api/v1/abandoned', abandonedRoutes);
 };
 
 export default mountRoutes;

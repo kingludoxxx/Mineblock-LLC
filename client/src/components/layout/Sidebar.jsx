@@ -42,8 +42,9 @@ const navGroups = [
     label: 'Operations',
     icon: Store,
     items: [
-      { to: '/app/orders', icon: ShoppingCart, label: 'Orders', permission: 'orders:access' },
+      { to: '/app/orders', icon: ShoppingCart, label: 'Orders', permission: 'orders:access', end: true },
       { to: '/app/customers', icon: UsersRound, label: 'Customers', permission: 'customers:access' },
+      { to: '/app/abandoned', icon: ShoppingCart, label: 'Abandoned checkouts', permission: 'orders:access' },
     ],
   },
   {

@@ -1588,3 +1588,23 @@ DECISIONS: Env vars upserted per-key (never bulk PUT) to protect the live
 service. NONE else.
 STATUS: COMPLETE (production). Builder slice 1 in progress (worktree agent).
 ---
+
+---
+TIMESTAMP: 2026-08-08 21:15
+TASK: CRM Lane 1 — Abandoned Checkouts page
+BUILT: server/src/routes/abandonedCheckouts.js (crm_abandoned_checkouts table,
+Shopify checkouts API sync w/ pagination + 429 retry, auto-sync on stale list
+load, manual /sync, list w/ search + KPI: count/value-at-stake/reachable-by-
+email), mounted at /api/v1/abandoned under orders:access (deliberately no new
+permission). Client: AbandonedCheckoutsPage.jsx, route /app/abandoned,
+"Abandoned checkouts" item in Operations group.
+TESTED: By execution: real data (1 open checkout, heatherleeshepherd@,
+$131.99, Puure Breast Lift Device V2, recovery URL present); manual sync
+imported:1; 401 without token; client build clean; browser screenshot
+verified (nav + KPI + row + recovery link).
+OUTPUT: Recoverable-revenue list live locally with real store data.
+DECISIONS: Reused orders:access (same audience; avoids migration-number race
+with the funnels lane which holds 088). Auto-sync throttled to 10-min
+staleness, fail-open to cached data.
+STATUS: COMPLETE (local). Ships with next deploy.
+---

@@ -16,6 +16,7 @@ import AcceptInvite from './pages/AcceptInvite';
 import Dashboard from './pages/Dashboard';
 import OrdersPage from './pages/orders/OrdersPage';
 import OrderDetailPage from './pages/orders/OrderDetailPage';
+import AbandonedCheckoutsPage from './pages/orders/AbandonedCheckoutsPage';
 import CustomersPage from './pages/customers/CustomersPage';
 import CustomerDetailPage from './pages/customers/CustomerDetailPage';
 import Settings from './pages/Settings';
@@ -122,6 +123,7 @@ export default function App() {
           <Route path="orders/:id" element={<PageGate permission="orders:access"><OrderDetailPage /></PageGate>} />
           <Route path="customers" element={<PageGate permission="customers:access"><CustomersPage /></PageGate>} />
           <Route path="customers/:email" element={<PageGate permission="customers:access"><CustomerDetailPage /></PageGate>} />
+          <Route path="abandoned" element={<PageGate permission="orders:access"><AbandonedCheckoutsPage /></PageGate>} />
 
           {/* Intel */}
           <Route path="meta" element={<PageGate permission="meta-ads:access"><MetaPage /></PageGate>} />
