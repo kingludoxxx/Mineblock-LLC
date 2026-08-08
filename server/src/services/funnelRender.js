@@ -863,7 +863,7 @@ const CKT_TEMPLATE_CSS = `/* Checkout template (seeded) — buyer-facing LIGHT t
 body{background:#fff;color:#111827;}
 main{display:grid;grid-template-columns:minmax(0,1fr) 420px;column-gap:56px;row-gap:0;max-width:1180px;margin:0 auto;padding:28px 24px 64px;align-items:start;}
 main>.lb-blk{grid-column:1;min-width:0;margin:0 0 26px;}
-main>[data-blk-id='ckt_summary']{grid-column:2;grid-row:1/span 40;margin:0;}
+main>[data-blk-id='ckt_summary']{grid-column:2;grid-row:1/span 40;margin:0;align-self:stretch;border-left:1px solid #e2e2e2;background:#f7f7f7;padding-left:36px;}
 /* Brand */
 .ckt-brand{text-align:center;padding:8px 0 4px;}
 .ckt-brand-link{display:inline-block;line-height:0;}
@@ -875,17 +875,17 @@ main>[data-blk-id='ckt_summary']{grid-column:2;grid-row:1/span 40;margin:0;}
 .ckt-note{color:#6b7280;font-size:.9rem;margin:-6px 0 12px;}
 .ckt-field{margin-bottom:12px;}
 .ckt-two{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;}
-.ckt-input{width:100%;box-sizing:border-box;border:1px solid #dedede;border-radius:8px;padding:13px 12px;font:400 15px/1.3 Inter,system-ui,sans-serif;color:#111;background:#fff;}
+.ckt-input{width:100%;box-sizing:border-box;border:1.5px solid #cfcfcf;border-radius:8px;padding:16px 14px;font:400 16px/1.3 Inter,system-ui,sans-serif;color:#111;background:#fff;}
 .ckt-input:focus{outline:2px solid rgba(37,99,235,.2);border-color:#2563eb;}
 .ckt-input::placeholder{color:#9ca3af;}
 .ckt-select{appearance:none;-webkit-appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' fill='none' stroke='%236b7280' stroke-width='1.6'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 12px center;padding-right:34px;}
 .ckt-phone{display:flex;align-items:stretch;}
-.ckt-phone-prefix{display:flex;align-items:center;gap:5px;border:1px solid #dedede;border-right:0;border-radius:8px 0 0 8px;padding:0 12px;background:#fff;color:#374151;font-size:14px;white-space:nowrap;}
+.ckt-phone-prefix{display:flex;align-items:center;gap:5px;border:1.5px solid #cfcfcf;border-right:0;border-radius:8px 0 0 8px;padding:0 12px;background:#fff;color:#374151;font-size:15px;white-space:nowrap;}
 .ckt-phone .ckt-input{border-radius:0 8px 8px 0;}
 /* Floating-label field (country / state show a value + a small caption) */
 .ckt-float{position:relative;}
-.ckt-float>label{position:absolute;top:7px;left:13px;font-size:11px;line-height:1;color:#6b7280;pointer-events:none;z-index:1;}
-.ckt-float>.ckt-input{padding-top:23px;padding-bottom:7px;}
+.ckt-float>label{position:absolute;top:9px;left:14px;font-size:11px;line-height:1;color:#6b7280;pointer-events:none;z-index:1;}
+.ckt-float>.ckt-input{padding-top:26px;padding-bottom:9px;}
 /* Shipping method */
 .ckt-ship{display:flex;flex-direction:column;gap:10px;}
 .ckt-ship-option{display:flex;align-items:center;gap:12px;border:1px solid #dedede;border-radius:10px;padding:14px 16px;cursor:pointer;background:#fff;}
@@ -930,19 +930,17 @@ main>[data-blk-id='ckt_whop'] .lb-checkout-fallback{display:none;} /* replaced b
 /* Complete checkout */
 .ckt-complete{display:block;width:100%;background:#111;color:#fff;border:0;border-radius:10px;padding:16px;font:700 1.05rem/1.2 Inter,system-ui,sans-serif;cursor:pointer;}
 .ckt-complete:hover{background:#000;}
-/* Trust badges (inline brand marks) */
-.ckt-badges{display:flex;flex-wrap:wrap;gap:7px;justify-content:center;align-items:center;padding:2px 0;}
-.ckt-badges svg{display:block;}
 /* Footer links */
 .ckt-footer{display:flex;gap:18px;border-top:1px solid #ececec;padding-top:16px;font-size:.85rem;}
 .ckt-footer a{color:#6b7280;text-decoration:underline;}
 .ckt-poweredby{color:#9ca3af;font-size:.78rem;margin:8px 2px 0;}
 /* Right column: order summary */
-.ckt-summary-inner{position:sticky;top:24px;background:#fafafa;border:1px solid #ececec;border-radius:12px;padding:20px 20px 24px;}
+.ckt-summary-inner{position:sticky;top:24px;background:transparent;border:0;border-radius:0;padding:24px 24px 28px 0;}
 .ckt-summary-top{display:flex;justify-content:flex-end;margin-bottom:4px;}
-.ckt-continue{display:inline-flex;align-items:center;gap:6px;color:#2563eb;font-size:.9rem;font-weight:600;}
+.ckt-continue{display:inline-flex;align-items:center;gap:6px;color:#111;font-size:.9rem;font-weight:600;}
 .ckt-lines .fos-os-row{border-bottom:0;padding:10px 0;align-items:center;}
 .ckt-lines .fos-os-total{font-size:1.1rem;border-top:1px solid #e2e2e2;}
+.ckt-usd{font-size:.72rem;font-weight:600;color:#6b7280;margin-right:5px;letter-spacing:.02em;}
 .ckt-lines .fos-os-name{font-weight:600;line-height:1.3;}
 .ckt-os-sub{display:block;color:#6b7280;font-size:.8rem;font-weight:400;margin-top:3px;}
 .ckt-os-img{width:44px;height:44px;border-radius:8px;object-fit:cover;border:1px solid #e5e5e5;margin-right:10px;vertical-align:middle;}
@@ -952,8 +950,8 @@ main>[data-blk-id='ckt_whop'] .lb-checkout-fallback{display:none;} /* replaced b
 /* Mobile: single column, order summary first */
 @media (max-width:900px){
   main{grid-template-columns:1fr;column-gap:0;padding:20px 16px 48px;}
-  main>[data-blk-id='ckt_summary']{grid-column:1;grid-row:auto;order:-1;margin:0 0 28px;}
-  .ckt-summary-inner{position:static;}
+  main>[data-blk-id='ckt_summary']{grid-column:1;grid-row:auto;order:-1;margin:0 0 28px;border-left:0;background:transparent;padding-left:0;}
+  .ckt-summary-inner{position:static;background:#f7f7f7;border-radius:12px;padding:20px;}
 }`;
 
 // Seeded page-level JS. Two jobs, both defensive and both reading ONLY the
@@ -1001,10 +999,13 @@ const CKT_TEMPLATE_JS = `(function(){
             rows[i].insertBefore(el,rows[i].firstChild);
           }
         }
+        var promo=q('.ckt-summary .ckt-promo');
+        if(promo){box.insertBefore(promo,totalRow);}
         if(totals.subtotal!=null){box.insertBefore(row('Subtotal',money(totals.subtotal)),totalRow);}
         var savings=(totals.savings!=null)?totals.savings:totals.discount;
         if(savings!=null&&Number(savings)>0){box.insertBefore(row('Savings','-'+money(savings)),totalRow);}
-        if(totals.shipping!=null){box.insertBefore(row('Shipping',Number(totals.shipping)===0?'FREE':money(totals.shipping)),totalRow);}
+        var tvs=totalRow.getElementsByTagName('span');
+        if(tvs&&tvs.length>=2&&!totalRow.querySelector('.ckt-usd')){var usd=document.createElement('span');usd.className='ckt-usd';usd.textContent='USD';tvs[1].insertBefore(usd,tvs[1].firstChild);}
       }
       if(tries>240){clearInterval(timer);}
     }catch(e){if(tries>240){clearInterval(timer);}}
@@ -1029,21 +1030,6 @@ const CKT_MINI_MC =
   `<svg width="28" height="18" viewBox="0 0 28 18" aria-hidden="true"><rect x=".5" y=".5" width="27" height="17" rx="3" fill="#fff" stroke="#e3e3e3"/><circle cx="11.5" cy="9" r="5" fill="#EB001B"/><circle cx="16.5" cy="9" r="5" fill="#F79E1B"/><path d="M14 5.15a5 5 0 0 0 0 7.7 5 5 0 0 0 0-7.7z" fill="#FF5F00"/></svg>`;
 const CKT_MINI_AMEX =
   `<svg width="28" height="18" viewBox="0 0 28 18" aria-hidden="true"><rect x=".5" y=".5" width="27" height="17" rx="3" fill="#2E77BC" stroke="#2E77BC"/><text x="14" y="12" text-anchor="middle" font-family="Arial,Helvetica,sans-serif" font-weight="700" font-size="6.5" fill="#fff">AMEX</text></svg>`;
-// Trust-badge row (38x24).
-const CKT_BADGE_APPLEPAY =
-  `<svg width="38" height="24" viewBox="0 0 38 24" aria-label="Apple Pay"><rect x=".5" y=".5" width="37" height="23" rx="4" fill="#fff" stroke="#e3e3e3"/><path transform="translate(8,4.6) scale(.52)" d="M13.5 12.2c-.3.7-.5 1-.9 1.6-.6.8-1.4 1.9-2.4 1.9-.9 0-1.1-.6-2.3-.6s-1.5.6-2.3.6c-1 0-1.8-1-2.4-1.8C.9 11.9.7 8.5 2.2 6.8c.8-.9 1.8-1.4 2.7-1.4 1 0 1.6.6 2.4.6.8 0 1.3-.6 2.4-.6.8 0 1.7.2 2.4 1.1-2.1 1.2-1.8 4.2.9 5.1zM9.3 3.9c.5-.6.8-1.4.7-2.2-.7.03-1.5.5-2 1.1-.4.5-.8 1.3-.7 2.1.8.06 1.5-.4 2-1z" fill="#000"/><text x="22.5" y="15.8" font-family="Arial,Helvetica,sans-serif" font-weight="600" font-size="8.5" fill="#000">Pay</text></svg>`;
-const CKT_BADGE_GPAY =
-  `<svg width="38" height="24" viewBox="0 0 38 24" aria-label="Google Pay"><rect x=".5" y=".5" width="37" height="23" rx="4" fill="#fff" stroke="#e3e3e3"/><text x="8" y="15.8" font-family="Arial,Helvetica,sans-serif" font-weight="700" font-size="9.5" fill="#4285F4">G</text><text x="15.5" y="15.8" font-family="Arial,Helvetica,sans-serif" font-weight="500" font-size="8.5" fill="#5f6368">Pay</text></svg>`;
-const CKT_BADGE_PAYPAL =
-  `<svg width="38" height="24" viewBox="0 0 38 24" aria-label="PayPal"><rect x=".5" y=".5" width="37" height="23" rx="4" fill="#fff" stroke="#e3e3e3"/><text x="19" y="15.5" text-anchor="middle" font-family="Arial,Helvetica,sans-serif" font-style="italic" font-weight="700" font-size="8.5"><tspan fill="#003087">Pay</tspan><tspan fill="#009cde">Pal</tspan></text></svg>`;
-const CKT_BADGE_VISA =
-  `<svg width="38" height="24" viewBox="0 0 38 24" aria-label="Visa"><rect x=".5" y=".5" width="37" height="23" rx="4" fill="#fff" stroke="#e3e3e3"/><text x="19" y="16" text-anchor="middle" font-family="Arial,Helvetica,sans-serif" font-weight="700" font-style="italic" font-size="11" fill="#1A1F71">VISA</text></svg>`;
-const CKT_BADGE_MC =
-  `<svg width="38" height="24" viewBox="0 0 38 24" aria-label="Mastercard"><rect x=".5" y=".5" width="37" height="23" rx="4" fill="#fff" stroke="#e3e3e3"/><circle cx="16" cy="12" r="6.4" fill="#EB001B"/><circle cx="22" cy="12" r="6.4" fill="#F79E1B"/><path d="M19 6.75a6.4 6.4 0 0 0 0 10.5 6.4 6.4 0 0 0 0-10.5z" fill="#FF5F00"/></svg>`;
-const CKT_BADGE_AMEX =
-  `<svg width="38" height="24" viewBox="0 0 38 24" aria-label="American Express"><rect x=".5" y=".5" width="37" height="23" rx="4" fill="#2E77BC" stroke="#2E77BC"/><text x="19" y="15" text-anchor="middle" font-family="Arial,Helvetica,sans-serif" font-weight="700" font-size="8" fill="#fff">AMEX</text></svg>`;
-const CKT_BADGE_DISCOVER =
-  `<svg width="38" height="24" viewBox="0 0 38 24" aria-label="Discover"><rect x=".5" y=".5" width="37" height="23" rx="4" fill="#fff" stroke="#e3e3e3"/><text x="18.5" y="11.5" text-anchor="middle" font-family="Arial,Helvetica,sans-serif" font-weight="800" font-size="5.4" letter-spacing=".2" fill="#1a1a1a">DISCOVER</text><rect x="8" y="14" width="22" height="3" rx="1.5" fill="#F76E11"/></svg>`;
 
 // Returns { blocks, custom_css, custom_js } for a fresh 'checkout' page.
 // Deliberately a function (not a frozen constant): every call mints fresh
@@ -1072,7 +1058,7 @@ export function checkoutPageTemplate() {
       `<div class='ckt-field'><input class='ckt-input' type='text' name='address1' placeholder='Address' autocomplete='address-line1'></div>` +
       `<div class='ckt-field'><input class='ckt-input' type='text' name='address2' placeholder='Apartment, suite, etc. (optional)' autocomplete='address-line2'></div>` +
       `<div class='ckt-field'><input class='ckt-input' type='text' name='city' placeholder='City' autocomplete='address-level2'></div>` +
-      `<div class='ckt-two'><div class='ckt-float'><label>State / province</label><select class='ckt-input ckt-select' name='state' autocomplete='address-level1'><option value='' selected disabled></option>${cktOptions(CKT_US_STATES)}</select></div><input class='ckt-input' type='text' name='postal' placeholder='Postal code' autocomplete='postal-code'></div>` +
+      `<div class='ckt-two'><div class='ckt-float'><label>State/province</label><select class='ckt-input ckt-select' name='state' autocomplete='address-level1'><option value='' selected disabled></option>${cktOptions(CKT_US_STATES)}</select></div><input class='ckt-input' type='text' name='postal' placeholder='Postal code' autocomplete='postal-code'></div>` +
       `</section>`),
     html('ckt_shipping', 'checkout-shipping-method',
       `<section class='ckt-section'><h2 class='ckt-h2'>Shipping method</h2>` +
@@ -1090,9 +1076,7 @@ export function checkoutPageTemplate() {
     html('ckt_payhead', 'checkout-payment-heading',
       `<section class='ckt-section'><h2 class='ckt-h2'>Payment method</h2><p class='ckt-note'>All transactions are secure and encrypted.</p>` +
       `<div class='ckt-pay-card ckt-pay-card-top'>` +
-      `<label class='ckt-pay-option'><input type='radio' name='ckt-pay' checked><span class='ckt-pay-icon'>${CKT_ICON_CARD}</span><span>Card</span>` +
-      `<span class='ckt-pay-brands'>${CKT_MINI_VISA}${CKT_MINI_MC}${CKT_MINI_AMEX}</span>` +
-      `</label>` +
+      `<label class='ckt-pay-option'><input type='radio' name='ckt-pay' checked><span class='ckt-pay-icon'>${CKT_ICON_CARD}</span><span>Card</span></label>` +
       `<div class='ckt-card-fields'>` +
       `<div class='ckt-card-sublabel'>Card information</div>` +
       `<div class='ckt-card-number'><input class='ckt-input' type='text' name='card_number' placeholder='1234 1234 1234 1234' autocomplete='cc-number' inputmode='numeric'><span class='ckt-card-brands'>${CKT_MINI_VISA}${CKT_MINI_MC}${CKT_MINI_AMEX}</span></div>` +
@@ -1112,10 +1096,6 @@ export function checkoutPageTemplate() {
       `<p class='ckt-poweredby'>Powered by Whop \u00b7 Terms \u00b7 Privacy</p></section>`),
     html('ckt_button', 'checkout-complete-button',
       `<button type='button' class='ckt-complete' data-ckt-complete>Complete checkout</button>`),
-    html('ckt_badges', 'checkout-trust-badges',
-      `<div class='ckt-badges' aria-label='Accepted payment methods'>` +
-      `${CKT_BADGE_APPLEPAY}${CKT_BADGE_GPAY}${CKT_BADGE_PAYPAL}${CKT_BADGE_VISA}${CKT_BADGE_MC}${CKT_BADGE_AMEX}${CKT_BADGE_DISCOVER}` +
-      `</div>`),
     html('ckt_footer', 'checkout-footer-links',
       `<footer class='ckt-footer'><a href='#'>Return policy</a><a href='#'>Privacy policy</a><a href='#'>Terms of service</a></footer>`),
     html('ckt_summary', 'checkout-order-summary',
