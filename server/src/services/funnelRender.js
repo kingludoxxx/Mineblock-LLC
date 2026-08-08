@@ -36,6 +36,36 @@ export const escapeHtml = (v) =>
 
 const esc = escapeHtml;
 
+// #4: href sink guard. Operator-authored hrefs are served on the public,
+// unauthenticated host — a `javascript:`/`data:`/`vbscript:` URL is click-to-XSS.
+// Allow only http(s)/mailto/tel/relative; anything else collapses to '#'.
+// Returns an HTML-attribute-escaped value.
+const SAFE_URL_SCHEME = /^(https?:|mailto:|tel:)/i;
+export const safeHref = (v) => {
+  const raw = String(v ?? '').trim();
+  if (!raw) return '#';
+  // A scheme is present only if a ':' appears before any '/', '?' or '#'.
+  const firstColon = raw.indexOf(':');
+  const firstSlash = raw.search(/[/?#]/);
+  const hasScheme = firstColon !== -1 && (firstSlash === -1 || firstColon < firstSlash);
+  if (hasScheme && !SAFE_URL_SCHEME.test(raw)) return '#';
+  return esc(raw);
+};
+
+// #5: url() inside a style attribute is a different context than HTML — the
+// HTML parser decodes entities before the CSS parser runs, so HTML-escaping
+// alone lets a quote/paren re-appear at the CSS layer (injection/exfil).
+// Percent-encode the CSS-breaking characters and allow only safe schemes.
+export const safeCssUrl = (v) => {
+  const raw = String(v ?? '').trim();
+  if (!raw) return '';
+  const firstColon = raw.indexOf(':');
+  const firstSlash = raw.search(/[/?#]/);
+  const hasScheme = firstColon !== -1 && (firstSlash === -1 || firstColon < firstSlash);
+  if (hasScheme && !/^https?:/i.test(raw)) return '';
+  return raw.replace(/[\\'"()\s<>]/g, (c) => '%' + c.charCodeAt(0).toString(16).padStart(2, '0'));
+};
+
 const toInt = (v, fallback) => {
   const n = parseInt(v, 10);
   return Number.isFinite(n) ? n : fallback;
@@ -120,8 +150,8 @@ function renderBlockInner(block) {
     }
     case 'hero': {
       const bg = p.image_url || '';
-      const bgStyle = bg ? ` style="background-image:url('${esc(bg)}')"` : '';
-      const ctaHref = esc(p.cta_href || '#');
+      const bgStyle = bg ? ` style="background-image:url('${safeCssUrl(bg)}')"` : '';
+      const ctaHref = safeHref(p.cta_href || '#');
       return (
         `<section class='lb-hero'${bgStyle}>` +
         `<div class='lb-container'>` +
@@ -153,7 +183,7 @@ function renderBlockInner(block) {
       const inter = isPlainObject((block || {}).interaction)
         ? block.interaction
         : {};
-      const href = esc(String(inter.href || p.href || '#'));
+      const href = safeHref(String(inter.href || p.href || '#'));
       let extra = '';
       for (const attr of ['action', 'coupon', 'speed', 'target', 'title']) {
         const v = String(inter[attr] || '').trim();
@@ -270,7 +300,7 @@ function renderBlockInner(block) {
             `<img data-el='image' src='${esc(it.image || '')}' alt=''/>` +
             `<h3 data-el='item_name'>${esc(it.name || '')}</h3>` +
             `<p data-el='item_summary'>${esc(it.summary || '')}</p>` +
-            `<a class='lb-btn' data-el='cta' href='${esc(it.href || '#')}'>${esc(it.cta || 'View')}</a>` +
+            `<a class='lb-btn' data-el='cta' href='${safeHref(it.href || '#')}'>${esc(it.cta || 'View')}</a>` +
             `</article>`
         )
         .join('');
@@ -283,7 +313,7 @@ function renderBlockInner(block) {
         `<span class='lb-countdown-clock' data-el='clock'>—</span></div>`
       );
     case 'sticky_cta': {
-      const href = esc(p.href || '#');
+      const href = safeHref(p.href || '#');
       return `<a class='lb-sticky-cta' href='${href}'>${esc(p.text || 'Buy Now')}</a>`;
     }
     case 'embed':
@@ -442,9 +472,18 @@ export function compileFlow(page, funnel, pagesById) {
     const pid = String((page || {}).id ?? '');
     if (!pid) return empty;
 
+    // #2: pages are served under /f/<funnelSlug>/... — flow targets must be
+    // full public paths, not bare page slugs (a bare '/thankyou' navigates to
+    // the site root and 404s). funnel.slug is [a-z0-9-]+ by construction.
+    const funnelSlug = String((funnel || {}).slug || '');
+    const toPublic = (slug) => {
+      if (typeof slug !== 'string' || !funnelSlug) return null;
+      const base = `/f/${funnelSlug}`;
+      return slug === '/' ? base : base + slug;
+    };
     const slugOf = (id) => {
       const p = map.get(String(id));
-      return p && typeof p.slug === 'string' ? p.slug : null;
+      return p && typeof p.slug === 'string' ? toPublic(p.slug) : null;
     };
 
     let next_path = null;
@@ -455,17 +494,17 @@ export function compileFlow(page, funnel, pagesById) {
       if (!isPlainObject(e)) continue;
       if (String(e.source) !== pid) continue;
       const kind = e.kind === 'fallback' ? 'fallback' : 'main';
-      const targetSlug = slugOf(e.target);
-      if (kind === 'main' && next_path === null && targetSlug) next_path = targetSlug;
-      if (kind === 'fallback' && fallback_path === null && targetSlug) fallback_path = targetSlug;
+      const targetPath = slugOf(e.target);
+      if (kind === 'main' && next_path === null && targetPath) next_path = targetPath;
+      if (kind === 'fallback' && fallback_path === null && targetPath) fallback_path = targetPath;
       // Per-button bindings (optional; not persisted by the slice-3 canvas but
       // honoured here if a caller/import supplies them on the edge).
       const buttons = Array.isArray(e.buttons) ? e.buttons : [];
       for (const b of buttons) {
         if (!isPlainObject(b)) continue;
         const bid = b.id != null ? String(b.id) : '';
-        const bslug = slugOf(b.target);
-        if (bid && bslug && routes[bid] === undefined) routes[bid] = bslug;
+        const bpath = slugOf(b.target);
+        if (bid && bpath && routes[bid] === undefined) routes[bid] = bpath;
       }
     }
     return { next_path, fallback_path, routes };

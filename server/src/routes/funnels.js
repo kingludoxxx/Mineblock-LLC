@@ -369,6 +369,8 @@ router.patch('/:id', async (req, res) => {
       if (!isPlainObject(body.seo)) {
         return res.status(400).json({ error: 'seo must be an object' });
       }
+      const seoErr = scanValue(body.seo, 0); // #8: same proto-key scan as blocks
+      if (seoErr) return res.status(400).json({ error: `seo: ${seoErr}` });
       sets.push(`seo = $${i}`);
       params.push(body.seo); // postgres.js serializes JSONB itself — pass raw
       i += 1;
@@ -867,6 +869,8 @@ router.patch('/:id/pages/:pageId', async (req, res) => {
       if (!isPlainObject(body.seo)) {
         return res.status(400).json({ error: 'seo must be an object' });
       }
+      const seoErr = scanValue(body.seo, 0); // #8: same proto-key scan as blocks
+      if (seoErr) return res.status(400).json({ error: `seo: ${seoErr}` });
       sets.push(`seo = $${i}`);
       params.push(body.seo);
       i += 1;
