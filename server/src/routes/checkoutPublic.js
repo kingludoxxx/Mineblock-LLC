@@ -228,6 +228,88 @@ router.post('/create-session', async (req, res) => {
   }
 });
 
+// POST /stripe/create-intent — mint the PaymentIntent for a processing
+// session. Amount comes from the SESSION (already server-priced) — the
+// client sends only the session id. Customer + setup_future_usage tokenize
+// the card for 1-click upsells. Deterministic Stripe Idempotency-Key means a
+// replayed call returns the same PI, not a second charge surface.
+router.post('/stripe/create-intent', async (req, res) => {
+  try {
+    if (!(await rateLimit(req, res, 'create-intent', 20))) return;
+    await ensureCheckoutTables();
+    const sessionId = String(req.body?.session_id || '').slice(0, 80);
+    if (!sessionId) {
+      return res.status(422).json({ success: false, error: { code: 'session_required' } });
+    }
+    const rows = await pgQuery(
+      `SELECT id, funnel_id, status, total, currency, customer, gateway_session_id, gateway
+       FROM co_sessions WHERE id = $1`, [sessionId]
+    );
+    if (!rows.length) {
+      return res.status(404).json({ success: false, error: { code: 'not_found' } });
+    }
+    const session = rows[0];
+    if (session.status !== 'processing') {
+      return res.status(409).json({ success: false, error: { code: 'session_not_payable' } });
+    }
+    const { resolveCredential } = await import('../services/gatewayConfigs.js');
+    const { createCustomer, createPaymentIntent, modeOf } =
+      await import('../services/gateways/stripe.js');
+    const secretKey = await resolveCredential(session.funnel_id || '', 'stripe', 'secret_key');
+    if (!secretKey) {
+      return res.status(503).json({ success: false, error: { code: 'gateway_not_configured' } });
+    }
+
+    const cust = session.customer || {};
+    const customer = await createCustomer(secretKey, {
+      email: cust.email || '',
+      name: [cust.first_name, cust.last_name].filter(Boolean).join(' '),
+      phone: cust.phone || '',
+      metadata: { co_session_id: session.id },
+    });
+    // A failed customer create degrades to a PI without saved-card upsells —
+    // never blocks the sale.
+    const customerId = customer.ok ? customer.customer_id : '';
+
+    const pi = await createPaymentIntent(secretKey, {
+      amount: Number(session.total),
+      currency: session.currency,
+      customerId,
+      metadata: { co_session_id: session.id },
+      idempotencyKey: `ci_${session.id}`,
+      setupFutureUsage: Boolean(customerId),
+    });
+    if (!pi.ok) {
+      console.error('[checkout] create-intent failed:', pi.error, pi.detail || '');
+      return res.status(502).json({ success: false, error: { code: 'gateway_error' } });
+    }
+
+    await pgQuery(
+      `UPDATE co_sessions SET gateway = 'stripe', gateway_session_id = $2,
+         gateway_customer_id = COALESCE($3, gateway_customer_id), updated_at = NOW()
+       WHERE id = $1`,
+      [session.id, pi.id, customerId || null]
+    );
+    const publishableKey = await resolveCredential(
+      session.funnel_id || '', 'stripe', 'publishable_key'
+    );
+    return res.json({
+      success: true,
+      data: {
+        payment_intent_id: pi.id,
+        client_secret: pi.client_secret,
+        publishable_key: publishableKey || null,
+        mode: modeOf(secretKey),
+        amount: Number(session.total),
+        currency: session.currency,
+      },
+    });
+  } catch (err) {
+    console.error('[checkout] create-intent failed:', err.message);
+    return res.status(500).json({ success: false, error: { code: 'internal_error' } });
+  }
+});
+
 // GET /session/:id — safe public snapshot (thank-you / upsell pages poll
 // this). Hand-picked fields, an allow-list: no tracking net, no customer PII
 // beyond nothing, no gateway internals.

@@ -1703,3 +1703,38 @@ mounting only lane files — shared app.js untouched; mount hunks go in the
 integrator report. DECISION MADE on all three.
 STATUS: COMPLETE (local verification; integrator merge pending)
 ---
+
+---
+TIMESTAMP: 2026-08-08 22:05
+TASK: Integration lane slice 2 — Stripe test-mode settle + idempotent orders
+BUILT: gateways/stripe.js (PaymentIntents adapter port: customer, intent w/
+setup_future_usage, off-session charge, local Stripe-Signature HMAC verify
+w/ 300s tolerance + multi-v1 rotation support, PI parser w/ BNPL reuse
+gate; STRIPE_API_BASE test seam read at call time); gatewayConfigs.js
+(per-funnel creds in co_gateway_configs, AES-256-GCM at rest, write-only
+patch null-keeps/""-clears/value-replaces, reads only *_set booleans, env
+fallback); checkoutSettle.js (THE settle path: atomic processing→paid
+claim + co_orders ON CONFLICT(idempotency_key) DO NOTHING — sweeps must
+reuse these); gatewayWebhooks.js (POST /stripe: raw-body sig verify
+fail-closed, authoritative PI re-fetch, unmatched-payment queue, forensics
+rows w/ first-outcome-wins); public POST /stripe/create-intent; admin
+GET/PUT /gateways.
+TESTED: 43-check battery vs mock Stripe (:4009) implementing the exact API
+surface. EXIT BAR PROVEN: same signed event twice → exactly one co_orders
+row, second delivery no-op ack; 5 CONCURRENT deliveries → 1 settled/1
+order (DB arbitration). Failure paths: bad/missing/stale signature 403 +
+session untouched, PI-fetch outage 502 + nothing written, amount mismatch
+409 + needs_review + no order, BNPL PM not saved, unknown-session valid-
+sig payment → co_unmatched_payments (idempotent), malformed JSON 4xx,
+env-signed event rejected when per-funnel secret set.
+OUTPUT: RESULT: 43 passed, 0 failed.
+DECISIONS: (1) Settle order-of-writes: session flip then order insert, both
+independently idempotent, crash between them heals on redelivery/sweep.
+(2) Unknown-session events verify against env-level secret; only authentic
+ones enter the unmatched queue (prevents unauthenticated spam). (3) Creds
+cipher key = CHECKOUT_CREDS_KEY else sha256(JWT_SECRET) fallback so prod
+works without new env. (4) STRIPE_API_BASE env override as the mock seam.
+DECISION MADE on all four.
+STATUS: COMPLETE (local verification; live Stripe test-mode run BLOCKED on
+operator-supplied sk_test key — see errors.md)
+---

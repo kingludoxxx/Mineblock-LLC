@@ -146,6 +146,25 @@ async function createTables() {
     )
   `);
 
+  // Columns added after the initial co_sessions DDL — safe on fresh and
+  // existing DBs (same pattern as orders.js). Settle provenance for upsells:
+  // gateway_customer_id + the charge's actual method type gate PM reuse.
+  await pgQuery(`ALTER TABLE co_sessions ADD COLUMN IF NOT EXISTS gateway_customer_id TEXT`);
+  await pgQuery(`ALTER TABLE co_sessions ADD COLUMN IF NOT EXISTS payment_method_type TEXT`);
+
+  // Per-funnel gateway credentials (operator data). Secret values inside
+  // `config` are AES-256-GCM ciphertext (gatewayConfigs.js); reads only ever
+  // surface `*_set` booleans.
+  await pgQuery(`
+    CREATE TABLE IF NOT EXISTS co_gateway_configs (
+      funnel_id TEXT NOT NULL,
+      gateway TEXT NOT NULL,
+      config JSONB NOT NULL DEFAULT '{}',
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (funnel_id, gateway)
+    )
+  `);
+
   // Real money the system could not attribute to a session — an operator
   // queue, never a silent drop. PK on the webhook id keeps it idempotent.
   await pgQuery(`

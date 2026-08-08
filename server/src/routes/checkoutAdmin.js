@@ -89,6 +89,46 @@ router.get('/stats', async (req, res) => {
   }
 });
 
+// ── Gateway credentials (per-funnel operator data) ─────────────────────────
+// WRITE-ONLY semantics: null keeps the stored value, "" clears it, a value
+// replaces it (encrypted at rest). Reads return only `*_set` booleans.
+
+// GET /gateways/:funnelId — safe view of every gateway's config state.
+router.get('/gateways/:funnelId', async (req, res) => {
+  try {
+    const { GATEWAYS, getPublicConfig } = await import('../services/gatewayConfigs.js');
+    const funnelId = String(req.params.funnelId || '').slice(0, 64);
+    const out = {};
+    for (const gw of Object.keys(GATEWAYS)) {
+      out[gw] = await getPublicConfig(funnelId, gw);
+    }
+    return res.json({ success: true, data: out });
+  } catch (err) {
+    console.error('[checkoutAdmin] gateways read failed:', err.message);
+    return res.status(500).json({ success: false, error: { code: 'internal_error' } });
+  }
+});
+
+// PUT /gateways/:funnelId/:gateway — write-only patch.
+router.put('/gateways/:funnelId/:gateway', async (req, res) => {
+  try {
+    const { GATEWAYS, patchConfig } = await import('../services/gatewayConfigs.js');
+    const gateway = String(req.params.gateway || '');
+    if (!GATEWAYS[gateway]) {
+      return res.status(404).json({ success: false, error: { code: 'unknown_gateway' } });
+    }
+    const funnelId = String(req.params.funnelId || '').slice(0, 64);
+    if (!funnelId) {
+      return res.status(422).json({ success: false, error: { code: 'funnel_required' } });
+    }
+    const view = await patchConfig(funnelId, gateway, req.body || {});
+    return res.json({ success: true, data: view });
+  } catch (err) {
+    console.error('[checkoutAdmin] gateway patch failed:', err.message);
+    return res.status(500).json({ success: false, error: { code: 'internal_error' } });
+  }
+});
+
 // GET /:id — full session detail: row + event trail + orders + upsell charges.
 router.get('/:id', async (req, res) => {
   try {

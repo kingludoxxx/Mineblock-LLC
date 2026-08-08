@@ -86,3 +86,12 @@ STATUS: BLOCKED — operator must open the Render dashboard for
 RESOLVED 2026-07-15 15:40: Cancelled the hung build via Render REST API
   (POST /v1/services/{svc}/deploys/{dep}/cancel with the rnd_ key from
   ~/.claude/settings.json). Queued deploy 157e3aa then built + went live.
+
+---
+TIMESTAMP: 2026-08-08 22:05
+TASK: Integration lane slice 2/3 — live gateway verification
+ERROR: Stripe + Whop TEST credentials not provided (per docs/LANE-INTEGRATION.md they arrive from the operator)
+ATTEMPTED: Built + verified against a local mock implementing the exact API surface (43/43); signature verification uses real HMAC with self-generated signatures per the lane doc
+FIX TRIED: n/a — external dependency
+STATUS: BLOCKED (only the against-live-test-mode rerun; all code paths verified locally. Unblock: operator supplies sk_test_/whsec_ and Whop test API key, then rerun test_slice2/3 batteries with STRIPE_API_BASE unset)
+---
