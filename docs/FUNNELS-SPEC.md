@@ -93,6 +93,40 @@ entry lives under the existing **Production** group in the Puure sidebar._
   per-page live stats chips (needs tracking lane), Funnels Dashboard KPIs
   (needs tracking + costs lanes).
 
+## Slice 3 (canvas) — acceptance checklist against Ludo's screenshots
+Reviewer must tick every line against the screenshots before integration:
+- [ ] Header bar: back arrow · status dot · funnel name · PUBLISHED badge ·
+      path subtitle · Settings dropdown · "Saved just now" autosave hint ·
+      Domain picker slot (placeholder until slice 5) · Analytics + Live site
+      buttons (placeholder targets ok) · green/accent Publish button.
+- [ ] Live counter chip top-right ("N live · M unique today") — placeholder
+      values until tracking lane, but the chip exists.
+- [ ] Left panel "ADD A PAGE": collapsible; EXACT items + subtitles:
+      Storefront (Product grid) · Quiz (Multi-step questions) ·
+      Lead / Advertorial (Listicle, VSL) · Checkout (Payment page) ·
+      Upsell (1-click offer) · Downsell (Fallback offer) ·
+      Thank You (Confirmation) · Customer Portal (Self-service) ·
+      Generic / Opt-in (Blank + form) · divider · Clone a page (disabled
+      "coming soon" ok this slice) · Page library (disabled ok).
+      Clicking an item creates a page of that type at canvas center.
+- [ ] Canvas: pan (drag empty space) + zoom (wheel/buttons, % indicator);
+      pages as cards (type-colored placeholder thumbnail this slice) with
+      name + type label + stat chip row (— placeholders); drag to reposition
+      (persists to flow_layout.nodes x/y).
+- [ ] Edges: drag from a card's edge handle to another card draws a curve;
+      persists to flow_layout.edges {source,target,kind:'main'}; a second
+      distinct handle or modifier creates kind:'fallback' (decline path,
+      visually distinct); edge deletable. Many→one supported (angle pattern).
+- [ ] Selected card floating toolbar: settings · analytics (placeholder) ·
+      edit (→ page editor route) · preview (→ /f preview URL) · duplicate ·
+      code/JSON — plus the page's public URL text.
+- [ ] Bottom-right toolbar: undo/redo (canvas ops) · zoom fit · zoom % ·
+      S/M/L device toggles (affect page-card aspect only this slice).
+- [ ] Funnels list page upgraded toward screenshot: filter chips (All/
+      Published/Inactive/Not Yet Published/Deleted), sort, search, metric
+      columns rendered with "—" placeholders until data lanes land.
+- [ ] Puure branding everywhere; p-6 padding; theme tokens; dark theme.
+
 ## Constraints reminder (from funnel-os DECISIONS.md — apply to every slice)
 Fail-open serving; no-store on non-200/drafts; blocks validated on write;
 (funnel_id, slug) partial-unique arbitration; query string preserved through
